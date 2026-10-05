@@ -26,7 +26,7 @@ Section: Parameters
 
 Section: S01 -- Preamble
 
-  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScRaw "# The 8.3 name codex/plugs/img/run.ps1 folds a source to, so this test names", ScRaw "# the file the image actually carries whatever SampleSrc is.", ScRaw "if (-not $DiskPath) {", ScRaw "    $n83 = ([System.IO.Path]::GetFileNameWithoutExtension($SampleSrc)).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    $e83 = ([System.IO.Path]::GetExtension($SampleSrc).TrimStart('.')).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    if ($n83.Length -gt 8) { $n83 = $n83.Substring(0, 8) }", ScRaw "    if ($e83.Length -gt 3) { $e83 = $e83.Substring(0, 3) }", ScRaw "    $DiskPath = if ($e83) { \"$n83.$e83\" } else { $n83 }", ScRaw "}", ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScComment "The compiler under test, at both the host compile and the DISK guest:", ScComment "build-output\\bare-metal holds whichever compiler ran last.", ScIf (SeNot (SeVar "Kernel")) [ScAssign "Kernel" (SePathJoin (SeVar "root") (SeLit "seed\\Codex.cdx"))] [], ScAssign "outDir" (SeRaw "Join-Path $root 'build-output\\disk-compile-test'"), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeRaw "Join-Path $PSScriptRoot 'compile.ps1'"), ScAssign "runScript" (SeRaw "Join-Path $PSScriptRoot 'test-run.ps1'"), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScRaw "# The 8.3 name codex/plugs/img/run.ps1 folds a source to, so this test names", ScRaw "# the file the image actually carries whatever SampleSrc is.", ScRaw "if (-not $DiskPath) {", ScRaw "    $n83 = ([System.IO.Path]::GetFileNameWithoutExtension($SampleSrc)).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    $e83 = ([System.IO.Path]::GetExtension($SampleSrc).TrimStart('.')).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    if ($n83.Length -gt 8) { $n83 = $n83.Substring(0, 8) }", ScRaw "    if ($e83.Length -gt 3) { $e83 = $e83.Substring(0, 3) }", ScRaw "    $DiskPath = if ($e83) { \"$n83.$e83\" } else { $n83 }", ScRaw "}", ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScComment "The compiler under test, at both the host compile and the DISK guest:", ScComment "build-output\\bare-metal holds whichever compiler ran last.", ScIf (SeNot (SeVar "Kernel")) [ScAssign "Kernel" (SePathJoin (SeVar "root") (SeLit "seed\\Codex.cdx"))] [], ScAssign "outDir" (SeBare (SePathJoinN [SeVar "root", SeLit "build-output\\disk-compile-test"])), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "compile.ps1"])), ScAssign "runScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "test-run.ps1"])), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
 
 Section: S01b -- FAT16 extraction helper
 
@@ -49,19 +49,19 @@ Section: S02 -- Step 1a: Compile source to CDX
 
   s02-body : List ShellCmd =
     let fail-cdx = [ScEchoStyled (SeLit "FAIL: CDX compile failed") ClBrightRed True, ScIf (SeFileExists (SeVar "cdxLog")) [ScRaw "Get-Content $cdxLog | Write-Host"] [], ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 1a: Compile source to CDX..."), ScAssign "imgOut" (SeRaw "Join-Path $outDir 'disk-test.img'"), ScAssign "cdxOut" (SeRaw "Join-Path $outDir 'disk-test.cdx'"), ScAssign "cdxLog" (SeRaw "Join-Path $outDir 'cdx-build.log'"), ScRaw "& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore -Kernel $Kernel", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "cdxOut")))) fail-cdx []]
+    in [ScBlank, ScEcho (SeLit "Step 1a: Compile source to CDX..."), ScAssign "imgOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.img"])), ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.cdx"])), ScAssign "cdxLog" (SeBare (SePathJoinN [SeVar "outDir", SeLit "cdx-build.log"])), ScRaw "& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore -Kernel $Kernel", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "cdxOut")))) fail-cdx []]
 
 Section: S03 -- Step 1b: CDX to PE via plug
 
   s03-body : List ShellCmd =
     let fail-pe = [ScEcho (SeLit "FAIL: PE plug failed"), ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 1b: CDX -> PE via plug..."), ScAssign "peOut" (SeRaw "Join-Path $outDir 'disk-test.efi'"), ScAssign "pePlug" (SeRaw "Join-Path $root 'codex\\plugs\\pe\\run.ps1'"), ScRaw "& pwsh -NoProfile -File $pePlug -CdxInput $cdxOut -Out $peOut", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "peOut")))) fail-pe []]
+    in [ScBlank, ScEcho (SeLit "Step 1b: CDX -> PE via plug..."), ScAssign "peOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.efi"])), ScAssign "pePlug" (SeBare (SePathJoinN [SeVar "root", SeLit "codex\\plugs\\pe\\run.ps1"])), ScRaw "& pwsh -NoProfile -File $pePlug -CdxInput $cdxOut -Out $peOut", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "peOut")))) fail-pe []]
 
 Section: S04 -- Step 1c: PE + CDX to FAT16 IMG via plug
 
   s04-body : List ShellCmd =
     let fail-img = [ScEcho (SeLit "FAIL: IMG plug failed"), ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 1c: PE + CDX -> FAT16 IMG via plug..."), ScAssign "imgPlug" (SeRaw "Join-Path $root 'codex\\plugs\\img\\run.ps1'"), ScRaw "& pwsh -NoProfile -File $imgPlug -PeInput $peOut -CdxInput $cdxOut -Out $imgOut -Fat16 -Source $SampleSrc", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "imgOut")))) fail-img [], ScEcho (SeRaw "\"  IMG: $((Get-Item $imgOut).Length) bytes\"")]
+    in [ScBlank, ScEcho (SeLit "Step 1c: PE + CDX -> FAT16 IMG via plug..."), ScAssign "imgPlug" (SeBare (SePathJoinN [SeVar "root", SeLit "codex\\plugs\\img\\run.ps1"])), ScRaw "& pwsh -NoProfile -File $imgPlug -PeInput $peOut -CdxInput $cdxOut -Out $imgOut -Fat16 -Source $SampleSrc", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "imgOut")))) fail-img [], ScEcho (SeRaw "\"  IMG: $((Get-Item $imgOut).Length) bytes\"")]
 
 Section: S05 -- Step 2: Boot compiler with IMG as IDE disk
 
@@ -117,7 +117,7 @@ Section: S08b -- Step 2b: Extract OUT.CDX from the image
 
   s08b-body : List ShellCmd =
     let fail-size = [ScEchoStyled (SeRaw "\"FAIL: OUT.CDX is $extracted bytes, the guest declared $binSize\"") ClBrightRed True, ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 2b: Extract OUT.CDX from the image..."), ScAssign "cdxOut" (SeRaw "Join-Path $outDir 'disk-compiled.cdx'"), ScAssign "extracted" (SeRaw "Export-Fat16File -Image $imgOut -Name 'OUT     CDX' -Out $cdxOut"), ScIf (SeRaw "$extracted -ne $binSize") fail-size [], ScEcho (SeRaw "\"  Written: $cdxOut ($extracted bytes)\"")]
+    in [ScBlank, ScEcho (SeLit "Step 2b: Extract OUT.CDX from the image..."), ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-compiled.cdx"])), ScAssign "extracted" (SeRaw "Export-Fat16File -Image $imgOut -Name 'OUT     CDX' -Out $cdxOut"), ScIf (SeRaw "$extracted -ne $binSize") fail-size [], ScEcho (SeRaw "\"  Written: $cdxOut ($extracted bytes)\"")]
 
 Section: S10 -- Step 3: Boot compiled CDX and check output
 
@@ -125,7 +125,7 @@ Section: S10 -- Step 3: Boot compiled CDX and check output
     let fail-run = [ScEcho (SeLit "FAIL: runtime failed"), ScExit (SeInt 1)]
     in let pass = [ScEchoStyled (SeLit "PASS: DISK compile mode works") ClBrightGreen True]
     in let fail-mismatch = [ScEchoStyled (SeLit "FAIL: output mismatch") ClBrightRed True, ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 3: Run compiled CDX..."), ScAssign "actual" (SeRaw "Join-Path $outDir 'runtime.actual'"), ScRaw "& pwsh -NoProfile -File $runScript -Kernel $cdxOut -OutFile $actual -PCore $PCore", ScIf (SeRaw "$LASTEXITCODE -ne 0") fail-run [], ScRaw "$output = if (Test-Path $actual) { (Get-Content -Raw $actual).TrimEnd() } else { '' }", ScEcho (SeRaw "\"  Output: '$output'\""), ScEcho (SeRaw "\"  Expected: '$Expected'\""), ScIf (SeStringEq (SeVar "output") (SeVar "Expected")) pass fail-mismatch]
+    in [ScBlank, ScEcho (SeLit "Step 3: Run compiled CDX..."), ScAssign "actual" (SeBare (SePathJoinN [SeVar "outDir", SeLit "runtime.actual"])), ScRaw "& pwsh -NoProfile -File $runScript -Kernel $cdxOut -OutFile $actual -PCore $PCore", ScIf (SeRaw "$LASTEXITCODE -ne 0") fail-run [], ScRaw "$output = if (Test-Path $actual) { (Get-Content -Raw $actual).TrimEnd() } else { '' }", ScEcho (SeRaw "\"  Output: '$output'\""), ScEcho (SeRaw "\"  Expected: '$Expected'\""), ScIf (SeStringEq (SeVar "output") (SeVar "Expected")) pass fail-mismatch]
 
 Section: Assembly
 

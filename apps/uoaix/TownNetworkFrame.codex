@@ -1,0 +1,51 @@
+Chapter: TownNetworkFrame
+  cites Uoaix chapter TownNetwork
+  cites Uoaix chapter EconomyProduction
+
+  tnf-output : EpWorld, Integer, Integer -> Integer
+  tnf-output (w) (resource) (recipe) =
+    if resource > 0 then (list-at w.catalog.resources (resource - 1)).item
+    else if recipe > 0 then (list-at w.catalog.recipes (recipe - 1)).item else 0
+  tnf-role : EpWorld, Integer, Integer -> Integer
+  tnf-role (w) (resource) (recipe) =
+    let item = tnf-output w resource recipe
+    in if item == 5 | item == 6 | item == 31 then 2
+    else if item == 41 then 4
+    else if item == 13 | item == 14 | item == 16 then 3
+    else if recipe > 0 then let r = list-at w.catalog.recipes (recipe - 1)
+      in if r.one == 31 | r.two == 31 | r.three == 31 then 1 else 0
+    else 0
+  tnf-food-count : EpActor -> Integer
+  tnf-food-count (p) = ep-at p.stock 34 + ep-at p.stock 50 + ep-at p.stock 14 + ep-at p.stock 16
+  tnf-zero : List Integer, Integer, Integer -> Integer
+  tnf-zero (inputs) (base) (i) = if i == 30 then 0
+    else let a = list-set-at inputs (base + i) 0 in tnf-zero inputs base (i + 1)
+  tnf-set : List Integer, Integer, Integer, Integer -> Integer
+  tnf-set (inputs) (base) (column) (value) =
+    let a = list-set-at inputs (base + column) (tn-clip value -1000 1000) in 0
+  tnf-frame : EpWorld, Integer, Integer, Integer, Integer, Integer, Integer, List Integer, Integer -> Integer
+  tnf-frame (w) (actor) (item) (role) (goal) (needed) (trade) (inputs) (base) =
+    if not (ep-valid-actor w actor) | not (eg-id w.catalog item)
+      | role < 0 | role > 4 | (goal /= 0 & not (eg-id w.catalog goal))
+      | needed < 1 | needed > ep-stock-limit | trade < -1000 | trade > 1000
+      | base < 0 | base > list-length inputs - 32 then -1
+    else let p = ep-actor w actor
+    in let hour = int-mod w.hour 24
+    in let cleared = tnf-zero inputs base 0
+    in let a0 = tnf-set inputs base 0 (p.hunger * 10)
+    in let a2 = tnf-set inputs base 2 ((em-purse w.money p.purse).coin * 10)
+    in let a3 = tnf-set inputs base 3 1000
+    in let a4 = tnf-set inputs base 4 (tnf-food-count p * 1000)
+    in let a5 = tnf-set inputs base 5 (if goal == 0 then 0 else ep-at p.stock goal * 1000 / needed)
+    in let a6 = tnf-set inputs base 6 (ep-at p.stock item * 250)
+    in let a9 = tnf-set inputs base 9 ((ep-price-gold w actor item - 10) * 20)
+    in let a10 = tnf-set inputs base 10 (if role == 2 then 1000 else 0)
+    in let a11 = tnf-set inputs base 11 (if role == 1 then 1000 else 0)
+    in let a12 = tnf-set inputs base 12 (if role == 3 then 1000 else 0)
+    in let a13 = tnf-set inputs base 13 (if role == 4 then 1000 else 0)
+    in let a21 = tnf-set inputs base 21 (if hour >= 8 & hour <= 17 then 1000 else 0)
+    in let a22 = tnf-set inputs base 22 (if hour == 18 then 1000 else 0)
+    in let a23 = tnf-set inputs base 23 (if hour == 19 then 1000 else 0)
+    in let a25 = tnf-set inputs base 25 trade
+    in let a29 = tnf-set inputs base 29 (if ep-at p.stock item < 4 then 1000 else 0)
+    in 0

@@ -1,0 +1,339 @@
+Chapter: MageryReplay
+  cites Uoaix chapter MageryCodec
+  cites Uoaix chapter EconomyMetals
+
+  mr-check : Text, Boolean -> [Console] Integer
+  mr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  mr-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  mr-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  MrEnv = record { game : GameShard, map : WalkMap, magic : Magery, input : GameInput, actor : MgActor }
+  mr-land : WalkMap, Integer -> Integer
+  mr-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let written = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in mr-land map (i + 1)
+  mr-reagents : GsiState, Integer -> Integer
+  mr-reagents (items) (i) = if i == 8 then 0 else let item = gs-item #40000002 (mgd-reagent i) 0
+    in let amount = __record-set item "amount" 5
+    in when world-create items.world item
+      is Err (_) -> -1
+      is Ok (serial) -> let registered = gsi-register items serial 0 0 True True in mr-reagents items (i + 1)
+  mr-env : Integer -> Result MrEnv Text
+  mr-env (unused) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (game) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> Err e
+      is Ok (map) -> let filled = mr-land map 0
+        in when mr-decoration map
+          is Err (e) -> Err e
+          is Ok (decoration) -> let hero = gs-mobile 0 1421 1698 0 400 1002
+            in let hp = __record-set hero "health" 10
+            in let mobile = world-create game.world hero
+            in let character = poke-qword game.characters 0 1
+            in let strength = poke-byte game.characters 79 30
+            in let dexterity = poke-byte game.characters 80 20
+            in let intelligence = poke-byte game.characters 81 20
+            in let skill = poke-byte game.characters 82 25
+            in let value = poke-byte game.characters 83 100
+            in let pack = world-create game.world (gs-item 1 #0E75 0)
+            in let book = world-create game.world (gs-item #40000002 #0EFA 0)
+            in let items = gsi-new game.world
+            in let pack-def = gsi-register items #40000002 21 #3C False False
+            in let reagents = mr-reagents items 0
+            in let npc = gs-mobile 0 1422 1698 0 400 1002
+            in let npc-hp = __record-set npc "health" 30
+            in let opponent = world-create game.world npc
+            in let chest = world-create game.world (gs-item #40000002 #0E43 0)
+            in let chest-def = gsi-register items #4000000D 0 #49 True False
+            in let rune = world-create game.world (gs-item #40000002 #1F14 0)
+            in let bank = gmb-new items #4A
+            in let banker = gmb-add-banker bank 12
+            in let combat = cb-new game 42
+            in let magic = mgs-new items bank combat decoration None (mr-cover map)
+            in let book-def = mgs-book magic #40000003 #80FFFFFF
+            in let box-def = mgs-container magic #4000000D
+            in let rune-def = mgs-rune magic #4000000E 1424 1698 0
+            in let input = gn-input-with (gsi-specs 0) 1
+            in let mode = __record-set input "mode" 2
+            in let phase = __record-set input.session "phase" 2
+            in let serial = __record-set input.session "serial" 1
+            in let active = __record-set game "active" 1
+            in let bound = mge-bind magic
+            in when mg-session magic game input
+              is Err (e) -> Err e
+              is Ok (actor) -> if reagents < 0 | not (is-ok mobile & is-ok pack & is-ok book & is-ok opponent & is-ok chest & is-ok rune & is-ok book-def & is-ok box-def & is-ok rune-def) then Err "fixture allocation"
+                else Ok (MrEnv { game = game, map = map, magic = magic, input = input, actor = actor })
+  mr-command : Integer -> List Integer
+  mr-command (spell) = let text = show spell in sip-length (gp-ascii [#12,0,0,#27] text 0 (text-length text + 1))
+  mr-reply : Result (Maybe GameReply) Text -> GameReply
+  mr-reply (result) = when result
+    is Err (e) -> gs-reply [] ("ERROR " & e)
+    is Ok (maybe) -> when maybe
+      is None -> gs-reply [] "NONE"
+      is Just (reply) -> reply
+  mr-target : Integer, Integer, Integer, Integer, Integer -> List Integer
+  mr-target (cursor) (serial) (x) (y) (z) =
+    let a = gp-put32 (gp-put32 [#6C,0] cursor & [0]) serial
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,bit-and z 255]) 0
+  mr-cast : MrEnv, Integer, Integer, Integer -> [Device.Block] GameReply
+  mr-cast (env) (spell) (target) (now) = act
+    started <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command spell) now
+    pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (now + mgd-delay spell)
+    if mgd-self spell then mr-reply pulsed else act
+      result <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-target env.actor.cursor target 1424 1701 0) (now + mgd-delay spell + 1)
+      mr-reply result
+    end
+  end
+  mr-amount : MrEnv, Integer -> Integer
+  mr-amount (env) (kind) = when world-get env.game.world (#40000004 + kind)
+    is Err (_) -> 0
+    is Ok (item) -> item.amount
+  mr-costs : MrEnv, Integer, Integer -> Boolean
+  mr-costs (env) (spell) (i) = if i == 8 then True
+    else if mr-amount env i /= (if bit-and (mgd-reagents spell) (bit-shl 1 i) /= 0 then 4 else 5) then False
+    else mr-costs env spell (i + 1)
+  mr-effect-case : Integer -> [Console, Device.Block] Integer
+  mr-effect-case (spell) = when mr-env 0
+    is Err (e) -> act
+      print-line-uni ("FAIL effect fixture " & e)
+      1
+    end
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> act
+        print-line-uni ("FAIL target fixture " & e)
+        1
+      end
+      is Ok (npc) -> let box = list-at env.magic.definitions (world-slot env.game.world #4000000D)
+        in let trap = if spell == 14 | spell == 21 then let a = __record-set box "trapped" True in let b = __record-set box "trapper" 1 in 0 else 0
+        in let lock = if spell == 23 then let a = __record-set box "locked" True in 0 else 0
+        in let poisoned = if spell == 11 then let a = __record-set npc "poison" 0 in let b = __record-set npc "poison-left" 10 in 0 else 0
+        in let target = if spell == 32 then #4000000E else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then #4000000D
+          else if spell == 22 | spell == 24 then 0 else if spell == 1 | spell == 3 | spell == 5 | spell == 8 | spell == 11 | spell == 12 | spell == 18 | spell == 20 then 12 else 1
+        in act
+          reply <- mr-cast env spell target 1000
+          source <- world-get env.game.world 1
+          victim <- world-get env.game.world 12
+          effect-ok <- if spell == 1 then mgs-stat npc 1 < npc.dexterity
+            else if spell == 2 then world-count env.game.world == 15
+            else if spell == 3 then mgs-stat npc 2 < npc.intelligence
+            else if spell == 4 then when source is Err (_) -> False is Ok (m) -> m.health > 10
+            else if spell == 5 | spell == 12 | spell == 18 then when victim is Err (_) -> False is Ok (m) -> m.health < 30
+            else if spell == 6 then env.actor.night > env.magic.tick & env.actor.light > 0
+            else if spell == 7 then env.actor.absorb > 0
+            else if spell == 8 then mgs-stat npc 0 < npc.strength
+            else if spell == 9 then mgs-stat env.actor 1 > env.actor.dexterity
+            else if spell == 10 then mgs-stat env.actor 2 > env.actor.intelligence
+            else if spell == 11 then npc.poison == -1
+            else if spell == 13 then box.trapped
+            else if spell == 14 | spell == 21 then not box.trapped
+            else if spell == 15 then env.actor.protected-until > env.magic.tick
+            else if spell == 16 then mgs-stat env.actor 0 > env.actor.strength
+            else if spell == 17 then mgs-stat env.actor 0 > env.actor.strength & mgs-stat env.actor 1 > env.actor.dexterity & mgs-stat env.actor 2 > env.actor.intelligence
+            else if spell == 19 then box.locked
+            else if spell == 20 then npc.poison >= 0
+            else if spell == 23 then not box.locked
+            else if spell == 24 then world-count env.game.world == 17 & is-err (walk-height env.map 1424 1701 0)
+            else when source is Err (_) -> False is Ok (m) -> m.x == 1424 & m.y == (if spell == 32 then 1698 else 1701)
+          mr-check ("spell " & show spell & " applies effect and consumes exact pack reagents/mana") (effect-ok & env.actor.stage == 0 & env.actor.mana == 20 - mgd-mana spell & mr-costs env spell 0 & list-length reply.packets > 0)
+        end
+  mr-effects : Integer, Integer -> [Console, Device.Block] Integer
+  mr-effects (spell) (failures) = if spell == 25 then act
+      mark <- __heap-save
+      last <- mr-effect-case 32
+      restored <- __heap-restore mark
+      failures + last
+    end
+    else act
+      mark <- __heap-save
+      result <- mr-effect-case spell
+      restored <- __heap-restore mark
+      mr-effects (spell + 1) (failures + result)
+    end
+  mr-unchanged : MrEnv, Integer -> Boolean
+  mr-unchanged (env) (i) = if i == 8 then env.actor.mana == 20
+    else mr-amount env i == 5 & mr-unchanged env (i + 1)
+  mr-guards : MrEnv -> [Console, Device.Block] Integer
+  mr-guards (env) = act
+    bank <- world-create env.game.world (gs-item 1 #09B2 0)
+    bank-meta <- gsi-register env.magic.items #4000000F 29 #4A False False
+    garlic <- world-get env.game.world #40000006
+    when garlic
+      is Err (e) -> mr-check e False
+      is Ok (item) -> act
+        moved <- world-update env.game.world (ia-copy item item.serial item.amount #4000000F 40 120 0)
+        refused <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 4) 1000
+        a <- mr-check "bank reagents do not authorize casting or consume pack stock" (is-ok moved & env.actor.stage == 0 & mr-unchanged env 0)
+        returned <- world-update env.game.world item
+        started <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 4) 2000
+        pulse <- mg-pulse env.magic env.game env.input env.map 2593 (2000 + mgd-delay 4)
+        cursor <- env.actor.cursor
+        forged <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-target (cursor + 1) 1 0 0 0) (2001 + mgd-delay 4)
+        b <- mr-check "forged target cannot spend resources or replace owned cursor" (env.actor.stage == 2 & env.actor.cursor == cursor & mr-unchanged env 0)
+        finished <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-target cursor 1 0 0 0) (2002 + mgd-delay 4)
+        replayed <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-target cursor 1 0 0 0) (2003 + mgd-delay 4)
+        c <- mr-check "successful target cannot be replayed for another debit" (env.actor.stage == 0 & env.actor.mana == 16 & mr-costs env 4 0)
+        a+b+c
+      end
+  end
+  mr-interruption : MrEnv -> [Console, Device.Block] Integer
+  mr-interruption (env) = act
+    started <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 5) 1000
+    mobile <- world-get env.game.world 1
+    when mobile
+      is Err (e) -> mr-check e False
+      is Ok (item) -> act
+        moved <- world-update env.game.world (ia-copy item item.serial 1 0 (item.x + 1) item.y item.z)
+        pulse <- mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-delay 5)
+        a <- mr-check "movement interrupts casting with fizzle and no reagent debit" (is-ok moved & env.actor.stage == 0 & list-length (mr-reply pulse).packets >= 2 & mr-unchanged env 0)
+        restarted <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 5) 3000
+        hit <- env.magic.combat.damage-hook env.game env.input 12 1 1
+        b <- mr-check "combat impact interrupts an active cast before spell completion" (env.actor.stage == 0 & is-ok hit & mr-unchanged env 0)
+        again <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 5) 5000
+        disconnected <- mg-disconnect env.magic env.game env.input
+        c <- mr-check "disconnect clears pending casting without consuming resources" (env.actor.stage == 0 & env.actor.cursor == 0 & mr-unchanged env 0)
+        a+b+c
+      end
+  end
+  mr-codec : MrEnv -> [Console, Device.Block] Integer
+  mr-codec (env) = act
+    clock <- __record-set env.magic "tick" 1000
+    mana <- __record-set env.actor "mana" 7
+    regen <- __record-set env.actor "regen" 1200
+    bonus <- mge-mod env.magic env.actor 2 5 1500
+    poison <- __record-set env.actor "poison" 2
+    left <- __record-set env.actor "poison-left" 4
+    due <- __record-set env.actor "poison-due" 1300
+    tracked <- mgs-track env.magic env.actor
+    cast <- __record-set env.actor "stage" 2
+    cursor <- __record-set env.actor "cursor" #4D470123
+    buffer <- alloc-bytes (mgc-size env.magic)
+    encoded <- mgc-write env.magic buffer (mgc-size env.magic) 1000
+    fresh <- mgs-new env.magic.items env.magic.bank env.magic.combat env.magic.decoration None (mr-cover env.map)
+    decoded <- mgc-read fresh buffer (mgc-size fresh) 10000
+    actor <- list-at fresh.actors 0
+    a <- mr-check "MGM1 restores mana modifiers poison and rebased timers without target cursors" (is-ok encoded & is-ok decoded & actor.mana == 7 & mgs-stat actor 2 == 25 & actor.regen == 10200 & actor.poison-due == 10300 & actor.poison == 2 & actor.poison-left == 4 & actor.stage == 0 & actor.cursor == 0 & actor.connection == -1 & fresh.count == 1)
+    second <- alloc-bytes (mgc-size fresh)
+    rewritten <- mgc-write fresh second (mgc-size fresh) 10000
+    b <- mr-check "MGM1 preserves canonical bytes across clock rebase" (is-ok rewritten & mr-bytes buffer second 0 (mgc-size fresh))
+    corrupt <- poke-qword buffer (64 + 40) 65535
+    refused <- mgc-read fresh buffer (mgc-size fresh) 20000
+    c <- mr-check "MGM1 refuses excess mana before mutating restored state" (is-err refused & actor.mana == 7 & fresh.tick == 10000)
+    book <- list-at fresh.definitions 2
+    d <- mr-check "MGM1 restores spellbook definition" (book.serial == #40000003 & book.spells == #80FFFFFF)
+    a+b+c+d
+  end
+  mr-bytes : Integer, Integer, Integer, Integer -> Boolean
+  mr-bytes (a) (b) (i) (length) = if i == length then True
+    else if peek-byte a i /= peek-byte b i then False else mr-bytes a b (i + 1) length
+  mr-regressions : Integer, Integer -> [Console, Device.Block] Integer
+  mr-regressions (i) (failures) = if i == 4 then act failures end else let mark = __heap-save
+    in act
+      result <- when mr-env 0
+        is Err (e) -> mr-check e False
+        is Ok (env) -> if i == 0 then mr-guards env else if i == 1 then mr-interruption env else if i == 2 then mr-codec env else mr-lots env
+      restored <- __heap-restore mark
+      mr-regressions (i + 1) (failures + result)
+    end
+  mr-consume-lot : Magery, Integer -> Boolean
+  mr-consume-lot (magic) (left) = if left == 0 then True
+    else when mgr-consume magic 1 128 0 []
+      is Err (_) -> False
+      is Ok (_) -> mr-consume-lot magic (left - 1)
+  mr-lots : MrEnv -> [Console] Integer
+  mr-lots (env) = when ep-new (ex-catalog 0) (em-new 0)
+    is Err (e) -> mr-check e False
+    is Ok (economy) -> when eu-new economy
+      is Err (e) -> mr-check e False
+      is Ok (currency) -> let purse = eu-open currency 2 1
+        in let admitted = ep-admit economy purse 100
+        in let actor = ep-actor economy admitted
+        in let stock = ep-add actor.stock 24 5
+        in let quality = ep-add actor.quality 24 2500
+        in let wear = ep-add actor.wear 24 10
+        in let basis = ep-add actor.cost 24 17
+        in let gathered = ep-add economy.gathered 24 5
+        in let vendor = gv-new env.game currency
+        in let player = gv-add-player vendor 1 admitted #40000002
+        in let lot = gv-add-lot vendor #4000000B admitted 24 500 2 17
+        in let linked = __record-set env.magic "vendor" (Just vendor)
+        in let whole-stack = gsi-register env.magic.items #4000000B 0 0 True False
+        in let quote = __record-set (list-at vendor.players 0) "side" 2
+        in let ready = mgr-ready env.magic 1 128 0
+        in let first = mgr-consume env.magic 1 128 0 []
+        in act
+          a <- mr-check "tracked whole-stack reagent debits quantity quality wear and proportional basis" (player == 0 & lot == 0 & ready & is-ok first & mr-amount env 7 == 4 & ep-at actor.stock 24 == 4 & ep-at actor.quality 24 == 2000 & ep-at actor.wear 24 == 8 & ep-at actor.cost 24 == 14 & (list-at vendor.lots 0).basis == 14 & ep-at economy.consumed 24 == 1 & (list-at vendor.players 0).side == 0 & ep-census economy 1)
+          rest <- mr-consume-lot env.magic 4
+          b <- mr-check "last reagent retires physical lot and leaves exact zero basis with conserved census" (rest & world-slot env.game.world #4000000B < 0 & vendor.lot-count == 0 & ep-at actor.stock 24 == 0 & ep-at actor.quality 24 == 0 & ep-at actor.wear 24 == 0 & ep-at actor.cost 24 == 0 & ep-at economy.consumed 24 == 5 & ep-census economy 1)
+          a+b
+        end
+  mr-decoration : WalkMap -> Result WdState Text
+  mr-decoration (map) = let data = alloc-bytes 64
+    in let zero = mgs-zero data 0 8
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 16 map.x
+    in let c = poke-qword data 24 map.y
+    in let d = poke-qword data 32 map.width
+    in let e = poke-qword data 40 map.height
+    in wd-read data 64 map 200
+  mr-run : GameShard, WalkMap, WdState -> [Console, Device.Block] Integer
+  mr-run (game) (map) (decoration) = act
+    mobile <- world-create game.world (gs-mobile 0 1421 1698 0 400 1002)
+    character <- poke-qword game.characters 0 1
+    strength <- poke-byte game.characters 79 30
+    dexterity <- poke-byte game.characters 80 20
+    intelligence <- poke-byte game.characters 81 20
+    skill <- poke-byte game.characters 82 25
+    value <- poke-byte game.characters 83 50
+    pack <- world-create game.world (gs-item 1 #0E75 0)
+    book <- world-create game.world (gs-item #40000002 #0EFA 0)
+    items <- gsi-new game.world
+    pack-def <- gsi-register items #40000002 21 #3C False False
+    bank <- gmb-new items #4A
+    combat <- cb-new game 42
+    magic <- mgs-new items bank combat decoration None (mr-cover map)
+    admitted <- mgs-book magic #40000003 #80FFFFFF
+    actor-result <- mgs-ensure magic game 1
+    when actor-result
+      is Err (e) -> act
+        print-line-uni ("FAIL actor " & e)
+        1
+      end
+      is Ok (actor) -> act
+        shown <- when world-get game.world #40000003
+          is Err (e) -> gs-reply [] e
+          is Ok (item) -> mgp-book items item #80FFFFFF
+        rows <- list-at shown.packets 2
+        a <- mr-check "legacy spellbook placement open and 25 spell rows" (is-ok admitted & list-length shown.packets == 3 & gp-u16 (list-at shown.packets 1) 5 == #FFFF & list-length rows == 480 & gp-u16 rows 3 == 25 & gp-u32 rows 5 == #41000001 & gp-u16 rows 9 == #1F2E & gp-u16 rows 12 == 1 & gp-u32 rows 461 == #41000020 & gp-u16 rows 468 == 32)
+        b <- mr-check "book lookup uses carried definition and known spell mask" (mgr-book magic 1 4 == #40000003 & mgr-book magic 1 32 == #40000003 & mgr-book magic 1 31 == 0)
+        mana <- mgp-mana actor
+        c <- mr-check "mana packet sends maximum before current" (list-length mana == 9 & list-at mana 0 == #A2 & gp-u32 mana 1 == 1 & gp-u16 mana 5 == 20 & gp-u16 mana 7 == 20)
+        d <- mr-check "classic costs delay and healing reagent set" (mgd-mana 4 == 4 & mgd-mana 12 == 6 & mgd-mana 18 == 9 & mgd-mana 32 == 11 & mgd-delay 4 == mgd-ticks 500 & mgd-reagents 4 == mgd-three 2 3 6)
+        a+b+c+d
+      end
+  end
+  opening : [Console, Device.Block] Integer = when gs-new 0
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (game) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (map) -> when mr-decoration map
+        is Err (e) -> act
+          print-line-uni e
+          1
+        end
+        is Ok (decoration) -> act
+          failures <- mr-run game map decoration
+          effects <- mr-effects 1 0
+          regressions <- mr-regressions 0 0
+          print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions))
+          failures + effects + regressions
+        end

@@ -88,22 +88,47 @@ Section: Byte Reading
 Section: Header Parsing
   st-parse-file : List Integer -> SafeTensorFile
   st-parse-file (data) =
-    if list-length data < 8 then SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = [], st-tensor-count = 0, st-valid = False }
+    if list-length data < 8 then
+      SafeTensorFile {
+        st-header-len = 0,
+        st-data-offset = 0,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
     else let hlen = st-read-u64 data 0
     in let data-off = 8 + hlen
     in let header-text = st-extract-text data 8 hlen ""
     in let parsed = json-parse header-text
     in when parsed
       is Just (jv) -> st-build-file hlen data-off jv
-      is None -> SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = [], st-tensor-count = 0, st-valid = False }
+      is None -> SafeTensorFile {
+        st-header-len = hlen,
+        st-data-offset = data-off,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
 
   st-build-file : Integer, Integer, JsonValue -> SafeTensorFile
   st-build-file (hlen) (data-off) (jv) =
     when jv
       is JsonObject (pairs) ->
         let tensors = st-parse-tensor-pairs pairs 0 (list-length pairs) []
-        in SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = tensors, st-tensor-count = list-length tensors, st-valid = True }
-      is otherwise -> SafeTensorFile { st-header-len = hlen, st-data-offset = data-off, st-tensors = [], st-tensor-count = 0, st-valid = False }
+        in SafeTensorFile {
+          st-header-len = hlen,
+          st-data-offset = data-off,
+          st-tensors = tensors,
+          st-tensor-count = list-length tensors,
+          st-valid = True
+        }
+      is otherwise -> SafeTensorFile {
+        st-header-len = hlen,
+        st-data-offset = data-off,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
 
   st-parse-tensor-pairs : List JsonPair, Integer, Integer, List StTensorMeta -> List StTensorMeta
   st-parse-tensor-pairs (pairs) (i) (len) (acc) =
@@ -118,7 +143,14 @@ Section: Header Parsing
     let dtype = st-parse-dtype (json-get-str v "dtype" "F32")
     in let shape = st-parse-shape (json-get v "shape")
     in let offsets = st-parse-offsets (json-get v "data_offsets")
-    in StTensorMeta { stm-name = name, stm-dtype = dtype, stm-shape = shape.st-dims, stm-ndim = shape.st-ndim, stm-offset-start = offsets.st-off-start, stm-offset-end = offsets.st-off-end }
+    in StTensorMeta {
+      stm-name = name,
+      stm-dtype = dtype,
+      stm-shape = shape.st-dims,
+      stm-ndim = shape.st-ndim,
+      stm-offset-start = offsets.st-off-start,
+      stm-offset-end = offsets.st-off-end
+    }
 
 Section: Header In Memory
 
@@ -134,7 +166,13 @@ Section: Header In Memory
     in let parsed = json-parse text
     in when parsed
       is Just (jv) -> st-build-file hlen (8 + hlen) jv
-      is None -> SafeTensorFile { st-header-len = hlen, st-data-offset = 8 + hlen, st-tensors = [], st-tensor-count = 0, st-valid = False }
+      is None -> SafeTensorFile {
+        st-header-len = hlen,
+        st-data-offset = 8 + hlen,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
 
   st-minus-ones : Integer, List Integer -> List Integer
   st-minus-ones (i) (acc) = if i >= 128 then acc else st-minus-ones (i + 1) (list-push acc (0 - 1))
@@ -174,7 +212,10 @@ Section: Shape Parsing
     when mv
       is Just (jv) ->
         when jv
-          is JsonArray (items) -> StShape { st-dims = st-extract-ints items 0 (list-length items) [], st-ndim = list-length items }
+          is JsonArray (items) -> StShape {
+            st-dims = st-extract-ints items 0 (list-length items) [],
+            st-ndim = list-length items
+          }
           is otherwise -> StShape { st-dims = [], st-ndim = 0 }
       is None -> StShape { st-dims = [], st-ndim = 0 }
 
@@ -347,8 +388,11 @@ Section: Tensor Loading (FP8)
     let sign = bit-and (bit-shru b 7) 1
     in let exp = bit-and (bit-shru b 2) 31
     in let mant = bit-and b 3
-    in if exp == 31 then (if mant /= 0 then st-f8-nan else if sign == 1 then 0 - st-f8-inf else st-f8-inf)
-    else let mag = if exp == 0 then mant * 1000 / 65536 else (4 + mant) * 1000 * st-pow2 exp / 131072
+    in if exp == 31 then
+      (if mant /= 0 then st-f8-nan else if sign == 1 then 0 - st-f8-inf else st-f8-inf)
+    else let mag = if exp == 0 then
+      mant * 1000 / 65536
+    else (4 + mant) * 1000 * st-pow2 exp / 131072
     in if sign == 1 then 0 - mag else mag
 
   st-load-f8 : List Integer, SafeTensorFile, StTensorMeta -> Tensor

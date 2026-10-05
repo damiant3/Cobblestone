@@ -1,0 +1,82 @@
+Chapter: BootVolumeProof
+  cites Uoaix chapter BootVolume
+  cites Foreword chapter Gpt
+  cites Foreword chapter Result
+  cites Kernel chapter VirtioPciX86
+  cites Kernel chapter MmioMapX86
+
+  bvp-check : Text, Boolean -> [Console] Nothing
+  bvp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  bvp-rehash : Integer, Integer -> Integer
+  bvp-rehash (header) (entries) =
+    let array-crc = gpt-write-u32 header 88 (uv-crc entries 16384 (-8) 0 #FFFFFFFF)
+    in gpt-write-u32 header 16 (uv-crc header 92 16 0 #FFFFFFFF)
+
+  bvp-setup : Integer, Integer -> Integer
+  bvp-setup (header) (entries) =
+    let a = vpx-zero header 512 0
+    in let b = vpx-zero entries 16384 0
+    in let signature = __buf-write-bytes header 0 [69,70,73,32,80,65,82,84]
+    in let version = gpt-write-u32 header 8 65536
+    in let size = gpt-write-u32 header 12 92
+    in let self = poke-qword header 24 1
+    in let backup = poke-qword header 32 2047
+    in let first = poke-qword header 40 34
+    in let last = poke-qword header 48 2014
+    in let array = poke-qword header 72 2
+    in let count = gpt-write-u32 header 80 128
+    in let stride = gpt-write-u32 header 84 128
+    in let esp = gpt-write-guid entries 0 gpt-esp-type-guid
+    in let esp-first = poke-qword entries 32 34
+    in let esp-last = poke-qword entries 40 99
+    in let facts = gpt-write-guid entries 128 gpt-codex-facts-guid
+    in let data-first = poke-qword entries 160 100
+    in let data-last = poke-qword entries 168 199
+    in bvp-rehash header entries
+
+  opening : [Console] Nothing =
+    let header = alloc-bytes 512
+    in let entries = alloc-bytes 16384
+    in let initialized = bvp-setup header entries
+    in act
+      bvp-check "valid GPT region" (uv-header-valid header 2048 & (when uv-region header entries is Err (e) -> False is Ok (r) -> r.start == 100 & r.sectors == 100))
+      let corrupt = poke-byte header 56 1
+      in bvp-check "header CRC catches GUID corruption" (not (uv-header-valid header 2048))
+      let reset = bvp-setup header entries
+      in let corrupt = poke-byte entries 1000 1
+      in bvp-check "entry CRC catches corruption" (is-err (uv-region header entries))
+      let reset = bvp-setup header entries
+      in let duplicate = gpt-write-guid entries 256 gpt-codex-facts-guid
+      in let hash = bvp-rehash header entries
+      in bvp-check "duplicate data type refused" (is-err (uv-region header entries))
+      let reset = bvp-setup header entries
+      in let overlap = poke-qword entries 40 100
+      in let hash = bvp-rehash header entries
+      in bvp-check "overlap refused" (is-err (uv-region header entries))
+      let reset = bvp-setup header entries
+      in let ro = poke-qword entries 176 #1000000000000000
+      in let hash = bvp-rehash header entries
+      in bvp-check "readonly partition refused" (is-err (uv-region header entries))
+      let reset = bvp-setup header entries
+      in let count = gpt-write-u32 header 80 1
+      in let hash = gpt-write-u32 header 16 (uv-crc header 92 16 0 #FFFFFFFF)
+      in bvp-check "undersized GPT array refused" (not (uv-header-valid header 2048))
+      let reset = bvp-setup header entries
+      in let count = gpt-write-u32 header 80 1025
+      in let hash = gpt-write-u32 header 16 (uv-crc header 92 16 0 #FFFFFFFF)
+      in bvp-check "oversized GPT array refused" (not (uv-header-valid header 2048))
+      bvp-check "MMIO identity and write permission" (mx-identity #C0200093 #C0201000 #000FFFFFFFE00000 & not (mx-identity #C0200091 #C0201000 #000FFFFFFFE00000) & not (mx-identity #C0400093 #C0201000 #000FFFFFFFE00000))
+      bvp-check "invalid MMIO windows refused" (is-err (mx-check-window 0 1) & is-err (mx-check-window #C0000000 1048577) & is-err (mx-check-window #800000000000 4096))
+      bvp-check "WB requires UC MTRR" (not (mx-cache-uc 6 False) & mx-cache-uc 6 True & mx-cache-uc 0 False & not (mx-cache-uc 2 True))
+      let raw = alloc-bytes 8192
+      in let table = bit-and (raw + 4095) (0 - 4096)
+      in let cleared = vpx-zero table 4096 0
+      in act
+        bvp-check "absent MMIO ancestor refused" (not (mx-page table #C0000000))
+        let readonly = poke-qword table 0 (bit-or table 1)
+        in bvp-check "readonly MMIO ancestor refused" (not (mx-page table #C0000000))
+      end
+    end
+
+Page 1

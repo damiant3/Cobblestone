@@ -1,0 +1,289 @@
+Chapter: Payment
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+
+ We say:
+
+  LightPayment = record {
+    rays : Integer,
+    stones : List Integer,
+    hardness : Integer
+  }
+
+  payment-stone-type : GameState, Permanent, Integer -> Integer
+  payment-stone-type (gs) (p) (player) =
+    if p.controller /= player | p.tapped | p.attached-to >= 0 | p.template-id < 0 | p.template-id >= list-length (gs.templates) then 0 - 1
+    else let t = get-template gs (p.template-id)
+    in if t.card-type /= Gemstone | t.gem-stone < 0 | t.gem-stone > 5 then 0 - 1 else t.gem-stone
+
+  stone-mask-bit : Integer -> Integer
+  stone-mask-bit (kind) = if kind == 0 then 1 else if kind == 1 then 2 else if kind == 2 then 4 else if kind == 3 then 8 else if kind == 4 then 16 else if kind == 5 then 32 else if kind == 6 then 64 else 0
+
+  stone-preserved : Integer, Integer -> Boolean
+  stone-preserved (mask) (kind) = if kind < 0 | kind > 6 then False else int-mod (mask / stone-mask-bit kind) 2 == 1
+
+  payment-stock : GameState, Integer, Integer, Integer, List Integer -> List Integer
+  payment-stock (gs) (player) (kept) (i) (counts) =
+    if i >= list-length (gs.battlefield) then counts
+    else let kind = payment-stone-type gs (list-at (gs.battlefield) i) player
+    in payment-stock gs player kept (i + 1) (if kind < 0 | stone-preserved kept kind then counts else list-set-at counts kind (list-at counts kind + 1))
+
+  plan-light-payment : GameState, Integer, LightCost, Integer -> LightPayment
+  plan-light-payment (gs) (player) (cost) (available) =
+    plan-light-payment-keeping gs player cost available 0
+
+  plan-light-payment-keeping : GameState, Integer, LightCost, Integer, Integer -> LightPayment
+  plan-light-payment-keeping (gs) (player) (cost) (available) (kept) =
+    let rays = total-rays cost
+    in if cost.red < 0 | cost.yellow < 0 | cost.blue < 0 | cost.orange < 0 | cost.green < 0 | cost.purple < 0 | cost.white < 0 | available < 0 then LightPayment { rays = 0 - 1, stones = [], hardness = 0 }
+    else if colored-rays cost == 0 & rays <= available then LightPayment { rays = rays, stones = [], hardness = 0 }
+    else let mark = __heap-save
+    in let counts = payment-stock gs player kept 0 [0, 0, 0, 0, 0, 0]
+    in let demands = [cost.red, cost.yellow, cost.blue, cost.orange, cost.green, cost.purple, cost.white]
+    in let chains = [cost.red, cost.yellow, cost.blue, cost.orange, cost.green, cost.purple, cost.white, 0]
+    in let ordinary = payment-chains-fit counts chains available
+    in let enough = if ordinary then True else if list-at counts 5 == 0 then False
+      else (let lowered = payment-minimum-chains chains 0
+        in if payment-chains-fit counts lowered available then search-diamond-chains demands counts lowered 0 (list-at counts 5) available else False)
+    in let orange = if list-at chains 3 < list-at counts 3 then list-at chains 3 else list-at counts 3
+    in let green = if list-at chains 4 < list-at counts 4 then list-at chains 4 else list-at counts 4
+    in let red = list-at chains 0 + list-at chains 5 + list-at chains 3 - orange
+    in let yellow = list-at chains 1 + list-at chains 3 - orange + list-at chains 4 - green
+    in let blue = list-at chains 2 + list-at chains 5 + list-at chains 4 - green
+    in let diamonds = list-at chains 7
+    in let used-rays = payment-chain-rays chains
+    in let chosen = if enough then choose-payment-stones gs player kept 0 [red, yellow, blue, orange, green, diamonds] [] else []
+    in let stock = if enough then payment-hardness-stock gs chosen 0 0 [[], [], [], [], []] else []
+    in let hardness = if enough then auto-payment-hardness chains demands stock [0, 0, 0, 0, 0] 0 0 0 else 0
+    in let restored = __heap-restore mark
+    in if enough then LightPayment { rays = used-rays, stones = choose-payment-stones gs player kept 0 [red, yellow, blue, orange, green, diamonds] [], hardness = hardness }
+    else LightPayment { rays = 0 - 1, stones = [], hardness = 0 }
+
+  payment-hardness-stock : GameState, List Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  payment-hardness-stock (gs) (stones) (i) (j) (stock) =
+    if i >= list-length (gs.battlefield) | j >= list-length stones then stock
+    else let p = list-at (gs.battlefield) i
+    in if p.id /= list-at stones j then payment-hardness-stock gs stones (i + 1) j stock
+    else let t = get-template gs (p.template-id)
+    in let next = if t.gem-stone < 0 | t.gem-stone >= 5 then stock else list-set-at stock (t.gem-stone) (list-push (list-at stock (t.gem-stone)) (t.hardness))
+    in payment-hardness-stock gs stones (i + 1) (j + 1) next
+
+  take-payment-hardness : List (List Integer), List Integer, Integer -> Integer
+  take-payment-hardness (stock) (offsets) (kind) =
+    let at = list-at offsets kind
+    in let hardness = list-at (list-at stock kind) at
+    in let advanced = list-set-at offsets kind (at + 1)
+    in hardness
+
+  amplify-payment-hardness : Integer, Integer, Integer -> Integer
+  amplify-payment-hardness (hardness) (output) (needed) =
+    if output >= needed then hardness
+    else amplify-payment-hardness (hardness * 2) (if output > needed / 2 then needed else output * 2) needed
+
+  auto-payment-hardness : List Integer, List Integer, List (List Integer), List Integer, Integer, Integer, Integer -> Integer
+  auto-payment-hardness (chains) (demands) (stock) (offsets) (color) (i) (total) =
+    if color >= 6 then total
+    else if i >= list-at chains color then auto-payment-hardness chains demands stock offsets (color + 1) 0 total
+    else let base = if color < 3 then take-payment-hardness stock offsets color
+      else if color == 3 then (if i < list-length (list-at stock 3) then take-payment-hardness stock offsets 3 else take-payment-hardness stock offsets 0 + take-payment-hardness stock offsets 1)
+      else if color == 4 then (if i < list-length (list-at stock 4) then take-payment-hardness stock offsets 4 else take-payment-hardness stock offsets 1 + take-payment-hardness stock offsets 2)
+      else take-payment-hardness stock offsets 0 + take-payment-hardness stock offsets 2
+    in let hardness = if i == 0 then amplify-payment-hardness base 1 (list-at demands color - list-at chains color + 1) else base
+    in auto-payment-hardness chains demands stock offsets color (i + 1) (total + hardness)
+
+  payment-chain-rays : List Integer -> Integer
+  payment-chain-rays (chains) = list-at chains 0 + list-at chains 1 + list-at chains 2 + list-at chains 3 + list-at chains 4 + list-at chains 5 + list-at chains 6
+
+  payment-chains-fit : List Integer, List Integer, Integer -> Boolean
+  payment-chains-fit (stock) (chains) (available) =
+    let orange = if list-at chains 3 > list-at stock 3 then list-at chains 3 - list-at stock 3 else 0
+    in let green = if list-at chains 4 > list-at stock 4 then list-at chains 4 - list-at stock 4 else 0
+    in payment-chain-rays chains <= available
+    & list-at chains 0 + list-at chains 5 + orange <= list-at stock 0
+    & list-at chains 1 + orange + green <= list-at stock 1
+    & list-at chains 2 + list-at chains 5 + green <= list-at stock 2
+
+  payment-minimum-chains : List Integer, Integer -> List Integer
+  payment-minimum-chains (chains) (i) =
+    if i >= 7 then chains
+    else payment-minimum-chains (list-set-at chains i (if list-at chains i > 0 then 1 else 0)) (i + 1)
+
+  search-diamond-chains : List Integer, List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  search-diamond-chains (demands) (stock) (chains) (color) (diamonds) (available) =
+    if color >= 7 then (let saved = list-set-at chains 7 (list-at stock 5 - diamonds) in True)
+    else if list-at demands color == 0 then search-diamond-chains demands stock chains (color + 1) diamonds available
+    else try-diamond-chain demands stock chains color diamonds available 0 1
+
+ Concentrating d Diamonds on one of n same-color chains produces the
+ maximum output, 2^d + n - 1. Other chains need no Diamonds, so one
+ allocation per color covers every feasible chain count without a per-ray tree.
+
+  try-diamond-chain : List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  try-diamond-chain (demands) (stock) (chains) (color) (diamonds) (available) (used) (output) =
+    let demand = list-at demands color
+    in let count = if output >= demand then 1 else demand - output + 1
+    in let set = list-set-at chains color count
+    in let found = if payment-chains-fit stock chains available then search-diamond-chains demands stock chains (color + 1) (diamonds - used) available else False
+    in if found then True
+    else if used >= diamonds | output >= demand then (let reset = list-set-at chains color 1 in False)
+    else try-diamond-chain demands stock chains color diamonds available (used + 1) (if output > demand / 2 then demand else output * 2)
+
+  choose-payment-stones : GameState, Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  choose-payment-stones (gs) (player) (kept) (i) (needs) (chosen) =
+    if i >= list-length (gs.battlefield) then chosen
+    else let p = list-at (gs.battlefield) i
+    in let kind = payment-stone-type gs p player
+    in if kind < 0 | stone-preserved kept kind then choose-payment-stones gs player kept (i + 1) needs chosen
+    else if list-at needs kind == 0 then choose-payment-stones gs player kept (i + 1) needs chosen
+    else let reduced = list-set-at needs kind (list-at needs kind - 1)
+    in choose-payment-stones gs player kept (i + 1) reduced (list-push chosen (p.id))
+
+  light-payment-possible : GameState, Integer, LightCost, Integer -> Boolean
+  light-payment-possible (gs) (player) (cost) (available) =
+    light-payment-rays gs player cost available >= 0
+
+  light-payment-rays : GameState, Integer, LightCost, Integer -> Integer
+  light-payment-rays (gs) (player) (cost) (available) =
+    light-payment-rays-keeping gs player cost available 0
+
+  light-payment-rays-keeping : GameState, Integer, LightCost, Integer, Integer -> Integer
+  light-payment-rays-keeping (gs) (player) (cost) (available) (kept) =
+    let mark = __heap-save
+    in let plan = plan-light-payment-keeping gs player cost available kept
+    in let result = plan.rays
+    in let restored = __heap-restore mark
+    in result
+
+  apply-light-payment : GameState, Integer, LightPayment -> GameState
+  apply-light-payment (gs) (player) (plan) =
+    if plan.rays < 0 then gs
+    else let paid = set-player gs player (player-spend-rays (get-player gs player) (plan.rays))
+    in if list-length (plan.stones) == 0 then paid
+    else let field = tap-payment-stones (paid.battlefield) (plan.stones) 0 0 []
+    in GameState { queued-loyalty = paid.queued-loyalty, loyalty-state = paid.loyalty-state, queued-cards = paid.queued-cards, automatic-work = paid.automatic-work, players = paid.players, generals = paid.generals, battlefield = field, active-player = paid.active-player, priority-player = paid.priority-player, turn-number = paid.turn-number, phase = paid.phase, step = paid.step, next-permanent-id = paid.next-permanent-id, next-instance-id = paid.next-instance-id, game-over = paid.game-over, winner = paid.winner, templates = paid.templates, card-templates = paid.card-templates, card-orders = paid.card-orders, disruption = paid.disruption, queued-abilities = paid.queued-abilities }
+
+  tap-payment-stones : List Permanent, List Integer, Integer, Integer, List Permanent -> List Permanent
+  tap-payment-stones (field) (stones) (i) (j) (acc) =
+    if i >= list-length field then acc
+    else let p = list-at field i
+    in let used = if j < list-length stones then p.id == list-at stones j else False
+    in tap-payment-stones field stones (i + 1) (if used then j + 1 else j) (list-push acc (if used then permanent-tap p else p))
+
+  ManualChain = record {
+    valid : Boolean,
+    color : Integer,
+    diamonds : Integer
+  }
+
+  chain-color : Integer -> Integer
+  chain-color (mask) = if mask == 0 then 6 else if mask == 1 then 0 else if mask == 2 then 1 else if mask == 4 then 2 else if mask == 8 | mask == 3 then 3 else if mask == 16 | mask == 6 then 4 else if mask == 5 then 5 else 0 - 1
+
+  payment-permanent-index : List Permanent, Integer, Integer -> Integer
+  payment-permanent-index (field) (id) (i) = if i >= list-length field then 0 - 1 else if (list-at field i).id == id then i else payment-permanent-index field id (i + 1)
+
+  inspect-manual-chain : GameState, Integer, List Integer, List Boolean, Integer, Integer, Integer -> ManualChain
+  inspect-manual-chain (gs) (player) (stones) (used) (i) (mask) (diamonds) =
+    if i >= list-length stones then ManualChain { valid = chain-color mask >= 0, color = chain-color mask, diamonds = diamonds }
+    else let index = payment-permanent-index (gs.battlefield) (list-at stones i) 0
+    in if index < 0 then ManualChain { valid = False, color = 0 - 1, diamonds = 0 }
+    else if list-at used index then ManualChain { valid = False, color = 0 - 1, diamonds = 0 }
+    else let kind = payment-stone-type gs (list-at (gs.battlefield) index) player
+    in if kind < 0 then ManualChain { valid = False, color = 0 - 1, diamonds = 0 }
+    else let marked = list-set-at used index True
+    in let next-mask = if kind == 5 | stone-preserved mask kind then mask else mask + stone-mask-bit kind
+    in inspect-manual-chain gs player stones marked (i + 1) next-mask (if kind == 5 then diamonds + 1 else diamonds)
+
+  manual-chain-output : Integer, Integer, Integer -> Integer
+  manual-chain-output (diamonds) (output) (needed) =
+    if output >= needed then needed
+    else if diamonds == 0 then output
+    else manual-chain-output (diamonds - 1) (if output > needed / 2 then needed else output * 2) needed
+
+  inspect-manual-payment : GameState, Integer, List (List Integer), List Boolean, List Integer, Integer -> Boolean
+  inspect-manual-payment (gs) (player) (chains) (used) (remaining) (i) =
+    if i >= list-length chains then payment-chain-rays remaining == 0
+    else let chain = inspect-manual-chain gs player (list-at chains i) used 0 0 0
+    in if chain.valid == False then False
+    else let need = list-at remaining (chain.color)
+    in let output = manual-chain-output (chain.diamonds) 1 need
+    in let reduced = list-set-at remaining (chain.color) (need - output)
+    in inspect-manual-payment gs player chains used reduced (i + 1)
+
+  manual-uses-stone : List (List Integer), Integer, Integer -> Boolean
+  manual-uses-stone (chains) (stone) (i) = if i >= list-length chains then False else if int-list-has (list-at chains i) stone then True else manual-uses-stone chains stone (i + 1)
+
+  manual-payment-stones : List Permanent, List (List Integer), Integer, List Integer -> List Integer
+  manual-payment-stones (field) (chains) (i) (acc) =
+    if i >= list-length field then acc
+    else let id = (list-at field i).id
+    in manual-payment-stones field chains (i + 1) (if manual-uses-stone chains id 0 then list-push acc id else acc)
+
+  plan-manual-payment : GameState, Integer, LightCost, List (List Integer) -> LightPayment
+  plan-manual-payment (gs) (player) (cost) (chains) =
+    let rays = list-length chains
+    in if rays > prismatic-available-rays ((get-player gs player).prismatic) | cost.red < 0 | cost.yellow < 0 | cost.blue < 0 | cost.orange < 0 | cost.green < 0 | cost.purple < 0 | cost.white < 0 then LightPayment { rays = 0 - 1, stones = [], hardness = 0 }
+    else let mark = __heap-save
+    in let used = for p in gs.battlefield -> False
+    in let remaining = [cost.red, cost.yellow, cost.blue, cost.orange, cost.green, cost.purple, cost.white]
+    in let ready = inspect-manual-payment gs player chains used remaining 0
+    in let hardness = if ready then manual-payment-hardness gs chains 0 0 else 0
+    in let restored = __heap-restore mark
+    in if ready then LightPayment { rays = rays, stones = manual-payment-stones (gs.battlefield) chains 0 [], hardness = hardness }
+    else LightPayment { rays = 0 - 1, stones = [], hardness = 0 }
+
+  manual-chain-hardness : GameState, List Integer, Integer, Integer, Integer -> Integer
+  manual-chain-hardness (gs) (stones) (i) (base) (factor) =
+    if i >= list-length stones then base * factor
+    else let p = find-permanent (gs.battlefield) (list-at stones i) 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in manual-chain-hardness gs stones (i + 1) (base + (if t.gem-stone == 5 then 0 else t.hardness)) (if t.gem-stone == 5 then factor * 2 else factor)
+
+  manual-payment-hardness : GameState, List (List Integer), Integer, Integer -> Integer
+  manual-payment-hardness (gs) (chains) (i) (total) =
+    if i >= list-length chains then total
+    else manual-payment-hardness gs chains (i + 1) (total + manual-chain-hardness gs (list-at chains i) 0 0 1)
+
+  manual-payment-possible : GameState, Integer, LightCost, List (List Integer) -> Boolean
+  manual-payment-possible (gs) (player) (cost) (chains) =
+    let mark = __heap-save
+    in let plan = plan-manual-payment gs player cost chains
+    in let ready = plan.rays >= 0
+    in let restored = __heap-restore mark
+    in ready
+
+  obsidian-ready : GameState, Permanent, Integer -> Boolean
+  obsidian-ready (gs) (p) (player) =
+    if p.controller /= player | p.tapped | p.attached-to >= 0 | p.template-id < 0 | p.template-id >= list-length (gs.templates) then False
+    else let t = get-template gs (p.template-id)
+    in t.card-type == Gemstone & t.gem-stone == 6
+
+  can-activate-fluorescence : GameState, Integer, Integer -> Boolean
+  can-activate-fluorescence (gs) (player) (stone) =
+    let ps = (get-player gs player).prismatic
+    in if ps.fluorescence-active | prismatic-available-rays ps < 1 then False
+    else let index = payment-permanent-index (gs.battlefield) stone 0
+    in if index < 0 then False else obsidian-ready gs (list-at (gs.battlefield) index) player
+
+  find-ready-obsidian : GameState, Integer, Integer -> Integer
+  find-ready-obsidian (gs) (player) (i) =
+    if i >= list-length (gs.battlefield) then 0 - 1
+    else let p = list-at (gs.battlefield) i
+    in if obsidian-ready gs p player then p.id else find-ready-obsidian gs player (i + 1)
+
+  activate-fluorescence : GameState, Integer, Integer -> GameState
+  activate-fluorescence (gs) (player) (stone) =
+    if can-activate-fluorescence gs player stone == False then gs
+    else let tapped = apply-light-payment gs player (LightPayment { rays = 0, stones = [stone], hardness = 0 })
+    in let p = get-player tapped player
+    in set-player tapped player (PlayerState { general = p.general, prismatic = prismatic-activate-fluorescence (p.prismatic), library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used })
+
+  end-fluorescence : GameState -> GameState
+  end-fluorescence (gs) =
+    let player = gs.active-player
+    in let p = get-player gs player
+    in let ps = p.prismatic
+    in if ps.fluorescence-active == False then gs
+    else set-player gs player (PlayerState { general = p.general, prismatic = PrismaticState { rays-total = ps.rays-total, rays-used = ps.rays-used, fluorescence-active = False, committed-rays = ps.committed-rays }, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used })
+
+Page 1

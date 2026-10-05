@@ -1,24 +1,35 @@
 [CmdletBinding()]
 param(
     [ValidateSet('codex-vm','ovmf','both')][string]$Bed='both',
-    [ValidateSet('unit','step')][string]$Unit='unit',
+    [ValidateSet('unit','step','render','bounded','policy','loop','worker-loop')][string]$Unit='unit',
     [string]$Mode='all',
     [string]$Kernel='seed/Codex.cdx',
+    [switch]$OwnedProcessPool,
     [string]$OutDir=''
 )
 $ErrorActionPreference='Stop'
+if($OwnedProcessPool -and ($Bed -ne 'ovmf' -or $Unit -ne 'worker-loop')){throw 'OwnedProcessPool requires -Bed ovmf -Unit worker-loop'}
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 Set-Location $repo
-$allowed=if($Unit -eq 'unit'){@('positive','bound','over-copy','hook','order','target-lifetime','view-lifetime','callback-lifetime','source-pitch','dest-pitch')}else{@('positive','drain','rebuild','move','pitch','base','hide','shadow','gpu','redraw','chrome-stay','chrome-min','chrome-close')}
+$allowed=switch($Unit){
+    unit {@('positive','bound','over-copy','hook','order','target-lifetime','view-lifetime','callback-lifetime','source-pitch','dest-pitch')}
+    step {@('positive','drain','rebuild','move','pitch','base','hide','shadow','gpu','redraw','chrome-stay','chrome-min','chrome-close')}
+    render {@('positive','raster-bound','vertex-lifetime','shadow-pass')}
+    bounded {@('positive','render-cancel','front-publish','render-budget','render-quanta')}
+    policy {@('positive','budget-bypass','skip-bypass','burst-bypass')}
+    loop {@('positive','dispatch-bypass')}
+    worker-loop {@('positive','dispatch-bypass')}
+}
 if($Mode -ne 'all' -and $Mode -notin $allowed){throw "Unknown $Unit control: $Mode"}
-$subject="codex/test/apps/scene-present-$Unit"
-$marker=if($Unit -eq 'unit'){'present-proof-end'}else{'scene-step-proof-end'}
-$first=if($Unit -eq 'unit'){'stable='}else{'render completes before publication:'}
+$subject=switch($Unit){render {'codex/test/apps/scene-render-work'} bounded {'codex/test/apps/scene-bounded-step'} policy {'codex/test/apps/pane-policy'} loop {'codex/test/apps/desk-scene-render-loop'} worker-loop {'codex/test/apps/desk-worker-loop'} default {"codex/test/apps/scene-present-$Unit"}}
+$marker=switch($Unit){unit {'present-proof-end'} step {'scene-step-proof-end'} render {'render-work-end'} bounded {'bounded-step-end'} policy {'pane-policy-end'} loop {'render-loop-end'} worker-loop {'render-loop-end'}}
+$first=switch($Unit){unit {'stable='} step {'render completes before publication:'} render {'done '} bounded {'staged '} policy {'budget '} loop {'desk loop returns during rendering:'} worker-loop {'desk loop returns during rendering:'}}
 if(-not $OutDir){$OutDir=Join-Path $repo ('build-output/desk-present-'+[Guid]::NewGuid().ToString('N'))}
 if(-not [IO.Path]::IsPathRooted($OutDir)){$OutDir=Join-Path $repo $OutDir}
 $OutDir=[IO.Path]::GetFullPath($OutDir)
 if(Test-Path $OutDir){throw 'Choose a fresh proof output directory'}
 New-Item -ItemType Directory -Path $OutDir|Out-Null
+Copy-Item -LiteralPath $PSCommandPath -Destination "$OutDir/runner.ps1"
 $originalKernel=(Resolve-Path $Kernel).Path
 $kernelHash=(Get-FileHash $originalKernel).Hash
 $kernelPath=Join-Path $OutDir 'kernel.cdx'
@@ -52,7 +63,8 @@ function Read-Live([string]$path){
     }finally{$file.Dispose()}
 }
 function Run-Ovmf([string]$cdx,[string]$run){
-    & pwsh -NoProfile -File build/cdx-to-pe.ps1 -CdxInput $cdx -Out "$run/proof.efi" -HeapPages 32768 -ExitBootServices
+    $poolArgs=@(if($OwnedProcessPool){'-OwnedProcessPool'})
+    & pwsh -NoProfile -File build/cdx-to-pe.ps1 -CdxInput $cdx -Out "$run/proof.efi" -HeapPages 32768 -ExitBootServices @poolArgs
     if($LASTEXITCODE -ne 0){throw 'PE conversion failed'}
     & pwsh -NoProfile -File build/build-img.ps1 -PeInput "$run/proof.efi" -Out "$run/boot.img"
     if($LASTEXITCODE -ne 0){throw 'Image build failed'}
@@ -83,6 +95,9 @@ function Run-Ovmf([string]$cdx,[string]$run){
 }
 foreach($arm in $modes){
     $source=$template
+    if($OwnedProcessPool){
+        $source=Replace-One $source 'initialized <- runtime-init 0' ('initialized <- runtime-init 0'+"`n"+'    print-line-uni ("\nproof-owned-pool=" & show (peek-32 126976 8 == 4 & peek-32 126976 12 >= 256 & peek-qword 126976 248 == 536870912 & peek-qword 127200 0 > 0))')
+    }
     $reason=''
     switch($arm){
         bound {$source=Replace-One $source 'gsc-present-pixels : Integer = 1024' 'gsc-present-pixels : Integer = 1000000000';$reason='bound=NO'}
@@ -90,9 +105,9 @@ foreach($arm in $modes){
             $source=Replace-One $source 'in gsc-blit-unit-work dst stride tgt at (at + take)' 'in let copied = gsc-blit-unit-work dst stride tgt at (tgt.r3t-w * tgt.r3t-h) in at + take'
             $reason='bound=NO'
         }
-        hook {$source=Replace-One $source 'else let service = (tgt.r3t-service) 0' 'else let service = 0';$reason='pump=NO'}
+        hook {$source=Replace-One $source "else let service = (tgt.r3t-service) 0`n    in let remaining" "else let service = 0`n    in let remaining";$reason='pump=NO'}
         order {
-            $source=Replace-One $source 'else let service = (tgt.r3t-service) 0' 'else let service = 0'
+            $source=Replace-One $source "else let service = (tgt.r3t-service) 0`n    in let remaining" "else let service = 0`n    in let remaining"
             $source=Replace-One $source 'in gsc-blit-unit-work dst stride tgt at (at + take)' 'in let copied = gsc-blit-unit-work dst stride tgt at (at + take) in let service-after = (tgt.r3t-service) 0 in copied'
             $reason='order=NO'
         }
@@ -121,7 +136,7 @@ foreach($arm in $modes){
             $reason='one step copies a bounded prefix: NO'
         }
         rebuild {
-            $source=Replace-One $source 'f <- if software & sp.sp-present >= 0 then' 'f <- if False then'
+            $source=Replace-One $source 'else if software & sp.sp-present >= 0 then' 'else if False then'
             $reason='pending copy owns one completed frame: NO'
         }
         move {
@@ -164,6 +179,17 @@ foreach($arm in $modes){
             $source=Replace-One $source "v <- (gs-viewport-release)`n          gsc-cancel sp" "v <- (gs-viewport-release)`n          0"
             $reason='chrome close cancels pending copy: NO'
         }
+        raster-bound {$source=Replace-One $source 'rw-pixel-limit : Integer = 256' 'rw-pixel-limit : Integer = 4096';$reason='done False'}
+        vertex-lifetime {$source=Replace-One $source 'else let ca = rw-copy-vertex (work.rw-a) a' 'else let ca = __record-set work "rw-a" a';$reason='color False'}
+        shadow-pass {$source=Replace-One $source 'in let shadow = __record-set job "sj-shadows" shadows' 'in let shadow = __record-set job "sj-shadows" 0';$reason='color False'}
+        render-cancel {$source=Replace-One $source 'in let job = when sp.sp-job is None -> 0 is Just (work) -> sj-cancel work' 'in let job = 0';$reason='cancel False'}
+        front-publish {$source=Replace-One $source 'in let next = sp.sp-front.r3t-base' 'in let next = completed';$reason='front False'}
+        render-budget {$source=Replace-One $source 'sp.sp-allowed == 0 | (iq /= 0 & peek-qword iq di-count > 0)' '(iq /= 0 & peek-qword iq di-count > 0)';$reason='budget False'}
+        render-quanta {$source=Replace-One $source 'gsc-render-quanta : Integer = 8' 'gsc-render-quanta : Integer = 32';$reason='quanta False'}
+        budget-bypass {$source=Replace-One $source 'else if peek-qword slot pp-spent < peek-qword slot pp-allowance then 1 else 0' 'else 1';$reason='budget False'}
+        skip-bypass {$source=Replace-One $source 'if elapsed >= period & peek-qword slot pp-miss == pp-skip then' 'if False then';$reason='skip False'}
+        burst-bypass {$source=Replace-One $source 'queued == False | count >= 32' 'queued == False';$reason='fairness False'}
+        dispatch-bypass {$source=Replace-One $source 'in let sc = desk-input-step kbd mouse w h ds' 'in let sc = let yielded = process-yield in 0';$reason='desk dispatch cancels render on input: NO'}
     }
     $src="$OutDir/$arm.codex";$cdx="$OutDir/$arm.cdx"
     [IO.File]::WriteAllText($src,$source,[Text.UTF8Encoding]::new($false))
@@ -180,15 +206,21 @@ foreach($arm in $modes){
             if($LASTEXITCODE -ne 0){throw "$bedName $arm execution failed"}
         }else{Run-Ovmf $cdx $run}
         $trace=[IO.File]::ReadAllText("$run/trace.log").Replace("`r",'')
+        if($OwnedProcessPool -and @([regex]::Matches($trace,'(?m)^proof-owned-pool=True$')).Count -ne 1){throw 'Guest did not confirm the owned process pool'}
         if($trace.Contains('!EXC')){throw "$bedName $arm trapped"}
         $start=$trace.IndexOf($first)
         if($start -lt 0){throw "$bedName $arm produced no verdict"}
         $body=$trace.Substring($start).Trim()
-        $shape='^'+[regex]::Escape($expected).Replace('yes','(?:yes|NO)')+'$'
+        $shape='^'+[regex]::Escape($expected).Replace('yes','(?:yes|NO)').Replace('True','(?:True|False)')+'$'
         $valid=$body -match $shape
-        $ok=$valid -and $(if($arm -eq 'positive'){[string]::Equals($body,$expected,[StringComparison]::Ordinal)}else{$body.Contains($reason) -and ($Unit -eq 'step' -or $body.Contains('accepted=NO'))})
+        $ok=$valid -and $(if($arm -eq 'positive'){[string]::Equals($body,$expected,[StringComparison]::Ordinal)}else{$body.Contains($reason) -and ($Unit -ne 'unit' -or $body.Contains('accepted=NO'))})
+        if($Unit -eq 'worker-loop' -and $arm -ne 'positive'){
+            $wanted=$expected.Replace('desk dispatch cancels render on input: yes','desk dispatch cancels render on input: NO').Replace('background observer progresses during rendering: yes','background observer progresses during rendering: NO')
+            $ok=[string]::Equals($body,$wanted,[StringComparison]::Ordinal)
+        }
         if((Get-FileHash $cdx).Hash -ne $cdxHash -or (Get-FileHash $kernelPath).Hash -ne $kernelHash -or (Get-FileHash (Join-Path $repo 'tools/codex-vm.exe')).Hash -ne $vmHash){throw 'Proof artifact changed during execution'}
         $record=[ordered]@{unit=$Unit;bed=$bedName;arm=$arm;passed=$ok;kernel=$kernelHash;vm=$vmHash;source=(Get-FileHash $src).Hash;cdx=$cdxHash;trace="$run/trace.log"}
+        $record.processPool=if($bedName -eq 'codex-vm'){'native-fixed'}elseif($OwnedProcessPool){'uefi-owned'}else{'uefi-legacy'}
         if($bedName -eq 'ovmf'){$record.image=(Get-Content "$run/image.sha256" -Raw).Trim()}
         $records.Add($record)
         $records|ConvertTo-Json -Depth 5|Set-Content "$OutDir/results.json" -Encoding utf8

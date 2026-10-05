@@ -1,0 +1,89 @@
+Chapter: SassCtrl
+  cites Foreword chapter Format
+
+ SM 5.2 (Maxwell) scheduling control, as maxas documents it
+ (github.com/NervanaSystems/maxas at 54eda7af, lib/MaxAs/MaxAsGrammar.pm
+ printCtrl and readCtrl, lib/MaxAs/MaxAs.pm processSassCtrlLine).
+
+ Every fourth 64-bit word of the instruction stream is a control word for
+ the three instructions after it. Slot k occupies 21 bits at 21 * k: the
+ 17-bit control code in its low bits, then the 4-bit operand reuse flags.
+ Bit 63 is unused.
+
+ The 17-bit control code, low bit first: stall in bits 0..3 (cycles before
+ the next issue); yield in bit 4; the write barrier in bits 5..7 and the
+ read barrier in bits 8..10, 7 meaning none; the wait mask in bits 11..16,
+ one bit per barrier 0..5. The yield bit is stored raw: maxas writes 0 as Y,
+ and the hardware's reading is unconfirmed (GspGpuStack.md, unknown 10).
+
+ maxas's text form is wait:read:write:yield:stall, with the wait mask as two
+ hex digits or --, a barrier as its index plus one or -, yield as Y or -,
+ and the stall as one hex digit.
+
+Section: Codes
+
+  CtrlCode = record {
+   stall : Integer,
+   yield-bit : Integer,
+   write-bar : Integer,
+   read-bar : Integer,
+   wait-mask : Integer,
+   reuse : Integer
+  }
+
+  sass-ctrl-in-range : Integer, Integer -> Boolean
+  sass-ctrl-in-range (v) (hi) = if v < 0 then False else v <= hi
+
+  sass-ctrl-valid : CtrlCode -> Boolean
+  sass-ctrl-valid (c) =
+    if sass-ctrl-in-range c.stall 15 == False then False
+    else if sass-ctrl-in-range c.yield-bit 1 == False then False
+    else if sass-ctrl-in-range c.write-bar 7 == False then False
+    else if sass-ctrl-in-range c.read-bar 7 == False then False
+    else if sass-ctrl-in-range c.wait-mask 63 == False then False
+    else sass-ctrl-in-range c.reuse 15
+
+  sass-ctrl-pack : CtrlCode -> Integer
+  sass-ctrl-pack (c) =
+    if sass-ctrl-valid c == False then -1
+    else let low = bit-or (bit-shl c.yield-bit 4) c.stall
+    in let bars = bit-or (bit-shl c.read-bar 8) (bit-shl c.write-bar 5)
+    in bit-or (bit-shl c.wait-mask 11) (bit-or bars low)
+
+  sass-ctrl-unpack : Integer, Integer -> CtrlCode
+  sass-ctrl-unpack (code) (reuse) = CtrlCode {
+   stall = bit-and code 15,
+   yield-bit = bit-and (bit-shru code 4) 1,
+   write-bar = bit-and (bit-shru code 5) 7,
+   read-bar = bit-and (bit-shru code 8) 7,
+   wait-mask = bit-and (bit-shru code 11) 63,
+   reuse = bit-and reuse 15
+  }
+
+  sass-ctrl-slot-bits : CtrlCode -> Integer
+  sass-ctrl-slot-bits (c) = bit-or (sass-ctrl-pack c) (bit-shl c.reuse 17)
+
+  sass-ctrl-word : CtrlCode, CtrlCode, CtrlCode -> Integer
+  sass-ctrl-word (a) (b) (c) =
+    if sass-ctrl-valid a == False then -1
+    else if sass-ctrl-valid b == False then -1
+    else if sass-ctrl-valid c == False then -1
+    else let hi = bit-or (bit-shl (sass-ctrl-slot-bits b) 21) (bit-shl (sass-ctrl-slot-bits c) 42)
+    in bit-or (sass-ctrl-slot-bits a) hi
+
+  sass-ctrl-slot : Integer, Integer -> CtrlCode
+  sass-ctrl-slot (word) (k) =
+    let bits = bit-and (bit-shru word (21 * k)) #1FFFFF
+    in sass-ctrl-unpack (bit-and bits #1FFFF) (bit-shru bits 17)
+
+Section: Notation
+
+  sass-ctrl-bar-text : Integer -> Text
+  sass-ctrl-bar-text (b) = if b == 7 then "-" else show (b + 1)
+
+  sass-ctrl-text : CtrlCode -> Text
+  sass-ctrl-text (c) =
+    let wait = if c.wait-mask == 0 then "--" else fmt-hex-pad c.wait-mask 2
+    in let yield = if c.yield-bit == 0 then "Y" else "-"
+    in let bars = sass-ctrl-bar-text c.read-bar & ":" & sass-ctrl-bar-text c.write-bar
+    in wait & ":" & bars & ":" & yield & ":" & fmt-hex c.stall

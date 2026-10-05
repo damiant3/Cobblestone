@@ -1,0 +1,115 @@
+Chapter: TownNetworkLiveProof
+  cites Uoaix chapter TownNetworkLiveCodec
+  cites Uoaix chapter TownLiveCodec
+
+  tnp-check : Text, Boolean -> [Console] Nothing
+  tnp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tnp-fill : WalkMap, Integer -> Boolean
+  tnp-fill (map) (i) = if i == map.width * map.height then True
+    else let mark = __heap-save
+    in let ok = is-ok (walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0)
+    in let restored = __heap-restore mark in ok & tnp-fill map (i + 1)
+  tnp-hours : EuCurrency, Integer -> Boolean
+  tnp-hours (x) (left) = if left == 0 then True else eu-hour x == 0 & tnp-hours x (left - 1)
+  tnp-rounds : TownNetworkLive, WalkMap, Integer, Integer, Integer -> Integer
+  tnp-rounds (n) (map) (i) (count) (peak) = if i == count then peak
+    else let mark = __heap-save
+    in let result = tnv-advance n map None (32400 + i * 12) 3 8
+    in let ok = is-ok result
+    in let used = __heap-save - mark
+    in let restored = __heap-restore mark
+    in if not ok then -1 else tnp-rounds n map (i + 1) count (max peak used)
+  tnp-identities : TownNetworkLive, Integer -> Boolean
+  tnp-identities (n) (i) = if i == 3 then True
+    else let r = list-at n.agents i
+    in r.thoughts >= 1 & r.state.head <= r.state.count
+      & tn-happiness r.state >= 0 & tn-happiness r.state <= 1000
+      & tn-alarm r.state >= 0 & tn-alarm r.state <= 1000
+      & (tf-person n.actions.town.people r.person).mood == tn-happiness r.state / 10
+      & r.proposal.actor == r.actor & tnp-identities n (i + 1)
+  tnp-codec : TownNetworkLive, WalkMap -> [Console] Nothing
+  tnp-codec (n) (map) = act
+    t <- n.actions.town
+    size <- tnlc-size n
+    buf <- alloc-bytes size
+    encoded <- tnlc-encode n map buf size
+    town-buf <- alloc-bytes tlc-bytes
+    town-encoded <- tlc-encode t map town-buf tlc-bytes
+    when tlc-decode town-buf tlc-bytes t.vendors t.items map t.now
+      is Err (e) -> print-line-uni ("FAIL base town restore " & e)
+      is Ok (town) -> when tnlc-decode buf size town map
+        is Err (e) -> print-line-uni ("FAIL neural restore " & e)
+        is Ok (restored) -> act
+          first <- list-at n.agents 0
+          loaded <- list-at restored.agents 0
+          tnp-check "TNL1 restores frozen model emotions pending queue consent and audit" (is-ok encoded & is-ok town-encoded & restored.model-id == n.model-id
+            & loaded.thoughts == first.thoughts & loaded.state.head == first.state.head & loaded.prepared == first.prepared
+            & tn-happiness loaded.state == tn-happiness first.state & tn-alarm loaded.state == tn-alarm first.state
+            & restored.actions.book.offer-count == n.actions.book.offer-count & restored.actions.book.event-count == n.actions.book.event-count)
+          tnp-check "TNL1 restores controlled route after TLC1 reset" ((list-at town.residents 0).control.expires == (list-at t.residents 0).control.expires
+            & (list-at town.residents 0).control.vendor == (list-at t.residents 0).control.vendor)
+          previous <- list-at first.state.inputs 0
+          separate <- tn-input loaded.state 0 (if previous == 1000 then 0 else 1000)
+          tnp-check "restored neural buffers are independent" (separate == 0 & list-at first.state.inputs 0 == previous)
+          expires <- (list-at town.residents 2).control.expires
+          bad-model <- poke-qword buf 24 (bit-xor n.model-id 1)
+          hash <- poke-qword buf 48 (ws-hash buf size 0 2166136261)
+          refused <- tnlc-decode buf size town map
+          tnp-check "changed model refuses before borrowed route mutation" (is-err refused & (list-at town.residents 2).control.expires == expires)
+          reset <- poke-qword buf 24 n.model-id
+          malformed <- poke-qword buf (tnlc-agent-at + 2 * tnlc-agent-bytes + 840) 99
+          hash2 <- poke-qword buf 48 (ws-hash buf size 0 2166136261)
+          final-row <- tnlc-decode buf size town map
+          tnp-check "late malformed route and short bytes refuse atomically" (is-err final-row & is-err (tnlc-decode 0 0 town map) & (list-at town.residents 2).control.expires == expires)
+          count <- restored.actions.book.event-count
+          pressure <- __record-set restored.actions.book "event-count" 1024
+          thoughts <- loaded.thoughts
+          head <- loaded.state.head
+          held <- tnv-infer restored loaded
+          tnp-check "audit pressure preserves neural queue and recurrent state" (held == -14 & loaded.thoughts == thoughts & loaded.state.head == head)
+          available <- __record-set restored.actions.book "event-count" count
+          print-line-uni ("live-network-codec-bytes=" & show size)
+        end
+  end
+  tnp-live : TownLive, WalkMap -> [Console] Nothing
+  tnp-live (t) (map) = when tnv-new t
+    is Err (e) -> act print-line-uni ("FAIL network " & e) end
+    is Ok (n) -> act
+      clock <- tnp-hours t.vendors.currency 9
+      policy <- gla-market n.actions True
+      baseline <- n.actions.book.event-count
+      first <- tnv-advance n map None 32400 1 1
+      a <- list-at n.agents 0
+      b <- list-at n.agents 1
+      tnp-check "decision budget runs one resident through the frozen network" (clock & policy == 0 & is-ok first & a.thoughts == 1 & b.thoughts == 0)
+      tnp-check "frozen queue proposals pass the live validator" (a.state.count > 0 & n.actions.book.event-count == baseline + 1
+        & (list-at n.actions.book.events baseline).kind == list-at a.state.queue 0 + 1)
+      peak <- tnp-rounds n map 1 32 0
+      tnp-check "bounded rounds retain per-resident emotions and actor identity" (peak >= 0 & tnp-identities n 0)
+      tnp-check "live feature roles and residence hours retain training meanings" (list-at b.state.inputs 11 == 1000
+        & list-at a.state.inputs 11 == 0 & a.total == 9 & list-at a.hours 0 == 9)
+      tnp-check "live model actions preserve currency and material census" (euv-valid t.vendors.currency & ep-census t.vendors.currency.world 1 & gvsc-valid t.vendors)
+      print-line-uni ("neural-round-peak-scratch=" & show peak)
+      print-line-uni ("first-action=" & show (list-at a.state.queue 0 + 1) & " happiness=" & show (tn-happiness a.state) & " alarm=" & show (tn-alarm a.state))
+      tnp-codec n map
+    end
+  tnp-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  tnp-run (game) (map) (currency) = let v = gv-new game currency
+    in let items = gsi-new game.world
+    in when bb-populate v items map
+      is Err (e) -> act print-line-uni ("FAIL shops " & e) end
+      is Ok (_) -> when tl-populate v items map None 0 3
+        is Err (e) -> act print-line-uni ("FAIL residents " & e) end
+        is Ok (t) -> tnp-live t map
+  opening : [Console] Nothing = when bb-economy 0
+    is Err (e) -> act print-line-uni ("FAIL economy " & e) end
+    is Ok (currency) -> when world-new 128
+      is Err (e) -> act print-line-uni ("FAIL world " & e) end
+      is Ok (world) -> let chars = alloc-bytes 800
+        in let cleared = gs-zero chars 0
+        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0 }
+        in when walk-map-new 1408 1536 128 192
+          is Err (e) -> act print-line-uni ("FAIL map " & e) end
+          is Ok (map) -> if tnp-fill map 0 then tnp-run game map currency else act print-line-uni "FAIL terrain" end
+
+Page 1

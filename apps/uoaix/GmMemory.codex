@@ -1,0 +1,296 @@
+Chapter: GmMemory
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Encode chapter Json
+
+  GmAccount = record {
+    id : Integer, human : Integer, gm : Integer, powers : Integer, revision : Integer,
+    coin-each : Integer, coin-day : Integer, item-each : Integer, item-day : Integer,
+    title-day : Integer, plot-day : Integer, day : Integer,
+    coins-used : Integer, items-used : Integer, titles-used : Integer, plots-used : Integer,
+    coins : Integer, titles : Integer, last-request : Integer
+  }
+
+  GmMemory = record {
+    accounts : List GmAccount, names : List Integer, used : Integer,
+    actions : List Integer, action-count : Integer, treasury : Integer,
+    vault : List Integer, inventory : List Integer, plots : List Integer,
+    ledger : List Integer, ledger-count : Integer
+  }
+
+  GmAudit = record {
+    actor : Integer, principal : Text, action : Text, target : Integer,
+    request : Integer, revision : Integer, day : Integer, reason : Text,
+    before : Text, after : Text, detail : Text, subject : Integer, amount : Integer
+  }
+
+  gm-empty : Integer -> GmAccount
+  gm-empty (unused) = GmAccount {
+    id = 0, human = 0, gm = 0, powers = 0, revision = 0,
+    coin-each = 0, coin-day = 0, item-each = 0, item-day = 0,
+    title-day = 0, plot-day = 0, day = 0,
+    coins-used = 0, items-used = 0, titles-used = 0, plots-used = 0,
+    coins = 0, titles = 0, last-request = 0
+  }
+
+  gm-accounts : Integer, List GmAccount -> List GmAccount
+  gm-accounts (i) (acc) = if i == 128 then acc else gm-accounts (i + 1) (list-push acc (gm-empty 0))
+
+  gm-zeros : Integer -> List Integer
+  gm-zeros (n) = tf-zeros n (__list-with-capacity n)
+
+  gm-memory-new : Integer between 0 and 1000000000 -> GmMemory
+  gm-memory-new (treasury) = GmMemory {
+    accounts = gm-accounts 0 (__list-with-capacity 128), names = gm-zeros 8320, used = 0,
+    actions = gm-zeros 262144, action-count = 0, treasury = treasury,
+    vault = gm-zeros 32, inventory = gm-zeros 4096, plots = gm-zeros 64,
+    ledger = gm-zeros 512, ledger-count = 0
+  }
+
+  gm-find-at : GmMemory, Integer, Integer -> Integer
+  gm-find-at (m) (id) (i) =
+    if i == m.used then -1
+    else if (list-at m.accounts i).id == id then i else gm-find-at m id (i + 1)
+
+  gm-find : GmMemory, Integer -> Integer
+  gm-find (m) (id) = gm-find-at m id 0
+
+  gm-memory-register : GmMemory, Integer, Text, Boolean -> Integer
+  gm-memory-register (m) (id) (name) (human) =
+    if id <= 0 | id > 2147483647 | text-length name == 0 | text-length name > 64 then -1
+    else if gm-find m id >= 0 then -2
+    else if m.used == 128 then -3
+    else let slot = m.used
+    in let a = list-at m.accounts slot
+    in let named = admin-store m.names (slot * 65) name
+    in let identity = __record-set a "id" id
+    in let kind = __record-set a "human" (if human then 1 else 0)
+    in let count = __record-set m "used" (slot + 1)
+    in 0
+
+  gm-name : GmMemory, Integer -> Text
+  gm-name (m) (slot) = admin-load m.names (slot * 65)
+
+  gm-policy : GmAccount -> Text
+  gm-policy (a) = "{\"gm\":" & show a.gm & ",\"powers\":" & show a.powers & ",\"revision\":" & show a.revision
+    & ",\"coin_each\":" & show a.coin-each & ",\"coin_day\":" & show a.coin-day
+    & ",\"item_each\":" & show a.item-each & ",\"item_day\":" & show a.item-day
+    & ",\"title_day\":" & show a.title-day & ",\"plot_day\":" & show a.plot-day & "}"
+
+  gm-audit : GmMemory, GmAudit, Boolean -> Integer
+  gm-audit (m) (event) (revocation) =
+    if m.action-count >= (if revocation then 256 else 128) then -1
+    else let id = m.action-count + 1
+    in let text = "{\"id\":" & show id & ",\"transaction_id\":" & show id & ",\"actor_account\":" & show event.actor & ",\"principal\":" & json-quote event.principal
+      & ",\"action\":" & json-quote event.action & ",\"target_account\":" & show event.target
+      & ",\"request_id\":" & show event.request & ",\"grant_revision\":" & show event.revision
+      & ",\"game_day\":" & show event.day & ",\"decision\":" & json-quote (if event.reason == "" then "accepted" else "refused")
+      & ",\"reason\":" & json-quote event.reason & ",\"before\":" & event.before & ",\"after\":" & event.after
+      & ",\"subject\":" & show event.subject & ",\"amount\":" & show event.amount
+      & ",\"detail\":" & json-quote event.detail & "}"
+    in if text-length text > 1023 then -1
+    else let saved = admin-store m.actions (m.action-count * 1024) text
+    in let count = __record-set m "action-count" id
+    in id
+
+  gm-result : Integer, Text -> Text
+  gm-result (id) (reason) =
+    if id < 0 then "{\"stand_in\":true,\"error\":\"admin-actions-full-or-record-too-large\"}"
+    else if reason /= "" then "{\"stand_in\":true,\"log_id\":" & show id & ",\"error\":" & json-quote reason & "}"
+    else "{\"stand_in\":true,\"log_id\":" & show id & ",\"ok\":1}"
+
+  gm-limit-valid : Integer -> Boolean
+  gm-limit-valid (n) = n >= 0 & n <= 1000000000
+
+  gm-limits-valid : JsonValue -> Boolean
+  gm-limits-valid (v) =
+    gm-limit-valid (admin-int v "coin_each") & gm-limit-valid (admin-int v "coin_day") &
+    gm-limit-valid (admin-int v "item_each") & gm-limit-valid (admin-int v "item_day") &
+    gm-limit-valid (admin-int v "title_day") & gm-limit-valid (admin-int v "plot_day") &
+    admin-int v "coin_each" <= admin-int v "coin_day" & admin-int v "item_each" <= admin-int v "item_day"
+
+  gm-edit-reason : GmMemory, Integer, Text, JsonValue, Integer -> Text
+  gm-edit-reason (m) (slot) (operation) (v) (day) =
+    if slot < 0 then "unknown-account"
+    else let a = list-at m.accounts slot
+    in if a.human /= 1 then "human-account-required"
+    else if day < a.day | day < 0 then "game-clock-reversed"
+    else if a.revision >= 999999999 then "revision-exhausted"
+    else if operation == "gm-revoke" then if a.gm == 1 then "" else "not-a-gm"
+    else if operation /= "gm-dub" & operation /= "gm-set" then "unknown-operation"
+    else if operation == "gm-set" & a.gm /= 1 then "not-a-gm"
+    else if operation == "gm-dub" & a.gm == 1 then "already-a-gm"
+    else if admin-int v "powers" < 0 | admin-int v "powers" > 8191 | not (gm-limits-valid v) then "invalid-powers-or-limits"
+    else ""
+
+  gm-memory-edit : GmMemory, Text, Text, JsonValue, Integer -> Text
+  gm-memory-edit (m) (principal) (operation) (v) (day) =
+    let target = admin-int v "account"
+    in let slot = gm-find m target
+    in let reason = gm-edit-reason m slot operation v day
+    in let before = if slot < 0 then "null" else gm-policy (list-at m.accounts slot)
+    in let revision = if slot < 0 then 0 else (list-at m.accounts slot).revision
+    in let after = if reason /= "" then before else gm-next-policy (list-at m.accounts slot) operation v
+    in let logged = gm-audit m (GmAudit { actor = 0, principal = principal, action = operation, target = target,
+      request = 0, revision = revision, day = day, reason = reason, before = before, after = after, detail = "in-memory stand-in", subject = 0, amount = 0 }) (operation == "gm-revoke" & reason == "")
+    in if logged < 0 | reason /= "" then gm-result logged reason
+    else let a = list-at m.accounts slot
+    in let changed = __record-set a "revision" (a.revision + 1)
+    in let flag = __record-set a "gm" (if operation == "gm-revoke" then 0 else 1)
+    in let powers = __record-set a "powers" (if operation == "gm-revoke" then 0 else admin-int v "powers")
+    in let ca = __record-set a "coin-each" (if operation == "gm-revoke" then 0 else admin-int v "coin_each")
+    in let cd = __record-set a "coin-day" (if operation == "gm-revoke" then 0 else admin-int v "coin_day")
+    in let ia = __record-set a "item-each" (if operation == "gm-revoke" then 0 else admin-int v "item_each")
+    in let id = __record-set a "item-day" (if operation == "gm-revoke" then 0 else admin-int v "item_day")
+    in let td = __record-set a "title-day" (if operation == "gm-revoke" then 0 else admin-int v "title_day")
+    in let pd = __record-set a "plot-day" (if operation == "gm-revoke" then 0 else admin-int v "plot_day")
+    in gm-result logged ""
+
+  gm-next-policy : GmAccount, Text, JsonValue -> Text
+  gm-next-policy (a) (operation) (v) =
+    let revoked = operation == "gm-revoke"
+    in "{\"gm\":" & show (if revoked then 0 else 1) & ",\"powers\":" & show (if revoked then 0 else admin-int v "powers")
+      & ",\"revision\":" & show (a.revision + 1)
+      & ",\"coin_each\":" & show (if revoked then 0 else admin-int v "coin_each") & ",\"coin_day\":" & show (if revoked then 0 else admin-int v "coin_day")
+      & ",\"item_each\":" & show (if revoked then 0 else admin-int v "item_each") & ",\"item_day\":" & show (if revoked then 0 else admin-int v "item_day")
+      & ",\"title_day\":" & show (if revoked then 0 else admin-int v "title_day") & ",\"plot_day\":" & show (if revoked then 0 else admin-int v "plot_day") & "}"
+
+  gm-power : Text -> Integer
+  gm-power (action) =
+    if action == "support" then 1 else if action == "go-to-player" then 2
+    else if action == "unstuck" then 4 else if action == "inspect" then 8
+    else if action == "restore-items" then 16 else if action == "kick" then 32
+    else if action == "mute" then 64 else if action == "jail" then 128 else if action == "ban" then 256
+    else if action == "favor-coins" then 512 else if action == "favor-items" then 1024
+    else if action == "favor-title" then 2048 else if action == "favor-plot" then 4096 else 0
+
+  gm-used : Integer, Integer, Integer -> Integer
+  gm-used (stored-day) (day) (amount) = if stored-day == day then amount else 0
+
+  gm-action-reason : GmMemory, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Text
+  gm-action-reason (m) (actor-slot) (target-slot) (action) (request) (subject) (amount) (day) =
+    if actor-slot < 0 then "unknown-actor"
+    else let a = list-at m.accounts actor-slot
+    in let power = gm-power action
+    in if request <= 0 | request > 999999999 | request <= a.last-request then "request-replayed-or-invalid"
+    else if day < a.day | day < 0 then "game-clock-reversed"
+    else if a.human /= 1 | a.gm /= 1 then "gm-account-required"
+    else if power == 0 | bit-and a.powers power == 0 then "power-not-granted"
+    else if target-slot < 0 then "unknown-target"
+    else if power < 512 then ""
+    else let target = list-at m.accounts target-slot
+    in if target.human /= 1 then "human-recipient-required"
+    else if amount <= 0 | amount > 1000000000 then "invalid-amount"
+    else if action == "favor-coins" then
+      if amount > a.coin-each | amount > a.coin-day - gm-used a.day day a.coins-used then "coin-limit"
+      else if amount > m.treasury | target.coins > 1000000000 - amount then "treasury-or-purse-limit" else ""
+    else if action == "favor-items" then
+      if subject < 1 | subject > 32 then "unknown-item-type"
+      else if amount > a.item-each | amount > a.item-day - gm-used a.day day a.items-used then "item-limit"
+      else if amount > list-at m.vault (subject - 1) | list-at m.inventory (target-slot * 32 + subject - 1) > 1000000000 - amount then "vault-or-inventory-limit" else ""
+    else if amount /= 1 then "one-title-or-plot-per-action"
+    else if action == "favor-title" then
+      if subject < 1 | subject > 32 then "unknown-title"
+      else if bit-and target.titles (bit-shl 1 (subject - 1)) /= 0 then "title-already-held"
+      else if gm-used a.day day a.titles-used >= a.title-day then "title-limit" else ""
+    else if subject < 1 | subject > 64 then "unknown-plot"
+    else if list-at m.plots (subject - 1) /= 0 then "plot-not-crown-owned"
+    else if gm-used a.day day a.plots-used >= a.plot-day then "plot-limit" else ""
+
+  gm-roll-day : GmAccount, Integer -> Integer
+  gm-roll-day (a) (day) =
+    if a.day == day then 0
+    else let ca = __record-set a "coins-used" 0
+    in let ia = __record-set a "items-used" 0
+    in let ta = __record-set a "titles-used" 0
+    in let pa = __record-set a "plots-used" 0
+    in let changed = __record-set a "day" day in 0
+
+  gm-apply : GmMemory, Integer, Integer, Text, Integer, Integer, Integer, Integer -> Integer
+  gm-apply (m) (actor-slot) (target-slot) (action) (subject) (amount) (day) (log-id) =
+    let a = list-at m.accounts actor-slot
+    in let target = list-at m.accounts target-slot
+    in let rolled = gm-roll-day a day
+    in if action == "favor-coins" then
+      let used = __record-set a "coins-used" (a.coins-used + amount)
+      in let payer = __record-set m "treasury" (m.treasury - amount)
+      in let payee = __record-set target "coins" (target.coins + amount)
+      in let at = m.ledger-count * 4
+      in let l0 = list-set-at m.ledger at log-id
+      in let l1 = list-set-at m.ledger (at + 1) 0
+      in let l2 = list-set-at m.ledger (at + 2) target.id
+      in let l3 = list-set-at m.ledger (at + 3) amount
+      in let counted = __record-set m "ledger-count" (m.ledger-count + 1) in 0
+    else if action == "favor-items" then
+      let used = __record-set a "items-used" (a.items-used + amount)
+      in let at = target-slot * 32 + subject - 1
+      in let source = list-set-at m.vault (subject - 1) (list-at m.vault (subject - 1) - amount)
+      in let recipient = list-set-at m.inventory at (list-at m.inventory at + amount) in 0
+    else if action == "favor-title" then
+      let used = __record-set a "titles-used" (a.titles-used + 1)
+      in let title = __record-set target "titles" (bit-or target.titles (bit-shl 1 (subject - 1))) in 0
+    else if action == "favor-plot" then
+      let used = __record-set a "plots-used" (a.plots-used + 1)
+      in let owner = list-set-at m.plots (subject - 1) target.id in 0
+    else 0
+
+  gm-memory-act : GmMemory, Integer, Integer, Text, Integer, Integer, Integer, Integer, Text -> Text
+  gm-memory-act (m) (actor) (request) (action) (target) (subject) (amount) (day) (detail) =
+    let actor-slot = gm-find m actor
+    in let target-slot = gm-find m target
+    in let reason = if text-length detail > 128 then "detail-limit" else gm-action-reason m actor-slot target-slot action request subject amount day
+    in let revision = if actor-slot < 0 then 0 else (list-at m.accounts actor-slot).revision
+    in let before = gm-resource-state m target-slot action subject 0 False
+    in let after = if reason /= "" then before else gm-resource-state m target-slot action subject amount True
+    in let logged = gm-audit m (GmAudit { actor = actor, principal = "gm-account", action = action, target = target,
+      request = request, revision = revision, day = day, reason = reason, before = before, after = after, detail = if text-length detail > 128 then "" else detail, subject = subject, amount = amount }) False
+    in if logged < 0 then gm-result logged reason
+    else let consumed = if actor-slot < 0 then 0 else
+      let a = list-at m.accounts actor-slot
+      in let saved = if request > a.last-request & request <= 999999999 then __record-set a "last-request" request else a in 0
+    in if reason /= "" then gm-result logged reason
+    else let applied = gm-apply m actor-slot target-slot action subject amount day logged
+    in gm-result logged ""
+
+  gm-resource-state : GmMemory, Integer, Text, Integer, Integer, Boolean -> Text
+  gm-resource-state (m) (slot) (action) (subject) (amount) (applied) =
+    if slot < 0 then "null"
+    else let target = list-at m.accounts slot
+    in if action == "favor-coins" then
+      "{\"treasury\":" & show (m.treasury - amount) & ",\"recipient_coins\":" & show (target.coins + amount) & "}"
+    else if action == "favor-items" & subject >= 1 & subject <= 32 then
+      "{\"item_type\":" & show subject & ",\"vault\":" & show (list-at m.vault (subject - 1) - amount) & ",\"recipient_items\":" & show (list-at m.inventory (slot * 32 + subject - 1) + amount) & "}"
+    else if action == "favor-title" & subject >= 1 & subject <= 32 then
+      "{\"title_mask\":" & show (if applied then bit-or target.titles (bit-shl 1 (subject - 1)) else target.titles) & "}"
+    else if action == "favor-plot" & subject >= 1 & subject <= 64 then
+      "{\"plot\":" & show subject & ",\"owner\":" & show (if applied then target.id else list-at m.plots (subject - 1)) & "}"
+    else "null"
+
+  gm-account-json : GmMemory, Integer, Integer -> Text
+  gm-account-json (m) (slot) (day) =
+    let a = list-at m.accounts slot
+    in "{\"account\":" & show a.id & ",\"name\":" & json-quote (gm-name m slot) & ",\"human\":" & show a.human
+      & ",\"policy\":" & gm-policy a & ",\"coins\":" & show a.coins
+      & ",\"coins_used\":" & show (gm-used a.day day a.coins-used) & ",\"items_used\":" & show (gm-used a.day day a.items-used)
+      & ",\"titles_used\":" & show (gm-used a.day day a.titles-used) & ",\"plots_used\":" & show (gm-used a.day day a.plots-used) & "}"
+
+  gm-account-rows : GmMemory, Integer, Integer, List Text -> Text
+  gm-account-rows (m) (day) (i) (parts) =
+    if i == m.used then text-concat-list (list-push parts "]")
+    else let separated = if i == 0 then parts else list-push parts ","
+    in gm-account-rows m day (i + 1) (list-push separated (gm-account-json m i day))
+
+  gm-memory-view : GmMemory, Integer -> Text
+  gm-memory-view (m) (day) = "{\"stand_in\":true,\"treasury\":" & show m.treasury & ",\"day\":" & show day & ",\"action_count\":" & show m.action-count & ",\"accounts\":" & gm-account-rows m day 0 ["["] & "}"
+
+  gm-action-rows : GmMemory, Integer, Integer, List Text -> Text
+  gm-action-rows (m) (i) (stop) (parts) =
+    if i >= stop then text-concat-list (list-push parts "]")
+    else let separated = if list-length parts == 1 then parts else list-push parts ","
+    in gm-action-rows m (i + 1) stop (list-push separated (admin-load m.actions (i * 1024)))
+
+  gm-memory-log : GmMemory, Integer -> Text
+  gm-memory-log (m) (before) =
+    if before < 0 | before > m.action-count + 1 then admin-error "log-id"
+    else let stop = if before == 0 then m.action-count else before - 1
+    in "{\"stand_in\":true,\"rows\":" & gm-action-rows m (max 0 (stop - 16)) stop ["["] & "}"

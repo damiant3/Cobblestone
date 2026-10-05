@@ -1,0 +1,127 @@
+Chapter: VirtioBlkX86
+  cites Kernel chapter VirtioPciX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+ VIRTIO 1.2 section 5.2: requests contain type32, reserved32, sector64,
+ data and status8. Types 0, 1 and 4 are read, write and flush. Capacity
+ is expressed in 512-byte sectors. Writes flush when feature bit 9 is
+ offered; without FLUSH or CONFIG_WCE negotiation the device is writethrough.
+
+  VbxState = record {
+    device : VpxDevice, queue : VpxQueue, request : Integer, data : Integer,
+    status : Integer, completion : Integer, capacity : Integer, readonly : Boolean, flush : Boolean
+  }
+
+  vbx-capacity : VpxDevice, Integer -> Integer
+  vbx-capacity (d) (left) =
+    if left <= 0 then -1
+    else let before = peek-byte d.common 21
+    in let low = bit-and (peek-32 d.config 0) #FFFFFFFF
+    in let high = bit-and (peek-32 d.config 4) #FFFFFFFF
+    in let after = peek-byte d.common 21
+    in if before /= after then vbx-capacity d (left - 1)
+    else if high >= #80000000 then -1 else low + high * #100000000
+
+  vbx-init : PciDevice -> Result VbxState Text
+  vbx-init (pci) =
+    if pci.pci-vendor /= #1AF4 | (pci.pci-device-id /= #1042 & pci.pci-device-id /= #1001) then Err "not a virtio block device"
+    else when vpx-open pci
+      is Err (e) -> Err e
+      is Ok (d) -> if d.config-size < 8 then Err "virtio block capacity absent"
+        else when vpx-reset d
+          is Err (e) -> Err e
+          is Ok (features) ->
+            let readonly = bit-and features.low 32 /= 0
+            in let flush = bit-and features.low 512 /= 0
+            in let wanted = bit-and features.low 544
+            in when vpx-accept d wanted 1
+              is Err (e) -> Err e
+              is Ok (accepted) -> when vpx-queue d 0 8
+                is Err (e) -> Err e
+                is Ok (q) ->
+                  let capacity = vbx-capacity d 8
+                  in if capacity <= 0 then Err "virtio block capacity invalid or unstable"
+                  else let raw = alloc-bytes 560
+                  in let buffer = bit-and (raw + 15) (0 - 16)
+                  in let zero = vpx-zero buffer 544 0
+                  in let ready = vpx-ready d
+                  in Ok (VbxState { device = d, queue = q, request = buffer, data = buffer + 16,
+                    status = buffer + 528, completion = buffer + 536, capacity = capacity, readonly = readonly, flush = flush })
+
+  vbx-find : PciScanResult -> Result VbxState Text
+  vbx-find (scan) =
+    if scan.truncated then Err "virtio PCI scan truncated"
+    else when pci-find-device scan #1AF4 #1042
+      is Just (pci) -> vbx-init pci
+      is None -> when pci-find-device scan #1AF4 #1001
+        is Just (pci) -> vbx-init pci
+        is None -> Err "virtio block device absent"
+
+  vbx-descriptor : Integer, Integer, Integer, Integer, Integer -> Integer
+  vbx-descriptor (at) (address) (size) (flags) (next) =
+    let a = poke-qword at 0 address
+    in let b = poke-32 at 8 size
+    in let c = poke-16 at 12 flags
+    in poke-16 at 14 next
+
+  vbx-poll : VbxState, Integer -> Integer
+  vbx-poll (state) (left) =
+    let result = vpx-take state.queue state.completion
+    in if result /= 0 then result
+    else if left <= 0 then let fault = __record-set state.queue "fault" 1 in -1
+    else vbx-poll state (left - 1)
+
+  vbx-request : VbxState, Integer, Integer -> Result Integer Text
+  vbx-request (state) (kind) (sector) =
+    if state.queue.fault /= 0 then Err "virtio block queue faulted"
+    else if kind /= 0 & kind /= 1 & kind /= 4 then Err "virtio block operation invalid"
+    else if kind /= 4 & (sector < 0 | sector >= state.capacity) then Err "virtio block sector outside capacity"
+    else if kind == 1 & state.readonly then Err "virtio block device is read-only"
+    else if kind == 4 & not state.flush then Err "virtio block flush not negotiated"
+    else let a = poke-32 state.request 0 kind
+    in let b = poke-32 state.request 4 0
+    in let c = poke-qword state.request 8 (if kind == 4 then 0 else sector)
+    in let status = poke-byte state.status 0 255
+    in let q = state.queue
+    in let header = vbx-descriptor q.desc state.request 16 1 1
+    in let data = if kind == 4 then vbx-descriptor (q.desc + 16) state.status 1 2 0
+      else vbx-descriptor (q.desc + 16) state.data 512 (if kind == 0 then 3 else 1) 2
+    in let tail = if kind == 4 then 0 else vbx-descriptor (q.desc + 32) state.status 1 2 0
+    in if vpx-publish q 0 /= 0 then Err "virtio block publication refused"
+    else if vbx-poll state 10000000 /= 1 then Err "virtio block completion timed out or malformed"
+    else let fence = memory-fence 0
+    in let id = bit-and (peek-32 state.completion 0) #FFFFFFFF
+    in let length = bit-and (peek-32 state.completion 4) #FFFFFFFF
+    in if id /= 0 | length < 1 | length > (if kind == 0 then 513 else 1) then
+      let fault = __record-set q "fault" 1 in Err "virtio block completion identity or length invalid"
+    else let code = peek-byte state.status 0
+    in if code == 0 then
+      if length == (if kind == 0 then 513 else 1) then Ok 0
+      else let fault = __record-set q "fault" 1 in Err "virtio block successful read was short"
+    else if code == 1 then Err "virtio block device I/O error"
+    else if code == 2 then Err "virtio block operation unsupported"
+    else let fault = __record-set q "fault" 1 in Err "virtio block completion status invalid"
+
+  vbx-copy-sector : Integer, Integer, Integer -> Integer
+  vbx-copy-sector (src) (dst) (i) =
+    if i >= 512 then 0
+    else let copied = poke-byte dst i (peek-byte src i)
+    in vbx-copy-sector src dst (i + 1)
+
+  vbx-read : VbxState, Integer, Integer -> Result Integer Text
+  vbx-read (state) (sector) (out) = when vbx-request state 0 sector
+    is Err (e) -> Err e
+    is Ok (status) -> let copied = vbx-copy-sector state.data out 0 in Ok 512
+
+  vbx-write : VbxState, Integer, Integer -> Result Integer Text
+  vbx-write (state) (sector) (source) =
+    if state.queue.fault /= 0 then Err "virtio block queue faulted"
+    else if state.readonly then Err "virtio block device is read-only"
+    else let copied = vbx-copy-sector source state.data 0
+    in when vbx-request state 1 sector
+      is Err (e) -> Err e
+      is Ok (status) -> if state.flush then vbx-request state 4 0 else Ok 0
+
+Page 1

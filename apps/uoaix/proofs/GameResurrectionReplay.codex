@@ -1,0 +1,128 @@
+Chapter: GameResurrectionReplay
+  cites Uoaix chapter GameResurrection
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  grr-life : GameResurrection, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
+  grr-life (r) (shard) (input) (map) (enemy) = act
+    initial <- gr-pulse r shard input map 2593 0
+    cbr-check "entry publishes live status and HP" (cbr-opcode initial 17 0 & cbr-opcode initial 161 0)
+    actor <- gsi-session r.items shard input 0
+    when world-create shard.world (gs-item input.session.serial #1BF2 0)
+      is Err (e) -> print-line-uni ("FAIL loot " & e)
+      is Ok (loot) -> act
+        registered <- gsi-register r.items loot 0 0 True True
+        when cb-ensure r.combat shard input.session.serial
+          is Err (e) -> print-line-uni ("FAIL own " & e)
+          is Ok (own) -> when cb-ensure r.combat shard enemy
+            is Err (e) -> print-line-uni ("FAIL enemy " & e)
+            is Ok (attacker) -> act
+              novice <- __record-set own "skill" 0
+              strong <- cb-profile r.combat shard enemy "Enemy" 100 100 100 1000
+              target <- cb-select r.combat shard attacker own
+              dead <- gr-pulse r shard input map 2593 attacker.due
+              corpse <- own.corpse
+              cbr-check "lethal hit emits own death ghost corpse and live health without observer AF" (target & is-ok dead & cbr-hits shard own.serial == 0 & cbr-opcode dead 44 0 & not (cbr-opcode dead 175 0) & cbr-opcode dead 26 0 & cbr-opcode dead 17 0 & cbr-opcode dead 161 0)
+              cbr-check "corpse owns real loot and container metadata" (gsi-known r.items corpse & (gsi-meta r.items corpse).gump == 9 & (when world-get shard.world loot is Err (_) -> False is Ok (item) -> item.container == corpse))
+              ghost <- cbd-handler r.combat r.items shard input map 2593 [44,2]
+              cbr-check "death response enters ghost without healing" (cbr-opcode ghost 32 0 & cbr-hits shard own.serial == 0)
+              when world-get shard.world r.shrine
+                is Err (e) -> print-line-uni ("FAIL shrine " & e)
+                is Ok (ankh) -> act
+                  far <- world-update shard.world (ia-copy ankh ankh.serial 1 0 1425 1698 0)
+                  refused <- gr-handler r shard input map 2593 (gp-put32 [6] r.shrine)
+                  cbr-check "distant shrine cannot resurrect" (is-ok refused & cbr-hits shard own.serial == 0)
+                  back <- world-update shard.world ankh
+                  cbr-check "shrine returns to admitted position" (is-ok back)
+                end
+              before <- world-count shard.world
+              unrelated <- gr-handler r shard input map 2593 (gp-put32 [6] corpse)
+              cbr-check "non-shrine double click falls through without mutation" ((when unrelated is Ok (None) -> True is otherwise -> False) & world-count shard.world == before)
+              revived <- gr-handler r shard input map 2593 (gp-put32 [6] r.shrine)
+              cbr-check "ankh restores body skin and ten-percent HP" (is-ok revived & cbr-hits shard own.serial == 4 & (when world-get shard.world own.serial is Err (_) -> False is Ok (m) -> m.graphic == 400 & m.hue == 1002))
+              cbr-check "resurrection synchronizes status and stops attackers" (cbr-opcode revived 17 0 & cbr-opcode revived 161 0 & attacker.target == 0 & own.target == 0)
+              duplicate <- gr-handler r shard input map 2593 (gp-put32 [6] r.other)
+              cbr-check "living player cannot heal by repeating shrine use" (is-ok duplicate & cbr-hits shard own.serial == 4)
+              opened <- gsi-handle-at r.items shard input map 2593 (gp-put32 [6] corpse) 1000
+              cbr-check "living player opens corpse loot container" (cbr-opcode opened 36 0 & cbr-opcode opened 60 0)
+              lifted <- gsi-handle-at r.items shard input map 2593 (gp-put16 (gp-put32 [7] loot) 1) 1000
+              when gsi-pack r.items actor
+                is Err (e) -> print-line-uni ("FAIL pack " & e)
+                is Ok (pack) -> act
+                  drop-packet <- gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] loot) 20) 20) 0) pack.serial
+                  dropped <- gsi-handle-at r.items shard input map 2593 drop-packet 1001
+                  cbr-check "corpse loot moves once to player backpack" (is-ok lifted & is-ok dropped & (when world-get shard.world loot is Err (_) -> False is Ok (item) -> item.container == pack.serial & item.amount == 1))
+                end
+              buf <- alloc-bytes 32
+              encoded <- gr-encode r buf 32
+              restored <- gr-new r.combat r.items
+              decoded <- gr-decode restored buf 32
+              cbr-check "shrine codec preserves identity and resets health cursor" (is-ok encoded & is-ok decoded & restored.shrine == r.shrine & restored.other == r.other & restored.health == -1)
+              short <- gr-decode restored 0 0
+              cbr-check "short shrine checkpoint refuses before reading" (is-err short)
+            end
+      end
+  end
+  grr-run : GameShard, WalkMap -> [Console] Nothing
+  grr-run (shard) (map) = act
+    c <- cb-new shard 42
+    items <- gsi-new shard.world
+    r <- gr-new c items
+    input <- gn-input-with (cb-specs 0 & [gsi-spec 6 5 5 5]) 1
+    when gs-relay-key shard
+      is Err (e) -> print-line-uni ("FAIL relay " & e)
+      is Ok (key) -> act
+        keyed <- __record-set input.session "key" key
+        login <- gs-handle shard input.session map (cbr-login key)
+        created <- gs-handle shard input.session map (cbr-create 0)
+        mode <- __record-set input "mode" 2
+        shrine <- gr-install r 1419 1698 0
+        cbr-check "trusted ankh installs two immovable halves" (is-ok shrine & gr-shrine-valid items r.shrine 2 & gr-shrine-valid items r.other 3)
+        when world-create shard.world (gs-mobile 0 1421 1698 0 400 1002)
+          is Err (e) -> print-line-uni ("FAIL enemy " & e)
+          is Ok (enemy) -> grr-life r shard input map enemy
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 8 8
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- cbr-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> grr-run shard map
+      end
+  end
+
+Page 1

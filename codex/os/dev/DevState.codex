@@ -29,9 +29,9 @@ Section: The Snapshot
 
   dev-region-sum-loop : Integer, Integer, Integer, Integer -> Integer
   dev-region-sum-loop (addr) (len) (i) (acc) =
-   if i >= len then acc
-   else let x = bit-xor acc (peek-byte addr i)
-   in dev-region-sum-loop addr len (i + 1) (bit-and (x * fnv-prime-32) fnv-mask-32)
+    if i >= len then acc
+    else let x = bit-xor acc (peek-byte addr i)
+    in dev-region-sum-loop addr len (i + 1) (bit-and (x * fnv-prime-32) fnv-mask-32)
 
 Section: The State
 
@@ -62,22 +62,31 @@ Section: Adding A Watch
 
   dev-watch-add : DevState, Text, Integer, Integer -> WatchAdd
   dev-watch-add (st) (label) (addr) (len) =
-   if len <= 0 then WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch length must be positive" }
-   else if len > dev-max-watch-len then
-     WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch length " & show len & " exceeds " & show dev-max-watch-len }
-   else if dev-watch-count st >= dev-max-watches then
-     WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch table full (" & show dev-max-watches & ")" }
-   else let e = WatchEntry {
-     we-label = label,
-     we-addr = addr,
-     we-len = len,
-     we-sum = dev-region-sum addr len
-   }
-   in WatchAdd {
-     wa-state = DevState { ds-watches = list-snoc (st.ds-watches) e },
-     wa-ok = True,
-     wa-message = "watching " & label & " at " & show addr & " for " & show len & " bytes"
-   }
+    if len <= 0 then
+      WatchAdd { wa-state = st, wa-ok = False, wa-message = "watch length must be positive" }
+    else if len > dev-max-watch-len then
+      WatchAdd {
+        wa-state = st,
+        wa-ok = False,
+        wa-message = "watch length " & show len & " exceeds " & show dev-max-watch-len
+      }
+    else if dev-watch-count st >= dev-max-watches then
+      WatchAdd {
+        wa-state = st,
+        wa-ok = False,
+        wa-message = "watch table full (" & show dev-max-watches & ")"
+      }
+    else let e = WatchEntry {
+      we-label = label,
+      we-addr = addr,
+      we-len = len,
+      we-sum = dev-region-sum addr len
+    }
+    in WatchAdd {
+      wa-state = DevState { ds-watches = list-snoc (st.ds-watches) e },
+      wa-ok = True,
+      wa-message = "watching " & label & " at " & show addr & " for " & show len & " bytes"
+    }
 
   dev-watch-clear : DevState -> DevState
   dev-watch-clear (st) = DevState { ds-watches = [] }
@@ -92,27 +101,27 @@ Section: Checking
 
   dev-watch-check : DevState -> WatchCheck
   dev-watch-check (st) =
-   let n = dev-watch-count st
-   in if n == 0 then WatchCheck { wc-state = st, wc-changed = 0, wc-report = "no watches" }
-   else dev-check-loop st 0 n [] 0 ""
+    let n = dev-watch-count st
+    in if n == 0 then WatchCheck { wc-state = st, wc-changed = 0, wc-report = "no watches" }
+    else dev-check-loop st 0 n [] 0 ""
 
   dev-check-loop : DevState, Integer, Integer, List WatchEntry, Integer, Text -> WatchCheck
   dev-check-loop (st) (i) (n) (acc) (changed) (report) =
-   if i >= n then WatchCheck {
-     wc-state = DevState { ds-watches = acc },
-     wc-changed = changed,
-     wc-report = report
-   }
-   else let e = list-at (st.ds-watches) i
-   in let now = dev-region-sum (e.we-addr) (e.we-len)
-   in let moved = now /= (e.we-sum)
-   in let line = (e.we-label) & (if moved then " CHANGED" else " same")
-   in let re-armed = WatchEntry {
-        we-label = e.we-label,
-        we-addr = e.we-addr,
-        we-len = e.we-len,
-        we-sum = now
-      }
-   in let next-changed = if moved then changed + 1 else changed
-   in let next-report = if text-length report == 0 then line else report & ", " & line
-   in dev-check-loop st (i + 1) n (list-snoc acc re-armed) next-changed next-report
+    if i >= n then WatchCheck {
+      wc-state = DevState { ds-watches = acc },
+      wc-changed = changed,
+      wc-report = report
+    }
+    else let e = list-at (st.ds-watches) i
+    in let now = dev-region-sum (e.we-addr) (e.we-len)
+    in let moved = now /= (e.we-sum)
+    in let line = (e.we-label) & (if moved then " CHANGED" else " same")
+    in let re-armed = WatchEntry {
+         we-label = e.we-label,
+         we-addr = e.we-addr,
+         we-len = e.we-len,
+         we-sum = now
+       }
+    in let next-changed = if moved then changed + 1 else changed
+    in let next-report = if text-length report == 0 then line else report & ", " & line
+    in dev-check-loop st (i + 1) n (list-snoc acc re-armed) next-changed next-report

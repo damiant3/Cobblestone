@@ -1,0 +1,63 @@
+Chapter: GameCombatViewReplay
+  cites Uoaix chapter GameCombat
+
+  cv-check : Text, Boolean -> [Console] Nothing
+  cv-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cv-has : List (List Integer), Integer, Integer, Integer -> Boolean
+  cv-has (packets) (opcode) (serial) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-at p 0 == opcode & bit-and (gp-u32 p 3) #7FFFFFFF == serial)
+      | cv-has packets opcode serial (i + 1)
+  cv-run : GameShard -> [Console] Nothing
+  cv-run (shard) = act
+    combat <- cb-new shard 42
+    when world-create shard.world (gs-mobile 0 18 18 0 400 1002)
+      is Err (e) -> print-line-uni ("FAIL viewer " & e)
+      is Ok (viewer) -> when world-create shard.world (gs-mobile 0 0 0 0 17 0)
+        is Err (e) -> print-line-uni ("FAIL npc " & e)
+        is Ok (npc) -> when world-create shard.world (gs-mobile 0 37 18 0 17 0)
+          is Err (e) -> print-line-uni ("FAIL distant npc " & e)
+          is Ok (far) -> when world-create shard.world (WorldObject { serial = 0, kind = 2, x = 36, y = 36, z = 0,
+            graphic = 8198, hue = 1002, container = 0, amount = 400, health = 0 })
+            is Err (e) -> print-line-uni ("FAIL corpse " & e)
+            is Ok (corpse) -> act
+              own <- cb-profile combat shard viewer "Viewer" 30 1 3 100
+              near <- cb-profile combat shard npc "Near" 30 1 3 100
+              distant <- cb-profile combat shard far "Far" 30 1 3 100
+              when world-get shard.world viewer
+                is Err (e) -> print-line-uni ("FAIL viewer lookup " & e)
+                is Ok (m) -> act
+                  packets <- cb-view combat shard m 0 []
+                  cv-check "indexed view includes both distance boundaries and excludes self and distant mobile" (own == 0 & near == 0 & distant == 0
+                    & list-length packets == 2 & cv-has packets 120 npc 0 & cv-has packets 26 corpse 0
+                    & not (cv-has packets 120 viewer 0) & not (cv-has packets 120 far 0))
+                  hidden <- world-update shard.world (WorldObject { serial = corpse, kind = 2, x = 36, y = 36, z = 0,
+                    graphic = 8198, hue = 1002, container = viewer, amount = 400, health = 0 })
+                  after <- cb-view combat shard m 0 []
+                  cv-check "contained corpse leaves tile view" (is-ok hidden & list-length after == 1 & not (cv-has after 26 corpse 0))
+                  moved <- world-update shard.world (gs-mobile far 36 18 0 17 0)
+                  arrived <- cb-view combat shard m 0 []
+                  cv-check "tile maintenance admits moved mobile without world scan" (is-ok moved & list-length arrived == 2 & cv-has arrived 120 far 0)
+                  dead <- world-update shard.world (__record-set (gs-mobile npc 0 0 0 17 0) "health" 0)
+                  live <- cb-view combat shard m 0 []
+                  cv-check "zero-health mobile stays hidden" (is-ok dead & list-length live == 1 & not (cv-has live 120 npc 0))
+                  deleted <- world-delete shard.world far
+                  when world-create shard.world (gs-mobile 0 36 18 0 17 0)
+                    is Err (e) -> print-line-uni ("FAIL replacement " & e)
+                    is Ok (fresh) -> act
+                      stale <- cb-view combat shard m 0 []
+                      cv-check "reused world slot cannot reuse prior combat identity" (is-ok deleted & fresh /= far & list-length stale == 0)
+                      rebound <- cb-profile combat shard fresh "Fresh" 30 1 3 100
+                      restored <- cb-view combat shard m 0 []
+                      cv-check "fresh binding becomes visible once" (rebound == 0 & list-length restored == 1 & cv-has restored 120 fresh 0)
+                      edge <- cb-view combat shard (gs-mobile viewer 0 0 0 400 1002) 0 []
+                      cv-check "map-edge clipping excludes far occupants" (list-length edge == 0)
+                    end
+                end
+            end
+  end
+  opening : [Console] Nothing = when gs-new 0
+    is Err (e) -> act print-line-uni ("FAIL shard " & e) end
+    is Ok (shard) -> cv-run shard
+
+Page 1

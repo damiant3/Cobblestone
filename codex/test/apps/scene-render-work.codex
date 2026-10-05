@@ -1,0 +1,104 @@
+Chapter: SceneRenderWorkTest
+  cites Engine chapter SceneWork
+  cites Works chapter GopScene
+  cites Works chapter GopFish
+  cites Foreword chapter Console
+
+  srw-equal : Integer, Integer, Integer, Integer -> Boolean
+  srw-equal (a) (b) (i) (n) =
+    if i >= n then True
+    else peek-32 a (i * 4) == peek-32 b (i * 4) & srw-equal a b (i + 1) n
+
+  srw-poison : Integer, Integer -> Integer
+  srw-poison (base) (i) =
+    if i >= 4096 then 0
+    else let d = poke-qword base (i * 8) 0
+    in srw-poison base (i + 1)
+
+  srw-nonblank : Integer, Integer, Integer -> Boolean
+  srw-nonblank (base) (i) (n) =
+    if i >= n then False
+    else if peek-32 base (i * 4) /= 37 then True
+    else srw-nonblank base (i + 1) n
+
+  srw-triangle : EngineMaterial -> Scene3DState
+  srw-triangle (material) =
+    let camera = camera3d-new (vec3-new 0.0 0.0 500.0) (vec3-new 0.0 0.0 0.0) 0.785
+    in let scene = scene3d-new camera
+    in let mesh = mesh-new [vertex-pos-normal -200 -200 0 0 0 1000, vertex-pos-normal 200 -200 0 0 0 1000, vertex-pos-normal 0 200 450 0 0 1000] [0, 1, 2]
+    in let parent = sn3-set-pos (sn3-new "parent") 10.0 0.0 0.0
+    in let child = __record-set (sn3-with-mesh "clipped" mesh material) "sn3-parent" 0
+    in scene3d-add-light (scene3d-add (scene3d-add scene parent) child) (dir-light (vec3-new 0.0 0.0 1.0) (rgb 255 255 255) 900)
+
+  srw-refusals : Integer -> Boolean
+  srw-refusals (unused) =
+    let scene = srw-triangle emat-red
+    in let target = r3d-target-new 8 8 0
+    in let job = sj-new scene target 8
+    in let child = list-at (scene.s3-nodes) 1
+    in let bad-parent = __record-set child "sn3-parent" 1
+    in let begin = sj-begin job 37 0
+    in let parent-step = sj-step job
+    in let child-step = sj-step job
+    in let rejected-parent = child-step < 0
+    in let repaired = __record-set child "sn3-parent" 0
+    in let material = child.sn3-material
+    in let excessive = __record-set material "emat-shininess" (rw-shininess-limit + 1)
+    in let restart = sj-begin job 37 0
+    in let parent-again = sj-step job
+    in let rejected-shade = sj-step job < 0
+    in let invalid-map = sj-new scene target 0
+    in rejected-parent & rejected-shade & invalid-map.sj-phase < 0 & sj-begin invalid-map 37 1 < 0
+
+  srw-drain : R3dSceneWork, Integer -> Boolean
+  srw-drain (job) (remaining) =
+    if job.sj-phase == 9 then True
+    else if remaining <= 0 | job.sj-phase < 0 then False
+    else let mark = __heap-save
+    in let next = sj-step job
+    in let bound-ok = job.sj-raster.rw-attempts <= 256
+    in let restored = __heap-restore mark
+    in let overwritten = srw-poison (alloc-bytes 32768) 0
+    in let restored-again = __heap-restore mark
+    in bound-ok & srw-drain job (remaining - 1)
+
+  srw-case : Scene3DState, Integer -> [Console] Nothing
+  srw-case (scene) (shadow) = act
+    let oracle = r3d-target-new 73 61 37
+    in let target = r3d-target-new 73 61 0
+    in let job = sj-new scene target 32
+    in let mark = __heap-save
+    in let draw = if shadow == 1 then r3d-render-shadowed oracle scene 32 else r3d-render-into oracle scene
+    in let restore = __heap-restore mark
+    in let begin = sj-begin job 37 shadow
+    in let restore-begin = __heap-restore mark
+    in let done = srw-drain job 100000
+    in let color = srw-equal (oracle.r3t-base) (target.r3t-base) 0 (73 * 61)
+    in let depth = srw-equal (oracle.r3t-depth) (target.r3t-depth) 0 (73 * 61)
+    in let nonblank = srw-nonblank (oracle.r3t-base) 0 (73 * 61)
+    in act
+      print-line ("done " & show done & " color " & show color & " depth " & show depth & " nonblank " & show nonblank)
+    end
+  end
+
+  opening : [Console] Nothing = act
+    srw-case (gsc-scene 0) 0
+    srw-case (gsc-scene 0) 1
+    srw-case (gf-scene 1234) 1
+    srw-case (srw-triangle (emat-set-shading (emat-color (rgb 170 90 30)) Unlit)) 0
+    srw-case (srw-triangle (emat-set-texture (emat-set-shading (emat-color (rgb 170 90 30)) Unlit) (etx-checkerboard 8 8 1 170 200))) 1
+    srw-case (srw-triangle (emat-set-shading (emat-color (rgb 170 90 30)) GouraudShaded)) 1
+    let fish = gf-scene 0
+    in let mark = __heap-save
+    in let moved = gf-advance fish 1234
+    in let restore = __heap-restore mark
+    in let poison = srw-poison (alloc-bytes 32768) 0
+    in let reset = __heap-restore mark
+    in act
+      srw-case fish 1
+      print-line ("refusal " & show (srw-refusals 0))
+      print-line "render-work-end"
+    end
+  end
+
+Page 1

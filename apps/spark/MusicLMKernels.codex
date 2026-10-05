@@ -1,0 +1,80 @@
+Chapter: MusicLMKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+  ml-embed : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ml-embed (ids) (w0) (w1) (w2) (w3) (yb) (dim) (rows) (gid) =
+    if gid >= rows * dim then 0
+    else act
+      a <- device-load ids (gid / dim)
+      b <- device-load ids (rows + gid / dim)
+      c <- device-load ids (2 * rows + gid / dim)
+      d <- device-load ids (3 * rows + gid / dim)
+      let col = gid - gid / dim * dim
+      in device-store-f32 yb gid (((from-real-approx (device-load-f16-approx w0 (a * dim + col)) + from-real-approx (device-load-f16-approx w1 (b * dim + col))) + from-real-approx (device-load-f16-approx w2 (c * dim + col))) + from-real-approx (device-load-f16-approx w3 (d * dim + col)))
+    end
+
+ Audiocraft concatenates cosine and sine halves with exponent j/(half-1).
+
+  ml-position : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ml-position (xb) (yb) (dim) (offset) (n) (gid) =
+    if gid >= n then 0
+    else let col = gid - gid / dim * dim
+    in let half = dim / 2
+    in let j = if col < half then col else col - half
+    in let phase = real-from-int (offset + gid / dim) / real-exp2-approx (13.287712379549449 * real-from-int j / real-from-int (half - 1))
+    in device-store-f32 yb gid (device-load-f32 xb gid + (if col < half then real-cos phase else real-sin phase))
+
+  ml-causal : Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  ml-causal (xb) (yb) (rows) (n) (masked) (gid) =
+    if gid >= n then 0
+    else let col = gid - gid / rows * rows
+    in let row = gid / rows - gid / rows / rows * rows
+    in device-store-f32 yb gid (if col > row then masked else device-load-f32 xb gid)
+
+ Compensated summation limits cancellation error in the long dot products.
+
+  ml-dot : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  ml-dot (xb) (wb) (row) (col) (dim) (k) (sum) (correction) =
+    if k >= dim then sum
+    else act
+      x <- device-load-f32 xb (row * dim + k)
+      w <- device-load-f16-approx wb (col * dim + k)
+      let term = x * from-real-approx w - correction
+      in let next = sum + term
+      in ml-dot xb wb row col dim (k + 1) next ((next - sum) - term)
+    end
+
+  ml-projection : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ml-projection (xb) (wb) (yb) (dim) (out) (n) (gid) =
+    if gid >= n then 0 else device-store-f32 yb gid (ml-dot xb wb (gid / out) (gid - gid / out * out) dim 0 0.0 0.0)
+
+  ml-stat-sum : Integer, Integer, Integer, Integer, Real, Integer, Real, Real -> [Device] Real
+  ml-stat-sum (xb) (base) (dim) (k) (mean) (square) (sum) (correction) =
+    if k >= dim then sum
+    else act
+      v <- device-load-f32 xb (base + k)
+      let delta = v - mean
+      in let term = (if square == 1 then delta * delta else delta) - correction
+      in let next = sum + term
+      in ml-stat-sum xb base dim (k + 1) mean square next ((next - sum) - term)
+    end
+
+  ml-norm-stat : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ml-norm-stat (xb) (sb) (dim) (rows) (gid) =
+    if gid >= rows then 0
+    else act
+      total <- ml-stat-sum xb (gid * dim) dim 0 0.0 0 0.0 0.0
+      let mean = total / real-from-int dim
+      in act
+        square <- ml-stat-sum xb (gid * dim) dim 0 mean 1 0.0 0.0
+        a <- device-store-f32 sb (gid * 2) mean
+        device-store-f32 sb (gid * 2 + 1) (1.0 / real-sqrt (square / real-from-int dim + 0.00001))
+      end
+    end
+
+  ml-cache-write : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ml-cache-write (xb) (yb) (offset) (dim) (gid) =
+    if gid >= dim then 0 else device-store-f32 yb (offset * dim + gid) (device-load-f32 xb gid)

@@ -1,6 +1,6 @@
 // Build: nvcc -O2 browser-vs-host.cu -lcuda -o browser-vs-host.exe (under vcvars64).
 // browser-vs-host.exe <browser.ptx> : BrowserKernels' bk-linear (f32 w) and bk-linear-h (packed f16 w),
-// emitted by the PTX plug, against an f64 host y = x w^T + b on a shape that is no multiple of 16.
+// emitted by the PTX plug, against an f64 host y = x w^T + b on a shape that is no multiple of 64.
 // Inputs are multiples of 1/64 in [-2, 2), exact in f16 and f32. Sabotage arms: kk - 1 for bk-linear,
 // the f32 w buffer read as f16 for bk-linear-h; each must miss nearly every element. bk-row-rstd takes eps as a Real through the gid entry wrapper; its sabotage passes eps 1.0.
 #include <cuda.h>
@@ -13,10 +13,10 @@ static char *slurp(const char *p) { FILE *f = fopen(p, "rb"); fseek(f, 0, SEEK_E
 static float wave(long long i, int seed) { return (float)((int)((i * 37 + seed) % 257) - 128) / 64.0f; }
 static long long run(CUmodule m, const char *name, CUdeviceptr x, CUdeviceptr w, CUdeviceptr b, CUdeviceptr y, long long mm, long long nn, long long kk, float *hy, const double *ref) {
     CUfunction f; CK(cuModuleGetFunction(&f, m, name));
-    unsigned tiles = (unsigned)(((mm + 15) / 16) * ((nn + 15) / 16)); long long px = (long long)tiles * 256;
+    unsigned tiles = (unsigned)(((mm + 63) / 64) * ((nn + 63) / 64)); long long px = (long long)tiles * 256;
     CK(cuMemsetD8(y, 0, mm * nn * 4));
     void *p[] = { &x, &w, &b, &y, &mm, &nn, &kk, &px };
-    CK(cuLaunchKernel(f, tiles, 1, 1, 256, 1, 1, 2048, 0, p, 0)); CK(cuCtxSynchronize());
+    CK(cuLaunchKernel(f, tiles, 1, 1, 256, 1, 1, 2080 * 4, 0, p, 0)); CK(cuCtxSynchronize());
     CK(cuMemcpyDtoH(hy, y, mm * nn * 4));
     long long good = 0;
     for (long long i = 0; i < mm * nn; i++) if (fabs(hy[i] - ref[i]) <= 1e-5 * (1.0 + fabs(ref[i]))) good++;
@@ -24,7 +24,7 @@ static long long run(CUmodule m, const char *name, CUdeviceptr x, CUdeviceptr w,
 }
 int main(int argc, char **argv) {
     CUdevice d; CUcontext c; CK(cuInit(0)); CK(cuDeviceGet(&d, 0)); CK(cuDevicePrimaryCtxRetain(&c, d)); CK(cuCtxSetCurrent(c));
-    const long long mm = 37, nn = 45, kk = 70, n = mm * nn;
+    const long long mm = 137, nn = 145, kk = 70, n = mm * nn;
     float *hx = (float *)malloc(mm * kk * 4), *hw = (float *)malloc(nn * kk * 4), *hb = (float *)malloc(nn * 4), *hy = (float *)malloc(n * 4);
     __half *hh = (__half *)malloc(nn * kk * 2); double *ref = (double *)malloc(n * 8);
     for (long long i = 0; i < mm * kk; i++) hx[i] = wave(i, 5);
@@ -43,8 +43,8 @@ int main(int argc, char **argv) {
     CUdeviceptr xr, sr; CK(cuMemAlloc(&xr, rows * len * 4)); CK(cuMemAlloc(&sr, rows * 2 * 4)); CK(cuMemcpyHtoD(xr, hr, rows * len * 4));
     for (int arm = 0; arm < 2; arm++) {
         double eps = arm ? 1.0 : 1e-5; CUfunction fr; CK(cuModuleGetFunction(&fr, m, "bk_row_rstd_kernel"));
-        long long px = rows; void *pr[] = { &xr, &sr, &len, &eps, &rows, &px };
-        CK(cuMemsetD8(sr, 0, rows * 8)); CK(cuLaunchKernel(fr, 1, 1, 1, 32, 1, 1, 0, 0, pr, 0)); CK(cuCtxSynchronize()); CK(cuMemcpyDtoH(hs, sr, rows * 8));
+        long long px = rows * 256; void *pr[] = { &xr, &sr, &len, &eps, &rows, &px };
+        CK(cuMemsetD8(sr, 0, rows * 8)); CK(cuLaunchKernel(fr, (unsigned)rows, 1, 1, 256, 1, 1, 256 * 4, 0, pr, 0)); CK(cuCtxSynchronize()); CK(cuMemcpyDtoH(hs, sr, rows * 8));
         for (long long r = 0; r < rows; r++) { double s = 0, q = 0; for (long long j = 0; j < len; j++) s += hr[r * len + j]; s /= len; for (long long j = 0; j < len; j++) q += (hr[r * len + j] - s) * (hr[r * len + j] - s); double want = 1.0 / sqrt(q / len + 1e-5); if (fabs(hs[r * 2 + 1] - want) <= 1e-5 * want) { if (arm) s3++; else g3++; } }
     }
     printf("bk-row-rstd %lld rows of %lld, eps through the wrapper: %lld/%lld, sabotage eps 1.0 %lld/%lld\n", rows, len, g3, rows, s3, rows);

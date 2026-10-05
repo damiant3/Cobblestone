@@ -1,0 +1,73 @@
+Chapter: AdminPanelProof
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Encode chapter Json
+  cites Foreword chapter Console
+
+  pp-value : Text -> JsonValue
+  pp-value (text) = (json-parse-value text 0 (text-length text)).value
+
+  pp-check : Text, Boolean -> [Console] Integer
+  pp-check (name) (pass) = act
+    print-line-uni (name & (if pass then " PASS" else " FAIL"))
+    if pass then 0 else 1
+  end
+
+  pp-apply : AdminPanel, List Integer, JsonValue -> Integer
+  pp-apply (p) (observed) (v) =
+    let recorded = p.log-count > 0 & text-contains (admin-load p.log ((p.log-count - 1) * 1024)) "inspect"
+    in let checked = list-set-at observed 0 (if recorded then 1 else -1)
+    in let counted = list-set-at observed 1 (list-at observed 1 + 1)
+    in 0
+
+  opening : [Console] Nothing = act
+    w <- tf-new 0
+    m <- tm-new 0
+    a <- admin-world-new w m
+    mark <- __heap-save
+    p <- panel-new a "Damian"
+    size <- __heap-save - mark
+    print-line-uni ("PANEL retained-bytes=" & show size)
+    forbidden <- panel-dispatch p 1 "{\"command\":\"panel-open\"}"
+    c1 <- pp-check "health cannot open panel" (text-contains forbidden "role" & p.active == 0)
+    opened <- panel-open p 100
+    c2 <- pp-check "human session logged" (p.active == 1 & p.sessions == 1 & p.log-count == 1 & text-contains opened "Damian")
+    connected <- panel-connect p 1 "test" "Iolo" "127.0.0.1" "now"
+    c3 <- pp-check "live connection fields" (connected == 0 & text-contains (panel-connections p 0 []) "Iolo")
+    command <- pp-value "{\"command\":\"panel-action\",\"action\":\"inspect\",\"session\":1,\"actor\":\"forged\",\"target\":1}"
+    queued <- panel-human p command 101
+    observed <- [0,0]
+    id <- p.pending
+    applied <- panel-action-apply p id 102 (pp-apply p observed)
+    c4 <- pp-check "log exists before effect and trusted actor is retained" (applied == 0 & list-at observed 0 == 1 & text-contains (admin-load p.log 1024) "\"actor\":\"Damian\"")
+    replay <- panel-action-apply p id 103 (pp-apply p observed)
+    c5 <- pp-check "action applies once" (replay == -1)
+    queued2 <- panel-human p command 104
+    expired <- panel-action-apply p p.pending 180105 (pp-apply p observed)
+    c6 <- pp-check "expired session refuses effect" (expired == -2 & not (panel-live p 1 180105) & list-at observed 1 == 1)
+    reopened <- panel-open p 180106
+    stale <- panel-human p command 180107
+    c7 <- pp-check "old session loses authority after login" (text-contains stale "session" & p.sessions == 2)
+    command2 <- pp-value "{\"command\":\"panel-action\",\"action\":\"inspect\",\"session\":2}"
+    queue-close <- panel-human p command2 180107
+    close-id <- p.pending
+    logout <- panel-close p 180108
+    after-close <- panel-action-apply p close-id 180109 (pp-apply p observed)
+    c10 <- pp-check "logout prevents callback" (after-close == -1 & list-at observed 1 == 1)
+    login3 <- panel-open p 180110
+    command3 <- pp-value "{\"command\":\"panel-action\",\"action\":\"inspect\",\"session\":3}"
+    queue-replace <- panel-human p command3 180111
+    replaced-id <- p.pending
+    login4 <- panel-open p 180112
+    after-replace <- panel-action-apply p replaced-id 180113 (pp-apply p observed)
+    c11 <- pp-check "replacement prevents callback" (after-replace == -1 & list-at observed 1 == 1 & p.sessions == 4)
+    full <- __record-set p "log-count" 127
+    command4 <- pp-value "{\"command\":\"panel-action\",\"action\":\"inspect\",\"session\":4}"
+    refused <- panel-human p command4 180114
+    c8 <- pp-check "full log prevents action queue" (text-contains refused "action-log-full" & p.pending-state == 0)
+    closed <- panel-close p 180115
+    c9 <- pp-check "reserved log slot permits session revocation" (p.active == 0 & p.log-count == 128 & text-contains closed "closed")
+    print-line-uni ("UOAIX PANEL CORE failures=" & show (c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11))
+  end

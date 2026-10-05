@@ -1,0 +1,162 @@
+Chapter: GamePackets
+  cites Foreword chapter CCE
+  cites Uoaix chapter WorldRecords
+
+ Classic UO packet fields are big-endian; signed z uses its low byte.
+ Layout hypotheses follow Jerrith's UO Packets Guide. Client 1.25.32
+ rendering remains the acceptance oracle, including the legacy 3-byte walk.
+
+  gp-u16 : List Integer, Integer -> Integer
+  gp-u16 (bytes) (at) = list-at bytes at * 256 + list-at bytes (at + 1)
+
+  gp-u32 : List Integer, Integer -> Integer
+  gp-u32 (bytes) (at) = gp-u16 bytes at * 65536 + gp-u16 bytes (at + 2)
+
+  gp-put16 : List Integer, Integer -> List Integer
+  gp-put16 (bytes) (n) = list-push (list-push bytes (bit-and (bit-shr n 8) 255)) (bit-and n 255)
+
+  gp-put32 : List Integer, Integer -> List Integer
+  gp-put32 (bytes) (n) = gp-put16 (gp-put16 bytes (bit-shr n 16)) n
+
+  gp-zeros : List Integer, Integer -> List Integer
+  gp-zeros (bytes) (count) =
+    if count <= 0 then bytes else gp-zeros (list-push bytes 0) (count - 1)
+
+  gp-ascii : List Integer, Text, Integer, Integer -> List Integer
+  gp-ascii (bytes) (text) (i) (count) =
+    if i >= count then bytes
+    else let byte = if i < text-length text then to-unicode (char-code (char-at text i)) else 0
+    in gp-ascii (list-push bytes byte) text (i + 1) count
+
+  gp-buffer : List Integer, Integer, Integer, Integer -> List Integer
+  gp-buffer (bytes) (buffer) (at) (count) =
+    if count <= 0 then bytes
+    else gp-buffer (list-push bytes (peek-byte buffer at)) buffer (at + 1) (count - 1)
+
+  gp-start : Integer -> List Integer
+  gp-start (opcode) = list-push (__list-with-capacity 512) opcode
+
+  gp-character-entries : Integer, Integer, List Integer -> List Integer
+  gp-character-entries (characters) (slot) (bytes) =
+    if slot >= 5 then bytes
+    else let name = if peek-qword characters (slot * 160) == 0 then gp-zeros bytes 30
+      else gp-buffer bytes characters (slot * 160 + 18) 30
+    in gp-character-entries characters (slot + 1) (gp-zeros name 30)
+
+  gp-character-list : Integer -> List Integer
+  gp-character-list (characters) =
+    let header = list-push (gp-put16 (gp-start 169) 372) 5
+    in let names = gp-character-entries characters 0 header
+    in let city = list-push (list-push names 1) 0
+    in gp-put32 (gp-ascii (gp-ascii city "Britain" 0 31) "Sweet Dreams Inn" 0 31) 0
+
+  gp-character-resend : Integer -> List Integer
+  gp-character-resend (characters) =
+    gp-character-entries characters 0 (list-push (gp-put16 (gp-start #86) 304) 5)
+
+  gp-enter : WorldObject, Integer -> List Integer
+  gp-enter (mobile) (direction) =
+    let a = gp-put32 (gp-put32 (gp-start 27) mobile.serial) 0
+    in let b = gp-put16 (gp-put16 (gp-put16 a mobile.graphic) mobile.x) mobile.y
+    in let c = list-push (list-push (gp-put16 b mobile.z) direction) 0
+    in let d = gp-put32 c #FFFFFFFF
+    in gp-zeros (gp-put16 (gp-put16 (gp-put16 (gp-put16 d 0) 0) 6144) 4096) 6
+
+  gp-player : WorldObject, Integer -> List Integer
+  gp-player (mobile) (direction) =
+    let a = list-push (gp-put16 (gp-put32 (gp-start 32) mobile.serial) mobile.graphic) 0
+    in let b = list-push (gp-put16 a mobile.hue) 0
+    in let c = gp-put16 (gp-put16 b mobile.x) mobile.y
+    in list-push (list-push (gp-put16 c 0) direction) (bit-and mobile.z 255)
+
+  gp-equip : WorldObject, Integer -> List Integer
+  gp-equip (item) (layer) =
+    let a = list-push (gp-put16 (gp-put32 (gp-start 46) item.serial) item.graphic) 0
+    in gp-put16 (gp-put32 (list-push a layer) item.container) item.hue
+
+  gp-move-denied : WorldObject, Integer, Integer -> List Integer
+  gp-move-denied (mobile) (direction) (sequence) =
+    let a = gp-put16 (list-push (gp-start 33) sequence) mobile.x
+    in list-push (list-push (gp-put16 a mobile.y) direction) (bit-and mobile.z 255)
+
+  gp-move-accepted : Integer -> List Integer
+  gp-move-accepted (sequence) = [34, sequence, 1]
+
+  gp-status : WorldObject, Integer, Integer -> List Integer
+  gp-status (mobile) (characters) (slot) =
+    let base = slot * 160 + 8
+    in let strength = peek-byte characters (base + 71)
+    in let dexterity = peek-byte characters (base + 72)
+    in let intelligence = peek-byte characters (base + 73)
+    in let a = gp-buffer (gp-put32 (gp-put16 (gp-start 17) 66) mobile.serial) characters (base + 10) 30
+    in let b = gp-put16 (gp-put16 a mobile.health) strength
+    in let c = list-push (list-push (list-push b 0) 1) (peek-byte characters (base + 70))
+    in let d = gp-put16 (gp-put16 (gp-put16 c strength) dexterity) intelligence
+    in let e = gp-put16 (gp-put16 (gp-put16 (gp-put16 d dexterity) dexterity) intelligence) intelligence
+    in gp-put16 (gp-put16 (gp-put32 e 0) 0) 0
+
+  gp-packet-size : Integer -> Integer
+  gp-packet-size (opcode) =
+    if opcode == 145 then 65
+    else if opcode == 0 then 100
+    else if opcode == 93 then 73
+    else if opcode == 2 then 3
+    else if opcode == 3 then 3
+    else if opcode == 115 then 2
+    else if opcode == 114 then 5
+    else if opcode == 164 then 149
+    else if opcode == 167 then 4
+    else if opcode == 52 then 10
+    else if opcode == 1 then 5
+    else if opcode == 131 then 39
+    else 0
+
+  gp-packet-length-valid : List Integer -> Boolean
+  gp-packet-length-valid (packet) =
+    if list-length packet == 0 then False
+    else if list-at packet 0 == 3 then
+      if list-length packet < 10 | list-length packet > 137 then False else gp-u16 packet 1 == list-length packet
+    else gp-packet-size (list-at packet 0) > 0 & list-length packet == gp-packet-size (list-at packet 0)
+
+  gp-speech-body-valid : List Integer, Integer -> Boolean
+  gp-speech-body-valid (packet) (i) =
+    if i == list-length packet - 1 then list-at packet i == 0
+    else let byte = list-at packet i
+    in byte >= 32 & byte <= 126 & gp-speech-body-valid packet (i + 1)
+
+  gp-speech-valid : List Integer -> Boolean
+  gp-speech-valid (packet) =
+    if not (gp-packet-length-valid packet) then False
+    else if list-at packet 0 /= 3 then False
+    else let kind = list-at packet 3
+    in (kind == 0 | kind == 2 | kind == 8 | kind == 9) & gp-u16 packet 4 <= 1001 & gp-u16 packet 6 <= 9
+      & gp-speech-body-valid packet 8
+
+  gp-speech-text : List Integer -> Text
+  gp-speech-text (packet) = utf8-bytes-to-text (list-take (list-drop packet 8) (list-length packet - 9))
+
+  gp-speech-tail : List Integer, List Integer, Integer -> List Integer
+  gp-speech-tail (out) (packet) (i) =
+    if i >= list-length packet then out
+    else gp-speech-tail (list-push out (list-at packet i)) packet (i + 1)
+
+  gp-speech : WorldObject, Integer, Integer, List Integer -> List Integer
+  gp-speech (mobile) (characters) (slot) (packet) =
+    let header = gp-put16 (gp-start 28) (list-length packet + 36)
+    in let speaker = list-push (gp-put16 (gp-put32 header mobile.serial) mobile.graphic) (list-at packet 3)
+    in let style = gp-put16 (gp-put16 speaker (gp-u16 packet 4)) (gp-u16 packet 6)
+    in gp-speech-tail (gp-buffer style characters (slot * 160 + 18) 30) packet 8
+
+  gp-fixed-matches : List Integer, Integer, Text, Integer -> Boolean
+  gp-fixed-matches (bytes) (at) (text) (i) =
+    if i >= 30 then True
+    else let expected = if i < text-length text then to-unicode (char-code (char-at text i)) else 0
+    in if list-at bytes (at + i) /= expected then False
+    else gp-fixed-matches bytes at text (i + 1)
+
+  gp-password-matches : List Integer, Integer, Text, Integer -> Boolean
+  gp-password-matches (bytes) (at) (text) (i) =
+    if i >= 30 then True
+    else let expected = if i < text-length text then to-unicode (char-code (char-at text i)) - 13 else 0
+    in if list-at bytes (at + i) /= expected then False
+    else gp-password-matches bytes at text (i + 1)

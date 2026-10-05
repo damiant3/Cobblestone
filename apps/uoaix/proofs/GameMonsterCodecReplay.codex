@@ -1,0 +1,56 @@
+Chapter: GameMonsterCodecReplay
+  cites Uoaix chapter GameMonsterCodec
+  check : Text, Boolean -> [Console] Nothing
+  check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  run : GameShard -> [Console] Nothing
+  run (shard) = act
+    combat <- cb-new shard 42
+    when gm-new combat 2 1426 1700 0 6
+      is Err (e) -> print-line-uni ("FAIL home " & e)
+      is Ok (g) -> when world-create shard.world (gs-mobile 0 1426 1701 0 17 0)
+        is Err (e) -> print-line-uni ("FAIL npc " & e)
+        is Ok (serial) -> act
+          profile <- cb-profile combat shard serial "Orc" 40 2 5 300
+          first <- list-at g.slots 0
+          second <- list-at g.slots 1
+          bound <- __record-set first "serial" serial
+          direction <- __record-set first "direction" 7
+          due <- __record-set first "due" 180
+          visible <- __record-set first "visible" True
+          waiting <- __record-set second "due" (100 + gm-ticks 60000)
+          size <- gmc-size 2
+          buf <- alloc-bytes size
+          encoded <- gmc-encode g shard.world 100 buf size
+          when gm-new combat 2 1 1 0 1
+            is Err (e) -> print-line-uni ("FAIL restore state " & e)
+            is Ok (restored) -> act
+              decoded <- gmc-decode restored shard.world 1000 buf size
+              a <- list-at restored.slots 0
+              b <- list-at restored.slots 1
+              check "home slot and facing survive codec" (is-ok encoded & is-ok decoded & restored.x == 1426 & restored.y == 1700 & restored.radius == 6 & a.serial == serial & a.direction == 7)
+              check "movement and replacement deadlines rebase" (a.due == 1080 & b.due == 1000 + gm-ticks 60000 & b.serial == 0 & combat.tick == 1000)
+              check "connection and visibility reset" (restored.connection == -1 & not a.visible & not b.visible)
+              duplicate <- poke-qword buf 88 serial
+              refused <- gmc-decode restored shard.world 2000 buf size
+              check "duplicate serial refuses without mutation" (is-err refused & a.due == 1080 & combat.tick == 1000)
+              clear <- poke-qword buf 88 0
+              invalid <- poke-qword buf 104 (gm-ticks 60000 + 1)
+              bad <- gmc-decode restored shard.world 2000 buf size
+              check "late malformed row refuses whole restore" (is-err bad & a.due == 1080)
+              check "short buffer refuses before reading" (is-err (gmc-decode restored shard.world 0 0 0))
+              repaired <- poke-qword buf 104 0
+              deleted <- world-delete shard.world serial
+              stale <- gmc-decode restored shard.world 2000 buf size
+              check "stale world binding refuses" (is-ok deleted & is-err stale)
+              resaved <- gmc-encode g shard.world 100 buf size
+              check "a slot whose NPC died saves as an empty respawn" (is-ok resaved & peek-qword buf 64 == 0 & peek-qword buf 80 == gm-ticks 60000)
+            end
+        end
+  end
+  opening : [Console] Nothing = act
+    when gs-new 0
+      is Err (e) -> print-line-uni ("FAIL shard " & e)
+      is Ok (shard) -> run shard
+  end
+
+Page 1

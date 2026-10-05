@@ -1,0 +1,255 @@
+Chapter: GameLiveActions
+  cites Uoaix chapter TownLiveControl
+  cites Uoaix chapter EconomyActions
+  cites Uoaix chapter GameHarvestProduction
+
+  GameLiveActions = record { town : TownLive, book : EaWorld, copper : Integer, silver : Integer }
+  gla-register : TownLive, Integer -> Boolean
+  gla-register (t) (i) = if i == t.count then True
+    else let r = list-at t.residents i
+    in let serial = (tf-person t.people r.person).world-serial
+    in if not (tl-controlled t r.person r.actor) then False
+    else let old = gv-owner t.vendors serial 0
+    in let admitted = if old < 0 then gv-add-owner t.vendors serial r.actor
+      else if (list-at t.vendors.owners old).actor == r.actor then old else -1
+    in admitted >= 0 & gla-register t (i + 1)
+  gla-new : TownLive -> Result GameLiveActions Text
+  gla-new (t) = if t.count < 1 | t.count > 3 | not (eu-ready t.vendors.currency) then Err "live proposal binding"
+    else if not (gla-register t 0) then Err "live proposal owner registration"
+    else let copper = ep-buffer 256
+    in let silver = ep-buffer 256
+    in Ok (GameLiveActions { town = t, book = ea-new t.vendors.currency.world, copper = copper, silver = silver })
+  gla-funds : EuCurrency, Integer -> Integer
+  gla-funds (x) (actor) = let purse = (ep-actor x.world actor).purse
+    in eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+  gla-vendor-actor : GvWorld, Integer, Integer -> Integer
+  gla-vendor-actor (v) (actor) (i) = if i == v.vendor-count then -1
+    else if (list-at v.vendors i).actor == actor then i else gla-vendor-actor v actor (i + 1)
+  gla-lot-valid : GameLiveActions, Integer, Integer, Integer -> Boolean
+  gla-lot-valid (g) (at) (actor) (owner) = let v = g.town.vendors
+    in if at < 0 | at >= v.lot-count then False
+    else let l = list-at v.lots at
+    in if l.actor /= actor | l.quantity < 1 | not (gsi-known g.town.items l.serial)
+      | not (gsi-meta g.town.items l.serial).movable | not (gv-sale-source v l.serial owner actor) then False
+    else when world-get v.game.world l.serial
+      is Err (_) -> False
+      is Ok (obj) -> obj.kind == 2 & obj.amount == l.quantity & world-child-count v.game.world l.serial == 0
+  gla-stock : GameLiveActions, Integer, Integer, Integer, Integer -> Integer
+  gla-stock (g) (actor) (owner) (item) (i) = if i == g.town.vendors.lot-count then 0
+    else let l = list-at g.town.vendors.lots i
+    in (if l.item == item & gla-lot-valid g i actor owner then l.quantity else 0) + gla-stock g actor owner item (i + 1)
+  gla-post : GameLiveActions, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gla-post (g) (verified-vendor-policy) (vendor) (kind) (target) (item) (quantity) (limit) (expires) =
+    let v = g.town.vendors
+    in let at = gv-vendor v vendor 0
+    in if not verified-vendor-policy | at < 0 then -10
+    else let actor = (list-at v.vendors at).actor
+    in let w = g.book.world
+    in if not (eu-ready v.currency) | w.sales /= v.currency.world.sales then -17
+    else if (kind /= 2 & kind /= 3) | not (eg-id w.catalog item)
+      | (target /= 0 & not (ep-valid-actor w target)) | target == actor
+      | quantity < 1 | quantity > ep-stock-limit | limit < 1 | limit > 1000000
+      | expires < w.hour | expires > ep-limit then -16
+    else if g.book.offer-count == 256 | not (ea-room g.book 1) then -14
+    else if kind == 3 & gla-stock g actor vendor item 0 < quantity then -1
+    else if kind == 2 & gla-funds v.currency actor < limit * quantity then -1
+    else let id = ea-record-offer g.book actor kind target item quantity limit expires
+    in let c = poke-qword g.copper ((id - 1) * 8) v.currency.copper-rate
+    in let s = poke-qword g.silver ((id - 1) * 8) v.currency.silver-rate in id
+  gla-consent : GameLiveActions, EaProposal -> Integer
+  gla-consent (g) (p) = if p.offer < 1 | p.offer > g.book.offer-count then -12
+    else let o = list-at g.book.offers (p.offer - 1)
+    in if o.owner /= p.target | o.owner == p.actor | o.kind /= (if p.kind == 2 then 3 else 2)
+      | (o.target /= 0 & o.target /= p.actor) | o.item /= p.item
+      | o.remaining < p.quantity | o.expires < g.book.world.hour then -12
+    else if peek-qword g.copper ((p.offer - 1) * 8) /= g.town.vendors.currency.copper-rate
+      | peek-qword g.silver ((p.offer - 1) * 8) /= g.town.vendors.currency.silver-rate then -13
+    else 0
+  gla-offer : GameLiveActions, Integer, Integer, Integer, Integer, Integer -> Integer
+  gla-offer (g) (owner) (kind) (item) (target) (i) = if i == g.book.offer-count then 0
+    else let o = list-at g.book.offers i
+    in if o.owner == owner & o.kind == kind & o.item == item & o.remaining > 0
+      & (o.target == 0 | o.target == target) & o.expires >= g.book.world.hour
+      & peek-qword g.copper (i * 8) == g.town.vendors.currency.copper-rate
+      & peek-qword g.silver (i * 8) == g.town.vendors.currency.silver-rate then i + 1
+    else gla-offer g owner kind item target (i + 1)
+  gla-market-lots : GameLiveActions, Boolean, Integer -> Integer
+  gla-market-lots (g) (verified-policy) (i) = if not verified-policy then -10
+    else let v = g.town.vendors
+    in if i == v.lot-count then 0
+    else let l = list-at v.lots i
+    in let at = gla-vendor-actor v l.actor 0
+    in if at < 0 then gla-market-lots g verified-policy (i + 1)
+    else let merchant = list-at v.vendors at
+    in if not (gla-lot-valid g i l.actor merchant.serial) then gla-market-lots g verified-policy (i + 1)
+    else let ask = ep-price g.book.world l.actor l.item
+    in if ask < 1 then gla-market-lots g verified-policy (i + 1)
+    else let published = ep-set merchant.prices l.item ask
+    in let old-sell = gla-current-offer g l.actor 3 l.item ask
+    in if old-sell < 0 then old-sell
+    else let sell = if old-sell > 0 then 0
+      else gla-post g True merchant.serial 3 0 l.item (gla-stock g l.actor merchant.serial l.item 0) ask ep-limit
+    in if sell < 0 then sell
+    else let bid = max 1 (min 65535 (ask / 2))
+    in let quantity = min ep-stock-limit (gla-funds v.currency l.actor / bid)
+    in let old-buy = gla-current-offer g l.actor 2 l.item bid
+    in if old-buy < 0 then old-buy
+    else let buy = if quantity <= 0 | old-buy > 0 then 0
+      else gla-post g True merchant.serial 2 0 l.item quantity bid ep-limit
+    in if buy < 0 then buy else gla-market-lots g verified-policy (i + 1)
+  gla-market-bids : GameLiveActions, Integer, Integer -> Integer
+  gla-market-bids (g) (vendor) (item) = let v = g.town.vendors
+    in if vendor == v.vendor-count then 0
+    else if item > list-length g.book.world.catalog.items then gla-market-bids g (vendor + 1) 1
+    else let p = list-at v.vendors vendor
+    in let ask = ep-at p.prices item
+    in if ask < 1 then gla-market-bids g vendor (item + 1)
+    else let bid = max 1 (min 65535 (ask / 2))
+    in let old = gla-current-offer g p.actor 2 item bid
+    in if old < 0 then old else if old > 0 then gla-market-bids g vendor (item + 1)
+    else let quantity = min ep-stock-limit (gla-funds v.currency p.actor / bid)
+    in let posted = if quantity < 1 then 0 else gla-post g True p.serial 2 0 item quantity bid ep-limit
+    in if posted < 0 then posted else gla-market-bids g vendor (item + 1)
+  gla-market : GameLiveActions, Boolean -> Integer
+  gla-market (g) (verified-policy) = let posted = gla-market-lots g verified-policy 0
+    in if posted < 0 then posted else gla-market-bids g 0 1
+  gla-current-offer : GameLiveActions, Integer, Integer, Integer, Integer -> Integer
+  gla-current-offer (g) (owner) (kind) (item) (price) = let id = gla-offer g owner kind item 0 0
+    in if id == 0 then 0 else if (list-at g.book.offers (id - 1)).limit == price then id
+    else ea-cancel g.book owner id
+  gla-price : GameLiveActions, Integer, Integer -> Integer
+  gla-price (g) (kind) (offer) = if offer < 1 | offer > g.book.offer-count then 0
+    else let o = list-at g.book.offers (offer - 1)
+    in let at = gla-vendor-actor g.town.vendors o.owner 0
+    in if at < 0 | not (eg-id g.book.world.catalog o.item) then 0
+    else if kind == 2 then ep-price g.book.world o.owner o.item
+    else let ask = ep-at (list-at g.town.vendors.vendors at).prices o.item
+    in if ask < 1 then 0 else max 1 (min 65535 (ask / 2))
+  gla-settle : GameLiveActions, EaProposal, Integer, Integer, Integer -> Integer
+  gla-settle (g) (p) (serial) (vendor-index) (price) =
+    let t = g.town
+    in let v = t.vendors
+    in let merchant = list-at v.vendors vendor-index
+    in let npc = (tf-person t.people (gla-person g p.actor 0)).world-serial
+    in let buyer = if p.kind == 2 then p.actor else merchant.actor
+    in let seller = if p.kind == 2 then merchant.actor else p.actor
+    in let owner = if p.kind == 2 then merchant.serial else npc
+    in let at = gv-lot v serial 0
+    in if not (gla-lot-valid g at seller owner) then -1
+    else let lot = list-at v.lots at
+    in if lot.item /= p.item | lot.quantity < p.quantity then -1
+    else let metadata = gsi-meta t.items serial
+    in let gump = metadata.gump
+    in let stackable = metadata.stackable
+    in let line = GvLine { lot = at, quantity = p.quantity, price = price, delivered = 0,
+      basis = 0, copper = 0, silver = 0, gold = 0 }
+    in let actor = ep-actor g.book.world p.actor
+    in let old-place = actor.place
+    in let place = __record-set actor "place" (ep-actor g.book.world merchant.actor).place
+    in when gv-checkout v [line] buyer seller owner (if p.kind == 2 then npc else merchant.extra) npc
+      is Err (_) -> let restored = __record-set actor "place" old-place in -1
+      is Ok (_) ->
+        let registered = gsi-register t.items line.delivered 0 gump True stackable
+        in let invalidated = gh-invalidate-quotes v 0
+        in let o = list-at g.book.offers (p.offer - 1)
+        in let used = __record-set o "remaining" (o.remaining - p.quantity)
+        in if registered /= 0 then -20 else 0
+  gla-person : GameLiveActions, Integer, Integer -> Integer
+  gla-person (g) (actor) (i) = if i == g.town.count then 0
+    else let r = list-at g.town.residents i
+    in if r.actor == actor then r.person else gla-person g actor (i + 1)
+  gla-trade : GameLiveActions, WalkMap, Maybe WdState, Integer, EaProposal, Integer -> Integer
+  gla-trade (g) (map) (doors) (person) (p) (serial) =
+    let admitted = gla-consent g p
+    in let v = g.town.vendors
+    in let at = gla-vendor-actor v p.target 0
+    in if admitted /= 0 then admitted else if at < 0 then -12
+    else let merchant = list-at v.vendors at
+    in let o = list-at g.book.offers (p.offer - 1)
+    in let price = gla-price g p.kind p.offer
+    in if price < 1 then -1
+    else if (p.kind == 2 & (price > p.limit | price < o.limit))
+      | (p.kind == 3 & (price < p.limit | price > o.limit)) then -13
+    else when world-get v.game.world (tf-person g.town.people person).world-serial
+      is Err (_) -> -10
+      is Ok (npc) -> when world-get v.game.world merchant.serial
+        is Err (_) -> -12
+        is Ok (target) -> if gv-near npc target then gla-settle g p serial at price
+          else let r = list-at g.town.residents (person - 1)
+          in if r.control.expires > g.town.now & r.control.vendor == merchant.serial then -19
+          else let directed = tl-direct g.town map doors person p.actor 3 merchant.serial (g.town.now + 3600)
+          in if directed == 0 then 1 else directed
+  gla-eat : GameLiveActions, EaProposal, Integer -> Integer
+  gla-eat (g) (p) (serial) = let v = g.town.vendors
+    in let owner = (tf-person g.town.people (gla-person g p.actor 0)).world-serial
+    in let at = gv-lot v serial 0
+    in if not (ep-food p.item) | not (gla-lot-valid g at p.actor owner) then -1
+    else let lot = list-at v.lots at
+    in let actor = ep-actor g.book.world p.actor
+    in let quantity = ep-at actor.stock p.item
+    in let quality = ep-at actor.quality p.item
+    in let wear = ep-at actor.wear p.item
+    in let cost = ep-at actor.cost p.item
+    in let basis = lot.basis / lot.quantity
+    in if lot.item /= p.item | quantity < 1 | quality < lot.quality | wear < lot.wear | cost < basis
+      | ep-at g.book.world.consumed p.item >= ep-limit then -1
+    else when world-get v.game.world serial
+      is Err (_) -> -1
+      is Ok (obj) -> when (if obj.amount == 1 then world-delete v.game.world serial
+        else world-update v.game.world (ia-copy obj serial (obj.amount - 1) obj.container obj.x obj.y obj.z))
+        is Err (_) -> -1
+        is Ok (_) ->
+          let a = ep-set actor.stock p.item 1
+          in let b = ep-set actor.quality p.item lot.quality
+          in let c = ep-set actor.wear p.item lot.wear
+          in let d = ep-set actor.cost p.item basis
+          in let eaten = ep-eat g.book.world p.actor p.item
+          in let r0 = ep-set actor.stock p.item (quantity - 1)
+          in let r1 = ep-set actor.quality p.item (quality - lot.quality)
+          in let r2 = ep-set actor.wear p.item (wear - lot.wear)
+          in let r3 = ep-set actor.cost p.item (cost - basis)
+          in let retired = if lot.quantity == 1 then gh-retire-lot v at else
+            let n = __record-set lot "quantity" (lot.quantity - 1)
+            in let value = __record-set lot "basis" (lot.basis - basis) in 0
+          in let invalidated = gh-invalidate-quotes v 0 in eaten
+  gla-zero : EaProposal -> Boolean
+  gla-zero (p) = p.target == 0 & p.item == 0 & p.quantity == 0 & p.offer == 0
+    & p.limit == 0 & p.recipe == 0 & p.station == 0 & p.node == 0
+  gla-move : GameLiveActions, WalkMap, Maybe WdState, Integer, Integer, Integer -> Integer
+  gla-move (g) (map) (doors) (person) (actor) (action) =
+    let r = list-at g.town.residents (person - 1)
+    in let target = if action == 0 then r.home else if action == 1 then r.work else r.tavern
+    in when world-get g.town.vendors.game.world (tf-person g.town.people person).world-serial
+      is Err (_) -> -10
+      is Ok (m) -> if tl-at m target & r.via-home == 0 then 0
+        else if r.control.expires > g.town.now & r.control.action == action & r.control.vendor == 0 then -19
+        else let result = tl-direct g.town map doors person actor action 0 (g.town.now + 3600)
+        in if result == 0 then 1 else result
+  gla-affect : GameLiveActions, Integer, Integer, Integer, Integer -> Integer
+  gla-affect (g) (person) (actor) (happiness) (alarm) =
+    if not (tl-controlled g.town person actor) then -10
+    else if happiness < 0 | happiness > 1000 | alarm < 0 | alarm > 1000 then -16
+    else let person-state = tf-person g.town.people person
+    in let mood = __record-set person-state "mood" (happiness / 10)
+    in let hunger = __record-set person-state "hunger" (ep-actor g.book.world actor).hunger
+    in let touched = world-touch g.town.vendors.game.world in 0
+  gla-execute : GameLiveActions, WalkMap, Maybe WdState, Integer, Integer, EaProposal, Integer -> Integer
+  gla-execute (g) (map) (doors) (person) (kind) (p) (serial) =
+    if not (tl-controlled g.town person p.actor) then -10
+    else if kind /= p.kind then -15
+    else if not (eu-ready g.town.vendors.currency) | g.book.world.hour /= g.town.now / 3600 then -17
+    else if kind == 2 | kind == 3 then
+      if not (ea-shape p) | serial <= 0 then -16 else gla-trade g map doors person p serial
+    else if kind == 4 then if not (ea-shape p) | serial <= 0 then -16 else gla-eat g p serial
+    else if kind == 1 | kind == 5 | kind == 7 | kind == 9 | kind == 10 then
+      if not (gla-zero p) | serial /= 0 then -16
+      else gla-move g map doors person p.actor (if kind == 1 then 1 else if kind == 7 | kind == 9 then 4 else 0)
+    else -11
+  gla-submit : GameLiveActions, WalkMap, Maybe WdState, Integer, Integer, EaProposal, Integer -> Integer
+  gla-submit (g) (map) (doors) (person) (kind) (p) (serial) = if not (ea-room g.book 1) then -14
+    else let actor = if person < 1 | person > g.town.count then 0 else (list-at g.town.residents (person - 1)).actor
+    in let price = if kind == 2 | kind == 3 then gla-price g kind p.offer else 0
+    in let result = gla-execute g map doors person kind p serial
+    in if result == -19 then result else ea-log g.book actor kind p result price
+
+Page 1

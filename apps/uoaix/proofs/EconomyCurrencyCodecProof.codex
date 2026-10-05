@@ -1,0 +1,136 @@
+Chapter: EconomyCurrencyCodecProof
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  eucp-check : Text, Boolean -> [Console] Nothing
+  eucp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  eucp-hours : EuCurrency, Integer -> Integer
+  eucp-hours (x) (n) = if n == 0 then 0 else if eu-hour x /= 0 then -1 else eucp-hours x (n - 1)
+  eucp-fill : EuCurrency, Integer -> Integer
+  eucp-fill (x) (actor) = if x.count == em-rows then 0
+    else if eu-rates x True actor 200 20 /= 0 then -1 else eucp-fill x actor
+  eucp-equal : Integer, Integer, Integer -> Boolean
+  eucp-equal (a) (b) (i) = if i == euc-bytes then True
+    else if peek-qword a i /= peek-qword b i then False else eucp-equal a b (i + 8)
+  eucp-corrupt : Integer, Integer, Integer -> Boolean
+  eucp-corrupt (buf) (at) (value) =
+    let old = peek-qword buf at
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf euc-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (euc-decode buf euc-bytes)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at old
+    in let rehash = poke-qword buf 48 (ws-hash buf euc-bytes 0 2166136261)
+    in refused
+  eucp-roundtrip : CurrencyCheckpoint, Integer, Integer -> [Console] Nothing
+  eucp-roundtrip (s) (buf) (copy) = act
+    x <- s.currency
+    eucp-check "all denominations policies loans and material state recover" (s.tick == 400 & s.sequence == 17 & x.copper.issued == 1000 & x.silver.issued == 100 & x.world.money.issued == 10 & x.copper-rate == 200 & x.silver-rate == 20 & x.world.hour == 12 & x.copper.defaults == 1 & x.silver.defaults == 1 & x.world.money.defaults == 1 & (list-at x.world.money.loans 0).paid == 1 & eu-census x)
+    encoded <- euc-encode s copy euc-bytes
+    eucp-check "canonical complete currency roundtrip" (is-ok encoded & eucp-equal buf copy 0)
+    changed <- __record-set (em-purse x.copper 3) "coin" 999
+    eucp-check "decoded purse mutation cannot change source bytes" (eucp-equal buf copy 0 & is-err (euc-encode s copy euc-bytes))
+  end
+  eucp-run : EuCurrency -> [Console] Nothing
+  eucp-run (x) = act
+    w <- x.world
+    crown <- eu-open x 5 1
+    player <- eu-open x 2 7
+    vendor <- eu-open x 3 9
+    actor <- ep-admit w crown 1
+    p <- ep-actor w actor
+    hand <- ep-station w actor 1 1
+    smelter <- ep-station w actor 3 1
+    mint <- ep-station w actor 12 1
+    stone <- eh-source w 1 1
+    branch <- eh-source w 2 1
+    fuel <- eh-source w 2 1
+    gold <- eh-source w 6 1
+    copper <- eh-source w 25 1
+    silver <- eh-source w 26 1
+    a <- eh-harvest w actor stone
+    b <- eh-harvest w actor branch
+    c <- eh-harvest w actor fuel
+    d <- ep-craft w actor 1 hand
+    e <- ep-craft w actor 31 hand
+    f <- ep-set p.skills 1 1000
+    g <- ep-set p.skills 2 1000
+    h <- ep-set p.skills 8 1000
+    i <- eh-harvest w actor gold
+    j <- eh-harvest w actor copper
+    k <- eh-harvest w actor silver
+    l <- ep-craft w actor 8 smelter
+    m <- ep-craft w actor 32 smelter
+    n <- ep-craft w actor 33 smelter
+    policy-c <- eu-mint-policy x True actor 1 1000
+    policy-s <- eu-mint-policy x True actor 2 100
+    policy-g <- eu-mint-policy x True actor 3 10
+    mint-c <- eu-strike x True actor mint 1 1
+    mint-s <- eu-strike x True actor mint 2 1
+    mint-g <- eu-strike x True actor mint 3 1
+    grant <- eu-grant x True actor crown 10 1 1
+    loan-c <- eu-lend x True 1 player 1 200 10 10
+    loan-s <- eu-lend x True 1 player 2 20 2 10
+    loan-g <- eu-lend x True 1 player 3 2 1 10
+    tax <- eu-tax x True actor 1000
+    payment <- eu-pay x True player vendor 100 10 1
+    rates <- eu-rates x True actor 200 20
+    advanced <- eucp-hours x 12
+    repaid <- eu-repay x True player 3 loan-g 1
+    eucp-check "fixture reconstructs mint transfer tax rates defaults and repayment" (mint-c == 0 & mint-s == 0 & mint-g == 0 & grant == 0 & loan-c == 1 & loan-s == 1 & loan-g == 1 & tax == 0 & payment == 0 & rates == 0 & advanced == 0 & repaid == 0 & euv-valid x)
+    buf <- alloc-bytes euc-bytes
+    copy <- alloc-bytes euc-bytes
+    checkpoint <- CurrencyCheckpoint { currency = x, tick = 400, sequence = 17 }
+    encoded <- euc-encode checkpoint buf euc-bytes
+    print-line-uni ("CURRENCY-CHECKPOINT-BYTES " & show euc-bytes)
+    eucp-check "complete currency snapshot encodes" (is-ok encoded)
+    eucp-check "published component offsets locate complete payloads" (peek-qword buf 192 == #31434555 & peek-qword buf 1422400 == 4 & peek-qword buf 1894528 == 4 & peek-qword buf 2366656 == 1)
+    before <- __heap-save
+    decoded <- euc-decode buf euc-bytes
+    after <- __heap-save
+    small-bytes <- after - before
+    print-line-uni ("CURRENCY-DECODE-BYTES " & show small-bytes)
+    eucp-check "currency decode bounded below 5 MiB" (is-ok decoded & small-bytes < 5242880)
+    when decoded
+      is Err (reason) -> print-line-uni ("FAIL currency decode " & reason)
+      is Ok (s) -> eucp-roundtrip s buf copy
+    reclaimed <- __heap-restore before
+    eucp-check "wrong metadata truncation and legacy-only restore refuse" (is-err (euc-decode-record buf euc-bytes 401 17) & is-err (euc-decode buf (euc-bytes - 1)) & is-err (es-decode buf euc-bytes))
+    eucp-check "rehashed detached copper balance refuses" (eucp-corrupt buf (euc-copper-at + 64 + 2 * 24 + 16) 999)
+    eucp-check "rehashed policy and saved admission count refuse" (eucp-corrupt buf 72 300 & eucp-corrupt buf 160 5)
+    eucp-check "rehashed event sequence and historical rates refuse" (eucp-corrupt buf euc-events-at 2 & eucp-corrupt buf (euc-events-at + 80) 200)
+    eucp-check "rehashed cross-ledger sequence link refuses" (eucp-corrupt buf (euc-events-at + 112) 1)
+    eucp-check "rehashed spare event and header bytes refuse" (eucp-corrupt buf (euc-events-at + x.count * 120) 1 & eucp-corrupt buf 168 1)
+    eucp-check "rehashed oversized and negative table dimensions refuse" (eucp-corrupt buf 64 (em-rows + 1) & eucp-corrupt buf (euc-copper-at + 16) -1 & eucp-corrupt buf (euc-silver-at + 8) 129)
+    eucp-check "rehashed silver loan and ledger edits refuse" (eucp-corrupt buf (euc-silver-at + 64 + 256 * 24 + 40) 1 & eucp-corrupt buf (euc-silver-at + 64 + 256 * 24 + 128 * 56 + 32) 1)
+    heap-before <- __heap-save
+    filled <- eucp-fill x actor
+    heap-after <- __heap-save
+    eucp-check "full policy history retains no per-event heap" (filled == 0 & x.count == em-rows & heap-before == heap-after & eu-rates x True actor 100 10 == -1)
+    full <- euc-encode checkpoint buf euc-bytes
+    full-before <- __heap-save
+    full-decoded <- euc-decode buf euc-bytes
+    full-after <- __heap-save
+    print-line-uni ("CURRENCY-FULL-DECODE-BYTES " & show (full-after - full-before))
+    eucp-check "maximum history reconstructs with flat retained decode heap" (is-ok full & is-ok full-decoded & full-after - full-before == small-bytes)
+  end
+  eucp-world : EpWorld -> [Console] Nothing
+  eucp-world (w) = act
+    when eu-new w
+      is Err (e) -> print-line-uni ("FAIL currency fixture " & e)
+      is Ok (x) -> eucp-run x
+  end
+  opening : [Console] Nothing = act
+    when ep-new (ex-catalog 0) (em-new 0)
+      is Err (e) -> print-line-uni ("FAIL currency world " & e)
+      is Ok (w) -> eucp-world w
+  end

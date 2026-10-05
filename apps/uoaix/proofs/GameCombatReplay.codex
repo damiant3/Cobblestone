@@ -1,0 +1,123 @@
+Chapter: GameCombatReplay
+  cites Uoaix chapter GameCombat
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  cbr-fight : GameCombat, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
+  cbr-fight (combat) (shard) (input) (map) (npc) = act
+    profile <- cb-profile combat shard npc "Sparring partner" 10 1 1 0
+    when cb-ensure combat shard input.session.serial
+      is Err (message) -> print-line-uni ("FAIL own actor " & message)
+      is Ok (own) -> act
+        low <- __record-set own "low" 4
+        high <- __record-set own "high" 4
+        fast <- __record-set own "dexterity" 1000
+        cbr-check "PIT conversion preserves Sphere animation floor" (pit-input-hz == 1193182 & pit-count == 11932 & cb-delay own == 100)
+        ordinary <- __record-set own "dexterity" 10
+        intro <- cb-pulse combat shard input map 2594 0
+        cbr-check "nearby opponent enters through pulse" (profile == 0 & cbr-opcode intro 120 0)
+        war <- cb-request combat shard input map 2594 [114,1,0,50,0] 100
+        cbr-check "war-mode response bytes" (cbr-equal (cbr-packet war 0) [114,1,0,50,0])
+        status <- cb-request combat shard input map 2594 [52,237,237,237,237,4,0,0,0,4] 100
+        expected-name <- [83,112,97,114,114,105,110,103,32,112,97,114,116,110,101,114]
+        expected-status <- [17,0,43,0,0,0,4] & gp-zeros expected-name 14 & [0,100,0,100,0,1]
+        cbr-check "other status exact legacy fields and normalized health" (npc == 4 & cbr-equal (cbr-packet status 0) expected-status)
+        attack <- cb-request combat shard input map 2594 [5,0,0,0,4] 100
+        again <- cb-request combat shard input map 2594 [5,0,0,0,4] 200
+        cbr-check "active attackers deduplicate target requests" (combat.count == 1)
+        early <- cb-pulse combat shard input map 2594 369
+        cbr-check "target acknowledgement and duplicate request preserves timer" (cbr-equal (cbr-packet attack 0) [170,0,0,0,4] & is-ok again & own.due == 370 & is-ok early & list-length (cbr-packets early) == 0 & cbr-hits shard npc == 6)
+        hit <- cb-pulse combat shard input map 2594 370
+        cbr-check "timed swing exact bytes and damage health update" (cbr-equal (cbr-packet hit 0) [47,0,0,0,0,1,0,0,0,4] & cbr-equal (cbr-packet hit 1) [110,0,0,0,1,0,9,0,5,0,1,0,0,1] & cbr-equal (cbr-packet hit 2) [161,0,0,0,4,0,100,0,33] & cbr-hits shard npc == 2)
+        peace <- cb-request combat shard input map 2594 [114,0,0,50,0] 371
+        cbr-check "peace clears attacker target" (not own.war & own.target == 0 & cbr-equal (cbr-packet peace 0) [114,0,0,50,0])
+        resumed <- cb-request combat shard input map 2594 [5,0,0,0,4] 372
+        killed <- cb-pulse combat shard input map 2594 642
+        cbr-check "NPC death emits corpse and removes killed mobile" (is-ok resumed & cbr-opcode killed 175 0 & cbr-opcode killed 26 0 & cbr-opcode killed 29 0 & cbr-hits shard npc == -1 & own.target == 0)
+        cbr-check "death removes both attacker and victim from active index" (combat.count == 0)
+        cbr-check "death packet and corpse item exact bytes" (cbr-equal (cbr-packet killed 3) [175,0,0,0,4,64,0,0,5,0,0,0,0] & cbr-equal (cbr-packet killed 4) [26,0,16,192,0,0,5,32,6,1,144,5,141,6,162,0])
+        when world-create shard.world (__record-set (gs-mobile 0 1421 1698 0 400 0) "health" 100)
+          is Err (message) -> print-line-uni ("FAIL strong opponent " & message)
+          is Ok (strong) -> act
+            configured <- cb-profile combat shard strong "Veteran opponent" 100 100 100 1000
+            when cb-ensure combat shard strong
+              is Err (message) -> print-line-uni ("FAIL strong metadata " & message)
+              is Ok (enemy) -> act
+                novice <- __record-set own "skill" 0
+                server-attack <- cb-select combat shard enemy own
+                fatal <- cb-pulse combat shard input map 2594 (enemy.due)
+                cbr-check "server-controlled opponent can kill player" (configured == 0 & server-attack & is-ok fatal & cbr-hits shard own.serial == 0 & cbr-opcode fatal 44 0 & cbr-opcode fatal 161 0)
+                cbr-check "own death excludes observer AF and retains legacy death menu" (not (cbr-opcode fatal 175 0) & cbr-opcode fatal 26 0 & cbr-equal (cbr-packet fatal 4) [44,0] & cbr-opcode fatal 32 0)
+                ghost <- cb-request combat shard input map 2594 [44,2] combat.tick
+                cbr-check "death response enters ghost play without resurrection" (is-ok ghost & cbr-opcode ghost 27 0 & cbr-opcode ghost 32 0 & cbr-opcode ghost 85 0 & cbr-hits shard own.serial == 0)
+                dead-attack <- cb-request combat shard input map 2594 (gp-put32 [5] strong) combat.tick
+                cbr-check "dead player attack is refused" (cbr-equal (cbr-packet dead-attack 0) [170,0,0,0,0])
+              end
+          end
+        cbr-check "malformed combat packet refuses without indexing" (is-err (cb-request combat shard input map 2594 [5] combat.tick))
+      end
+  end
+  cbr-run : GameShard, WalkMap -> [Console] Nothing
+  cbr-run (shard) (map) = act
+    combat <- cb-new shard 42
+    input <- gn-input-with (cb-specs 0) 1
+    cbr-check "combat requires authenticated active session" (is-err (cb-request combat shard input map 2594 [114,1,0,50,0] 0))
+    when gs-relay-key shard
+      is Err (message) -> print-line-uni ("FAIL relay " & message)
+      is Ok (key) -> act
+        keyed <- __record-set input.session "key" key
+        login <- gs-handle shard input.session map (cbr-login key)
+        created <- gs-handle shard input.session map (cbr-create 0)
+        mode <- __record-set input "mode" 2
+        cbr-check "replay creates real authenticated character" (is-ok login & is-ok created & input.session.phase == 2 & input.session.serial == 1)
+        unhandled <- cb-request combat shard input map 2594 [52,237,237,237,237,5,0,0,0,1] 999
+        cbr-check "other status subtype leaves fallback state untouched" ((when unhandled is Ok (None) -> True is otherwise -> False) & combat.tick == 0 & (list-at combat.actors 0).serial == 0)
+        when world-create shard.world (__record-set (gs-mobile 0 1421 1698 0 400 0) "health" 6)
+          is Err (message) -> print-line-uni ("FAIL opponent " & message)
+          is Ok (npc) -> cbr-fight combat shard input map npc
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 8 8
+      is Err (message) -> print-line-uni ("FAIL map " & message)
+      is Ok (map) -> act
+        filled <- cbr-fill map 0
+        when gs-new 0
+          is Err (message) -> print-line-uni ("FAIL shard " & message)
+          is Ok (shard) -> cbr-run shard map
+      end
+  end

@@ -1,0 +1,114 @@
+Chapter: EconomyCurrencyInputProof
+  cites Uoaix chapter EconomyCurrencyInput
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  euip-check : Text, Boolean -> [Console] Nothing
+  euip-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  euip-frames : EuiScenario, Integer, Integer -> Boolean
+  euip-frames (s) (buf) (i) = if i == list-length s.entries then True
+    else is-ok (eui-encode (list-at s.entries i) (buf + i * eui-frame-bytes) eui-frame-bytes) & euip-frames s buf (i + 1)
+  euip-equal : Integer, Integer, Integer -> Boolean
+  euip-equal (a) (b) (i) = if i == euc-bytes then True
+    else if peek-qword a i /= peek-qword b i then False else euip-equal a b (i + 8)
+  euip-recovered : CurrencyCheckpoint, CurrencyCheckpoint, Integer, Integer -> [Console] Nothing
+  euip-recovered (source) (state) (one) (two) = act
+    a <- euc-encode source one euc-bytes
+    b <- euc-encode state two euc-bytes
+    euip-check "ordered inputs reproduce complete direct state" (efi-valid state & is-ok a & is-ok b & euip-equal one two 0)
+  end
+  euip-corrupt : Integer, Integer, Integer -> Boolean
+  euip-corrupt (buf) (at) (value) =
+    let old = peek-qword buf at
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf eui-frame-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (eui-decode buf eui-frame-bytes)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at old
+    in let rehash = poke-qword buf 48 (ws-hash buf eui-frame-bytes 0 2166136261)
+    in refused
+  euip-hours : Integer, Integer, Integer -> Integer
+  euip-hours (buf) (i) (count) = if i == count then 0
+    else let mark = __heap-save
+    in let entry = eui-new (i + 1) (i + 1) 21
+    in let encoded = is-ok (eui-encode entry (buf + i * eui-frame-bytes) eui-frame-bytes)
+    in let restored = __heap-restore mark
+    in if not encoded then -1 else euip-hours buf (i + 1) count
+  euip-budget : CurrencyCheckpoint -> [Console] Nothing
+  euip-budget (source) = act
+    frames <- alloc-bytes (4096 * eui-frame-bytes)
+    written <- euip-hours frames 0 4096
+    small-before <- __heap-save
+    small <- eui-replay source frames (2 * eui-frame-bytes)
+    small-after <- __heap-save
+    small-bytes <- small-after - small-before
+    euip-check "small hourly replay succeeds" (written == 0 & is-ok small)
+    reclaimed <- __heap-restore small-before
+    full-before <- __heap-save
+    full <- eui-replay source frames (4096 * eui-frame-bytes)
+    full-after <- __heap-save
+    print-line-uni ("CURRENCY-REPLAY-BYTES " & show (full-after - full-before))
+    euip-check "maximum batch retains same heap as two inputs" (is-ok full & full-after - full-before == small-bytes & small-bytes < 8388608)
+    when full
+      is Err (e) -> print-line-uni ("FAIL full replay " & e)
+      is Ok (s) -> euip-check "maximum batch advances all clocks without aliasing source" (s.sequence == 4096 & s.currency.world.hour == 4096 & s.currency.copper.hour == 4096 & s.currency.silver.hour == 4096 & source.sequence == 0 & source.currency.world.hour == 0)
+    cleaned <- __heap-restore full-before
+    euip-check "oversized and partial frame batches refuse" (is-err (eui-replay source frames (4097 * eui-frame-bytes)) & is-err (eui-replay source frames 1))
+  end
+  euip-run : CurrencyCheckpoint, EuiScenario -> [Console] Nothing
+  euip-run (source) (s) = act
+    count <- list-length s.entries
+    print-line-uni ("CURRENCY-INPUTS " & show count & " CHECKPOINT " & show s.middle)
+    euip-check "novice bootstrap and financial fixture valid" (s.failed == 0 & efi-valid s.state)
+    frames <- alloc-bytes (count * eui-frame-bytes)
+    one <- alloc-bytes euc-bytes
+    two <- alloc-bytes euc-bytes
+    written <- euip-frames s frames 0
+    euip-check "all fixture inputs encode" written
+    mark <- __heap-save
+    replay <- eui-replay source frames (count * eui-frame-bytes)
+    when replay
+      is Err (e) -> print-line-uni ("FAIL fixture replay " & e)
+      is Ok (state) -> euip-recovered s.state state one two
+    restored <- __heap-restore mark
+    euip-check "successful replay leaves source empty" (source.sequence == 0 & source.currency.count == 0 & source.currency.world.money.purse-count == 1)
+    before <- __heap-save
+    changed <- poke-qword frames (eui-frame-bytes + 40) 3
+    checksum <- poke-qword (frames + eui-frame-bytes) 48 (ws-hash (frames + eui-frame-bytes) eui-frame-bytes 0 2166136261)
+    bad-sequence <- eui-replay source frames (2 * eui-frame-bytes)
+    euip-check "late sequence failure cannot publish a prefix" (is-err bad-sequence & source.sequence == 0 & source.currency.count == 0)
+    cleaned <- __heap-restore before
+    rewritten <- eui-encode (list-at s.entries 1) (frames + eui-frame-bytes) eui-frame-bytes
+    wrong <- poke-qword frames 56 999
+    rehash <- poke-qword frames 48 (ws-hash frames eui-frame-bytes 0 2166136261)
+    failure-mark <- __heap-save
+    mismatch <- eui-replay source frames eui-frame-bytes
+    euip-check "outcome mismatch candidate never changes source" (is-err mismatch & source.currency.world.money.purse-count == 1 & source.sequence == 0)
+    failure-cleaned <- __heap-restore failure-mark
+    original <- eui-encode (list-at s.entries 0) frames eui-frame-bytes
+    euip-check "rehashed spare argument and unknown operation refuse" (euip-corrupt frames 120 1 & euip-corrupt frames 24 22)
+    policy <- eui-new 1 0 7
+    permission <- list-set-at policy.args 0 1
+    actor <- list-set-at policy.args 1 1
+    copper <- list-set-at policy.args 2 100
+    silver <- list-set-at policy.args 3 10
+    policy-encoded <- eui-encode policy frames eui-frame-bytes
+    euip-check "rehashed nonboolean authority refuses" (is-ok policy-encoded & euip-corrupt frames 64 2)
+    euip-check "metadata mismatch truncation and old magic refuse" (is-err (eui-decode-record frames eui-frame-bytes 1 1) & is-err (eui-decode frames (eui-frame-bytes - 1)) & euip-corrupt frames 0 #31494555)
+    euip-budget source
+  end
+  euip-source : CurrencyCheckpoint -> [Console] Nothing
+  euip-source (source) = act
+    when efi-source 0
+      is Err (e) -> print-line-uni ("FAIL simulation " & e)
+      is Ok (simulation) -> euip-run source (efi-build simulation)
+  end
+  opening : [Console] Nothing = act
+    when efi-source 0
+      is Err (e) -> print-line-uni ("FAIL source " & e)
+      is Ok (source) -> euip-source source
+  end

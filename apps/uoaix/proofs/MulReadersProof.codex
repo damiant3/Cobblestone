@@ -1,0 +1,103 @@
+Chapter: MulReadersProof
+  cites Uoaix chapter MulReaders
+  cites Foreword chapter Result
+
+  mrp-check : Text, Boolean -> [Console] Nothing
+  mrp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  mrp-land : Integer -> Boolean
+  mrp-land (b) =
+    let a = __buf-write-byte b 169 52
+    in let c = __buf-write-byte b 170 18
+    in let d = __buf-write-byte b 171 128
+    in when mul-land b 196 7 6
+      is Ok (t) -> t.graphic == 4660 & t.z == -128
+      is Err (e) -> False
+
+  mrp-static : Integer -> Boolean
+  mrp-static (b) =
+    let a = __buf-write-bytes b 0 [52,18,7,6,255,120,86]
+    in when mul-static b 7 0
+      is Ok (t) -> t.graphic == 4660 & t.x == 7 & t.y == 6 & t.z == -1 & t.hue == 22136
+      is Err (e) -> False
+
+  mrp-multi : Integer -> Boolean
+  mrp-multi (b) =
+    let a = __buf-write-bytes b 0 [52,18,254,255,0,128,255,127,0,0,0,128]
+    in when mul-component b 12 0
+      is Ok (t) -> t.graphic == 4660 & t.x == -2 & t.y == -32768 & t.z == 32767 & t.flags == 2147483648
+      is Err (e) -> False
+
+  mrp-item : Integer -> Boolean
+  mrp-item (b) =
+    let a = __buf-write-bytes b 0 [0,6,0,0,9,4,0,0,0,0,52,18,0,0,0,0,7]
+    in when mul-item-data b 37
+      is Ok (t) -> t.flags == 1536 & t.weight == 9 & t.layer == 4 & t.animation == 4660 & t.height == 7 & mul-item-surface t & mul-item-standing-z t (-5) == -2
+      is Err (e) -> False
+
+  mrp-index : Integer -> Boolean
+  mrp-index (b) =
+    let a = __buf-write-bytes b 0 [14,0,0,0,7,0,0,0,255,255,255,255]
+    in when mul-index b 12 21 7
+      is Ok (r) -> r.offset == 14 & r.length == 7 & is-err (mul-index b 12 20 7) & is-err (mul-index b 12 21 12)
+      is Err (e) -> False
+
+  mrp-empty : Integer -> Boolean
+  mrp-empty (b) =
+    let a = __buf-write-bytes b 0 [255,255,255,255,255,255,255,255]
+    in when mul-index b 12 0 7
+      is Ok (r) -> r.length == 0
+      is Err (e) -> False
+
+  mrp-land-data : Integer -> Boolean
+  mrp-land-data (b) =
+    let a = __buf-write-bytes b 0 [0,0,0,128,120,86]
+    in when mul-land-data b 26
+      is Err (e) -> False
+      is Ok (t) -> t.flags == 2147483648 & t.texture == 22136 & mul-land-passable t
+        & not (mul-land-passable (MulLandData { flags = 64, texture = 0 }))
+        & not (mul-land-passable (MulLandData { flags = 128, texture = 0 }))
+
+  mrp-invalid-static : Integer -> Boolean
+  mrp-invalid-static (b) =
+    let a = __buf-write-bytes b 0 [1,0,8,0,0,0,0]
+    in let bad-x = is-err (mul-static b 7 0)
+    in let c = __buf-write-bytes b 0 [0,64,0,0,0,0,0]
+    in bad-x & is-err (mul-static b 7 0)
+
+  mrp-invalid-land : Integer -> Boolean
+  mrp-invalid-land (b) =
+    let a = __buf-write-bytes b 4 [0,64,0]
+    in is-err (mul-land b 196 0 0)
+
+  mrp-range : Result MulRange Text, Integer, Integer -> Boolean
+  mrp-range (r) (offset) (length) = when r
+    is Ok (v) -> v.offset == offset & v.length == length
+    is Err (e) -> False
+
+  opening : [Console] Nothing =
+    let b = alloc-bytes 196
+    in act
+      mrp-check "map column order" (mrp-range (mul-map-range 8 0) 100352 196 & mrp-range (mul-map-range 0 8) 196 196)
+      mrp-check "map final block" (mrp-range (mul-map-range 6143 4095) 77070140 196)
+      mrp-check "map bounds" (is-err (mul-map-range (-1) 0) & is-err (mul-map-range 6144 0) & is-err (mul-staidx-range 0 4096))
+      mrp-check "land signed and row order" (mrp-land b)
+      mrp-check "land truncation" (is-err (mul-land b 195 7 7))
+      mrp-check "static signed and hue" (mrp-static b)
+      mrp-check "static bounds" (is-err (mul-static b 6 0) & is-err (mul-static b 7 1) & is-err (mul-static b 7 (-1)))
+      mrp-check "multi signed and flags" (mrp-multi b)
+      mrp-check "multi truncation" (is-err (mul-component b 11 0) & is-err (mul-component b 12 1))
+      mrp-check "item flags and bridge height" (mrp-item b)
+      mrp-check "tiledata group boundaries" (mrp-range (mul-land-data-range 32) 840 26 & mrp-range (mul-item-data-range 32) 429224 37)
+      mrp-check "tiledata bounds" (is-err (mul-item-data-range 16384) & is-err (mul-land-data-range (-1)) & is-err (mul-item-data b 36))
+      mrp-check "index extent and stride" (mrp-index b)
+      mrp-check "index sentinel" (mrp-empty b)
+      mrp-check "range overflow guard" (not (mul-fits 20 9223372036854775807 2) & not (mul-fits 20 0 (-1)))
+      mrp-check "multi index limit" (mrp-range (mul-multi-index-range 4095) 49140 12 & is-err (mul-multi-index-range 4096))
+      mrp-check "land flags and texture" (mrp-land-data b & is-err (mul-land-data b 25))
+      mrp-check "invalid static fields" (mrp-invalid-static b)
+      mrp-check "invalid land graphic" (mrp-invalid-land b)
+      mrp-check "final tiledata and negative extents" (mrp-range (mul-item-data-range 16383) 1036251 37 & not (mul-fits (-9223372036854775807 - 1) 1 0) & not (mul-fits 1 (-9223372036854775807 - 1) 0))
+    end
+
+Page 1

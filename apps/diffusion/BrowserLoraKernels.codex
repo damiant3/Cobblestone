@@ -1,0 +1,218 @@
+Chapter: BrowserLoraKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+  blw-subnormal : Integer, Integer -> Integer
+  blw-subnormal (m) (e) =
+    if m == 0 then 0
+    else if m >= 8388608 then bit-or (bit-shl e 23) (m - 8388608)
+    else blw-subnormal (m * 2) (e - 1)
+
+  blw-f8 : Integer, Integer -> Integer
+  blw-f8 (b) (kind) =
+    let sign = bit-shl (bit-and b 128) 24
+    in let mb = if kind == 5 then 2 else 3
+    in let bias = if kind == 5 then 15 else 7
+    in let m = bit-and b (bit-shl 1 mb - 1)
+    in let e = bit-and (bit-shru b mb) (if kind == 5 then 31 else 15)
+    in let special = if kind == 5 then e == 31 else e == 15 & m == 7
+    in let body = if special then (if kind == 5 & m == 0 then 2139095040 else 2143289344)
+      else if e == 0 then (if m == 0 then 0 else blw-subnormal (bit-shl m (23 - mb)) (128 - bias))
+      else bit-or (bit-shl (e + 127 - bias) 23) (bit-shl m (23 - mb))
+    in bit-or sign body
+
+  blw-decode : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-decode (src) (dst) (n) (kind) (gid) =
+    if gid >= n then 0
+    else let width = if kind == 3 then 2 else 1
+    in let at = gid * width
+    in act
+      word <- device-load src (at / 4)
+      let raw = bit-and (bit-shru word ((at - at / 4 * 4) * 8)) (if width == 2 then 65535 else 255)
+      in device-store dst gid (if kind == 3 then bit-shl raw 16 else blw-f8 raw kind)
+    end
+
+  blw-widen : Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-widen (src) (dst) (n) (gid) =
+    if gid >= n then 0
+    else device-store-approx dst gid (device-load-f16-approx src gid)
+
+ Packed f16 writes use whole u32 words. Round to nearest, ties to even,
+ including subnormals; WGSL's direct f16 storage path is not supported.
+
+  blw-round : Integer, Integer -> Integer
+  blw-round (m) (shift) =
+    let q = bit-shru m shift
+    in let rem = bit-and m (bit-shl 1 shift - 1)
+    in let half = bit-shl 1 (shift - 1)
+    in q + (if rem > half | (rem == half & bit-and q 1 /= 0) then 1 else 0)
+
+  blw-half : Integer -> Integer
+  blw-half (w) =
+    let sign = bit-and (bit-shru w 16) 32768
+    in let e = bit-and (bit-shru w 23) 255
+    in let m = bit-and w 8388607
+    in let h = e - 112
+    in if e == 255 then bit-or sign (31744 + (if m == 0 then 0 else 512))
+    else if h >= 31 then bit-or sign 31744
+    else if h < 0 - 10 then sign
+    else if h <= 0 then bit-or sign (blw-round (bit-or m 8388608) (14 - h))
+    else bit-or sign (bit-shl h 10 + blw-round m 13)
+
+  blw-pack : Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-pack (src) (dst) (n) (gid) =
+    if gid >= (n + 1) / 2 then 0
+    else device-store dst gid (bit-or (blw-half (device-load src (gid * 2))) (bit-shl (if gid * 2 + 1 < n then blw-half (device-load src (gid * 2 + 1)) else 0) 16))
+
+  blw-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  blw-dot (up) (down) (row) (col) (cols) (rank) (i) (sum) =
+    if i >= rank then sum
+    else blw-dot up down row col cols rank (i + 1) (sum + device-load-approx up (row * rank + i) * device-load-approx down (i * cols + col))
+
+  blw-mid-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  blw-mid-dot (mid) (down) (s) (ci) (q) (rank) (cin) (kk) (i) (sum) =
+    if i >= rank then sum
+    else blw-mid-dot mid down s ci q rank cin kk (i + 1) (sum + device-load-approx mid ((s * rank + i) * kk + q) * device-load-approx down (i * cin + ci))
+
+  blw-mid : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-mid (output) (mid) (down) (rank) (cin) (kk) (gid) =
+    if gid >= rank * cin * kk then 0
+    else let s = gid / (cin * kk)
+    in let ci = (gid - s * cin * kk) / kk
+    in act
+      value <- blw-mid-dot mid down s ci (gid - s * cin * kk - ci * kk) rank cin kk 0 (real-approx-from-int 0)
+      device-store-approx output gid value
+    end
+
+  blw-delta : Integer, Integer, Integer, Real approximate, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-delta (w) (up) (down) (scale) (rows) (cols) (rank) (gid) =
+    if gid >= rows * cols then 0
+    else let row = gid / cols
+    in act
+      delta <- blw-dot up down row (gid - row * cols) cols rank 0 (real-approx-from-int 0)
+      device-store-approx w gid (device-load-approx w gid + scale * delta)
+    end
+
+  blw-matmul : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-matmul (output) (a) (b) (rows) (cols) (rank) (gid) =
+    if gid >= rows * cols then 0
+    else let row = gid / cols
+    in act
+      value <- blw-dot a b row (gid - row * cols) cols rank 0 (real-approx-from-int 0)
+      device-store-approx output gid value
+    end
+
+  blw-zero : Integer, Integer, Integer -> [Device] Integer
+  blw-zero (w) (n) (gid) =
+    if gid >= n then 0 else device-store-f32 w gid 0.0
+
+  blw-col-sq : Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  blw-col-sq (w) (d) (cols) (j) (rows) (o) (acc) =
+    if o >= rows then acc
+    else act
+      a <- device-load-f32 w (o * cols + j)
+      b <- device-load-f32 d (o * cols + j)
+      blw-col-sq w d cols j rows (o + 1) (acc + (a + b) * (a + b))
+    end
+
+  blw-chan-sq : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  blw-chan-sq (w) (d) (rows) (cols) (c) (inner) (t) (acc) =
+    if t >= inner then acc
+    else act
+      s <- blw-col-sq w d cols (c * inner + t) rows 0 0.0
+      blw-chan-sq w d rows cols c inner (t + 1) (acc + s)
+    end
+
+  blw-dora-norm : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-dora-norm (w) (d) (norms) (rows) (cols) (inner) (gid) =
+    if inner <= 0 then 0
+    else if gid >= cols / inner then 0
+    else act
+      s <- blw-chan-sq w d rows cols gid inner 0 0.0
+      device-store-f32 norms gid (real-sqrt s)
+    end
+
+  blw-dora-apply : Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-dora-apply (w) (d) (norms) (dora) (strength) (full) (rows) (cols) (inner) (gid) =
+    if gid >= rows * cols then 0
+    else let c = (gid - (gid / cols) * cols) / inner
+    in act
+      old <- device-load-f32 w gid
+      dv <- device-load-f32 d gid
+      nv <- device-load-f32 norms c
+      sv <- device-load-f32 dora c
+      wc <- (old + dv) * (sv / nv)
+      device-store-f32 w gid (if full == 1 then wc else old + strength * (wc - old))
+    end
+
+ WGSL specializes helper buffers once per kernel. A distinct helper keeps
+ the second operand pair bound separately from blw-dot's first pair.
+
+  blw-rhs-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  blw-rhs-dot (up) (down) (row) (col) (cols) (rank) (i) (sum) =
+    if i >= rank then sum
+    else blw-rhs-dot up down row col cols rank (i + 1) (sum + device-load-approx up (row * rank + i) * device-load-approx down (i * cols + col))
+
+  blw-hada : Integer, Integer, Integer, Integer, Integer, Real approximate, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-hada (w) (a) (b) (c) (d) (scale) (rows) (cols) (r1) (r2) (gid) =
+    if gid >= rows * cols then 0
+    else let row = gid / cols
+    in act
+      x <- blw-dot a b row (gid - row * cols) cols r1 0 (real-approx-from-int 0)
+      y <- blw-rhs-dot c d row (gid - row * cols) cols r2 0 (real-approx-from-int 0)
+      device-store-approx w gid (device-load-approx w gid + scale * (x * y))
+    end
+
+  blw-axpy : Integer, Integer, Real approximate, Integer, Integer -> [Device] Integer
+  blw-axpy (w) (x) (scale) (n) (gid) =
+    if gid >= n then 0
+    else device-store-approx w gid (device-load-approx w gid + scale * device-load-approx x gid)
+
+  blw-prod : Integer, Integer, Integer, Real approximate, Integer, Integer -> [Device] Integer
+  blw-prod (w) (a) (b) (scale) (n) (gid) =
+    if gid >= n then 0
+    else device-store-approx w gid (device-load-approx w gid + scale * (device-load-approx a gid * device-load-approx b gid))
+
+  blw-sum2 : Integer, Integer, Integer, Integer, Integer, Real approximate, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-sum2 (w) (a) (b) (c) (d) (scale) (rows) (cols) (r1) (r2) (gid) =
+    if gid >= rows * cols then 0
+    else let row = gid / cols
+    in act
+      x <- blw-dot a b row (gid - row * cols) cols r1 0 (real-approx-from-int 0)
+      y <- blw-rhs-dot c d row (gid - row * cols) cols r2 0 (real-approx-from-int 0)
+      device-store-approx w gid (device-load-approx w gid + scale * (x + y))
+    end
+
+  blw-kron : Integer, Integer, Integer, Real approximate, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-kron (w) (a) (b) (scale) (rows) (cols) (c) (d) (kk) (gid) =
+    if gid >= rows * cols then 0
+    else let row = gid / cols
+    in let j = (gid - row * cols) / kk
+    in let ai = (row / c) * (cols / (d * kk)) + j / d
+    in let bi = ((row - row / c * c) * d + (j - j / d * d)) * kk + (gid - row * cols - j * kk)
+    in device-store-approx w gid (device-load-approx w gid + scale * (device-load-approx a ai * device-load-approx b bi))
+
+  blw-tucker-j : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  blw-tucker-j (t) (wb) (i) (r) (q) (rank) (cin) (kk) (j) (sum) =
+    if j >= rank then sum
+    else blw-tucker-j t wb i r q rank cin kk (j + 1) (sum + device-load-approx t ((i * rank + j) * kk + q) * device-load-approx wb (j * cin + r))
+
+  blw-tucker-i : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  blw-tucker-i (t) (wa) (wb) (p) (r) (q) (rank) (rows) (cin) (kk) (i) (sum) =
+    if i >= rank then sum
+    else act
+      value <- blw-tucker-j t wb i r q rank cin kk 0 (real-approx-from-int 0)
+      blw-tucker-i t wa wb p r q rank rows cin kk (i + 1) (sum + value * device-load-approx wa (i * rows + p))
+    end
+
+  blw-tucker : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  blw-tucker (output) (t) (wa) (wb) (rank) (rows) (cin) (kk) (gid) =
+    if gid >= rows * cin * kk then 0
+    else let p = gid / (cin * kk)
+    in let r = (gid - p * cin * kk) / kk
+    in act
+      value <- blw-tucker-i t wa wb p r (gid - p * cin * kk - r * kk) rank rows cin kk 0 (real-approx-from-int 0)
+      device-store-approx output gid value
+    end

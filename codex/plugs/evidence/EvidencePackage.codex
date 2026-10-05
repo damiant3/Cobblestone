@@ -1,4 +1,5 @@
 Chapter: EvidencePackage
+  cites Foreword chapter CCE
   cites Foreword chapter ComplianceEvidence
   cites Foreword chapter Sha256
   cites Foreword chapter TextSearch
@@ -32,7 +33,19 @@ Section: Inputs
   }
 
   ev-empty-inputs : EvidenceInputs
-  ev-empty-inputs = EvidenceInputs { ei-product = "", ei-board = "", ei-cdx-size = 0, ei-cdx-file-sha = "", ei-header = [], ei-log-sha = "", ei-log-lines = 0, ei-diag = [], ei-manifest-sha = "", ei-chapters = [], ei-punctual-sha = "" }
+  ev-empty-inputs = EvidenceInputs {
+    ei-product = "",
+    ei-board = "",
+    ei-cdx-size = 0,
+    ei-cdx-file-sha = "",
+    ei-header = [],
+    ei-log-sha = "",
+    ei-log-lines = 0,
+    ei-diag = [],
+    ei-manifest-sha = "",
+    ei-chapters = [],
+    ei-punctual-sha = ""
+  }
 
 Section: Hex
 
@@ -112,7 +125,8 @@ Section: Diagnostics
   ev-count-with : List Text, Text, Integer, Integer -> Integer
   ev-count-with (xs) (needle) (i) (acc) =
     if i >= list-length xs then acc
-    else ev-count-with xs needle (i + 1) (if text-contains (list-at xs i) needle then acc + 1 else acc)
+    else
+      ev-count-with xs needle (i + 1) (if text-contains (list-at xs i) needle then acc + 1 else acc)
 
   ev-code-count : EvidenceInputs, Text -> Integer
   ev-code-count (e) (code) = ev-count-with (e.ei-diag) (" " & code & ":") 0 0
@@ -146,14 +160,62 @@ Section: Claims
   ev-claim-for : EvidenceInputs, Requirement -> Claim
   ev-claim-for (e) (r) =
     let sel = r.artifact
-    in if sel == "compile-log" then (if ev-has-log e then Claim { cl-req = r, cl-claimed = True, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "errors=" & show (ev-errors e) & " warnings=" & show (ev-warnings e) & " CDX4010=" & show (ev-code-count e "CDX4010") & " CDX4020=" & show (ev-code-count e "CDX4020") & " CDX2050=" & show (ev-code-count e "CDX2050") & " CDX2051=" & show (ev-code-count e "CDX2051") & " CDX2061=" & show (ev-code-count e "CDX2061") & " CDX2063=" & show (ev-code-count e "CDX2063") & " CDX2031=" & show (ev-code-count e "CDX2031") } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no compile log given to the plug" })
-    else if sel == "effect-types" then (if ev-has-log e & ev-errors e == 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "the effect checker passed this build: errors=0, CDX2031=" & show (ev-code-count e "CDX2031") } else if ev-has-log e then Claim { cl-req = r, cl-claimed = False, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "the compile log carries errors=" & show (ev-errors e) & "; a build that did not pass its checks discharges nothing" } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no compile log given to the plug" })
-    else if sel == "cdx-binary" then (if ev-has-cdx e then Claim { cl-req = r, cl-claimed = True, cl-artifact = "cdx:" & (e.ei-cdx-file-sha), cl-note = "size=" & show (e.ei-cdx-size) & " flags=" & show (ev-flags (e.ei-header)) & (if bit-and (ev-flags (e.ei-header)) 1 == 1 then " bare-metal" else " NOT bare-metal: this binary expects a host") } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no CDX header given to the plug, or not a CDX" })
-    else if sel == "cdx-header" then (if ev-has-cdx e & ev-nonzero (e.ei-header) 8 40 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "hash:" & ev-header-hash (e.ei-header), cl-note = "content hash present; signature " & (if ev-signed (e.ei-header) then "present" else "ABSENT (an unsigned CDX; the verifier checks the hash only)") } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no CDX header, or its content hash is zero" })
-    else if sel == "capability-manifest" then (if ev-has-cdx e & ev-cap-size (e.ei-header) > 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "hash:" & ev-header-hash (e.ei-header), cl-note = "capability section size=" & show (ev-cap-size (e.ei-header)) } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "this CDX carries no capability section (size 0); the manifest the claim needs is not in this build" })
-    else if sel == "punctual-report" then (if text-length (e.ei-punctual-sha) > 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "punctual:" & (e.ei-punctual-sha), cl-note = "punctual report given" } else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "no punctual (WCET) report given to the plug" })
-    else if sel == "none" then Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "manufacturer's process; outside the toolchain" }
-    else Claim { cl-req = r, cl-claimed = False, cl-artifact = "none", cl-note = "artifact class " & sel & " is a design or library reference, not an output of this build; the product's own test evidence discharges it" }
+    in if sel == "compile-log" then
+      (if ev-has-log e then Claim { cl-req = r, cl-claimed = True, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "errors=" & show (ev-errors e) & " warnings=" & show (ev-warnings e) & " CDX4010=" & show (ev-code-count e "CDX4010") & " CDX4020=" & show (ev-code-count e "CDX4020") & " CDX2050=" & show (ev-code-count e "CDX2050") & " CDX2051=" & show (ev-code-count e "CDX2051") & " CDX2061=" & show (ev-code-count e "CDX2061") & " CDX2063=" & show (ev-code-count e "CDX2063") & " CDX2031=" & show (ev-code-count e "CDX2031") } else Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "no compile log given to the plug"
+      })
+    else if sel == "effect-types" then
+      (if ev-has-log e & ev-errors e == 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "the effect checker passed this build: errors=0, CDX2031=" & show (ev-code-count e "CDX2031") } else if ev-has-log e then Claim { cl-req = r, cl-claimed = False, cl-artifact = "log:" & (e.ei-log-sha), cl-note = "the compile log carries errors=" & show (ev-errors e) & "; a build that did not pass its checks discharges nothing" } else Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "no compile log given to the plug"
+      })
+    else if sel == "cdx-binary" then
+      (if ev-has-cdx e then Claim { cl-req = r, cl-claimed = True, cl-artifact = "cdx:" & (e.ei-cdx-file-sha), cl-note = "size=" & show (e.ei-cdx-size) & " flags=" & show (ev-flags (e.ei-header)) & (if bit-and (ev-flags (e.ei-header)) 1 == 1 then " bare-metal" else " NOT bare-metal: this binary expects a host") } else Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "no CDX header given to the plug, or not a CDX"
+      })
+    else if sel == "cdx-header" then
+      (if ev-has-cdx e & ev-nonzero (e.ei-header) 8 40 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "hash:" & ev-header-hash (e.ei-header), cl-note = "content hash present; signature " & (if ev-signed (e.ei-header) then "present" else "ABSENT (an unsigned CDX; the verifier checks the hash only)") } else Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "no CDX header, or its content hash is zero"
+      })
+    else if sel == "capability-manifest" then
+      (if ev-has-cdx e & ev-cap-size (e.ei-header) > 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "hash:" & ev-header-hash (e.ei-header), cl-note = "capability section size=" & show (ev-cap-size (e.ei-header)) } else Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "this CDX carries no capability section (size 0); the manifest the claim needs is not in this build"
+      })
+    else if sel == "punctual-report" then
+      (if text-length (e.ei-punctual-sha) > 0 then Claim { cl-req = r, cl-claimed = True, cl-artifact = "punctual:" & (e.ei-punctual-sha), cl-note = "punctual report given" } else Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "no punctual (WCET) report given to the plug"
+      })
+    else if sel == "none" then
+      Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "manufacturer's process; outside the toolchain"
+      }
+    else
+      Claim {
+        cl-req = r,
+        cl-claimed = False,
+        cl-artifact = "none",
+        cl-note = "artifact class " & sel & " is a design or library reference, not an output of this build; the product's own test evidence discharges it"
+      }
 
   ev-claims : EvidenceInputs, List Requirement, Integer, List Claim -> List Claim
   ev-claims (e) (reqs) (i) (acc) =
@@ -286,9 +348,7 @@ Section: The Per-Board Residual
   to-lower-text : Text, Integer, Integer, Text -> Text
   to-lower-text (s) (i) (n) (acc) =
     if i >= n then acc
-    else let c = char-code-at s i
-    in let lc = if c >= char-code-at "A" 0 & c <= char-code-at "Z" 0 then c + 32 else c
-    in to-lower-text s (i + 1) n (acc & char-to-text (code-to-char lc))
+    else to-lower-text s (i + 1) n (acc & char-to-text (to-lower (char-at s i)))
 
   ev-board-key : Text -> Text
   ev-board-key (b) = to-lower-text b 0 (text-length b) ""
@@ -300,15 +360,96 @@ Section: The Per-Board Residual
   ev-board-posture : Text -> BoardPosture
   ev-board-posture (b) =
     let k = ev-board-key b
-    in if text-contains k "esp32-c6" | text-contains k "esp32c6" then BoardPosture { bp-known = True, bp-name = "ESP32-C6", bp-flash-encryption = True, bp-hw-crypto = True, bp-secure-boot = True, bp-hw-rng = True, bp-source = "Espressif ESP32-C6 TRM: Flash Encryption, Secure Boot v2, hardware AES/SHA/ECC/RSA, TRNG" }
-    else if text-contains k "nrf9160" then BoardPosture { bp-known = True, bp-name = "nRF9160", bp-flash-encryption = False, bp-hw-crypto = True, bp-secure-boot = True, bp-hw-rng = True, bp-source = "Nordic nRF9160: CryptoCell-310, Arm TrustZone secure boot (TF-M), CRACEN TRNG; no transparent flash encryption" }
-    else if text-contains k "nrf52840" | text-contains k "nrf52" then BoardPosture { bp-known = True, bp-name = "nRF52840", bp-flash-encryption = False, bp-hw-crypto = True, bp-secure-boot = False, bp-hw-rng = True, bp-source = "Nordic nRF52840: CryptoCell-310 + TRNG; APPROTECT readback protection, no flash encryption, no hardware secure-boot fuses" }
-    else if text-contains k "stm32l4" then BoardPosture { bp-known = True, bp-name = "STM32L4", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = True, bp-source = "ST STM32L4: on-chip TRNG and RDP flash readout protection; no flash encryption, no secure-boot fuses (base line)" }
-    else if text-contains k "stm32f4" then BoardPosture { bp-known = True, bp-name = "STM32F4", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "ST STM32F4: RDP readout protection only; no flash encryption, no hardware crypto or TRNG on the base line" }
-    else if text-contains k "rp2040" then BoardPosture { bp-known = True, bp-name = "RP2040", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "Raspberry Pi RP2040: no flash encryption, no hardware crypto, no secure boot, ring-oscillator entropy only" }
-    else if text-contains k "fe310" then BoardPosture { bp-known = True, bp-name = "FE310", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "SiFive FE310: no flash encryption, no hardware crypto, no secure boot, no TRNG" }
-    else if text-contains k "pi4" | text-contains k "bcm2711" then BoardPosture { bp-known = True, bp-name = "Pi4", bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = True, bp-hw-rng = True, bp-source = "Raspberry Pi 4 (BCM2711): Armv8-A crypto extensions, hardware RNG, signed-bootloader secure boot; no transparent flash encryption" }
-    else BoardPosture { bp-known = False, bp-name = if text-length b == 0 then "(unset)" else b, bp-flash-encryption = False, bp-hw-crypto = False, bp-secure-boot = False, bp-hw-rng = False, bp-source = "not in the board table; the manufacturer states this SoC's flash encryption, hardware crypto, secure boot and TRNG" }
+    in if text-contains k "esp32-c6" | text-contains k "esp32c6" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "ESP32-C6",
+        bp-flash-encryption = True,
+        bp-hw-crypto = True,
+        bp-secure-boot = True,
+        bp-hw-rng = True,
+        bp-source = "Espressif ESP32-C6 TRM: Flash Encryption, Secure Boot v2, hardware AES/SHA/ECC/RSA, TRNG"
+      }
+    else if text-contains k "nrf9160" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "nRF9160",
+        bp-flash-encryption = False,
+        bp-hw-crypto = True,
+        bp-secure-boot = True,
+        bp-hw-rng = True,
+        bp-source = "Nordic nRF9160: CryptoCell-310, Arm TrustZone secure boot (TF-M), CRACEN TRNG; no transparent flash encryption"
+      }
+    else if text-contains k "nrf52840" | text-contains k "nrf52" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "nRF52840",
+        bp-flash-encryption = False,
+        bp-hw-crypto = True,
+        bp-secure-boot = False,
+        bp-hw-rng = True,
+        bp-source = "Nordic nRF52840: CryptoCell-310 + TRNG; APPROTECT readback protection, no flash encryption, no hardware secure-boot fuses"
+      }
+    else if text-contains k "stm32l4" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "STM32L4",
+        bp-flash-encryption = False,
+        bp-hw-crypto = False,
+        bp-secure-boot = False,
+        bp-hw-rng = True,
+        bp-source = "ST STM32L4: on-chip TRNG and RDP flash readout protection; no flash encryption, no secure-boot fuses (base line)"
+      }
+    else if text-contains k "stm32f4" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "STM32F4",
+        bp-flash-encryption = False,
+        bp-hw-crypto = False,
+        bp-secure-boot = False,
+        bp-hw-rng = False,
+        bp-source = "ST STM32F4: RDP readout protection only; no flash encryption, no hardware crypto or TRNG on the base line"
+      }
+    else if text-contains k "rp2040" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "RP2040",
+        bp-flash-encryption = False,
+        bp-hw-crypto = False,
+        bp-secure-boot = False,
+        bp-hw-rng = False,
+        bp-source = "Raspberry Pi RP2040: no flash encryption, no hardware crypto, no secure boot, ring-oscillator entropy only"
+      }
+    else if text-contains k "fe310" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "FE310",
+        bp-flash-encryption = False,
+        bp-hw-crypto = False,
+        bp-secure-boot = False,
+        bp-hw-rng = False,
+        bp-source = "SiFive FE310: no flash encryption, no hardware crypto, no secure boot, no TRNG"
+      }
+    else if text-contains k "pi4" | text-contains k "bcm2711" then
+      BoardPosture {
+        bp-known = True,
+        bp-name = "Pi4",
+        bp-flash-encryption = False,
+        bp-hw-crypto = False,
+        bp-secure-boot = True,
+        bp-hw-rng = True,
+        bp-source = "Raspberry Pi 4 (BCM2711): Armv8-A crypto extensions, hardware RNG, signed-bootloader secure boot; no transparent flash encryption"
+      }
+    else
+      BoardPosture {
+        bp-known = False,
+        bp-name = if text-length b == 0 then "(unset)" else b,
+        bp-flash-encryption = False,
+        bp-hw-crypto = False,
+        bp-secure-boot = False,
+        bp-hw-rng = False,
+        bp-source = "not in the board table; the manufacturer states this SoC's flash encryption, hardware crypto, secure boot and TRNG"
+      }
 
   ev-yn : Boolean -> Text
   ev-yn (b) = if b then "yes" else "no"
@@ -358,7 +499,8 @@ Section: The SBOM
   ev-sbom-comps : List Text, Integer, Text -> Text
   ev-sbom-comps (xs) (i) (acc) =
     if i >= list-length xs then acc
-    else ev-sbom-comps xs (i + 1) (acc & (if i == 0 then "" else ",\n") & ev-sbom-comp (list-at xs i))
+    else
+      ev-sbom-comps xs (i + 1) (acc & (if i == 0 then "" else ",\n") & ev-sbom-comp (list-at xs i))
 
   ev-sbom : EvidenceInputs -> Text
   ev-sbom (e) =
@@ -380,4 +522,8 @@ Section: The Package
     in let etsi = ev-claims e etsi-requirements 0 []
     in let nist = ev-claims e nist-requirements 0 []
     in let iec = ev-claims e iec-requirements 0 []
-    in EvidenceOut { eo-cdxe = ev-cdxe e cra etsi nist iec, eo-html = ev-html e cra etsi nist iec, eo-sbom = ev-sbom e }
+    in EvidenceOut {
+      eo-cdxe = ev-cdxe e cra etsi nist iec,
+      eo-html = ev-html e cra etsi nist iec,
+      eo-sbom = ev-sbom e
+    }

@@ -6,13 +6,13 @@ Chapter: CIL Metadata
  known. The builder is singly owned; its lists and fields mutate in place.
 
   CilCell =
-   | CilU2 (Integer)
-   | CilU4 (Integer)
-   | CilString (Integer)
-   | CilBlob (Integer)
-   | CilGuid (Integer)
-   | CilTable (Integer) (Integer)
-   | CilCoded (Integer) (List Integer) (Integer)
+    | CilU2 (Integer)
+    | CilU4 (Integer)
+    | CilString (Integer)
+    | CilBlob (Integer)
+    | CilGuid (Integer)
+    | CilTable (Integer) (Integer)
+    | CilCoded (Integer) (List Integer) (Integer)
 
   CilRow = record { table : Integer, cells : List CilCell }
   CilKey = record { key : Text, value : Integer }
@@ -24,11 +24,11 @@ Chapter: CIL Metadata
 
   cil-append : List Integer, List Integer, Integer -> List Integer
   cil-append (out) (src) (i) =
-   if i >= list-length src then out else cil-append (list-push out (list-at src i)) src (i + 1)
+    if i >= list-length src then out else cil-append (list-push out (list-at src i)) src (i + 1)
 
   cil-empty-buckets : Integer, List (List CilKey) -> List (List CilKey)
   cil-empty-buckets (n) (out) =
-   if n <= 0 then out else cil-empty-buckets (n - 1) (list-push out [])
+    if n <= 0 then out else cil-empty-buckets (n - 1) (list-push out [])
 
   cil-new-metadata : Integer -> CilMetadata
   cil-new-metadata (unused) = CilMetadata {
@@ -38,70 +38,76 @@ Chapter: CIL Metadata
 
   cil-name-hash : Text, Integer, Integer -> Integer
   cil-name-hash (text) (i) (hash) =
-   if i >= text-length text then hash
-   else cil-name-hash text (i + 1) (int-mod (hash * 33 + char-code-at text i) 1024)
+    if i >= text-length text then hash
+    else cil-name-hash text (i + 1) (int-mod (hash * 33 + char-code-at text i) 1024)
 
   cil-key-find : List CilKey, Text, Integer -> Integer
   cil-key-find (items) (key) (i) =
-   if i >= list-length items then -1
-   else let entry = list-at items i
-   in if entry.key == key then entry.value else cil-key-find items key (i + 1)
+    if i >= list-length items then -1
+    else let entry = list-at items i
+    in if entry.key == key then entry.value else cil-key-find items key (i + 1)
 
   cil-string : CilMetadata, Text -> Integer
   cil-string (md) (text) =
-   if text == "" then 0
-   else let bucket = cil-name-hash text 0 0
-   in let entries = list-at (md.names) bucket
-   in let found = cil-key-find entries text 0
-   in if found >= 0 then found
-   else let offset = list-length (md.strings)
-   in let bytes = cil-append (md.strings) (text-to-utf8-bytes text & [0]) 0
-   in let put = __record-set md "strings" bytes
-   in let named = list-set-at (md.names) bucket (list-push entries (CilKey { key = text, value = offset }))
-   in offset
+    if text == "" then 0
+    else let bucket = cil-name-hash text 0 0
+    in let entries = list-at (md.names) bucket
+    in let found = cil-key-find entries text 0
+    in if found >= 0 then found
+    else let offset = list-length (md.strings)
+    in let bytes = cil-append (md.strings) (text-to-utf8-bytes text & [0]) 0
+    in let put = __record-set md "strings" bytes
+    in let named = list-set-at (md.names) bucket (list-push entries (CilKey {
+      key = text,
+      value = offset
+    }))
+    in offset
 
   cil-compressed : Integer -> List Integer
   cil-compressed (n) =
-   if n < 0 | n > 536870911 then fail "CIL compressed integer out of range"
-   else if n < 128 then [n]
-   else if n < 16384 then [128 + n / 256, int-mod n 256]
-   else [192 + n / 16777216, int-mod (n / 65536) 256, int-mod (n / 256) 256, int-mod n 256]
+    if n < 0 | n > 536870911 then fail "CIL compressed integer out of range"
+    else if n < 128 then [n]
+    else if n < 16384 then [128 + n / 256, int-mod n 256]
+    else [192 + n / 16777216, int-mod (n / 65536) 256, int-mod (n / 256) 256, int-mod n 256]
 
   cil-blob : CilMetadata, List Integer -> Integer
   cil-blob (md) (bytes) =
-   let offset = list-length (md.blobs)
-   in let prefix = cil-append (md.blobs) (cil-compressed (list-length bytes)) 0
-   in let put = __record-set md "blobs" (cil-append prefix bytes 0)
-   in offset
+    let offset = list-length (md.blobs)
+    in let prefix = cil-append (md.blobs) (cil-compressed (list-length bytes)) 0
+    in let put = __record-set md "blobs" (cil-append prefix bytes 0)
+    in offset
 
   cil-user-bytes : Text, Integer, List Integer -> List Integer
   cil-user-bytes (text) (i) (out) =
-   if i >= text-length text then out
-   else cil-user-bytes text (i + 1) (cil-append out (write-i16 (char-code-at text i)) 0)
+    if i >= text-length text then out
+    else cil-user-bytes text (i + 1) (cil-append out (write-i16 (char-code-at text i)) 0)
 
   cil-user-special : Text, Integer -> Integer
   cil-user-special (text) (i) =
-   if i >= text-length text then 0
-   else let c = char-code-at text i
-   in if (c >= 1 & c <= 8) | (c >= 14 & c <= 31) | c == 39 | c == 45 | c == 127 then 1
-   else cil-user-special text (i + 1)
+    if i >= text-length text then 0
+    else let c = char-code-at text i
+    in if (c >= 1 & c <= 8) | (c >= 14 & c <= 31) | c == 39 | c == 45 | c == 127 then 1
+    else cil-user-special text (i + 1)
 
   cil-user-string : CilMetadata, Text -> Integer
   cil-user-string (md) (text) =
-   let offset = list-length (md.users)
-   in let bytes = cil-user-bytes text 0 [] & [cil-user-special text 0]
-   in let prefix = cil-append (md.users) (cil-compressed (list-length bytes)) 0
-   in let put = __record-set md "users" (cil-append prefix bytes 0)
-   in if offset >= 16777216 then fail "CIL user strings exceed token range" else offset
+    let offset = list-length (md.users)
+    in let bytes = cil-user-bytes text 0 [] & [cil-user-special text 0]
+    in let prefix = cil-append (md.users) (cil-compressed (list-length bytes)) 0
+    in let put = __record-set md "users" (cil-append prefix bytes 0)
+    in if offset >= 16777216 then fail "CIL user strings exceed token range" else offset
 
   cil-row : CilMetadata, Integer, List CilCell -> Integer
   cil-row (md) (table) (cells) =
-   if table < 0 | table >= 64 then fail "CIL table out of range"
-   else let index = list-at (md.counts) table + 1
-   in if index >= 16777216 then fail "CIL table exceeds token range"
-   else let count = list-set-at (md.counts) table index
-   in let rows = __record-set md "rows" (list-push (md.rows) (CilRow { table = table, cells = cells }))
-   in index
+    if table < 0 | table >= 64 then fail "CIL table out of range"
+    else let index = list-at (md.counts) table + 1
+    in if index >= 16777216 then fail "CIL table exceeds token range"
+    else let count = list-set-at (md.counts) table index
+    in let rows = __record-set md "rows" (list-push (md.rows) (CilRow {
+      table = table,
+      cells = cells
+    }))
+    in index
 
   cil-index : Integer, Integer -> List Integer
   cil-index (size) (value) = if size == 2 then write-i16 value else write-i32 value
@@ -111,10 +117,10 @@ Chapter: CIL Metadata
 
   cil-coded-width : CilMetadata, List Integer, Integer, Integer -> Integer
   cil-coded-width (md) (tables) (limit) (i) =
-   if i >= list-length tables then 2
-   else let table = list-at tables i
-   in if table >= 0 & list-at (md.counts) table >= limit then 4
-   else cil-coded-width md tables limit (i + 1)
+    if i >= list-length tables then 2
+    else let table = list-at tables i
+    in if table >= 0 & list-at (md.counts) table >= limit then 4
+    else cil-coded-width md tables limit (i + 1)
 
   cil-cell-bytes : CilMetadata, CilCell -> List Integer
   cil-cell-bytes (md) (cell) = when cell
@@ -128,52 +134,57 @@ Chapter: CIL Metadata
 
   cil-cells-bytes : CilMetadata, List CilCell, Integer, List Integer -> List Integer
   cil-cells-bytes (md) (cells) (i) (out) =
-   if i >= list-length cells then out
-   else cil-cells-bytes md cells (i + 1) (cil-append out (cil-cell-bytes md (list-at cells i)) 0)
+    if i >= list-length cells then out
+    else cil-cells-bytes md cells (i + 1) (cil-append out (cil-cell-bytes md (list-at cells i)) 0)
 
   cil-table-rows : CilMetadata, Integer, Integer, List Integer -> List Integer
   cil-table-rows (md) (table) (i) (out) =
-   if i >= list-length (md.rows) then out
-   else let row = list-at (md.rows) i
-   in cil-table-rows md table (i + 1) (if row.table == table then cil-cells-bytes md (row.cells) 0 out else out)
+    if i >= list-length (md.rows) then out
+    else let row = list-at (md.rows) i
+    in cil-table-rows md table (i + 1) (if row.table == table then cil-cells-bytes md (row.cells) 0 out else out)
 
   cil-tables-bytes : CilMetadata, Integer, List Integer -> List Integer
   cil-tables-bytes (md) (table) (out) =
-   if table >= 64 then out
-   else cil-tables-bytes md (table + 1) (if list-at (md.counts) table == 0 then out else cil-table-rows md table 0 out)
+    if table >= 64 then out
+    else
+      cil-tables-bytes md (table + 1) (if list-at (md.counts) table == 0 then out else cil-table-rows md table 0 out)
 
   cil-valid-mask : CilMetadata, Integer, Integer -> Integer
   cil-valid-mask (md) (i) (mask) =
-   if i >= 64 then mask
-   else cil-valid-mask md (i + 1) (if list-at (md.counts) i > 0 then bit-or mask (bit-shl 1 i) else mask)
+    if i >= 64 then mask
+    else
+      cil-valid-mask md (i + 1) (if list-at (md.counts) i > 0 then bit-or mask (bit-shl 1 i) else mask)
 
   cil-count-bytes : CilMetadata, Integer, List Integer -> List Integer
   cil-count-bytes (md) (i) (out) =
-   if i >= 64 then out
-   else let count = list-at (md.counts) i
-   in cil-count-bytes md (i + 1) (if count > 0 then cil-append out (write-i32 count) 0 else out)
+    if i >= 64 then out
+    else let count = list-at (md.counts) i
+    in cil-count-bytes md (i + 1) (if count > 0 then cil-append out (write-i32 count) 0 else out)
 
   cil-stream-header : Text, Integer, Integer -> List Integer
   cil-stream-header (name) (offset) (size) =
-   let bytes = text-to-utf8-bytes name & [0]
-   in write-i32 offset & write-i32 size & bytes & pad-zeros (align-up (list-length bytes) 4 - list-length bytes)
+    let bytes = text-to-utf8-bytes name & [0]
+    in write-i32 offset & write-i32 size & bytes & pad-zeros (align-up (list-length bytes) 4 - list-length bytes)
 
   cil-pad4 : List Integer -> List Integer
   cil-pad4 (bytes) = bytes & pad-zeros (align-up (list-length bytes) 4 - list-length bytes)
 
   cil-metadata-image : CilMetadata -> CilMetadataImage
   cil-metadata-image (md) =
-   let heaps = (if list-length (md.strings) >= 65536 then 1 else 0) + (if list-length (md.blobs) >= 65536 then 4 else 0)
-   in let tables = write-i32 0 & [2, 0, heaps, 1] & write-i64 (cil-valid-mask md 0 0) & write-i64 0 & cil-count-bytes md 0 [] & cil-tables-bytes md 0 []
-   in let table-offset = 108
-   in let string-offset = table-offset + align-up (list-length tables) 4
-   in let user-offset = string-offset + align-up (list-length (md.strings)) 4
-   in let guid-offset = user-offset + align-up (list-length (md.users)) 4
-   in let blob-offset = guid-offset + 16
-   in let headers = [66, 83, 74, 66] & write-i16 1 & write-i16 1 & write-i32 0 & write-i32 12 & text-to-utf8-bytes "v4.0.30319" & [0, 0] & write-i16 0 & write-i16 5
-    & cil-stream-header "#~" table-offset (list-length tables)
-    & cil-stream-header "#Strings" string-offset (list-length (md.strings))
-    & cil-stream-header "#US" user-offset (list-length (md.users))
-    & cil-stream-header "#GUID" guid-offset 16
-    & cil-stream-header "#Blob" blob-offset (list-length (md.blobs))
-   in CilMetadataImage { bytes = headers & cil-pad4 tables & cil-pad4 (md.strings) & cil-pad4 (md.users) & pad-zeros 16 & md.blobs, guid-offset = guid-offset }
+    let heaps = (if list-length (md.strings) >= 65536 then 1 else 0) + (if list-length (md.blobs) >= 65536 then 4 else 0)
+    in let tables = write-i32 0 & [2, 0, heaps, 1] & write-i64 (cil-valid-mask md 0 0) & write-i64 0 & cil-count-bytes md 0 [] & cil-tables-bytes md 0 []
+    in let table-offset = 108
+    in let string-offset = table-offset + align-up (list-length tables) 4
+    in let user-offset = string-offset + align-up (list-length (md.strings)) 4
+    in let guid-offset = user-offset + align-up (list-length (md.users)) 4
+    in let blob-offset = guid-offset + 16
+    in let headers = [66, 83, 74, 66] & write-i16 1 & write-i16 1 & write-i32 0 & write-i32 12 & text-to-utf8-bytes "v4.0.30319" & [0, 0] & write-i16 0 & write-i16 5
+     & cil-stream-header "#~" table-offset (list-length tables)
+     & cil-stream-header "#Strings" string-offset (list-length (md.strings))
+     & cil-stream-header "#US" user-offset (list-length (md.users))
+     & cil-stream-header "#GUID" guid-offset 16
+     & cil-stream-header "#Blob" blob-offset (list-length (md.blobs))
+    in CilMetadataImage {
+      bytes = headers & cil-pad4 tables & cil-pad4 (md.strings) & cil-pad4 (md.users) & pad-zeros 16 & md.blobs,
+      guid-offset = guid-offset
+    }

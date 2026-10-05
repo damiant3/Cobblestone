@@ -1,0 +1,193 @@
+Chapter: WalkMap
+  cites Uoaix chapter MulReaders
+  cites Foreword chapter Result
+
+ Each cell owns24 land bytes and a bounded collider stride. Legacy loaders
+ admit eight colliders; installed-cache pages admit their measured maximum.
+
+  WalkMap = record { x : Integer, y : Integer, width : Integer, height : Integer, land : Integer, solids : Integer, stride : Integer }
+
+  walk-zero : Integer, Integer, Integer, Integer, Integer -> Integer
+  walk-zero (land) (solids) (i) (count) (stride) =
+    if i >= count then 0
+    else let clear-land = poke-qword land (i * 24) 0
+    in let clear-solids = poke-qword solids (i * stride) 0
+    in walk-zero land solids (i + 1) count stride
+
+  walk-map-new : Integer, Integer, Integer, Integer -> Result WalkMap Text
+  walk-map-new (x) (y) (width) (height) = walk-map-sized x y width height 8
+
+  walk-map-sized : Integer, Integer, Integer, Integer, Integer -> Result WalkMap Text
+  walk-map-sized (x) (y) (width) (height) (colliders) =
+    if width < 2 | height < 2 | width > 256 | height > 256 then Err "walk window budget"
+    else if x < 0 | y < 0 | x + width > 6144 | y + height > 4096 then Err "walk window outside map"
+    else if colliders < 1 | colliders > 256 then Err "walk collider capacity"
+    else let land = alloc-bytes (width * height * 24)
+    in let stride = 8 + colliders * 24
+    in let solids = alloc-bytes (width * height * stride)
+    in let clear = walk-zero land solids 0 (width * height) stride
+    in Ok (WalkMap { x = x, y = y, width = width, height = height, land = land, solids = solids, stride = stride })
+
+  walk-cell : WalkMap, Integer, Integer -> Integer
+  walk-cell (map) (x) (y) =
+    if x < map.x | y < map.y | x >= map.x + map.width | y >= map.y + map.height then -1
+    else (y - map.y) * map.width + x - map.x
+
+  walk-set-land : WalkMap, Integer, Integer, Integer, Integer -> Result Integer Text
+  walk-set-land (map) (x) (y) (z) (flags) =
+    let cell = walk-cell map x y
+    in if cell < 0 then Err "land outside walk window"
+    else if z < -128 | z > 127 | flags < 0 | flags > 4294967295 then Err "invalid land fields"
+    else let a = poke-qword map.land (cell * 24 + 8) z
+    in let b = poke-qword map.land (cell * 24 + 16) flags
+    in let ready = poke-qword map.land (cell * 24) 1
+    in Ok cell
+
+  walk-decode-land : WalkMap, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  walk-decode-land (map) (x) (y) (block) (size) (tiledata) (tile-size) =
+    when mul-land block size x y
+      is Err (e) -> Err e
+      is Ok (land) -> when mul-land-data-range land.graphic
+        is Err (e) -> Err e
+        is Ok (range) ->
+          if not (mul-fits tile-size range.offset range.length) then Err "land tiledata truncated"
+          else when mul-land-data (tiledata + range.offset) range.length
+            is Err (e) -> Err e
+            is Ok (tile) -> walk-set-land map x y land.z tile.flags
+
+  walk-add-solid : WalkMap, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  walk-add-solid (map) (x) (y) (z) (height) (flags) =
+    let cell = walk-cell map x y
+    in if cell < 0 then Err "solid outside walk window"
+    else if z < -128 | z > 127 | height < 0 | height > 255 | flags < 0 | flags > 4294967295 then Err "invalid solid fields"
+    else let count = peek-qword map.solids (cell * map.stride)
+    in if count >= (map.stride - 8) / 24 then Err "walk collider budget"
+    else let at = cell * map.stride + 8 + count * 24
+    in let a = poke-qword map.solids at z
+    in let b = poke-qword map.solids (at + 8) height
+    in let c = poke-qword map.solids (at + 16) flags
+    in let added = poke-qword map.solids (cell * map.stride) (count + 1)
+    in Ok count
+
+  walk-decode-static : WalkMap, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  walk-decode-static (map) (block-x) (block-y) (buffer) (size) (index) (tiledata) (tile-size) =
+    when mul-static buffer size index
+      is Err (e) -> Err e
+      is Ok (item) -> when mul-item-data-range item.graphic
+        is Err (e) -> Err e
+        is Ok (range) ->
+          if not (mul-fits tile-size range.offset range.length) then Err "static tiledata truncated"
+          else when mul-item-data (tiledata + range.offset) range.length
+            is Err (e) -> Err e
+            is Ok (tile) -> if bit-and tile.flags 576 == 0 then Ok -1
+              else walk-add-solid map (block-x + item.x) (block-y + item.y) item.z tile.height tile.flags
+
+  walk-ready : WalkMap, Integer, Integer -> Boolean
+  walk-ready (map) (x) (y) =
+    let cell = walk-cell map x y
+    in cell >= 0 & (if cell < 0 then False else peek-qword map.land (cell * 24) == 1)
+
+  walk-z : WalkMap, Integer, Integer -> Integer
+  walk-z (map) (x) (y) = peek-qword map.land (walk-cell map x y * 24 + 8)
+
+  walk-abs : Integer -> Integer
+  walk-abs (n) = if n < 0 then 0 - n else n
+
+  walk-average : Integer, Integer -> Integer
+  walk-average (a) (b) = if a + b < 0 then (a + b - 1) / 2 else (a + b) / 2
+
+ Four-corner triangulation follows RunUO Map.GetAverageZ. Climb admission
+ and remaining stair height are adapted from SphereServer Source-X
+ CServerMapBlockingState::CheckTile_Item and CChar::CheckValidMove,
+ Apache-2.0; apps/uoaix/Sphere-LICENSE.txt. Bridge standing height is rounded
+ down; its remaining climb height is rounded up. Headroom remains16 units.
+ Land admits a step when its lowest corner is within2 of the mover (ServUO
+ MovementImpl landZ <= stepTop); the mover then stands at the tile's average.
+
+  walk-ground : WalkMap, Integer, Integer -> Result Integer Text
+  walk-ground (map) (x) (y) =
+    if not (walk-ready map x y & walk-ready map (x + 1) y
+      & walk-ready map x (y + 1) & walk-ready map (x + 1) (y + 1)) then Err "land not loaded"
+    else let a = walk-z map x y
+    in let b = walk-z map x (y + 1)
+    in let c = walk-z map (x + 1) y
+    in let d = walk-z map (x + 1) (y + 1)
+    in Ok (if walk-abs (a - d) > walk-abs (b - c) then walk-average b c else walk-average a d)
+
+  walk-clear : WalkMap, Integer, Integer, Integer -> Boolean
+  walk-clear (map) (cell) (z) (i) =
+    if i >= peek-qword map.solids (cell * map.stride) then True
+    else let at = cell * map.stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let height = peek-qword map.solids (at + 8)
+    in let flags = peek-qword map.solids (at + 16)
+    in let top = base + (if bit-and flags 1024 /= 0 then height / 2 else height)
+    in if bit-and flags 576 /= 0 & base < z + 16 & top > z then False
+    else walk-clear map cell z (i + 1)
+
+  walk-surfaces : WalkMap, Integer, Integer, Integer, Integer -> Integer
+  walk-surfaces (map) (cell) (max-z) (i) (best) =
+    if i >= peek-qword map.solids (cell * map.stride) then best
+    else let at = cell * map.stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let height = peek-qword map.solids (at + 8)
+    in let flags = peek-qword map.solids (at + 16)
+    in let z = base + (if bit-and flags 1024 /= 0 then height / 2 else height)
+    in let reachable = if bit-and flags 1024 /= 0 then base <= max-z + height / 2 else z <= max-z
+    in let usable = bit-and flags 512 /= 0 & bit-and flags 192 == 0 & reachable & z <= 127
+      & z > best & walk-clear map cell z 0
+    in walk-surfaces map cell max-z (i + 1) (if usable then z else best)
+
+  walk-low : WalkMap, Integer, Integer -> Integer
+  walk-low (map) (x) (y) = min (min (walk-z map x y) (walk-z map x (y + 1))) (min (walk-z map (x + 1) y) (walk-z map (x + 1) (y + 1)))
+
+  walk-height : WalkMap, Integer, Integer, Integer -> Result Integer Text
+  walk-height (map) (x) (y) (from-z) = when walk-ground map x y
+    is Err (e) -> Err e
+    is Ok (ground) ->
+      let cell = walk-cell map x y
+      in let flags = peek-qword map.land (cell * 24 + 16)
+      in let land-ok = bit-and flags 192 == 0 & walk-low map x y <= from-z + 2 & walk-clear map cell ground 0
+      in let best = walk-surfaces map cell (from-z + 2) 0 (if land-ok then ground else -129)
+      in if best < -128 then Err "no walkable surface or clearance" else Ok best
+
+  walk-dx : Integer -> Integer
+  walk-dx (dir) = if dir >= 1 & dir <= 3 then 1 else if dir >= 5 & dir <= 7 then -1 else 0
+
+  walk-dy : Integer -> Integer
+  walk-dy (dir) = if dir >= 3 & dir <= 5 then 1 else if dir == 7 | dir <= 1 then -1 else 0
+
+  walk-climb : WalkMap, Integer, Integer, Integer, Integer -> Integer
+  walk-climb (map) (cell) (z) (i) (height) = if cell < 0 then 0
+    else if i >= peek-qword map.solids (cell * map.stride) then height
+    else let at = cell * map.stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let h = peek-qword map.solids (at + 8)
+    in let flags = peek-qword map.solids (at + 16)
+    in let supported = bit-and flags 1536 == 1536 & bit-and flags 192 == 0 & base + h / 2 == z
+    in walk-climb map cell z (i + 1) (if supported then max height ((h + 1) / 2) else height)
+
+ RunUO MovementImpl measures land climb from the current land tile's top
+ corner (startTop), not the mobile's averaged z; this applies only when the
+ mobile stands on land within the step height of that tile.
+  walk-land-top : WalkMap, Integer, Integer, Integer -> Integer
+  walk-land-top (map) (x) (y) (z) =
+    if not (walk-ready map x y & walk-ready map (x + 1) y & walk-ready map x (y + 1) & walk-ready map (x + 1) (y + 1)) then z
+    else let top = max (max (walk-z map x y) (walk-z map (x + 1) y)) (max (walk-z map x (y + 1)) (walk-z map (x + 1) (y + 1)))
+    in when walk-ground map x y
+      is Err (_) -> z
+      is Ok (ground) -> if walk-abs (ground - z) <= 2 then top else z
+  walk-step : WalkMap, Integer, Integer, Integer, Integer -> Result Integer Text
+  walk-step (map) (x) (y) (z) (dir) =
+    if dir < 0 | dir > 7 then Err "walk direction"
+    else let dx = walk-dx dir
+    in let dy = walk-dy dir
+    in let climbed = z + walk-climb map (walk-cell map x y) z 0 0
+    in let top = max climbed (walk-land-top map x y z)
+    in if dx /= 0 & dy /= 0 then
+      when walk-height map (x + dx) y top
+        is Err (e) -> Err "diagonal side blocked"
+        is Ok (a) -> when walk-height map x (y + dy) top
+          is Err (e) -> Err "diagonal side blocked"
+          is Ok (b) -> walk-height map (x + dx) (y + dy) top
+    else walk-height map (x + dx) (y + dy) top

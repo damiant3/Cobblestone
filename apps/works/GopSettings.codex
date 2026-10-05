@@ -1,5 +1,6 @@
 Chapter: GopSettings
   cites Works chapter GopFat16
+  cites Foreword chapter Maybe
 
  We say:
 
@@ -7,6 +8,7 @@ Section: Kinds
 
   gst-kind-int : Integer = 0
   gst-kind-bool : Integer = 1
+  gst-kind-text : Integer = 2
 
 Section: The Schema
 
@@ -16,12 +18,15 @@ Section: The Schema
     sk-kind : Integer,
     sk-default : Integer,
     sk-lo : Integer,
-    sk-hi : Integer
+    sk-hi : Integer,
+    sk-default-text : Text,
+    sk-text-limit : Integer
   }
 
   SettingsStore = record {
     st-keys : List SettingKey,
     st-vals : List Integer,
+    st-texts : List Text,
     st-count : Integer
   }
 
@@ -29,13 +34,42 @@ Section: The Schema
     | SetOk (SettingsStore)
     | SetRefused (Text)
 
+  SettingValue =
+    | SettingInteger (Integer)
+    | SettingBoolean (Boolean)
+    | SettingText (Text)
+
   gst-int-key : Integer, Text, Integer, Integer, Integer -> SettingKey
   gst-int-key (id) (name) (dflt) (lo) (hi) =
-    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-int, sk-default = dflt, sk-lo = lo, sk-hi = hi }
+    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-int, sk-default = dflt, sk-lo = lo, sk-hi = hi, sk-default-text = "", sk-text-limit = 0 }
 
   gst-bool-key : Integer, Text, Boolean -> SettingKey
   gst-bool-key (id) (name) (dflt) =
-    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-bool, sk-default = if dflt then 1 else 0, sk-lo = 0, sk-hi = 1 }
+    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-bool, sk-default = if dflt then 1 else 0, sk-lo = 0, sk-hi = 1, sk-default-text = "", sk-text-limit = 0 }
+
+  gst-text-key : Integer, Text, Text, Integer -> SettingKey
+  gst-text-key (id) (name) (dflt) (limit) =
+    SettingKey { sk-id = id, sk-name = name, sk-kind = gst-kind-text, sk-default = 0, sk-lo = 0, sk-hi = 0, sk-default-text = dflt, sk-text-limit = limit }
+
+  gst-id-before : List SettingKey, Integer, Integer, Integer -> Boolean
+  gst-id-before (keys) (id) (stop) (i) = if i >= stop then False else if (list-at keys i).sk-id == id then True else gst-id-before keys id stop (i + 1)
+
+  gst-schema-why : List SettingKey, Integer -> Text
+  gst-schema-why (keys) (i) =
+    if list-length keys > gst-max-keys then "too many settings"
+    else if i >= list-length keys then ""
+    else let k = list-at keys i
+    in if k.sk-id <= 0 | k.sk-name == "" then "setting needs a positive id and name"
+    else if gst-id-before keys (k.sk-id) i 0 then "duplicate setting id: " & show (k.sk-id)
+    else if k.sk-kind < gst-kind-int | k.sk-kind > gst-kind-text then "unknown setting type: " & k.sk-name
+    else if k.sk-kind == gst-kind-text then
+      if k.sk-text-limit < 0 | text-length (k.sk-default-text) > k.sk-text-limit then "invalid text default or limit: " & k.sk-name else gst-schema-why keys (i + 1)
+    else if k.sk-lo > k.sk-hi | k.sk-default < k.sk-lo | k.sk-default > k.sk-hi then "invalid default or range: " & k.sk-name
+    else if k.sk-kind == gst-kind-bool & (k.sk-lo /= 0 | k.sk-hi /= 1) then "invalid boolean range: " & k.sk-name
+    else gst-schema-why keys (i + 1)
+
+  gst-checked-store : List SettingKey -> SetResult
+  gst-checked-store (keys) = let why = gst-schema-why keys 0 in if why == "" then SetOk (gst-store keys) else SetRefused why
 
   gst-defaults : List SettingKey, Integer, Integer, List Integer -> List Integer
   gst-defaults (keys) (i) (n) (acc) =
@@ -46,7 +80,10 @@ Section: The Schema
   gst-store : List SettingKey -> SettingsStore
   gst-store (keys) =
     let n = list-length keys
-    in SettingsStore { st-keys = keys, st-vals = gst-defaults keys 0 n [], st-count = n }
+    in SettingsStore { st-keys = keys, st-vals = gst-defaults keys 0 n [], st-texts = gst-text-defaults keys 0 [], st-count = n }
+
+  gst-text-defaults : List SettingKey, Integer, List Text -> List Text
+  gst-text-defaults (keys) (i) (acc) = if i >= list-length keys then acc else gst-text-defaults keys (i + 1) (list-push acc ((list-at keys i).sk-default-text))
 
 Section: Reading
 
@@ -59,7 +96,21 @@ Section: Reading
   gst-get : SettingsStore, Integer, Integer -> Integer
   gst-get (s) (id) (fallback) =
     let idx = gst-index-of s id 0
-    in if idx < 0 then fallback else list-at (s.st-vals) idx
+    in if idx < 0 then fallback else if (list-at (s.st-keys) idx).sk-kind == gst-kind-text then fallback else list-at (s.st-vals) idx
+
+  gst-get-text : SettingsStore, Integer, Text -> Text
+  gst-get-text (s) (id) (fallback) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then fallback else if (list-at (s.st-keys) idx).sk-kind /= gst-kind-text then fallback else list-at (s.st-texts) idx
+
+  gst-value : SettingsStore, Integer -> Maybe SettingValue
+  gst-value (s) (id) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then None
+    else let k = list-at (s.st-keys) idx
+    in if k.sk-kind == gst-kind-text then Just (SettingText (list-at (s.st-texts) idx))
+    else if k.sk-kind == gst-kind-bool then Just (SettingBoolean (list-at (s.st-vals) idx /= 0))
+    else Just (SettingInteger (list-at (s.st-vals) idx))
 
   gst-get-bool : SettingsStore, Integer, Boolean -> Boolean
   gst-get-bool (s) (id) (fallback) =
@@ -78,12 +129,42 @@ Section: Writing
     let idx = gst-index-of s id 0
     in if idx < 0 then SetRefused ("no such setting: " & show id)
     else let k = list-at (s.st-keys) idx
-    in if v < k.sk-lo then SetRefused (k.sk-name & " rejects " & show v & ", low limit " & show (k.sk-lo))
+    in if k.sk-kind == gst-kind-text then SetRefused (k.sk-name & " requires text")
+    else if v < k.sk-lo then SetRefused (k.sk-name & " rejects " & show v & ", low limit " & show (k.sk-lo))
     else if v > k.sk-hi then SetRefused (k.sk-name & " rejects " & show v & ", high limit " & show (k.sk-hi))
     else SetOk (__record-set s "st-vals" (gst-vals-with s idx v 0 []))
 
   gst-set-bool : SettingsStore, Integer, Boolean -> SetResult
-  gst-set-bool (s) (id) (on) = gst-set s id (if on then 1 else 0)
+  gst-set-bool (s) (id) (on) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then SetRefused ("no such setting: " & show id)
+    else if (list-at (s.st-keys) idx).sk-kind /= gst-kind-bool then SetRefused ((list-at (s.st-keys) idx).sk-name & " is not boolean")
+    else gst-set s id (if on then 1 else 0)
+
+  gst-texts-with : SettingsStore, Integer, Text, Integer, List Text -> List Text
+  gst-texts-with (s) (idx) (v) (i) (acc) = if i >= s.st-count then acc else gst-texts-with s idx v (i + 1) (list-push acc (if i == idx then v else list-at (s.st-texts) i))
+
+  gst-set-text : SettingsStore, Integer, Text -> SetResult
+  gst-set-text (s) (id) (v) =
+    let idx = gst-index-of s id 0
+    in if idx < 0 then SetRefused ("no such setting: " & show id)
+    else let k = list-at (s.st-keys) idx
+    in if k.sk-kind /= gst-kind-text then SetRefused (k.sk-name & " is not text")
+    else if text-length v > k.sk-text-limit then SetRefused (k.sk-name & " exceeds text limit " & show (k.sk-text-limit))
+    else SetOk (__record-set s "st-texts" (gst-texts-with s idx v 0 []))
+
+  gst-set-value : SettingsStore, Integer, SettingValue -> SetResult
+  gst-set-value (s) (id) (v) = when v
+    is SettingText (t) -> gst-set-text s id t
+    is SettingBoolean (b) -> gst-set-bool s id b
+    is SettingInteger (n) ->
+      let idx = gst-index-of s id 0
+      in if idx < 0 then SetRefused ("no such setting: " & show id)
+      else if (list-at (s.st-keys) idx).sk-kind /= gst-kind-int then SetRefused ((list-at (s.st-keys) idx).sk-name & " is not integer")
+      else gst-set s id n
+
+  gst-copy : SettingsStore -> SettingsStore
+  gst-copy (s) = SettingsStore { st-keys = s.st-keys, st-vals = gst-vals-with s (0 - 1) 0 0 [], st-texts = gst-texts-with s (0 - 1) "" 0 [], st-count = s.st-count }
 
   gst-or-keep : SettingsStore, SetResult -> SettingsStore
   gst-or-keep (s) (r) = when r
@@ -102,7 +183,7 @@ Section: Restoring A Default
     let idx = gst-index-of s id 0
     in if idx < 0 then SetRefused ("no such setting: " & show id)
     else let k = list-at (s.st-keys) idx
-    in gst-set s id (k.sk-default)
+    in if k.sk-kind == gst-kind-text then gst-set-text s id (k.sk-default-text) else gst-set s id (k.sk-default)
 
   gst-reset-all : SettingsStore -> SettingsStore
   gst-reset-all (s) = gst-store (s.st-keys)
@@ -156,7 +237,7 @@ Section: Saving
   gst-save (s) = act
     m <- gfat-mount-esp
     if m.gm-ok == False then False
-    else if s.st-count > gst-max-keys then False
+    else if s.st-count > gst-max-keys | gst-has-text (s.st-keys) 0 then False
     else
       let buf = __heap-save
       in let adv = __heap-advance gst-buf-bytes
@@ -170,6 +251,9 @@ Section: Saving
       in let h = gst-put-recs s buf 0 gst-hdr-bytes
       in gfat-write-small-file (m.gm-vol) gst-name buf (gst-hdr-bytes + gst-rec-bytes * s.st-count)
   end
+
+  gst-has-text : List SettingKey, Integer -> Boolean
+  gst-has-text (keys) (i) = if i >= list-length keys then False else if (list-at keys i).sk-kind == gst-kind-text then True else gst-has-text keys (i + 1)
 
 Section: Loading
 

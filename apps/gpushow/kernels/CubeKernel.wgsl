@@ -77,14 +77,15 @@ fn cu_render(gid : i32, frame : i32) -> i32 {
   }
   }
 }
+// cx-kernel cube_step_main wg=64 outb=b0 frame=u0
 @group(0) @binding(0) var<storage, read_write> cube_step_outb_buf : array<i32>;
 struct U_cube_step {
   frame : i32,
 }
 @group(0) @binding(1) var<uniform> u_cube_step : U_cube_step;
 @compute @workgroup_size(64)
-fn cube_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>) {
-  let gid = i32(gid_vec.x);
+fn cube_step_main(@builtin(global_invocation_id) gid_vec : vec3<u32>, @builtin(num_workgroups) nwg_vec : vec3<u32>) {
+  let gid = i32(gid_vec.x + gid_vec.y * nwg_vec.x * 64u);
   let frame = u_cube_step.frame;
   cube_step_outb_buf[gid] = cu_render(gid, frame);
 }

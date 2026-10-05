@@ -1,0 +1,90 @@
+Chapter: GameHarvestState
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter EconomyHarvest
+
+ Copyright 2026 SphereServer development team. Apache-2.0.
+ Adapted Source-X CClientUse/CClientTarg and CCharSkill resource targeting.
+ License: apps/uoaix/Sphere-LICENSE.txt.
+
+  GhRequest = record { serial : Integer, connection : Integer, tool : Integer,
+    target : Integer, expires : Integer, next : Integer }
+  GhSite = record { x : Integer, y : Integer, z : Integer, resource : Integer, node : Integer }
+  GameHarvest = record { vendor : GvWorld, items : GsiState, requests : List GhRequest,
+    sites : List GhSite, count : Integer, nonce : Integer }
+  gh-requests : Integer, List GhRequest -> List GhRequest
+  gh-requests (i) (out) = if i == 5 then out
+    else gh-requests (i + 1) (list-push out (GhRequest {
+      serial = 0, connection = -1, tool = 0, target = 0, expires = 0, next = 0 }))
+  gh-sites : Integer, List GhSite -> List GhSite
+  gh-sites (i) (out) = if i == 256 then out
+    else gh-sites (i + 1) (list-push out (GhSite { x = 0, y = 0, z = 0, resource = 0, node = 0 }))
+  gh-state : GvWorld, GsiState -> GameHarvest
+  gh-state (vendor) (items) = GameHarvest { vendor = vendor, items = items,
+    requests = gh-requests 0 (__list-with-capacity 5), sites = gh-sites 0 (__list-with-capacity 256), count = 0, nonce = 1 }
+  gh-ticks : Integer -> Integer
+  gh-ticks (milliseconds) = (milliseconds * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
+  gh-tool-type : Integer -> Integer
+  gh-tool-type (item) = if item == 25 then 5 else if item == 26 then 15 else if item == 29 then 9 else 0
+  gh-tool-graphic : Integer, Integer -> Boolean
+  gh-tool-graphic (item) (graphic) =
+    if item == 25 then graphic == #0E85 | graphic == #0E86
+    else if item == 26 then graphic == #0F49 | graphic == #0F4A
+    else if item == 29 then graphic == #0DBF | graphic == #0DC0 else False
+  gh-client-skill : Integer -> Integer
+  gh-client-skill (resource) = if resource == 5 then 45 else if resource == 15 then 44 else 18
+  gh-economy-skill : Integer -> Integer
+  gh-economy-skill (skill) = if skill == 45 then 1 else if skill == 44 | skill == 11 then 6
+    else if skill == 18 then 4 else if skill == 7 | skill == 37 then 8 else if skill == 34 then 10 else 0
+  gh-skill-rows : EpActor, GameShard, Integer, Integer, List Integer -> List Integer
+  gh-skill-rows (actor) (shard) (slot) (skill) (out) = if skill == 46 then gp-put16 out 0
+    else let mapped = gh-economy-skill skill
+    in let value = if mapped == 0 then sip-skill-value shard.characters slot skill 0 else ep-at actor.skills mapped
+    in gh-skill-rows actor shard slot (skill + 1) (gp-put16 (gp-put16 out (skill + 1)) value)
+  gh-skills : GameHarvest, GvPlayer, Integer -> List Integer
+  gh-skills (state) (player) (slot) =
+    gh-skill-rows (ep-actor state.vendor.currency.world player.actor) state.vendor.game slot 0 [#3A,0,190,0]
+  gh-skill-baseline : EpActor, GameShard, Integer, Integer -> Integer
+  gh-skill-baseline (actor) (shard) (slot) (skill) =
+    let mapped = gh-economy-skill skill
+    in ep-set actor.skills mapped (max (ep-at actor.skills mapped) (sip-skill-value shard.characters slot skill 0))
+  gh-session : GameHarvest, GameInput, GvPlayer, Integer -> GhRequest
+  gh-session (state) (input) (player) (slot) =
+    let request = list-at state.requests slot
+    in let same-player = request.serial == input.session.serial
+    in let changed = not same-player | request.connection /= input.connection
+    in let reset = if not changed then 0 else
+      let a = __record-set request "serial" input.session.serial
+      in let b = __record-set request "connection" input.connection
+      in let c = __record-set request "tool" 0
+      in let d = __record-set request "target" 0
+      in let e = __record-set request "expires" 0
+      in let f = __record-set request "next" (if same-player then request.next else 0) in 0
+    in let actor = ep-actor state.vendor.currency.world player.actor
+    in let mining = gh-skill-baseline actor state.vendor.game slot 45
+    in let lumber = gh-skill-baseline actor state.vendor.game slot 44
+    in let fishing = gh-skill-baseline actor state.vendor.game slot 18
+    in request
+  gh-site-find : GameHarvest, Integer, Integer, Integer, Integer, Integer -> Integer
+  gh-site-find (state) (resource) (x) (y) (z) (i) = if i == state.count then -1
+    else let site = list-at state.sites i
+    in if site.resource == resource & site.x == x & site.y == y & site.z == z then i
+    else gh-site-find state resource x y z (i + 1)
+  gh-site : GameHarvest, GvPlayer, Integer, Integer, Integer, Integer -> Integer
+  gh-site (state) (player) (resource) (x) (y) (z) =
+    let found = gh-site-find state resource x y z 0
+    in if found >= 0 then (list-at state.sites found).node
+    else if state.count == 256 then -1
+    else let world = state.vendor.currency.world
+    in let node = eh-source world resource (ep-actor world player.actor).place
+    in if node < 1 then -1
+    else let site = list-at state.sites state.count
+    in let a = __record-set site "x" x
+    in let b = __record-set site "y" y
+    in let c = __record-set site "z" z
+    in let d = __record-set site "resource" resource
+    in let e = __record-set site "node" node
+    in let count = __record-set state "count" (state.count + 1)
+    in node
+
+Page 1

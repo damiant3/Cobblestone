@@ -1,0 +1,215 @@
+Chapter: SparkScenePanel
+  cites Spark chapter SparkScene
+  cites Spark chapter SparkVideoPanel
+  cites Spark chapter TextureMap
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Game chapter Rasterizer
+
+Section: Project View
+
+  ScnView = record { scv-project : ScnProject, scv-files : List (List Text), scv-root : Text, scv-textures : List ScnTexture, scv-selected : Integer, scv-epoch : Integer, scv-busy : Boolean }
+
+  scnp-status : Text -> Integer
+  scnp-status (s) = let e = dom-set-text (dom-get "scene-status") s in 0
+
+  spark-scene-panel : DomElement -> Integer
+  spark-scene-panel (parent) =
+    let box = svp-el parent "section" "scene" ""
+    in let css = svp-el box "style" "" "#scene{margin:24px 0;padding:16px;background:#1d2027;border-radius:8px}#scene button,#scene select,#scene input{font:inherit;color:#e8e6e1;background:#292d36;border:1px solid #4b505c;border-radius:5px;padding:6px 9px;margin:4px}#scene button{cursor:pointer}#scene button:hover{border-color:#e0a040}#scene input[type=number]{width:72px}#scene input[type=range]{width:140px;accent-color:#e0a040}#scene li{padding:5px 0;overflow-wrap:anywhere}#scene canvas{display:block;margin:12px 0;border-radius:6px;width:100%;max-width:640px;height:auto;background:#101a28}#scene-status{color:#c5bdab}"
+    in let title = svp-el box "h2" "" "3D scene"
+    in let status = svp-el box "p" "scene-status" "Open a project to build a scene with its image textures."
+    in let body = svp-el box "div" "scene-body" ""
+    in 0
+
+  spark-scene-load : List (List Text), Text -> Integer
+  spark-scene-load (files) (root) =
+    let epoch = state-set "scene-epoch" (state-get "scene-epoch" + 1)
+    in let clear = dom-set-html (dom-get "scene-body") ""
+    in let at = svp-find files (root & "/Scene/scene.json") 0
+    in if at < 0 then scnp-loaded files root epoch ""
+    else let row = list-at files at
+    in if text-to-integer (json-obj-field row "size") == 0 then scnp-loaded files root epoch "empty scene file"
+    else file-read-then (json-obj-field row "name") 0 (text-to-integer (json-obj-field row "size")) (\r -> scnp-loaded files root epoch (svp-text r))
+
+  scnp-loaded : List (List Text), Text, Integer, Text -> Integer
+  scnp-loaded (files) (root) (epoch) (text) =
+    if epoch /= state-get "scene-epoch" then 0
+    else let p = scn-read text
+    in if text-length (p.scp-error) > 0 then scnp-status (p.scp-error & " The file has not been changed.")
+    else let s = ScnView { scv-project = p, scv-files = files, scv-root = root, scv-textures = [], scv-selected = 0, scv-epoch = epoch, scv-busy = True }
+    in let ui = scnp-ui s
+    in scnp-load-textures s 0
+
+  scnp-range : DomElement, Text, Text, Integer, Integer, Integer -> DomElement
+  scnp-range (box) (id) (label) (lo) (hi) (value) =
+    let l = dom-set-attr (svp-el box "label" "" label) "for" id
+    in dom-set-value (dom-set-attr (dom-set-attr (dom-set-attr (dom-set-attr (svp-el box "input" id "") "type" "range") "min" (show lo)) "max" (show hi)) "step" "1") (show value)
+
+  scnp-number : DomElement, Text, Text -> DomElement
+  scnp-number (box) (id) (label) =
+    let l = dom-set-attr (svp-el box "label" "" label) "for" id
+    in dom-set-value (dom-set-attr (dom-set-attr (dom-set-attr (svp-el box "input" id "") "type" "number") "min" "-10") "max" "10") "0"
+
+  scnp-ui : ScnView -> Integer
+  scnp-ui (s) =
+    let box = dom-set-html (dom-get "scene-body") ""
+    in let note = svp-el box "p" "" "Add a mesh, select it, then choose a project image as its texture."
+    in let tools = svp-el box "div" "" "Mesh: "
+    in let shape = svp-el tools "select" "scene-shape" ""
+    in let cube = dom-set-attr (svp-el shape "option" "" "Cube") "value" "cube"
+    in let sphere = dom-set-attr (svp-el shape "option" "" "Sphere") "value" "sphere"
+    in let plane = dom-set-attr (svp-el shape "option" "" "Plane") "value" "plane"
+    in let add = dom-on-click (svp-el tools "button" "scene-add" "Add mesh") (\x -> scnp-add s)
+    in let list = svp-el box "ol" "scene-objects" ""
+    in let edit = svp-el box "div" "" "Selected object: "
+    in let x = scnp-number edit "scene-x" "X"
+    in let y = scnp-number edit "scene-y" "Y"
+    in let z = scnp-number edit "scene-z" "Z"
+    in let tl = svp-el edit "label" "" "Texture: "
+    in let tex = svp-el edit "select" "scene-texture" ""
+    in let empty = dom-set-attr (svp-el tex "option" "" "Checkerboard") "value" ""
+    in let missing = dom-set-style (svp-el tex "option" "scene-missing-texture" "") "display" "none"
+    in let choices = scnp-texture-options s tex 0
+    in let apply = dom-on-click (svp-el edit "button" "scene-apply" "Apply") (\x -> scnp-apply s)
+    in let canvas = svp-el box "canvas" "scene-canvas" ""
+    in let camera = svp-el box "div" "" "Camera: "
+    in let yaw = scnp-range camera "scene-yaw" "Orbit" (0 - 180) 180 (s.scv-project.scp-yaw)
+    in let yk = dom-on-input yaw (\x -> scnp-camera s)
+    in let pitch = scnp-range camera "scene-pitch" "Elevation" (0 - 75) 75 (s.scv-project.scp-pitch)
+    in let pk = dom-on-input pitch (\x -> scnp-camera s)
+    in let zoom = scnp-range camera "scene-distance" "Distance" 2 30 (s.scv-project.scp-distance)
+    in let zk = dom-on-input zoom (\x -> scnp-camera s)
+    in let save = dom-on-click (svp-el box "button" "scene-save" "Save scene") (\x -> scnp-save s)
+    in let gen = dom-on-click (svp-el box "button" "scene-generate" "Generate 3D") (\x -> scnp-status "3D generation is unavailable: no 3D model is connected. You can build a scene from meshes and project textures.")
+    in 0
+
+  scnp-texture-options : ScnView, DomElement, Integer -> Integer
+  scnp-texture-options (s) (select) (i) =
+    if i >= list-length (s.scv-files) then 0
+    else let row = list-at (s.scv-files) i
+    in let path = json-obj-field row "path"
+    in let low = text-to-lower path
+    in let n = text-length low
+    in let ext = if n >= 4 then substring low (n - 4) 4 else ""
+    in let rel = substring path (text-length (s.scv-root) + 1) (text-length path - text-length (s.scv-root) - 1)
+    in let option = if ext == ".png" | ext == ".jpg" | ext == "jpeg" | ext == "webp" then dom-set-attr (svp-el select "option" "" rel) "value" rel else select
+    in scnp-texture-options s select (i + 1)
+
+  scnp-has : List ScnTexture, Text, Integer -> Boolean
+  scnp-has (xs) (path) (i) = if i >= list-length xs then False else if (list-at xs i).sct-path == path then True else scnp-has xs path (i + 1)
+
+  scnp-load-textures : ScnView, Integer -> Integer
+  scnp-load-textures (s) (i) =
+    if s.scv-epoch /= state-get "scene-epoch" then 0
+    else if i >= list-length (s.scv-project.scp-objects) then (let a = __record-set s "scv-busy" False in let b = scnp-rows s in let c = scnp-select s (s.scv-selected) in scnp-draw s)
+    else let path = (list-at (s.scv-project.scp-objects) i).sco-texture
+    in let at = svp-find (s.scv-files) (s.scv-root & "/" & path) 0
+    in if text-length path == 0 | at < 0 | scnp-has (s.scv-textures) path 0 then scnp-load-textures s (i + 1)
+    else let msg = scnp-status ("Reading texture " & path)
+    in texture-pixels-then (json-obj-field (list-at (s.scv-files) at) "name") 128 128 (\px -> scnp-texture-read s i path px)
+
+  scnp-texture-read : ScnView, Integer, Text, List Integer -> Integer
+  scnp-texture-read (s) (i) (path) (px) =
+    if s.scv-epoch /= state-get "scene-epoch" then 0
+    else let xs = if list-length px == 16384 then list-push (s.scv-textures) (ScnTexture { sct-path = path, sct-data = Texture2D { tex-width = 128, tex-height = 128, tex-pixels = px, tex-wrap = WrapClamp, tex-filter = FilterNearest } }) else s.scv-textures
+    in let a = __record-set s "scv-textures" xs
+    in scnp-load-textures s (i + 1)
+
+  scnp-rows : ScnView -> Integer
+  scnp-rows (s) = let box = dom-set-html (dom-get "scene-objects") "" in scnp-row s box 0
+
+  scnp-row : ScnView, DomElement, Integer -> Integer
+  scnp-row (s) (box) (i) =
+    if i >= list-length (s.scv-project.scp-objects) then 0
+    else let o = list-at (s.scv-project.scp-objects) i
+    in let missing = text-length (o.sco-texture) > 0 & scnp-has (s.scv-textures) (o.sco-texture) 0 == False
+    in let row = svp-el box "li" "" (o.sco-shape & " (" & show (o.sco-x) & ", " & show (o.sco-y) & ", " & show (o.sco-z) & ") " & (o.sco-texture) & (if missing then " [missing or unreadable texture] " else " "))
+    in let select = dom-on-click (svp-el row "button" ("scene-select" & show i) "Select") (\x -> scnp-select s i)
+    in let remove = dom-on-click (svp-el row "button" ("scene-remove" & show i) "Remove") (\x -> scnp-remove s i)
+    in scnp-row s box (i + 1)
+
+  scnp-select : ScnView, Integer -> Integer
+  scnp-select (s) (i) =
+    if i < 0 | i >= list-length (s.scv-project.scp-objects) then 0
+    else let selected = __record-set s "scv-selected" i
+    in let o = list-at (s.scv-project.scp-objects) i
+    in let a = dom-set-value (dom-get "scene-x") (show (o.sco-x))
+    in let b = dom-set-value (dom-get "scene-y") (show (o.sco-y))
+    in let c = dom-set-value (dom-get "scene-z") (show (o.sco-z))
+    in let missing = text-length (o.sco-texture) > 0 & scnp-has (s.scv-textures) (o.sco-texture) 0 == False
+    in let option = dom-set-style (dom-set-attr (dom-set-text (dom-get "scene-missing-texture") ("Unavailable: " & o.sco-texture)) "value" (if missing then o.sco-texture else "")) "display" (if missing then "block" else "none")
+    in let d = dom-set-value (dom-get "scene-texture") (o.sco-texture)
+    in scnp-status ("Selected " & o.sco-shape & " " & show (i + 1))
+
+  scnp-add : ScnView -> Integer
+  scnp-add (s) =
+    if s.scv-busy then 0
+    else let xs = list-push (for o in s.scv-project.scp-objects -> o) (ScnObject { sco-shape = dom-get-value (dom-get "scene-shape"), sco-x = 0, sco-y = 0, sco-z = 0, sco-texture = "" })
+    in let err = scn-check xs 0
+    in if text-length err > 0 then scnp-status err
+    else let p = __record-set (s.scv-project) "scp-objects" xs
+    in let rows = scnp-rows s
+    in let select = scnp-select s (list-length xs - 1)
+    in scnp-draw s
+
+  scnp-apply : ScnView -> Integer
+  scnp-apply (s) =
+    if s.scv-busy then 0
+    else let i = s.scv-selected
+    in if i < 0 | i >= list-length (s.scv-project.scp-objects) then scnp-status "Add or select an object first."
+    else let x = dom-get-value (dom-get "scene-x")
+    in let y = dom-get-value (dom-get "scene-y")
+    in let z = dom-get-value (dom-get "scene-z")
+    in if show (text-to-integer x) /= x | show (text-to-integer y) /= y | show (text-to-integer z) /= z then scnp-status "Object coordinates must be whole numbers."
+    else let previous = list-at (s.scv-project.scp-objects) i
+    in let o = ScnObject { sco-shape = previous.sco-shape, sco-x = text-to-integer x, sco-y = text-to-integer y, sco-z = text-to-integer z, sco-texture = dom-get-value (dom-get "scene-texture") }
+    in let err = scn-check [o] 0
+    in if text-length err > 0 then scnp-status err
+    else let xs = list-set-at (s.scv-project.scp-objects) i o
+    in let p = __record-set (s.scv-project) "scp-objects" xs
+    in let busy = __record-set s "scv-busy" True
+    in let release = __record-set s "scv-textures" (scnp-retain (s.scv-textures) xs 0 [])
+    in scnp-load-textures s 0
+
+  scnp-without : List ScnObject, Integer, Integer, List ScnObject -> List ScnObject
+  scnp-without (xs) (drop) (i) (acc) = if i >= list-length xs then acc else scnp-without xs drop (i + 1) (if i == drop then acc else list-push acc (list-at xs i))
+
+  scnp-remove : ScnView, Integer -> Integer
+  scnp-remove (s) (i) =
+    if s.scv-busy then 0
+    else let xs = scnp-without (s.scv-project.scp-objects) i 0 []
+    in let p = __record-set (s.scv-project) "scp-objects" xs
+    in let selected = __record-set s "scv-selected" 0
+    in let release = __record-set s "scv-textures" (scnp-retain (s.scv-textures) xs 0 [])
+    in let busy = __record-set s "scv-busy" True
+    in scnp-load-textures s 0
+
+  scnp-referenced : List ScnObject, Text, Integer -> Boolean
+  scnp-referenced (xs) (path) (i) = if i >= list-length xs then False else if (list-at xs i).sco-texture == path then True else scnp-referenced xs path (i + 1)
+
+  scnp-retain : List ScnTexture, List ScnObject, Integer, List ScnTexture -> List ScnTexture
+  scnp-retain (textures) (objects) (i) (acc) =
+    if i >= list-length textures then acc
+    else let t = list-at textures i
+    in scnp-retain textures objects (i + 1) (if scnp-referenced objects (t.sct-path) 0 then list-push acc t else acc)
+
+  scnp-camera : ScnView -> Integer
+  scnp-camera (s) =
+    let p = s.scv-project
+    in let yaw = __record-set p "scp-yaw" (text-to-integer (dom-get-value (dom-get "scene-yaw")))
+    in let pitch = __record-set p "scp-pitch" (text-to-integer (dom-get-value (dom-get "scene-pitch")))
+    in let distance = __record-set p "scp-distance" (text-to-integer (dom-get-value (dom-get "scene-distance")))
+    in scnp-draw s
+
+  scnp-draw : ScnView -> Integer
+  scnp-draw (s) =
+    let fb = scn-render (s.scv-project) (s.scv-textures)
+    in let canvas = canvas-pixels (dom-get "scene-canvas") 320 240 (fb.fb-pixels)
+    in let frame = state-set "scene-rendered" (state-get "scene-rendered" + 1)
+    in scnp-status (show (list-length (s.scv-project.scp-objects)) & " objects. Save scene to keep edits.")
+
+  scnp-save : ScnView -> Integer
+  scnp-save (s) =
+    if state-get "writable" /= 1 then scnp-status "This project is read-only. Open a writable folder to save."
+    else file-write-then "Scene/scene.json" (scn-write (s.scv-project)) (\r -> if text-contains r "\"ok\":true" then scnp-status "Scene saved." else scnp-status ("Not saved: " & r))

@@ -1,0 +1,74 @@
+Chapter: MusicT5Kernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ T5-base: RMS normalization at epsilon 1e-6, ReLU feed-forward blocks and
+ unscaled attention with 32 bidirectional relative-position buckets. The
+ integer thresholds below equal T5Attention's logarithmic buckets at distance
+ 128; the reference exports every bucket from -256 through 256.
+
+ We say:
+
+  m5-embed : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  m5-embed (ids) (wb) (yb) (width) (n) (gid) =
+    if gid >= n then 0
+    else act
+      id <- device-load ids (gid / width)
+      device-store-f32 yb gid (device-load-f32 wb (id * width + gid - gid / width * width))
+    end
+
+  m5-squares : Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  m5-squares (xb) (base) (width) (i) (sum) (correction) =
+    if i >= width then sum
+    else act
+      x <- device-load-f32 xb (base + i)
+      let term = x * x - correction
+      in let next = sum + term
+      in m5-squares xb base width (i + 1) next ((next - sum) - term)
+    end
+
+  m5-rms-stat : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  m5-rms-stat (xb) (sb) (width) (rows) (gid) =
+    if gid >= rows then 0
+    else act
+      sum <- m5-squares xb (gid * width) width 0 0.0 0.0
+      device-store-f32 sb gid (1.0 / real-sqrt (sum / real-from-int width + 0.000001))
+    end
+
+  m5-rms-apply : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  m5-rms-apply (xb) (gb) (sb) (yb) (width) (n) (gid) =
+    if gid >= n then 0
+    else device-store-f32 yb gid ((device-load-f32 xb gid * device-load-f32 sb (gid / width)) * device-load-f32 gb (gid - gid / width * width))
+
+  m5-relu : Integer, Integer, Integer, Integer -> [Device] Integer
+  m5-relu (xb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb gid
+      device-store-f32 yb gid (if x > 0.0 then x else 0.0)
+    end
+
+  m5-bucket : Integer -> Integer
+  m5-bucket (rel) =
+    let side = if rel > 0 then 16 else 0
+    in let n = if rel < 0 then 0 - rel else rel
+    in side + (if n < 8 then n else if n < 12 then 8 else if n < 16 then 9 else if n < 23 then 10 else if n < 32 then 11 else if n < 46 then 12 else if n < 64 then 13 else if n < 91 then 14 else 15)
+
+  m5-buckets : Integer, Integer, Integer, Integer -> [Device] Integer
+  m5-buckets (yb) (start) (n) (gid) = if gid >= n then 0 else device-store yb gid (m5-bucket (start + gid))
+
+  m5-position-bias : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  m5-position-bias (xb) (bb) (mask) (yb) (heads) (seq) (n) (masked) (gid) =
+    if gid >= n then 0
+    else let head = gid / (seq * seq)
+    in let query = gid / seq - head * seq
+    in let key = gid - gid / seq * seq
+    in act
+      valid <- device-load mask key
+      device-store-f32 yb gid (if valid == 0 then masked else device-load-f32 xb gid + device-load-f32 bb (m5-bucket (key - query) * heads + head))
+    end
+
+  m5-mask : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  m5-mask (xb) (mask) (yb) (width) (n) (gid) =
+    if gid >= n then 0
+    else device-store-f32 yb gid (if device-load mask (gid / width) == 0 then 0.0 else device-load-f32 xb gid)

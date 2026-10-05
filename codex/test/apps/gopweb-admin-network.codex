@@ -1,0 +1,91 @@
+Chapter: GopWebAdminNetworkTest
+  cites Works chapter GopWeb
+  cites Net chapter Ethernet
+  cites Foreword chapter Console
+
+  wan-ip : List Integer = [192, 168, 50, 10]
+  wan-peer : List Integer = [192, 168, 50, 42]
+  wan-gateway : List Integer = [192, 168, 50, 1]
+  wan-mac : List Integer = [2, 10, 20, 30, 40, 50]
+  wan-peer-mac : List Integer = [2, 60, 70, 80, 90, 100]
+
+  wan-frame : Integer, Integer, Integer, List Integer -> List Integer
+  wan-frame (source) (sequence) (flags) (payload) =
+    let tcp = tcp-with-checksum (tcp-build-segment source gopweb-port sequence 1001 flags 8192 payload) wan-peer wan-ip
+    in eth-build-frame wan-mac wan-peer-mac eth-type-ipv4 (ip-build-packet wan-peer wan-ip ip-proto-tcp tcp)
+
+  wan-get : Text -> List Integer
+  wan-get (path) = http-text-to-ascii ("GET " & path & " HTTP/1.0") & [13, 10, 13, 10]
+
+  wan-fill : Integer, List Integer -> List Integer
+  wan-fill (n) (acc) = if n <= 0 then acc else wan-fill (n - 1) (list-push acc 97)
+
+  wan-tree-has : WidgetNode, Text -> Boolean
+  wan-tree-has (node) (text) =
+    (when node.wn-kind is WkLabel (label) -> text-contains label text is otherwise -> False)
+    | wan-children-have (node.wn-children) text 0
+
+  wan-children-have : List WidgetNode, Text, Integer -> Boolean
+  wan-children-have (nodes) (text) (i) =
+    if i >= list-length nodes then False
+    else wan-tree-has (list-at nodes i) text | wan-children-have nodes text (i + 1)
+
+  opening : [Console, Concurrent, Network.Read, Network.Write] Nothing =
+    let blk = gopweb-blk-new
+    in let cfg = net-config-static wan-mac wan-ip [255, 255, 255, 0] wan-gateway [192, 168, 50, 1] "fixture"
+    in let lease = __record-set cfg "lease-time" 3600
+    in let saved = gopweb-lease blk cfg
+    in let running = gopweb-state blk 2
+    in let initial = WebMux { listen = web-listen-configured wan-mac [0, 0, 0, 0] [0, 0, 0, 0] gopweb-port, conns = [], served = 0 }
+    in let m0 = gopweb-bind initial cfg
+    in let arp = arp-build-reply wan-peer-mac wan-peer wan-mac wan-ip wan-peer-mac
+    in let observe = \event -> gopweb-observe blk event
+    in act
+      m1 <- web-mux-feed-observed gopweb-route web-observe-none observe [255, 255, 255, 0] m0 arp (list-length arp) gopweb-port
+      let syn = wan-frame 50000 1000 tcp-flag-syn []
+      in act
+        m2 <- web-mux-feed-observed gopweb-route web-observe-none observe [255, 255, 255, 0] m1 syn (list-length syn) gopweb-port
+        let get = wan-frame 50000 1001 (bit-or tcp-flag-psh tcp-flag-ack) (wan-get "/api/health")
+        in act
+          m3 <- web-mux-feed-observed gopweb-route web-observe-none observe [255, 255, 255, 0] m2 get (list-length get) gopweb-port
+          let slot = gopweb-slot-at blk 0
+          in let seen = peek-qword blk gopweb-blk-count == 1 & peek-qword slot 24 == 200 & peek-qword slot 32 > 0 & peek-qword slot 1224 == 1
+          in let peer = list-at (m3.conns) 0
+          in let route-ok = ip-equal (((peer.transport).session).gateway-ip) wan-peer & ip-equal ((((peer.transport).session).conn).remote-ip) wan-peer
+          in let listener = ip-equal (((m3.listen).session).local-ip) wan-ip & ip-equal (((m3.listen).session).gateway-ip) wan-gateway
+          in let path = gopweb-text-read slot 192 0 (peek-qword slot 56) == "/api/health" & peek-qword slot 16 == gopweb-ip-pack wan-peer
+          in let tree = gopweb-tree blk
+          in let display = wan-tree-has tree "192.168.50.10:9100" & wan-tree-has tree "/api/status" & wan-tree-has tree "Running"
+          in let stop = gopweb-action blk gopweb-cmd-stop
+          in act
+            oversized <- web-mux-drain-observed gopweb-route web-observe-none observe m3 0 (peer.transport) (peer.server) (http-text-to-ascii "POST /oversized HTTP/1.0" & [13, 10] & wan-fill (web-mux-pending-budget + 1) [])
+            let refusal-slot = gopweb-slot-at blk 1
+            in let refusal-logged = peek-qword blk gopweb-blk-count == 2 & peek-qword refusal-slot 24 == 413 & gopweb-text-read refusal-slot 192 0 (peek-qword refusal-slot 56) == "/oversized" & list-length (oversized.conns) == 0
+            in act
+            closed <- gopweb-command blk m3
+            let reset = web-closed-reply syn (list-length syn) wan-mac
+            in let reset-seg = frame-seg reset
+            in let reset-ok = tcp-has-flag reset-seg tcp-flag-rst & tcp-has-flag reset-seg tcp-flag-ack & reset-seg.ack-num == 1001 & reset-seg.dst-port == 50000 & eth-src-mac reset == wan-mac & eth-dst-mac reset == wan-peer-mac
+            in let request-seq = peek-qword blk gopweb-blk-command-seq
+            in let odd = poke-qword blk gopweb-blk-command-seq (request-seq + 1)
+            in act
+            deferred <- gopweb-command blk closed
+            let guarded = peek-qword blk gopweb-blk-ack-seq == request-seq & net-io-conn-closed (deferred.listen)
+            in let restore-seq = poke-qword blk gopweb-blk-command-seq request-seq
+            in act
+            print-line-uni ("leased listener survives accept " & show listener)
+            print-line-uni ("LAN peer reply route " & show route-ok)
+            print-line-uni ("standard route structured log " & show (seen & path))
+            print-line-uni ("overview shows binding and routes " & show display)
+            print-line-uni ("stop closes listener and connections " & show (net-io-conn-closed (closed.listen) & list-length (closed.conns) == 0))
+            print-line-uni ("stop acknowledged without receive " & show (peek-qword blk gopweb-blk-state == 0 & peek-qword blk gopweb-blk-command-seq == peek-qword blk gopweb-blk-ack-seq))
+            print-line-uni ("closed port reset uses peer link " & show reset-ok)
+            print-line-uni ("partial command publication deferred " & show guarded)
+            print-line-uni ("oversized request logged " & show refusal-logged)
+            end
+            end
+            end
+          end
+        end
+      end
+    end

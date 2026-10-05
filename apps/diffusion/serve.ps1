@@ -159,19 +159,19 @@ $schema = [ordered]@{
         hr_modules = @{ type = 'array'; items = @{ type = 'string' }; description = 'Hires fix VAE / text encoder: file names from the models folder''s VAE and text_encoder directories (Forge''s hr_additional_modules). The last VAE file encodes and decodes the hires pass; a text encoder file changes nothing on SDXL or SD1.5, as in Forge.' }
         refiner = @{ type = 'string'; description = 'Refiner: an SDXL checkpoint file name the sampling switches to at refiner_switch_at; with hires fix, in the hires pass only.' }
         refiner_switch_at = @{ type = 'number'; minimum = 0; maximum = 1; description = 'Refiner: the fraction of model calls after which the refiner takes over, default 0.8.' }
-        freeu = @{ type = 'boolean'; description = 'Forge''s FreeU Integrated (SDXL and SD1.5; not with Flux or a refiner): the output blocks'' backbone and skip features rescaled.' }
+        freeu = @{ type = 'boolean'; description = 'Forge''s FreeU Integrated (SDXL and SD1.5, not Flux; with a refiner, until the switch, as Forge''s reloaded refiner is unpatched): the output blocks'' backbone and skip features rescaled.' }
         freeu_b1 = @{ type = 'number'; minimum = 0; maximum = 2; description = 'FreeU B1, default 1.01 (Forge''s default preset; its SDXL preset is 1.3, 1.4, 0.9, 0.2).' }
         freeu_b2 = @{ type = 'number'; minimum = 0; maximum = 2; description = 'FreeU B2, default 1.02.' }
         freeu_s1 = @{ type = 'number'; minimum = 0; maximum = 4; description = 'FreeU S1, default 0.99.' }
         freeu_s2 = @{ type = 'number'; minimum = 0; maximum = 4; description = 'FreeU S2, default 0.95.' }
         freeu_start = @{ type = 'number'; minimum = 0; maximum = 1; description = 'FreeU start, a fraction of the steps, default 0: FreeU runs where the sampler''s step / (steps - 1) is within start and end, as Forge gates it.' }
         freeu_end = @{ type = 'number'; minimum = 0; maximum = 1; description = 'FreeU end, a fraction of the steps, default 1.' }
-        pag_scale = @{ type = 'number'; minimum = 0; maximum = 100; description = 'Forge''s PerturbedAttentionGuidance Integrated, on at this scale (Forge''s default 3); one more model call per step. Not with Flux or a refiner.' }
-        sag = @{ type = 'boolean'; description = 'Forge''s SelfAttentionGuidance Integrated: needs cfg above 1 (Forge skips it otherwise); one more model call per step. Not with Flux or a refiner.' }
+        pag_scale = @{ type = 'number'; minimum = 0; maximum = 100; description = 'Forge''s PerturbedAttentionGuidance Integrated, on at this scale (Forge''s default 3); one more model call per step. Not with Flux; with a refiner, until the switch.' }
+        sag = @{ type = 'boolean'; description = 'Forge''s SelfAttentionGuidance Integrated: needs cfg above 1 (Forge skips it otherwise); one more model call per step. Not with Flux; with a refiner, until the switch.' }
         sag_scale = @{ type = 'number'; minimum = -2; maximum = 5; description = 'SAG scale, default 0.5.' }
         sag_blur_sigma = @{ type = 'number'; minimum = 0; maximum = 10; description = 'SAG blur sigma, default 2; above 0.' }
         sag_threshold = @{ type = 'number'; minimum = 0; maximum = 4; description = 'SAG blur mask threshold, default 1.' }
-        dynthres = @{ type = 'boolean'; description = 'Forge''s DynamicThresholding (CFG-Fix) Integrated: the guidance rescaled to the variability the mimic scale would give. Not with Flux or a refiner.' }
+        dynthres = @{ type = 'boolean'; description = 'Forge''s DynamicThresholding (CFG-Fix) Integrated: the guidance rescaled to the variability the mimic scale would give. Not with Flux; with a refiner, until the switch.' }
         dynthres_mimic_scale = @{ type = 'number'; minimum = 0; maximum = 100; description = 'Mimic scale, default 7.' }
         dynthres_threshold_percentile = @{ type = 'number'; minimum = 0; maximum = 1; description = 'Threshold percentile, default 1.' }
         dynthres_mimic_mode = @{ type = 'string'; enum = $dtModes; description = 'Mimic scale schedule, default Constant.' }
@@ -398,7 +398,6 @@ function Request-Lines($A) {
     $fu = Arg $A 'freeu' $false; $sg = Arg $A 'sag' $false; $pg = Arg $A 'pag_scale' $null
     if ($fu -isnot [bool] -or $sg -isnot [bool]) { return 'refused: freeu and sag must be true or false' }
     if (($fu -or $sg -or $null -ne $pg) -and $flux) { return 'refused: FreeU, PAG and SAG are for SDXL and SD1.5, not Flux' }
-    if (($fu -or $sg -or $null -ne $pg) -and $ref -ne '') { return 'refused: FreeU, PAG and SAG with a refiner are not run here' }
     if ($fu) {
         $fr = [ordered]@{ freeu_b1 = @(1.01, 0, 2); freeu_b2 = @(1.02, 0, 2); freeu_s1 = @(0.99, 0, 4); freeu_s2 = @(0.95, 0, 4) }
         foreach ($k in $fr.Keys) {
@@ -429,7 +428,6 @@ function Request-Lines($A) {
     if ($dt -isnot [bool]) { return 'refused: dynthres must be true or false' }
     if ($dt) {
         if ($flux) { return 'refused: dynamic thresholding is for SDXL and SD1.5, not Flux' }
-        if ($ref -ne '') { return 'refused: dynamic thresholding with a refiner is not run here' }
         $dn = [ordered]@{ dynthres_mimic_scale = @(7, 0, 100); dynthres_threshold_percentile = @(1, 0, 1) }
         foreach ($k in $dn.Keys) { $v = Arg $A $k $dn[$k][0]; if (-not (IsNum $v) -or [double]$v -lt $dn[$k][1] -or [double]$v -gt $dn[$k][2]) { return "refused: $k must be within $($dn[$k][1]) and $($dn[$k][2])" }; $extra.Add("$k=$(PyFloat $v)") }
         $mm = Arg $A 'dynthres_mimic_mode' 'Constant'; if ($dtModes -cnotcontains $mm) { return "refused: dynthres_mimic_mode must be one of: $($dtModes -join ', ')" }; $extra.Add("dynthres_mimic_mode=$mm")
@@ -453,11 +451,12 @@ function Request-Lines($A) {
 
 # The resident guest: one codex-vm for the server's life, started by the first
 # call and again after a failure. It serves request-<n>.txt from its staging
-# root in turn and answers each in done-<n>.txt under -Output; between calls
+# root in turn and answers each in done-<n>.txt in its own directory under
+# -Output, which no other server reads or clears; between calls
 # the process is suspended, so an idle server costs no CPU while the weights
 # stay on the device.
 Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class CodexImageProc { [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr h); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr h); }'
-$script:guest = $null; $script:root = $null; $script:n = 0; $script:lastUse = [DateTime]::UtcNow
+$script:guest = $null; $script:root = $null; $script:out = $null; $script:n = 0; $script:lastUse = [DateTime]::UtcNow
 
 function Stop-Guest {
     if ($script:guest) {
@@ -472,17 +471,21 @@ function Stop-Guest {
         [IO.Directory]::Delete($script:root)
     }
     $script:root = $null
+    if ($script:out -and (Test-Path $script:out)) { [IO.Directory]::Delete($script:out, $true) }
+    $script:out = $null
 }
 
 function Start-Guest {
-    $script:root = Join-Path $staging ([guid]::NewGuid().ToString('N'))
+    $gid = [guid]::NewGuid().ToString('N')
+    $script:root = Join-Path $staging $gid
     New-Item -ItemType Directory $script:root | Out-Null
     New-Item -ItemType Junction -Path (Join-Path $script:root 'models') -Target $Models | Out-Null
+    $script:out = Join-Path $Output ".guest-$gid"
+    New-Item -ItemType Directory $script:out | Out-Null
     $script:n = 0
-    foreach ($old in [IO.Directory]::GetFiles($Output, 'done-*.txt')) { [IO.File]::Delete($old) }
     $roots = @('-gpu-files', $script:root)
     foreach ($sub in 'text_encoder', 'VAE') { $d = Join-Path $Models $sub; if (Test-Path -PathType Container $d) { $roots += @('-gpu-files', $d) } }
-    $script:guest = Start-Process -FilePath $vm -ArgumentList (@('-kernel', $Driver, '-disk', $Disk) + $roots + @('-gpu-out', $Output, '-mem', '3072', '-headless', '-output', (Join-Path $script:root 'serial.txt'))) -PassThru -WindowStyle Hidden
+    $script:guest = Start-Process -FilePath $vm -ArgumentList (@('-kernel', $Driver, '-disk', $Disk) + $roots + @('-gpu-out', $script:out, '-mem', '3072', '-headless', '-output', (Join-Path $script:root 'serial.txt'))) -PassThru -WindowStyle Hidden
 }
 
 function Generate($A) {
@@ -501,7 +504,7 @@ function Generate($A) {
         [IO.File]::Move($tmp, (Join-Path $script:root "request-$n.txt"))
         $staged += Join-Path $script:root "request-$n.txt"
         [void][CodexImageProc]::NtResumeProcess($script:guest.Handle)
-        $done = Join-Path $Output "done-$n.txt"
+        $done = Join-Path $script:out "done-$n.txt"
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
         while (-not (Test-Path -PathType Leaf $done) -and -not $script:guest.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
         if (-not (Test-Path -PathType Leaf $done)) {
@@ -515,8 +518,10 @@ function Generate($A) {
         $answer = [IO.File]::ReadAllText($done).Trim()
         [IO.File]::Delete($done)
         if (-not $answer.StartsWith('ok png')) { return Refuse "the driver answered: $answer" }
+        $made = Join-Path $script:out $name
+        if (-not (Test-Path -PathType Leaf $made)) { return Refuse "the driver wrote no image ($answer)" }
         $png = Join-Path $Output $name
-        if (-not (Test-Path -PathType Leaf $png)) { return Refuse "the driver wrote no image ($answer)" }
+        [IO.File]::Move($made, $png, $true)
         $head = [byte[]]::new(8); $fs = [IO.File]::OpenRead($png); [void]$fs.Read($head, 0, 8); $fs.Dispose()
         if ([Convert]::ToHexString($head) -ne '89504E470D0A1A0A') { return Refuse "the driver wrote $name, which is not a PNG" }
         return @{ content = @(@{ type = 'text'; text = $png }); structuredContent = @{ path = $png; request = $req }; isError = $false }

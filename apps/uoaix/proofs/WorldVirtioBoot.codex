@@ -1,0 +1,35 @@
+Chapter: WorldVirtioBoot
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldDiskWrite
+  cites Uoaix chapter WorldDiskRead
+  cites Kernel chapter VirtioBlkX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Result
+
+  uvb-run : VbxState -> [Console, Device.Block] Nothing
+  uvb-run (state) =
+    let device = UoVirtio state
+    in act
+      opened <- us-open-on device 0 32
+      when opened
+        is Err (e) -> print-line-uni ("FAIL virtio store open " & e)
+        is Ok (store) ->
+          if state.readonly then let bytes = alloc-bytes 8
+          in let zero = poke-qword bytes 0 0
+          in act
+            denied <- us-append store 1 0 0 bytes 8
+            udw-check "readonly store refuses commit" (is-err denied & store.head == 0 & store.fault == 1)
+          end
+          else if store.head == 0 then udw-boot device
+          else udr-read store 0 False
+      let fault = __record-set state.queue "fault" 1
+      in act
+        failed <- us-open-on device 0 32
+        udw-check "read fault propagated" (when failed is Ok (s) -> False is Err (e) -> e == "virtio block queue faulted")
+      end
+    end
+
+  opening : [Console, Device.Block] Nothing = when vbx-find pci-scan-all
+    is Err (e) -> print-line-uni ("FAIL virtio device " & e)
+    is Ok (state) -> uvb-run state

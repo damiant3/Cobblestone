@@ -1,0 +1,160 @@
+Chapter: EconomyActions
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyCurrency
+
+  EaProposal = record { actor : Integer, kind : Integer, target : Integer,
+    item : Integer, quantity : Integer, offer : Integer, limit : Integer,
+    recipe : Integer, station : Integer, node : Integer }
+  EaOffer = record { owner : Integer, kind : Integer, target : Integer,
+    item : Integer, remaining : Integer, limit : Integer, expires : Integer }
+  EaEvent = record { sequence : Integer, hour : Integer, principal : Integer,
+    actor : Integer, kind : Integer, target : Integer, item : Integer,
+    quantity : Integer, offer : Integer, result : Integer, price : Integer,
+    money-sequence : Integer, proposed-kind : Integer, limit : Integer,
+    recipe : Integer, station : Integer, node : Integer }
+  EaWorld = record { world : EpWorld, offers : List EaOffer, offer-count : Integer,
+    events : List EaEvent, event-count : Integer, sequence : Integer }
+
+  ea-offers : Integer, List EaOffer -> List EaOffer
+  ea-offers (i) (xs) = if i == 256 then xs
+    else let row = EaOffer { owner = 0, kind = 0, target = 0, item = 0,
+      remaining = 0, limit = 0, expires = 0 }
+    in ea-offers (i + 1) (list-push xs row)
+  ea-events : Integer, List EaEvent -> List EaEvent
+  ea-events (i) (xs) = if i == 1024 then xs
+    else let row = EaEvent { sequence = 0, hour = 0, principal = 0, actor = 0,
+      kind = 0, target = 0, item = 0, quantity = 0, offer = 0, result = 0,
+      price = 0, money-sequence = 0, proposed-kind = 0, limit = 0,
+      recipe = 0, station = 0, node = 0 }
+    in ea-events (i + 1) (list-push xs row)
+  ea-new : EpWorld -> EaWorld
+  ea-new (w) = EaWorld { world = w, offers = ea-offers 0 (__list-with-capacity 256),
+    offer-count = 0, events = ea-events 0 (__list-with-capacity 1024), event-count = 0, sequence = 0 }
+  ea-room : EaWorld, Integer -> Boolean
+  ea-room (e) (count) = count >= 0 & count <= 1024 & e.event-count <= 1024 - count
+    & e.sequence <= ep-limit - count
+  ea-log : EaWorld, Integer, Integer, EaProposal, Integer, Integer -> Integer
+  ea-log (e) (principal) (kind) (p) (result) (price) =
+    let row = list-at e.events e.event-count
+    in let a = __record-set row "sequence" (e.sequence + 1)
+    in let b = __record-set row "hour" e.world.hour
+    in let c = __record-set row "principal" principal
+    in let d = __record-set row "actor" p.actor
+    in let f = __record-set row "kind" kind
+    in let g = __record-set row "target" p.target
+    in let h = __record-set row "item" p.item
+    in let i = __record-set row "quantity" p.quantity
+    in let j = __record-set row "offer" p.offer
+    in let k = __record-set row "result" result
+    in let l = __record-set row "price" price
+    in let m = __record-set row "money-sequence" e.world.money.sequence
+    in let m1 = __record-set row "proposed-kind" p.kind
+    in let m2 = __record-set row "limit" p.limit
+    in let m3 = __record-set row "recipe" p.recipe
+    in let m4 = __record-set row "station" p.station
+    in let m5 = __record-set row "node" p.node
+    in let n = __record-set e "sequence" (e.sequence + 1)
+    in let o = __record-set e "event-count" (e.event-count + 1)
+    in result
+  ea-ack : EaWorld -> Integer
+  ea-ack (e) = let a = __record-set e "event-count" 0 in 0
+  ea-request : Integer, Integer -> EaProposal
+  ea-request (actor) (kind) = EaProposal { actor = actor, kind = kind, target = 0,
+    item = 0, quantity = 0, offer = 0, limit = 0, recipe = 0, station = 0, node = 0 }
+
+  ea-post : EaWorld, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ea-post (e) (principal) (kind) (target) (item) (quantity) (limit) (expires) =
+    let w = e.world
+    in if eu-catalog w then -17
+    else if not (ep-valid-actor w principal) | (kind /= 2 & kind /= 3)
+      | (target /= 0 & not (ep-valid-actor w target)) | target == principal
+      | not (eg-id w.catalog item) | quantity < 1 | quantity > ep-stock-limit
+      | limit < 1 | limit > 1000000 | expires < w.hour | expires > ep-limit then -1
+    else if e.offer-count == 256 | not (ea-room e 1) then -14
+    else let actor = ep-actor w principal
+    in if kind == 3 & ep-at actor.stock item < quantity then -1
+    else if kind == 2 & (em-purse w.money actor.purse).coin < limit * quantity then -1
+    else ea-record-offer e principal kind target item quantity limit expires
+  ea-record-offer : EaWorld, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ea-record-offer (e) (principal) (kind) (target) (item) (quantity) (limit) (expires) =
+    let id = e.offer-count + 1
+    in let row = list-at e.offers e.offer-count
+    in let a = __record-set row "owner" principal
+    in let b = __record-set row "kind" kind
+    in let c = __record-set row "target" target
+    in let d = __record-set row "item" item
+    in let f = __record-set row "remaining" quantity
+    in let g = __record-set row "limit" limit
+    in let h = __record-set row "expires" expires
+    in let i = __record-set e "offer-count" id
+    in let request = ea-request principal kind
+    in let j = __record-set request "target" target
+    in let k = __record-set request "item" item
+    in let l = __record-set request "quantity" quantity
+    in let m = __record-set request "offer" id
+    in let n = __record-set request "limit" limit
+    in let logged = ea-log e principal 11 request id limit
+    in id
+  ea-cancel : EaWorld, Integer, Integer -> Integer
+  ea-cancel (e) (principal) (offer) =
+    if not (ep-valid-actor e.world principal) | offer < 1 | offer > e.offer-count then -1
+    else let row = list-at e.offers (offer - 1)
+    in if row.owner /= principal | row.remaining == 0 then -1
+    else if not (ea-room e 1) then -14
+    else let request = ea-request principal 12
+    in let a = __record-set request "target" row.target
+    in let b = __record-set request "item" row.item
+    in let c = __record-set request "quantity" row.remaining
+    in let d = __record-set request "offer" offer
+    in let g = __record-set request "limit" row.limit
+    in let f = __record-set row "remaining" 0
+    in ea-log e principal 12 request 0 row.limit
+
+  ea-trade : EaWorld, EaProposal -> Integer
+  ea-trade (e) (p) =
+    if p.offer < 1 | p.offer > e.offer-count then -12
+    else let offer = list-at e.offers (p.offer - 1)
+    in if offer.owner /= p.target | offer.owner == p.actor
+      | offer.kind /= (if p.kind == 2 then 3 else 2)
+      | (offer.target /= 0 & offer.target /= p.actor) | offer.item /= p.item
+      | offer.remaining < p.quantity | offer.expires < e.world.hour then -12
+    else let buyer = if p.kind == 2 then p.actor else p.target
+    in let seller = if p.kind == 2 then p.target else p.actor
+    in let price = ep-price e.world seller p.item
+    in if price < 1 then -1
+    else if p.kind == 2 & (price > p.limit | price < offer.limit) then -13
+    else if p.kind == 3 & (price < p.limit | price > offer.limit) then -13
+    else let result = ep-buy e.world buyer seller p.item p.quantity
+    in if result /= 0 then result
+    else let a = __record-set offer "remaining" (offer.remaining - p.quantity) in 0
+  ea-shape : EaProposal -> Boolean
+  ea-shape (p) = if p.kind == 1 then
+      p.target == 0 & p.item == 0 & p.quantity == 0 & p.offer == 0 & p.limit == 0
+      & ((p.node > 0 & p.recipe == 0 & p.station == 0)
+        | (p.node == 0 & p.recipe > 0 & p.station > 0))
+    else if p.kind == 2 | p.kind == 3 then
+      p.target > 0 & p.item > 0 & p.quantity > 0 & p.quantity <= ep-stock-limit
+      & p.offer > 0 & p.limit > 0 & p.limit <= 1000000
+      & p.recipe == 0 & p.station == 0 & p.node == 0
+    else if p.kind == 4 then p.target == 0 & p.quantity == 1 & p.offer == 0
+      & p.limit == 0 & p.recipe == 0 & p.station == 0 & p.node == 0
+    else False
+  ea-execute : EaWorld, Integer, Integer, EaProposal -> Integer
+  ea-execute (e) (principal) (kind) (p) =
+    if principal /= p.actor | not (ep-valid-actor e.world principal) then -10
+    else if kind /= p.kind then -15
+    else if kind < 1 | kind > 4 then -11
+    else if not (ea-shape p) then -16
+    else if (kind == 2 | kind == 3) & eu-catalog e.world then -17
+    else if kind == 1 then if p.node > 0 then eh-harvest e.world principal p.node
+      else ep-craft e.world principal p.recipe p.station
+    else if kind == 4 then ep-eat e.world principal p.item
+    else ea-trade e p
+  ea-submit : EaWorld, Integer, Integer, EaProposal -> Integer
+  ea-submit (e) (principal) (kind) (p) =
+    if not (ea-room e 1) then -14
+    else let price = if (kind == 2 | kind == 3) & eg-id e.world.catalog p.item then
+      ep-price e.world (if kind == 2 then p.target else principal) p.item else 0
+    in let result = ea-execute e principal kind p
+    in ea-log e principal kind p result price

@@ -1,0 +1,28 @@
+Chapter: GameCipherProof
+  cites Uoaix chapter GameBlowfish
+  cites Foreword chapter Sha256
+  cites Foreword chapter Result
+
+  gcp-decode : GameCipher, Integer, List Integer -> Result (List Integer) Text
+  gcp-decode (cipher) (i) (bytes) =
+    if i >= 231397 then Ok bytes
+    else let mark = __heap-save
+    in when gb-byte cipher (bit-and (i * 73 + 19) 255)
+      is Err (e) -> Err e
+      is Ok (plain) ->
+        let appended = list-push bytes plain
+        in let restored = __heap-restore mark
+        in gcp-decode cipher (i + 1) appended
+
+  opening : [Console] Nothing =
+    let tables = gb-tables-new 0
+    in let cipher = gb-new tables
+    in when gcp-decode cipher 0 (__list-with-capacity 231397)
+      is Err (e) -> print-line-uni ("FAIL " & e)
+      is Ok (bytes) -> act
+        print-line-uni (sha256-to-hex (sha256 bytes))
+        print-line-uni ("table " & show cipher.table & " position " & show cipher.position)
+        let before = cipher.position
+        in let refused = is-err (gb-byte cipher 256)
+        in print-line-uni ("non-byte refused unchanged " & show (refused & cipher.position == before))
+      end

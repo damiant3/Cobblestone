@@ -1,0 +1,36 @@
+Chapter: NvGspArgsTest
+  cites Kernel chapter NvGspArgs
+  cites Foreword chapter Format
+
+ The expected output is tinygrad's own init_rm_args and init_libos_args,
+ run by Python against allocation n at 0x1000000000 + n * 0x1000000 with its
+ pages 0x2000 apart: build/nv-gsp-args-oracle.ps1.
+
+Section: Main
+
+  hex-bytes : List Integer, Integer, Text -> Text
+  hex-bytes (bs) (i) (acc) = if i >= list-length bs then acc else hex-bytes bs (i + 1) (acc & fmt-hex-pad (list-at bs i) 2)
+
+  pages : Integer, Integer, Integer, List Integer -> List Integer
+  pages (base) (n) (i) (acc) = if i >= n then acc else pages base n (i + 1) (acc & [base + #2000 * i])
+
+  alloc-base : Integer -> Integer
+  alloc-base (n) = #1000000000 + n * #1000000
+
+  report : Integer, Integer -> [Console] Nothing
+  report (k) (queue-size) = act
+   let total = (nv-gsp-queue-table-size queue-size + 2 * queue-size) / #1000
+   in let ps = pages (alloc-base 0) total 0 []
+   in act
+    print-line-uni ("PT " & show k & " " & hex-bytes (nv-gsp-queue-table ps 0 []) 0 "")
+    print-line-uni ("RM " & show k & " " & hex-bytes (nv-gsp-rm-args (list-at ps 0) queue-size) 0 "")
+    print-line-uni ("TX " & show k & " " & hex-bytes (nv-gsp-tx-header queue-size) 0 "")
+    print-line-uni ("LB " & show k & " " & hex-bytes (nv-gsp-libos-args (alloc-base 2) (alloc-base 1)) 0 "")
+   end
+  end
+
+  opening : [Console] Nothing = act
+   report 0 #40000
+   report 1 #80000
+   report 2 #200000
+  end

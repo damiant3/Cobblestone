@@ -1,0 +1,40 @@
+Chapter: GameCombatCodecProof
+  cites Uoaix chapter GameCombatCodec
+  cites Foreword chapter Result
+  ccp-check : Text, Boolean -> [Console] Nothing
+  ccp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  opening : [Console] Nothing = act
+    source <- cb-state 2 42
+    target <- cb-state 2 7
+    old <- list-at target.actors 0
+    old-serial <- __record-set old "serial" 1
+    old-active <- cb-enlist target old
+    a <- list-at source.actors 0
+    serial <- __record-set a "serial" 1
+    maximum <- __record-set a "maximum" 90
+    corpse <- __record-set a "corpse" 1073741828
+    name <- cb-name a.name "Orc" 0
+    war <- __record-set a "war" True
+    attack <- __record-set a "target" 2
+    due <- __record-set a "due" 999
+    link <- __record-set a "connection" 8
+    draw <- cb-random source 100
+    size <- cbc-size 2
+    buf <- alloc-bytes size
+    encoded <- cbc-encode source buf size
+    restored <- cbc-decode target buf size
+    b <- list-at target.actors 0
+    ccp-check "combat profile corpse and name survive" (is-ok encoded & is-ok restored & b.serial == 1 & b.maximum == 90 & b.corpse == a.corpse & peek-byte b.name 0 == 79)
+    ccp-check "restore clears session and attack timers" (not b.war & b.target == 0 & b.due == 0 & b.connection == 0 & target.tick == 0 & target.seen == -1 & target.count == 0)
+    next-source <- cb-random source 1000
+    next-target <- cb-random target 1000
+    ccp-check "combat RNG continuation survives" (next-source == next-target & source.draws == target.draws)
+    changed <- poke-qword buf (48 + 136 + 24) 0
+    first <- poke-qword buf 48 99
+    bad <- cbc-decode target buf size
+    ccp-check "invalid final row refuses before first mutation" (is-err bad & b.serial == 1)
+    ccp-check "short checkpoint refuses before reading" (is-err (cbc-decode target 0 0))
+    ccp-check "short output refuses before writing" (is-err (cbc-encode source 0 0))
+  end
+
+Page 1

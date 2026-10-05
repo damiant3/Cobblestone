@@ -63,6 +63,32 @@ const runInPage = `async (code, ep, xs) => {
   return { errs, out };
 }`;
 
+// As runInPage, for a kernel that also takes n by uniform at binding 2. The
+// output is pre-filled with `fill` so a store the guard should have refused
+// shows; n under the buffer length is what makes the guard observable, since
+// WebGPU clamps an out-of-bounds store rather than faulting.
+const runGuardedInPage = `async (code, ep, xs, n, fill) => {
+  const a = await navigator.gpu.requestAdapter(); const d = await a.requestDevice();
+  const errs = []; d.pushErrorScope('validation');
+  const m = d.createShaderModule({ code });
+  const info = await m.getCompilationInfo(); for (const x of info.messages) if (x.type === 'error') errs.push(x.message);
+  const len = xs.length, S = GPUBufferUsage.STORAGE, D = GPUBufferUsage.COPY_DST;
+  const x = d.createBuffer({ size: len * 4, usage: S | D });
+  d.queue.writeBuffer(x, 0, new Int32Array(xs));
+  const y = d.createBuffer({ size: len * 4, usage: S | D | GPUBufferUsage.COPY_SRC });
+  d.queue.writeBuffer(y, 0, new Int32Array(len).fill(fill));
+  const u = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | D });
+  d.queue.writeBuffer(u, 0, new Int32Array([n, 0, 0, 0]));
+  const r = d.createBuffer({ size: len * 4, usage: GPUBufferUsage.MAP_READ | D });
+  const p = d.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: ep } });
+  const bg = d.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: y } }, { binding: 1, resource: { buffer: x } }, { binding: 2, resource: { buffer: u } }] });
+  const e = d.createCommandEncoder(); const c = e.beginComputePass(); c.setPipeline(p); c.setBindGroup(0, bg); c.dispatchWorkgroups(Math.ceil(len / 64)); c.end();
+  e.copyBufferToBuffer(y, 0, r, 0, len * 4); d.queue.submit([e.finish()]);
+  const v = await d.popErrorScope(); if (v) errs.push(v.message);
+  await r.mapAsync(GPUMapMode.READ); const out = Array.from(new Int32Array(r.getMappedRange())); r.unmap(); d.destroy();
+  return { errs, out };
+}`;
+
 let edge = null, server = null, work = null;
 try {
   work = mkdtempSync(join(tmpdir(), 'wgsl-f32-'));
@@ -111,6 +137,22 @@ try {
 
   const conv = await grade(code.replaceAll('bitcast<f32>(', 'f32(').replaceAll('bitcast<i32>(', 'i32('));
   ok('control: conversion in place of bitcast is caught', conv.errs.length === 0 && conv.copyBad > 0 && conv.axpyBad > 0 && conv.copyABad > 0 && conv.constABad > 0, `copy ${conv.copyBad}, axpy ${conv.axpyBad}, copy-approx ${conv.copyABad}, const-approx ${conv.constABad} of ${xs.length} differ`);
+
+  // fs-two-guarded: y[2i] = x[i], y[2i+1] = -x[i] below n, the fill above it.
+  const gn = 1001, fill = 0x5A5A5A5A;
+  const negBits = (v) => new Int32Array(new Float32Array([Math.fround(0 - v)]).buffer)[0];
+  const expectGuarded = xs.map((_, i) => i >= gn ? fill : (i % 2 === 0 ? xs[i / 2] : negBits(f[(i - 1) / 2])));
+  const gradeGuarded = async (src) => {
+    const r = await cdp.eval(`(${runGuardedInPage})(${JSON.stringify(src)}, 'fs_two_guarded_main', ${JSON.stringify(xs)}, ${gn}, ${fill})`);
+    return { errs: r.errs, below: r.out.filter((v, i) => i < gn && v !== expectGuarded[i]).length, above: r.out.filter((v, i) => i >= gn && v !== fill).length };
+  };
+  const guardSrc = code.slice(code.indexOf('fn fs_two_guarded_main'));
+  ok('fs-two-guarded lowers to two guarded stores', (guardSrc.slice(0, guardSrc.indexOf('\n}')).match(/if \(.*< n\)\) \{/g) || []).length === 2);
+  const g = await gradeGuarded(code);
+  ok('fs-two-guarded compiles on WebGPU', g.errs.length === 0, g.errs.join('; ').slice(0, 200));
+  ok(`fs-two-guarded stores every index below n=${gn} and none at or above it`, g.below === 0 && g.above === 0, `${g.below} wrong below n, ${g.above} written at or above n`);
+  const ng = await gradeGuarded(code.replace(/if \(.*< n\)\) \{/g, 'if (true) {'));
+  ok('control: the kernel with its guards removed is caught', ng.errs.length === 0 && ng.below === 0 && ng.above > 0, `${ng.below} wrong below n, ${ng.above} written at or above n`);
 } catch (e) {
   ok('the arm ran', false, String(e && e.message || e));
 } finally {

@@ -12,7 +12,7 @@ Chapter: Txt2ImgArm
   cites Diffusion chapter BrowserTxt2Img
 
  The page codex/plugs/html/arms/txt2img.mjs drives: a picked SD1.5
- checkpoint's CLIP-L, UNet and VAE decoder uploaded as f32, ClipBpe loaded
+ checkpoint's CLIP-L, UNet and VAE decoder uploaded (rank 2 and up as packed f16), ClipBpe loaded
  from page-data "vocab" and "merges", the seed's torch noise read back, then
  browser-txt2img on page-data "prompt", "negative", "seed", "steps", "cfg10"
  (the scale in tenths), "size", shown in the canvas #out and read back.
@@ -85,10 +85,10 @@ Section: Upload
     else let t = list-at ts i
     in let dt = tx-dt (t.bt-dtype)
     in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
-    in let h = if dt < 0 then 0 else gpu-buf-alloc (elems * 4)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (if bt-half t then (elems + 1) / 2 * 4 else elems * 4)
     in let ns2 = list-snoc ns (tx-short prefix (t.bt-name))
     in if h == 0 then tx-upload ts (i + 1) prefix ns2 (list-snoc hs 0) (bad + 1) next
-    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt gpu-dt-f32 (\r -> tx-upload ts (i + 1) prefix ns2 (list-snoc hs h) (bad + (if text-contains r "\"ok\":true" then 0 else 1)) next)
+    else gpu-buf-upload-then h 0 (state-get-text "file") (t.bt-offset) elems dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r -> tx-upload ts (i + 1) prefix ns2 (list-snoc hs h) (bad + (if text-contains r "\"ok\":true" then 0 else 1)) next)
 
 Section: Generate
 
@@ -116,7 +116,14 @@ Section: Generate
     in let size = text-to-integer (page-data "size")
     in let nz = bt-noise seed (4 * (size / 8) * (size / 8))
     in let d = state-set "noise-handle" nz
-    in browser-txt2img-then m bpe (page-data "prompt") (page-data "negative") seed (text-to-integer (page-data "steps")) (real-from-int (text-to-integer (page-data "cfg10")) / 10.0) size size (\img -> tx-made img size)
+    in let hb = state-set "heap-before" __heap-save
+    in browser-txt2img-timed m bpe (page-data "prompt") (page-data "negative") seed (text-to-integer (page-data "steps")) (real-from-int (text-to-integer (page-data "cfg10")) / 10.0) size size (\s -> 0) (\img sm -> tx-timed img sm size)
+
+  tx-timed : Integer, Text, Integer -> Integer
+  tx-timed (img) (sm) (size) =
+    let ha = state-set "heap-after" __heap-save
+    in let s = state-set-text "summary" sm
+    in tx-made img size
 
   tx-made : Integer, Integer -> Integer
   tx-made (img) (size) =

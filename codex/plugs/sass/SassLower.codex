@@ -1,0 +1,473 @@
+Chapter: SassLower
+  cites Sass chapter SassEncode
+  cites Sass chapter SassSched
+  cites Sass chapter SassCtrl
+  cites Plug chapter Plug Types
+  cites Foreword chapter List
+
+ The 64-bit sequences are Mesa's (mesa-24.2.0, src/nouveau/codegen):
+ add and subtract as split64BitOpPostRA splits them (nv50_ir_build_util.cpp),
+ the low half writing the carry (IADD.CC) and the high half adding it
+ (IADD.X), a subtraction negating its second source in both halves; a
+ comparison as NVC0LegalizeSSA::handleSET lowers it (nv50_ir_lowering_nvc0.cpp),
+ IADD RZ.CC of the low words with the second negated, then ISETP.X of the
+ high words, signed; a left shift by a constant below 32 as the SHF path of
+ the NVC0 64-bit shift legalization, low = SHF.L of (RZ, k, low) and high =
+ SHF.L of (low, k, high), typed S64 for a signed source.
+
+ Constant bank 0 is our own layout (GspGpuStack.md stage 1): block size x
+ at 0x0, parameter i at 0x140 + 8 i, low word first.
+
+Section: State
+
+  LVal =
+   | LInt (Integer)
+   | LPred (Integer)
+   | LNone
+   | LFail (Text)
+
+  LBind = record {
+   name : Text,
+   reg : Integer
+  }
+
+  LState = record {
+   code : ConsList SassInsn,
+   next-reg : Integer,
+   next-pred : Integer,
+   env : List LBind,
+   guard : Integer,
+   inlining : List Text,
+   defs : List IRDef
+  }
+
+  LRes = record {
+   st : LState,
+   val : LVal
+  }
+
+  lw-res : LState, LVal -> LRes
+  lw-res (st) (v) = LRes { st = st, val = v }
+
+  lw-fail : LState, Text -> LRes
+  lw-fail (st) (why) = LRes { st = st, val = LFail why }
+
+  lw-is-fail : LVal -> Boolean
+  lw-is-fail (v) =
+    when v
+     is LFail (why) -> True
+     is otherwise -> False
+
+  lw-int-reg : LVal -> Integer
+  lw-int-reg (v) =
+    when v
+     is LInt (r) -> r
+     is otherwise -> -1
+
+  lw-state : LState, ConsList SassInsn, Integer, Integer, List LBind, Integer, List Text -> LState
+  lw-state (st) (code) (nr) (np) (env) (g) (inl) = LState { code = code, next-reg = nr, next-pred = np, env = env, guard = g, inlining = inl, defs = st.defs }
+
+  lw-emit-at : LState, Integer, SassBody -> LState
+  lw-emit-at (st) (g) (b) = lw-state st (Cons (sass-when g 0 b) st.code) st.next-reg st.next-pred st.env st.guard st.inlining
+
+  lw-emit : LState, SassBody -> LState
+  lw-emit (st) (b) = lw-emit-at st st.guard b
+
+  lw-with-env : LState, List LBind -> LState
+  lw-with-env (st) (env) = lw-state st st.code st.next-reg st.next-pred env st.guard st.inlining
+
+  lw-with-guard : LState, Integer -> LState
+  lw-with-guard (st) (g) = lw-state st st.code st.next-reg st.next-pred st.env g st.inlining
+
+  lw-with-preds : LState, Integer -> LState
+  lw-with-preds (st) (np) = lw-state st st.code st.next-reg np st.env st.guard st.inlining
+
+  lw-with-inlining : LState, List Text -> LState
+  lw-with-inlining (st) (inl) = lw-state st st.code st.next-reg st.next-pred st.env st.guard inl
+
+  lw-bump-reg : LState -> LState
+  lw-bump-reg (st) = lw-state st st.code (st.next-reg + 2) st.next-pred st.env st.guard st.inlining
+
+  lw-bind : LState, Text, Integer -> LState
+  lw-bind (st) (n) (r) = lw-with-env st ([LBind { name = n, reg = r }] & st.env)
+
+  lw-lookup : List LBind, Text, Integer -> Integer
+  lw-lookup (env) (n) (i) =
+    if i >= list-length env then -1
+    else if (list-at env i).name == n then (list-at env i).reg
+    else lw-lookup env n (i + 1)
+
+  lw-text-in : List Text, Text, Integer -> Boolean
+  lw-text-in (xs) (n) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == n then True
+    else lw-text-in xs n (i + 1)
+
+  lw-find-def : List IRDef, Text, Integer -> Integer
+  lw-find-def (defs) (n) (i) =
+    if i >= list-length defs then -1
+    else if (list-at defs i).name == n then i
+    else lw-find-def defs n (i + 1)
+
+Section: Values
+
+  lw-pair : LState -> LRes
+  lw-pair (st) =
+    if st.next-reg > 252 then lw-fail st "registers"
+    else lw-res (lw-bump-reg st) (LInt st.next-reg)
+
+  lw-int-lit : LState, Integer -> LRes
+  lw-int-lit (st) (v) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (r) -> lw-res (lw-emit (lw-emit p.st (SMov32i r (bit-and v #FFFFFFFF))) (SMov32i (r + 1) (bit-shru v 32))) (LInt r)
+     is otherwise -> p
+
+  lw-special : LState, SassBody, Integer -> LRes
+  lw-special (st) (lo) (r) = lw-res (lw-emit (lw-emit st lo) (SMov (r + 1) (SrcReg 255))) (LInt r)
+
+  lw-name : LState, Text -> LRes
+  lw-name (st) (n) =
+    let bound = lw-lookup st.env n 0
+    in if bound >= 0 then lw-res st (LInt bound)
+    else if n == "thread-idx-x" then lw-name-special st 33
+    else if n == "block-idx-x" then lw-name-special st 37
+    else if n == "block-dim-x" then lw-name-cb st 0
+    else lw-fail st ("name " & n)
+
+  lw-name-special : LState, Integer -> LRes
+  lw-name-special (st) (id) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (r) -> lw-special p.st (SS2r r id) r
+     is otherwise -> p
+
+  lw-name-cb : LState, Integer -> LRes
+  lw-name-cb (st) (off) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (r) -> lw-special p.st (SMov r (SrcCb 0 off)) r
+     is otherwise -> p
+
+Section: Arithmetic
+
+  lw-add64 : LState, Integer, Integer, Integer -> LRes
+  lw-add64 (st) (a) (b) (neg) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (d) -> lw-res (lw-emit (lw-emit p.st (SIaddc d a (SrcReg b) (1 + 8 * neg))) (SIaddc (d + 1) (a + 1) (SrcReg (b + 1)) (2 + 8 * neg))) (LInt d)
+     is otherwise -> p
+
+  lw-shl64 : LState, Integer, Integer -> LRes
+  lw-shl64 (st) (a) (k) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (d) -> lw-res (lw-emit (lw-emit p.st (SShf 0 d 255 (SrcImm k) a 0 3 0)) (SShf 0 (d + 1) a (SrcImm k) (a + 1) 0 3 0)) (LInt d)
+     is otherwise -> p
+
+  lw-log2 : Integer, Integer -> Integer
+  lw-log2 (v) (k) =
+    if k > 31 then -1
+    else if bit-shl 1 k == v then k
+    else lw-log2 v (k + 1)
+
+  lw-pow2-lit : IRExpr -> Integer
+  lw-pow2-lit (e) =
+    when e
+     is IrIntLit (v) (sp) -> if v < 1 then -1 else lw-log2 v 0
+     is otherwise -> -1
+
+  lw-cmp-code : IRBinaryOp -> Integer
+  lw-cmp-code (op) =
+    when op
+     is IrLt -> 1
+     is IrEq -> 2
+     is IrLtEq -> 3
+     is IrGt -> 4
+     is IrNotEq -> 5
+     is IrGtEq -> 6
+     is otherwise -> 0
+
+  lw-cmp-inverse : Integer -> Integer
+  lw-cmp-inverse (c) = 7 - c
+
+  lw-pred : LState -> LRes
+  lw-pred (st) =
+    if st.next-pred > 6 then lw-fail st "predicates"
+    else lw-res (lw-with-preds st (st.next-pred + 1)) (LPred st.next-pred)
+
+  lw-compare : LState, Integer, Integer, Integer -> LRes
+  lw-compare (st) (c) (a) (b) =
+    let p = lw-pred st
+    in when p.val
+     is LPred (q) -> lw-res (lw-emit-at (lw-emit-at p.st 7 (SIaddc 255 a (SrcReg b) 9)) 7 (SIsetpc q c 0 1 (a + 1) (SrcReg (b + 1)) 0 st.guard 0)) (LPred q)
+     is otherwise -> p
+
+  lw-binary : LState, IRBinaryOp, IRExpr, IRExpr -> LRes
+  lw-binary (st) (op) (x) (y) =
+    let k = lw-pow2-lit y
+    in when op
+     is IrMulInt -> if k >= 0 then lw-scaled st x k else if lw-pow2-lit x >= 0 then lw-scaled st y (lw-pow2-lit x) else lw-fail st "multiply"
+     is otherwise -> lw-binary-2 st op x y
+
+  lw-scaled : LState, IRExpr, Integer -> LRes
+  lw-scaled (st) (x) (k) =
+    let rx = lower-expr st x
+    in when rx.val
+     is LInt (a) -> if k == 0 then rx else lw-shl64 rx.st a k
+     is LFail (why) -> rx
+     is otherwise -> lw-fail rx.st "operand"
+
+  lw-binary-2 : LState, IRBinaryOp, IRExpr, IRExpr -> LRes
+  lw-binary-2 (st) (op) (x) (y) =
+    let rx = lower-expr st x
+    in if lw-is-fail rx.val then rx
+    else let ry = lower-expr rx.st y
+    in if lw-is-fail ry.val then ry
+    else let a = lw-int-reg rx.val
+    in let b = lw-int-reg ry.val
+    in if a < 0 then lw-fail ry.st "operand"
+    else if b < 0 then lw-fail ry.st "operand"
+    else when op
+     is IrAddInt -> lw-add64 ry.st a b 0
+     is IrSubInt -> lw-add64 ry.st a b 1
+     is otherwise -> if lw-cmp-code op == 0 then lw-fail ry.st "operator" else lw-compare ry.st (lw-cmp-code op) a b
+
+Section: Control
+
+  lw-merge : LRes, Integer -> LState
+  lw-merge (arm) (r) =
+    when arm.val
+     is LInt (t) -> lw-emit (lw-emit arm.st (SMov r (SrcReg t))) (SMov (r + 1) (SrcReg (t + 1)))
+     is otherwise -> arm.st
+
+  lw-if : LState, IRExpr, IRExpr, IRExpr -> LRes
+  lw-if (st) (c) (x) (y) =
+    when c
+     is IrBinary (op) (ca) (cb) (ty) (sp) -> if lw-cmp-code op == 0 then lw-fail st "condition" else lw-if-cmp st (lw-cmp-code op) ca cb x y
+     is otherwise -> lw-fail st "condition"
+
+  lw-if-cmp : LState, Integer, IRExpr, IRExpr, IRExpr, IRExpr -> LRes
+  lw-if-cmp (st) (c) (ca) (cb) (x) (y) =
+    let ra = lower-expr st ca
+    in if lw-is-fail ra.val then ra
+    else let rb = lower-expr ra.st cb
+    in if lw-is-fail rb.val then rb
+    else if lw-int-reg ra.val < 0 then lw-fail rb.st "condition"
+    else if lw-int-reg rb.val < 0 then lw-fail rb.st "condition"
+    else let pt = lw-compare rb.st c (lw-int-reg ra.val) (lw-int-reg rb.val)
+    in if lw-is-fail pt.val then pt
+    else let pf = lw-compare pt.st (lw-cmp-inverse c) (lw-int-reg ra.val) (lw-int-reg rb.val)
+    in if lw-is-fail pf.val then pf
+    else let res = lw-pair pf.st
+    in if lw-is-fail res.val then res
+    else lw-if-arms res.st st.guard st.next-pred (lw-int-reg res.val) (lw-pred-reg pt.val) (lw-pred-reg pf.val) x y
+
+  lw-pred-reg : LVal -> Integer
+  lw-pred-reg (v) =
+    when v
+     is LPred (q) -> q
+     is otherwise -> 7
+
+  lw-if-arms : LState, Integer, Integer, Integer, Integer, Integer, IRExpr, IRExpr -> LRes
+  lw-if-arms (st) (outer) (preds) (r) (pt) (pf) (x) (y) =
+    let tx = lower-expr (lw-with-guard st pt) x
+    in if lw-is-fail tx.val then tx
+    else let sx = lw-merge tx r
+    in let ty = lower-expr (lw-with-guard sx pf) y
+    in if lw-is-fail ty.val then ty
+    else let sy = lw-merge ty r
+    in lw-res (lw-with-preds (lw-with-guard sy outer) preds) (LInt r)
+
+  lw-let : LState, Text, IRExpr, IRExpr -> LRes
+  lw-let (st) (n) (v) (body) =
+    let rv = lower-expr st v
+    in when rv.val
+     is LInt (r) -> lw-scoped (lower-expr (lw-bind rv.st n r) body) st.env
+     is LFail (why) -> rv
+     is otherwise -> lw-fail rv.st "binding"
+
+  lw-scoped : LRes, List LBind -> LRes
+  lw-scoped (res) (env) = lw-res (lw-with-env res.st env) res.val
+
+  lw-stmts : LState, List IRActStmt, Integer, LVal -> LRes
+  lw-stmts (st) (stmts) (i) (last) =
+    if i >= list-length stmts then lw-res st last
+    else when list-at stmts i
+     is IrDoBind (n) (ty) (v) (sp) -> lw-stmt-bind st stmts i n v
+     is IrDoExec (v) (sp) -> lw-stmt-exec st stmts i v
+
+  lw-stmt-bind : LState, List IRActStmt, Integer, Text, IRExpr -> LRes
+  lw-stmt-bind (st) (stmts) (i) (n) (v) =
+    let rv = lower-expr st v
+    in when rv.val
+     is LInt (r) -> lw-stmts (lw-bind rv.st n r) stmts (i + 1) LNone
+     is LFail (why) -> rv
+     is otherwise -> lw-fail rv.st "binding"
+
+  lw-stmt-exec : LState, List IRActStmt, Integer, IRExpr -> LRes
+  lw-stmt-exec (st) (stmts) (i) (v) =
+    let rv = lower-expr st v
+    in if lw-is-fail rv.val then rv
+    else lw-stmts rv.st stmts (i + 1) rv.val
+
+Section: Calls
+
+  LArgs = record {
+   st : LState,
+   regs : List Integer,
+   fail : Text
+  }
+
+  lw-arg-regs : LState, List IRExpr, Integer, List Integer -> LArgs
+  lw-arg-regs (st) (args) (i) (acc) =
+    if i >= list-length args then LArgs { st = st, regs = acc, fail = "" }
+    else let r = lower-expr st (list-at args i)
+    in when r.val
+     is LInt (x) -> lw-arg-regs r.st args (i + 1) (acc & [x])
+     is LFail (why) -> LArgs { st = r.st, regs = acc, fail = why }
+     is otherwise -> LArgs { st = r.st, regs = acc, fail = "argument" }
+
+  lw-param-env : List IRParam, List Integer, Integer, List LBind -> List LBind
+  lw-param-env (ps) (rs) (i) (acc) =
+    if i >= list-length ps then acc
+    else lw-param-env ps rs (i + 1) ([LBind { name = (list-at ps i).name, reg = list-at rs i }] & acc)
+
+  lw-apply : LState, IRExpr -> LRes
+  lw-apply (st) (e) =
+    let chain = collect-apply-chain e []
+    in when chain.root
+     is IrName (n) (ty) (sp) -> lw-call st n chain.args
+     is otherwise -> lw-fail st "indirect call"
+
+  lw-call : LState, Text, List IRExpr -> LRes
+  lw-call (st) (n) (args) =
+    if n == "device-load" then (if list-length args == 2 then lw-load st args else lw-fail st "device-load arity")
+    else if n == "device-store" then (if list-length args == 3 then lw-store st args else lw-fail st "device-store arity")
+    else lw-inline st n args
+
+  lw-address : LState, IRExpr, IRExpr -> LRes
+  lw-address (st) (base) (index) =
+    let rbase = lower-expr st base
+    in if lw-is-fail rbase.val then rbase
+    else if lw-int-reg rbase.val < 0 then lw-fail rbase.st "address"
+    else let rindex = lw-scaled rbase.st index 3
+    in if lw-is-fail rindex.val then rindex
+    else if lw-int-reg rindex.val < 0 then lw-fail rindex.st "address"
+    else lw-add64 rindex.st (lw-int-reg rbase.val) (lw-int-reg rindex.val) 0
+
+  lw-load : LState, List IRExpr -> LRes
+  lw-load (st) (args) =
+    let raddr = lw-address st (list-at args 0) (list-at args 1)
+    in if lw-is-fail raddr.val then raddr
+    else let p = lw-pair raddr.st
+    in when p.val
+     is LInt (d) -> lw-res (lw-emit p.st (SLdg d (lw-int-reg raddr.val) 0 64)) (LInt d)
+     is otherwise -> p
+
+  lw-store : LState, List IRExpr -> LRes
+  lw-store (st) (args) =
+    let raddr = lw-address st (list-at args 0) (list-at args 1)
+    in if lw-is-fail raddr.val then raddr
+    else let rval = lower-expr raddr.st (list-at args 2)
+    in when rval.val
+     is LInt (v) -> lw-res (lw-emit rval.st (SStg (lw-int-reg raddr.val) 0 v 64)) (LInt v)
+     is LFail (why) -> rval
+     is otherwise -> lw-fail rval.st "stored value"
+
+  lw-inline : LState, Text, List IRExpr -> LRes
+  lw-inline (st) (n) (args) =
+    let k = lw-find-def st.defs n 0
+    in if k < 0 then lw-fail st ("call " & n)
+    else if lw-text-in st.inlining n 0 then lw-fail st ("recursion " & n)
+    else let d = list-at st.defs k
+    in if list-length d.params /= list-length args then lw-fail st ("partial application " & n)
+    else let la = lw-arg-regs st args 0 []
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let inner = lw-with-inlining (lw-with-env la.st (lw-param-env d.params la.regs 0 [])) ([n] & st.inlining)
+    in let rbody = lower-expr inner d.body
+    in lw-res (lw-with-inlining (lw-with-env rbody.st st.env) st.inlining) rbody.val
+
+Section: Expressions
+
+  lower-expr : LState, IRExpr -> LRes
+  lower-expr (st) (e) =
+    when e
+     is IrIntLit (v) (sp) -> lw-int-lit st v
+     is IrName (n) (ty) (sp) -> lw-name st n
+     is IrBinary (op) (x) (y) (ty) (sp) -> lw-binary st op x y
+     is IrIf (c) (x) (y) (ty) (sp) -> lw-if st c x y
+     is IrLet (n) (ty) (v) (body) (sp) -> lw-let st n v body
+     is IrApply (f) (a) (ty) (sp) -> lw-apply st e
+     is IrAct (stmts) (ty) (sp) -> lw-stmts st stmts 0 LNone
+     is otherwise -> lw-fail st "construct"
+
+Section: Kernels
+
+  lw-params : LState, List IRParam, Integer -> LState
+  lw-params (st) (ps) (i) =
+    if i >= list-length ps then st
+    else let r = st.next-reg
+    in let s1 = lw-emit (lw-emit (lw-bump-reg st) (SMov r (SrcCb 0 (320 + 8 * i)))) (SMov (r + 1) (SrcCb 0 (324 + 8 * i)))
+    in lw-params (lw-bind s1 (list-at ps i).name r) ps (i + 1)
+
+  KernelOut = record {
+   insns : List SassInsn,
+   refusal : Text
+  }
+
+  lw-code-collect : ConsList SassInsn, List SassInsn -> List SassInsn
+  lw-code-collect (code) (acc) =
+    when code
+     is Nil -> acc
+     is Cons (head) (tail) -> lw-code-collect tail (list-push acc head)
+
+  lw-code-list : ConsList SassInsn -> List SassInsn
+  lw-code-list (code) = lw-code-collect (cl-reverse code) []
+
+  lw-kernel : List IRDef, IRDef -> KernelOut
+  lw-kernel (defs) (d) =
+    let st0 = LState { code = Nil, next-reg = 0, next-pred = 0, env = [], guard = 7, inlining = [d.name], defs = defs }
+    in let r = lower-expr (lw-params st0 d.params 0) d.body
+    in let s = r.st
+    in when r.val
+     is LFail (why) -> KernelOut { insns = [], refusal = why }
+     is otherwise -> KernelOut { insns = lw-code-list (Cons (sass-always SExit) s.code), refusal = "" }
+
+Section: Listing
+
+  sass-pad : List SassInsn -> List SassInsn
+  sass-pad (insns) = if int-mod (list-length insns) 3 == 0 then insns else sass-pad (insns & [sass-always SNop])
+
+  sass-listing-line : CtrlCode, SassInsn -> Text
+  sass-listing-line (c) (i) = "I " & sass-ctrl-text c & " " & sass-word-hex (sass-encode i) & " " & sass-insn-text i & "\n"
+
+  sass-listing-groups : List SassInsn, List CtrlCode, Integer, Text -> Text
+  sass-listing-groups (insns) (codes) (k) (acc) =
+    if 3 * k >= list-length insns then acc
+    else let c0 = list-at codes (3 * k)
+    in let c1 = list-at codes (3 * k + 1)
+    in let c2 = list-at codes (3 * k + 2)
+    in let head = "C " & sass-word-hex (sass-ctrl-word c0 c1 c2) & "\n"
+    in let body = sass-listing-line c0 (list-at insns (3 * k)) & sass-listing-line c1 (list-at insns (3 * k + 1)) & sass-listing-line c2 (list-at insns (3 * k + 2))
+    in sass-listing-groups insns codes (k + 1) (acc & head & body)
+
+  sass-listing : Text, List SassInsn -> Text
+  sass-listing (name) (raw) =
+    let insns = sass-pad raw
+    in ".kernel " & name & "\n" & sass-listing-groups insns (sass-schedule insns) 0 ""
+
+  sass-is-kernel : Text -> Boolean
+  sass-is-kernel (n) = if text-length n < 4 then False else substring n 0 4 == "gpu-"
+
+  sass-emit-defs : List IRDef, Integer, Text -> Text
+  sass-emit-defs (defs) (i) (acc) =
+    if i >= list-length defs then acc
+    else let d = list-at defs i
+    in if sass-is-kernel d.name == False then sass-emit-defs defs (i + 1) acc
+    else let k = lw-kernel defs d
+    in let out = if k.refusal /= "" then "REFUSED " & d.name & ": " & k.refusal & "\n" else sass-listing d.name k.insns
+    in sass-emit-defs defs (i + 1) (acc & out)
+
+  emit-sass-chapter : IRChapter -> Text
+  emit-sass-chapter (ch) = sass-emit-defs ch.defs 0 ""

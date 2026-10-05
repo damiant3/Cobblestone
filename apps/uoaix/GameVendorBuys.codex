@@ -1,0 +1,100 @@
+Chapter: GameVendorBuys
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyCatalog
+  cites Foreword chapter Result
+
+ A vendor buys only what its own trade uses, at the value to that trade
+ (Damian, 2026-10-05: "a blacksmith would only purchase items they planned to
+ smelt, and would offer only the value of the melt"). Roles follow the Britain
+ shop order: provisioner, blacksmith, tailor, baker, healer, innkeeper.
+ Classic art IDs: ores, ingots, logs, boards, cloth and reagents follow
+ ServUO's item constructors; shop goods follow BritainCatalog.
+
+  gvb-role-words : List Text = ["provisioner", "blacksmith", "tailor", "baker", "healer", "innkeeper"]
+  gvb-role : Integer -> Integer
+  gvb-role (index) = if index < 0 then 0 - 1 else int-mod index 6
+
+  gvb-material : Integer, Integer -> Boolean
+  gvb-material (role) (item) =
+    if role == 0 then item == 2 | item == 7 | item == 15 | item == 35 | item == 38
+    else if role == 1 then item == 5 | item == 6 | item == 31 | item == 32 | (item >= 63 & item <= 66)
+    else if role == 2 then item == 10 | item == 11 | item == 12 | item == 36 | item == 37
+    else if role == 3 then item == 13 | item == 33
+    else if role == 4 then (item >= 17 & item <= 24) | item == 37
+    else if role == 5 then item == 8 | item == 9 | item == 14 | item == 16 | item == 34 | item == 50 | item == 76
+    else False
+  gvb-goods : Integer, Integer -> Boolean
+  gvb-goods (role) (item) =
+    if role == 0 then item == 29 | item == 30 | item == 45 | item == 47 | item == 48 | item == 49
+    else if role == 1 then (item >= 39 & item <= 43) | (item >= 69 & item <= 71) | item == 74
+    else if role == 2 then item == 46 | item == 72 | item == 73
+    else if role == 3 then item == 34 | item == 76
+    else if role == 4 then item == 75
+    else False
+
+  gvb-item-of : Integer -> Integer
+  gvb-item-of (g) =
+    if g >= #1BEF & g <= #1BF4 then 31 else if g >= #19B7 & g <= #19BA then 5
+    else if g >= #1BDD & g <= #1BE2 then 15 else if g >= #1BD7 & g <= #1BDC then 38
+    else if g == #102E then 39 else if g == #1766 | g == #1767 | g == #175D | g == #175E then 37
+    else if g == #1081 | g == #1082 | g == #1067 | g == #1068 then 35 else if g == #1078 | g == #1079 then 7
+    else if g == #0DF9 | g == #0DFA then 10 else if g == #0DF8 then 12 else if g == #0FA0 | g == #0FA1 then 36
+    else if g == #0F7A then 23 else if g == #0F7B then 21 else if g == #0F84 then 18 else if g == #0F85 then 17
+    else if g == #0F86 then 19 else if g == #0F88 then 20 else if g == #0F8D then 22 else if g == #0F8C then 24
+    else if g == #0E85 | g == #0E86 | g == #0F39 | g == #0F3A | g == #0F43 | g == #0F44 | g == #0EC4 | g == #0EC5
+      | g == #13E3 | g == #13E4 | g == #1034 | g == #1035 | g == #1EB8 | g == #1EB9 then 42
+    else if g == #0F51 | g == #0F52 then 69 else if g == #0F60 | g == #0F61 then 70 else if g == #1413 then 71
+    else if g == #0F9E | g == #0F9F then 74 else if g == #1517 then 72 else if g == #152E then 73
+    else if g == #0E21 then 75 else if g == #103B | g == #103C then 34 else if g == #1040 | g == #1041 then 76
+    else if g == #0E76 then 45 else if g == #0DBF | g == #0DC0 then 29 else 0
+
+  gvb-resource : EgCatalog, Integer, Integer -> Boolean
+  gvb-resource (c) (item) (i) = if i == list-length c.resources then False
+    else if (list-at c.resources i).item == item then True
+    else gvb-resource c item (i + 1)
+  gvb-recipe : EgCatalog, Integer, Integer -> Integer
+  gvb-recipe (c) (item) (i) = if i == list-length c.recipes then 0 - 1
+    else if (list-at c.recipes i).item == item then i
+    else gvb-recipe c item (i + 1)
+
+ A gathered unit costs 1 (EconomyCurrency.md, "Price scale"); a crafted unit
+ costs its first recipe's inputs and labor over the batch.
+  gvb-standard : EpWorld, Integer, Integer -> Integer
+  gvb-standard (w) (item) (depth) = if depth == 0 | item == 0 then 0
+    else if gvb-resource w.catalog item 0 then 1
+    else let at = gvb-recipe w.catalog item 0
+    in if at < 0 then 0
+    else let r = list-at w.catalog.recipes at
+    in (r.one-count * gvb-standard w r.one (depth - 1) + r.two-count * gvb-standard w r.two (depth - 1)
+      + r.three-count * gvb-standard w r.three (depth - 1) + ep-labor-in w item) / r.quantity
+
+  gvb-part : EpWorld, Integer, Integer, Integer -> Integer
+  gvb-part (w) (role) (input) (count) = if input == 0 | not (gvb-material role input) then 0
+    else count * gvb-standard w input 16
+
+  gvb-bid : EpWorld, Integer, Integer -> Integer
+  gvb-bid (w) (role) (item) = if not (eg-id w.catalog item) then 0
+    else let value = if gvb-material role item then gvb-standard w item 16 else if gvb-goods role item then gvb-content w role item else 0
+    in if value > 65535 then 65535 else value
+  gvb-content : EpWorld, Integer, Integer -> Integer
+  gvb-content (w) (role) (item) = let at = gvb-recipe w.catalog item 0
+    in if at < 0 then 0
+    else let r = list-at w.catalog.recipes at
+    in (gvb-part w role r.one r.one-count + gvb-part w role r.two r.two-count + gvb-part w role r.three r.three-count) / r.quantity
+
+ A sold item outside the economy (testing kit, loot) joins the seller's pool
+ through `ep-find` and becomes a lot before checkout; capacity is checked
+ first, so a refusal changes nothing.
+  gvb-admit : GvWorld, GvPlayer, GvQuote -> Result Integer Text
+  gvb-admit (v) (p) (q) = when world-get v.game.world q.serial
+    is Err (e) -> Err "sold item absent"
+    is Ok (obj) -> let existing = gv-lot v obj.serial 0
+      in if existing >= 0 then Ok existing
+      else if obj.kind /= 2 | obj.amount < 1 | world-child-count v.game.world obj.serial > 0 | not (gv-under v.game.world obj.serial p.pack 65) then Err "sold item is not a loose backpack item"
+      else if v.lot-count >= gv-lot-limit then Err "vendor lot capacity"
+      else if ep-find v.currency.world p.actor q.item obj.amount /= 0 then Err "found goods refused"
+      else let lot = gv-add-lot v obj.serial p.actor q.item 1000 32 0
+      in if lot < 0 then Err "found lot refused" else Ok lot
+
+Page 1

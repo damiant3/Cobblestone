@@ -25,11 +25,7 @@ Section: Setup
 
   load-shuffled-deck : GameState, Integer, List Integer, Integer -> GameState
   load-shuffled-deck (gs) (player-idx) (cards) (i) =
-    if i >= list-length cards then gs
-    else let p = get-player gs player-idx
-    in let p2 = PlayerState { general = p.general, prismatic = p.prismatic, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
-    in let gs2 = set-player gs player-idx p2
-    in load-shuffled-deck gs2 player-idx cards (i + 1)
+    game-load-library gs player-idx cards i
 
 Section: Entry Point
 
@@ -38,9 +34,15 @@ Section: Entry Point
     let templates = full-card-pool
     in let gen-a = general-warlord
     in let gen-b = general-dawn-commander
-    in let deck-a = gen-starter-deck gen-a templates 42
-    in let deck-b = gen-starter-deck gen-b templates 99
-    in let valid-a = validate-deck deck-a templates gen-a
+    in when gen-starter-deck gen-a templates 42
+      is StarterRefused (why) -> act print-line-uni why end
+      is StarterDeck (deck-a) -> (when gen-starter-deck gen-b templates 99
+        is StarterRefused (why) -> act print-line-uni why end
+        is StarterDeck (deck-b) -> run-generated-game templates gen-a gen-b deck-a deck-b)
+
+  run-generated-game : List CardTemplate, GeneralTemplate, GeneralTemplate, DeckList, DeckList -> [Console] Nothing
+  run-generated-game (templates) (gen-a) (gen-b) (deck-a) (deck-b) =
+    let valid-a = validate-deck deck-a templates gen-a
     in let valid-b = validate-deck deck-b templates gen-b
     in let gs = game-new templates gen-a gen-b
     in let gs2 = load-shuffled-deck gs 0 (shuffle-deck (deck-a.cards) 777) 0
@@ -65,7 +67,7 @@ Section: Entry Point
       print-line-uni ("Result: " & format-general-state rgen0 (p0.general) result 0)
       print-line-uni ("        " & format-general-state rgen1 (p1.general) result 1)
       print-line-uni ("Turns: " & show (result.turn-number))
-      print-line-uni (if result.game-over then "Winner: Player " & show (result.winner) else "Draw")
+      print-line-uni (if result.game-over then "Winner: Player " & show (result.winner) else if game-budget-stopped result then budget-stop-reason result else "Draw")
       print-line-uni ""
       print-line-uni "=== Done ==="
     end

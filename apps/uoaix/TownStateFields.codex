@@ -1,0 +1,210 @@
+Chapter: TownStateFields
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+
+ Fixed little-endian scalar cells, then length-prefixed padded CCE text,
+ then fixed-length integer arrays. No native pointers enter the wire.
+
+  ts-zero : Integer, Integer, Integer -> Integer
+  ts-zero (buf) (size) (i) =
+    if i == size then 0 else let a = poke-byte buf i 0 in ts-zero buf size (i + 1)
+
+  ts-write-text : Integer, Integer, Integer, Text -> Integer
+  ts-write-text (buf) (at) (limit) (text) =
+    let a = poke-qword buf at (text-length text)
+    in ts-text-bytes buf (at + 8) limit text 0
+
+  ts-text-bytes : Integer, Integer, Integer, Text, Integer -> Integer
+  ts-text-bytes (buf) (at) (limit) (text) (i) =
+    if i == limit then 0
+    else let a = poke-byte buf (at + i) (if i < text-length text then char-code-at text i else 0)
+    in ts-text-bytes buf at limit text (i + 1)
+
+  ts-text-valid : Integer, Integer, Integer -> Boolean
+  ts-text-valid (buf) (at) (limit) =
+    let size = peek-qword buf at
+    in if size < 0 | size > limit then False
+    else ts-padding-valid buf (at + 8) size limit
+
+  ts-padding-valid : Integer, Integer, Integer, Integer -> Boolean
+  ts-padding-valid (buf) (at) (i) (limit) =
+    if i == limit then True
+    else if peek-byte buf (at + i) /= 0 then False
+    else ts-padding-valid buf at (i + 1) limit
+
+  ts-text-list : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ts-text-list (buf) (at) (length) (i) (bytes) =
+    if i == length then bytes
+    else ts-text-list buf at length (i + 1) (list-push bytes (peek-byte buf (at + i)))
+
+  ts-read-text : Integer, Integer -> Text
+  ts-read-text (buf) (at) = raw-bytes-to-text (ts-text-list buf (at + 8) (peek-qword buf at) 0 [])
+
+  ts-write-list : Integer, Integer, List Integer, Integer -> Integer
+  ts-write-list (buf) (at) (values) (i) =
+    if i == list-length values then 0
+    else let a = poke-qword buf (at + i * 8) (list-at values i)
+    in ts-write-list buf at values (i + 1)
+
+  ts-read-list : Integer, Integer, List Integer, Integer -> Integer
+  ts-read-list (buf) (at) (values) (i) =
+    if i == list-length values then 0
+    else let a = list-set-at values i (peek-qword buf (at + i * 8))
+    in ts-read-list buf at values (i + 1)
+
+  ts-write-town : Integer, Integer, TfTown -> Integer
+  ts-write-town (buf) (at) (p) =
+    let f0 = poke-qword buf (at + 0) p.serial
+    in let f1 = poke-qword buf (at + 8) p.market
+    in let f2 = poke-qword buf (at + 16) p.tavern
+    in let f3 = poke-qword buf (at + 24) p.temple
+    in let f4 = poke-qword buf (at + 32) p.vendor
+    in let f5 = poke-qword buf (at + 40) p.population
+    in let f6 = poke-qword buf (at + 48) p.grain
+    in let f7 = poke-qword buf (at + 56) p.bread
+    in let f8 = poke-qword buf (at + 64) p.ingots
+    in let f9 = poke-qword buf (at + 72) p.goods
+    in let f10 = poke-qword buf (at + 80) p.crop
+    in let f11 = poke-qword buf (at + 88) p.harvested
+    in let f12 = poke-qword buf (at + 96) p.baked
+    in let f13 = poke-qword buf (at + 104) p.forged
+    in let f14 = poke-qword buf (at + 112) p.sold
+    in let f15 = poke-qword buf (at + 120) p.births
+    in let f16 = poke-qword buf (at + 128) p.deaths
+    in let f17 = poke-qword buf (at + 136) p.marriages
+    in let f18 = poke-qword buf (at + 144) p.illnesses
+    in let f19 = poke-qword buf (at + 152) p.shortages
+    in let f20 = poke-qword buf (at + 160) p.observations
+    in let f21 = poke-qword buf (at + 168) p.adhered
+    in let f22 = poke-qword buf (at + 176) p.eaten
+    in let f23 = ts-write-text buf (at + 184) 64 p.name
+    in 0
+
+  ts-read-town : Integer, Integer, TfTown -> Integer
+  ts-read-town (buf) (at) (p) =
+    let f0 = __record-set p "serial" (peek-qword buf (at + 0))
+    in let f1 = __record-set p "market" (peek-qword buf (at + 8))
+    in let f2 = __record-set p "tavern" (peek-qword buf (at + 16))
+    in let f3 = __record-set p "temple" (peek-qword buf (at + 24))
+    in let f4 = __record-set p "vendor" (peek-qword buf (at + 32))
+    in let f5 = __record-set p "population" (peek-qword buf (at + 40))
+    in let f6 = __record-set p "grain" (peek-qword buf (at + 48))
+    in let f7 = __record-set p "bread" (peek-qword buf (at + 56))
+    in let f8 = __record-set p "ingots" (peek-qword buf (at + 64))
+    in let f9 = __record-set p "goods" (peek-qword buf (at + 72))
+    in let f10 = __record-set p "crop" (peek-qword buf (at + 80))
+    in let f11 = __record-set p "harvested" (peek-qword buf (at + 88))
+    in let f12 = __record-set p "baked" (peek-qword buf (at + 96))
+    in let f13 = __record-set p "forged" (peek-qword buf (at + 104))
+    in let f14 = __record-set p "sold" (peek-qword buf (at + 112))
+    in let f15 = __record-set p "births" (peek-qword buf (at + 120))
+    in let f16 = __record-set p "deaths" (peek-qword buf (at + 128))
+    in let f17 = __record-set p "marriages" (peek-qword buf (at + 136))
+    in let f18 = __record-set p "illnesses" (peek-qword buf (at + 144))
+    in let f19 = __record-set p "shortages" (peek-qword buf (at + 152))
+    in let f20 = __record-set p "observations" (peek-qword buf (at + 160))
+    in let f21 = __record-set p "adhered" (peek-qword buf (at + 168))
+    in let f22 = __record-set p "eaten" (peek-qword buf (at + 176))
+    in let f23 = __record-set p "name" (ts-read-text buf (at + 184))
+    in 0
+
+  ts-town-wire-valid : Integer, Integer -> Boolean
+  ts-town-wire-valid (buf) (at) = ts-text-valid buf (at + 184) 64
+
+  ts-write-person : Integer, Integer, TfPerson -> Integer
+  ts-write-person (buf) (at) (p) =
+    let f0 = poke-qword buf (at + 0) p.serial
+    in let f1 = poke-qword buf (at + 8) p.world-serial
+    in let f2 = poke-qword buf (at + 16) p.town
+    in let f3 = poke-qword buf (at + 24) p.home
+    in let f4 = poke-qword buf (at + 32) p.workplace
+    in let f5 = poke-qword buf (at + 40) p.place
+    in let f6 = poke-qword buf (at + 48) p.job
+    in let f7 = poke-qword buf (at + 56) p.age
+    in let f8 = poke-qword buf (at + 64) p.alive
+    in let f9 = poke-qword buf (at + 72) p.spouse
+    in let f10 = poke-qword buf (at + 80) p.parent-a
+    in let f11 = poke-qword buf (at + 88) p.parent-b
+    in let f12 = poke-qword buf (at + 96) p.children
+    in let f13 = poke-qword buf (at + 104) p.due
+    in let f14 = poke-qword buf (at + 112) p.death-age
+    in let f15 = poke-qword buf (at + 120) p.illness
+    in let f16 = poke-qword buf (at + 128) p.hunger
+    in let f17 = poke-qword buf (at + 136) p.fatigue
+    in let f18 = poke-qword buf (at + 144) p.mood
+    in let f19 = poke-qword buf (at + 152) p.coin
+    in let f20 = poke-qword buf (at + 160) p.bread
+    in let f21 = poke-qword buf (at + 168) p.goods
+    in let f22 = poke-qword buf (at + 176) p.activity
+    in let f23 = poke-qword buf (at + 184) p.memory-next
+    in let f24 = poke-qword buf (at + 192) p.memory-count
+    in let f25 = ts-write-text buf (at + 200) 64 p.name
+    in let f26 = ts-write-list buf (at + 272) p.schedule 0
+    in let f27 = ts-write-list buf (at + 464) p.memories 0
+    in 0
+
+  ts-read-person : Integer, Integer, TfPerson -> Integer
+  ts-read-person (buf) (at) (p) =
+    let f0 = __record-set p "serial" (peek-qword buf (at + 0))
+    in let f1 = __record-set p "world-serial" (peek-qword buf (at + 8))
+    in let f2 = __record-set p "town" (peek-qword buf (at + 16))
+    in let f3 = __record-set p "home" (peek-qword buf (at + 24))
+    in let f4 = __record-set p "workplace" (peek-qword buf (at + 32))
+    in let f5 = __record-set p "place" (peek-qword buf (at + 40))
+    in let f6 = __record-set p "job" (peek-qword buf (at + 48))
+    in let f7 = __record-set p "age" (peek-qword buf (at + 56))
+    in let f8 = __record-set p "alive" (peek-qword buf (at + 64))
+    in let f9 = __record-set p "spouse" (peek-qword buf (at + 72))
+    in let f10 = __record-set p "parent-a" (peek-qword buf (at + 80))
+    in let f11 = __record-set p "parent-b" (peek-qword buf (at + 88))
+    in let f12 = __record-set p "children" (peek-qword buf (at + 96))
+    in let f13 = __record-set p "due" (peek-qword buf (at + 104))
+    in let f14 = __record-set p "death-age" (peek-qword buf (at + 112))
+    in let f15 = __record-set p "illness" (peek-qword buf (at + 120))
+    in let f16 = __record-set p "hunger" (peek-qword buf (at + 128))
+    in let f17 = __record-set p "fatigue" (peek-qword buf (at + 136))
+    in let f18 = __record-set p "mood" (peek-qword buf (at + 144))
+    in let f19 = __record-set p "coin" (peek-qword buf (at + 152))
+    in let f20 = __record-set p "bread" (peek-qword buf (at + 160))
+    in let f21 = __record-set p "goods" (peek-qword buf (at + 168))
+    in let f22 = __record-set p "activity" (peek-qword buf (at + 176))
+    in let f23 = __record-set p "memory-next" (peek-qword buf (at + 184))
+    in let f24 = __record-set p "memory-count" (peek-qword buf (at + 192))
+    in let f25 = __record-set p "name" (ts-read-text buf (at + 200))
+    in let f26 = ts-read-list buf (at + 272) p.schedule 0
+    in let f27 = ts-read-list buf (at + 464) p.memories 0
+    in 0
+
+  ts-person-wire-valid : Integer, Integer -> Boolean
+  ts-person-wire-valid (buf) (at) = ts-text-valid buf (at + 200) 64
+
+  ts-write-persona : Integer, Integer, TmPersona -> Integer
+  ts-write-persona (buf) (at) (p) =
+    let f0 = poke-qword buf (at + 0) p.npc
+    in let f1 = poke-qword buf (at + 8) p.call-limit
+    in let f2 = poke-qword buf (at + 16) p.token-budget
+    in let f3 = poke-qword buf (at + 24) p.gift-limit
+    in let f4 = poke-qword buf (at + 32) p.call-hour
+    in let f5 = poke-qword buf (at + 40) p.calls
+    in let f6 = poke-qword buf (at + 48) p.request
+    in let f7 = ts-write-text buf (at + 56) 512 p.description
+    in let f8 = ts-write-text buf (at + 576) 128 p.fallback
+    in 0
+
+  ts-read-persona : Integer, Integer, TmPersona -> Integer
+  ts-read-persona (buf) (at) (p) =
+    let f0 = __record-set p "npc" (peek-qword buf (at + 0))
+    in let f1 = __record-set p "call-limit" (peek-qword buf (at + 8))
+    in let f2 = __record-set p "token-budget" (peek-qword buf (at + 16))
+    in let f3 = __record-set p "gift-limit" (peek-qword buf (at + 24))
+    in let f4 = __record-set p "call-hour" (peek-qword buf (at + 32))
+    in let f5 = __record-set p "calls" (peek-qword buf (at + 40))
+    in let f6 = __record-set p "request" (peek-qword buf (at + 48))
+    in let f7 = __record-set p "description" (ts-read-text buf (at + 56))
+    in let f8 = __record-set p "fallback" (ts-read-text buf (at + 576))
+    in 0
+
+  ts-persona-wire-valid : Integer, Integer -> Boolean
+  ts-persona-wire-valid (buf) (at) = ts-text-valid buf (at + 56) 512 & ts-text-valid buf (at + 576) 128
+
+

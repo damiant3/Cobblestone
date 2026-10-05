@@ -1,0 +1,128 @@
+Chapter: WireCapture
+  cites Uoaix chapter LoginWire
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter NetDriver
+  cites Net chapter NetCompact
+
+Section: Wire Capture
+
+  uo-hex-byte : Integer -> Text
+  uo-hex-byte (n) =
+    let digits = "0123456789ABCDEF"
+    in char-to-text (char-at digits (n / 16)) & char-to-text (char-at digits (bit-and n 15))
+
+  uo-log-pieces : List Integer, Integer, List Text -> List Text
+  uo-log-pieces (bytes) (i) (acc) =
+    if i >= list-length bytes then acc
+    else uo-log-pieces bytes (i + 1) (list-push acc (uo-hex-byte (list-at bytes i)))
+
+  uo-log : Text, Integer, List Integer -> [Console] Nothing
+  uo-log (direction) (connection) (bytes) =
+    print-line-uni (direction & " " & show connection & " " & text-concat-list (uo-log-pieces bytes 0 []))
+
+  uo-zero-pad : List Integer, Integer -> List Integer
+  uo-zero-pad (bytes) (stop) =
+    if list-length bytes >= stop then bytes
+    else uo-zero-pad (list-push bytes 0) stop
+
+ The A8 shard-list header and 40-byte entry are the classic UO wire format.
+ The shard-list IP is little endian; the relay IP and port are big endian.
+
+  uo-shard-list : List Integer
+  uo-shard-list =
+    uo-zero-pad [168, 0, 46, 100, 0, 1, 0, 0, 85, 79, 65, 73, 88] 40 & [0, 0, 1, 0, 0, 127]
+
+  uo-relay : List Integer = [140, 127, 0, 0, 1, 10, 33, 18, 52, 86, 120]
+
+  uo-recv : TcpTransportState -> [Network.Read, Network.Write] RawRecvResult
+  uo-recv (ts) =
+    if ts.recv-len > 0 then
+      RawRecvResult {
+        transport = transport-drop-recv ts,
+        data = __buf-read-bytes (ts.recv-base) 0 (ts.recv-len),
+        has-data = True
+      }
+    else net-io-recv-raw ts 0
+
+  uo-capture-recv : TcpTransportState, Integer, Integer, Integer,
+    UoLoginWire -> [Console, Network.Read, Network.Write] Integer
+  uo-capture-recv (ts) (connection) (total) (phase) (wire) = act
+    recv <- uo-recv ts
+    if recv.has-data == False then act
+      closed <- net-io-close (recv.transport)
+      print-line-uni ("END " & show connection & " " & show total)
+      total
+    end
+    else let size = list-length (recv.data)
+    in let next-wire = uo-wire-feed wire (recv.data) 0
+    in act
+      uo-log "RX" connection (recv.data)
+      if total + size > 4096 then act
+        print-line-uni ("REFUSE capture-limit " & show connection)
+        closed <- net-io-close (recv.transport)
+        total
+      end
+      else if next-wire.failure /= 0 then act
+        print-line-uni ("REFUSE packet " & show connection & " " & show (next-wire.failure))
+        closed <- net-io-close (recv.transport)
+        total + size
+      end
+      else if phase == 0 & next-wire.logins == 1 then act
+        uo-log "TX-ATTEMPT" connection uo-shard-list
+        sent <- net-io-send-raw-checked (recv.transport) uo-shard-list
+        if sent.ns-complete then act
+          print-line-uni ("TX-COMPLETE " & show connection & " shard-list")
+          uo-capture-recv (sent.ns-transport) connection (total + size) 1 next-wire
+        end
+        else act
+          print-line-uni ("REFUSE send-incomplete " & show connection)
+          closed <- net-io-close (sent.ns-transport)
+          total + size
+        end
+      end
+      else if phase == 1 & next-wire.selections == 1 then act
+        uo-log "TX-ATTEMPT" connection uo-relay
+        sent <- net-io-send-raw-checked (recv.transport) uo-relay
+        closed <- net-io-close (sent.ns-transport)
+        print-line-uni ("RELAY " & show connection & " " & show (sent.ns-complete))
+        total + size
+      end
+      else uo-capture-recv (recv.transport) connection (total + size) phase next-wire
+    end
+  end
+
+  uo-capture-loop : Integer -> [Console, Network.Read, Network.Write] Integer
+  uo-capture-loop (connection) =
+    let mark = __heap-save
+    in let session = net-session-new net-driver-mac [10, 0, 2, 15] [10, 0, 2, 2] 2593 0 [10, 0, 2, 2] 1000
+    in let arp = arp-cache-add (session.arp) [10, 0, 2, 2] [82, 85, 10, 0, 2, 2]
+    in let ts = net-io-listen (transport-new-with-cap (set-arp session arp) 4096)
+    in act
+      print-line-uni ("LISTEN " & show connection & " 2593")
+      accepted <- net-io-accept ts 0
+      when (accepted.session).conn.state
+        is TcpEstablished -> act
+          print-line-uni ("ACCEPT " & show connection)
+          captured <- uo-capture-recv accepted connection 0 0 (uo-wire-new 0)
+          let restored = __heap-restore mark
+          in uo-capture-loop (connection + 1)
+        end
+        is otherwise -> act
+          closed <- net-io-close accepted
+          let restored = __heap-restore mark
+          in uo-capture-loop connection
+        end
+    end
+
+  opening : [Console, Network.Read, Network.Write] Integer
+  opening = act
+    card <- net-driver-bring-up
+    print-line-uni "UOAIX stage0 capture, synthetic credentials only, 4096 bytes per connection"
+    let arena = nc-set-acquire (nc-pool-cell process-get-pid)
+    in let released = nc-set-release arena
+    in uo-capture-loop 0
+  end

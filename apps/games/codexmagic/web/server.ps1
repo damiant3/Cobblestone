@@ -376,6 +376,7 @@ function Get-AdornedName {
     return $name
 }
 
+function Json-String { param($Value); ConvertTo-Json -InputObject ([string]$Value) -Compress }
 function Send-Json { param($Response, [string]$Json, [int]$Status = 200); $buf = [System.Text.Encoding]::UTF8.GetBytes($Json); $Response.StatusCode = $Status; $Response.ContentType = 'application/json; charset=utf-8'; $Response.Headers.Add('Access-Control-Allow-Origin', '*'); $Response.ContentLength64 = $buf.Length; $Response.OutputStream.Write($buf, 0, $buf.Length) }
 function Send-AuthJson { param($Response, [string]$Json, [int]$Status = 200); Send-Json $Response $Json $Status }
 
@@ -393,7 +394,7 @@ function Handle-Auth {
     elseif ($path -eq '/api/auth/check-password') {
         $p = $qs['p']; $score = Score-Password $p; $labels = @('rejected','thin','fair','good','strong')
         $msg = switch ($score) { 0 { if ($p.Length -lt 5) { 'at least 5 characters required' } else { 'letters and numbers only' } }; 1 { 'some features require a stronger password' }; 2 { 'add uppercase and numbers' }; 3 { 'good' }; 4 { 'full access' } }
-        Send-Json $Response "{`"score`":$score,`"label`":`"$($labels[$score])`",`"message`":`"$msg`"}"
+        Send-Json $Response "{`"score`":$score,`"label`":$(Json-String ("$($labels[$score])")),`"message`":$(Json-String ("$msg"))}"
     }
     elseif ($path -eq '/api/auth/register') {
         $u = $qs['u']; $d = $qs['d']; $p = $qs['p']
@@ -411,7 +412,7 @@ function Handle-Auth {
         foreach ($c in $starterPack) { [void]$starterCards.Add($c) }
         $script:AuthAccounts[$ul] = @{ Id=$id; Handle=$ul; Display=$display; Password=$p; PwScore=$pwScore; Tfa=$false; Admin=$isFirst; Banned=$false; Balance=500; OwnedCards=$starterCards; Wins=0; Losses=0; Rating=1000; Subscription='Free'; ClanId=0; Roles=@() }
         $tok = [guid]::NewGuid().ToString('N'); $script:AuthSessions[$tok] = $ul; $labels = @('rejected','thin','fair','good','strong')
-        Send-Json $Response "{`"token`":`"$tok`",`"handle`":`"$ul`",`"display`":`"$display`",`"id`":$id,`"pw-score`":$pwScore,`"pw-label`":`"$($labels[$pwScore])`",`"tfa`":false,`"admin`":$($isFirst.ToString().ToLower()),`"starterGrant`":true,`"starterBalance`":500,`"starterCards`":$($starterPack.Count)}"
+        Send-Json $Response "{`"token`":$(Json-String ("$tok")),`"handle`":$(Json-String ("$ul")),`"display`":$(Json-String ("$display")),`"id`":$id,`"pw-score`":$pwScore,`"pw-label`":$(Json-String ("$($labels[$pwScore])")),`"tfa`":false,`"admin`":$($isFirst.ToString().ToLower()),`"starterGrant`":true,`"starterBalance`":500,`"starterCards`":$($starterPack.Count)}"
     }
     elseif ($path -eq '/api/auth/login') {
         $u = $qs['u']; $p = $qs['p']
@@ -422,13 +423,13 @@ function Handle-Auth {
         if ($acct.Banned) { Send-Json $Response '{"error":"account banned"}' 403; return }
         if ($acct.Password -ne $p) { Send-Json $Response '{"error":"wrong password"}' 400; return }
         $tok = [guid]::NewGuid().ToString('N'); $script:AuthSessions[$tok] = $ul; $labels = @('rejected','thin','fair','good','strong')
-        Send-Json $Response "{`"token`":`"$tok`",`"handle`":`"$ul`",`"display`":`"$($acct.Display)`",`"id`":$($acct.Id),`"pw-score`":$($acct.PwScore),`"pw-label`":`"$($labels[$acct.PwScore])`",`"tfa`":$($acct.Tfa.ToString().ToLower()),`"admin`":$($acct.Admin.ToString().ToLower())}"
+        Send-Json $Response "{`"token`":$(Json-String ("$tok")),`"handle`":$(Json-String ("$ul")),`"display`":$(Json-String ("$($acct.Display)")),`"id`":$($acct.Id),`"pw-score`":$($acct.PwScore),`"pw-label`":$(Json-String ("$($labels[$acct.PwScore])")),`"tfa`":$($acct.Tfa.ToString().ToLower()),`"admin`":$($acct.Admin.ToString().ToLower())}"
     }
     elseif ($path -eq '/api/auth/me') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
         $u = $script:AuthSessions[$t]; $acct = $script:AuthAccounts[$u]; $labels = @('rejected','thin','fair','good','strong')
         $adorned = Get-AdornedName $acct
-        Send-Json $Response "{`"handle`":`"$u`",`"display`":`"$($acct.Display)`",`"adorned`":`"$adorned`",`"id`":$($acct.Id),`"pw-score`":$($acct.PwScore),`"pw-label`":`"$($labels[$acct.PwScore])`",`"tfa`":$($acct.Tfa.ToString().ToLower()),`"admin`":$($acct.Admin.ToString().ToLower())}"
+        Send-Json $Response "{`"handle`":$(Json-String ("$u")),`"display`":$(Json-String ("$($acct.Display)")),`"adorned`":$(Json-String ("$adorned")),`"id`":$($acct.Id),`"pw-score`":$($acct.PwScore),`"pw-label`":$(Json-String ("$($labels[$acct.PwScore])")),`"tfa`":$($acct.Tfa.ToString().ToLower()),`"admin`":$($acct.Admin.ToString().ToLower())}"
     }
     elseif ($path -eq '/api/auth/logout') { $t = $qs['t']; if ($t) { $script:AuthSessions.Remove($t) }; Send-Json $Response '{"ok":true}' }
     elseif ($path -eq '/api/auth/profile') {
@@ -437,23 +438,22 @@ function Handle-Auth {
         $ownedCount = if ($a.OwnedCards) { $a.OwnedCards.Count } else { 0 }
         $clanId = if ($a.ClanId) { $a.ClanId } else { 0 }
         $adorned = Get-AdornedName $a
-        $rolesJson = '[' + (($a.Roles | ForEach-Object { "`"$_`"" }) -join ',') + ']'
-        Send-Json $Response "{`"handle`":`"$u`",`"display`":`"$($a.Display)`",`"adorned`":`"$adorned`",`"id`":$($a.Id),`"admin`":$($a.Admin.ToString().ToLower()),`"roles`":$rolesJson,`"pw-score`":$($a.PwScore),`"pw-label`":`"$($labels[$a.PwScore])`",`"balance`":$($a.Balance),`"tokens`":$ownedCount,`"wins`":$($a.Wins),`"losses`":$($a.Losses),`"rating`":$($a.Rating),`"subscription`":`"$($a.Subscription)`",`"clanId`":$clanId,`"rank`":`"$(if ($a.Rating -ge 1800) {'Diamond'} elseif ($a.Rating -ge 1500) {'Platinum'} elseif ($a.Rating -ge 1200) {'Gold'} elseif ($a.Rating -ge 900) {'Silver'} else {'Bronze'})`"}"
+        $rolesJson = '[' + (($a.Roles | ForEach-Object { "$(Json-String ("$_"))" }) -join ',') + ']'
+        Send-Json $Response "{`"handle`":$(Json-String ("$u")),`"display`":$(Json-String ("$($a.Display)")),`"adorned`":$(Json-String ("$adorned")),`"id`":$($a.Id),`"admin`":$($a.Admin.ToString().ToLower()),`"roles`":$rolesJson,`"pw-score`":$($a.PwScore),`"pw-label`":$(Json-String ("$($labels[$a.PwScore])")),`"balance`":$($a.Balance),`"tokens`":$ownedCount,`"wins`":$($a.Wins),`"losses`":$($a.Losses),`"rating`":$($a.Rating),`"subscription`":$(Json-String ("$($a.Subscription)")),`"clanId`":$clanId,`"rank`":$(Json-String ("$(if ($a.Rating -ge 1800) {'Diamond'} elseif ($a.Rating -ge 1500) {'Platinum'} elseif ($a.Rating -ge 1200) {'Gold'} elseif ($a.Rating -ge 900) {'Silver'} else {'Bronze'})"))}"
     }
     elseif ($path -eq '/api/auth/pool') {
         $cdxPool = Invoke-CdxApi '/api/magic/pool'
         if ($cdxPool) { Send-Json $Response $cdxPool }
         else {
             $json = ($script:CardPool | ForEach-Object { $c = $_
-                $cj = $c.cost | ConvertTo-Json -Compress
-                $clj = $c.color | ConvertTo-Json -Compress
-                $q = '"'
-                $ss = if ($c.spellSpeed) { $q + $c.spellSpeed + $q } else { 'null' }
-                $fc = if ($c.fluorClause) { $q + $c.fluorClause + $q } else { 'null' }
+                $cj = ConvertTo-Json -InputObject $c.cost -Compress
+                $clj = ConvertTo-Json -InputObject $c.color -Compress
+                $ss = if ($c.spellSpeed) { Json-String $c.spellSpeed } else { 'null' }
+                $fc = if ($c.fluorClause) { Json-String $c.fluorClause } else { 'null' }
                 $extra = ''
-                if ($c.type -eq 'Gemstone') { $extra = ',"gemColor":' + $q + $c.gemColor + $q + ',"variety":' + $q + $c.variety + $q + ',"hardness":' + $c.hardness }
-                if ($c.type -eq 'Equipment') { $extra = ',"slot":' + $q + $c.slot + $q + ',"socketEmpty":' + $c.socketEmpty.ToString().ToLower() }
-                '{' + '"id":' + $c.id + ',"name":' + $q + $c.name + $q + ',"type":' + $q + $c.type + $q + ',"rarity":' + $q + $c.rarity + $q + ',"cost":' + $cj + ',"color":' + $clj + ',"power":' + $c.power + ',"toughness":' + $c.toughness + ',"defense":' + $c.defense + ',"keywords":' + $q + $c.keywords + $q + ',"isBasic":' + $c.isBasic.ToString().ToLower() + ',"spellSpeed":' + $ss + ',"baseFocus":' + $c.baseFocus + ',"fluorClause":' + $fc + $extra + '}'
+                if ($c.type -eq 'Gemstone') { $extra = ',"gemColor":' + (Json-String $c.gemColor) + ',"variety":' + (Json-String $c.variety) + ',"hardness":' + $c.hardness }
+                if ($c.type -eq 'Equipment') { $extra = ',"slot":' + (Json-String $c.slot) + ',"socketEmpty":' + $c.socketEmpty.ToString().ToLower() }
+                '{' + '"id":' + $c.id + ',"name":' + (Json-String $c.name) + ',"type":' + (Json-String $c.type) + ',"rarity":' + (Json-String $c.rarity) + ',"cost":' + $cj + ',"color":' + $clj + ',"power":' + $c.power + ',"toughness":' + $c.toughness + ',"defense":' + $c.defense + ',"keywords":' + (Json-String $c.keywords) + ',"isBasic":' + $c.isBasic.ToString().ToLower() + ',"spellSpeed":' + $ss + ',"baseFocus":' + $c.baseFocus + ',"fluorClause":' + $fc + $extra + '}'
             }) -join ','
             Send-Json $Response ('{"cards":[' + $json + ']}')
         }
@@ -468,7 +468,7 @@ function Handle-Auth {
     }
     elseif ($path -eq '/api/auth/season') {
         $s = $script:CurrentSeason
-        Send-Json $Response "{`"name`":`"$($s.name)`",`"year`":$($s.year),`"quarter`":$($s.quarter),`"pool-size`":$($s.poolSize),`"bans`":$($s.banned.Count),`"active`":true}"
+        Send-Json $Response "{`"name`":$(Json-String ("$($s.name)")),`"year`":$($s.year),`"quarter`":$($s.quarter),`"pool-size`":$($s.poolSize),`"bans`":$($s.banned.Count),`"active`":true}"
     }
     elseif ($path -eq '/api/auth/collection') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"cards":[],"total":0}'; return }
@@ -487,7 +487,7 @@ function Handle-Auth {
             $name = if ($t2) { $t2.name } else { "Card #$($_.cardId)" }
             $type = if ($t2) { $t2.type } else { '?' }
             $kw = if ($t2) { $t2.keywords } else { '' }
-            "{`"cardId`":$($_.cardId),`"name`":`"$name`",`"type`":`"$type`",`"rarity`":`"$($_.rarity)`",`"keywords`":`"$kw`",`"count`":$($_.count)}"
+            "{`"cardId`":$($_.cardId),`"name`":$(Json-String ("$name")),`"type`":$(Json-String ("$type")),`"rarity`":$(Json-String ("$($_.rarity)")),`"keywords`":$(Json-String ("$kw")),`"count`":$($_.count)}"
         }
         Send-Json $Response "{`"cards`":[$($items -join ',')],`"total`":$($owned.Count)}"
     }
@@ -495,8 +495,7 @@ function Handle-Auth {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"decks":[]}'; return }
         $u = $script:AuthSessions[$t]; $a = $script:AuthAccounts[$u]
         $decks = if ($a.Decks) { $a.Decks } else { @{} }
-        $q = '"'
-        $list = @($decks.Keys | ForEach-Object { $d = $decks[$_]; $vCount = if($d.versions){$d.versions.Count}else{0}; '{' + $q + 'name' + $q + ':' + $q + $_ + $q + ',' + $q + 'cards' + $q + ':' + $d.cards.Count + ',' + $q + 'thumbprint' + $q + ':' + $q + $d.thumbprint + $q + ',' + $q + 'created' + $q + ':' + $q + $d.created + $q + ',' + $q + 'modified' + $q + ':' + $q + $d.modified + $q + ',' + $q + 'versions' + $q + ':' + $vCount + '}' })
+        $list = @($decks.Keys | ForEach-Object { $d = $decks[$_]; $vCount = if($d.versions){$d.versions.Count}else{0}; '{"name":' + (Json-String $_) + ',"cards":' + $d.cards.Count + ',"thumbprint":' + (Json-String $d.thumbprint) + ',"created":' + (Json-String $d.created) + ',"modified":' + (Json-String $d.modified) + ',"versions":' + $vCount + '}' })
         Send-Json $Response ('{"decks":[' + ($list -join ',') + ']}')
     }
     elseif ($path -eq '/api/auth/save-deck') {
@@ -515,7 +514,7 @@ function Handle-Auth {
             $a.Decks[$name] = @{ cards = $cardList; thumbprint = $thumbprint; created = $now; modified = $now; versions = @() }
         }
         Save-State
-        Send-Json $Response ('{"ok":true,"name":"' + $name + '","cards":' + $cardList.Count + ',"thumbprint":"' + $thumbprint + '"}')
+        Send-Json $Response ('{"ok":true,"name":' + (Json-String $name) + ',"cards":' + $cardList.Count + ',"thumbprint":' + (Json-String $thumbprint) + '}')
     }
     elseif ($path -eq '/api/auth/mark-deck-version') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
@@ -527,7 +526,7 @@ function Handle-Auth {
         $ver = @{ label = $label; cards = @($d.cards); thumbprint = $d.thumbprint; markedAt = (Get-Date).ToString('o') }
         $d.versions = @($d.versions) + @($ver)
         Save-State
-        Send-Json $Response ('{"ok":true,"label":"' + $label + '","thumbprint":"' + $d.thumbprint + '","version":' + $d.versions.Count + '}')
+        Send-Json $Response ('{"ok":true,"label":' + (Json-String $label) + ',"thumbprint":' + (Json-String $d.thumbprint) + ',"version":' + $d.versions.Count + '}')
     }
     elseif ($path -eq '/api/auth/load-deck') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
@@ -540,12 +539,11 @@ function Handle-Auth {
             if ($vi -lt 0 -or $vi -ge $d.versions.Count) { Send-Json $Response '{"error":"version not found"}' 404; return }
             $v = $d.versions[$vi]
             $cardsJson = ($v.cards | ForEach-Object { $_ }) -join ','
-            Send-Json $Response ('{"name":"' + $name + '","label":"' + $v.label + '","thumbprint":"' + $v.thumbprint + '","cards":[' + $cardsJson + ']}')
+            Send-Json $Response ('{"name":' + (Json-String $name) + ',"label":' + (Json-String $v.label) + ',"thumbprint":' + (Json-String $v.thumbprint) + ',"cards":[' + $cardsJson + ']}')
         } else {
             $cardsJson = ($d.cards | ForEach-Object { $_ }) -join ','
-            $q = '"'
-            $versJson = @($d.versions | ForEach-Object { '{' + $q + 'label' + $q + ':' + $q + $_.label + $q + ',' + $q + 'thumbprint' + $q + ':' + $q + $_.thumbprint + $q + ',' + $q + 'markedAt' + $q + ':' + $q + $_.markedAt + $q + ',' + $q + 'cards' + $q + ':' + $_.cards.Count + '}' }) -join ','
-            Send-Json $Response ('{"name":"' + $name + '","thumbprint":"' + $d.thumbprint + '","created":"' + $d.created + '","modified":"' + $d.modified + '","cards":[' + $cardsJson + '],"versions":[' + $versJson + ']}')
+            $versJson = @($d.versions | ForEach-Object { '{"label":' + (Json-String $_.label) + ',"thumbprint":' + (Json-String $_.thumbprint) + ',"markedAt":' + (Json-String $_.markedAt) + ',"cards":' + $_.cards.Count + '}' }) -join ','
+            Send-Json $Response ('{"name":' + (Json-String $name) + ',"thumbprint":' + (Json-String $d.thumbprint) + ',"created":' + (Json-String $d.created) + ',"modified":' + (Json-String $d.modified) + ',"cards":[' + $cardsJson + '],"versions":[' + $versJson + ']}')
         }
     }
     elseif ($path -eq '/api/auth/delete-deck') {
@@ -559,12 +557,12 @@ function Handle-Auth {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
         $u = $script:AuthSessions[$t]; $a = $script:AuthAccounts[$u]
         $packType = $qs['type']; $cost = switch ($packType) { 'premium'{300} 'draft'{250} default{100} }
-        if ($a.Balance -lt $cost) { Send-Json $Response "{`"error`":`"Not enough MC. Need $cost, have $($a.Balance).`"}" 400; return }
+        if ($a.Balance -lt $cost) { Send-Json $Response "{`"error`":$(Json-String ("Not enough MC. Need $cost, have $($a.Balance)."))}" 400; return }
         if (-not $a.OwnedCards) { $a.OwnedCards = [System.Collections.ArrayList]::new() }
         $pulled = Crack-PackCards -PackType $packType -Sub $a.Subscription
         $a.Balance -= $cost
         foreach ($c in $pulled) { [void]$a.OwnedCards.Add($c) }
-        $cardsJson = ($pulled | ForEach-Object { $t2 = $script:CardIndex[$_.cardId]; $name = if($t2){$t2.name}else{"Card #$($_.cardId)"}; "{`"cardId`":$($_.cardId),`"name`":`"$name`",`"rarity`":`"$($_.rarity)`",`"tokenId`":$($_.tokenId)}" }) -join ','
+        $cardsJson = ($pulled | ForEach-Object { $t2 = $script:CardIndex[$_.cardId]; $name = if($t2){$t2.name}else{"Card #$($_.cardId)"}; "{`"cardId`":$($_.cardId),`"name`":$(Json-String ("$name")),`"rarity`":$(Json-String ("$($_.rarity)")),`"tokenId`":$($_.tokenId)}" }) -join ','
         Send-Json $Response "{`"ok`":true,`"balance`":$($a.Balance),`"cards`":[$cardsJson],`"count`":$($pulled.Count)}"
     }
     elseif ($path -eq '/api/auth/buy-store-item') {
@@ -578,7 +576,7 @@ function Handle-Auth {
         if ($discActive -and $item.discountFrom) { try { if ([datetime]::Parse($item.discountFrom) -gt (Get-Date)) { $discActive = $false } } catch {} }
         if ($discActive -and $item.discountTo) { try { if ([datetime]::Parse($item.discountTo) -lt (Get-Date)) { $discActive = $false } } catch {} }
         $effectivePrice = if ($discActive) { [Math]::Floor($item.price * (1 - $item.discount / 100)) } else { $item.price }
-        if ($a.Balance -lt $effectivePrice) { Send-Json $Response "{`"error`":`"Not enough MC. Need $effectivePrice, have $($a.Balance).`"}" 400; return }
+        if ($a.Balance -lt $effectivePrice) { Send-Json $Response "{`"error`":$(Json-String ("Not enough MC. Need $effectivePrice, have $($a.Balance)."))}" 400; return }
         if (-not $a.OwnedCards) { $a.OwnedCards = [System.Collections.ArrayList]::new() }
         $pulled = @()
         if ($item.type -in @('pack','bundle','starter')) {
@@ -596,15 +594,15 @@ function Handle-Auth {
         $a.Balance -= $effectivePrice
         if ($item.qty -gt 0) { $item.qty-- }
         $item.sold++
-        $cardsJson = ($pulled | ForEach-Object { $t2 = $script:CardIndex[$_.cardId]; $nm = if($t2){$t2.name}else{"?"}; "{`"cardId`":$($_.cardId),`"name`":`"$nm`",`"rarity`":`"$($_.rarity)`",`"tokenId`":$($_.tokenId)}" }) -join ','
-        Send-Json $Response "{`"ok`":true,`"balance`":$($a.Balance),`"cards`":[$cardsJson],`"count`":$($pulled.Count),`"itemName`":`"$($item.name)`"}"
+        $cardsJson = ($pulled | ForEach-Object { $t2 = $script:CardIndex[$_.cardId]; $nm = if($t2){$t2.name}else{"?"}; "{`"cardId`":$($_.cardId),`"name`":$(Json-String ("$nm")),`"rarity`":$(Json-String ("$($_.rarity)")),`"tokenId`":$($_.tokenId)}" }) -join ','
+        Send-Json $Response "{`"ok`":true,`"balance`":$($a.Balance),`"cards`":[$cardsJson],`"count`":$($pulled.Count),`"itemName`":$(Json-String ("$($item.name)"))}"
     }
     elseif ($path -eq '/api/auth/buy-coin') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
         $u = $script:AuthSessions[$t]; $a = $script:AuthAccounts[$u]
         $amt = [int]$qs['amount']
         if ($amt -lt 1) { Send-Json $Response '{"error":"amount must be positive"}' 400; return }
-        if ($amt -gt $script:CoinForSale) { Send-Json $Response "{`"error`":`"Only $($script:CoinForSale) MC available for purchase.`"}" 400; return }
+        if ($amt -gt $script:CoinForSale) { Send-Json $Response "{`"error`":$(Json-String ("Only $($script:CoinForSale) MC available for purchase."))}" 400; return }
         $script:CoinForSale -= $amt; $a.Balance += $amt
         $script:MintLog.Add(@{type='purchase';handle=$u;amount=$amt;reason="bought at store";time=Now-Stamp})
         Send-Json $Response "{`"ok`":true,`"balance`":$($a.Balance),`"forSale`":$($script:CoinForSale)}"
@@ -622,7 +620,7 @@ function Handle-Auth {
         if ($newScore -eq 0) { Send-Json $Response '{"error":"new password too weak"}' 400; return }
         $a.Password = $new; $a.PwScore = $newScore
         $labels = @('rejected','thin','fair','good','strong')
-        Send-Json $Response "{`"ok`":true,`"pw-score`":$newScore,`"pw-label`":`"$($labels[$newScore])`"}"
+        Send-Json $Response "{`"ok`":true,`"pw-score`":$newScore,`"pw-label`":$(Json-String ("$($labels[$newScore])"))}"
     }
     elseif ($path -eq '/api/auth/subscribe') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
@@ -630,7 +628,7 @@ function Handle-Auth {
         $tier = $qs['tier']; if ($tier -notin @('Free','Bronze','Silver','Gold','Platinum')) { $tier = 'Free' }
         $a.Subscription = $tier
         $adorned = Get-AdornedName $a
-        Send-Json $Response "{`"ok`":true,`"subscription`":`"$tier`",`"adorned`":`"$adorned`"}"
+        Send-Json $Response "{`"ok`":true,`"subscription`":$(Json-String ("$tier")),`"adorned`":$(Json-String ("$adorned"))}"
     }
     elseif ($path -eq '/api/auth/wipe-collection') {
         $t = $qs['t']; if (-not $t -or -not $script:AuthSessions.ContainsKey($t)) { Send-Json $Response '{"error":"not authenticated"}' 401; return }
@@ -675,7 +673,7 @@ function Handle-Auth {
             if ($discActive -and $_.discountFrom) { try { if ([datetime]::Parse($_.discountFrom) -gt $now) { $discActive = $false } } catch {} }
             if ($discActive -and $_.discountTo) { try { if ([datetime]::Parse($_.discountTo) -lt $now) { $discActive = $false } } catch {} }
             $dv = if ($discActive) { $discPct } else { 0 }; $slv = if ($discActive) { $sl } else { '' }
-            "{`"id`":$($_.id),`"name`":`"$($_.name)`",`"type`":`"$($_.type)`",`"price`":$($_.price),`"qty`":$($_.qty),`"discount`":$dv,`"saleLabel`":`"$slv`",`"sold`":$($_.sold)}"
+            "{`"id`":$($_.id),`"name`":$(Json-String ("$($_.name)")),`"type`":$(Json-String ("$($_.type)")),`"price`":$($_.price),`"qty`":$($_.qty),`"discount`":$dv,`"saleLabel`":$(Json-String ("$slv")),`"sold`":$($_.sold)}"
         }
         Send-Json $Response "{`"items`":[$($it -join ',')]}"
     }
@@ -706,7 +704,7 @@ function Handle-Admin {
         if ($amt -lt 1) { Send-Json $Response '{"error":"amount must be positive"}' 400; return }
         $circulating = 0; foreach ($a in $script:AuthAccounts.Values) { $circulating += $a.Balance }; $circulating += $script:CoinForSale
         $unallocated = $script:TotalMinted - $script:TotalBurned - $circulating
-        if ($amt -gt $unallocated) { Send-Json $Response "{`"error`":`"Only $unallocated MC unallocated in supply. Mint more first.`"}" 400; return }
+        if ($amt -gt $unallocated) { Send-Json $Response "{`"error`":$(Json-String ("Only $unallocated MC unallocated in supply. Mint more first."))}" 400; return }
         $script:AuthAccounts[$hl].Balance += $amt
         $script:MintLog.Add(@{type='grant';handle=$hl;amount=$amt;reason=$reason;time=Now-Stamp})
         Send-Json $Response "{`"ok`":true,`"balance`":$($script:AuthAccounts[$hl].Balance)}"
@@ -716,7 +714,7 @@ function Handle-Admin {
         if ($amt -lt 1) { Send-Json $Response '{"error":"amount must be positive"}' 400; return }
         $circulating = 0; foreach ($a in $script:AuthAccounts.Values) { $circulating += $a.Balance }; $circulating += $script:CoinForSale
         $unallocated = $script:TotalMinted - $script:TotalBurned - $circulating
-        if ($amt -gt $unallocated) { Send-Json $Response "{`"error`":`"Only $unallocated MC unallocated. Mint more first.`"}" 400; return }
+        if ($amt -gt $unallocated) { Send-Json $Response "{`"error`":$(Json-String ("Only $unallocated MC unallocated. Mint more first."))}" 400; return }
         $script:CoinForSale += $amt
         if ($price -ge 1) { $script:CoinPrice = $price }
         $script:MintLog.Add(@{type='stock';handle='STORE';amount=$amt;reason="$($script:CoinForSale) MC now for sale";time=Now-Stamp})
@@ -727,23 +725,23 @@ function Handle-Admin {
         if ($amt -lt 1) { Send-Json $Response '{"error":"amount must be positive"}' 400; return }
         $circulating = 0; foreach ($a in $script:AuthAccounts.Values) { $circulating += $a.Balance }; $circulating += $script:CoinForSale
         $unallocated = $script:TotalMinted - $script:TotalBurned - $circulating
-        if ($amt -gt $unallocated) { Send-Json $Response "{`"error`":`"Can only burn unallocated supply ($unallocated MC).`"}" 400; return }
+        if ($amt -gt $unallocated) { Send-Json $Response "{`"error`":$(Json-String ("Can only burn unallocated supply ($unallocated MC)."))}" 400; return }
         $script:TotalBurned += $amt
         $script:MintLog.Add(@{type='burn';handle='SUPPLY';amount=$amt;reason=$reason;time=Now-Stamp})
         Send-Json $Response "{`"ok`":true,`"supply`":$($script:TotalMinted - $script:TotalBurned),`"burned`":$($script:TotalBurned)}"
     }
-    elseif ($path -eq '/api/admin/mint-log') { $e = $script:MintLog | Select-Object -Last 50; $j = '[' + (($e | ForEach-Object { "{`"type`":`"$($_.type)`",`"handle`":`"$($_.handle)`",`"amount`":$($_.amount),`"reason`":`"$($_.reason)`",`"time`":`"$($_.time)`"}" }) -join ',') + ']'; Send-Json $Response "{`"entries`":$j}" }
-    elseif ($path -eq '/api/admin/users') { $u = $script:AuthAccounts.Values | ForEach-Object { $rj='[' + (($_.Roles | ForEach-Object { "`"$_`"" }) -join ',') + ']'; "{`"id`":$($_.Id),`"handle`":`"$($_.Handle)`",`"display`":`"$($_.Display)`",`"admin`":$($_.Admin.ToString().ToLower()),`"banned`":$($_.Banned.ToString().ToLower()),`"pwScore`":$($_.PwScore),`"balance`":$($_.Balance),`"roles`":$rj}" }; Send-Json $Response "{`"users`":[$($u -join ',')]}" }
+    elseif ($path -eq '/api/admin/mint-log') { $e = $script:MintLog | Select-Object -Last 50; $j = '[' + (($e | ForEach-Object { "{`"type`":$(Json-String ("$($_.type)")),`"handle`":$(Json-String ("$($_.handle)")),`"amount`":$($_.amount),`"reason`":$(Json-String ("$($_.reason)")),`"time`":$(Json-String ("$($_.time)"))}" }) -join ',') + ']'; Send-Json $Response "{`"entries`":$j}" }
+    elseif ($path -eq '/api/admin/users') { $u = $script:AuthAccounts.Values | ForEach-Object { $rj='[' + (($_.Roles | ForEach-Object { "$(Json-String ("$_"))" }) -join ',') + ']'; "{`"id`":$($_.Id),`"handle`":$(Json-String ("$($_.Handle)")),`"display`":$(Json-String ("$($_.Display)")),`"admin`":$($_.Admin.ToString().ToLower()),`"banned`":$($_.Banned.ToString().ToLower()),`"pwScore`":$($_.PwScore),`"balance`":$($_.Balance),`"roles`":$rj}" }; Send-Json $Response "{`"users`":[$($u -join ',')]}" }
     elseif ($path -eq '/api/admin/set-role') { $hl = ($qs['handle']).ToLower(); if (-not $script:AuthAccounts.ContainsKey($hl)) { Send-Json $Response '{"error":"unknown"}' 400; return }; $script:AuthAccounts[$hl].Admin = ($qs['admin'] -eq '1'); Send-Json $Response '{"ok":true}' }
     elseif ($path -eq '/api/admin/ban') { $hl = ($qs['handle']).ToLower(); if (-not $script:AuthAccounts.ContainsKey($hl)) { Send-Json $Response '{"error":"unknown"}' 400; return }; $script:AuthAccounts[$hl].Banned = ($qs['banned'] -eq '1'); Send-Json $Response '{"ok":true}' }
     elseif ($path -eq '/api/admin/set-roles') { $hl = ($qs['handle']).ToLower(); if (-not $script:AuthAccounts.ContainsKey($hl)) { Send-Json $Response '{"error":"unknown"}' 400; return }; $roleStr = $qs['roles']; $script:AuthAccounts[$hl].Roles = if ($roleStr) { @($roleStr -split ',') } else { @() }; Send-Json $Response '{"ok":true}' }
     elseif ($path -eq '/api/admin/add-item') { $name = $qs['name']; if (-not $name) { Send-Json $Response '{"error":"name required"}' 400; return }; $id = $script:StoreNextId++; $avFrom = if($qs['availableFrom']){$qs['availableFrom']}else{''}; $avTo = if($qs['availableTo']){$qs['availableTo']}else{''}; $cid = if($qs['cardId']){[int]$qs['cardId']}else{-1}; $script:StoreItems[$id] = @{id=$id;name=$name;type=$qs['type'];price=[int]$qs['price'];qty=[int]$qs['qty'];desc=$qs['desc'];discount=0;saleLabel='';sold=0;cardId=$cid;availableFrom=$avFrom;availableTo=$avTo;discountFrom='';discountTo=''}; Send-Json $Response "{`"ok`":true,`"id`":$id}" }
-    elseif ($path -eq '/api/admin/store-items') { $it = $script:StoreItems.Values | Sort-Object {$_.id} | ForEach-Object { $af=if($_.availableFrom){$_.availableFrom}else{''}; $at2=if($_.availableTo){$_.availableTo}else{''}; $df=if($_.discountFrom){$_.discountFrom}else{''}; $dt=if($_.discountTo){$_.discountTo}else{''}; $cid=if($_.cardId){$_.cardId}else{-1}; "{`"id`":$($_.id),`"name`":`"$($_.name)`",`"type`":`"$($_.type)`",`"price`":$($_.price),`"qty`":$($_.qty),`"discount`":$($_.discount),`"saleLabel`":`"$($_.saleLabel)`",`"sold`":$($_.sold),`"cardId`":$cid,`"availableFrom`":`"$af`",`"availableTo`":`"$at2`",`"discountFrom`":`"$df`",`"discountTo`":`"$dt`"}" }; Send-Json $Response "{`"items`":[$($it -join ',')]}" }
+    elseif ($path -eq '/api/admin/store-items') { $it = $script:StoreItems.Values | Sort-Object {$_.id} | ForEach-Object { $af=if($_.availableFrom){$_.availableFrom}else{''}; $at2=if($_.availableTo){$_.availableTo}else{''}; $df=if($_.discountFrom){$_.discountFrom}else{''}; $dt=if($_.discountTo){$_.discountTo}else{''}; $cid=if($_.cardId){$_.cardId}else{-1}; "{`"id`":$($_.id),`"name`":$(Json-String ("$($_.name)")),`"type`":$(Json-String ("$($_.type)")),`"price`":$($_.price),`"qty`":$($_.qty),`"discount`":$($_.discount),`"saleLabel`":$(Json-String ("$($_.saleLabel)")),`"sold`":$($_.sold),`"cardId`":$cid,`"availableFrom`":$(Json-String ("$af")),`"availableTo`":$(Json-String ("$at2")),`"discountFrom`":$(Json-String ("$df")),`"discountTo`":$(Json-String ("$dt"))}" }; Send-Json $Response "{`"items`":[$($it -join ',')]}" }
     elseif ($path -eq '/api/admin/set-discount') { $id = [int]$qs['id']; if (-not $script:StoreItems.ContainsKey($id)) { Send-Json $Response '{"error":"not found"}' 400; return }; $script:StoreItems[$id].discount = [int]$qs['pct']; $script:StoreItems[$id].saleLabel = if ($qs['label']) { $qs['label'] } else { '' }; $script:StoreItems[$id].discountFrom = if($qs['discountFrom']){$qs['discountFrom']}else{''}; $script:StoreItems[$id].discountTo = if($qs['discountTo']){$qs['discountTo']}else{''}; Send-Json $Response '{"ok":true}' }
     elseif ($path -eq '/api/admin/remove-item') { $id = [int]$qs['id']; if ($script:StoreItems.ContainsKey($id)) { $script:StoreItems.Remove($id) }; Send-Json $Response '{"ok":true}' }
-    elseif ($path -eq '/api/admin/clans') { $c = $script:Clans.Values | ForEach-Object { $mc=$_.members.Count; $tc=@($_.trades.Values|Where-Object{$_.status -eq 'active'}).Count; $lc=@($_.loans.Values|Where-Object{$_.status -eq 'active'}).Count; "{`"id`":$($_.id),`"name`":`"$($_.name)`",`"tag`":`"$($_.tag)`",`"leader`":`"$($_.leader)`",`"members`":$mc,`"isPaid`":$($_.isPaid.ToString().ToLower()),`"treasury`":$($_.treasury),`"trades`":$tc,`"loans`":$lc}" }; Send-Json $Response "{`"clans`":[$($c -join ',')]}" }
+    elseif ($path -eq '/api/admin/clans') { $c = $script:Clans.Values | ForEach-Object { $mc=$_.members.Count; $tc=@($_.trades.Values|Where-Object{$_.status -eq 'active'}).Count; $lc=@($_.loans.Values|Where-Object{$_.status -eq 'active'}).Count; "{`"id`":$($_.id),`"name`":$(Json-String ("$($_.name)")),`"tag`":$(Json-String ("$($_.tag)")),`"leader`":$(Json-String ("$($_.leader)")),`"members`":$mc,`"isPaid`":$($_.isPaid.ToString().ToLower()),`"treasury`":$($_.treasury),`"trades`":$tc,`"loans`":$lc}" }; Send-Json $Response "{`"clans`":[$($c -join ',')]}" }
     elseif ($path -eq '/api/admin/disband-clan') { $id = [int]$qs['id']; if ($script:Clans.ContainsKey($id)) { $cl=$script:Clans[$id]; foreach($m in $cl.members){if($script:AuthAccounts.ContainsKey($m.handle)){$script:AuthAccounts[$m.handle].ClanId=0}}; foreach($tk in @($cl.trades.Keys)){$tr=$cl.trades[$tk];if($tr.status -eq 'active' -and $tr.escrowCard -and $script:AuthAccounts.ContainsKey($tr.seller)){$sa=$script:AuthAccounts[$tr.seller];if(-not $sa.OwnedCards){$sa.OwnedCards=[System.Collections.ArrayList]::new()};[void]$sa.OwnedCards.Add($tr.escrowCard)}}; foreach($lk in @($cl.loans.Keys)){$ln=$cl.loans[$lk];if($ln.status -eq 'active'){if($ln.originalCard -and $script:AuthAccounts.ContainsKey($ln.lender)){$la=$script:AuthAccounts[$ln.lender];if(-not $la.OwnedCards){$la.OwnedCards=[System.Collections.ArrayList]::new()};[void]$la.OwnedCards.Add($ln.originalCard)};if($script:AuthAccounts.ContainsKey($ln.borrower)){$ba=$script:AuthAccounts[$ln.borrower];for($i=0;$i -lt $ba.OwnedCards.Count;$i++){if($ba.OwnedCards[$i] -is [hashtable] -and $ba.OwnedCards[$i].tokenId -eq $ln.tokenId){$ba.OwnedCards.RemoveAt($i);break}}}}}; $script:Clans.Remove($id) }; Send-Json $Response '{"ok":true}' }
-    elseif ($path -eq '/api/admin/blockchain') { $supply = 0; foreach ($a in $script:AuthAccounts.Values) { $supply += $a.Balance }; $txC = $script:MintLog.Count + $script:TradeHistory.Count; $bc = [Math]::Max(1,[Math]::Floor($txC/3)+1); $hash = '{0:x16}' -f ([Math]::Abs($bc.GetHashCode())*7919); $rt = @(); foreach ($e in ($script:MintLog | Select-Object -Last 5)) { $rt += "{`"time`":`"$($e.time)`",`"type`":`"$($e.type)`",`"detail`":`"$($e.amount) MC $($e.handle)`"}" }; foreach ($e in ($script:TradeHistory | Select-Object -Last 5)) { $rt += "{`"time`":`"$($e.time)`",`"type`":`"trade`",`"detail`":`"$($e.cardName) $($e.price) MC`"}" }; Send-Json $Response "{`"blocks`":$bc,`"transactions`":$txC,`"tokens`":$supply,`"supply`":$supply,`"height`":$bc,`"lastHash`":`"0x$hash`",`"avgBlockTime`":`"12`",`"pendingTx`":0,`"nodeStatus`":`"Online`",`"recentTx`":[$($rt -join ',')]}" }
+    elseif ($path -eq '/api/admin/blockchain') { $supply = 0; foreach ($a in $script:AuthAccounts.Values) { $supply += $a.Balance }; $txC = $script:MintLog.Count + $script:TradeHistory.Count; $bc = [Math]::Max(1,[Math]::Floor($txC/3)+1); $hash = '{0:x16}' -f ([Math]::Abs($bc.GetHashCode())*7919); $rt = @(); foreach ($e in ($script:MintLog | Select-Object -Last 5)) { $rt += "{`"time`":$(Json-String ("$($e.time)")),`"type`":$(Json-String ("$($e.type)")),`"detail`":$(Json-String ("$($e.amount) MC $($e.handle)"))}" }; foreach ($e in ($script:TradeHistory | Select-Object -Last 5)) { $rt += "{`"time`":$(Json-String ("$($e.time)")),`"type`":`"trade`",`"detail`":$(Json-String ("$($e.cardName) $($e.price) MC"))}" }; Send-Json $Response "{`"blocks`":$bc,`"transactions`":$txC,`"tokens`":$supply,`"supply`":$supply,`"height`":$bc,`"lastHash`":$(Json-String ("0x$hash")),`"avgBlockTime`":`"12`",`"pendingTx`":0,`"nodeStatus`":`"Online`",`"recentTx`":[$($rt -join ',')]}" }
     else { Send-Json $Response '{"error":"unknown admin endpoint"}' 404 }
 }
 
@@ -779,7 +777,7 @@ function Handle-Market {
         if ($qs['search']) { $active = @($active | Where-Object { $_.cardName -like "*$($qs['search'])*" }) }
         $sort = $qs['sort']; if ($sort -eq 'price-low') { $active = @($active | Sort-Object { if ($_.type -eq 'auction') { $_.currentBid } else { $_.price } }) } elseif ($sort -eq 'price-high') { $active = @($active | Sort-Object { if ($_.type -eq 'auction') { $_.currentBid } else { $_.price } } -Descending) } elseif ($sort -eq 'ending') { $active = @($active | Sort-Object { if ($_.endsAt) { $_.endsAt } else { [datetime]::MaxValue } }) } else { $active = @($active | Sort-Object { $_.id } -Descending) }
         $all = @($script:Listings.Values | Where-Object { $_.status -eq 'active' })
-        $items = $active | ForEach-Object { $tl = if ($_.endsAt) { $r = ($_.endsAt - (Get-Date)); if ($r.TotalSeconds -gt 0) { '{0}h {1}m' -f [int]$r.TotalHours, $r.Minutes } else { 'ended' } } else { '--' }; "{`"id`":$($_.id),`"type`":`"$($_.type)`",`"cardName`":`"$($_.cardName)`",`"cardType`":`"$($_.cardType)`",`"rarity`":`"$($_.rarity)`",`"price`":$($_.price),`"minBid`":$($_.minBid),`"currentBid`":$($_.currentBid),`"buyout`":$($_.buyout),`"bidCount`":$($_.bidCount),`"seller`":`"$($_.seller)`",`"timeLeft`":`"$tl`"}" }
+        $items = $active | ForEach-Object { $tl = if ($_.endsAt) { $r = ($_.endsAt - (Get-Date)); if ($r.TotalSeconds -gt 0) { '{0}h {1}m' -f [int]$r.TotalHours, $r.Minutes } else { 'ended' } } else { '--' }; "{`"id`":$($_.id),`"type`":$(Json-String ("$($_.type)")),`"cardName`":$(Json-String ("$($_.cardName)")),`"cardType`":$(Json-String ("$($_.cardType)")),`"rarity`":$(Json-String ("$($_.rarity)")),`"price`":$($_.price),`"minBid`":$($_.minBid),`"currentBid`":$($_.currentBid),`"buyout`":$($_.buyout),`"bidCount`":$($_.bidCount),`"seller`":$(Json-String ("$($_.seller)")),`"timeLeft`":$(Json-String ("$tl"))}" }
         Send-Json $Response "{`"listings`":[$($items -join ',')],`"totalActive`":$($all.Count),`"totalSales`":$(@($all|Where-Object{$_.type -eq 'sale'}).Count),`"totalAuctions`":$(@($all|Where-Object{$_.type -eq 'auction'}).Count),`"totalVolume`":$($script:TotalVolume)}"
     }
     elseif ($path -eq '/api/market/create') {
@@ -854,7 +852,7 @@ function Handle-Market {
     elseif ($path -eq '/api/market/my-listings') {
         if (-not $user) { Send-Json $Response '{"listings":[]}'; return }
         $mine = @($script:Listings.Values | Where-Object { $_.seller -eq $user.Handle -and $_.status -eq 'active' })
-        $items = $mine | ForEach-Object { $tl = if ($_.endsAt) { $r = ($_.endsAt-(Get-Date)); if ($r.TotalSeconds -gt 0) { '{0}h {1}m' -f [int]$r.TotalHours,$r.Minutes } else { 'ended' } } else { '--' }; "{`"id`":$($_.id),`"type`":`"$($_.type)`",`"cardName`":`"$($_.cardName)`",`"price`":$($_.price),`"currentBid`":$($_.currentBid),`"bidCount`":$($_.bidCount),`"timeLeft`":`"$tl`"}" }
+        $items = $mine | ForEach-Object { $tl = if ($_.endsAt) { $r = ($_.endsAt-(Get-Date)); if ($r.TotalSeconds -gt 0) { '{0}h {1}m' -f [int]$r.TotalHours,$r.Minutes } else { 'ended' } } else { '--' }; "{`"id`":$($_.id),`"type`":$(Json-String ("$($_.type)")),`"cardName`":$(Json-String ("$($_.cardName)")),`"price`":$($_.price),`"currentBid`":$($_.currentBid),`"bidCount`":$($_.bidCount),`"timeLeft`":$(Json-String ("$tl"))}" }
         Send-Json $Response "{`"listings`":[$($items -join ',')]}"
     }
     elseif ($path -eq '/api/market/my-cards') {
@@ -865,14 +863,14 @@ function Handle-Market {
             $rar = if ($c -is [hashtable] -and $c.rarity) { $c.rarity } else { 'Common' }
             $tid = if ($c -is [hashtable]) { $c.tokenId } else { $i }
             $tmpl = $script:CardIndex[$cid]; $nm = if ($tmpl) { $tmpl.name } else { "Card #$cid" }; $tp = if ($tmpl) { $tmpl.type } else { '?' }
-            $cards += "{`"tokenId`":$tid,`"cardId`":$cid,`"rarity`":`"$rar`",`"name`":`"$nm`",`"type`":`"$tp`"}"
+            $cards += "{`"tokenId`":$tid,`"cardId`":$cid,`"rarity`":$(Json-String ("$rar")),`"name`":$(Json-String ("$nm")),`"type`":$(Json-String ("$tp"))}"
         }
         Send-Json $Response "{`"cards`":[$($cards -join ',')]}"
     }
     elseif ($path -eq '/api/market/history') {
         if (-not $user) { Send-Json $Response '{"transactions":[]}'; return }
         $mine = @($script:TradeHistory | Where-Object { $_.buyer -eq $user.Handle -or $_.seller -eq $user.Handle }) | Select-Object -Last 20
-        $items = $mine | ForEach-Object { $t = if ($_.seller -eq $user.Handle) { 'sold' } else { 'bought' }; "{`"type`":`"$t`",`"cardName`":`"$($_.cardName)`",`"price`":$($_.price),`"buyer`":`"$($_.buyer)`",`"seller`":`"$($_.seller)`",`"time`":`"$($_.time)`"}" }
+        $items = $mine | ForEach-Object { $t = if ($_.seller -eq $user.Handle) { 'sold' } else { 'bought' }; "{`"type`":$(Json-String ("$t")),`"cardName`":$(Json-String ("$($_.cardName)")),`"price`":$($_.price),`"buyer`":$(Json-String ("$($_.buyer)")),`"seller`":$(Json-String ("$($_.seller)")),`"time`":$(Json-String ("$($_.time)"))}" }
         Send-Json $Response "{`"transactions`":[$($items -join ',')]}"
     }
     else { Send-Json $Response '{"error":"unknown market endpoint"}' 404 }
@@ -912,13 +910,13 @@ function Handle-Clan {
         if ($cid -eq 0 -or -not $script:Clans.ContainsKey($cid)) { Send-Json $Response '{"id":0}'; return }
         $cl = $script:Clans[$cid]; Expire-ClanLoans $cl
         $mc = $cl.members.Count; $ac = $cl.applications.Count; $tc = @($cl.trades.Values | Where-Object { $_.status -eq 'active' }).Count; $lc = @($cl.loans.Values | Where-Object { $_.status -eq 'active' }).Count
-        Send-Json $Response "{`"id`":$($cl.id),`"name`":`"$($cl.name)`",`"tag`":`"$($cl.tag)`",`"leader`":`"$($cl.leader)`",`"founder`":`"$($cl.founder)`",`"members`":$mc,`"applications`":$ac,`"treasury`":$($cl.treasury),`"isPaid`":$($cl.isPaid.ToString().ToLower()),`"activeTrades`":$tc,`"activeLoans`":$lc,`"rank`":`"$($cl.rank)`",`"createdAt`":`"$($cl.createdAt)`"}"
+        Send-Json $Response "{`"id`":$($cl.id),`"name`":$(Json-String ("$($cl.name)")),`"tag`":$(Json-String ("$($cl.tag)")),`"leader`":$(Json-String ("$($cl.leader)")),`"founder`":$(Json-String ("$($cl.founder)")),`"members`":$mc,`"applications`":$ac,`"treasury`":$($cl.treasury),`"isPaid`":$($cl.isPaid.ToString().ToLower()),`"activeTrades`":$tc,`"activeLoans`":$lc,`"rank`":$(Json-String ("$($cl.rank)")),`"createdAt`":$(Json-String ("$($cl.createdAt)"))}"
     }
     elseif ($path -eq '/api/clan/search') {
         $q = $qs['q']; if (-not $q) { Send-Json $Response '{"clans":[]}'; return }
         $ql = $q.ToLower()
         $found = @($script:Clans.Values | Where-Object { $_.name -like "*$ql*" -or $_.tag -like "*$ql*" })
-        $items = $found | ForEach-Object { "{`"id`":$($_.id),`"name`":`"$($_.name)`",`"tag`":`"$($_.tag)`",`"leader`":`"$($_.leader)`",`"members`":$($_.members.Count)}" }
+        $items = $found | ForEach-Object { "{`"id`":$($_.id),`"name`":$(Json-String ("$($_.name)")),`"tag`":$(Json-String ("$($_.tag)")),`"leader`":$(Json-String ("$($_.leader)")),`"members`":$($_.members.Count)}" }
         Send-Json $Response "{`"clans`":[$($items -join ',')]}"
     }
     elseif ($path -eq '/api/clan/create') {
@@ -952,7 +950,7 @@ function Handle-Clan {
         if (-not $user -or -not $user.ClanId -or $user.ClanId -eq 0) { Send-Json $Response '{"error":"not in a clan"}' 400; return }
         $cl = $script:Clans[$user.ClanId]; $me = Get-ClanMember $cl $user.Handle
         if (-not $me -or $me.role -eq 'Member') { Send-Json $Response '{"error":"officer or leader required"}' 403; return }
-        $items = $cl.applications | ForEach-Object { "{`"handle`":`"$($_.handle)`",`"appliedAt`":`"$($_.appliedAt)`"}" }
+        $items = $cl.applications | ForEach-Object { "{`"handle`":$(Json-String ("$($_.handle)")),`"appliedAt`":$(Json-String ("$($_.appliedAt)"))}" }
         Send-Json $Response "{`"applications`":[$($items -join ',')]}"
     }
     elseif ($path -eq '/api/clan/approve') {
@@ -1029,7 +1027,7 @@ function Handle-Clan {
     elseif ($path -eq '/api/clan/members') {
         if (-not $user -or -not $user.ClanId -or $user.ClanId -eq 0) { Send-Json $Response '{"error":"not in a clan"}' 400; return }
         $cl = $script:Clans[$user.ClanId]
-        $items = $cl.members | ForEach-Object { "{`"handle`":`"$($_.handle)`",`"role`":`"$($_.role)`",`"joinedAt`":`"$($_.joinedAt)`",`"clanCoins`":$($_.clanCoins)}" }
+        $items = $cl.members | ForEach-Object { "{`"handle`":$(Json-String ("$($_.handle)")),`"role`":$(Json-String ("$($_.role)")),`"joinedAt`":$(Json-String ("$($_.joinedAt)")),`"clanCoins`":$($_.clanCoins)}" }
         Send-Json $Response "{`"members`":[$($items -join ',')]}"
     }
     elseif ($path -eq '/api/clan/deposit') {
@@ -1116,13 +1114,13 @@ function Handle-Clan {
         $cl = $script:Clans[$user.ClanId]
         if (-not $cl.isPaid) { Send-Json $Response '{"trades":[]}'; return }
         $active = @($cl.trades.Values | Where-Object { $_.status -eq 'active' })
-        $items = $active | ForEach-Object { "{`"id`":$($_.id),`"seller`":`"$($_.seller)`",`"cardName`":`"$($_.cardName)`",`"cardType`":`"$($_.cardType)`",`"rarity`":`"$($_.rarity)`",`"price`":$($_.priceClanCoins)}" }
+        $items = $active | ForEach-Object { "{`"id`":$($_.id),`"seller`":$(Json-String ("$($_.seller)")),`"cardName`":$(Json-String ("$($_.cardName)")),`"cardType`":$(Json-String ("$($_.cardType)")),`"rarity`":$(Json-String ("$($_.rarity)")),`"price`":$($_.priceClanCoins)}" }
         Send-Json $Response "{`"trades`":[$($items -join ',')]}"
     }
     elseif ($path -eq '/api/clan/trade/history') {
         if (-not $user -or -not $user.ClanId -or $user.ClanId -eq 0) { Send-Json $Response '{"history":[]}'; return }
         $cl = $script:Clans[$user.ClanId]
-        $items = @(); if ($cl.tradeHistory) { $items = @($cl.tradeHistory | Select-Object -Last 20 | ForEach-Object { "{`"cardName`":`"$($_.cardName)`",`"price`":$($_.price),`"buyer`":`"$($_.buyer)`",`"seller`":`"$($_.seller)`",`"time`":`"$($_.time)`"}" }) }
+        $items = @(); if ($cl.tradeHistory) { $items = @($cl.tradeHistory | Select-Object -Last 20 | ForEach-Object { "{`"cardName`":$(Json-String ("$($_.cardName)")),`"price`":$($_.price),`"buyer`":$(Json-String ("$($_.buyer)")),`"seller`":$(Json-String ("$($_.seller)")),`"time`":$(Json-String ("$($_.time)"))}" }) }
         Send-Json $Response "{`"history`":[$($items -join ',')]}"
     }
     elseif ($path -eq '/api/clan/loan/lend') {
@@ -1178,7 +1176,7 @@ function Handle-Clan {
         if (-not $user -or -not $user.ClanId -or $user.ClanId -eq 0) { Send-Json $Response '{"loans":[]}'; return }
         $cl = $script:Clans[$user.ClanId]; Expire-ClanLoans $cl
         $mine = @($cl.loans.Values | Where-Object { $_.status -eq 'active' -and ($_.lender -eq $user.Handle -or $_.borrower -eq $user.Handle) })
-        $items = $mine | ForEach-Object { $tl = try { $r = ([datetime]::Parse($_.expiresAt) - (Get-Date)); if ($r.TotalSeconds -gt 0) { '{0}h {1}m' -f [int]$r.TotalHours, $r.Minutes } else { 'expired' } } catch { '--' }; "{`"id`":$($_.id),`"lender`":`"$($_.lender)`",`"borrower`":`"$($_.borrower)`",`"cardName`":`"$($_.cardName)`",`"rarity`":`"$($_.rarity)`",`"timeLeft`":`"$tl`"}" }
+        $items = $mine | ForEach-Object { $tl = try { $r = ([datetime]::Parse($_.expiresAt) - (Get-Date)); if ($r.TotalSeconds -gt 0) { '{0}h {1}m' -f [int]$r.TotalHours, $r.Minutes } else { 'expired' } } catch { '--' }; "{`"id`":$($_.id),`"lender`":$(Json-String ("$($_.lender)")),`"borrower`":$(Json-String ("$($_.borrower)")),`"cardName`":$(Json-String ("$($_.cardName)")),`"rarity`":$(Json-String ("$($_.rarity)")),`"timeLeft`":$(Json-String ("$tl"))}" }
         Send-Json $Response "{`"loans`":[$($items -join ',')]}"
     }
     else { Send-Json $Response '{"error":"unknown clan endpoint"}' 404 }

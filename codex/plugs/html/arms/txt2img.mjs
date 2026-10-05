@@ -71,12 +71,14 @@ try {
   const errs = pageErrors.length ? '; page errors: ' + pageErrors.join(' | ') : '';
   const parse = t => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : null; } catch { return null; } };
 
-  ok('CLIP-L, the UNet and the VAE decoder bind 1022 tensors, every one uploaded as f32', st.tensors === 1022 && st.failed === 0, `${st.tensors} bound, ${st.failed} failed${errs}`);
+  ok('CLIP-L, the UNet and the VAE decoder bind 1022 tensors, every one uploaded (rank 2 and up as packed f16)', st.tensors === 1022 && st.failed === 0, `${st.tensors} bound, ${st.failed} failed${errs}`);
   ok('ClipBpe loads', st.bpe === 0, `status ${st.bpe}`);
   const nz = parse(st.noise), tn = readFileSync(join(repo, 'codex', 'test', 'gpu-files', 'torch-noise.bin'));
   const nzBad = nz ? nz.slice(0, 16384).filter((v, i) => !(Math.abs(asF(v) - tn.readFloatLE(i * 4)) <= 1e-5)).length : 16384;
   ok(`seed ${req.seed}'s noise is torch's (4 x 64 x 64, draw 0, within 1e-5)`, req.seed !== '0' || nzBad === 0, req.seed === '0' ? `${nzBad} of 16384 outside` : 'not graded: the fixture is seed 0');
+  console.log(`  info  ${st.summary || 'no timing'} (not graded)`);
   ok('the image is made and shown with no WebGPU error', st.image > 0 && st['err-run'] === '' && st.err === '' && /"ok":true/.test(st.shown || ''), `image ${st.image}, error '${st['err-run'] || st.err}', shown ${st.shown}, ${secs} s from the click`);
+  ok('the job gives its byte heap back (the page heap pointer before the job equals the one its done sees)', st['heap-before'] > 0 && st['heap-after'] === st['heap-before'], `before ${st['heap-before']}, after ${st['heap-after']}`);
   const px = parse(st.pixels);
   const f = px ? px.map(asF) : [];
   const nan = f.filter(v => !Number.isFinite(v)).length, mean = f.reduce((a, v) => a + v, 0) / (f.length || 1), sd = Math.sqrt(f.reduce((a, v) => a + (v - mean) ** 2, 0) / (f.length || 1));

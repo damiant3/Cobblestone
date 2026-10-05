@@ -1,0 +1,67 @@
+Chapter: GameMobileBankServer
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter WalkLoad
+  cites Uoaix chapter GameHuffman
+  cites Net chapter NetDriver
+  cites Net chapter NetCompact
+
+  GmbDemo = record { bank : GmbState, npc : Integer, connection : Integer }
+  gmb-demo-handler : GmbState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  gmb-demo-handler (bank) (shard) (input) (map) (port) (packet) = when gmb-handle bank shard input map port packet
+    is Err (e) -> Err e
+    is Ok (reply) -> when reply
+      is Just (value) -> Ok reply
+      is None -> gsi-handle bank.items shard input map port packet
+  gmb-demo-route : GmbState, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console] Result GameReply Text
+  gmb-demo-route (bank) (shard) (input) (map) (port) (packet) =
+    let entering = if list-length packet == 0 then False else input.mode == 2 & input.session.phase == 1 & (list-at packet 0 == 0 | list-at packet 0 == #5D)
+    in act
+      routed <- gn-route (gmb-demo-handler bank) shard input map port packet
+      when routed
+        is Err (e) -> Err e
+        is Ok (reply) -> if entering & input.session.phase == 2 then gsi-after-entry bank.items shard input reply else Ok reply
+    end
+  gmb-demo-pulse : GmbDemo, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  gmb-demo-pulse (demo) (shard) (input) (map) (port) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 | demo.connection == input.connection then Ok None
+    else when world-get shard.world demo.npc
+      is Err (e) -> Err e
+      is Ok (npc) -> let seen = __record-set demo "connection" input.connection
+        in Ok (Just (gs-reply [gmb-mobile demo.bank.items npc,sip-message npc.serial npc.graphic 0 "Say bank to open your bank box."] "bank demo ready"))
+  opening : [Console, Network.Read, Network.Write] Integer = act
+    card <- net-driver-bring-up
+    arena <- nc-set-acquire (nc-pool-cell process-get-pid)
+    released <- nc-set-release arena
+    huffman <- gh-new 0
+    loaded <- wl-load 1408 1680 64 64
+    when loaded
+      is Err (e) -> act
+        print-line-uni ("REFUSE preload " & e)
+        1
+      end
+      is Ok (map) -> when gs-new 0
+        is Err (e) -> act
+          print-line-uni ("REFUSE shard " & e)
+          1
+        end
+        is Ok (shard) -> when walk-height map 1422 1698 0
+          is Err (e) -> act
+            print-line-uni ("REFUSE banker ground " & e)
+            1
+          end
+          is Ok (z) -> when world-create shard.world (gs-mobile 0 1422 1698 z 400 1002)
+            is Err (e) -> act
+              print-line-uni ("REFUSE banker " & e)
+              1
+            end
+            is Ok (npc) -> let items = gsi-new shard.world
+              in let bank = gmb-new items #4A
+              in let added = gmb-add-banker bank npc
+              in when gmb-dress items npc
+                is Err (e) -> act
+                  print-line-uni ("REFUSE clothing " & e)
+                  1
+                end
+                is Ok (done) -> let demo = GmbDemo { bank = bank, npc = npc, connection = -1 }
+                  in gn-loop-hooks (gsi-specs 0) (gmb-demo-route bank) (gmb-demo-pulse demo) shard map huffman 2593 0
+  end

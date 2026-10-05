@@ -1,0 +1,303 @@
+Chapter: CompositeStore
+  cites Uoaix chapter CompositeCodec
+  cites Uoaix chapter CompositeDelta
+  cites Uoaix chapter CompositeGrow
+  cites Kernel chapter Hpet
+
+  CompositeOwner = record { state : CompositeGame, store : UoStore,
+    saved : Integer, work : Integer, patch : Integer, size : Integer,
+    revision : Integer, item-revision : Integer, characters : Integer, key : Integer, vendor-sequence : Integer,
+    players : Integer, draws : Integer, scene : Integer, inputs : Integer,
+    last-save : Integer, guard : Integer, guard-revision : Integer,
+    monsters : Integer, guard-monsters : Integer, shrine : Integer, other-shrine : Integer, faults : Integer }
+
+  cs-monster-copy : CompositeGame, Integer, Integer -> Integer
+  cs-monster-copy (state) (buf) (i) = if i == list-length state.monsters.slots then
+      let a = poke-qword buf 192 state.monsters.x
+      in let b = poke-qword buf 200 state.monsters.y
+      in let c = poke-qword buf 208 state.monsters.z
+      in poke-qword buf 216 state.monsters.radius
+    else let slot = list-at state.monsters.slots i
+    in let a = poke-qword buf (i * 24) slot.serial
+    in let b = poke-qword buf (i * 24 + 8) slot.direction
+    in let c = poke-qword buf (i * 24 + 16) slot.due
+    in cs-monster-copy state buf (i + 1)
+  cs-monster-same : CompositeGame, Integer, Integer -> Boolean
+  cs-monster-same (state) (buf) (i) = if i == list-length state.monsters.slots then
+      peek-qword buf 192 == state.monsters.x & peek-qword buf 200 == state.monsters.y
+      & peek-qword buf 208 == state.monsters.z & peek-qword buf 216 == state.monsters.radius
+    else let slot = list-at state.monsters.slots i
+    in peek-qword buf (i * 24) == slot.serial & peek-qword buf (i * 24 + 8) == slot.direction
+      & peek-qword buf (i * 24 + 16) == slot.due & cs-monster-same state buf (i + 1)
+
+  cs-before : CompositeOwner -> Integer
+  cs-before (owner) = let game = owner.state.checkpoint.game
+    in let revision = __record-set owner "guard-revision" (world-revision game.world)
+    in let chars = ws-copy game.characters owner.guard 800 0
+    in let monsters = cs-monster-copy owner.state owner.guard-monsters 0
+    in 0
+  cs-mutated : CompositeOwner -> Boolean
+  cs-mutated (owner) = let game = owner.state.checkpoint.game
+    in world-revision game.world /= owner.guard-revision | not (cs-equal game.characters owner.guard 800 0)
+      | not (cs-monster-same owner.state owner.guard-monsters 0)
+
+  cs-price-dirty : CompositeOwner, Integer -> Boolean
+  cs-price-dirty (owner) (i) = if i == owner.state.vendor.vendor-count then False
+    else let base = owner.saved + 128 + gc-size owner.state.checkpoint.game.world.capacity + euc-bytes
+    in not (cs-equal (list-at owner.state.vendor.vendors i).prices (base + gvsc-vendors-at + i * gvsc-vendor-bytes + 40) 1032 0)
+      | cs-price-dirty owner (i + 1)
+  cs-items-dirty : CompositeOwner, Integer -> Boolean
+  cs-items-dirty (owner) (i) = world-item-revision owner.state.checkpoint.game.world /= owner.item-revision
+
+  cs-equal : Integer, Integer, Integer, Integer -> Boolean
+  cs-equal (one) (two) (bytes) (i) = if i == bytes then True
+    else peek-qword one i == peek-qword two i & cs-equal one two bytes (i + 8)
+  cs-remember : CompositeOwner -> Integer
+  cs-remember (owner) = let game = owner.state.checkpoint.game
+    in let revision = __record-set owner "revision" (world-revision game.world)
+    in let items = __record-set owner "item-revision" (world-item-revision game.world)
+    in let chars = ws-copy game.characters owner.characters 800 0
+    in let key = __record-set owner "key" game.next-key
+    in let vendor = __record-set owner "vendor-sequence" owner.state.vendor.sequence
+    in let players = __record-set owner "players" owner.state.vendor.player-count
+    in let draws = __record-set owner "draws" owner.state.combat.draws
+    in let scene = __record-set owner "scene" owner.state.combat.scene
+    in let monsters = cs-monster-copy owner.state owner.monsters 0
+    in let shrine = __record-set owner "shrine" owner.state.resurrection.shrine
+    in let other = __record-set owner "other-shrine" owner.state.resurrection.other
+    in 0
+  cs-dirty : CompositeOwner -> Boolean
+  cs-dirty (owner) = let game = owner.state.checkpoint.game
+    in game.next-key /= owner.key | owner.state.vendor.sequence /= owner.vendor-sequence
+      | owner.state.vendor.player-count /= owner.players | owner.state.combat.draws /= owner.draws
+      | owner.state.combat.scene /= owner.scene
+      | world-revision game.world /= owner.revision
+      | not (cs-equal game.characters owner.characters 800 0)
+      | cs-price-dirty owner 0
+      | not (cs-monster-same owner.state owner.monsters 0)
+      | owner.state.resurrection.shrine /= owner.shrine | owner.state.resurrection.other /= owner.other-shrine
+  cs-owner : CompositeGame, UoStore, Integer, Integer -> CompositeOwner
+  cs-owner (state) (store) (saved) (size) =
+    let clock = hpet-start
+    in let owner = CompositeOwner { state = state, store = store, saved = saved,
+      work = alloc-bytes size, patch = alloc-bytes cd-max-bytes, size = size,
+      revision = 0, item-revision = 0,
+      characters = alloc-bytes 800, key = 0, vendor-sequence = 0,
+      players = 0, draws = 0, scene = 0, inputs = 0,
+      last-save = hpet-ticks, guard = alloc-bytes 800, guard-revision = 0,
+      monsters = alloc-bytes 224, guard-monsters = alloc-bytes 224, shrine = 0, other-shrine = 0, faults = state.vendor.currency.count }
+    in let remembered = cs-remember owner in owner
+  cs-fault-text : EuCurrency, Integer, Text -> Text
+  cs-fault-text (x) (i) (acc) = if i >= x.count then acc
+    else let e = list-at x.events i
+    in if e.kind /= 12 | e.party <= 0 then cs-fault-text x (i + 1) acc
+    else let metal = if e.copper > 0 then "copper" else if e.silver > 0 then "silver" else "gold"
+    in let line = "FAULT treasury: the crown decreed " & show e.party & " " & metal & " to make change for purse " & show e.actor
+      & " (currency event " & show e.sequence & "); treasury copper=" & show (em-purse x.copper 1).coin
+      & " silver=" & show (em-purse x.silver 1).coin & " gold=" & show (em-purse x.world.money 1).coin
+      & ". Why is there no " & metal & " left in the kingdom, but there is gold?"
+    in cs-fault-text x (i + 1) (if text-length acc == 0 then line else acc & " | " & line)
+  cs-report : Text -> [Console] Integer
+  cs-report (text) = if text-length text == 0 then act 0 end else act
+    print-line-uni text
+    1
+  end
+  cs-refuse : CompositeOwner, Text -> Result Integer Text
+  cs-refuse (owner) (message) = let stopped = __record-set owner.store "fault" 1 in Err message
+  cs-microseconds : Integer, Integer -> Integer
+  cs-microseconds (start) (stop) = (stop - start) * 1000000 / max 1 hpet-ticks-per-second
+  cs-commit : CompositeOwner, Boolean -> [Console, Device.Block] Result Integer Text
+  cs-commit (owner) (force) = if owner.store.fault /= 0 then act Err "composite owner requires restart" end
+    else if not force & not (cs-dirty owner) then act Ok 0 end
+    else if owner.store.sequence >= ep-limit then act cs-refuse owner "composite sequence exhausted" end
+    else let sequence = owner.store.sequence + 1
+    in let tick = owner.store.tick + 1
+    in act
+    started <- hpet-ticks
+    print-line-uni ("WORLD COMMIT BEGIN sequence=" & show sequence & " ms=" & show (cs-microseconds 0 started / 1000))
+    encoded <- cc-encode owner.state sequence tick owner.work owner.size
+    encoded-at <- hpet-ticks
+    when encoded
+      is Err (e) -> act cs-refuse owner e end
+      is Ok (size) -> act
+       delta <- cd-encode owner.saved owner.work size sequence tick owner.patch
+       delta-at <- hpet-ticks
+       when delta
+        is Err (e) -> act cs-refuse owner e end
+        is Ok (bytes) -> act
+          committed <- us-append owner.store 2 sequence tick owner.patch bytes
+          when committed
+            is Err (e) -> cs-refuse owner e
+            is Ok (_) ->
+              let old = owner.saved
+              in let saved = __record-set owner "saved" owner.work
+              in let work = __record-set owner "work" old
+              in let counted = __record-set owner "inputs" (owner.inputs + 1)
+              in let timed = __record-set owner "last-save" hpet-ticks
+              in let remembered = cs-remember owner
+              in act
+                finished <- hpet-ticks
+                print-line-uni ("WORLD COMMITTED sequence=" & show sequence & " objects=" & show (world-count owner.state.checkpoint.game.world)
+                  & " ms=" & show (cs-microseconds 0 finished / 1000) & " encode-us=" & show (cs-microseconds started encoded-at)
+                  & " delta-us=" & show (cs-microseconds encoded-at delta-at) & " io-us=" & show (cs-microseconds delta-at finished)
+                  & " total-us=" & show (cs-microseconds started finished) & " bytes=" & show bytes)
+                faults <- cs-fault-text owner.state.vendor.currency owner.faults ""
+                reported <- __record-set owner "faults" owner.state.vendor.currency.count
+                said <- cs-report faults
+                Ok 1
+              end
+        end
+      end
+    end
+
+  cs-route : CompositeOwner, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Device.Block] Result GameReply Text
+  cs-route (owner) (game) (input) (map) (port) (packet) =
+    if owner.store.fault /= 0 then act Err "composite owner requires restart" end
+    else let captured = cs-before owner in act
+      started <- hpet-ticks
+      handled <- cg-route owner.state game input map port packet
+      handled-at <- hpet-ticks
+      when handled
+        is Err (e) -> if cs-mutated owner then let stopped = cs-refuse owner e in Err e else Err e
+        is Ok (reply) -> act
+          registered <- cg-items owner.state 0
+          committed <- if reply.close | cs-items-dirty owner 0 | owner.state.vendor.sequence /= owner.vendor-sequence
+            | (list-at packet 0 /= 2 & world-revision game.world /= owner.guard-revision)
+            then cs-commit owner False else cs-timer owner hpet-ticks
+          when committed
+            is Err (e) -> Err e
+            is Ok (_) -> act
+              viewed <- cg-view owner.state game input reply
+              finished <- hpet-ticks
+              print-line-uni ("WORLD ROUTE ms=" & show (cs-microseconds 0 finished / 1000) & " opcode=" & show (list-at packet 0)
+                & " handler-us=" & show (cs-microseconds started handled-at) & " total-us=" & show (cs-microseconds started finished))
+              viewed
+            end
+        end
+    end
+  cs-pulse : CompositeOwner, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Device.Block] Result (Maybe GameReply) Text
+  cs-pulse (owner) (game) (input) (map) (port) (tick) =
+    if owner.store.fault /= 0 then act Err "composite owner requires restart" end
+    else let captured = cs-before owner in act
+     started <- hpet-ticks
+     handled <- cg-pulse owner.state game input map port tick
+     handled-at <- hpet-ticks
+     when handled
+      is Err (e) -> let stopped = if cs-mutated owner then cs-refuse owner e else Err e in act Err e end
+      is Ok (reply) -> act
+        committed <- if cs-items-dirty owner 0 | owner.state.vendor.sequence /= owner.vendor-sequence
+          then cs-commit owner False else cs-timer owner hpet-ticks
+        when committed
+          is Err (e) -> Err e
+          is Ok (_) -> when cg-view owner.state game input (when reply is None -> gs-reply [] "client view" is Just (value) -> value)
+            is Err (e) -> Err e
+            is Ok (value) -> if list-length value.packets == 0 & not value.close then Ok None else act
+              finished <- hpet-ticks
+              print-line-uni ("WORLD PULSE ms=" & show (cs-microseconds 0 finished / 1000) & " packets=" & show (list-length value.packets)
+                & " handler-us=" & show (cs-microseconds started handled-at) & " total-us=" & show (cs-microseconds started finished))
+              Ok (Just value)
+            end
+      end
+    end
+
+  cs-timer : CompositeOwner, Integer -> [Console, Device.Block] Result Integer Text
+  cs-timer (owner) (now) = if now - owner.last-save < 60 * max 1 hpet-ticks-per-second then act Ok 0 end
+    else act
+      committed <- cs-commit owner False
+      when committed
+        is Err (e) -> Err e
+        is Ok (n) -> let timed = __record-set owner "last-save" now in Ok n
+    end
+
+  cs-disconnect : CompositeOwner, GameShard, GameInput -> [Console, Device.Block] Result Integer Text
+  cs-disconnect (owner) (game) (input) =
+    if game.world.buffer /= owner.state.checkpoint.game.world.buffer | game.characters /= owner.state.checkpoint.game.characters then act Err "disconnect owner binding differs" end
+    else cs-commit owner False
+
+  cs-replay : UoStore, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  cs-replay (store) (saved) (size) (patch) (at) (sequence) (tick) =
+    if at == store.head then act
+      if sequence == store.sequence & tick == store.tick then Ok 0 else Err "composite recovered head mismatch"
+    end
+    else if at < 0 | at > store.head then act Err "composite suffix extent invalid" end
+    else let mark = __heap-save
+    in act
+      loaded <- us-read store at patch cd-max-bytes
+      when loaded
+        is Err (e) -> Err e
+        is Ok (row) -> if row.kind /= 2 | row.sequence /= sequence + 1 | row.tick < tick | row.next <= at then Err "composite suffix order invalid"
+          else when cd-apply saved size patch row.length row.sequence row.tick
+            is Err (e) -> Err e
+            is Ok (_) -> let next = row.next
+              in let seq = row.sequence
+              in let time = row.tick
+              in let restored = __heap-restore mark
+              in cs-replay store saved size patch next seq time
+    end
+  cs-load : UoStore, Integer -> [Console, Device.Block] Result CompositeOwner Text
+  cs-load (store) (z) = cs-load-config store (CompositeSetup { vendor-z = z, shrine-z = z, home-z = z, decoration = None })
+  cs-load-config : UoStore, CompositeSetup -> [Console, Device.Block] Result CompositeOwner Text
+  cs-load-config (store) (setup) = cs-load-town store setup None
+  cs-load-town : UoStore, CompositeSetup, Maybe WalkMap -> [Console, Device.Block] Result CompositeOwner Text
+  cs-load-town (store) (setup) (britain) = let capacity = cc-size world-max-objects
+    in let saved = alloc-bytes capacity
+    in if store.head == 0 then when (when britain is None -> cg-new setup.vendor-z is Just (map) -> cg-britain map)
+      is Err (e) -> act Err e end
+      is Ok (state) -> when cg-install state setup
+       is Err (e) -> act Err e end
+       is Ok (_) -> when cc-encode state 0 0 saved capacity
+        is Err (e) -> act Err e end
+        is Ok (written) -> act
+          committed <- us-append store 1 0 0 saved written
+          when committed
+            is Err (e) -> Err e
+            is Ok (_) -> act
+              print-line-uni "WORLD NEW composite"
+              Ok (cs-owner state store saved written)
+            end
+        end
+    else act
+      loaded <- us-read store store.snapshot saved capacity
+      when loaded
+        is Err (e) -> Err e
+        is Ok (row) -> if row.kind /= 1 then Err "composite checkpoint kind differs"
+          else let size = row.length
+          in let patch = alloc-bytes cd-max-bytes
+          in act
+            replayed <- cs-replay store saved size patch row.next row.sequence row.tick
+            when replayed
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-decode-town saved size store.sequence store.tick setup.decoration britain
+                is Err (e) -> Err e
+                is Ok (state) -> cs-upgrade store state saved size setup
+          end
+    end
+
+  cs-publish-restore : UoStore, CompositeGame, Integer, Integer, CompositeSetup -> [Console, Device.Block] Result CompositeOwner Text
+  cs-publish-restore (store) (state) (saved) (size) (setup) = let owner = cs-owner state store saved size
+    in when cg-install state setup
+      is Err (e) -> act Err e end
+      is Ok (_) -> act
+        migrated <- cs-commit owner False
+        when migrated
+          is Err (e) -> Err e
+          is Ok (_) -> act
+            print-line-uni ("WORLD RESTORED objects=" & show (world-count state.checkpoint.game.world) & " sequence=" & show store.sequence)
+            Ok owner
+          end
+      end
+  cs-upgrade : UoStore, CompositeGame, Integer, Integer, CompositeSetup -> [Console, Device.Block] Result CompositeOwner Text
+  cs-upgrade (store) (state) (saved) (size) (setup) = if state.checkpoint.game.world.capacity == world-max-objects then
+      if size == cc-size world-max-objects then cs-publish-restore store state saved size setup else cs-upgrade-save store state saved setup
+    else when cu-grow state world-max-objects
+      is Err (e) -> act Err e end
+      is Ok (grown) -> cs-upgrade-save store grown saved setup
+  cs-upgrade-save : UoStore, CompositeGame, Integer, CompositeSetup -> [Console, Device.Block] Result CompositeOwner Text
+  cs-upgrade-save (store) (grown) (saved) (setup) = when cg-install grown setup
+    is Err (e) -> act Err e end
+    is Ok (_) -> when cc-encode grown store.sequence store.tick saved (cc-size world-max-objects)
+        is Err (e) -> act Err e end
+        is Ok (written) -> act
+          committed <- us-append store 1 store.sequence store.tick saved written
+          when committed is Err (e) -> Err e is Ok (_) -> cs-publish-restore store grown saved written setup
+        end

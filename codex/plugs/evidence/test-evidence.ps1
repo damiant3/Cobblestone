@@ -126,9 +126,11 @@ function Run-Board([string]$name, [string]$board) {
 $bEsp = Run-Board 'esp' 'esp32-c6'
 $bStm = Run-Board 'stm' 'stm32f4'
 $bUnk = Run-Board 'unk' 'mystery-soc'
-$rE = Cdxe $bEsp; $rS = Cdxe $bStm; $rU = Cdxe $bUnk
-if (-not $bEsp -or -not $bStm -or -not $bUnk) { $actual['board'] = '(run failed)' }
+$bCap = Run-Board 'cap' 'ESP32C6 devkit'
+$rE = Cdxe $bEsp; $rS = Cdxe $bStm; $rU = Cdxe $bUnk; $rC = Cdxe $bCap
+if (-not $bEsp -or -not $bStm -or -not $bUnk -or -not $bCap) { $actual['board'] = '(run failed)' }
 elseif ((Count $rE '^board\.flash-encryption=yes') -ne 1) { $actual['board'] = 'esp32-c6 flash encryption not anchored' }
+elseif ((Count $rC '^board\.flash-encryption=yes') -ne 1) { $actual['board'] = 'a capitalised board name (ESP32C6 devkit) was not matched' }
 elseif ((Count $rS '^board\.flash-encryption=no') -ne 1) { $actual['board'] = 'stm32f4 flash encryption not left to the manufacturer' }
 elseif ((Count $rU '^board\.known=n') -ne 1) { $actual['board'] = 'an unknown board was not reported unknown' }
 else {

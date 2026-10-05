@@ -73,17 +73,17 @@ Section: The Register File
 
   a64-lir-nused-callee : List Location, Integer, Integer, Integer -> Integer
   a64-lir-nused-callee (assign) (i) (n) (acc) =
-   if i >= n then acc
-   else when (list-at assign i)
-    is LocReg (r) -> a64-lir-nused-callee assign (i + 1) n (if (r < (lir-target-a64.ncallee)) & ((r + 1) > acc) then r + 1 else acc)
-    is LocSlot (s) -> a64-lir-nused-callee assign (i + 1) n acc
+    if i >= n then acc
+    else when (list-at assign i)
+     is LocReg (r) -> a64-lir-nused-callee assign (i + 1) n (if (r < (lir-target-a64.ncallee)) & ((r + 1) > acc) then r + 1 else acc)
+     is LocSlot (s) -> a64-lir-nused-callee assign (i + 1) n acc
 
   a64-lir-nslots : List Location, Integer, Integer, Integer -> Integer
   a64-lir-nslots (assign) (i) (n) (acc) =
-   if i >= n then acc
-   else when (list-at assign i)
-    is LocSlot (s) -> a64-lir-nslots assign (i + 1) n (if (s + 1) > acc then s + 1 else acc)
-    is LocReg (r) -> a64-lir-nslots assign (i + 1) n acc
+    if i >= n then acc
+    else when (list-at assign i)
+     is LocSlot (s) -> a64-lir-nslots assign (i + 1) n (if (s + 1) > acc then s + 1 else acc)
+     is LocReg (r) -> a64-lir-nslots assign (i + 1) n acc
 
 Section: The Frame
 
@@ -129,30 +129,36 @@ Section: The Frame
 
   a64-lir-save-regs : A64State, Integer, Integer, Integer -> A64State
   a64-lir-save-regs (st) (i) (nused) (nslots) =
-   if i >= nused then st
-   else a64-lir-save-regs (a64-emit st (arm64-str (list-at a64-lir-phys i) a64-sp (a64-lir-save-off nslots i))) (i + 1) nused nslots
+    if i >= nused then st
+    else
+      a64-lir-save-regs (a64-emit st (arm64-str (list-at a64-lir-phys i) a64-sp (a64-lir-save-off nslots i))) (i + 1) nused nslots
 
   a64-lir-restore-regs : A64State, Integer, Integer, Integer -> A64State
   a64-lir-restore-regs (st) (i) (nused) (nslots) =
-   if i >= nused then st
-   else a64-lir-restore-regs (a64-emit st (arm64-ldr (list-at a64-lir-phys i) a64-sp (a64-lir-save-off nslots i))) (i + 1) nused nslots
+    if i >= nused then st
+    else
+      a64-lir-restore-regs (a64-emit st (arm64-ldr (list-at a64-lir-phys i) a64-sp (a64-lir-save-off nslots i))) (i + 1) nused nslots
 
   a64-lir-emit-prologue : A64State, A64LirFrame -> A64State
   a64-lir-emit-prologue (st) (fr) =
-   let frame = a64-lir-frame-bytes fr
-   in if frame == 0 then st
-      else let st1 = a64-lir-save-regs (a64-emit st (arm64-sub-imm a64-sp a64-sp frame)) 0 (fr.nused) (fr.nslots)
-      in if fr.haslr then a64-emit-stack-guard (a64-emit st1 (arm64-str a64-lr a64-sp (a64-lir-lr-off fr))) else st1
+    let frame = a64-lir-frame-bytes fr
+    in if frame == 0 then st
+    else let st1 = a64-lir-save-regs (a64-emit st (arm64-sub-imm a64-sp a64-sp frame)) 0 (fr.nused) (fr.nslots)
+    in if fr.haslr then
+      a64-emit-stack-guard (a64-emit st1 (arm64-str a64-lr a64-sp (a64-lir-lr-off fr)))
+    else st1
 
  The result is already in `x0` when the epilogue runs, and neither the saved
  pool nor the link register is `x0`, so restoring cannot disturb it.
 
   a64-lir-emit-epilogue : A64State, A64LirFrame -> A64State
   a64-lir-emit-epilogue (st) (fr) =
-   let frame = a64-lir-frame-bytes fr
-   in if frame == 0 then st
-      else let st1 = if fr.haslr then a64-emit st (arm64-ldr a64-lr a64-sp (a64-lir-lr-off fr)) else st
-      in a64-emit (a64-lir-restore-regs st1 0 (fr.nused) (fr.nslots)) (arm64-add-imm a64-sp a64-sp frame)
+    let frame = a64-lir-frame-bytes fr
+    in if frame == 0 then st
+    else let st1 = if fr.haslr then
+      a64-emit st (arm64-ldr a64-lr a64-sp (a64-lir-lr-off fr))
+    else st
+    in a64-emit (a64-lir-restore-regs st1 0 (fr.nused) (fr.nslots)) (arm64-add-imm a64-sp a64-sp frame)
 
 Section: Entry Moves
 
@@ -162,26 +168,26 @@ Section: Entry Moves
 
   a64-lir-emv-phys : Integer -> Integer
   a64-lir-emv-phys (i) =
-   if i >= (lir-target-a64.nregs) then a64-lir-scratch-reg else list-at a64-lir-phys i
+    if i >= (lir-target-a64.nregs) then a64-lir-scratch-reg else list-at a64-lir-phys i
 
   a64-lir-emit-emv : A64State, LirEmv -> A64State
   a64-lir-emit-emv (st) (step) =
-   when step
-    is EmvMove (d) (s) ->
-     let pd = a64-lir-emv-phys d
-     in let ps = a64-lir-emv-phys s
-     in if pd == ps then st else a64-emit st (arm64-mov pd ps)
-    is EmvStore (k) (s) -> a64-emit st (arm64-str (a64-lir-emv-phys s) a64-sp (a64-lir-slot-off k))
+    when step
+     is EmvMove (d) (s) ->
+      let pd = a64-lir-emv-phys d
+      in let ps = a64-lir-emv-phys s
+      in if pd == ps then st else a64-emit st (arm64-mov pd ps)
+     is EmvStore (k) (s) -> a64-emit st (arm64-str (a64-lir-emv-phys s) a64-sp (a64-lir-slot-off k))
 
   a64-lir-emit-emvs : A64State, List LirEmv, Integer, Integer -> A64State
   a64-lir-emit-emvs (st) (plan) (i) (n) =
-   if i >= n then st
-   else a64-lir-emit-emvs (a64-lir-emit-emv st (list-at plan i)) plan (i + 1) n
+    if i >= n then st
+    else a64-lir-emit-emvs (a64-lir-emit-emv st (list-at plan i)) plan (i + 1) n
 
   a64-lir-emit-entry : A64State, LirFunc, List Location -> A64State
   a64-lir-emit-entry (st) (f) (assign) =
-   let plan = lir-emv-for lir-target-a64 f assign
-   in a64-lir-emit-emvs st plan 0 (list-length plan)
+    let plan = lir-emv-for lir-target-a64 f assign
+    in a64-lir-emit-emvs st plan 0 (list-length plan)
 
 Section: The Construct Whitelist
 
@@ -198,12 +204,12 @@ Section: The Construct Whitelist
 
   a64-lir-op-ok : LirOp -> Boolean
   a64-lir-op-ok (op) =
-   when op
-    is LoAdd -> True
-    is LoSub -> True
-    is LoMul -> True
-    is LoRem -> False
-    is LoDiv -> False
+    when op
+     is LoAdd -> True
+     is LoSub -> True
+     is LoMul -> True
+     is LoRem -> False
+     is LoDiv -> False
 
  **Only an eight-byte load is admitted, and the reason is the encoder rather
  than the selector.** A field's width comes from the shared width table, so a
@@ -232,75 +238,78 @@ Section: The Construct Whitelist
 
   a64-lir-load-ok : Integer, Integer -> Boolean
   a64-lir-load-ok (off) (w) =
-   if w /= 8 then False
-   else if off < 0 then False
-   else if ((off / 8) * 8) /= off then False
-   else off <= 32760
+    if w /= 8 then False
+    else if off < 0 then False
+    else if ((off / 8) * 8) /= off then False
+    else off <= 32760
 
   a64-lir-whitelisted : LirInsn -> Boolean
   a64-lir-whitelisted (insn) =
-   when insn
-    is LiBin (op) (dst) (l) (r) -> a64-lir-op-ok op
-    is LiMove (dst) (src) -> True
-    is LiCmp (l) (r) -> True
-    is LiTest (l) (r) -> True
-    is LiBranch (c) (t) (fl) -> True
-    is LiJump (b) -> True
-    is LiRet (v) -> True
-    is LiCall (dst) (name) (args) -> True
-    is LiLoad (dst) (base) (off) (w) (sg) -> a64-lir-load-ok off w
-    is otherwise -> False
+    when insn
+     is LiBin (op) (dst) (l) (r) -> a64-lir-op-ok op
+     is LiMove (dst) (src) -> True
+     is LiCmp (l) (r) -> True
+     is LiTest (l) (r) -> True
+     is LiBranch (c) (t) (fl) -> True
+     is LiJump (b) -> True
+     is LiRet (v) -> True
+     is LiCall (dst) (name) (args) -> True
+     is LiLoad (dst) (base) (off) (w) (sg) -> a64-lir-load-ok off w
+     is otherwise -> False
 
   a64-lir-known-arity : List Text, List Integer, Text, Integer -> Integer
   a64-lir-known-arity (names) (arities) (target) (i) =
-   if i >= list-length names then 0 - 1
-   else if list-at names i == target then list-at arities i
-   else a64-lir-known-arity names arities target (i + 1)
+    if i >= list-length names then 0 - 1
+    else if list-at names i == target then list-at arities i
+    else a64-lir-known-arity names arities target (i + 1)
 
   a64-lir-call-ok : A64State, Text, Integer -> Boolean
   a64-lir-call-ok (st) (name) (nargs) =
-   if nargs > 8 then False
-   else a64-lir-known-arity (st.func-names) (st.func-arities) name 0 == nargs
+    if nargs > 6 then False
+    else a64-lir-known-arity (st.func-names) (st.func-arities) name 0 == nargs
 
   a64-lir-calls-ok-insns : A64State, List LirInsn, Integer, Integer -> Boolean
   a64-lir-calls-ok-insns (st) (insns) (i) (n) =
-   if i >= n then True
-   else when (list-at insns i)
-    is LiCall (dst) (name) (args) -> if a64-lir-call-ok st name (list-length args) then a64-lir-calls-ok-insns st insns (i + 1) n else False
-    is otherwise -> a64-lir-calls-ok-insns st insns (i + 1) n
+    if i >= n then True
+    else when (list-at insns i)
+     is LiCall (dst) (name) (args) -> if a64-lir-call-ok st name (list-length args) then
+       a64-lir-calls-ok-insns st insns (i + 1) n
+     else False
+     is otherwise -> a64-lir-calls-ok-insns st insns (i + 1) n
 
   a64-lir-calls-ok : A64State, List LirBlock, Integer, Integer -> Boolean
   a64-lir-calls-ok (st) (blocks) (i) (n) =
-   if i >= n then True
-   else if a64-lir-calls-ok-insns st ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns))
-        then a64-lir-calls-ok st blocks (i + 1) n
-        else False
+    if i >= n then True
+    else if a64-lir-calls-ok-insns st ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns))
+         then a64-lir-calls-ok st blocks (i + 1) n
+    else False
 
   a64-lir-has-call-insns : List LirInsn, Integer, Integer -> Boolean
   a64-lir-has-call-insns (insns) (i) (n) =
-   if i >= n then False
-   else when (list-at insns i)
-    is LiCall (dst) (name) (args) -> True
-    is otherwise -> a64-lir-has-call-insns insns (i + 1) n
+    if i >= n then False
+    else when (list-at insns i)
+     is LiCall (dst) (name) (args) -> True
+     is otherwise -> a64-lir-has-call-insns insns (i + 1) n
 
   a64-lir-has-call : List LirBlock, Integer, Integer -> Boolean
   a64-lir-has-call (blocks) (i) (n) =
-   if i >= n then False
-   else if a64-lir-has-call-insns ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns)) then True
-   else a64-lir-has-call blocks (i + 1) n
+    if i >= n then False
+    else if a64-lir-has-call-insns ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns)) then
+      True
+    else a64-lir-has-call blocks (i + 1) n
 
   a64-lir-insns-ok : List LirInsn, Integer, Integer -> Boolean
   a64-lir-insns-ok (insns) (i) (n) =
-   if i >= n then True
-   else if a64-lir-whitelisted (list-at insns i) then a64-lir-insns-ok insns (i + 1) n
-   else False
+    if i >= n then True
+    else if a64-lir-whitelisted (list-at insns i) then a64-lir-insns-ok insns (i + 1) n
+    else False
 
   a64-lir-blocks-ok : List LirBlock, Integer, Integer -> Boolean
   a64-lir-blocks-ok (blocks) (i) (n) =
-   if i >= n then True
-   else if a64-lir-insns-ok ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns))
-        then a64-lir-blocks-ok blocks (i + 1) n
-        else False
+    if i >= n then True
+    else if a64-lir-insns-ok ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns))
+         then a64-lir-blocks-ok blocks (i + 1) n
+    else False
 
  The result of a zero-instruction function is either an immediate or a vreg,
  and with no instructions **every vreg is a parameter** -- vregs `0 ..
@@ -314,16 +323,16 @@ Section: The Construct Whitelist
 
   a64-lir-result-ok : LirValue, Integer -> Boolean
   a64-lir-result-ok (v) (nparams) =
-   when v
-    is LvImm (k) -> True
-    is LvReg (r) -> if r < nparams then r < 8 else False
+    when v
+     is LvImm (k) -> True
+     is LvReg (r) -> if r < nparams then r < 8 else False
 
   a64-lir-selects : LirFunc -> Boolean
   a64-lir-selects (f) =
-   if (f.nparams) > 8 then False
-   else if a64-lir-zero-insn f
-        then a64-lir-result-ok (f.result) (f.nparams)
-        else a64-lir-blocks-ok (f.blocks) 0 (list-length (f.blocks))
+    if (f.nparams) > 8 then False
+    else if a64-lir-zero-insn f
+         then a64-lir-result-ok (f.result) (f.nparams)
+    else a64-lir-blocks-ok (f.blocks) 0 (list-length (f.blocks))
 
 Section: Dispatch
 
@@ -337,9 +346,9 @@ Section: Dispatch
 
   a64-lir-emit-result-param : A64State, LirValue -> A64State
   a64-lir-emit-result-param (st) (v) =
-   when v
-    is LvImm (k) -> a64-emit-li st a64-x0 k
-    is LvReg (r) -> if r == 0 then st else a64-emit st (arm64-mov a64-x0 (a64-x0 + r))
+    when v
+     is LvImm (k) -> a64-emit-li st a64-x0 k
+     is LvReg (r) -> if r == 0 then st else a64-emit st (arm64-mov a64-x0 (a64-x0 + r))
 
  The allocator never hands out `x10` or `x11`, so a loaded or materialised
  operand cannot land on top of a live value.
@@ -351,61 +360,66 @@ Section: Dispatch
 
   a64-lir-src-loc : A64State, Location, Integer -> A64LirSrc
   a64-lir-src-loc (st) (loc) (scratch) =
-   when loc
-    is LocReg (pr) -> A64LirSrc { state = st, reg = list-at a64-lir-phys pr }
-    is LocSlot (k) -> A64LirSrc { state = a64-emit st (arm64-ldr scratch a64-sp (a64-lir-slot-off k)), reg = scratch }
+    when loc
+     is LocReg (pr) -> A64LirSrc { state = st, reg = list-at a64-lir-phys pr }
+     is LocSlot (k) -> A64LirSrc {
+       state = a64-emit st (arm64-ldr scratch a64-sp (a64-lir-slot-off k)),
+       reg = scratch
+     }
 
   a64-lir-src : A64State, LirValue, List Location, Integer -> A64LirSrc
   a64-lir-src (st) (v) (assign) (scratch) =
-   when v
-    is LvImm (k) -> A64LirSrc { state = a64-emit-li st scratch k, reg = scratch }
-    is LvReg (r) -> a64-lir-src-loc st (list-at assign r) scratch
+    when v
+     is LvImm (k) -> A64LirSrc { state = a64-emit-li st scratch k, reg = scratch }
+     is LvReg (r) -> a64-lir-src-loc st (list-at assign r) scratch
 
  The ALU itself. Three operands, so the destination is written and never read,
  and `LoAdd`/`LoSub`/`LoMul` map one to one onto `add`/`sub`/`mul`.
 
   a64-lir-emit-alu : A64State, LirOp, Integer, Integer, Integer -> A64State
   a64-lir-emit-alu (st) (op) (rd) (rn) (rm) =
-   when op
-    is LoAdd -> a64-emit st (arm64-add rd rn rm)
-    is LoSub -> a64-emit st (arm64-sub rd rn rm)
-    is LoMul -> a64-emit st (arm64-mul rd rn rm)
-    is LoRem -> st
-    is LoDiv -> st
+    when op
+     is LoAdd -> a64-emit st (arm64-add rd rn rm)
+     is LoSub -> a64-emit st (arm64-sub rd rn rm)
+     is LoMul -> a64-emit st (arm64-mul rd rn rm)
+     is LoRem -> st
+     is LoDiv -> st
 
   a64-lir-dst-reg : Location -> Integer
   a64-lir-dst-reg (loc) =
-   when loc
-    is LocReg (pr) -> list-at a64-lir-phys pr
-    is LocSlot (k) -> a64-lir-scratch-reg
+    when loc
+     is LocReg (pr) -> list-at a64-lir-phys pr
+     is LocSlot (k) -> a64-lir-scratch-reg
 
   a64-lir-store-dst : A64State, Location -> A64State
   a64-lir-store-dst (st) (loc) =
-   when loc
-    is LocReg (pr) -> st
-    is LocSlot (k) -> a64-emit st (arm64-str a64-lir-scratch-reg a64-sp (a64-lir-slot-off k))
+    when loc
+     is LocReg (pr) -> st
+     is LocSlot (k) -> a64-emit st (arm64-str a64-lir-scratch-reg a64-sp (a64-lir-slot-off k))
 
   a64-lir-emit-bin : A64State, LirOp, Integer, LirValue, LirValue, List Location -> A64State
   a64-lir-emit-bin (st) (op) (dst) (l) (r) (assign) =
-   let sl = a64-lir-src st l assign a64-lir-scratch-reg
-   in let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
-   in let d = list-at assign dst
-   in a64-lir-store-dst (a64-lir-emit-alu (sr.state) op (a64-lir-dst-reg d) (sl.reg) (sr.reg)) d
+    let sl = a64-lir-src st l assign a64-lir-scratch-reg
+    in let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
+    in let d = list-at assign dst
+    in a64-lir-store-dst (a64-lir-emit-alu (sr.state) op (a64-lir-dst-reg d) (sl.reg) (sr.reg)) d
 
   a64-lir-load-into : A64State, Integer, LirValue, List Location -> A64State
   a64-lir-load-into (st) (dr) (src) (assign) =
-   when src
-    is LvImm (k) -> a64-emit-li st dr k
-    is LvReg (r) ->
-     when (list-at assign r)
-      is LocReg (pr) -> let p = list-at a64-lir-phys pr in if p == dr then st else a64-emit st (arm64-mov dr p)
-      is LocSlot (k) -> a64-emit st (arm64-ldr dr a64-sp (a64-lir-slot-off k))
+    when src
+     is LvImm (k) -> a64-emit-li st dr k
+     is LvReg (r) ->
+      when (list-at assign r)
+       is LocReg (pr) -> let p = list-at a64-lir-phys pr in if p == dr then
+         st
+       else a64-emit st (arm64-mov dr p)
+       is LocSlot (k) -> a64-emit st (arm64-ldr dr a64-sp (a64-lir-slot-off k))
 
   a64-lir-emit-mov : A64State, Integer, LirValue, List Location -> A64State
   a64-lir-emit-mov (st) (dst) (src) (assign) =
-   when (list-at assign dst)
-    is LocReg (pr) -> a64-lir-load-into st (list-at a64-lir-phys pr) src assign
-    is LocSlot (k) -> a64-emit (a64-lir-load-into st a64-lir-scratch-reg src assign) (arm64-str a64-lir-scratch-reg a64-sp (a64-lir-slot-off k))
+    when (list-at assign dst)
+     is LocReg (pr) -> a64-lir-load-into st (list-at a64-lir-phys pr) src assign
+     is LocSlot (k) -> a64-emit (a64-lir-load-into st a64-lir-scratch-reg src assign) (arm64-str a64-lir-scratch-reg a64-sp (a64-lir-slot-off k))
 
  The base is a pointer the allocator placed, so it resolves through
  `a64-lir-src` into the SECOND scratch, leaving the first free for a spilled
@@ -416,9 +430,9 @@ Section: Dispatch
 
   a64-lir-emit-load : A64State, Integer, LirValue, Integer, List Location -> A64State
   a64-lir-emit-load (st) (dst) (base) (off) (assign) =
-   let bb = a64-lir-src st base assign a64-lir-scratch2
-   in let d = list-at assign dst
-   in a64-lir-store-dst (a64-emit (bb.state) (arm64-ldr (a64-lir-dst-reg d) (bb.reg) off)) d
+    let bb = a64-lir-src st base assign a64-lir-scratch2
+    in let d = list-at assign dst
+    in a64-lir-store-dst (a64-emit (bb.state) (arm64-ldr (a64-lir-dst-reg d) (bb.reg) off)) d
 
  A comparison sets the flags and defines nothing. `arm64-cmp` is `subs xzr`, so
  the operands are read and the result discarded exactly as x86's `cmp` does.
@@ -432,15 +446,15 @@ Section: Dispatch
 
   a64-lir-emit-cmp : A64State, LirValue, LirValue, List Location -> A64State
   a64-lir-emit-cmp (st) (l) (r) (assign) =
-   let sl = a64-lir-src st l assign a64-lir-scratch-reg
-   in when r
-    is LvImm (k) ->
-     if a64-lir-cmp-imm-ok k then a64-emit (sl.state) (arm64-cmp-imm (sl.reg) k)
-     else let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
-     in a64-emit (sr.state) (arm64-cmp (sl.reg) (sr.reg))
-    is LvReg (vr) ->
-     let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
-     in a64-emit (sr.state) (arm64-cmp (sl.reg) (sr.reg))
+    let sl = a64-lir-src st l assign a64-lir-scratch-reg
+    in when r
+     is LvImm (k) ->
+      if a64-lir-cmp-imm-ok k then a64-emit (sl.state) (arm64-cmp-imm (sl.reg) k)
+      else let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
+      in a64-emit (sr.state) (arm64-cmp (sl.reg) (sr.reg))
+     is LvReg (vr) ->
+      let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
+      in a64-emit (sr.state) (arm64-cmp (sl.reg) (sr.reg))
 
  A test is `LiCmp`'s bitwise-AND sibling: it ANDs its two operands, sets the
  flags from the result, and defines nothing. `arm64-tst` is `ands xzr`, which
@@ -459,9 +473,9 @@ Section: Dispatch
 
   a64-lir-emit-test : A64State, LirValue, LirValue, List Location -> A64State
   a64-lir-emit-test (st) (l) (r) (assign) =
-   let sl = a64-lir-src st l assign a64-lir-scratch-reg
-   in let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
-   in a64-emit (sr.state) (arm64-tst (sl.reg) (sr.reg))
+    let sl = a64-lir-src st l assign a64-lir-scratch-reg
+    in let sr = a64-lir-src (sl.state) r assign a64-lir-scratch2
+    in a64-emit (sr.state) (arm64-tst (sl.reg) (sr.reg))
 
  The six conditions, and their inverses. AArch64 numbers them EQ 0, NE 1,
  GE 10, LT 11, GT 12, LE 13, and the inverse of each is the one a fall-through
@@ -469,23 +483,23 @@ Section: Dispatch
 
   a64-lir-cond-code : LirCond -> Integer
   a64-lir-cond-code (c) =
-   when c
-    is LcEq -> 0
-    is LcNe -> 1
-    is LcLt -> 11
-    is LcGt -> 12
-    is LcLe -> 13
-    is LcGe -> 10
+    when c
+     is LcEq -> 0
+     is LcNe -> 1
+     is LcLt -> 11
+     is LcGt -> 12
+     is LcLe -> 13
+     is LcGe -> 10
 
   a64-lir-cond-inv : LirCond -> Integer
   a64-lir-cond-inv (c) =
-   when c
-    is LcEq -> 1
-    is LcNe -> 0
-    is LcLt -> 10
-    is LcGt -> 13
-    is LcLe -> 12
-    is LcGe -> 11
+    when c
+     is LcEq -> 1
+     is LcNe -> 0
+     is LcLt -> 10
+     is LcGt -> 13
+     is LcLe -> 12
+     is LcGe -> 11
 
   A64LirFix = record {
    at : Integer,
@@ -504,48 +518,52 @@ Section: Dispatch
 
   a64-lir-fix : A64LirCtx, A64State, Integer, Integer, Integer -> A64LirCtx
   a64-lir-fix (cx) (st) (at) (target) (cond) =
-   A64LirCtx { state = st, boffs = cx.boffs, fixups = list-push (cx.fixups) (A64LirFix { at = at, target = target, cond = cond }) }
+    A64LirCtx {
+      state = st,
+      boffs = cx.boffs,
+      fixups = list-push (cx.fixups) (A64LirFix { at = at, target = target, cond = cond })
+    }
 
   a64-lir-emit-branch : A64LirCtx, LirCond, Integer, Integer, Integer -> A64LirCtx
   a64-lir-emit-branch (cx) (c) (tblk) (fblk) (nextid) =
-   if fblk == nextid
-   then let at = ((cx.state).insn-count)
-        in a64-lir-fix cx (a64-emit (cx.state) (arm64-b-cond (a64-lir-cond-code c) 0)) at tblk (a64-lir-cond-code c)
-   else if tblk == nextid
-   then let at = ((cx.state).insn-count)
-        in a64-lir-fix cx (a64-emit (cx.state) (arm64-b-cond (a64-lir-cond-inv c) 0)) at fblk (a64-lir-cond-inv c)
-   else let at1 = ((cx.state).insn-count)
-        in let cx1 = a64-lir-fix cx (a64-emit (cx.state) (arm64-b-cond (a64-lir-cond-code c) 0)) at1 tblk (a64-lir-cond-code c)
-        in let at2 = ((cx1.state).insn-count)
-        in a64-lir-fix cx1 (a64-emit (cx1.state) (arm64-b 0)) at2 fblk (0 - 1)
+    if fblk == nextid
+    then let at = ((cx.state).insn-count)
+    in a64-lir-fix cx (a64-emit (cx.state) (arm64-b-cond (a64-lir-cond-code c) 0)) at tblk (a64-lir-cond-code c)
+    else if tblk == nextid
+    then let at = ((cx.state).insn-count)
+    in a64-lir-fix cx (a64-emit (cx.state) (arm64-b-cond (a64-lir-cond-inv c) 0)) at fblk (a64-lir-cond-inv c)
+    else let at1 = ((cx.state).insn-count)
+    in let cx1 = a64-lir-fix cx (a64-emit (cx.state) (arm64-b-cond (a64-lir-cond-code c) 0)) at1 tblk (a64-lir-cond-code c)
+    in let at2 = ((cx1.state).insn-count)
+    in a64-lir-fix cx1 (a64-emit (cx1.state) (arm64-b 0)) at2 fblk (0 - 1)
 
   a64-lir-emit-jump : A64LirCtx, Integer, Integer -> A64LirCtx
   a64-lir-emit-jump (cx) (b) (nextid) =
-   if b == nextid then cx
-   else let at = ((cx.state).insn-count)
-        in a64-lir-fix cx (a64-emit (cx.state) (arm64-b 0)) at b (0 - 1)
+    if b == nextid then cx
+    else let at = ((cx.state).insn-count)
+    in a64-lir-fix cx (a64-emit (cx.state) (arm64-b 0)) at b (0 - 1)
 
   a64-lir-emit-ret : A64State, LirValue, List Location, A64LirFrame -> A64State
   a64-lir-emit-ret (st) (v) (assign) (fr) =
-   a64-emit (a64-lir-emit-epilogue (a64-lir-emit-result-alloc st v assign) fr) arm64-ret
+    a64-emit (a64-lir-emit-epilogue (a64-lir-emit-result-alloc st v assign) fr) arm64-ret
 
   a64-lir-emit-amv : A64State, LirAmv, List LirValue -> A64State
   a64-lir-emit-amv (st) (step) (argvals) =
-   when step
-    is AmvMove (d) (s) ->
-     let pd = a64-lir-emv-phys d
-     in let ps = a64-lir-emv-phys s
-     in if pd == ps then st else a64-emit st (arm64-mov pd ps)
-    is AmvLoad (d) (k) -> a64-emit st (arm64-ldr (a64-lir-emv-phys d) a64-sp (a64-lir-slot-off k))
-    is AmvImm (d) (a) ->
-     when (list-at argvals a)
-      is LvImm (k) -> a64-emit-li st (a64-lir-emv-phys d) k
-      is LvReg (r) -> st
+    when step
+     is AmvMove (d) (s) ->
+      let pd = a64-lir-emv-phys d
+      in let ps = a64-lir-emv-phys s
+      in if pd == ps then st else a64-emit st (arm64-mov pd ps)
+     is AmvLoad (d) (k) -> a64-emit st (arm64-ldr (a64-lir-emv-phys d) a64-sp (a64-lir-slot-off k))
+     is AmvImm (d) (a) ->
+      when (list-at argvals a)
+       is LvImm (k) -> a64-emit-li st (a64-lir-emv-phys d) k
+       is LvReg (r) -> st
 
   a64-lir-emit-amvs : A64State, List LirAmv, List LirValue, Integer, Integer -> A64State
   a64-lir-emit-amvs (st) (plan) (argvals) (i) (n) =
-   if i >= n then st
-   else a64-lir-emit-amvs (a64-lir-emit-amv st (list-at plan i) argvals) plan argvals (i + 1) n
+    if i >= n then st
+    else a64-lir-emit-amvs (a64-lir-emit-amv st (list-at plan i) argvals) plan argvals (i + 1) n
 
  The result move has to happen before anything else writes `x0`, and nothing
  does: the next instruction is whatever the block holds, and a second call in
@@ -560,53 +578,60 @@ Section: Dispatch
 
   a64-lir-emit-call : A64State, Integer, Text, List LirValue, List Location -> A64State
   a64-lir-emit-call (st) (dst) (name) (args) (assign) =
-   let plan = lir-amv-for lir-target-a64 args assign
-   in let st1 = a64-lir-emit-amvs st plan args 0 (list-length plan)
-   in let st2 = a64-emit-call-to st1 name
-   in when (list-at assign dst)
-    is LocReg (pr) ->
-     let p = list-at a64-lir-phys pr
-     in if p == a64-x0 then st2 else a64-emit st2 (arm64-mov p a64-x0)
-    is LocSlot (k) -> a64-emit st2 (arm64-str a64-x0 a64-sp (a64-lir-slot-off k))
+    let plan = lir-amv-for lir-target-a64 args assign
+    in let st1 = a64-lir-emit-amvs st plan args 0 (list-length plan)
+    in let st2 = a64-emit-call-to st1 name
+    in when (list-at assign dst)
+     is LocReg (pr) ->
+      let p = list-at a64-lir-phys pr
+      in if p == a64-x0 then st2 else a64-emit st2 (arm64-mov p a64-x0)
+     is LocSlot (k) -> a64-emit st2 (arm64-str a64-x0 a64-sp (a64-lir-slot-off k))
 
   a64-lir-emit-insn : A64LirCtx, LirInsn, List Location, A64LirFrame, Integer -> A64LirCtx
   a64-lir-emit-insn (cx) (ins) (assign) (fr) (nextid) =
-   when ins
-    is LiBin (op) (dst) (l) (r) -> a64-lir-ctx-st cx (a64-lir-emit-bin (cx.state) op dst l r assign)
-    is LiMove (dst) (src) -> a64-lir-ctx-st cx (a64-lir-emit-mov (cx.state) dst src assign)
-    is LiCmp (l) (r) -> a64-lir-ctx-st cx (a64-lir-emit-cmp (cx.state) l r assign)
-    is LiTest (l) (r) -> a64-lir-ctx-st cx (a64-lir-emit-test (cx.state) l r assign)
-    is LiLoad (dst) (base) (off) (w) (sg) -> a64-lir-ctx-st cx (a64-lir-emit-load (cx.state) dst base off assign)
-    is LiRet (v) -> a64-lir-ctx-st cx (a64-lir-emit-ret (cx.state) v assign fr)
-    is LiCall (dst) (name) (args) -> a64-lir-ctx-st cx (a64-lir-emit-call (cx.state) dst name args assign)
-    is LiBranch (c) (tblk) (fblk) -> a64-lir-emit-branch cx c tblk fblk nextid
-    is LiJump (b) -> a64-lir-emit-jump cx b nextid
-    is otherwise -> cx
+    when ins
+     is LiBin (op) (dst) (l) (r) -> a64-lir-ctx-st cx (a64-lir-emit-bin (cx.state) op dst l r assign)
+     is LiMove (dst) (src) -> a64-lir-ctx-st cx (a64-lir-emit-mov (cx.state) dst src assign)
+     is LiCmp (l) (r) -> a64-lir-ctx-st cx (a64-lir-emit-cmp (cx.state) l r assign)
+     is LiTest (l) (r) -> a64-lir-ctx-st cx (a64-lir-emit-test (cx.state) l r assign)
+     is LiLoad (dst) (base) (off) (w) (sg) -> a64-lir-ctx-st cx (a64-lir-emit-load (cx.state) dst base off assign)
+     is LiRet (v) -> a64-lir-ctx-st cx (a64-lir-emit-ret (cx.state) v assign fr)
+     is LiCall (dst) (name) (args) -> a64-lir-ctx-st cx (a64-lir-emit-call (cx.state) dst name args assign)
+     is LiBranch (c) (tblk) (fblk) -> a64-lir-emit-branch cx c tblk fblk nextid
+     is LiJump (b) -> a64-lir-emit-jump cx b nextid
+     is otherwise -> cx
 
   a64-lir-emit-insns : A64LirCtx, List LirInsn, Integer, Integer, List Location, A64LirFrame, Integer -> A64LirCtx
   a64-lir-emit-insns (cx) (insns) (i) (n) (assign) (fr) (nextid) =
-   if i >= n then cx
-   else a64-lir-emit-insns (a64-lir-emit-insn cx (list-at insns i) assign fr nextid) insns (i + 1) n assign fr nextid
+    if i >= n then cx
+    else
+      a64-lir-emit-insns (a64-lir-emit-insn cx (list-at insns i) assign fr nextid) insns (i + 1) n assign fr nextid
 
   a64-lir-next-id : List LirBlock, Integer, Integer -> Integer
   a64-lir-next-id (blocks) (i) (n) =
-   if (i + 1) >= n then 0 - 1 else ((list-at blocks (i + 1)).id)
+    if (i + 1) >= n then 0 - 1 else ((list-at blocks (i + 1)).id)
 
   a64-lir-emit-blocks : A64LirCtx, List LirBlock, Integer, Integer, List Location, A64LirFrame -> A64LirCtx
   a64-lir-emit-blocks (cx) (blocks) (i) (n) (assign) (fr) =
-   if i >= n then cx
-   else let b = list-at blocks i
-   in let cx0 = A64LirCtx { state = cx.state, boffs = list-set-at (cx.boffs) (b.id) ((cx.state).insn-count), fixups = cx.fixups }
-   in let cx1 = a64-lir-emit-insns cx0 (b.insns) 0 (list-length (b.insns)) assign fr (a64-lir-next-id blocks i n)
-   in a64-lir-emit-blocks cx1 blocks (i + 1) n assign fr
+    if i >= n then cx
+    else let b = list-at blocks i
+    in let cx0 = A64LirCtx {
+      state = cx.state,
+      boffs = list-set-at (cx.boffs) (b.id) ((cx.state).insn-count),
+      fixups = cx.fixups
+    }
+    in let cx1 = a64-lir-emit-insns cx0 (b.insns) 0 (list-length (b.insns)) assign fr (a64-lir-next-id blocks i n)
+    in a64-lir-emit-blocks cx1 blocks (i + 1) n assign fr
 
   a64-lir-apply-fixups : A64State, List A64LirFix, List Integer, Integer, Integer -> A64State
   a64-lir-apply-fixups (st) (fixups) (boffs) (i) (n) =
-   if i >= n then st
-   else let fx = list-at fixups i
-   in let rel = ((list-at boffs (fx.target)) - (fx.at)) * 4
-   in let st1 = if (fx.cond) < 0 then a64-patch-insn st (fx.at) (arm64-b rel) else a64-patch-insn st (fx.at) (arm64-b-cond (fx.cond) rel)
-   in a64-lir-apply-fixups st1 fixups boffs (i + 1) n
+    if i >= n then st
+    else let fx = list-at fixups i
+    in let rel = ((list-at boffs (fx.target)) - (fx.at)) * 4
+    in let st1 = if (fx.cond) < 0 then
+      a64-patch-insn st (fx.at) (arm64-b rel)
+    else a64-patch-insn st (fx.at) (arm64-b-cond (fx.cond) rel)
+    in a64-lir-apply-fixups st1 fixups boffs (i + 1) n
 
  The result of an arithmetic function is a vreg the allocator placed, so this
  reads `assign` where the zero-instruction path reads the parameter index. A
@@ -618,50 +643,55 @@ Section: Dispatch
 
   a64-lir-result-loc : A64State, Location -> A64State
   a64-lir-result-loc (st) (loc) =
-   when loc
-    is LocReg (pr) ->
-     let p = list-at a64-lir-phys pr
-     in if p == a64-x0 then st else a64-emit st (arm64-mov a64-x0 p)
-    is LocSlot (k) -> a64-emit st (arm64-ldr a64-x0 a64-sp (a64-lir-slot-off k))
+    when loc
+     is LocReg (pr) ->
+      let p = list-at a64-lir-phys pr
+      in if p == a64-x0 then st else a64-emit st (arm64-mov a64-x0 p)
+     is LocSlot (k) -> a64-emit st (arm64-ldr a64-x0 a64-sp (a64-lir-slot-off k))
 
   a64-lir-emit-result-alloc : A64State, LirValue, List Location -> A64State
   a64-lir-emit-result-alloc (st) (v) (assign) =
-   when v
-    is LvImm (k) -> a64-emit-li st a64-x0 k
-    is LvReg (r) -> a64-lir-result-loc st (list-at assign r)
+    when v
+     is LvImm (k) -> a64-emit-li st a64-x0 k
+     is LvReg (r) -> a64-lir-result-loc st (list-at assign r)
 
   a64-lir-zero-insn : LirFunc -> Boolean
   a64-lir-zero-insn (f) =
-   if f.rets then False
-   else if list-length (f.blocks) /= 1 then False
-   else list-length ((list-at (f.blocks) 0).insns) == 0
+    if f.rets then False
+    else if list-length (f.blocks) /= 1 then False
+    else list-length ((list-at (f.blocks) 0).insns) == 0
 
   a64-lir-emit-func : A64State, IRDef, LirFunc, List Location -> A64State
   a64-lir-emit-func (st) (def) (f) (assign) =
-   let st1 = a64-reset-func-state st (def.name) (list-length (def.params))
-   in if a64-lir-zero-insn f
-      then a64-emit (a64-lir-emit-result-param st1 (f.result)) arm64-ret
-      else a64-lir-emit-framed st1 f assign
+    let st1 = a64-reset-func-state st (def.name) (list-length (def.params))
+    in if a64-lir-zero-insn f
+       then a64-emit (a64-lir-emit-result-param st1 (f.result)) arm64-ret
+    else a64-lir-emit-framed st1 f assign
 
   a64-lir-frame-of : LirFunc, List Location -> A64LirFrame
   a64-lir-frame-of (f) (assign) =
-   let na = list-length assign
-   in A64LirFrame {
-    nslots = a64-lir-nslots assign 0 na 0,
-    nused = a64-lir-nused-callee assign 0 na 0,
-    haslr = a64-lir-has-call (f.blocks) 0 (list-length (f.blocks))
-   }
+    let na = list-length assign
+    in A64LirFrame {
+     nslots = a64-lir-nslots assign 0 na 0,
+     nused = a64-lir-nused-callee assign 0 na 0,
+     haslr = a64-lir-has-call (f.blocks) 0 (list-length (f.blocks))
+    }
 
   a64-lir-emit-framed : A64State, LirFunc, List Location -> A64State
   a64-lir-emit-framed (st) (f) (assign) =
-   let fr = a64-lir-frame-of f assign
-   in let nb = list-length (f.blocks)
-   in let ste = a64-lir-emit-entry (a64-lir-emit-prologue st fr) f assign
-   in let cx0 = A64LirCtx { state = ste, boffs = lir-int-vec 0 (a64-lir-max-block-id (f.blocks) 0 nb 0) 0 [], fixups = [] }
-   in let cxf = a64-lir-emit-blocks cx0 (f.blocks) 0 nb assign fr
-   in let stp = a64-lir-apply-fixups (cxf.state) (cxf.fixups) (cxf.boffs) 0 (list-length (cxf.fixups))
-   in if f.rets then stp
-      else a64-emit (a64-lir-emit-epilogue (a64-lir-emit-result-alloc stp (f.result) assign) fr) arm64-ret
+    let fr = a64-lir-frame-of f assign
+    in let nb = list-length (f.blocks)
+    in let ste = a64-lir-emit-entry (a64-lir-emit-prologue st fr) f assign
+    in let cx0 = A64LirCtx {
+      state = ste,
+      boffs = lir-int-vec 0 (a64-lir-max-block-id (f.blocks) 0 nb 0) 0 [],
+      fixups = []
+    }
+    in let cxf = a64-lir-emit-blocks cx0 (f.blocks) 0 nb assign fr
+    in let stp = a64-lir-apply-fixups (cxf.state) (cxf.fixups) (cxf.boffs) 0 (list-length (cxf.fixups))
+    in if f.rets then stp
+    else
+      a64-emit (a64-lir-emit-epilogue (a64-lir-emit-result-alloc stp (f.result) assign) fr) arm64-ret
 
  The offset table is sized by the highest block id present, not by the block
  count, because the two are not the same number: ids are handed out eagerly
@@ -670,9 +700,9 @@ Section: Dispatch
 
   a64-lir-max-block-id : List LirBlock, Integer, Integer, Integer -> Integer
   a64-lir-max-block-id (blocks) (i) (n) (acc) =
-   if i >= n then acc + 1
-   else let bid = ((list-at blocks i).id)
-   in a64-lir-max-block-id blocks (i + 1) n (if bid > acc then bid else acc)
+    if i >= n then acc + 1
+    else let bid = ((list-at blocks i).id)
+    in a64-lir-max-block-id blocks (i + 1) n (if bid > acc then bid else acc)
 
  That bound is the frame's own size. `arm64-sub-imm` and `arm64-add-imm` take a
  twelve-bit immediate and MASK what they are given, so a frame past 4095 bytes
@@ -681,20 +711,23 @@ Section: Dispatch
 
   a64-lir-alloc-ok : LirFunc, List Location -> Boolean
   a64-lir-alloc-ok (f) (assign) =
-   if a64-lir-zero-insn f then True
-   else a64-lir-frame-bytes (a64-lir-frame-of f assign) <= 4095
+    if a64-lir-zero-insn f then True
+    else a64-lir-frame-bytes (a64-lir-frame-of f assign) <= 4095
 
   a64-lir-emit-try : A64State, IRDef -> A64LirTry
   a64-lir-emit-try (st) (def) =
-   if def.name == "opening" then a64-lir-not-handled st
-   else if list-length (def.params) > 8 then a64-lir-not-handled st
-   else let r = lower-def-to-lir def
-   in if r.ok == False then a64-lir-not-handled st
-      else if (r.func).nparams /= list-length (def.params) then a64-lir-not-handled st
-      else if a64-lir-selects (r.func) == False then a64-lir-not-handled st
-      else if a64-lir-calls-ok st ((r.func).blocks) 0 (list-length ((r.func).blocks)) == False then a64-lir-not-handled st
-      else if list-length (lir-check-func (r.func)) > 0 then a64-lir-not-handled st
-      else let a = lir-alloc-linscan lir-target-a64 (r.func)
-      in if list-length (lir-alloc-check lir-target-a64 (r.func) (a.assign)) > 0 then a64-lir-not-handled st
-         else if a64-lir-alloc-ok (r.func) (a.assign) == False then a64-lir-not-handled st
-         else A64LirTry { handled = True, state = a64-lir-emit-func st def (r.func) (a.assign) }
+    if def.name == "opening" then a64-lir-not-handled st
+    else if list-length (def.params) > 8 then a64-lir-not-handled st
+    else let r = lower-def-to-lir def
+    in if r.ok == False then a64-lir-not-handled st
+    else if (r.func).nparams /= list-length (def.params) then a64-lir-not-handled st
+    else if (r.func).nparams > 6 & lir-has-backedge (r.func) then a64-lir-not-handled st
+    else if a64-lir-selects (r.func) == False then a64-lir-not-handled st
+    else if a64-lir-calls-ok st ((r.func).blocks) 0 (list-length ((r.func).blocks)) == False then
+      a64-lir-not-handled st
+    else if list-length (lir-check-func (r.func)) > 0 then a64-lir-not-handled st
+    else let a = lir-alloc-linscan lir-target-a64 (r.func)
+    in if list-length (lir-alloc-check lir-target-a64 (r.func) (a.assign)) > 0 then
+      a64-lir-not-handled st
+    else if a64-lir-alloc-ok (r.func) (a.assign) == False then a64-lir-not-handled st
+    else A64LirTry { handled = True, state = a64-lir-emit-func st def (r.func) (a.assign) }

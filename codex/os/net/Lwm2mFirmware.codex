@@ -66,44 +66,44 @@ Section: The Client
 
   fw-fail : Lwm2mFw, Integer, Text -> Lwm2mFw
   fw-fail (c) (result) (why) =
-   let ctx2 = ota-step (c.fw-ctx) (EvDownloadFailed why)
-   in fw-set-result (c revised { fw-ctx = ctx2 }) result
+    let ctx2 = ota-step (c.fw-ctx) (EvDownloadFailed why)
+    in fw-set-result (c revised { fw-ctx = ctx2 }) result
 
 Section: Object 5 Resources
 
   fw-state-resource : Lwm2mFw -> Integer
   fw-state-resource (c) =
-   when c.fw-ctx.state
-    is OtaIdle -> lwm2m-fw-state-value FwIdle
-    is OtaDownloading (received) (total) -> lwm2m-fw-state-value FwDownloading
-    is OtaDownloaded -> lwm2m-fw-state-value FwDownloaded
-    is OtaVerifying -> lwm2m-fw-state-value FwDownloaded
-    is OtaVerified -> lwm2m-fw-state-value FwDownloaded
-    is OtaActivating -> lwm2m-fw-state-value FwUpdating
-    is OtaRollingBack -> lwm2m-fw-state-value FwUpdating
-    is OtaFailed (reason) -> lwm2m-fw-state-value FwIdle
+    when c.fw-ctx.state
+     is OtaIdle -> lwm2m-fw-state-value FwIdle
+     is OtaDownloading (received) (total) -> lwm2m-fw-state-value FwDownloading
+     is OtaDownloaded -> lwm2m-fw-state-value FwDownloaded
+     is OtaVerifying -> lwm2m-fw-state-value FwDownloaded
+     is OtaVerified -> lwm2m-fw-state-value FwDownloaded
+     is OtaActivating -> lwm2m-fw-state-value FwUpdating
+     is OtaRollingBack -> lwm2m-fw-state-value FwUpdating
+     is OtaFailed (reason) -> lwm2m-fw-state-value FwIdle
 
   fw-result-resource : Lwm2mFw -> Integer
   fw-result-resource (c) = c.fw-result
 
   fw-package-uri : Lwm2mFw -> Text
   fw-package-uri (c) =
-   when c.fw-ctx.manifest
-    is None -> ""
-    is Just (m) -> m.firmware-uri
+    when c.fw-ctx.manifest
+     is None -> ""
+     is Just (m) -> m.firmware-uri
 
 Section: Write /5/0/1 -- Package URI
 
   fw-write-package-uri : Lwm2mFw, OtaManifest -> Lwm2mFw
   fw-write-package-uri (c) (m) =
-   let ctx2 = ota-step (c.fw-ctx) (EvManifestReceived m)
-   in c revised {
-    fw-ctx = ctx2,
-    fw-written = 0,
-    fw-next-block = 0,
-    fw-faults = 0,
-    fw-result = 0
-   }
+    let ctx2 = ota-step (c.fw-ctx) (EvManifestReceived m)
+    in c revised {
+     fw-ctx = ctx2,
+     fw-written = 0,
+     fw-next-block = 0,
+     fw-faults = 0,
+     fw-result = 0
+    }
 
 Section: The Download
 
@@ -114,21 +114,23 @@ Section: The Download
 
   fw-next-request : Lwm2mFw, Integer, List Integer -> List Integer
   fw-next-request (c) (msg-id) (token) =
-   let path = fw-package-uri c
-   in let blk = coap-block-option coap-opt-block2 (c.fw-next-block) 0 fw-szx
-   in let opts = coap-uri-path-options path & [blk]
-   in coap-build-request CoapConfirmable CoapGet msg-id token opts []
+    let path = fw-package-uri c
+    in let blk = coap-block-option coap-opt-block2 (c.fw-next-block) 0 fw-szx
+    in let opts = coap-uri-path-options path & [blk]
+    in coap-build-request CoapConfirmable CoapGet msg-id token opts []
 
   fw-feed-response : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   fw-feed-response (brd) (c) (bytes) =
-   when coap-parse bytes
-    is None -> board-pair brd (fw-fail c fw-result-conn-lost "malformed CoAP response")
-    is Just (m) ->
-      if m.cm-code /= coap-205-content then board-pair brd (fw-fail c fw-result-conn-lost "response was not 2.05 Content")
-      else if fw-size2-too-big c (m.cm-options) then board-pair brd (fw-fail c fw-result-no-flash "declared size exceeds the staging bank")
-      else when coap-find-option (m.cm-options) coap-opt-block2
-       is None -> fw-stage-last brd c (m.cm-payload)
-       is Just (v) -> fw-stage-block brd c (m.cm-payload) (coap-uint-value v)
+    when coap-parse bytes
+     is None -> board-pair brd (fw-fail c fw-result-conn-lost "malformed CoAP response")
+     is Just (m) ->
+       if m.cm-code /= coap-205-content then
+         board-pair brd (fw-fail c fw-result-conn-lost "response was not 2.05 Content")
+       else if fw-size2-too-big c (m.cm-options) then
+         board-pair brd (fw-fail c fw-result-no-flash "declared size exceeds the staging bank")
+       else when coap-find-option (m.cm-options) coap-opt-block2
+        is None -> fw-stage-last brd c (m.cm-payload)
+        is Just (v) -> fw-stage-block brd c (m.cm-payload) (coap-uint-value v)
 
  Size2 is an EARLY refusal and nothing more. A server that declares a total
  over the bank is refused before byte one, which saves writing most of an
@@ -139,22 +141,23 @@ Section: The Download
 
   fw-size2-too-big : Lwm2mFw, List CoapOption -> Boolean
   fw-size2-too-big (c) (opts) =
-   when coap-find-option opts coap-opt-size2
-    is None -> False
-    is Just (sv) -> coap-uint-value sv > c.fw-capacity
+    when coap-find-option opts coap-opt-size2
+     is None -> False
+     is Just (sv) -> coap-uint-value sv > c.fw-capacity
 
   fw-stage-block : linear Board, Lwm2mFw, List Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   fw-stage-block (brd) (c) (payload) (bv) =
-   let num = coap-block-num bv
-   in let more = coap-block-more bv
-   in if num /= c.fw-next-block then board-pair brd (fw-fail c fw-result-conn-lost "block out of order")
-   else act
-    w <- fw-write brd c payload
-    when w
-     is (brd1, c2) ->
-       if more == 1 then board-pair brd1 (c2 revised { fw-next-block = num + 1 })
-       else board-pair brd1 (fw-download-complete (c2 revised { fw-next-block = num + 1 }))
-    end
+    let num = coap-block-num bv
+    in let more = coap-block-more bv
+    in if num /= c.fw-next-block then
+      board-pair brd (fw-fail c fw-result-conn-lost "block out of order")
+    else act
+     w <- fw-write brd c payload
+     when w
+      is (brd1, c2) ->
+        if more == 1 then board-pair brd1 (c2 revised { fw-next-block = num + 1 })
+        else board-pair brd1 (fw-download-complete (c2 revised { fw-next-block = num + 1 }))
+     end
 
   fw-stage-last : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   fw-stage-last (brd) (c) (payload) = act
@@ -178,22 +181,22 @@ Section: The Download
 
   fw-write : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   fw-write (brd) (c) (payload) =
-   if list-length payload > (c.fw-capacity) - (c.fw-written)
-   then board-pair brd (fw-fail c fw-result-no-flash "write past the end of the staging bank")
-   else act
-   ob <- flash-open-bank brd (c.fw-bank)
-   when ob
-    is (brd1, b0) -> act
-      b1 <- flash-write-page b0 (c.fw-stage + (c.fw-written)) payload
-      f <- flash-seal-bank b1
-      let ctx2 = ota-step (c.fw-ctx) (EvBlockReceived payload (c.fw-written))
-      in let c2 = c revised {
-       fw-ctx = ctx2,
-       fw-written = (c.fw-written) + list-length payload,
-       fw-faults = (c.fw-faults) + (if f < 0 then 0 - f else 0)
-      }
-      in board-pair brd1 c2
-    end
+    if list-length payload > (c.fw-capacity) - (c.fw-written)
+    then board-pair brd (fw-fail c fw-result-no-flash "write past the end of the staging bank")
+    else act
+    ob <- flash-open-bank brd (c.fw-bank)
+    when ob
+     is (brd1, b0) -> act
+       b1 <- flash-write-page b0 (c.fw-stage + (c.fw-written)) payload
+       f <- flash-seal-bank b1
+       let ctx2 = ota-step (c.fw-ctx) (EvBlockReceived payload (c.fw-written))
+       in let c2 = c revised {
+        fw-ctx = ctx2,
+        fw-written = (c.fw-written) + list-length payload,
+        fw-faults = (c.fw-faults) + (if f < 0 then 0 - f else 0)
+       }
+       in board-pair brd1 c2
+     end
   end
 
 Section: Gate A -- on what landed
@@ -209,51 +212,51 @@ Section: Gate A -- on what landed
 
   fw-magic-ok : Integer -> Boolean
   fw-magic-ok (addr) =
-   if peek-byte addr 0 /= 67 then False
-   else if peek-byte addr 1 /= 68 then False
-   else if peek-byte addr 2 /= 88 then False
-   else True
+    if peek-byte addr 0 /= 67 then False
+    else if peek-byte addr 1 /= 68 then False
+    else if peek-byte addr 2 /= 88 then False
+    else True
 
   fw-gate-a : Lwm2mFw -> GateAResult
   fw-gate-a (c) =
-   when c.fw-ctx.manifest
-    is None -> GateAFailTruncated
-    is Just (m) ->
-      if (c.fw-written) /= m.firmware-size then GateAFailTruncated
-      else if fw-magic-ok (c.fw-stage) == False then GateAFailMagic
-      else if ota-hash-eq (fw-digest c) (m.firmware-hash) 0 32 then GateAPass
-      else GateAFailHash
+    when c.fw-ctx.manifest
+     is None -> GateAFailTruncated
+     is Just (m) ->
+       if (c.fw-written) /= m.firmware-size then GateAFailTruncated
+       else if fw-magic-ok (c.fw-stage) == False then GateAFailMagic
+       else if ota-hash-eq (fw-digest c) (m.firmware-hash) 0 32 then GateAPass
+       else GateAFailHash
 
   fw-download-complete : Lwm2mFw -> Lwm2mFw
   fw-download-complete (c) =
-   if (c.fw-faults) > 0 then fw-fail c fw-result-no-flash "flash write fault while staging"
-   else when fw-gate-a c
-    is GateAPass ->
-      let ctx2 = ota-step (c.fw-ctx) (EvGateAResult GateAPass)
-      in let ctx3 = ota-step ctx2 EvDownloadComplete
-      in c revised { fw-ctx = ctx3 }
-    is GateAFailMagic -> fw-fail c fw-result-bad-package "staged image is not a CDX"
-    is GateAFailTruncated -> fw-fail c fw-result-conn-lost "staged image is short"
-    is otherwise -> fw-fail c fw-result-integrity "staged image hash does not match the manifest"
+    if (c.fw-faults) > 0 then fw-fail c fw-result-no-flash "flash write fault while staging"
+    else when fw-gate-a c
+     is GateAPass ->
+       let ctx2 = ota-step (c.fw-ctx) (EvGateAResult GateAPass)
+       in let ctx3 = ota-step ctx2 EvDownloadComplete
+       in c revised { fw-ctx = ctx3 }
+     is GateAFailMagic -> fw-fail c fw-result-bad-package "staged image is not a CDX"
+     is GateAFailTruncated -> fw-fail c fw-result-conn-lost "staged image is short"
+     is otherwise -> fw-fail c fw-result-integrity "staged image hash does not match the manifest"
 
 Section: Execute /5/0/2 -- Update
 
   fw-execute-update : Lwm2mFw, GateBResult -> Lwm2mFw
   fw-execute-update (c) (verdict) =
-   let ctx1 = ota-step (c.fw-ctx) (EvGateBResult verdict)
-   in let ctx2 = ota-step ctx1 (EvGateBResult verdict)
-   in when verdict
-    is GateBPass -> c revised { fw-ctx = ctx2 }
-    is otherwise -> fw-set-result (c revised { fw-ctx = ctx2 }) fw-result-update-failed
+    let ctx1 = ota-step (c.fw-ctx) (EvGateBResult verdict)
+    in let ctx2 = ota-step ctx1 (EvGateBResult verdict)
+    in when verdict
+     is GateBPass -> c revised { fw-ctx = ctx2 }
+     is otherwise -> fw-set-result (c revised { fw-ctx = ctx2 }) fw-result-update-failed
 
   fw-activate : Lwm2mFw -> Lwm2mFw
   fw-activate (c) =
-   when c.fw-ctx.state
-    is OtaVerified ->
-      let ctx2 = ota-step (c.fw-ctx) EvActivationConfirmed
-      in let ctx3 = ota-step ctx2 EvActivationConfirmed
-      in fw-set-result (c revised { fw-ctx = ctx3 }) fw-result-success
-    is otherwise -> c
+    when c.fw-ctx.state
+     is OtaVerified ->
+       let ctx2 = ota-step (c.fw-ctx) EvActivationConfirmed
+       in let ctx3 = ota-step ctx2 EvActivationConfirmed
+       in fw-set-result (c revised { fw-ctx = ctx3 }) fw-result-success
+     is otherwise -> c
 
  CONFIRMING THE BOOT IS A SEPARATE ACT FROM ACTIVATING THE IMAGE, and
  they run on different firmwares. `fw-activate` runs on the OLD image and
@@ -279,12 +282,12 @@ Section: Execute /5/0/2 -- Update
 
   fw-confirm-boot : linear Board, Lwm2mFw, Integer, Integer, Boolean -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   fw-confirm-boot (brd) (c) (bank) (rec-addr) (registered) =
-   if registered == False then board-pair brd c
-   else act
-    rc <- boot-commit brd bank rec-addr
-    when rc
-     is (b1, w) -> board-pair b1 (fw-set-result c fw-result-success)
-    end
+    if registered == False then board-pair brd c
+    else act
+     rc <- boot-commit brd bank rec-addr
+     when rc
+      is (b1, w) -> board-pair b1 (fw-set-result c fw-result-success)
+     end
 
   fw-boot-config : Lwm2mFw -> BootConfig
   fw-boot-config (c) = c.fw-ctx.boot-config

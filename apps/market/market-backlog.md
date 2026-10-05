@@ -10,4 +10,6 @@ is still real is never quietly dropped.
 
 ## Open
 
-Nothing.
+| Source | Gap |
+|---|---|
+| `MarketWeb.codex:177`, `:189` | Health inserts the store name raw; `products-json-loop` inserts product IDs/names raw. JSON quote/backslash/control escaping is absent. The current active-product provider returns an empty list, so the product branch is a helper-contract gap until populated. Source-inspected 2026-10-01 at main 33668. |

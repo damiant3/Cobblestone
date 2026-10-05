@@ -1,0 +1,236 @@
+Chapter: AdminWorld
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter AdminProtocol
+  cites Uoaix chapter AdminContext
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+
+Section: Bounded Storage
+
+  AdminWorld = record {
+    world : TfWorld, mind : TmMind, reports : List Integer,
+    report-head : Integer, report-count : Integer, report-sequence : Integer,
+    job : List Integer, job-id : Integer, job-state : Integer,
+    npc : Integer, event : Integer, request : Integer,
+    gold-in : Integer, gold-out : Integer, spawns : Integer, errors : Integer,
+    price-bread : Integer, price-goods : Integer, online : Integer,
+    context-extra : (Text, Integer, Integer -> Text)
+  }
+
+  admin-world-new : TfWorld, TmMind -> AdminWorld
+  admin-world-new (world) (mind) = AdminWorld {
+    world = world, mind = mind, reports = tf-zeros 65536 [],
+    report-head = 0, report-count = 0, report-sequence = 0,
+    job = tf-zeros 4096 [], job-id = 0, job-state = 0,
+    npc = 0, event = 0, request = 0, gold-in = 0, gold-out = 0,
+    spawns = 0, errors = 0, price-bread = 0, price-goods = 0, online = 1,
+    context-extra = cx-extra-none
+  }
+
+  admin-store-chars : List Integer, Integer, Text, Integer -> Integer
+  admin-store-chars (storage) (base) (text) (i) =
+    if i == text-length text then 0
+    else let stored = list-set-at storage (base + i + 1) (char-code-at text i)
+    in admin-store-chars storage base text (i + 1)
+
+  admin-store : List Integer, Integer, Text -> Integer
+  admin-store (storage) (base) (text) =
+    let length = list-set-at storage base (text-length text)
+    in admin-store-chars storage base text 0
+
+  admin-load-chars : List Integer, Integer, Integer, Integer, List Integer -> Text
+  admin-load-chars (storage) (base) (i) (length) (acc) =
+    if i == length then raw-bytes-to-text acc
+    else admin-load-chars storage base (i + 1) length (list-push acc (list-at storage (base + i + 1)))
+
+  admin-load : List Integer, Integer -> Text
+  admin-load (storage) (base) = admin-load-chars storage base 0 (list-at storage base) []
+
+Section: Input Bounds
+
+  admin-json-safe : Text, Integer, Integer, Boolean, Boolean, Integer -> Boolean
+  admin-json-safe (s) (i) (depth) (quoted) (escaped) (digits) =
+    if i == text-length s then depth == 0 & not quoted
+    else let c = char-code-at s i
+    in if quoted then
+      if escaped then admin-json-safe s (i + 1) depth True False 0
+      else if c == char-code-at "\\" 0 then admin-json-safe s (i + 1) depth True True 0
+      else admin-json-safe s (i + 1) depth (c /= char-code-at "\"" 0) False 0
+    else if c == char-code-at "\"" 0 then admin-json-safe s (i + 1) depth True False 0
+    else if c == char-code-at "{" 0 | c == char-code-at "[" 0 then
+      if depth >= 8 then False else admin-json-safe s (i + 1) (depth + 1) False False 0
+    else if c == char-code-at "}" 0 | c == char-code-at "]" 0 then
+      if depth <= 0 then False else admin-json-safe s (i + 1) (depth - 1) False False 0
+    else if c >= char-code-at "0" 0 & c <= char-code-at "9" 0 then
+      if digits >= 10 then False else admin-json-safe s (i + 1) depth False False (digits + 1)
+    else if c == char-code-at "." 0 | c == char-code-at "e" 0 | c == char-code-at "E" 0 then False
+    else admin-json-safe s (i + 1) depth False False 0
+
+  admin-int : JsonValue, Text -> Integer
+  admin-int (value) (name) = when json-get value name
+    is Just (v) -> when v
+      is JsonInt (n) -> n
+      is otherwise -> -1
+    is None -> -1
+
+  admin-error : Text -> Text
+  admin-error (reason) = "{\"error\":" & json-quote reason & "}"
+
+Section: Health
+
+  admin-population : TfWorld, Integer, Integer -> Integer
+  admin-population (world) (i) (total) =
+    if i >= world.used then total
+    else admin-population world (i + 1) (total + (list-at world.people i).alive)
+
+  admin-health : AdminWorld -> Text
+  admin-health (a) = "{\"up\":" & show a.online & ",\"game_hour\":" & show a.world.hour
+    & ",\"population\":" & show (admin-population a.world 0 0)
+    & ",\"gold_in\":" & show a.gold-in & ",\"gold_out\":" & show a.gold-out
+    & ",\"bread_price\":" & show a.price-bread & ",\"goods_price\":" & show a.price-goods
+    & ",\"spawns\":" & show a.spawns & ",\"model_fallbacks\":" & show a.mind.fallbacks
+    & ",\"refused_proposals\":" & show a.mind.refusals & ",\"errors\":" & show a.errors
+    & ",\"conduct_pending\":" & show a.report-count & ",\"mind_pending\":" & show a.job-state & "}"
+
+Section: Conduct Queue
+
+  admin-report-kind : JsonValue -> Text
+  admin-report-kind (v) = when json-get v "subject_kind"
+    is None -> "account"
+    is Just (value) -> when value
+      is JsonStr (kind) -> kind
+      is otherwise -> ""
+
+  admin-report-subject-id : JsonValue -> Integer
+  admin-report-subject-id (v) = when json-get v "subject_id"
+    is None -> 0
+    is Just (value) -> when value
+      is JsonInt (id) -> id
+      is otherwise -> -1
+
+  admin-report-subject-valid : JsonValue -> Boolean
+  admin-report-subject-valid (v) =
+    let kind = admin-report-kind v
+    in let id = admin-report-subject-id v
+    in let account-ok = when json-get v "account"
+      is None -> kind /= "account"
+      is Just (value) -> when value
+        is JsonStr (account) -> if kind == "account" then text-length account > 0 & text-length account <= 64 else account == ""
+        is otherwise -> False
+    in account-ok & ((kind == "account" & id == 0) | (kind == "npc" & id > 0 & id <= 2147483647) | (kind == "world" & id >= 0 & id <= 2147483647))
+
+  admin-report-subject-json : JsonValue -> Text
+  admin-report-subject-json (v) =
+    let kind = admin-report-kind v
+    in "\"subject_kind\":" & json-quote kind & ",\"subject_id\":" & show (admin-report-subject-id v)
+      & (if kind == "account" then ",\"account\":" & json-quote (json-get-str v "account" "") else "")
+
+  admin-report : AdminWorld, JsonValue -> Text
+  admin-report (a) (v) =
+    let happened = json-get-str v "happened" ""
+    in let location = json-get-str v "location" ""
+    in let wall = json-get-str v "wall_time" ""
+    in let evidence = json-get-str v "evidence" ""
+    in let hour = admin-int v "game_hour"
+    in if not (admin-report-subject-valid v) | text-length happened == 0 | text-length happened > 256 | text-length location == 0 | text-length location > 64 | text-length wall == 0 | text-length wall > 64 | text-length evidence == 0 | text-length evidence > 512 | hour < 0 then admin-error "report-fields"
+    else if a.report-count == 32 | a.report-sequence >= 999999999 then admin-error "report-full"
+    else let id = a.report-sequence + 1
+    in let body = "{\"id\":" & show id & "," & admin-report-subject-json v & ",\"happened\":" & json-quote happened & ",\"location\":" & json-quote location & ",\"wall_time\":" & json-quote wall & ",\"game_hour\":" & show hour & ",\"evidence\":" & json-quote evidence & "}"
+    in if text-length body > 2047 then admin-error "report-size"
+    else let slot = int-mod (a.report-head + a.report-count) 32
+    in let stored = admin-store a.reports (slot * 2048) body
+    in let count = __record-set a "report-count" (a.report-count + 1)
+    in let sequence = __record-set a "report-sequence" id
+    in "{\"queued\":" & show id & "}"
+
+  admin-report-peek : AdminWorld -> Text
+  admin-report-peek (a) = if a.report-count == 0 then "{\"report\":null}" else admin-load a.reports (a.report-head * 2048)
+
+  admin-report-ack : AdminWorld, Integer -> Text
+  admin-report-ack (a) (id) =
+    if a.report-count == 0 | id /= a.report-sequence - a.report-count + 1 then admin-error "report-id"
+    else let head = __record-set a "report-head" (int-mod (a.report-head + 1) 32)
+    in let count = __record-set a "report-count" (a.report-count - 1)
+    in "{\"acknowledged\":" & show id & "}"
+
+Section: Mind Jobs
+
+  admin-job-submit : AdminWorld, Integer, Integer, Integer, Text -> Integer
+  admin-job-submit (a) (npc) (event) (request) (line) =
+    if a.job-state /= 0 then -2
+    else if not (tf-valid-person a.world npc) | event < 1 | event > 4 | request < 1 | request > 999999999 | text-length line > 512 | a.job-id >= 999999999 then -1
+    else if (list-at a.mind.personas (npc - 1)).npc == 0 then -1
+    else let saved = admin-store a.job 0 line
+    in let n = __record-set a "npc" npc
+    in let e = __record-set a "event" event
+    in let r = __record-set a "request" request
+    in let id = __record-set a "job-id" (a.job-id + 1)
+    in let state = __record-set a "job-state" 1
+    in a.job-id
+
+  admin-job-peek : AdminWorld -> Text
+  admin-job-peek (a) =
+    if a.job-state /= 1 then "{\"job\":null}"
+    else "{\"id\":" & show a.job-id & ",\"context\":" & tm-context a.mind a.world a.npc a.event (admin-load a.job 0) & "}"
+
+  admin-job-complete : AdminWorld, TmProposal, Integer, Integer -> Text
+  admin-job-complete (a) (proposal) (provider) (tokens) =
+    let reply = tm-respond a.mind a.world a.npc a.event a.request (admin-load a.job 0) proposal provider tokens
+    in let body = "{\"id\":" & show a.job-id & ",\"npc\":" & show a.npc & ",\"speech\":" & json-quote reply.speech & ",\"outcome\":" & json-quote (tm-reason reply.outcome) & ",\"moved\":" & show reply.moved & ",\"fallback\":" & show reply.fallback & "}"
+    in if reply.outcome == 9 then admin-error "audit-full"
+    else let saved = admin-store a.job 2048 body
+    in let state = __record-set a "job-state" 2
+    in body
+
+  admin-job-fallback : AdminWorld -> Integer
+  admin-job-fallback (a) =
+    if a.job-state /= 1 then -1
+    else let proposal = TmProposal { actor = a.npc, kind = 0, target = 0, item = 0, quantity = 0, destination = 0, speech = "" }
+    in let reply = admin-job-complete a proposal 0 0
+    in if a.job-state == 2 then 0 else -2
+
+  admin-job-result : AdminWorld -> Text
+  admin-job-result (a) = if a.job-state == 2 then admin-load a.job 2048 else ""
+
+  admin-job-ack : AdminWorld, Integer -> Integer
+  admin-job-ack (a) (id) =
+    if a.job-state /= 2 | a.job-id /= id then -1
+    else let state = __record-set a "job-state" 0 in 0
+
+  admin-job-respond : AdminWorld, JsonValue -> Text
+  admin-job-respond (a) (v) =
+    if a.job-state /= 1 | admin-int v "id" /= a.job-id then admin-error "job-id"
+    else let proposal = TmProposal {
+      actor = admin-int v "actor", kind = admin-int v "kind", target = admin-int v "target",
+      item = admin-int v "item", quantity = admin-int v "quantity", destination = admin-int v "destination",
+      speech = json-get-str v "speech" ""
+    }
+    in admin-job-complete a proposal (admin-int v "provider") (admin-int v "tokens")
+
+Section: Dispatch
+
+  admin-command : AdminWorld, Integer, JsonValue -> Text
+  admin-command (a) (role) (v) =
+    let command = json-get-str v "command" ""
+    in if command == "health" then admin-health a
+    else if role == 1 then admin-error "role"
+    else if command == "context-read" then
+      if role < 2 | role > 4 then admin-error "role"
+      else cx-read a.world a.mind a.context-extra (json-get-str v "topic" "") (admin-int v "id") (admin-int v "after")
+    else if command == "mind-next" then admin-job-peek a
+    else if command == "mind-reply" then admin-job-respond a v
+    else if command == "report-add" then admin-report a v
+    else if role == 2 then admin-error "role"
+    else if command == "report-peek" then admin-report-peek a
+    else if role /= 4 then admin-error "role"
+    else if command == "report-ack" then admin-report-ack a (admin-int v "id")
+    else admin-error "unsupported-command"
+
+  admin-dispatch : AdminWorld, Integer, Text -> Text
+  admin-dispatch (a) (role) (body) =
+    if text-length body > 2048 | not (admin-json-safe body 0 0 False False 0) then admin-error "syntax"
+    else let parsed = json-parse-value body 0 (text-length body)
+    in if not parsed.ok then admin-error "syntax"
+    else if skip-ws body parsed.next (text-length body) /= text-length body then admin-error "syntax"
+    else admin-command a role parsed.value

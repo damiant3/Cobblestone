@@ -1,0 +1,62 @@
+Chapter: GameCombatPackets
+  cites Uoaix chapter GamePackets
+
+ Copyright 2026 SphereServer development team. Apache-2.0.
+ Adapted from Source-X src/network/send.cpp for Codex and client 1.25.32.
+ License: apps/uoaix/Sphere-LICENSE.txt.
+
+  cbp-start : Integer, Integer -> List Integer
+  cbp-start (opcode) (size) = list-push (__list-with-capacity size) opcode
+  cbp-war : Boolean -> List Integer
+  cbp-war (war) = [114, if war then 1 else 0, 0, 50, 0]
+  cbp-target : Integer -> List Integer
+  cbp-target (serial) = gp-put32 (cbp-start 170 5) serial
+  cbp-swing : Integer, Integer -> List Integer
+  cbp-swing (attacker) (defender) = gp-put32 (gp-put32 (list-push (cbp-start 47 10) 0) attacker) defender
+  cbp-health : Integer, Integer, Integer, Boolean -> List Integer
+  cbp-health (serial) (hits) (maximum) (own) =
+    let high = if own then maximum else 100
+    in let current = if own then hits else hits * 100 / max 1 maximum
+    in gp-put16 (gp-put16 (gp-put32 (cbp-start 161 9) serial) high) current
+  cbp-status : WorldObject, Integer, Integer -> List Integer
+  cbp-status (mobile) (name) (maximum) =
+    let a = gp-buffer (gp-put32 (gp-put16 (cbp-start 17 43) 43) mobile.serial) name 0 30
+    in let b = gp-put16 (gp-put16 a (mobile.health * 100 / max 1 maximum)) 100
+    in b & [0, 1]
+  cbp-animation : Integer, Integer -> List Integer
+  cbp-animation (serial) (action) =
+    let a = gp-put16 (gp-put32 (cbp-start 110 14) serial) action
+    in (gp-put16 (gp-put16 a 5) 1) & [0, 0, 1]
+  cbp-death : Integer, Integer -> List Integer
+  cbp-death (serial) (corpse) = gp-put32 (gp-put32 (gp-put32 (cbp-start 175 13) serial) corpse) 0
+  cbp-remove : Integer -> List Integer
+  cbp-remove (serial) = gp-put32 (cbp-start 29 5) serial
+  cbp-flags : Boolean, Boolean -> Integer
+  cbp-flags (war) (dead) = if war then 64 else if dead then 128 else 0
+  cbp-mobile : WorldObject, Integer, Integer, Integer -> List Integer
+  cbp-mobile (m) (direction) (flags) (notoriety) =
+    let a = gp-put16 (gp-put32 (gp-put16 (cbp-start 120 23) 23) m.serial) m.graphic
+    in let b = gp-put16 (gp-put16 a m.x) m.y
+    in let c = gp-put16 (b & [bit-and m.z 255, direction]) m.hue
+    in gp-put32 (c & [flags, notoriety]) 0
+  cbp-move : WorldObject, Integer, Integer, Integer -> List Integer
+  cbp-move (m) (direction) (flags) (notoriety) =
+    let a = gp-put16 (gp-put32 (cbp-start 119 17) m.serial) m.graphic
+    in let b = gp-put16 (gp-put16 a m.x) m.y
+    in (gp-put16 (b & [bit-and m.z 255, direction]) m.hue) & [flags, notoriety]
+  cbp-player : WorldObject, Integer, Integer -> List Integer
+  cbp-player (m) (direction) (flags) =
+    let bytes = gp-player m direction
+    in let a = list-set-at bytes 10 flags in bytes
+  cbp-corpse : WorldObject, Integer, Integer -> List Integer
+  cbp-corpse (item) (body) (direction) =
+    let a = gp-put32 (gp-put16 (cbp-start 26 20) 0) (bit-or item.serial #80000000)
+    in let b = gp-put16 (gp-put16 a 8198) body
+    in let c = gp-put16 b (bit-or item.x (if direction > 0 then 32768 else 0))
+    in let d = gp-put16 c (bit-or item.y (if item.hue > 0 then 32768 else 0))
+    in let e = if direction > 0 then list-push d direction else d
+    in let f = list-push e (bit-and item.z 255)
+    in let g = if item.hue > 0 then gp-put16 f item.hue else f
+    in let h = list-set-at g 1 (bit-shr (list-length g) 8)
+    in let i = list-set-at g 2 (bit-and (list-length g) 255)
+    in g

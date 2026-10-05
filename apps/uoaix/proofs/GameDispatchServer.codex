@@ -1,0 +1,58 @@
+Chapter: GameDispatchServer
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameHuffman
+  cites Uoaix chapter WalkLoad
+  cites Net chapter NetDriver
+  cites Net chapter NetCompact
+  cites Foreword chapter Result
+
+  gds-handler : GameShard, GameInput, WalkMap, Integer, List Integer -> [Device.Block] Result GameReply Text
+  gds-handler (shard) (state) (map) (port) (packet) =
+    when gn-default-handler shard state map port packet
+      is Err (e) -> act Err e end
+      is Ok (reply) -> act
+        buf <- block-read-sector 0
+        if buf <= 0 then Err "fixture marker read failed"
+        else let counter = poke-qword buf 0 (peek-qword buf 0 + 1)
+        in act
+          saved <- block-write-sector 0 buf
+          if saved /= 0 then Err "fixture marker write failed" else Ok reply
+        end
+      end
+
+  opening : [Console, Network.Read, Network.Write, Device.Block] Integer = act
+    settings <- block-read-sector 0
+    if settings <= 0 then act
+      print-line-uni "FAIL fixture disk"
+      1
+    end
+    else let host-port = peek-qword settings 8
+    in if host-port < 1024 | host-port > 65535 then act
+      print-line-uni "FAIL fixture port"
+      1
+    end
+    else act
+    card <- net-driver-bring-up
+    let arena = nc-set-acquire (nc-pool-cell process-get-pid)
+    in let released = nc-set-release arena
+    in let huffman = gh-new 0
+    in act
+      print-line-uni "DISPATCH PRELOAD"
+      loaded <- wl-load 1408 1680 32 32
+      when loaded
+        is Err (e) -> act
+          print-line-uni ("FAIL map " & e)
+          1
+        end
+        is Ok (map) -> when gs-new 0
+          is Err (e) -> act
+            print-line-uni ("FAIL shard " & e)
+            1
+          end
+          is Ok (shard) -> gn-loop-with gds-handler shard map huffman host-port 0
+    end
+    end
+  end
+
+Page 1

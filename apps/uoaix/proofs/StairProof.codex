@@ -1,0 +1,65 @@
+Chapter: StairProof
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter DecorationCodec
+
+  stair-check : Text, Boolean -> [Console] Integer
+  stair-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  stair-z : Result Integer Text, Integer -> Boolean
+  stair-z (result) (z) = when result is Err (_) -> False is Ok (height) -> height == z
+  stair-land : WalkMap, Integer -> Integer
+  stair-land (map) (i) = if i == 64 then 0
+    else let set = walk-set-land map (int-mod i 8) (i / 8) -3 0 in stair-land map (i + 1)
+  stair-synthetic : Integer -> [Console] Integer
+  stair-synthetic (unused) = when walk-map-new 0 0 8 8
+    is Err (e) -> stair-check e False
+    is Ok (map) -> let filled = stair-land map 0
+      in let first = walk-add-solid map 2 2 -3 5 1536
+      in let next = walk-add-solid map 2 1 2 5 1536
+      in let platform = walk-add-solid map 4 2 0 5 512
+      in let wall = walk-add-solid map 3 2 -3 20 64
+      in act
+        a <- stair-check "odd-height bridge stair carries remaining climb" (stair-z (walk-step map 2 2 -1 0) 4)
+        b <- stair-check "ordinary high platform remains refused" (is-err (walk-height map 4 2 0))
+        c <- stair-check "blocking wall remains refused" (is-err (walk-step map 2 2 -1 2))
+        ceiling <- walk-add-solid map 2 1 18 2 64
+        d <- stair-check "stair still needs full headroom" (is-err (walk-step map 2 2 -1 0))
+        corner <- walk-add-solid map 1 1 2 5 1536
+        e <- stair-check "diagonal blocked side remains refused" (is-err (walk-step map 2 2 -1 7))
+        a+b+c+d+e
+      end
+  stair-dock : WalkMap -> [Console] Integer
+  stair-dock (map) = when walk-step map 1434 1756 -1 0
+    is Err (e) -> stair-check ("installed dock first stair: " & e) False
+    is Ok (first) -> act
+      a <- stair-check "installed dock first stair reaches4" (first == 4)
+      when walk-step map 1434 1755 first 0
+        is Err (e) -> stair-check ("installed dock continuation: " & e) False
+        is Ok (second) -> act
+          print-line-uni ("DOCK 1434 1754 " & show second)
+          b <- stair-check "installed dock continues upward" (second > first)
+          a+b
+        end
+    end
+  opening : [Console, Device.Block] Integer = act
+    checks <- stair-synthetic 0
+    opened <- wmc-open UoIde
+    when opened
+      is Err (e) -> stair-check e False
+      is Ok (cache) -> act
+        covered <- wmc-cover cache 1434 1756
+        data <- wmc-decoration cache
+        when covered
+          is Err (e) -> stair-check e False
+          is Ok (map) -> when data
+            is Err (e) -> stair-check e False
+            is Ok (installed) -> when wd-read installed.data installed.size map map.stride
+              is Err (e) -> stair-check e False
+              is Ok (_) -> act
+                dock <- stair-dock map
+                checks+dock
+              end
+      end
+  end

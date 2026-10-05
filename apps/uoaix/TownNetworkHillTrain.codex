@@ -1,0 +1,103 @@
+Chapter: TownNetworkHillTrain
+  cites Uoaix chapter TownNetworkHill
+  cites Uoaix chapter TownNetworkOutcomes
+  cites Uoaix chapter TownNetwork
+  cites Uoaix chapter TownNetworkHillSeed
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  tnhc-checksum : List Integer, Integer, Integer -> Integer
+  tnhc-checksum (xs) (i) (hash) = if i == list-length xs then hash
+    else tnhc-checksum xs (i + 1) (bit-and ((bit-xor hash (list-at xs i)) * 16777619) #FFFFFFFF)
+  tnhc-log : TnhGpu, Integer -> [Console] Integer
+  tnhc-log (g) (iteration) = act
+    mark <- __heap-save
+    print-line-uni ("ITERATION " & show iteration & " SCORE " & show g.best-score & " ACCEPTED " & show g.accepted)
+    restored <- __heap-restore mark
+    0
+  end
+  tnhc-loop : TnhGpu, Integer, Integer, Integer, Integer -> [Console] Boolean
+  tnhc-loop (g) (state) (step) (remaining) (iteration) = act
+    if remaining == 0 then True else act
+      one <- tnh-seed-next state
+      two <- tnh-seed-next one
+      parameter <- int-mod (one / 65536) 766
+      delta <- if int-mod (two / 32768) 2 == 0 then step else 0 - step
+      result <- tnh-try g parameter delta
+      logged <- if int-mod (iteration + 1) 1000 == 0 then tnhc-log g (iteration + 1) else 0
+      if result < 0 then False else tnhc-loop g two step (remaining - 1) (iteration + 1)
+    end
+  end
+  tnhc-write : List Integer, Integer, Integer -> [Console] Integer
+  tnhc-write (xs) (base) (i) = act
+    if i == list-length xs then 0 else act
+      print-line-uni ("W " & show (base + i) & " " & show (list-at xs i))
+      tnhc-write xs base (i + 1)
+    end
+  end
+  tnhc-train : TnoData, Integer, Integer, Integer -> [Console] Nothing
+  tnhc-train (data) (seed) (step) (iterations) = act
+    weights <- tn-zeros 766
+    state <- tnh-seed-fill weights 0 seed
+    hash <- tnhc-checksum data.inputs 0 (tnhc-checksum data.outcomes 0 2166136261)
+    print-line-uni "METHOD coordinate-hill-v1"
+    print-line-uni "SCORE tnh-outcome-v1 sum(1000*chosen-utility-sum((output-outcome)^2/16))"
+    print-line-uni ("SEED " & show seed & " STEP " & show step & " ITERATIONS " & show iterations)
+    print-line-uni ("CORPUS " & show data.count & " TRIALS " & show data.trials & " REPEATS " & show data.repeats & " CHECKSUM32 " & show hash)
+    when tnh-open data.count weights data.inputs data.outcomes
+      is Err (message) -> print-line-uni ("FAIL hill admission " & message)
+      is Ok (g) -> act
+        initial <- g.best-score
+        logged <- tnhc-log g 0
+        before <- __heap-save
+        trained <- tnhc-loop g state step iterations 0
+        after <- __heap-save
+        print-line-uni ("RETAINED-GROWTH " & show (after - before))
+        final <- g.best-score
+        accepted <- g.accepted
+        print-line-uni ("RESULT INITIAL " & show initial & " FINAL " & show final & " ACCEPTED " & show accepted)
+        if not trained | after /= before | accepted == 0 | final <= initial then act
+          closed <- tnh-close g
+          print-line-uni "FAIL hill training"
+        end else when tnh-export g
+          is Err (message) -> act
+            closed <- tnh-close g
+            print-line-uni ("FAIL hill export " & message)
+          end
+          is Ok (model) -> act
+            closed <- tnh-close g
+            if not closed then print-line-uni "FAIL hill release" else act
+              print-line-uni "MODEL-BEGIN 766"
+              hw <- tnhc-write model.hidden-weights 0 0
+              hb <- tnhc-write model.hidden-bias 512 0
+              ow <- tnhc-write model.output-weights 528 0
+              ob <- tnhc-write model.output-bias 752 0
+              print-line-uni "MODEL-END"
+              print-line-uni "PASS GPU hill climbing and CPU export"
+            end
+          end
+      end
+  end
+  tnhc-run : Integer, Integer, Integer -> [Console] Nothing
+  tnhc-run (seed) (step) (iterations) = act
+    if seed < 0 | seed > 4294967295 | step < 1 | step > 1000 | iterations < 1 | iterations > 100000
+      then print-line-uni "FAIL hill configuration"
+    else when tno-build 0
+      is Err (message) -> print-line-uni ("FAIL " & message)
+      is Ok (data) -> tnhc-train data seed step iterations
+  end
+  opening : [Console] Nothing = act
+    line <- read-line
+    when line
+      is None -> tnhc-run 104729 50 20000
+      is Just (text) -> act
+        fields <- text-split text " "
+        if list-length fields /= 3 then print-line-uni "FAIL hill configuration" else act
+          seed <- text-to-integer (list-at fields 0)
+          step <- text-to-integer (list-at fields 1)
+          iterations <- text-to-integer (list-at fields 2)
+          if show seed /= list-at fields 0 | show step /= list-at fields 1 | show iterations /= list-at fields 2
+            then print-line-uni "FAIL hill configuration" else tnhc-run seed step iterations
+        end
+      end
+  end

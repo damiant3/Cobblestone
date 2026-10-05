@@ -1,0 +1,258 @@
+Chapter: TitleRegistryProof
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter TitleRegistryCodec
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  trp-check : Text, Boolean -> [Console] Nothing
+  trp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  trp-party : Integer, Integer -> TrParty
+  trp-party (kind) (id) = TrParty { kind = kind, id = id }
+  trp-item : WorldTable, Integer -> Integer
+  trp-item (world) (amount) = when world-create world (WorldObject { serial = 0,
+    kind = 2, x = 100, y = 100, z = 0, graphic = 1000, hue = 0,
+    container = 0, amount = amount, health = 100 })
+    is Err (e) -> -1
+    is Ok (serial) -> serial
+  trp-evidence : WorldTable, Integer, TrParty, TrParty, Integer -> TrEvidence
+  trp-evidence (world) (serial) (owner) (mark) (revision) = TrEvidence {
+    serial = serial, present = world-slot world serial >= 0, marked = True,
+    owner = owner, mark = mark, mark-revision = revision }
+  trp-owner : TrRegistry, Integer, Integer, Integer -> Boolean
+  trp-owner (r) (serial) (kind) (id) = when tr-owner r serial
+    is Err (e) -> False
+    is Ok (p) -> p.kind == kind & p.id == id
+  trp-command : Integer, TrParty, TrParty, TrEvidence, Integer -> TrCommand
+  trp-command (kind) (actor) (recipient) (evidence) (hour) = TrCommand {
+    kind = kind, verified = True, registrar = 0, actor = actor, recipient = recipient,
+    evidence = evidence, nonce = 0, event = 0, parent = 0, hour = hour }
+  trp-byte-equal : Integer, Integer, Integer -> Boolean
+  trp-byte-equal (one) (two) (i) = if i == trc-bytes then True else peek-byte one i == peek-byte two i & trp-byte-equal one two (i + 1)
+  trp-corrupt : Integer, Integer, Integer -> Boolean
+  trp-corrupt (buf) (at) (value) = let saved = peek-qword buf at
+    in let old-hash = peek-qword buf 48
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf trc-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (trc-decode buf trc-bytes)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at saved
+    in let checksum = poke-qword buf 48 old-hash
+    in refused
+  trp-codec : TrRegistry -> [Console] Nothing
+  trp-codec (r) = act
+    buf <- alloc-bytes trc-bytes
+    copy <- alloc-bytes trc-bytes
+    written <- trc-encode r 100 9 buf trc-bytes
+    trp-check "checkpoint header and complete history encoded" (is-ok written & trc-bytes == 475232 & peek-qword buf 0 == #31435254 & peek-qword buf 32 == 100 & peek-qword buf 40 == 9 & peek-qword buf 64 == 4 & peek-qword buf 72 == 17)
+    mark <- __heap-save
+    loaded <- trc-decode-record buf trc-bytes 100 9
+    after <- __heap-save
+    print-line-uni ("REGISTRY-DECODE-BYTES " & show (after - mark))
+    when loaded
+      is Err (e) -> print-line-uni ("FAIL checkpoint " & e)
+      is Ok (checkpoint) -> act
+        decoded <- checkpoint.registry
+        encoded <- trc-encode decoded checkpoint.tick checkpoint.sequence copy trc-bytes
+        trp-check "history reconstruction reproduces canonical checkpoint" (is-ok encoded & trp-byte-equal buf copy 0 & decoded.used == 4 & decoded.count == 17 & (list-at decoded.titles 2).status == 3)
+        changed <- __record-set (list-at decoded.titles 0) "owner-id" 999
+        trp-check "detached decode rejects unlogged owner mutation" ((list-at r.titles 0).owner-id == 8 & is-err (trc-encode decoded 100 9 copy trc-bytes))
+      end
+    trp-check "checkpoint metadata truncation and reserved data refused" (is-err (trc-decode-record buf trc-bytes 100 10) & is-err (trc-decode buf (trc-bytes - 1)) & trp-corrupt buf 56 1)
+    trp-check "rehashed owner and lineage changes refused" (trp-corrupt buf (trc-titles-at + 24) 999 & trp-corrupt buf (trc-titles-at + 2 * 128 + 120) 0)
+    trp-check "rehashed consent and historical sequence changes refused" (trp-corrupt buf (trc-history-at + 112 + 64) 999 & trp-corrupt buf trc-history-at 2)
+    trp-check "nonzero spare history refused" (trp-corrupt buf (trc-bytes - 8) 1)
+  end
+  trp-pages : TrRegistry, Integer -> [Console] Nothing
+  trp-pages (r) (serial) = act
+    when tr-history r serial 0 3
+      is Err (e) -> print-line-uni ("FAIL page " & e)
+      is Ok (page) -> act
+        newest <- list-at page 0
+        cursor <- (list-at page 2).sequence
+        changed <- __record-set newest "to-id" 999
+        trp-check "public history page detached from authoritative rows" (list-length page == 3 & trp-owner r serial 2 8 & (list-at r.history 13).to-id == 8)
+        when tr-history r serial cursor 16
+          is Err (e) -> print-line-uni ("FAIL older page " & e)
+          is Ok (older) -> trp-check "cursor exposes earlier committed provenance" (list-length older == 9 & (list-at older 8).kind == 1)
+      end
+  end
+  trp-core : WorldTable, TrRegistry -> [Console] Nothing
+  trp-core (world) (r) = act
+    one <- trp-party 1 1
+    two <- trp-party 1 2
+    npc-two <- trp-party 2 2
+    four <- trp-party 1 4
+    five <- trp-party 1 5
+    npc <- trp-party 2 7
+    family <- trp-party 3 70
+    finder <- trp-party 2 8
+    crown <- trp-party 5 0
+    a <- trp-item world 2
+    b <- trp-item world 1
+    unmarked <- trp-evidence world a one one 1
+    no-mark <- __record-set unmarked "marked" False
+    trp-check "unmarked items have no registry owner" (tr-register r True 1 one unmarked 1 == -1 & r.used == 0 & r.count == 0 & is-err (tr-owner r a))
+    ea <- trp-evidence world a one one 1
+    trp-check "registration needs admission and distinct stable serial" (tr-register r False 1 one ea 1 == -1 & tr-register r True 3 one ea 1 == -1 & tr-register r True 1 one ea 1 == 1 & tr-register r True 0 one ea 1 == -1 & trp-owner r a 1 1 & tr-check-mark r ea == 1)
+    trp-check "removing mark cannot erase registered truth" (tr-check-mark r unmarked == 3 & trp-owner r a 1 1 & r.count == 1)
+    input-change <- __record-set one "id" 99
+    trp-check "caller party mutation cannot alter registered owner" (trp-owner r a 1 1)
+    input-restore <- __record-set one "id" 1
+    offer <- tr-offer r True one two ea 2
+    trp-check "both parties required for transfer" (offer == 2 & trp-owner r a 1 1 & tr-accept r False two offer ea 3 == -1 & tr-accept r True npc-two offer ea 3 == -1 & tr-accept r True two offer ea 3 == 0 & trp-owner r a 1 2)
+    pending <- trp-evidence world a two one 1
+    forged <- trp-evidence world a two four 2
+    trp-check "pending lawful remark distinguished from forgery" (tr-check-mark r pending == 2 & tr-check-mark r forged == 3 & trp-owner r a 1 2)
+    remarked <- trp-evidence world a two two 2
+    trp-check "lawful remark follows registered transfer once" (tr-remark r True two remarked 4 == 0 & tr-check-mark r remarked == 1 & tr-remark r True two (trp-evidence world a two two 3) 4 == -1)
+    cancelled <- tr-offer r True two npc-two remarked 5
+    cancellation <- tr-cancel r True two a cancelled 6
+    replacement <- tr-offer r True two four remarked 7
+    trp-check "cancelled offer nonce cannot accept replacement" (cancelled == 5 & cancellation == 0 & replacement == 7 & tr-accept r True npc-two cancelled remarked 8 == -1 & tr-accept r True four replacement remarked 8 == 0)
+    newer <- trp-evidence world a four four 3
+    trp-check "registry time cannot reverse" (tr-remark r True four newer 7 == -1 & tr-remark r True four newer 9 == 0)
+    eb <- trp-evidence world b npc npc 1
+    trp-check "crown registrar and NPC succession retain truth" (tr-register r True 0 npc eb 10 == 2 & tr-succeed r False npc family eb 2 9000 11 == -1 & tr-succeed r True npc family eb 1 9000 11 == -1 & tr-succeed r True npc family eb 2 9000 11 == 0 & trp-owner r b 3 70)
+    trp-check "ordinary player death is not a succession cause" (tr-succeed r True four crown newer 2 9001 12 == -1 & tr-succeed r False four five newer 1 10000 12 == -1 & trp-owner r a 1 4)
+    trp-check "verified character deletion uses lawful heir" (tr-succeed r True four five newer 1 10000 12 == 0 & trp-owner r a 1 5)
+    inherited <- trp-evidence world a five four 3
+    released <- tr-release r True five inherited 10001 13
+    loose <- trp-evidence world a (trp-party 0 0) four 3
+    acquired <- trp-evidence world a finder four 3
+    trp-check "discard and verified reacquisition keep history" (released == 0 & tr-check-mark r loose == 4 & tr-claim r False finder acquired 10002 14 == -1 & tr-claim r True finder acquired 10002 14 == 0 & trp-owner r a 2 8 & tr-check-mark r acquired == 2)
+    parent-before <- when world-get world a is Ok (item) -> item.amount is Err (e) -> -1
+    reduced <- world-update world (WorldObject { serial = a, kind = 2, x = 100, y = 100,
+      z = 0, graphic = 1000, hue = 0, container = 0, amount = 1, health = 100 })
+    child <- trp-item world 1
+    child-evidence <- trp-evidence world child finder four 3
+    derived <- tr-derive r True a child-evidence 15
+    trp-check "split child retains parent provenance and owner" (parent-before == 2 & is-ok reduced & derived == 3 & (list-at r.titles 2).parent == a & trp-owner r child 2 8 & tr-check-mark r child-evidence == 2 & (list-at r.history 14).reference == a)
+    removed <- world-delete world child
+    retired <- tr-retire r True child 20000 16
+    recycled <- trp-item world 1
+    replacement-evidence <- trp-evidence world recycled one one 1
+    trp-check "retired serial history survives slot reuse" (is-ok removed & retired == 0 & recycled /= child & tr-check-mark r child-evidence == 5 & tr-status r child == 3 & tr-register r True 2 one replacement-evidence 17 == 4 & (list-at r.titles 2).serial == child & (list-at r.titles 2).status == 3)
+    trp-pages r a
+    trp-check "history query bounds enforced" (is-err (tr-history r a 0 17) & is-err (tr-history r 1 0 3))
+    trp-codec r
+  end
+
+  trp-transactions : WorldTable, TrRegistry -> [Console] Nothing
+  trp-transactions (world) (r) = act
+    one <- trp-party 1 1
+    two <- trp-party 1 2
+    bad <- trp-party 2 2
+    serial <- trp-item world 1
+    evidence <- trp-evidence world serial one one 1
+    register <- trp-command 1 one two evidence 1
+    when tr-prepare r register
+      is Err (e) -> print-line-uni ("FAIL prepare " & e)
+      is Ok (undo) -> act
+        buf <- alloc-bytes trc-bytes
+        trp-check "prepared mutation blocks reads and competing writes" (undo.result == 1 & is-err (tr-owner r serial) & is-err (tr-history r serial 0 1) & tr-check-mark r evidence == -1 & is-err (tr-prepare r register) & is-err (trc-encode r 1 1 buf trc-bytes))
+        rolled <- tr-rollback undo
+        trp-check "rollback restores title slot history and counters" (rolled == 0 & r.used == 0 & r.count == 0 & r.sequence == 0 & r.hour == 0 & r.busy == 0 & (list-at r.titles 0).serial == 0 & (list-at r.history 0).sequence == 0 & tr-rollback undo == -1 & tr-accept-undo undo == -1)
+      end
+    when tr-prepare r register
+      is Err (e) -> print-line-uni ("FAIL second prepare " & e)
+      is Ok (undo) -> trp-check "commit closes undo exactly once" (tr-accept-undo undo == 0 & tr-accept-undo undo == -1 & trp-owner r serial 1 1)
+    offer <- trp-command 2 one two evidence 2
+    accept <- trp-command 4 two one evidence 2
+    token <- __record-set accept "nonce" 2
+    bad-accept <- trp-command 4 bad one evidence 2
+    bad-token <- __record-set bad-accept "nonce" 2
+    trp-check "late batch refusal rolls back earlier offer" (is-err (tr-prepare-batch r [offer,bad-accept]) & r.count == 1 & r.sequence == 1 & r.hour == 1 & r.busy == 0 & (list-at r.titles 0).offer-nonce == 0 & trp-owner r serial 1 1)
+    when tr-prepare-batch r [offer,accept]
+      is Err (e) -> print-line-uni ("FAIL batch prepare " & e)
+      is Ok (undo) -> trp-check "repeated-title batch rollback restores pre-batch owner" (tr-rollback-batch undo == 0 & trp-owner r serial 1 1 & r.count == 1 & tr-rollback-batch undo == -1)
+    when tr-prepare-batch r [offer,accept]
+      is Err (e) -> print-line-uni ("FAIL batch reprepare " & e)
+      is Ok (undo) -> trp-check "batch commit retains bilateral transfer history" (tr-accept-batch undo == 0 & trp-owner r serial 1 2 & r.count == 3 & tr-accept-batch undo == -1)
+  end
+  trp-fill-history : TrRegistry, TrParty, TrParty, TrEvidence -> Integer
+  trp-fill-history (r) (one) (two) (e) = if r.count >= 4095 then 0
+    else let nonce = tr-offer r True one two e 1
+    in if nonce < 0 | tr-cancel r True one e.serial nonce 1 /= 0 then -1
+    else trp-fill-history r one two e
+  trp-budget : WorldTable, TrRegistry -> [Console] Nothing
+  trp-budget (world) (r) = act
+    one <- trp-party 1 1
+    two <- trp-party 1 2
+    serial <- trp-item world 1
+    e <- trp-evidence world serial one one 1
+    registered <- tr-register r True 0 one e 0
+    before <- __heap-save
+    filled <- trp-fill-history r one two e
+    offer <- tr-offer r True one two e 1
+    after <- __heap-save
+    trp-check "full committed history never overwritten" (registered == 1 & filled == 0 & offer == 4096 & r.count == 4096 & (list-at r.history 0).kind == 1 & tr-accept r True two offer e 1 == -1 & trp-owner r serial 1 1)
+    trp-check "mutations retain no per-event heap" (before == after)
+    buf <- alloc-bytes trc-bytes
+    encoded <- trc-encode r 1 1 buf trc-bytes
+    mark <- __heap-save
+    loaded <- trc-decode buf trc-bytes
+    finish <- __heap-save
+    print-line-uni ("REGISTRY-FULL-DECODE-BYTES " & show (finish - mark))
+    trp-check "full history reconstructs within bounded decode heap" (is-ok encoded & is-ok loaded & finish - mark < 1048576)
+  end
+  trp-commands : WorldTable, Integer, TrParty, List TrCommand -> List TrCommand
+  trp-commands (world) (left) (owner) (xs) = if left == 0 then xs
+    else let serial = trp-item world 1
+    in let evidence = trp-evidence world serial owner owner 1
+    in trp-commands world (left - 1) owner (list-push xs (trp-command 1 owner owner evidence 1))
+  trp-many : WorldTable, TrRegistry -> [Console] Nothing
+  trp-many (world) (r) = act
+    owner <- trp-party 1 1
+    commands <- trp-commands world 64 owner []
+    mark <- __heap-save
+    prepared <- tr-prepare-batch r commands
+    after <- __heap-save
+    print-line-uni ("REGISTRY-BATCH-BYTES " & show (after - mark))
+    trp-check "maximum batch undo below 32 KiB" (after - mark < 32768)
+    when prepared
+      is Err (e) -> print-line-uni ("FAIL maximum batch " & e)
+      is Ok (undo) -> act
+        accepted <- tr-accept-batch undo
+        retained <- r.count == 64 & r.used == 64 & r.busy == 0
+        reclaimed <- __heap-restore mark
+        trp-check "maximum batch commit survives request scratch restore" (accepted == 0 & retained & r.count == 64 & trp-owner r (list-at commands 63).evidence.serial 1 1)
+      end
+    extra <- trp-command 1 owner owner (list-at commands 0).evidence 1
+    too-many <- list-push commands extra
+    trp-check "batch count budget refuses before mutation" (is-err (tr-prepare-batch r too-many) & r.count == 64)
+    more <- trp-commands world 64 owner []
+    when tr-prepare-batch r more
+      is Err (e) -> print-line-uni ("FAIL second maximum batch " & e)
+      is Ok (undo) -> act
+        accepted <- tr-accept-batch undo
+        overflow <- trp-item world 1
+        evidence <- trp-evidence world overflow owner owner 1
+        trp-check "title capacity refuses without dropping earlier history" (accepted == 0 & r.used == 128 & r.count == 128 & tr-register r True 0 owner evidence 1 == -1 & r.used == 128 & (list-at r.history 0).kind == 1)
+      end
+  end
+  opening : [Console] Nothing = act
+    when world-new 16
+      is Err (e) -> print-line-uni ("FAIL world " & e)
+      is Ok (world) -> act
+        mark <- __heap-save
+        registry <- tr-new 2
+        built <- __heap-save
+        print-line-uni ("REGISTRY-BYTES " & show (built - mark))
+        when registry
+          is Err (e) -> print-line-uni ("FAIL registry " & e)
+          is Ok (r) -> trp-core world r
+        when tr-new 0
+          is Err (e) -> print-line-uni ("FAIL transaction registry " & e)
+          is Ok (r) -> trp-transactions world r
+        when tr-new 0
+          is Err (e) -> print-line-uni ("FAIL budget registry " & e)
+          is Ok (r) -> trp-budget world r
+      end
+    when world-new 129
+      is Err (e) -> print-line-uni ("FAIL large world " & e)
+      is Ok (world) -> when tr-new 0
+        is Err (e) -> print-line-uni ("FAIL large registry " & e)
+        is Ok (r) -> trp-many world r
+  end

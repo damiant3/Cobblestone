@@ -1,0 +1,105 @@
+Chapter: SkillsProof
+  cites Uoaix chapter Skills
+  cites Foreword chapter Result
+
+  skp-check : Text, Boolean -> [Console] Integer
+  skp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  skp-kit : SkCharacter, Integer, Integer -> Boolean
+  skp-kit (p) (starter) (kind) = if kind == 33 then True
+    else sk-at p.held kind == (if kind == starter then 1 else 0)
+      & sk-at p.blessed kind == (if kind == starter then 1 else 0)
+      & sk-at p.levels kind == 0 & sk-at p.training kind == 0
+      & skp-kit p starter (kind + 1)
+  skp-kits : SkWorld, Integer -> Boolean
+  skp-kits (w) (profession) = if profession == 15 then True
+    else let id = sk-admit w True profession profession 1
+    in if id <= 0 then False else let p = sk-person w id
+    in p.jerky == 1 & p.hunger == 0 & p.alive & skp-kit p (sk-starter profession) 1
+      & (list-at w.catalog (sk-starter profession - 1)).tier == 1 & skp-kits w (profession + 1)
+  skp-use : SkWorld, Integer, Integer, Integer, Integer -> Integer
+  skp-use (w) (id) (kind) (job) (left) = if left == 0 then 0
+    else let mark = __heap-save
+    in let result = sk-use w id kind job True
+    in let restored = __heap-restore mark
+    in if result /= 0 then -1 else skp-use w id kind job (left - 1)
+  skp-parent : SkWorld, Integer, Integer, Integer -> Integer
+  skp-parent (w) (id) (parent) (left) = if left == 0 then 0
+    else let result = sk-parent-practice w id parent True
+    in if result /= 0 then -1 else skp-parent w id parent (left - 1)
+  skp-run : SkWorld -> [Console] Integer
+  skp-run (w) = act
+    kits <- skp-kits w 1
+    a <- skp-check "all professions receive one lowest-tier blessed kit and jerky with full belly" kits
+    b <- skp-check "invalid duplicate and unauthenticated creation refuse" (sk-admit w False 99 1 1 == -1 & sk-admit w True 1 2 1 == -1 & sk-admit w True 99 0 1 == -1 & w.used == 14)
+    miner <- sk-person w 1
+    picked <- sk-receive-crafted w 1 2 2 True
+    c <- skp-check "shovel rejects big ore while pickaxe reaches common and big ore" (picked == 0 & sk-use w 1 1 2 True == -1 & sk-use w 1 1 1 True == 0 & sk-use w 1 2 1 True == 0 & sk-use w 1 2 2 True == 0 & sk-at miner.held 2 == 0 & sk-use w 1 2 2 True == -1)
+    before <- __heap-save
+    repeated <- skp-use w 1 1 1 2000
+    after <- __heap-save
+    print-line-uni ("SKILLS-2000-USES-BYTES " & show (after - before))
+    d <- skp-check "blessed tool survives repeated work without wear or failure" (repeated == 0 & sk-at miner.held 1 == 1 & sk-at miner.wear 1 == 1 & after - before < 65536)
+    another <- sk-receive-crafted w 1 2 50 True
+    died <- sk-death w 1 True
+    e <- skp-check "death retains blessed kit and removes ordinary carried items" (another == 0 & died == 0 & sk-at miner.held 1 == 1 & sk-at miner.held 2 == 0 & miner.jerky == 0 & sk-use w 1 1 1 True == -1)
+    revived <- sk-revive w 1 True
+    f <- skp-check "revival does not reissue meal or tools and blessed kit still works" (revived == 0 & miner.jerky == 0 & sk-at miner.held 2 == 0 & sk-use w 1 1 1 True == 0)
+    carpenter <- sk-person w 2
+    chair <- sk-receive-crafted w 2 4 100 True
+    table <- sk-receive-crafted w 2 5 100 True
+    lathe <- sk-receive-crafted w 2 6 100 True
+    plane <- sk-receive-crafted w 2 7 100 True
+    g <- skp-check "carpentry instruments have exclusive jobs and higher-tier skill admission" (chair == 0 & table == 0 & lathe == 0 & plane == 0 & sk-use w 2 3 3 True == 0 & sk-use w 2 3 4 True == -1 & sk-use w 2 4 5 True == -1 & sk-use w 2 4 4 True == 0 & sk-use w 2 5 5 True == 0 & sk-use w 2 7 7 True == 0 & sk-use w 2 6 6 True == -1)
+    raised <- skp-parent w 2 2 300
+    h <- skp-check "lathe becomes usable at its parent tier without granting joinery expertise" (raised == 0 & sk-use w 2 6 6 True == 0 & sk-effective w 2 6 == 1 & sk-effective w 2 4 == 1)
+    fighter <- sk-person w 11
+    sword-work <- skp-use w 11 24 24 300
+    katana <- sk-receive-crafted w 11 25 1000 True
+    i <- skp-check "longsword practice does not transfer to katana" (sword-work == 0 & katana == 0 & sk-effective w 11 24 == 200 & sk-effective w 11 25 == 0)
+    parent <- skp-parent w 11 11 800
+    blocked <- skp-use w 11 24 24 100
+    j <- skp-check "parent mastery alone cannot take an untrained instrument beyond basics" (parent == 0 & blocked == 0 & sk-effective w 11 24 == 200)
+    trainer <- sk-trainer-set w True 0 24 1 1000 True
+    trained <- sk-train-npc w 11 trainer True
+    k <- skp-check "master training unlocks practice but grants no proficiency" (trained == 0 & sk-effective w 11 24 == 200 & sk-use w 11 24 24 True == 0 & sk-effective w 11 24 == 201)
+    mastered <- skp-use w 11 24 24 699
+    pupil <- sk-admit w True 99 11 1
+    l <- skp-check "mastered player teaches with consent while novice and self teaching refuse" (mastered == 0 & sk-train-player w pupil 11 24 False == -1 & sk-train-player w 11 pupil 24 True == -1 & sk-train-player w 11 11 24 True == -1 & sk-train-player w pupil 11 24 True == 0)
+    low-parent <- skp-use w pupil 24 24 300
+    m <- skp-check "trained subskill remains capped by its own parent" (low-parent == 0 & sk-effective w pupil 24 == 200)
+    rare <- sk-trainer-set w True 0 26 9 1000 True
+    elsewhere <- sk-trainer-set w True 0 26 1 1000 True
+    n <- skp-check "rare training refuses remote learner and out-of-place master" (sk-train-npc w 11 rare True == -1 & sk-train-npc w 11 elsewhere True == -1)
+    moved <- sk-place w 11 9 True
+    o <- skp-check "rare teacher admits only the placed encounter" (moved == 0 & sk-train-npc w 11 rare True == 0 & sk-at fighter.training 26 == 1 & sk-effective w 11 26 == 0)
+    disabled <- sk-trainer-set w True rare 26 9 1000 False
+    p <- skp-check "keeper authority trainer mastery and disabled state are enforced" (disabled == rare & sk-train-npc w 11 rare True == -1 & sk-trainer-set w False 0 26 9 1000 True == -1 & sk-trainer-set w True 0 26 9 899 True == -1 & sk-rare-place w False 26 1 == -1)
+    q <- skp-check "unadmitted transfers and action flags change nothing" (sk-receive-crafted w 1 2 100 False == -1 & sk-at miner.held 2 == 0 & sk-use w 1 1 1 False == -1 & sk-death w 1 False == -1 & miner.alive)
+    rare-tool <- sk-receive-crafted w 11 26 1000 True
+    rare-work <- skp-use w 11 26 26 900
+    teacher-moved <- sk-place w 11 1 True
+    remote <- sk-train-player w pupil 11 26 True
+    teacher-home <- sk-place w 11 9 True
+    pupil-home <- sk-place w pupil 9 True
+    r <- skp-check "rare player masters obey the same place rule" (rare-tool == 0 & rare-work == 0 & teacher-moved == 0 & remote == -1 & teacher-home == 0 & pupil-home == 0 & sk-train-player w pupil 11 26 True == 0)
+    a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q + r
+  end
+  opening : [Console] Integer = act
+    before <- __heap-save
+    made <- sk-new 32
+    after <- __heap-save
+    print-line-uni ("SKILLS-32-CAPACITY-BYTES " & show (after - before))
+    when made
+      is Err (e) -> act
+        print-line-uni ("FAIL " & e)
+        1
+      end
+      is Ok (w) -> act
+        failures <- skp-run w
+        print-line-uni ("UOAIX SKILLS failures=" & show failures)
+        failures
+      end
+  end

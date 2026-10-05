@@ -1,0 +1,34 @@
+Chapter: NvGspSysInfo
+
+ GspSystemInfo (928 bytes, r570), the GSP_SET_SYSTEM_INFO payload, as
+ tinygrad fills it (tinygrad/runtime/support/nv/ip.py,
+ rpc_set_gsp_system_info, at c3aec477; the structure in runtime/autogen/
+ nv.py). Little-endian; every byte not listed is zero.
+
+ gpuPhysAddr 0, gpuPhysFbAddr 8 and gpuPhysInstAddr 16 (64-bit): the base
+ addresses of BAR 0, BAR 1 and BAR 3. nvDomainBusDeviceFunc 32 (64-bit):
+ bus << 8 | device << 3 | function. maxUserVa 72 (64-bit): 0x7ffffffff000.
+ pciConfigMirrorBase 80 (32-bit): 0x88000, or 0x92000 on a GPU booted
+ through FMC. pciConfigMirrorSize 84: 0x1000. PCIDeviceID 88, PCISubDeviceID
+ 92 and PCIRevisionID 96 (32-bit): the configuration dwords at 0x00 (vendor
+ and device) and 0x2c (subsystem vendor and subsystem), and the byte at 0x08
+ (revision). bIsPassthru 840 (8-bit): 1.
+
+Section: System info
+
+  sys-put : Integer, Integer, Integer, Integer -> Integer
+  sys-put (buf) (off) (v) (n) =
+    if n <= 0 then buf
+    else let wrote = poke-byte buf off (bit-and v 255)
+    in sys-put buf (off + 1) (bit-shru v 8) (n - 1)
+
+  nv-gsp-system-info : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Boolean -> List Integer
+  nv-gsp-system-info (bar0) (bar1) (bar3) (bus) (dev) (fn) (id-dword) (sub-dword) (revision) (fmc) =
+    let bdf = bit-or (bit-shl bus 8) (bit-or (bit-shl dev 3) fn)
+    in let buf = alloc-bytes 928
+    in let zeroed = __memset buf 0 928
+    in let s1 = sys-put (sys-put (sys-put buf 0 bar0 8) 8 bar1 8) 16 bar3 8
+    in let s2 = sys-put (sys-put s1 32 bdf 8) 72 #7FFFFFFFF000 8
+    in let s3 = sys-put (sys-put s2 80 (if fmc then #92000 else #88000) 4) 84 #1000 4
+    in let s4 = sys-put (sys-put (sys-put s3 88 id-dword 4) 92 sub-dword 4) 96 revision 4
+    in __buf-read-bytes (sys-put s4 840 1 1) 0 928

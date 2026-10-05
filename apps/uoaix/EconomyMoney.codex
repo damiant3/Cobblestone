@@ -1,0 +1,216 @@
+Chapter: EconomyMoney
+
+  EmPurse = record { kind : Integer, owner : Integer, coin : Integer }
+  EmLoan = record { lender : Integer, borrower : Integer, principal : Integer,
+    interest : Integer, due : Integer, paid : Integer, status : Integer }
+  EmEntry = record { action : Integer, hour : Integer, payer : Integer,
+    payee : Integer, amount : Integer, kind : Integer, reference : Integer }
+  EmMoney = record { purses : List EmPurse, loans : List EmLoan,
+    ledger : List EmEntry, purse-count : Integer, loan-count : Integer,
+    entry-count : Integer, sequence : Integer, hour : Integer,
+    tax : Integer, issued : Integer, defaults : Integer }
+
+  em-limit : Integer = 1000000000000
+  em-rows : Integer = 8192
+
+  em-purses : Integer, List EmPurse -> List EmPurse
+  em-purses (i) (xs) = if i == 256 then xs else
+    em-purses (i + 1) (list-push xs (EmPurse { kind = 0, owner = 0, coin = 0 }))
+  em-loans : Integer, List EmLoan -> List EmLoan
+  em-loans (i) (xs) = if i == 128 then xs else
+    em-loans (i + 1) (list-push xs (EmLoan { lender = 0, borrower = 0,
+      principal = 0, interest = 0, due = 0, paid = 0, status = 0 }))
+  em-entries : Integer, List EmEntry -> List EmEntry
+  em-entries (i) (xs) = if i == em-rows then xs else
+    em-entries (i + 1) (list-push xs (EmEntry { action = 0, hour = 0,
+      payer = 0, payee = 0, amount = 0, kind = 0, reference = 0 }))
+
+  em-new : Integer -> EmMoney
+  em-new (unused) =
+    let w = EmMoney { purses = em-purses 0 [], loans = em-loans 0 [],
+      ledger = em-entries 0 [], purse-count = 1, loan-count = 0,
+      entry-count = 0, sequence = 0, hour = 0, tax = 0, issued = 0, defaults = 0 }
+    in let treasury = list-at w.purses 0
+    in let a = __record-set treasury "kind" 1
+    in w
+
+  em-valid-purse : EmMoney, Integer -> Boolean
+  em-valid-purse (w) (id) = id > 0 & id <= w.purse-count
+  em-purse : EmMoney, Integer -> EmPurse
+  em-purse (w) (id) = list-at w.purses (id - 1)
+  em-find : EmMoney, Integer, Integer, Integer -> Integer
+  em-find (w) (kind) (owner) (i) =
+    if i > w.purse-count then 0
+    else let p = em-purse w i
+    in if p.kind == kind & p.owner == owner then i else em-find w kind owner (i + 1)
+  em-open : EmMoney, Integer, Integer -> Integer
+  em-open (w) (kind) (owner) =
+    if kind < 2 | kind > 5 | owner <= 0 | w.purse-count == 256 then -1
+    else if em-find w kind owner 1 /= 0 then -1
+    else let id = w.purse-count + 1
+    in let p = list-at w.purses w.purse-count
+    in let a = __record-set p "kind" kind
+    in let b = __record-set p "owner" owner
+    in let c = __record-set w "purse-count" id
+    in id
+
+  em-room : EmMoney, Integer -> Boolean
+  em-room (w) (rows) = rows > 0 & w.entry-count <= em-rows - rows & w.sequence < em-limit
+  em-begin : EmMoney -> Integer
+  em-begin (w) = let a = __record-set w "sequence" (w.sequence + 1) in w.sequence
+  em-row : EmMoney, Integer, Integer, Integer, Integer, Integer -> Integer
+  em-row (w) (payer) (payee) (amount) (kind) (reference) =
+    let e = list-at w.ledger w.entry-count
+    in let a = __record-set e "action" w.sequence
+    in let b = __record-set e "hour" w.hour
+    in let c = __record-set e "payer" payer
+    in let d = __record-set e "payee" payee
+    in let f = __record-set e "amount" amount
+    in let g = __record-set e "kind" kind
+    in let h = __record-set e "reference" reference
+    in let j = __record-set w "entry-count" (w.entry-count + 1)
+    in 0
+  em-move : EmMoney, Integer, Integer, Integer, Integer, Integer -> Integer
+  em-move (w) (payer) (payee) (amount) (kind) (reference) =
+    let one = em-purse w payer
+    in let two = em-purse w payee
+    in let a = __record-set one "coin" (one.coin - amount)
+    in let b = __record-set two "coin" (two.coin + amount)
+    in em-row w payer payee amount kind reference
+
+  em-can-move : EmMoney, Integer, Integer, Integer -> Boolean
+  em-can-move (w) (payer) (payee) (amount) =
+    if not (em-valid-purse w payer) | not (em-valid-purse w payee) | payer == payee | amount <= 0 | amount > em-limit then False
+    else (em-purse w payer).coin >= amount & (em-purse w payee).coin <= em-limit - amount
+
+  em-tax : EmMoney, Integer, Integer, Integer -> Integer
+  em-tax (w) (payer) (payee) (gross) = if payer == 1 | payee == 1 then 0 else gross * w.tax / 10000
+
+  em-can-pay : EmMoney, Integer, Integer, Integer -> Boolean
+  em-can-pay (w) (payer) (payee) (gross) =
+    if not (em-valid-purse w payer) | not (em-valid-purse w payee) | payer == payee | gross <= 0 | gross > em-limit then False
+    else let tax = em-tax w payer payee gross
+    in (em-purse w payer).coin >= gross
+      & (em-purse w payee).coin <= em-limit - (gross - tax)
+      & (tax == 0 | (em-purse w 1).coin <= em-limit - tax)
+      & em-room w (if tax > 0 then 2 else 1)
+
+  em-pay-rows : EmMoney, Integer, Integer, Integer, Integer, Integer -> Integer
+  em-pay-rows (w) (payer) (payee) (gross) (kind) (reference) =
+    let tax = em-tax w payer payee gross
+    in let a = em-move w payer payee (gross - tax) kind reference
+    in if tax > 0 then em-move w payer 1 tax 2 reference else 0
+
+  em-pay : EmMoney, Integer, Integer, Integer -> Integer
+  em-pay (w) (payer) (payee) (gross) =
+    if payer == 1 | not (em-can-pay w payer payee gross) then -1
+    else let a = em-begin w in em-pay-rows w payer payee gross 1 0
+
+  em-set-tax : EmMoney, Boolean, Integer -> Integer
+  em-set-tax (w) (authorized) (rate) =
+    if not authorized | rate < 0 | rate > 10000 | not (em-room w 1) then -1
+    else let a = em-begin w
+    in let b = em-row w 0 0 0 3 rate
+    in let c = __record-set w "tax" rate
+    in 0
+
+  em-issue : EmMoney, Boolean, Integer, Integer -> Integer
+  em-issue (w) (authorized) (amount) (source) =
+    if not authorized | amount <= 0 | amount > em-limit | source /= 2 then -1
+    else if not (em-room w 1) | w.issued > em-limit - amount | (em-purse w 1).coin > em-limit - amount then -1
+    else let a = em-begin w
+    in let treasury = em-purse w 1
+    in let b = __record-set treasury "coin" (treasury.coin + amount)
+    in let c = __record-set w "issued" (w.issued + amount)
+    in em-row w 0 1 amount 4 source
+
+  em-grant : EmMoney, Boolean, Integer, Integer -> Integer
+  em-grant (w) (authorized) (business) (amount) =
+    if not authorized | not (em-valid-purse w business) then -1
+    else if (em-purse w business).kind /= 5 | not (em-can-move w 1 business amount) | not (em-room w 1) then -1
+    else let a = em-begin w in em-move w 1 business amount 5 0
+
+  em-decree : EmMoney, Integer -> Integer
+  em-decree (w) (amount) =
+    if amount <= 0 | not (em-room w 1) | w.issued > em-limit - amount | (em-purse w 1).coin > em-limit - amount then -1
+    else let a = em-begin w
+    in let treasury = em-purse w 1
+    in let b = __record-set treasury "coin" (treasury.coin + amount)
+    in let c = __record-set w "issued" (w.issued + amount)
+    in em-row w 0 1 amount 16 0
+  em-payout : EmMoney, Integer, Integer -> Integer
+  em-payout (w) (payee) (amount) =
+    if payee <= 1 | not (em-valid-purse w payee) | not (em-can-move w 1 payee amount) | not (em-room w 1) then -1
+    else let a = em-begin w in em-move w 1 payee amount 17 0
+  em-reclaim : EmMoney, Integer, Integer -> Integer
+  em-reclaim (w) (payer) (amount) =
+    if not (em-can-move w payer 1 amount) | not (em-room w 1) then -1
+    else let a = em-begin w in em-move w payer 1 amount 6 0
+
+  em-town-grant : EmMoney, Boolean, Integer, Integer -> Integer
+  em-town-grant (w) (authorized) (purse) (amount) =
+    if not authorized | not (em-valid-purse w purse) then -1
+    else if (em-purse w purse).kind /= 4 | not (em-can-move w 1 purse amount) | not (em-room w 1) then -1
+    else let a = em-begin w in em-move w 1 purse amount 13 (em-purse w purse).owner
+
+  em-lend : EmMoney, Integer, Integer, Integer, Integer, Integer -> Integer
+  em-lend (w) (lender) (borrower) (principal) (interest) (due) =
+    if w.loan-count == 128 | interest < 0 | interest > em-limit | principal <= 0 | principal > em-limit - interest | due <= w.hour | due > em-limit then -1
+    else if not (em-can-pay w lender borrower principal) then -1
+    else let id = w.loan-count + 1
+    in let loan = list-at w.loans w.loan-count
+    in let a = em-begin w
+    in let b = em-pay-rows w lender borrower principal 7 id
+    in let c = __record-set loan "lender" lender
+    in let d = __record-set loan "borrower" borrower
+    in let e = __record-set loan "principal" principal
+    in let f = __record-set loan "interest" interest
+    in let g = __record-set loan "due" due
+    in let h = __record-set loan "status" 1
+    in let j = __record-set w "loan-count" id
+    in id
+
+  em-repay : EmMoney, Integer, Integer, Integer -> Integer
+  em-repay (w) (borrower) (id) (amount) =
+    if id <= 0 | id > w.loan-count then -1
+    else let loan = list-at w.loans (id - 1)
+    in if loan.borrower /= borrower | loan.status == 2 | amount > loan.principal + loan.interest - loan.paid then -1
+    else if not (em-can-pay w borrower loan.lender amount) then -1
+    else let a = em-begin w
+    in let b = em-pay-rows w borrower loan.lender amount 8 id
+    in let c = __record-set loan "paid" (loan.paid + amount)
+    in let d = if loan.paid == loan.principal + loan.interest then __record-set loan "status" 2 else loan
+    in 0
+
+  em-due-count : EmMoney, Integer, Integer -> Integer
+  em-due-count (w) (hour) (i) =
+    if i == w.loan-count then 0 else let loan = list-at w.loans i
+    in (if loan.status == 1 & loan.due <= hour then 1 else 0) + em-due-count w hour (i + 1)
+  em-default : EmMoney, Integer -> Integer
+  em-default (w) (i) =
+    if i == w.loan-count then 0 else let loan = list-at w.loans i
+    in let a = if loan.status == 1 & loan.due <= w.hour then
+      let b = __record-set loan "status" 3
+      in let c = __record-set w "defaults" (w.defaults + 1)
+      in em-row w loan.borrower loan.lender 0 9 (i + 1)
+      else 0
+    in em-default w (i + 1)
+  em-advance : EmMoney, Integer -> Integer
+  em-advance (w) (hour) =
+    if hour < w.hour | hour > em-limit then -1
+    else let rows = em-due-count w hour 0
+    in if not (em-room w (rows + 1)) then -1
+    else let a = em-begin w
+    in let b = __record-set w "hour" hour
+    in let c = em-row w 0 0 0 10 hour
+    in em-default w 0
+
+  em-total : EmMoney, Integer -> Integer
+  em-total (w) (i) = if i > w.purse-count then 0 else (em-purse w i).coin + em-total w (i + 1)
+  em-ledger-balance : EmMoney, Integer, Integer, Integer -> Integer
+  em-ledger-balance (w) (purse) (i) (balance) =
+    if i == w.entry-count then balance else let e = list-at w.ledger i
+    in em-ledger-balance w purse (i + 1) (balance + (if e.payee == purse then e.amount else 0) - (if e.payer == purse then e.amount else 0))
+  em-balanced : EmMoney, Integer -> Boolean
+  em-balanced (w) (id) = if id > w.purse-count then em-total w 1 == w.issued
+    else (em-purse w id).coin == em-ledger-balance w id 0 0 & em-balanced w (id + 1)

@@ -1,0 +1,53 @@
+Chapter: TownStore
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter TownInput
+  cites Uoaix chapter TownInputCodec
+  cites Uoaix chapter TownReplay
+  cites Foreword chapter Result
+
+  TownRecovery = record { state : TownState, inputs : Integer }
+
+  town-store-suffix : UoStore, TownState, Integer, Integer, Integer -> [Device.Block] Result TownRecovery Text
+  town-store-suffix (store) (state) (at) (buf) (count) =
+    if at == store.head then
+      if state.checkpoint.sequence /= store.sequence | state.checkpoint.tick /= store.tick then act Err "recovered state disagrees with store head" end
+      else if not (ts-state-valid state.checkpoint state.townsfolk state.mind) then act Err "recovered state invariant invalid" end
+      else act Ok (TownRecovery { state = state, inputs = count }) end
+    else if at < 0 | at > store.head | count >= 4096 then act Err "town recovery extent or input budget invalid" end
+    else let mark = __heap-save
+    in act
+      read <- us-read store at buf ti-frame-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) ->
+          if row.kind /= 2 | row.next <= at | row.next > store.head then Err "town recovery suffix record invalid"
+          else let next = row.next
+          in when ti-decode-record buf row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (entry) -> when ti-apply state entry
+              is Err (e) -> Err e
+              is Ok (outcome) ->
+                if ti-retains-text entry outcome.code then town-store-suffix store state next buf (count + 1)
+                else let restored = __heap-restore mark in town-store-suffix store state next buf (count + 1)
+    end
+
+  town-store-restore : UoStore -> [Device.Block] Result TownRecovery Text
+  town-store-restore (store) =
+    if store.fault /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "town recovery requires a committed checkpoint" end
+    else let capacity = ts-size world-max-objects
+    in let snapshot = alloc-bytes capacity
+    in let input = alloc-bytes ti-frame-bytes
+    in act
+      read <- us-read store store.snapshot snapshot capacity
+      when read
+        is Err (e) -> Err e
+        is Ok (row) -> if row.kind /= 1 | row.next > store.head then Err "town recovery checkpoint record invalid"
+          else when ts-decode-record snapshot row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (state) -> town-store-suffix store state row.next input 0
+    end
+
+Page 1

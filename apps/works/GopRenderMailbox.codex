@@ -1,0 +1,177 @@
+Chapter: GopRenderMailbox
+
+Section: Shared Control
+
+  grm-bytes : Integer = 256
+  grm-pid : Integer = 0
+  grm-owner : Integer = 8
+  grm-counter : Integer = 16
+  grm-request : Integer = 24
+  grm-state : Integer = 32
+  grm-reply : Integer = 40
+  grm-pixels : Integer = 48
+  grm-width : Integer = 56
+  grm-height : Integer = 64
+  grm-kind : Integer = 72
+  grm-phase : Integer = 80
+  grm-angle : Integer = 88
+  grm-sky : Integer = 96
+  grm-shadows : Integer = 104
+  grm-ack : Integer = 112
+  grm-copy : Integer = 120
+  grm-published : Integer = 128
+  grm-peak : Integer = 136
+  grm-steps : Integer = 144
+  grm-cancel-want : Integer = 152
+  grm-cancel-ack : Integer = 160
+  grm-reply-owner : Integer = 168
+  grm-depth : Integer = 176
+  grm-stop : Integer = 184
+  grm-stopped : Integer = 192
+  grm-core : Integer = 200
+  grm-refusals : Integer = 208
+  grm-allowed : Integer = 216
+
+  grm-token-limit : Integer = 2147483647
+  grm-heap-bytes : Integer = 31457280
+  grm-reserve-bytes : Integer = 4194304
+  grm-copy-pixels : Integer = 1024
+
+  grm-new : Integer -> Integer
+  grm-new (ignored) =
+    let cell = alloc-bytes grm-bytes
+    in let cleared = __memset cell 0 grm-bytes
+    in let pid = poke-qword cell grm-pid (0 - 1)
+    in let admitted = poke-qword cell grm-allowed 1
+    in cell
+
+  grm-alive : Integer -> Boolean
+  grm-alive (cell) =
+    if cell == 0 then False
+    else let pid = peek-qword cell grm-pid
+    in if pid <= 0 | pid >= 16 then False
+    else let state = process-status pid
+    in state > 0 & state < 4 & peek-qword cell grm-stopped == 0
+
+  grm-current : Integer, Integer -> Boolean
+  grm-current (cell) (owner) =
+    if cell == 0 | owner <= 0 then False
+    else peek-qword cell grm-owner == owner & peek-qword cell grm-stop == 0
+
+  grm-matches : Integer, Integer, Integer -> Boolean
+  grm-matches (cell) (owner) (token) =
+    if grm-current cell owner == False then False
+    else token > 0 & peek-qword cell grm-request == token
+
+  grm-refuse : Integer -> Integer
+  grm-refuse (cell) =
+    let count = poke-qword cell grm-refusals (peek-qword cell grm-refusals + 1)
+    in 0 - 1
+
+  grm-next : Integer -> Integer
+  grm-next (cell) =
+    let previous = peek-qword cell grm-counter
+    in if previous < 0 | previous >= grm-token-limit then grm-refuse cell
+    else let token = previous + 1
+    in let wrote = poke-qword cell grm-counter token
+    in token
+
+  grm-cancel : Integer, Integer -> Integer
+  grm-cancel (cell) (owner) =
+    if grm-current cell owner == False then 0
+    else let token = peek-qword cell grm-request
+    in let invalidate = poke-qword cell grm-request 0
+    in let wanted = if token > 0 then poke-qword cell grm-cancel-want token else 0
+    in let copy = poke-qword cell grm-copy 0
+    in token
+
+  grm-close : Integer, Integer -> Integer
+  grm-close (cell) (owner) =
+    if grm-current cell owner == False then 0
+    else let canceled = grm-cancel cell owner
+    in let closed = poke-qword cell grm-owner 0
+    in 0
+
+  grm-open : Integer, Integer -> Integer
+  grm-open (cell) (kind) =
+    if cell == 0 then 0
+    else if peek-qword cell grm-stop /= 0 then grm-refuse cell
+    else let closed = grm-close cell (peek-qword cell grm-owner)
+    in let owner = grm-next cell
+    in if owner <= 0 then owner
+    else let shape = poke-qword cell grm-kind kind
+    in let admitted = poke-qword cell grm-allowed 1
+    in let live = poke-qword cell grm-owner owner
+    in owner
+
+  grm-size-ok : Integer, Integer -> Boolean
+  grm-size-ok (w) (h) =
+    if w <= 0 | h <= 0 | w > 8192 | h > 8192 then False
+    else w * h * 8 <= grm-heap-bytes - grm-reserve-bytes
+
+  grm-submit : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  grm-submit (cell) (owner) (w) (h) (phase) (angle) (sky) (shadows) =
+    if grm-current cell owner == False then 0 - 1
+    else if grm-alive cell == False | grm-size-ok w h == False then grm-refuse cell
+    else let canceled = grm-cancel cell owner
+    in let token = grm-next cell
+    in if token <= 0 then token
+    else let width = poke-qword cell grm-width w
+    in let height = poke-qword cell grm-height h
+    in let time = poke-qword cell grm-phase phase
+    in let yaw = poke-qword cell grm-angle angle
+    in let background = poke-qword cell grm-sky sky
+    in let shadow = poke-qword cell grm-shadows shadows
+    in let committed = poke-qword cell grm-request token
+    in token
+
+  grm-ready : Integer, Integer -> Boolean
+  grm-ready (cell) (owner) =
+    if grm-current cell owner == False | grm-alive cell == False then False
+    else let token = peek-qword cell grm-request
+    in token > 0 & peek-qword cell grm-reply == token & peek-qword cell grm-reply-owner == owner & peek-qword cell grm-state == 2 & peek-qword cell grm-ack /= token & peek-qword cell grm-pixels > 0
+
+  grm-failed : Integer, Integer -> Boolean
+  grm-failed (cell) (owner) =
+    if grm-current cell owner == False | grm-alive cell == False then True
+    else peek-qword cell grm-request > 0 & peek-qword cell grm-reply == peek-qword cell grm-request & peek-qword cell grm-reply-owner == owner & peek-qword cell grm-state < 0
+
+  grm-consume : Integer, Integer -> Integer
+  grm-consume (cell) (owner) =
+    if grm-ready cell owner == False then 0 - 1
+    else if grm-size-ok (peek-qword cell grm-width) (peek-qword cell grm-height) == False then 0 - 1
+    else if peek-qword cell grm-copy /= peek-qword cell grm-width * peek-qword cell grm-height then 0 - 1
+    else let token = peek-qword cell grm-request
+    in let ack = poke-qword cell grm-ack token
+    in let inactive = poke-qword cell grm-request 0
+    in let count = poke-qword cell grm-published (peek-qword cell grm-published + 1)
+    in let reset = poke-qword cell grm-copy 0
+    in token
+
+  grm-copy-unit : Integer, Integer, Integer, Integer -> Integer
+  grm-copy-unit (cell) (owner) (dst) (stride) =
+    if grm-ready cell owner == False then 0 - 1
+    else let w = peek-qword cell grm-width
+    in let h = peek-qword cell grm-height
+    in let at = peek-qword cell grm-copy
+    in if grm-size-ok w h == False | stride < w | dst <= 0 | at < 0 | at > w * h then 0 - 1
+    else let limit = if at + grm-copy-pixels < w * h then at + grm-copy-pixels else w * h
+    in let copied = grm-copy-run dst stride (peek-qword cell grm-pixels) w at limit
+    in let stored = poke-qword cell grm-copy limit
+    in limit
+
+  grm-copy-run : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  grm-copy-run (dst) (stride) (src) (w) (at) (limit) =
+    if at >= limit then at
+    else let row = at / w
+    in let x = int-mod at w
+    in let left = w - x
+    in let take = if left < limit - at then left else limit - at
+    in let copied = grm-copy-span (dst + (row * stride + x) * 4) (src + at * 4) take 0
+    in grm-copy-run dst stride src w (at + take) limit
+
+  grm-copy-span : Integer, Integer, Integer, Integer -> Integer
+  grm-copy-span (dst) (src) (n) (i) =
+    if i >= n then i
+    else let wrote = poke-32 dst (i * 4) (peek-32 src (i * 4))
+    in grm-copy-span dst src n (i + 1)

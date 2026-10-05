@@ -1,0 +1,101 @@
+Chapter: PanelAuditProof
+  cites Uoaix chapter PanelAuditCodec
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter GameClock
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Encode chapter Json
+  cites Foreword chapter Result
+
+  pap-check : Text, Boolean -> [Console] Nothing
+  pap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  pap-clear : Integer, Integer -> Integer
+  pap-clear (buf) (i) = if i >= pac-size then 0
+    else let cleared = poke-byte buf i 0 in pap-clear buf (i + 1)
+
+  pap-run : AdminPanel -> [Console] Nothing
+  pap-run (p) =
+    let opened = panel-open p 100
+    in let connection = panel-connect p 1 "Avatar" "Mara" "127.0.0.1" "fixture"
+    in let gm-session = list-set-at p.gm-sessions 2 1
+    in let rate = __record-set p.clock "day-seconds" 3600
+    in let phase = __record-set p.clock "phase" 17
+    in let due = __record-set p.clock "due" 3
+    in let action = JsonObject [json-pair "command" (JsonStr "panel-action"), json-pair "action" (JsonStr "inspect"), json-pair "session" (JsonInt 1)]
+    in let queued = panel-human p action 101
+    in let buf = alloc-bytes (pac-size + 8)
+    in let guard = poke-qword buf pac-size 1234567
+    in let gms = gm-memory-new 0
+    in when pac-encode p 70 11 buf pac-size
+      is Err (e) -> print-line-uni ("FAIL encode " & e)
+      is Ok (size) -> act
+        pap-check "panel envelope bounds" (size == 133216 & peek-qword buf 133216 == 1234567)
+        when pac-decode-record buf size 70 11 p.world "New owner" gms p.clock
+          is Err (e) -> print-line-uni ("FAIL decode " & e)
+          is Ok (restored) -> act
+            pap-check "audit and counter restored" (restored.sessions == 1 & restored.log-count == 2 & admin-load restored.log 0 == admin-load p.log 0 & admin-load restored.log 1024 == admin-load p.log 1024)
+            pap-check "queued action cancelled on boot" (restored.pending-state == 0 & restored.pending == 0 & list-at restored.log 2046 == -2 & p.pending-state == 1 & list-at p.log 2046 == 0)
+            pap-check "owner and GM sessions cleared" (restored.active == 0 & restored.touched == 0 & list-at restored.gm-sessions 2 == 0 & not (panel-live restored 1 101))
+            let changed = __record-set p.clock "due" 4
+            in pap-check "shared clock binding preserved" (restored.clock.day-seconds == 3600 & restored.clock.phase == 17 & restored.clock.due == 4)
+            pap-check "connections cleared and principal rebound" (panel-connections restored 0 [] == "[]" & restored.actor == "New owner")
+            let cleared = pap-clear buf 0
+            in pap-check "audit survives input reuse" (admin-load restored.log 1024 == admin-load p.log 1024 & list-at restored.log 2046 == -2)
+            let calls = [0]
+            in let rejected = panel-action-apply restored 2 102 (\v -> let counted = list-set-at calls 0 1 in 0)
+            in pap-check "old queued effect cannot run" (rejected == -1 & list-at calls 0 == 0)
+            let next = panel-open restored 200
+            in pap-check "new session advances retained counter" (restored.sessions == 2 & restored.active == 1 & text-contains next "New owner" & p.sessions == 1)
+            let fresh = JsonObject [json-pair "command" (JsonStr "panel-action"), json-pair "action" (JsonStr "inspect"), json-pair "session" (JsonInt 2)]
+            in let queued-new = panel-human restored fresh 201
+            in let calls-new = [0]
+            in let replay = panel-action-apply restored 2 202 (\v -> let counted = list-set-at calls-new 0 1 in 0)
+            in pap-check "fresh session does not revive old action" (replay == -1 & list-at calls-new 0 == 0 & restored.pending-state == 1 & restored.pending == 4)
+          end
+        let encoded = pac-encode p 70 11 buf pac-size
+        in pap-check "panel outer metadata refused" (is-err (pac-decode-record buf pac-size 71 11 p.world "Owner" gms p.clock))
+        pap-check "panel truncation refused" (is-err (pac-decode buf (pac-size - 1) p.world "Owner" gms p.clock))
+        let corrupt = poke-byte buf 150 255
+        in pap-check "panel checksum refused" (is-err (pac-decode buf pac-size p.world "Owner" gms p.clock))
+        let encoded = pac-encode p 70 11 buf pac-size
+        in let bad = poke-qword buf 80 3
+        in let hash = poke-qword buf 48 (ws-hash buf pac-size 0 2166136261)
+        in pap-check "rehashed pending reference refused" (is-err (pac-decode buf pac-size p.world "Owner" gms p.clock))
+        let encoded = pac-encode p 70 11 buf pac-size
+        in let bad = poke-qword buf (96 + 1040 + 1032) 1
+        in let hash = poke-qword buf 48 (ws-hash buf pac-size 0 2166136261)
+        in pap-check "rehashed queued outcome refused" (is-err (pac-decode buf pac-size p.world "Owner" gms p.clock))
+        let encoded = pac-encode p 70 11 buf pac-size
+        in let bad = poke-byte buf (96 + 1031) 1
+        in let hash = poke-qword buf 48 (ws-hash buf pac-size 0 2166136261)
+        in pap-check "rehashed audit padding refused" (is-err (pac-decode buf pac-size p.world "Owner" gms p.clock))
+        let encoded = pac-encode p 70 11 buf pac-size
+        in let counter = poke-qword buf 64 0
+        in let pending = poke-qword buf 80 0
+        in let phase = poke-qword buf 88 0
+        in let cancelled = poke-qword buf (96 + 1040 + 1032) (-2)
+        in let hash = poke-qword buf 48 (ws-hash buf pac-size 0 2166136261)
+        in pap-check "rehashed session reversal refused" (is-err (pac-decode buf pac-size p.world "Owner" gms p.clock))
+        let encoded = pac-encode p 70 11 buf pac-size
+        in let original = admin-load p.log 0
+        in let fake = admin-store p.log 0 "{\"id\":9,\"session\":1}"
+        in let rewritten = pac-write-rows (buf + 96) p 0
+        in let hash = poke-qword buf 48 (ws-hash buf pac-size 0 2166136261)
+        in act
+          pap-check "rehashed audit identity refused" (is-err (pac-decode buf pac-size p.world "Owner" gms p.clock))
+          let repaired = admin-store p.log 0 original
+          in pap-check "valid audit restored after control" (pac-state-valid p)
+        end
+        let in-flight = __record-set p "pending-state" 2
+        in pap-check "in-flight action snapshot refused" (is-err (pac-encode p 70 11 buf pac-size))
+      end
+
+  opening : [Console] Nothing =
+    let a = admin-world-new (tf-new 0) (tm-new 0)
+    in pap-run (panel-new a "Original owner")
+
+Page 1

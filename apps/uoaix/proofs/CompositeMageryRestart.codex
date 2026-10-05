@@ -1,0 +1,150 @@
+Chapter: CompositeMageryRestart
+  cites Uoaix chapter CompositeStore
+
+  cmr-check : Text, Boolean -> [Console] Integer
+  cmr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cmr-fill : WalkMap, Integer -> Integer
+  cmr-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cmr-fill map (i + 1)
+  cmr-create : Integer -> List Integer
+  cmr-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Mage" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cmr-decoration : WalkMap -> Result WdState Text
+  cmr-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  cmr-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  cmr-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  cmr-attach : CompositeOwner, WdState, WalkMap -> Result Magery Text
+  cmr-attach (store) (decoration) (map) = let owner = store.state
+    in let magic = mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (cmr-cover map)
+    in let hooked = mge-bind magic
+    in let attached = __record-set owner "magic" (Just magic)
+    in when cc-magic-restore owner magic
+      is Err (e) -> Err e
+      is Ok (_) -> Ok magic
+  cmr-find : WorldTable, Integer, Integer -> Integer
+  cmr-find (world) (serial) (graphic) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> cmr-find world (world-next-sibling world serial) graphic
+      is Ok (item) -> if item.graphic == graphic then serial else cmr-find world (world-next-sibling world serial) graphic
+  cmr-state : Magery, CompositeGame, Integer -> Boolean
+  cmr-state (magic) (owner) (mana) = let player = list-at owner.vendor.players 0
+    in let game = owner.checkpoint.game
+    in let actor = list-at magic.actors (world-slot game.world player.serial)
+    in let book = cmr-find game.world (world-first-child game.world player.pack) #0EFA
+    in let rune = cmr-find game.world (world-first-child game.world player.pack) #1F14
+    in let book-meta = list-at magic.definitions (world-slot game.world book)
+    in let rune-meta = list-at magic.definitions (world-slot game.world rune)
+    in book > 0 & rune > 0 & actor.serial == player.serial & actor.mana == mana
+      & book-meta.serial == book & book-meta.spells == #3F
+      & rune-meta.serial == rune & rune-meta.rune & rune-meta.x == 1430 & rune-meta.y == 1705 & rune-meta.z == 0
+
+  cmr-kit : Magery, CompositeGame -> Boolean
+  cmr-kit (magic) (owner) = let game = owner.checkpoint.game
+    in let player = list-at owner.vendor.players 0
+    in let pack = gsi-pack-find game.world player.serial 0
+    in let bag = gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+    in let rune = gsi-child-art game.world (world-first-child game.world bag) #1F14 0
+    in if rune <= 0 then False
+    else let meta = list-at magic.definitions (world-slot game.world rune)
+    in when world-get game.world player.serial
+      is Err (_) -> False
+      is Ok (m) -> meta.serial == rune & meta.rune & meta.x == m.x & meta.y == m.y & meta.z == m.z
+  cmr-first : CompositeOwner, Magery, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cmr-first (store) (magic) (map) (specs) = let owner = store.state in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (cmr-create 0)
+    player <- list-at owner.vendor.players 0
+    game <- owner.checkpoint.game
+    book <- world-create game.world (gs-item player.pack #0EFA 0)
+    rune <- world-create game.world (gs-item player.pack #1F14 0)
+    marked <- when book
+      is Err (e) -> Err e
+      is Ok (b) -> when rune
+        is Err (e) -> Err e
+        is Ok (r) -> when mgs-book magic b #3F
+          is Err (e) -> Err e
+          is Ok (_) -> mgs-rune magic r 1430 1705 0
+    actor <- mgs-ensure magic game player.serial
+    drained <- when actor
+      is Err (e) -> Err e
+      is Ok (a) -> let spent = __record-set a "mana" 7
+        in let touched = mgs-touch magic in Ok a.mana
+    committed <- cs-commit store True
+    a <- cmr-check "boot1 entry, spellbook, marked rune and spent mana commit" (is-ok entry & is-ok marked & is-ok drained & is-ok committed & cmr-state magic owner 7)
+    unmarked <- not (cmr-kit magic owner)
+    enabled <- __record-set owner "testing" True
+    stocked <- cg-entry owner game input (gs-reply [] "testing entry")
+    kit-saved <- cs-commit store True
+    b <- cmr-check "boot1 testing kit rune is marked at the entry position" (unmarked & is-ok stocked & is-ok kit-saved & cmr-kit magic owner)
+    a + b
+  end
+  cmr-later : CompositeOwner, WdState, WalkMap -> [Console, Device.Block] Integer
+  cmr-later (store) (decoration) (map) = let held = store.state.magic-held in act
+    early <- cs-commit store True
+    when cmr-attach store decoration map
+      is Err (e) -> cmr-check ("restore " & e) False
+      is Ok (magic) -> if cmr-state magic store.state 9 then
+          cmr-check "boot3 a commit before attach kept MGM1 and the later mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & store.state.magic-held == 0 & cmr-kit magic store.state)
+        else act
+          restored <- cmr-check "boot2 restart restores spellbook mask, rune destination and mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & cmr-state magic store.state 7 & cmr-kit magic store.state)
+          player <- list-at store.state.vendor.players 0
+          actor <- list-at magic.actors (world-slot store.state.checkpoint.game.world player.serial)
+          spent <- __record-set actor "mana" 9
+          touched <- mgs-touch magic
+          committed <- cs-commit store True
+          saved <- cmr-check "boot2 changed mana commits through the live section" (is-ok committed)
+          restored + saved
+        end
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cmr-check e False
+     is Ok (map) -> let filled = cmr-fill map 0
+      in when cmr-decoration map
+       is Err (e) -> cmr-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cmr-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> cmr-check ("recovery " & e) False
+        is Ok (owner) -> if fresh then when cmr-attach owner decoration map
+            is Err (e) -> cmr-check ("attach " & e) False
+            is Ok (magic) -> cmr-first owner magic map specs
+          else cmr-later owner decoration map
+      end
+    end

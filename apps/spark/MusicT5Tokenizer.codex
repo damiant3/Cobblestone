@@ -1,0 +1,85 @@
+Chapter: MusicT5Tokenizer
+  cites AI chapter T5Tokenizer
+  cites Foreword chapter CCE
+
+ SentencePiece Normalizer::NormalizePrefix uses the longest matching charsmap
+ rule, including rules spanning combining sequences. Transformers' legacy T5
+ tokenizer separates added tokens before SentencePiece and does not add a second
+ terminal EOS. References: sentencepiece/src/normalizer.cc, NormalizePrefix;
+ transformers/models/t5/tokenization_t5.py, _add_eos_if_not_present.
+
+ We say:
+
+  MtMatch = record { mm-offset : Integer, mm-length : Integer }
+
+  mt-longest : T5Tok, Integer, Integer, Integer, Integer, Integer, Integer -> MtMatch
+  mt-longest (tok) (a) (n) (i) (pos) (best) (length) =
+    if i >= n then MtMatch { mm-offset = best, mm-length = length }
+    else let c = peek-byte a i
+    in let p = bit-xor pos c
+    in let u = tk-u32 (tok.tk-trie) p
+    in if bit-and u #800000FF /= c then MtMatch { mm-offset = best, mm-length = length }
+    else let q = bit-xor p (tk-offset u)
+    in let leaf = bit-and (bit-shru u 8) 1 == 1
+    in mt-longest tok a n (i + 1) q (if leaf then bit-and (tk-u32 (tok.tk-trie) q) #7FFFFFFF else best) (if leaf then i + 1 else length)
+
+  mt-normal : T5Tok, Integer, Integer, Integer, List Integer -> List Integer
+  mt-normal (tok) (a) (n) (i) (acc) =
+    if i >= n then acc
+    else let match = mt-longest tok (a + i) (n - i) 0 (tk-offset (tk-u32 (tok.tk-trie) 0)) (0 - 1) 0
+    in let len = if match.mm-length > 0 then match.mm-length else tk-char-len (peek-byte a i)
+    in mt-normal tok a n (i + len) (if match.mm-length > 0 then tk-pool-copy (tok.tk-pool) (match.mm-offset) acc else tk-copy a i (i + len) acc)
+
+  mt-segment : T5Tok, Integer, Integer -> List Integer
+  mt-segment (tok) (a) (n) =
+    let norm = mt-normal tok a n 0 []
+    in let spaced = tk-spaces norm 0 (tk-strip-end norm (list-length norm)) []
+    in let meta = if list-length spaced > 0 & tk-is-meta spaced 0 then spaced else tk-meta [] & spaced
+    in if list-length spaced == 0 then [] else tk-words tok meta 0 0 []
+
+  MtSpecial = record { ms-id : Integer, ms-length : Integer }
+
+  mt-none : MtSpecial = MtSpecial { ms-id = 0 - 1, ms-length = 0 }
+
+  mt-pattern : Integer, Integer, Integer, List Integer -> Boolean
+  mt-pattern (a) (n) (i) (pattern) = i + list-length pattern <= n & tj-at a i pattern 0
+
+  mt-extra : T5Tok, Integer, Integer, Integer -> MtSpecial
+  mt-extra (tok) (a) (n) (i) =
+    if i + 12 > n then mt-none
+    else let first = peek-byte a (i + 10)
+    in let second = peek-byte a (i + 11)
+    in let len = if first >= 48 & first <= 57 & second == 62 then 12
+      else if i + 13 <= n & first >= 49 & first <= 57 & second >= 48 & second <= 57 & peek-byte a (i + 12) == 62 then 13 else 0
+    in if len == 0 then mt-none else MtSpecial { ms-id = t5-piece-id tok (a + i) len, ms-length = len }
+
+  mt-special : T5Tok, Integer, Integer, Integer -> MtSpecial
+  mt-special (tok) (a) (n) (i) =
+    if peek-byte a i /= 60 then mt-none
+    else if mt-pattern a n i [60, 112, 97, 100, 62] then MtSpecial { ms-id = 0, ms-length = 5 }
+    else if mt-pattern a n i [60, 47, 115, 62] then MtSpecial { ms-id = 1, ms-length = 4 }
+    else if mt-pattern a n i [60, 117, 110, 107, 62] then MtSpecial { ms-id = 2, ms-length = 5 }
+    else if mt-pattern a n i [60, 101, 120, 116, 114, 97, 95, 105, 100, 95] then mt-extra tok a n i
+    else mt-none
+
+  mt-append : List Integer, List Integer, Integer -> List Integer
+  mt-append (acc) (ids) (i) = if i >= list-length ids then acc else mt-append (list-push acc (list-at ids i)) ids (i + 1)
+
+  mt-split : T5Tok, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mt-split (tok) (a) (n) (start) (i) (acc) =
+    if i >= n then (if start < n then mt-append acc (mt-segment tok (a + start) (n - start)) 0 else acc)
+    else let special = mt-special tok a n i
+    in if special.ms-id < 0 then mt-split tok a n start (i + 1) acc
+    else let before = if i > start then mt-append acc (mt-segment tok (a + start) (i - start)) 0 else acc
+    in mt-split tok a n (i + special.ms-length) (i + special.ms-length) (list-push before (special.ms-id))
+
+  mt-text-utf8 : List Integer, Integer, Integer, Integer -> Integer
+  mt-text-utf8 (cs) (i) (a) (n) = if i >= list-length cs then n else mt-text-utf8 cs (i + 1) a (n + tj-utf8 (a + n) (list-at cs i))
+
+  music-t5-tokenize : T5Tok, Text -> List Integer
+  music-t5-tokenize (tok) (prompt) =
+    let cs = text-to-unicode-bytes prompt
+    in let a = alloc-bytes (list-length cs * 4 + 8)
+    in let n = mt-text-utf8 cs 0 a 0
+    in let ids = mt-split tok a n 0 0 []
+    in if list-length ids > 0 & list-at ids (list-length ids - 1) == 1 then ids else list-push ids 1

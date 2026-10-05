@@ -1,0 +1,171 @@
+Chapter: EncodecKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+  ec-add : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-add (ab) (bb) (yb) (n) (gid) =
+    if gid >= n then 0 else device-store-f32 yb gid (device-load-f32 ab gid + device-load-f32 bb gid)
+
+  ec-rvq : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-rvq (tokens) (books) (out) (frames) (width) (bins) (gid) =
+    if gid >= frames * width then 0
+    else let channel = gid / frames
+    in let time = gid - channel * frames
+    in act
+      k0 <- device-load tokens time
+      k1 <- device-load tokens (frames + time)
+      k2 <- device-load tokens (2 * frames + time)
+      k3 <- device-load tokens (3 * frames + time)
+      v0 <- device-load-f32 books (k0 * width + channel)
+      v1 <- device-load-f32 books ((bins + k1) * width + channel)
+      v2 <- device-load-f32 books ((2 * bins + k2) * width + channel)
+      v3 <- device-load-f32 books ((3 * bins + k3) * width + channel)
+      device-store-f32 out gid (((v0 + v1) + v2) + v3)
+    end
+
+  ec-square-sum : Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  ec-square-sum (vb) (base) (len) (i) (acc) (correction) =
+    if i >= len then acc
+    else act
+      v <- device-load-f32 vb (base + i)
+      let term = v * v - correction
+      in let next = acc + term
+      in ec-square-sum vb base len (i + 1) next ((next - acc) - term)
+    end
+
+  ec-weight-scale : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-weight-scale (vb) (gb) (sb) (len) (rows) (gid) =
+    if gid >= rows then 0
+    else act
+      s <- ec-square-sum vb (gid * len) len 0 0.0 0.0
+      g <- device-load-f32 gb gid
+      device-store-f32 sb gid (g / real-sqrt s)
+    end
+
+  ec-weight-apply : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-weight-apply (vb) (sb) (wb) (len) (n) (gid) =
+    if gid >= n then 0
+    else device-store-f32 wb gid (device-load-f32 vb gid * device-load-f32 sb (gid / len))
+
+  ec-elu : Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-elu (xb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb gid
+      device-store-f32 yb gid (if x >= 0.0 then x else real-exp2-approx (x * 1.4426950408889634) - 1.0)
+    end
+
+  ec-reflect : Integer, Integer, Integer, Integer, Integer -> [Device] Real
+  ec-reflect (xb) (channel) (frames) (padded) (pos) =
+    let at = if pos < 0 then 0 - pos else if pos >= padded then 2 * padded - 2 - pos else pos
+    in if at < 0 | at >= frames then 0.0 else device-load-f32 xb (channel * frames + at)
+
+  ec-conv-sum : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  ec-conv-sum (xb) (wb) (frames) (padded) (cin) (kernel) (pad) (co) (time) (j) (stop) (acc) =
+    if j >= stop then acc
+    else let ci = j / kernel
+    in let tap = j - ci * kernel
+    in act
+      x <- ec-reflect xb ci frames padded (time + tap - pad)
+      w <- device-load-f32 wb (co * cin * kernel + j)
+      ec-conv-sum xb wb frames padded cin kernel pad co time (j + 1) stop (acc + x * w)
+    end
+
+  ec-conv1d : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-conv1d (xb) (wb) (bb) (yb) (cin) (cout) (frames) (kernel) (pad) (gid) =
+    if gid >= cout * frames then 0
+    else let co = gid / frames
+    in let right = kernel - 1 - pad
+    in let maxpad = if pad > right then pad else right
+    in let padded = if frames <= maxpad then maxpad + 1 else frames
+    in act
+      bias <- device-load-f32 bb co
+      value <- ec-conv-sum xb wb frames padded cin kernel pad co (gid - co * frames) 0 (cin * kernel) 0.0
+      device-store-f32 yb gid (value + bias)
+    end
+
+  ec-transpose-sum : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  ec-transpose-sum (xb) (wb) (frames) (cout) (kernel) (stride) (co) (time) (rem) (taps) (j) (stop) (acc) =
+    if j >= stop then acc
+    else let ci = j / taps
+    in let tap = rem + (j - ci * taps) * stride
+    in let pos = (time - tap) / stride
+    in if time < tap | pos >= frames then ec-transpose-sum xb wb frames cout kernel stride co time rem taps (j + 1) stop acc
+    else act
+      x <- device-load-f32 xb (ci * frames + pos)
+      w <- device-load-f32 wb ((ci * cout + co) * kernel + tap)
+      ec-transpose-sum xb wb frames cout kernel stride co time rem taps (j + 1) stop (acc + x * w)
+    end
+
+  ec-conv-transpose : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-conv-transpose (xb) (wb) (bb) (yb) (cin) (cout) (frames) (kernel) (stride) (left) (gid) =
+    if gid >= cout * frames * stride then 0
+    else let width = frames * stride
+    in let co = gid / width
+    in let time = gid - co * width + left
+    in let rem = time - time / stride * stride
+    in let taps = (kernel - rem + stride - 1) / stride
+    in act
+      bias <- device-load-f32 bb co
+      value <- ec-transpose-sum xb wb frames cout kernel stride co time rem taps 0 (cin * taps) 0.0
+      device-store-f32 yb gid (value + bias)
+    end
+
+  ec-lstm-input : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  ec-lstm-input (xb) (wi) (frames) (time) (width) (row) (i) (acc) =
+    if i >= width then acc
+    else act
+      x <- device-load-f32 xb (i * frames + time)
+      w <- device-load-f32 wi (row * width + i)
+      ec-lstm-input xb wi frames time width row (i + 1) (acc + x * w)
+    end
+
+  ec-lstm-hidden : Integer, Integer, Integer, Integer, Integer, Real -> [Device] Real
+  ec-lstm-hidden (hb) (wh) (width) (row) (i) (acc) =
+    if i >= width then acc
+    else act
+      h <- device-load-f32 hb i
+      w <- device-load-f32 wh (row * width + i)
+      ec-lstm-hidden hb wh width row (i + 1) (acc + h * w)
+    end
+
+  ec-lstm-gates : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-lstm-gates (xb) (hb) (wi) (wh) (bi) (bh) (gb) (frames) (time) (width) (gid) =
+    if gid >= 4 * width then 0
+    else act
+      x <- ec-lstm-input xb wi frames time width gid 0 0.0
+      h <- ec-lstm-hidden hb wh width gid 0 0.0
+      ib <- device-load-f32 bi gid
+      hbias <- device-load-f32 bh gid
+      device-store-f32 gb gid ((x + ib) + (h + hbias))
+    end
+
+  ec-sigmoid : Real -> Real
+  ec-sigmoid (x) = 1.0 / (1.0 + real-exp2-approx (0.0 - x * 1.4426950408889634))
+
+  ec-tanh : Real -> Real
+  ec-tanh (x) =
+    let a = if x < 0.0 then 0.0 - x else x
+    in let e = real-exp2-approx (0.0 - 2.0 * a * 1.4426950408889634)
+    in let t = (1.0 - e) / (1.0 + e)
+    in if x < 0.0 then 0.0 - t else t
+
+  ec-lstm-state : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  ec-lstm-state (gb) (cb) (hn) (cn) (yb) (frames) (time) (width) (gid) =
+    if gid >= width then 0
+    else act
+      input <- device-load-f32 gb gid
+      forget <- device-load-f32 gb (width + gid)
+      cell <- device-load-f32 gb (2 * width + gid)
+      output <- device-load-f32 gb (3 * width + gid)
+      previous <- device-load-f32 cb gid
+      let c = ec-sigmoid forget * previous + ec-sigmoid input * ec-tanh cell
+      in let h = ec-sigmoid output * ec-tanh c
+      in act
+        device-store-f32 cn gid c
+        device-store-f32 hn gid h
+        device-store-f32 yb (gid * frames + time) h
+      end
+    end

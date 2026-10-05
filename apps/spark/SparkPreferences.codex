@@ -1,0 +1,271 @@
+Chapter: SparkPreferences
+  cites Foreword chapter CCE
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+
+ The WPF original's PreferenceTracker (D:\Projects\Spark\Spark\PreferenceTracker.cs):
+ style tokens counted over rated images and folded back into later prompts.
+ Weights are kept in quarters, because every strength the original passes is
+ 0.5, 1.0 or 1.5 and a preset takes half of it. The weights keep .NET
+ Dictionary insertion order, and the orderings are stable, as LINQ's are.
+
+Section: State
+
+  PrefWeight = record {
+    pw-key : Text,
+    pw-quarters : Integer
+  }
+
+  PrefState = record {
+    ps-weights : List PrefWeight,
+    ps-positive : Integer,
+    ps-negative : Integer
+  }
+
+  spark-pref-empty : PrefState
+  spark-pref-empty = PrefState { ps-weights = [], ps-positive = 0, ps-negative = 0 }
+
+ The original's signal tokens, in its order (PreferenceTracker.cs s_signalTokens).
+
+  spref-signal : List Text
+  spref-signal =
+    [ "anime", "realistic", "painterly", "cinematic", "wide", "close-up"
+    , "bold", "dark", "bright", "saturated", "desaturated", "detailed"
+    , "minimal", "dramatic", "soft", "hard", "warm", "cool", "purple"
+    , "amber", "copper", "blue", "motion", "still", "crowds", "solo"
+    , "scale contrast", "geometric", "organic", "kubrick", "easley"
+    , "moebius", "studio khara", "concept art", "paperback"
+    , "poster", "portrait", "landscape", "16:9", "3:2", "1:1"
+    , "high detail", "low detail", "sharp", "blurry"
+    ]
+
+Section: Text
+
+  spref-lower-loop : List Integer, Integer, List Integer -> List Integer
+  spref-lower-loop (u) (i) (acc) =
+    if i >= list-length u then acc
+    else let c = list-at u i
+    in spref-lower-loop u (i + 1) (list-push acc (if c >= 65 & c <= 90 then c + 32 else c))
+
+  spref-lower : Text -> Text
+  spref-lower (t) = unicode-bytes-to-text (spref-lower-loop (text-to-unicode-bytes t) 0 [])
+
+  spref-find : Text, Text, Integer -> Integer
+  spref-find (hay) (needle) (i) =
+    if i + text-length needle > text-length hay then 0 - 1
+    else if substring hay i (text-length needle) == needle then i
+    else spref-find hay needle (i + 1)
+
+  spref-contains-ci : Text, Text -> Boolean
+  spref-contains-ci (hay) (needle) = spref-find (spref-lower hay) (spref-lower needle) 0 >= 0
+
+  spref-remove-ci-loop : Text, Text, Text, Integer, Text -> Text
+  spref-remove-ci-loop (t) (low) (n) (i) (acc) =
+    if i >= text-length t then acc
+    else if i + text-length n <= text-length t & substring low i (text-length n) == n then spref-remove-ci-loop t low n (i + text-length n) acc
+    else spref-remove-ci-loop t low n (i + 1) (acc & substring t i 1)
+
+ Regex.Replace(text, Regex.Escape(s), "", IgnoreCase): every occurrence, left to right.
+
+  spref-remove-ci : Text, Text -> Text
+  spref-remove-ci (t) (s) = if text-length s == 0 then t else spref-remove-ci-loop t (spref-lower t) (spref-lower s) 0 ""
+
+  spref-ws-at : Text, Integer -> Boolean
+  spref-ws-at (t) (i) = let s = substring t i 1 in s == " " | s == "\n"
+
+  spref-trim-start : Text, Integer -> Integer
+  spref-trim-start (t) (i) = if i < text-length t & spref-ws-at t i then spref-trim-start t (i + 1) else i
+
+  spref-trim-end : Text, Integer -> Integer
+  spref-trim-end (t) (e) = if e > 0 & spref-ws-at t (e - 1) then spref-trim-end t (e - 1) else e
+
+  spref-trim : Text -> Text
+  spref-trim (t) = let a = spref-trim-start t 0 in substring t a (spref-trim-end t (text-length t) - a)
+
+  spref-ws-end : Text, Integer -> Integer
+  spref-ws-end (t) (i) = if i < text-length t & spref-ws-at t i then spref-ws-end t (i + 1) else i
+
+ Regex.Replace(text, @",\s*,", ","), one pass: a match's second comma is consumed.
+
+  spref-commas : Text, Integer, Text -> Text
+  spref-commas (t) (i) (acc) =
+    if i >= text-length t then acc
+    else if substring t i 1 == "," then
+      (let j = spref-ws-end t (i + 1)
+      in if j < text-length t & substring t j 1 == "," then spref-commas t (j + 1) (acc & ",")
+      else spref-commas t (i + 1) (acc & ","))
+    else spref-commas t (i + 1) (acc & substring t i 1)
+
+ Regex.Replace(text, @"\s{2,}", " "), one pass.
+
+  spref-spaces : Text, Integer, Text -> Text
+  spref-spaces (t) (i) (acc) =
+    if i >= text-length t then acc
+    else let j = spref-ws-end t i
+    in if j - i >= 2 then spref-spaces t j (acc & " ")
+    else spref-spaces t (i + 1) (acc & substring t i 1)
+
+  spref-trim-commas : Text -> Text
+  spref-trim-commas (t) = if text-length t > 0 & substring t (text-length t - 1) 1 == "," then spref-trim-commas (substring t 0 (text-length t - 1)) else t
+
+Section: Recording
+
+  spref-tokens-loop : Text, Integer, List Text -> List Text
+  spref-tokens-loop (low) (i) (acc) =
+    if i >= list-length spref-signal then acc
+    else let tok = list-at spref-signal i
+    in spref-tokens-loop low (i + 1) (if spref-find low tok 0 >= 0 then list-push acc tok else acc)
+
+  spark-pref-tokens : Text -> List Text
+  spark-pref-tokens (text) = spref-tokens-loop (spref-lower text) 0 []
+
+  spref-add-loop : List PrefWeight, Text, Integer, Integer, List PrefWeight, Boolean -> List PrefWeight
+  spref-add-loop (ws) (key) (q) (i) (acc) (hit) =
+    if i >= list-length ws then (if hit then acc else list-push acc (PrefWeight { pw-key = key, pw-quarters = q }))
+    else let w = list-at ws i
+    in if w.pw-key == key then spref-add-loop ws key q (i + 1) (list-push acc (PrefWeight { pw-key = key, pw-quarters = w.pw-quarters + q })) True
+    else spref-add-loop ws key q (i + 1) (list-push acc w) hit
+
+  spref-add : List PrefWeight, Text, Integer -> List PrefWeight
+  spref-add (ws) (key) (q) = spref-add-loop ws key q 0 [] False
+
+  spref-add-all : List PrefWeight, List Text, Integer, Integer -> List PrefWeight
+  spref-add-all (ws) (toks) (q) (i) =
+    if i >= list-length toks then ws
+    else spref-add-all (spref-add ws (list-at toks i) q) toks q (i + 1)
+
+ RecordPositive and RecordNegative: the prompt text and style's tokens move by
+ the strength. A positive also adds half the strength to a preset other than
+ "none"; a negative leaves presets alone, as the original's does.
+
+  spark-pref-record : PrefState, Text, Text, Integer, Boolean -> PrefState
+  spark-pref-record (s) (text) (preset) (quarters) (positive) =
+    let q = if positive then quarters else 0 - quarters
+    in let ws = spref-add-all (s.ps-weights) (spark-pref-tokens text) q 0
+    in let ws2 = if positive & preset /= "none" then spref-add ws ("preset:" & preset) (quarters / 2) else ws
+    in PrefState {
+      ps-weights = ws2,
+      ps-positive = s.ps-positive + (if positive then 1 else 0),
+      ps-negative = s.ps-negative + (if positive then 0 else 1)
+    }
+
+Section: Ordering
+
+ A stable sort: equal weights keep insertion order, as LINQ's OrderBy does.
+
+  spref-insert : List PrefWeight, PrefWeight, Boolean, Integer, List PrefWeight, Boolean -> List PrefWeight
+  spref-insert (sorted) (w) (desc) (i) (acc) (placed) =
+    if i >= list-length sorted then (if placed then acc else list-push acc w)
+    else let x = list-at sorted i
+    in let before = if desc then w.pw-quarters > x.pw-quarters else w.pw-quarters < x.pw-quarters
+    in if placed == False & before then spref-insert sorted w desc (i + 1) (list-push (list-push acc w) x) True
+    else spref-insert sorted w desc (i + 1) (list-push acc x) placed
+
+  spref-sort : List PrefWeight, Boolean, Integer, List PrefWeight -> List PrefWeight
+  spref-sort (ws) (desc) (i) (acc) =
+    if i >= list-length ws then acc
+    else spref-sort ws desc (i + 1) (spref-insert acc (list-at ws i) desc 0 [] False)
+
+  spref-preset : Text -> Boolean
+  spref-preset (k) = text-length k >= 7 & substring k 0 7 == "preset:"
+
+Section: Adjusting
+
+  spref-boosts : List PrefWeight, Text, Integer, List Text -> List Text
+  spref-boosts (ws) (p) (i) (acc) =
+    if i >= list-length ws | list-length acc >= 3 then acc
+    else let w = list-at ws i
+    in if spref-preset (w.pw-key) then spref-boosts ws p (i + 1) acc
+    else spref-boosts ws p (i + 1) (if w.pw-quarters > 6 & spref-contains-ci p (w.pw-key) == False then list-push acc (w.pw-key) else acc)
+
+  spref-supps : List PrefWeight, Text, Integer, List Text -> List Text
+  spref-supps (ws) (p) (i) (acc) =
+    if i >= list-length ws | list-length acc >= 2 then acc
+    else let w = list-at ws i
+    in if spref-preset (w.pw-key) then spref-supps ws p (i + 1) acc
+    else spref-supps ws p (i + 1) (if w.pw-quarters < 0 - 6 & spref-contains-ci p (w.pw-key) then list-push acc (w.pw-key) else acc)
+
+  spref-join : List Text, Integer, Text -> Text
+  spref-join (xs) (i) (acc) = if i >= list-length xs then acc else spref-join xs (i + 1) (if i == 0 then list-at xs 0 else acc & ", " & list-at xs i)
+
+  spref-strip : Text, List Text, Integer -> Text
+  spref-strip (t) (ss) (i) = if i >= list-length ss then t else spref-strip (spref-trim (spref-remove-ci t (list-at ss i))) ss (i + 1)
+
+ AdjustPrompt: the adjusted prompt and its explanation. The original's minus
+ sign is U+2212.
+
+  PrefAdjust = record {
+    pa-prompt : Text,
+    pa-explanation : Text
+  }
+
+  spark-pref-adjust : PrefState, Text -> PrefAdjust
+  spark-pref-adjust (s) (p) =
+    if s.ps-positive + s.ps-negative < 3 then PrefAdjust { pa-prompt = p, pa-explanation = "not enough data yet" }
+    else let boosts = spref-boosts (spref-sort (s.ps-weights) True 0 []) p 0 []
+    in let supps = spref-supps (spref-sort (s.ps-weights) False 0 []) p 0 []
+    in let m1 = if list-length boosts > 0 then p & ", " & spref-join boosts 0 "" else p
+    in let m2 = spref-strip m1 supps 0
+    in let m3 = spref-trim-commas (spref-trim (spref-spaces (spref-commas m2 0 "") 0 ""))
+    in let e1 = if list-length boosts > 0 then "+[" & spref-join boosts 0 "" & "]" else ""
+    in let e2 = if list-length supps > 0 then e1 & " " & unicode-bytes-to-text [8722] & "[" & spref-join supps 0 "" & "]" else e1
+    in PrefAdjust { pa-prompt = m3, pa-explanation = if text-length e2 == 0 then "no adjustments" else e2 }
+
+ SuggestedPreset: the first preset, in insertion order, with the largest
+ weight above zero, else "none".
+
+  spref-suggest : List PrefWeight, Integer, Integer, Text -> Text
+  spref-suggest (ws) (i) (best) (name) =
+    if i >= list-length ws then name
+    else let w = list-at ws i
+    in if spref-preset (w.pw-key) & w.pw-quarters > best then spref-suggest ws (i + 1) (w.pw-quarters) (substring (w.pw-key) 7 (text-length (w.pw-key) - 7))
+    else spref-suggest ws (i + 1) best name
+
+  spark-pref-suggested-preset : PrefState -> Text
+  spark-pref-suggested-preset (s) = spref-suggest (s.ps-weights) 0 0 "none"
+
+Section: preferences.json
+
+ The original's PreferenceState as its serializer writes it, camelCase:
+ "weights" by name in insertion order, "totalPositive", "totalNegative". A
+ weight the tracker writes is a whole number of quarters, printed as .NET
+ prints that double (31, 2.5, 0.25, -4.5).
+
+  spref-pow10 : Integer -> Integer
+  spref-pow10 (k) = if k <= 0 then 1 else 10 * spref-pow10 (k - 1)
+
+  spref-quarters : JsonValue -> Integer
+  spref-quarters (v) = when v
+    is JsonInt (n) -> n * 4
+    is JsonNum (n) -> (n.jn-mantissa * 4) / spref-pow10 (n.jn-decimals)
+    is otherwise -> 0
+
+  spref-weights-loop : List JsonPair, Integer, List PrefWeight -> List PrefWeight
+  spref-weights-loop (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else let p = list-at ps i
+    in spref-weights-loop ps (i + 1) (list-snoc acc (PrefWeight { pw-key = p.key, pw-quarters = spref-quarters (p.value) }))
+
+  spref-weights-of : JsonValue -> List PrefWeight
+  spref-weights-of (v) = when json-get v "weights"
+    is Just (w) -> (when w
+      is JsonObject (ps) -> spref-weights-loop ps 0 []
+      is otherwise -> [])
+    is None -> []
+
+  spark-pref-parse : Text -> PrefState
+  spark-pref-parse (json) = when json-parse json
+    is Just (v) -> PrefState { ps-weights = spref-weights-of v, ps-positive = json-get-int v "totalPositive" 0, ps-negative = json-get-int v "totalNegative" 0 }
+    is None -> spark-pref-empty
+
+  spark-pref-number : Integer -> JsonValue
+  spark-pref-number (q) =
+    if q - (q / 4) * 4 == 0 then JsonInt (q / 4)
+    else if (q * 25) - ((q * 25) / 10) * 10 == 0 then json-num ((q * 25) / 10) 1
+    else json-num (q * 25) 2
+
+  spref-pairs : List PrefWeight, Integer, List JsonPair -> List JsonPair
+  spref-pairs (ws) (i) (acc) = if i >= list-length ws then acc else spref-pairs ws (i + 1) (list-snoc acc (json-pair ((list-at ws i).pw-key) (spark-pref-number ((list-at ws i).pw-quarters))))
+
+  spark-pref-json : PrefState -> Text
+  spark-pref-json (s) = json-emit (JsonObject [json-pair "weights" (JsonObject (spref-pairs (s.ps-weights) 0 [])), json-pair "totalPositive" (JsonInt (s.ps-positive)), json-pair "totalNegative" (JsonInt (s.ps-negative))])

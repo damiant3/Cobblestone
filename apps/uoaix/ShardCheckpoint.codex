@@ -1,0 +1,98 @@
+Chapter: ShardCheckpoint
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter PanelAuditCodec
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter GameClock
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+ USC1 contains a 96-byte header followed by UGC1, UEC1, UAC1 and UPA1.
+ Header cells: magic, version, size, game bytes, tick, sequence, FNV32,
+ reserved zero, day seconds, fractional phase, due hours, reserved zero.
+ The monotonic cursor is rebased by the caller's new boot tick on restore.
+
+  ShardCheckpoint = record { game : GameCheckpoint, economy : EconomyCheckpoint, panel : AdminPanel }
+
+  shc-size : Integer -> Integer
+  shc-size (capacity) = 96 + gc-size capacity + es-bytes + ac-size + pac-size
+
+  shc-clock-valid : Integer, Integer, Integer -> Boolean
+  shc-clock-valid (rate) (phase) (due) =
+    if not (gc-rate-valid rate) then False
+    else phase >= 0 & phase < rate * 100 & due >= 0 & due <= 8760000
+
+  shc-encode : ShardCheckpoint, Integer, Integer -> Result Integer Text
+  shc-encode (state) (buf) (capacity) =
+    let checkpoint = state.game.state.checkpoint
+    in let clock = state.panel.clock
+    in if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects then Err "shard world capacity invalid"
+    else let size = shc-size checkpoint.world.capacity
+    in let game-bytes = gc-size checkpoint.world.capacity
+    in if capacity < size then Err "shard checkpoint destination too short"
+    else if state.economy.tick /= checkpoint.tick | state.economy.sequence /= checkpoint.sequence then Err "shard component commit positions differ"
+    else if state.game.state.townsfolk.hour /= state.economy.world.hour then Err "shard simulation hours differ"
+    else if clock.last-tick < 0 | not (shc-clock-valid clock.day-seconds clock.phase clock.due) then Err "shard clock invalid"
+    else when gc-encode state.game.state state.game.game (buf + 96) game-bytes
+      is Err (e) -> Err e
+      is Ok (g) -> when es-encode state.economy (buf + 96 + game-bytes) es-bytes
+        is Err (e) -> Err e
+        is Ok (ec) -> when ac-encode state.panel.world checkpoint.tick checkpoint.sequence (buf + 96 + game-bytes + es-bytes) ac-size
+          is Err (e) -> Err e
+          is Ok (a) -> when pac-encode state.panel checkpoint.tick checkpoint.sequence (buf + 96 + game-bytes + es-bytes + ac-size) pac-size
+            is Err (e) -> Err e
+            is Ok (p) ->
+              let h0 = poke-qword buf 0 #31435355
+              in let h1 = poke-qword buf 8 1
+              in let h2 = poke-qword buf 16 size
+              in let h3 = poke-qword buf 24 game-bytes
+              in let h4 = poke-qword buf 32 checkpoint.tick
+              in let h5 = poke-qword buf 40 checkpoint.sequence
+              in let h7 = poke-qword buf 56 0
+              in let h8 = poke-qword buf 64 clock.day-seconds
+              in let h9 = poke-qword buf 72 clock.phase
+              in let h10 = poke-qword buf 80 clock.due
+              in let h11 = poke-qword buf 88 0
+              in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+              in Ok size
+
+  shc-decode : Integer, Integer, Integer, Text, GmMemory -> Result ShardCheckpoint Text
+  shc-decode (buf) (size) (now) (actor) (gms) =
+    if now < 0 | size < shc-size 1 - es-bytes + es-v1-bytes | size > shc-size world-max-objects then Err "shard checkpoint length or boot tick invalid"
+    else if peek-qword buf 0 /= #31435355 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size then Err "shard checkpoint format unsupported"
+    else if peek-qword buf 56 /= 0 | peek-qword buf 88 /= 0 then Err "shard checkpoint reserved data"
+    else let game-bytes = peek-qword buf 24
+    in if game-bytes < gc-size 1 | game-bytes > gc-size world-max-objects then Err "shard game component length invalid"
+    else let economy-bytes = size - 96 - game-bytes - ac-size - pac-size
+    in if es-version economy-bytes == 0 then Err "shard component lengths disagree"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "shard checkpoint checksum invalid"
+    else let tick = peek-qword buf 32
+    in let sequence = peek-qword buf 40
+    in let rate = peek-qword buf 64
+    in let phase = peek-qword buf 72
+    in let due = peek-qword buf 80
+    in if tick < 0 | sequence < 0 | not (shc-clock-valid rate phase due) then Err "shard checkpoint clock invalid"
+    else when gc-decode-record (buf + 96) game-bytes tick sequence
+      is Err (e) -> Err e
+      is Ok (game) -> when es-decode-record (buf + 96 + game-bytes) economy-bytes tick sequence
+        is Err (e) -> Err e
+        is Ok (economy) ->
+          if economy.world.hour /= game.state.townsfolk.hour then Err "shard checkpoint simulation hours differ"
+          else when ac-decode-record (buf + 96 + game-bytes + economy-bytes) ac-size tick sequence game.state.townsfolk game.state.mind
+            is Err (e) -> Err e
+            is Ok (admin) ->
+              let clock = GameClock { day-seconds = rate, last-tick = now, phase = phase, due = due }
+              in when pac-decode-record (buf + 96 + game-bytes + economy-bytes + ac-size) pac-size tick sequence admin actor gms clock
+                is Err (e) -> Err e
+                is Ok (panel) -> Ok (ShardCheckpoint { game = game, economy = economy, panel = panel })
+
+  shc-decode-record : Integer, Integer, Integer, Integer, Integer, Text, GmMemory -> Result ShardCheckpoint Text
+  shc-decode-record (buf) (size) (tick) (sequence) (now) (actor) (gms) =
+    if size < 64 then Err "shard checkpoint record truncated"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "shard checkpoint disagrees with record metadata"
+    else shc-decode buf size now actor gms
+
+Page 1

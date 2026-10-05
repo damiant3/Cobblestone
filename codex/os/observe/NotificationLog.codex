@@ -129,8 +129,19 @@ Section: Entry Management
     in let count2 = nl.nl-entry-count + 1
     in if count2 > nl.nl-max-entries then
       let trimmed = nl-trim-entries entries2 count2 (nl.nl-max-entries)
-      in NotificationLog { nl-journal = nl.nl-journal, nl-entries = trimmed, nl-entry-count = nl.nl-max-entries, nl-max-entries = nl.nl-max-entries }
-    else NotificationLog { nl-journal = nl.nl-journal, nl-entries = entries2, nl-entry-count = count2, nl-max-entries = nl.nl-max-entries }
+      in NotificationLog {
+        nl-journal = nl.nl-journal,
+        nl-entries = trimmed,
+        nl-entry-count = nl.nl-max-entries,
+        nl-max-entries = nl.nl-max-entries
+      }
+    else
+      NotificationLog {
+        nl-journal = nl.nl-journal,
+        nl-entries = entries2,
+        nl-entry-count = count2,
+        nl-max-entries = nl.nl-max-entries
+      }
 
   nl-trim-entries : List NotifAuditEntry, Integer, Integer -> List NotifAuditEntry
   nl-trim-entries (entries) (count) (max-entries) =
@@ -162,8 +173,14 @@ Section: Queries
     if i >= n then acc
     else let entry = list-at entries i
     in let match-src = if text-length src-filter == 0 then True else entry.nae-source == src-filter
-    in let match-sev = if text-length sev-filter == 0 then True else entry.nae-severity == sev-filter
-    in let match-time = if from-ts == 0 then True else if entry.nae-timestamp >= from-ts then if to-ts == 0 then True else entry.nae-timestamp <= to-ts else False
+    in let match-sev = if text-length sev-filter == 0 then
+      True
+    else entry.nae-severity == sev-filter
+    in let match-time = if from-ts == 0 then
+      True
+    else if entry.nae-timestamp >= from-ts then
+      if to-ts == 0 then True else entry.nae-timestamp <= to-ts
+    else False
     in if match-src then if match-sev then if match-time then
       nl-filter-entries entries (i + 1) n src-filter sev-filter from-ts to-ts (list-push acc entry)
     else nl-filter-entries entries (i + 1) n src-filter sev-filter from-ts to-ts acc
@@ -174,13 +191,15 @@ Section: JSON Export
 
   nl-entry-to-json : NotifAuditEntry -> Text
   nl-entry-to-json (entry) =
-    "{\"event\":\"" & notif-event-label (entry.nae-event)
-    & "\",\"id\":" & show (entry.nae-notif-id)
-    & ",\"severity\":\"" & entry.nae-severity
-    & "\",\"source\":\"" & entry.nae-source
-    & "\",\"title\":\"" & entry.nae-title
-    & "\",\"body\":\"" & entry.nae-body
-    & "\",\"timestamp\":" & show (entry.nae-timestamp) & "}"
+    json-emit (json-object [
+      json-pair "event" (json-str (notif-event-label (entry.nae-event))),
+      json-pair "id" (json-int (entry.nae-notif-id)),
+      json-pair "severity" (json-str (entry.nae-severity)),
+      json-pair "source" (json-str (entry.nae-source)),
+      json-pair "title" (json-str (entry.nae-title)),
+      json-pair "body" (json-str (entry.nae-body)),
+      json-pair "timestamp" (json-int (entry.nae-timestamp))
+    ])
 
   nl-export-json : NotificationLog -> Text
   nl-export-json (nl) =

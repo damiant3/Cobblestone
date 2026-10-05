@@ -1,0 +1,102 @@
+Chapter: SharedServeProof
+  cites Uoaix chapter ShardServer
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameHuffman
+  cites Uoaix chapter WalkLoad
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter AdminProtocol
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Works chapter Http
+  cites Net chapter NetDriver
+  cites Net chapter NetCompact
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  ssv-line : [Console] Text = act
+    line <- read-line
+    when line is None -> "" is Just (text) -> text
+  end
+
+  ssv-fail : Text -> [Console] Integer
+  ssv-fail (message) = act
+    print-line-uni ("FAIL " & message)
+    1
+  end
+
+  ssv-marker : Integer -> [Device.Block] Result Integer Text
+  ssv-marker (offset) = act
+    buf <- block-read-sector 0
+    if buf <= 0 then Err "shared fixture disk missing"
+    else let value = peek-qword buf offset + 1
+    in let stored = poke-qword buf offset value
+    in act
+      written <- block-write-sector 0 buf
+      if written /= 0 then Err "shared fixture marker write failed" else Ok value
+    end
+  end
+
+  ssv-game : GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Device.Block] Result GameReply Text
+  ssv-game (game) (input) (map) (port) (packet) = when gn-default-handler game input map port packet
+    is Err (e) -> act Err e end
+    is Ok (reply) -> act
+      saved <- ssv-marker 0
+      when saved is Err (e) -> Err e is Ok (n) -> Ok reply
+    end
+
+  ssv-http : AdminAuth, AdminWorld, HttpRequest -> [Console, Device.Block] Result HttpResponse Text
+  ssv-http (auth) (world) (request) =
+    let response = admin-route auth (admin-dispatch world) request
+    in act
+      saved <- ssv-marker 16
+      when saved
+        is Err (e) -> Err e
+        is Ok (n) -> act
+          print-line-uni ("ADMINREPLY " & show n)
+          Ok response
+        end
+    end
+
+  opening : [Console, Network.Read, Network.Write, Device.Block] Integer = act
+    health <- ssv-line
+    mind-key <- ssv-line
+    keeper <- ssv-line
+    human <- ssv-line
+    epoch <- ssv-line
+    settings <- block-read-sector 0
+    if settings <= 0 then ssv-fail "fixture disk"
+    else let port = peek-qword settings 8
+    in when admin-auth-new [health,mind-key,keeper,human] epoch
+      is None -> ssv-fail "fixture auth"
+      is Just (auth) -> act
+        card <- net-driver-bring-up
+        let arena = nc-set-acquire (nc-pool-cell process-get-pid)
+        in let released = nc-set-release arena
+        in let huffman = gh-new 0
+        in act
+          print-line-uni "SHARED PRELOAD"
+          loaded <- wl-load 1408 1680 32 32
+          when loaded
+            is Err (e) -> ssv-fail ("map " & e)
+            is Ok (map) -> when gs-new 0
+              is Err (e) -> ssv-fail ("game " & e)
+              is Ok (game) ->
+                let town = tf-new 0
+                in let britain = tf-add-town town "Britain" 1 2 3
+                in let mara = tf-add-person town "Mara" britain 4 5 2 9000
+                in let world = admin-world-new town (tm-new 0)
+                in let http-handler = ssv-http auth world
+                in when ss-new game map huffman port [2593,2593,2593,2593,2593,2593,2594,2594] net-driver-mac [10,0,2,15] [10,0,2,2] [255,255,255,0] get-ticks
+                  is Err (e) -> ssv-fail ("server " & e)
+                  is Ok (server) -> act
+                    print-line-uni "LISTEN game-server 0"
+                    print-line-uni "LISTEN admin 2594"
+                    ss-serve ssv-game http-handler server
+                  end
+        end
+      end
+  end
+
+Page 1

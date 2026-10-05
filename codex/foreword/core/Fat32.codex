@@ -270,7 +270,7 @@ Section: Path Resolution
         else if bit-and (entry.de-attr) 16 == 16
           then let child-cluster = entry.de-cluster
           in fat32-walk-path vol parts (depth + 1) total child-cluster
-          else None
+        else None
       is None -> None
 
 Section: File Reading
@@ -298,13 +298,15 @@ Section: File Reading
     in if remaining - bytes-this <= 0 then Just acc2
     else if next-off >= (vol.f32-sectors-per-cluster)
       then fat32-read-next-cluster vol cluster (remaining - bytes-this) acc2 saved power steps
-      else fat32-read-cluster-bytes vol cluster (remaining - bytes-this) next-off acc2 saved power steps
+    else
+      fat32-read-cluster-bytes vol cluster (remaining - bytes-this) next-off acc2 saved power steps
 
   fat32-read-next-cluster : Fat32Volume, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
   fat32-read-next-cluster (vol) (cluster) (remaining) (acc) (saved) (power) (steps) = act
     nxt <- fat32-next-cluster vol cluster
     if nxt == saved then None
-    else if steps + 1 == power then fat32-read-cluster-bytes vol nxt remaining 0 acc nxt (power * 2) 0
+    else if steps + 1 == power then
+      fat32-read-cluster-bytes vol nxt remaining 0 acc nxt (power * 2) 0
     else fat32-read-cluster-bytes vol nxt remaining 0 acc saved power (steps + 1)
   end
 
@@ -340,7 +342,8 @@ Section: Root Listing
   fat32-list-dir-walk (vol) (cluster) (acc) (saved) (power) (steps) =
     if fat32-is-end cluster then acc
     else if cluster < 2 then acc
-    else fat32-list-dir-step vol cluster (fat32-list-dir-sectors (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster) acc) saved power steps
+    else
+      fat32-list-dir-step vol cluster (fat32-list-dir-sectors (fat32-cluster-sector vol cluster) (vol.f32-sectors-per-cluster) acc) saved power steps
 
   fat32-list-dir-step : Fat32Volume, Integer, List Text, Integer, Integer, Integer -> [Device.Block] List Text
   fat32-list-dir-step (vol) (cluster) (acc) (saved) (power) (steps) = act
@@ -379,7 +382,10 @@ Section: File Writing
   fat32-write-file-step (vol) (parts) (data) (dir-cluster) =
     if dir-cluster == 0 then False
     else let data-len = list-length data
-    in let clusters-needed = if data-len == 0 then 1 else (data-len + (vol.f32-sectors-per-cluster) * 512 - 1) / ((vol.f32-sectors-per-cluster) * 512)
+    in let clusters-needed = if data-len == 0 then
+      1
+    else
+      (data-len + (vol.f32-sectors-per-cluster) * 512 - 1) / ((vol.f32-sectors-per-cluster) * 512)
     in act
       first-cluster <- fat32-alloc-chain vol clusters-needed (vol.f32-next-free) 0
       fat32-write-file-finish vol data dir-cluster (list-at parts (list-length parts - 1)) first-cluster
@@ -557,7 +563,7 @@ Section: Finding A Run Of Free Slots
     let eps = (vol.f32-bytes-per-sector) / 32
     in let r = fat16-run-in-sector buf 0 eps need streak
     in if (r.rn-found) then sector * 512 + (r.rn-at) * 32
-       else fat32-run-dir-sectors vol need (sector + 1) (remaining - 1) (r.rn-streak)
+    else fat32-run-dir-sectors vol need (sector + 1) (remaining - 1) (r.rn-streak)
 
   fat32-find-or-grow-run-in-dir : Fat32Volume, Integer, Integer -> [Device.Block] Integer
   fat32-find-or-grow-run-in-dir (vol) (cluster) (need) = act
@@ -675,7 +681,7 @@ Section: Choosing An Alias
     let eps = (vol.f32-bytes-per-sector) / 32
     in let found = fat16-name-slot-in-sector buf name 0 eps
     in if found >= 0 then sector * 512 + found
-       else fat32-name-slot-sectors vol name (sector + 1) (remaining - 1)
+    else fat32-name-slot-sectors vol name (sector + 1) (remaining - 1)
 
   fat32-write-entry-at : Integer, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
   fat32-write-entry-at (sector) (off) (name83) (attr) (cluster) (size) = act
@@ -725,9 +731,9 @@ Section: 8.3 Name Conversion
     let dot = fat32-find-dot name 0 (text-length name)
     in if dot < 0
       then fat32-pad-right (fat16-upper name) 11
-      else let base = fat32-pad-right (fat16-upper (substring name 0 dot)) 8
-      in let ext = fat32-pad-right (fat16-upper (substring name (dot + 1) (text-length name - dot - 1))) 3
-      in base & ext
+    else let base = fat32-pad-right (fat16-upper (substring name 0 dot)) 8
+    in let ext = fat32-pad-right (fat16-upper (substring name (dot + 1) (text-length name - dot - 1))) 3
+    in base & ext
 
  The 46 is ASCII for a full stop, and `char-code` does not answer ASCII, so no
  name ever split at its dot: `BOOTX64.EFI` was padded whole into eleven
@@ -792,7 +798,7 @@ Section: Directory Creation
       is Just (entry) ->
         if bit-and (entry.de-attr) 16 == 16
           then fat32-ensure-parent-dirs vol parts (depth + 1) stop (entry.de-cluster)
-          else 0
+        else 0
       is None -> fat32-ensure-parent-child vol parts depth stop (fat32-mkdir vol current name)
 
   fat32-ensure-parent-child : Fat32Volume, List Text, Integer, Integer, Integer -> [Device.Block] Integer

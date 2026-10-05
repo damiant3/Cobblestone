@@ -176,8 +176,8 @@ while (segIds.length < conWant) {
   cp += 27 + lc * 8; conN++;
 }
 const idOf = i => dv.getInt32(DAT_BASE + HDR_SIZE + i * REC, true);
-check('239 constellation lines published', geti(CELL_CONLINES) === 239 && conWant === 239, geti(CELL_CONLINES));
-check('36 constellations walked', geti(CELL_CONCOUNT) === 36 && conN === 36, geti(CELL_CONCOUNT));
+check('695 constellation lines published', geti(CELL_CONLINES) === 695 && conWant === 695, geti(CELL_CONLINES));
+check('88 constellations walked', geti(CELL_CONCOUNT) === 88 && conN === 88, geti(CELL_CONCOUNT));
 let segBad = -1;
 for (let k = 0; k < geti(CELL_CONLINES); k++) {
   const a = geti(CON_BUF + k * 8), b = geti(CON_BUF + k * 8 + 4);
@@ -243,7 +243,7 @@ const firstFrom = DAT_BASE + conOff + 27;
 const keepFrom = dv.getInt32(firstFrom, true);
 dv.setInt32(firstFrom, 999999999, true);
 w.sm_load(dat.length);
-control('the constellation resolution arm', geti(CELL_CONLINES) === 238);
+control('the constellation resolution arm', geti(CELL_CONLINES) === conWant - 1);
 dv.setInt32(firstFrom, keepFrom, true);
 w.sm_load(dat.length);
 

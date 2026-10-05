@@ -1,0 +1,85 @@
+Chapter: GameMonsterAggressionReplay
+  cites Uoaix chapter GameMonster
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  Aggression = record { swings : Integer, health : Integer, moves : Integer }
+  gma-pulses : GameMonster, GameShard, GameInput, WalkMap, Aggression, Integer -> [Console] Nothing
+  gma-pulses (g) (shard) (input) (map) (counts) (tick) =
+    if tick > gm-ticks 20000 then act
+      print-line-uni ("swings=" & show counts.swings & " health-updates=" & show counts.health & " moves=" & show counts.moves)
+      print-line-uni ("player-hp=" & show (cbr-hits shard input.session.serial))
+      cbr-check "three-monster twenty-second run swings and damages player" (counts.swings > 0 & counts.health > 0 & cbr-hits shard input.session.serial < 45)
+    end
+    else let mark = __heap-save in act
+      result <- gm-pulse g shard input map 2593 tick
+      when result
+        is Err (e) -> print-line-uni ("FAIL pulse " & e)
+        is Ok (_) -> act
+          swing <- __record-set counts "swings" (counts.swings + (if cbr-opcode result 47 0 then 1 else 0))
+          health <- __record-set counts "health" (counts.health + (if cbr-opcode result 161 0 then 1 else 0))
+          moves <- __record-set counts "moves" (counts.moves + (if cbr-opcode result 119 0 then 1 else 0))
+          restore <- __heap-restore mark
+          gma-pulses g shard input map counts (tick + 1)
+        end
+    end
+  gma-run : GameShard, WalkMap -> [Console] Nothing
+  gma-run (shard) (map) = act
+    combat <- cb-new shard 104729
+    counts <- Aggression { swings = 0, health = 0, moves = 0 }
+    input <- gn-input-with (cb-specs 0) 1
+    when gm-new combat 3 1426 1700 0 6
+      is Err (e) -> print-line-uni ("FAIL home " & e)
+      is Ok (g) -> when gs-relay-key shard
+        is Err (e) -> print-line-uni ("FAIL relay " & e)
+        is Ok (key) -> act
+          keyed <- __record-set input.session "key" key
+          login <- gs-handle shard input.session map (cbr-login key)
+          created <- gs-handle shard input.session map (cbr-create 0)
+          mode <- __record-set input "mode" 2
+          gma-pulses g shard input map counts 0
+        end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1408 1680 32 32
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- cbr-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> gma-run shard map
+      end
+  end
+
+Page 1

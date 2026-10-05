@@ -1,0 +1,116 @@
+Chapter: GameWorldSpawnCodec
+  cites Uoaix chapter GameWorldSpawn
+
+ UWS1: 64-byte header, 8-byte remaining timer per region, 40-byte slot rows.
+ Rows carry serial, region/profile indexes, direction and remaining movement time.
+ UCB1 owns combat profiles and RNG. The composite owns atomic world restoration.
+
+  gwsc-size : GameWorldSpawn -> Integer
+  gwsc-size (g) = 64 + list-length g.catalog.regions * 8 + list-length g.slots * 40
+  gwsc-row : GameWorldSpawn, Integer, Integer -> Integer
+  gwsc-row (g) (buf) (i) = buf + 64 + list-length g.catalog.regions * 8 + i * 40
+  gwsc-clock : Integer -> Boolean
+  gwsc-clock (now) = now >= 0 & now <= 9223372036854775807 - gm-ticks 86400000
+  gwsc-bound : GameWorldSpawn, WorldTable, Integer, Integer, Integer -> Boolean
+  gwsc-bound (g) (world) (serial) (region) (profile) = if serial == 0 then True
+    else if region < 0 | region >= list-length g.catalog.regions
+      | profile < 0 | profile >= list-length g.catalog.profiles then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (m) -> if m.kind /= 1 | m.health <= 0 then False
+        else let a = list-at g.combat.actors (world-slot world serial)
+        in let p = list-at g.catalog.profiles profile
+        in a.serial == serial & a.npc & m.graphic == p.body & m.hue >= p.hue & m.hue <= p.hue-high
+          & gws-inside (list-at g.catalog.regions region) m.x m.y
+  gwsc-write-timers : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gwsc-write-timers (g) (now) (buf) (i) = if i == list-length g.catalog.regions then 0
+    else let written = poke-qword buf (64 + i * 8) (max 0 (peek-qword g.deadlines (i * 8) - now))
+    in gwsc-write-timers g now buf (i + 1)
+  gwsc-write-slots : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gwsc-write-slots (g) (now) (buf) (i) = if i == list-length g.slots then 0
+    else let slot = list-at g.slots i
+    in let row = gwsc-row g buf i
+    in let a = poke-qword row 0 slot.serial
+    in let b = poke-qword row 8 (if slot.serial == 0 then -1 else slot.region)
+    in let c = poke-qword row 16 (if slot.serial == 0 then -1 else slot.profile)
+    in let d = poke-qword row 24 slot.direction
+    in let e = poke-qword row 32 (max 0 (slot.due - now))
+    in gwsc-write-slots g now buf (i + 1)
+  gwsc-distinct : GameWorldSpawn, Integer, Integer, Integer, Integer -> Boolean
+  gwsc-distinct (g) (buf) (serial) (i) (limit) = if serial == 0 | i == limit then True
+    else peek-qword (gwsc-row g buf i) 0 /= serial & gwsc-distinct g buf serial (i + 1) limit
+  gwsc-count : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gwsc-count (g) (buf) (region) (i) = if i == list-length g.slots then 0
+    else let row = gwsc-row g buf i
+    in (if peek-qword row 0 > 0 & peek-qword row 8 == region then 1 else 0) + gwsc-count g buf region (i + 1)
+  gwsc-timers-valid : GameWorldSpawn, Integer, Integer -> Boolean
+  gwsc-timers-valid (g) (buf) (i) = if i == list-length g.catalog.regions then True
+    else let remaining = peek-qword buf (64 + i * 8)
+    in let r = list-at g.catalog.regions i
+    in remaining >= 0 & remaining <= gm-ticks (max 1000 (r.maximum-minutes * 60000))
+      & gwsc-count g buf i 0 <= r.maximum & gwsc-timers-valid g buf (i + 1)
+  gwsc-rows-valid : GameWorldSpawn, WorldTable, Integer, Integer -> Boolean
+  gwsc-rows-valid (g) (world) (buf) (i) = if i == list-length g.slots then True
+    else let row = gwsc-row g buf i
+    in let serial = peek-qword row 0
+    in let region = peek-qword row 8
+    in let profile = peek-qword row 16
+    in let direction = peek-qword row 24
+    in let remaining = peek-qword row 32
+    in serial >= 0 & direction >= 0 & direction < 8 & remaining >= 0 & remaining <= gm-ticks 5000
+      & (serial /= 0 | (region == -1 & profile == -1))
+      & gwsc-bound g world serial region profile & gwsc-distinct g buf serial 0 i
+      & gwsc-rows-valid g world buf (i + 1)
+  gwsc-encode : GameWorldSpawn, WorldTable, Integer, Integer, Integer -> Result Integer Text
+  gwsc-encode (g) (world) (now) (buf) (capacity) =
+    if not (gwsc-clock now) | list-length g.combat.actors /= world.capacity then Err "world spawn codec owner or clock"
+    else if capacity < gwsc-size g then Err "world spawn codec destination"
+    else let a = poke-qword buf 0 #31535755
+    in let b = poke-qword buf 8 1
+    in let c = poke-qword buf 16 g.catalog.revision
+    in let d = poke-qword buf 24 (list-length g.catalog.regions)
+    in let e = poke-qword buf 32 (list-length g.slots)
+    in let f = poke-qword buf 40 g.cursor
+    in let h = poke-qword buf 48 (max 0 (g.due - now))
+    in let reserved = poke-qword buf 56 0
+    in let timers = gwsc-write-timers g now buf 0
+    in let slots = gwsc-write-slots g now buf 0
+    in if not (gwsc-timers-valid g buf 0 & gwsc-rows-valid g world buf 0)
+      | g.cursor < 0 | g.cursor >= list-length g.catalog.regions
+      | g.due < 0 | g.due > now + gm-ticks 1000 then Err "world spawn codec state"
+    else Ok (gwsc-size g)
+  gwsc-read-timers : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gwsc-read-timers (g) (now) (buf) (i) = if i == list-length g.catalog.regions then 0
+    else let timer = poke-qword g.deadlines (i * 8) (now + peek-qword buf (64 + i * 8))
+    in let count = poke-qword g.populations (i * 8) (gwsc-count g buf i 0)
+    in gwsc-read-timers g now buf (i + 1)
+  gwsc-read-slots : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gwsc-read-slots (g) (now) (buf) (i) = if i == list-length g.slots then 0
+    else let slot = list-at g.slots i
+    in let row = gwsc-row g buf i
+    in let a = __record-set slot "serial" (peek-qword row 0)
+    in let b = __record-set slot "region" (peek-qword row 8)
+    in let c = __record-set slot "profile" (peek-qword row 16)
+    in let d = __record-set slot "direction" (peek-qword row 24)
+    in let e = __record-set slot "due" (now + peek-qword row 32)
+    in let f = __record-set slot "visible" False
+    in gwsc-read-slots g now buf (i + 1)
+  gwsc-decode : GameWorldSpawn, WorldTable, Integer, Integer, Integer -> Result Integer Text
+  gwsc-decode (g) (world) (now) (buf) (size) =
+    if not (gwsc-clock now) | list-length g.combat.actors /= world.capacity then Err "world spawn codec owner or clock"
+    else if size /= gwsc-size g then Err "world spawn codec length"
+    else if peek-qword buf 0 /= #31535755 | peek-qword buf 8 /= 1
+      | peek-qword buf 16 /= g.catalog.revision | peek-qword buf 24 /= list-length g.catalog.regions
+      | peek-qword buf 32 /= list-length g.slots | peek-qword buf 56 /= 0 then Err "world spawn codec format or catalog"
+    else if peek-qword buf 40 < 0 | peek-qword buf 40 >= list-length g.catalog.regions
+      | peek-qword buf 48 < 0 | peek-qword buf 48 > gm-ticks 1000
+      | not (gwsc-rows-valid g world buf 0 & gwsc-timers-valid g buf 0) then Err "world spawn codec bindings"
+    else let timers = gwsc-read-timers g now buf 0
+    in let slots = gwsc-read-slots g now buf 0
+    in let cursor = __record-set g "cursor" (peek-qword buf 40)
+    in let due = __record-set g "due" (now + peek-qword buf 48)
+    in let connection = __record-set g "connection" -1
+    in let tick = __record-set g.combat "tick" now
+    in Ok size
+
+Page 1

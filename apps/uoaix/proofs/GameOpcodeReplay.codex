@@ -1,0 +1,97 @@
+Chapter: GameOpcodeReplay
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameOpcode
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter LoginWire
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+  gor-specs : List GameOpcodeSpec = [
+    GameOpcodeSpec { opcode = 5, size = 5, minimum = 5, maximum = 5 },
+    GameOpcodeSpec { opcode = 18, size = 0, minimum = 5, maximum = 64 },
+    GameOpcodeSpec { opcode = 114, size = 5, minimum = 5, maximum = 5 }]
+
+  gor-handler : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console] Result (Maybe GameReply) Text
+  gor-handler (control) (game) (input) (map) (port) (packet) =
+    if list-at packet 0 == 5 then
+      let armed = list-set-at control 0 1
+      in let deadline = list-set-at control 1 (get-ticks + 10)
+      in act Ok (Just (gs-reply [[115, 90]] "hook fixed")) end
+    else if list-at packet 0 == 18 then act Ok (Just (gs-reply [[115, 91]] "hook variable")) end
+    else if list-at packet 0 == 114 then act Ok (Just (gs-reply [packet] "hook war mode")) end
+    else act Ok None end
+
+  gor-pulse : List Integer, GameShard, GameInput, WalkMap, Integer, Integer -> [Console] Result (Maybe GameReply) Text
+  gor-pulse (control) (game) (input) (map) (port) (tick) =
+    if list-at control 0 == 0 | tick < list-at control 1 then act Ok None end
+    else let consumed = list-set-at control 0 0
+    in act Ok (Just (gs-reply [[115, 92]] ("hook pulse tick=" & show tick))) end
+
+  gor-seed : UoLoginWire, Integer -> Integer
+  gor-seed (wire) (i) = if i >= 4 then 0
+    else let changed = uo-wire-byte wire (if i == 3 then 1 else 0)
+    in gor-seed wire (i + 1)
+
+  gor-feed : GameShard, GameInput, UoLoginWire, List Integer, Integer -> Result Boolean Text
+  gor-feed (game) (input) (wire) (bytes) (i) =
+    when gn-byte game input (uo-xor-byte wire (list-at bytes i))
+      is Err (e) -> Err e
+      is Ok (done) -> if i + 1 >= list-length bytes then Ok done
+        else if done then Err "early frame completion" else gor-feed game input wire bytes (i + 1)
+
+  gor-frame : GameShard, List Integer -> Result Boolean Text
+  gor-frame (game) (bytes) =
+    let input = gn-input-with gor-specs 0
+    in let mode = __record-set input "mode" 2
+    in let seeded = gor-seed input.wire 0
+    in let wire = uo-wire-new 0
+    in let other = gor-seed wire 0
+    in gor-feed game input wire bytes 0
+
+  gor-start-check : GameShard, WalkMap -> [Console] Boolean
+  gor-start-check (game) (map) =
+    let control = [0, 0]
+    in let input = gn-input-with gor-specs 0
+    in let mode = __record-set input "mode" 2
+    in let fixed = when gor-frame game [5,0,0,0,1] is Ok (done) -> done is Err (e) -> False
+    in let variable = when gor-frame game [18,0,5,65,0] is Ok (done) -> done is Err (e) -> False
+    in let short = when gor-frame game [18,0,4] is Err (e) -> True is otherwise -> False
+    in let long = when gor-frame game [18,0,65] is Err (e) -> True is otherwise -> False
+    in let duplicate = not (go-valid (gor-specs & [list-at gor-specs 0]))
+    in act
+      denied <- gn-route (gor-handler control) game input map 2594 [5,0,0,0,1]
+      let guarded = (when denied is Err (e) -> True is otherwise -> False) & list-at control 0 == 0
+      in let armed = list-set-at control 0 1
+      in act
+        no-pulse <- gn-pulse (gor-pulse control) game input map 2594 1
+        let pulse-guard = (when no-pulse is Ok (maybe) -> (when maybe is None -> True is otherwise -> False) is otherwise -> False) & list-at control 0 == 1
+        in let reset = list-set-at control 0 0
+        in let session = __record-set input.session "phase" 2
+        in act
+        handled <- gn-route (gor-handler control) game input map 2594 [5,0,0,0,1]
+        pulsed <- gn-pulse (gor-pulse control) game input map 2594 (get-ticks + 20)
+        let accepted = when handled is Ok (reply) -> list-at (list-at reply.packets 0) 1 == 90 is otherwise -> False
+        in let pulse-ok = when pulsed is Ok (maybe) -> (when maybe is Just (reply) -> list-at (list-at reply.packets 0) 1 == 92 is otherwise -> False) is otherwise -> False
+        in let ok = go-valid gor-specs & fixed & variable & short & long & duplicate & guarded & pulse-guard & accepted & pulse-ok & list-at control 0 == 0
+        in act
+          print-line-uni (if ok then "PASS opcode startup checks" else "FAIL opcode startup checks")
+          ok
+        end
+        end
+      end
+    end
+
+  opening : [Console, Network.Read, Network.Write] Integer = when gs-new 0
+    is Err (e) -> act 1 end
+    is Ok (game) -> when walk-map-new 0 0 4 4
+      is Err (e) -> act 1 end
+      is Ok (map) -> act
+        checked <- gor-start-check game map
+        if not checked then 1
+        else let control = [0, 0]
+        in game-server-with gor-specs (gn-route (gor-handler control)) (gor-pulse control) 2594 32
+      end
+
+Page 1

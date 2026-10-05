@@ -162,7 +162,10 @@ Section: Predicate Pushdown
   try-push-to-side (pred) (op) =
     when op
       is RelScan (t) -> PushResult { result = RelFilter (RelScan t) pred, pushed = True }
-      is RelFilter (child) (existing) -> PushResult { result = RelFilter child (PredAnd existing pred), pushed = True }
+      is RelFilter (child) (existing) -> PushResult {
+        result = RelFilter child (PredAnd existing pred),
+        pushed = True
+      }
       is otherwise -> PushResult { result = op, pushed = False }
 
 Section: Join Order Selection
@@ -230,7 +233,13 @@ Section: Plan Cache
   }
 
   plan-cache-new : PlanCache
-  plan-cache-new = PlanCache { pc-plans = hamt-empty, pc-count = 0, pc-hits = 0, pc-misses = 0, pc-enabled = True }
+  plan-cache-new = PlanCache {
+    pc-plans = hamt-empty,
+    pc-count = 0,
+    pc-hits = 0,
+    pc-misses = 0,
+    pc-enabled = True
+  }
 
   plan-cache-lookup : PlanCache, Text -> Pair PlanCache (Maybe RelOp)
   plan-cache-lookup (cache) (query-hash) =
@@ -239,33 +248,80 @@ Section: Plan Cache
     in when found
       is None -> make-pair (PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses + 1, pc-enabled = cache.pc-enabled }) None
       is Just (cp) ->
-        if cp.cp-stale then make-pair (PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses + 1, pc-enabled = cache.pc-enabled }) None
-        else let updated = CachedPlan { cp-query-hash = cp.cp-query-hash, cp-plan = cp.cp-plan, cp-use-count = cp.cp-use-count + 1, cp-stale = False }
+        if cp.cp-stale then
+          make-pair (PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses + 1, pc-enabled = cache.pc-enabled }) None
+        else let updated = CachedPlan {
+          cp-query-hash = cp.cp-query-hash,
+          cp-plan = cp.cp-plan,
+          cp-use-count = cp.cp-use-count + 1,
+          cp-stale = False
+        }
         in make-pair (PlanCache { pc-plans = hamt-set (cache.pc-plans) query-hash updated, pc-count = cache.pc-count, pc-hits = cache.pc-hits + 1, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }) (Just (cp.cp-plan))
 
   plan-cache-store : PlanCache, Text, RelOp -> PlanCache
   plan-cache-store (cache) (query-hash) (plan) =
-    let cp = CachedPlan { cp-query-hash = query-hash, cp-plan = plan, cp-use-count = 1, cp-stale = False }
-    in PlanCache { pc-plans = hamt-set (cache.pc-plans) query-hash cp, pc-count = cache.pc-count + 1, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+    let cp = CachedPlan {
+      cp-query-hash = query-hash,
+      cp-plan = plan,
+      cp-use-count = 1,
+      cp-stale = False
+    }
+    in PlanCache {
+      pc-plans = hamt-set (cache.pc-plans) query-hash cp,
+      pc-count = cache.pc-count + 1,
+      pc-hits = cache.pc-hits,
+      pc-misses = cache.pc-misses,
+      pc-enabled = cache.pc-enabled
+    }
 
   plan-cache-invalidate : PlanCache, Text -> PlanCache
   plan-cache-invalidate (cache) (query-hash) =
-    PlanCache { pc-plans = hamt-remove (cache.pc-plans) query-hash, pc-count = cache.pc-count - 1, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+    PlanCache {
+      pc-plans = hamt-remove (cache.pc-plans) query-hash,
+      pc-count = cache.pc-count - 1,
+      pc-hits = cache.pc-hits,
+      pc-misses = cache.pc-misses,
+      pc-enabled = cache.pc-enabled
+    }
 
   plan-cache-purge : PlanCache -> PlanCache
-  plan-cache-purge (cache) = PlanCache { pc-plans = hamt-empty, pc-count = 0, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+  plan-cache-purge (cache) = PlanCache {
+    pc-plans = hamt-empty,
+    pc-count = 0,
+    pc-hits = cache.pc-hits,
+    pc-misses = cache.pc-misses,
+    pc-enabled = cache.pc-enabled
+  }
 
   plan-cache-disable : PlanCache -> PlanCache
-  plan-cache-disable (cache) = PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = False }
+  plan-cache-disable (cache) = PlanCache {
+    pc-plans = cache.pc-plans,
+    pc-count = cache.pc-count,
+    pc-hits = cache.pc-hits,
+    pc-misses = cache.pc-misses,
+    pc-enabled = False
+  }
 
   plan-cache-enable : PlanCache -> PlanCache
-  plan-cache-enable (cache) = PlanCache { pc-plans = cache.pc-plans, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = True }
+  plan-cache-enable (cache) = PlanCache {
+    pc-plans = cache.pc-plans,
+    pc-count = cache.pc-count,
+    pc-hits = cache.pc-hits,
+    pc-misses = cache.pc-misses,
+    pc-enabled = True
+  }
 
   plan-cache-mark-stale : PlanCache, Text -> PlanCache
   plan-cache-mark-stale (cache) (table-name) =
     let entries = hamt-to-list (cache.pc-plans)
     in let staled = pc-stale-loop entries table-name 0 (list-length entries) (cache.pc-plans)
-    in PlanCache { pc-plans = staled, pc-count = cache.pc-count, pc-hits = cache.pc-hits, pc-misses = cache.pc-misses, pc-enabled = cache.pc-enabled }
+    in PlanCache {
+      pc-plans = staled,
+      pc-count = cache.pc-count,
+      pc-hits = cache.pc-hits,
+      pc-misses = cache.pc-misses,
+      pc-enabled = cache.pc-enabled
+    }
 
   pc-stale-loop : List (HamtEntry CachedPlan), Text, Integer, Integer, HamtMap CachedPlan -> HamtMap CachedPlan
   pc-stale-loop (entries) (table) (i) (len) (plans) =
@@ -273,7 +329,12 @@ Section: Plan Cache
     else let e = list-at entries i
     in let cp = e.value
     in if plan-references-table (cp.cp-plan) table then
-      let staled = CachedPlan { cp-query-hash = cp.cp-query-hash, cp-plan = cp.cp-plan, cp-use-count = cp.cp-use-count, cp-stale = True }
+      let staled = CachedPlan {
+        cp-query-hash = cp.cp-query-hash,
+        cp-plan = cp.cp-plan,
+        cp-use-count = cp.cp-use-count,
+        cp-stale = True
+      }
       in pc-stale-loop entries table (i + 1) len (hamt-set plans (e.key) staled)
     else pc-stale-loop entries table (i + 1) len plans
 

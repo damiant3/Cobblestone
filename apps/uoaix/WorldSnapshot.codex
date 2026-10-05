@@ -1,0 +1,102 @@
+Chapter: WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+ UWS1 is little-endian: eight 64-bit header cells followed by the table's
+ 16-byte metadata and 80-byte slots. Header cells are magic, version,
+ capacity, game tick, input-log sequence, table bytes, FNV32, reserved zero.
+ FNV32 detects corruption, not hostile alteration; structural validation
+ follows the checksum. The checksum excludes only its own eight bytes.
+
+  WorldCheckpoint = record { world : WorldTable, tick : Integer, sequence : Integer }
+
+  ws-size : Integer -> Integer
+  ws-size (capacity) = 80 + capacity * 80
+
+  ws-copy : Integer, Integer, Integer, Integer -> Integer
+  ws-copy (src) (dst) (bytes) (i) =
+    if i >= bytes then 0
+    else let copied = poke-byte dst i (peek-byte src i)
+    in ws-copy src dst bytes (i + 1)
+
+  ws-hash : Integer, Integer, Integer, Integer -> Integer
+  ws-hash (buf) (size) (i) (hash) =
+    if i >= size then hash
+    else if i == 48 then ws-hash buf size 56 hash
+    else let mixed = bit-xor hash (peek-byte buf i)
+    in ws-hash buf size (i + 1) (bit-and (mixed * 16777619) 4294967295)
+
+  ws-encode : WorldCheckpoint, Integer, Integer -> Result Integer Text
+  ws-encode (checkpoint) (out) (capacity) =
+    let world = checkpoint.world
+    in if world.capacity < 1 | world.capacity > world-max-objects then Err "checkpoint world capacity invalid"
+    else if checkpoint.tick < 0 | checkpoint.sequence < 0 then Err "checkpoint clock or sequence invalid"
+    else let size = ws-size world.capacity
+    in if capacity < size then Err "checkpoint destination too short"
+    else let a = poke-qword out 0 #31535755
+    in let b = poke-qword out 8 1
+    in let c = poke-qword out 16 world.capacity
+    in let d = poke-qword out 24 checkpoint.tick
+    in let e = poke-qword out 32 checkpoint.sequence
+    in let f = poke-qword out 40 (size - 64)
+    in let g = poke-qword out 48 0
+    in let h = poke-qword out 56 0
+    in let copied = ws-copy world.buffer (out + 64) (size - 64) 0
+    in let checksum = poke-qword out 48 (ws-hash out size 0 2166136261)
+    in Ok size
+
+  ws-slot-valid : WorldTable, Integer -> Boolean
+  ws-slot-valid (world) (slot) =
+    let serial = peek-qword world.buffer (16 + slot * 80)
+    in if serial == 0 then True
+    else if serial < -2147483647 | serial > 2147483647 then False
+    else let low = bit-and (if serial < 0 then 0 - serial else serial) world-serial-mask
+    in if low == 0 then False
+    else if int-mod (low - 1) world.capacity /= slot then False
+    else if serial < 0 then True
+    else let obj = world-read-slot world slot
+    in world-fields-valid obj
+      & ((obj.kind == 1 & bit-and serial world-item-bit == 0) | (obj.kind == 2 & bit-and serial world-item-bit /= 0))
+      & world-parent-valid world serial obj.container world-max-container-depth
+
+  ws-active-count : WorldTable, Integer, Integer -> Integer
+  ws-active-count (world) (slot) (count) =
+    if slot >= world.capacity then count
+    else let mark = __heap-save
+    in let valid = ws-slot-valid world slot
+    in let active = if peek-qword world.buffer (16 + slot * 80) > 0 then 1 else 0
+    in let restored = __heap-restore mark
+    in if not valid then -1 else ws-active-count world (slot + 1) (count + active)
+
+  ws-free-count : WorldTable, Integer, Integer -> Integer
+  ws-free-count (world) (slot) (count) =
+    if slot == -1 then count
+    else if slot < 0 | slot >= world.capacity | count >= world.capacity then -1
+    else if peek-qword world.buffer (16 + slot * 80) > 0 then -1
+    else ws-free-count world (peek-qword world.buffer (24 + slot * 80)) (count + 1)
+
+  ws-table-valid : WorldTable -> Boolean
+  ws-table-valid (world) =
+    let count = world-count world
+    in if count < 0 | count > world.capacity then False
+    else if ws-active-count world 0 0 /= count then False
+    else ws-free-count world (peek-qword world.buffer 8) 0 == world.capacity - count
+
+  ws-decode : Integer, Integer -> Result WorldCheckpoint Text
+  ws-decode (buf) (size) =
+    if size < 64 then Err "checkpoint header truncated"
+    else if peek-qword buf 0 /= #31535755 | peek-qword buf 8 /= 1 then Err "checkpoint format unsupported"
+    else let capacity = peek-qword buf 16
+    in if capacity < 1 | capacity > world-max-objects then Err "checkpoint capacity invalid"
+    else if size /= ws-size capacity | peek-qword buf 40 /= size - 64 then Err "checkpoint length invalid"
+    else if peek-qword buf 24 < 0 | peek-qword buf 32 < 0 | peek-qword buf 56 /= 0 then Err "checkpoint metadata invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "checkpoint checksum invalid"
+    else let view = WorldTable { buffer = buf + 64, capacity = capacity, index = 0 }
+    in if not (ws-table-valid view) then Err "checkpoint object or free-list invariant invalid"
+    else let memory = alloc-bytes (size - 64)
+    in let copied = ws-copy (buf + 64) memory (size - 64) 0
+    in let world = WorldTable { buffer = memory, capacity = capacity, index = 0 }
+    in if not (world-reindex world) then Err "checkpoint index rebuild failed"
+    else Ok (WorldCheckpoint { world = world, tick = peek-qword buf 24, sequence = peek-qword buf 32 })
+
+Page 1

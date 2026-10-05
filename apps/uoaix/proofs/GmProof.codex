@@ -1,0 +1,138 @@
+Chapter: GmProof
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminProtocol
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Encode chapter Json
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+  gp-json : Text -> JsonValue
+  gp-json (text) = (json-parse-value text 0 (text-length text)).value
+
+  gp-ok : Text -> Boolean
+  gp-ok (text) = admin-int (gp-json text) "ok" == 1
+
+  gp-error : Text, Text -> Boolean
+  gp-error (text) (reason) = json-get-str (gp-json text) "error" "" == reason
+
+  gp-policy : Integer, Integer -> JsonValue
+  gp-policy (account) (powers) = JsonObject [
+    json-pair "account" (JsonInt account), json-pair "powers" (JsonInt powers),
+    json-pair "coin_each" (JsonInt 100), json-pair "coin_day" (JsonInt 150),
+    json-pair "item_each" (JsonInt 2), json-pair "item_day" (JsonInt 3),
+    json-pair "title_day" (JsonInt 1), json-pair "plot_day" (JsonInt 1)
+  ]
+
+  gp-total : GmMemory, Integer, Integer -> Integer
+  gp-total (m) (i) (total) = if i == m.used then total else gp-total m (i + 1) (total + (list-at m.accounts i).coins)
+
+  gp-fill : GmMemory -> Integer
+  gp-fill (m) =
+    if m.action-count >= 128 then 0
+    else let expected = m.action-count + 1
+    in let mark = __heap-save
+    in let response = gm-memory-edit m "Owner" "gm-dub" (gp-policy 30 1) 2
+    in let ok = admin-int (gp-json response) "log_id" == expected
+    in let restored = __heap-restore mark
+    in if ok then gp-fill m else 1
+
+  gp-check : Text, Boolean -> [Console] Integer
+  gp-check (name) (ok) = act
+    print-line-uni (name & (if ok then " PASS" else " FAIL"))
+    if ok then 0 else 1
+  end
+
+  gp-access : Integer -> Boolean
+  gp-access (unused) =
+    let key = "1111111111111111111111111111111111111111111111111111111111111111"
+    in when admin-auth-new [key,key,key,key] key
+      is None -> False
+      is Just (auth) ->
+        let p = panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+        in let registered = gm-memory-register p.gms 77 "Gwen" True
+        in let grant = gm-memory-edit p.gms "Owner" "gm-dub" (gp-policy 77 1) 0
+        in let opened = panel-open p 100
+        in let scratch = __heap-save
+        in let issued = panel-gm-key auth p (gp-json ("{\"command\":\"gm-key-set\",\"account\":77,\"session\":1,\"key\":\"" & key & "\"}")) 100
+        in let copied = list-at (list-at auth.incoming 4) 0
+        in let restored = __heap-restore scratch
+        in let live-key = list-at auth.enabled 4 == 1 & list-at (list-at auth.incoming 4) 0 == copied
+        in let login = panel-gm-command p 0 (gp-json "{\"command\":\"panel-open\"}") 101
+        in let owner-command = panel-gm-command p 0 (gp-json "{\"command\":\"gm-dub\",\"session\":1,\"account\":77}") 102
+        in let world-command = panel-gm-command p 0 (gp-json "{\"command\":\"mind-next\",\"session\":1}") 102
+        in let stale = panel-gm-command p 0 (gp-json "{\"command\":\"panel-data\",\"session\":1}") 180102
+        in let sequence = list-set-at auth.sequences 4 19
+        in let rotated = admin-key-set auth 5 key
+        in let revoked = panel-gm-key auth p (gp-json "{\"command\":\"gm-key-revoke\",\"account\":77,\"session\":1}") 110
+        in let closed = list-at p.gm-sessions 2 == 0
+        in let again = panel-gm-command p 0 (gp-json "{\"command\":\"panel-open\"}") 120
+        in let filled = gp-fill p.gms
+        in let close-full = panel-gm-command p 0 (gp-json "{\"command\":\"panel-close\",\"session\":2}") 121
+        in live-key & closed & text-contains login "Gwen" & gp-error owner-command "role" & gp-error world-command "role" & gp-error stale "session" & list-at auth.sequences 4 == 19 & list-at auth.enabled 4 == 0 & list-at p.gm-sessions 2 == 0 & gp-error close-full "action-log-full" & not (text-contains (gm-memory-log p.gms 0) key)
+
+  opening : [Console] Nothing = act
+    mark <- __heap-save
+    m <- gm-memory-new 1000
+    retained <- __heap-save - mark
+    print-line-uni ("GM STAND-IN retained-bytes=" & show retained)
+    a <- gm-memory-register m 10 "Aster" True
+    b <- gm-memory-register m 20 "Bryn" True
+    n <- gm-memory-register m 30 "NPC baker" False
+    stocked <- list-set-at m.vault 0 5
+    total <- gp-total m 0 m.treasury
+    dubbed <- gm-memory-edit m "Owner" "gm-dub" (gp-policy 10 8191) 0
+    npc <- gm-memory-edit m "Owner" "gm-dub" (gp-policy 30 8191) 0
+    c1 <- gp-check "only registered human account can be dubbed" (a == 0 & b == 0 & n == 0 & gp-ok dubbed & gp-error npc "human-account-required" & (list-at m.accounts 0).gm == 1 & (list-at m.accounts 2).gm == 0)
+    forged <- gm-memory-act m 20 1 "favor-coins" 10 0 10 0 "client claims GM"
+    c2 <- gp-check "client claim cannot confer GM authority" (gp-error forged "gm-account-required" & gp-total m 0 m.treasury == total & m.ledger-count == 0)
+    coin1 <- gm-memory-act m 10 1 "favor-coins" 20 0 100 0 "loyal service"
+    log1 <- admin-int (gp-json coin1) "log_id"
+    row1 <- gp-json (admin-load m.actions ((log1 - 1) * 1024))
+    c3 <- gp-check "coin favor moves treasury and appends matching ledger" (gp-ok coin1 & m.treasury == 900 & (list-at m.accounts 1).coins == 100 & gp-total m 0 m.treasury == total & m.ledger-count == 1 & list-at m.ledger 0 == log1 & list-at m.ledger 1 == 0 & list-at m.ledger 2 == 20 & list-at m.ledger 3 == 100 & admin-int row1 "actor_account" == 10 & admin-int row1 "target_account" == 20 & admin-int row1 "amount" == 100 & admin-int row1 "transaction_id" == log1)
+    excess <- gm-memory-act m 10 2 "favor-coins" 20 0 51 0 "over daily limit"
+    coin2 <- gm-memory-act m 10 3 "favor-coins" 20 0 50 0 "remaining allowance"
+    replay <- gm-memory-act m 10 3 "favor-coins" 20 0 1 0 "retry"
+    c4 <- gp-check "daily cap and replay preserve resources" (gp-error excess "coin-limit" & gp-ok coin2 & gp-error replay "request-replayed-or-invalid" & m.treasury == 850 & (list-at m.accounts 1).coins == 150 & m.ledger-count == 2)
+    tomorrow <- gm-memory-act m 10 4 "favor-coins" 20 0 100 1 "new game day"
+    yesterday <- gm-memory-act m 10 5 "favor-coins" 20 0 1 0 "clock rollback"
+    c5 <- gp-check "only later game day resets allowance" (gp-ok tomorrow & gp-error yesterday "game-clock-reversed" & (list-at m.accounts 0).coins-used == 100 & m.treasury == 750)
+    narrowed <- gm-memory-edit m "Owner" "gm-set" (gp-policy 10 1) 1
+    denied <- gm-memory-act m 10 6 "favor-coins" 20 0 1 1 "stale power"
+    revoked <- gm-memory-edit m "Owner" "gm-revoke" (gp-policy 10 0) 1
+    no-power <- gm-memory-act m 10 7 "support" 20 0 0 1 "after revoke"
+    redub <- gm-memory-edit m "Owner" "gm-dub" (gp-policy 10 8191) 1
+    still-used <- gm-memory-act m 10 8 "favor-coins" 20 0 51 1 "redub is not a reset"
+    c6 <- gp-check "narrow revoke and redub cannot restore spent quota" (gp-ok narrowed & gp-error denied "power-not-granted" & gp-ok revoked & gp-error no-power "gm-account-required" & gp-ok redub & gp-error still-used "coin-limit" & (list-at m.accounts 0).coins-used == 100)
+    item1 <- gm-memory-act m 10 9 "favor-items" 20 1 2 1 "from vault"
+    item2 <- gm-memory-act m 10 10 "favor-items" 20 1 2 1 "too many"
+    item3 <- gm-memory-act m 10 11 "favor-items" 20 1 1 1 "remaining item allowance"
+    c7 <- gp-check "item favor conserves stock and enforces quantity limits" (gp-ok item1 & gp-error item2 "item-limit" & gp-ok item3 & list-at m.vault 0 == 2 & list-at m.inventory 32 == 3)
+    title1 <- gm-memory-act m 10 12 "favor-title" 20 1 1 1 "title one"
+    title2 <- gm-memory-act m 10 13 "favor-title" 20 2 1 1 "title two"
+    plot1 <- gm-memory-act m 10 14 "favor-plot" 20 1 1 1 "plot one"
+    plot2 <- gm-memory-act m 10 15 "favor-plot" 20 2 1 1 "plot two"
+    old-plot <- gm-memory-act m 10 16 "favor-plot" 20 1 1 2 "already owned"
+    c8 <- gp-check "title plot caps and crown ownership" (gp-ok title1 & gp-error title2 "title-limit" & gp-ok plot1 & gp-error plot2 "plot-limit" & gp-error old-plot "plot-not-crown-owned" & (list-at m.accounts 1).titles == 1 & list-at m.plots 0 == 20 & list-at m.plots 1 == 0)
+    future-plot <- gm-memory-act m 10 17 "favor-plot" 20 2 1 2 "later day"
+    duplicate-title <- gm-memory-act m 10 18 "favor-title" 20 1 1 2 "already titled"
+    c9 <- gp-check "later day cannot duplicate title or plot" (gp-ok future-plot & gp-error duplicate-title "title-already-held" & list-at m.plots 1 == 20 & (list-at m.accounts 0).plots-used == 1)
+    panel <- panel-new-with-gms (admin-world-new (tf-new 0) (tm-new 0)) "Owner" m
+    before-auth <- m.action-count
+    keeper <- panel-dispatch panel 3 "{\"command\":\"gm-revoke\",\"account\":10}"
+    no-session <- panel-dispatch panel 4 "{\"command\":\"gm-revoke\",\"account\":10,\"session\":99}"
+    c10 <- gp-check "only live owner session reaches GM mutation" (text-contains keeper "role" & text-contains no-session "session" & m.action-count == before-auth & (list-at m.accounts 0).gm == 1)
+    filled <- gp-fill m
+    before-full <- gp-total m 0 m.treasury
+    log-full <- gm-memory-act m 10 19 "favor-coins" 20 0 1 2 "full audit"
+    emergency <- gm-memory-edit m "Owner" "gm-revoke" (gp-policy 10 0) 2
+    repeated <- gm-memory-edit m "Owner" "gm-revoke" (gp-policy 10 0) 2
+    c11 <- gp-check "audit capacity blocks effects but reserves revocation" (filled == 0 & text-contains log-full "admin-actions-full" & gp-ok emergency & (list-at m.accounts 0).gm == 0 & (list-at m.accounts 0).powers == 0 & m.action-count == 129 & text-contains repeated "admin-actions-full" & gp-total m 0 m.treasury == before-full)
+    newest <- gm-memory-log m 0
+    older <- gm-memory-log m 114
+    c12 <- gp-check "paged log survives arena restores" (text-contains newest "\"id\":129" & text-contains older "\"id\":113" & not (text-contains older "\"id\":114") & text-contains newest "human-account-required")
+    c13 <- gp-check "personal key lifetime sessions role denial and secret-free audit" (gp-access 0)
+    print-line-uni ("UOAIX GM STAND-IN failures=" & show (c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13))
+  end

@@ -134,6 +134,7 @@ Section: Commands -- Core
       is ScReturn (e) -> pad & "return " & emit-ps-expr e
       is ScRaw (text) -> pad & text
       is ScSequence (cmds) -> emit-ps-cmds cmds indent 0 (list-length cmds)
+      is ScIndent (cmds) -> sh-drop-last-newline (emit-ps-cmds cmds (indent + 1) 0 (list-length cmds))
       is ScSetStrictMode -> pad & "Set-StrictMode -Version Latest"
       is ScSetErrorStop -> pad & "$ErrorActionPreference = 'Stop'"
       is ScContinueLabel (label) -> pad & "continue " & label
@@ -289,6 +290,7 @@ Section: Expressions -- Leaf
       is SeVar (name) -> "$" & name
       is SeEnvVar (name) -> "$env:" & name
       is SeRaw (text) -> text
+      is SeBare (x) -> ps-unparen (emit-ps-expr x)
       is SeHashLiteral -> "@{}"
       is otherwise -> emit-ps-expr-ops e
 
@@ -432,6 +434,26 @@ Section: Helpers
 
   ps-quote : Text -> Text
   ps-quote (s) = "'" & text-replace s "'" "''" & "'"
+
+  ps-unparen : Text -> Text
+  ps-unparen (s) =
+    let n = text-length s
+    in if n < 2 then s
+    else if substring s 0 1 /= "(" | substring s (n - 1) 1 /= ")" then s
+    else if ps-paren-close s 0 0 0 == n - 1 then substring s 1 (n - 2)
+    else s
+
+  ps-paren-close : Text, Integer, Integer, Integer -> Integer
+  ps-paren-close (s) (i) (depth) (q) =
+    if i >= text-length s then 0 - 1
+    else let c = substring s i 1
+    in if q == 1 then ps-paren-close s (i + 1) depth (if c == "'" then 0 else 1)
+    else if q == 2 then ps-paren-close s (i + 1) depth (if c == "\"" then 0 else 2)
+    else if c == "'" then ps-paren-close s (i + 1) depth 1
+    else if c == "\"" then ps-paren-close s (i + 1) depth 2
+    else if c == "(" then ps-paren-close s (i + 1) (depth + 1) 0
+    else if c == ")" then (if depth == 1 then i else ps-paren-close s (i + 1) (depth - 1) 0)
+    else ps-paren-close s (i + 1) depth 0
 
  SeText is the DOUBLE-quoted counterpart, and it exists because the single
  quoting above is what forced authors to ScRaw. A message like

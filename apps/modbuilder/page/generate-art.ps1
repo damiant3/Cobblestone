@@ -30,6 +30,7 @@ $art = @(
     @{ id = 'hover';   w = 1024; h = 1024; out = 640;  seed = 7511; prompt = 'a wild boar animal on four legs resting on straw beside a stone cooking fire, a small glowing golden hourglass floating in the air above the fire, cozy barn interior, no people' }
     @{ id = 'hud';     w = 1024; h = 1024; out = 640;  seed = 7601; prompt = 'three steaming bowls of stew, bread and roasted meat on a carved wooden shelf beside a glowing red health potion vial, warm hearth light' }
     @{ id = 'rows';    w = 1024; h = 1024; out = 640;  seed = 7701; prompt = 'perfectly straight rows of carrot and turnip seedlings in dark tilled soil beside a viking farmhouse, a wooden hoe, golden hour' }
+    @{ id = 'tools';   w = 1024; h = 1024; out = 640;  seed = 7901; prompt = 'a copper-bladed viking shovel and a wooden hoe leaning on a wattle fence beside freshly dug dark earth, a smoothed stone path and young ferns and bushes planted along it, golden hour' }
     @{ id = 'forge';   w = 1536; h = 640;  out = 1536; seed = 7801; prompt = 'a blazing forge fire and anvil in a dark stone smithy, a glowing rune-carved amulet cooling in a quench trough, embers drifting' }
 )
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })

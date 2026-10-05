@@ -1,0 +1,46 @@
+Chapter: BrowserNoiseWasm
+  cites Diffusion chapter BrownianTree
+
+ We say:
+
+  wasm-exports : Text = "|noise-bank|"
+
+  nw-drop : List Real, Integer, List Real -> List Real
+  nw-drop (sig) (i) (acc) = if i >= list-length sig then acc else nw-drop sig (i + 1) (if i == list-length sig - 2 then acc else list-push acc (list-at sig i))
+
+  nw-sigmas : Integer, Integer -> List Real
+  nw-sigmas (kind) (steps) =
+    if kind == 6 then nw-drop (sdxl-karras-sigmas (steps + 1)) 0 []
+    else if steps == 1 then [sm-pow (sm-pow (sm-discrete-sigma 999) (1.0 / 7.0)) 7.0, 0.0]
+    else sdxl-karras-sigmas steps
+
+  nw-brownian : BtTree, List Real, Integer, Integer, Integer -> Integer
+  nw-brownian (tree) (qs) (out) (n) (i) =
+    if i >= list-length qs / 2 then out
+    else let draw = brownian-draw tree (list-at qs (2 * i)) (list-at qs (2 * i + 1)) (out + 8 + i * n * 4)
+    in nw-brownian tree qs out n (i + 1)
+
+  nw-torch : Integer, Integer, Integer, Integer, Integer -> Integer
+  nw-torch (seed) (out) (n) (count) (i) =
+    if i >= count then out
+    else let draw = noise-torch-into (out + 8 + i * n * 4) seed (i + 1) n
+    in nw-torch seed out n count (i + 1)
+
+ The returned header is byte length and vector width as little-endian u32,
+ followed by the native f32 words. The host copies them before dropping the
+ job's Wasm instance and worker.
+
+  noise-bank : Integer, Integer, Integer, Integer -> Integer
+  noise-bank (seed) (n) (kind) (steps) =
+    if n < 256 | n > 65536 | int-mod n 64 /= 0 | steps < 1 | steps > 50 then 0
+    else if kind /= 1 & kind /= 3 & kind /= 4 & kind /= 5 & kind /= 6 then 0
+    else let count = (steps - 1) * (if kind == 1 then 2 else 1)
+    in let out = alloc-bytes (8 + n * 4 * count)
+    in let a = poke-32 out 0 (n * 4 * count)
+    in let b = poke-32 out 4 n
+    in if count == 0 then out
+    else if kind == 5 then nw-torch seed out n count 0
+    else let sig = nw-sigmas kind steps
+    in nw-brownian (brownian-tree seed n sig) (brownian-queries (kind == 1) sig 0 []) out n 0
+
+  opening : Integer = 0

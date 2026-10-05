@@ -1,0 +1,37 @@
+Chapter: CurrencyRestartRead
+  cites Uoaix chapter EconomyCurrencyStore
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  crr-check : Text, Boolean -> [Console] Nothing
+  crr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 16384
+    when opened
+      is Err (e) -> print-line-uni ("FAIL open " & e)
+      is Ok (store) -> act
+        recovered <- currency-store-restore store
+        when recovered
+          is Err (e) -> print-line-uni ("FAIL recovery " & e)
+          is Ok (recovery) -> act
+            state <- recovery.state
+            x <- state.currency
+            crr-check "latest complete checkpoint plus 35-input suffix" (recovery.inputs == 35 & state.sequence == 149 & state.tick == 1490 & store.sequence == 149 & store.tick == 1490)
+            crr-check "three metals rates defaults and partial debt restored" (efi-valid state)
+            crr-check "reboot retains all mined ingot provenance" (ep-at x.world.gathered 6 == 2 & ep-at x.world.gathered 63 == 2 & ep-at x.world.gathered 64 == 2 & ep-at x.world.consumed 32 == 1 & ep-at x.world.consumed 65 == 1 & ep-at x.world.consumed 66 == 1 & eu-census x)
+          end
+        saved <- store.sequence
+        changed <- __record-set store "sequence" (saved + 1)
+        disagreement <- currency-store-restore store
+        crr-check "cached currency head disagreement refused" (is-err disagreement)
+        restored <- __record-set store "sequence" saved
+        torn <- __record-set store "tail" 1
+        tail-recovery <- currency-store-restore store
+        crr-check "marked torn tail cannot silently restore prior prefix" (is-err tail-recovery)
+        tail-restored <- __record-set store "tail" 0
+        crr-check "store metadata restored after refusal" (store.sequence == saved)
+      end
+  end

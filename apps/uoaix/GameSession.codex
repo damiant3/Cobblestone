@@ -1,0 +1,323 @@
+Chapter: GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter GameAccounts
+  cites Foreword chapter Result
+
+ Five character slots, 160 bytes each: mobile serial, 100 creation bytes
+ plus four server clothing-hue bytes, and four equipment serials. The fixed world budget is 64 objects.
+ `characters` holds the bound account's five slots; one active mobile is admitted by this stage.
+
+  GameShard = record { world : WorldTable, characters : Integer, accounts : Integer, next-key : Integer,
+    pending-key : Integer, active : Integer }
+  GameSession = record { phase : Integer, serial : Integer, direction : Integer, sequence : Integer, key : Integer }
+  GameReply = record { packets : List (List Integer), close : Boolean, note : Text }
+
+  gs-zero : Integer, Integer -> Integer
+  gs-zero (buffer) (i) = if i >= 800 then 0
+    else let clear = poke-byte buffer i 0 in gs-zero buffer (i + 1)
+
+  gs-new : Integer -> Result GameShard Text
+  gs-new (unused) = when world-new 64
+    is Err (e) -> Err e
+    is Ok (world) ->
+      let characters = alloc-bytes 800
+      in let clear = gs-zero characters 0
+      in Ok (GameShard { world = world, characters = characters, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0 })
+
+  gs-relay-key : GameShard -> Result Integer Text
+  gs-relay-key (shard) =
+    if shard.active /= 0 then Err "an account is already in world"
+    else if shard.next-key >= 4294967295 then Err "relay key budget exhausted"
+    else let key = shard.next-key + 1
+    in let a = __record-set shard "next-key" key
+    in let b = __record-set a "pending-key" key
+    in Ok key
+
+  gs-session : Integer -> GameSession
+  gs-session (key) = GameSession { phase = 0, serial = 0, direction = 0, sequence = 0, key = key }
+
+  gs-reply : List (List Integer), Text -> GameReply
+  gs-reply (packets) (note) = GameReply { packets = packets, close = False, note = note }
+
+  gs-disconnect : GameShard, GameSession -> Integer
+  gs-disconnect (shard) (session) =
+    let active = if shard.active == session.serial then __record-set shard "active" 0 else shard
+    in let closed = __record-set session "phase" 3
+    in 0
+
+  gs-byte-range : List Integer, Integer -> Boolean
+  gs-byte-range (packet) (i) =
+    if i >= list-length packet then True
+    else let value = list-at packet i
+    in value >= 0 & value <= 255 & gs-byte-range packet (i + 1)
+
+  gs-name : List Integer, Integer, Boolean -> Boolean
+  gs-name (packet) (i) (ended) =
+    if i >= 30 then ended
+    else if ended then True
+    else let byte = list-at packet (10 + i)
+    in let letter = (byte >= 65 & byte <= 90) | (byte >= 97 & byte <= 122)
+    in if byte == 0 then i >= 2
+    else if letter | (i > 0 & (byte == 32 | byte == 39 | byte == 45)) then gs-name packet (i + 1) False
+    else False
+
+ The 1.25 client leaves earlier keystrokes after the name's NUL terminator.
+  gs-name-clean : List Integer, Integer, Boolean -> List Integer
+  gs-name-clean (packet) (i) (cut) =
+    if i >= 30 then packet
+    else let byte = list-at packet (10 + i)
+    in if cut & byte /= 0 then gs-name-clean (list-set-at packet (10 + i) 0) (i + 1) True
+    else gs-name-clean packet (i + 1) (cut | byte == 0)
+
+  gs-create-valid : List Integer -> Boolean
+  gs-create-valid (packet) =
+    if list-length packet /= 100 & list-length packet /= 104 then False
+    else let strength = list-at packet 71
+    in let dexterity = list-at packet 72
+    in let intelligence = list-at packet 73
+    in let s1 = list-at packet 74
+    in let s2 = list-at packet 76
+    in let s3 = list-at packet 78
+    in let skin = bit-and (gp-u16 packet 80) 32767
+    in gp-u32 packet 1 == #EDEDEDED & gp-u32 packet 5 == #FFFFFFFF & list-at packet 9 == 0
+      & gs-name packet 0 False & list-at packet 70 <= 1
+      & strength >= 10 & strength <= 45 & dexterity >= 10 & dexterity <= 45
+      & intelligence >= 10 & intelligence <= 45 & strength + dexterity + intelligence == 65
+      & s1 <= 45 & s2 <= 45 & s3 <= 45 & s1 /= s2 & s1 /= s3 & s2 /= s3
+      & list-at packet 75 <= 50 & list-at packet 77 <= 50 & list-at packet 79 <= 50
+      & list-at packet 75 + list-at packet 77 + list-at packet 79 == 100
+      & skin >= 1002 & skin <= 1058 & list-at packet 90 == 0 & list-at packet 91 == 0 & gp-u32 packet 92 < 5
+      & gs-hair-valid (gp-u16 packet 82) False & gs-hair-valid (gp-u16 packet 86) True
+      & (gp-u16 packet 82 == 0 | (gp-u16 packet 84 >= 1102 & gp-u16 packet 84 <= 1149))
+      & (gp-u16 packet 86 == 0 | (gp-u16 packet 88 >= 1102 & gp-u16 packet 88 <= 1149))
+      & (list-at packet 70 == 0 | gp-u16 packet 86 == 0)
+      & (if list-length packet == 100 then True else gp-u16 packet 100 <= 1001 & gp-u16 packet 102 <= 1001)
+
+  gs-hair-valid : Integer, Boolean -> Boolean
+  gs-hair-valid (graphic) (beard) =
+    if graphic == 0 then True
+    else if beard then (graphic >= 8254 & graphic <= 8257) | (graphic >= 8267 & graphic <= 8269)
+    else (graphic >= 8251 & graphic <= 8253) | (graphic >= 8260 & graphic <= 8266)
+
+  gs-mobile : Integer, Integer, Integer, Integer, Integer, Integer -> WorldObject
+  gs-mobile (serial) (x) (y) (z) (graphic) (hue) = WorldObject {
+    serial = serial, kind = 1, x = x, y = y, z = z, graphic = graphic,
+    hue = hue, container = 0, amount = 1, health = 50 }
+
+  gs-item : Integer, Integer, Integer -> WorldObject
+  gs-item (mobile) (graphic) (hue) = WorldObject {
+    serial = 0, kind = 2, x = 0, y = 0, z = 0, graphic = graphic,
+    hue = hue, container = mobile, amount = 1, health = 0 }
+
+  gs-delete-items : WorldTable, List Integer, Integer -> Result Integer Text
+  gs-delete-items (world) (serials) (i) =
+    if i >= list-length serials then Ok 0
+    else let serial = list-at serials i
+    in when (if serial == 0 then Ok 0 else world-delete world serial)
+      is Err (e) -> Err ("equipment rollback: " & e)
+      is Ok (removed) -> gs-delete-items world serials (i + 1)
+
+  gs-equipment : WorldTable, Integer, List Integer, Integer, List Integer -> Result (List Integer) Text
+  gs-equipment (world) (mobile) (packet) (i) (serials) =
+    if i >= 4 then Ok serials
+    else let graphic = if i == 0 then 5399
+      else if i == 1 then 5422
+      else gp-u16 packet (if i == 2 then 82 else 86)
+    in let hue = gp-u16 packet (if i == 0 then 100 else if i == 1 then 102 else if i == 2 then 84 else 88)
+    in when (if graphic == 0 then Ok 0 else world-create world (gs-item mobile graphic hue))
+      is Err (e) -> when gs-delete-items world serials 0
+        is Err (rollback) -> Err rollback
+        is Ok (removed) -> Err e
+      is Ok (serial) -> gs-equipment world mobile packet (i + 1) (list-push serials serial)
+
+  gs-store-create : Integer, Integer, List Integer, Integer -> Integer
+  gs-store-create (characters) (slot) (packet) (i) =
+    if i >= 104 then 0
+    else let saved = poke-byte characters (slot * 160 + 8 + i) (list-at packet i)
+    in gs-store-create characters slot packet (i + 1)
+
+  gs-store-equipment : Integer, Integer, List Integer, Integer -> Integer
+  gs-store-equipment (characters) (slot) (serials) (i) =
+    if i >= 4 then 0
+    else let saved = poke-qword characters (slot * 160 + 112 + i * 8) (list-at serials i)
+    in gs-store-equipment characters slot serials (i + 1)
+
+  gs-equip-packets : GameShard, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gs-equip-packets (shard) (slot) (i) (packets) =
+    if i >= 4 then Ok packets
+    else let serial = peek-qword shard.characters (slot * 160 + 112 + i * 8)
+    in if serial == 0 then gs-equip-packets shard slot (i + 1) packets
+    else when world-get shard.world serial
+      is Err (e) -> Err e
+      is Ok (item) ->
+        let layer = if i == 0 then 5 else if i == 1 then 4 else if i == 2 then 11 else 16
+        in gs-equip-packets shard slot (i + 1) (list-push packets (gp-equip item layer))
+
+  gs-enter : GameShard, GameSession, Integer -> Result GameReply Text
+  gs-enter (shard) (session) (slot) =
+    if slot < 0 | slot >= 5 then Err "character slot outside account"
+    else if shard.active /= 0 then Err "account already in world"
+    else let serial = peek-qword shard.characters (slot * 160)
+    in when world-get shard.world serial
+      is Err (e) -> Err e
+      is Ok (mobile) ->
+        let packets = list-push (list-push (__list-with-capacity 10) (gp-enter mobile 0)) (gp-player mobile 0)
+        in when gs-equip-packets shard slot 0 packets
+          is Err (e) -> Err e
+          is Ok (equipped) ->
+            let a = __record-set session "phase" 2
+            in let b = __record-set a "serial" serial
+            in let c = __record-set b "direction" 0
+            in let d = __record-set c "sequence" 0
+            in let active = __record-set shard "active" serial
+            in Ok (gs-reply (list-push (list-push equipped [79, 0]) [85]) "entered world")
+
+ Creation takes the first free slot whatever slot the client names, and the
+ stored request is rewritten to name that slot.
+  gs-free-slot : Integer, Integer -> Integer
+  gs-free-slot (characters) (slot) = if slot >= 5 then 5
+    else if peek-qword characters (slot * 160) == 0 then slot
+    else gs-free-slot characters (slot + 1)
+
+  gs-create : GameShard, GameSession, WalkMap, List Integer -> Result GameReply Text
+  gs-create (shard) (session) (map) (packet) =
+    if shard.active /= 0 then Err "account already in world"
+    else if not (gs-create-valid packet) then Err "invalid character creation"
+    else let slot = gs-free-slot shard.characters 0
+    in let cleaned = gs-name-clean (if list-length packet == 100 then packet & [0, 0, 0, 0] else packet) 0 False
+    in let normalized = list-set-at (list-set-at (list-set-at (list-set-at cleaned 92 0) 93 0) 94 0) 95 slot
+    in if slot >= 5 then Err "account has no free character slot"
+    else when walk-ground map 1420 1698
+      is Err (e) -> Err e
+      is Ok (ground) -> when walk-height map 1420 1698 ground
+        is Err (e) -> Err e
+        is Ok (z) -> when (world-create shard.world
+          (__record-set (gs-mobile 0 1420 1698 z (400 + list-at packet 70) (gp-u16 packet 80)) "health" (list-at packet 71)))
+          is Err (e) -> Err e
+          is Ok (serial) -> when gs-equipment shard.world serial normalized 0 (__list-with-capacity 4)
+            is Err (e) -> when world-delete shard.world serial
+              is Err (rollback) -> Err ("mobile rollback: " & rollback)
+              is Ok (removed) -> Err e
+            is Ok (items) ->
+              let name = gs-store-create shard.characters slot normalized 0
+              in let equipped = gs-store-equipment shard.characters slot items 0
+              in let committed = poke-qword shard.characters (slot * 160) serial
+              in gs-enter shard session slot
+
+ Classic 0x83 delete: password at 1 (30 bytes), slot index at 31. Refusals use
+ 0x85 (0 bad password, 1 no such character); success resends the list as 0x86.
+  gs-delete-tree : WorldTable, Integer, Integer -> Result Integer Text
+  gs-delete-tree (world) (serial) (depth) = if depth == 0 then Err "character delete depth"
+    else let child = world-first-child world serial
+    in if child /= 0 then when gs-delete-tree world child (depth - 1)
+      is Err (e) -> Err e
+      is Ok (_) -> gs-delete-tree world serial depth
+    else world-delete world serial
+ The character password is the one typed at creation (create bytes 40..69,
+ stored at slot offset 48); an empty creation password matches an empty entry.
+  gs-delete-password : Integer, Integer, List Integer, Integer -> Boolean
+  gs-delete-password (characters) (slot) (packet) (k) = if k == 30 then True
+    else list-at packet (1 + k) == peek-byte characters (slot * 160 + 48 + k) & gs-delete-password characters slot packet (k + 1)
+  gs-clear-slot : Integer, Integer, Integer -> Integer
+  gs-clear-slot (characters) (slot) (i) = if i == 160 then 0
+    else let z = poke-byte characters (slot * 160 + i) 0 in gs-clear-slot characters slot (i + 1)
+  gs-delete : GameShard, List Integer -> Result GameReply Text
+  gs-delete (shard) (packet) =
+    if shard.active /= 0 then Err "account already in world"
+    else let slot = gp-u32 packet 31
+    in if slot < 0 | slot >= 5 then Ok (gs-reply [[#85, 1]] "character delete refused: slot")
+    else let serial = peek-qword shard.characters (slot * 160)
+    in if serial == 0 then Ok (gs-reply [[#85, 1]] "character delete refused: empty slot")
+    else if not (gs-delete-password shard.characters slot packet 0) then Ok (gs-reply [[#85, 0]] "character delete refused: password")
+    else when gs-delete-tree shard.world serial 16
+      is Err (e) -> Err e
+      is Ok (_) -> let cleared = gs-clear-slot shard.characters slot 0
+        in let touched = world-touch shard.world
+        in Ok (gs-reply [gp-character-resend shard.characters] ("character deleted slot=" & show slot))
+  gs-login : GameShard, GameSession, List Integer -> Result GameReply Text
+  gs-login (shard) (session) (packet) =
+    let key = shard.pending-key
+    in let consumed = __record-set shard "pending-key" 0
+    in if key == 0 | session.key /= key | gp-u32 packet 1 /= key then Err "relay key absent or consumed"
+    else if shard.active /= 0 then Err "an account is already in world"
+    else when ga-login shard.accounts packet 5 35
+      is Err (e) -> Err e
+      is Ok (index) ->
+        let rebound = ga-bind shard.accounts shard.characters index
+        in let logged = ga-logged shard.accounts
+        in let touched = if rebound then world-touch shard.world else 0
+        in let logged = __record-set session "phase" 1
+        in Ok (gs-reply [gp-character-list shard.characters] ("character list account=" & show index))
+
+  gs-deny-move : GameSession, WorldObject, Integer -> Result GameReply Text
+  gs-deny-move (session) (mobile) (sequence) =
+    let reset = __record-set session "sequence" 0
+    in Ok (gs-reply [gp-move-denied mobile session.direction sequence] "walk refused")
+
+  gs-walk : GameShard, GameSession, WalkMap, List Integer -> Result GameReply Text
+  gs-walk (shard) (session) (map) (packet) = when world-get shard.world session.serial
+    is Err (e) -> Err e
+    is Ok (mobile) ->
+      let raw-dir = list-at packet 1
+      in let dir = bit-and raw-dir 7
+      in let sequence = list-at packet 2
+      in if bit-and raw-dir 120 /= 0 | sequence /= session.sequence then gs-deny-move session mobile sequence
+      else let step = if dir /= session.direction then Ok mobile.z else walk-step map mobile.x mobile.y mobile.z dir
+      in when step
+        is Err (e) -> gs-deny-move session mobile sequence
+        is Ok (z) ->
+          let moving = dir == session.direction
+          in let next = WorldObject { serial = mobile.serial, kind = mobile.kind,
+            x = mobile.x + (if moving then walk-dx dir else 0), y = mobile.y + (if moving then walk-dy dir else 0),
+            z = z, graphic = mobile.graphic, hue = mobile.hue, container = mobile.container,
+            amount = mobile.amount, health = mobile.health }
+          in when world-update shard.world next
+            is Err (e) -> Err e
+            is Ok (serial) ->
+              let a = __record-set session "direction" dir
+              in let b = __record-set a "sequence" (if sequence == 255 then 1 else sequence + 1)
+              in Ok (gs-reply [gp-move-accepted sequence] (if moving then "walked" else "turned"))
+
+  gs-handle : GameShard, GameSession, WalkMap, List Integer -> Result GameReply Text
+  gs-handle (shard) (session) (map) (packet) =
+    if list-length packet == 0 then Err "empty game packet"
+    else let opcode = list-at packet 0
+    in if not (gp-packet-length-valid packet) then Err "game packet length/opcode"
+    else if not (gs-byte-range packet 0) then Err "non-byte game packet"
+    else if session.phase == 3 then Err "session closed"
+    else if opcode == 1 then let closed = gs-disconnect shard session
+      in Ok (GameReply { packets = [], close = True, note = "client logout" })
+    else if opcode == 145 & session.phase == 0 then gs-login shard session packet
+    else if session.phase == 0 then Err "game login required"
+    else if opcode == 115 then Ok (gs-reply [packet] "ping")
+    else if opcode == 164 then Ok (gs-reply [] "hardware info")
+    else if opcode == 0 & session.phase == 1 then gs-create shard session map packet
+    else if opcode == 93 & session.phase == 1 then gs-enter shard session (gp-u32 packet 65)
+    else if opcode == 131 & session.phase == 1 then gs-delete shard packet
+    else if opcode == 2 & session.phase == 2 then gs-walk shard session map packet
+    else if opcode == 167 & session.phase == 2 then Ok (gs-reply [] ("optional tip/notice ignored id=" & show (gp-u16 packet 1) & " type=" & show (list-at packet 3)))
+    else if opcode == 3 & session.phase == 2 then
+      if not (gp-speech-valid packet) then Err "speech type, style or text invalid"
+      else gs-speech shard session packet 0
+    else if opcode == 52 & session.phase == 2 then
+      if gp-u32 packet 6 /= session.serial | list-at packet 5 /= 4 then Err "status query target/type"
+      else gs-status shard session 0
+    else Err "packet not admitted in session phase"
+
+  gs-speech : GameShard, GameSession, List Integer, Integer -> Result GameReply Text
+  gs-speech (shard) (session) (packet) (slot) =
+    if slot >= 5 then Err "character metadata absent"
+    else if peek-qword shard.characters (slot * 160) /= session.serial then gs-speech shard session packet (slot + 1)
+    else when world-get shard.world session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> Ok (gs-reply [gp-speech mobile shard.characters slot packet] "speech")
+
+  gs-status : GameShard, GameSession, Integer -> Result GameReply Text
+  gs-status (shard) (session) (slot) =
+    if slot >= 5 then Err "character metadata absent"
+    else if peek-qword shard.characters (slot * 160) /= session.serial then gs-status shard session (slot + 1)
+    else when world-get shard.world session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> Ok (gs-reply [gp-status mobile shard.characters slot] "status")

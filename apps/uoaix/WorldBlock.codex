@@ -1,0 +1,35 @@
+Chapter: WorldBlock
+  cites Kernel chapter VirtioBlkX86
+  cites Foreword chapter Result
+
+  UoDevice = | UoIde | UoVirtio (VbxState)
+
+  us-device-count : UoDevice -> [Device.Block] Integer
+  us-device-count (device) = when device
+    is UoIde -> act
+      count <- block-sector-count
+      count
+    end
+    is UoVirtio (state) -> act state.capacity end
+
+  us-device-read : UoDevice, Integer -> [Device.Block] Result Integer Text
+  us-device-read (device) (sector) = when device
+    is UoIde -> act
+      buf <- block-read-sector sector
+      if buf <= 0 then Err "IDE block read failed" else Ok buf
+    end
+    is UoVirtio (state) ->
+      let buf = alloc-bytes 512
+      in act
+        when vbx-read state sector buf
+          is Err (e) -> Err e
+          is Ok (n) -> Ok buf
+      end
+
+  us-device-write : UoDevice, Integer, Integer -> [Device.Block] Result Integer Text
+  us-device-write (device) (sector) (buf) = when device
+    is UoIde -> act
+      status <- block-write-sector sector buf
+      if status == 0 then Ok 0 else Err "IDE block write failed"
+    end
+    is UoVirtio (state) -> act vbx-write state sector buf end

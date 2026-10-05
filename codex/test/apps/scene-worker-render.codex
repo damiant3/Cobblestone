@@ -1,0 +1,143 @@
+Chapter: SceneWorkerRenderTest
+  cites Works chapter GopRenderWorker
+  cites Works chapter GopRenderMailbox
+  cites Works chapter GopScene
+  cites Works chapter GopFish
+  cites Works chapter GopAhci
+  cites Engine chapter Renderer3D
+  cites Foreword chapter Console
+
+  swr-w : Integer = 64
+  swr-h : Integer = 48
+
+  swr-await : Integer, Integer, Integer -> [Concurrent] Boolean
+  swr-await (cell) (owner) (fuel) =
+    if grm-ready cell owner then act True end
+    else if fuel <= 0 | grm-failed cell owner then act False end
+    else act
+      yielded <- process-yield
+      swr-await cell owner (fuel - 1)
+    end
+
+  swr-same : Integer, Integer, Integer, Integer -> Boolean
+  swr-same (a) (b) (at) (n) =
+    if at >= n then True
+    else peek-32 a (at * 4) == peek-32 b (at * 4) & swr-same a b (at + 1) n
+
+  swr-untouched : Integer, Integer, Integer -> Boolean
+  swr-untouched (base) (at) (n) =
+    if at >= n then True
+    else peek-32 base (at * 4) == 1515870810 & swr-untouched base (at + 1) n
+
+  swr-oracle : Integer, Integer, Integer -> R3dTriState
+  swr-oracle (kind) (phase) (shadows) =
+    let pixels = alloc-bytes (swr-w * swr-h * 4)
+    in let depth = alloc-bytes (swr-w * swr-h * 4)
+    in let target = R3dTriState { r3t-base = pixels, r3t-depth = depth, r3t-w = swr-w, r3t-h = swr-h, r3t-stride = swr-w, r3t-service = r3d-no-service }
+    in let mark = __heap-save
+    in let scene = if kind == 2 then gf-scene 0 else gsc-scene 0
+    in let advanced = if kind == 2 then gf-advance scene phase else 0
+    in let camera = gsc-copy-camera (scene.s3-camera) (gsc-camera phase (gsc-aspect swr-w swr-h))
+    in let sky = if kind == 2 then gf-sky else gsc-sky
+    in let clear = r3d-target-clear target sky
+    in let drawn = if shadows == 1 then r3d-render-shadowed target scene gsc-shadow-map else r3d-render-into target scene
+    in let restored = __heap-restore mark
+    in target
+
+  swr-copy : ScenePane, Integer -> Integer
+  swr-copy (sp) (fuel) =
+    if fuel <= 0 then 0 - 1
+    else let phase = gsc-worker-unit sp
+    in if phase <= 0 then phase else swr-copy sp (fuel - 1)
+
+  swr-poison : Integer, Integer -> Integer
+  swr-poison (source) (n) =
+    let base = alloc-bytes (grm-heap-bytes - 64)
+    in if source < base | source + n * 4 > base + grm-heap-bytes - 64 then 0
+    else let cleared = __memset source 90 (n * 4)
+    in 1
+
+  opening : [Console, Concurrent, Capability, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    initialized <- runtime-init 0
+    let cell = grm-new 0
+    in let frame = alloc-zeroed (swr-w * swr-h * 4) 64
+    in let cursor = alloc-zeroed 2048 64
+    in act
+      pid <- grw-start cell
+      sp <- gsc-new frame swr-w cursor 0 gsc-sky swr-w swr-h
+      let owned = gsc-worker-own sp cell 1
+      in let owner = sp.sp-worker-owner
+      in let oracle = swr-oracle 1 0 0
+      in let token = grm-submit cell owner swr-w swr-h 0 0 gsc-sky 0
+      in let mark = __heap-save
+      in let temporary = alloc-zeroed 65536 64
+      in act
+        ready <- swr-await cell owner 200000
+        let restored = __heap-restore mark
+        in let overwrite = alloc-zeroed 65536 64
+        in let setup = pid > 0 & token > 0 & ready & temporary == overwrite & peek-qword cell grm-core == 0
+        in let color = if setup then swr-same (peek-qword cell grm-pixels) (oracle.r3t-base) 0 (swr-w * swr-h) else False
+        in let depth = if setup then swr-same (peek-qword cell grm-depth) (oracle.r3t-depth) 0 (swr-w * swr-h) else False
+        in let early = if setup then grm-consume cell owner < 0 else False
+        in let canary = __memset (sp.sp-tgt.r3t-base) 90 (swr-w * swr-h * 4)
+        in let first = if setup then gsc-worker-unit sp else 0 - 1
+        in let copy-bound = first == 1 & peek-qword cell grm-copy == 1024 & sp.sp-ready == 0 & swr-same (sp.sp-tgt.r3t-base) (oracle.r3t-base) 0 1024 & swr-untouched (sp.sp-tgt.r3t-base) 1024 (swr-w * swr-h)
+        in let copied = if setup then swr-copy sp 8 else 0 - 1
+        in let published = copied == 0 & sp.sp-ready == 1 & peek-qword cell grm-published == 1 & swr-same (sp.sp-front.r3t-base) (oracle.r3t-base) 0 (swr-w * swr-h)
+        in let replay = poke-qword cell grm-request token
+        in let replay-rejected = grm-ready cell owner == False
+        in let replay-clear = poke-qword cell grm-request 0
+        in let duplicate = replay-rejected & grm-consume cell owner < 0 & peek-qword cell grm-published == 1
+        in let next = grm-submit cell owner swr-w swr-h 40 40 gsc-sky 1
+        in act
+          ready2 <- swr-await cell owner 200000
+          let before = peek-qword cell grm-published
+          in let replaced = grm-submit cell owner swr-w swr-h 41 41 gsc-sky 1
+          in let old-request = replaced > next & grm-ready cell owner == False
+          in let invalidated = grm-close cell owner
+          in let closed = peek-qword cell grm-owner == 0 & peek-qword cell grm-request == 0 & grm-ready cell owner == False
+          in let current = grm-open cell 2
+          in let stale = grm-ready cell current == False & grm-consume cell owner < 0 & peek-qword cell grm-published == before
+          in let fish-oracle = swr-oracle 2 50 1
+          in let switched = __record-set sp "sp-worker-owner" current
+          in let cleared = __record-set sp "sp-ready" 0
+          in let fish-token = grm-submit cell current swr-w swr-h 50 50 gf-sky 1
+          in act
+            fish-ready <- swr-await cell current 200000
+            let fish-source = peek-qword cell grm-pixels
+            in let wrong-owner = grm-ready cell owner == False
+            in let fish-depth = if fish-ready then swr-same (peek-qword cell grm-depth) (fish-oracle.r3t-depth) 0 (swr-w * swr-h) else False
+            in let fish-copy = if fish-ready then swr-copy sp 8 else 0 - 1
+            in let fish = fish-copy == 0 & fish-depth & swr-same (sp.sp-front.r3t-base) (fish-oracle.r3t-base) 0 (swr-w * swr-h)
+            in let peak = peek-qword cell grm-peak
+            in act
+              stopped <- grw-stop cell
+              reused <- process-spawn-with-heap (\ignored -> swr-poison fish-source (swr-w * swr-h)) grm-heap-bytes
+              poisoned <- if reused > 0 then process-wait reused else act 0 end
+              let retained = reused == pid & poisoned == 1 & swr-same (sp.sp-front.r3t-base) (fish-oracle.r3t-base) 0 (swr-w * swr-h)
+              in let admission = grm-size-ok 8192 8192 == False & grm-size-ok (0 - 1) 10 == False & grm-size-ok swr-w swr-h
+              in let limit-cell = grm-new 0
+              in let exhausted = poke-qword limit-cell grm-counter grm-token-limit
+              in let refused = grm-open limit-cell 1 < 0
+              in act
+                port-out-byte 33 255
+                port-out-byte 161 255
+                print-line-uni ("setup=" & show (setup & ready2 & next > 0 & fish-token > 0))
+                print-line-uni ("scene-color-depth=" & show (color & depth))
+                print-line-uni ("bounded-copy=" & show (early & copy-bound & published))
+                print-line-uni ("duplicate=" & show duplicate)
+                print-line-uni ("stale-request=" & show old-request)
+                print-line-uni ("closed=" & show closed)
+                print-line-uni ("stale-owner=" & show (stale & wrong-owner))
+                print-line-uni ("fish-shadow=" & show fish)
+                print-line-uni ("owned-after-slot-reuse=" & show retained)
+                print-line-uni ("admission=" & show (admission & refused))
+                print-line-uni ("worker-peak=" & show peak)
+                print-line-uni "scene-worker-end"
+              end
+            end
+          end
+        end
+      end
+    end
+  end

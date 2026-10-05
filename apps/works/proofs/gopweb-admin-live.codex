@@ -1,0 +1,93 @@
+Chapter: GopWebAdminLive
+  cites Works chapter GopWeb
+  cites Foreword chapter Console
+
+  live-negative : Integer = 0
+
+  live-await : Integer, Integer, Integer, Integer, Integer -> [Concurrent] Boolean
+  live-await (blk) (cell) (value) (deadline) (fuel) =
+    if peek-qword blk cell >= value then True
+    else if get-ticks >= deadline | fuel <= 0 then False
+    else act
+      yielded <- process-yield
+      live-await blk cell value deadline (fuel - 1)
+    end
+
+  live-state : Integer, Integer, Integer, Integer -> [Concurrent] Boolean
+  live-state (blk) (value) (deadline) (fuel) =
+    if peek-qword blk gopweb-blk-state == value & peek-qword blk gopweb-blk-command-seq == peek-qword blk gopweb-blk-ack-seq then True
+    else if value == 2 & peek-qword blk gopweb-blk-state >= 4 & peek-qword blk gopweb-blk-command-seq == peek-qword blk gopweb-blk-ack-seq then False
+    else if get-ticks >= deadline | fuel <= 0 then False
+    else act
+      yielded <- process-yield
+      live-state blk value deadline (fuel - 1)
+    end
+
+  opening : [Console, Concurrent, Capability, Network.Read, Network.Write, Device.Port] Nothing = act
+    initialized <- runtime-init 0
+    blk <- gopweb-hold
+    let pid = peek-qword blk gopweb-blk-pid
+    in act
+      ready <- live-state blk (if live-negative == 1 then 4 else 2) (get-ticks + 2000) 500000000
+      print-line-uni ("service-ready=" & show (ready & pid > 0))
+      print-line-uni ("binding=" & gopweb-ip-text (peek-qword blk gopweb-blk-ip) & ":9100")
+      print-line-uni ("service-state=" & show (peek-qword blk gopweb-blk-state) & " pid=" & show pid & " process=" & show (process-status pid) & " card=" & show (peek-qword blk gopweb-blk-card) & " heap=" & show (peek-qword blk gopweb-blk-heap))
+      print-line-uni (when e1000-find pci-scan-all is None -> "intel=absent" is Just (device) -> (let bar = pci-parse-bar (device.pci-bus) (device.pci-dev) (device.pci-func) 0 in "intel-bar=" & show (bar.bar-base) & " verdict=" & show (e1000-bar-verdict bar)))
+      print-line-uni ("nic-status=" & show (if net-driver-active == net-card-e1000 then e1000-read (net-driver-cell net-driver-off-mmio) e1000-reg-status else 0))
+      print-line-uni ("nic-rx-next=" & show (peek-32 (net-driver-cell net-driver-off-ctrl-blk) 0) & " rx0=" & show (peek-byte (net-driver-cell net-driver-off-rx-ring) 12) & " mac-rx=" & show (if net-driver-active == net-card-e1000 then e1000-read (net-driver-cell net-driver-off-mmio) e1000-reg-gprc else 0))
+      if live-negative == 1 then act
+        print-line-uni "phase=no-lease"
+        attempted <- live-await blk gopweb-blk-refused 1 (get-ticks + 2000) 500000000
+        confirmed <- live-await blk gopweb-blk-refused 2 (get-ticks + 2000) 500000000
+        print-line-uni ("lease-refused=" & show (ready & attempted & confirmed & peek-qword blk gopweb-blk-ip == 0 & peek-qword blk gopweb-blk-count == 0 & process-status pid > 0))
+        killed <- if pid > 0 then process-kill pid else 0
+        port-out-byte 33 255
+        port-out-byte 161 255
+        print-line-uni "web-admin-live-end"
+      end
+      else if ready == False then act
+        killed <- if pid > 0 then process-kill pid else 0
+        print-line-uni "web-admin-live-end"
+      end
+      else act
+        print-line-uni "phase=running"
+        first <- live-await blk gopweb-blk-count 1 (get-ticks + 2000) 500000000
+        let stop = gopweb-action blk gopweb-cmd-stop
+        in act
+          stopped <- live-state blk 0 (get-ticks + 1000) 500000000
+          print-line-uni ("stop-ack=" & show stopped)
+          print-line-uni "phase=stopped"
+          attempted <- live-await blk gopweb-blk-refused 1 (get-ticks + 2000) 500000000
+          confirmed <- live-await blk gopweb-blk-refused 2 (get-ticks + 2000) 500000000
+          let quiet = peek-qword blk gopweb-blk-count == 1
+          in let start = gopweb-action blk gopweb-cmd-start
+          in act
+            started <- live-state blk 2 (get-ticks + 2000) 500000000
+            print-line-uni ("start-ack=" & show started)
+            print-line-uni "phase=started"
+            second <- live-await blk gopweb-blk-count 2 (get-ticks + 2000) 500000000
+            print-line-uni "phase=restart-ready"
+            authorized <- live-await blk gopweb-blk-count 3 (get-ticks + 2000) 500000000
+            let restart = gopweb-action blk gopweb-cmd-restart
+            in act
+              restarted <- live-state blk 2 (get-ticks + 2000) 500000000
+              print-line-uni ("restart-ack=" & show restarted)
+              print-line-uni "phase=restarted"
+              third <- live-await blk gopweb-blk-count 4 (get-ticks + 2000) 500000000
+              let stop2 = gopweb-action blk gopweb-cmd-stop
+              in act
+                final <- live-state blk 0 (get-ticks + 1000) 500000000
+                print-line-uni ("controls=" & show (first & stopped & quiet & attempted & confirmed & started & second & authorized & restarted & third & final))
+                print-line-uni ("requests=" & show (peek-qword blk gopweb-blk-count) & " 2xx=" & show (peek-qword blk 136) & " 4xx=" & show (peek-qword blk 152) & " bytes=" & show (peek-qword blk gopweb-blk-bytes-sent))
+                print-line-uni ("log-path=" & gopweb-text-read (gopweb-slot-at blk 3) 192 0 (peek-qword (gopweb-slot-at blk 3) 56))
+                killed <- process-kill pid
+                port-out-byte 33 255
+                port-out-byte 161 255
+                print-line-uni "web-admin-live-end"
+              end
+            end
+          end
+        end
+      end
+    end
+  end

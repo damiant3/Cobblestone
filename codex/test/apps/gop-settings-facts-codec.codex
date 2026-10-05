@@ -1,0 +1,46 @@
+Chapter: GopSettingsFactsCodec
+  cites Works chapter GopSettingsFacts
+  cites Foreword chapter Console
+
+  fc-yes : Boolean -> Text
+  fc-yes (v) = if v then "yes" else "NO"
+
+  fc-bad : SettingsStore, Text -> Boolean
+  fc-bad (s) (body) = when gsf-decode s (gsf-prefix & body)
+    is SetRefused (why) -> text-length why > 0
+    is SetOk (v) -> False
+
+  fc-restored : SetResult -> Boolean
+  fc-restored (result) = when result
+    is SetOk (s) -> gst-get s 1 0 == 2 & gst-get-bool s 2 False & gst-get-text s 3 "" == "café"
+    is SetRefused (why) -> False
+
+  opening : [Console] Nothing =
+    let keys = [gst-int-key 1 "theme" 0 0 3, gst-bool-key 2 "sound" False, gst-text-key 3 "wallpaper" "none" 32]
+    in let defaults = gst-store keys
+    in let values = gst-copy defaults
+    in let a = gst-set-value values 1 (SettingInteger 2)
+    in let b = gst-set-value values 2 (SettingBoolean True)
+    in let c = gst-set-value values 3 (SettingText "café")
+    in let text = gsf-encode values
+    in let expected = gsf-prefix & "[[1,0,2],[2,1,true],[3,2,\"636166c3a9\"]]"
+    in let roundtrip = fc-restored (gsf-decode defaults text)
+    in let bad-range = fc-bad defaults "[[1,0,9]]"
+    in let bad-type = fc-bad defaults "[[2,1,1]]"
+    in let bad-kind = fc-bad defaults "[[2,0,1]]"
+    in let unknown = fc-bad defaults "[[99,0,1]]"
+    in let duplicate = fc-bad defaults "[[1,0,1],[1,0,2]]"
+    in let bad-hex = fc-bad defaults "[[3,2,\"zz\"]]"
+    in let bad-utf8 = fc-bad defaults "[[3,2,\"ff\"]]"
+    in let trailing = fc-bad defaults "[[1,0,1]]junk"
+    in let partial = fc-bad defaults "[[1,0,2],[2,1,1]]"
+    in let unchanged = gst-get defaults 1 (0 - 1) == 0 & gst-get-bool defaults 2 True == False & gst-get-text defaults 3 "" == "none"
+    in act
+      print-line-uni ("canonical UTF-8 envelope: " & fc-yes (text == expected & gsf-ascii text 0))
+      print-line-uni ("typed snapshot roundtrip: " & fc-yes roundtrip)
+      print-line-uni ("range and type refused: " & fc-yes (bad-range & bad-type & bad-kind))
+      print-line-uni ("unknown and duplicate ids refused: " & fc-yes (unknown & duplicate))
+      print-line-uni ("malformed text and trailing data refused: " & fc-yes (bad-hex & bad-utf8 & trailing))
+      print-line-uni ("partial decode leaves caller unchanged: " & fc-yes (partial & unchanged))
+      print-line-uni ("non-ASCII envelope refused: " & fc-yes (gsf-ascii (gsf-prefix & "café") 0 == False))
+    end

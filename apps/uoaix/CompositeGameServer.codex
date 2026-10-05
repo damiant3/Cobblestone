@@ -1,0 +1,152 @@
+Chapter: CompositeGameServer
+  cites Uoaix chapter CompositePaging
+  cites Uoaix chapter GameHuffman
+  cites Uoaix chapter CompositeLaunch
+  cites Uoaix chapter CompositeLineup
+  cites Net chapter NetDriver
+  cites Net chapter NetCompact
+
+  cgs-fail : Text -> [Console] Integer
+  cgs-fail (message) = act
+    print-line-uni ("FAIL composite " & message)
+    1
+  end
+  cgs-ground : WalkMap, Integer, Integer -> Result Integer Text
+  cgs-ground (map) (x) (y) = when walk-ground map x y
+    is Err (e) -> Err e
+    is Ok (z) -> walk-height map x y z
+  cgs-setup : WalkMap, WdState -> Result CompositeSetup Text
+  cgs-setup (map) (decoration) = when cgs-ground map 1421 1698
+    is Err (e) -> Err e
+    is Ok (vendor) -> when cgs-ground map 1418 1700
+      is Err (e) -> Err e
+      is Ok (shrine) -> when cgs-ground map cg-home-x cg-home-y
+        is Err (e) -> Err e
+        is Ok (home) -> Ok (CompositeSetup { vendor-z = vendor, shrine-z = shrine, home-z = home, decoration = Just decoration })
+  cgs-load : MapCacheState, UoStore, CompositeSetup, MapInstallData -> [Console, Device.Block] Result CompositeOwner Text
+  cgs-load (cache) (store) (setup) (installed) = when walk-map-sized 1408 1536 96 160 ((cache.map.stride - 8) / 24)
+    is Err (e) -> act Err e end
+    is Ok (britain) -> act
+      filled <- wmc-fill cache britain 0
+      when filled
+        is Err (e) -> Err e
+        is Ok (_) -> act
+          loaded <- cs-load-town store setup (Just britain)
+          when loaded
+            is Err (e) -> Err e
+            is Ok (owner) -> when cg-town-doors owner.state installed.data installed.size
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner
+        end
+    end
+  cgs-accounts : CompositeOwner, CompositeLaunchMode, List Integer -> [Console, Device.Block] Result Integer Text
+  cgs-accounts (owner) (launch) (entropy) =
+    let accounts = owner.state.checkpoint.game.accounts
+    in let moded = ga-set-mode accounts (if launch.dev then ga-dev else ga-public)
+    in let seeded = ga-set-entropy accounts entropy 0
+    in if list-length launch.british == 0 then act
+      if not launch.dev & ga-british-default accounts then Err "public mode refuses account British with its default password; launch with a new password"
+      else act
+        print-line-uni (if launch.dev then "ACCOUNTS dev: an unknown name and password create the account at first login" else "ACCOUNTS public: no login creates an account")
+        Ok 0
+      end
+    end
+    else when ga-british-password-set accounts launch.british
+      is Err (e) -> act Err e end
+      is Ok (_) -> act
+        committed <- cs-commit owner True
+        when committed
+          is Err (e) -> Err e
+          is Ok (_) -> act
+            print-line-uni "ACCOUNTS public: no login creates an account; British password replaced"
+            Ok 0
+          end
+      end
+  cgs-start : MapCacheState, WalkMap, Integer, List GameOpcodeSpec, CompositeLaunchMode, List Integer, Integer -> [Console, Network.Read, Network.Write, Device.Block] Integer
+  cgs-start (cache) (map) (huffman) (specs) (launch) (entropy) (table) = let testing = launch.testing in act
+    data <- wmc-decoration cache
+    when data
+      is Err (e) -> cgs-fail e
+      is Ok (installed) -> when wd-read installed.data installed.size map map.stride
+        is Err (e) -> cgs-fail e
+        is Ok (decoration) -> when cgs-setup map decoration
+          is Err (e) -> cgs-fail e
+          is Ok (setup) -> act
+            opened <- us-open 0 wmc-start
+            when opened
+              is Err (e) -> cgs-fail e
+              is Ok (store) -> act
+                recovered <- cgs-load cache store setup installed
+                when recovered
+                  is Err (e) -> cgs-fail e
+                  is Ok (owner) -> act
+                    configured <- __record-set owner.state "testing" testing
+                    tiled <- __record-set owner.state.items "tiles" table
+                    print-line-uni (if table == 0 then "ITEMS none: reinstall the map cache for TILEDATA names and weights" else "ITEMS installed")
+                    print-line-uni (when owner.state.town is None -> "TOWNSFOLK off: this world runs the demo economy; a fresh world disk builds Britain with townsfolk" is Just (town) -> "TOWNSFOLK on: Britain economy with " & show town.count & " residents")
+                    accounted <- cgs-accounts owner launch entropy
+                    when accounted
+                     is Err (e) -> cgs-fail e
+                     is Ok (_) -> act
+                      arranged <- cgl-arrange owner.state testing
+                      when arranged
+                       is Err (e) -> cgs-fail e
+                       is Ok (_) -> cgs-ready cache map huffman specs owner decoration
+                     end
+                  end
+              end
+          end
+  end
+  cgs-ready : MapCacheState, WalkMap, Integer, List GameOpcodeSpec, CompositeOwner, WdState -> [Console, Network.Read, Network.Write, Device.Block] Integer
+  cgs-ready (cache) (map) (huffman) (specs) (owner) (decoration) = act
+                    print-line-uni (when owner.state.lineup is None -> "LINEUP off" is Just (l) -> "LINEUP bank: six shopkeepers, banker and resident at 1434-1441,1694")
+                    let magic = mgs-new owner.state.items owner.state.banks owner.state.combat decoration (Just owner.state.vendor) (cp-magic-cover cache decoration)
+                    in let hooked = mge-bind magic
+                    in let attached = __record-set owner.state "magic" (Just magic)
+                    in when cc-magic-restore owner.state magic
+                     is Err (e) -> cgs-fail e
+                     is Ok (_) -> when gmg-new owner.state.checkpoint.game owner.state.items owner.state.combat map
+                      is Err (e) -> cgs-fail e
+                      is Ok (gates) -> when cg-gates-bind gates 0
+                        is Err (e) -> cgs-fail e
+                        is Ok (_) -> let installed = __record-set owner.state "gates" (Just gates) in act
+                          print-line-uni "READY composite: paged whole map, decoration, mixed vendor, bank, skills/items, combat, monsters, ankh, magery, moongates, timed saves"
+                          gn-loop-hooks-with-disconnect specs (cp-route cache owner) (cp-pulse cache owner) (cs-disconnect owner) owner.state.checkpoint.game map huffman 2593 0
+                        end
+  end
+  cgs-run : CompositeLaunchMode, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Integer
+  cgs-run (launch) (entropy) = when cg-specs 0
+    is Err (e) -> cgs-fail e
+    is Ok (specs) -> if not (go-valid specs) then cgs-fail "registry validation" else act
+      card <- net-driver-bring-up
+      let arena = nc-set-acquire (nc-pool-cell process-get-pid)
+      in let released = nc-set-release arena
+      in let huffman = gh-new 0
+      in act
+        opened <- wmc-open UoIde
+        when opened
+          is Err (e) -> cgs-fail e
+          is Ok (cache) -> act
+            loaded <- wmc-cover cache 1420 1698
+            tiles <- wmc-items cache
+            when loaded
+              is Err (e) -> cgs-fail e
+              is Ok (map) -> when tiles
+                is Err (e) -> cgs-fail e
+                is Ok (table) -> cgs-start cache map huffman specs launch entropy table
+          end
+      end
+    end
+  opening : [Console, Network.Read, Network.Write, Device.Block, Device.Port, Identity] Integer = act
+   configured <- cl-read 0
+   s0 <- device-seed 0
+   s1 <- device-seed 1
+   s2 <- device-seed 2
+   s3 <- device-seed 3
+   when configured
+    is Err (e) -> cgs-fail e
+    is Ok (launch) -> act
+      print-line-uni (if launch.testing then "MODE composite TESTING local-only" else if launch.dev then "MODE composite DEV" else "MODE composite PUBLIC")
+      cgs-run launch [s0, s1, s2, s3]
+    end
+  end

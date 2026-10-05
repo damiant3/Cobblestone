@@ -1,0 +1,58 @@
+Chapter: TownNetworkBench
+  cites Uoaix chapter TownNetwork
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  tnb-values : Integer, Integer, List Integer -> List Integer
+  tnb-values (n) (value) (xs) = if n == 0 then xs
+    else tnb-values (n - 1) value (list-push xs value)
+  tnb-weights : Integer -> List Integer
+  tnb-weights (n) = tnb-values n 1000 (__list-with-capacity n)
+  tnb-bias : List Integer, Integer -> Integer
+  tnb-bias (xs) (i) = if i == tn-output-count then 0
+    else let a = list-set-at xs i (i + 1) in tnb-bias xs (i + 1)
+  tnb-inputs : TnState, Integer -> Integer
+  tnb-inputs (s) (i) = if i == tn-input-count - 2 then 0
+    else let a = tn-input s i 1000 in tnb-inputs s (i + 1)
+  tnb-population : Integer, List TnState -> List TnState
+  tnb-population (n) (xs) = if n == 0 then xs
+    else let s = tn-new 0
+    in let a = tnb-inputs s 0
+    in tnb-population (n - 1) (list-push xs s)
+  tnb-round : TnModel, List TnState, Integer -> Integer
+  tnb-round (m) (states) (i) = if i == list-length states then 0
+    else let a = tn-step m (list-at states i) in tnb-round m states (i + 1)
+  tnb-repeat : TnModel, List TnState, Integer -> Integer
+  tnb-repeat (m) (states) (n) = if n == 0 then 0
+    else let a = tnb-round m states 0 in tnb-repeat m states (n - 1)
+
+  tnb-main : Integer -> [Console] Nothing
+  tnb-main (rounds) = act
+    ob <- tn-zeros tn-output-count
+    bias <- tnb-bias ob 0
+    when tn-model (tnb-weights 512) (tn-zeros 16) (tnb-weights 224) ob
+      is Err (message) -> print-line-uni ("FAIL model " & message)
+      is Ok (m) -> act
+        states <- tnb-population 128 (__list-with-capacity 128)
+        warm <- tnb-round m states 0
+        before <- __heap-save
+        ran <- tnb-repeat m states rounds
+        after <- __heap-save
+        print-line-uni ("NPCS " & show (list-length states))
+        print-line-uni ("ROUNDS " & show rounds)
+        print-line-uni ("RETAINED-GROWTH " & show (after - before))
+        macs <- tn-input-count * tn-hidden-count + tn-hidden-count * tn-output-count
+        print-line-uni ("TOTAL-MACS " & show (macs * 128 * rounds))
+        print-line-uni ((if ran == 0 & after == before & tn-pop (list-at states 0) == 10 then "PASS" else "FAIL") & " benchmark state")
+      end
+  end
+  opening : [Console] Nothing = act
+    line <- read-line
+    when line
+      is None -> print-line-uni "FAIL missing round count"
+      is Just (text) -> act
+        rounds <- text-to-integer text
+        if rounds < 0 | rounds > 65536 | show rounds /= text
+          then print-line-uni "FAIL round count" else tnb-main rounds
+      end
+  end

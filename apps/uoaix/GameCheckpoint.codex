@@ -1,0 +1,115 @@
+Chapter: GameCheckpoint
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameAccounts
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+ UGC1 version 2 wraps the account section (GameAccounts) and TSC1. Header
+ cells are magic, version, size, TSC1 size, tick, sequence, FNV32, next
+ relay key. Live connections, pending relay keys, the account mode and
+ administrator authority do not survive a boot. Slot padding is reserved
+ zero for versioned extension.
+
+  GameCheckpoint = record { state : TownState, game : GameShard }
+
+  gc-town-at : Integer = 64 + ga-bytes
+  gc-size : Integer -> Integer
+  gc-size (capacity) = gc-town-at + ts-size capacity
+
+  gc-zero-range : Integer, Integer, Integer -> Boolean
+  gc-zero-range (buf) (at) (stop) =
+    if at >= stop then True
+    else peek-byte buf at == 0 & gc-zero-range buf (at + 1) stop
+
+  gc-unique : Integer, Integer, Integer, Integer -> Boolean
+  gc-unique (characters) (serial) (slot) (i) =
+    if i >= slot then True
+    else peek-qword characters (i * 160) /= serial & gc-unique characters serial slot (i + 1)
+
+  gc-equipment : WorldTable, Integer, Integer, Integer -> Boolean
+  gc-equipment (world) (slot) (mobile) (i) =
+    if i >= 4 then True
+    else let serial = peek-qword slot (112 + i * 8)
+    in if serial == 0 then gc-equipment world slot mobile (i + 1)
+    else when world-get world serial
+      is Err (e) -> False
+      is Ok (item) -> item.kind == 2 & item.container == mobile & gc-equipment world slot mobile (i + 1)
+
+  gc-slot : WorldTable, Integer, Integer -> Boolean
+  gc-slot (world) (characters) (index) =
+    let slot = characters + index * 160
+    in let serial = peek-qword slot 0
+    in if serial == 0 then gc-zero-range slot 0 160
+    else if not (gc-zero-range slot 144 160 & gc-unique characters serial index 0) then False
+    else when world-get world serial
+      is Err (e) -> False
+      is Ok (mobile) -> if mobile.kind /= 1 then False
+        else let packet = __buf-read-bytes (slot + 8) 0 104
+        in list-at packet 0 == 0 & gs-create-valid packet & gp-u16 packet 94 == index & gc-equipment world slot serial 0
+
+  gc-slots : WorldTable, Integer, Integer -> Boolean
+  gc-slots (world) (characters) (i) =
+    if i >= 5 then True
+    else let mark = __heap-save
+    in let valid = gc-slot world characters i
+    in let restored = __heap-restore mark
+    in valid & gc-slots world characters (i + 1)
+
+  gc-accounts-valid : WorldTable, Integer, Integer -> Boolean
+  gc-accounts-valid (world) (table) (i) = if i >= ga-count table then True
+    else if not (gc-slots world (ga-slots table i) 0) then False
+    else gc-accounts-valid world table (i + 1)
+
+  gc-encode : TownState, GameShard, Integer, Integer -> Result Integer Text
+  gc-encode (state) (game) (buf) (capacity) =
+    if game.world.buffer /= state.checkpoint.world.buffer | game.world.capacity /= state.checkpoint.world.capacity then Err "game and town world ownership differs"
+    else if game.next-key < 0 | game.next-key > #FFFFFFFF then Err "game relay counter invalid"
+    else if not (gc-slots game.world game.characters 0) then Err "game character slots invalid"
+    else let size = gc-size game.world.capacity
+    in if capacity < size then Err "game checkpoint destination too short"
+    else if buf < game.characters + 800 & game.characters < buf + size then Err "game checkpoint overlaps character slots"
+    else if buf < game.accounts + ga-bytes & game.accounts < buf + size then Err "game checkpoint overlaps accounts"
+    else if buf < game.world.buffer + ws-size game.world.capacity - 64 & game.world.buffer < buf + size then Err "game checkpoint overlaps world table"
+    else let accounts = ga-encode game.accounts game.characters (buf + 64)
+    in if not (gc-accounts-valid game.world (buf + 64) 0) then Err "game account character slots invalid"
+    else when ts-encode state (buf + gc-town-at) (capacity - gc-town-at)
+      is Err (e) -> Err e
+      is Ok (town-size) ->
+        let a = poke-qword buf 0 #31434755
+        in let b = poke-qword buf 8 2
+        in let c = poke-qword buf 16 size
+        in let d = poke-qword buf 24 town-size
+        in let e = poke-qword buf 32 state.checkpoint.tick
+        in let f = poke-qword buf 40 state.checkpoint.sequence
+        in let g = poke-qword buf 56 game.next-key
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in Ok size
+
+  gc-decode : Integer, Integer -> Result GameCheckpoint Text
+  gc-decode (buf) (size) =
+    if size < gc-size 1 | size > gc-size world-max-objects then Err "game checkpoint length outside budget"
+    else if peek-qword buf 0 /= #31434755 | peek-qword buf 8 /= 2 then Err "game checkpoint format unsupported"
+    else if peek-qword buf 16 /= size | peek-qword buf 24 /= size - gc-town-at then Err "game checkpoint length mismatch"
+    else if peek-qword buf 56 < 0 | peek-qword buf 56 > #FFFFFFFF then Err "game relay counter invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "game checkpoint checksum invalid"
+    else if not (ga-decode-valid (buf + 64)) then Err "game checkpoint accounts invalid"
+    else when ts-decode-record (buf + gc-town-at) (size - gc-town-at) (peek-qword buf 32) (peek-qword buf 40)
+      is Err (e) -> Err e
+      is Ok (state) -> if not (gc-accounts-valid state.checkpoint.world (buf + 64) 0) then Err "game checkpoint character references invalid"
+        else let accounts = ga-decode (buf + 64)
+        in let characters = alloc-bytes 800
+        in let copied = ws-copy (ga-slots accounts (ga-bound accounts)) characters 800 0
+        in let game = GameShard { world = state.checkpoint.world, characters = characters, accounts = accounts,
+          next-key = peek-qword buf 56, pending-key = 0, active = 0 }
+        in Ok (GameCheckpoint { state = state, game = game })
+
+  gc-decode-record : Integer, Integer, Integer, Integer -> Result GameCheckpoint Text
+  gc-decode-record (buf) (size) (tick) (sequence) =
+    if size < 64 then Err "game checkpoint record truncated"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "game checkpoint disagrees with record metadata"
+    else gc-decode buf size
+
+Page 1

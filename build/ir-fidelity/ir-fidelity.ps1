@@ -128,7 +128,7 @@ function Invoke-IrCompile {
     $fid = @()
     if (Test-Path $log) {
         $diags = @(Get-Content $log | Where-Object { $_ -match 'error CDX\d+' })
-        $fid = @(Get-Content $log -Encoding utf8 | Where-Object { $_ -match 'FIDELITY ' } | ForEach-Object { $_.Substring($_.IndexOf('FIDELITY ')) })
+        $fid = @(Get-Content $log -Encoding utf8 | Where-Object { $_ -cmatch 'FIDELITY ' } | ForEach-Object { $_.Substring($_.IndexOf('FIDELITY ')) })
     }
     return @{ Wire = $wire; Diags = $diags; Seconds = $sw.Elapsed.TotalSeconds; Fidelity = $fid }
 }

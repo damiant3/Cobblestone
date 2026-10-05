@@ -3,26 +3,26 @@ Chapter: Pascal Emitter
 Section: Keywords and Sanitization
 
   pas-keywords : List Text =
-   ["absolute", "and", "array", "asm", "begin", "case", "const",
-    "constructor", "destructor", "div", "do", "downto", "else", "end",
-    "file", "for", "function", "goto", "if", "implementation", "in",
-    "inherited", "inline", "interface", "label", "mod", "nil", "not",
-    "object", "of", "operator", "or", "packed", "procedure", "program",
-    "record", "repeat", "set", "shl", "shr", "string", "then", "to",
-    "type", "unit", "until", "uses", "var", "while", "with", "xor",
-    "true", "false", "result", "write", "writeln", "read", "readln"]
+    ["absolute", "and", "array", "asm", "begin", "case", "const",
+     "constructor", "destructor", "div", "do", "downto", "else", "end",
+     "file", "for", "function", "goto", "if", "implementation", "in",
+     "inherited", "inline", "interface", "label", "mod", "nil", "not",
+     "object", "of", "operator", "or", "packed", "procedure", "program",
+     "record", "repeat", "set", "shl", "shr", "string", "then", "to",
+     "type", "unit", "until", "uses", "var", "while", "with", "xor",
+     "true", "false", "result", "write", "writeln", "read", "readln"]
 
   pas-is-keyword : Text, Integer -> Boolean
   pas-is-keyword (name) (i) =
-   if i == list-length pas-keywords then False
-   else if list-at pas-keywords i == name then True
-   else pas-is-keyword name (i + 1)
+    if i == list-length pas-keywords then False
+    else if list-at pas-keywords i == name then True
+    else pas-is-keyword name (i + 1)
 
   pas-sanitize : Text -> Text
   pas-sanitize (name) =
-   let s = text-replace name "-" "_"
-   in if pas-is-keyword s 0 then s & "_v"
-      else s
+    let s = text-replace name "-" "_"
+    in if pas-is-keyword s 0 then s & "_v"
+    else s
 
  The IR spells a record field as `name/slot`, so a field name reaches the
  emitter as `a/0` and reads as a division. riscv resolves the slot and
@@ -33,27 +33,27 @@ Section: Keywords and Sanitization
 
   pas-slash-pos : Text, Integer, Integer -> Integer
   pas-slash-pos (f) (i) (len) =
-   if i >= len then (-1)
-   else if char-to-text (char-at f i) == "/" then i
-   else pas-slash-pos f (i + 1) len
+    if i >= len then (-1)
+    else if char-to-text (char-at f i) == "/" then i
+    else pas-slash-pos f (i + 1) len
 
   pas-field : Text -> Text
   pas-field (f) =
-   let slash = pas-slash-pos f 0 (text-length f)
-   in if slash >= 0 then pas-sanitize (substring f 0 slash)
-      else pas-sanitize f
+    let slash = pas-slash-pos f 0 (text-length f)
+    in if slash >= 0 then pas-sanitize (substring f 0 slash)
+    else pas-sanitize f
 
   pas-field-slot : Text -> Integer
   pas-field-slot (f) =
-   let slash = pas-slash-pos f 0 (text-length f)
-   in if slash < 0 then -1
-      else text-to-integer (substring f (slash + 1) (text-length f - slash - 1))
+    let slash = pas-slash-pos f 0 (text-length f)
+    in if slash < 0 then -1
+    else text-to-integer (substring f (slash + 1) (text-length f - slash - 1))
 
   pas-field-text : Text, Text -> Text
   pas-field-text (rec-text) (field) =
-   let slot = pas-field-slot field
-   in if slot < 0 then rec-text & "." & pas-field field
-      else rec-text & "[" & integer-to-text slot & "]"
+    let slot = pas-field-slot field
+    in if slot < 0 then rec-text & "." & pas-field field
+    else rec-text & "[" & integer-to-text slot & "]"
 
   pas-escape : Text -> Text
   pas-escape (s) = text-replace s "'" "''"
@@ -71,35 +71,35 @@ Section: Arity Map
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
   bsearch-arity-pos (entries) (name) (lo) (hi) =
-   if lo >= hi then lo
-   else let mid = lo + (hi - lo) / 2
-   in let mid-name = (list-at entries mid).name
-   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
-      else bsearch-arity-pos entries name (mid + 1) hi
+    if lo >= hi then lo
+    else let mid = lo + (hi - lo) / 2
+    in let mid-name = (list-at entries mid).name
+    in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+    else bsearch-arity-pos entries name (mid + 1) hi
 
   sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
   sorted-insert-arity (xs) (e) =
-   let len = list-length xs
-   in let pos = bsearch-arity-pos xs (e.name) 0 len
-   in list-insert-at xs pos e
+    let len = list-length xs
+    in let pos = bsearch-arity-pos xs (e.name) 0 len
+    in list-insert-at xs pos e
 
   build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
-   if i == list-length defs then acc
-   else let d = list-at defs i
-   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
-    name = d.name,
-    arity = __narrow (list-length (d.params)),
-    generic-count = 0
-   }))
+    if i == list-length defs then acc
+    else let d = list-at defs i
+    in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+     name = d.name,
+     arity = __narrow (list-length (d.params)),
+     generic-count = 0
+    }))
 
   lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
-   let len = list-length entries
-   in let pos = bsearch-arity-pos entries name 0 len
-   in if pos >= len then -1
-      else let e = list-at entries pos
-      in if e.name == name then e.arity else -1
+    let len = list-length entries
+    in let pos = bsearch-arity-pos entries name 0 len
+    in if pos >= len then -1
+    else let e = list-at entries pos
+    in if e.name == name then e.arity else -1
 
 Section: Record Table
 
@@ -134,79 +134,82 @@ Section: Record Table
 
   pas-ov-clamps : OverflowMode -> Boolean
   pas-ov-clamps (m) =
-   when m
-    is OvClamping -> True
-    is otherwise -> False
+    when m
+     is OvClamping -> True
+     is otherwise -> False
 
   pas-rec-field-of : ARecordFieldDef -> PasRecField
   pas-rec-field-of (f) =
-   when f.type-expr
-    is ABoundedIntType (base) (lo) (hi) (mode) (sp) ->
-     PasRecField { rf-name = f.name.value, rf-lo = lo, rf-hi = hi, rf-clamp = pas-ov-clamps mode }
-    is otherwise ->
-     PasRecField { rf-name = f.name.value, rf-lo = 0, rf-hi = 0, rf-clamp = False }
+    when f.type-expr
+     is ABoundedIntType (base) (lo) (hi) (mode) (sp) ->
+      PasRecField { rf-name = f.name.value, rf-lo = lo, rf-hi = hi, rf-clamp = pas-ov-clamps mode }
+     is otherwise ->
+      PasRecField { rf-name = f.name.value, rf-lo = 0, rf-hi = 0, rf-clamp = False }
 
   pas-rec-fields-of : List ARecordFieldDef, Integer, List PasRecField -> List PasRecField
   pas-rec-fields-of (fs) (i) (acc) =
-   if i >= list-length fs then acc
-   else pas-rec-fields-of fs (i + 1) (list-push acc (pas-rec-field-of (list-at fs i)))
+    if i >= list-length fs then acc
+    else pas-rec-fields-of fs (i + 1) (list-push acc (pas-rec-field-of (list-at fs i)))
 
   pas-build-recs : List ATypeDef, Integer, List PasRec -> List PasRec
   pas-build-recs (tds) (i) (acc) =
-   if i >= list-length tds then acc
-   else let acc1 = when list-at tds i
-        is ARecordTypeDef (nm) (tps) (fs) (recmut) (sp) ->
-         list-push acc (PasRec { pr-name = nm.value, pr-fields = pas-rec-fields-of fs 0 [] })
-        is otherwise -> acc
-   in pas-build-recs tds (i + 1) acc1
+    if i >= list-length tds then acc
+    else let acc1 = when list-at tds i
+         is ARecordTypeDef (nm) (tps) (fs) (recmut) (sp) ->
+          list-push acc (PasRec { pr-name = nm.value, pr-fields = pas-rec-fields-of fs 0 [] })
+         is otherwise -> acc
+    in pas-build-recs tds (i + 1) acc1
 
   pas-build-vctors : List ATypeDef, Integer, List PasVCtor -> List PasVCtor
   pas-build-vctors (tds) (i) (acc) =
-   if i >= list-length tds then acc
-   else let acc1 = when list-at tds i
-        is AVariantTypeDef (nm) (tps) (cs) (sp) -> pas-add-vctors cs 0 acc
-        is otherwise -> acc
-   in pas-build-vctors tds (i + 1) acc1
+    if i >= list-length tds then acc
+    else let acc1 = when list-at tds i
+         is AVariantTypeDef (nm) (tps) (cs) (sp) -> pas-add-vctors cs 0 acc
+         is otherwise -> acc
+    in pas-build-vctors tds (i + 1) acc1
 
   pas-add-vctors : List AVariantCtorDef, Integer, List PasVCtor -> List PasVCtor
   pas-add-vctors (cs) (i) (acc) =
-   if i >= list-length cs then acc
-   else let c = list-at cs i
-   in pas-add-vctors cs (i + 1) (list-push acc (PasVCtor { pv-name = c.name.value, pv-arity = list-length (c.fields) }))
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in pas-add-vctors cs (i + 1) (list-push acc (PasVCtor {
+      pv-name = c.name.value,
+      pv-arity = list-length (c.fields)
+    }))
 
   pas-find-rec : List PasRec, Text, Integer -> Integer
   pas-find-rec (rs) (nm) (i) =
-   if i >= list-length rs then -1
-   else if (list-at rs i).pr-name == nm then i
-   else pas-find-rec rs nm (i + 1)
+    if i >= list-length rs then -1
+    else if (list-at rs i).pr-name == nm then i
+    else pas-find-rec rs nm (i + 1)
 
 Section: Apply Chain
 
   is-upper-letter : Integer -> Boolean
   is-upper-letter (code) =
-   if code >= char-code 'E' then code <= char-code 'Z'
-   else False
+    if code >= char-code 'E' then code <= char-code 'Z'
+    else False
 
 Section: Type Definition Emission
 
   emit-pas-type-defs : List ATypeDef, Integer -> Text
   emit-pas-type-defs (tds) (i) =
-   if i == list-length tds then ""
-   else emit-pas-type-def (list-at tds i) & emit-pas-type-defs tds (i + 1)
+    if i == list-length tds then ""
+    else emit-pas-type-def (list-at tds i) & emit-pas-type-defs tds (i + 1)
 
   emit-pas-type-def : ATypeDef -> Text
   emit-pas-type-def (td) =
-   when td
-    is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
-     "  " & pas-sanitize (name.value) & " = record\n" & emit-pas-record-fields fields 0 & "  end;\n\n"
-    is AVariantTypeDef (name) (tparams) (ctors) (s) -> ""
-    is AUnitTypeDef (name) (unitbase) (s) -> ""
+    when td
+     is ARecordTypeDef (name) (tparams) (fields) (recmut) (s) ->
+      "  " & pas-sanitize (name.value) & " = record\n" & emit-pas-record-fields fields 0 & "  end;\n\n"
+     is AVariantTypeDef (name) (tparams) (ctors) (s) -> ""
+     is AUnitTypeDef (name) (unitbase) (s) -> ""
 
   emit-pas-record-fields : List ARecordFieldDef, Integer -> Text
   emit-pas-record-fields (fields) (i) =
-   if i == list-length fields then ""
-   else let f = list-at fields i
-   in "    " & pas-sanitize (f.name.value) & ": Variant;\n" & emit-pas-record-fields fields (i + 1)
+    if i == list-length fields then ""
+    else let f = list-at fields i
+    in "    " & pas-sanitize (f.name.value) & ": Variant;\n" & emit-pas-record-fields fields (i + 1)
 
 Section: Expression Emission
 
@@ -235,44 +238,48 @@ Section: Expression Emission
 
   pas-h : IRExpr, PasCtx, Integer, Integer -> PasHoist
   pas-h (e) (ctx) (depth) (n) =
-   if depth >= 256 then pas-hoist-lit "0" n
-   else when e
-    is IrIntLit (v) (sp) -> pas-hoist-lit (integer-to-text v) n
-    is IrNumLit (v) (sp) -> pas-hoist-lit (integer-to-text v & ".0") n
-    is IrTextLit (s) (sp) -> pas-hoist-lit ("'" & pas-escape s & "'") n
-    is IrBoolLit (b) (sp) -> pas-hoist-lit (if b then "True" else "False") n
-    is IrCharLit (v) (sp) -> pas-hoist-lit (integer-to-text v) n
-    is IrName (nm) (ty) (sp) -> pas-hoist-lit (emit-pas-name nm ctx) n
-    is IrBinary (op) (l) (r) (ty) (sp) -> pas-h-binary op l r ctx depth n
-    is IrNegate (o) (nty) (sp) ->
-     let h = pas-h o ctx (depth + 1) n
-     in PasHoist { hs = h.hs, hx = "(-" & h.hx & ")", hn = h.hn }
-    is IrIf (c) (t) (el) (ty) (sp) -> pas-h-if c t el ctx depth n
-    is IrLet (nm) (ty) (val) (body) (sp) ->
-     let hv = pas-h val ctx (depth + 1) n
-     in let hb = pas-h body ctx (depth + 1) (hv.hn)
-     in PasHoist { hs = hv.hs & "  " & pas-sanitize nm & " := " & hv.hx & ";\n" & hb.hs, hx = hb.hx, hn = hb.hn }
-    is IrApply (f) (a) (ty) (sp) -> pas-h-apply e ctx depth n
-    is IrLambda (params) (body) (ty) (sp) -> pas-hoist-lit "0 { !UNSUPPORTED: lambda has no representation in Pascal }" n
-    is IrList (elems) (ty) (sp) ->
-     let ha = pas-h-args elems 0 ctx depth n "" []
-     in PasHoist { hs = ha.as-stmts,
-                   hx = if list-length elems == 0 then "codex_list_empty"
-                        else "VarArrayOf([" & pas-join-texts (ha.as-texts) 0 & "])",
-                   hn = ha.as-next }
-    is IrMatch (scrut) (branches) (ty) (sp) -> pas-h-match scrut branches ctx depth n
-    is IrAct (stmts) (ty) (sp) -> pas-h-act stmts 0 ctx depth n "" "0"
-    is IrHandle (eff) (body) (clauses) (ty) (sp) -> pas-h body ctx (depth + 1) n
-    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> pas-h body ctx (depth + 1) n
-    is IrRecord (nm) (fields) (ty) (sp) -> pas-h-record nm fields ctx depth n
-    is IrFieldAccess (rec) (field) (ty) (sp) ->
-     let h = pas-h rec ctx (depth + 1) n
-     in PasHoist { hs = h.hs, hx = pas-field-text (h.hx) field, hn = h.hn }
-    is IrFieldStore (rec) (field) (val) (ty) (sp) -> pas-h-field-store rec field val ctx depth n
-    is IrFork (body) (ty) (sp) -> pas-h body ctx (depth + 1) n
-    is IrAwait (task) (ty) (sp) -> pas-h task ctx (depth + 1) n
-    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> pas-hoist-lit "0" n
-    is IrError (msg) (ty) (sp) -> pas-hoist-lit "0" n
+    if depth >= 256 then pas-hoist-lit "0" n
+    else when e
+     is IrIntLit (v) (sp) -> pas-hoist-lit (integer-to-text v) n
+     is IrNumLit (v) (sp) -> pas-hoist-lit (integer-to-text v & ".0") n
+     is IrTextLit (s) (sp) -> pas-hoist-lit ("'" & pas-escape s & "'") n
+     is IrBoolLit (b) (sp) -> pas-hoist-lit (if b then "True" else "False") n
+     is IrCharLit (v) (sp) -> pas-hoist-lit (integer-to-text v) n
+     is IrName (nm) (ty) (sp) -> pas-hoist-lit (emit-pas-name nm ctx) n
+     is IrBinary (op) (l) (r) (ty) (sp) -> pas-h-binary op l r ctx depth n
+     is IrNegate (o) (nty) (sp) ->
+      let h = pas-h o ctx (depth + 1) n
+      in PasHoist { hs = h.hs, hx = "(-" & h.hx & ")", hn = h.hn }
+     is IrIf (c) (t) (el) (ty) (sp) -> pas-h-if c t el ctx depth n
+     is IrLet (nm) (ty) (val) (body) (sp) ->
+      let hv = pas-h val ctx (depth + 1) n
+      in let hb = pas-h body ctx (depth + 1) (hv.hn)
+      in PasHoist {
+        hs = hv.hs & "  " & pas-sanitize nm & " := " & hv.hx & ";\n" & hb.hs,
+        hx = hb.hx,
+        hn = hb.hn
+      }
+     is IrApply (f) (a) (ty) (sp) -> pas-h-apply e ctx depth n
+     is IrLambda (params) (body) (ty) (sp) -> pas-hoist-lit "0 { !UNSUPPORTED: lambda has no representation in Pascal }" n
+     is IrList (elems) (ty) (sp) ->
+      let ha = pas-h-args elems 0 ctx depth n "" []
+      in PasHoist { hs = ha.as-stmts,
+                    hx = if list-length elems == 0 then "codex_list_empty"
+                         else "VarArrayOf([" & pas-join-texts (ha.as-texts) 0 & "])",
+                    hn = ha.as-next }
+     is IrMatch (scrut) (branches) (ty) (sp) -> pas-h-match scrut branches ctx depth n
+     is IrAct (stmts) (ty) (sp) -> pas-h-act stmts 0 ctx depth n "" "0"
+     is IrHandle (eff) (body) (clauses) (ty) (sp) -> pas-h body ctx (depth + 1) n
+     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> pas-h body ctx (depth + 1) n
+     is IrRecord (nm) (fields) (ty) (sp) -> pas-h-record nm fields ctx depth n
+     is IrFieldAccess (rec) (field) (ty) (sp) ->
+      let h = pas-h rec ctx (depth + 1) n
+      in PasHoist { hs = h.hs, hx = pas-field-text (h.hx) field, hn = h.hn }
+     is IrFieldStore (rec) (field) (val) (ty) (sp) -> pas-h-field-store rec field val ctx depth n
+     is IrFork (body) (ty) (sp) -> pas-h body ctx (depth + 1) n
+     is IrAwait (task) (ty) (sp) -> pas-h task ctx (depth + 1) n
+     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> pas-hoist-lit "0" n
+     is IrError (msg) (ty) (sp) -> pas-hoist-lit "0" n
 
  `IfThen` is a FUNCTION, so Pascal evaluates both arms before calling it and
  a recursive definition never terminates. This is the reason the whole file
@@ -282,16 +289,16 @@ Section: Expression Emission
 
   pas-h-if : IRExpr, IRExpr, IRExpr, PasCtx, Integer, Integer -> PasHoist
   pas-h-if (c) (t) (el) (ctx) (depth) (n) =
-   let hc = pas-h c ctx (depth + 1) n
-   in let tmp = pas-temp-name (hc.hn)
-   in let ht = pas-h t ctx (depth + 1) (hc.hn + 1)
-   in let he = pas-h el ctx (depth + 1) (ht.hn)
-   in PasHoist {
-    hs = hc.hs
-       & "  if " & hc.hx & " then\n  begin\n" & ht.hs & "  " & tmp & " := " & ht.hx & ";\n  end\n"
-       & "  else\n  begin\n" & he.hs & "  " & tmp & " := " & he.hx & ";\n  end;\n",
-    hx = tmp,
-    hn = he.hn }
+    let hc = pas-h c ctx (depth + 1) n
+    in let tmp = pas-temp-name (hc.hn)
+    in let ht = pas-h t ctx (depth + 1) (hc.hn + 1)
+    in let he = pas-h el ctx (depth + 1) (ht.hn)
+    in PasHoist {
+     hs = hc.hs
+        & "  if " & hc.hx & " then\n  begin\n" & ht.hs & "  " & tmp & " := " & ht.hx & ";\n  end\n"
+        & "  else\n  begin\n" & he.hs & "  " & tmp & " := " & he.hx & ";\n  end;\n",
+     hx = tmp,
+     hn = he.hn }
 
  A store is a STATEMENT, which is the whole reason this file hoists, and the
  value it answers is the field read back rather than the stored expression:
@@ -304,36 +311,36 @@ Section: Expression Emission
 
   pas-h-field-store : IRExpr, Text, IRExpr, PasCtx, Integer, Integer -> PasHoist
   pas-h-field-store (rec) (field) (val) (ctx) (depth) (n) =
-   let hr = pas-h rec ctx (depth + 1) n
-   in let needs-tmp = text-contains (hr.hx) "("
-   in let tmp = pas-temp-name (hr.hn)
-   in let target = if needs-tmp then tmp else hr.hx
-   in let n1 = if needs-tmp then hr.hn + 1 else hr.hn
-   in let pre = if needs-tmp then "  " & tmp & " := " & hr.hx & ";\n" else ""
-   in let hv = pas-h val ctx (depth + 1) n1
-   in let slot = pas-field-text target field
-   in PasHoist {
-    hs = hr.hs & pre & hv.hs & "  " & slot & " := " & hv.hx & ";\n",
-    hx = slot,
-    hn = hv.hn }
+    let hr = pas-h rec ctx (depth + 1) n
+    in let needs-tmp = text-contains (hr.hx) "("
+    in let tmp = pas-temp-name (hr.hn)
+    in let target = if needs-tmp then tmp else hr.hx
+    in let n1 = if needs-tmp then hr.hn + 1 else hr.hn
+    in let pre = if needs-tmp then "  " & tmp & " := " & hr.hx & ";\n" else ""
+    in let hv = pas-h val ctx (depth + 1) n1
+    in let slot = pas-field-text target field
+    in PasHoist {
+     hs = hr.hs & pre & hv.hs & "  " & slot & " := " & hv.hx & ";\n",
+     hx = slot,
+     hn = hv.hn }
 
   pas-h-binary : IRBinaryOp, IRExpr, IRExpr, PasCtx, Integer, Integer -> PasHoist
   pas-h-binary (op) (l) (r) (ctx) (depth) (n) =
-   let hl = pas-h l ctx (depth + 1) n
-   in let hr = pas-h r ctx (depth + 1) (hl.hn)
-   in PasHoist { hs = hl.hs & hr.hs, hx = pas-bin-text op (hl.hx) (hr.hx), hn = hr.hn }
+    let hl = pas-h l ctx (depth + 1) n
+    in let hr = pas-h r ctx (depth + 1) (hl.hn)
+    in PasHoist { hs = hl.hs & hr.hs, hx = pas-bin-text op (hl.hx) (hr.hx), hn = hr.hn }
 
   pas-bin-text : IRBinaryOp, Text, Text -> Text
   pas-bin-text (op) (l) (r) =
-   when op
-    is IrAppendText -> "Concat(" & l & ", " & r & ")"
-    is IrAppendList -> "codex_list_concat(" & l & ", " & r & ")"
-    is IrConsList -> "codex_list_cons(" & l & ", " & r & ")"
-    is IrAnd -> "(" & l & " and " & r & ")"
-    is IrOr -> "(" & l & " or " & r & ")"
-    is IrDivInt -> "(" & l & " div " & r & ")"
-    is IrRemInt -> "(" & l & " mod " & r & ")"
-    is otherwise -> "(" & l & " " & pas-bin-op op & " " & r & ")"
+    when op
+     is IrAppendText -> "Concat(" & l & ", " & r & ")"
+     is IrAppendList -> "codex_list_concat(" & l & ", " & r & ")"
+     is IrConsList -> "codex_list_cons(" & l & ", " & r & ")"
+     is IrAnd -> "(" & l & " and " & r & ")"
+     is IrOr -> "(" & l & " or " & r & ")"
+     is IrDivInt -> "(" & l & " div " & r & ")"
+     is IrRemInt -> "(" & l & " mod " & r & ")"
+     is otherwise -> "(" & l & " " & pas-bin-op op & " " & r & ")"
 
   PasArgs = record {
    as-stmts : Text,
@@ -343,23 +350,27 @@ Section: Expression Emission
 
   pas-h-args : List IRExpr, Integer, PasCtx, Integer, Integer, Text, List Text -> PasArgs
   pas-h-args (args) (i) (ctx) (depth) (n) (acc-s) (acc-t) =
-   if i >= list-length args then PasArgs { as-stmts = acc-s, as-texts = acc-t, as-next = n }
-   else let h = pas-h (list-at args i) ctx (depth + 1) n
-   in pas-h-args args (i + 1) ctx depth (h.hn) (acc-s & h.hs) (acc-t & [h.hx])
+    if i >= list-length args then PasArgs { as-stmts = acc-s, as-texts = acc-t, as-next = n }
+    else let h = pas-h (list-at args i) ctx (depth + 1) n
+    in pas-h-args args (i + 1) ctx depth (h.hn) (acc-s & h.hs) (acc-t & [h.hx])
 
   pas-join-texts : List Text, Integer -> Text
   pas-join-texts (xs) (i) =
-   if i >= list-length xs then ""
-   else if i == list-length xs - 1 then list-at xs i
-   else list-at xs i & ", " & pas-join-texts xs (i + 1)
+    if i >= list-length xs then ""
+    else if i == list-length xs - 1 then list-at xs i
+    else list-at xs i & ", " & pas-join-texts xs (i + 1)
 
   pas-h-record : Text, List IRFieldVal, PasCtx, Integer, Integer -> PasHoist
   pas-h-record (nm) (fields) (ctx) (depth) (n) =
-   let ha = pas-h-field-vals fields 0 ctx depth n "" []
-   in let ri = pas-find-rec (ctx.ctx-recs) nm 0
-   in let ordered = if ri < 0 then ha.as-texts
-                    else pas-order-args ((list-at (ctx.ctx-recs) ri).pr-fields) fields (ha.as-texts) 0 []
-   in PasHoist { hs = ha.as-stmts, hx = "Make" & pas-sanitize nm & "(" & pas-join-texts ordered 0 & ")", hn = ha.as-next }
+    let ha = pas-h-field-vals fields 0 ctx depth n "" []
+    in let ri = pas-find-rec (ctx.ctx-recs) nm 0
+    in let ordered = if ri < 0 then ha.as-texts
+    else pas-order-args ((list-at (ctx.ctx-recs) ri).pr-fields) fields (ha.as-texts) 0 []
+    in PasHoist {
+      hs = ha.as-stmts,
+      hx = "Make" & pas-sanitize nm & "(" & pas-join-texts ordered 0 & ")",
+      hn = ha.as-next
+    }
 
  The values are hoisted in SOURCE order, so whatever statements they need run
  in the order the source wrote them; only the finished expression texts are
@@ -368,37 +379,41 @@ Section: Expression Emission
 
   pas-order-args : List PasRecField, List IRFieldVal, List Text, Integer, List Text -> List Text
   pas-order-args (decl) (fvs) (texts) (i) (acc) =
-   if i >= list-length decl then acc
-   else let pos = pas-fv-pos fvs ((list-at decl i).rf-name) 0
-   in pas-order-args decl fvs texts (i + 1) (list-push acc (if pos < 0 then "0" else list-at texts pos))
+    if i >= list-length decl then acc
+    else let pos = pas-fv-pos fvs ((list-at decl i).rf-name) 0
+    in pas-order-args decl fvs texts (i + 1) (list-push acc (if pos < 0 then "0" else list-at texts pos))
 
   pas-fv-pos : List IRFieldVal, Text, Integer -> Integer
   pas-fv-pos (fvs) (nm) (i) =
-   if i >= list-length fvs then -1
-   else if pas-field ((list-at fvs i).name) == pas-sanitize nm then i
-   else pas-fv-pos fvs nm (i + 1)
+    if i >= list-length fvs then -1
+    else if pas-field ((list-at fvs i).name) == pas-sanitize nm then i
+    else pas-fv-pos fvs nm (i + 1)
 
   pas-h-field-vals : List IRFieldVal, Integer, PasCtx, Integer, Integer, Text, List Text -> PasArgs
   pas-h-field-vals (fields) (i) (ctx) (depth) (n) (acc-s) (acc-t) =
-   if i >= list-length fields then PasArgs { as-stmts = acc-s, as-texts = acc-t, as-next = n }
-   else let h = pas-h ((list-at fields i).value) ctx (depth + 1) n
-   in pas-h-field-vals fields (i + 1) ctx depth (h.hn) (acc-s & h.hs) (acc-t & [h.hx])
+    if i >= list-length fields then PasArgs { as-stmts = acc-s, as-texts = acc-t, as-next = n }
+    else let h = pas-h ((list-at fields i).value) ctx (depth + 1) n
+    in pas-h-field-vals fields (i + 1) ctx depth (h.hn) (acc-s & h.hs) (acc-t & [h.hx])
 
  A match is the same shape as a conditional and for the same reason: the old
  form nested `IfThen` per branch, so every branch of every match ran.
 
   pas-h-match : IRExpr, List IRBranch, PasCtx, Integer, Integer -> PasHoist
   pas-h-match (scrut) (branches) (ctx) (depth) (n) =
-   if list-length branches == 0 then pas-hoist-lit "0" n
-   else let hsc = pas-h scrut ctx (depth + 1) n
-   in let sc = pas-temp-name (hsc.hn)
-   in let tmp = pas-temp-name (hsc.hn + 1)
-   in if pas-branches-guarded branches 0
-      then let flag = pas-temp-name (hsc.hn + 2)
-      in let hg = pas-h-match-guarded branches sc ctx depth (hsc.hn + 3) tmp flag 0
-      in PasHoist { hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n  " & flag & " := False;\n" & hg.hs, hx = tmp, hn = hg.hn }
-      else let hb = pas-h-match-chain branches sc ctx depth (hsc.hn + 2) tmp 0
-      in PasHoist { hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n" & hb.hs, hx = tmp, hn = hb.hn }
+    if list-length branches == 0 then pas-hoist-lit "0" n
+    else let hsc = pas-h scrut ctx (depth + 1) n
+    in let sc = pas-temp-name (hsc.hn)
+    in let tmp = pas-temp-name (hsc.hn + 1)
+    in if pas-branches-guarded branches 0
+       then let flag = pas-temp-name (hsc.hn + 2)
+       in let hg = pas-h-match-guarded branches sc ctx depth (hsc.hn + 3) tmp flag 0
+       in PasHoist {
+         hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n  " & flag & " := False;\n" & hg.hs,
+         hx = tmp,
+         hn = hg.hn
+       }
+    else let hb = pas-h-match-chain branches sc ctx depth (hsc.hn + 2) tmp 0
+    in PasHoist { hs = hsc.hs & "  " & sc & " := " & hsc.hx & ";\n" & hb.hs, hx = tmp, hn = hb.hn }
 
  A guarded arm cannot fall through to the next arm from inside a nested
  if/else chain, because a Pascal begin block has nothing that resumes the
@@ -409,69 +424,74 @@ Section: Expression Emission
 
   pas-branches-guarded : List IRBranch, Integer -> Boolean
   pas-branches-guarded (branches) (i) =
-   if i >= list-length branches then False
-   else if pas-guard-trivial ((list-at branches i).guard) then pas-branches-guarded branches (i + 1)
-   else True
+    if i >= list-length branches then False
+    else if pas-guard-trivial ((list-at branches i).guard) then
+      pas-branches-guarded branches (i + 1)
+    else True
 
   pas-guard-trivial : IRExpr -> Boolean
   pas-guard-trivial (g) =
-   when g
-    is IrBoolLit (v) (sp) -> v
-    is otherwise -> False
+    when g
+     is IrBoolLit (v) (sp) -> v
+     is otherwise -> False
 
   pas-h-match-guarded : List IRBranch, Text, PasCtx, Integer, Integer, Text, Text, Integer -> PasHoist
   pas-h-match-guarded (branches) (scrut-text) (ctx) (depth) (n) (tmp) (flag) (i) =
-   if i >= list-length branches then PasHoist { hs = "", hx = tmp, hn = n }
-   else let b = list-at branches i
-   in let hbody = pas-h (b.body) ctx (depth + 1) n
-   in let hguard = pas-h (b.guard) ctx (depth + 1) (hbody.hn)
-   in let binds = pas-pat-bind-text (b.pattern) scrut-text
-   in let take = hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  " & flag & " := True;\n"
-   in let inner = if pas-guard-trivial (b.guard) then take
-                  else hguard.hs & "  if (" & hguard.hx & ") = True then\n  begin\n" & take & "  end;\n"
-   in let arm = "  if " & flag & " = False then\n  begin\n  if " & pas-match-cond-text (b.pattern) scrut-text & " then\n  begin\n" & binds & inner & "  end;\n  end;\n"
-   in let rest = pas-h-match-guarded branches scrut-text ctx depth (hguard.hn) tmp flag (i + 1)
-   in PasHoist { hs = arm & rest.hs, hx = tmp, hn = rest.hn }
+    if i >= list-length branches then PasHoist { hs = "", hx = tmp, hn = n }
+    else let b = list-at branches i
+    in let hbody = pas-h (b.body) ctx (depth + 1) n
+    in let hguard = pas-h (b.guard) ctx (depth + 1) (hbody.hn)
+    in let binds = pas-pat-bind-text (b.pattern) scrut-text
+    in let take = hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  " & flag & " := True;\n"
+    in let inner = if pas-guard-trivial (b.guard) then take
+    else hguard.hs & "  if (" & hguard.hx & ") = True then\n  begin\n" & take & "  end;\n"
+    in let arm = "  if " & flag & " = False then\n  begin\n  if " & pas-match-cond-text (b.pattern) scrut-text & " then\n  begin\n" & binds & inner & "  end;\n  end;\n"
+    in let rest = pas-h-match-guarded branches scrut-text ctx depth (hguard.hn) tmp flag (i + 1)
+    in PasHoist { hs = arm & rest.hs, hx = tmp, hn = rest.hn }
 
   pas-h-match-chain : List IRBranch, Text, PasCtx, Integer, Integer, Text, Integer -> PasHoist
   pas-h-match-chain (branches) (scrut-text) (ctx) (depth) (n) (tmp) (i) =
-   let b = list-at branches i
-   in let hbody = pas-h (b.body) ctx (depth + 1) n
-   in let binds = pas-pat-bind-text (b.pattern) scrut-text
-   in if i >= list-length branches - 1
-      then PasHoist { hs = "  begin\n" & binds & hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  end;\n", hx = tmp, hn = hbody.hn }
-      else let rest = pas-h-match-chain branches scrut-text ctx depth (hbody.hn) tmp (i + 1)
-      in PasHoist {
-       hs = "  if " & pas-match-cond-text (b.pattern) scrut-text & " then\n  begin\n" & binds & hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  end\n  else\n" & rest.hs,
-       hx = tmp,
-       hn = rest.hn }
+    let b = list-at branches i
+    in let hbody = pas-h (b.body) ctx (depth + 1) n
+    in let binds = pas-pat-bind-text (b.pattern) scrut-text
+    in if i >= list-length branches - 1 then
+      PasHoist {
+        hs = "  begin\n" & binds & hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  end;\n",
+        hx = tmp,
+        hn = hbody.hn
+      }
+    else let rest = pas-h-match-chain branches scrut-text ctx depth (hbody.hn) tmp (i + 1)
+    in PasHoist {
+     hs = "  if " & pas-match-cond-text (b.pattern) scrut-text & " then\n  begin\n" & binds & hbody.hs & "  " & tmp & " := " & hbody.hx & ";\n  end\n  else\n" & rest.hs,
+     hx = tmp,
+     hn = rest.hn }
 
   pas-match-cond-text : IRPat, Text -> Text
   pas-match-cond-text (pat) (scrut-text) =
-   when pat
-    is IrCtorPat (name) (subs) (ty) (sp) ->
-     "(VarToStr(" & scrut-text & "[0]) = '" & name & "')" & pas-sub-cond-text subs 0 scrut-text
-    is IrLitPat (text) (ty) (sp) -> scrut-text & " = " & text
-    is otherwise -> "True"
+    when pat
+     is IrCtorPat (name) (subs) (ty) (sp) ->
+      "(VarToStr(" & scrut-text & "[0]) = '" & name & "')" & pas-sub-cond-text subs 0 scrut-text
+     is IrLitPat (text) (ty) (sp) -> scrut-text & " = " & text
+     is otherwise -> "True"
 
   pas-sub-cond-text : List IRPat, Integer, Text -> Text
   pas-sub-cond-text (subs) (i) (scrut-text) =
-   if i >= list-length subs then ""
-   else let c = pas-match-cond-text (list-at subs i) (scrut-text & "[" & integer-to-text (i + 1) & "]")
-   in (if c == "True" then "" else " and " & c) & pas-sub-cond-text subs (i + 1) scrut-text
+    if i >= list-length subs then ""
+    else let c = pas-match-cond-text (list-at subs i) (scrut-text & "[" & integer-to-text (i + 1) & "]")
+    in (if c == "True" then "" else " and " & c) & pas-sub-cond-text subs (i + 1) scrut-text
 
   pas-pat-bind-text : IRPat, Text -> Text
   pas-pat-bind-text (pat) (path) =
-   when pat
-    is IrVarPat (name) (ty) (sp) -> "  " & pas-sanitize name & " := " & path & ";\n"
-    is IrCtorPat (name) (subs) (ty) (sp) -> pas-sub-bind-text subs 0 path
-    is otherwise -> ""
+    when pat
+     is IrVarPat (name) (ty) (sp) -> "  " & pas-sanitize name & " := " & path & ";\n"
+     is IrCtorPat (name) (subs) (ty) (sp) -> pas-sub-bind-text subs 0 path
+     is otherwise -> ""
 
   pas-sub-bind-text : List IRPat, Integer, Text -> Text
   pas-sub-bind-text (subs) (i) (path) =
-   if i >= list-length subs then ""
-   else pas-pat-bind-text (list-at subs i) (path & "[" & integer-to-text (i + 1) & "]")
-    & pas-sub-bind-text subs (i + 1) path
+    if i >= list-length subs then ""
+    else pas-pat-bind-text (list-at subs i) (path & "[" & integer-to-text (i + 1) & "]")
+     & pas-sub-bind-text subs (i + 1) path
 
  An act's value is its last statement's. A bind names it; anything else needs
  a temporary, except a call to a Pascal PROCEDURE, which has no value at all
@@ -479,52 +499,52 @@ Section: Expression Emission
 
   pas-h-act : List IRActStmt, Integer, PasCtx, Integer, Integer, Text, Text -> PasHoist
   pas-h-act (stmts) (i) (ctx) (depth) (n) (acc) (lastx) =
-   if i >= list-length stmts then PasHoist { hs = acc, hx = lastx, hn = n }
-   else let s = list-at stmts i
-   in let ex = when s
-       is IrDoExec (x) (sp) -> x
-       is IrDoBind (nm) (ty) (v) (sp) -> v
-   in let h = pas-h ex ctx (depth + 1) n
-   in when s
-    is IrDoBind (nm) (ty) (v) (sp) ->
-     pas-h-act stmts (i + 1) ctx depth (h.hn) (acc & h.hs & "  " & pas-sanitize nm & " := " & h.hx & ";\n") (pas-sanitize nm)
-    is IrDoExec (x) (sp) ->
-     if pas-proc-builtin (pas-head-name ex)
-     then pas-h-act stmts (i + 1) ctx depth (h.hn) (acc & h.hs & "  " & h.hx & ";\n") "0"
-     else let tmp = pas-temp-name (h.hn)
-     in pas-h-act stmts (i + 1) ctx depth (h.hn + 1) (acc & h.hs & "  " & tmp & " := " & h.hx & ";\n") tmp
+    if i >= list-length stmts then PasHoist { hs = acc, hx = lastx, hn = n }
+    else let s = list-at stmts i
+    in let ex = when s
+        is IrDoExec (x) (sp) -> x
+        is IrDoBind (nm) (ty) (v) (sp) -> v
+    in let h = pas-h ex ctx (depth + 1) n
+    in when s
+     is IrDoBind (nm) (ty) (v) (sp) ->
+      pas-h-act stmts (i + 1) ctx depth (h.hn) (acc & h.hs & "  " & pas-sanitize nm & " := " & h.hx & ";\n") (pas-sanitize nm)
+     is IrDoExec (x) (sp) ->
+      if pas-proc-builtin (pas-head-name ex)
+      then pas-h-act stmts (i + 1) ctx depth (h.hn) (acc & h.hs & "  " & h.hx & ";\n") "0"
+      else let tmp = pas-temp-name (h.hn)
+      in pas-h-act stmts (i + 1) ctx depth (h.hn + 1) (acc & h.hs & "  " & tmp & " := " & h.hx & ";\n") tmp
 
   emit-pas-name : Text, PasCtx -> Text
   emit-pas-name (n) (ctx) =
-   if n == "True" then "True"
-   else if n == "False" then "False"
-   else if n == "Nothing" then "0"
-   else let ar = lookup-arity (ctx.ctx-arities) n
-   in if ar == 0 then pas-sanitize n & "()"
-      else pas-sanitize n
+    if n == "True" then "True"
+    else if n == "False" then "False"
+    else if n == "Nothing" then "0"
+    else let ar = lookup-arity (ctx.ctx-arities) n
+    in if ar == 0 then pas-sanitize n & "()"
+    else pas-sanitize n
 
   pas-bin-op : IRBinaryOp -> Text
   pas-bin-op (op) =
-   when op
-    is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
-    is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
-    is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
-    is IrDivInt -> "div"
-    is IrRemInt -> "mod"
-    is IrPowInt -> "**"
-    is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
-    is IrEq -> "="
-    is IrNotEq -> "<>"
-    is IrLt | IrLtVec -> "<"
-    is IrGt | IrGtVec -> ">"
-    is IrLtEq | IrLtEqVec -> "<="
-    is IrGtEq | IrGtEqVec -> ">="
-    is IrApproxEq | IrApproxEqExact -> "="
-    is IrAnd -> "and"
-    is IrOr -> "or"
-    is IrAppendText -> "+"
-    is IrAppendList -> "+"
-    is IrConsList -> "+"
+    when op
+     is IrAddInt | IrAddNum | IrAddVec | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating -> "+"
+     is IrSubInt | IrSubNum | IrSubVec | IrSubRealApprox | IrSubRealTrapping | IrSubRealSaturating -> "-"
+     is IrMulInt | IrMulNum | IrMulVec | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating -> "*"
+     is IrDivInt -> "div"
+     is IrRemInt -> "mod"
+     is IrPowInt -> "**"
+     is IrDivNum | IrDivVec | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "/"
+     is IrEq -> "="
+     is IrNotEq -> "<>"
+     is IrLt | IrLtVec -> "<"
+     is IrGt | IrGtVec -> ">"
+     is IrLtEq | IrLtEqVec -> "<="
+     is IrGtEq | IrGtEqVec -> ">="
+     is IrApproxEq | IrApproxEqExact -> "="
+     is IrAnd -> "and"
+     is IrOr -> "or"
+     is IrAppendText -> "+"
+     is IrAppendList -> "+"
+     is IrConsList -> "+"
 
  Two of the builtins this plug maps reach Pascal PROCEDURES -- print-line-uni
  is WriteLn and process-exit is Halt -- and a procedure has no result to
@@ -544,80 +564,80 @@ Section: Expression Emission
 
   pas-name-known : List Text, Text, Integer -> Boolean
   pas-name-known (xs) (n) (i) =
-   if i >= list-length xs then False
-   else if list-at xs i == n then True
-   else pas-name-known xs n (i + 1)
+    if i >= list-length xs then False
+    else if list-at xs i == n then True
+    else pas-name-known xs n (i + 1)
 
   pas-add-name : List Text, Text -> List Text
   pas-add-name (xs) (n) = if pas-name-known xs n 0 then xs else list-push xs n
 
   pas-collect-binds : IRExpr, List Text -> List Text
   pas-collect-binds (e) (acc) =
-   when e
-    is IrLet (name) (ty) (val) (body) (sp) -> pas-collect-binds body (pas-collect-binds val (pas-add-name acc (pas-sanitize name)))
-    is IrAct (stmts) (ty) (sp) -> pas-collect-act-binds stmts 0 acc
-    is IrBinary (op) (l) (r) (ty) (sp) -> pas-collect-binds r (pas-collect-binds l acc)
-    is IrNegate (o) (nty) (sp) -> pas-collect-binds o acc
-    is IrIf (c) (t) (el) (ty) (sp) -> pas-collect-binds el (pas-collect-binds t (pas-collect-binds c acc))
-    is IrApply (f) (a) (ty) (sp) -> pas-collect-binds a (pas-collect-binds f acc)
-    is IrLambda (ps) (b) (ty) (sp) -> pas-collect-binds b acc
-    is IrList (elems) (ty) (sp) -> pas-collect-list-binds elems 0 acc
-    is IrMatch (scrut) (branches) (ty) (sp) -> pas-collect-branch-binds branches 0 (pas-collect-binds scrut acc)
-    is IrRecord (nm) (fields) (ty) (sp) -> pas-collect-field-binds fields 0 acc
-    is IrFieldAccess (rec) (fld) (ty) (sp) -> pas-collect-binds rec acc
-    is IrFieldStore (rec) (fld) (v) (ty) (sp) -> pas-collect-binds v (pas-collect-binds rec acc)
-    is IrHandle (eff) (b) (cl) (ty) (sp) -> pas-collect-binds b acc
-    is IrWithTimeout (secs) (ef) (sc) (b) (ty) (sp) -> pas-collect-binds b acc
-    is IrFork (b) (ty) (sp) -> pas-collect-binds b acc
-    is IrAwait (t) (ty) (sp) -> pas-collect-binds t acc
-    is otherwise -> acc
+    when e
+     is IrLet (name) (ty) (val) (body) (sp) -> pas-collect-binds body (pas-collect-binds val (pas-add-name acc (pas-sanitize name)))
+     is IrAct (stmts) (ty) (sp) -> pas-collect-act-binds stmts 0 acc
+     is IrBinary (op) (l) (r) (ty) (sp) -> pas-collect-binds r (pas-collect-binds l acc)
+     is IrNegate (o) (nty) (sp) -> pas-collect-binds o acc
+     is IrIf (c) (t) (el) (ty) (sp) -> pas-collect-binds el (pas-collect-binds t (pas-collect-binds c acc))
+     is IrApply (f) (a) (ty) (sp) -> pas-collect-binds a (pas-collect-binds f acc)
+     is IrLambda (ps) (b) (ty) (sp) -> pas-collect-binds b acc
+     is IrList (elems) (ty) (sp) -> pas-collect-list-binds elems 0 acc
+     is IrMatch (scrut) (branches) (ty) (sp) -> pas-collect-branch-binds branches 0 (pas-collect-binds scrut acc)
+     is IrRecord (nm) (fields) (ty) (sp) -> pas-collect-field-binds fields 0 acc
+     is IrFieldAccess (rec) (fld) (ty) (sp) -> pas-collect-binds rec acc
+     is IrFieldStore (rec) (fld) (v) (ty) (sp) -> pas-collect-binds v (pas-collect-binds rec acc)
+     is IrHandle (eff) (b) (cl) (ty) (sp) -> pas-collect-binds b acc
+     is IrWithTimeout (secs) (ef) (sc) (b) (ty) (sp) -> pas-collect-binds b acc
+     is IrFork (b) (ty) (sp) -> pas-collect-binds b acc
+     is IrAwait (t) (ty) (sp) -> pas-collect-binds t acc
+     is otherwise -> acc
 
   pas-collect-list-binds : List IRExpr, Integer, List Text -> List Text
   pas-collect-list-binds (xs) (i) (acc) =
-   if i >= list-length xs then acc
-   else pas-collect-list-binds xs (i + 1) (pas-collect-binds (list-at xs i) acc)
+    if i >= list-length xs then acc
+    else pas-collect-list-binds xs (i + 1) (pas-collect-binds (list-at xs i) acc)
 
   pas-collect-field-binds : List IRFieldVal, Integer, List Text -> List Text
   pas-collect-field-binds (fs) (i) (acc) =
-   if i >= list-length fs then acc
-   else pas-collect-field-binds fs (i + 1) (pas-collect-binds ((list-at fs i).value) acc)
+    if i >= list-length fs then acc
+    else pas-collect-field-binds fs (i + 1) (pas-collect-binds ((list-at fs i).value) acc)
 
   pas-collect-branch-binds : List IRBranch, Integer, List Text -> List Text
   pas-collect-branch-binds (bs) (i) (acc) =
-   if i >= list-length bs then acc
-   else let b = list-at bs i
-   in pas-collect-branch-binds bs (i + 1) (pas-collect-binds (b.body) (pas-collect-pat-names (b.pattern) acc))
+    if i >= list-length bs then acc
+    else let b = list-at bs i
+    in pas-collect-branch-binds bs (i + 1) (pas-collect-binds (b.body) (pas-collect-pat-names (b.pattern) acc))
 
   pas-collect-pat-names : IRPat, List Text -> List Text
   pas-collect-pat-names (pat) (acc) =
-   when pat
-    is IrVarPat (name) (ty) (sp) -> pas-add-name acc (pas-sanitize name)
-    is IrCtorPat (name) (subs) (ty) (sp) -> pas-collect-pat-list subs 0 acc
-    is otherwise -> acc
+    when pat
+     is IrVarPat (name) (ty) (sp) -> pas-add-name acc (pas-sanitize name)
+     is IrCtorPat (name) (subs) (ty) (sp) -> pas-collect-pat-list subs 0 acc
+     is otherwise -> acc
 
   pas-collect-pat-list : List IRPat, Integer, List Text -> List Text
   pas-collect-pat-list (subs) (i) (acc) =
-   if i >= list-length subs then acc
-   else pas-collect-pat-list subs (i + 1) (pas-collect-pat-names (list-at subs i) acc)
+    if i >= list-length subs then acc
+    else pas-collect-pat-list subs (i + 1) (pas-collect-pat-names (list-at subs i) acc)
 
   pas-collect-act-binds : List IRActStmt, Integer, List Text -> List Text
   pas-collect-act-binds (stmts) (i) (acc) =
-   if i >= list-length stmts then acc
-   else let acc1 = when list-at stmts i
-       is IrDoBind (name) (ty) (val) (sp) -> pas-collect-binds val (pas-add-name acc (pas-sanitize name))
-       is IrDoExec (ex) (sp) -> pas-collect-binds ex acc
-   in pas-collect-act-binds stmts (i + 1) acc1
+    if i >= list-length stmts then acc
+    else let acc1 = when list-at stmts i
+        is IrDoBind (name) (ty) (val) (sp) -> pas-collect-binds val (pas-add-name acc (pas-sanitize name))
+        is IrDoExec (ex) (sp) -> pas-collect-binds ex acc
+    in pas-collect-act-binds stmts (i + 1) acc1
 
   pas-seed-params : List IRParam, Integer, List Text -> List Text
   pas-seed-params (params) (i) (acc) =
-   if i >= list-length params then acc
-   else pas-seed-params params (i + 1) (pas-add-name acc (pas-sanitize ((list-at params i).name)))
+    if i >= list-length params then acc
+    else pas-seed-params params (i + 1) (pas-add-name acc (pas-sanitize ((list-at params i).name)))
 
   pas-names-from : List Text, Integer -> Text
   pas-names-from (xs) (i) =
-   if i >= list-length xs then ""
-   else if i == list-length xs - 1 then list-at xs i
-   else list-at xs i & ", " & pas-names-from xs (i + 1)
+    if i >= list-length xs then ""
+    else if i == list-length xs - 1 then list-at xs i
+    else list-at xs i & ", " & pas-names-from xs (i + 1)
 
  The seed's LENGTH is taken before the collection runs, and that is not a
  style choice. `list-push` extends in place when the backing array has spare
@@ -628,53 +648,61 @@ Section: Expression Emission
 
   pas-var-block : List IRParam, IRExpr, Integer -> Text
   pas-var-block (params) (body) (ntemps) =
-   let seed = pas-seed-params params 0 []
-   in let nseed = list-length seed
-   in let all = pas-collect-binds body seed
-   in let names = if list-length all <= nseed then "" else pas-names-from all nseed
-   in let temps = pas-temp-names ntemps 0
-   in let both = if text-length names == 0 then temps
-                 else if text-length temps == 0 then names
-                 else names & ", " & temps
-   in if text-length both == 0 then ""
-      else "var " & both & ": Variant;\n"
+    let seed = pas-seed-params params 0 []
+    in let nseed = list-length seed
+    in let all = pas-collect-binds body seed
+    in let names = if list-length all <= nseed then "" else pas-names-from all nseed
+    in let temps = pas-temp-names ntemps 0
+    in let both = if text-length names == 0 then temps
+    else if text-length temps == 0 then names
+    else names & ", " & temps
+    in if text-length both == 0 then ""
+    else "var " & both & ": Variant;\n"
 
   pas-temp-names : Integer, Integer -> Text
   pas-temp-names (n) (i) =
-   if i >= n then ""
-   else if i == n - 1 then pas-temp-name i
-   else pas-temp-name i & ", " & pas-temp-names n (i + 1)
+    if i >= n then ""
+    else if i == n - 1 then pas-temp-name i
+    else pas-temp-name i & ", " & pas-temp-names n (i + 1)
 
   pas-proc-builtin : Text -> Boolean
   pas-proc-builtin (n) = n == "print-line-uni" | n == "process-exit"
 
   pas-head-name : IRExpr -> Text
   pas-head-name (e) =
-   when e
-    is IrApply (f) (a) (ty) (sp) -> pas-head-name f
-    is IrName (n) (ty) (sp) -> n
-    is otherwise -> ""
+    when e
+     is IrApply (f) (a) (ty) (sp) -> pas-head-name f
+     is IrName (n) (ty) (sp) -> n
+     is otherwise -> ""
 
 
 Section: Apply Emission
 
   pas-h-apply : IRExpr, PasCtx, Integer, Integer -> PasHoist
   pas-h-apply (e) (ctx) (depth) (n) =
-   let chain = collect-apply-chain e []
-   in let root = chain.root
-   in let args = chain.args
-   in when root
-    is IrName (nm) (ty) (sp) ->
-     if nm == "__narrow" then pas-h (list-at args 0) ctx (depth + 1) n
-     else let ha = pas-h-args args 0 ctx depth n "" []
-     in let idx = pas-find-builtin pas-builtin-names nm 0
-     in if idx < 0
-        then PasHoist { hs = ha.as-stmts, hx = pas-sanitize nm & "(" & pas-join-texts (ha.as-texts) 0 & ")", hn = ha.as-next }
-        else PasHoist { hs = ha.as-stmts, hx = pas-builtin-text idx (ha.as-texts), hn = ha.as-next }
-    is otherwise ->
-     let hr = pas-h root ctx (depth + 1) n
-     in let ha = pas-h-args args 0 ctx depth (hr.hn) "" []
-     in PasHoist { hs = hr.hs & ha.as-stmts, hx = hr.hx & "(" & pas-join-texts (ha.as-texts) 0 & ")", hn = ha.as-next }
+    let chain = collect-apply-chain e []
+    in let root = chain.root
+    in let args = chain.args
+    in when root
+     is IrName (nm) (ty) (sp) ->
+      if nm == "__narrow" then pas-h (list-at args 0) ctx (depth + 1) n
+      else let ha = pas-h-args args 0 ctx depth n "" []
+      in let idx = pas-find-builtin pas-builtin-names nm 0
+      in if idx < 0 then
+        PasHoist {
+          hs = ha.as-stmts,
+          hx = pas-sanitize nm & "(" & pas-join-texts (ha.as-texts) 0 & ")",
+          hn = ha.as-next
+        }
+      else PasHoist { hs = ha.as-stmts, hx = pas-builtin-text idx (ha.as-texts), hn = ha.as-next }
+     is otherwise ->
+      let hr = pas-h root ctx (depth + 1) n
+      in let ha = pas-h-args args 0 ctx depth (hr.hn) "" []
+      in PasHoist {
+        hs = hr.hs & ha.as-stmts,
+        hx = hr.hx & "(" & pas-join-texts (ha.as-texts) 0 & ")",
+        hn = ha.as-next
+      }
 
   pas-builtin-names : List Text
   pas-builtin-names = ["abs", "char-at", "char-code", "char-to-text",
@@ -691,100 +719,100 @@ Section: Apply Emission
 
   pas-find-builtin : List Text, Text, Integer -> Integer
   pas-find-builtin (names) (target) (i) =
-   if i >= list-length names then -1
-   else if list-at names i == target then i
-   else pas-find-builtin names target (i + 1)
+    if i >= list-length names then -1
+    else if list-at names i == target then i
+    else pas-find-builtin names target (i + 1)
 
   pas-builtin-text : Integer, List Text -> Text
   pas-builtin-text (idx) (a) =
-   if idx == 0 then "Abs(" & list-at a 0 & ")"
-   else if idx == 1 then "Ord(" & list-at a 0 & "[" & list-at a 1 & " + 1])"
-   else if idx == 2 then list-at a 0
-   else if idx == 3 then "Chr(" & list-at a 0 & ")"
-   else if idx == 4 then "codex_mod(" & list-at a 0 & ", " & list-at a 1 & ")"
-   else if idx == 5 then "IntToStr(" & list-at a 0 & ")"
-   else if idx == 6 then list-at a 0 & "[" & list-at a 1 & "]"
-   else if idx == 7 then "codex_list_len(" & list-at a 0 & ")"
-   else if idx == 8 then "Max(" & list-at a 0 & ", " & list-at a 1 & ")"
-   else if idx == 9 then "Min(" & list-at a 0 & ", " & list-at a 1 & ")"
-   else if idx == 10 then "(-" & list-at a 0 & ")"
-   else if idx == 11 then "WriteLn(" & list-at a 0 & ")"
-   else if idx == 12 then "Halt(" & list-at a 0 & ")"
-   else if idx == 13 then "IntToStr(" & list-at a 0 & ")"
-   else if idx == 14 then "Copy(" & list-at a 0 & ", " & list-at a 1 & " + 1, " & list-at a 2 & ")"
-   else if idx == 15 then "text_contains(" & list-at a 0 & ", " & list-at a 1 & ")"
-   else if idx == 16 then "Length(" & list-at a 0 & ")"
-   else if idx == 17 then "text_to_integer(" & list-at a 0 & ")"
-   else if idx == 18 then "codex_list_snoc(" & list-at a 0 & ", " & list-at a 1 & ")"
-   else if idx == 19 then "codex_list_snoc(" & list-at a 0 & ", " & list-at a 1 & ")"
-   else "CODEX_UNMAPPED_BUILTIN"
+    if idx == 0 then "Abs(" & list-at a 0 & ")"
+    else if idx == 1 then "Ord(" & list-at a 0 & "[" & list-at a 1 & " + 1])"
+    else if idx == 2 then list-at a 0
+    else if idx == 3 then "Chr(" & list-at a 0 & ")"
+    else if idx == 4 then "codex_mod(" & list-at a 0 & ", " & list-at a 1 & ")"
+    else if idx == 5 then "IntToStr(" & list-at a 0 & ")"
+    else if idx == 6 then list-at a 0 & "[" & list-at a 1 & "]"
+    else if idx == 7 then "codex_list_len(" & list-at a 0 & ")"
+    else if idx == 8 then "Max(" & list-at a 0 & ", " & list-at a 1 & ")"
+    else if idx == 9 then "Min(" & list-at a 0 & ", " & list-at a 1 & ")"
+    else if idx == 10 then "(-" & list-at a 0 & ")"
+    else if idx == 11 then "WriteLn(" & list-at a 0 & ")"
+    else if idx == 12 then "Halt(" & list-at a 0 & ")"
+    else if idx == 13 then "IntToStr(" & list-at a 0 & ")"
+    else if idx == 14 then "Copy(" & list-at a 0 & ", " & list-at a 1 & " + 1, " & list-at a 2 & ")"
+    else if idx == 15 then "text_contains(" & list-at a 0 & ", " & list-at a 1 & ")"
+    else if idx == 16 then "Length(" & list-at a 0 & ")"
+    else if idx == 17 then "text_to_integer(" & list-at a 0 & ")"
+    else if idx == 18 then "codex_list_snoc(" & list-at a 0 & ", " & list-at a 1 & ")"
+    else if idx == 19 then "codex_list_snoc(" & list-at a 0 & ", " & list-at a 1 & ")"
+    else "CODEX_UNMAPPED_BUILTIN"
 
 Section: Definition Emission
 
   emit-pas-def : IRDef, PasCtx -> Text
   emit-pas-def (d) (ctx) =
-   let name = pas-sanitize (d.name)
-   in let h = pas-h (d.body) ctx 0 0
-   in let vars = pas-var-block (d.params) (d.body) (h.hn)
-   in let sig = if list-length (d.params) == 0 then "function " & name & ": Variant;\n"
-                else "function " & name & "(" & emit-pas-def-params (d.params) 0 & "): Variant;\n"
-   in let tail = if pas-proc-builtin (pas-head-name (d.body)) then "  " & h.hx & ";\n"
-                 else "  Result := " & h.hx & ";\n"
-   in sig & vars & "begin\n" & h.hs & tail & "end;\n\n"
+    let name = pas-sanitize (d.name)
+    in let h = pas-h (d.body) ctx 0 0
+    in let vars = pas-var-block (d.params) (d.body) (h.hn)
+    in let sig = if list-length (d.params) == 0 then "function " & name & ": Variant;\n"
+    else "function " & name & "(" & emit-pas-def-params (d.params) 0 & "): Variant;\n"
+    in let tail = if pas-proc-builtin (pas-head-name (d.body)) then "  " & h.hx & ";\n"
+    else "  Result := " & h.hx & ";\n"
+    in sig & vars & "begin\n" & h.hs & tail & "end;\n\n"
 
   emit-pas-def-params : List IRParam, Integer -> Text
   emit-pas-def-params (params) (i) =
-   if i == list-length params then ""
-   else if i == list-length params - 1 then pas-sanitize ((list-at params i).name) & ": Variant"
-   else pas-sanitize ((list-at params i).name) & ": Variant; " & emit-pas-def-params params (i + 1)
+    if i == list-length params then ""
+    else if i == list-length params - 1 then pas-sanitize ((list-at params i).name) & ": Variant"
+    else pas-sanitize ((list-at params i).name) & ": Variant; " & emit-pas-def-params params (i + 1)
 
   emit-pas-defs : List IRDef, Integer, PasCtx -> Text
   emit-pas-defs (defs) (i) (ctx) =
-   if i == list-length defs then ""
-   else emit-pas-def (list-at defs i) ctx & emit-pas-defs defs (i + 1) ctx
+    if i == list-length defs then ""
+    else emit-pas-def (list-at defs i) ctx & emit-pas-defs defs (i + 1) ctx
 
 Section: Chapter Emission
 
   emit-pascal-chapter : IRChapter, List ATypeDef -> Text
   emit-pascal-chapter (m) (type-defs) =
-   let recs = pas-build-recs type-defs 0 []
-   in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
-   in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
-   in let body-types = emit-pas-type-defs type-defs 0
-   in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
-   in let defs-text = emit-pas-defs (m.defs) 0 ctx
-   in let entry = pas-emit-entry (m.defs)
-   in header & types-text & "\n" & pas-runtime-helpers & pas-emit-ctors recs 0 & pas-emit-vctors (pas-build-vctors type-defs 0 []) 0 & defs-text & pas-emit-shell (m.defs) & "begin\n  " & entry & "end.\n"
+    let recs = pas-build-recs type-defs 0 []
+    in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
+    in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
+    in let body-types = emit-pas-type-defs type-defs 0
+    in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
+    in let defs-text = emit-pas-defs (m.defs) 0 ctx
+    in let entry = pas-emit-entry (m.defs)
+    in header & types-text & "\n" & pas-runtime-helpers & pas-emit-ctors recs 0 & pas-emit-vctors (pas-build-vctors type-defs 0 []) 0 & defs-text & pas-emit-shell (m.defs) & "begin\n  " & entry & "end.\n"
 
   emit-pascal-chapter-stream-head : IRChapter, List ATypeDef -> Text
   emit-pascal-chapter-stream-head (m) (type-defs) =
-   let recs = pas-build-recs type-defs 0 []
-   in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
-   in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
-   in let body-types = emit-pas-type-defs type-defs 0
-   in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
-   in let entry = pas-emit-entry (m.defs)
-   in header & types-text & "\n" & pas-runtime-helpers & pas-emit-ctors recs 0 & pas-emit-vctors (pas-build-vctors type-defs 0 []) 0
+    let recs = pas-build-recs type-defs 0 []
+    in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
+    in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
+    in let body-types = emit-pas-type-defs type-defs 0
+    in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
+    in let entry = pas-emit-entry (m.defs)
+    in header & types-text & "\n" & pas-runtime-helpers & pas-emit-ctors recs 0 & pas-emit-vctors (pas-build-vctors type-defs 0 []) 0
 
   emit-pascal-chapter-stream-tail : IRChapter, List ATypeDef -> Text
   emit-pascal-chapter-stream-tail (m) (type-defs) =
-   let recs = pas-build-recs type-defs 0 []
-   in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
-   in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
-   in let body-types = emit-pas-type-defs type-defs 0
-   in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
-   in let entry = pas-emit-entry (m.defs)
-   in pas-emit-shell (m.defs) & "begin\n  " & entry & "end.\n"
+    let recs = pas-build-recs type-defs 0 []
+    in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
+    in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
+    in let body-types = emit-pas-type-defs type-defs 0
+    in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
+    in let entry = pas-emit-entry (m.defs)
+    in pas-emit-shell (m.defs) & "begin\n  " & entry & "end.\n"
 
   emit-pascal-chapter-stream-env : IRChapter, List ATypeDef -> PasCtx
   emit-pascal-chapter-stream-env (m) (type-defs) =
-   let recs = pas-build-recs type-defs 0 []
-   in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
-   in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
-   in let body-types = emit-pas-type-defs type-defs 0
-   in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
-   in let entry = pas-emit-entry (m.defs)
-   in ctx
+    let recs = pas-build-recs type-defs 0 []
+    in let ctx = PasCtx { ctx-arities = build-arity-map (m.defs) 0 [], ctx-recs = recs }
+    in let header = "program CodexProgram;\n{$mode objfpc}{$H+}\nuses SysUtils, Variants, Math, Classes;\n\n"
+    in let body-types = emit-pas-type-defs type-defs 0
+    in let types-text = if text-length body-types == 0 then "" else "type\n" & body-types
+    in let entry = pas-emit-entry (m.defs)
+    in ctx
 
   emit-pascal-chapter-stream-def : IRChapter, PasCtx, Integer -> Text
   emit-pascal-chapter-stream-def (m) (v) (i) = emit-pas-def (list-at (m.defs) i) v
@@ -794,15 +822,16 @@ Section: Chapter Emission
 
   pas-emit-ctors : List PasRec, Integer -> Text
   pas-emit-ctors (rs) (i) =
-   if i >= list-length rs then ""
-   else pas-emit-ctor (list-at rs i) & pas-emit-ctors rs (i + 1)
+    if i >= list-length rs then ""
+    else pas-emit-ctor (list-at rs i) & pas-emit-ctors rs (i + 1)
 
   pas-emit-ctor : PasRec -> Text
   pas-emit-ctor (r) =
-   let fs = r.pr-fields
-   in let sig = if list-length fs == 0 then "function Make" & pas-sanitize (r.pr-name) & ": Variant;\n"
-                else "function Make" & pas-sanitize (r.pr-name) & "(" & pas-ctor-params fs 0 & "): Variant;\n"
-   in sig & "begin\n  Result := VarArrayOf([" & pas-ctor-args fs 0 & "]);\nend;\n\n"
+    let fs = r.pr-fields
+    in let sig = if list-length fs == 0 then
+      "function Make" & pas-sanitize (r.pr-name) & ": Variant;\n"
+    else "function Make" & pas-sanitize (r.pr-name) & "(" & pas-ctor-params fs 0 & "): Variant;\n"
+    in sig & "begin\n  Result := VarArrayOf([" & pas-ctor-args fs 0 & "]);\nend;\n\n"
 
  A variant value is a variant array too, tag first and the constructor's
  fields after it, so a `Variant` local can hold one and `when` can read the
@@ -813,43 +842,44 @@ Section: Chapter Emission
 
   pas-emit-vctors : List PasVCtor, Integer -> Text
   pas-emit-vctors (cs) (i) =
-   if i >= list-length cs then ""
-   else pas-emit-vctor (list-at cs i) & pas-emit-vctors cs (i + 1)
+    if i >= list-length cs then ""
+    else pas-emit-vctor (list-at cs i) & pas-emit-vctors cs (i + 1)
 
   pas-emit-vctor : PasVCtor -> Text
   pas-emit-vctor (c) =
-   let n = c.pv-arity
-   in let sig = if n == 0 then "function " & pas-sanitize (c.pv-name) & ": Variant;\n"
-                else "function " & pas-sanitize (c.pv-name) & "(" & pas-vctor-params n 0 & "): Variant;\n"
-   in sig & "begin\n  Result := VarArrayOf(['" & c.pv-name & "'" & pas-vctor-args n 0 & "]);\nend;\n\n"
+    let n = c.pv-arity
+    in let sig = if n == 0 then "function " & pas-sanitize (c.pv-name) & ": Variant;\n"
+    else "function " & pas-sanitize (c.pv-name) & "(" & pas-vctor-params n 0 & "): Variant;\n"
+    in sig & "begin\n  Result := VarArrayOf(['" & c.pv-name & "'" & pas-vctor-args n 0 & "]);\nend;\n\n"
 
   pas-vctor-params : Integer, Integer -> Text
   pas-vctor-params (n) (i) =
-   if i >= n then ""
-   else "_f" & integer-to-text i & ": Variant" & (if i == n - 1 then "" else "; ") & pas-vctor-params n (i + 1)
+    if i >= n then ""
+    else
+      "_f" & integer-to-text i & ": Variant" & (if i == n - 1 then "" else "; ") & pas-vctor-params n (i + 1)
 
   pas-vctor-args : Integer, Integer -> Text
   pas-vctor-args (n) (i) =
-   if i >= n then ""
-   else ", _f" & integer-to-text i & pas-vctor-args n (i + 1)
+    if i >= n then ""
+    else ", _f" & integer-to-text i & pas-vctor-args n (i + 1)
 
   pas-ctor-params : List PasRecField, Integer -> Text
   pas-ctor-params (fs) (i) =
-   if i >= list-length fs then ""
-   else let p = "_f" & integer-to-text i & ": Variant"
-   in if i == list-length fs - 1 then p
-      else p & "; " & pas-ctor-params fs (i + 1)
+    if i >= list-length fs then ""
+    else let p = "_f" & integer-to-text i & ": Variant"
+    in if i == list-length fs - 1 then p
+    else p & "; " & pas-ctor-params fs (i + 1)
 
   pas-ctor-args : List PasRecField, Integer -> Text
   pas-ctor-args (fs) (i) =
-   if i >= list-length fs then ""
-   else let f = list-at fs i
-   in let raw = "_f" & integer-to-text i
-   in let a = if f.rf-clamp
-              then "codex_clamp(" & raw & ", " & integer-to-text (f.rf-lo) & ", " & integer-to-text (f.rf-hi) & ")"
-              else raw
-   in if i == list-length fs - 1 then a
-      else a & ", " & pas-ctor-args fs (i + 1)
+    if i >= list-length fs then ""
+    else let f = list-at fs i
+    in let raw = "_f" & integer-to-text i
+    in let a = if f.rf-clamp then
+      "codex_clamp(" & raw & ", " & integer-to-text (f.rf-lo) & ", " & integer-to-text (f.rf-hi) & ")"
+    else raw
+    in if i == list-length fs - 1 then a
+    else a & ", " & pas-ctor-args fs (i + 1)
 
  Pascal has no closures and its `mod` truncates, so int-mod cannot be an
  expression here without evaluating an operand twice. The helper is
@@ -858,10 +888,10 @@ Section: Chapter Emission
 
   pas-runtime-helpers : Text
   pas-runtime-helpers =
-   "type\n  TCodexStrArray = array of string;\n\n"
-   & "function codex_mod(a, b: Int64): Int64;\nvar m: Int64;\nbegin\n  m := Abs(b);\n  Result := a mod m;\n  if Result < 0 then Result := Result + m;\nend;\n\n"
-   & "function codex_clamp(v, lo, hi: Variant): Variant;\nbegin\n  if v < lo then Result := lo\n  else if v > hi then Result := hi\n  else Result := v;\nend;\n\n"
-   & pas-list-builtins & pas-text-builtins
+    "type\n  TCodexStrArray = array of string;\n\n"
+    & "function codex_mod(a, b: Int64): Int64;\nvar m: Int64;\nbegin\n  m := Abs(b);\n  Result := a mod m;\n  if Result < 0 then Result := Result + m;\nend;\n\n"
+    & "function codex_clamp(v, lo, hi: Variant): Variant;\nbegin\n  if v < lo then Result := lo\n  else if v > hi then Result := hi\n  else Result := v;\nend;\n\n"
+    & pas-list-builtins & pas-text-builtins
 
  `VarArrayOf` is 0-based, and `Length` counts a string or a dynamic array
  and cannot count a variant array's elements, which is why the count goes
@@ -875,11 +905,11 @@ Section: Chapter Emission
 
   pas-list-builtins : Text
   pas-list-builtins =
-   "function codex_list_empty: Variant;\nbegin\n  Result := VarArrayCreate([0, -1], varVariant);\nend;\n\n"
-   & "function codex_list_len(v: Variant): Integer;\nbegin\n  if VarIsArray(v) then Result := VarArrayHighBound(v, 1) - VarArrayLowBound(v, 1) + 1\n  else Result := 0;\nend;\n\n"
-   & "function codex_list_snoc(v, x: Variant): Variant;\nvar n, i: Integer;\nbegin\n  n := codex_list_len(v);\n  Result := VarArrayCreate([0, n], varVariant);\n  for i := 0 to n - 1 do Result[i] := v[i];\n  Result[n] := x;\nend;\n\n"
-   & "function codex_list_cons(x, v: Variant): Variant;\nvar n, i: Integer;\nbegin\n  n := codex_list_len(v);\n  Result := VarArrayCreate([0, n], varVariant);\n  Result[0] := x;\n  for i := 0 to n - 1 do Result[i + 1] := v[i];\nend;\n\n"
-   & "function codex_list_concat(a, b: Variant): Variant;\nvar na, nb, i: Integer;\nbegin\n  na := codex_list_len(a);\n  nb := codex_list_len(b);\n  Result := VarArrayCreate([0, na + nb - 1], varVariant);\n  for i := 0 to na - 1 do Result[i] := a[i];\n  for i := 0 to nb - 1 do Result[na + i] := b[i];\nend;\n\n"
+    "function codex_list_empty: Variant;\nbegin\n  Result := VarArrayCreate([0, -1], varVariant);\nend;\n\n"
+    & "function codex_list_len(v: Variant): Integer;\nbegin\n  if VarIsArray(v) then Result := VarArrayHighBound(v, 1) - VarArrayLowBound(v, 1) + 1\n  else Result := 0;\nend;\n\n"
+    & "function codex_list_snoc(v, x: Variant): Variant;\nvar n, i: Integer;\nbegin\n  n := codex_list_len(v);\n  Result := VarArrayCreate([0, n], varVariant);\n  for i := 0 to n - 1 do Result[i] := v[i];\n  Result[n] := x;\nend;\n\n"
+    & "function codex_list_cons(x, v: Variant): Variant;\nvar n, i: Integer;\nbegin\n  n := codex_list_len(v);\n  Result := VarArrayCreate([0, n], varVariant);\n  Result[0] := x;\n  for i := 0 to n - 1 do Result[i + 1] := v[i];\nend;\n\n"
+    & "function codex_list_concat(a, b: Variant): Variant;\nvar na, nb, i: Integer;\nbegin\n  na := codex_list_len(a);\n  nb := codex_list_len(b);\n  Result := VarArrayCreate([0, na + nb - 1], varVariant);\n  for i := 0 to na - 1 do Result[i] := a[i];\n  for i := 0 to nb - 1 do Result[na + i] := b[i];\nend;\n\n"
 
  Pascal strings are 1-based, so every index here is one more than the
  foreword's. `StringReplace` with an empty needle is undefined rather than
@@ -888,25 +918,28 @@ Section: Chapter Emission
 
   pas-text-builtins : Text
   pas-text-builtins =
-   "function text_starts_with(s, p: Variant): Boolean;\nvar ss, ps: string;\nbegin\n  ss := VarToStr(s);\n  ps := VarToStr(p);\n  Result := (Length(ps) <= Length(ss)) and (Copy(ss, 1, Length(ps)) = ps);\nend;\n\n"
-   & "function text_replace(s, a, b: Variant): string;\nvar ss, aa: string;\nbegin\n  ss := VarToStr(s);\n  aa := VarToStr(a);\n  if Length(aa) = 0 then Result := ss\n  else Result := StringReplace(ss, aa, VarToStr(b), [rfReplaceAll]);\nend;\n\n"
-   & "function text_contains(s, sub: Variant): Boolean;\nvar ss, ub: string;\nbegin\n  ss := VarToStr(s);\n  ub := VarToStr(sub);\n  Result := (Length(ub) = 0) or (Pos(ub, ss) > 0);\nend;\n\n"
-   & "function text_to_integer(s: Variant): Int64;\nvar ss: string;\n  i: Integer;\n  neg: Boolean;\n  v: Int64;\nbegin\n  ss := VarToStr(s);\n  i := 1;\n  neg := False;\n  v := 0;\n  if (Length(ss) > 0) and (ss[1] = '-') then\n  begin\n    neg := True;\n    i := 2;\n  end;\n  while (i <= Length(ss)) and (ss[i] >= '0') and (ss[i] <= '9') do\n  begin\n    v := v * 10 + (Ord(ss[i]) - 48);\n    Inc(i);\n  end;\n  if neg then Result := -v else Result := v;\nend;\n\n"
-   & "function text_split(s, sep: Variant): TCodexStrArray;\nvar ss, pp: string;\n  i, start, n: Integer;\nbegin\n  ss := VarToStr(s);\n  pp := VarToStr(sep);\n  if Length(pp) = 0 then\n  begin\n    SetLength(Result, 1);\n    Result[0] := ss;\n    Exit;\n  end;\n  SetLength(Result, 0);\n  start := 1;\n  i := 1;\n  n := 0;\n  while i <= Length(ss) - Length(pp) + 1 do\n  begin\n    if Copy(ss, i, Length(pp)) = pp then\n    begin\n      SetLength(Result, n + 1);\n      Result[n] := Copy(ss, start, i - start);\n      Inc(n);\n      i := i + Length(pp);\n      start := i;\n    end\n    else Inc(i);\n  end;\n  SetLength(Result, n + 1);\n  Result[n] := Copy(ss, start, Length(ss) - start + 1);\nend;\n\n"
+    "function text_starts_with(s, p: Variant): Boolean;\nvar ss, ps: string;\nbegin\n  ss := VarToStr(s);\n  ps := VarToStr(p);\n  Result := (Length(ps) <= Length(ss)) and (Copy(ss, 1, Length(ps)) = ps);\nend;\n\n"
+    & "function text_replace(s, a, b: Variant): string;\nvar ss, aa: string;\nbegin\n  ss := VarToStr(s);\n  aa := VarToStr(a);\n  if Length(aa) = 0 then Result := ss\n  else Result := StringReplace(ss, aa, VarToStr(b), [rfReplaceAll]);\nend;\n\n"
+    & "function text_contains(s, sub: Variant): Boolean;\nvar ss, ub: string;\nbegin\n  ss := VarToStr(s);\n  ub := VarToStr(sub);\n  Result := (Length(ub) = 0) or (Pos(ub, ss) > 0);\nend;\n\n"
+    & "function text_to_integer(s: Variant): Int64;\nvar ss: string;\n  i: Integer;\n  neg: Boolean;\n  v: Int64;\nbegin\n  ss := VarToStr(s);\n  i := 1;\n  neg := False;\n  v := 0;\n  if (Length(ss) > 0) and (ss[1] = '-') then\n  begin\n    neg := True;\n    i := 2;\n  end;\n  while (i <= Length(ss)) and (ss[i] >= '0') and (ss[i] <= '9') do\n  begin\n    v := v * 10 + (Ord(ss[i]) - 48);\n    Inc(i);\n  end;\n  if neg then Result := -v else Result := v;\nend;\n\n"
+    & "function text_split(s, sep: Variant): TCodexStrArray;\nvar ss, pp: string;\n  i, start, n: Integer;\nbegin\n  ss := VarToStr(s);\n  pp := VarToStr(sep);\n  if Length(pp) = 0 then\n  begin\n    SetLength(Result, 1);\n    Result[0] := ss;\n    Exit;\n  end;\n  SetLength(Result, 0);\n  start := 1;\n  i := 1;\n  n := 0;\n  while i <= Length(ss) - Length(pp) + 1 do\n  begin\n    if Copy(ss, i, Length(pp)) = pp then\n    begin\n      SetLength(Result, n + 1);\n      Result[n] := Copy(ss, start, i - start);\n      Inc(n);\n      i := i + Length(pp);\n      start := i;\n    end\n    else Inc(i);\n  end;\n  SetLength(Result, n + 1);\n  Result[n] := Copy(ss, start, Length(ss) - start + 1);\nend;\n\n"
 
   pas-emit-entry : List IRDef -> Text
   pas-emit-entry (defs) = pas-emit-entry-loop defs 0
 
   pas-emit-shell : List IRDef -> Text
   pas-emit-shell (defs) =
-   if pas-emit-entry-loop defs 0 == "" then ""
-   else "type\n  TCodexMain = class(TThread)\n  protected\n    procedure Execute; override;\n  end;\n\nprocedure TCodexMain.Execute;\nbegin\n  " & pas-sanitize opening-entry-point & ";\nend;\n\n"
+    if pas-emit-entry-loop defs 0 == "" then ""
+    else
+      "type\n  TCodexMain = class(TThread)\n  protected\n    procedure Execute; override;\n  end;\n\nprocedure TCodexMain.Execute;\nbegin\n  " & pas-sanitize opening-entry-point & ";\nend;\n\n"
   pas-emit-entry-loop : List IRDef, Integer -> Text
   pas-emit-entry-loop (defs) (i) =
-   if i >= list-length defs then ""
-   else let d = list-at defs i
-   in if d.name == opening-entry-point then
-    if list-length (d.params) == 0 then "with TCodexMain.Create(False, 512 * 1024 * 1024) do\n  begin\n    WaitFor;\n    Free;\n  end;\n" else ""
-   else pas-emit-entry-loop defs (i + 1)
+    if i >= list-length defs then ""
+    else let d = list-at defs i
+    in if d.name == opening-entry-point then
+      if list-length (d.params) == 0 then
+        "with TCodexMain.Create(False, 512 * 1024 * 1024) do\n  begin\n    WaitFor;\n    Free;\n  end;\n"
+      else ""
+    else pas-emit-entry-loop defs (i + 1)
 
 Page 1

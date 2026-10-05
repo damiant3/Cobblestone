@@ -1,0 +1,65 @@
+Chapter: GameLinksReplay
+  cites Uoaix chapter GameLinks
+
+  glr-check : Text, Boolean -> [Console] Integer
+  glr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  glr-refuse : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> Result GameReply Text
+  glr-refuse (seen) (game) (input) (map) (port) (packet) = let actor = list-set-at seen 0 game.active
+    in Err "fixture packet refusal"
+  glr-disconnect : List Integer, Boolean, GameShard, GameInput -> Result Integer Text
+  glr-disconnect (seen) (fail) (game) (input) = let called = list-set-at seen 1 (list-at seen 1 + 1)
+    in let actor = list-set-at seen 2 game.active
+    in if fail then Err "fixture disconnect failure" else Ok 0
+  glr-run : GameLinks -> [Console, Network.Read, Network.Write] Integer
+  glr-run (owner) = act
+    seen <- [0,0,0]
+    one <- (list-at owner.server.protocols 0).game
+    two <- (list-at owner.server.protocols 1).game
+    a1 <- __record-set one "mode" 2
+    a2 <- __record-set one.session "phase" 2
+    a3 <- __record-set one.session "serial" 1
+    b1 <- __record-set two "mode" 2
+    b2 <- __record-set two.session "phase" 2
+    b3 <- __record-set two.session "serial" 2
+    old-active <- __record-set owner.server.game "active" 0
+    ticket <- list-at owner.relays 0
+    key <- __record-set ticket "key" 777
+    expiry <- __record-set ticket "expires" 9000
+    a <- glr-check "relay expiry and capacity admission are bounded" (gl-ticket owner 777 8999 0 == 0 & gl-ticket owner 777 9000 0 == -1 & gl-free-ticket owner 9000 0 == 0)
+    b <- glr-check "actor ownership belongs to another active session only" (gl-actor-used owner 1 1 0 & not (gl-actor-used owner 1 0 0) & gl-actor-used owner 2 0 0)
+    refused <- gl-handle (glr-refuse seen) owner 0 [115,7]
+    c <- glr-check "packet error restores scoped actor binding" (is-err refused & list-at seen 0 == 1 & owner.server.game.active == 0 & not owner.fault)
+    raw <- poke-byte one.raw 0 171
+    epoch <- (list-at owner.peers 0).clock.epoch
+    boundary <- __record-set owner.server.links "mark" __heap-save
+    junk <- __heap-advance 1048577
+    compacted <- sl-compact owner.server.links
+    d <- glr-check "session relay and clock storage survive common compaction" (is-ok compacted & one.session.serial == 1 & two.session.serial == 2 & ticket.key == 777 & peek-byte one.raw 0 == 171 & (list-at owner.peers 0).clock.epoch == epoch)
+    closing <- __record-set (list-at owner.server.protocols 0) "closing" 1
+    closed <- gl-close (glr-disconnect seen False) owner 0
+    repeated <- gl-close (glr-disconnect seen False) owner 0
+    e <- glr-check "disconnect once leaves the other actor live" (closed == 0 & repeated == 0 & list-at seen 1 == 1 & list-at seen 2 == 1 & one.session.phase == 3 & two.session.phase == 2 & owner.server.game.active == 0)
+    other-closing <- __record-set (list-at owner.server.protocols 1) "closing" 1
+    failure <- gl-close (glr-disconnect seen True) owner 1
+    prevented <- gl-handle (glr-refuse seen) owner 0 [115,8]
+    f <- glr-check "disconnect failure latches owner fault and refuses later admission" (failure == -1 & owner.fault & is-err prevented & list-at seen 0 == 1 & owner.server.game.active == 0 & two.session.phase == 2)
+    a+b+c+d+e+f
+  end
+  opening : [Console, Network.Read, Network.Write] Integer = act
+    none <- net-driver-bind-none 0
+    arena <- nc-set-acquire (nc-pool-cell process-get-pid)
+    released <- nc-set-release arena
+    when gs-new 0
+      is Err (_) -> -1
+      is Ok (game) -> when walk-map-new 0 0 4 4
+        is Err (_) -> -1
+        is Ok (map) -> when gl-new [] game map 0 2594 [2593,2593,2593,2593] [82,84,0,18,52,86] [10,0,2,15] [10,0,2,2] [255,255,255,0]
+          is Err (e) -> act
+            print-line-uni e
+            1
+          end
+          is Ok (owner) -> glr-run owner
+  end

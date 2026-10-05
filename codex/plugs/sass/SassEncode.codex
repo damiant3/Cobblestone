@@ -1,0 +1,464 @@
+Chapter: SassEncode
+  cites Foreword chapter Format
+
+ SM 5.2 (Maxwell) instruction encodings, from Mesa's
+ src/nouveau/codegen/nv50_ir_emit_gm107.cpp (mesa-24.2.0, 22fafc98), and for
+ LDG and STG, which that emitter does not have, from NAK's
+ src/nouveau/compiler/nak/sm50.rs (same tag). Every instruction is one 64-bit
+ word. Common fields: destination register at bit 0, first source at bit 8,
+ the guard predicate at bits 16..18 (7 is PT, the always-true predicate)
+ with its negation at bit 19, and the second source at bit 20. Register 255
+ is RZ, which reads as zero.
+
+ The second source has three forms, each with its own opcode: a register; a
+ constant-bank operand c[bank][offset], the offset divided by 4 in 14 bits at
+ bit 20 and the bank in 5 bits at bit 34; and a 20-bit signed immediate, its
+ low 19 bits at bit 20 and its sign at bit 56. Floating-point immediates are
+ not encoded here.
+
+ NOP: Mesa's emitNOP writes no condition code; maxas, whose grammar was taken
+ from NVIDIA compiler output, writes TR (15) at bit 8. The encoding here is
+ maxas's. EXIT and BRA carry TR at bit 0 in both.
+
+ The lane mask at bit 39 (MOV) and bit 12 (MOV32I) is written as 15, all
+ four lanes, as Mesa writes it for a 32-bit move.
+
+ S2R system-register ids, from Mesa's emitSYS: SR_LANEID 0, SR_TID.X..Z
+ 33..35, SR_CTAID.X..Z 37..39.
+
+ ISETP and FSETP write predicate P at bit 3 and PT at bit 0, and combine with
+ PT at bit 39 under AND (0 at bit 45). The comparison is at bit 49 (ISETP,
+ 3 bits, signed flag at bit 48) or bit 48 (FSETP, 4 bits): LT 1, EQ 2, LE 3,
+ GT 4, NE 5, GE 6. SHR is arithmetic when bit 48 is set. LOP writes PT at bit
+ 48 and its operation at bit 41: AND 0, OR 1, XOR 2. ISCADD's shift is 5 bits
+ at bit 39.
+
+ The 64-bit carry chain: IADD writes the carry (.CC) at bit 47 and adds it
+ (.X) at bit 43, and negates its first source at bit 49 and its second at
+ bit 48. ISETP.X at bit 43 folds the carry into the comparison, and ISETP
+ combines its result with predicate q at bit 39 (negated at bit 42) under
+ AND 0, OR 1 or XOR 2 at bit 45. SHF, the funnel shift of a register pair:
+ opcode 5BF8 (left) or 5CF8 (right), 36F8 or 38F8 with an immediate shift;
+ the high register at bit 39, .W at bit 50, .HI at bit 48, and the type at
+ bit 37 (U64 2, S64 3).
+
+ XMAD multiplies 16-bit halves: d = a.half * b.half + c. Register form
+ (opcode 5B00): c at bit 39, PSL at bit 36, MRG at bit 37, the addend mode
+ (CLO 1, CHI 2, CSFU 3, CBCC 4) in 3 bits at bit 50, H1 of a at bit 53 and
+ of b at bit 35. Constant-bank form (4E00): PSL at bit 55, MRG at bit 56,
+ the mode in 2 bits at bit 50 (no CBCC), H1 of b at bit 52. Immediate form
+ (3600): a 16-bit unsigned b at bit 20, fields as the register form, no H1
+ of b. maxas's XMAD.LO expansion is the 32-bit multiply low:
+ XMAD.MRG x, a, b.H1, RZ; XMAD d, a, b, c; XMAD.PSL.CBCC d, a.H1, x.H1, d.
+
+ LDG and STG: address register at bit 8, a 24-bit signed byte offset at bit
+ 20, the 64-bit address flag (.E) at bit 45, and the width at bit 48 (32
+ bits 4, 64 bits 5); STG's data register is at bit 0. BRA: a 24-bit signed
+ byte offset at bit 20, relative to the next instruction.
+
+Section: Instructions
+
+  SassSrc =
+   | SrcReg (Integer)
+   | SrcCb (Integer) (Integer)
+   | SrcImm (Integer)
+
+  SassBody =
+   | SIadd (Integer) (Integer) (SassSrc)
+   | SIaddc (Integer) (Integer) (SassSrc) (Integer)
+   | SFadd (Integer) (Integer) (SassSrc)
+   | SFmul (Integer) (Integer) (SassSrc)
+   | SFfma (Integer) (Integer) (SassSrc) (Integer)
+   | SMov (Integer) (SassSrc)
+   | SMov32i (Integer) (Integer)
+   | SS2r (Integer) (Integer)
+   | SIsetp (Integer) (Integer) (Integer) (Integer) (SassSrc)
+   | SIsetpc (Integer) (Integer) (Integer) (Integer) (Integer) (SassSrc) (Integer) (Integer) (Integer)
+   | SFsetp (Integer) (Integer) (Integer) (SassSrc)
+   | SShl (Integer) (Integer) (SassSrc)
+   | SShr (Integer) (Integer) (Integer) (SassSrc)
+   | SShf (Integer) (Integer) (Integer) (SassSrc) (Integer) (Integer) (Integer) (Integer)
+   | SLop (Integer) (Integer) (Integer) (SassSrc)
+   | SIscadd (Integer) (Integer) (SassSrc) (Integer)
+   | SLdg (Integer) (Integer) (Integer) (Integer)
+   | SStg (Integer) (Integer) (Integer) (Integer)
+   | SXmad (Integer) (Integer) (Integer) (SassSrc) (Integer) (Integer) (Integer) (Integer)
+   | SBra (Integer)
+   | SNop
+   | SExit
+
+  SassInsn = record {
+   guard : Integer,
+   guard-neg : Integer,
+   body : SassBody
+  }
+
+  sass-always : SassBody -> SassInsn
+  sass-always (b) = SassInsn { guard = 7, guard-neg = 0, body = b }
+
+  sass-when : Integer, Integer, SassBody -> SassInsn
+  sass-when (p) (neg) (b) = SassInsn { guard = p, guard-neg = neg, body = b }
+
+Section: Validity
+
+  sass-in : Integer, Integer, Integer -> Boolean
+  sass-in (v) (lo) (hi) = if v < lo then False else v <= hi
+
+  sass-reg-ok : Integer -> Boolean
+  sass-reg-ok (r) = sass-in r 0 255
+
+  sass-sys-name : Integer -> Text
+  sass-sys-name (id) =
+    when id
+     is 0 -> "SR_LANEID"
+     is 33 -> "SR_TID.X"
+     is 34 -> "SR_TID.Y"
+     is 35 -> "SR_TID.Z"
+     is 37 -> "SR_CTAID.X"
+     is 38 -> "SR_CTAID.Y"
+     is 39 -> "SR_CTAID.Z"
+     is otherwise -> ""
+
+  sass-cmp-name : Integer -> Text
+  sass-cmp-name (c) =
+    when c
+     is 1 -> "LT"
+     is 2 -> "EQ"
+     is 3 -> "LE"
+     is 4 -> "GT"
+     is 5 -> "NE"
+     is 6 -> "GE"
+     is otherwise -> ""
+
+  sass-lop-name : Integer -> Text
+  sass-lop-name (op) =
+    when op
+     is 0 -> "AND"
+     is 1 -> "OR"
+     is 2 -> "XOR"
+     is otherwise -> ""
+
+  sass-xmad-cmode-text : Integer -> Text
+  sass-xmad-cmode-text (cm) =
+    when cm
+     is 1 -> ".CLO"
+     is 2 -> ".CHI"
+     is 3 -> ".CSFU"
+     is 4 -> ".CBCC"
+     is otherwise -> ""
+
+  sass-xmad-mode-text : Integer, Integer -> Text
+  sass-xmad-mode-text (pm) (cm) =
+    if pm == 1 then (if cm == 1 then ".PSL.CLO" else if cm == 4 then ".PSL.CBCC" else ".PSL")
+    else if pm == 2 then ".MRG" & sass-xmad-cmode-text cm
+    else sass-xmad-cmode-text cm
+
+  sass-xmad-mode-ok : Integer, Integer -> Boolean
+  sass-xmad-mode-ok (pm) (cm) =
+    if sass-in pm 0 2 == False then False
+    else if sass-in cm 0 4 == False then False
+    else if pm == 1 then (if cm == 0 then True else if cm == 1 then True else cm == 4)
+    else if pm == 2 then (if cm == 0 then True else cm == 4)
+    else True
+
+  sass-xmad-ok : Integer, Integer, Integer, SassSrc, Integer, Integer, Integer, Integer -> Boolean
+  sass-xmad-ok (d) (a) (ah) (s) (bh) (c) (pm) (cm) =
+    if sass-regs2-ok d a == False then False
+    else if sass-reg-ok c == False then False
+    else if sass-in ah 0 1 == False then False
+    else if sass-in bh 0 1 == False then False
+    else if sass-xmad-mode-ok pm cm == False then False
+    else when s
+     is SrcReg (r) -> sass-reg-ok r
+     is SrcCb (bank) (off) -> if cm == 4 then False else sass-src-ok s False
+     is SrcImm (v) -> if bh == 1 then False else sass-in v 0 65535
+
+  sass-iaddc-ok : Integer, Integer, SassSrc, Integer -> Boolean
+  sass-iaddc-ok (d) (a) (s) (fl) =
+    if sass-regs2-ok d a == False then False
+    else if sass-in fl 0 15 == False then False
+    else if bit-and fl 8 == 0 then sass-src-ok s True
+    else when s
+     is SrcImm (v) -> False
+     is otherwise -> sass-src-ok s True
+
+  sass-setpc-ok : Integer, Integer, Integer, Integer, Integer, SassSrc, Integer, Integer, Integer -> Boolean
+  sass-setpc-ok (p) (c) (u) (x) (a) (s) (bo) (q) (qn) =
+    if sass-in p 0 6 == False then False
+    else if sass-cmp-name c == "" then False
+    else if sass-in u 0 1 == False then False
+    else if sass-in x 0 1 == False then False
+    else if sass-in bo 0 2 == False then False
+    else if sass-in q 0 7 == False then False
+    else if sass-in qn 0 1 == False then False
+    else if sass-reg-ok a == False then False
+    else sass-src-ok s True
+
+  sass-shf-ok : Integer, Integer, Integer, SassSrc, Integer, Integer, Integer, Integer -> Boolean
+  sass-shf-ok (rt) (d) (a) (s) (c) (w) (ty) (hi) =
+    if sass-regs2-ok d a == False then False
+    else if sass-reg-ok c == False then False
+    else if sass-in rt 0 1 == False then False
+    else if sass-in w 0 1 == False then False
+    else if sass-in hi 0 1 == False then False
+    else if (if ty == 0 then False else if ty == 2 then False else ty /= 3) then False
+    else when s
+     is SrcReg (r) -> sass-reg-ok r
+     is SrcImm (v) -> sass-in v 0 63
+     is otherwise -> False
+
+  sass-src-ok : SassSrc, Boolean -> Boolean
+  sass-src-ok (s) (imm-allowed) =
+    when s
+     is SrcReg (r) -> sass-reg-ok r
+     is SrcCb (bank) (off) -> if sass-in bank 0 31 == False then False else if sass-in off 0 #FFFC == False then False else bit-and off 3 == 0
+     is SrcImm (v) -> if imm-allowed then sass-in v -524288 524287 else False
+
+  sass-regs2-ok : Integer, Integer -> Boolean
+  sass-regs2-ok (d) (a) = if sass-reg-ok d == False then False else sass-reg-ok a
+
+  sass-mem-ok : Integer, Integer, Integer, Integer -> Boolean
+  sass-mem-ok (r) (a) (off) (width) =
+    if sass-regs2-ok r a == False then False
+    else if sass-in off -8388608 8388607 == False then False
+    else if width == 32 then True
+    else if width == 64 then (if r > 253 then False else bit-and r 1 == 0)
+    else False
+
+  sass-body-ok : SassBody -> Boolean
+  sass-body-ok (b) =
+    when b
+     is SIadd (d) (x) (s) -> if sass-regs2-ok d x == False then False else sass-src-ok s True
+     is SFadd (d) (x) (s) -> if sass-regs2-ok d x == False then False else sass-src-ok s False
+     is SFmul (d) (x) (s) -> if sass-regs2-ok d x == False then False else sass-src-ok s False
+     is SFfma (d) (x) (s) (z) -> if sass-regs2-ok d x == False then False else if sass-reg-ok z == False then False else sass-src-ok s False
+     is SMov (d) (s) -> if sass-reg-ok d == False then False else sass-src-ok s True
+     is SMov32i (d) (v) -> if sass-reg-ok d == False then False else sass-in v -2147483648 #FFFFFFFF
+     is SS2r (d) (id) -> if sass-reg-ok d == False then False else sass-sys-name id /= ""
+     is SIaddc (d) (x) (s) (fl) -> sass-iaddc-ok d x s fl
+     is SIsetpc (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) -> sass-setpc-ok p c u xf x s bo q qn
+     is SShf (rt) (d) (x) (s) (c) (w) (ty) (hi) -> sass-shf-ok rt d x s c w ty hi
+     is SIsetp (p) (c) (u) (x) (s) -> if sass-in p 0 6 == False then False else if sass-cmp-name c == "" then False else if sass-in u 0 1 == False then False else if sass-reg-ok x == False then False else sass-src-ok s True
+     is SFsetp (p) (c) (x) (s) -> if sass-in p 0 6 == False then False else if sass-cmp-name c == "" then False else if sass-reg-ok x == False then False else sass-src-ok s False
+     is SShl (d) (x) (s) -> if sass-regs2-ok d x == False then False else sass-src-ok s True
+     is SShr (d) (u) (x) (s) -> if sass-regs2-ok d x == False then False else if sass-in u 0 1 == False then False else sass-src-ok s True
+     is SLop (d) (op) (x) (s) -> if sass-regs2-ok d x == False then False else if sass-lop-name op == "" then False else sass-src-ok s True
+     is SIscadd (d) (x) (s) (sh) -> if sass-regs2-ok d x == False then False else if sass-in sh 0 31 == False then False else sass-src-ok s True
+     is SLdg (d) (a) (off) (w) -> sass-mem-ok d a off w
+     is SStg (a) (off) (r) (w) -> sass-mem-ok r a off w
+     is SXmad (d) (a) (ah) (s) (bh) (c) (pm) (cm) -> sass-xmad-ok d a ah s bh c pm cm
+     is SBra (off) -> if sass-in off -8388608 8388607 == False then False else bit-and off 7 == 0
+     is SNop -> True
+     is SExit -> True
+
+  sass-insn-ok : SassInsn -> Boolean
+  sass-insn-ok (i) =
+    if sass-in i.guard 0 7 == False then False
+    else if sass-in i.guard-neg 0 1 == False then False
+    else sass-body-ok i.body
+
+Section: Encoding
+
+ sass-encode answers -1 (every bit set) for an instruction sass-insn-ok
+ refuses. No SM 5.2 opcode is all ones.
+
+  sass-src-bits : SassSrc -> Integer
+  sass-src-bits (s) =
+    when s
+     is SrcReg (r) -> bit-shl r 20
+     is SrcCb (bank) (off) -> bit-or (bit-shl (bit-shru off 2) 20) (bit-shl bank 34)
+     is SrcImm (v) -> bit-or (bit-shl (bit-and v #7FFFF) 20) (bit-shl (bit-and (bit-shru v 19) 1) 56)
+
+  sass-src-op : SassSrc, Integer, Integer, Integer -> Integer
+  sass-src-op (s) (reg-op) (cb-op) (imm-op) =
+    when s
+     is SrcReg (r) -> reg-op
+     is SrcCb (bank) (off) -> cb-op
+     is SrcImm (v) -> imm-op
+
+  sass-alu : SassSrc, Integer, Integer, Integer, Integer, Integer -> Integer
+  sass-alu (s) (reg-op) (cb-op) (imm-op) (d) (a) =
+    bit-or (bit-shl (sass-src-op s reg-op cb-op imm-op) 48) (bit-or (sass-src-bits s) (bit-or (bit-shl a 8) d))
+
+  sass-setp-tail : Integer -> Integer
+  sass-setp-tail (p) = bit-or (bit-shl 7 39) (bit-or (bit-shl p 3) 7)
+
+  sass-isetp-bits : Integer, Integer, Integer, Integer, Integer, SassSrc, Integer, Integer, Integer -> Integer
+  sass-isetp-bits (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) =
+    let flags = bit-or (bit-shl xf 43) (bit-or (bit-shl bo 45) (bit-or (bit-shl q 39) (bit-shl qn 42)))
+    in bit-or (bit-shl c 49) (bit-or (bit-shl (1 - u) 48) (bit-or flags (bit-or (bit-or (bit-shl p 3) 7) (sass-alu s #5B60 #4B60 #3660 0 x))))
+
+  sass-iadd-bits : Integer, Integer, SassSrc, Integer -> Integer
+  sass-iadd-bits (d) (x) (s) (fl) =
+    let flags = bit-or (bit-shl (bit-and fl 1) 47) (bit-or (bit-shl (bit-and (bit-shru fl 1) 1) 43) (bit-or (bit-shl (bit-and (bit-shru fl 2) 1) 49) (bit-shl (bit-and (bit-shru fl 3) 1) 48)))
+    in bit-or flags (sass-alu s #5C10 #4C10 #3810 d x)
+
+  sass-shf-bits : Integer, Integer, Integer, SassSrc, Integer, Integer, Integer, Integer -> Integer
+  sass-shf-bits (rt) (d) (x) (s) (c) (w) (ty) (hi) =
+    let flags = bit-or (bit-shl c 39) (bit-or (bit-shl w 50) (bit-or (bit-shl hi 48) (bit-shl ty 37)))
+    in bit-or flags (if rt == 1 then sass-alu s #5CF8 0 #38F8 d x else sass-alu s #5BF8 0 #36F8 d x)
+
+  sass-mem : Integer, Integer, Integer, Integer, Integer -> Integer
+  sass-mem (op) (r) (a) (off) (width) =
+    let flags = bit-or (bit-shl 1 45) (bit-shl (if width == 64 then 5 else 4) 48)
+    in bit-or (bit-shl op 48) (bit-or flags (bit-or (bit-shl (bit-and off #FFFFFF) 20) (bit-or (bit-shl a 8) r)))
+
+  sass-xmad-bits : Integer, Integer, Integer, SassSrc, Integer, Integer, Integer, Integer -> Integer
+  sass-xmad-bits (d) (a) (ah) (s) (bh) (c) (pm) (cm) =
+    let common = bit-or (bit-shl c 39) (bit-or (bit-shl cm 50) (bit-or (bit-shl ah 53) (bit-or (bit-shl a 8) d)))
+    in when s
+     is SrcReg (r) -> bit-or #5B00000000000000 (bit-or common (bit-or (bit-shl r 20) (bit-or (bit-shl pm 36) (bit-shl bh 35))))
+     is SrcCb (bank) (off) -> bit-or #4E00000000000000 (bit-or common (bit-or (sass-src-bits s) (bit-or (bit-shl pm 55) (bit-shl bh 52))))
+     is SrcImm (v) -> bit-or #3600000000000000 (bit-or common (bit-or (bit-shl v 20) (bit-shl pm 36)))
+
+  sass-body-bits : SassBody -> Integer
+  sass-body-bits (b) =
+    when b
+     is SIadd (d) (x) (s) -> sass-iadd-bits d x s 0
+     is SIaddc (d) (x) (s) (fl) -> sass-iadd-bits d x s fl
+     is SFadd (d) (x) (s) -> sass-alu s #5C58 #4C58 0 d x
+     is SFmul (d) (x) (s) -> sass-alu s #5C68 #4C68 0 d x
+     is SFfma (d) (x) (s) (z) -> bit-or (bit-shl z 39) (sass-alu s #5980 #4980 0 d x)
+     is SMov (d) (s) -> bit-or (bit-shl 15 39) (sass-alu s #5C98 #4C98 #3898 d 0)
+     is SMov32i (d) (v) -> bit-or #0100000000000000 (bit-or (bit-shl (bit-and v #FFFFFFFF) 20) (bit-or (bit-shl 15 12) d))
+     is SS2r (d) (id) -> bit-or #F0C8000000000000 (bit-or (bit-shl id 20) d)
+     is SIsetp (p) (c) (u) (x) (s) -> sass-isetp-bits p c u 0 x s 0 7 0
+     is SIsetpc (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) -> sass-isetp-bits p c u xf x s bo q qn
+     is SShf (rt) (d) (x) (s) (c) (w) (ty) (hi) -> sass-shf-bits rt d x s c w ty hi
+     is SFsetp (p) (c) (x) (s) -> bit-or (bit-shl c 48) (bit-or (sass-setp-tail p) (sass-alu s #5BB0 #4BB0 0 0 x))
+     is SShl (d) (x) (s) -> sass-alu s #5C48 #4C48 #3848 d x
+     is SShr (d) (u) (x) (s) -> bit-or (bit-shl (1 - u) 48) (sass-alu s #5C28 #4C28 #3828 d x)
+     is SLop (d) (op) (x) (s) -> bit-or (bit-shl 7 48) (bit-or (bit-shl op 41) (sass-alu s #5C40 #4C40 #3840 d x))
+     is SIscadd (d) (x) (s) (sh) -> bit-or (bit-shl sh 39) (sass-alu s #5C18 #4C18 #3818 d x)
+     is SLdg (d) (a) (off) (w) -> sass-mem #EED0 d a off w
+     is SStg (a) (off) (r) (w) -> sass-mem #EED8 r a off w
+     is SXmad (d) (a) (ah) (s) (bh) (c) (pm) (cm) -> sass-xmad-bits d a ah s bh c pm cm
+     is SBra (off) -> bit-or #E240000000000000 (bit-or (bit-shl (bit-and off #FFFFFF) 20) 15)
+     is SNop -> bit-or #50B0000000000000 (bit-shl 15 8)
+     is SExit -> bit-or #E300000000000000 15
+
+  sass-encode : SassInsn -> Integer
+  sass-encode (i) =
+    if sass-insn-ok i == False then -1
+    else bit-or (sass-body-bits i.body) (bit-or (bit-shl i.guard 16) (bit-shl i.guard-neg 19))
+
+  sass-word-hex : Integer -> Text
+  sass-word-hex (w) = fmt-hex-pad (bit-shru w 32) 8 & fmt-hex-pad (bit-and w #FFFFFFFF) 8
+
+Section: Notation
+
+ maxas's assembler syntax, which is also what nvdisasm prints.
+
+  sass-reg-text : Integer -> Text
+  sass-reg-text (r) = if r == 255 then "RZ" else "R" & show r
+
+  sass-signed-hex : Integer -> Text
+  sass-signed-hex (v) = if v < 0 then "-0x" & fmt-hex (0 - v) else "0x" & fmt-hex v
+
+  sass-src-text : SassSrc -> Text
+  sass-src-text (s) =
+    when s
+     is SrcReg (r) -> sass-reg-text r
+     is SrcCb (bank) (off) -> "c[0x" & fmt-hex bank & "][0x" & fmt-hex off & "]"
+     is SrcImm (v) -> sass-signed-hex v
+
+  sass-addr-text : Integer, Integer -> Text
+  sass-addr-text (a) (off) =
+    if off == 0 then "[" & sass-reg-text a & "]"
+    else "[" & sass-reg-text a & "+" & sass-signed-hex off & "]"
+
+  sass-width-text : Integer -> Text
+  sass-width-text (w) = if w == 64 then ".64" else ""
+
+  sass-guard-text : SassInsn -> Text
+  sass-guard-text (i) =
+    if i.guard == 7 then (if i.guard-neg == 0 then "" else "@!PT ")
+    else (if i.guard-neg == 0 then "@P" else "@!P") & show i.guard & " "
+
+  sass-rrs-text : Text, Integer, Integer, SassSrc -> Text
+  sass-rrs-text (op) (d) (a) (s) = op & " " & sass-reg-text d & ", " & sass-reg-text a & ", " & sass-src-text s & ";"
+
+  sass-setp-text : Text, Integer, Integer, SassSrc -> Text
+  sass-setp-text (head) (p) (x) (s) = head & ".AND P" & show p & ", PT, " & sass-reg-text x & ", " & sass-src-text s & ", PT;"
+
+  sass-half-text : Integer -> Text
+  sass-half-text (h) = if h == 1 then ".H1" else ""
+
+  sass-pred-text : Integer, Integer -> Text
+  sass-pred-text (q) (qn) = (if qn == 1 then "!" else "") & (if q == 7 then "PT" else "P" & show q)
+
+  sass-iaddc-text : Integer, Integer, SassSrc, Integer -> Text
+  sass-iaddc-text (d) (x) (s) (fl) =
+    let head = if bit-and fl 2 == 2 then "IADD.X " else "IADD "
+    in let dst = sass-reg-text d & (if bit-and fl 1 == 1 then ".CC" else "")
+    in let na = if bit-and fl 4 == 4 then "-" else ""
+    in let nb = if bit-and fl 8 == 8 then "-" else ""
+    in head & dst & ", " & na & sass-reg-text x & ", " & nb & sass-src-text s & ";"
+
+  sass-isetpc-text : Integer, Integer, Integer, Integer, Integer, SassSrc, Integer, Integer, Integer -> Text
+  sass-isetpc-text (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) =
+    let head = "ISETP." & sass-cmp-name c & (if u == 1 then ".U32" else "") & (if xf == 1 then ".X" else "") & "." & sass-lop-name bo
+    in head & " P" & show p & ", PT, " & sass-reg-text x & ", " & sass-src-text s & ", " & sass-pred-text q qn & ";"
+
+  sass-shf-text : Integer, Integer, Integer, SassSrc, Integer, Integer, Integer, Integer -> Text
+  sass-shf-text (rt) (d) (x) (s) (c) (w) (ty) (hi) =
+    let head = (if rt == 1 then "SHF.R" else "SHF.L") & (if w == 1 then ".W" else "") & (if ty == 2 then ".U64" else if ty == 3 then ".S64" else "") & (if hi == 1 then ".HI" else "")
+    in head & " " & sass-reg-text d & ", " & sass-reg-text x & ", " & sass-src-text s & ", " & sass-reg-text c & ";"
+
+  sass-body-text : SassBody -> Text
+  sass-body-text (b) =
+    when b
+     is SIadd (d) (x) (s) -> sass-rrs-text "IADD" d x s
+     is SIaddc (d) (x) (s) (fl) -> sass-iaddc-text d x s fl
+     is SIsetpc (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) -> sass-isetpc-text p c u xf x s bo q qn
+     is SShf (rt) (d) (x) (s) (c) (w) (ty) (hi) -> sass-shf-text rt d x s c w ty hi
+     is SFadd (d) (x) (s) -> sass-rrs-text "FADD" d x s
+     is SFmul (d) (x) (s) -> sass-rrs-text "FMUL" d x s
+     is SFfma (d) (x) (s) (z) -> "FFMA " & sass-reg-text d & ", " & sass-reg-text x & ", " & sass-src-text s & ", " & sass-reg-text z & ";"
+     is SMov (d) (s) -> "MOV " & sass-reg-text d & ", " & sass-src-text s & ";"
+     is SMov32i (d) (v) -> "MOV32I " & sass-reg-text d & ", 0x" & fmt-hex (bit-and v #FFFFFFFF) & ";"
+     is SS2r (d) (id) -> "S2R " & sass-reg-text d & ", " & sass-sys-name id & ";"
+     is SIsetp (p) (c) (u) (x) (s) -> sass-setp-text ("ISETP." & sass-cmp-name c & (if u == 1 then ".U32" else "")) p x s
+     is SFsetp (p) (c) (x) (s) -> sass-setp-text ("FSETP." & sass-cmp-name c) p x s
+     is SShl (d) (x) (s) -> sass-rrs-text "SHL" d x s
+     is SShr (d) (u) (x) (s) -> sass-rrs-text (if u == 1 then "SHR.U32" else "SHR") d x s
+     is SLop (d) (op) (x) (s) -> sass-rrs-text ("LOP." & sass-lop-name op) d x s
+     is SIscadd (d) (x) (s) (sh) -> "ISCADD " & sass-reg-text d & ", " & sass-reg-text x & ", " & sass-src-text s & ", " & sass-signed-hex sh & ";"
+     is SLdg (d) (a) (off) (w) -> "LDG.E" & sass-width-text w & " " & sass-reg-text d & ", " & sass-addr-text a off & ";"
+     is SStg (a) (off) (r) (w) -> "STG.E" & sass-width-text w & " " & sass-addr-text a off & ", " & sass-reg-text r & ";"
+     is SXmad (d) (a) (ah) (s) (bh) (c) (pm) (cm) -> "XMAD" & sass-xmad-mode-text pm cm & " " & sass-reg-text d & ", " & sass-reg-text a & sass-half-text ah & ", " & sass-src-text s & sass-half-text bh & ", " & sass-reg-text c & ";"
+     is SBra (off) -> "BRA " & sass-signed-hex off & ";"
+     is SNop -> "NOP;"
+     is SExit -> "EXIT;"
+
+  sass-insn-text : SassInsn -> Text
+  sass-insn-text (i) = sass-guard-text i & sass-body-text i.body
+
+Section: Idioms
+
+  sass-src-is-reg : SassSrc, Integer -> Boolean
+  sass-src-is-reg (s) (r) =
+    when s
+     is SrcReg (x) -> x == r
+     is otherwise -> False
+
+  sass-mul-lo-ok : Integer, Integer, SassSrc, Integer, Integer -> Boolean
+  sass-mul-lo-ok (d) (a) (b) (c) (x) =
+    if d == a then False
+    else if x == a then False
+    else if x == d then False
+    else if x == c then False
+    else if x == 255 then False
+    else if sass-src-is-reg b x then False
+    else when b
+     is SrcImm (v) -> False
+     is otherwise -> True
+
+  sass-mul-lo : Integer, Integer, SassSrc, Integer, Integer -> List SassInsn
+  sass-mul-lo (d) (a) (b) (c) (x) =
+    if sass-mul-lo-ok d a b c x == False then []
+    else [
+     sass-always (SXmad x a 0 b 1 255 2 0),
+     sass-always (SXmad d a 0 b 0 c 0 0),
+     sass-always (SXmad d a 1 (SrcReg x) 1 d 1 4)
+    ]

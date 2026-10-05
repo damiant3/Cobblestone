@@ -2,8 +2,8 @@ Chapter: BrowserUNet
   cites WebApp chapter WebGpu
   cites Diffusion chapter UNetGraph
 
- The UNet's operations over BrowserKernels' WGSL module, for a page. Weights
- are f32 device buffers by their name under model.diffusion_model.
+ Weights are device buffers by their name under model.diffusion_model, packed
+ f16 where bt-half says so.
 
  We say:
 
@@ -29,7 +29,10 @@ Section: Launches
   bu-grid (n) = GpuGrid { gx = (n + 63) / 64, gy = 1, gz = 1, bx = 64, by = 1, bz = 1, shared = 0 }
 
   bu-tiles : Integer, Integer -> GpuGrid
-  bu-tiles (m) (n) = GpuGrid { gx = ((m + 15) / 16) * ((n + 15) / 16), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+  bu-tiles (m) (n) = GpuGrid { gx = ((m + 63) / 64) * ((n + 63) / 64), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
+
+  bu-rows : Text, Text, Integer, List GpuParam -> Boolean
+  bu-rows (code) (name) (rows) (ps) = gpu-launch code name (GpuGrid { gx = rows, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }) ps >= 0
 
   bu-run : Text, Text, Integer, List GpuParam -> Boolean
   bu-run (code) (name) (n) (ps) = gpu-launch code name (bu-grid n) ps >= 0
@@ -83,7 +86,7 @@ Section: Operations
     in let zb = if biased then 0 else gpu-buf-alloc (nn * 4)
     in let b = if biased then bu-get u (name & ".bias") else zb
     in let y = gpu-buf-alloc (mm * nn * 4)
-    in let ok = if x == 0 | w == 0 | b == 0 | y == 0 then False else gpu-launch code "bk_linear_main" (bu-tiles mm nn) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 mm, gpu-arg-u32 nn, gpu-arg-u32 kk] >= 0
+    in let ok = if x == 0 | w == 0 | b == 0 | y == 0 then False else gpu-launch code "bk_linear_h_main" (bu-tiles mm nn) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 mm, gpu-arg-u32 nn, gpu-arg-u32 kk] >= 0
     in bu-free (bu-out y ok) zb
 
   bu-conv : Text, BuWeights, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
@@ -93,8 +96,31 @@ Section: Operations
     in let w = bu-get u (name & ".weight")
     in let b = bu-get u (name & ".bias")
     in let y = gpu-buf-alloc (cout * oh * ow * 4)
-    in let ok = if x == 0 | w == 0 | b == 0 | y == 0 then False else gpu-launch code "bk_conv2d_main" (bu-tiles cout (oh * ow)) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 cin, gpu-arg-u32 h, gpu-arg-u32 wd, gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 stride, gpu-arg-u32 pad, gpu-arg-u32 oh, gpu-arg-u32 ow] >= 0
+    in let sp = bu-splits (((cout + 63) / 64) * ((oh * ow + 63) / 64)) (cin * k * k)
+    in let ok = if x == 0 | w == 0 | b == 0 | y == 0 then False
+       else if sp > 1 then bu-conv-split code x w b y cin h wd cout k stride pad oh ow sp
+       else gpu-launch code "bk_conv2d_h_main" (bu-tiles cout (oh * ow)) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 cin, gpu-arg-u32 h, gpu-arg-u32 wd, gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 stride, gpu-arg-u32 pad, gpu-arg-u32 oh, gpu-arg-u32 ow] >= 0
     in bu-out y ok
+
+ A conv of fewer than 136 tiles, four workgroups for each of the reference
+ card's 34 multiprocessors, splits its k into up to 8 slices of at least 256.
+
+  bu-splits : Integer, Integer -> Integer
+  bu-splits (tiles) (kk) =
+    if tiles >= 136 then 1
+    else let want = (136 + tiles - 1) / tiles
+    in let cap = if want > 8 then 8 else want
+    in if kk / 256 < cap then (if kk / 256 < 1 then 1 else kk / 256) else cap
+
+  bu-conv-split : Text, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  bu-conv-split (code) (x) (w) (b) (y) (cin) (h) (wd) (cout) (k) (stride) (pad) (oh) (ow) (sp) =
+    let n = cout * oh * ow
+    in let p = gpu-buf-alloc (sp * n * 4)
+    in let ok = if p == 0 then False
+       else if gpu-launch code "bk_conv2d_hs_main" (GpuGrid { gx = sp * ((cout + 63) / 64) * ((oh * ow + 63) / 64), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }) [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf b 0, gpu-arg-buf p 0, gpu-arg-u32 cin, gpu-arg-u32 h, gpu-arg-u32 wd, gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 stride, gpu-arg-u32 pad, gpu-arg-u32 oh, gpu-arg-u32 ow, gpu-arg-u32 sp] < 0 then False
+       else bu-run code "bk_sum_splits_main" n [gpu-arg-buf p 0, gpu-arg-buf y 0, gpu-arg-u32 sp, gpu-arg-u32 n]
+    in let f = bu-free 0 p
+    in ok
 
   bu-group-norm : Text, BuWeights, Integer, Integer, Integer, Real, Text -> Integer
   bu-group-norm (code) (u) (x) (c) (hw) (eps) (name) =
@@ -104,8 +130,8 @@ Section: Operations
     in let b = bu-get u (name & ".bias")
     in let y = gpu-buf-alloc (n * 4)
     in let ok = if x == 0 | s == 0 | g == 0 | b == 0 | y == 0 then False
-       else if bu-run code "bk_row_mean_main" 32 [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 (n / 32), gpu-arg-u32 32] == False then False
-       else if bu-run code "bk_row_rstd_main" 32 [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 (n / 32), gpu-arg-f32 eps, gpu-arg-u32 32] == False then False
+       else if bu-rows code "bk_row_mean_main" 32 [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 (n / 32), gpu-arg-u32 32] == False then False
+       else if bu-rows code "bk_row_rstd_main" 32 [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 (n / 32), gpu-arg-f32 eps, gpu-arg-u32 32] == False then False
        else bu-run code "bk_group_affine_main" n [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-buf g 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 c, gpu-arg-u32 hw, gpu-arg-u32 32, gpu-arg-u32 n]
     in bu-free (bu-out y ok) s
 
@@ -117,27 +143,29 @@ Section: Operations
     in let b = bu-get u (name & ".bias")
     in let y = gpu-buf-alloc (n * 4)
     in let ok = if x == 0 | s == 0 | g == 0 | b == 0 | y == 0 then False
-       else if bu-run code "bk_row_mean_main" rows [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 dim, gpu-arg-u32 rows] == False then False
-       else if bu-run code "bk_row_rstd_main" rows [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 dim, gpu-arg-f32 0.00001, gpu-arg-u32 rows] == False then False
+       else if bu-rows code "bk_row_mean_main" rows [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 dim, gpu-arg-u32 rows] == False then False
+       else if bu-rows code "bk_row_rstd_main" rows [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-u32 dim, gpu-arg-f32 0.00001, gpu-arg-u32 rows] == False then False
        else bu-run code "bk_layer_affine_main" n [gpu-arg-buf x 0, gpu-arg-buf s 0, gpu-arg-buf g 0, gpu-arg-buf b 0, gpu-arg-buf y 0, gpu-arg-u32 dim, gpu-arg-u32 n]
     in bu-free (bu-out y ok) s
 
- The native softmax is in place; WebGPU refuses one buffer bound twice as
- writable storage, so the rows go out through a temporary and back by a scale
- of 1.
-
   bu-softmax-rows : Text, Integer, Integer, Integer -> Boolean
   bu-softmax-rows (code) (s) (cols) (rows) =
-    let n = cols * rows
-    in let m = gpu-buf-alloc (rows * 2 * 4)
-    in let y = gpu-buf-alloc (n * 4)
-    in let ok = if s == 0 | m == 0 | y == 0 then False
-       else if bu-run code "bk_row_max_main" rows [gpu-arg-buf s 0, gpu-arg-buf m 0, gpu-arg-u32 cols, gpu-arg-u32 rows] == False then False
-       else if bu-run code "bk_row_expsum_main" rows [gpu-arg-buf s 0, gpu-arg-buf m 0, gpu-arg-u32 cols, gpu-arg-u32 rows] == False then False
-       else if bu-run code "bk_softmax_apply_main" n [gpu-arg-buf s 0, gpu-arg-buf m 0, gpu-arg-buf y 0, gpu-arg-u32 cols, gpu-arg-u32 n] == False then False
-       else bu-run code "bk_scale_main" n [gpu-arg-buf y 0, gpu-arg-buf s 0, gpu-arg-f32 1.0, gpu-arg-u32 n]
-    in let f = bu-free (bu-free 0 y) m
-    in ok
+    if s == 0 then False else bu-rows code "bk_softmax_rows_main" rows [gpu-arg-buf s 0, gpu-arg-u32 cols, gpu-arg-u32 rows]
+
+  bu-attention : Text, BuWeights, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  bu-attention (code) (u) (x) (sq) (c) (ctx) (sk) (kv) (p) =
+    let heads = c / 64
+    in let q = bu-linear-b code u x sq c c (p & "to_q") False
+    in let k = bu-linear-b code u ctx sk kv c (p & "to_k") False
+    in let v = bu-linear-b code u ctx sk kv c (p & "to_v") False
+    in let scores = gpu-buf-alloc (heads * sq * sk * 4)
+    in let values = gpu-buf-alloc (sq * c * 4)
+    in let scored = if q == 0 | k == 0 | v == 0 | scores == 0 | values == 0 then False
+      else bu-rows code "bk_attn_scores_main" (heads * ((sq + 63) / 64) * ((sk + 63) / 64)) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf scores 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 64, gpu-arg-f32 0.125, gpu-arg-u32 (heads * sq * sk)]
+    in let soft = if scored then bu-softmax-rows code scores sk (heads * sq) else False
+    in let gathered = if soft then bu-rows code "bk_attn_values_main" (heads * ((sq + 63) / 64)) [gpu-arg-buf scores 0, gpu-arg-buf v 0, gpu-arg-buf values 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 64, gpu-arg-u32 (sq * c)] else False
+    in let out = if gathered then bu-linear-b code u values sq c c (p & "to_out.0") True else 0
+    in bu-free (bu-free (bu-free (bu-free (bu-free out q) k) v) scores) values
 
   bu-upload : List Real -> Integer
   bu-upload (xs) =
@@ -156,9 +184,5 @@ Section: Operations
   bu-timestep : Text, Integer, Integer -> Boolean
   bu-timestep (code) (tb) (temb) = bu-run code "bk_timestep_main" 320 [gpu-arg-buf tb 0, gpu-arg-buf temb 0, gpu-arg-u32 320, gpu-arg-f32 9.210340371976184, gpu-arg-u32 320]
 
- attention is the SDXL graph's fused one (UNetGraph); the SD1.5 graph builds
- its own from linear-b and the three launches, so a page refuses it until
- SDXL runs in the browser.
-
-  browser-unet-ops : Text -> UNetOps BuWeights
-  browser-unet-ops (code) = UNetOps { conv = \u x cin h wd cout k st pd nm -> bu-conv code u x cin h wd cout k st pd nm, linear = \u x mm kk nn nm -> bu-linear-b code u x mm kk nn nm True, linear-b = \u x mm kk nn nm bi -> bu-linear-b code u x mm kk nn nm bi, group-norm = \u x c hw eps nm -> bu-group-norm code u x c hw eps nm, layer-norm = \u x rows dim nm -> bu-layer-norm code u x rows dim nm, silu = \x n -> bu-silu code x n, add = \a b n -> bu-add code a b n, add-channel = \x b hw n -> bu-add-channel code x b hw n, transpose = \x r c -> bu-transpose code x r c, concat = \a b ca cb hw -> bu-concat code a b ca cb hw, attention = \u x sq c ctx sk kv p -> 0, alloc = gpu-buf-alloc, free = bu-free, temp = gpu-buf-alloc, tfree = \keep h bytes -> bu-free keep h, upload = bu-upload, geglu = \pr g inner n -> bu-run code "bk_geglu_main" n [gpu-arg-buf pr 0, gpu-arg-buf g 0, gpu-arg-u32 inner, gpu-arg-u32 n], upsample = \x up h w n -> bu-run code "bk_upsample_main" n [gpu-arg-buf x 0, gpu-arg-buf up 0, gpu-arg-u32 h, gpu-arg-u32 w, gpu-arg-u32 n], crop = \x c h w oh ow -> 0, timestep = \tb temb -> bu-timestep code tb temb, attn-scores = \q k s heads sq sk d scale -> bu-run code "bk_attn_scores_main" (heads * sq * sk) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf s 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-f32 scale, gpu-arg-u32 (heads * sq * sk)], softmax-rows = \s cols rows -> bu-softmax-rows code s cols rows, attn-values = \s v o heads sq sk d -> bu-run code "bk_attn_values_main" (sq * heads * d) [gpu-arg-buf s 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-u32 (sq * heads * d)], out-patch = \x s cx cs hh ww -> True, self-v = \p -> False, probs-at = \p -> False, probs = \s hd r -> True }
+  browser-unet-ops : Text, (Integer -> Integer) -> UNetOps BuWeights
+  browser-unet-ops (code) (cl) = UNetOps { conv = \u x cin h wd cout k st pd nm -> bu-conv code u x cin h wd cout k st pd nm, linear = \u x mm kk nn nm -> bu-linear-b code u x mm kk nn nm True, linear-b = \u x mm kk nn nm bi -> bu-linear-b code u x mm kk nn nm bi, group-norm = \u x c hw eps nm -> bu-group-norm code u x c hw eps nm, layer-norm = \u x rows dim nm -> bu-layer-norm code u x rows dim nm, silu = \x n -> bu-silu code x n, add = \a b n -> bu-add code a b n, add-channel = \x b hw n -> bu-add-channel code x b hw n, transpose = \x r c -> bu-transpose code x r c, concat = \a b ca cb hw -> bu-concat code a b ca cb hw, attention = \u x sq c ctx sk kv p -> bu-attention code u x sq c ctx sk kv p, alloc = gpu-buf-alloc, free = bu-free, temp = gpu-buf-alloc, tfree = \keep h bytes -> bu-free keep h, upload = bu-upload, geglu = \pr g inner n -> bu-run code "bk_geglu_main" n [gpu-arg-buf pr 0, gpu-arg-buf g 0, gpu-arg-u32 inner, gpu-arg-u32 n], upsample = \x up h w n -> bu-run code "bk_upsample_main" n [gpu-arg-buf x 0, gpu-arg-buf up 0, gpu-arg-u32 h, gpu-arg-u32 w, gpu-arg-u32 n], crop = \x c h w oh ow -> 0, timestep = \tb temb -> bu-timestep code tb temb, attn-scores = \q k s heads sq sk d scale -> bu-rows code "bk_attn_scores_main" (heads * ((sq + 63) / 64) * ((sk + 63) / 64)) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf s 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-f32 scale, gpu-arg-u32 (heads * sq * sk)], softmax-rows = \s cols rows -> bu-softmax-rows code s cols rows, attn-values = \s v o heads sq sk d -> bu-rows code "bk_attn_values_main" (heads * ((sq + 63) / 64) * ((d + 63) / 64)) [gpu-arg-buf s 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-u32 (sq * heads * d)], out-patch = \x s cx cs hh ww -> True, self-v = \p -> False, probs-at = \p -> False, probs = \s hd r -> True, flash-at = \d -> d <= 40, flash = \q k v o hh sq sk d sc -> bu-rows code "bk_attn_flash_main" (hh * ((sq + 63) / 64)) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 hh, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 d, gpu-arg-f32 sc], ctx-len = cl }

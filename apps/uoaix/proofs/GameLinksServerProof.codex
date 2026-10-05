@@ -1,0 +1,47 @@
+Chapter: GameLinksServerProof
+  cites Uoaix chapter GameLinks
+
+  glsp-land : WalkMap, Integer -> Integer
+  glsp-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let written = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in glsp-land map (i + 1)
+  glsp-pulse : List Integer, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  glsp-pulse (seen) (game) (input) (map) (port) (tick) =
+    if game.active /= input.session.serial then Err "pulse actor binding"
+    else let slot = world-slot game.world input.session.serial
+    in if slot < 0 then Err "pulse actor absent"
+    else if list-at seen slot /= 0 then Ok None
+    else let marked = list-set-at seen slot 1
+    in Ok (Just (gs-reply [[115,bit-and input.session.serial 255]] "peer pulse"))
+  glsp-disconnect : List Integer, GameShard, GameInput -> [Console] Result Integer Text
+  glsp-disconnect (seen) (game) (input) = let count = list-at seen input.connection + 1
+    in let marked = list-set-at seen input.connection count
+    in act
+      print-line-uni ("DISCONNECT " & show input.connection & " calls=" & show count)
+      Ok 0
+    end
+  opening : [Console, Network.Read, Network.Write] Integer = act
+    card <- net-driver-bring-up
+    arena <- nc-set-acquire (nc-pool-cell process-get-pid)
+    released <- nc-set-release arena
+    huffman <- gh-new 0
+    when gs-new 0
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (game) -> when walk-map-new 1408 1680 32 32
+        is Err (e) -> act
+          print-line-uni e
+          1
+        end
+        is Ok (map) -> let land = glsp-land map 0
+          in when gl-new [] game map huffman 2594 [2593,2593,2593,2593,2593,2593] net-driver-mac [10,0,2,15] [10,0,2,2] [255,255,255,0]
+            is Err (e) -> act
+              print-line-uni e
+              1
+            end
+            is Ok (owner) -> let seen = gp-zeros [] game.world.capacity
+              in let closed = gp-zeros [] 32
+              in gl-serve gn-default-handler (glsp-pulse seen) (glsp-disconnect closed) owner
+  end

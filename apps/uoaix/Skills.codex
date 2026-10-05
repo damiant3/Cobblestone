@@ -1,0 +1,157 @@
+Chapter: Skills
+  cites Uoaix chapter SkillCatalog
+  cites Foreword chapter Result
+
+  SkCharacter = record { identity : Integer, profession : Integer, place : Integer,
+    alive : Boolean, hunger : Integer, jerky : Integer, parents : Integer,
+    levels : Integer, training : Integer, held : Integer, blessed : Integer, wear : Integer }
+  SkTrainer = record { instrument : Integer, place : Integer, mastery : Integer, enabled : Boolean }
+  SkWorld = record { catalog : List SkInstrument, characters : List SkCharacter,
+    trainers : List SkTrainer, rare-places : Integer, capacity : Integer, used : Integer, trainer-count : Integer }
+
+  sk-clear : Integer, Integer, Integer -> Integer
+  sk-clear (buf) (cells) (i) = if i == cells then 0
+    else let a = poke-qword buf (i * 8) 0 in sk-clear buf cells (i + 1)
+  sk-buffer : Integer -> Integer
+  sk-buffer (cells) = let buf = alloc-bytes (cells * 8) in let a = sk-clear buf cells 0 in buf
+  sk-at : Integer, Integer -> Integer
+  sk-at (buf) (id) = peek-qword buf (id * 8)
+  sk-set : Integer, Integer, Integer -> Integer
+  sk-set (buf) (id) (value) = let a = poke-qword buf (id * 8) value in 0
+  sk-characters : Integer, List SkCharacter -> List SkCharacter
+  sk-characters (left) (xs) = if left == 0 then xs else sk-characters (left - 1) (list-push xs (SkCharacter { identity = 0, profession = 0, place = 0, alive = False,
+      hunger = 0, jerky = 0, parents = sk-buffer 15, levels = sk-buffer 33,
+      training = sk-buffer 33, held = sk-buffer 33, blessed = sk-buffer 33, wear = sk-buffer 33 }))
+  sk-trainers : Integer, List SkTrainer -> List SkTrainer
+  sk-trainers (left) (xs) = if left == 0 then xs else sk-trainers (left - 1) (list-push xs (SkTrainer { instrument = 0, place = 0, mastery = 0, enabled = False }))
+  sk-new : Integer -> Result SkWorld Text
+  sk-new (capacity) = if capacity < 1 | capacity > 4096 then Err "skills capacity outside 1..4096"
+    else let rare = sk-buffer 33
+    in let place = sk-set rare 26 9
+    in Ok (SkWorld { catalog = sk-catalog 0, characters = sk-characters capacity [],
+      trainers = sk-trainers 128 [], rare-places = rare, capacity = capacity, used = 0, trainer-count = 0 })
+  sk-valid : SkWorld, Integer -> Boolean
+  sk-valid (w) (id) = id > 0 & id <= w.used
+  sk-kind : Integer -> Boolean
+  sk-kind (kind) = kind >= 1 & kind <= 32
+  sk-person : SkWorld, Integer -> SkCharacter
+  sk-person (w) (id) = list-at w.characters (id - 1)
+  sk-find : SkWorld, Integer, Integer -> Integer
+  sk-find (w) (identity) (i) = if i == w.used then 0
+    else if (list-at w.characters i).identity == identity then i + 1 else sk-find w identity (i + 1)
+  sk-admit : SkWorld, Boolean, Integer, Integer, Integer -> Integer
+  sk-admit (w) (verified-new) (identity) (profession) (place) =
+    if not verified-new | identity <= 0 | place <= 0 | sk-starter profession == 0 | w.used == w.capacity then -1
+    else if sk-find w identity 0 /= 0 then -1
+    else let p = list-at w.characters w.used
+    in let tool = sk-starter profession
+    in let a = __record-set p "identity" identity
+    in let b = __record-set p "profession" profession
+    in let c = __record-set p "place" place
+    in let d = __record-set p "alive" True
+    in let e = __record-set p "jerky" 1
+    in let f = sk-set p.parents profession 200
+    in let g = sk-set p.held tool 1
+    in let h = sk-set p.blessed tool 1
+    in let j = sk-set p.wear tool 1
+    in let id = w.used + 1
+    in let k = __record-set w "used" id in id
+
+  sk-effective : SkWorld, Integer, Integer -> Integer
+  sk-effective (w) (id) (kind) = if not (sk-valid w id) | not (sk-kind kind) then -1
+    else let p = sk-person w id
+    in let parent = sk-at p.parents (list-at w.catalog (kind - 1)).parent
+    in let level = sk-at p.levels kind
+    in if level < parent then level else parent
+  sk-ceiling : SkCharacter, Integer -> Integer
+  sk-ceiling (p) (kind) = if sk-at p.training kind == 0 then 200 else 1000
+  sk-parent-practice : SkWorld, Integer, Integer, Boolean -> Integer
+  sk-parent-practice (w) (id) (parent) (admitted) =
+    if not admitted | not (sk-valid w id) | parent < 1 | parent > 14 then -1
+    else let p = sk-person w id
+    in if not p.alive then -1 else let level = sk-at p.parents parent
+    in if level == 1000 then 0 else sk-set p.parents parent (level + 1)
+  sk-practice : SkWorld, Integer, Integer, Boolean -> Integer
+  sk-practice (w) (id) (kind) (admitted) =
+    if not admitted | not (sk-valid w id) | not (sk-kind kind) then -1
+    else let p = sk-person w id
+    in let parent = sk-at p.parents (list-at w.catalog (kind - 1)).parent
+    in let level = sk-at p.levels kind
+    in if not p.alive | sk-at p.held kind == 0 | sk-at p.wear kind == 0 then -1
+    else if level >= parent | level >= sk-ceiling p kind then 0
+    else sk-set p.levels kind (level + 1)
+
+  sk-use : SkWorld, Integer, Integer, Integer, Boolean -> Integer
+  sk-use (w) (id) (kind) (job) (admitted) =
+    if not admitted | not (sk-valid w id) | not (sk-kind kind) then -1
+    else let p = sk-person w id
+    in let tool = list-at w.catalog (kind - 1)
+    in let required = if tool.tier == 1 then 0 else if tool.tier == 2 then 200 else 500
+    in if not p.alive | sk-at p.held kind == 0 | sk-at p.wear kind == 0 then -1
+    else if tool.job /= job & not (kind == 2 & job == 1) then -1
+    else if sk-at p.parents tool.parent < required then -1
+    else let practiced = sk-practice w id kind True
+    in if sk-at p.blessed kind == 1 then 0
+    else let remaining = sk-at p.wear kind - 1
+    in let worn = sk-set p.wear kind remaining
+    in let broken = if remaining == 0 then sk-set p.held kind 0 else 0
+    in 0
+  sk-receive-crafted : SkWorld, Integer, Integer, Integer, Boolean -> Integer
+  sk-receive-crafted (w) (id) (kind) (durability) (verified-transfer) =
+    if not verified-transfer | not (sk-valid w id) | not (sk-kind kind) | durability < 1 | durability > 1000000 then -1
+    else let p = sk-person w id
+    in if not p.alive | sk-at p.held kind /= 0 then -1
+    else let a = sk-set p.held kind 1
+    in let b = sk-set p.blessed kind 0
+    in sk-set p.wear kind durability
+  sk-death-items : SkCharacter, Integer -> Integer
+  sk-death-items (p) (kind) = if kind == 33 then 0
+    else let a = if sk-at p.blessed kind == 1 then 0 else
+      let b = sk-set p.held kind 0 in sk-set p.wear kind 0
+    in sk-death-items p (kind + 1)
+  sk-death : SkWorld, Integer, Boolean -> Integer
+  sk-death (w) (id) (verified-death) = if not verified-death | not (sk-valid w id) then -1
+    else let p = sk-person w id
+    in let a = __record-set p "alive" False
+    in let b = __record-set p "jerky" 0
+    in sk-death-items p 1
+  sk-revive : SkWorld, Integer, Boolean -> Integer
+  sk-revive (w) (id) (admitted) = if not admitted | not (sk-valid w id) then -1
+    else let a = __record-set (sk-person w id) "alive" True in 0
+  sk-place : SkWorld, Integer, Integer, Boolean -> Integer
+  sk-place (w) (id) (place) (admitted) = if not admitted | not (sk-valid w id) | place <= 0 then -1
+    else let a = __record-set (sk-person w id) "place" place in 0
+
+  sk-trainer-set : SkWorld, Boolean, Integer, Integer, Integer, Integer, Boolean -> Integer
+  sk-trainer-set (w) (keeper) (id) (kind) (place) (mastery) (enabled) =
+    if not keeper | not (sk-kind kind) | place <= 0 | mastery < 900 | mastery > 1000
+      | id < 0 | id > w.trainer-count | (id == 0 & w.trainer-count == 128) then -1
+    else let index = if id == 0 then w.trainer-count else id - 1
+    in let t = list-at w.trainers index
+    in let a = __record-set t "instrument" kind
+    in let b = __record-set t "place" place
+    in let c = __record-set t "mastery" mastery
+    in let d = __record-set t "enabled" enabled
+    in let e = if id == 0 then __record-set w "trainer-count" (index + 1) else w
+    in index + 1
+  sk-rare-place : SkWorld, Boolean, Integer, Integer -> Integer
+  sk-rare-place (w) (keeper) (kind) (place) = if not keeper | not (sk-kind kind) | place < 0 then -1
+    else sk-set w.rare-places kind place
+  sk-train-at : SkWorld, Integer, Integer, Integer, Integer -> Integer
+  sk-train-at (w) (student) (kind) (place) (mastery) =
+    let p = sk-person w student
+    in let rare = sk-at w.rare-places kind
+    in if not p.alive | p.place /= place | (rare /= 0 & rare /= place) | mastery < 900 then -1
+    else sk-set p.training kind 1
+  sk-train-npc : SkWorld, Integer, Integer, Boolean -> Integer
+  sk-train-npc (w) (student) (trainer) (admitted) =
+    if not admitted | not (sk-valid w student) | trainer < 1 | trainer > w.trainer-count then -1
+    else let t = list-at w.trainers (trainer - 1)
+    in if not t.enabled then -1 else sk-train-at w student t.instrument t.place t.mastery
+  sk-train-player : SkWorld, Integer, Integer, Integer, Boolean -> Integer
+  sk-train-player (w) (student) (master) (kind) (mutual-consent) =
+    if not mutual-consent | not (sk-valid w student) | not (sk-valid w master) | student == master | not (sk-kind kind) then -1
+    else let teacher = sk-person w master
+    in if not teacher.alive then -1
+    else sk-train-at w student kind teacher.place (sk-effective w master kind)
+

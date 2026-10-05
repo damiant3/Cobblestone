@@ -1,0 +1,116 @@
+Chapter: ShardTxProof
+  cites Uoaix chapter ShardTx
+  cites Net chapter NetIO
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Foreword chapter Result
+
+  txp-check : Text, Boolean -> [Console] Nothing
+  txp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  txp-session : Integer -> TcpTransportState
+  txp-session (port) =
+    let s = net-session-new [2,0,0,0,0,1] [10,0,2,15] [10,0,2,2] port 50000 [10,0,2,2] 1000
+    in transport-new-with-cap (set-conn s (tcp-set-state s.conn TcpEstablished)) 4096
+
+  txp-bytes : Integer, Integer, List Integer -> List Integer
+  txp-bytes (i) (count) (out) = if i >= count then out
+    else txp-bytes (i + 1) count (list-push out (int-mod i 251))
+
+  txp-frame-valid : List Integer, Integer, Integer -> Boolean
+  txp-frame-valid (frame) (offset) (i) = if i >= list-length frame - 54 then True
+    else list-at frame (54 + i) == int-mod (offset + i) 251 & txp-frame-valid frame offset (i + 1)
+
+  txp-fill : ShardTx, TcpTransportState, Integer -> Result TcpTransportState Text
+  txp-fill (q) (t) (left) = if left == 0 then Ok t
+    else when stx-step q t
+      is Err (e) -> Err e
+      is Ok (step) ->
+        if step.sent /= net-mss | step.complete then Err "fill segment size"
+        else let frame = list-at step.transport.session.outbox 0
+        in if list-length frame /= net-mss + 54 | not (txp-frame-valid frame (q.offset - step.sent) 0) then Err "fill payload changed"
+        else txp-fill q (transport-set-session step.transport (set-outbox step.transport.session [])) (left - 1)
+
+  txp-resume : ShardTx, TcpTransportState -> [Console] Nothing
+  txp-resume (q) (t) =
+    let ack = tcp-segment-of 50000 2593 0 t.session.conn.send-next tcp-flag-ack 8192 []
+    in let fed = net-receive-segment t.session ack
+    in when stx-step q (transport-set-session t fed.session)
+      is Err (e) -> print-line-uni ("FAIL resume " & e)
+      is Ok (step) ->
+        let frame = list-at step.transport.session.outbox 0
+        in let before = q.offset
+        in let unflushed = when stx-step q step.transport is Err (e) -> True is Ok (x) -> False
+        in let clear = transport-set-session step.transport (set-outbox step.transport.session [])
+        in let idle = when stx-step q clear is Err (e) -> False is Ok (x) -> x.complete & x.sent == 0
+        in let reused = stx-enqueue q [99,100]
+        in act
+          txp-check "ACK resumes exact unsent suffix" (step.complete & step.sent == 12003 - net-mss * net-rexmit-capacity & list-length frame == step.sent + 54 & txp-frame-valid frame (12003 - step.sent) 0)
+          txp-check "unflushed output refuses without progress" (unflushed & before == 12003)
+          txp-check "completed transmit is idle" idle
+          txp-check "buffer reuse preserves TCP retransmit bytes" (q.used == 2 & peek-byte q.buffer 0 == 99 & txp-frame-valid frame (12003 - step.sent) 0)
+          let closed = transport-set-session clear (set-conn clear.session (tcp-set-state clear.session.conn TcpClosed))
+          in let refused = when stx-step q closed is Err (e) -> True is Ok (x) -> False
+          in act
+            txp-check "closed connection preserves pending bytes" (refused & q.offset == 0 & q.used == 2)
+            let damaged = __record-set q "offset" 3
+            in let invalid = when stx-step q clear is Err (e) -> True is Ok (x) -> False
+            in txp-check "invalid cursor refuses" invalid
+          end
+        end
+
+  txp-blocked : ShardTx, TcpTransportState -> [Console] Nothing
+  txp-blocked (q) (t) =
+    let before = q.offset
+    in let blocked = when stx-step q t is Err (e) -> False is Ok (x) -> x.sent == 0 & not x.complete
+    in act
+      txp-check "full TCP queue yields without advancing" (blocked & q.offset == before & net-rexmit-full t.session)
+      when stx-new 8
+        is Err (e) -> print-line-uni ("FAIL other queue " & e)
+        is Ok (other) ->
+          let queued = stx-enqueue other [9]
+          in let independent = when stx-step other (txp-session 2594) is Err (e) -> False is Ok (x) -> x.sent == 1 & x.complete
+          in act
+            txp-check "other connection progresses while first waits" (independent & q.offset == before)
+            txp-resume q t
+          end
+    end
+
+  txp-run : ShardTx -> [Console] Nothing
+  txp-run (q) =
+    let bad = when stx-enqueue q [256] is Err (e) -> True is Ok (n) -> False
+    in let mark = __heap-save
+    in let bytes = txp-bytes 0 12003 (__list-with-capacity 12003)
+    in let queued = stx-enqueue q bytes
+    in let reclaimed = __heap-restore mark
+    in let overwritten = txp-bytes 0 12003 (__list-with-capacity 12003)
+    in let changed = list-set-at overwritten 0 77
+    in let busy = when stx-enqueue q [9] is Err (e) -> True is Ok (n) -> False
+    in act
+      txp-check "invalid byte refuses before enqueue" bad
+      txp-check "queue owns bytes after caller scratch reuse" (q.used == 12003 & q.offset == 0 & peek-byte q.buffer 0 == 0 & peek-byte q.buffer 12002 == int-mod 12002 251)
+      txp-check "busy queue refuses replacement" (busy & q.used == 12003 & peek-byte q.buffer 0 == 0)
+      when txp-fill q (txp-session 2593) net-rexmit-capacity
+        is Err (e) -> print-line-uni ("FAIL fill " & e)
+        is Ok (t) -> act
+          txp-check "each turn emits one intact MSS" (q.offset == net-mss * net-rexmit-capacity & list-length t.session.rexmit-queue == net-rexmit-capacity)
+          txp-blocked q t
+        end
+    end
+
+  opening : [Console] Nothing =
+    let small = when stx-new 0 is Err (e) -> True is Ok (q) -> False
+    in let large = when stx-new (stx-max-bytes + 1) is Err (e) -> True is Ok (q) -> False
+    in let oversized = when stx-new 1
+      is Err (e) -> False
+      is Ok (q) -> when stx-enqueue q [0,1] is Err (e) -> q.used == 0 & q.offset == 0 is Ok (n) -> False
+    in act
+      txp-check "queue capacity bounds" (small & large)
+      txp-check "oversized response refuses without mutation" oversized
+      when stx-new 12003
+        is Err (e) -> print-line-uni ("FAIL queue " & e)
+        is Ok (q) -> txp-run q
+    end
+
+Page 1

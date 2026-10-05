@@ -1,0 +1,82 @@
+Chapter: GameFramingProof
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameOpcode
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter ShardServer
+  cites Uoaix chapter LoginWire
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter Result
+
+  gfp-check : Text, Boolean -> [Console] Nothing
+  gfp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gfp-seed : UoLoginWire, Integer -> Integer
+  gfp-seed (wire) (i) = if i == 4 then 0
+    else let next = uo-wire-byte wire (if i == 3 then 1 else 0)
+    in gfp-seed wire (i + 1)
+
+  gfp-feed : GameShard, GameInput, UoLoginWire, Integer, Integer, Integer -> Boolean
+  gfp-feed (game) (input) (wire) (op) (length) (i) = if i == length then True
+    else let dynamic = (go-default op).size == 0
+    in let byte = if i == 0 then op else if dynamic & i == 1 then length / 256
+      else if dynamic & i == 2 then int-mod length 256 else int-mod (i * 17) 256
+    in when gn-byte game input (uo-xor-byte wire byte)
+      is Err (e) -> False
+      is Ok (done) -> if done /= (i + 1 == length) then False else gfp-feed game input wire op length (i + 1)
+
+  gfp-frame : GameShard, Integer, Integer, Integer -> Boolean
+  gfp-frame (game) (mode) (op) (length) =
+    let input = gn-input op
+    in let set-mode = __record-set input "mode" mode
+    in let seeded = gfp-seed input.wire 0
+    in let wire = uo-wire-new 0
+    in let other = gfp-seed wire 0
+    in let framed = gfp-feed game input wire op length 0
+    in let reset = __record-set input "used" 0
+    in let ping = gfp-feed game input wire 115 2 0
+    in framed & ping & input.used == 2 & peek-byte input.buffer 0 == 115 & peek-byte input.buffer 1 == 17
+
+  gfp-table : GameShard, Integer -> [Console] Nothing
+  gfp-table (game) (op) = if op == list-length go-lengths then print-line-uni "PASS table end"
+    else let mark = __heap-save
+    in let spec = go-default op
+    in let length = if spec.size == 0 then spec.minimum else spec.size
+    in let ok = gfp-frame game 1 op length & gfp-frame game 2 op length
+    in act
+      print-line-uni ((if ok then "FRAME " else "FAIL FRAME ") & show op & " " & show spec.size)
+      let restored = __heap-restore mark in gfp-table game (op + 1)
+    end
+
+  gfp-skip : GameShard, WalkMap, Integer, Integer -> Boolean
+  gfp-skip (game) (map) (phase) (op) =
+    let input = gn-input 9
+    in let mode = __record-set input "mode" 2
+    in let set-phase = __record-set input.session "phase" phase
+    in let packet = gp-zeros (gp-start op) ((go-default op).size - 1)
+    in when gn-default-handler game input map 2593 packet
+      is Err (e) -> False
+      is Ok (reply) -> not reply.close & list-length reply.packets == 0 & input.session.phase == phase & game.active == 0
+
+  opening : [Console] Nothing = when gs-new 0
+    is Err (e) -> print-line-uni ("FAIL " & e)
+    is Ok (game) -> when walk-map-new 0 0 4 4
+      is Err (e) -> print-line-uni ("FAIL " & e)
+      is Ok (map) -> act
+        gfp-table game 0
+        gfp-check "maximum dynamic then ping" (gfp-frame game 2 12 65535)
+        gfp-check "short dynamic refused" (not (gfp-frame game 2 12 2))
+        gfp-check "delete skipped before authentication" (gfp-skip game map 0 131)
+        gfp-check "delete skipped at character list" (gfp-skip game map 1 131)
+        gfp-check "help skipped in world" (gfp-skip game map 2 155)
+        gfp-check "fixed profile cannot drift" (not (go-valid [GameOpcodeSpec { opcode = 155, size = 256, minimum = 256, maximum = 256 }]))
+        let before = __heap-save
+        in let input = gn-input 0
+        in let extent = __heap-save - before
+        in act
+          gfp-check "input fits shared construction arena" (extent <= ss-protocol-bytes)
+          gfp-check "outside client table refused" (go-header (go-default 180) == 0)
+        end
+      end
+
+Page 1

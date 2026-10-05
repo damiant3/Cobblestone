@@ -1,0 +1,63 @@
+Chapter: GameDisconnectReplay
+  cites Uoaix chapter GameNet
+
+  gdcr-input : GameShard, Integer -> GameInput
+  gdcr-input (shard) (number) = let input = gn-input number
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let serial = __record-set input.session "serial" 17
+    in let active = __record-set shard "active" 17 in input
+  gdcr-closed : Integer -> TcpTransportState
+  gdcr-closed (unused) = transport-new-with-cap (net-session-new [82,84,0,18,52,86] [10,0,2,15] [10,0,2,2] 2593 50000 [10,0,2,2] 1000) 4096
+  gdcr-flush : List Integer, Boolean, GameShard, GameInput -> [Console] Result Integer Text
+  gdcr-flush (seen) (fail) (shard) (input) = act
+    a <- list-set-at seen 0 (list-at seen 0 + 1)
+    b <- list-set-at seen 1 shard.active
+    c <- list-set-at seen 2 input.session.phase
+    d <- list-set-at seen 3 input.connection
+    print-line-uni "owner disconnect callback"
+    if fail then Err "fixture commit refused" else Ok 0
+  end
+  gdcr-check : Text, Boolean -> [Console] Integer
+  gdcr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  gdcr-run : GameShard, WalkMap -> [Console, Network.Read, Network.Write] Integer
+  gdcr-run (shard) (map) = act
+    bound <- net-driver-bind-none 0
+    input <- gdcr-input shard 41
+    seen <- [0,0,0,0]
+    transport <- gdcr-closed 0
+    mark <- __heap-save
+    ended <- gn-connection-hooks-with-disconnect gn-default-handler gn-no-pulse (gdcr-flush seen False) transport shard input map 0 2593 mark
+    a <- gdcr-check "terminal socket invokes owner once before session cleanup" (ended == 0 & list-at seen 0 == 1 & list-at seen 1 == 17 & list-at seen 2 == 2 & list-at seen 3 == 41 & shard.active == 0 & input.session.phase == 3)
+    failed-input <- gdcr-input shard 42
+    failed-seen <- [0,0,0,0]
+    failed-transport <- gdcr-closed 0
+    failed-mark <- __heap-save
+    failed <- gn-connection-hooks-with-disconnect gn-default-handler gn-no-pulse (gdcr-flush failed-seen True) failed-transport shard failed-input map 0 2593 failed-mark
+    b <- gdcr-check "owner error propagates nonzero and preserves session for fail-stop" (failed == 1 & list-at failed-seen 0 == 1 & shard.active == 17 & failed-input.session.phase == 2)
+    old-input <- gdcr-input shard 43
+    old-transport <- gdcr-closed 0
+    old-mark <- __heap-save
+    old <- gn-connection-hooks gn-default-handler gn-no-pulse old-transport shard old-input map 0 2593 old-mark
+    c <- gdcr-check "existing connection API keeps default cleanup" (old == 0 & shard.active == 0 & old-input.session.phase == 3)
+    logout-input <- gdcr-input shard 44
+    logged-out <- gs-disconnect shard logout-input.session
+    logout-seen <- [0,0,0,0]
+    logout <- gn-finish-disconnect (gdcr-flush logout-seen False) shard logout-input
+    d <- gdcr-check "protocol logout still reaches owner with closed session" (logout == 0 & list-at logout-seen 0 == 1 & list-at logout-seen 2 == 3)
+    a+b+c+d
+  end
+  opening : [Console, Network.Read, Network.Write] Integer = when gs-new 0
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (shard) -> when walk-map-new 0 0 4 4
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (map) -> gdcr-run shard map

@@ -1,0 +1,249 @@
+Chapter: EconomyProduction
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Foreword chapter Result
+
+  EpActor = record { purse : Integer, place : Integer, hunger : Integer,
+    attempts : Integer, stock : Integer, quality : Integer, cost : Integer,
+    wear : Integer, skills : Integer }
+  EpStation = record { kind : Integer, place : Integer, owner : Integer, enabled : Integer }
+  EpNode = record { resource : Integer, place : Integer, owner : Integer,
+    ground : Integer, planted : Integer, stage : Integer, ready : Integer,
+    water : Integer, tended : Integer }
+  EpTrade = record { action : Integer, hour : Integer, buyer : Integer,
+    seller : Integer, item : Integer, quantity : Integer, gross : Integer,
+    quality : Integer, durability : Integer }
+  EpWorld = record { catalog : EgCatalog, money : EmMoney,
+    actors : List EpActor, stations : List EpStation, nodes : List EpNode,
+    actor-count : Integer, station-count : Integer, node-count : Integer,
+    hour : Integer, gathered : Integer, found : Integer, crafted : Integer, consumed : Integer,
+    sales : Integer, turnover : Integer, crown-turnover : Integer,
+    trades : List EpTrade, trade-count : Integer,
+    mint-owner : Integer, mint-rate : Integer, mint-ingots : Integer }
+
+  ep-limit : Integer = 1000000000000
+  ep-stock-limit : Integer = 1000000
+  ep-trade-limit : Integer = 4096
+  ep-station-limit : Integer = 256
+  ep-node-limit : Integer = 1024
+ Labor in copper at 10 a work-day (1 silver a day, Damian 2026-10-05), sized so
+ that with materials and the quarter margin a basic sword quotes near 1 gold
+ (700 copper), a full metal suit near 10 gold, and bread and a meal within 8.
+  ep-copper-per-gold : Integer = 700
+  ep-unit : EpWorld -> Integer
+  ep-unit (w) = if list-length w.catalog.items >= 68 then ep-copper-per-gold else 1
+  ep-labor-in : EpWorld, Integer -> Integer
+  ep-labor-in (w) (item) = if list-length w.catalog.items >= 68 then ep-labor item else 0
+  ep-labor : Integer -> Integer
+  ep-labor (item) = if item == 41 then 5000 else if item == 44 then 700
+    else if item == 40 | item == 70 | item == 71 then 500 else if item == 43 then 200
+    else if item == 42 | item == 47 | item == 48 | item == 69 then 150 else if item == 46 then 70
+    else if item == 74 then 35 else if item == 72 | item == 73 then 20 else if item == 45 then 15
+    else if item == 29 | item == 30 | item == 31 | item == 32 | item == 65 | item == 66 | item == 37 | item == 49 | item == 75 then 10
+    else if item == 35 | item == 36 | item == 38 | item == 39 | item == 25 | item == 26 | item == 27 | item == 28 | item == 62 then 5
+    else if item == 34 | item == 76 | item == 50 | item == 33 then 2 else 0
+  ep-clear : Integer, Integer, Integer -> Integer
+  ep-clear (buf) (cells) (i) = if i == cells then 0
+    else let a = poke-qword buf (i * 8) 0 in ep-clear buf cells (i + 1)
+  ep-buffer : Integer -> Integer
+  ep-buffer (cells) = let buf = alloc-bytes (cells * 8)
+    in let a = ep-clear buf cells 0 in buf
+  ep-at : Integer, Integer -> Integer
+  ep-at (buf) (id) = peek-qword buf (id * 8)
+  ep-set : Integer, Integer, Integer -> Integer
+  ep-set (buf) (id) (value) = let a = poke-qword buf (id * 8) value in 0
+  ep-add : Integer, Integer, Integer -> Integer
+  ep-add (buf) (id) (value) = ep-set buf id (ep-at buf id + value)
+  ep-actors : Integer, List EpActor -> List EpActor
+  ep-actors (i) (xs) = if i == 128 then xs else
+    ep-actors (i + 1) (list-push xs (EpActor { purse = 0, place = 0, hunger = 0,
+      attempts = 0, stock = ep-buffer 129, quality = ep-buffer 129,
+      cost = ep-buffer 129, wear = ep-buffer 129, skills = ep-buffer 11 }))
+  ep-stations : Integer, List EpStation -> List EpStation
+  ep-stations (i) (xs) = if i == ep-station-limit then xs else
+    ep-stations (i + 1) (list-push xs (EpStation { kind = 0, place = 0, owner = 0, enabled = 0 }))
+  ep-nodes : Integer, List EpNode -> List EpNode
+  ep-nodes (i) (xs) = if i == ep-node-limit then xs else
+    ep-nodes (i + 1) (list-push xs (EpNode { resource = 0, place = 0, owner = 0,
+      ground = 0, planted = 0, stage = 0, ready = 0, water = 0, tended = 0 }))
+  ep-trades : Integer, List EpTrade -> List EpTrade
+  ep-trades (i) (xs) = if i == ep-trade-limit then xs else
+    ep-trades (i + 1) (list-push xs (EpTrade { action = 0, hour = 0, buyer = 0,
+      seller = 0, item = 0, quantity = 0, gross = 0, quality = 0, durability = 0 }))
+  ep-core-items : EgCatalog -> Boolean
+  ep-core-items (c) = if list-length c.items < 62 then False
+    else (list-at c.items 3).name == "water" & (list-at c.items 13).name == "vegetables"
+      & (list-at c.items 15).name == "fruit" & (list-at c.items 33).name == "bread"
+      & (list-at c.items 49).name == "cooked food" & (list-at c.items 50).name == "coin"
+      & (list-at c.items 31).name == "gold ingots" & (list-at c.items 61).name == "stone hammer"
+  ep-new : EgCatalog, EmMoney -> Result EpWorld Text
+  ep-new (catalog) (money) = if eg-validate catalog /= 0 | not (ep-core-items catalog) then Err "economy catalog refused"
+    else Ok (EpWorld { catalog = catalog, money = money, actors = ep-actors 0 [],
+      stations = ep-stations 0 [], nodes = ep-nodes 0 [], actor-count = 0,
+      station-count = 0, node-count = 0, hour = money.hour,
+      gathered = ep-buffer 129, found = ep-buffer 129, crafted = ep-buffer 129, consumed = ep-buffer 129,
+      sales = ep-buffer 129, turnover = ep-buffer 8, crown-turnover = ep-buffer 8,
+      trades = ep-trades 0 [], trade-count = 0, mint-owner = 0, mint-rate = 0, mint-ingots = 0 })
+  ep-actor : EpWorld, Integer -> EpActor
+  ep-actor (w) (id) = list-at w.actors (id - 1)
+  ep-valid-actor : EpWorld, Integer -> Boolean
+  ep-valid-actor (w) (id) = id > 0 & id <= w.actor-count
+  ep-purse-used : EpWorld, Integer, Integer -> Boolean
+  ep-purse-used (w) (purse) (i) = if i == w.actor-count then False
+    else (list-at w.actors i).purse == purse | ep-purse-used w purse (i + 1)
+  ep-admit : EpWorld, Integer, Integer -> Integer
+  ep-admit (w) (purse) (place) =
+    if w.actor-count == 128 | place <= 0 | not (em-valid-purse w.money purse) then -1
+    else if purse == 1 | ep-purse-used w purse 0 then -1
+    else let id = w.actor-count + 1
+    in let p = list-at w.actors w.actor-count
+    in let a = __record-set p "purse" purse
+    in let b = __record-set p "place" place
+    in let c = __record-set w "actor-count" id
+    in id
+  ep-place : EpWorld, Integer, Integer -> Integer
+  ep-place (w) (actor) (place) = if not (ep-valid-actor w actor) | place <= 0 then -1
+    else let a = __record-set (ep-actor w actor) "place" place in 0
+  ep-station : EpWorld, Integer, Integer, Integer -> Integer
+  ep-station (w) (actor) (kind) (place) =
+    if not (ep-valid-actor w actor) | kind < 1 | kind > 12 | place <= 0 | w.station-count == ep-station-limit then -1
+    else let id = w.station-count + 1
+    in let s = list-at w.stations w.station-count
+    in let a = __record-set s "kind" kind
+    in let b = __record-set s "owner" actor
+    in let c = __record-set s "place" place
+    in let d = __record-set s "enabled" 1
+    in let e = __record-set w "station-count" id
+    in id
+
+  ep-room : EpActor, Integer, Integer -> Boolean
+  ep-room (p) (item) (quantity) = quantity >= 0 & quantity <= ep-stock-limit & ep-at p.stock item <= ep-stock-limit - quantity
+  ep-remove : EpActor, Integer, Integer -> Integer
+  ep-remove (p) (item) (quantity) =
+    if item == 0 | quantity == 0 then 0 else let stock = ep-at p.stock item
+    in let a = ep-set p.quality item (ep-at p.quality item - ep-at p.quality item * quantity / stock)
+    in let b = ep-set p.cost item (ep-at p.cost item - ep-at p.cost item * quantity / stock)
+    in let c = ep-set p.wear item (ep-at p.wear item - ep-at p.wear item * quantity / stock)
+    in ep-add p.stock item (0 - quantity)
+  ep-consume : EpWorld, EpActor, Integer, Integer -> Integer
+  ep-consume (w) (p) (item) (quantity) = if item == 0 | quantity == 0 then 0
+    else let a = ep-remove p item quantity in ep-add w.consumed item quantity
+  ep-tool : EpActor, Integer -> Boolean
+  ep-tool (p) (tool) = tool == 0 | (ep-at p.stock tool > 0 & ep-at p.wear tool > 0)
+  ep-wear : EpWorld, EpActor, Integer -> Integer
+  ep-wear (w) (p) (tool) = if tool == 0 then 0
+    else let left = ep-at p.wear tool - 1
+    in let a = if left <= (ep-at p.stock tool - 1) * 32 then ep-consume w p tool 1 else 0
+    in ep-set p.wear tool left
+  ep-practice : EpActor, Integer -> Boolean
+  ep-practice (p) (skill) =
+    let level = ep-at p.skills skill
+    in let chance = if skill == 0 then 1000 else 100 + level * 9 / 10
+    in let roll = int-mod (p.attempts * 137 + 37) 1000
+    in let a = __record-set p "attempts" (p.attempts + 1)
+    in let b = if skill > 0 & level < 1000 then ep-add p.skills skill 1 else 0
+    in roll < chance
+  ep-has : EpActor, Integer, Integer -> Boolean
+  ep-has (p) (item) (quantity) = item == 0 | ep-at p.stock item >= quantity
+  ep-input-cost : EpActor, Integer, Integer -> Integer
+  ep-input-cost (p) (item) (quantity) = if item == 0 then 0
+    else ep-at p.cost item * quantity / ep-at p.stock item
+  ep-craft : EpWorld, Integer, Integer, Integer -> Integer
+  ep-craft (w) (actor) (recipe) (station) =
+    if not (ep-valid-actor w actor) | recipe <= 0 | recipe > list-length w.catalog.recipes | station <= 0 | station > w.station-count then -1
+    else let p = ep-actor w actor
+    in let r = list-at w.catalog.recipes (recipe - 1)
+    in let s = list-at w.stations (station - 1)
+    in if s.owner /= actor | s.place /= p.place | s.enabled == 0 | s.kind /= r.station | r.station == 12 | r.item == 51 | p.attempts >= ep-limit then -1
+    else if not (ep-has p r.one r.one-count) | not (ep-has p r.two r.two-count) | not (ep-has p r.three r.three-count) | not (ep-tool p r.tool) then -1
+    else if r.tool > 0 & ((r.tool == r.one & ep-at p.stock r.one <= r.one-count) | (r.tool == r.two & ep-at p.stock r.two <= r.two-count) | (r.tool == r.three & ep-at p.stock r.three <= r.three-count)) then -1
+    else if not (ep-room p r.item r.quantity) | ep-at w.crafted r.item > ep-limit - r.quantity then -1
+    else let cost = ep-input-cost p r.one r.one-count + ep-input-cost p r.two r.two-count + ep-input-cost p r.three r.three-count + ep-labor-in w r.item
+    in if ep-at p.cost r.item > ep-limit - cost then -1
+    else let success = ep-practice p r.skill
+    in let wear = ep-wear w p r.tool
+    in if not success then -2
+    else let a = ep-consume w p r.one r.one-count
+    in let b = ep-consume w p r.two r.two-count
+    in let c = ep-consume w p r.three r.three-count
+    in let d = ep-add p.stock r.item r.quantity
+    in let e = ep-add p.cost r.item cost
+    in let f = ep-add p.quality r.item (r.quantity * (if r.skill == 0 then 1000 else 100 + ep-at p.skills r.skill * 9 / 10))
+    in let durability = ep-add p.wear r.item (r.quantity * 32)
+    in let g = ep-add w.crafted r.item r.quantity
+    in r.quantity
+
+  ep-price-gold : EpWorld, Integer, Integer -> Integer
+  ep-price-gold (w) (seller) (item) = ep-price w seller item / ep-unit w
+  ep-price : EpWorld, Integer, Integer -> Integer
+  ep-price (w) (seller) (item) =
+    if not (ep-valid-actor w seller) | not (eg-id w.catalog item) then -1
+    else let p = ep-actor w seller
+    in let stock = ep-at p.stock item
+    in if stock == 0 then -1
+    else let inputs = ep-at p.cost item / stock
+    in let scarcity = if stock >= 10 then 0 else if ep-unit w > 1 then inputs * (10 - stock) / 100 else 10 - stock
+    in let demand = if ep-at w.sales item > 100 then 100 else ep-at w.sales item
+    in let price = 1 + inputs + inputs / 4 + scarcity + (if ep-unit w > 1 then inputs * demand / 400 else demand / 4)
+    in if price > 1000000 then 1000000 else price
+  ep-buy : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  ep-buy (w) (buyer) (seller) (item) (quantity) =
+    if not (ep-valid-actor w buyer) | not (ep-valid-actor w seller) | buyer == seller | not (eg-id w.catalog item) | quantity <= 0 | quantity > ep-stock-limit | w.trade-count == ep-trade-limit then -1
+    else let b = ep-actor w buyer
+    in let s = ep-actor w seller
+    in if b.place /= s.place | not (ep-has s item quantity) | not (ep-room b item quantity) then -1
+    else let price = ep-price w seller item
+    in let gross = price * quantity
+    in let chain = (list-at w.catalog.items (item - 1)).chain
+    in if ep-at b.cost item > ep-limit - gross | ep-at w.turnover chain > ep-limit - gross | ep-at w.sales item > ep-limit - quantity then -1
+    else if not (em-can-pay w.money b.purse s.purse gross) then -1
+    else let quality = ep-at s.quality item * quantity / ep-at s.stock item
+    in let durability = ep-at s.wear item * quantity / ep-at s.stock item
+    in let a = em-pay w.money b.purse s.purse gross
+    in if a /= 0 then -1
+    else let c = ep-remove s item quantity
+    in let d = ep-add b.stock item quantity
+    in let e = ep-add b.quality item quality
+    in let f = ep-add b.cost item gross
+    in let transferred-wear = ep-add b.wear item durability
+    in let g = ep-add w.sales item quantity
+    in let h = ep-add w.turnover chain gross
+    in let crown = if (em-purse w.money b.purse).kind == 5 then ep-add w.crown-turnover chain gross else 0
+    in let trade = list-at w.trades w.trade-count
+    in let t1 = __record-set trade "action" w.money.sequence
+    in let t2 = __record-set trade "hour" w.hour
+    in let t3 = __record-set trade "buyer" b.purse
+    in let t4 = __record-set trade "seller" s.purse
+    in let t5 = __record-set trade "item" item
+    in let t6 = __record-set trade "quantity" quantity
+    in let t7 = __record-set trade "gross" gross
+    in let t8 = __record-set trade "quality" quality
+    in let t9 = __record-set trade "durability" durability
+    in let count = __record-set w "trade-count" (w.trade-count + 1)
+    in 0
+  ep-food : Integer -> Boolean
+  ep-food (item) = item == 14 | item == 16 | item == 34 | item == 50
+  ep-eat : EpWorld, Integer, Integer -> Integer
+  ep-eat (w) (actor) (item) = if not (ep-valid-actor w actor) | not (ep-food item) | not (eg-id w.catalog item) then -1
+    else let p = ep-actor w actor
+    in if ep-at p.stock item == 0 then -1
+    else let a = ep-consume w p item 1
+    in let b = __record-set p "hunger" (if p.hunger < 30 then 0 else p.hunger - 30)
+    in 0
+ 1000 quality and 32 wear per unit are an unskilled craft's full values (ep-craft).
+  ep-find : EpWorld, Integer, Integer, Integer -> Integer
+  ep-find (w) (actor) (item) (quantity) =
+    if not (ep-valid-actor w actor) | not (eg-id w.catalog item) | quantity <= 0 | quantity > ep-stock-limit then -1
+    else let p = ep-actor w actor
+    in if not (ep-room p item quantity) | ep-at w.found item > ep-limit - quantity then -1
+    else let a = ep-add p.stock item quantity
+    in let b = ep-add p.quality item (quantity * 1000)
+    in let c = ep-add p.wear item (quantity * 32)
+    in let d = ep-add w.found item quantity
+    in 0
+  ep-held : EpWorld, Integer, Integer -> Integer
+  ep-held (w) (item) (actor) = if actor == w.actor-count then 0
+    else ep-at (list-at w.actors actor).stock item + ep-held w item (actor + 1)
+  ep-census : EpWorld, Integer -> Boolean
+  ep-census (w) (item) = if item > list-length w.catalog.items then True
+    else ep-held w item 0 == ep-at w.gathered item + ep-at w.found item + ep-at w.crafted item - ep-at w.consumed item & ep-census w (item + 1)

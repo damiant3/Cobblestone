@@ -1,0 +1,81 @@
+Chapter: CompositeGrow
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameCombatCodec
+
+ Capacity grows by an integer factor. Each old slot's issued serial ceiling
+ seeds every corresponding new residue class, so an old stale serial cannot
+ become live again. Live rows move to their new modulo slot without renaming.
+
+  cu-tombstones : WorldTable, WorldTable, Integer -> Integer
+  cu-tombstones (old) (world) (i) = if i == world.capacity then 0
+    else let stamp = peek-qword old.buffer (16 + int-mod i old.capacity * 80)
+    in let ceiling = bit-and (if stamp < 0 then 0 - stamp else stamp) world-serial-mask
+    in let low = i + 1
+    in let prior = if low > ceiling then 0 else low + ((ceiling - low) / world.capacity) * world.capacity
+    in let saved = poke-qword world.buffer (16 + i * 80) (0 - prior)
+    in cu-tombstones old world (i + 1)
+  cu-rows : WorldTable, WorldTable, Integer -> Result Integer Text
+  cu-rows (old) (world) (i) = if i == old.capacity then Ok 0
+    else let serial = peek-qword old.buffer (16 + i * 80)
+    in if serial <= 0 then cu-rows old world (i + 1)
+    else let at = int-mod (bit-and serial world-serial-mask - 1) world.capacity
+    in if peek-qword world.buffer (16 + at * 80) > 0 then Err "capacity migration serial collision"
+    else let copied = ws-copy (old.buffer + 16 + i * 80) (world.buffer + 16 + at * 80) 80 0
+    in cu-rows old world (i + 1)
+  cu-links : WorldTable, Integer, Integer -> Integer
+  cu-links (world) (i) (head) = if i < 0 then poke-qword world.buffer 8 head
+    else if peek-qword world.buffer (16 + i * 80) > 0 then cu-links world (i - 1) head
+    else let linked = poke-qword world.buffer (24 + i * 80) head
+    in cu-links world (i - 1) i
+  cu-world : WorldTable, Integer -> Result WorldTable Text
+  cu-world (old) (capacity) = if capacity <= old.capacity | capacity > world-max-objects | int-mod capacity old.capacity /= 0 then Err "capacity migration ratio invalid"
+    else when world-new capacity
+      is Err (e) -> Err e
+      is Ok (world) -> let floors = cu-tombstones old world 0
+        in when cu-rows old world 0
+          is Err (e) -> Err e
+          is Ok (_) -> let count = poke-qword world.buffer 0 (world-count old)
+            in let links = cu-links world (capacity - 1) (0 - 1)
+            in if ws-active-count world 0 0 /= world-count old
+              | ws-free-count world (peek-qword world.buffer 8) 0 /= capacity - world-count old then Err "capacity migration validation failed"
+            else if world-reindex world then Ok world else Err "capacity migration index rebuild failed"
+  cu-items : GsiState, GsiState, Integer -> Result Integer Text
+  cu-items (old) (items) (i) = if i == list-length old.items then Ok 0
+    else let row = list-at old.items i
+    in if row.serial == 0 then cu-items old items (i + 1)
+    else if gsi-register items row.serial row.layer row.gump row.movable row.stackable /= 0 then Err "capacity migration item definition invalid"
+    else cu-items old items (i + 1)
+  cu-combat : GameCombat, GameCombat, Integer, Integer -> Integer
+  cu-combat (old) (combat) (scratch) (i) = if i == list-length old.actors then 0
+    else let row = list-at old.actors i
+    in let copied = if row.serial == 0 then 0
+      else let at = int-mod (bit-and row.serial world-serial-mask - 1) (list-length combat.actors)
+      in let written = cbc-write-row row scratch
+      in cbc-read-row (list-at combat.actors at) scratch
+    in cu-combat old combat scratch (i + 1)
+  cu-grow : CompositeGame, Integer -> Result CompositeGame Text
+  cu-grow (old) (capacity) = when cu-world old.checkpoint.game.world capacity
+    is Err (e) -> Err e
+    is Ok (world) -> let items = gsi-new world
+      in let tiled = __record-set items "tiles" old.items.tiles
+      in when cu-items old.items items 0
+        is Err (e) -> Err e
+        is Ok (_) ->
+          let combat = cb-state capacity old.combat.seed
+          in let rows = cu-combat old.combat combat (alloc-bytes 136) 0
+          in let draws = __record-set combat "draws" old.combat.draws
+          in let scene = __record-set combat "scene" old.combat.scene
+          in let tick = __record-set combat "tick" old.combat.tick
+          in let game = __record-set old.checkpoint.game "world" world
+          in let checkpoint = __record-set old.checkpoint.state.checkpoint "world" world
+          in when cg-context old.checkpoint old.vendor items combat
+            is Err (e) -> Err e
+            is Ok (grown) -> let m = __record-set old.monsters "combat" combat
+              in let r = __record-set old.resurrection "combat" combat
+              in let ri = __record-set old.resurrection "items" items
+              in let a = __record-set grown "monsters" old.monsters
+              in let b = __record-set grown "resurrection" old.resurrection
+              in let c = __record-set grown "decoration" old.decoration
+              in let d = __record-set grown "test-grants" old.test-grants
+              in let t = __record-set grown "timers" old.timers
+              in Ok grown

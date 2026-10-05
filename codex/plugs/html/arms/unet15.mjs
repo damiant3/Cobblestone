@@ -1,6 +1,6 @@
 // Stage 3 of docs/Designs/Active/Apps/InBrowserDiffusion.md: one SD1.5 UNet
 // step in a compiled page, codex/plugs/html/arms/UNet15Arm.codex, in headless
-// Edge: the picked checkpoint's UNet uploaded as f32, unet15-forward-with over
+// Edge: the picked checkpoint's UNet uploaded (rank 2 and up as packed f16), unet15-forward-with over
 // browser-unet-ops on codex/test/apps/sd15-unet-step's inputs, every block
 // graded as that test grades it against apps/diffusion/UNet15Reference.codex
 // (Forge's own step in f32): 64 samples within 1% of the block's rms and the
@@ -88,7 +88,7 @@ try {
   const errs = pageErrors.length ? '; page errors: ' + pageErrors.join(' | ') : '';
   const parse = t => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : null; } catch { return null; } };
 
-  ok(`the UNet binds the file's ${want} model.diffusion_model. tensors, every one uploaded as f32`, st.tensors === want && st.failed === 0, `${st.tensors} bound, ${st.failed} failed${errs}`);
+  ok(`the UNet binds the file's ${want} model.diffusion_model. tensors, every one uploaded (rank 2 and up as packed f16)`, st.tensors === want && st.failed === 0, `${st.tensors} bound, ${st.failed} failed${errs}`);
   ok('the step runs with no WebGPU error', st.done === 1 && st['err-run'] === '' && st.err === '', `error '${st['err-run'] || st.err}', ${secs} s from the click to every block read back`);
   refs.forEach((r, k) => { const g = grade(parse(st['b' + k]), r); ok(r.name, g.near === 64 && g.rmsNear, g.text); });
   const far = grade(parse(st['b' + refs.length]), refs[1]), zero = grade(parse(st['b' + (refs.length + 1)]), refs[1]);

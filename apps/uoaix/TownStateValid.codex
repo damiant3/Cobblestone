@@ -1,0 +1,190 @@
+Chapter: TownStateValid
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter TownStateFields
+
+  ts-counter : Integer -> Boolean
+  ts-counter (n) = n >= 0 & n <= 1000000000000
+
+  ts-ref : Integer, Integer -> Boolean
+  ts-ref (n) (used) = n >= 0 & n <= used
+
+  ts-range : List Integer, Integer, Integer, Integer -> Boolean
+  ts-range (xs) (i) (low) (high) =
+    if i == list-length xs then True
+    else let n = list-at xs i
+    in if n < low | n > high then False else ts-range xs (i + 1) low high
+
+  ts-person-values : TfPerson, TfWorld -> Boolean
+  ts-person-values (p) (w) =
+    p.world-serial >= 0 & p.world-serial <= 2147483647
+    & bit-and p.world-serial world-item-bit == 0
+    & p.home >= 0 & p.home <= 2147483647 & p.workplace >= 0 & p.workplace <= 2147483647 & p.place >= 0 & p.place <= 2147483647
+    & p.job >= 0 & p.job <= 4 & p.age >= 0 & p.age <= 8760000 & (p.alive == 0 | p.alive == 1)
+    & (p.job == 0 | p.age >= 6570)
+    & ts-ref p.spouse w.used & ts-ref p.parent-a w.used & ts-ref p.parent-b w.used
+    & p.spouse /= p.serial & p.parent-a /= p.serial & p.parent-b /= p.serial
+    & p.children >= 0 & p.children <= 128 & p.due >= -1 & p.due <= w.hour / 24 + 280
+    & p.death-age > 0 & p.death-age <= 8760000 & p.illness >= 0 & p.illness <= 8760000
+    & p.hunger >= 0 & p.hunger <= 100 & p.fatigue >= 0 & p.fatigue <= 100 & p.mood >= 0 & p.mood <= 100
+    & p.coin >= 0 & p.coin <= 1000000 & p.bread >= 0 & p.bread <= 1000000 & p.goods >= 0 & p.goods <= 1000000
+    & p.activity >= 0 & p.activity <= 7 & p.memory-next >= 0 & p.memory-next < 16 & p.memory-count >= 0 & p.memory-count <= 16
+    & (p.memory-count == 16 | p.memory-next == p.memory-count)
+    & ts-range p.schedule 0 0 7 & ts-range p.memories 0 0 w.sequence
+
+  ts-unused-person : TfPerson -> Boolean
+  ts-unused-person (p) =
+    p.serial == 0 & p.world-serial == 0 & p.name == "" & p.town == 0 & p.home == 0 & p.workplace == 0 & p.place == 0
+    & p.job == 0 & p.age == 0 & p.alive == 0 & p.spouse == 0 & p.parent-a == 0 & p.parent-b == 0 & p.children == 0
+    & p.due == -1 & p.death-age == 29200 & p.illness == 0 & p.hunger == 0 & p.fatigue == 0 & p.mood == 70
+    & p.coin == 0 & p.bread == 0 & p.goods == 0 & p.activity == 0 & p.memory-next == 0 & p.memory-count == 0
+    & ts-range p.schedule 0 0 7 & ts-range p.memories 0 0 0
+
+  ts-person-link : TfWorld, TfPerson -> Boolean
+  ts-person-link (w) (p) =
+    if p.spouse == 0 then True
+    else let spouse = tf-person w p.spouse
+    in p.alive == 1 & spouse.alive == 1 & spouse.spouse == p.serial & spouse.town == p.town & p.age >= 6570 & spouse.age >= 6570
+      & p.parent-a /= spouse.serial & p.parent-b /= spouse.serial & spouse.parent-a /= p.serial & spouse.parent-b /= p.serial
+      & not ((p.parent-a > 0 & (p.parent-a == spouse.parent-a | p.parent-a == spouse.parent-b)) | (p.parent-b > 0 & (p.parent-b == spouse.parent-a | p.parent-b == spouse.parent-b)))
+
+  ts-person-memory : TfPerson, Integer, Integer -> Boolean
+  ts-person-memory (p) (i) (previous) =
+    if i == p.memory-count then True
+    else let at = int-mod (p.memory-next - p.memory-count + i + 16) 16
+    in let value = list-at p.memories at
+    in value > previous & ts-person-memory p (i + 1) value
+
+  ts-people-valid : TfWorld, WorldTable, Integer, Integer, Integer -> Boolean
+  ts-people-valid (w) (world) (i) (counts) (seen) =
+    if i == 128 then True
+    else let p = list-at w.people i
+    in if list-length p.schedule /= 24 | list-length p.memories /= 16 | text-length p.name > 64 then False
+    else if i >= w.used then ts-unused-person p & ts-people-valid w world (i + 1) counts seen
+    else if p.serial /= i + 1 | p.town < 1 | p.town > w.town-count | text-length p.name == 0 | p.home == 0 | p.workplace == 0 | p.place == 0 then False
+    else if not (ts-person-values p w) then False
+    else if p.parent-a > 0 & p.parent-a == p.parent-b then False
+    else if not (ts-person-link w p) | not (ts-person-memory p 0 0) then False
+    else let binding = ts-mobile-valid world p seen
+    in let counted = if p.alive == 1 then poke-qword counts ((p.town - 1) * 8) (peek-qword counts ((p.town - 1) * 8) + 1) else 0
+    in binding & ts-people-valid w world (i + 1) counts seen
+
+  ts-mobile-valid : WorldTable, TfPerson, Integer -> Boolean
+  ts-mobile-valid (world) (p) (seen) =
+    if p.world-serial == 0 | p.alive == 0 then True
+    else let slot = world-slot world p.world-serial
+    in if slot < 0 then False
+    else if peek-qword world.buffer (24 + slot * 80) /= 1 | peek-byte seen slot /= 0 then False
+    else let marked = poke-byte seen slot 1 in True
+
+  ts-town-values : TfTown -> Boolean
+  ts-town-values (t) =
+    t.market > 0 & t.market <= 2147483647 & t.tavern > 0 & t.tavern <= 2147483647 & t.temple > 0 & t.temple <= 2147483647
+    & t.grain >= 0 & t.grain <= 1000000 & t.bread >= 0 & t.bread <= 1000000 & t.ingots >= 0 & t.ingots <= 1000000
+    & t.goods >= 0 & t.goods <= 1000000 & t.crop >= 0 & t.crop <= 64
+    & ts-counter t.harvested & ts-counter t.baked & ts-counter t.forged & ts-counter t.sold & ts-counter t.births & ts-counter t.deaths
+    & ts-counter t.marriages & ts-counter t.illnesses & ts-counter t.shortages & ts-counter t.observations & ts-counter t.adhered
+    & t.adhered <= t.observations & ts-counter t.eaten
+
+  ts-unused-town : TfTown -> Boolean
+  ts-unused-town (t) =
+    t.serial == 0 & t.name == "" & t.market == 0 & t.tavern == 0 & t.temple == 0 & t.vendor == 0 & t.population == 0
+    & t.grain == 0 & t.bread == 0 & t.ingots == 0 & t.goods == 0 & t.crop == 0
+    & t.harvested == 0 & t.baked == 0 & t.forged == 0 & t.sold == 0 & t.births == 0 & t.deaths == 0
+    & t.marriages == 0 & t.illnesses == 0 & t.shortages == 0 & t.observations == 0 & t.adhered == 0 & t.eaten == 0
+
+  ts-towns-valid : TfWorld, Integer, Integer -> Boolean
+  ts-towns-valid (w) (i) (counts) =
+    if i == 4 then True
+    else let t = list-at w.towns i
+    in if i >= w.town-count then ts-unused-town t & ts-towns-valid w (i + 1) counts
+    else if t.serial /= i + 1 | text-length t.name == 0 | text-length t.name > 64 | not (ts-town-values t) then False
+    else if t.population /= peek-qword counts (i * 8) | not (ts-ref t.vendor w.used) then False
+    else let vendor-ok = if t.vendor == 0 then True else ts-vendor-valid w t
+    in vendor-ok & ts-towns-valid w (i + 1) counts
+
+  ts-vendor-valid : TfWorld, TfTown -> Boolean
+  ts-vendor-valid (w) (t) =
+    let p = tf-person w t.vendor
+    in p.alive == 1 & p.job == 4 & p.town == t.serial & p.workplace == t.market
+
+  ts-family-dfs : TfWorld, Integer, Integer, Integer -> Boolean
+  ts-family-dfs (w) (marks) (id) (fuel) =
+    if id == 0 then True
+    else if fuel == 0 then False
+    else let mark = peek-byte marks (id - 1)
+    in if mark == 2 then True else if mark == 1 then False
+    else let entered = poke-byte marks (id - 1) 1
+    in let p = tf-person w id
+    in let valid = ts-family-dfs w marks p.parent-a (fuel - 1) & ts-family-dfs w marks p.parent-b (fuel - 1)
+    in let finished = poke-byte marks (id - 1) 2
+    in valid
+
+  ts-families : TfWorld, Integer, Integer -> Boolean
+  ts-families (w) (marks) (i) =
+    if i > w.used then True
+    else ts-family-dfs w marks i 129 & ts-families w marks (i + 1)
+
+  ts-events-valid : TfWorld, Integer -> Boolean
+  ts-events-valid (w) (i) =
+    if i == w.event-count then True
+    else let at = i * 4
+    in let kind = list-at w.events at
+    in let actor = list-at w.events (at + 1)
+    in let other = list-at w.events (at + 2)
+    in let hour = list-at w.events (at + 3)
+    in kind >= 1 & kind <= 6 & actor > 0 & actor <= w.used & ts-ref other w.used & hour >= 0 & hour <= w.hour
+      & ts-events-valid w (i + 1)
+
+  ts-personas-valid : TfWorld, TmMind, Integer -> Boolean
+  ts-personas-valid (w) (m) (i) =
+    if i == 128 then True
+    else let p = list-at m.personas i
+    in if p.npc /= 0 & (p.npc /= i + 1 | p.npc > w.used) then False
+    else if p.call-limit < 1 | p.call-limit > 8 | p.token-budget < 1 | p.token-budget > 512 | p.gift-limit < 0 | p.gift-limit > 10 then False
+    else if p.call-hour < -1 | p.call-hour > w.hour | p.calls < 0 | p.calls > p.call-limit | p.request < 0 | p.request > 1000000000 then False
+    else if p.call-hour == -1 & p.calls /= 0 then False
+    else if p.request < p.calls then False
+    else if text-length p.description > 512 | text-length p.fallback == 0 | text-length p.fallback > 128 then False
+    else if p.npc == 0 & (p.call-hour /= -1 | p.calls /= 0 | p.request /= 0 | p.description /= "") then False
+    else if p.npc > 0 & text-length p.description == 0 then False
+    else ts-personas-valid w m (i + 1)
+
+  ts-audit-valid : TfWorld, TmMind, Integer -> Boolean
+  ts-audit-valid (w) (m) (i) =
+    if i == m.audit-count then True
+    else let at = i * 6
+    in let actor = list-at m.audit at
+    in let hour = list-at m.audit (at + 1)
+    in let event = list-at m.audit (at + 2)
+    in let request = list-at m.audit (at + 3)
+    in let outcome = list-at m.audit (at + 4)
+    in let moved = list-at m.audit (at + 5)
+    in if hour < 0 | hour > w.hour | outcome < 0 | outcome > 12 | outcome == 9 | moved < 0 | moved > 10 then False
+    else if outcome /= 0 & moved /= 0 then False
+    else if outcome /= 11 & (actor < 1 | actor > w.used | event < 1 | event > 4 | request < 1 | request > 1000000000) then False
+    else ts-audit-valid w m (i + 1)
+
+  ts-state-valid : WorldCheckpoint, TfWorld, TmMind -> Boolean
+  ts-state-valid (checkpoint) (w) (m) =
+    if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects | checkpoint.tick < 0 | checkpoint.sequence < 0 then False
+    else if list-length w.people /= 128 | list-length w.towns /= 4 | list-length w.events /= 4096 | list-length m.personas /= 128 | list-length m.audit /= 6144 then False
+    else if w.used < 0 | w.used > 128 | w.town-count < 0 | w.town-count > 4 | w.hour < 0 | w.hour > 8760000 then False
+    else if w.event-count < 0 | w.event-count > 1024 | not (ts-counter w.sequence) | w.sequence < w.event-count then False
+    else if m.audit-count < 0 | m.audit-count > 1024 | not (ts-counter m.sequence) | m.sequence < m.audit-count then False
+    else if not (ts-counter m.fallbacks) | not (ts-counter m.refusals) | not (ts-counter m.accepted) then False
+    else if m.sequence /= m.accepted + m.fallbacks | m.refusals > m.fallbacks then False
+    else if not (ws-table-valid checkpoint.world) then False
+    else let mark = __heap-save
+    in let counts = alloc-bytes 32
+    in let seen = alloc-bytes checkpoint.world.capacity
+    in let families = alloc-bytes 128
+    in let z1 = ts-zero counts 32 0
+    in let z2 = ts-zero seen checkpoint.world.capacity 0
+    in let z3 = ts-zero families 128 0
+    in let people = ts-people-valid w checkpoint.world 0 counts seen
+    in let valid = if not people then False else ts-towns-valid w 0 counts & ts-families w families 1 & ts-events-valid w 0 & ts-personas-valid w m 0 & ts-audit-valid w m 0
+    in let restored = __heap-restore mark
+    in valid

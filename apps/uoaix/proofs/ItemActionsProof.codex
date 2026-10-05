@@ -1,0 +1,133 @@
+Chapter: ItemActionsProof
+  cites Uoaix chapter ItemActions
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  iap-check : Text, Boolean -> [Console] Nothing
+  iap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  iap-object : Integer, Integer, Integer -> WorldObject
+  iap-object (kind) (parent) (amount) = WorldObject { serial = 0, kind = kind,
+    x = 1420, y = 1698, z = 0, graphic = 400, hue = 0, container = parent, amount = amount, health = 30 }
+
+  iap-seed : WorldTable -> Boolean
+  iap-seed (world) =
+    let actor = world-create world (iap-object 1 0 1)
+    in let bag = world-create world (iap-object 2 1 1)
+    in let source = world-create world (iap-object 2 1073741826 10)
+    in let target = world-create world (iap-object 2 0 5)
+    in let other = world-create world (iap-object 1 0 1)
+    in let private = world-create world (iap-object 2 5 1)
+    in is-ok actor & is-ok bag & is-ok source & is-ok target & is-ok other & is-ok private
+
+  iap-request : Integer, Integer, ItemDestination -> ItemMove
+  iap-request (item) (amount) (destination) = ItemMove { actor = 1, item = item, amount = amount, destination = destination }
+
+  iap-amount : WorldTable, Integer -> Integer
+  iap-amount (world) (serial) = when world-get world serial
+    is Err (e) -> -1
+    is Ok (obj) -> obj.amount
+
+  iap-parent : WorldTable, Integer -> Integer
+  iap-parent (world) (serial) = when world-get world serial
+    is Err (e) -> -1
+    is Ok (obj) -> obj.container
+
+  iap-run : WorldTable -> [Console] Nothing
+  iap-run (world) =
+    let seeded = iap-seed world
+    in let checkpoint = WorldCheckpoint { world = world, sequence = 0, tick = 0 }
+    in let admission = ItemAdmission { movable = True, stackable = True, destination = True }
+    in let source = 1073741827
+    in let target = 1073741828
+    in let original = ws-hash world.buffer (16 + world.capacity * 80) 0 2166136261
+    in act
+      iap-check "seeded physical items" (seeded & world-count world == 6)
+      when ia-plan checkpoint 1 (iap-request source 3 (ItemGround 1421 1698 0)) admission
+        is Err (e) -> print-line-uni ("FAIL split plan " & e)
+        is Ok (action) -> act
+          iap-check "planning leaves world untouched" (original == ws-hash world.buffer (16 + world.capacity * 80) 0 2166136261)
+          when wa-prepare checkpoint action
+            is Err (e) -> print-line-uni ("FAIL split apply " & e)
+            is Ok (undo) -> act
+              iap-check "split preserves quantities and identity" (world-count world == 7 & iap-amount world source == 7 & iap-amount world 1073741831 == 3 & iap-parent world source == 1073741826 & iap-parent world 1073741831 == 0)
+              iap-check "split rolls back as one action" (wa-rollback undo & original == ws-hash world.buffer (16 + world.capacity * 80) 0 2166136261)
+            end
+        end
+      when ia-plan checkpoint 1 (iap-request source 10 (ItemStack target)) admission
+        is Err (e) -> print-line-uni ("FAIL merge plan " & e)
+        is Ok (action) -> when wa-prepare checkpoint action
+          is Err (e) -> print-line-uni ("FAIL merge apply " & e)
+          is Ok (undo) -> act
+            iap-check "full merge retires source serial" (world-count world == 5 & iap-amount world source == -1 & iap-amount world target == 15)
+            iap-check "merge rollback restores both stacks" (wa-rollback undo & iap-amount world source == 10 & iap-amount world target == 5)
+          end
+      when ia-plan checkpoint 1 (iap-request source 4 (ItemStack target)) admission
+        is Err (e) -> print-line-uni ("FAIL partial merge plan " & e)
+        is Ok (action) -> when wa-prepare checkpoint action
+          is Err (e) -> print-line-uni ("FAIL partial merge apply " & e)
+          is Ok (undo) -> act
+            iap-check "partial merge preserves both serials" (world-count world == 6 & iap-amount world source == 6 & iap-amount world target == 9)
+            iap-check "partial merge rollback" (wa-rollback undo & iap-amount world source == 10 & iap-amount world target == 5)
+          end
+      when ia-plan checkpoint 1 (iap-request target 5 (ItemContainer 1073741826 20 30)) admission
+        is Err (e) -> print-line-uni ("FAIL container plan " & e)
+        is Ok (action) -> when wa-prepare checkpoint action
+          is Err (e) -> print-line-uni ("FAIL container apply " & e)
+          is Ok (undo) -> act
+            iap-check "ground item enters owned container" (iap-parent world target == 1073741826 & world-count world == 6)
+            iap-check "container move rollback" (wa-rollback undo & iap-parent world target == 0)
+          end
+      iap-check "other mobile inventory refused" (is-err (ia-plan checkpoint 1 (iap-request 1073741830 1 (ItemGround 1420 1698 0)) admission))
+      iap-check "distant drop refused" (is-err (ia-plan checkpoint 1 (iap-request source 10 (ItemGround 1423 1698 0)) admission))
+      iap-check "container cycle refused" (is-err (ia-plan checkpoint 1 (iap-request 1073741826 1 (ItemContainer source 0 0)) admission))
+      iap-check "self stack refused" (is-err (ia-plan checkpoint 1 (iap-request source 1 (ItemStack source)) admission))
+      iap-check "bad amount and stale serial refused" (is-err (ia-plan checkpoint 1 (iap-request source 11 (ItemStack target)) admission) & is-err (ia-plan checkpoint 1 (iap-request 99 1 (ItemStack target)) admission))
+      iap-check "server mobility admission required" (is-err (ia-plan checkpoint 1 (iap-request source 10 (ItemGround 1420 1698 0)) (ItemAdmission { movable = False, stackable = True, destination = True })))
+      iap-check "nonstackable split refused" (is-err (ia-plan checkpoint 1 (iap-request source 1 (ItemGround 1420 1698 0)) (ItemAdmission { movable = True, stackable = False, destination = True })))
+      iap-check "container admission required" (is-err (ia-plan checkpoint 1 (iap-request source 10 (ItemContainer target 0 0)) (ItemAdmission { movable = True, stackable = True, destination = False })))
+      iap-check "merge destination admission required" (is-err (ia-plan checkpoint 1 (iap-request source 1 (ItemStack target)) (ItemAdmission { movable = True, stackable = True, destination = False })))
+      let changed = world-update world (WorldObject { serial = target, kind = 2, x = 1420, y = 1698, z = 0, graphic = 400, hue = 0, container = 0, amount = 65535, health = 30 })
+      in iap-check "stack overflow refused" (is-ok changed & is-err (ia-plan checkpoint 1 (iap-request source 1 (ItemStack target)) admission))
+      let changed = world-update world (WorldObject { serial = target, kind = 2, x = 1420, y = 1698, z = 0, graphic = 400, hue = 1, container = 0, amount = 5, health = 30 })
+      in iap-check "different stack attributes refused" (is-ok changed & is-err (ia-plan checkpoint 1 (iap-request source 1 (ItemStack target)) admission))
+      when world-get world 1073741826
+        is Err (e) -> print-line-uni "FAIL occupied bag"
+        is Ok (bag) ->
+          let changed = world-update world (ia-copy bag bag.serial 2 bag.container bag.x bag.y bag.z)
+          in iap-check "occupied container cannot split or merge" (is-ok changed & is-err (ia-plan checkpoint 1 (iap-request bag.serial 1 (ItemGround 1420 1698 0)) admission) & is-err (ia-plan checkpoint 1 (iap-request bag.serial 1 (ItemStack source)) admission))
+      let changed = world-update world (WorldObject { serial = 1, kind = 1, x = 1420, y = 1698, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 0 })
+      in iap-check "dead actor refused" (is-ok changed & is-err (ia-plan checkpoint 1 (iap-request source 1 (ItemGround 1420 1698 0)) admission))
+    end
+
+  iap-replay : WorldTable -> [Console] Nothing
+  iap-replay (world) =
+    let seeded = iap-seed world
+    in let checkpoint = WorldCheckpoint { world = world, sequence = 0, tick = 0 }
+    in let frame = alloc-bytes wa-max-bytes
+    in when ia-plan checkpoint 1 (iap-request 1073741827 3 (ItemGround 1421 1698 0)) (ItemAdmission { movable = True, stackable = True, destination = True })
+      is Err (e) -> print-line-uni ("FAIL replay plan " & e)
+      is Ok (action) -> when wa-encode action frame wa-max-bytes
+        is Err (e) -> print-line-uni ("FAIL replay encode " & e)
+        is Ok (n) -> when wa-replay checkpoint frame n
+          is Err (e) -> print-line-uni ("FAIL replay apply " & e)
+          is Ok (next) -> iap-check "encoded split replays as one sequence" (seeded & next.sequence == 1 & next.tick == 1 & iap-amount world 1073741827 == 7 & iap-amount world 1073741831 == 3 & world-count world == 7)
+
+  opening : [Console] Nothing = act
+    when world-new 8
+      is Err (e) -> print-line-uni "FAIL setup"
+      is Ok (world) -> iap-run world
+    when world-new 8
+      is Err (e) -> print-line-uni "FAIL replay setup"
+      is Ok (world) -> iap-replay world
+    when world-new 6
+      is Err (e) -> print-line-uni "FAIL capacity setup"
+      is Ok (world) ->
+        let seeded = iap-seed world
+        in let checkpoint = WorldCheckpoint { world = world, sequence = 0, tick = 0 }
+        in iap-check "split capacity refusal preserves source" (seeded & is-err (ia-plan checkpoint 1 (iap-request 1073741827 1 (ItemGround 1420 1698 0)) (ItemAdmission { movable = True, stackable = True, destination = True })) & iap-amount world 1073741827 == 10 & world-count world == 6)
+  end
+
+Page 1

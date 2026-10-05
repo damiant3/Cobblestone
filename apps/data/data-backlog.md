@@ -12,3 +12,5 @@ gap that is still real is never quietly dropped.
 
 | # | Capability | State of the gap |
 |---|---|---|
+| DATA-2 | **A primary key and a unique index accept a duplicate row.** Measured by reek on seed EF9466BE (2026-10-04): two inserts with the same key into a table with a primary key and a unique index both answer True, and the table holds 2 rows. UOAIX stage B (`apps/uoaix/Database.md`) depends on key uniqueness. Owner: fester, with the Codex DB backend. | open |
+| DATA-3 | **No storage backend.** `Wal.codex`, `BufferPool.codex` and `Page.codex` have no disk, block or flush path; pages and log records live only in memory (`apps/uoaix/Database.md`). Owner: fester, UOAIX stage B. | open |

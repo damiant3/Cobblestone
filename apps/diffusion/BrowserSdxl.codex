@@ -1,0 +1,157 @@
+Chapter: BrowserSdxl
+  cites Diffusion chapter BrowserClipPrompt
+  cites Diffusion chapter BrowserLoad
+  cites Diffusion chapter BrowserDpm
+
+ We say:
+
+  BrowserSdxlModel = record {
+    bs-code : Text,
+    bs-l : BcWeights,
+    bs-g : BcWeights,
+    bs-unet : BuWeights,
+    bs-vae : BvWeights,
+    bs-handles : List Integer,
+    bs-state : Integer
+  }
+
+  BrowserSdxlSettings = record {
+    bs-width : Integer,
+    bs-height : Integer,
+    bs-steps : Integer,
+    bs-seed : Integer,
+    bs-cfg : Real
+  }
+
+  BsJob = record {
+    bsj-model : BrowserSdxlModel,
+    bsj-settings : BrowserSdxlSettings,
+    bsj-context : Integer,
+    bsj-negative : Integer,
+    bsj-keys : Integer,
+    bsj-nkeys : Integer,
+    bsj-label : Integer,
+    bsj-nlabel : Integer,
+    bsj-x : Integer,
+    bsj-sig : List Real,
+    bsj-tab : List Real,
+    bsj-dpm : BdState,
+    bsj-progress : (Text, Integer, Integer -> Integer),
+    bsj-ready : (Integer -> Integer),
+    bsj-refuse : (Text -> Integer)
+  }
+
+  browser-sdxl-close : BrowserSdxlModel -> Boolean
+  browser-sdxl-close (m) =
+    if peek-32 (m.bs-state) 0 == 1 then False
+    else if peek-32 (m.bs-state) 0 == 2 then True
+    else let f = bcl-free (m.bs-handles) 0
+    in let closed = poke-32 (m.bs-state) 0 2
+    in True
+
+  bs-fail : BrowserSdxlModel, (Text -> Integer), Text -> Integer
+  bs-fail (m) (refuse) (why) = let idle = poke-32 (m.bs-state) 0 0 in refuse why
+
+  bs-job-free : BsJob -> Integer
+  bs-job-free (job) = let d = bd-close (job.bsj-dpm) in bcl-free [job.bsj-context, job.bsj-negative, job.bsj-label, job.bsj-nlabel, job.bsj-x] 0
+
+  bs-job-fail : BsJob, Text -> Integer
+  bs-job-fail (job) (why) = let f = bs-job-free job in bs-fail (job.bsj-model) (job.bsj-refuse) why
+
+ SDXL ADM is pooled G followed by six 256-wide embeddings of size/crop/target.
+
+  bs-adm : Text, Integer, Integer, Integer -> Integer
+  bs-adm (code) (pooled) (width) (height) =
+    let y = gpu-buf-alloc (2816 * 4)
+    in let times = bu-upload [real-from-int height, real-from-int width, 0.0, 0.0, real-from-int height, real-from-int width]
+    in let copied = if y == 0 | times == 0 then False else bc-copy code pooled 0 y 0 1280 >= 0
+    in let embedded = if copied then bu-run code "bk_timestep_main" 1536 [gpu-arg-buf times 0, gpu-arg-buf y (1280 * 4), gpu-arg-u32 256, gpu-arg-f32 9.210340371976184, gpu-arg-u32 1536] else False
+    in bu-free (bu-out y embedded) times
+
+  bs-decoded : BsJob, Integer, Text -> Integer
+  bs-decoded (job) (image) (result) =
+    if result /= "" | gpu-error 0 /= "" then
+      let f = gpu-buf-free image in bs-job-fail job ("SDXL GPU completion failed: " & result & " " & gpu-error 0)
+    else let progress = job.bsj-progress "decoding" 1 1
+    in let f = bs-job-free job
+    in let idle = poke-32 ((job.bsj-model).bs-state) 0 0
+    in if progress < 0 then (let dropped = gpu-buf-free image in job.bsj-refuse "SDXL generation cancelled")
+    else job.bsj-ready image
+
+  bs-decode : BsJob -> Integer
+  bs-decode (job) =
+    let m = job.bsj-model
+    in let settings = job.bsj-settings
+    in let w = settings.bs-width / 8
+    in let h = settings.bs-height / 8
+    in let progress = job.bsj-progress "decoding" 0 1
+    in if progress < 0 then bs-job-fail job "SDXL generation cancelled"
+    else let scaled = (browser-sampler-ops (m.bs-code)).lincomb (job.bsj-x) (job.bsj-x) (job.bsj-x) (job.bsj-x) (1.0 / 0.13025) 0.0 0.0 (4 * w * h)
+    in if scaled < 0 then bs-job-fail job "SDXL latent scaling failed"
+    else let image = vae-decode-with (browser-vae-ops (m.bs-code)) (m.bs-vae) (BvAct { ah = job.bsj-x, ac = 4, ahh = h, aww = w })
+    in if image.ah == 0 then bs-job-fail job "SDXL VAE decoding failed"
+    else gpu-done-then (\r -> bs-decoded job (image.ah) r)
+
+  bs-stepped : BsJob, Integer, Text -> Integer
+  bs-stepped (job) (i) (result) =
+    if result /= "" | gpu-error 0 /= "" then bs-job-fail job ("SDXL GPU step failed: " & result & " " & gpu-error 0)
+    else let progress = job.bsj-progress "sampling" (i + 1) ((job.bsj-settings).bs-steps)
+    in if progress < 0 then bs-job-fail job "SDXL generation cancelled" else bs-step job (i + 1)
+
+  bs-step : BsJob, Integer -> Integer
+  bs-step (job) (i) =
+    if i >= (job.bsj-settings).bs-steps then bs-decode job
+    else let m = job.bsj-model
+    in let settings = job.bsj-settings
+    in let w = settings.bs-width / 8
+    in let h = settings.bs-height / 8
+    in let ops = browser-unet-ops (m.bs-code) (\ctx -> if ctx == job.bsj-negative then job.bsj-nkeys else job.bsj-keys)
+    in let sops = browser-sampler-ops (m.bs-code)
+    in let bad = bd-step sops (\x sigma -> guided-with ops sops (\a b -> unet-denoise-with ops sops (m.bs-unet) (job.bsj-tab) (job.bsj-label) (job.bsj-context) h w a b) (\a b -> unet-denoise-with ops sops (m.bs-unet) (job.bsj-tab) (job.bsj-nlabel) (job.bsj-negative) h w a b) (settings.bs-cfg) (4 * w * h) x sigma) (job.bsj-dpm) (job.bsj-x) (job.bsj-sig) i (4 * w * h)
+    in if bad < 0 then bs-job-fail job "SDXL sampler step failed"
+    else gpu-done-then (\r -> bs-stepped job i r)
+
+  bs-negative : BrowserSdxlModel, BrowserSdxlSettings, Integer, Integer, Integer, Integer, (Text, Integer, Integer -> Integer), (Integer -> Integer), (Text -> Integer), ClipCond -> Integer
+  bs-negative (m) (settings) (kind) (ctx) (label) (keys) (progress) (ready) (refuse) (negative) =
+    let uctx = browser-clip-crossattn (m.bs-code) negative
+    in let ulabel = bs-adm (m.bs-code) (negative.cn-pooled) (settings.bs-width) (settings.bs-height)
+    in let freed = browser-clip-cond-free negative
+    in let n = 4 * (settings.bs-width / 8) * (settings.bs-height / 8)
+    in let x = bt-noise (settings.bs-seed) n
+    in let sig = bd-sigmas kind (settings.bs-steps)
+    in let dpm = bd-new kind (settings.bs-seed) n sig
+    in let job = BsJob { bsj-model = m, bsj-settings = settings, bsj-context = ctx, bsj-negative = uctx, bsj-keys = keys, bsj-nkeys = 77 * negative.cn-chunks, bsj-label = label, bsj-nlabel = ulabel, bsj-x = x, bsj-sig = sig, bsj-tab = unet-log-sigmas 0, bsj-dpm = dpm, bsj-progress = progress, bsj-ready = ready, bsj-refuse = refuse }
+    in if uctx == 0 | ulabel == 0 | x == 0 | (kind /= 0 & kind /= 2 & dpm.bd-buffer == 0) then bs-job-fail job "SDXL conditioning/noise allocation failed"
+    else let scaled = (browser-sampler-ops (m.bs-code)).lincomb x x x x (list-at sig 0) 0.0 0.0 n
+    in if scaled < 0 then bs-job-fail job "SDXL noise scaling failed"
+    else dpm.bd-prepare (\current total -> progress "noise" current total) (\result ->
+      if result /= "" then bs-job-fail job result
+      else let p = progress "sampling" 0 (settings.bs-steps)
+      in if p < 0 then bs-job-fail job "SDXL generation cancelled" else bs-step job 0)
+
+  bs-conditioned : BrowserSdxlModel, ClipBpe, Text, BrowserSdxlSettings, Integer, (Text, Integer, Integer -> Integer), (Integer -> Integer), (Text -> Integer), ClipCond -> Integer
+  bs-conditioned (m) (bpe) (negative) (settings) (kind) (progress) (ready) (refuse) (cond) =
+    let ctx = browser-clip-crossattn (m.bs-code) cond
+    in let label = bs-adm (m.bs-code) (cond.cn-pooled) (settings.bs-width) (settings.bs-height)
+    in let f = browser-clip-cond-free cond
+    in if ctx == 0 | label == 0 then (let dropped = bcl-free [ctx, label] 0 in bs-fail m refuse "SDXL conditioning allocation failed")
+    else browser-clip-condition-then (m.bs-code) (m.bs-l) (m.bs-g) bpe negative True (\c -> bs-negative m settings kind ctx label (77 * cond.cn-chunks) progress ready refuse c) (\why -> (let dropped = bcl-free [ctx, label] 0 in bs-fail m refuse why))
+
+  browser-sdxl-euler-then : BrowserSdxlModel, ClipBpe, Text, Text, BrowserSdxlSettings, (Text, Integer, Integer -> Integer), (Integer -> Integer), (Text -> Integer) -> Integer
+  browser-sdxl-euler-then (m) (bpe) (prompt) (negative) (settings) (progress) (ready) (refuse) =
+    browser-sdxl-sample-then m bpe prompt negative settings 0 progress ready refuse
+
+  browser-sdxl-sample-then : BrowserSdxlModel, ClipBpe, Text, Text, BrowserSdxlSettings, Integer, (Text, Integer, Integer -> Integer), (Integer -> Integer), (Text -> Integer) -> Integer
+  browser-sdxl-sample-then (m) (bpe) (prompt) (negative) (settings) (kind) (progress) (ready0) (refuse0) =
+    let mark = __heap-save
+    in let ready = \h -> let back = __heap-restore mark in ready0 h
+    in let refuse = \t -> let back = __heap-restore mark in refuse0 t
+    in if peek-32 (m.bs-state) 0 /= 0 then refuse "SDXL model is busy or closed"
+    else if kind < 0 | kind > 6 then refuse "SDXL sampler is unsupported"
+    else if clip-bpe-status bpe /= 0 then refuse "CLIP tokenizer is invalid"
+    else if settings.bs-width < 64 | settings.bs-width > 1344 | settings.bs-height < 64 | settings.bs-height > 1344 then refuse "SDXL dimensions are outside the supported range"
+    else if settings.bs-width * settings.bs-height > 1048576 | int-mod (settings.bs-width) 32 /= 0 | int-mod (settings.bs-height) 32 /= 0 | settings.bs-steps < 1 | settings.bs-steps > 50 | bit-and (bit-shru (real-to-bits (settings.bs-cfg)) 52) 2047 == 2047 | settings.bs-cfg < 0.0 | settings.bs-cfg > 30.0 then refuse "SDXL settings are outside the supported range"
+    else let busy = poke-32 (m.bs-state) 0 1
+    in let p = progress "encoding" 0 1
+    in if p < 0 then bs-fail m refuse "SDXL generation cancelled"
+    else browser-clip-condition-then (m.bs-code) (m.bs-l) (m.bs-g) bpe prompt False (\c -> bs-conditioned m bpe negative settings kind progress ready refuse c) (\why -> bs-fail m refuse why)

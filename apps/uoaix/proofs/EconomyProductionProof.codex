@@ -1,0 +1,140 @@
+Chapter: EconomyProductionProof
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Foreword chapter Result
+
+  epp-check : Text, Boolean -> [Console] Nothing
+  epp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  epp-harvest : EpWorld, Integer, Integer, Integer -> Integer
+  epp-harvest (w) (actor) (node) (tries) = if tries == 0 then -3
+    else let result = eh-harvest w actor node
+    in if result == -2 then epp-harvest w actor node (tries - 1) else result
+  epp-craft : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  epp-craft (w) (actor) (recipe) (station) (tries) = if tries == 0 then -3
+    else let result = ep-craft w actor recipe station
+    in if result == -2 then epp-craft w actor recipe station (tries - 1) else result
+  epp-hours : EpWorld, Integer -> Integer
+  epp-hours (w) (count) = if count == 0 then 0
+    else if eh-step w /= 0 then -1 else epp-hours w (count - 1)
+
+  epp-run : EpWorld -> [Console] Nothing
+  epp-run (w) = act
+    purse-one <- em-open w.money 2 1
+    purse-two <- em-open w.money 3 1
+    one <- ep-admit w purse-one 100
+    two <- ep-admit w purse-two 100
+    first <- ep-actor w one
+    second <- ep-actor w two
+    epp-check "empty admission and census" (one == 1 & two == 2 & ep-census w 1 & ep-admit w purse-one 100 == -1 & ep-admit w 1 100 == -1)
+    fixture-mint <- em-issue w.money True 10000 2
+    loan-one <- em-lend w.money 1 purse-one 1000 0 1000
+    loan-two <- em-lend w.money 1 purse-two 1000 0 1000
+    hand <- ep-station w one 1 100
+    other <- ep-station w two 1 100
+    stone <- eh-source w 1 100
+    branch <- eh-source w 2 100
+    clay <- eh-source w 3 100
+    ore <- eh-source w 5 100
+    epp-check "no tools or phantom crafting" (eh-harvest w one ore == -1 & ep-craft w one 1 hand == -1 & ep-at first.stock 25 == 0)
+    epp-check "gathered bootstrap materials" (eh-harvest w one stone == 4 & eh-harvest w one branch == 4 & eh-harvest w one clay == 4 & eh-harvest w one stone == -1)
+    epp-check "owned workplace admission" (ep-craft w one 1 other == -1 & ep-place w one 101 == 0 & ep-craft w one 1 hand == -1 & ep-place w one 100 == 0)
+    epp-check "crafted tools consume inputs" (ep-craft w one 1 hand == 1 & ep-craft w one 2 hand == 1 & ep-at first.stock 1 == 0 & ep-at first.stock 2 == 2 & ep-at first.stock 25 == 1 & ep-at first.wear 25 == 32)
+    skill-before <- ep-at first.skills 1
+    epp-check "novice harvest trains and wears tool" (epp-harvest w one ore 100 == 1 & ep-at first.skills 1 > skill-before & ep-at first.wear 25 < 32 & ep-at first.stock 5 == 1)
+    tax <- em-set-tax w.money True 1000
+    charges <- ep-at first.wear 25
+    seller-coin <- (em-purse w.money purse-one).coin
+    buyer-coin <- (em-purse w.money purse-two).coin
+    quote <- ep-price w one 25
+    epp-check "purchase transfers worn tool and real coin" (ep-buy w two one 25 1 == 0 & ep-at first.stock 25 == 0 & ep-at second.stock 25 == 1 & ep-at second.wear 25 == charges & (em-purse w.money purse-one).coin == seller-coin + quote - quote / 10 & (em-purse w.money purse-two).coin == buyer-coin - quote)
+    trade <- list-at w.trades 0
+    epp-check "purchase log links money and goods" (w.trade-count == 1 & trade.action == w.money.sequence & trade.buyer == purse-two & trade.seller == purse-one & trade.item == 25 & trade.quantity == 1 & trade.gross == quote & trade.durability == charges)
+    epp-check "empty seller and self purchase refused" (ep-buy w two one 25 1 == -1 & ep-buy w one one 26 1 == -1)
+    price-before <- ep-price w one 2
+    extra-branches <- eh-source w 2 100
+    gathered-branches <- eh-harvest w one extra-branches
+    epp-check "stock changes price" (gathered-branches == 4 & ep-price w one 2 < price-before)
+    master <- ep-set second.skills 1 1000
+    master-ore <- eh-source w 5 100
+    epp-check "master yields more than novice" (eh-harvest w two master-ore == 4 & ep-at second.quality 5 == 4000)
+    wear-last <- ep-set second.wear 25 1
+    last-ore <- eh-source w 5 100
+    epp-check "last tool charge consumes tool" (eh-harvest w two last-ore == 4 & ep-at second.stock 25 == 0 & ep-at second.wear 25 == 0 & ep-at w.consumed 25 == 1)
+    kiln <- ep-station w one 10 100
+    epp-check "bucket crafted at kiln" (epp-craft w one 6 kiln 100 == 1 & ep-at first.stock 30 == 1)
+    well <- eh-source w 4 100
+    water <- eh-harvest w one well
+    wheat <- eh-source w 13 100
+    farmer <- ep-set first.skills 5 1000
+    crop <- eh-harvest w one wheat
+    plot <- eh-ground w one 100 1
+    tree-soil <- eh-ground w one 100 2
+    epp-check "planting consumes seed and checks soil" (water == 4 & crop == 4 & eh-plant w one tree-soil 13 == -1 & eh-plant w one plot 13 == 0 & ep-at first.stock 52 == 0 & eh-plant w two plot 13 == -1)
+    epp-check "crop watered and tended" (eh-care w one plot True == 0 & eh-care w one plot False == 0 & ep-at first.stock 4 == 3)
+    half-grown <- epp-hours w 36
+    epp-check "growing crop not harvestable" (half-grown == 0 & (list-at w.nodes (plot - 1)).stage == 1 & eh-harvest w one plot == -1)
+    mature <- epp-hours w 36
+    epp-check "mature planted harvest" (mature == 0 & eh-harvest w one plot == 4 & ep-at first.stock 52 == 1 & ep-at first.stock 13 == 8)
+    neglected <- epp-hours w 72
+    epp-check "neglected regrowth fails" (neglected == 0 & (list-at w.nodes (plot - 1)).stage == 3 & eh-harvest w one plot == -1)
+    replanted <- eh-plant w one plot 13
+    epp-check "plant can be eaten" (replanted == 0 & eh-eaten w plot == 0 & (list-at w.nodes (plot - 1)).stage == 3)
+    mill <- ep-station w one 2 100
+    oven <- ep-station w one 6 100
+    cook <- ep-set first.skills 9 1000
+    epp-check "mill and bakery consume real inputs" (ep-craft w one 9 oven == -1 & ep-craft w one 9 mill == 2 & ep-craft w one 10 oven == 4 & ep-at first.stock 33 == 0 & ep-at first.stock 34 == 4 & ep-at first.stock 4 == 2)
+    hungry <- first.hunger
+    epp-check "consumption reduces stock and hunger" (ep-eat w one 34 == 0 & ep-at first.stock 34 == 3 & first.hunger == hungry - 30 & ep-eat w two 34 == -1)
+    tree <- eh-source w 15 100
+    woodcutter <- ep-set first.skills 6 1000
+    epp-check "tree fells to stump and gives sapling" (eh-harvest w one tree == 4 & (list-at w.nodes (tree - 1)).stage == 0 & ep-at first.stock 56 == 1)
+    sapling <- epp-hours w 84
+    epp-check "tree returns through sapling" (sapling == 0 & (list-at w.nodes (tree - 1)).stage == 1)
+    regrown <- epp-hours w 84
+    epp-check "tree regrows at configured time" (regrown == 0 & (list-at w.nodes (tree - 1)).stage == 2)
+    epp-check "material and coin census" (ep-census w 1 & em-balanced w.money 1)
+    frozen-trades <- w.trade-count
+    full-trades <- __record-set w "trade-count" ep-trade-limit
+    old-coin <- (em-purse w.money purse-two).coin
+    old-stock <- ep-at first.stock 34
+    epp-check "full trade log refuses coin and goods together" (ep-buy w two one 34 1 == -1 & (em-purse w.money purse-two).coin == old-coin & ep-at first.stock 34 == old-stock)
+    restored-trades <- __record-set w "trade-count" frozen-trades
+    frozen-ledger <- w.money.entry-count
+    full-ledger <- __record-set w.money "entry-count" em-rows
+    old-hour <- w.hour
+    old-stage <- (list-at w.nodes (tree - 1)).stage
+    old-hunger <- first.hunger
+    epp-check "full coin ledger refuses goods and clock" (ep-buy w two one 34 1 == -1 & ep-at first.stock 34 == old-stock & eh-step w == -1 & w.hour == old-hour & w.money.hour == old-hour & first.hunger == old-hunger & (list-at w.nodes (tree - 1)).stage == old-stage)
+    restored-ledger <- __record-set w.money "entry-count" frozen-ledger
+    before <- __heap-save
+    advanced <- epp-hours w 24
+    after <- __heap-save
+    epp-check "tick allocates no heap" (advanced == 0 & before == after)
+    fresh-stone <- eh-harvest w one stone
+    fresh-branch <- eh-harvest w one branch
+    pick-one <- ep-craft w one 1 hand
+    pick-two <- ep-craft w one 1 hand
+    used-pick <- eh-harvest w one ore
+    mixed-charges <- ep-at first.wear 25
+    mixed-quality <- ep-at first.quality 25
+    half-sale <- ep-buy w two one 25 1
+    epp-check "partial worn stack preserves quality and charges" (fresh-stone == 4 & fresh-branch == 4 & pick-one == 1 & pick-two == 1 & used-pick /= -1 & mixed-charges == 63 & half-sale == 0 & ep-at first.wear 25 + ep-at second.wear 25 == mixed-charges & ep-at first.quality 25 + ep-at second.quality 25 == mixed-quality)
+    bought-back <- ep-buy w one two 25 1
+    epp-check "merged worn stack and censuses preserved" (bought-back == 0 & ep-at first.stock 25 == 2 & ep-at first.wear 25 == 63 & ep-at first.quality 25 == mixed-quality & ep-census w 1 & em-balanced w.money 1)
+    tamper <- ep-add first.stock 40 1
+    epp-check "unlogged manufactured item detected" (not (ep-census w 1))
+  end
+
+  opening : [Console] Nothing = act
+    money <- em-new 0
+    mark <- __heap-save
+    when ep-new (eg-standard 0) money
+      is Err (error) -> print-line-uni ("FAIL " & error)
+      is Ok (world) -> act
+        built <- __heap-save
+        print-line-uni ("PRODUCTION-BYTES " & show (built - mark))
+        epp-run world
+      end
+  end

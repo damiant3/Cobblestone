@@ -1,0 +1,122 @@
+Chapter: OwnedProcessPoolProbe
+  cites Foreword chapter Console
+  cites Works chapter GopHandoff
+
+  opp-tamper : Integer = 0
+
+  opp-child : Integer -> [Concurrent] Integer
+  opp-child (cell) =
+    let pid = process-get-pid
+    in let begin = __heap-save
+    in let data = alloc-bytes 65536
+    in let fill = __memset data 165 65536
+    in let p = poke-qword cell 0 pid
+    in let h = poke-qword cell 8 begin
+    in let d = poke-qword cell 24 data
+    in act
+      yielded <- process-yield
+      let again = poke-qword cell 16 process-get-pid
+      in 37
+    end
+
+  opp-intact : Integer, Integer -> Boolean
+  opp-intact (base) (at) =
+    if at >= 4096 then True
+    else peek-byte base at == 90 & opp-intact base (at + 1)
+
+  opp-child-ok : Integer, Integer, Integer -> Boolean
+  opp-child-ok (cell) (pid) (pool) =
+    let base = peek-qword cell 8
+    in let data = peek-qword cell 24
+    in let stack = if pid > 0 & pid < 16 then peek-qword 20480 (pid * 256 + 72) else 0
+    in let lo = pool + pid * 33554432
+    in let hi = lo + 33554432 - 4096
+    in pid > 0 & pid < 16 & peek-qword cell 0 == pid & peek-qword cell 16 == pid & base >= lo & data >= base & data + 65536 <= hi & stack > data & stack <= hi
+
+  opp-fx-old : Integer -> Integer
+  opp-fx-old (slot) = 1073741824 + (slot + 1) * 33554432 - 4096
+
+  opp-spin : Integer, Integer -> Integer
+  opp-spin (cell) (fuel) =
+    if peek-qword cell 8 == 1 then 1
+    else if fuel <= 0 then 0
+    else opp-spin cell (fuel - 1)
+
+  opp-busy : Integer -> Integer
+  opp-busy (cell) =
+    let entered = poke-qword cell 0 1
+    in opp-spin cell 1000000000
+
+  opp-release : Integer -> Integer
+  opp-release (cell) =
+    let entered = peek-qword cell 0
+    in let release = poke-qword cell 8 1
+    in entered
+
+  opening : [Console, Concurrent, Capability, Device.Port] Nothing =
+    let entry = __heap-save
+    in let damage = if opp-tamper == 1 then poke-qword 126976 248 0
+      else if opp-tamper == 2 then poke-qword 126976 224 (handoff-root-lo 0)
+      else if opp-tamper == 3 then poke-qword 126976 224 (handoff-process-pool 0 + 1)
+      else if opp-tamper == 4 then poke-qword 126976 240 (handoff-root-lo 0)
+      else 0
+    in act
+    initialized <- runtime-init 0
+    let parent = process-get-pid
+    in let pool = peek-qword 127200 0
+    in let root-lo = if handoff-has-v4 0 then handoff-root-lo 0 else __heap-save
+    in let root-hi = peek-qword 4072 0
+    in let cell = alloc-bytes 32
+    in let sentinel = alloc-bytes 4096
+    in let fill = __memset sentinel 90 4096
+    in let fx-covered = handoff-has-v4 0 & opp-fx-old 0 >= entry + 1048576 & opp-fx-old 1 + 4096 <= root-hi - 1048576
+    in let fx0 = if fx-covered then let filled = __memset (opp-fx-old 0) 90 4096 in 0 else 0
+    in let fx1 = if fx-covered then let filled = __memset (opp-fx-old 1) 90 4096 in 0 else 0
+    in act
+      first <- process-spawn (\ignored -> opp-child cell)
+      waited1 <- if first > 0 then process-wait first else act (0 - 1) end
+      let ordinary = waited1 == 37 & opp-child-ok cell first pool
+      in act
+        second <- process-spawn-priority (\ignored -> opp-child cell) 2 0
+        waited2 <- if second > 0 then process-wait second else act (0 - 1) end
+        let priority = waited2 == 37 & opp-child-ok cell second pool
+        in act
+          third <- process-spawn-with-heap (\ignored -> opp-child cell) 8388608
+          waited3 <- if third > 0 then process-wait third else act (0 - 1) end
+          let custom = waited3 == 37 & opp-child-ok cell third pool
+          in let coord = alloc-bytes 16
+          in let clear = __memset coord 0 16
+          in act
+          busy <- process-spawn-priority (\ignored -> opp-busy coord) 3 0
+          release <- process-spawn-priority (\ignored -> opp-release coord) 2 0
+          wb <- if busy > 0 then process-wait busy else act (0 - 1) end
+          wr <- if release > 0 then process-wait release else act (0 - 1) end
+          let preempted = wb == 1 & wr == 1
+          in let disjoint = if handoff-has-v4 0 then handoff-process-span 0 == 536870912 & root-lo == entry & handoff-root-hi 0 == root-hi & root-hi > root-lo & (pool + handoff-process-span 0 <= root-lo | pool >= root-hi) else pool == 1073741824
+          in let retained = opp-intact sentinel 0
+          in let spoil = if opp-tamper == 10 & fx-covered then poke-byte (opp-fx-old 0) 0 165 else 0
+          in let fx-intact = if fx-covered then opp-intact (opp-fx-old 0) 0 & opp-intact (opp-fx-old 1) 0 else True
+          in act
+            port-out-byte 33 255
+            port-out-byte 161 255
+            print-line-uni ("root-lo=" & show root-lo)
+            print-line-uni ("root-hi=" & show root-hi)
+            print-line-uni ("pool=" & show pool)
+            print-line-uni ("entry-heap=" & show entry)
+            print-line-uni ("fx-covered=" & show fx-covered)
+            print-line-uni ("setup=" & show (parent == 0 & process-get-pid == 0))
+            print-line-uni ("pool-layout=" & show disjoint)
+            print-line-uni ("ordinary=" & show ordinary)
+            print-line-uni ("priority=" & show priority)
+            print-line-uni ("custom=" & show custom)
+            print-line-uni ("reused=" & show (first > 0 & first == second & first == third))
+            print-line-uni ("preempted=" & show preempted)
+            print-line-uni ("sentinel=" & show retained)
+            print-line-uni ("legacy-fx-untouched=" & show fx-intact)
+            print-line-uni "owned-pool-end"
+          end
+          end
+        end
+      end
+    end
+  end

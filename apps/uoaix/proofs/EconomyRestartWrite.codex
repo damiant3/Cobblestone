@@ -1,0 +1,64 @@
+Chapter: EconomyRestartWrite
+  cites Uoaix chapter EconomyInput
+  cites Uoaix chapter EconomyInputFixtures
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStore
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  erw-checkpoint : UoStore, EconomyCheckpoint, Integer -> [Device.Block] Result Integer Text
+  erw-checkpoint (store) (state) (buf) = when es-encode state buf es-bytes
+    is Err (e) -> act Err e end
+    is Ok (size) -> us-append store 1 state.sequence state.tick buf size
+  erw-loop : UoStore, EconomyCheckpoint, EiScenario, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  erw-loop (store) (state) (scenario) (frame) (snapshot) (i) =
+    if i == list-length scenario.entries then act Ok i end
+    else let mark = __heap-save
+    in let entry = list-at scenario.entries i
+    in when ei-encode entry frame ei-frame-bytes
+      is Err (e) -> act Err e end
+      is Ok (size) -> act
+        logged <- us-append store 2 entry.sequence entry.tick frame size
+        when logged
+          is Err (e) -> act Err e end
+          is Ok (offset) -> when ei-apply state entry
+            is Err (e) -> act Err e end
+            is Ok (result) -> act
+              checkpoint <- if entry.sequence == scenario.middle then erw-checkpoint store state snapshot else act Ok 0 end
+              when checkpoint
+                is Err (e) -> act Err e end
+                is Ok (at) -> let restored = __heap-restore mark in erw-loop store state scenario frame snapshot (i + 1)
+            end
+      end
+  erw-run : UoStore, EconomyCheckpoint, EiScenario -> [Console, Device.Block] Nothing
+  erw-run (store) (state) (scenario) = act
+    blank <- economy-store-restore store
+    print-line-uni (if is-err blank then "PASS blank recovery refused" else "FAIL blank recovery admitted")
+    snapshot <- alloc-bytes es-bytes
+    frame <- alloc-bytes ei-frame-bytes
+    saved <- erw-checkpoint store state snapshot
+    when saved
+      is Err (e) -> print-line-uni ("FAIL initial checkpoint " & e)
+      is Ok (offset) -> act
+        completed <- erw-loop store state scenario frame snapshot 0
+        when completed
+          is Err (e) -> print-line-uni ("FAIL input commit " & e)
+          is Ok (count) -> act
+            print-line-uni (if scenario.failed == 0 & count == 162 & scenario.middle == 48 & store.sequence == 162 & store.tick == 1620 & store.snapshot > 0 & store.fault == 0 then "PASS economy checkpoints and 162 inputs committed" else "FAIL commit metadata")
+            print-line-uni (if eif-valid state then "PASS live mined gold loan purchase and farm state" else "FAIL live state")
+          end
+      end
+  end
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 8192
+    when opened
+      is Err (e) -> print-line-uni ("FAIL open " & e)
+      is Ok (store) -> when eif-source 0
+        is Err (e) -> print-line-uni ("FAIL fixture " & e)
+        is Ok (simulation) -> act
+          scenario <- eif-build simulation
+          when eif-source 0
+            is Err (e) -> print-line-uni ("FAIL initial state " & e)
+            is Ok (state) -> erw-run store state scenario
+        end
+  end

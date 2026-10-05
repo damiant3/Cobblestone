@@ -72,6 +72,9 @@ Section: Tree Helpers
   tk-method (mods) (result) (name) (params) (body) =
     CstMethod CstMethodSpec { cm-attributes = [], cm-modifiers = mods, cm-result = result, cm-name = name, cm-type-params = [], cm-params = params, cm-body = Just (CstBlock body) }
 
+  tk-v3 : CstExpr, CstExpr, CstExpr -> CstExpr
+  tk-v3 (x) (y) (z) = CstObjectNew (tk-ty "UnityEngine.Vector3") [CstArgument { ca-mode = [], ca-name = "", ca-value = x }, CstArgument { ca-mode = [], ca-name = "", ca-value = y }, CstArgument { ca-mode = [], ca-name = "", ca-value = z }] []
+
   tk-strings : List Text -> CstExpr
   tk-strings (xs) = CstArrayNew (tk-ty "string") [] (list-map (\x -> CstString x) xs) True
 
@@ -130,6 +133,39 @@ Section: Hoe Swap
       ]
     ]
     in cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstSealed], ch-name = "PrismHoeSwap", ch-bases = [tk-ty "UnityEngine.MonoBehaviour"] }) members 0
+
+Section: Shovel Dig
+
+ The game's lowering op lowers nothing when it is a copy held as a
+ template, or when its object carries a `Piece` (measured 2026-10-03 in
+ `test-play.ps1 -Dig`: a copy of `digg_v3` made at placement lowers 0.45;
+ the template copy, and `digg_v3` with a `Piece` added, change 0.0;
+ `raise_v2` raises in every form). The hoe-menu piece therefore carries
+ no op: where it lands it copies the live `digg_v3` on an inactive shelf,
+ gives the copy `op`'s settings, and releases it.
+
+  unity-tool-kit-dig-emit : [Console] Nothing
+  unity-tool-kit-dig-emit =
+    let members = [
+      \u -> tk-field [CstPublic] tk-go "op" None,
+      \u -> tk-method [CstPrivate] (tk-ty "void") "Awake" [] [
+        tk-guard (tk-or (tk-d (tk-n "ZNetView") "m_forceDisableInit") (tk-not (tk-n "op"))),
+        CstVariables [] (tk-ty "TerrainOp") [CstVariable { cv-name = "source", cv-value = Just CstNull }],
+        CstForEach CstInferredType "o" (CstCall (CstMemberAccess (tk-d (tk-n "UnityEngine") "Resources") "FindObjectsOfTypeAll" [tk-ty "TerrainOp"]) []) (CstIf (tk-and (CstBinary CstEqual (tk-d (tk-d (tk-n "o") "gameObject") "name") (CstString "digg_v3")) (CstBinary CstEqual (tk-d (tk-d (tk-n "o") "transform") "parent") CstNull)) (tk-set (tk-n "source") (tk-n "o")) None),
+        CstIf (tk-n "source") (CstBlock [
+          tk-var "shelf" (CstObjectNew tk-go [] []),
+          tk-do (tk-call (tk-d (tk-n "shelf") "SetActive") [CstBoolean False]),
+          tk-var "made" (tk-get (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Instantiate") [tk-d (tk-n "source") "gameObject", tk-d (tk-n "shelf") "transform"]) "TerrainOp"),
+          tk-var "from" (tk-d (tk-get (tk-n "op") "TerrainOp") "m_settings"),
+          CstForEach CstInferredType "f" (tk-call (tk-d (CstTypeOf (tk-ty "TerrainOp.Settings")) "GetFields") []) (tk-do (tk-call (tk-d (tk-n "f") "SetValue") [tk-d (tk-n "made") "m_settings", tk-call (tk-d (tk-n "f") "GetValue") [tk-n "from"]])),
+          tk-set (tk-d (tk-d (tk-n "made") "transform") "position") (tk-d (tk-n "transform") "position"),
+          tk-do (tk-call (tk-d (tk-d (tk-n "made") "transform") "SetParent") [CstNull, CstBoolean True]),
+          tk-do (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Destroy") [tk-n "shelf"])
+        ]) None,
+        tk-do (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Destroy") [tk-n "gameObject"])
+      ]
+    ]
+    in cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstSealed], ch-name = "PrismShovelDigger", ch-bases = [tk-ty "UnityEngine.MonoBehaviour"] }) members 0
 
 Section: Tool Kit
 
@@ -222,8 +258,15 @@ Section: Tool Kit
       tk-set (tk-n "holder") (CstObjectNew tk-go [CstArgument { ca-mode = [], ca-name = "", ca-value = CstString "Prism Tool Kit Templates" }] []),
       tk-do (tk-call (tk-d (tk-n "holder") "SetActive") [CstBoolean False]),
       tk-do (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "DontDestroyOnLoad") [tk-n "holder"]),
-      tk-var "dig" (tk-call (tk-n "Terrain") [CstString "raise_v2", CstString "PrismShovelDig", CstString "Dig", CstString "Lowers the ground half a step."]),
-      tk-set (tk-d (tk-n "dig") "m_raiseDelta") (CstUnary CstNegate (tk-setting "0")),
+      tk-var "digg" (tk-call (tk-n "Find") [CstString "raise_v2"]),
+      CstForEach CstInferredType "op" (CstCall (CstMemberAccess (tk-d (tk-n "UnityEngine") "Resources") "FindObjectsOfTypeAll" [tk-ty "TerrainOp"]) []) (CstIf (tk-and (CstBinary CstEqual (tk-d (tk-d (tk-n "op") "gameObject") "name") (CstString "digg_v3")) (CstBinary CstEqual (tk-d (tk-d (tk-n "op") "transform") "parent") CstNull)) (tk-set (tk-n "digg") (tk-d (tk-n "op") "gameObject")) None),
+      tk-var "lower" (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "Instantiate") [tk-n "digg", tk-d (tk-n "holder") "transform"]),
+      tk-set (tk-d (tk-n "lower") "name") (CstString "PrismShovelDigOp"),
+      tk-set (tk-d (tk-d (tk-get (tk-n "lower") "TerrainOp") "m_settings") "m_raiseDelta") (CstUnary CstNegate (tk-setting "0")),
+      tk-do (tk-call (tk-n "Terrain") [CstString "raise_v2", CstString "PrismShovelDig", CstString "Dig", CstString "Lowers the ground half a step."]),
+      tk-var "carrier" (CstIndex (tk-n "made") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "0" }]),
+      tk-do (tk-call (tk-d (tk-d (tk-n "UnityEngine") "Object") "DestroyImmediate") [tk-get (tk-n "carrier") "TerrainOp"]),
+      tk-set (tk-d (tk-add (tk-n "carrier") "PrismShovelDigger") "op") (tk-n "lower"),
       tk-var "smooth" (tk-call (tk-n "Terrain") [CstString "mud_road_v2", CstString "PrismShovelSmooth", CstString "Smooth", CstString "Smooths the ground without laying dirt."]),
       tk-set (tk-d (tk-n "smooth") "m_paintCleared") (CstBoolean False),
       tk-var "clear" (tk-call (tk-n "Terrain") [CstString "path_v2", CstString "PrismHoeClear", CstString "Clear", CstString "Clears grass, bushes and plantings."]),
@@ -274,11 +317,79 @@ Section: Tool Kit
         tk-set (tk-d piece "m_resources") (CstArrayNew (tk-ty "Piece.Requirement") [] [tk-n "cost"] True),
         tk-set (tk-d piece "m_icon") (tk-call (tk-d (tk-d (tk-n "harvest") "m_itemData") "GetIcon") [])
       ]) None,
+      CstIf (CstBinary CstEqual (tk-d piece "m_icon") (tk-n "fallback")) (CstBlock [
+        tk-var "shot" (tk-call (tk-n "Snapshot") [tk-n "t"]),
+        CstIf (tk-n "shot") (tk-set (tk-d piece "m_icon") (tk-n "shot")) None
+      ]) None,
       tk-var "swap" (tk-add (tk-n "t") "PrismHoeSwap"),
       tk-set (tk-d (tk-n "swap") "target") name,
       tk-set (tk-d (tk-n "swap") "tilt") tilt,
       tk-do (tk-call (tk-d (tk-n "ornaments") "Add") [tk-n "t"]),
       tk-do (tk-call (tk-d (tk-n "ornamentNames") "Add") [name])
+    ]
+
+ The game has no icon for its bushes, ferns, shrubs or vines (a census of
+ loaded sprites on 2026-10-03 found 22 plant sprites, none of them), so a
+ decor planting is photographed once: an orthographic camera renders a
+ copy of the template far above the world to a 128-pixel texture. The
+ copy is made the way the game makes a placement ghost, with
+ `ZNetView.m_forceDisableInit` set, so it claims no network object. The
+ game's shaders write alpha 0, so a pixel is opaque wherever it has any
+ colour. A headless run has no graphics device and keeps the fallback icon.
+
+  unity-tool-kit-snapshot : Integer -> CstMember
+  unity-tool-kit-snapshot (unused) =
+    let ue = \name -> tk-d (tk-n "UnityEngine") name
+    in let square = CstObjectNew (tk-ty "UnityEngine.Rect") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "128" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "128" }] []
+    in let destroy = \e -> tk-do (tk-call (tk-d (ue "Object") "DestroyImmediate") [e])
+    in tk-method [CstPrivate, CstStatic] (tk-ty "UnityEngine.Sprite") "Snapshot" [tk-param tk-go "t"] [
+      CstIf (CstBinary CstEqual (tk-d (ue "SystemInfo") "graphicsDeviceType") (tk-d (tk-d (ue "Rendering") "GraphicsDeviceType") "Null")) (CstReturn (Just CstNull)) None,
+      tk-set (tk-d (tk-n "ZNetView") "m_forceDisableInit") (CstBoolean True),
+      tk-var "shot" (tk-call (tk-d (ue "Object") "Instantiate") [tk-n "t", tk-v3 (tk-float "0") (tk-float "5000") (tk-float "0"), tk-d (ue "Quaternion") "identity"]),
+      tk-set (tk-d (tk-n "ZNetView") "m_forceDisableInit") (CstBoolean False),
+      tk-var "parts" (CstCall (CstMemberAccess (tk-n "shot") "GetComponentsInChildren" [tk-ty "UnityEngine.MeshRenderer"]) []),
+      CstIf (CstBinary CstEqual (tk-d (tk-n "parts") "Length") (tk-int "0")) (CstBlock [destroy (tk-n "shot"), CstReturn (Just CstNull)]) None,
+      tk-var "box" (tk-d (CstIndex (tk-n "parts") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "0" }]) "bounds"),
+      CstForEach CstInferredType "r" (tk-n "parts") (tk-do (tk-call (tk-d (tk-n "box") "Encapsulate") [tk-d (tk-n "r") "bounds"])),
+      tk-var "size" (tk-call (tk-d (ue "Mathf") "Max") [tk-d (tk-d (tk-n "box") "extents") "x", tk-call (tk-d (ue "Mathf") "Max") [tk-d (tk-d (tk-n "box") "extents") "y", tk-d (tk-d (tk-n "box") "extents") "z"]]),
+      tk-var "eye" (CstObjectNew tk-go [CstArgument { ca-mode = [], ca-name = "", ca-value = CstString "Prism icon camera" }] []),
+      tk-var "cam" (tk-add (tk-n "eye") "UnityEngine.Camera"),
+      tk-set (tk-d (tk-n "cam") "enabled") (CstBoolean False),
+      tk-set (tk-d (tk-n "cam") "orthographic") (CstBoolean True),
+      tk-set (tk-d (tk-n "cam") "orthographicSize") (CstBinary CstMultiply (tk-n "size") (tk-float "1.1")),
+      tk-set (tk-d (tk-n "cam") "clearFlags") (tk-d (ue "CameraClearFlags") "SolidColor"),
+      tk-set (tk-d (tk-n "cam") "backgroundColor") (CstObjectNew (tk-ty "UnityEngine.Color") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0" }] []),
+      tk-set (tk-d (tk-n "cam") "nearClipPlane") (tk-float "0.01"),
+      tk-set (tk-d (tk-n "cam") "farClipPlane") (CstBinary CstMultiply (tk-n "size") (tk-float "8")),
+      tk-set (tk-d (tk-d (tk-n "eye") "transform") "position") (CstBinary CstAdd (tk-d (tk-n "box") "center") (CstBinary CstMultiply (tk-d (tk-v3 (tk-float "0") (tk-float "0.5") (tk-float "-1")) "normalized") (CstBinary CstMultiply (tk-n "size") (tk-float "4")))),
+      tk-do (tk-call (tk-d (tk-d (tk-n "eye") "transform") "LookAt") [tk-d (tk-n "box") "center"]),
+      tk-var "glow" (tk-add (tk-n "eye") "UnityEngine.Light"),
+      tk-set (tk-d (tk-n "glow") "type") (tk-d (ue "LightType") "Directional"),
+      tk-set (tk-d (tk-n "glow") "intensity") (tk-float "1"),
+      tk-var "fog" (tk-d (ue "RenderSettings") "fog"),
+      tk-set (tk-d (ue "RenderSettings") "fog") (CstBoolean False),
+      tk-var "rt" (CstObjectNew (tk-ty "UnityEngine.RenderTexture") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "128" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "128" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "24" }] []),
+      tk-set (tk-d (tk-n "cam") "targetTexture") (tk-n "rt"),
+      tk-do (tk-call (tk-d (tk-n "cam") "Render") []),
+      tk-var "was" (tk-d (ue "RenderTexture") "active"),
+      tk-set (tk-d (ue "RenderTexture") "active") (tk-n "rt"),
+      tk-var "tex" (CstObjectNew (tk-ty "UnityEngine.Texture2D") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "128" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-int "128" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-d (ue "TextureFormat") "RGBA32" }, CstArgument { ca-mode = [], ca-name = "", ca-value = CstBoolean False }] []),
+      tk-do (tk-call (tk-d (tk-n "tex") "ReadPixels") [square, tk-int "0", tk-int "0"]),
+      tk-var "px" (tk-call (tk-d (tk-n "tex") "GetPixels32") []),
+      CstFor (tk-var "i" (tk-int "0")) (Just (CstBinary CstLess (tk-n "i") (tk-d (tk-n "px") "Length"))) [CstUnary CstPostIncrement (tk-n "i")] (CstBlock [
+        tk-var "c" (CstIndex (tk-n "px") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "i" }]),
+        tk-set (tk-d (CstIndex (tk-n "px") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-n "i" }]) "a") (CstCast (tk-ty "byte") (CstConditional (CstBinary CstEqual (CstBinary CstAdd (CstBinary CstAdd (tk-d (tk-n "c") "r") (tk-d (tk-n "c") "g")) (tk-d (tk-n "c") "b")) (tk-int "0")) (tk-int "0") (tk-int "255")))
+      ]),
+      tk-do (tk-call (tk-d (tk-n "tex") "SetPixels32") [tk-n "px"]),
+      tk-do (tk-call (tk-d (tk-n "tex") "Apply") []),
+      tk-set (tk-d (ue "RenderTexture") "active") (tk-n "was"),
+      tk-set (tk-d (ue "RenderSettings") "fog") (tk-n "fog"),
+      tk-set (tk-d (tk-n "cam") "targetTexture") CstNull,
+      destroy (tk-n "eye"),
+      tk-do (tk-call (tk-d (tk-n "rt") "Release") []),
+      destroy (tk-n "rt"),
+      destroy (tk-n "shot"),
+      CstReturn (Just (tk-call (tk-d (ue "Sprite") "Create") [tk-n "tex", square, CstObjectNew (tk-ty "UnityEngine.Vector2") [CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0.5" }, CstArgument { ca-mode = [], ca-name = "", ca-value = tk-float "0.5" }] []]))
     ]
 
   unity-tool-kit-clear : Integer -> CstMember
@@ -306,6 +417,7 @@ Section: Tool Kit
     unity-tool-kit-terrain,
     unity-tool-kit-make-templates,
     unity-tool-kit-ornament,
+    unity-tool-kit-snapshot,
     unity-tool-kit-clear,
     unity-tool-kit-garden-plants
   ]
@@ -314,6 +426,7 @@ Section: Tool Kit
   unity-tool-kit-emit = act
     cst-stream-class (CstClassHead { ch-modifiers = [CstInternal, CstSealed], ch-name = "PrismToolKit", ch-bases = [tk-ty "UnityEngine.MonoBehaviour"] }) unity-tool-kit-members 0
     unity-tool-kit-swap-emit
+    unity-tool-kit-dig-emit
   end
 
   unity-tool-kit-effect : Integer -> CstMember

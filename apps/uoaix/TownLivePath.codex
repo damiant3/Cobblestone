@@ -1,0 +1,173 @@
+Chapter: TownLivePath
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter WorldSnapshot
+
+ A* movement shape and Chebyshev heuristic adapted from SphereServer X
+ CPathFinder.cpp and CCharNPCAct.cpp NPC_WalkToPoint, Apache-2.0.
+ Sphere-LICENSE.txt. The Codex port uses a bounded heap and indexed occupancy.
+
+  TlPath = record { width : Integer, height : Integer, epoch : Integer, count : Integer,
+    seen : Integer, cost : Integer, parent : Integer, z : Integer, position : Integer, heap : Integer,
+    goal-x : Integer, goal-y : Integer, goal-z : Integer, expanded : Integer }
+  tl-path-new : WalkMap -> TlPath
+  tl-path-new (map) = let cells = map.width * map.height
+    in let seen = alloc-bytes (cells * 8)
+    in let zero = wd-zero seen 0 (cells * 8)
+    in TlPath { width = map.width, height = map.height, epoch = 0, count = 0,
+      seen = seen, cost = alloc-bytes (cells * 8), parent = alloc-bytes (cells * 8),
+      z = alloc-bytes (cells * 8), position = alloc-bytes (cells * 8), heap = alloc-bytes (cells * 8),
+      goal-x = 0, goal-y = 0, goal-z = 0, expanded = 0 }
+  tl-occupied : WorldTable, Integer, Integer, Integer -> Boolean
+  tl-occupied (world) (serial) (self) (z) = if serial == 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (obj) -> (obj.serial /= self & obj.kind == 1 & obj.health > 0 & walk-abs (obj.z - z) < 16)
+        | tl-occupied world (world-tile-next world serial) self z
+  tl-door-find : WdState, Integer, Integer, Integer, Integer -> Integer
+  tl-door-find (doors) (x) (y) (z) (i) = if i == doors.count then -1
+    else if wd-field doors i 0 > x then -1
+    else if wd-field doors i 0 == x & wd-field doors i 1 == y
+      & wd-field doors i 7 == 1 & peek-byte doors.opened i == 0
+      & walk-abs (wd-field doors i 2 - z) <= 2 then i
+    else tl-door-find doors x y z (i + 1)
+  tl-door : Maybe WdState, Integer, Integer, Integer -> Integer
+  tl-door (optional) (x) (y) (z) = when optional
+    is None -> -1
+    is Just (doors) -> if not (wd-bound doors) then -1
+      else tl-door-find doors x y z (wd-lower doors x 0 doors.count)
+  tl-probe-door : WdState, WalkMap, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-probe-door (doors) (map) (x) (y) (z) (direction) (door) =
+    if not (wd-bound doors) | map.solids /= doors.solids | map.land /= doors.land
+      | map.x /= doors.window-x | map.y /= doors.window-y | map.width /= doors.width | map.height /= doors.height
+      | door < 0 | door >= doors.count then -129
+    else if peek-byte doors.opened door /= 0 | wd-field doors door 7 /= 1 then -129
+    else let closed-x = wd-field doors door 0
+    in let closed-y = wd-field doors door 1
+    in let opened-x = closed-x + wd-field doors door 9
+    in let opened-y = closed-y + wd-field doors door 10
+    in let one = walk-cell map closed-x closed-y
+    in let two = walk-cell map opened-x opened-y
+    in if one < 0 | two < 0 then -129
+    else let first = alloc-bytes doors.stride
+    in let second = alloc-bytes doors.stride
+    in let saved1 = ws-copy (map.solids + one * doors.stride) first doors.stride 0
+    in let saved2 = ws-copy (map.solids + two * doors.stride) second doors.stride 0
+    in let opened = poke-byte doors.opened door 1
+    in let rebuilt1 = wd-rebuild-cell doors closed-x closed-y
+    in let rebuilt2 = wd-rebuild-cell doors opened-x opened-y
+    in let result = if not (is-ok rebuilt1 & is-ok rebuilt2) then -129
+      else when walk-step map x y z direction is Err (_) -> -129 is Ok (height) -> height
+    in let closed = poke-byte doors.opened door 0
+    in let restored1 = ws-copy first (map.solids + one * doors.stride) doors.stride 0
+    in let restored2 = ws-copy second (map.solids + two * doors.stride) doors.stride 0
+    in result
+  tl-probe : WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-probe (world) (map) (doors) (self) (x) (y) (z) (direction) =
+    let nx = x + walk-dx direction
+    in let ny = y + walk-dy direction
+    in if walk-cell map nx ny < 0 then -129
+    else let height = when walk-step map x y z direction
+      is Ok (height) -> height
+      is Err (_) -> let door = tl-door doors nx ny z
+        in if door < 0 then -129 else when doors
+          is None -> -129
+          is Just (state) -> tl-probe-door state map x y z direction door
+    in if height < -128 then -129
+    else if tl-occupied world (world-tile-first world nx ny) self height then -129 else height
+  tl-heuristic : TlPath, Integer -> Integer
+  tl-heuristic (p) (cell) = max (walk-abs (int-mod cell p.width - p.goal-x)) (walk-abs (cell / p.width - p.goal-y))
+  tl-before : TlPath, Integer, Integer -> Boolean
+  tl-before (p) (a) (b) = let ah = tl-heuristic p a
+    in let bh = tl-heuristic p b
+    in let af = peek-qword p.cost (a * 8) + ah
+    in let bf = peek-qword p.cost (b * 8) + bh
+    in af < bf | (af == bf & (ah < bh | (ah == bh & a < b)))
+  tl-heap-set : TlPath, Integer, Integer -> Integer
+  tl-heap-set (p) (at) (cell) = let a = poke-qword p.heap (at * 8) cell
+    in let b = poke-qword p.position (cell * 8) at in 0
+  tl-up : TlPath, Integer, Integer -> Integer
+  tl-up (p) (at) (cell) = if at == 0 then tl-heap-set p at cell
+    else let parent = (at - 1) / 2
+    in let other = peek-qword p.heap (parent * 8)
+    in if not (tl-before p cell other) then tl-heap-set p at cell
+    else let moved = tl-heap-set p at other in tl-up p parent cell
+  tl-down : TlPath, Integer, Integer -> Integer
+  tl-down (p) (at) (cell) = let left = at * 2 + 1
+    in if left >= p.count then tl-heap-set p at cell
+    else let right = left + 1
+    in let child = if right < p.count & tl-before p (peek-qword p.heap (right * 8)) (peek-qword p.heap (left * 8)) then right else left
+    in let other = peek-qword p.heap (child * 8)
+    in if not (tl-before p other cell) then tl-heap-set p at cell
+    else let moved = tl-heap-set p at other in tl-down p child cell
+  tl-pop : TlPath -> Integer
+  tl-pop (p) = let first = peek-qword p.heap 0
+    in let last = peek-qword p.heap ((p.count - 1) * 8)
+    in let count = __record-set p "count" (p.count - 1)
+    in let position = poke-qword p.position (first * 8) -1
+    in let shifted = if p.count == 0 then 0 else tl-down p 0 last
+    in first
+  tl-open : TlPath, Integer, Integer, Integer, Integer -> Integer
+  tl-open (p) (cell) (cost) (direction) (z) =
+    let fresh = peek-qword p.seen (cell * 8) /= p.epoch
+    in if not fresh & peek-qword p.cost (cell * 8) <= cost then 0
+    else let at = if fresh then -1 else peek-qword p.position (cell * 8)
+    in let seen = poke-qword p.seen (cell * 8) p.epoch
+    in let distance = poke-qword p.cost (cell * 8) cost
+    in let parent = poke-qword p.parent (cell * 8) direction
+    in let height = poke-qword p.z (cell * 8) z
+    in if at >= 0 then tl-up p at cell
+    else let slot = p.count
+    in let count = __record-set p "count" (slot + 1)
+    in tl-up p slot cell
+  tl-expand : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer -> Integer
+  tl-expand (p) (world) (map) (doors) (self) (cell) (direction) = if direction == 8 then 0
+    else let x = map.x + int-mod cell p.width
+    in let y = map.y + cell / p.width
+    in let mark = __heap-save
+    in let height = tl-probe world map doors self x y (peek-qword p.z (cell * 8)) direction
+    in let restored = __heap-restore mark
+    in let neighbor = walk-cell map (x + walk-dx direction) (y + walk-dy direction)
+    in let opened = if height < -128 | neighbor < 0 then 0
+      else tl-open p neighbor (peek-qword p.cost (cell * 8) + 1) direction height
+    in tl-expand p world map doors self cell (direction + 1)
+  tl-search : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer -> Integer
+  tl-search (p) (world) (map) (doors) (self) (goal) (budget) =
+    if p.count == 0 | budget == 0 then -1
+    else let cell = tl-pop p
+    in let expanded = __record-set p "expanded" (p.expanded + 1)
+    in if cell == goal & walk-abs (peek-qword p.z (cell * 8) - p.goal-z) <= 2 then cell
+    else let neighbors = tl-expand p world map doors self cell 0
+    in tl-search p world map doors self goal (budget - 1)
+  tl-reverse-path : TlPath, Integer, Integer, Integer, Integer -> Integer
+  tl-reverse-path (p) (cell) (start) (path) (count) = if cell == start then count
+    else if count == 256 then -1
+    else let direction = peek-qword p.parent (cell * 8)
+    in let saved = poke-byte path count direction
+    in let previous = cell - walk-dx direction - walk-dy direction * p.width
+    in tl-reverse-path p previous start path (count + 1)
+  tl-flip-path : Integer, Integer, Integer -> Integer
+  tl-flip-path (path) (count) (i) = if i >= count / 2 then 0
+    else let one = peek-byte path i
+    in let two = peek-byte path (count - i - 1)
+    in let a = poke-byte path i two
+    in let b = poke-byte path (count - i - 1) one
+    in tl-flip-path path count (i + 1)
+  tl-plan : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  tl-plan (p) (world) (map) (doors) (mobile) (x) (y) (z) (path) =
+    let start = walk-cell map mobile.x mobile.y
+    in let goal = walk-cell map x y
+    in if start < 0 | goal < 0 | p.width /= map.width | p.height /= map.height | not (world-indexed world) then -1
+    else if tl-occupied world (world-tile-first world x y) mobile.serial z then -1
+    else let epoch = __record-set p "epoch" (p.epoch + 1)
+    in let cleared = if p.epoch < 1000000000 then 0 else let zero = wd-zero p.seen 0 (p.width * p.height * 8) in let reset = __record-set p "epoch" 1 in 0
+    in let count = __record-set p "count" 0
+    in let gx = __record-set p "goal-x" (x - map.x)
+    in let gy = __record-set p "goal-y" (y - map.y)
+    in let gz = __record-set p "goal-z" z
+    in let expanded = __record-set p "expanded" 0
+    in let opened = tl-open p start 0 0 mobile.z
+    in let found = tl-search p world map doors mobile.serial goal 4096
+    in let zero = wd-zero path 0 256
+    in if found < 0 then -1
+    else let length = tl-reverse-path p found start path 0
+    in if length < 0 then -1 else let ordered = tl-flip-path path length 0 in length

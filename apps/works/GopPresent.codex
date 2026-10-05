@@ -1,0 +1,99 @@
+Chapter: GopPresent
+
+  dsp-new : Integer, Integer, Integer, Integer -> Integer
+  dsp-new (screen) (w) (h) (stride) =
+    let state = alloc-zeroed 128 64
+    in let back = alloc-zeroed (stride * h * 4) 64
+    in let front = alloc-zeroed (stride * h * 4) 64
+    in let a = poke-qword state 0 screen
+    in let b = poke-qword state 8 back
+    in let c = poke-qword state 16 front
+    in let d = poke-qword state 24 w
+    in let e = poke-qword state 32 h
+    in let f = poke-qword state 40 stride
+    in state
+
+  dsp-row : Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
+  dsp-row (screen) (back) (front) (at) (limit) (first) =
+    if at >= limit then 0
+    else if at + 8 <= limit then
+      let value = peek-qword back at
+      in let changed = first | value /= peek-qword front at
+      in let saved = if changed then poke-qword front at value else 0
+      in let shown = if changed then poke-qword screen at value else 0
+      in dsp-row screen back front (at + 8) limit first
+    else
+      let value = peek-32 back at
+      in let changed = first | value /= peek-32 front at
+      in let saved = if changed then poke-32 front at value else 0
+      in if changed then poke-32 screen at value else 0
+
+  dsp-hold : Integer, Integer, Integer, Integer, Integer -> Integer
+  dsp-hold (state) (x) (y) (w) (h) =
+    if state == 0 then 0
+    else let a = poke-qword state 72 x
+    in let b = poke-qword state 80 y
+    in let c = poke-qword state 88 w
+    in poke-qword state 96 h
+
+  dsp-clamp : Integer, Integer -> Integer
+  dsp-clamp (v) (limit) = if v < 0 then 0 else if v > limit then limit else v
+
+  dsp-restore-row : Integer, Integer, Integer, Integer -> Integer
+  dsp-restore-row (back) (front) (at) (limit) =
+    if at >= limit then 0
+    else if at + 8 <= limit then
+      let copied = poke-qword back at (peek-qword front at)
+      in dsp-restore-row back front (at + 8) limit
+    else poke-32 back at (peek-32 front at)
+
+  dsp-restore-rows : Integer, Integer, Integer -> Integer
+  dsp-restore-rows (state) (y) (limit) =
+    if y >= limit then 0
+    else let w = peek-qword state 24
+    in let lo = dsp-clamp (peek-qword state 72) w
+    in let hi = dsp-clamp (peek-qword state 72 + peek-qword state 88) w
+    in let at = y * peek-qword state 40 * 4
+    in let copied = dsp-restore-row (peek-qword state 8) (peek-qword state 16) (at + lo * 4) (at + hi * 4)
+    in dsp-restore-rows state (y + 1) limit
+
+  dsp-rollback : Integer -> Integer
+  dsp-rollback (state) =
+    if state == 0 then 0
+    else let h = peek-qword state 32
+    in dsp-restore-rows state (dsp-clamp (peek-qword state 80) h) (dsp-clamp (peek-qword state 80 + peek-qword state 96) h)
+
+  dsp-rows : Integer, Integer, Boolean -> Integer
+  dsp-rows (state) (y) (first) =
+    if y >= peek-qword state 32 then 0
+    else let screen = peek-qword state 0
+    in let back = peek-qword state 8
+    in let front = peek-qword state 16
+    in let w = peek-qword state 24
+    in let at = y * peek-qword state 40 * 4
+    in let held = peek-qword state 88 > 0 & y >= peek-qword state 80 & y < peek-qword state 80 + peek-qword state 96
+    in let lo = if held then dsp-clamp (peek-qword state 72) w else w
+    in let hi = if held then dsp-clamp (peek-qword state 72 + peek-qword state 88) w else w
+    in let left = dsp-row screen back front at (at + lo * 4) first
+    in let right = dsp-row screen back front (at + hi * 4) (at + w * 4) first
+    in dsp-rows state (y + 1) first
+
+  dsp-publish : Integer -> Integer
+  dsp-publish (state) =
+    if state == 0 then 0
+    else let rows = dsp-rows state 0 (peek-qword state 56 == 0)
+    in let clean = poke-qword state 64 0
+    in poke-qword state 56 1
+
+  dsp-request : Integer -> Integer
+  dsp-request (state) = if state == 0 then 0 else poke-qword state 64 1
+
+  dsp-due : Integer, Integer, Integer -> Integer
+  dsp-due (state) (now) (rate) =
+    if state == 0 then 0
+    else if peek-qword state 56 /= 0 & peek-qword state 64 == 0 then 0
+    else if peek-qword state 56 /= 0 & rate > 0 & bit-and (now - peek-qword state 48) 4294967295 < rate / 60 then 0
+    else let shown = dsp-publish state
+    in poke-qword state 48 now
+
+Page 1

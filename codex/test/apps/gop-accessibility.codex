@@ -1,0 +1,92 @@
+Chapter: GopAccessibilityArm
+  cites Works chapter GopAccessibility
+  cites UI chapter SettingsPanel
+  cites UI chapter Layout
+  cites UI chapter Theme
+  cites Foreword chapter Console
+
+  gat-yes : Boolean -> Text
+  gat-yes (v) = if v then "yes" else "NO"
+
+  gat-refused : GaxTargets, Text -> Boolean
+  gat-refused (r) (reason) = when r is GaxRefused (why) -> why == reason is otherwise -> False
+
+  gat-none : Maybe GaxAnnouncement -> Boolean
+  gat-none (r) = when r is None -> True is otherwise -> False
+
+  gat-message : Maybe GaxAnnouncement, Text -> Boolean
+  gat-message (r) (text) = when r
+    is Just (a) -> a.ga-text == text & a.ga-truncated == False & (when a.ga-live is LivePolite -> True is otherwise -> False)
+    is None -> False
+
+  gat-many : Integer, List WidgetNode -> List WidgetNode
+  gat-many (n) (acc) = if n <= 0 then acc else gat-many (n - 1) (list-push acc (widget-button ("button-" & show n) "Go"))
+
+  gat-long : Integer, Text -> Text
+  gat-long (n) (acc) = if n <= 0 then acc else gat-long (n - 1) (acc & "日")
+
+  gat-cycle : FocusRing, Integer -> FocusRing
+  gat-cycle (fr) (n) = if n <= 0 then fr else gat-cycle (focus-next fr) (n - 1)
+
+  gat-overwrite : Integer, Integer -> Integer
+  gat-overwrite (addr) (i) = if i >= 1048576 then 0 else let put = poke-qword addr i 0 in gat-overwrite addr (i + 8)
+
+  opening : [Console] Nothing =
+    let root = widget-panel "root" DirColumn 4 [
+      widget-button "first" "Go",
+      sp-labeled-row "check" "Borders" 80 (widget-checkbox "check" True),
+      sp-labeled-row "name" "Filename" 80 (widget-input "name" "private value" 0),
+      widget-gauge "zoom" 50 100,
+      widget-add-flag (widget-panel "disabled" DirColumn 0 [widget-button "not-focusable" "Disabled child"]) flag-disabled,
+      widget-panel "hidden" DirColumn 0 [widget-button "hidden-child" "Hidden child"],
+      widget-button "last" "Finish"]
+    in let zoom = a11y-focus-order (a11y-slider "Zoom" 50 0 100) 1
+    in let bindings = [GaxBinding { gb-id = "zoom", gb-info = zoom }, GaxBinding { gb-id = "hidden", gb-info = a11y-hidden a11y-empty }]
+    in let laid = widget-layout root theme-terminal (layout-rect 0 0 500 500)
+    in when gax-collect laid bindings
+      is GaxRefused (why) -> print-line-uni why
+      is GaxReady (targets) ->
+        let ids = gax-ids targets 0 []
+        in let ordered = ids == ["zoom","first","check","name","last"]
+        in let check = (list-at targets 2).gt-info
+        in let input = (list-at targets 3).gt-info
+        in let roles = a11y-role-name (check.ai-role) == "checkbox" & check.ai-label == "Borders" & gax-say check == "Borders, checkbox, checked" & a11y-role-name (input.ai-role) == "textbox" & input.ai-label == "Filename"
+        in let fr = focus-next (gax-ring targets "")
+        in let cycle = focus-current fr == "zoom" & focus-current (gat-cycle fr 1) == "first" & focus-current (gat-cycle fr 2) == "check" & focus-current (gat-cycle fr 3) == "name" & focus-current (gat-cycle fr 4) == "last" & focus-current (gat-cycle fr 5) == "zoom" & focus-current (focus-prev fr) == "last"
+        in let applied = focus-apply (focus-set fr "check") laid
+        in let visible = when widget-find applied "check" is Just (w) -> flag-has (widget-flags w) flag-focused is None -> False
+        in let kept-disabled = when widget-find applied "disabled" is Just (w) -> flag-has (widget-flags w) flag-disabled is None -> False
+        in let duplicate = gax-collect (widget-panel "duplicates" DirColumn 0 [widget-button "same" "One",widget-button "same" "Two"]) []
+        in let empty = gax-collect (widget-button "" "Unnamed") []
+        in let capped = gax-collect (widget-panel "many" DirColumn 0 (gat-many 257 [])) []
+        in let state = gax-channel-new
+        in let extra = __heap-advance 8
+        in let canary = poke-qword state gax-channel-bytes 12345
+        in let was-empty = gat-none (gax-read state 0)
+        in let mark = __heap-save
+        in let text = gax-say check & " café 日本 🙂"
+        in let seq = gax-publish state text LivePolite
+        in let released = __heap-restore mark
+        in let scratch = __heap-save
+        in let scratch-space = __heap-advance 1048576
+        in let overwritten = gat-overwrite scratch 0
+        in let retained = gat-message (gax-read state 0) "Borders, checkbox, checked café 日本 🙂" & gat-none (gax-read state seq)
+        in let odd = atomic-store state (seq + 1)
+        in let torn = gat-none (gax-read state 0)
+        in let stable = atomic-store state seq
+        in let off = gax-publish state "ignored" LiveOff
+        in let quiet = atomic-load state == seq
+        in let longer = gax-publish state (gat-long 400 "") LiveAssertive
+        in let limited = when gax-read state seq
+              is Just (a) -> a.ga-truncated & a.ga-text == (gat-long (509 / text-length "日") "" & "...") & (when a.ga-live is LiveAssertive -> True is otherwise -> False)
+              is None -> False
+        in act
+          print-line-uni ("roles and labels preserve control semantics: " & gat-yes roles)
+          print-line-uni ("hidden and disabled subtrees excluded: " & gat-yes ordered)
+          print-line-uni ("forward and reverse focus wrap: " & gat-yes cycle)
+          print-line-uni ("focus flags preserve disabled state: " & gat-yes (visible & kept-disabled))
+          print-line-uni ("invalid focus lists refuse by name: " & gat-yes (gat-refused duplicate "Duplicate focus id: same" & gat-refused empty "Focus control needs an id." & gat-refused capped "Pane exceeds the 256-control accessibility limit."))
+          print-line-uni ("announcement survives scratch overwrite: " & gat-yes (was-empty & retained))
+          print-line-uni ("in-progress and live-off announcements suppressed: " & gat-yes (torn & quiet))
+          print-line-uni ("Unicode truncation is explicit and bounded: " & gat-yes (limited & peek-qword state gax-channel-bytes == 12345 & peek-qword state 8 <= 512))
+        end

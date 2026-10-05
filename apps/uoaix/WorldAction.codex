@@ -1,0 +1,141 @@
+Chapter: WorldAction
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+ UWA1 stores one action: eight header cells followed by 1..64 UWJ1
+ frames. Header: magic, sequence, tick, actor, action kind, count,
+ FNV32 excluding its own cell, target. Every nested frame has the same
+ sequence and tick. Undo entries retain slot index and its prior 80 bytes.
+
+  WorldAction = record {
+    sequence : Integer, tick : Integer, actor : Integer, kind : Integer,
+    target : Integer, events : List WorldEvent
+  }
+  WorldUndo = record { world : WorldTable, bytes : Integer, count : Integer, state : Integer }
+  wa-max-events : Integer = 64
+  wa-max-bytes : Integer = 8256
+
+  wa-events-valid : List WorldEvent, Integer, Integer, Integer -> Boolean
+  wa-events-valid (events) (sequence) (tick) (i) =
+    if i >= list-length events then True
+    else let event = list-at events i
+    in
+      event.sequence == sequence & event.tick == tick & event.operation >= 1 & event.operation <= 3
+      & event.object.serial > 0 & event.object.serial <= 2147483647 & wa-events-valid events sequence tick (i + 1)
+
+  wa-valid : WorldAction -> Boolean
+  wa-valid (action) =
+    let count = list-length action.events
+    in if count < 1 | count > wa-max-events then False
+    else action.sequence > 0 & action.tick >= 0 & action.actor >= 0 & action.actor <= 2147483647
+      & action.target >= 0 & action.target <= 2147483647 & action.kind > 0 & action.kind <= 65535
+      & wa-events-valid action.events action.sequence action.tick 0
+
+  wa-encode-events : List WorldEvent, Integer, Integer -> Result Integer Text
+  wa-encode-events (events) (buf) (i) =
+    if i >= list-length events then Ok 0
+    else when wj-encode (list-at events i) (buf + i * 128) 128
+      is Err (e) -> Err e
+      is Ok (n) -> wa-encode-events events buf (i + 1)
+
+  wa-encode : WorldAction, Integer, Integer -> Result Integer Text
+  wa-encode (action) (buf) (capacity) =
+    if not (wa-valid action) then Err "world action shape invalid"
+    else let count = list-length action.events
+    in let size = 64 + count * 128
+    in if capacity < size then Err "world action destination too short"
+    else when wa-encode-events action.events (buf + 64) 0
+      is Err (e) -> Err e
+      is Ok (n) ->
+        let a = poke-qword buf 0 #31415755
+        in let b = poke-qword buf 8 action.sequence
+        in let c = poke-qword buf 16 action.tick
+        in let d = poke-qword buf 24 action.actor
+        in let e = poke-qword buf 32 action.kind
+        in let f = poke-qword buf 40 count
+        in let g = poke-qword buf 48 0
+        in let h = poke-qword buf 56 action.target
+        in let checksum = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in Ok size
+
+  wa-decode-events : Integer, Integer, List WorldEvent -> Result (List WorldEvent) Text
+  wa-decode-events (buf) (count) (events) =
+    if count == 0 then Ok events
+    else when wj-decode buf
+      is Err (e) -> Err e
+      is Ok (event) -> wa-decode-events (buf + 128) (count - 1) (list-push events event)
+
+  wa-decode : Integer, Integer -> Result WorldAction Text
+  wa-decode (buf) (size) =
+    if size < 192 | size > wa-max-bytes then Err "world action size invalid"
+    else let count = peek-qword buf 40
+    in if count < 1 | count > wa-max-events then Err "world action count invalid"
+    else if size /= 64 + count * 128 | peek-qword buf 0 /= #31415755 then Err "world action format invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "world action checksum invalid"
+    else when wa-decode-events (buf + 64) count []
+      is Err (e) -> Err e
+      is Ok (events) ->
+        let action = WorldAction { sequence = peek-qword buf 8, tick = peek-qword buf 16,
+          actor = peek-qword buf 24, kind = peek-qword buf 32, target = peek-qword buf 56, events = events }
+        in if wa-valid action then Ok action else Err "world action metadata invalid"
+
+  wa-undo-slots : WorldUndo, Integer -> Integer
+  wa-undo-slots (undo) (n) =
+    if n <= 0 then 0
+    else let at = 16 + (n - 1) * 88
+    in let slot = peek-qword undo.bytes at
+    in let restored = ws-copy (undo.bytes + at + 8) (undo.world.buffer + 16 + slot * 80) 80 0
+    in wa-undo-slots undo (n - 1)
+
+  wa-rollback : WorldUndo -> Boolean
+  wa-rollback (undo) =
+    if undo.state /= 0 then False
+    else let slots = wa-undo-slots undo undo.count
+    in let header = ws-copy undo.bytes undo.world.buffer 16 0
+    in let indexed = world-reindex undo.world
+    in let closed = __record-set undo "state" 2
+    in indexed
+
+  wa-accept : WorldUndo -> Boolean
+  wa-accept (undo) =
+    if undo.state /= 0 then False else let closed = __record-set undo "state" 1 in True
+
+  wa-apply-events : WorldUndo, List WorldEvent, Integer -> Result Integer Text
+  wa-apply-events (undo) (events) (i) =
+    if i >= list-length events then Ok undo.count
+    else let event = list-at events i
+    in
+      let slot = if event.operation == 1 then peek-qword undo.world.buffer 8 else world-slot undo.world event.object.serial
+      in if slot < 0 | slot >= undo.world.capacity then Err "world action slot unavailable"
+      else let at = 16 + undo.count * 88
+      in let index = poke-qword undo.bytes at slot
+      in let saved = ws-copy (undo.world.buffer + 16 + slot * 80) (undo.bytes + at + 8) 80 0
+      in let counted = __record-set undo "count" (undo.count + 1)
+      in when wj-apply undo.world event
+        is Err (e) -> Err e
+        is Ok (serial) -> wa-apply-events undo events (i + 1)
+
+  wa-prepare : WorldCheckpoint, WorldAction -> Result WorldUndo Text
+  wa-prepare (checkpoint) (action) =
+    if checkpoint.sequence < 0 | checkpoint.sequence == 9223372036854775807 | checkpoint.tick < 0 then Err "world action checkpoint invalid"
+    else if not (wa-valid action) then Err "world action shape invalid"
+    else if action.sequence /= checkpoint.sequence + 1 | action.tick < checkpoint.tick then Err "world action sequence gap or clock reversal"
+    else let bytes = alloc-bytes (16 + list-length action.events * 88)
+    in let header = ws-copy checkpoint.world.buffer bytes 16 0
+    in let undo = WorldUndo { world = checkpoint.world, bytes = bytes, count = 0, state = 0 }
+    in when wa-apply-events undo action.events 0
+      is Err (e) -> let restored = wa-rollback undo in Err e
+      is Ok (n) -> Ok undo
+
+  wa-replay : WorldCheckpoint, Integer, Integer -> Result WorldCheckpoint Text
+  wa-replay (checkpoint) (buf) (size) = when wa-decode buf size
+    is Err (e) -> Err e
+    is Ok (action) -> when wa-prepare checkpoint action
+      is Err (e) -> Err e
+      is Ok (undo) ->
+        let accepted = wa-accept undo
+        in Ok (WorldCheckpoint { world = checkpoint.world, sequence = action.sequence, tick = action.tick })
+
+Page 1

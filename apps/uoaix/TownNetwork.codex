@@ -1,0 +1,106 @@
+Chapter: TownNetwork
+  cites Foreword chapter Result
+
+  TnModel = record {
+    hidden-weights : List Integer, hidden-bias : List Integer,
+    output-weights : List Integer, output-bias : List Integer
+  }
+  TnState = record {
+    inputs : List Integer, hidden : List Integer, outputs : List Integer,
+    queue : List Integer, count : Integer, head : Integer
+  }
+
+  tn-input-count : Integer = 32
+  tn-hidden-count : Integer = 16
+  tn-output-count : Integer = 14
+  tn-action-count : Integer = 10
+  tn-scale : Integer = 1000
+  tn-weight-bound : Integer = 4000
+  tn-hidden-bound : Integer = 4000
+
+  tn-fill : Integer, List Integer -> List Integer
+  tn-fill (n) (xs) = if n == 0 then xs else tn-fill (n - 1) (list-push xs 0)
+  tn-zeros : Integer -> List Integer
+  tn-zeros (n) = tn-fill n (__list-with-capacity n)
+  tn-bounded : List Integer, Integer -> Boolean
+  tn-bounded (xs) (i) = if i == list-length xs then True
+    else let x = list-at xs i
+    in x >= 0 - tn-weight-bound & x <= tn-weight-bound & tn-bounded xs (i + 1)
+  tn-model : List Integer, List Integer, List Integer, List Integer -> Result TnModel Text
+  tn-model (hw) (hb) (ow) (ob) =
+    if list-length hw /= tn-input-count * tn-hidden-count | list-length hb /= tn-hidden-count
+      then Err "hidden layer shape"
+    else if list-length ow /= tn-hidden-count * tn-output-count | list-length ob /= tn-output-count
+      then Err "output layer shape"
+    else if not (tn-bounded hw 0 & tn-bounded hb 0 & tn-bounded ow 0 & tn-bounded ob 0)
+      then Err "weight bound"
+    else Ok (TnModel { hidden-weights = hw, hidden-bias = hb, output-weights = ow, output-bias = ob })
+  tn-new : Integer -> TnState
+  tn-new (unused) =
+    let s = TnState { inputs = tn-zeros tn-input-count, hidden = tn-zeros tn-hidden-count,
+      outputs = tn-zeros tn-output-count, queue = tn-zeros tn-action-count, count = 0, head = 0 }
+    in let a = list-set-at s.outputs 10 500
+    in s
+  tn-input : TnState, Integer, Integer -> Integer
+  tn-input (s) (slot) (value) =
+    if slot < 0 | slot >= tn-input-count - 2 | value < 0 - tn-scale | value > tn-scale then -1
+    else let a = list-set-at s.inputs slot value in 0
+
+  tn-dot : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  tn-dot (weights) (values) (base) (width) (i) (sum) =
+    if i == width then sum / tn-scale
+    else tn-dot weights values base width (i + 1) (sum + list-at weights (base + i) * list-at values i)
+  tn-clip : Integer, Integer, Integer -> Integer
+  tn-clip (x) (low) (high) = if x < low then low else if x > high then high else x
+  tn-hidden : TnModel, TnState, Integer -> Integer
+  tn-hidden (m) (s) (row) = if row == tn-hidden-count then 0
+    else let x = tn-dot m.hidden-weights s.inputs (row * tn-input-count) tn-input-count 0 0
+    in let value = tn-clip (x + list-at m.hidden-bias row) 0 tn-hidden-bound
+    in let a = list-set-at s.hidden row value
+    in tn-hidden m s (row + 1)
+  tn-output : TnModel, TnState, Integer -> Integer
+  tn-output (m) (s) (row) = if row == tn-output-count then 0
+    else let x = tn-dot m.output-weights s.hidden (row * tn-hidden-count) tn-hidden-count 0 0
+    in let value = x + list-at m.output-bias row
+    in let clipped = if row < tn-action-count then value
+      else tn-clip value (if row < 12 then 0 else 0 - tn-scale) tn-scale
+    in let a = list-set-at s.outputs row clipped
+    in tn-output m s (row + 1)
+
+  tn-position : TnState, Integer, Integer -> Integer
+  tn-position (s) (action) (i) = if i == s.count then i
+    else if list-at s.outputs action > list-at s.outputs (list-at s.queue i) then i
+    else tn-position s action (i + 1)
+  tn-shift : TnState, Integer, Integer -> Integer
+  tn-shift (s) (at) (i) = if i == at then 0
+    else let a = list-set-at s.queue i (list-at s.queue (i - 1))
+    in tn-shift s at (i - 1)
+  tn-order : TnState, Integer -> Integer
+  tn-order (s) (action) = if action == tn-action-count then 0
+    else let changed = if list-at s.outputs action <= 0 then 0
+      else let at = tn-position s action 0
+      in let moved = tn-shift s at s.count
+      in let a = list-set-at s.queue at action
+      in let b = __record-set s "count" (s.count + 1)
+      in 0
+    in tn-order s (action + 1)
+  tn-step : TnModel, TnState -> Integer
+  tn-step (m) (s) =
+    let a = list-set-at s.inputs 30 (list-at s.outputs 10)
+    in let b = list-set-at s.inputs 31 (list-at s.outputs 11)
+    in let h = tn-hidden m s 0
+    in let o = tn-output m s 0
+    in let c = __record-set s "count" 0
+    in let d = __record-set s "head" 0
+    in tn-order s 0
+  tn-pop : TnState -> Integer
+  tn-pop (s) = if s.head == s.count then 0
+    else let action = list-at s.queue s.head + 1
+    in let a = __record-set s "head" (s.head + 1)
+    in action
+  tn-happiness : TnState -> Integer
+  tn-happiness (s) = list-at s.outputs 10
+  tn-alarm : TnState -> Integer
+  tn-alarm (s) = list-at s.outputs 11
+  tn-opinion : TnState, Integer -> Integer
+  tn-opinion (s) (axis) = if axis < 0 | axis > 1 then 0 else list-at s.outputs (12 + axis)

@@ -1,0 +1,84 @@
+Chapter: GameClockProof
+  cites Uoaix chapter GameClock
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Foreword chapter Console
+
+  gcp-check : Text, Boolean -> [Console] Integer
+  gcp-check (name) (ok) = act
+    print-line-uni (name & (if ok then " PASS" else " FAIL"))
+    if ok then 0 else 1
+  end
+
+  gcp-step : TfWorld, Integer -> Integer
+  gcp-step (world) (unused) =
+    let result = tf-step world
+    in if result /= 0 then result else tf-ack-events world
+
+  gcp-ok : Integer -> Integer
+  gcp-ok (unused) = 0
+
+  gcp-refuse : Integer -> Integer
+  gcp-refuse (unused) = -1
+
+  gcp-loop : GameClock, (Integer -> Integer), Integer -> Integer
+  gcp-loop (clock) (step) (n) =
+    if n == 0 then 0
+    else let result = gc-poll clock clock.last-tick 1 step
+    in if result /= 0 then -1 else gcp-loop clock step (n - 1)
+
+  opening : [Console] Nothing = act
+    clock <- gc-new 0
+    normal <- tf-new 0
+    town <- tf-add-town normal "Britain" 1 2 3
+    resident <- tf-add-person normal "Mara" town 1 2 0 7000
+    bare <- __record-set (tf-town normal town) "crop" 0
+    drained <- tf-ack-events normal
+    before <- gc-poll clock 29999 24 (gcp-step normal)
+    boundary <- gc-poll clock 30000 24 (gcp-step normal)
+    rest <- gc-poll clock (2 * 60 * 60 * 100) 24 (gcp-step normal)
+    c1 <- gcp-check "two real hours drive one full game day" (clock.day-seconds == 7200 & before == 0 & boundary == 1 & rest == 23 & normal.hour == 24 & (tf-person normal resident).age == 7001 & (tf-town normal town).crop == 32)
+    changed <- gc-new 0
+    half <- gc-accrue changed 15000
+    set <- gc-set-rate changed 3600 15000
+    early <- gc-poll changed 22499 24 gcp-ok
+    due <- gc-poll changed 22500 24 gcp-ok
+    c2 <- gcp-check "live rate change preserves fractional game hour" (half == 0 & set == 0 & early == 0 & due == 1 & changed.phase == 0)
+    catchup <- gc-new 0
+    rate <- gc-set-rate catchup 3600 60000
+    one <- gc-poll catchup 60000 1 gcp-ok
+    failed <- gc-poll catchup 60000 1 gcp-refuse
+    retained <- catchup.due
+    last <- gc-poll catchup 60000 1 gcp-ok
+    reversed <- gc-set-rate catchup 7200 59999
+    invalid <- gc-set-rate catchup 0 60000
+    c3 <- gcp-check "old-rate backlog is bounded and failed hours remain due" (rate == 0 & one == 1 & failed == -1 & retained == 1 & last == 1 & reversed == -1 & invalid == -1 & catchup.day-seconds == 3600 & catchup.due == 0)
+    fast <- gc-new 0
+    faster <- gc-set-rate fast 3600 0
+    world <- tf-new 0
+    t <- tf-add-town world "Minoc" 1 2 3
+    person <- tf-add-person world "Iolo" t 1 2 0 7000
+    crop <- __record-set (tf-town world t) "crop" 0
+    acknowledged <- tf-ack-events world
+    day <- gc-poll fast (60 * 60 * 100) 24 (gcp-step world)
+    c4 <- gcp-check "schedules age and regrowth use the same rescaled hours" (day == 24 & world.hour == normal.hour & (tf-person world person).age == (tf-person normal resident).age & (tf-town world t).crop == (tf-town normal town).crop)
+    p <- panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+    deterministic <- __record-set p "clock" (gc-new 0)
+    login <- panel-open p 100
+    keeper <- panel-dispatch p 3 "{\"command\":\"panel-day-set\",\"seconds\":3600,\"session\":1}"
+    bad-session <- panel-dispatch p 4 "{\"command\":\"panel-day-set\",\"seconds\":3600,\"session\":99}"
+    applied <- panel-day-set p 3600 100
+    log <- admin-load p.log 1024
+    full <- __record-set p "log-count" 127
+    denied <- panel-day-set p 7200 200
+    c5 <- gcp-check "owner change records old and new rate before effects" (text-contains keeper "role" & text-contains bad-session "session" & text-contains applied "3600" & text-contains log "game-day-length" & text-contains log "old_seconds\":7200" & text-contains log "new_seconds\":3600" & text-contains denied "action-log-full" & p.clock.day-seconds == 3600 & p.clock.last-tick == 100)
+    callback <- gcp-ok
+    mark <- __heap-save
+    polled <- gcp-loop clock callback 10000
+    growth <- __heap-save - mark
+    print-line-uni ("idle-poll heap-bytes=" & show growth)
+    c6 <- gcp-check "idle polls retain no heap" (polled == 0 & growth == 0)
+    print-line-uni ("UOAIX GAME CLOCK failures=" & show (c1+c2+c3+c4+c5+c6))
+  end

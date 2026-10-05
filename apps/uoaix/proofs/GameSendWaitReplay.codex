@@ -1,0 +1,47 @@
+Chapter: GameSendWaitReplay
+  cites Uoaix chapter GameNet
+
+  gsw-queue : Integer, List RexmitSeg -> List RexmitSeg
+  gsw-queue (left) (out) = if left == 0 then out else
+    gsw-queue (left - 1) (list-push out (RexmitSeg { rx-frame = [], rx-ack = 1, rx-sent = 0, rx-resent = False }))
+  gsw-transport : Integer -> TcpTransportState
+  gsw-transport (unused) = let s = net-session-new [82,84,0,18,52,86] [10,0,2,15] [10,0,2,2] 2593 50000 [10,0,2,2] 1000
+    in transport-new-with-cap (set-conn s (tcp-set-state s.conn TcpEstablished)) 4096
+  gsw-sender : Integer, List Integer, TcpTransportState, List Integer, Integer, Integer -> NetSendResult
+  gsw-sender (mode) (control) (ts) (bytes) (offset) (total) =
+    let call = list-at control 0
+    in let counted = list-set-at control 0 (call + 1)
+    in let valid = list-at control 1 == 1 & offset == (if call == 0 then 0 else 3)
+      & total == list-length bytes & list-at bytes offset == (if call == 0 then 11 else 44)
+    in let checked = list-set-at control 1 (if valid then 1 else 0)
+    in let full = transport-set-session ts (set-rexmit ts.session (gsw-queue net-rexmit-capacity []) 48 0)
+    in if mode == 1 & call >= 2 then NetSendResult { ns-transport = transport-set-session ts (set-rexmit ts.session [] 0 0), ns-sent = total, ns-complete = True }
+    else if mode == 2 then NetSendResult { ns-transport = ts, ns-sent = 3, ns-complete = False }
+    else if mode == 3 then NetSendResult { ns-transport = transport-set-session full (set-conn full.session (tcp-set-state full.session.conn TcpClosed)), ns-sent = 3, ns-complete = False }
+    else NetSendResult { ns-transport = full, ns-sent = 3, ns-complete = False }
+  gsw-check : Text, Boolean -> [Console] Integer
+  gsw-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  opening : [Console, Network.Read, Network.Write] Integer = act
+    bytes <- [11,22,33,44,55]
+    a-control <- [0,1]
+    resumed <- gn-send-wait-with (gsw-sender 1 a-control) (gsw-transport 0) bytes 0 6
+    a <- gsw-check "delayed room resumes exact unsent suffix without replaying prefix" (resumed.ns-complete & resumed.ns-sent == 5 & list-at a-control 0 == 3 & list-at a-control 1 == 1)
+    b-control <- [0,1]
+    refused <- gn-send-wait-with (gsw-sender 2 b-control) (gsw-transport 0) bytes 0 6
+    b <- gsw-check "non-full refusal returns once with partial byte count" (not refused.ns-complete & refused.ns-sent == 3 & list-at b-control 0 == 1)
+    c-control <- [0,1]
+    closed <- gn-send-wait-with (gsw-sender 3 c-control) (gsw-transport 0) bytes 0 6
+    c <- gsw-check "closed connection ends wait immediately" (not closed.ns-complete & net-io-conn-closed closed.ns-transport & list-at c-control 0 == 1)
+    d-control <- [0,1]
+    stalled <- gn-send-wait-with (gsw-sender 4 d-control) (gsw-transport 0) bytes 0 6
+    d <- gsw-check "permanent backpressure has finite drain budget" (not stalled.ns-complete & stalled.ns-sent == 3 & list-at d-control 0 == 6 & list-at d-control 1 == 1)
+    e-control <- [0,1]
+    terminal <- gn-send-wait-with (gsw-sender 1 e-control) closed.ns-transport bytes 3 6
+    e <- gsw-check "already closed transport never calls sender" (not terminal.ns-complete & terminal.ns-sent == 3 & list-at e-control 0 == 0)
+    actual <- gn-send closed.ns-transport 0 False [bytes] 0
+    f <- gsw-check "production send preserves terminal refusal" actual.close
+    a+b+c+d+e+f
+  end

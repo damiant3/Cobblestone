@@ -104,6 +104,21 @@ try {
   ok('bk_lincomb3 with f32 scalars from gpu-arg-f32 equals 0.5 x - 2 w + 0.25 w exactly', st.launch3 === 0 && lBad(st.l) === 0, `launch ${st.launch3}; ${lBad(st.l)} of ${M * K} differ`);
   ok('control, a passed as gpu-arg-u32 1, is caught', st.launch4 === 0 && lBad(st.l2) > 0, `launch ${st.launch4}; ${lBad(st.l2)} of ${M * K} differ`);
 
+  // The upload's f32-to-f16 conversion (_gf2h, over f32 bits): every f16
+  // value round-trips exactly, and between neighbours the f32 midpoint
+  // rounds to the even one and one f32 ulp either side to the nearer, both
+  // signs, 65520 to infinity. Control: the same function with its rounding
+  // removed must fail.
+  const f2hTest = `(conv) => { const F = new Float32Array(1), U = new Uint32Array(F.buffer), bits = (x) => { F[0] = x; return U[0]; }; let bad = 0, n = 0;
+    for (let h = 0; h < 0x7c00; h++) for (const s of [0, 0x8000]) { n++; if (conv(bits(_gh2f(h | s))) !== (h | s)) bad++; }
+    for (let h = 0; h < 0x7bff; h++) for (const s of [0, 0x8000]) { const m = bits((_gh2f(h | s) + _gh2f((h + 1) | s)) / 2), even = (h & 1) ? h + 1 : h; n += 3; if (conv(m) !== (even | s)) bad++; if (conv(m - 1) !== (h | s)) bad++; if (conv(m + 1) !== ((h + 1) | s)) bad++; }
+    n += 2; if (conv(bits(65520)) !== 0x7c00) bad++; if (conv(bits(65520) - 1) !== 0x7bff) bad++;
+    return JSON.stringify({ bad, n }); }`;
+  const f2h = JSON.parse(await evalIn(`(${f2hTest})(_gf2h)`));
+  ok('the upload converts f32 to f16 rounding to nearest even, subnormals and overflow included', f2h.bad === 0, `${f2h.bad} of ${f2h.n} wrong`);
+  const f2hCut = JSON.parse(await evalIn(`(${f2hTest})(eval('(' + _gf2h.toString().replaceAll('h++', 'h') + ')'))`));
+  ok('control, the conversion with its rounding removed, is caught', f2hCut.bad > 0, `${f2hCut.bad} of ${f2hCut.n} wrong`);
+
   const ct = await runPage('/control');
   ok('control, xb and wb swapped in the cx-kernel line, is caught', swapped !== wgsl && yBad(ct.y) > 0, `${yBad(ct.y)} of ${M * N} differ`);
 } catch (e) {

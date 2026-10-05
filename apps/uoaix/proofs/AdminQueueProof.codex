@@ -1,0 +1,89 @@
+Chapter: AdminQueueProof
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  aqp-check : Text, Boolean -> [Console] Nothing
+  aqp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  aqp-clear : Integer, Integer -> Integer
+  aqp-clear (buf) (i) = if i >= ac-size then 0
+    else let saved = poke-byte buf i 0 in aqp-clear buf (i + 1)
+
+  aqp-report : Text = "{\"command\":\"report-add\",\"account\":\"Avatar\",\"happened\":\"quoted \\\"é λ\\\"\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":7,\"evidence\":\"line one\\nline two\"}"
+
+  aqp-run : AdminWorld -> [Console] Nothing
+  aqp-run (a) =
+    let r1 = admin-dispatch a 3 aqp-report
+    in let r2 = admin-dispatch a 3 aqp-report
+    in let ack = admin-report-ack a 1
+    in let pending = admin-job-submit a 1 1 1 "quoted é λ"
+    in let gold = __record-set a "gold-in" 19
+    in let out = __record-set a "gold-out" 7
+    in let buf = alloc-bytes (ac-size + 8)
+    in let guard = poke-qword buf ac-size 1234567
+    in when ac-encode a 70 11 buf ac-size
+      is Err (e) -> print-line-uni ("FAIL encode " & e)
+      is Ok (size) -> act
+        aqp-check "admin envelope size" (size == 70096 & peek-qword buf 70096 == 1234567)
+        when ac-decode-record buf size 70 11 a.world a.mind
+          is Err (e) -> print-line-uni ("FAIL decode " & e)
+          is Ok (restored) -> act
+            aqp-check "report ring metadata restored" (restored.report-head == 1 & restored.report-count == 1 & restored.report-sequence == 2)
+            aqp-check "unicode quoted report restored" (admin-report-peek restored == admin-report-peek a & text-contains (admin-report-peek restored) "é λ")
+            aqp-check "pending mind job restored" (restored.job-state == 1 & restored.job-id == 1 & admin-job-peek restored == admin-job-peek a)
+            aqp-check "health counters restored" (restored.gold-in == 19 & restored.gold-out == 7 & restored.online == 1)
+            let cleared = aqp-clear buf 0
+            in aqp-check "input buffer reuse preserves queues" (admin-report-peek restored == admin-report-peek a & admin-job-peek restored == admin-job-peek a)
+            let acknowledged = admin-report-ack restored 2
+            in aqp-check "detached queue mutation" (restored.report-count == 0 & a.report-count == 1 & text-contains acknowledged "acknowledged")
+          end
+        let encoded = ac-encode a 70 11 buf ac-size
+        in aqp-check "outer metadata refused" (is-err (ac-decode-record buf ac-size 70 12 a.world a.mind))
+        aqp-check "missing NPC binding refused" (is-err (ac-decode buf ac-size (tf-new 0) a.mind))
+        aqp-check "missing persona binding refused" (is-err (ac-decode buf ac-size a.world (tm-new 0)))
+        aqp-check "truncated queue refused" (is-err (ac-decode buf (ac-size - 1) a.world a.mind))
+        let corrupted = poke-byte buf 2100 17
+        in aqp-check "queue checksum refused" (is-err (ac-decode buf ac-size a.world a.mind))
+        let encoded = ac-encode a 70 11 buf ac-size
+        in let invalid = poke-qword buf 72 33
+        in let hash = poke-qword buf 48 (ws-hash buf ac-size 0 2166136261)
+        in aqp-check "rehashed queue count refused" (is-err (ac-decode buf ac-size a.world a.mind))
+        let encoded = ac-encode a 70 11 buf ac-size
+        in let invalid = poke-qword buf 80 3
+        in let hash = poke-qword buf 48 (ws-hash buf ac-size 0 2166136261)
+        in aqp-check "rehashed report identity refused" (is-err (ac-decode buf ac-size a.world a.mind))
+        let encoded = ac-encode a 70 11 buf ac-size
+        in let invalid = poke-qword buf 192 2048
+        in let hash = poke-qword buf 48 (ws-hash buf ac-size 0 2166136261)
+        in aqp-check "rehashed slot bound refused" (is-err (ac-decode buf ac-size a.world a.mind))
+        let encoded = ac-encode a 70 11 buf ac-size
+        in let invalid = poke-byte buf (192 + 2055) 1
+        in let hash = poke-qword buf 48 (ws-hash buf ac-size 0 2166136261)
+        in aqp-check "rehashed slot padding refused" (is-err (ac-decode buf ac-size a.world a.mind))
+        let completed = admin-job-fallback a
+        in when ac-encode a 71 12 buf ac-size
+          is Err (e) -> print-line-uni ("FAIL completed encode " & e)
+          is Ok (size) -> when ac-decode-record buf size 71 12 a.world a.mind
+            is Err (e) -> print-line-uni ("FAIL completed decode " & e)
+            is Ok (restored) -> act
+              aqp-check "completed mind result restored" (restored.job-state == 2 & admin-job-result restored == admin-job-result a & admin-job-ack restored 1 == 0 & a.job-state == 2)
+              let wrong = admin-store a.job 2048 "{\"id\":2}"
+              in let forged = ac-write-slots (buf + 65984) a.job 2 0
+              in let hash = poke-qword buf 48 (ws-hash buf ac-size 0 2166136261)
+              in aqp-check "rehashed result identity refused" (is-err (ac-decode buf ac-size a.world a.mind))
+            end
+      end
+
+  opening : [Console] Nothing =
+    let world = tf-new 0
+    in let town = tf-add-town world "Britain" 1 2 3
+    in let npc = tf-add-person world "Mara" town 4 5 2 9000
+    in let mind = tm-new 0
+    in let persona = tm-configure mind world npc "Baker" "Busy." 8 128 3
+    in aqp-run (admin-world-new world mind)
+
+Page 1

@@ -59,13 +59,15 @@ $notes = @()
 
 # -- 1. the rows that claim `fixed`, and the emitter each one names
 
+# A row is one BuiltinSpec, on one line or (since the code-layout pass, main
+# 32239) one field a line, so the name is carried to the bs-alloc that follows.
 $rows = @()
+$cur = $null
 foreach ($line in [System.IO.File]::ReadLines($Builtins)) {
-    if ($line -match 'bs-name = "([^"]+)", bs-alloc = "fixed"') {
-        $name = $matches[1]
-        $emit = ''
-        if ($line -match 'bs-emit = Just \(\\s a -> ([a-z0-9-]+)') { $emit = $matches[1] }
-        $rows += [pscustomobject]@{ Name = $name; Emit = $emit }
+    if ($line -match 'bs-name = "([^"]+)"') { $cur = $matches[1] }
+    if ($cur -and $line -match 'bs-alloc = "fixed"') {
+        $rows += [pscustomobject]@{ Name = $cur }
+        $cur = $null
     }
 }
 if ($rows.Count -eq 0) { Write-Host 'REFUSED: no rows reading "fixed" were found. The pattern stopped matching, which is not the same as a clean tree.'; exit 1 }

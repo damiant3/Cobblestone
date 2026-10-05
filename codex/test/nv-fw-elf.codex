@@ -1,0 +1,93 @@
+Chapter: NvFwElfTest
+  cites Kernel chapter NvFirmware
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+Section: Synthetic ELF
+
+  fw-test-put : Integer, Integer, Integer, Integer -> Integer
+  fw-test-put (buf) (off) (value) (n) =
+    if n <= 0 then 0
+    else let w = poke-byte buf off (bit-and value 255)
+    in fw-test-put buf (off + 1) (bit-shru value 8) (n - 1)
+
+  fw-test-name : Integer, Integer, Text, Integer -> Integer
+  fw-test-name (buf) (off) (name) (i) =
+    if i >= text-length name then poke-byte buf (off + i) 0
+    else let w = poke-byte buf (off + i) (to-unicode (char-code (char-at name i)))
+    in fw-test-name buf off name (i + 1)
+
+  fw-test-pattern : Integer, Integer, Integer, Integer, Integer -> Integer
+  fw-test-pattern (buf) (off) (size) (base) (i) =
+    if i >= size then 0
+    else let w = poke-byte buf (off + i) (bit-and (base + i) 255)
+    in fw-test-pattern buf off size base (i + 1)
+
+  fw-test-sh : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fw-test-sh (buf) (index) (name) (kind) (off) (size) =
+    let sh = 512 + index * 64
+    in let a = fw-test-put buf sh name 4
+    in let b = fw-test-put buf (sh + 4) kind 4
+    in let c = fw-test-put buf (sh + 24) off 8
+    in let d = fw-test-put buf (sh + 32) size 8
+    in fw-test-put buf (sh + 48) 1 8
+
+  fw-test-elf : Integer -> Integer
+  fw-test-elf (mode) =
+    let buf = alloc-bytes 1536
+    in let z = __memset buf 0 1536
+    in let magic = fw-test-put buf 0 #464C457F 4
+    in let ident = fw-test-put buf 4 #010102 3
+    in let machine = fw-test-put buf 18 243 2
+    in let version = fw-test-put buf 20 1 4
+    in let table = fw-test-put buf 40 512 8
+    in let eh = fw-test-put buf 52 64 2
+    in let shsize = fw-test-put buf 58 64 2
+    in let shnum = fw-test-put buf 60 5 2
+    in let shstrings = fw-test-put buf 62 1 2
+    in let s1 = 1
+    in let s2 = s1 + text-length ".shstrtab" + 1
+    in let s3 = s2 + text-length ".fwimage" + 1
+    in let s4 = s3 + text-length ".fwsignature_ga10x" + 1
+    in let string-size = s4 + text-length ".fwsignature_ad10x" + 1
+    in let n1 = fw-test-name buf (256 + s1) ".shstrtab" 0
+    in let n2 = fw-test-name buf (256 + s2) ".fwimage" 0
+    in let n3 = fw-test-name buf (256 + s3) ".fwsignature_ga10x" 0
+    in let n4 = fw-test-name buf (256 + s4) ".fwsignature_ad10x" 0
+    in let h1 = fw-test-sh buf 1 s1 3 256 string-size
+    in let h2 = fw-test-sh buf (if mode == 0 then 2 else 4) s2 1 (1024 + mode * 128) (13 + mode * 4)
+    in let h3 = fw-test-sh buf 3 s3 1 1080 4
+    in let h4 = fw-test-sh buf (if mode == 0 then 4 else 2) s4 1 (1100 + mode * 180) (7 + mode * 2)
+    in let p1 = fw-test-pattern buf (1024 + mode * 128) (13 + mode * 4) (10 + mode) 0
+    in let p2 = fw-test-pattern buf (1100 + mode * 180) (7 + mode * 2) (100 + mode) 0
+    in buf
+
+  fw-test-sum : Integer, Integer, Integer, Integer, Integer -> Integer
+  fw-test-sum (buf) (off) (size) (i) (acc) = if i >= size then acc else fw-test-sum buf off size (i + 1) (acc + peek-byte buf (off + i))
+
+  fw-test-report : Integer, Integer, Integer, Text -> [Console] Nothing
+  fw-test-report (n) (buf) (size) (name) = act
+   when nv-gsp-elf64 buf size name
+    is None -> print-line-uni ("ELF " & show n & " REFUSED")
+    is Just (s) -> print-line-uni ("ELF " & show n & " " & show s.image-offset & " " & show s.image-size & " " & show s.signature-offset & " " & show s.signature-size & " " & show (fw-test-sum buf s.image-offset s.image-size 0 0) & " " & show (fw-test-sum buf s.signature-offset s.signature-size 0 0))
+  end
+
+  opening : [Console] Nothing = act
+   fw-test-report 0 (fw-test-elf 0) 1536 ".fwsignature_ad10x"
+   fw-test-report 1 (fw-test-elf 1) 1536 ".fwsignature_ad10x"
+   fw-test-report 2 (fw-test-elf 0) 63 ".fwsignature_ad10x"
+   fw-test-report 3 (fw-test-elf 0) 800 ".fwsignature_ad10x"
+   fw-test-report 4 (fw-test-elf 0) 1536 ".missing"
+   let b = fw-test-elf 0
+   in let corrupt = fw-test-put b 40 #8000000000000000 8
+   in fw-test-report 5 b 1536 ".fwsignature_ad10x"
+   let b = fw-test-elf 0
+   in let corrupt = fw-test-put b (512 + 4 * 64 + 24) 1532 8
+   in fw-test-report 6 b 1536 ".fwsignature_ad10x"
+   let b = fw-test-elf 0
+   in let corrupt = poke-byte b 0 0
+   in fw-test-report 7 b 1536 ".fwsignature_ad10x"
+   let b = fw-test-elf 0
+   in let corrupt = fw-test-put b (512 + 64 + 24) 1536 8
+   in fw-test-report 8 b 1536 ".fwsignature_ad10x"
+  end

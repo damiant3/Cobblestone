@@ -1,0 +1,48 @@
+Chapter: NvGspRegistry
+  cites Foreword chapter CCE
+
+ The SET_REGISTRY payload (NV_VGPU_MSG_FUNCTION_SET_REGISTRY, 73) as
+ tinygrad builds it (tinygrad/runtime/support/nv/ip.py,
+ rpc_set_registry_table, at c3aec477; structures in runtime/autogen/nv.py).
+ Little-endian. PACKED_REGISTRY_TABLE (8 bytes): size 0, the whole payload;
+ numEntries 4. Then one PACKED_REGISTRY_ENTRY (16 bytes) per entry: nameOffset
+ 0, from the payload's start; type 4 (8-bit), REGISTRY_TABLE_ENTRY_TYPE_DWORD
+ (1); data 8; length 12 = 4. Then the names, each ASCII and NUL-terminated,
+ in entry order. GSP_SET_SYSTEM_INFO is function 72.
+
+Section: Registry
+
+  RegEntry = record {
+   name : Text,
+   value : Integer
+  }
+
+  nv-gsp-fn-set-system-info : Integer
+  nv-gsp-fn-set-system-info = 72
+
+  nv-gsp-fn-set-registry : Integer
+  nv-gsp-fn-set-registry = 73
+
+  reg-u32 : Integer -> List Integer
+  reg-u32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  reg-name-bytes : Text, Integer, List Integer -> List Integer
+  reg-name-bytes (t) (i) (acc) = if i >= text-length t then acc & [0] else reg-name-bytes t (i + 1) (acc & [to-unicode (char-code (char-at t i))])
+
+  reg-names : List RegEntry, Integer, List Integer -> List Integer
+  reg-names (es) (i) (acc) = if i >= list-length es then acc else reg-names es (i + 1) (acc & reg-name-bytes (list-at es i).name 0 [])
+
+  reg-entries : List RegEntry, Integer, Integer, List Integer -> List Integer
+  reg-entries (es) (i) (name-off) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in reg-entries es (i + 1) (name-off + text-length e.name + 1) (acc & reg-u32 name-off & [1, 0, 0, 0] & reg-u32 e.value & reg-u32 4)
+
+  nv-gsp-registry : List RegEntry -> List Integer
+  nv-gsp-registry (es) =
+    let names = reg-names es 0 []
+    in let first-name = 8 + 16 * list-length es
+    in reg-u32 (first-name + list-length names) & reg-u32 (list-length es) & reg-entries es 0 first-name [] & names
+
+  nv-gsp-registry-default : List RegEntry
+  nv-gsp-registry-default = [RegEntry { name = "RMForcePcieConfigSave", value = 1 }, RegEntry { name = "RMSecBusResetEnable", value = 1 }]

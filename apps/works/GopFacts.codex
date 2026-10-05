@@ -143,6 +143,87 @@ Section: Scan
     else gfs-scan-loop (st.gfs-base) kind fl-fact-log-start (st.gfs-head) []
   end
 
+Section: Checked Reads
+
+  GopFactsMount =
+    | GfsMounted (GopFactStore)
+    | GfsAbsent
+    | GfsMountFailed (Text)
+
+  GopFactsRead =
+    | GfsRows (List Text)
+    | GfsReadFailed (Text)
+
+  gfs-region-checked : [Device.Port] GopFactsMount
+  gfs-region-checked = act
+    hdr <- disk-read-sector 1
+    if hdr.dr-ok == False then GfsMountFailed "fact partition header read failed"
+    else if gpt-sig-ok (hdr.dr-buf) == False then act
+      mbr <- disk-read-sector 0
+      if mbr.dr-ok == False then GfsMountFailed "fact partition sector zero read failed"
+      else if peek-byte (mbr.dr-buf) 510 == 85 & peek-byte (mbr.dr-buf) 511 == 170 then GfsAbsent
+      else GfsMounted (GopFactStore { gfs-ok = True, gfs-base = 0, gfs-limit = 0, gfs-head = 0, gfs-count = 0, gfs-gen = 0 })
+    end
+    else act
+      ents <- disk-read-sector (fat16-read-u32 (hdr.dr-buf) 72)
+      if ents.dr-ok == False then GfsMountFailed "fact partition entries read failed"
+      else let start = gfs-scan-entries (ents.dr-buf) 0
+      in let last = gfs-part-end (ents.dr-buf) 0
+      in if start < 2 then GfsAbsent
+      else if last < start then GfsMountFailed "fact partition bounds are invalid"
+      else GfsMounted (GopFactStore { gfs-ok = True, gfs-base = start, gfs-limit = last - start + 1, gfs-head = 0, gfs-count = 0, gfs-gen = 0 })
+    end
+  end
+
+  gfs-sector-zero : Integer, Integer -> Boolean
+  gfs-sector-zero (buf) (i) = if i >= fl-sector-size then True else if peek-byte buf i /= 0 then False else gfs-sector-zero buf (i + 1)
+
+  gfs-mount-checked : [Device.Port] GopFactsMount
+  gfs-mount-checked = act
+    region <- gfs-region-checked
+    when region
+      is GfsMounted (st) -> act
+        a <- disk-read-sector (st.gfs-base)
+        b <- disk-read-sector (st.gfs-base + 1)
+        if a.dr-ok == False | b.dr-ok == False then GfsMountFailed "fact superblock read failed"
+        else when pick-superblock (unpack-superblock (a.dr-buf)) (unpack-superblock (b.dr-buf))
+          is None -> if gfs-sector-zero (a.dr-buf) 0 & gfs-sector-zero (b.dr-buf) 0 then
+            GfsMounted (GopFactStore { gfs-ok = True, gfs-base = st.gfs-base, gfs-limit = st.gfs-limit, gfs-head = fl-fact-log-start, gfs-count = 0, gfs-gen = 1 })
+            else GfsMountFailed "fact superblocks are invalid"
+          is Just (sb) -> if disk-sb-credible sb (st.gfs-limit) == False then GfsMountFailed "fact superblock bounds are invalid"
+            else GfsMounted (GopFactStore { gfs-ok = True, gfs-base = st.gfs-base, gfs-limit = st.gfs-limit, gfs-head = sb.log-head, gfs-count = sb.fact-count, gfs-gen = sb.index-gen })
+      end
+      is otherwise -> region
+  end
+
+  gfs-scan-checked-loop : Integer, Integer, Integer, Integer, List Text -> [Device.Port] GopFactsRead
+  gfs-scan-checked-loop (base) (kind) (sector) (end-sec) (acc) = act
+    if sector == end-sec then GfsRows acc
+    else if sector > end-sec then GfsReadFailed "fact entry exceeds published head"
+    else act
+      r <- disk-read-sector (base + sector)
+      if r.dr-ok == False then GfsReadFailed ("fact header read failed at sector " & show sector)
+      else let k = fl-entry-kind (r.dr-buf)
+      in let clen = fl-entry-content-len (r.dr-buf)
+      in let nsec = fl-sectors-for clen
+      in if nsec <= 0 | nsec > end-sec - sector then GfsReadFailed "fact content exceeds published head"
+      else if k /= kind then gfs-scan-checked-loop base kind (sector + nsec) end-sec acc
+      else let buf = alloc-bytes (nsec * fl-sector-size)
+      in act
+        ok <- disk-read-into (base + sector) nsec buf
+        if ok == False then GfsReadFailed ("fact content read failed at sector " & show sector)
+        else gfs-scan-checked-loop base kind (sector + nsec) end-sec (list-push acc (unpack-text buf fl-header-size clen))
+      end
+    end
+  end
+
+  gfs-scan-all-checked : GopFactStore, Integer -> [Device.Port] GopFactsRead
+  gfs-scan-all-checked (st) (kind) = act
+    if st.gfs-ok == False then GfsReadFailed "fact store is unavailable"
+    else if st.gfs-head < fl-fact-log-start | (st.gfs-limit > 0 & st.gfs-head > st.gfs-limit) then GfsReadFailed "fact scan bounds are invalid"
+    else gfs-scan-checked-loop (st.gfs-base) kind fl-fact-log-start (st.gfs-head) []
+  end
+
 Section: Write
 
  The entry bytes are app-pack-fact's; the sectors go out through

@@ -1,0 +1,43 @@
+Chapter: CompositeGrowProof
+  cites Uoaix chapter CompositeStore
+
+  cgp-check : Text, Boolean -> [Console] Integer
+  cgp-check (label) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & label)
+    if ok then 0 else 1
+  end
+  cgp-generations : Integer -> [Console] Integer
+  cgp-generations (unused) = when world-new 2
+    is Err (e) -> cgp-check e False
+    is Ok (world) -> when world-create world (gs-mobile 0 1420 1698 0 400 1002)
+      is Err (e) -> cgp-check e False
+      is Ok (mobile) -> when world-create world (gs-item mobile 5399 0)
+        is Err (e) -> cgp-check e False
+        is Ok (old) -> let deleted = world-delete world old
+          in when world-create world (gs-item mobile 5399 0)
+            is Err (e) -> cgp-check e False
+            is Ok (current) -> when cu-world world 16384
+              is Err (e) -> cgp-check e False
+              is Ok (grown) -> when world-create grown (gs-item 0 5422 0)
+                is Err (e) -> cgp-check e False
+                is Ok (next) -> cgp-check "capacity growth preserves live IDs and cannot revive stale generations" (is-err (world-get grown old) & is-ok (world-get grown current) & world-first-child grown mobile == current & next /= old & next /= current)
+  opening : [Console, Device.Block] Integer = act
+    generations <- cgp-generations 0
+    opened <- us-open 0 131072
+    when opened
+      is Err (e) -> cgp-check e False
+      is Ok (store) -> act
+        before <- store.sequence
+        loaded <- cs-load store 0
+        when loaded
+          is Err (e) -> cgp-check e False
+          is Ok (owner) -> let game = owner.state.checkpoint.game
+            in let serial = peek-qword game.characters 0
+            in act
+              a <- cgp-check "legacy composite upgrades capacity and components" (game.world.capacity == 16384 & store.sequence == before & owner.state.resurrection.shrine > 0)
+              b <- cgp-check "legacy character serial position and death survive upgrade" (serial == 6 & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.x == 1421 & m.y == 1698 & m.health == 0))
+              c <- cgp-check "legacy vendor ledger and inventory remain bound" (owner.state.vendor.sale-count == 1 & euv-valid owner.state.vendor.currency & gsi-known owner.state.items (list-at owner.state.vendor.players 0).pack)
+              generations + a + b + c
+            end
+      end
+  end

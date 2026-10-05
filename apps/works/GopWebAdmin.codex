@@ -1,0 +1,290 @@
+Chapter: GopWebAdmin
+  cites Net chapter WebServer
+  cites Foreword chapter CCE
+  cites UI chapter Widget
+  cites Works chapter GopAhci
+
+  gopweb-port : Integer = 9100
+  gopweb-blk-pid : Integer = 64
+  gopweb-blk-state : Integer = 72
+  gopweb-blk-cmd : Integer = 80
+  gopweb-blk-requested : Integer = 88
+  gopweb-blk-ack : Integer = 96
+  gopweb-blk-version : Integer = 104
+  gopweb-blk-seen : Integer = 112
+  gopweb-blk-count : Integer = 120
+  gopweb-blk-bytes-sent : Integer = 128
+  gopweb-blk-statuses : Integer = 136
+  gopweb-blk-dropped : Integer = 176
+  gopweb-blk-started : Integer = 184
+  gopweb-blk-heap : Integer = 192
+  gopweb-blk-peak : Integer = 200
+  gopweb-blk-lease-start : Integer = 208
+  gopweb-blk-lease-seconds : Integer = 216
+  gopweb-blk-ip : Integer = 224
+  gopweb-blk-gateway : Integer = 232
+  gopweb-blk-mask : Integer = 240
+  gopweb-blk-dns : Integer = 248
+  gopweb-blk-card : Integer = 256
+  gopweb-blk-filter-status : Integer = 264
+  gopweb-blk-filter-method : Integer = 272
+  gopweb-blk-scroll : Integer = 280
+  gopweb-blk-query-length : Integer = 288
+  gopweb-blk-focus : Integer = 296
+  gopweb-blk-mods : Integer = 304
+  gopweb-blk-heartbeat : Integer = 320
+  gopweb-blk-heap-base : Integer = 328
+  gopweb-blk-tab : Integer = 336
+  gopweb-blk-command-seq : Integer = 344
+  gopweb-blk-ack-seq : Integer = 352
+  gopweb-blk-refused : Integer = 360
+  gopweb-blk-refused-ip : Integer = 368
+  gopweb-blk-refused-port : Integer = 376
+  gopweb-blk-refused-seq : Integer = 384
+  gopweb-blk-latency : Integer = 392
+  gopweb-query : Integer = 512
+  gopweb-query-cap : Integer = 96
+  gopweb-ring : Integer = 2048
+  gopweb-ring-slots : Integer = 64
+  gopweb-slot-bytes : Integer = 1280
+  gopweb-page-rows : Integer = 3
+  gopweb-cmd-stop : Integer = 1
+  gopweb-cmd-start : Integer = 2
+  gopweb-cmd-restart : Integer = 3
+  gopweb-heap-bytes : Integer = 8388608
+
+ Slots contain aligned qwords: sequence 0, milliseconds 8, IPv4 16,
+ status 24, sent bytes 32, duration 40, method/path lengths 48/56.
+ CCE character codes occupy 16 qwords at 64 and 128 qwords at 192.
+ Truncation flags are at 1216, send completion at 1224, method class at 1232.
+ The writer invalidates sequence before mutation and publishes it last.
+
+  gopweb-blk-bytes : Integer = gopweb-ring + gopweb-ring-slots * gopweb-slot-bytes
+  gopweb-blk-new : Integer = alloc-zeroed gopweb-blk-bytes 64
+
+  gopweb-bump : Integer -> Integer
+  gopweb-bump (blk) = poke-qword blk gopweb-blk-version (peek-qword blk gopweb-blk-version + 1)
+
+  gopweb-slot-at : Integer, Integer -> Integer
+  gopweb-slot-at (blk) (i) = blk + gopweb-ring + int-mod i gopweb-ring-slots * gopweb-slot-bytes
+
+  gopweb-text-write : Integer, Integer, Text, Integer, Integer -> Integer
+  gopweb-text-write (ptr) (off) (text) (i) (cap) =
+    if i >= cap | i >= text-length text then i
+    else let put = poke-qword ptr (off + i * 8) (char-code (char-at text i))
+    in gopweb-text-write ptr off text (i + 1) cap
+
+  gopweb-text-read : Integer, Integer, Integer, Integer -> Text
+  gopweb-text-read (ptr) (off) (lo) (hi) =
+    if hi <= lo then ""
+    else if hi - lo == 1 then char-to-text (code-to-char (peek-qword ptr (off + lo * 8)))
+    else let mid = lo + (hi - lo) / 2
+    in gopweb-text-read ptr off lo mid & gopweb-text-read ptr off mid hi
+
+  gopweb-ip-pack : List Integer -> Integer
+  gopweb-ip-pack (ip) =
+    bit-or (bit-shl (list-at ip 0) 24) (bit-or (bit-shl (list-at ip 1) 16) (bit-or (bit-shl (list-at ip 2) 8) (list-at ip 3)))
+
+  gopweb-ip-unpack : Integer -> List Integer
+  gopweb-ip-unpack (ip) = [bit-and (bit-shru ip 24) 255, bit-and (bit-shru ip 16) 255, bit-and (bit-shru ip 8) 255, bit-and ip 255]
+
+  gopweb-ip-text : Integer -> Text
+  gopweb-ip-text (ip) = show (bit-and (bit-shru ip 24) 255) & "." & show (bit-and (bit-shru ip 16) 255) & "." & show (bit-and (bit-shru ip 8) 255) & "." & show (bit-and ip 255)
+
+  gopweb-status-code : Text -> Integer
+  gopweb-status-code (status) =
+    if text-length status < 3 then 0
+    else (char-code (char-at status 0) - char-code '0') * 100 + (char-code (char-at status 1) - char-code '0') * 10 + char-code (char-at status 2) - char-code '0'
+
+  gopweb-method-class : Text -> Integer
+  gopweb-method-class (method) =
+    if method == "GET" then 1 else if method == "POST" then 2 else if method == "HEAD" then 3 else if method == "PUT" then 4 else if method == "DELETE" then 5 else if method == "OPTIONS" then 6 else if method == "PATCH" then 7 else 8
+
+  gopweb-method-name : Integer -> Text
+  gopweb-method-name (n) =
+    if n == 0 then "All methods" else if n == 1 then "GET" else if n == 2 then "POST" else if n == 3 then "HEAD" else if n == 4 then "PUT" else if n == 5 then "DELETE" else if n == 6 then "OPTIONS" else if n == 7 then "PATCH" else "Other methods"
+
+  gopweb-observe : Integer, WebRequestEvent -> Integer
+  gopweb-observe (blk) (event) =
+    let count = peek-qword blk gopweb-blk-count
+    in let slot = gopweb-slot-at blk count
+    in let invalidate = poke-qword slot 0 0
+    in let t = poke-qword slot 8 (event.wr-time)
+    in let ip = poke-qword slot 16 (gopweb-ip-pack (event.wr-client))
+    in let status = gopweb-status-code (event.wr-status)
+    in let st = poke-qword slot 24 status
+    in let bs = poke-qword slot 32 (event.wr-bytes)
+    in let dur = poke-qword slot 40 (event.wr-duration)
+    in let ml = gopweb-text-write slot 64 (event.wr-method) 0 16
+    in let pl = gopweb-text-write slot 192 (event.wr-path) 0 128
+    in let method = poke-qword slot 48 ml
+    in let path = poke-qword slot 56 pl
+    in let cut = poke-qword slot 1216 ((if text-length (event.wr-path) > 128 then 1 else 0) + (if text-length (event.wr-method) > 16 then 2 else 0))
+    in let complete = poke-qword slot 1224 (if event.wr-complete then 1 else 0)
+    in let mc = poke-qword slot 1232 (gopweb-method-class (event.wr-method))
+    in let publish = poke-qword slot 0 (count + 1)
+    in let bytes = poke-qword blk gopweb-blk-bytes-sent (peek-qword blk gopweb-blk-bytes-sent + event.wr-bytes)
+    in let bucket = if status >= 200 & status < 600 then status / 100 - 2 else 4
+    in let codes = poke-qword blk (gopweb-blk-statuses + bucket * 8) (peek-qword blk (gopweb-blk-statuses + bucket * 8) + 1)
+    in let dropped = if count >= gopweb-ring-slots then poke-qword blk gopweb-blk-dropped (peek-qword blk gopweb-blk-dropped + 1) else 0
+    in let counted = poke-qword blk gopweb-blk-count (count + 1)
+    in gopweb-bump blk
+
+  gopweb-field-match : Integer, Integer, Integer, Text, Integer, Integer -> Boolean
+  gopweb-field-match (ptr) (off) (len) (query) (at) (j) =
+    if j >= text-length query then True
+    else if at + text-length query > len then False
+    else if to-lower (code-to-char (peek-qword ptr (off + (at + j) * 8))) == to-lower (char-at query j) then gopweb-field-match ptr off len query at (j + 1)
+    else gopweb-field-match ptr off len query (at + 1) 0
+
+  gopweb-log-matches : Integer, Integer, Text -> Boolean
+  gopweb-log-matches (blk) (n) (query) =
+    let slot = gopweb-slot-at blk n
+    in if peek-qword slot 0 /= n + 1 then False
+    else let status = peek-qword blk gopweb-blk-filter-status
+    in let method = peek-qword blk gopweb-blk-filter-method
+    in if status /= 0 & peek-qword slot 24 / 100 /= status then False
+    else if method /= 0 & peek-qword slot 1232 /= method then False
+    else let ml = peek-qword slot 48
+    in let pl = peek-qword slot 56
+    in if ml < 0 | ml > 16 | pl < 0 | pl > 128 then False
+    else let found = text-length query == 0 | gopweb-field-match slot 64 ml query 0 0 | gopweb-field-match slot 192 pl query 0 0 | text-contains (gopweb-ip-text (peek-qword slot 16)) query | text-contains (show (peek-qword slot 24)) query
+    in found & peek-qword slot 0 == n + 1
+
+  gopweb-query-text : Integer -> Text
+  gopweb-query-text (blk) = gopweb-text-read blk gopweb-query 0 (peek-qword blk gopweb-blk-query-length)
+
+  gopweb-log-first : Integer -> Integer
+  gopweb-log-first (count) = if count > gopweb-ring-slots then count - gopweb-ring-slots else 0
+
+  gopweb-match-count : Integer, Integer, Integer, Text -> Integer
+  gopweb-match-count (blk) (n) (stop) (query) =
+    if n >= stop then 0
+    else (if gopweb-log-matches blk n query then 1 else 0) + gopweb-match-count blk (n + 1) stop query
+
+  gopweb-col : Text, Text, Integer -> WidgetNode
+  gopweb-col (id) (text) (width) = widget-set-max (widget-fixed (widget-label id text) width 18) width 18
+
+  gopweb-row : Integer, Integer -> WidgetNode
+  gopweb-row (blk) (n) =
+    let slot = gopweb-slot-at blk n
+    in let id = "web-row-" & show n
+    in let method = gopweb-text-read slot 64 0 (peek-qword slot 48)
+    in let path = gopweb-text-read slot 192 0 (peek-qword slot 56)
+    in let status = show (peek-qword slot 24) & (if peek-qword slot 1224 == 1 then "" else " partial")
+    in let row = widget-panel id DirRow 4 [gopweb-col (id & "-time") (show (peek-qword slot 8)) 55, gopweb-col (id & "-ip") (gopweb-ip-text (peek-qword slot 16)) 90, gopweb-col (id & "-method") method 40, gopweb-col (id & "-path") (path & (if peek-qword slot 1216 == 0 then "" else "...")) 145, gopweb-col (id & "-status") status 55, gopweb-col (id & "-bytes") (show (peek-qword slot 32)) 48, gopweb-col (id & "-duration") (show (peek-qword slot 40)) 52]
+    in if peek-qword slot 0 == n + 1 then widget-fixed row 0 0 else widget-label id "Log changed; refresh"
+
+  gopweb-rows : Integer, Integer, Integer, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  gopweb-rows (blk) (n) (first) (query) (skip) (left) (acc) =
+    if n < first | left <= 0 then acc
+    else if gopweb-log-matches blk n query == False then gopweb-rows blk (n - 1) first query skip left acc
+    else if skip > 0 then gopweb-rows blk (n - 1) first query (skip - 1) left acc
+    else gopweb-rows blk (n - 1) first query 0 (left - 1) (list-push acc (gopweb-row blk n))
+
+  gopweb-state-name : Integer -> Text
+  gopweb-state-name (state) =
+    if state == 0 then "Stopped" else if state == 1 then "Starting: acquiring DHCP lease" else if state == 2 then "Running" else if state == 3 then "Stopping" else if state == 4 then "DHCP unavailable: Start to retry" else if state == 5 then "Service process unavailable" else "DHCP lease expired: Start to reacquire"
+
+  gopweb-state-text : Integer -> Text
+  gopweb-state-text (blk) =
+    let command = if peek-qword blk gopweb-blk-command-seq == peek-qword blk gopweb-blk-ack-seq then 0 else peek-qword blk gopweb-blk-cmd
+    in gopweb-state-name (peek-qword blk gopweb-blk-state) & (if command == 0 then "" else if command == 1 then " (Stop requested)" else if command == 2 then " (Start requested)" else " (Restart requested)")
+
+  gopweb-overview : Integer -> WidgetNode
+  gopweb-overview (blk) =
+    let uptime = (get-ticks - peek-qword blk gopweb-blk-started) / 100
+    in let lease = peek-qword blk gopweb-blk-lease-seconds - (get-ticks - peek-qword blk gopweb-blk-lease-start) / 100
+    in widget-panel "web-overview" DirRow 12 [
+      widget-panel "web-binding-details" DirColumn 4 [
+        gopweb-detail "web-binding" ("HTTP: " & (if peek-qword blk gopweb-blk-ip == 0 then "no DHCP address" else gopweb-ip-text (peek-qword blk gopweb-blk-ip) & ":" & show gopweb-port)),
+        gopweb-detail "web-gateway" ("Gateway: " & gopweb-ip-text (peek-qword blk gopweb-blk-gateway) & "   Mask: " & gopweb-ip-text (peek-qword blk gopweb-blk-mask)),
+        gopweb-detail "web-process" ("PID " & show (peek-qword blk gopweb-blk-pid) & "; uptime " & show (if uptime < 0 then 0 else uptime) & " s; lease left " & show (if lease < 0 then 0 else lease) & " s"),
+        gopweb-detail "web-heap" ("Heap: " & show (peek-qword blk gopweb-blk-heap / 1024) & " / " & show (gopweb-heap-bytes / 1024) & " KiB; peak " & show (peek-qword blk gopweb-blk-peak / 1024)),
+        gopweb-detail "web-applied" ("Applied " & show (peek-qword blk gopweb-blk-ack * 10) & " boot ms; wait " & show (peek-qword blk gopweb-blk-latency) & " ms"),
+        gopweb-detail "web-refused" ("Refused attempts: " & show (peek-qword blk gopweb-blk-refused))
+      ],
+      widget-panel "web-route-details" DirColumn 4 [
+        gopweb-detail "web-content" "Built-in site (no disk files)",
+        gopweb-detail "web-route-root" "/  ->  200 HTML: Cobblestone page",
+        gopweb-detail "web-route-health" "/api/health  ->  200 JSON: status=ok",
+        gopweb-detail "web-route-status" "/api/status  ->  200 JSON",
+        gopweb-detail "web-route-status-body" "connection requests; mode=http",
+        gopweb-detail "web-route-other" "Other paths  ->  404 text: Not found"
+      ]
+    ]
+
+  gopweb-detail : Text, Text -> WidgetNode
+  gopweb-detail (id) (text) = widget-fixed (widget-label id text) 240 16
+
+  gopweb-log-view : Integer -> WidgetNode
+  gopweb-log-view (blk) =
+    let count = peek-qword blk gopweb-blk-count
+    in let first = gopweb-log-first count
+    in let query = gopweb-query-text blk
+    in let matches = gopweb-match-count blk first count query
+    in let offset = peek-qword blk gopweb-blk-scroll
+    in let skip = if offset >= matches then (if matches > 0 then matches - 1 else 0) else offset
+    in let rows = gopweb-rows blk (count - 1) first query skip gopweb-page-rows []
+    in let status = peek-qword blk gopweb-blk-filter-status
+    in widget-panel "web-log" DirColumn 2 ([
+      widget-fixed (widget-panel "web-filters" DirRow 6 [widget-fixed (widget-button "web-method" (gopweb-method-name (peek-qword blk gopweb-blk-filter-method))) 105 0, widget-fixed (widget-button "web-status" (if status == 0 then "All statuses" else show status & "xx")) 110 0, widget-fixed (widget-button "web-query" (if peek-qword blk gopweb-blk-focus == 1 then "Search (typing)" else "Search")) 115 0, widget-button "web-query-clear" "Clear search"]) 0 0,
+      widget-fixed (widget-panel "web-scroll" DirRow 6 [widget-input "web-search" query (text-length query), widget-button "web-newer" "Newer", widget-button "web-older" "Older", widget-button "web-latest" "Latest"]) 0 0,
+      widget-label "web-log-size" (gopweb-state-text blk & "; " & show matches & " matching; showing " & show (list-length rows) & " from " & show skip & "; ring " & show gopweb-ring-slots & "; overwritten " & show (peek-qword blk gopweb-blk-dropped)),
+      widget-fixed (widget-panel "web-columns" DirRow 4 [gopweb-col "web-h-time" "Boot ms" 55, gopweb-col "web-h-client" "Client IP" 90, gopweb-col "web-h-method" "Method" 40, gopweb-col "web-h-path" "Path" 145, gopweb-col "web-h-status" "Status" 55, gopweb-col "web-h-bytes" "Bytes" 48, gopweb-col "web-h-duration" "Time ms" 52]) 0 0
+    ] & (if list-length rows == 0 then [widget-label "web-empty" "No matching requests"] else rows))
+
+  gopweb-tree : Integer -> WidgetNode
+  gopweb-tree (blk) = widget-panel "web-body" DirColumn 4 ([
+    widget-fixed (widget-panel "web-actions" DirRow 6 [widget-button "web-start" "Start", widget-button "web-stop" "Stop", widget-button "web-restart" "Restart", widget-button "web-overview-tab" "Overview", widget-button "web-log-tab" "Request log"]) 0 0
+  ] & (if peek-qword blk gopweb-blk-tab == 0 then [
+    widget-label "web-state" (gopweb-state-text blk),
+    widget-label "web-totals" ("Requests " & show (peek-qword blk gopweb-blk-count) & "   Sent " & show (peek-qword blk gopweb-blk-bytes-sent) & " bytes"),
+    widget-label "web-status-counts" ("2xx " & show (peek-qword blk 136) & "   3xx " & show (peek-qword blk 144) & "   4xx " & show (peek-qword blk 152) & "   5xx " & show (peek-qword blk 160) & "   Other " & show (peek-qword blk 168)),
+    gopweb-overview blk
+  ] else [gopweb-log-view blk]))
+
+  gopweb-action-code : Text -> Integer
+  gopweb-action-code (id) =
+    if id == "web-stop" then 1 else if id == "web-start" then 2 else if id == "web-restart" then 3 else if id == "web-method" then 4 else if id == "web-status" then 5 else if id == "web-older" then 6 else if id == "web-newer" then 7 else if id == "web-latest" then 8 else if id == "web-search" | id == "web-query" then 9 else if id == "web-query-clear" then 10 else if id == "web-overview-tab" then 11 else if id == "web-log-tab" then 12 else 0
+
+  gopweb-action : Integer, Integer -> Integer
+  gopweb-action (blk) (action) =
+    if action <= 0 then 0
+    else if action <= 3 then
+      let sequence = peek-qword blk gopweb-blk-command-seq + 2
+      in let writing = poke-qword blk gopweb-blk-command-seq (sequence - 1)
+      in let requested = poke-qword blk gopweb-blk-requested get-ticks
+      in let command = poke-qword blk gopweb-blk-cmd action
+      in let published = poke-qword blk gopweb-blk-command-seq sequence
+      in 1
+    else if action == 4 then
+      let method = poke-qword blk gopweb-blk-filter-method (int-mod (peek-qword blk gopweb-blk-filter-method + 1) 9)
+      in let scroll = poke-qword blk gopweb-blk-scroll 0 in 1
+    else if action == 5 then
+      let status = peek-qword blk gopweb-blk-filter-status
+      in let set = poke-qword blk gopweb-blk-filter-status (if status == 0 then 2 else if status >= 5 then 0 else status + 1)
+      in let scroll = poke-qword blk gopweb-blk-scroll 0 in 1
+    else if action == 6 then let scroll = poke-qword blk gopweb-blk-scroll (peek-qword blk gopweb-blk-scroll + gopweb-page-rows) in 1
+    else if action == 7 then let offset = peek-qword blk gopweb-blk-scroll - gopweb-page-rows in let scroll = poke-qword blk gopweb-blk-scroll (if offset < 0 then 0 else offset) in 1
+    else if action == 8 then let scroll = poke-qword blk gopweb-blk-scroll 0 in 1
+    else if action == 9 then let focus = poke-qword blk gopweb-blk-focus 1 in 1
+    else if action == 10 then let clear = poke-qword blk gopweb-blk-query-length 0 in let scroll = poke-qword blk gopweb-blk-scroll 0 in 1
+    else let tab = poke-qword blk gopweb-blk-tab (if action == 12 then 1 else 0)
+    in let focus = poke-qword blk gopweb-blk-focus 0 in 1
+
+  gopweb-key : Integer, Integer, Integer -> Integer
+  gopweb-key (blk) (sc) (ch) =
+    if sc == 73 then gopweb-action blk 7
+    else if sc == 81 then gopweb-action blk 6
+    else if sc == 15 then gopweb-action blk 9
+    else if peek-qword blk gopweb-blk-focus /= 1 then 0
+    else if sc == 1 | sc == 28 then let focus = poke-qword blk gopweb-blk-focus 0 in 1
+    else let len = peek-qword blk gopweb-blk-query-length
+    in if sc == 14 & len > 0 then
+      let shorter = poke-qword blk gopweb-blk-query-length (len - 1)
+      in let scroll = poke-qword blk gopweb-blk-scroll 0 in 1
+    else if sc >= 128 | ch < 32 | ch >= 127 | len >= gopweb-query-cap then 0
+    else let put = poke-qword blk (gopweb-query + len * 8) (from-unicode ch)
+    in let longer = poke-qword blk gopweb-blk-query-length (len + 1)
+    in let scroll = poke-qword blk gopweb-blk-scroll 0 in 1

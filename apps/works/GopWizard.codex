@@ -155,12 +155,22 @@ Section: Key Wait
   wz-vitals (c) (spins) (elapsed) (raw) (sc) =
     let z = wz-clear-row c 13
     in let y = wz-clear-row c 14
-    in let t = wz-text c 13 (wz-status-line elapsed) wz-col-warn
+    in let t = wz-text c 13 (if kbd-released 0 == 0 & wz-usb-proven (c.wz-kbd) then "USB keyboard active. Press Enter to continue." else wz-status-line elapsed) wz-col-warn
     in wz-text c 14 ("spin=" & show (spins / 1024) & "k s=" & show elapsed & " rtc=" & show raw & " pit=" & show (wz-pit 0) & " sc=" & show sc
          & " ok=" & (if (c.wz-kbd).uk-ok then "Y" else "n") & " ev=" & show (kbd-events (c.wz-kbd)) & " cc=" & show (kbd-code (c.wz-kbd))) wz-col-text
 
   wz-gate-fire : WzCtx -> Integer
   wz-gate-fire (c) = kbd-handback 0
+
+  wz-usb-proven : UsbKbd -> Boolean
+  wz-usb-proven (kbd) =
+    if kbd-scans kbd > 0 then True else wz-usb-peer-proven kbd 0
+
+  wz-usb-peer-proven : UsbKbd, Integer -> Boolean
+  wz-usb-peer-proven (kbd) (i) =
+    if i >= kbd-peers kbd then False
+    else if kbd-scans (kbd-peer kbd i) > 0 then True
+    else wz-usb-peer-proven kbd (i + 1)
 
   wz-real-key : Integer -> Boolean
   wz-real-key (sc) = sc > 0 & sc < 128
@@ -181,7 +191,7 @@ Section: Key Wait
     in let e2 = if tick then elapsed + 1 else elapsed
     in let p2 = if good then now else prev
     in let note = if tick | spins == 0 | (e2 == 0 & int-mod spins wz-note-every == 0) then wz-vitals c spins e2 now seen else 0
-    in let fire = if kbd-released 0 /= 0 then 0
+    in let fire = if kbd-released 0 /= 0 | wz-usb-proven (c.wz-kbd) then 0
       else if wz-real-key sc then 0
       else if e2 >= wz-gate-secs then wz-gate-fire c
       else if e2 == 0 & spins >= wz-noclock-spins then wz-gate-fire c

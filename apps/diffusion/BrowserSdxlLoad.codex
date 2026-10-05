@@ -1,0 +1,79 @@
+Chapter: BrowserSdxlLoad
+  cites Diffusion chapter BrowserSdxl
+  cites Diffusion chapter BrowserLora
+
+ We say:
+
+  bsl-uploaded : Text, List BoundTensor, Text, Integer, List Text, List Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer), (List Text, List Integer -> Integer), (Text -> Integer), Text -> Integer
+  bsl-uploaded (file) (ts) (prefix) (i) (ns) (hs) (patch) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" == False then bcl-refuse hs refuse ("SDXL tensor upload failed: " & result)
+    else bsl-upload file ts prefix (i + 1) ns hs patch ready refuse
+
+  bsl-upload : Text, List BoundTensor, Text, Integer, List Text, List Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer), (List Text, List Integer -> Integer), (Text -> Integer) -> Integer
+  bsl-upload (file) (ts) (prefix) (i) (ns) (hs) (patch) (ready) (refuse) =
+    if i >= list-length ts then ready ns hs
+    else let t = list-at ts i
+    in let dt = bl-dt (t.bt-dtype)
+    in if dt < 0 then bcl-refuse hs refuse "Unsupported SDXL tensor dtype"
+    else let n = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = gpu-buf-alloc (if bt-half t then (n + 1) / 2 * 4 else n * 4)
+    in if h == 0 then bcl-refuse hs refuse "SDXL weight allocation failed"
+    else gpu-buf-upload-then h 0 file (t.bt-offset) n dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r ->
+      if text-contains r "\"ok\":true" == False then bcl-refuse (list-push hs h) refuse ("SDXL tensor upload failed: " & r)
+      else patch t h (\why -> if why /= "" then bcl-refuse (list-push hs h) refuse why
+        else bsl-uploaded file ts prefix i (list-push ns (bl-short prefix (t.bt-name))) (list-push hs h) patch ready refuse r))
+
+  bsl-ready : Text, BrowserClipLoaded, BrowserClipLoaded, List Text, List Integer, (BrowserSdxlModel -> Integer), List Text, List Integer -> Integer
+  bsl-ready (code) (l) (g) (un) (uh) (ready) (vn) (vh) =
+    let state = alloc-bytes 4
+    in let idle = poke-32 state 0 0
+    in ready (BrowserSdxlModel { bs-code = code, bs-l = l.bcl-weights, bs-g = g.bcl-weights, bs-unet = BuWeights { bu-names = un, bu-handles = uh }, bs-vae = BvWeights { bw-names = vn, bw-handles = vh }, bs-handles = l.bcl-handles & g.bcl-handles & uh & vh, bs-state = state })
+
+  bsl-unet : Text, Text, List PartBinding, BrowserClipLoaded, BrowserClipLoaded, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), List Text, List Integer -> Integer
+  bsl-unet (file) (code) (parts) (l) (g) (patch) (ready) (refuse) (un) (uh) =
+    bsl-upload file (bl-vae (bl-part parts 0 "vae") 0 []) "first_stage_model." 0 [] [] patch (\vn vh -> bsl-ready code l g un uh ready vn vh) (\why -> (let a = browser-clip-close l in let b = browser-clip-close g in let c = bcl-free uh 0 in refuse why))
+
+  bsl-g : Text, Text, List PartBinding, BrowserClipLoaded, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), BrowserClipLoaded -> Integer
+  bsl-g (file) (code) (parts) (l) (patch) (ready) (refuse) (g) =
+    bsl-upload file (bl-part parts 0 "unet") "model.diffusion_model." 0 [] [] patch (\un uh -> bsl-unet file code parts l g patch ready refuse un uh) (\why -> (let a = browser-clip-close l in let b = browser-clip-close g in refuse why))
+
+  bsl-l : Text, Text, Text, List PartBinding, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), BrowserClipLoaded -> Integer
+  bsl-l (file) (code) (extra) (parts) (patch) (ready) (refuse) (l) =
+    browser-clip-load-patched file extra bc-xl-g-spec (list-at parts 2) patch (\g -> bsl-g file code parts l patch ready refuse g) (\why -> (let a = browser-clip-close l in refuse why))
+
+  bsl-header : Text, Text, Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), Text -> Integer
+  bsl-header (file) (code) (extra) (patch) (ready) (refuse) (data) =
+    if text-starts-with data "[" == False | text-ends-with data "]" == False then refuse ("SDXL header read failed: " & data)
+    else let parsed = st-parse-file (bl-list data)
+    in let binding = layout-bind parsed sdxl-layout
+    in if parsed.st-valid == False | bl-parts-bound (binding.lb-parts) 0 == False then refuse "Checkpoint does not satisfy the SDXL layout"
+    else browser-clip-load-patched file extra bc-xl-l-spec (list-at (binding.lb-parts) 1) patch (\l -> bsl-l file code extra (binding.lb-parts) patch ready refuse l) refuse
+
+  bsl-length : Text, Integer, Text, Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), Text -> Integer
+  bsl-length (file) (size) (code) (extra) (patch) (ready) (refuse) (data) =
+    let bytes = bl-list data
+    in let n = if list-length bytes /= 8 then 0 else st-read-u64 bytes 0
+    in if n <= 0 | n > 16777216 | n + 8 > size then refuse "SDXL header length is invalid"
+    else file-read-then file 0 (n + 8) (\r -> bsl-header file code extra patch ready refuse r)
+
+  bsl-opened : Text, Integer, Text, Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), Text -> Integer
+  bsl-opened (file) (size) (code) (extra) (patch) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" == False then refuse ("WebGPU open failed: " & result)
+    else file-read-then file 0 8 (\r -> bsl-length file size code extra patch ready refuse r)
+
+  browser-sdxl-open : Text, Integer, Text, Text, (BrowserSdxlModel -> Integer), (Text -> Integer) -> Integer
+  browser-sdxl-open (file) (size) (code) (extra) (ready) (refuse) =
+    browser-sdxl-open-patched file size code extra (\t h next -> next "") ready refuse
+
+  browser-sdxl-open-patched : Text, Integer, Text, Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer) -> Integer
+  browser-sdxl-open-patched (file) (size) (code) (extra) (patch) (ready) (refuse) =
+    if size <= 8 then refuse "SDXL file size is invalid"
+    else gpu-open-then (\r -> bsl-opened file size code extra patch ready refuse r)
+
+  browser-sdxl-lora-open : Text, Integer, Text, Text, Text, Integer, Real, Text, (BrowserSdxlModel -> Integer), (Text -> Integer) -> Integer
+  browser-sdxl-lora-open (checkpoint) (size) (code) (extra) (file) (lora-size) (weight) (lora-code) (ready) (refuse) =
+    if lora-code == "" then refuse "Browser LoRA shader is unavailable"
+    else browser-lora-open file lora-size "sdxl" weight (\l ->
+      browser-sdxl-open-patched checkpoint size code extra (\t h next -> browser-lora-patch lora-code l t h next) (\m ->
+        gpu-trim-then (\why -> if why == "" then ready m
+          else let f = browser-sdxl-close m in refuse ("LoRA scratch trim failed: " & why))) refuse) refuse

@@ -268,7 +268,9 @@ Section: Guidance
     tc-w : Integer,
     tc-cfg : Real,
     tc-sd15 : Boolean,
-    tc-extras : TiExtras
+    tc-extras : TiExtras,
+    tc-kc : Integer,
+    tc-ku : Integer
   }
 
   ti-model : TiCfg, Integer, Integer, Integer, Real -> Integer
@@ -289,7 +291,7 @@ Section: Guidance
     let fu = (c.tc-extras).tx-freeu
     in let thr = if ti-sag-patched c then list-at ((c.tc-extras).tx-sag) 2 else 1.0
     in let held = ti-sag-patched c
-    in unet-ops-with (if list-length fu >= 4 & ti-freeu-on (c.tc-extras) then (\a sk cx cs hh ww -> freeu-patch (list-at fu 0) (list-at fu 1) (list-at fu 2) (list-at fu 3) a sk cx cs hh ww) else (\a sk cx cs hh ww -> True)) (\p -> mode == 2 & text-starts-with p "middle_block." & (held == False | p /= ti-sag-key)) (\p -> mode == 1 & p == ti-sag-key) (\sb hd r -> sag-probs mbuf thr sb hd r)
+    in unet-ops-with (if list-length fu >= 4 & ti-freeu-on (c.tc-extras) then (\a sk cx cs hh ww -> freeu-patch (list-at fu 0) (list-at fu 1) (list-at fu 2) (list-at fu 3) a sk cx cs hh ww) else (\a sk cx cs hh ww -> True)) (\p -> mode == 2 & text-starts-with p "middle_block." & (held == False | p /= ti-sag-key)) (\p -> mode == 1 & p == ti-sag-key) (\sb hd r -> sag-probs mbuf thr sb hd r) (\h -> if h == c.tc-cu then c.tc-ku else c.tc-kc)
 
  SAG patches the model only where the guidance scale is above 1 (Forge
  prints and skips it otherwise).
@@ -304,7 +306,8 @@ Section: Guidance
   ti-den : TiCfg, Integer, Real -> Integer
   ti-den (c) (x) (s) =
     let tick = ti-tick (c.tc-extras)
-    in let n = 4 * c.tc-h * c.tc-w
+    in if ti-plain c then guided-with (ti-ops c 0 0) sampler-native-ops (\a b -> ti-model c (c.tc-yc) (c.tc-cc) a b) (\a b -> ti-model c (c.tc-yu) (c.tc-cu) a b) (c.tc-cfg) (4 * c.tc-h * c.tc-w) x s
+    else let n = 4 * c.tc-h * c.tc-w
     in let sag = ti-sag-patched c
     in let mbuf = if sag then gpu-buf-alloc (ti-mid-rows c * 4) else 0
     in let dc = ti-model c (c.tc-yc) (c.tc-cc) x s
@@ -315,6 +318,12 @@ Section: Guidance
     in let f = (if dc == 0 then True else gpu-buf-free dc) & (if du == 0 then True else gpu-buf-free du)
     in let g = if mbuf == 0 then True else gpu-buf-free mbuf
     in post
+
+ A request with no dynamic thresholding, SAG or PAG guides as the page does
+ (DenoiserGraph's guided-with).
+
+  ti-plain : TiCfg -> Boolean
+  ti-plain (c) = ti-sag-patched c == False & list-length ((c.tc-extras).tx-dt) == 0 & (c.tc-extras).tx-pag ~0 0.0
 
  Guidance: uncond + cfg (cond - uncond), or dynamic thresholding, Forge's
  sampler_cfg_function, at step 999 - t.
@@ -423,8 +432,9 @@ Section: Guidance
 
 Section: The Image
 
- The cross-attention context of the UNet is one 77-token chunk; a prompt
- that needs more is refused rather than cut.
+ The cross-attention context is the prompt's chunks, 77 tokens each, and the
+ cond and the uncond each attend over their own: Forge's backend (condition.py)
+ repeats the shorter to a common length, which leaves attention unchanged.
 
  Text to image from the unit noise in x: scaled by the first sigma unless the
  sampler is a timestep sampler; DPM fast and DPM adaptive run over the
@@ -443,15 +453,15 @@ Section: The Image
     in let f = if nb == 0 then True else gpu-buf-free nb
     in bad
 
-  ti-sample : Txt2Img, UNetFile, Integer, Integer, Integer, Integer -> Integer
-  ti-sample (r) (u) (yc) (cc) (yu) (cu) =
+  ti-sample : Txt2Img, UNetFile, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ti-sample (r) (u) (yc) (cc) (yu) (cu) (kc) (ku) =
     let lh = r.ti-height / 8
     in let lw = r.ti-width / 8
     in let n = 4 * lh * lw
     in let tab = unet-log-sigmas 0
     in let x = gpu-buf-alloc (n * 4)
     in let x0 = noise-torch x (r.ti-seed) 0 n
-    in let tc = TiCfg { tc-unet = u, tc-tab = tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = lh, tc-w = lw, tc-cfg = r.ti-cfg, tc-sd15 = False, tc-extras = r.ti-extras }
+    in let tc = TiCfg { tc-unet = u, tc-tab = tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = lh, tc-w = lw, tc-cfg = r.ti-cfg, tc-sd15 = False, tc-extras = r.ti-extras, tc-kc = kc, tc-ku = ku }
     in let bad = ti-txt2img-run r tc x n
     in if bad > 0 | x0 == False then 0 - bad - (if x0 then 0 else 1000) else x
 
@@ -464,7 +474,6 @@ Section: The Image
     in let c = clip-condition (ce-skip wl (r.ti-clip-skip)) (ce-skip wg (r.ti-clip-skip)) bpe (r.ti-prompt) False
     in let un = clip-condition (ce-skip wl (r.ti-clip-skip)) (ce-skip wg (r.ti-clip-skip)) bpe (r.ti-negative) True
     in if c.cn-status /= 0 | un.cn-status /= 0 then "text encoders failed " & show (c.cn-status) & " " & show (un.cn-status)
-    else if c.cn-chunks /= 1 | un.cn-chunks /= 1 then "refused: prompt " & show (c.cn-chunks) & " chunks, negative " & show (un.cn-chunks) & "; the UNet context is one 77-token chunk"
     else let cc = clip-crossattn c
     in let cu = clip-crossattn un
     in let yc = ti-adm (c.cn-pooled) (r.ti-height) (r.ti-width)
@@ -472,7 +481,7 @@ Section: The Image
     in if cc == 0 | cu == 0 | yc == 0 | yu == 0 then "conditioning failed: context " & show cc & " " & show cu & ", adm " & show yc & " " & show yu
     else let f1 = clip-cond-free c + clip-cond-free un
     in let u = unet-load (unet-open (r.ti-ckpt))
-    in let x = ti-sample r u yc cc yu cu
+    in let x = ti-sample r u yc cc yu cu (77 * c.cn-chunks) (77 * un.cn-chunks)
     in let f2 = ti-free-all (u.uf-handles) 0 0 + ti-free-all [cc, cu, yc, yu] 0 0
     in if x <= 0 then "sampling failed: " & show (0 - x) & " refused steps (1000 = noise)"
     else let lh = r.ti-height / 8

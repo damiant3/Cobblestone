@@ -1,0 +1,91 @@
+Chapter: TownNetworkHillProof
+  cites Uoaix chapter TownNetworkHill
+  cites Uoaix chapter TownNetwork
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Result
+
+  tnhp-check : Text, Boolean -> [Console] Nothing
+  tnhp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tnhp-inputs : TnState, List Integer, Integer, Integer -> Integer
+  tnhp-inputs (s) (inputs) (row) (i) = if i == 30 then 0
+    else let set = tn-input s i (list-at inputs (row * 32 + i))
+    in tnhp-inputs s inputs row (i + 1)
+  tnhp-state : TnModel, List Integer, Integer -> TnState
+  tnhp-state (m) (inputs) (row) =
+    let s = tn-new 0
+    in let copied = tnhp-inputs s inputs row 0
+    in let h = list-set-at s.outputs 10 (list-at inputs (row * 32 + 30))
+    in let a = list-set-at s.outputs 11 (list-at inputs (row * 32 + 31))
+    in let ran = tn-step m s
+    in s
+  tnhp-parity : TnState, Integer, Integer -> Boolean
+  tnhp-parity (s) (row) (i) = if i == 14 then True
+    else if list-at s.outputs i /= peek-qword tnh-scratch ((row * 14 + i) * 8) then False
+    else tnhp-parity s row (i + 1)
+  tnhp-error : TnState, List Integer, Integer, Integer, Integer -> Integer
+  tnhp-error (s) (outcomes) (row) (i) (sum) = if i == 14 then sum
+    else let difference = list-at s.outputs i - list-at outcomes (row * 14 + i)
+    in tnhp-error s outcomes row (i + 1) (sum + difference * difference / 16)
+  tnhp-score : TnState, List Integer, Integer -> Integer
+  tnhp-score (s) (outcomes) (row) =
+    let chosen = tn-pop s
+    in let utility = if chosen == 0 then 0 else list-at outcomes (row * 14 + chosen - 1)
+    in utility * 1000 - tnhp-error s outcomes row 0 0
+  tnhp-body : TnhGpu, List Integer, List Integer -> [Console] Nothing
+  tnhp-body (g) (inputs) (outcomes) = act
+    when tnh-export g
+      is Err (message) -> print-line-uni ("FAIL initial export " & message)
+      is Ok (initial) -> act
+        read <- gpu-buf-read g.outputs 0 (2 * 14 * 8) tnh-scratch
+        first <- tnhp-state initial inputs 0
+        second <- tnhp-state initial inputs 1
+        tnhp-check "CUDA integer inference equals CPU" (read & tnhp-parity first 0 0 & tnhp-parity second 1 0)
+        expected <- tnhp-score first outcomes 0 + tnhp-score second outcomes 1
+        original <- g.best-score
+        tnhp-check "CUDA aggregate score equals CPU" (original == expected)
+        mark <- __heap-save
+        better <- tnh-try g 752 100
+        after <- __heap-save
+        kept <- g.best-score
+        worse <- tnh-try g 752 -200
+        tied <- tnh-try g 752 0
+        invalid <- tnh-try g -1 100
+        tnhp-check "strict improvement is retained" (better == 1 & kept > original & g.accepted == 1)
+        tnhp-check "regression tie and invalid proposal retain incumbent" (worse == 0 & tied == 0 & invalid == -1 & g.best-score == kept)
+        tnhp-check "candidate evaluation retains no new guest heap" (after == mark)
+        when tnh-export g
+          is Err (message) -> print-line-uni ("FAIL accepted export " & message)
+          is Ok (model) -> act
+            one <- tnhp-state model inputs 0
+            two <- tnhp-state model inputs 1
+            score <- tnhp-score one outcomes 0 + tnhp-score two outcomes 1
+            tnhp-check "export holds accepted weights and score" (list-at model.output-bias 0 == 100 & score == kept)
+          end
+      end
+  end
+  opening : [Console] Nothing = act
+    weights <- tn-zeros 766
+    inputs <- tn-zeros 64
+    outcomes <- tn-zeros 28
+    hw <- list-set-at weights 0 1000
+    ow <- list-set-at weights 528 1000
+    happy <- list-set-at weights 762 500
+    opinion <- list-set-at weights 764 -200
+    x0 <- list-set-at inputs 0 200
+    x1 <- list-set-at inputs 32 800
+    p0 <- list-set-at inputs 30 500
+    p1 <- list-set-at inputs 62 500
+    y0 <- list-set-at outcomes 0 400
+    y1 <- list-set-at outcomes 14 1000
+    h0 <- list-set-at outcomes 10 500
+    h1 <- list-set-at outcomes 24 500
+    o0 <- list-set-at outcomes 12 -200
+    o1 <- list-set-at outcomes 26 -200
+    when tnh-open 2 weights inputs outcomes
+      is Err (message) -> print-line-uni ("FAIL hill admission " & message)
+      is Ok (g) -> act
+        tnhp-body g inputs outcomes
+        closed <- tnh-close g
+        tnhp-check "close releases ownership and refuses reuse" (closed & not (tnh-close g) & tnh-try g 0 1 == -1)
+      end
+  end

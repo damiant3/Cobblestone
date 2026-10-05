@@ -11,6 +11,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Out,
     [int]$HeapPages = 512,
+    [switch]$OwnedProcessPool,
     # Call GetMemoryMap + ExitBootServices (one stale-key retry) after the last
     # boot-services use, then cli and zero the SystemTable cells. This is what
     # the retired option_a_stub.asm always did and this stub never did, and the
@@ -209,6 +210,10 @@ function Find-FuncOffset([string]$name) {
 }
 
 # Entry point: `opening` by default, `__start` under -EntryStart.
+if ($OwnedProcessPool -and ($EntryStart -or -not $ExitBootServices -or (Find-FuncOffset '__spawn_pool_carve_v2') -lt 0)) {
+    throw 'OwnedProcessPool requires the v2 process runtime, opening entry and ExitBootServices.'
+}
+
 #
 # `__start` (emit-start, X86_64Chapter.codex) is the bare-metal runtime init:
 # GDT, page tables, CR3, the syscall MSR, and -- the one that matters here --
@@ -1023,12 +1028,12 @@ if ($HeapAt -ne 0) {
     # aperture, so the condition the guard tests cannot arise.
     #
     # With no framebuffer (r12 = 0) there is no aperture to collide with and
-    # AnyPages is right, which is also the codex-vm -headless case.
+    # AnyPages is right, including codex-vm guests below its GOP RAM range.
     #
     # NOT applied to the A5 path, deliberately and by construction: an
-    # -EntryStart payload without -Ebs still takes AnyPages below, so the
-    # flown A5 stub emits byte-identical bytes. Verified by hash, not by
-    # reading. It was first limited to -Ebs alone (main 15102), which left
+    # -EntryStart payload without -Ebs still takes AnyPages below. The
+    # corrected no-GOP guard skip applies to both startup paths; whole-stub
+    # byte identity is not claimed. The ceiling was first limited to -Ebs, which left
     # every PLAIN option-a image (the desk, the probes, sinkladder) halting
     # 'V' in the bed from main 15041 on: measured 2026-08-15 with
     # CODEX_VM_ALLOC_TRACE, the depot sinkladder.img (old stub, MaxAddress
@@ -1050,12 +1055,12 @@ if ($HeapAt -ne 0) {
     # 0xBF000000, heap ending exactly AT the aperture, and 'V' still raised.
     #
     # So the request is backed off far enough to satisfy the WINDOW rather
-    # than the heap, which leaves the guard untouched and therefore leaves the
-    # A5 path untouched. One extra megabyte so the arena end lands strictly
+    # than the heap, preserving the guard's 256 MiB overlap policy.
+    # One extra megabyte makes the arena end land strictly
     # below the aperture instead of exactly on it.
     $ebsBackoff = [Math]::Max([long]0, [long]0x10000000 - ([long]$HeapPages * 4096)) + 0x100000
     $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
-    $bw.Write([byte[]]@(0x74, 0x16))                                # jz +22 -> AnyPages
+    $bw.Write([byte[]]@(0x74, 0x17))                                # jz +23 -> AnyPages
     $bw.Write([byte[]]@(0x4C, 0x89, 0xE0))                          # mov rax, r12 (fb base)
     $bw.Write([byte[]]@(0x48, 0x2D))                                # sub rax, ebsBackoff
     $bw.Write([BitConverter]::GetBytes([int]$ebsBackoff))
@@ -1077,8 +1082,8 @@ $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
 $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))              # lea r9, [rsp+0x38]
 $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
 $bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
-# DARK RED only on the paths that already differ from the flown A5 stub, so the
-# -EntryStart-without-Ebs bytes stay byte-identical to what has flown.
+# Paint allocation failure only for ExitBootServices or opening startup;
+# EntryStart without ExitBootServices uses the unpainted refusal.
 if ($ExitBootServices -or -not $EntryStart) {
     AssertAllocOkPainted 'H' $GopDarkRed                        # H = heap allocation status
 } else {
@@ -1090,6 +1095,73 @@ $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))              # mov rax, [rsp+
 $bw.Write([byte[]]@(0x48, 0x85, 0xC0))                          # test rax, rax
 $bw.Write([byte[]]@(0x75, 0x10))                                # jnz +16 (over the panic)
 AllocPanic 'B'
+if ($OwnedProcessPool) {
+    # Preserve the root allocation. A second EfiLoaderData allocation owns
+    # all child slots and their FX pages below the runtime demand-map ceiling.
+    $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 224)))
+    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x08))                  # root base at +232
+    $bw.Write([byte[]]@(0x48, 0xB9)); $bw.Write([BitConverter]::GetBytes([long]$HeapPages * 4096))
+    $bw.Write([byte[]]@(0x48, 0x01, 0xC8, 0x48, 0x89, 0x47, 0x10)) # root end at +240
+    $bw.Write([byte[]]@(0x48, 0xC7, 0x47, 0x18, 0x00, 0x00, 0x00, 0x20)) # pool span at +248
+    $bw.Write([byte[]]@(0x48, 0xC7, 0x07, 0xFF, 0xFF, 0xFF, 0x7F)) # allocation ceiling
+    $bw.Write([byte[]]@(0x49, 0x89, 0xF9))                      # r9 = output pool base
+    $bw.Write([byte[]]@(0xB9, 0x01, 0x00, 0x00, 0x00))          # AllocateMaxAddress
+    $bw.Write([byte[]]@(0xBA, 0x02, 0x00, 0x00, 0x00))          # EfiLoaderData
+    $bw.Write([byte[]]@(0x41, 0xB8, 0x00, 0x00, 0x02, 0x00))    # 131072 pages
+    $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x50, 0x28))
+    AssertAllocOkPainted 'Q' 0x00602060                          # purple: owned pool refused
+    $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
+    $bw.Write([byte[]]@(0xC7, 0x47, 0x08, 0x04, 0x00, 0x00, 0x00)) # handoff version 4
+    $bw.Write([byte[]]@(0xC7, 0x47, 0x0C, 0x00, 0x01, 0x00, 0x00)) # handoff size 256
+    $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))          # restore root base
+} else {
+# The runtime derives process slots from RSP in [1 GiB, 1.5 GiB).
+# Keep the entire boot heap outside that fixed child-process pool.
+$heapPoolSkips = @()
+for ($heapAttempt = 0; $heapAttempt -lt 2; $heapAttempt++) {
+    $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))          # mov rax, [rsp+0x38]
+    $bw.Write([byte[]]@(0x48, 0x3D, 0x00, 0x00, 0x00, 0x60))  # cmp rax, 0x60000000
+    $bw.Write([byte[]]@(0x0F, 0x83))                            # jae heapPoolDone
+    $heapPoolSkips += $ms.Position
+    $bw.Write([int]0)
+    $bw.Write([byte[]]@(0x48, 0x89, 0xC2))                      # mov rdx, rax
+    $bw.Write([byte[]]@(0x48, 0xB9))                            # mov rcx, heap bytes
+    $bw.Write([BitConverter]::GetBytes([long]$HeapPages * 4096))
+    $bw.Write([byte[]]@(0x48, 0x01, 0xCA))                      # add rdx, rcx
+    $bw.Write([byte[]]@(0x48, 0x81, 0xFA, 0x00, 0x00, 0x00, 0x40)) # cmp rdx, 0x40000000
+    $bw.Write([byte[]]@(0x0F, 0x86))                            # jbe heapPoolDone
+    $heapPoolSkips += $ms.Position
+    $bw.Write([int]0)
+    if ($heapAttempt -eq 0 -and $HeapAt -eq 0) {
+        $bw.Write([byte[]]@(0x48, 0x89, 0xC1))                  # mov rcx, rax
+        $bw.Write([byte[]]@(0x48, 0xC7, 0xC2))                  # mov rdx, HeapPages
+        $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
+        $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))            # mov rax, [r15+0x60]
+        $bw.Write([byte[]]@(0xFF, 0x50, 0x30))                  # call FreePages
+        AssertAllocOk 'F'
+        $bw.Write([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x38, 0xFF, 0xFF, 0xFF, 0x3F)) # ceiling below pool
+        $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00)) # AllocateMaxAddress
+        $bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00)) # EfiLoaderData
+        $bw.Write([byte[]]@(0x49, 0xC7, 0xC0))                  # mov r8, HeapPages
+        $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
+        $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))      # lea r9, [rsp+0x38]
+        $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))            # mov rax, [r15+0x60]
+        $bw.Write([byte[]]@(0xFF, 0x50, 0x28))                  # call AllocatePages
+        AssertAllocOk 'H'
+        $bw.Write([byte[]]@(0x48, 0x83, 0x7C, 0x24, 0x38, 0x00)) # cmp qword [rsp+0x38], 0
+        $bw.Write([byte[]]@(0x75, 0x10))                        # jnz over panic
+        AllocPanic 'B'
+    } else {
+        AllocPanic 'P'
+    }
+}
+$heapPoolDone = $ms.Position
+foreach ($heapPoolSkip in $heapPoolSkips) {
+    $ms.Position = $heapPoolSkip
+    $bw.Write([int]($heapPoolDone - ($heapPoolSkip + 4)))
+}
+$ms.Position = $heapPoolDone
+}
 # 'V' = the framebuffer aperture [r12, r12 + r13*4) intersects the first
 # 256 MB of the heap, where every early record and deck lives -- the observed
 # catastrophic mode, refused loudly instead of being erased by the guest's own
@@ -1098,7 +1170,7 @@ AllocPanic 'B'
 # whole-range test would refuse every codex-vm boot. r12/r13 are GopAcquire's
 # base and pixel count, callee-saved and untouched since; rax is the heap base.
 $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
-$bw.Write([byte[]]@(0x74, 0x2E))                                # jz +46 (no fb -> skip)
+$bw.Write([byte[]]@(0x74, 0x31))                                # jz +49 (no fb -> skip)
 $bw.Write([byte[]]@(0x4C, 0x89, 0xE9))                          # mov rcx, r13
 $bw.Write([byte[]]@(0x48, 0xC1, 0xE1, 0x02))                    # shl rcx, 2
 $bw.Write([byte[]]@(0x4C, 0x01, 0xE1))                          # add rcx, r12  (fb end)
@@ -1535,8 +1607,9 @@ $bw.Write([byte[]]@(0x48, 0xB8))                                 # mov rax, imm6
 $bw.Write([BitConverter]::GetBytes([long]($ImageBase + $openingFuncOff)))
 $bw.Write([byte[]]@(0xFF, 0xD0))                                # call rax
 
-# Epilog: halt (we replaced the stack so we can't return to UEFI)
-$bw.Write([byte[]]@(0xF4))                                      # hlt
+# Epilog: halt for good (we replaced the stack so we can't return to UEFI). A payload
+# that ran runtime-init returns with the timer live, and an interrupt resumes a bare hlt.
+$bw.Write([byte[]]@(0xFA, 0xF4, 0xEB, 0xFD))                    # cli; hlt; jmp back to the hlt
 
 $bw.Close()
 $stub = $ms.ToArray()

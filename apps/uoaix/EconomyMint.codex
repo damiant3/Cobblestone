@@ -1,0 +1,28 @@
+Chapter: EconomyMint
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+
+  emi-configure : EpWorld, Boolean, Integer, Integer -> Integer
+  emi-configure (w) (authorized) (owner) (rate) =
+    if not authorized | not (ep-valid-actor w owner) | rate < 0 | rate > 1000000000 | not (em-room w.money 1) then -1
+    else if (em-purse w.money (ep-actor w owner).purse).kind /= 5 then -1
+    else let a = em-begin w.money
+    in let b = em-row w.money 0 (ep-actor w owner).purse 0 11 rate
+    in let c = __record-set w "mint-owner" owner
+    in let d = __record-set w "mint-rate" rate
+    in 0
+
+  emi-strike : EpWorld, Boolean, Integer, Integer, Integer -> Integer
+  emi-strike (w) (authorized) (actor) (station) (ingots) =
+    if not authorized | not (ep-valid-actor w actor) | actor /= w.mint-owner | w.mint-rate == 0 | ingots <= 0 | ingots > 1000 | station <= 0 | station > w.station-count then -1
+    else let p = ep-actor w actor
+    in let s = list-at w.stations (station - 1)
+    in let coin = ingots * w.mint-rate
+    in if s.kind /= 12 | s.owner /= actor | s.place /= p.place | s.enabled == 0 | not (ep-has p 32 ingots) | not (ep-tool p 62) | w.mint-ingots > ep-limit - ingots then -1
+    else if not (em-room w.money 2) | w.money.issued > em-limit - coin | (em-purse w.money 1).coin > em-limit - coin then -1
+    else let issued = em-issue w.money True coin 2
+    in if issued /= 0 then -1
+    else let a = ep-consume w p 32 ingots
+    in let b = ep-wear w p 62
+    in let c = __record-set w "mint-ingots" (w.mint-ingots + ingots)
+    in em-row w.money p.purse 1 0 12 ingots

@@ -1,0 +1,111 @@
+Chapter: MusicGeneration
+  cites Spark chapter MusicLMStream
+  cites Spark chapter MusicSampling
+  cites Spark chapter EncodecLoad
+
+ We say:
+
+  MusicGenSettings = record {
+    mg-frames : Integer,
+    mg-seed : Integer,
+    mg-sampling : Boolean,
+    mg-top-k : Integer,
+    mg-temperature : Real,
+    mg-guidance : Real
+  }
+
+  MusicGeneration = record {
+    mg-model : MusicLM,
+    mg-cond : MusicLMCache,
+    mg-null : MusicLMCache,
+    mg-settings : MusicGenSettings,
+    mg-raw : Integer,
+    mg-guided : Integer,
+    mg-probs : Integer,
+    mg-exp : Integer,
+    mg-rng : Integer,
+    mg-draw : Integer,
+    mg-heap : Integer,
+    mg-codes : Integer
+  }
+
+  mg-close : MusicGeneration -> Boolean
+  mg-close (g) = let a = music-lm-cache-close (g.mg-cond) in music-lm-cache-close (g.mg-null)
+
+  mg-fail : MusicGeneration, Text, (Text -> Integer) -> Integer
+  mg-fail (g) (why) (refuse) = let f = mg-close g in refuse why
+
+  mg-copy : Integer, Integer, List Integer, Integer -> Integer
+  mg-copy (a) (base) (xs) (i) = if i >= list-length xs then 0 else let w = poke-32 a ((base + i) * 4) (list-at xs i) in mg-copy a base xs (i + 1)
+
+  mg-guided-fill : MusicGeneration, Integer -> Boolean
+  mg-guided-fill (g) (i) =
+    if i >= 8192 then True
+    else let c = ms-get (g.mg-raw) i
+    in let u = ms-get (g.mg-raw) (8192 + i)
+    in let v = sm-f32 (u + sm-f32 (sm-f32 (c - u) * (g.mg-settings).mg-guidance))
+    in let w = ms-put (g.mg-guided) i v
+    in if bit-and (peek-32 (g.mg-guided) (i * 4)) #7F800000 == #7F800000 then False else mg-guided-fill g (i + 1)
+
+  mg-mask : MusicGeneration, List Integer, Integer, Integer, List Integer -> List Integer
+  mg-mask (g) (tokens) (offset) (book) (acc) =
+    if book >= 4 then acc
+    else let frame = offset - 1 - book
+    in let valid = frame >= 0 & frame < (g.mg-settings).mg-frames
+    in let token = if valid then list-at tokens book else 2048
+    in let w = if valid then poke-32 (g.mg-codes) ((book * (g.mg-settings).mg-frames + frame) * 4) token else 0
+    in mg-mask g tokens offset (book + 1) (list-push acc token)
+
+  mg-result : MusicGeneration, Integer, List Integer -> List Integer
+  mg-result (g) (i) (acc) = if i >= 4 * (g.mg-settings).mg-frames then acc else mg-result g (i + 1) (list-push acc (peek-32 (g.mg-codes) (i * 4)))
+
+  mg-heads-valid : List Integer, Integer -> Boolean
+  mg-heads-valid (hs) (i) = if list-length hs /= 4 then False else if i >= 4 then True else list-at hs i /= 0 & mg-heads-valid hs (i + 1)
+
+  mg-picked : Text, Text, MusicGeneration, Integer, (Integer, Integer, Integer, Integer -> Integer), (List Integer -> Integer), (Text -> Integer) -> Integer
+  mg-picked (base) (code) (g) (offset) (seen) (ready) (refuse) =
+    let settings = g.mg-settings
+    in let valid = mg-guided-fill g 0
+    in let probs = if settings.mg-sampling then music-probabilities (g.mg-guided) (g.mg-probs) (g.mg-heap) (settings.mg-top-k) (settings.mg-temperature) else True
+    in if valid == False | probs == False then mg-fail g "MusicGen sampling probabilities are invalid" refuse
+    else let drawn = if settings.mg-sampling then ms-exponential (g.mg-exp) (g.mg-rng) (settings.mg-seed) (peek-32 (g.mg-draw) 0) 0 else 0
+    in let advanced = if settings.mg-sampling then poke-32 (g.mg-draw) 0 (1 + peek-32 (g.mg-draw) 0) else 0
+    in let tokens = if settings.mg-sampling then music-multinomial (g.mg-probs) (g.mg-exp) else music-greedy (g.mg-guided)
+    in let next = mg-mask g tokens offset 0 []
+    in let progress = seen offset (settings.mg-frames + 3) (g.mg-guided) (peek-32 (g.mg-draw) 0)
+    in if progress < 0 then mg-fail g "MusicGen generation cancelled" refuse else mg-step base code g next (offset + 1) seen ready refuse
+
+  mg-downloaded : Text, Text, MusicGeneration, MusicLMOutput, MusicLMOutput, Integer, Integer, (Integer, Integer, Integer, Integer -> Integer), (List Integer -> Integer), (Text -> Integer), Text -> Integer
+  mg-downloaded (base) (code) (g) (cond) (null) (offset) (head) (seen) (ready) (refuse) (data) =
+    let words = el-bytes data
+    in if list-length words /= 2048 then (let f = music-lm-output-free cond & music-lm-output-free null in mg-fail g "MusicGen logit readback failed" refuse)
+    else let copied = mg-copy (g.mg-raw) (head * 2048) words 0
+    in mg-download base code g cond null offset (head + 1) seen ready refuse
+
+  mg-download : Text, Text, MusicGeneration, MusicLMOutput, MusicLMOutput, Integer, Integer, (Integer, Integer, Integer, Integer -> Integer), (List Integer -> Integer), (Text -> Integer) -> Integer
+  mg-download (base) (code) (g) (cond) (null) (offset) (head) (seen) (ready) (refuse) =
+    if head >= 8 then (let f = music-lm-output-free cond & music-lm-output-free null in mg-picked base code g offset seen ready refuse)
+    else let h = if head < 4 then list-at (cond.ml-heads) head else list-at (null.ml-heads) (head - 4)
+    in gpu-buf-download-then h 0 8192 (\r -> mg-downloaded base code g cond null offset head seen ready refuse r)
+
+  mg-step : Text, Text, MusicGeneration, List Integer, Integer, (Integer, Integer, Integer, Integer -> Integer), (List Integer -> Integer), (Text -> Integer) -> Integer
+  mg-step (base) (code) (g) (ids) (offset) (seen) (ready) (refuse) =
+    if offset > (g.mg-settings).mg-frames + 3 then (let f = mg-close g in ready (mg-result g 0 []))
+    else let cond = music-lm-step base code (g.mg-model) (g.mg-cond) ids (offset - 1)
+    in let null = music-lm-step base code (g.mg-model) (g.mg-null) ids (offset - 1)
+    in if mg-heads-valid (cond.ml-heads) 0 == False | mg-heads-valid (null.ml-heads) 0 == False then (let f = music-lm-output-free cond & music-lm-output-free null in mg-fail g "MusicGen LM step failed" refuse)
+    else mg-download base code g cond null offset 0 seen ready refuse
+
+  music-generate : Text, Text, MusicLM, Integer, Integer, MusicGenSettings, (Integer, Integer, Integer, Integer -> Integer), (List Integer -> Integer), (Text -> Integer) -> Integer
+  music-generate (base) (code) (w) (context) (keys) (settings) (seen) (ready) (refuse) =
+    if settings.mg-frames < 1 | settings.mg-frames > 1500 | settings.mg-temperature <= 0.0 | settings.mg-top-k < 0 | settings.mg-top-k > 2048 then refuse "MusicGen settings are outside the supported range"
+    else let dim = (w.ml-weights).t5m-width
+    in let zero = bt5-buffer (dim * 4)
+    in let capacity = settings.mg-frames + 3
+    in let cond = music-lm-cache-open code w context keys capacity
+    in let null = music-lm-cache-open code w zero 1 capacity
+    in let f = be-drop zero
+    in let g = MusicGeneration { mg-model = w, mg-cond = cond, mg-null = null, mg-settings = settings, mg-raw = alloc-bytes 65536, mg-guided = alloc-bytes 32768, mg-probs = alloc-bytes 32768, mg-exp = alloc-bytes 32768, mg-rng = alloc-bytes 16, mg-draw = alloc-bytes 4, mg-heap = alloc-bytes 8192, mg-codes = alloc-bytes (settings.mg-frames * 16) }
+    in let reset = poke-32 (g.mg-draw) 0 0
+    in if cond.mc-valid == False | null.mc-valid == False then mg-fail g "MusicGen cache allocation failed" refuse
+    else mg-step base code g [2048, 2048, 2048, 2048] 1 seen ready refuse

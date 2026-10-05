@@ -226,6 +226,16 @@ message per event, at most 300 characters, pointers rather than copied docs.
 An idle lane is not an event. External mail and public posting need explicit
 user authorization; startup does not implicitly authorize sending messages.
 
+**Read your AgentGrid inbox after every landing** (Damian, 2026-10-01).
+AgentGrid queues a message to a Codex thread until its turn ends, and a lane
+that works through several landings in one turn never sees root's orders: on
+2026-10-01 red and reek ran over an hour on superseded work while new orders
+sat queued. After each landing, list `<coordinationDir>\inbox` for files newer
+than your last read, act on root's newest order first, and drop any order
+already done at head silently. Then report the landing to root in one line
+through your outbox (`{"to":"root","text":"..."}`), and ask root rather than
+wait when the next unit is unclear. Hand off at 75% measured, not before.
+
 For Codex context measurement, resumption and capability gaps, follow the
 init skill's `Context and continuation` section. That section governs Codex
 when a copied skill assumes Claude transcripts or unavailable tools.

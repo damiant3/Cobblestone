@@ -51,9 +51,15 @@ Section: Loading
   lora-load : List Integer, Text, Integer -> LoraFile
   lora-load (data) (name) (alpha) =
     let file = st-parse-file data
-    in if file.st-valid == False then LoraFile { lf-weights = [], lf-weight-count = 0, lf-alpha = alpha, lf-name = name }
+    in if file.st-valid == False then
+      LoraFile { lf-weights = [], lf-weight-count = 0, lf-alpha = alpha, lf-name = name }
     else let weights = lora-parse-pairs file data 0 (file.st-tensor-count) []
-    in LoraFile { lf-weights = weights, lf-weight-count = list-length weights, lf-alpha = alpha, lf-name = name }
+    in LoraFile {
+      lf-weights = weights,
+      lf-weight-count = list-length weights,
+      lf-alpha = alpha,
+      lf-name = name
+    }
 
   lora-parse-pairs : SafeTensorFile, List Integer, Integer, Integer, List LoraWeight -> List LoraWeight
   lora-parse-pairs (file) (data) (i) (n) (acc) =
@@ -68,9 +74,20 @@ Section: Loading
           let down-data = (st-load-tensor data file meta).data
           in let up-data = (st-load-tensor data file up-m).data
           in let rank = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 0 else 1
-          in let in-dim = if meta.stm-ndim >= 2 then list-at (meta.stm-shape) 1 else list-length down-data
-          in let out-dim = if up-m.stm-ndim >= 2 then list-at (up-m.stm-shape) 0 else list-length up-data
-          in let weight = LoraWeight { lw-name = base-name, lw-down = down-data, lw-up = up-data, lw-rank = rank, lw-in-dim = in-dim, lw-out-dim = out-dim }
+          in let in-dim = if meta.stm-ndim >= 2 then
+            list-at (meta.stm-shape) 1
+          else list-length down-data
+          in let out-dim = if up-m.stm-ndim >= 2 then
+            list-at (up-m.stm-shape) 0
+          else list-length up-data
+          in let weight = LoraWeight {
+            lw-name = base-name,
+            lw-down = down-data,
+            lw-up = up-data,
+            lw-rank = rank,
+            lw-in-dim = in-dim,
+            lw-out-dim = out-dim
+          }
           in lora-parse-pairs file data (i + 1) n (list-push acc weight)
         is None -> lora-parse-pairs file data (i + 1) n acc
     else lora-parse-pairs file data (i + 1) n acc
@@ -117,7 +134,7 @@ Section: Apply LoRA Stack to Weight Set
     in let found = lora-find-weight (lora.lf-weights) name 0 (lora.lf-weight-count)
     in when found
       is Just (lw) -> let merged = lora-merge-weights weights lw (lora.lf-alpha)
-        in lora-stack-loop merged name loras (i + 1) n
+      in lora-stack-loop merged name loras (i + 1) n
       is None -> lora-stack-loop weights name loras (i + 1) n
 
   lora-find-weight : List LoraWeight, Text, Integer, Integer -> Maybe LoraWeight

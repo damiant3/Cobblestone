@@ -1,0 +1,33 @@
+Chapter: GopDeskKeys
+
+Section: Desktop Shortcuts
+
+  dkey-menu : Integer -> Boolean
+  dkey-menu (sc) = sc == 91 | sc == 92
+
+  dkey-reboot-window : Integer = 500
+
+  dkey-reset-count : Integer -> Integer
+  dkey-reset-count (state) = poke-qword state 24 0
+
+  dkey-step : Integer, Integer, Integer -> Boolean
+  dkey-step (state) (sc) (now) =
+    if state == 0 then False
+    else let count = peek-qword state 24
+    in let expired = count > 0 & (now < peek-qword state 32 | now - peek-qword state 32 > dkey-reboot-window)
+    in let timeout = if expired then dkey-reset-count state else 0
+    in if sc == 29 then let set = poke-qword state 0 (if peek-qword state 0 < 2 then peek-qword state 0 + 1 else 2) in False
+    else if sc == 157 then let set = poke-qword state 0 (if peek-qword state 0 > 0 then peek-qword state 0 - 1 else 0) in False
+    else if sc == 56 then let set = poke-qword state 8 (if peek-qword state 8 < 2 then peek-qword state 8 + 1 else 2) in False
+    else if sc == 184 then let set = poke-qword state 8 (if peek-qword state 8 > 0 then peek-qword state 8 - 1 else 0) in False
+    else if sc == 211 then let set = poke-qword state 16 0 in False
+    else if sc == 83 then
+      if peek-qword state 16 /= 0 then False
+      else let held = poke-qword state 16 1
+      in if peek-qword state 0 == 0 | peek-qword state 8 == 0 then let clear = dkey-reset-count state in False
+      else let n = peek-qword state 24 + 1
+      in let set = poke-qword state 24 n
+      in let time = poke-qword state 32 now
+      in if n < 3 then False else let clear = dkey-reset-count state in True
+    else if sc > 0 & sc < 128 then let clear = dkey-reset-count state in False
+    else False

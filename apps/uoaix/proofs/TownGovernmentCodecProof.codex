@@ -1,0 +1,154 @@
+Chapter: TownGovernmentCodecProof
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter TownGovernmentValid
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter TownWorks
+  cites Uoaix chapter TownDisputes
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  tgcp-check : Text, Boolean -> [Console] Nothing
+  tgcp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tgcp-people : TfWorld, Integer -> Integer
+  tgcp-people (w) (i) = if i == 8 then 0
+    else let p = tf-add-person w ("Citizen " & show i) 1 (1000 + i) 100 0 10000
+    in if p /= i then -1 else tgcp-people w (i + 1)
+  tgcp-hours : EuCurrency, Integer -> Integer
+  tgcp-hours (x) (n) = if n == 0 then 0 else if eu-hour x /= 0 then -1 else tgcp-hours x (n - 1)
+  tgcp-equal : Integer, Integer, Integer -> Boolean
+  tgcp-equal (a) (b) (i) = if i == tgc-bytes then True
+    else if peek-qword a i /= peek-qword b i then False else tgcp-equal a b (i + 8)
+  tgcp-corrupt : Integer, GovernmentBindings, Integer, Integer -> Boolean
+  tgcp-corrupt (buf) (bindings) (at) (value) =
+    let old = peek-qword buf at
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf tgc-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (tgc-decode buf tgc-bytes bindings)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at old
+    in let rehash = poke-qword buf 48 (ws-hash buf tgc-bytes 0 2166136261)
+    in refused
+  tgcp-recovered : GovernmentCheckpoint, GovernmentCheckpoint, Integer, Integer -> [Console] Nothing
+  tgcp-recovered (source) (s) (buf) (copy) = act
+    g <- s.government
+    t <- s.works
+    d <- s.disputes
+    tgcp-check "offices wages requests works and dispute history recover" (s.tick == 500 & s.sequence == 30 & g.day == 2 & g.guard-count == 1 & (tg-office g 1).request == 3 & (tg-office g 1).paid == 1 & t.order-count == 2 & t.bounty-count == 1 & (list-at t.bounties 0).status == 3 & d.used == 3 & (list-at d.cases 1).status == 2 & (list-at d.cases 2).status == 3)
+    encoded <- tgc-encode s copy tgc-bytes
+    tgcp-check "canonical civic checkpoint roundtrip" (is-ok encoded & tgcp-equal buf copy 0)
+    queue-before <- d.admin.report-count
+    facts <- TdReportFacts { verified = True, account = "PlayerNine", happened = "Duplicate", location = "Britain", wall-time = "fixture", evidence = "log 501" }
+    tgcp-check "recovered escalation and dues stamps prevent duplicate effects" (td-escalate d 1 3 facts == -1 & d.admin.report-count == queue-before & tg-collect g 1 1 4 True == -1)
+    changed <- __record-set (tg-office g 1) "mayor" 2
+    tgcp-check "decoded civic mutation neither aliases source nor bypasses appointment audit" ((tg-office source.government 1).mayor == 1 & is-err (tgc-encode s copy tgc-bytes))
+  end
+  tgcp-legacy : TfWorld, TrRegistry, EuCurrency -> [Console] Nothing
+  tgcp-legacy (people) (registry) (currency) = act
+    when ep-new (eg-standard 0) (em-new 0)
+      is Err (e) -> print-line-uni ("FAIL legacy economy " & e)
+      is Ok (world) -> act
+        admin <- admin-world-new people (tm-new 0)
+        g <- tg-new people world
+        t <- tw-new g
+        d <- td-new g registry admin None
+        s <- GovernmentCheckpoint { government = g, works = t, disputes = d, tick = 0, sequence = 0 }
+        bindings <- GovernmentBindings { people = people, economy = world, currency = None, royal-actor = 0, registry = registry, admin = admin }
+        foreign <- GovernmentBindings { people = people, economy = currency.world, currency = Just currency, royal-actor = 1, registry = registry, admin = admin }
+        buf <- alloc-bytes tgc-bytes
+        encoded <- tgc-encode s buf tgc-bytes
+        recovered <- tgc-decode buf tgc-bytes bindings
+        tgcp-check "legacy gold civic binding recovers without currency reinterpretation" (is-ok encoded & is-ok recovered & peek-qword buf 24 == 1 & is-err (tgc-decode buf tgc-bytes foreign))
+      end
+  end
+  tgcp-run : TgWorld, EuCurrency, TrRegistry, AdminWorld -> [Console] Nothing
+  tgcp-run (g) (x) (registry) (admin) = act
+    t <- tw-new g
+    d <- td-new g registry admin (Just x)
+    purse <- eu-open x 4 1
+    registered <- tg-register g True 1 1 purse
+    request <- tg-request g 1 1 1 10
+    grant <- tg-grant g True 1 5
+    loan <- tg-loan g True 1 2 0 120
+    dues <- tg-set-dues g 1 1 1
+    hired <- tg-hire g 1 1 7 3 1
+    hours <- tgcp-hours x 24
+    collected <- tg-collect g 1 1 4 True
+    paid <- tg-close-day g
+    site <- tw-admit-site t 1 1 2 True
+    raid <- tw-raid t True 1 1
+    repair <- tw-end-raid t True 1 1 (TwDamage { station = 2, boards = 2, nails = 1, hours = 3, fee = 2 })
+    essential <- tw-essential t 1 1 6
+    bounty <- tw-post t 1 1 55 1 1 True
+    claimed <- tw-claim t True bounty 55 1 9001 4
+    bounty-paid <- tw-pay-bounty t 1 bounty
+    second-raid <- tw-raid t True 1 2
+    claimant <- TrParty { kind = 2, id = 2 }
+    debt <- td-file d True 1 1 1 (TrParty { kind = 5, id = 0 }) (TrParty { kind = 2, id = 7 }) 1 3 1001
+    land <- td-file d True 1 1 2 claimant (TrParty { kind = 4, id = 1 }) 77 0 1002
+    land-settled <- td-land-settled d 1 land True 8001
+    conduct <- td-file d True 1 1 4 claimant (TrParty { kind = 1, id = 9 }) 501 0 1003
+    facts <- TdReportFacts { verified = True, account = "PlayerNine", happened = "Misconduct", location = "Britain", wall-time = "fixture", evidence = "world log 501" }
+    queued <- td-escalate d 1 conduct facts
+    tgcp-check "native civic fixture covers payroll raid repair bounty and disputes" (registered == 0 & request == 0 & grant == 0 & loan == 2 & dues == 0 & collected == 0 & hired == 1 & hours == 0 & paid == 0 & site == 0 & raid == 0 & repair == 1 & essential == 2 & bounty == 1 & claimed == 0 & bounty-paid == 0 & second-raid == 0 & (list-at t.towns 0).militia == 6 & debt == 1 & land == 2 & land-settled == 0 & conduct == 3 & queued == 0)
+    tgcp-check "civic references receipts and case transitions validate" (tgv-valid g t d)
+    bindings <- GovernmentBindings { people = g.people, economy = x.world, currency = Just x, royal-actor = 1, registry = registry, admin = admin }
+    source <- GovernmentCheckpoint { government = g, works = t, disputes = d, tick = 500, sequence = 30 }
+    buf <- alloc-bytes tgc-bytes
+    copy <- alloc-bytes tgc-bytes
+    encoded <- tgc-encode source buf tgc-bytes
+    print-line-uni ("GOVERNMENT-CHECKPOINT-BYTES " & show tgc-bytes)
+    tgcp-check "civic checkpoint encodes all fixed sections" (is-ok encoded)
+    mark <- __heap-save
+    decoded <- tgc-decode-record buf tgc-bytes 500 30 bindings
+    after <- __heap-save
+    print-line-uni ("GOVERNMENT-DECODE-BYTES " & show (after - mark))
+    tgcp-check "civic decode retains below 512 KiB beyond shared bindings" (is-ok decoded & after - mark < 524288)
+    when decoded
+      is Err (e) -> print-line-uni ("FAIL civic decode " & e)
+      is Ok (s) -> tgcp-recovered source s buf copy
+    reclaimed <- __heap-restore mark
+    tgcp-check "rehashed dimensions reserved bytes and binding mode refuse" (tgcp-corrupt buf bindings 64 5 & tgcp-corrupt buf bindings 152 1 & tgcp-corrupt buf bindings 24 1 & tgcp-corrupt buf bindings 104 2)
+    tgcp-check "rehashed mayor wage and unpaid total refuse" (tgcp-corrupt buf bindings (tgc-offices-at + 16) 2 & tgcp-corrupt buf bindings (tgc-guards-at + 24) 2 & tgcp-corrupt buf bindings (tgc-offices-at + 48) 1)
+    tgcp-check "rehashed funding request retirement and day cursor refuse" (tgcp-corrupt buf bindings (tgc-offices-at + 56) 4 & tgcp-corrupt buf bindings (tgc-guards-at + 40) 0 & tgcp-corrupt buf bindings 96 1)
+    tgcp-check "rehashed collection stamp and money receipt refuse" (tgcp-corrupt buf bindings (tgc-stamps-at + 3 * 8) 0 & tgcp-corrupt buf bindings (tgc-events-at + 2 * 64 + 56) 0)
+    tgcp-check "rehashed militia site and order progress refuse" (tgcp-corrupt buf bindings tgc-militia-at 0 & tgcp-corrupt buf bindings (tgc-sites-at + 16) 4 & tgcp-corrupt buf bindings (tgc-orders-at + 72) 4)
+    tgcp-check "paid bounty must retain its actual civic payment reference" (tgcp-corrupt buf bindings (tgc-bounties-at + 56) 1)
+    tgcp-check "rehashed dispute status subject and history refuse" (tgcp-corrupt buf bindings (tgc-cases-at + 9 * 8) 2 & tgcp-corrupt buf bindings (tgc-cases-at + 5 * 8) 6 & tgcp-corrupt buf bindings tgc-disputes-at 2)
+    tgcp-check "nonzero unused record refuses" (tgcp-corrupt buf bindings (tgc-cases-at + 127 * 128) 1)
+    tgcp-check "metadata mismatch and truncation refuse" (is-err (tgc-decode-record buf tgc-bytes 501 30 bindings) & is-err (tgc-decode buf (tgc-bytes - 1) bindings))
+    tgcp-check "source bindings remain ready after validation and refusal" (eu-ready x & admin.report-count == 1 & registry.busy == 0 & (list-at x.world.stations 1).enabled == 0)
+    tgcp-legacy g.people registry x
+  end
+  tgcp-government : EuCurrency, TfWorld, TrRegistry -> [Console] Nothing
+  tgcp-government (x) (people) (r) = act
+    admin <- admin-world-new people (tm-new 0)
+    when tg-new-currency people x 1
+      is Err (e) -> print-line-uni ("FAIL government " & e)
+      is Ok (g) -> tgcp-run g x r admin
+  end
+  tgcp-world : EuiScenario -> [Console] Nothing
+  tgcp-world (scenario) = act
+    tgcp-check "currency fixture ready" (scenario.failed == 0 & efi-valid scenario.state)
+    people <- tf-new 0
+    town <- tf-add-town people "Britain" 100 101 102
+    residents <- tgcp-people people 1
+    when tr-new 2
+      is Err (e) -> print-line-uni ("FAIL registry " & e)
+      is Ok (r) -> tgcp-government scenario.state.currency people r
+  end
+  opening : [Console] Nothing = act
+    when efi-source 0
+      is Err (e) -> print-line-uni ("FAIL currency " & e)
+      is Ok (state) -> tgcp-world (efi-build state)
+  end

@@ -1,0 +1,204 @@
+Chapter: GameHarvestReplay
+  cites Uoaix chapter GameHarvest
+  cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter GameHarvestCodec
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter GameVendorCodec
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  ghr-drain : EpWorld, Integer -> Boolean
+  ghr-drain (w) (left) = let p = ep-actor w 1
+    in if ep-at p.wear 25 <= 1 then True else if left == 0 then False
+    else let roll = __record-set p "attempts" 1
+    in let node = eh-source w 5 100
+    in eh-harvest w 1 node == -2 & ghr-drain w (left - 1)
+  ghr-tools : EpWorld -> Boolean
+  ghr-tools (w) = let p = ep-actor w 1
+    in let drained = ghr-drain w 64
+    in let stone1 = eh-source w 1 100
+    in let stone2 = eh-source w 1 100
+    in let branch = eh-source w 2 100
+    in let a = eh-harvest w 1 stone1
+    in let b = eh-harvest w 1 stone2
+    in let c = eh-harvest w 1 branch
+    in let pick = ep-craft w 1 1 1
+    in let axe = ep-craft w 1 2 1
+    in let knife = ep-craft w 1 3 1
+    in let cotton1 = eh-source w 10 100
+    in let cotton2 = eh-source w 10 100
+    in let roll1 = __record-set p "attempts" 0
+    in let gather1 = eh-harvest w 1 cotton1
+    in let roll2 = __record-set p "attempts" 0
+    in let gather2 = eh-harvest w 1 cotton2
+    in let loom = ep-station w 1 4 100
+    in let roll3 = __record-set p "attempts" 0
+    in let thread = ep-craft w 1 12 loom
+    in let roll4 = __record-set p "attempts" 0
+    in let rod = ep-craft w 1 5 1
+    in drained & pick == 1 & axe == 1 & knife == 1 & gather1 > 0 & gather2 > 0 & thread > 0 & rod == 1
+  ghr-tool : GvWorld, GsiState, Integer, Integer, Integer, Integer -> Integer
+  ghr-tool (v) (items) (pack) (item) (graphic) (wear) =
+    when world-create v.game.world (gs-item pack graphic 0)
+      is Err (_) -> 0
+      is Ok (serial) ->
+        let p = ep-actor v.currency.world 1
+        in let quality = ep-at p.quality item / ep-at p.stock item
+        in let lot = gv-add-lot v serial 1 item quality wear 0
+        in let known = gsi-register items serial 0 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  ghr-lookup : WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  ghr-lookup (map) (mobile) (x) (y) (z) (graphic) =
+    if z /= 0 then 0
+    else if x == 1419 & y == 1698 & graphic == #0220 then 5
+    else if x == 1421 & y == 1699 & graphic == #0C95 then 15
+    else if x == 1420 & y == 1701 & graphic == #00A8 then 9 else 0
+  ghr-target : Integer, Integer, Integer, Integer -> List Integer
+  ghr-target (context) (x) (y) (graphic) =
+    let a = gp-put32 (list-push (gp-put32 [#6C,1] context) 0) 0
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,0]) graphic
+  ghr-use : GameHarvest, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  ghr-use (state) (input) (map) (tool) (x) (y) (graphic) (tick) =
+    let begin = gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (gp-put32 [6] tool) tick
+    in let target = (list-at state.requests 0).target
+    in gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (ghr-target target x y graphic) (tick + 1)
+  ghr-bank : GameHarvest, GameInput, WalkMap, Integer, Integer -> [Console] Nothing
+  ghr-bank (state) (input) (map) (tool) (pack) = act
+    p <- list-at state.vendor.players 0
+    when world-create state.items.world (gs-item p.serial #09B2 0)
+      is Err (e) -> print-line-uni ("FAIL bank " & e)
+      is Ok (bank) -> when world-get state.items.world tool
+        is Err (e) -> print-line-uni ("FAIL tool " & e)
+        is Ok (item) -> act
+          known <- gsi-register state.items bank 29 #004A False False
+          stored <- world-update state.items.world (ia-copy item tool 1 bank 20 20 0)
+          begun <- gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (gp-put32 [6] tool) 10
+          cbr-check "bank-stored tool cannot open harvest cursor" (not (cbr-opcode begun #6C 0) & gh-tool state p tool < 0)
+          returned <- world-update state.items.world item
+          begin <- gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (gp-put32 [6] tool) 20
+          context <- (list-at state.requests 0).target
+          deposited <- world-update state.items.world (ia-copy item tool 1 bank 20 20 0)
+          attempts <- (ep-actor state.vendor.currency.world p.actor).attempts
+          completed <- gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (ghr-target context 1419 1698 #0220) 21
+          cbr-check "depositing selected tool refuses harvest completion" (cbr-opcode begin #6C 0 & is-ok completed & (ep-actor state.vendor.currency.world p.actor).attempts == attempts & state.count == 0)
+          back <- world-update state.items.world item
+          equipped <- gsi-register state.items tool 1 0 True False
+          worn <- world-update state.items.world (ia-copy item tool 1 p.serial 0 0 0)
+          cbr-check "directly equipped harvesting tool remains admitted" (gh-tool state p tool >= 0)
+          put-back <- world-update state.items.world item
+          metadata <- gsi-register state.items tool 0 0 True False
+          cbr-check "backpack tool remains admitted" (gh-tool state p tool >= 0)
+        end
+  end
+  ghr-live : GvWorld, GsiState, GameInput, WalkMap, Integer -> [Console] Nothing
+  ghr-live (v) (items) (input) (map) (pack) = act
+    state <- gh-state v items
+    p <- ep-actor v.currency.world 1
+    pick <- ghr-tool v items pack 25 #0E85 1
+    spare <- ghr-tool v items pack 25 #0E85 32
+    axe <- ghr-tool v items pack 26 #0F49 32
+    rod <- ghr-tool v items pack 29 #0DBF 32
+    cbr-check "real production supplies all harvesting tools" (pick > 0 & spare > 0 & axe > 0 & rod > 0 & ep-census v.currency.world 1)
+    ghr-bank state input map pick pack
+    roll <- __record-set p "attempts" 0
+    mined <- ghr-use state input map pick 1419 1698 #0220 100
+    cbr-check "mining produces backpack ore and skill update" (cbr-opcode mined 37 0 & cbr-opcode mined 58 0 & ep-at p.stock 5 == 2 & ep-at p.skills 1 == 501)
+    cbr-check "selected exhausted pick retires without draining spare" (is-err (world-get v.game.world pick) & is-ok (world-get v.game.world spare) & ep-at p.stock 25 == 1 & ep-at p.wear 25 == 32)
+    replayed <- gh-handler-at ghr-lookup gh-produce state v.game input map 2593 (ghr-target #48410001 1419 1698 #0220) 102
+    cbr-check "used target cannot harvest twice" (is-ok replayed & ep-at p.stock 5 == 2)
+    roll2 <- __record-set p "attempts" 0
+    chopped <- ghr-use state input map axe 1421 1699 #0C95 600
+    cbr-check "lumberjacking produces logs seed and skill gain" (cbr-opcode chopped 37 0 & ep-at p.stock 15 == 2 & ep-at p.stock 56 == 1 & ep-at p.skills 6 == 501)
+    roll3 <- __record-set p "attempts" 0
+    fished <- ghr-use state input map rod 1420 1701 #00A8 1100
+    cbr-check "fishing produces fish and skill gain" (cbr-opcode fished 37 0 & ep-at p.stock 9 == 1 & ep-at p.skills 4 == 1)
+    before <- p.attempts
+    bad <- ghr-use state input map spare 1419 1698 #0999 1600
+    cbr-check "forged terrain model grants nothing" (is-ok bad & p.attempts == before & ep-at p.stock 5 == 2)
+    depleted <- ghr-use state input map spare 1419 1698 #0220 2100
+    cbr-check "depleted source refuses without tool wear or skill attempt" (is-ok depleted & p.attempts == before & ep-at p.wear 25 == 32)
+    foreign <- gh-handler-at ghr-lookup gh-produce state v.game input map 2593 (gp-put32 [6] 0) 2600
+    cbr-check "unhandled click falls through without mutation" ((when foreign is Ok (None) -> True is otherwise -> False) & p.attempts == before)
+    cbr-check "production census and physical lot codec remain valid" (ep-census v.currency.world 1 & gvsc-valid v)
+    size <- ghc-size state.count
+    buf <- alloc-bytes size
+    encoded <- ghc-encode state 2600 buf size
+    restored <- gh-state v items
+    decoded <- ghc-decode restored 8000 buf size
+    cbr-check "harvest codec restores depletion bindings and clears targets" (is-ok encoded & is-ok decoded & restored.count == state.count & restored.nonce == state.nonce & (list-at restored.requests 0).target == 0)
+    corrupted <- poke-qword buf 136 999
+    rejected <- ghc-decode restored 9000 buf size
+    cbr-check "bad source codec refuses without changing restored state" (is-err rejected & (list-at restored.requests 0).next == 8000)
+  end
+  ghr-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  ghr-run (shard) (map) (currency) = act
+    tools <- ghr-tools currency.world
+    cbr-check "tool bootstrap uses gathering and recipes" tools
+    input <- gn-input-with (gsi-specs 0) 1
+    when gs-relay-key shard
+      is Err (e) -> print-line-uni ("FAIL relay " & e)
+      is Ok (key) -> act
+        keyed <- __record-set input.session "key" key
+        login <- gs-handle shard input.session map (cbr-login key)
+        create <- cbr-create 0
+        mining <- list-set-at create 74 45
+        lumber <- list-set-at create 76 44
+        fishing <- list-set-at create 78 18
+        created <- gs-handle shard input.session map create
+        mode <- __record-set input "mode" 2
+        v <- gv-new shard currency
+        items <- gsi-new shard.world
+        actor <- gsi-session items shard input 0
+        when gsi-pack items actor
+          is Err (e) -> print-line-uni ("FAIL pack " & e)
+          is Ok (pack) -> act
+            bound <- gv-add-player v input.session.serial 1 pack.serial
+            ghr-live v items input map pack.serial
+          end
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 8 8
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- cbr-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> when gvd-economy 0
+            is Err (e) -> print-line-uni ("FAIL economy " & e)
+            is Ok (currency) -> ghr-run shard map currency
+      end
+  end
+
+Page 1

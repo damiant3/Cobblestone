@@ -1,6 +1,6 @@
 // Stage 3 of docs/Designs/Active/Apps/InBrowserDiffusion.md: the VAE decoder
 // run in a compiled page, codex/plugs/html/arms/VaeDecodeArm.codex, in headless
-// Edge: dreamshaperXL's decoder uploaded as f32 from the picked checkpoint, then
+// Edge: dreamshaperXL's decoder uploaded (rank 2 and up as packed f16) from the picked checkpoint, then
 // vae-decode-with over browser-vae-ops on codex/test/apps/diffusion-vae-decode's
 // latent, against that test's reference (Forge's own f32 decode) by that test's
 // pixel rule and bar. A control decodes the latent with channels 0 and 1
@@ -96,7 +96,7 @@ try {
   const errs = pageErrors.length ? '; page errors: ' + pageErrors.join(' | ') : '';
   const parse = t => { try { const a = JSON.parse(t); return Array.isArray(a) ? a : null; } catch { return null; } };
 
-  ok('the decoder binds the 140 tensors diffusion-vae-decode uploads, every one uploaded as f32', st.tensors === 140 && st.failed === 0, `${st.tensors} bound, ${st.failed} failed${errs}`);
+  ok('the decoder binds the 140 tensors diffusion-vae-decode uploads, every one uploaded (rank 2 and up as packed f16)', st.tensors === 140 && st.failed === 0, `${st.tensors} bound, ${st.failed} failed${errs}`);
   ok('two decodes run with no WebGPU error', st.done === 1 && st.err === '', `error '${st.err}', ${secs} s from the click to both results read back`);
   ok('the decode is 3 x 256 x 256', st.shape === '3x256x256', st.shape);
   const d = diff(parse(st.out)), c = diff(parse(st.swapped));

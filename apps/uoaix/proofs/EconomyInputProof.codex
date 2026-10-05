@@ -1,0 +1,114 @@
+Chapter: EconomyInputProof
+  cites Uoaix chapter EconomyInput
+  cites Uoaix chapter EconomyInputFixtures
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  eip-check : Text, Boolean -> [Console] Nothing
+  eip-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  eip-equal : Integer, Integer, Integer -> Boolean
+  eip-equal (one) (two) (i) = if i == es-bytes then True else if peek-qword one i /= peek-qword two i then False else eip-equal one two (i + 8)
+  eip-reject : EconomyCheckpoint, Integer, Integer, Integer, Integer -> Boolean
+  eip-reject (source) (buf) (bytes) (at) (value) =
+    let frame = buf + (at / ei-frame-bytes) * ei-frame-bytes
+    in let saved = peek-qword buf at
+    in let old-hash = peek-qword frame 48
+    in let changed = poke-qword buf at value
+    in let rehash = poke-qword frame 48 (ws-hash frame ei-frame-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (ei-replay source buf bytes)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at saved
+    in let hash = poke-qword frame 48 old-hash
+    in refused
+  eip-clocks : Integer, Integer -> Boolean
+  eip-clocks (buf) (i) = if i == 4096 then True
+    else let mark = __heap-save
+    in let entry = ei-new (i + 1) (i + 1) 22
+    in let encoded = is-ok (ei-encode entry (buf + i * ei-frame-bytes) ei-frame-bytes)
+    in let restored = __heap-restore mark
+    in encoded & eip-clocks buf (i + 1)
+  eip-cost : EconomyCheckpoint, Integer, Integer -> Integer
+  eip-cost (source) (buf) (frames) = let mark = __heap-save
+    in when ei-replay source buf (frames * ei-frame-bytes)
+      is Err (e) -> -1
+      is Ok (state) -> let finish = __heap-save
+        in let valid = state.world.hour == frames & state.sequence == frames
+        in let restored = __heap-restore mark
+        in if valid then finish - mark else -1
+  eip-extra : EconomyCheckpoint -> [Console] Nothing
+  eip-extra (state) = act
+    arrival <- ei-new (state.sequence + 1) (state.tick + 1) 6
+    a0 <- list-set-at arrival.args 0 2
+    a1 <- list-set-at arrival.args 1 101
+    moved <- ei-apply state arrival
+    payment <- ei-new (state.sequence + 1) (state.tick + 1) 12
+    p0 <- list-set-at payment.args 0 3
+    p1 <- list-set-at payment.args 1 2
+    p2 <- list-set-at payment.args 2 10
+    paid <- ei-apply state payment
+    eaten <- ei-new (state.sequence + 1) (state.tick + 1) 21
+    e0 <- list-set-at eaten.args 0 8
+    removed <- ei-apply state eaten
+    eip-check "arrival payment and plant-eaten dispatch" (is-ok moved & is-ok paid & is-ok removed & (ep-actor state.world 2).place == 101 & (em-purse state.world.money 1).coin == 697 & (em-purse state.world.money 2).coin == 155 & (em-purse state.world.money 3).coin == 148 & (list-at state.world.nodes 7).stage == 3 & ev-valid state.world)
+  end
+  eip-run : EiScenario, EconomyCheckpoint -> [Console] Nothing
+  eip-run (scenario) (source) = act
+    count <- list-length scenario.entries
+    buf <- alloc-bytes (4096 * ei-frame-bytes)
+    packed <- eif-pack scenario buf 0
+    bytes <- count * ei-frame-bytes
+    eip-check "scenario admits mined gold loan trade and farm" (scenario.failed == 0 & eif-valid scenario.state & scenario.middle > 0 & scenario.middle < count)
+    print-line-uni ("INPUTS " & show count & " CHECKPOINT " & show scenario.middle)
+    eip-check "independent input header and arguments" (packed & peek-qword buf 0 == #31494555 & peek-qword buf 16 == 128 & peek-qword buf 24 == 1 & peek-qword buf 32 == 10 & peek-qword buf 40 == 1 & peek-qword buf 56 == 2 & peek-qword buf 64 == 5 & peek-qword buf 72 == 1)
+    replayed <- ei-replay source buf bytes
+    when replayed
+      is Err (e) -> print-line-uni ("FAIL replay " & e)
+      is Ok (state) -> act
+        eip-check "replayed outcomes and post-checkpoint admissions" (eif-valid state & state.sequence == count & state.tick == count * 10)
+        one <- alloc-bytes es-bytes
+        two <- alloc-bytes es-bytes
+        encoded-one <- es-encode scenario.state one es-bytes
+        encoded-two <- es-encode state two es-bytes
+        eip-check "replay equals independently executed source bytes" (is-ok encoded-one & is-ok encoded-two & eip-equal one two 0)
+        eip-extra state
+      end
+    eip-check "source unchanged after successful replay" (source.sequence == 0 & source.world.actor-count == 0 & source.world.money.purse-count == 1 & source.world.money.issued == 0)
+    eip-check "outer metadata mismatch refused" (is-err (ei-decode-record buf ei-frame-bytes 11 1))
+    eip-check "partial input tail refused" (is-err (ei-replay source buf (bytes - 1)))
+    eip-check "rehashed sequence gap refused" (eip-reject source buf bytes 40 2)
+    eip-check "rehashed outcome mismatch refused" (eip-reject source buf bytes 56 3)
+    eip-check "rehashed clock reversal refused" (eip-reject source buf bytes (ei-frame-bytes + 32) 1)
+    eip-check "rehashed unused arguments refused" (eip-reject source buf bytes 120 1)
+    eip-check "raw issuance opcode absent" (eip-reject source buf bytes 24 23)
+    eip-check "source unchanged after failed replay" (source.sequence == 0 & source.world.actor-count == 0 & source.world.money.purse-count == 1 & source.world.money.issued == 0)
+    clocks <- eip-clocks buf 0
+    small <- eip-cost source buf 2
+    large <- eip-cost source buf 4096
+    print-line-uni ("REPLAY-BYTES " & show small & " " & show large)
+    eip-check "4096 clock inputs retain flat replay heap" (clocks & small > 0 & small == large)
+    eip-check "replay input budget enforced" (is-err (ei-replay source buf (4097 * ei-frame-bytes)))
+    authority <- ei-new 1 1 9
+    auth <- list-set-at authority.args 0 1
+    auth-frame <- ei-encode authority buf ei-frame-bytes
+    invalid-auth <- poke-qword buf 64 2
+    auth-hash <- poke-qword buf 48 (ws-hash buf ei-frame-bytes 0 2166136261)
+    eip-check "rehashed noncanonical Boolean refused by decoder" (is-ok auth-frame & is-err (ei-decode buf ei-frame-bytes))
+    exhausted <- __record-set source "sequence" ep-limit
+    last <- ei-new ep-limit 1 22
+    eip-check "sequence exhaustion refuses before mutation" (is-err (ei-apply source last) & source.world.hour == 0 & source.sequence == ep-limit)
+  end
+  opening : [Console] Nothing = act
+    when eif-source 0
+      is Err (e) -> print-line-uni ("FAIL fixture " & e)
+      is Ok (state) -> act
+        scenario <- eif-build state
+        when eif-source 0
+          is Err (e) -> print-line-uni ("FAIL source " & e)
+          is Ok (source) -> eip-run scenario source
+      end
+  end

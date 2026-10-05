@@ -62,23 +62,23 @@ Section: Occurrence Count
  because the classification cares only about zero, one, and many.
 
   OccCount =
-   | OccDead
-   | OccOnce
-   | OccMany
+    | OccDead
+    | OccOnce
+    | OccMany
 
   occ-bump : OccCount -> OccCount
   occ-bump (c) =
-   when c
-    is OccDead -> OccOnce
-    is OccOnce -> OccMany
-    is OccMany -> OccMany
+    when c
+     is OccDead -> OccOnce
+     is OccOnce -> OccMany
+     is OccMany -> OccMany
 
   occ-count-name : OccCount -> Text
   occ-count-name (c) =
-   when c
-    is OccDead -> "Dead"
-    is OccOnce -> "Once"
-    is OccMany -> "Many"
+    when c
+     is OccDead -> "Dead"
+     is OccOnce -> "Once"
+     is OccMany -> "Many"
 
 Section: Occurrence Map
 
@@ -94,20 +94,20 @@ Section: Occurrence Map
 
   occ-map-find : List OccEntry, Text, Integer, Integer -> Integer
   occ-map-find (m) (n) (i) (len) =
-   if i >= len then 0 - 1
-   else if (list-at m i).name == n then i
-   else occ-map-find m n (i + 1) len
+    if i >= len then 0 - 1
+    else if (list-at m i).name == n then i
+    else occ-map-find m n (i + 1) len
 
   occ-map-get : List OccEntry, Text -> OccCount
   occ-map-get (m) (n) =
-   let i = occ-map-find m n 0 (list-length m)
-   in if i < 0 then OccDead else (list-at m i).count
+    let i = occ-map-find m n 0 (list-length m)
+    in if i < 0 then OccDead else (list-at m i).count
 
   occ-insert : List OccEntry, Text, OccCount -> List OccEntry
   occ-insert (m) (n) (c) =
-   let i = occ-map-find m n 0 (list-length m)
-   in if i < 0 then list-push m (OccEntry { name = n, count = c })
-   else list-set-at m i (OccEntry { name = n, count = occ-bump ((list-at m i).count) })
+    let i = occ-map-find m n 0 (list-length m)
+    in if i < 0 then list-push m (OccEntry { name = n, count = c })
+    else list-set-at m i (OccEntry { name = n, count = occ-bump ((list-at m i).count) })
 
   occ-singleton : Text -> List OccEntry
   occ-singleton (n) = occ-insert [] n (occ-bump OccDead)
@@ -117,101 +117,110 @@ Section: Occurrence Map
 
   occ-union-loop : List OccEntry, List OccEntry, Integer, Integer -> List OccEntry
   occ-union-loop (acc) (m2) (i) (len) =
-   if i >= len then acc
-   else let e = list-at m2 i
-   in occ-union-loop (occ-insert acc (e.name) (e.count)) m2 (i + 1) len
+    if i >= len then acc
+    else let e = list-at m2 i
+    in occ-union-loop (occ-insert acc (e.name) (e.count)) m2 (i + 1) len
 
   occ-remove : List OccEntry, Text -> List OccEntry
   occ-remove (m) (n) = occ-remove-loop [] m n 0 (list-length m)
 
   occ-remove-loop : List OccEntry, List OccEntry, Text, Integer, Integer -> List OccEntry
   occ-remove-loop (acc) (m) (n) (i) (len) =
-   if i >= len then acc
-   else let e = list-at m i
-   in occ-remove-loop (if (e.name) == n then acc else list-push acc e) m n (i + 1) len
+    if i >= len then acc
+    else let e = list-at m i
+    in occ-remove-loop (if (e.name) == n then acc else list-push acc e) m n (i + 1) len
 
   occ-bind-one : Text, List OccEntry, List OccEntry -> OccResult
   occ-bind-one (n) (free) (binders) =
-   OccResult {
-    free = occ-remove free n,
-    binders = list-push binders (OccEntry { name = n, count = occ-map-get free n })
-   }
+    OccResult {
+     free = occ-remove free n,
+     binders = list-push binders (OccEntry { name = n, count = occ-map-get free n })
+    }
 
 Section: Expression Walk
 
   occ-expr : IRExpr, List OccEntry, Integer -> OccResult
   occ-expr (e) (acc) (depth) =
-   if depth >= max-recursion-depth then OccResult { free = [], binders = acc }
-   else when e
-    is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> OccResult { free = [], binders = acc }
-    is IrName (n) (t) (s) -> OccResult { free = occ-singleton n, binders = acc }
-    is IrNegate (x) (t) (s) -> occ-expr x acc (depth + 1)
-    is IrBinary (op) (l) (r) (t) (s) ->
-     let rl = occ-expr l acc (depth + 1)
-     in let rr = occ-expr r (rl.binders) (depth + 1)
-     in OccResult { free = occ-union (rl.free) (rr.free), binders = rr.binders }
-    is IrIf (c) (th) (el) (t) (s) ->
-     let rc = occ-expr c acc (depth + 1)
-     in let rt = occ-expr th (rc.binders) (depth + 1)
-     in let re = occ-expr el (rt.binders) (depth + 1)
-     in OccResult { free = occ-union (rc.free) (occ-union (rt.free) (re.free)), binders = re.binders }
-    is IrLet (n) (t) (v) (b) (s) ->
-     let rv = occ-expr v acc (depth + 1)
-     in let rb = occ-expr b (rv.binders) (depth + 1)
-     in OccResult {
-      free = occ-union (rv.free) (occ-remove (rb.free) n),
-      binders = list-push (rb.binders) (OccEntry { name = n, count = occ-map-get (rb.free) n })
+    if depth >= max-recursion-depth then OccResult { free = [], binders = acc }
+    else when e
+     is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> OccResult {
+       free = [],
+       binders = acc
      }
-    is IrApply (f) (a) (t) (s) ->
-     let rf = occ-expr f acc (depth + 1)
-     in let ra = occ-expr a (rf.binders) (depth + 1)
-     in OccResult { free = occ-union (rf.free) (ra.free), binders = ra.binders }
-    is IrLambda (ps) (b) (t) (s) ->
-     let rb = occ-expr b acc (depth + 1)
-     in occ-bind-params ps (rb.free) (rb.binders) 0 (list-length ps)
-    is IrList (es) (t) (s) -> occ-exprs es acc (depth + 1) 0 (list-length es) []
-    is IrMatch (sc) (bs) (t) (s) ->
-     let rsc = occ-expr sc acc (depth + 1)
-     in occ-branches bs (rsc.free) (rsc.binders) (depth + 1) 0 (list-length bs)
-    is IrAct (ss) (t) (s) -> occ-stmts ss acc (depth + 1) 0 (list-length ss)
-    is IrHandle (eff) (h) (cs) (t) (s) ->
-     let rh = occ-expr h acc (depth + 1)
-     in occ-clauses cs (rh.free) (rh.binders) (depth + 1) 0 (list-length cs)
-    is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> occ-expr body acc (depth + 1)
-    is IrRecord (n) (fs) (t) (s) -> occ-fields fs acc (depth + 1) 0 (list-length fs) []
-    is IrFieldAccess (r) (f) (t) (s) -> occ-expr r acc (depth + 1)
-    is IrFork (b) (t) (s) -> occ-expr b acc (depth + 1)
-    is IrAwait (tk) (t) (s) -> occ-expr tk acc (depth + 1)
-    is IrTry (mx) (body) (fb) (fail) (t) (s) ->
-     let r1 = occ-stmts body acc (depth + 1) 0 (list-length body)
-     in let r2 = occ-stmts fb (r1.binders) (depth + 1) 0 (list-length fb)
-     in let r3 = occ-stmts fail (r2.binders) (depth + 1) 0 (list-length fail)
-     in OccResult { free = occ-union (r1.free) (occ-union (r2.free) (r3.free)), binders = r3.binders }
-    is IrFieldStore (r) (f) (v) (t) (s) ->
-     let rr = occ-expr r acc (depth + 1)
-     in let rv = occ-expr v (rr.binders) (depth + 1)
-     in OccResult { free = occ-union (rr.free) (rv.free), binders = rv.binders }
-    is IrError (m) (t) (s) -> OccResult { free = [], binders = acc }
+     is IrName (n) (t) (s) -> OccResult { free = occ-singleton n, binders = acc }
+     is IrNegate (x) (t) (s) -> occ-expr x acc (depth + 1)
+     is IrBinary (op) (l) (r) (t) (s) ->
+      let rl = occ-expr l acc (depth + 1)
+      in let rr = occ-expr r (rl.binders) (depth + 1)
+      in OccResult { free = occ-union (rl.free) (rr.free), binders = rr.binders }
+     is IrIf (c) (th) (el) (t) (s) ->
+      let rc = occ-expr c acc (depth + 1)
+      in let rt = occ-expr th (rc.binders) (depth + 1)
+      in let re = occ-expr el (rt.binders) (depth + 1)
+      in OccResult {
+        free = occ-union (rc.free) (occ-union (rt.free) (re.free)),
+        binders = re.binders
+      }
+     is IrLet (n) (t) (v) (b) (s) ->
+      let rv = occ-expr v acc (depth + 1)
+      in let rb = occ-expr b (rv.binders) (depth + 1)
+      in OccResult {
+       free = occ-union (rv.free) (occ-remove (rb.free) n),
+       binders = list-push (rb.binders) (OccEntry { name = n, count = occ-map-get (rb.free) n })
+      }
+     is IrApply (f) (a) (t) (s) ->
+      let rf = occ-expr f acc (depth + 1)
+      in let ra = occ-expr a (rf.binders) (depth + 1)
+      in OccResult { free = occ-union (rf.free) (ra.free), binders = ra.binders }
+     is IrLambda (ps) (b) (t) (s) ->
+      let rb = occ-expr b acc (depth + 1)
+      in occ-bind-params ps (rb.free) (rb.binders) 0 (list-length ps)
+     is IrList (es) (t) (s) -> occ-exprs es acc (depth + 1) 0 (list-length es) []
+     is IrMatch (sc) (bs) (t) (s) ->
+      let rsc = occ-expr sc acc (depth + 1)
+      in occ-branches bs (rsc.free) (rsc.binders) (depth + 1) 0 (list-length bs)
+     is IrAct (ss) (t) (s) -> occ-stmts ss acc (depth + 1) 0 (list-length ss)
+     is IrHandle (eff) (h) (cs) (t) (s) ->
+      let rh = occ-expr h acc (depth + 1)
+      in occ-clauses cs (rh.free) (rh.binders) (depth + 1) 0 (list-length cs)
+     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> occ-expr body acc (depth + 1)
+     is IrRecord (n) (fs) (t) (s) -> occ-fields fs acc (depth + 1) 0 (list-length fs) []
+     is IrFieldAccess (r) (f) (t) (s) -> occ-expr r acc (depth + 1)
+     is IrFork (b) (t) (s) -> occ-expr b acc (depth + 1)
+     is IrAwait (tk) (t) (s) -> occ-expr tk acc (depth + 1)
+     is IrTry (mx) (body) (fb) (fail) (t) (s) ->
+      let r1 = occ-stmts body acc (depth + 1) 0 (list-length body)
+      in let r2 = occ-stmts fb (r1.binders) (depth + 1) 0 (list-length fb)
+      in let r3 = occ-stmts fail (r2.binders) (depth + 1) 0 (list-length fail)
+      in OccResult {
+        free = occ-union (r1.free) (occ-union (r2.free) (r3.free)),
+        binders = r3.binders
+      }
+     is IrFieldStore (r) (f) (v) (t) (s) ->
+      let rr = occ-expr r acc (depth + 1)
+      in let rv = occ-expr v (rr.binders) (depth + 1)
+      in OccResult { free = occ-union (rr.free) (rv.free), binders = rv.binders }
+     is IrError (m) (t) (s) -> OccResult { free = [], binders = acc }
 
   occ-exprs : List IRExpr, List OccEntry, Integer, Integer, Integer, List OccEntry -> OccResult
   occ-exprs (es) (acc) (depth) (i) (len) (freeacc) =
-   if i >= len then OccResult { free = freeacc, binders = acc }
-   else let r = occ-expr (list-at es i) acc depth
-   in occ-exprs es (r.binders) depth (i + 1) len (occ-union freeacc (r.free))
+    if i >= len then OccResult { free = freeacc, binders = acc }
+    else let r = occ-expr (list-at es i) acc depth
+    in occ-exprs es (r.binders) depth (i + 1) len (occ-union freeacc (r.free))
 
   occ-fields : List IRFieldVal, List OccEntry, Integer, Integer, Integer, List OccEntry -> OccResult
   occ-fields (fs) (acc) (depth) (i) (len) (freeacc) =
-   if i >= len then OccResult { free = freeacc, binders = acc }
-   else let f = list-at fs i
-   in let r = occ-expr (f.value) acc depth
-   in occ-fields fs (r.binders) depth (i + 1) len (occ-union freeacc (r.free))
+    if i >= len then OccResult { free = freeacc, binders = acc }
+    else let f = list-at fs i
+    in let r = occ-expr (f.value) acc depth
+    in occ-fields fs (r.binders) depth (i + 1) len (occ-union freeacc (r.free))
 
   occ-bind-params : List IRParam, List OccEntry, List OccEntry, Integer, Integer -> OccResult
   occ-bind-params (ps) (free) (binders) (i) (len) =
-   if i >= len then OccResult { free = free, binders = binders }
-   else let p = list-at ps i
-   in let r = occ-bind-one (p.name) free binders
-   in occ-bind-params ps (r.free) (r.binders) (i + 1) len
+    if i >= len then OccResult { free = free, binders = binders }
+    else let p = list-at ps i
+    in let r = occ-bind-one (p.name) free binders
+    in occ-bind-params ps (r.free) (r.binders) (i + 1) len
 
  An act statement's binder is in scope for the statements after it. The
  rest of the sequence is analysed first; a bind reads its classification
@@ -219,60 +228,63 @@ Section: Expression Walk
 
   occ-stmts : List IRActStmt, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-stmts (ss) (acc) (depth) (i) (len) =
-   if i >= len then OccResult { free = [], binders = acc }
-   else let s = list-at ss i
-   in when s
-    is IrDoExec (v) (sp) ->
-     let rv = occ-expr v acc depth
-     in let rrest = occ-stmts ss (rv.binders) depth (i + 1) len
-     in OccResult { free = occ-union (rv.free) (rrest.free), binders = rrest.binders }
-    is IrDoBind (n) (t) (v) (sp) ->
-     let rv = occ-expr v acc depth
-     in let rrest = occ-stmts ss (rv.binders) depth (i + 1) len
-     in OccResult {
-      free = occ-union (rv.free) (occ-remove (rrest.free) n),
-      binders = list-push (rrest.binders) (OccEntry { name = n, count = occ-map-get (rrest.free) n })
-     }
+    if i >= len then OccResult { free = [], binders = acc }
+    else let s = list-at ss i
+    in when s
+     is IrDoExec (v) (sp) ->
+      let rv = occ-expr v acc depth
+      in let rrest = occ-stmts ss (rv.binders) depth (i + 1) len
+      in OccResult { free = occ-union (rv.free) (rrest.free), binders = rrest.binders }
+     is IrDoBind (n) (t) (v) (sp) ->
+      let rv = occ-expr v acc depth
+      in let rrest = occ-stmts ss (rv.binders) depth (i + 1) len
+      in OccResult {
+       free = occ-union (rv.free) (occ-remove (rrest.free) n),
+       binders = list-push (rrest.binders) (OccEntry {
+         name = n,
+         count = occ-map-get (rrest.free) n
+       })
+      }
 
   occ-branches : List IRBranch, List OccEntry, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-branches (bs) (free) (binders) (depth) (i) (len) =
-   if i >= len then OccResult { free = free, binders = binders }
-   else let b = list-at bs i
-   in let rg = occ-expr (b.guard) binders depth
-   in let rbody = occ-expr (b.body) (rg.binders) depth
-   in let branchfree = occ-union (rg.free) (rbody.free)
-   in let pr = occ-bind-pat branchfree (b.pattern) (rbody.binders) depth
-   in occ-branches bs (occ-union free (pr.free)) (pr.binders) depth (i + 1) len
+    if i >= len then OccResult { free = free, binders = binders }
+    else let b = list-at bs i
+    in let rg = occ-expr (b.guard) binders depth
+    in let rbody = occ-expr (b.body) (rg.binders) depth
+    in let branchfree = occ-union (rg.free) (rbody.free)
+    in let pr = occ-bind-pat branchfree (b.pattern) (rbody.binders) depth
+    in occ-branches bs (occ-union free (pr.free)) (pr.binders) depth (i + 1) len
 
   occ-bind-pat : List OccEntry, IRPat, List OccEntry, Integer -> OccResult
   occ-bind-pat (free) (p) (binders) (depth) =
-   if depth >= max-recursion-depth then OccResult { free = free, binders = binders }
-   else when p
-    is IrVarPat (n) (t) (s) -> occ-bind-one n free binders
-    is IrCtorPat (n) (subs) (t) (s) -> occ-bind-pat-list free subs binders (depth + 1) 0 (list-length subs)
-    is IrVecPat (subs) (t) (s) -> occ-bind-pat-list free subs binders (depth + 1) 0 (list-length subs)
-    is otherwise -> OccResult { free = free, binders = binders }
+    if depth >= max-recursion-depth then OccResult { free = free, binders = binders }
+    else when p
+     is IrVarPat (n) (t) (s) -> occ-bind-one n free binders
+     is IrCtorPat (n) (subs) (t) (s) -> occ-bind-pat-list free subs binders (depth + 1) 0 (list-length subs)
+     is IrVecPat (subs) (t) (s) -> occ-bind-pat-list free subs binders (depth + 1) 0 (list-length subs)
+     is otherwise -> OccResult { free = free, binders = binders }
 
   occ-bind-pat-list : List OccEntry, List IRPat, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-bind-pat-list (free) (ps) (binders) (depth) (i) (len) =
-   if i >= len then OccResult { free = free, binders = binders }
-   else let r = occ-bind-pat free (list-at ps i) binders depth
-   in occ-bind-pat-list (r.free) ps (r.binders) depth (i + 1) len
+    if i >= len then OccResult { free = free, binders = binders }
+    else let r = occ-bind-pat free (list-at ps i) binders depth
+    in occ-bind-pat-list (r.free) ps (r.binders) depth (i + 1) len
 
   occ-clauses : List IRHandleClause, List OccEntry, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-clauses (cs) (free) (binders) (depth) (i) (len) =
-   if i >= len then OccResult { free = free, binders = binders }
-   else let c = list-at cs i
-   in let rb = occ-expr (c.body) binders depth
-   in let r1 = occ-bind-names (rb.free) (c.params) (rb.binders) 0 (list-length (c.params))
-   in let r2 = occ-bind-one (c.resume-name) (r1.free) (r1.binders)
-   in occ-clauses cs (occ-union free (r2.free)) (r2.binders) depth (i + 1) len
+    if i >= len then OccResult { free = free, binders = binders }
+    else let c = list-at cs i
+    in let rb = occ-expr (c.body) binders depth
+    in let r1 = occ-bind-names (rb.free) (c.params) (rb.binders) 0 (list-length (c.params))
+    in let r2 = occ-bind-one (c.resume-name) (r1.free) (r1.binders)
+    in occ-clauses cs (occ-union free (r2.free)) (r2.binders) depth (i + 1) len
 
   occ-bind-names : List OccEntry, List Text, List OccEntry, Integer, Integer -> OccResult
   occ-bind-names (free) (ns) (binders) (i) (len) =
-   if i >= len then OccResult { free = free, binders = binders }
-   else let r = occ-bind-one (list-at ns i) free binders
-   in occ-bind-names (r.free) ns (r.binders) (i + 1) len
+    if i >= len then OccResult { free = free, binders = binders }
+    else let r = occ-bind-one (list-at ns i) free binders
+    in occ-bind-names (r.free) ns (r.binders) (i + 1) len
 
 Section: Definition Analysis
 
@@ -283,30 +295,33 @@ Section: Definition Analysis
 
   occ-analyse-def : IRDef -> List OccEntry
   occ-analyse-def (d) =
-   let r = occ-expr (d.body) [] 0
-   in (occ-classify-params (d.params) (r.free) 0 (list-length (d.params)) []) & (r.binders)
+    let r = occ-expr (d.body) [] 0
+    in (occ-classify-params (d.params) (r.free) 0 (list-length (d.params)) []) & (r.binders)
 
   occ-classify-params : List IRParam, List OccEntry, Integer, Integer, List OccEntry -> List OccEntry
   occ-classify-params (ps) (free) (i) (len) (acc) =
-   if i >= len then acc
-   else let p = list-at ps i
-   in occ-classify-params ps free (i + 1) len (list-push acc (OccEntry { name = p.name, count = occ-map-get free (p.name) }))
+    if i >= len then acc
+    else let p = list-at ps i
+    in occ-classify-params ps free (i + 1) len (list-push acc (OccEntry {
+      name = p.name,
+      count = occ-map-get free (p.name)
+    }))
 
   occ-report-chapter : IRChapter -> List Text
   occ-report-chapter (ch) = occ-report-defs (ch.defs) 0 (list-length (ch.defs)) []
 
   occ-report-defs : List IRDef, Integer, Integer, List Text -> List Text
   occ-report-defs (defs) (i) (len) (acc) =
-   if i >= len then acc
-   else let d = list-at defs i
-   in let es = occ-analyse-def d
-   in occ-report-defs defs (i + 1) len (list-push acc ("OCC " & (d.name) & ": " & occ-join es 0 (list-length es) ""))
+    if i >= len then acc
+    else let d = list-at defs i
+    in let es = occ-analyse-def d
+    in occ-report-defs defs (i + 1) len (list-push acc ("OCC " & (d.name) & ": " & occ-join es 0 (list-length es) ""))
 
   occ-join : List OccEntry, Integer, Integer, Text -> Text
   occ-join (es) (i) (len) (acc) =
-   if i >= len then acc
-   else let e = list-at es i
-   in occ-join es (i + 1) len (acc & (if acc == "" then "" else ", ") & (e.name) & "=" & occ-count-name (e.count))
+    if i >= len then acc
+    else let e = list-at es i
+    in occ-join es (i + 1) len (acc & (if acc == "" then "" else ", ") & (e.name) & "=" & occ-count-name (e.count))
 
  The occurrence report is INFORMATION about well-formed IR, not a
  fault, so it carries an info-severity code of its own. It must not be
@@ -324,7 +339,8 @@ Section: Definition Analysis
 
   occ-info-bag-loop : DiagnosticBag, List Text, Integer, Integer -> DiagnosticBag
   occ-info-bag-loop (bag) (lines) (i) (len) =
-   if i >= len then bag
-   else occ-info-bag-loop (bag-add bag (make-info cdx-occ-report (list-at lines i) synthetic-span)) lines (i + 1) len
+    if i >= len then bag
+    else
+      occ-info-bag-loop (bag-add bag (make-info cdx-occ-report (list-at lines i) synthetic-span)) lines (i + 1) len
 
 Page 1

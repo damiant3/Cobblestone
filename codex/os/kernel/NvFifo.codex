@@ -1,0 +1,88 @@
+Chapter: NvFifo
+
+ MAXWELL_CHANNEL_GPFIFO_A (0xb06f) push-buffer formats, from NVIDIA's class
+ header clb06f.h (as vendored in mesa-24.2.0). A GPFIFO entry is two 32-bit
+ words. Word 0: FETCH 0:0 (UNCONDITIONAL 0) and GET 31:2, the push segment's
+ address bits 31:2 in place. Word 1: GET_HI 7:0, address bits 39:32; PRIV 8:8
+ (USER 0, KERNEL 1); LEVEL 9:9 (MAIN 0); LENGTH 30:10, the segment length in
+ 32-bit words; SYNC 31:31 (PROCEED 0, WAIT 1).
+
+ A method header is one 32-bit word: ADDRESS 11:0, the method's byte offset
+ divided by 4; SUBCHANNEL 15:13; COUNT 28:16, or the data itself for an
+ immediate; SEC_OP 31:29 (INC_METHOD 1, NON_INC_METHOD 3, IMMD_DATA_METHOD 4,
+ ONE_INC 5).
+
+Section: Entries
+
+  nv-fifo-in : Integer, Integer, Integer -> Boolean
+  nv-fifo-in (v) (lo) (hi) = if v < lo then False else v <= hi
+
+  nv-gp-entry : Integer, Integer, Integer, Integer -> Integer
+  nv-gp-entry (addr) (dwords) (priv) (sync) =
+    if nv-fifo-in addr 0 #FFFFFFFFFF == False then -1
+    else if bit-and addr 3 /= 0 then -1
+    else if nv-fifo-in dwords 1 #1FFFFF == False then -1
+    else if nv-fifo-in priv 0 1 == False then -1
+    else if nv-fifo-in sync 0 1 == False then -1
+    else let w0 = bit-and addr #FFFFFFFC
+    in let w1 = bit-or (bit-shru addr 32) (bit-or (bit-shl priv 8) (bit-or (bit-shl dwords 10) (bit-shl sync 31)))
+    in bit-or w0 (bit-shl w1 32)
+
+  nv-method-header : Integer, Integer, Integer, Integer -> Integer
+  nv-method-header (op) (subc) (method) (count) =
+    if (if op == 1 then False else if op == 3 then False else if op == 4 then False else op /= 5) then -1
+    else if nv-fifo-in subc 0 7 == False then -1
+    else if nv-fifo-in method 0 #3FFC == False then -1
+    else if bit-and method 3 /= 0 then -1
+    else if nv-fifo-in count 0 #1FFF == False then -1
+    else bit-or (bit-shl op 29) (bit-or (bit-shl count 16) (bit-or (bit-shl subc 13) (bit-shru method 2)))
+
+ Nouveau v6.12 gm200_fifo selects gm107_runl. Its insert_chan writes the
+ channel id followed by the instance page number (physical address >> 12).
+ Empty output refuses an unrepresentable or unaligned input. This is a
+ channel entry, not the separate channel-group entry.
+
+  nv-runlist-channel : Integer, Integer -> List Integer
+  nv-runlist-channel (chid) (instance-pa) =
+    if nv-fifo-in chid 0 #FFFFFFFF == False then []
+    else if nv-fifo-in instance-pa 0 #FFFFFFFF000 == False then []
+    else if bit-and instance-pa #FFF /= 0 then []
+    else [chid, bit-shru instance-pa 12]
+
+ Nouveau v6.12 gm107_chan selects gk104_chan_ramfc_write. These are the
+ first 256 bytes of a zeroed instance block, as 32-bit words. The ring size
+ is in bytes, a positive power of two with at least one 8-byte GPFIFO entry.
+ The device mask is the writer's 12-bit devm field; priv sets word e4 bit 5.
+ Empty output refuses invalid inputs. Instance state beyond byte ff is separate.
+
+  nv-fifo-log2 : Integer -> Integer
+  nv-fifo-log2 (n) = if n <= 1 then 0 else 1 + nv-fifo-log2 (bit-shru n 1)
+
+  nv-maxwell-ramfc : Integer, Integer, Integer, Integer, Boolean, Integer -> List Integer
+  nv-maxwell-ramfc (userd) (offset) (ring-bytes) (devm) (priv) (chid) =
+    if userd < 0 then []
+    else if nv-fifo-in offset 0 #FFFFFFFFFF == False then []
+    else if bit-and offset 7 /= 0 then []
+    else if ring-bytes < 8 then []
+    else if bit-and ring-bytes (ring-bytes - 1) /= 0 then []
+    else if nv-fifo-in devm 0 #FFF == False then []
+    else if nv-fifo-in chid 0 #FFFFFFFF == False then []
+    else let order = nv-fifo-log2 (bit-shru ring-bytes 3)
+    in [
+     0, 0, bit-and userd #FFFFFFFF, bit-shru userd 32,
+     #FACE, 0, 0, 0,
+     0, 0, 0, 0,
+     #FFFFF902, 0, 0, 0,
+     0, 0, bit-and offset #FFFFFFFF, bit-or (bit-shru offset 32) (bit-shl order 16),
+     0, 0, 0, 0,
+     0, 0, 0, 0,
+     0, 0, 0, 0,
+     0, #20400000, 0, 0,
+     0, bit-or #30000000 devm, 0, #100,
+     0, 0, 0, #1F,
+     0, 0, #F8000000, 0,
+     0, 0, 0, 0,
+     0, 0, 0, 0,
+     0, (if priv then #20 else 0), chid, 0,
+     0, 0, #10003080, #10000010
+    ]

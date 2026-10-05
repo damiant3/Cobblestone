@@ -1,0 +1,92 @@
+Chapter: EconomyCatalogProof
+  cites Uoaix chapter EconomyCatalog
+
+  egp-check : Text, Boolean -> [Console] Nothing
+  egp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  egp-small : Integer -> EgCatalog
+  egp-small (unused) = EgCatalog {
+    items = [eg-item "root" 1, eg-item "tool" 1, eg-item "product" 1],
+    resources = [eg-resource 1 0 0 0 0 1 1],
+    recipes = [eg-recipe 2 1 1 1 0 0 0 0 1 0 0,
+      eg-recipe 3 1 1 1 0 0 0 0 1 2 0] }
+  egp-items : Integer, List EgItem -> List EgItem
+  egp-items (i) (xs) = if i == 128 then xs else egp-items (i + 1) (list-push xs (eg-item "chain link" 1))
+  egp-recipes : Integer, List EgRecipe -> List EgRecipe
+  egp-recipes (i) (xs) = if i == 1 then xs else egp-recipes (i - 1) (list-push xs (eg-recipe i 1 (i - 1) 1 0 0 0 0 1 0 0))
+  egp-chain : EgCatalog, Integer, Integer -> Boolean
+  egp-chain (c) (chain) (i) = if i == list-length c.items then False
+    else (list-at c.items i).chain == chain | egp-chain c chain (i + 1)
+  egp-chains : EgCatalog, Integer -> Boolean
+  egp-chains (c) (chain) = if chain == 8 then True else egp-chain c chain 0 & egp-chains c (chain + 1)
+  egp-reagents : EgCatalog, Integer -> Boolean
+  egp-reagents (c) (i) = if i == 24 then True else let r = list-at c.resources i
+    in r.item == i + 1 & r.skill == 7
+      & r.tool == (if i < 20 then 28 else if i < 22 then 27 else if i == 22 then 29 else 25)
+      & r.seed == (if i < 20 then i + 42 else 0) & egp-reagents c (i + 1)
+  egp-resources : Integer, List EgResource -> List EgResource
+  egp-resources (i) (xs) = if i == 65 then xs else egp-resources (i + 1) (list-push xs (eg-resource 1 0 0 0 0 1 1))
+  egp-too-many-recipes : Integer, List EgRecipe -> List EgRecipe
+  egp-too-many-recipes (i) (xs) = if i == 129 then xs else egp-too-many-recipes (i + 1) (list-push xs (eg-recipe 2 1 1 1 0 0 0 0 1 0 0))
+
+  opening : [Console] Nothing = act
+    mark <- __heap-save
+    c <- eg-standard 0
+    built <- __heap-save
+    egp-check "standard material and tool closure" (eg-validate c == 0)
+    egp-check "all seven chains and royal mint" (egp-chains c 1 & (list-at c.items 50).name == "coin" & (list-at c.recipes 29).station == 12 & (list-at c.recipes 29).one == 32 & (list-at c.resources 5).item == 6 & (list-at c.resources 5).skill == 2)
+    egp-check "reagent tools and herbalism" (egp-reagents c 16)
+    egp-check "plants and tree regrowth" ((list-at c.resources 9).seed == 54 & (list-at c.resources 12).seed == 52 & (list-at c.resources 14).seed == 56 & (list-at c.resources 14).regrow == 168 & (list-at c.resources 14).ground == 2)
+    print-line-uni ("CATALOG-BYTES " & show (built - mark))
+    before <- __heap-save
+    valid <- eg-validate c
+    after <- __heap-save
+    egp-check "validation reclaims scratch" (valid == 0 & before == after)
+    small <- egp-small 0
+    egp-check "rooted tool dependency" (eg-validate small == 0)
+    changed-tool <- __record-set (list-at small.resources 0) "tool" 2
+    scratch-before <- __heap-save
+    failed <- eg-validate small
+    scratch-after <- __heap-save
+    egp-check "tool bootstrap cycle refused" (failed == 1 & scratch-before == scratch-after)
+    restored-tool <- __record-set (list-at small.resources 0) "tool" 0
+    changed-one <- __record-set (list-at small.recipes 0) "one" 3
+    egp-check "unrooted material cycle refused" (eg-validate small == 2)
+    restored-one <- __record-set (list-at small.recipes 0) "one" 1
+    changed-two <- __record-set (list-at small.recipes 1) "two" 1
+    changed-two-count <- __record-set (list-at small.recipes 1) "two-count" 1
+    egp-check "duplicate inputs refused" (eg-validate small == -1)
+    restored-two <- __record-set (list-at small.recipes 1) "two" 0
+    restored-two-count <- __record-set (list-at small.recipes 1) "two-count" 0
+    changed-station <- __record-set (list-at small.recipes 1) "station" 0
+    egp-check "missing station refused" (eg-validate small == -1)
+    restored-station <- __record-set (list-at small.recipes 1) "station" 1
+    changed-quantity <- __record-set (list-at small.recipes 1) "quantity" 0
+    egp-check "zero recipe yield refused" (eg-validate small == -1)
+    restored-quantity <- __record-set (list-at small.recipes 1) "quantity" 1
+    changed-seed <- __record-set (list-at small.resources 0) "seed" 4
+    egp-check "unknown resource seed refused" (eg-validate small == -1)
+    restored-seed <- __record-set (list-at small.resources 0) "seed" 0
+    orphan <- list-push small.items (eg-item "orphan" 1)
+    changed-items <- __record-set small "items" orphan
+    egp-check "new orphan item refused" (eg-validate small == 4)
+    large <- EgCatalog { items = egp-items 0 [], resources = [eg-resource 1 0 0 0 0 1 1], recipes = egp-recipes 128 [] }
+    egp-check "maximum reversed chain closes" (eg-validate large == 0)
+    oversized <- list-push large.items (eg-item "overflow" 1)
+    changed-large <- __record-set large "items" oversized
+    egp-check "catalog capacity refused" (eg-validate large == -1)
+    malformed <- egp-small 0
+    pair-bad <- __record-set (list-at malformed.recipes 0) "two-count" 1
+    egp-check "optional pair mismatch refused" (eg-validate malformed == -1)
+    pair-fixed <- __record-set (list-at malformed.recipes 0) "two-count" 0
+    skill-bad <- __record-set (list-at malformed.resources 0) "skill" 11
+    egp-check "unknown skill refused" (eg-validate malformed == -1)
+    skill-fixed <- __record-set (list-at malformed.resources 0) "skill" 0
+    ground-bad <- __record-set (list-at malformed.resources 0) "ground" 1
+    egp-check "plant ground without seed refused" (eg-validate malformed == -1)
+    ground-fixed <- __record-set (list-at malformed.resources 0) "ground" 0
+    resources-large <- __record-set malformed "resources" (egp-resources 0 [])
+    egp-check "resource capacity refused" (eg-validate malformed == -1)
+    resources-fixed <- __record-set malformed "resources" [eg-resource 1 0 0 0 0 1 1]
+    recipes-large <- __record-set malformed "recipes" (egp-too-many-recipes 0 [])
+    egp-check "recipe capacity refused" (eg-validate malformed == -1)
+  end

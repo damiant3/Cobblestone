@@ -25,5 +25,3 @@ L-LESS). Both paths stay.
 `HttpClientResponse.status-text`, not the reason phrase, and keeps no headers.
 Nothing reads `status-text` at head: `apps/browser/PageFetcher` reads its own
 header block from the raw bytes (2026-09-29).
-
-**`bytes-to-text` traps on a carriage return.** `codex/os/net/WebServer.codex` `bytes-to-text-pieces` (line 34) maps each byte through `char-to-text (code-to-char (from-unicode b))`; `from-unicode 13` is -1 and the encoder refuses -1 (`!EXC=06`), so any caller handing it raw HTTP request bytes halts on the first CR. Found 2026-09-29 (blu): SparkServer died on every request through an unused call (removed, main 30264). The CORE-8 census searched the `code-to-char (from-unicode ...)` spelling and did not list this site. The repair is `cce-foreign-byte-text`, as the closed CORE-8 sites use.

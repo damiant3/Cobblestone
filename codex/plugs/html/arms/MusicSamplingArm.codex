@@ -1,0 +1,32 @@
+Chapter: MusicSamplingArm
+  cites Spark chapter MusicSampling
+  cites Spark chapter EncodecLoad
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  msa-put : Integer, List Integer, Integer -> Integer
+  msa-put (a) (xs) (i) = if i >= list-length xs then a else let w = poke-32 a (i * 4) (list-at xs i) in msa-put a xs (i + 1)
+
+  msa-words : Integer, Integer, Integer -> Text
+  msa-words (a) (lo) (hi) =
+    if hi - lo == 1 then show (peek-32 a (lo * 4))
+    else let mid = (lo + hi) / 2 in msa-words a lo mid & "," & msa-words a mid hi
+
+  msa-cases : Integer, Integer, Integer, Integer -> Integer
+  msa-cases (p) (q) (scratch) (i) =
+    if i >= text-to-integer (page-data "count") then state-set "done" 1
+    else let probs = el-bytes (page-data ("probs" & show i))
+    in if list-length probs /= 8192 then (let e = state-set-text "error" "Expected four 2048-way probability rows" in state-set "done" 1)
+    else let filled = msa-put p probs 0
+    in let seed = text-to-integer (page-data ("seed" & show i))
+    in let draw = text-to-integer (page-data ("draw" & show i))
+    in let filled2 = ms-exponential q scratch seed draw 0
+    in let tokens = music-multinomial p q
+    in let text = "[" & show (list-at tokens 0) & "," & show (list-at tokens 1) & "," & show (list-at tokens 2) & "," & show (list-at tokens 3) & "]"
+    in let a = state-set-text ("tokens" & show i) text
+    in let b = state-set-text ("exp" & show i) ("[" & msa-words q 0 8192 & "]")
+    in msa-cases p q scratch (i + 1)
+
+  opening : [Console] Integer
+  opening = msa-cases (alloc-bytes 32768) (alloc-bytes 32768) (alloc-bytes 16) 0

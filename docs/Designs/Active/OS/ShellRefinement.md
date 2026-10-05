@@ -620,10 +620,10 @@ number takes its citers with it.
 |---|---|---|
 | 1 | Typography: the UI quire's glyph stack, proportional metrics, an antialiased raster path, a type and spacing scale in `Theme` | CLOSED |
 | 2 | Iconography: `Icon.codex` in the launcher, taskbar, Files type column, dialog severity, status | one item open |
-| 3 | Surfaces and depth: layered surfaces, elevation, shadow, rounded corners, background images | background images open |
+| 3 | Surfaces and depth: layered surfaces, elevation, shadow, rounded corners, background images | CLOSED; bounded BMP wallpaper path |
 | 4 | Sound: `Sound.codex` on the Intel HDA device, off by default until stage 5 can configure it | CLOSED |
-| 5 | Settings: a typed schema, persistence through the fact store, a Settings GUI on `SettingsPanel.codex` | OPEN, whole stage |
-| 6 | Accessibility: roles, focus ring, keyboard traversal, high-contrast palette, independent text scaling, an announce channel | chapter armed, nothing wired |
+| 5 | Settings: a typed schema, persistence through the fact store, a Settings GUI on `SettingsPanel.codex` | CLOSED; Stage 6/7 controls show their deferred reasons |
+| 6 | Accessibility: roles, focus ring, keyboard traversal, high-contrast palette, independent text scaling, an announce channel | model, ring, Settings keyboard and shell contrast wired; other panes and text scaling open |
 | 7 | Accounts and parental controls | OPEN, needs a ruling before it starts |
 | 8 | Responsiveness: `Animation.codex`, transitions, a throbber, a stated frame budget with an instrument | OPEN |
 | 9 | Crisp: partial coverage, antialiased stroke, honest text metrics, small type, windows, docking, the task frame | one item open, plus D.5 |
@@ -665,16 +665,53 @@ a stage 3 or 5 item.
   box.** Padding insets text; a picture has nothing to inset. Measured off
   the content box the status dots drew zero pixels at 10 by 10.
 
-### Stage 3, what is left
+### Stage 3: Background images
 
-**Background IMAGES alone**, and the dependency stands: a decode path plus
-somewhere to keep the image, which is stage 5's store.
+Settings > Appearance > Wallpaper accepts an uppercase 8.3 BMP filename
+from the boot partition root. Basenames use A-Z, digits, underscore,
+hyphen or tilde. W opens the page from Appearance; typing and
+Backspace edit the filename and Enter applies it. The theme-background
+action clears the choice. Settings key 6 stores the filename as Text.
+Reset clears it through the same fact publication path.
+
+`GopWallpaper` decodes uncompressed BGR24/BGRX32 BMP, including top-down
+rows. Files are limited to 16 MiB and dimensions to 1..8192. The display
+cache is limited to 4194304 pixels (16 MiB); the filesystem FAT read is
+limited to 4 MiB. Unsupported formats, malformed
+headers, truncated pixels and insufficient buffers refuse with a reason.
+Fit preserves aspect ratio with nearest-neighbor sampling, performed only
+at load/apply. Painting copies cached pixels and clips to the background
+widget; chrome and windows retain their normal paint order.
+
+A fixed raw state block and display-sized cache live below the desktop
+base mark. Apply decodes into temporary storage and publishes Settings
+before replacing the live cache. A failed decode or save preserves the
+old name and pixels. Boot and step marks reclaim file/FAT/fit scratch;
+there is no pixel-object list. Retained cost is four bytes per display pixel
+plus 384 bytes of raw state. Apply temporarily needs another display buffer,
+the bounded file bytes and filesystem scratch. Repaint work is proportional
+to the clipped image area; it does not decode or scale again.
+
+`apps/works/proofs/wallpaper.ps1` constructs independent BMP/FAT fixtures,
+drives filename keyboard input and actual Settings handlers, then checks
+cold reload, reset, invalid-file and failed-publication cases. It compares
+every cached pixel on refusal and overwrites reclaimed scratch. Native
+captures cover the resulting backdrop. The untouched control capture is
+in blu's `build-output/wallpaper/control.bmp`.
+
+The idle witness watches an eight-byte location near the image centre in
+the software display buffer. Plain mode reports 10 writes at both 8 and
+16 seconds; selected wallpaper reports 11 at both durations. An injected
+late write raises the count to 12 and is rejected. These are measured
+2026-10-01 native-bed observations at that location and interval, not a
+whole-frame or CPU-time bound. The decoder arm separately checks bounded
+non-pixel allocation while fitting a 1920x1080 display.
 
 Elevation, shadow, rounded corners and gradients are not work: the desk has
 an adornment system (`dk-adorn-border`, `dk-adorn-gradient`,
 `dk-adorn-shadow`, `dk-adorn-round`), resolved by `dk-grad` and `dk-shade`,
 painted by `comp-shadow`, `comp-bevel`, `comp-accent` and
-`comp-corner-inset`, and toggleable in the Appearance pane.
+`comp-corner-inset`, and toggleable in Settings > Appearance.
 `GopStyleKit`'s `DesignLanguage` carries `dl-relief`, `dl-bevel-w`,
 `dl-corner`, `dl-outline` and `dl-gradient` per language.
 
@@ -687,19 +724,58 @@ painted by `comp-shadow`, `comp-bevel`, `comp-accent` and
 
 ### Stage 5: Settings
 
-The one users see and the one the rest depends on. A settings SCHEMA (typed
-keys, defaults, ranges), a persistence path through the existing fact store,
-and a Settings GUI built on `SettingsPanel.codex` with categories: Appearance
-(theme, wallpaper, type scale), Sound, Accessibility, Accounts and Parental
-Controls, System.
+The Settings pane uses `SettingsPanel.codex` through `GopSettingsPanel`.
+Appearance controls theme and adornments; Sound controls the sound switch;
+System controls task edge and pinned applications. Accounts and Parental
+Controls is listed but disabled with "awaiting Stage 7 ruling", with no
+keys or storage. Accessibility offers shell high contrast; text scale shows
+its Stage 6 reason until its consumer exists. Small windows have
+clamped Up/Down scrolling. Reset requires explicit confirmation.
 
-- Proves: a setting survives a reboot; an out-of-range value is refused
-  rather than clamped silently; the default is restored by an explicit action
-  and not by deleting a file.
-- It makes stages 3, 4, 6 and 7 configurable rather than hardcoded, so it
-  cannot come last.
-- Persistence goes through `GopFacts.codex`'s published interface. That
-  chapter is red's and is not part of this campaign.
+`GopSettings` supports Integer, Boolean and Text values with defaults and
+numeric/text-length limits. `gst-checked-store` checks positive unique ids,
+names, kinds and defaults, with at most 48 keys. Typed updates refuse
+mismatched kinds and out-of-range values without modifying the old value.
+`gst-copy` separates value arrays; single/all reset restores schema defaults.
+The legacy numeric API and unchecked constructor remain available.
+
+`GopSettingsFacts` stores versioned typed snapshots as namespaced kind-28
+facts. Text values use UTF-8 hex inside the JSON envelope. It migrates
+`SETTINGS.DAT` into facts only when a successful scan finds no settings
+snapshot. If the facts partition is absent, valid legacy preferences may
+be used without migration, with a storage-unavailable reason.
+A saved reset remains authoritative even while the legacy file exists.
+Malformed snapshots and failed reads refuse loading and lock desktop
+edits until restart. Save publishes and verifies the fact checkpoint
+before applying a candidate to the live desktop. Refused saves preserve
+the current preferences and show the reason.
+
+The additive `gfs-mount-checked` and `gfs-scan-all-checked` interfaces in
+red-owned `GopFacts.codex` distinguish absence, successful rows and named
+failures. A failed header/content read never returns partial rows.
+Checked mount refuses an unreadable superblock copy; a readable pair with
+no valid superblock is empty only when both sectors are zero. Existing
+GopFacts APIs keep their behavior. Root authorized blu's additive repair.
+
+`apps/works/proofs/settings-facts.ps1` builds an independent GPT/FAT fixture
+and boots fresh native guests for migration, persistence, confirmed reset
+and subsequent loading. It also checks checkpoint refusal, full storage,
+header/content/superblock read failures, legacy scan compatibility, and
+boot scratch reclamation after overwriting reclaimed memory.
+Focused typed/codec, desktop state/click/render, launcher and keyboard
+arms cover the callers. The full DeskVm builds; native panel captures
+show the controls and refusal text. This is native-bed evidence, not a
+physical-machine acceptance claim.
+
+The Settings window owns a fixed 2176-byte raw block below the desktop
+base mark, including wallpaper metadata, filename draft, cache pointer,
+keyboard focus and announcement bytes.
+Per-step and boot marks reclaim temporary records and text.
+Page work is bounded by fixed controls and 19 pins. Schema validation has
+bounded quadratic duplicate checking; updates are linear in key count.
+Fact scanning remains linear in history and retains scan buffers until
+the caller restores its mark, so peak memory still grows with history.
+Compiler heap/time behavior is unchanged.
 
 ### Stage 6: Accessibility
 
@@ -719,8 +795,57 @@ traversal of every pane, a high-contrast palette, text scaling independent of
   shape is the point, because `a11y-is-interactive` answers False through an
   `otherwise` catch-all, so a role that drifts into it is indistinguishable
   from one that was always inert unless every constructor is named.
-- **Nothing wires it.** Roles, the focus ring, traversal, the palette and
-  text scaling are all still open, and they are the stage.
+- `GopAccessibility` adapts widget kinds and labeled rows to the existing
+  roles and focus ring. Hidden/disabled subtrees are excluded. Empty or
+  duplicate focus IDs and capacity limits refuse with a reason: 4096 tree
+  visits, depth 64, 256 controls/bindings and 96 encoded bytes per ID.
+- The compositor draws black and white focus bands after status marks,
+  including ordinary, hovered and pressed focus; disabled controls omit
+  the ring. `gop-focus-ring` checks the pixel bands, clipping, scale and
+  normal node draw order. It does not prove every pane assigns focus.
+- Settings uses Tab/Shift-Tab, Enter/Space activation, pointer-selected
+  focus and scroll reveal. Its filename field accepts input when focused;
+  page changes clear stale focus. Existing shortcuts remain available.
+  `settings-focus` exercises all current Settings pages, forward/reverse
+  wrap, narrow-window reveal, actual navigation announcements, changed
+  checkbox state and retained bytes after scratch overwrite. Idle input
+  returns without allocation. A full DeskVm keyboard capture opens Settings
+  through the menu and toggles Borders with its focus ring visible.
+- Announcements use a single-writer latest-value channel. An even sequence
+  identifies a stable publication; odd means writing. Readers copy bytes
+  and recheck the sequence. The channel coalesces messages, stores at most
+  512 CCE bytes and marks truncation with an ellipsis and a flag. It retains
+  no transient Text pointer. `gop-accessibility` checks multilingual
+  retention, exact truncated prefix and stable/odd/live-off behavior;
+  concurrent reader/writer interleaving is not yet armed. No speech engine
+  is attached. Settings publishes focus and post-action state through this
+  channel; its retained offsets are in `works-desk-contract.md`. Read with
+  `gax-read (dk-settings-a11y ds + 128) last-sequence`, initially zero, and
+  pass the returned `ga-sequence` on the next read to suppress duplicates.
+- Shell high contrast is Boolean setting 7, default false, saved through
+  the same typed fact store. `GopContrast` supplies flat black widget
+  surfaces and white text, with cyan/yellow semantic tones. Muted widget
+  text uses its readable fallback. Focused captions and the top bar use
+  black text on white; inactive captions use white text on black.
+  Wallpaper is suppressed while enabled, with its
+  stored filename and cache retained; disabling restores the selected
+  theme and wallpaper. Reset includes the contrast setting.
+- `shell-contrast` computes the [WCAG contrast formula](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html).
+  The palette uses only sRGB channel endpoints, so relative luminance uses
+  exact integer weights without gamma approximation. Every widget-state
+  foreground/background pair, all six compositor text tones and the top
+  bar exceed 7:1; black/white computes to 21:1. These are source-color
+  ratios, not antialiased pixel ratios. The arm rejects non-endpoint
+  inputs rather than applying that restricted calculation to other colors.
+  Native desktop captures cover enabling, a fresh boot with the saved
+  value and disabling. This does not certify physical-display contrast or
+  replace the individual canvas panes' own rendering palettes.
+- Contrast adds no retained allocation: its Boolean uses spare bytes in
+  the existing Settings block. Theme construction is fixed-size; changing
+  the preference repaints the shell. There is no new idle scan.
+- Remaining: keyboard/role coverage for the other panes and window chrome,
+  individual canvas-pane accessibility, independent text scaling, and its
+  Settings control. Stage 6 remains open.
 
 ### Stage 7: Accounts and parental controls
 
@@ -1037,7 +1162,7 @@ the default placement."*
 |---|---|---|
 | 1 | the band docks to any edge | DONE |
 | 2 | the flick | DONE |
-| 3 | hot-launch pills | **mechanism landed.** A pinned app has a pill with no window; `dk-pill-live` is the union the four walks ask. **NOT closed: there is no pin gesture, and `dk-pill-hit` / `desk-pill-icons` are covered by no arm** |
+| 3 | hot-launch pills | **mechanism and Settings pin controls landed.** A pinned app has a pill with no window; `dk-pill-live` is the union the four walks ask. **NOT closed: `dk-pill-hit` / `desk-pill-icons` are covered by no arm** |
 | 4 | the Cobblestone button's position | **OPEN. It is five variables, not one** |
 
 **6.7, per-edge pill strips: DONE.** A pill's edge is a per-app FACT (6.7.1)

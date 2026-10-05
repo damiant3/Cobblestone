@@ -1,0 +1,70 @@
+Chapter: TownRestartWrite
+  cites Uoaix chapter TownInputFixtures
+  cites Uoaix chapter TownInput
+  cites Uoaix chapter TownInputCodec
+  cites Uoaix chapter TownReplay
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  trw-loop : UoStore, TownState, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  trw-loop (store) (state) (frame) (snapshot) (sequence) =
+    if sequence > 46 then act Ok 46 end
+    else let mark = __heap-save
+    in let entry = tip-input sequence
+    in when ti-encode entry frame ti-frame-bytes
+      is Err (e) -> act Err e end
+      is Ok (size) -> act
+        logged <- us-append store 2 entry.sequence entry.tick frame size
+        when logged
+          is Err (e) -> act Err e end
+          is Ok (offset) -> when ti-apply state entry
+            is Err (e) -> act Err e end
+            is Ok (outcome) -> act
+              saved <- if sequence == 9 then trw-checkpoint store state snapshot else act Ok 0 end
+              when saved
+                is Err (e) -> act Err e end
+                is Ok (at) ->
+                  if ti-retains-text entry outcome.code then trw-loop store state frame snapshot (sequence + 1)
+                  else let restored = __heap-restore mark in trw-loop store state frame snapshot (sequence + 1)
+            end
+      end
+
+  trw-checkpoint : UoStore, TownState, Integer -> [Device.Block] Result Integer Text
+  trw-checkpoint (store) (state) (buf) =
+    when ts-encode state buf (ts-size state.checkpoint.world.capacity)
+      is Err (e) -> act Err e end
+      is Ok (size) -> us-append store 1 state.checkpoint.sequence state.checkpoint.tick buf size
+
+  trw-run : UoStore, WorldTable -> [Console, Device.Block] Nothing
+  trw-run (store) (world) =
+    let state = tip-source world
+    in let snapshot = alloc-bytes (ts-size world.capacity)
+    in let frame = alloc-bytes ti-frame-bytes
+    in act
+      saved <- trw-checkpoint store state snapshot
+      when saved
+        is Err (e) -> print-line-uni ("FAIL initial checkpoint " & e)
+        is Ok (offset) -> act
+          completed <- trw-loop store state frame snapshot 1
+          when completed
+            is Err (e) -> print-line-uni ("FAIL combined write " & e)
+            is Ok (count) -> act
+              print-line-uni (if count == 46 & store.sequence == 46 & store.tick == 460 & store.snapshot > 0 & store.fault == 0 then "PASS combined checkpoints and inputs committed" else "FAIL combined commit metadata")
+              print-line-uni (if state.townsfolk.used == 4 & state.townsfolk.hour == 26 & state.mind.sequence == 3 & ts-state-valid state.checkpoint state.townsfolk state.mind then "PASS live writer state" else "FAIL live writer state")
+            end
+        end
+    end
+
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 8192
+    when opened
+      is Err (e) -> print-line-uni ("FAIL store open " & e)
+      is Ok (store) -> when world-new 4
+        is Err (e) -> print-line-uni ("FAIL world " & e)
+        is Ok (world) -> trw-run store world
+  end

@@ -406,7 +406,8 @@ Write-Host 'The day is warm, yet there is a cooling breeze.'
 # -- clean
 Measure-Phase 'clean' {
     $buildOut = Join-Path $Repo 'build-output'
-    if (Test-Path $buildOut) { Remove-Item -Recurse -Force $buildOut }
+    # the diffusion-* model-root junctions the GPU tests read (OperatorsManual, -gpu-files) are made once per box, so they survive
+    if (Test-Path $buildOut) { Get-ChildItem $buildOut -Force | Where-Object { -not ($_.Name -like 'diffusion-*' -and $_.LinkType -eq 'Junction') } | Remove-Item -Recurse -Force }
     if (Test-Path $OutDir) {
         $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
         $archive = Join-Path $PSScriptRoot "output-$stamp"

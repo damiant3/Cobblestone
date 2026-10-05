@@ -1,0 +1,173 @@
+Chapter: GopRenderWorker
+  cites Works chapter GopRenderMailbox
+  cites Works chapter GopScene
+  cites Works chapter GopFish
+  cites Engine chapter SceneWork
+  cites Engine chapter Renderer3D
+
+Section: Runtime Placement
+
+ The process table ABI is X86_64Boot: 256-byte slots at 20480, current core
+ at 8 and affinity at 16. Under the runtime's single spawning writer contract,
+ pin the free slot before custom-heap spawn publishes READY. That helper
+ retains affinity; changing it after publication could race an AP claim.
+
+  grw-core : Integer -> Integer
+  grw-core (pid) = atomic-load (20480 + pid * 256 + 8)
+
+  grw-free-slot : Integer -> Integer
+  grw-free-slot (pid) =
+    if pid >= 16 then 0 - 1
+    else if process-status pid == 0 then pid
+    else grw-free-slot (pid + 1)
+
+  grw-start : Integer -> [Concurrent] Integer
+  grw-start (cell) =
+    if cell == 0 then act (0 - 1) end
+    else if peek-qword cell grm-pid /= 0 - 1 | peek-qword cell grm-owner /= 0 then act (0 - 1) end
+    else grw-start-try cell 16
+
+  grw-start-try : Integer, Integer -> [Concurrent] Integer
+  grw-start-try (cell) (fuel) =
+    if fuel <= 0 then act (0 - 1) end
+    else
+    let slot = grw-free-slot 1
+    in let pinned = if slot > 0 then atomic-store (20480 + slot * 256 + 16) 0 else 0
+    in act
+      pid <- if slot > 0 then process-spawn-with-heap (\ignored -> grw-main cell) grm-heap-bytes else act (0 - 1) end
+      let recorded = poke-qword cell grm-pid pid
+      in if pid <= 0 | pid == slot then pid
+      else let stop = poke-qword cell grm-stop 1
+      in act
+        waited <- process-wait pid
+        if process-status pid /= 0 then 0 - 1
+        else let clear-pid = poke-qword cell grm-pid (0 - 1)
+        in let clear-stop = poke-qword cell grm-stop 0
+        in let clear-stopped = poke-qword cell grm-stopped 0
+        in grw-start-try cell (fuel - 1)
+      end
+    end
+
+  grw-peak : Integer, Integer -> Integer
+  grw-peak (cell) (base) =
+    let used = __heap-save - base
+    in if used > peek-qword cell grm-peak then poke-qword cell grm-peak used else 0
+
+  grw-ack-cancel : Integer, Integer -> Integer
+  grw-ack-cancel (cell) (token) =
+    if token <= peek-qword cell grm-cancel-ack then 0
+    else poke-qword cell grm-cancel-ack token
+
+  grw-main : Integer -> [Concurrent] Integer
+  grw-main (cell) = grw-loop cell __heap-save 0
+
+  grw-loop : Integer, Integer, Integer -> [Concurrent] Integer
+  grw-loop (cell) (base) (seen) =
+    if peek-qword cell grm-stop /= 0 then
+      let ack = grw-ack-cancel cell (peek-qword cell grm-cancel-want)
+      in let idle = poke-qword cell grm-state 0
+      in let gone = poke-qword cell grm-stopped 1
+      in 0
+    else let token = peek-qword cell grm-request
+    in let core = grw-core process-get-pid
+    in if token <= 0 | token == seen | core /= 0 | peek-qword cell grm-allowed == 0 then act
+      let canceled = peek-qword cell grm-cancel-want
+      in let ack = if token == 0 | canceled < token then grw-ack-cancel cell canceled else 0
+      in act
+        yielded <- process-yield
+        grw-loop cell base seen
+      end
+    end
+    else
+      let owner = peek-qword cell grm-owner
+      in let kind = peek-qword cell grm-kind
+      in let w = peek-qword cell grm-width
+      in let h = peek-qword cell grm-height
+      in let phase = peek-qword cell grm-phase
+      in let angle = peek-qword cell grm-angle
+      in let sky = peek-qword cell grm-sky
+      in let shadows = peek-qword cell grm-shadows
+      in if grm-matches cell owner token == False then grw-loop cell base seen
+      else let canceled = peek-qword cell grm-cancel-want
+      in let retired = if canceled < token then grw-ack-cancel cell canceled else 0
+      in let busy = poke-qword cell grm-state 1
+      in let placed = poke-qword cell grm-core core
+      in let count = poke-qword cell grm-steps 0
+      in let active-owner = poke-qword cell grm-reply-owner owner
+      in let active-token = poke-qword cell grm-reply token
+      in act
+        rendered <- if grm-size-ok w h & (kind == 1 | kind == 2) then grw-frame cell owner token kind w h phase angle sky shadows base else act (0 - 1) end
+        let peak = grw-peak cell base
+        in let held = if grm-matches cell owner token & rendered < 0 then grw-result cell owner token 0 0 (0 - 1) else 0
+        in act
+          consumed <- grw-wait cell owner token
+          let released = __heap-restore base
+          in let ack = grw-ack-cancel cell token
+          in let idle = poke-qword cell grm-state 0
+          in grw-loop cell base token
+        end
+      end
+
+  grw-result : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  grw-result (cell) (owner) (token) (pixels) (depth) (state) =
+    let ptr = poke-qword cell grm-pixels pixels
+    in let z = poke-qword cell grm-depth depth
+    in let reply-owner = poke-qword cell grm-reply-owner owner
+    in let reply = poke-qword cell grm-reply token
+    in poke-qword cell grm-state state
+
+  grw-frame : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Concurrent] Integer
+  grw-frame (cell) (owner) (token) (kind) (w) (h) (phase) (angle) (sky) (shadows) (base) =
+    let scene = if kind == 2 then gf-scene phase else gsc-scene phase
+    in let camera = gsc-copy-camera (scene.s3-camera) (gsc-camera angle (gsc-aspect w h))
+    in let pixels = alloc-bytes (w * h * 4)
+    in let depth = alloc-bytes (w * h * 4)
+    in let target = R3dTriState { r3t-base = pixels, r3t-depth = depth, r3t-w = w, r3t-h = h, r3t-stride = w, r3t-service = r3d-no-service }
+    in let job = sj-new scene target gsc-shadow-map
+    in let mark = __heap-save
+    in if mark - base > grm-heap-bytes - 1048576 then act (0 - 1) end
+    else let begun = sj-begin job sky shadows
+    in let peak = grw-peak cell base
+    in let restored = __heap-restore mark
+    in if begun < 0 then act begun end
+    else act
+      result <- grw-render cell owner token job mark base 0
+      if result /= 9 | grm-matches cell owner token == False then result
+      else grw-result cell owner token pixels depth 2
+    end
+
+  grw-render : Integer, Integer, Integer, R3dSceneWork, Integer, Integer, Integer -> [Concurrent] Integer
+  grw-render (cell) (owner) (token) (job) (mark) (base) (batch) =
+    if grm-matches cell owner token == False then act 0 end
+    else if peek-qword cell grm-allowed == 0 then act
+      yielded <- process-yield
+      grw-render cell owner token job mark base batch
+    end
+    else let phase = sj-step job
+    in let peak = grw-peak cell base
+    in let restored = __heap-restore mark
+    in let steps = poke-qword cell grm-steps (peek-qword cell grm-steps + 1)
+    in if phase < 0 | phase == 9 then act phase end
+    else if batch >= 31 then act
+      yielded <- process-yield
+      grw-render cell owner token job mark base 0
+    end
+    else grw-render cell owner token job mark base (batch + 1)
+
+  grw-wait : Integer, Integer, Integer -> [Concurrent] Integer
+  grw-wait (cell) (owner) (token) =
+    if grm-matches cell owner token == False | peek-qword cell grm-ack == token then act 0 end
+    else act
+      yielded <- process-yield
+      grw-wait cell owner token
+    end
+
+  grw-stop : Integer -> [Concurrent] Integer
+  grw-stop (cell) =
+    let pid = peek-qword cell grm-pid
+    in let closed = grm-close cell (peek-qword cell grm-owner)
+    in let stopped = poke-qword cell grm-stop 1
+    in if pid <= 0 | pid >= 16 then act 0 end
+    else act
+      process-wait pid
+    end

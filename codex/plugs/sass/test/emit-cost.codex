@@ -1,0 +1,53 @@
+Chapter: SassEmitCost
+
+Section: Probe
+
+  cost-emit : LState, Integer, Integer -> LState
+  cost-emit (st) (n) (i) =
+    if i >= n then st else cost-emit (lw-emit st (SMov32i 0 i)) n (i + 1)
+
+  cost-check : List SassInsn, Integer -> Boolean
+  cost-check (xs) (i) =
+    if i >= list-length xs then True
+    else let insn = list-at xs i
+    in when insn.body
+     is SMov32i (d) (v) -> if d /= 0 then False else if v /= i then False else cost-check xs (i + 1)
+     is otherwise -> False
+
+  cost-run : Integer -> [Console, Concurrent] Nothing
+  cost-run (n) = act
+    t0 <- get-ticks
+    let h0 = __heap-save
+    in let st = LState { code = Nil, next-reg = 0, next-pred = 0, env = [], guard = 7, inlining = [], defs = [] }
+    in let out = lw-code-list (cost-emit st n 0).code
+    in let valid = cost-check out 0
+    in let size = list-length out
+    in let used = __heap-save - h0
+    in act
+     t1 <- get-ticks
+     print-line-uni ("COST " & show n & " " & show used & " " & show (t1 - t0) & " " & show size & " " & show valid)
+    end
+  end
+
+  cost-fork : Boolean
+  cost-fork =
+    let st = LState { code = Nil, next-reg = 0, next-pred = 0, env = [], guard = 7, inlining = [], defs = [] }
+    in let prefix = cost-emit st 3 0
+    in let left = lw-emit prefix (SMov32i 0 3)
+    in let right = lw-emit-at prefix 2 (SMov32i 0 3)
+    in let a = lw-code-list left.code
+    in let b = lw-code-list right.code
+    in if list-length (lw-code-list prefix.code) /= 3 then False
+    else if list-length a /= 4 then False
+    else if list-length b /= 4 then False
+    else if cost-check a 0 == False then False
+    else if cost-check b 0 == False then False
+    else (list-at a 3).guard == 7 & (list-at b 3).guard == 2
+
+  opening : [Console, Concurrent] Nothing = act
+    print-line-uni ("FORK " & show cost-fork)
+    cost-run 1024
+    cost-run 2048
+    cost-run 4096
+    cost-run 8192
+  end

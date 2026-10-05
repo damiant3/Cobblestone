@@ -1,0 +1,59 @@
+Chapter: ShardTx
+  cites Net chapter NetIO
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Foreword chapter Result
+
+  ShardTx = record { buffer : Integer, capacity : Integer, used : Integer, offset : Integer }
+  ShardTxStep = record { transport : TcpTransportState, sent : Integer, complete : Boolean }
+  stx-max-bytes : Integer = 65536
+
+  stx-new : Integer -> Result ShardTx Text
+  stx-new (capacity) =
+    if capacity < 1 | capacity > stx-max-bytes then Err "shard transmit capacity invalid"
+    else Ok (ShardTx { buffer = alloc-bytes capacity, capacity = capacity, used = 0, offset = 0 })
+
+  stx-valid : ShardTx -> Boolean
+  stx-valid (queue) = queue.capacity >= 1 & queue.capacity <= stx-max-bytes
+    & queue.offset >= 0 & queue.offset <= queue.used & queue.used <= queue.capacity
+
+  stx-bytes-valid : List Integer, Integer -> Boolean
+  stx-bytes-valid (bytes) (i) = if i >= list-length bytes then True
+    else let value = list-at bytes i
+    in value >= 0 & value <= 255 & stx-bytes-valid bytes (i + 1)
+
+  stx-copy : Integer, List Integer, Integer -> Integer
+  stx-copy (buffer) (bytes) (i) = if i >= list-length bytes then i
+    else let written = poke-byte buffer i (list-at bytes i)
+    in stx-copy buffer bytes (i + 1)
+
+  stx-enqueue : ShardTx, List Integer -> Result Integer Text
+  stx-enqueue (queue) (bytes) =
+    if not (stx-valid queue) then Err "shard transmit state invalid"
+    else if queue.offset /= queue.used then Err "shard transmit response still pending"
+    else if list-length bytes > queue.capacity then Err "shard transmit response exceeds capacity"
+    else if not (stx-bytes-valid bytes 0) then Err "shard transmit input is not bytes"
+    else let copied = stx-copy queue.buffer bytes 0
+    in let used = __record-set queue "used" copied
+    in let reset = __record-set queue "offset" 0
+    in Ok copied
+
+  stx-step : ShardTx, TcpTransportState -> Result ShardTxStep Text
+  stx-step (queue) (transport) =
+    if not (stx-valid queue) then Err "shard transmit state invalid"
+    else if transport-stale transport then Err "shard transmit transport expired"
+    else if net-outbox-count transport.session /= 0 then Err "shard transmit outbox requires flush"
+    else if queue.offset == queue.used then Ok (ShardTxStep { transport = transport, sent = 0, complete = True })
+    else if net-io-conn-closed transport then Err "shard transmit connection closed"
+    else if net-rexmit-full transport.session then Ok (ShardTxStep { transport = transport, sent = 0, complete = False })
+    else let remaining = queue.used - queue.offset
+    in let count = if remaining > net-mss then net-mss else remaining
+    in let bytes = __buf-read-bytes queue.buffer queue.offset count
+    in let sent = net-send transport.session bytes
+    in if net-outbox-count sent.session /= 1 then Err "shard transmit segment refused"
+    else let next = transport-set-session transport sent.session
+    in let advanced = __record-set queue "offset" (queue.offset + count)
+    in Ok (ShardTxStep { transport = next, sent = count, complete = queue.offset == queue.used })
+
+Page 1

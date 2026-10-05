@@ -1,0 +1,167 @@
+Chapter: GameSessionProof
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter Result
+
+  gsp-check : Text, Boolean -> [Console] Nothing
+  gsp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gsp-fill : WalkMap, Integer -> Boolean
+  gsp-fill (map) (i) =
+    if i >= map.width * map.height then True
+    else let mark = __heap-save
+    in let ok = is-ok (walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0)
+    in let restore = __heap-restore mark
+    in ok & gsp-fill map (i + 1)
+
+  gsp-login : Integer -> List Integer
+  gsp-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104, 98, 84, 92, 107, 103, 88, 102, 103]) 21
+
+  gsp-create : Integer -> List Integer
+  gsp-create (slot) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Avatar" 0 30) "" 0 30
+    in let stats = name & [0, 30, 20, 15, 0, 50, 1, 50, 2, 0]
+    in let skin = gp-put16 stats 1002
+    in let appearance = gp-zeros skin 12
+    in gp-put32 (gp-put16 appearance slot) 0
+
+  gsp-at : GameShard, Integer, Integer -> Boolean
+  gsp-at (shard) (x) (y) = when world-get shard.world 1
+    is Err (e) -> False
+    is Ok (mobile) -> mobile.x == x & mobile.y == y & mobile.z == 0
+
+  gsp-session : GameShard, WalkMap, Integer -> [Console] Nothing
+  gsp-session (shard) (map) (key) =
+    let session = gs-session key
+    in act
+      gsp-check "login required" (is-err (gs-handle shard session map [2, 2, 0]))
+      gsp-check "truncated game login" (is-err (gs-handle shard session map [145]))
+      when gs-handle shard session map (gsp-login key)
+        is Err (e) -> print-line-uni ("FAIL game login " & e)
+        is Ok (reply) -> act
+          gsp-check "character list" (session.phase == 1 & list-length reply.packets == 1
+            & list-length (list-at reply.packets 0) == 372 & list-at (list-at reply.packets 0) 0 == 169)
+          gsp-check "relay consumed" (shard.pending-key == 0 & is-err (gs-handle shard (gs-session key) map (gsp-login key)))
+          let bad-stat = gs-handle shard session map (list-set-at (gsp-create 0) 71 46)
+          in let bad-name = gs-handle shard session map (list-set-at (gsp-create 0) 10 60)
+          in let bad-city = gs-handle shard session map (list-set-at (gsp-create 0) 91 1)
+          in let bad-slot = gs-handle shard session map (gsp-create 5)
+          in let bad-wide-slot = gs-handle shard session map (list-set-at (gsp-create 0) 92 1)
+          in gsp-check "creation refusals atomic" (is-err bad-stat & is-err bad-name & is-err bad-city & is-err bad-slot & is-err bad-wide-slot
+            & world-count shard.world == 0 & peek-qword shard.characters 0 == 0 & session.phase == 1)
+          when gs-handle shard session map (list-set-at (gsp-create 0) 18 103)
+            is Err (e) -> print-line-uni ("FAIL create " & e)
+            is Ok (entered) -> act
+              gsp-check "created world records" (world-count shard.world == 3 & shard.active == 1 & session.serial == 1)
+              gsp-check "name bytes after NUL scrubbed" (peek-byte shard.characters 18 == 65 & peek-byte shard.characters 26 == 0)
+              gsp-check "world entry packets" (list-length entered.packets == 6
+                & list-length (list-at entered.packets 0) == 37 & list-length (list-at entered.packets 1) == 19
+                & list-length (list-at entered.packets 2) == 15 & list-at (list-at entered.packets 5) 0 == 85)
+              gsp-check "spawn from map" (gsp-at shard 1420 1698)
+              let tip = gs-handle shard session map [167, 255, 255, 0]
+              in let notice = gs-handle shard session map [167, 0, 1, 1]
+              in let ping = gs-handle shard session map [115, 9]
+              in gsp-check "optional tips preserve session and following ping" (is-ok notice & session.phase == 2 & shard.active == 1
+                & (when tip is Err (e) -> False is Ok (reply) -> not reply.close & list-length reply.packets == 0)
+                & (when ping is Err (e) -> False is Ok (reply) -> not reply.close & list-at (list-at reply.packets 0) 1 == 9))
+              gsp-check "truncated tip refused" (is-err (gs-handle shard session map [167, 0, 0]))
+              let speech = gp-ascii [3, 0, 17, 0, 3, 178, 0, 3] "I accept" 0 9
+              in act
+                when gs-handle shard session map speech
+                  is Err (e) -> print-line-uni ("FAIL speech " & e)
+                  is Ok (reply) ->
+                    let packet = list-at reply.packets 0
+                    in gsp-check "speech identity and payload" (list-length packet == 53 & gp-u16 packet 1 == 53 & gp-u32 packet 3 == 1
+                      & gp-u16 packet 7 == 400 & list-at packet 9 == 0 & gp-u16 packet 10 == 946 & gp-u16 packet 12 == 3
+                      & list-at packet 14 == 65 & list-at packet 44 == 73 & list-at packet 52 == 0 & gp-speech-text speech == "I accept")
+                gsp-check "speech rejects command spoof and controls" (is-err (gs-handle shard session map (list-set-at speech 3 15))
+                  & is-err (gs-handle shard session map (list-set-at speech 9 10)) & is-err (gs-handle shard session map (list-set-at speech 16 65)))
+                gsp-check "speech length mismatch refused" (is-err (gs-handle shard session map (list-set-at speech 2 16)))
+                gsp-check "minimum emote and whisper styles admitted" (is-ok (gs-handle shard session map [3, 0, 10, 2, 0, 0, 0, 0, 97, 0])
+                  & is-ok (gs-handle shard session map [3, 0, 10, 8, 3, 233, 0, 9, 97, 0]))
+                gsp-check "speech style bounds refused" (is-err (gs-handle shard session map [3, 0, 10, 0, 3, 234, 0, 9, 97, 0])
+                  & is-err (gs-handle shard session map [3, 0, 10, 0, 3, 233, 0, 10, 97, 0]))
+                let maximum = gp-ascii [3, 0, 137, 9, 3, 178, 0, 3] "a" 0 1
+                in let filled = gsp-speech-fill maximum 127
+                in gsp-check "maximum speech admitted" (is-ok (gs-handle shard session map (list-push filled 0)))
+              end
+              gsp-check "entry wire fields" (gp-u32 (list-at entered.packets 0) 1 == 1
+                & gp-u16 (list-at entered.packets 0) 9 == 400 & gp-u16 (list-at entered.packets 0) 11 == 1420
+                & gp-u16 (list-at entered.packets 0) 13 == 1698 & gp-u32 (list-at entered.packets 2) 9 == 1
+                & gp-u16 (list-at entered.packets 2) 13 == 0)
+              let turn = gs-handle shard session map [2, 2, 0]
+              in gsp-check "turn stays put" (is-ok turn & session.direction == 2 & session.sequence == 1 & gsp-at shard 1420 1698)
+              let moved = gs-handle shard session map [2, 2, 1]
+              in gsp-check "east move" (is-ok moved & session.sequence == 2 & gsp-at shard 1421 1698)
+              let duplicate = gs-handle shard session map [2, 2, 1]
+              in gsp-check "sequence rejects unchanged" (is-ok duplicate & session.sequence == 0 & gsp-at shard 1421 1698
+                & (when duplicate is Err (e) -> False is Ok (r) -> list-at (list-at r.packets 0) 0 == 33))
+              let solid = walk-add-solid map 1422 1698 0 20 64
+              in let denied = gs-handle shard session map [2, 2, 0]
+              in gsp-check "wall rejects unchanged" (is-ok solid & is-ok denied & session.sequence == 0 & gsp-at shard 1421 1698)
+              let turned = gs-handle shard session map [2, 1, 0]
+              in let diagonal = gs-handle shard session map [2, 1, 1]
+              in gsp-check "diagonal cannot cut wall" (is-ok turned & is-ok diagonal & session.sequence == 0 & gsp-at shard 1421 1698)
+              gsp-check "new relay denied while active" (is-err (gs-relay-key shard))
+              let closed = gs-disconnect shard session
+              in act
+                gsp-check "disconnect retains character" (session.phase == 3 & shard.active == 0 & world-count shard.world == 3)
+                gsp-check "closed session refuses" (is-err (gs-handle shard session map [115, 1]))
+              end
+            end
+        end
+    end
+
+  gsp-map : WalkMap -> [Console] Nothing
+  gsp-map (map) = act
+    gsp-check "window initialized" (gsp-fill map 0)
+    gsp-check "unloaded edge refused" (is-err (walk-ground map (map.x + map.width - 1) map.y))
+    gsp-check "negative floor average" (walk-average (-4) (-3) == -4)
+    when gs-new 0
+      is Err (e) -> print-line-uni ("FAIL shard " & e)
+      is Ok (shard) -> when gs-relay-key shard
+        is Err (e) -> print-line-uni ("FAIL relay " & e)
+        is Ok (key) -> gsp-session shard map key
+  end
+
+  gsp-speech-fill : List Integer, Integer -> List Integer
+  gsp-speech-fill (packet) (left) = if left <= 0 then packet else gsp-speech-fill (list-push packet 97) (left - 1)
+
+  gsp-solids : WalkMap, Integer -> Boolean
+  gsp-solids (map) (left) =
+    if left <= 0 then True
+    else is-ok (walk-add-solid map 0 0 80 1 64) & gsp-solids map (left - 1)
+
+  gsp-geometry : WalkMap -> [Console] Nothing
+  gsp-geometry (map) =
+    let filled = gsp-fill map 0
+    in let wet = walk-set-land map 0 0 0 128
+    in act
+      gsp-check "water refused" (filled & is-ok wet & is-err (walk-height map 0 0 0))
+      let dry = walk-set-land map 0 0 0 0
+      in let bridge = walk-add-solid map 0 0 0 4 1536
+      in gsp-check "bridge half height" (is-ok dry & is-ok bridge
+        & (when walk-height map 0 0 0 is Err (e) -> False is Ok (z) -> z == 2))
+      let ceiling = walk-add-solid map 0 0 10 1 64
+      in gsp-check "headroom refused" (is-ok ceiling & is-err (walk-height map 0 0 0))
+      let filled-solids = gsp-solids map 6
+      in gsp-check "collider budget refused unchanged" (filled-solids & is-err (walk-add-solid map 0 0 80 1 64)
+        & peek-qword map.solids 0 == 8)
+      let s1 = walk-set-land map 2 2 0 0
+      in let s2 = walk-set-land map 2 3 7 0
+      in let s3 = walk-set-land map 3 2 5 0
+      in let s4 = walk-set-land map 3 3 9 0
+      in gsp-check "steep land admitted on its lowest corner, standing at the average" (is-ok s4 & (when walk-height map 2 2 0 is Err (e) -> False is Ok (z) -> z == 6) & is-err (walk-height map 2 2 (-5)))
+    end
+
+  opening : [Console] Nothing = act
+    when walk-map-new 1416 1696 16 16
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> gsp-map map
+    when walk-map-new 0 0 4 4
+      is Err (e) -> print-line-uni ("FAIL geometry map " & e)
+      is Ok (map) -> gsp-geometry map
+  end

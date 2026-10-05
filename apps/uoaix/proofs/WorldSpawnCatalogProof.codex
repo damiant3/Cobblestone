@@ -1,0 +1,74 @@
+Chapter: WorldSpawnCatalogProof
+  cites Uoaix chapter WorldSpawnData
+
+  wsp-check : Text, Boolean -> [Console] Nothing
+  wsp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  wsp-range : Integer, Integer, Integer, Integer -> Boolean
+  wsp-range (low) (high) (minimum) (maximum) = low >= minimum & high >= low & high <= maximum
+  wsp-profiles : WsCatalog, Integer -> Boolean
+  wsp-profiles (c) (i) = if i == list-length c.profiles then True
+    else let p = list-at c.profiles i
+    in p.body >= 0 & p.body < 16384 & p.hue >= 0 & p.hue-high >= p.hue & p.hue-high <= 65535
+      & text-length p.name > 0 & text-length p.name <= 30
+      & wsp-range p.strength-low p.strength-high 0 65535
+      & wsp-range p.hits-low p.hits-high 0 65535 & wsp-range p.dex-low p.dex-high 0 1000
+      & wsp-range p.damage-low p.damage-high 0 1000 & wsp-range p.skill-low p.skill-high 0 1000
+      & wsp-range p.tactics-low p.tactics-high 0 1000 & wsp-profiles c (i + 1)
+  wsp-choices : WsCatalog, List WsChoice, Integer -> Boolean
+  wsp-choices (c) (choices) (i) = if i == list-length choices then True
+    else let choice = list-at choices i
+    in choice.weight > 0 & choice.weight <= 65535 & text-length choice.key > 0
+      & choice.profile >= -1 & choice.profile < list-length c.profiles
+      & choice.group >= -1 & choice.group < list-length c.groups
+      & (choice.profile == -1 | choice.group == -1) & wsp-choices c choices (i + 1)
+  wsp-groups : WsCatalog, Integer -> Boolean
+  wsp-groups (c) (i) = if i == list-length c.groups then True
+    else wsp-choices c (list-at c.groups i).choices 0 & wsp-groups c (i + 1)
+  wsp-rect : WsRect -> Boolean
+  wsp-rect (r) = r.x1 >= 0 & r.x2 >= r.x1 & r.x2 < 6144 & r.y1 >= 0 & r.y2 >= r.y1 & r.y2 < 4096
+  wsp-exclusions : List WsRect, Integer -> Boolean
+  wsp-exclusions (rows) (i) = if i == list-length rows then True
+    else wsp-rect (list-at rows i) & wsp-exclusions rows (i + 1)
+  wsp-regions : WsCatalog, Integer -> Boolean
+  wsp-regions (c) (i) = if i == list-length c.regions then True
+    else let r = list-at c.regions i
+    in wsp-rect r.area & r.maximum > 0 & r.batch > 0
+      & r.group >= 0 & r.group < list-length c.groups
+      & wsp-range r.minimum-minutes r.maximum-minutes 0 1440
+      & wsp-exclusions r.exclusions 0 & wsp-regions c (i + 1)
+  wsp-unresolved : List WsChoice, Integer -> Integer
+  wsp-unresolved (choices) (i) = if i == list-length choices then 0
+    else let c = list-at choices i
+    in (if c.profile == -1 & c.group == -1 then 1 else 0) + wsp-unresolved choices (i + 1)
+  wsp-missing : WsCatalog, Integer -> Integer
+  wsp-missing (c) (i) = if i == list-length c.groups then 0
+    else wsp-unresolved (list-at c.groups i).choices 0 + wsp-missing c (i + 1)
+  wsp-distinct-before : WsCatalog, Integer, Integer -> Boolean
+  wsp-distinct-before (c) (i) (j) = if j == i then True
+    else (list-at c.regions i).id /= (list-at c.regions j).id & wsp-distinct-before c i (j + 1)
+  wsp-distinct : WsCatalog, Integer -> Boolean
+  wsp-distinct (c) (i) = if i == list-length c.regions then True
+    else wsp-distinct-before c i 0 & wsp-distinct c (i + 1)
+  wsp-inherited : WsCatalog, Integer -> Boolean
+  wsp-inherited (c) (i) = if i == list-length c.regions then False
+    else let r = list-at c.regions i
+    in if r.id /= 5621 then wsp-inherited c (i + 1)
+    else r.area.x1 == 914 & r.area.y1 == 1282 & r.area.x2 == 1102 & r.area.y2 == 1479
+      & r.maximum == 20 & r.batch == 5 & r.minimum-minutes == 20 & r.maximum-minutes == 30
+  wsp-classic-orc : WsCatalog, Integer -> Boolean
+  wsp-classic-orc (c) (i) = if i == list-length c.profiles then False
+    else let p = list-at c.profiles i
+    in if p.key == "orc" then p.body == 17 & p.ai == 2 else wsp-classic-orc c (i + 1)
+  opening : [Console] Nothing = act
+    c <- wsd-catalog 0
+    print-line-uni ("profiles=" & show (list-length c.profiles) & " groups=" & show (list-length c.groups) & " regions=" & show (list-length c.regions))
+    print-line-uni ("unresolved-choice-occurrences=" & show (wsp-missing c 0))
+    wsp-check "imported profile combat bounds" (wsp-profiles c 0)
+    wsp-check "weighted choice references and explicit unresolved sentinels" (wsp-groups c 0)
+    wsp-check "region caps timers geometry and exclusions" (wsp-regions c 0)
+    wsp-check "region identifiers are unique" (wsp-distinct c 0)
+    wsp-check "Rat Valley child inherits rectangle and overrides population timers" (wsp-inherited c 0)
+    wsp-check "classic GETUO resolves orc body and aggression" (wsp-classic-orc c 0)
+  end
+
+Page 1

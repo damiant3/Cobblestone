@@ -875,8 +875,8 @@ export const GAMES = [
       }
       if (i === BG_OFF) {
         if (!held) return null;
-        const ds = [...new Set(dice)].filter(d => legal(bgFrom(st.sel), d) && bgOffBy(st.sel, d));
-        return ds.length === 1 ? spend(ds[0]) : null;
+        const ds = [...new Set(dice)].filter(d => legal(bgFrom(st.sel), d) && bgOffBy(st.sel, d)).sort((a, b) => a - b);
+        return ds.length ? spend(ds[0]) : null;
       }
       if (!held) return dice.some(d => legal(i, d)) ? { sel: i } : null;
       if (i === st.sel) return { sel: null };
@@ -1395,7 +1395,13 @@ export const GAMES = [
     // the cards are dealt and how the two hands are ranked. The studs deal
     // a street at a time with a betting round after each. The seed picks
     // which variant you sit down to.
-    boot: (e, s) => e.pvt_new(s % 8, s),
+    // A stud's bring-in can put the opponent first; its opening is played
+    // before the board is handed over, so you sit down on the go.
+    boot: (e, s) => {
+      let h = e.pvt_new(s % 8, s);
+      for (let k = 0; k < 8 && e.pvt_cur(h) !== 0 && e.pvt_done(h) !== 1; k++) h = e.pvt_step(h);
+      return h;
+    },
     step: (e, h) => e.pvt_step(h),
     done: (e, h) => e.pvt_done(h) === 1,
     human: 0,

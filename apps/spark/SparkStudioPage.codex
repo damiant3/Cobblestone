@@ -1,0 +1,1682 @@
+Chapter: SparkStudioPage
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Foreword chapter CCE
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Spark chapter SparkPromptFile
+  cites Spark chapter SparkCatalog
+  cites Spark chapter SparkRequest
+  cites Spark chapter SparkPreferences
+  cites Spark chapter SparkModelFile
+  cites Spark chapter SparkCivitai
+  cites Spark chapter SparkCatalogue
+  cites Spark chapter SparkAudio
+  cites Spark chapter SparkAudioConfig
+  cites Spark chapter SparkMusicModels
+  cites Spark chapter SparkMusicGenerate
+  cites Spark chapter SparkImageEngine
+  cites Spark chapter SparkVideoPanel
+  cites Spark chapter SparkScenePanel
+  cites Spark chapter SparkLlm
+  cites Diffusion chapter BrowserLoad
+  cites Diffusion chapter BrowserTxt2Img
+
+ Spark Studio in a browser tab: open a Spark project folder, as the WPF
+ original writes one, and see every prompt with the images catalogued for it.
+ A catalog path is found through SparkStudio.md section 6's rule.
+
+Section: Layout
+
+  dom-remove : DomElement -> DomElement
+  dom-remove (el) = el
+
+  ss-el : DomElement, Text, Text, Text -> DomElement
+  ss-el (parent) (tag) (id) (text) =
+    let e = dom-create tag
+    in let a = if text-length id > 0 then dom-set-attr e "id" id else e
+    in let b = dom-set-text e text
+    in let c = dom-append parent e
+    in e
+
+  ss-style : DomElement, List Text, Integer -> DomElement
+  ss-style (e) (kv) (i) = if i + 1 >= list-length kv then e else ss-style (dom-set-style e (list-at kv i) (list-at kv (i + 1))) kv (i + 2)
+
+  opening : [Console] Integer
+  opening =
+    let body = ss-style (dom-query "body") ["margin", "0", "background", "#14161b", "color", "#e8e6e1", "font-family", "system-ui, sans-serif"] 0
+    in let root = ss-style (ss-el body "div" "ss" "") ["max-width", "960px", "margin", "0 auto", "padding", "24px"] 0
+    in let h = ss-style (ss-el root "h1" "title" "Spark Studio") ["font-weight", "600", "letter-spacing", "0.5px", "margin", "0 0 4px 0"] 0
+    in let p = ss-style (ss-el root "p" "about" "Open a Spark project folder: its prompts, its catalog and its images stay on this machine.") ["color", "#9a978f", "margin", "0 0 16px 0"] 0
+    in let guide = ss-el root "p" "start-guide" "1. Open your project folder. 2. Choose local model files and load a model. 3. Generate, then review the project library below. Music, video composition and 3D scene tools are separate sections."
+    in let pick = ss-style (ss-el root "button" "open" "Open a project folder") ["padding", "8px 16px", "border", "0", "border-radius", "6px", "background", "#e0a040", "color", "#14161b", "font-weight", "600", "cursor", "pointer"] 0
+    in let new-project = ss-button root "new-project" "New project..."
+    in let s = ss-style (ss-el root "p" "status" "No project open.") ["color", "#9a978f"] 0
+    in let gen = ss-simple-panel root
+    in let llm-home = ss-el root "div" "llm-home" ""
+    in let llm = ss-llm-panel llm-home
+    in let wizard = ss-wizard-panel body
+    in let cat = ss-catalogue-panel root
+    in let aud = ss-audio-panel root
+    in let video = spark-video-panel root
+    in let scene = spark-scene-panel root
+    in let list = ss-el root "div" "prompts" ""
+    in let lb = ss-style (ss-el body "div" "lb" "") ["display", "none", "position", "fixed", "inset", "0", "background", "rgba(8,9,12,0.94)", "align-items", "center", "justify-content", "center", "flex-direction", "column", "cursor", "zoom-out"] 0
+    in let big = ss-style (ss-el lb "img" "lb-img" "") ["max-width", "94vw", "max-height", "86vh", "object-fit", "contain"] 0
+    in let cap = ss-style (ss-el lb "div" "lb-cap" "") ["color", "#9a978f", "margin-top", "10px", "font-size", "13px"] 0
+    in let det = ss-style (ss-el lb "div" "lb-detail" "") ["color", "#c9c6bf", "margin-top", "8px", "font-size", "13px", "max-width", "80vw", "white-space", "pre-wrap", "max-height", "20vh", "overflow", "auto"] 0
+    in let c1 = dom-on-click lb (\id -> ss-lb-close 0)
+    in let c2 = dom-on-key body ss-lb-key
+    in let k = dom-on-click pick ss-pick
+    in state-set "ready" 1
+
+  ss-status : Text -> Integer
+  ss-status (t) =
+    let e = dom-set-text (dom-query "#status") t
+    in 0
+
+Section: Reading the folder
+
+  ss-pick : Text -> Integer
+  ss-pick (id) =
+    if state-get "audio-busy" == 1 | state-get "image-busy" == 1 | state-get "q-busy" == 1 | state-get "llm-busy" == 1 then ss-status "Finish or cancel generation before changing projects."
+    else if state-get "project-picking" == 1 then 0
+    else let a = state-set "project-picking" 1
+    in let b = ss-status "Choose a project folder."
+    in dir-open-then ss-picked
+
+  ss-ints : List Text, Integer, List Integer -> List Integer
+  ss-ints (ts) (i) (acc) = if i >= list-length ts then acc else ss-ints ts (i + 1) (list-snoc acc (text-to-integer (list-at ts i)))
+
+  ss-bytes : Text -> List Integer
+  ss-bytes (t) = if text-length t < 3 then [] else ss-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  ss-text : Text -> Text
+  ss-text (r) = if text-length r > 0 & substring r 0 1 == "[" then utf8-bytes-to-text (bl-list r) else ""
+
+  ss-root : Text -> Text
+  ss-root (path) = let parts = text-split path "/" in if list-length parts > 1 then list-at parts 0 else ""
+
+  ss-find : List (List Text), Text, Integer -> Integer
+  ss-find (rows) (path) (i) =
+    if i >= list-length rows then 0 - 1
+    else if json-obj-field (list-at rows i) "path" == path then i
+    else ss-find rows path (i + 1)
+
+ A file of the listing, read whole, handed to k as text; "" when absent.
+
+  ss-read-then : List (List Text), Text, (Text -> Integer) -> Integer
+  ss-read-then (rows) (path) (k) =
+    let i = ss-find rows path 0
+    in if i < 0 then k ""
+    else let row = list-at rows i
+    in file-read-then (json-obj-field row "name") 0 (text-to-integer (json-obj-field row "size")) (\r -> k (ss-text r))
+
+  ss-listed : Text -> Integer
+  ss-listed (r) =
+    let rows = json-parse-rows r
+    in if list-length rows == 0 then (let a = state-set "project-picking" 0 in ss-status "That folder is empty or could not be opened.")
+    else let a = state-set "audio-done" 0
+    in let b = state-set "done" 0
+    in let root = ss-root (json-obj-field (list-at rows 0) "path")
+    in let listing = state-set-text "llm-listing" r
+    in let s = ss-status ("Reading " & root & " (" & show (list-length rows) & " files)...")
+    in let au = ss-audio-load rows root
+    in let video = spark-video-load rows root
+    in let scene = spark-scene-load rows root
+    in ss-read-then rows (root & "/spark_project.json") (\pj -> ss-project rows root pj)
+
+ spark_project.json names the prompts file and the output folder; a folder
+ without one is read with the original's defaults.
+
+  ss-project : List (List Text), Text, Text -> Integer
+  ss-project (rows) (root) (pj) =
+    let v = json-parse pj
+    in let defaults = state-set-text "project-settings" (when v is Just (o) -> (when json-get o "defaultSettings" is Just (JsonNull) -> "" is Just (value) -> json-emit value is None -> "") is None -> "")
+    in let clear = state-set-text "project-settings-error" ""
+    in let applied = if state-get "loaded" == 1 then ss-apply-project-defaults 0 else 0
+    in let prompts-file = when v
+      is Just (o) -> json-get-str o "promptsFile" "ArtPrompts.txt"
+      is None -> "ArtPrompts.txt"
+    in let out-dir = when v
+      is Just (o) -> json-get-str o "outputDir" "Concept"
+      is None -> "Concept"
+    in ss-read-then rows (root & "/" & prompts-file) (\pt -> ss-read-then rows (root & "/" & out-dir & "/catalog.json") (\ct -> ss-read-then rows (root & "/" & out-dir & "/preferences.json") (\pj -> ss-purge-then rows root out-dir (ss-keep-prefs out-dir pj ct) (\ct2 -> ss-show rows root prompts-file (spark-prompts-parse pt) (spark-catalog-parse (ss-keep-catalog out-dir ct2))))))
+
+Section: Showing the project
+
+  ss-found : List (List Text), Text, SparkImage -> Boolean
+  ss-found (rows) (root) (im) = im.si-missing == False & ss-find rows (root & "/" & im.si-path) 0 >= 0
+
+  ss-count : List (List Text), Text, List SparkImage, Integer, Integer -> Integer
+  ss-count (rows) (root) (ims) (i) (n) = if i >= list-length ims then n else ss-count rows root ims (i + 1) (if ss-found rows root (list-at ims i) then n + 1 else n)
+
+  ss-deleted : List SparkImage, Integer, Integer -> Integer
+  ss-deleted (ims) (i) (n) = if i >= list-length ims then n else ss-deleted ims (i + 1) (if (list-at ims i).si-deleted then n + 1 else n)
+
+  ss-stars : Integer -> Text
+  ss-stars (n) = if n <= 0 then "" else "*" & ss-stars (n - 1)
+
+ A thumbnail per record: the image itself when the path rule finds its file,
+ else a box saying why not. names gathers every shown file, in page order,
+ for the lightbox.
+
+  ss-file-name : List (List Text), Text, SparkImage -> Text
+  ss-file-name (rows) (root) (im) =
+    let i = if im.si-missing then 0 - 1 else ss-find rows (root & "/" & im.si-path) 0
+    in if i < 0 then "" else json-obj-field (list-at rows i) "name"
+
+  ss-thumb : DomElement, List (List Text), Text, SparkImage, List Text -> List Text
+  ss-thumb (box) (rows) (root) (im) (names) =
+    let name = ss-file-name rows root im
+    in let fig = ss-style (ss-el box "div" "" "") ["width", "144px", "margin", "0 8px 8px 0", "font-size", "12px", "color", "#9a978f"] 0
+    in let pic = if text-length name > 0 then ss-style (dom-set-attr (ss-el fig "img" ("t" & show (list-length names)) "") "src" (file-url name)) ["width", "144px", "height", "96px", "object-fit", "cover", "border-radius", "4px", "cursor", "zoom-in", "display", "block"] 0
+      else ss-style (ss-el fig "div" "" (if im.si-deleted then "deleted" else "file not found")) ["width", "144px", "height", "96px", "border-radius", "4px", "background", "#2a2d35", "display", "flex", "align-items", "center", "justify-content", "center", "color", "#e08a7a"] 0
+    in let k = if text-length name > 0 then dom-on-click pic (\id -> ss-lb-open (text-to-integer (substring id 1 (text-length id - 1)))) else pic
+    in let cap = ss-el fig "div" "" (ss-stars (im.si-rating) & (if im.si-saved then "  saved" else ""))
+    in let d = if text-length name > 0 then state-set-text ("lb-d" & show (list-length names)) (ss-detail im) else ""
+    in let d2 = if text-length name > 0 then state-set-text ("lb-id" & show (list-length names)) (im.si-id) else ""
+    in if text-length name > 0 then list-snoc names name else names
+
+  ss-images : DomElement, List (List Text), Text, List SparkImage, Integer, Integer, List Text -> List Text
+  ss-images (box) (rows) (root) (ims) (n) (i) (names) =
+    if i >= list-length ims then names
+    else let im = list-at ims i
+    in ss-images box rows root ims n (i + 1) (if im.si-prompt == n & im.si-deleted == False then ss-thumb box rows root im names else names)
+
+  ss-in-stack : List SparkImage, Integer, Integer, Integer -> Integer
+  ss-in-stack (ims) (n) (i) (c) = if i >= list-length ims then c else ss-in-stack ims n (i + 1) (if (list-at ims i).si-prompt == n & (list-at ims i).si-deleted == False then c + 1 else c)
+
+  ss-prompt-card : DomElement, List (List Text), Text, List SparkImage, SparkPrompt, List Text -> List Text
+  ss-prompt-card (list) (rows) (root) (ims) (p) (names) =
+    let card = ss-style (ss-el list "div" ("p" & show (p.sp-number)) "") ["background", "#1d2027", "border-radius", "8px", "padding", "12px 16px", "margin", "10px 0"] 0
+    in let title = unicode-bytes-to-text (p.sp-title)
+    in let head = ss-style (ss-el card "div" "" ((if p.sp-number < 10 then "0" else "") & show (p.sp-number) & "  " & title)) ["font-weight", "600"] 0
+    in let series = ss-style (ss-el card "div" "" (unicode-bytes-to-text (p.sp-series) & "  -  " & show (ss-in-stack ims (p.sp-number) 0 0) & " images  -  " & spark-prompt-filename p)) ["color", "#9a978f", "font-size", "13px", "margin", "2px 0 6px 0"] 0
+    in let use = ss-button card ("use" & show (p.sp-number)) "Use this prompt"
+    in let u = dom-on-click use (\id -> ss-use-prompt (spark-prompt-full-text p))
+    in let strip = ss-style (ss-el card "div" "" "") ["display", "flex", "flex-wrap", "wrap"] 0
+    in ss-images strip rows root ims (p.sp-number) 0 names
+
+  ss-cards : DomElement, List (List Text), Text, List SparkImage, List SparkPrompt, Integer, List Text -> List Text
+  ss-cards (list) (rows) (root) (ims) (ps) (i) (names) =
+    if i >= list-length ps then names
+    else ss-cards list rows root ims ps (i + 1) (ss-prompt-card list rows root ims (list-at ps i) names)
+
+  ss-orphans : List SparkImage, List SparkPrompt, Integer, Integer -> Integer
+  ss-orphans (ims) (ps) (i) (n) =
+    if i >= list-length ims then n
+    else ss-orphans ims ps (i + 1) (if ss-has-prompt ps ((list-at ims i).si-prompt) 0 then n else n + 1)
+
+  ss-has-prompt : List SparkPrompt, Integer, Integer -> Boolean
+  ss-has-prompt (ps) (n) (i) = if i >= list-length ps then False else if (list-at ps i).sp-number == n then True else ss-has-prompt ps n (i + 1)
+
+  ss-show : List (List Text), Text, Text, List SparkPrompt, List SparkImage -> Integer
+  ss-show (rows) (root) (prompts-file) (ps) (ims) =
+    let list = dom-set-html (dom-query "#prompts") ""
+    in let found = ss-count rows root ims 0 0
+    in let del = ss-deleted ims 0 0
+    in let orphans = ss-orphans ims ps 0 0
+    in let names = ss-cards list rows root ims ps 0 []
+    in let stored = ss-store-prompts ps 0
+    in let a = state-set-text "lb-names" (ss-join names 0 "")
+    in let g = state-set "shown" (list-length names)
+    in let b = state-set "prompts" (list-length ps)
+    in let c = state-set "records" (list-length ims)
+    in let d = state-set "found" found
+    in let e = state-set "orphans" orphans
+    in let f = state-set "done" 1
+    in ss-status (root & ": " & show (list-length ps) & " prompts in " & prompts-file & ", " & show (list-length ims) & " catalog records (" & show del & " deleted, " & show orphans & " for no prompt), " & show found & " files found.")
+
+Section: The lightbox
+
+ One image at a time over the page, as the original's LightboxWindow: the
+ arrow keys step through every shown image in page order, Escape or a click
+ closes it.
+
+  ss-join : List Text, Integer, Text -> Text
+  ss-join (xs) (i) (acc) = if i >= list-length xs then acc else ss-join xs (i + 1) (if i == 0 then list-at xs 0 else acc & "|" & list-at xs i)
+
+  ss-lb-names : List Text
+  ss-lb-names = text-split (state-get-text "lb-names") "|"
+
+  ss-lb-show : Integer -> Integer
+  ss-lb-show (i) =
+    let names = ss-lb-names
+    in let n = list-length names
+    in let j = if i < 0 then n - 1 else if i >= n then 0 else i
+    in let s = state-set "lb-i" j
+    in let a = dom-set-attr (dom-query "#lb-img") "src" (file-url (list-at names j))
+    in let b = dom-set-text (dom-query "#lb-cap") (show (j + 1) & " of " & show n & "   (arrow keys, Escape)")
+    in let c = dom-set-text (dom-query "#lb-detail") (state-get-text ("lb-d" & show j))
+    in 0
+
+  ss-lb-open : Integer -> Integer
+  ss-lb-open (i) =
+    let a = ss-lb-show i
+    in let b = dom-set-style (dom-query "#lb") "display" "flex"
+    in state-set "lb-open" 1
+
+  ss-lb-close : Integer -> Integer
+  ss-lb-close (z) =
+    let a = dom-set-style (dom-query "#lb") "display" "none"
+    in state-set "lb-open" 0
+
+  ss-lb-key : Text -> Integer
+  ss-lb-key (k) =
+    if state-get "lb-open" /= 1 then 0
+    else if k == "ArrowRight" then ss-lb-show (state-get "lb-i" + 1)
+    else if k == "ArrowLeft" then ss-lb-show (state-get "lb-i" - 1)
+    else if k == "Escape" then ss-lb-close 0
+    else if text-length k == 1 & text-contains "12345" k then ss-rate (state-get "lb-i") (text-to-integer k)
+    else if k == "Delete" then ss-soft-delete (state-get "lb-i") "" False
+    else if k == "s" | k == "S" then ss-save (state-get "lb-i")
+    else 0
+Section: Simple mode
+
+  ss-llm-panel : DomElement -> DomElement
+  ss-llm-panel (root) =
+    let box = ss-style (ss-el root "details" "llm" "") ["background", "#1d2027", "padding", "16px", "margin", "16px 0", "border-radius", "8px"] 0
+    in let title = ss-el box "summary" "" "Writing assistant"
+    in let about = ss-el box "p" "" "Draft and review prompt text. Image generation starts only when you press Generate."
+    in let pl = dom-set-attr (ss-el box "label" "" "Provider ") "for" "llm-provider"
+    in let provider = ss-style (ss-el box "select" "llm-provider" "") ["display", "block", "max-width", "100%", "margin", "4px 0 12px 0", "padding", "6px", "background", "#14161b", "color", "#e8e6e1"] 0
+    in let cloud = dom-set-attr (ss-el provider "option" "" "Anthropic") "value" "anthropic"
+    in let local = dom-set-attr (ss-el provider "option" "" "Local Qwen3 GGUF (WebGPU)") "value" "local"
+    in let reason = ss-el box "p" "llm-local-reason" "Local generation asks for a Qwen3 GGUF file on first use and runs on this browser's GPU."
+    in let kl = dom-set-attr (ss-el box "label" "llm-key-label" "Provider key (stored in this browser only) ") "for" "llm-key"
+    in let key = dom-set-attr (dom-set-attr (ss-input box "input" "llm-key" "") "type" "password") "autocomplete" "off"
+    in let save = ss-button box "llm-key-save" "Save key"
+    in let clear = ss-button box "llm-key-clear" "Forget key"
+    in let key-state = ss-el box "p" "llm-key-state" "No key configured."
+    in let al = dom-set-attr (ss-el box "label" "" "Action ") "for" "llm-action"
+    in let action = ss-style (ss-el box "select" "llm-action" "") ["display", "block", "max-width", "100%", "margin", "4px 0 12px 0", "padding", "6px", "background", "#14161b", "color", "#e8e6e1"] 0
+    in let expand = dom-set-attr (ss-el action "option" "" "Expand current prompt") "value" "expand"
+    in let rewrite = dom-set-attr (ss-el action "option" "" "Rewrite current prompt") "value" "rewrite"
+    in let explain = dom-set-attr (ss-el action "option" "" "Explain engine refusal") "value" "refusal"
+    in let synopsis = dom-set-attr (dom-set-attr (ss-el action "option" "" "Draft project synopsis") "value" "synopsis") "disabled" "disabled"
+    in let prompts = dom-set-attr (dom-set-attr (ss-el action "option" "" "Draft art prompts") "value" "prompts") "disabled" "disabled"
+    in let il = dom-set-attr (ss-el box "label" "" "Optional direction ") "for" "llm-instruction"
+    in let instruction = ss-input box "textarea" "llm-instruction" ""
+    in let context-label = ss-el box "label" "" ""
+    in let context-check = dom-set-attr (dom-set-attr (ss-el context-label "input" "llm-use-context" "") "type" "checkbox") "checked" "checked"
+    in let context-name = ss-el context-label "span" "" " Use relevant snippets from the open project"
+    in let context = dom-set-attr (dom-set-attr (ss-input box "textarea" "llm-context" "") "readonly" "readonly") "aria-label" "Project snippets sent with request"
+    in let caption = ss-el box "p" "" "These snippets are sent with your request."
+    in let run = ss-button box "llm-run" "Draft text"
+    in let cancel = ss-button box "llm-cancel" "Cancel request"
+    in let status = dom-set-attr (dom-set-attr (ss-el box "p" "llm-status" "Configure a provider key to draft text.") "role" "status") "aria-live" "polite"
+    in let thinking = ss-style (ss-el box "pre" "llm-thinking" "") ["white-space", "pre-wrap", "max-height", "120px", "overflow", "auto"] 0
+    in let output = dom-set-attr (dom-set-attr (dom-set-attr (ss-input box "textarea" "llm-output" "") "readonly" "readonly") "aria-label" "Draft text to review") "rows" "6"
+    in let apply = ss-button box "llm-apply" "Use this prompt"
+    in let query = ss-style (ss-input box "textarea" "llm-context-query" "") ["display", "none"] 0
+    in let reply = ss-style (ss-input box "textarea" "llm-context-reply" "") ["display", "none"] 0
+    in let compute = dom-on-input query (\value -> let answer = dom-set-value reply (spark-llm-context value) in 0)
+    in box
+
+  ss-wizard-field : DomElement, Text, Text, Text, Text -> DomElement
+  ss-wizard-field (parent) (tag) (id) (label) (value) =
+    let title = dom-set-attr (ss-el parent "label" "" label) "for" id
+    in ss-input parent tag id value
+
+  ss-wizard-panel : DomElement -> DomElement
+  ss-wizard-panel (body) =
+    let box = ss-style (ss-el body "dialog" "wizard" "") ["width", "min(760px, calc(100vw - 48px))", "max-height", "85vh", "overflow", "auto", "box-sizing", "border-box", "background", "#1d2027", "color", "#e8e6e1", "border", "1px solid #555", "border-radius", "8px", "padding", "20px"] 0
+    in let aria = dom-set-attr box "aria-labelledby" "wizard-title"
+    in let title = ss-el box "h2" "wizard-title" "New Spark project"
+    in let progress = ss-el box "p" "wizard-progress" "Step 1 of 5"
+    in let setup = ss-el box "section" "wizard-step-0" ""
+    in let setup-title = ss-el setup "h3" "" "Project setup"
+    in let name = dom-set-attr (ss-wizard-field setup "input" "wizard-name" "Project name" "My Game") "maxlength" "128"
+    in let folder = ss-button setup "wizard-folder" "Choose parent folder"
+    in let parent = ss-el setup "p" "wizard-folder-name" "No parent folder selected."
+    in let story = ss-el box "section" "wizard-step-1" ""
+    in let story-title = ss-el story "h3" "" "Story and setting"
+    in let synopsis = dom-set-attr (dom-set-attr (ss-wizard-field story "textarea" "wizard-story" "Synopsis" "") "rows" "6") "maxlength" "16384"
+    in let glossary = dom-set-attr (ss-wizard-field story "input" "wizard-glossary" "Named characters and places (comma separated)" "") "maxlength" "4096"
+    in let story-draft = ss-button story "wizard-story-draft" "Draft synopsis"
+    in let style = ss-el box "section" "wizard-step-2" ""
+    in let style-title = ss-el style "h3" "" "Art style"
+    in let styles = ss-wizard-field style "select" "wizard-style" "Style template" ""
+    in let notes = dom-set-attr (ss-wizard-field style "textarea" "wizard-style-notes" "Custom or additional style notes" "") "maxlength" "8192"
+    in let art = ss-el box "section" "wizard-step-3" ""
+    in let art-title = ss-el art "h3" "" "Art prompts"
+    in let count = dom-set-attr (ss-wizard-field art "input" "wizard-count" "Number of prompts to draft (1-50)" "10") "type" "number"
+    in let prompts = dom-set-attr (dom-set-attr (ss-wizard-field art "textarea" "wizard-prompts" "Art prompts, in PROMPT format" "") "rows" "8") "maxlength" "131072"
+    in let art-draft = ss-button art "wizard-prompts-draft" "Draft art prompts"
+    in let starter = ss-button art "wizard-starters" "Use three starter prompts"
+    in let settings = ss-el box "section" "wizard-step-4" ""
+    in let settings-title = ss-el settings "h3" "" "Generation settings (SDXL)"
+    in let size = ss-wizard-field settings "select" "wizard-size" "Image size" ""
+    in let steps = ss-wizard-field settings "input" "wizard-steps" "Steps (1-50)" "20"
+    in let cfg = ss-wizard-field settings "input" "wizard-cfg" "CFG (0-30)" "7"
+    in let sampler = ss-wizard-field settings "select" "wizard-sampler" "Sampler (Karras)" ""
+    in let review = ss-style (ss-el settings "pre" "wizard-review" "") ["white-space", "pre-wrap"] 0
+    in let assistant = ss-el box "div" "wizard-assistant" ""
+    in let message = dom-set-attr (dom-set-attr (ss-el box "p" "wizard-status" "Nothing is written until you choose Create project.") "role" "status") "aria-live" "polite"
+    in let nav = ss-style (ss-el box "div" "wizard-nav" "") ["position", "sticky", "bottom", "0", "background", "#1d2027", "padding-top", "8px"] 0
+    in let back = ss-button nav "wizard-back" "Back"
+    in let next = ss-button nav "wizard-next" "Next"
+    in let create = ss-button nav "wizard-create" "Create project"
+    in let close = ss-button nav "wizard-close" "Close"
+    in let query = ss-style (ss-input box "textarea" "wizard-prompts-query" "") ["display", "none"] 0
+    in let reply = ss-style (ss-input box "textarea" "wizard-prompts-reply" "") ["display", "none"] 0
+    in let check = dom-on-input query (\value -> let answer = dom-set-value reply (spark-llm-prompts-check value) in 0)
+    in box
+
+  ss-button : DomElement, Text, Text -> DomElement
+  ss-button (parent) (id) (label) = ss-style (ss-el parent "button" id label) ["padding", "6px 12px", "margin", "4px 8px 4px 0", "border", "1px solid #3a3e48", "border-radius", "6px", "background", "#262a33", "color", "#e8e6e1", "cursor", "pointer"] 0
+
+  ss-input : DomElement, Text, Text, Text -> DomElement
+  ss-input (parent) (tag) (id) (value) =
+    let e = ss-style (ss-el parent tag id "") ["width", "100%", "box-sizing", "border-box", "margin", "4px 0 8px 0", "padding", "8px", "background", "#14161b", "color", "#e8e6e1", "border", "1px solid #3a3e48", "border-radius", "6px"] 0
+    in dom-set-value e value
+
+  ss-simple-panel : DomElement -> DomElement
+  ss-simple-panel (root) =
+    let box = ss-style (ss-el root "div" "simple" "") ["background", "#1d2027", "border-radius", "8px", "padding", "12px 16px", "margin", "16px 0"] 0
+    in let models = ss-button box "models-pick" "Choose models folder"
+    in let ms = ss-style (ss-el box "div" "models" "") ["font-size", "13px", "color", "#9a978f", "margin", "4px 0 8px 0"] 0
+    in let ll = ss-el box "div" "lora-selected" "LoRA: none. Choose one below, then load a checkpoint."
+    in let wl = ss-el box "label" "" "LoRA weight "
+    in let weight = dom-set-attr (ss-style (ss-input box "input" "lora-weight" "0.8") ["width", "100px"] 0) "aria-label" "LoRA weight"
+    in let none = dom-on-click (ss-button box "lora-none" "No LoRA") (\id -> ss-lora-select "" "" 0 "" (0 - 1))
+    in let inject = dom-on-click (ss-button box "lora-inject" "Insert trigger words") (\id -> ss-lora-inject 0)
+    in let al = ss-el box "label" "" "Prompt augment "
+    in let augment = dom-set-attr (ss-input box "input" "prompt-augment" "") "aria-label" "Prompt augment"
+    in let p = ss-input box "textarea" "prompt" "a lighthouse on a cliff at dawn, painted concept art"
+    in let n = ss-input box "input" "negative" "blurry, low quality"
+    in let size-label = ss-el box "label" "" "Image size "
+    in let sizes = ss-el box "select" "image-size" ""
+    in let size-change = dom-on-input sizes ss-image-size
+    in let family-info = ss-el box "div" "image-family-info" "Load an SD1.5 or SDXL checkpoint."
+    in let model-defaults = dom-on-click (ss-button box "image-model-defaults" "Use model defaults for this session") (\id -> ss-reset-project-defaults 0)
+    in let row = ss-el box "div" "" ""
+    in let draft = ss-button row "draft" "Draft (12 steps)"
+    in let good = ss-button row "good" "Good (25 steps)"
+    in let seed = ss-style (ss-input row "input" "seed" "1") ["width", "140px", "margin-right", "8px"] 0
+    in let runs = ss-style (ss-input row "input" "runs" "1") ["width", "60px", "margin-right", "8px"] 0
+    in let rl = dom-set-attr runs "title" "runs per prompt"
+    in let reroll = ss-button row "reroll" "Re-roll seed"
+    in let advb = ss-button row "adv-toggle" "Advanced"
+    in let adv = ss-style (ss-el box "div" "adv" "") ["display", "none", "font-size", "13px", "color", "#9a978f", "margin", "4px 0 8px 0"] 0
+    in let sl = ss-el adv "div" "image-sampling" "Sampling: Euler / Automatic"
+    in let sampler = dom-set-attr (ss-style (ss-el adv "select" "image-sampler" "") ["max-width", "100%"] 0) "aria-label" "Image sampler"
+    in let sampler-change = dom-on-input sampler ss-image-sampler
+    in let sampler-note = ss-el adv "div" "image-sampler-note" ""
+    in let arow = ss-el adv "div" "" ""
+    in let stl = ss-el arow "span" "" "steps "
+    in let steps-in = ss-style (ss-input arow "input" "steps-in" "12") ["width", "70px", "margin-right", "12px"] 0
+    in let cfl = ss-el arow "span" "" "CFG "
+    in let cfg-in = ss-style (ss-input arow "input" "cfg" "7") ["width", "70px"] 0
+    in let ai = dom-on-input steps-in (\v -> state-set "steps" (if text-length v > 3 | ss-digits-ok v 0 1 == False then 0 else text-to-integer v))
+    in let ci = dom-on-input cfg-in (\v -> let s = state-set-text "cfg" v in 0)
+    in let at = dom-on-click advb (\id -> ss-adv-toggle 0)
+    in let gb = ss-el box "span" "go-box" ""
+    in let go = ss-unloaded-controls 0
+    in let out = ss-style (ss-el box "canvas" "out" "") ["display", "block", "max-width", "100%", "height", "auto", "margin-top", "8px", "border-radius", "4px"] 0
+    in let cancel = ss-button box "cancel" "Cancel the queue"
+    in let results = ss-style (ss-el box "div" "results" "") ["display", "flex", "flex-wrap", "wrap", "margin-top", "8px"] 0
+    in let log = ss-style (ss-el box "div" "log" "") ["font-family", "ui-monospace, monospace", "font-size", "12px", "color", "#9a978f", "margin-top", "6px"] 0
+    in let cc = dom-on-click cancel (\id -> ss-cancel-queue 0)
+    in let q = state-set "steps" 12
+    in let qc = state-set-text "cfg" "7"
+    in let family = ss-image-defaults "sd15 checkpoint"
+    in let a = dom-on-click models ss-models-pick
+    in let b = dom-on-click draft (\id -> ss-quality 12)
+    in let c = dom-on-click good (\id -> ss-quality 25)
+    in let d = dom-on-click reroll (\id -> ss-reroll 0)
+    in box
+
+  ss-quality : Integer -> Integer
+  ss-quality (n) =
+    let a = dom-set-value (dom-query "#steps-in") (show n)
+    in let b = state-set "steps" n
+    in ss-log ("Quality selected: " & show n & " steps.")
+
+  ss-cancel-queue : Integer -> Integer
+  ss-cancel-queue (z) =
+    if state-get "q-busy" /= 1 then ss-log "No image queue is running."
+    else let a = state-set "q-cancel" 1
+    in ss-log "Queue cancellation requested; the current image will finish first."
+
+  ss-adv-toggle : Integer -> Integer
+  ss-adv-toggle (z) =
+    let on = if state-get "adv" == 1 then 0 else 1
+    in let a = dom-set-style (dom-query "#adv") "display" (if on == 1 then "block" else "none")
+    in state-set "adv" on
+
+  ss-digits-ok : Text, Integer, Integer -> Boolean
+  ss-digits-ok (t) (i) (dots) =
+    if i >= text-length t then dots <= 1 & text-length t > 0
+    else let c = substring t i 1
+    in if c == "." then ss-digits-ok t (i + 1) (dots + 1)
+    else if text-contains "0123456789" c then ss-digits-ok t (i + 1) dots
+    else False
+
+  ss-cfg-number : Text -> JsonNumber
+  ss-cfg-number (t) =
+    let parts = text-split t "."
+    in let frac = if list-length parts > 1 then list-at parts 1 else ""
+    in JsonNumber { jn-mantissa = text-to-integer (list-at parts 0 & frac), jn-decimals = text-length frac }
+
+  ss-request-refusal : Integer -> Text
+  ss-request-refusal (z) =
+    let steps = state-get "steps"
+    in let cfg = state-get-text "cfg"
+    in let xl = state-get-text "image-family" == "sdxl checkpoint"
+    in let width = state-get "image-width"
+    in let height = state-get "image-height"
+    in let sampler = state-get-text "image-sampler"
+    in if state-get-text "project-settings-error" /= "" then state-get-text "project-settings-error"
+    else if state-get-text "lora-file" /= state-get-text "loaded-lora-file" | (state-get-text "lora-file" /= "" & dom-get-value (dom-get "lora-weight") /= state-get-text "loaded-lora-weight") then "LoRA selection or weight changed; reload the checkpoint."
+    else if spark-image-sampler-id sampler < 0 then "unsupported image sampler"
+    else if xl == False & sampler /= "Euler" then "SD1.5 browser engine supports Euler only"
+    else if xl & state-get-text "image-scheduler" /= "Karras" then "SDXL Studio supports Karras scheduling only"
+    else if xl == False & state-get-text "image-scheduler" /= "Automatic" then "SD1.5 Studio uses Automatic scheduling"
+    else if steps < 1 | steps > (if xl then 50 else 150) then "steps must be a whole number from 1 to " & (if xl then "50" else "150")
+    else if xl & (width < 64 | height < 64 | width > 1344 | height > 1344 | int-mod width 32 /= 0 | int-mod height 32 /= 0) then "SDXL engine sizes are 64 to 1344 per dimension, in multiples of 32"
+    else if xl & width * height > 1048576 then "SDXL engine area must not exceed 1048576 pixels"
+    else if xl == False & (width < 512 | height < 512 | width > 768 | height > 768 | int-mod width 64 /= 0 | int-mod height 64 /= 0) then "SD1.5 sizes are 512 to 768 per dimension, in multiples of 64"
+    else if text-length cfg > 6 | ss-digits-ok cfg 0 0 == False then "CFG must be a number such as 7 or 5.5"
+    else let n = ss-cfg-number cfg
+    in let one = ss-pow10 (n.jn-decimals) 1
+    in if n.jn-mantissa < (if xl then 0 else one) | n.jn-mantissa > 30 * one then "CFG must be from " & (if xl then "0" else "1") & " to 30"
+    else ""
+
+  ss-image-size : Text -> Integer
+  ss-image-size (value) =
+    let parts = text-split value "x"
+    in let w = state-set "image-width" (if list-length parts == 2 then text-to-integer (list-at parts 0) else 0)
+    in state-set "image-height" (if list-length parts == 2 then text-to-integer (list-at parts 1) else 0)
+
+  ss-size-option : DomElement, Text -> DomElement
+  ss-size-option (parent) (size) = dom-set-attr (ss-el parent "option" "" size) "value" size
+
+  ss-image-defaults : Text -> Integer
+  ss-image-defaults (family) =
+    let xl = family == "sdxl checkpoint"
+    in let sizes = dom-set-html (dom-get "image-size") ""
+    in let a = ss-size-option sizes (if xl then "1024x1024" else "512x512")
+    in let b = ss-size-option sizes (if xl then "1024x768" else "768x512")
+    in let c = ss-size-option sizes (if xl then "768x1024" else "512x768")
+    in let d = if xl then ss-size-option sizes "1344x768" else sizes
+    in let e = if xl then ss-size-option sizes "768x1344" else sizes
+    in let size = dom-set-value sizes (if xl then "1024x1024" else "512x512")
+    in let chosen = ss-image-size (dom-get-value sizes)
+    in let cfg = state-set-text "cfg" (if xl then "5" else "7")
+    in let input = dom-set-value (dom-get "cfg") cfg
+    in let quality = ss-quality 12
+    in let info = dom-set-text (dom-get "image-family-info") (if xl then "SDXL: square, landscape or portrait; full-size generation needs most of a 16 GB GPU." else "SD1.5: 512 or 768 per dimension.")
+    in let samplers = dom-set-html (dom-get "image-sampler") ""
+    in let euler = ss-sampler-option samplers "" "Euler" True
+    in let dpm = ss-sampler-option samplers "image-dpm" "DPM++ 2M" xl
+    in let sde = ss-sampler-option samplers "image-sde" "DPM++ SDE" xl
+    in let midpoint = ss-sampler-option samplers "" "DPM++ 2M SDE" xl
+    in let heun = ss-sampler-option samplers "" "DPM++ 2M SDE Heun" xl
+    in let third = ss-sampler-option samplers "" "DPM++ 3M SDE" xl
+    in let note = dom-set-text (dom-get "image-sampler-note") (if xl then "SDXL samplers use Karras." else "SD1.5 supports Euler only.")
+    in let selected = dom-set-value samplers "Euler"
+    in let scheduler = state-set-text "image-scheduler" (if xl then "Karras" else "Automatic")
+    in let saved = state-set-text "image-family" family
+    in let chosen-sampler = ss-image-sampler "Euler"
+    in ss-apply-project-defaults 0
+
+  ss-project-int : JsonValue, Text, Integer -> Integer
+  ss-project-int (settings) (key) (fallback) = when json-get settings key
+    is None -> fallback
+    is Just (JsonNull) -> fallback
+    is Just (JsonInt (value)) -> value
+    is otherwise -> let refused = state-set-text "project-settings-error" ("Project " & key & " must be a whole number; use model defaults to reset.") in fallback
+
+  ss-project-text : JsonValue, Text, Text -> Text
+  ss-project-text (settings) (key) (fallback) = when json-get settings key
+    is None -> fallback
+    is Just (JsonNull) -> fallback
+    is Just (JsonStr (value)) -> value
+    is otherwise -> let refused = state-set-text "project-settings-error" ("Project " & key & " must be text; use model defaults to reset.") in fallback
+
+  ss-project-cfg : JsonValue -> Text
+  ss-project-cfg (settings) = when json-get settings "cfgScale"
+    is None -> state-get-text "cfg"
+    is Just (JsonNull) -> state-get-text "cfg"
+    is Just (JsonInt (value)) -> show value
+    is Just (JsonNum (value)) -> json-emit (JsonNum value)
+    is otherwise -> let refused = state-set-text "project-settings-error" "Project CFG must be numeric; use model defaults to reset." in state-get-text "cfg"
+
+  ss-apply-project-values : JsonValue -> Integer
+  ss-apply-project-values (settings) =
+    let width = ss-project-int settings "width" (state-get "image-width")
+    in let height = ss-project-int settings "height" (state-get "image-height")
+    in let steps = ss-quality (ss-project-int settings "steps" (state-get "steps"))
+    in let cfg = state-set-text "cfg" (ss-project-cfg settings)
+    in let input = dom-set-value (dom-get "cfg") cfg
+    in let size = show width & "x" & show height
+    in let removed = dom-remove (dom-get "image-project-size")
+    in let xl = state-get-text "image-family" == "sdxl checkpoint"
+    in let known = if xl then size == "1024x1024" | size == "1024x768" | size == "768x1024" | size == "1344x768" | size == "768x1344" else size == "512x512" | size == "768x512" | size == "512x768"
+    in let option = if known then dom-get "image-size" else dom-set-attr (dom-set-attr (ss-el (dom-get "image-size") "option" "image-project-size" ("Project " & size)) "value" size) "selected" "selected"
+    in let selected = dom-set-value (dom-get "image-size") size
+    in let applied = ss-image-size size
+    in let sampler = ss-project-text settings "sampler" (state-get-text "image-sampler")
+    in let old = dom-remove (dom-get "image-project-sampler")
+    in let sam-option = if spark-image-sampler-id sampler >= 0 then dom-get "image-sampler" else dom-set-attr (ss-el (dom-get "image-sampler") "option" "image-project-sampler" ("Project " & sampler)) "value" sampler
+    in let chosen = dom-set-value (dom-get "image-sampler") sampler
+    in let requested = ss-project-text settings "scheduler" (state-get-text "image-scheduler")
+    in let schedule = state-set-text "image-scheduler" (if sdoc-lower requested == "karras" then "Karras" else if sdoc-lower requested == "automatic" then "Automatic" else requested)
+    in let sample = ss-image-sampler sampler
+    in let why = ss-request-refusal 0
+    in let note = dom-set-text (dom-get "image-family-info") ((if why == "" then "Project defaults applied. " else "Project defaults refused: " & why & ". ") & (if xl then "SDXL generation needs most of a 16 GB GPU." else "SD1.5 supports Euler and 512-768 pixel dimensions."))
+    in 0
+
+  ss-apply-project-defaults : Integer -> Integer
+  ss-apply-project-defaults (z) = when json-parse (state-get-text "project-settings")
+    is None -> 0
+    is Just (JsonNull) -> 0
+    is Just (JsonObject (fields)) -> ss-apply-project-values (JsonObject fields)
+    is otherwise -> let refused = state-set-text "project-settings-error" "Project defaults must be an object; use model defaults to reset." in 0
+
+  ss-reset-project-defaults : Integer -> Integer
+  ss-reset-project-defaults (z) =
+    if state-get "loaded" /= 1 then ss-log "Load a checkpoint before choosing model defaults."
+    else if state-get "image-busy" == 1 | state-get "q-busy" == 1 then ss-log "Finish or cancel the current image job first."
+    else let cleared = state-set-text "project-settings" ""
+    in let error = state-set-text "project-settings-error" ""
+    in ss-image-defaults (state-get-text "image-family")
+
+  ss-sampler-option : DomElement, Text, Text, Boolean -> DomElement
+  ss-sampler-option (parent) (id) (name) (enabled) =
+    let option = dom-set-attr (ss-el parent "option" id name) "value" name
+    in if enabled then option else dom-set-attr option "disabled" ""
+
+  ss-image-sampler : Text -> Integer
+  ss-image-sampler (value) =
+    let saved = state-set-text "image-sampler" value
+    in let label = dom-set-text (dom-get "image-sampling") ("Sampling: " & value & " / " & state-get-text "image-scheduler")
+    in 0
+
+  ss-pow10 : Integer, Integer -> Integer
+  ss-pow10 (k) (acc) = if k <= 0 then acc else ss-pow10 (k - 1) (acc * 10)
+
+ The catalogue (SparkCatalogue.codex), one family at a time: each entry
+ links to its page and names its file, size and licence.
+
+  ss-catalogue-panel : DomElement -> DomElement
+  ss-catalogue-panel (root) =
+    let box = ss-style (ss-el root "div" "catalogue" "") ["background", "#1d2027", "border-radius", "8px", "padding", "12px 16px", "margin", "16px 0", "font-size", "13px"] 0
+    in let h = ss-style (ss-el box "div" "" "Models and LoRAs to download: add a file with Choose models folder") ["color", "#e8e6e1", "font-weight", "600", "margin-bottom", "6px"] 0
+    in let a = ss-catalogue-family box ["sd15 checkpoint", "sdxl checkpoint", "flux checkpoint", "sd15 LoRA", "sdxl LoRA", "flux LoRA"] 0
+    in let s = ss-style (ss-el box "div" "" "Search CivitAI's LoRAs") ["color", "#e8e6e1", "font-weight", "600", "margin", "12px 0 4px 0"] 0
+    in let q = ss-style (ss-input box "input" "lora-q" "") ["width", "60%"] 0
+    in let rated = ss-button box "lora-rated" "Highest rated"
+    in let most = ss-button box "lora-most" "Most downloaded"
+    in let res = ss-el box "div" "lora-results" ""
+    in let b = dom-on-click rated (\id -> ss-lora-search False)
+    in let c = dom-on-click most (\id -> ss-lora-search True)
+    in box
+
+ The original's LoRA browser (CivitAiClient.SearchLorasAsync): thirty LoRAs
+ at the chosen sort, SDXL first, each shown as a link to its model page.
+
+  ss-lora-search : Boolean -> Integer
+  ss-lora-search (by-downloads) =
+    let raw = dom-get-value (dom-get "lora-q")
+    in if text-length raw > 120 then (let a = dom-set-text (dom-get "lora-results") "Search refused: use at most 120 characters." in 0)
+    else let points = text-to-unicode-bytes raw
+    in if list-length (spf-trim points) == 0 then (let a = dom-set-text (dom-get "lora-results") "Enter a LoRA name or style before searching." in 0)
+    else if ss-search-control points 0 then (let a = dom-set-text (dom-get "lora-results") "Search refused: remove control characters." in 0)
+    else if state-get "lr-busy" == 1 then (let a = dom-set-text (dom-get "lora-results") "A LoRA search is already running." in 0)
+    else let a = dom-set-text (dom-query "#lora-results") "Searching CivitAI..."
+    in let b = state-set "lr-done" 0
+    in let c = state-set "lr-busy" 1
+    in fetch-with-then ("https://civitai.com/" & civitai-search-path raw by-downloads) "GET" "" "" ss-lora-found
+
+  ss-search-control : List Integer, Integer -> Boolean
+  ss-search-control (xs) (i) = if i >= list-length xs then False else if list-at xs i < 32 | list-at xs i == 127 then True else ss-search-control xs (i + 1)
+
+  ss-lora-found : Text -> Integer
+  ss-lora-found (body) =
+    let idle = state-set "lr-busy" 0
+    in let done = state-set "lr-done" 1
+    in when json-parse body
+      is Just (o) -> (when json-get o "items"
+        is Just (JsonArray (items)) -> ss-lora-results body
+        is otherwise -> (let a = dom-set-text (dom-get "lora-results") ("Search failed: " & json-get-str o "err" (json-get-str o "error" "CivitAI returned no result list. Please retry.")) in 0))
+      is None -> (let a = dom-set-text (dom-get "lora-results") "Search failed: CivitAI returned an invalid response. Please retry." in 0)
+
+  ss-lora-results : Text -> Integer
+  ss-lora-results (body) =
+    let rs = civitai-search-results body
+    in let box = dom-set-html (dom-query "#lora-results") ""
+    in let a = if list-length rs == 0 then dom-set-text box "no LoRAs found" else box
+    in let n = ss-lora-rows box rs 0
+    in let c = state-set "lr-count" (list-length rs)
+    in state-set "lr-done" 1
+
+  ss-lora-rows : DomElement, List LoraResult, Integer -> Integer
+  ss-lora-rows (box) (rs) (i) =
+    if i >= list-length rs then i
+    else let r = list-at rs i
+    in let row = ss-el box "div" ("lr" & show i) ""
+    in let link = ss-style (dom-set-attr (dom-set-attr (ss-el row "a" "" (r.lr-name)) "href" (r.lr-page)) "target" "_blank") ["color", "#e0a040"] 0
+    in let d = ss-el row "span" "" ("  " & r.lr-base & ", " & show (r.lr-downloads) & " downloads" & (if text-length (r.lr-trigger) > 0 then ", trigger words: " & r.lr-trigger else ""))
+    in ss-lora-rows box rs (i + 1)
+
+  ss-catalogue-family : DomElement, List Text, Integer -> Integer
+  ss-catalogue-family (box) (fams) (f) =
+    if f >= list-length fams then 0
+    else let fam = list-at fams f
+    in let t = ss-style (ss-el box "div" "" fam) ["color", "#9a978f", "margin-top", "6px"] 0
+    in let a = ss-catalogue-entries box fam spark-catalogue 0
+    in ss-catalogue-family box fams (f + 1)
+
+  ss-catalogue-entries : DomElement, Text, List CatalogueEntry, Integer -> Integer
+  ss-catalogue-entries (box) (fam) (es) (i) =
+    if i >= list-length es then 0
+    else let e = list-at es i
+    in if e.ce-family /= fam then ss-catalogue-entries box fam es (i + 1)
+    else let row = ss-el box "div" ("cat" & show i) ""
+    in let a = dom-set-attr (dom-set-attr (dom-set-attr row "data-family" (e.ce-family)) "data-file-url" (e.ce-file-url)) "data-mb" (show (e.ce-mb))
+    in let link = ss-style (dom-set-attr (ss-el row "a" "" (e.ce-name)) "href" (e.ce-page)) ["color", "#e0a040"] 0
+    in let tgt = dom-set-attr link "target" "_blank"
+    in let d = ss-el row "span" "" ("  " & e.ce-file & ", " & show (e.ce-mb) & " MB, " & e.ce-licence)
+    in ss-catalogue-entries box fam es (i + 1)
+
+Section: Music and sound effects
+
+  ss-select : DomElement, Text, List Text, Text -> DomElement
+  ss-select (parent) (id) (items) (first) =
+    let s = ss-style (ss-el parent "select" id "") ["margin", "2px 6px 2px 0", "background", "#14161b", "color", "#e8e6e1", "border", "1px solid #3a3e48", "max-width", "220px"] 0
+    in let a = dom-set-attr (dom-set-attr (dom-set-attr (ss-el s "option" "" first) "value" "") "disabled" "disabled") "selected" "selected"
+    in let b = ss-options s items 0
+    in s
+
+  ss-options : DomElement, List Text, Integer -> Integer
+  ss-options (s) (items) (i) =
+    if i >= list-length items then i
+    else let o = dom-set-attr (ss-el s "option" "" (list-at items i)) "value" (list-at items i)
+    in ss-options s items (i + 1)
+
+  ss-tag-select : DomElement, Text, List Text, Text, Text -> Integer
+  ss-tag-select (parent) (id) (items) (first) (prompt-id) =
+    let s = ss-select parent id items first
+    in let k = dom-on-input s (\v -> ss-add-tag prompt-id id v)
+    in 0
+
+  ss-add-tag : Text, Text, Text -> Integer
+  ss-add-tag (prompt-id) (select-id) (v) =
+    if text-length v == 0 then 0
+    else let p = dom-query ("#" & prompt-id)
+    in let a = dom-set-value p (spark-inject-tag (dom-get-value p) v)
+    in let b = dom-set-value (dom-query ("#" & select-id)) ""
+    in 0
+
+  ss-audio-panel : DomElement -> DomElement
+  ss-audio-panel (root) =
+    let box = ss-style (ss-el root "div" "audio" "") ["background", "#1d2027", "border-radius", "8px", "padding", "12px 16px", "margin", "16px 0", "font-size", "13px"] 0
+    in let session = SmgSession { smg-engine = None, smg-refresh = ss-audio-show }
+    in let models = music-models-panel box (\engine -> smg-ready session engine) (\x -> smg-closed session)
+    in let m = ss-music-panel box session
+    in let s = ss-sfx-panel box session
+    in box
+
+  ss-music-panel : DomElement, SmgSession -> Integer
+  ss-music-panel (box) (session) =
+    let j = spark-music-config-json
+    in let h = ss-style (ss-el box "div" "" "Music Director") ["color", "#e8e6e1", "font-weight", "600", "margin-bottom", "4px"] 0
+    in let p = ss-input box "textarea" "mus-prompt" ""
+    in let row = ss-el box "div" "" ""
+    in let moods = ss-select row "mus-mood" (spark-config-texts j "moodPresets") "mood preset"
+    in let mk = dom-on-input moods (\v -> if text-length v > 0 then (let a = dom-set-value (dom-query "#mus-prompt") v in 0) else 0)
+    in let a = ss-tag-select row "mus-genre" (spark-config-texts j "genres") "genre" "mus-prompt"
+    in let fam = ss-select row "mus-family" (spark-instrument-families j) "instrument family"
+    in let inst = ss-select row "mus-inst" [] "instrument"
+    in let fk = dom-on-input fam (\v -> ss-music-family v)
+    in let ik = dom-on-input inst (\v -> ss-add-tag "mus-prompt" "mus-inst" v)
+    in let b = ss-tag-select row "mus-composer" (spark-config-texts j "composers") "composer" "mus-prompt"
+    in let c = ss-tag-select row "mus-artist" (spark-config-texts j "artists") "artist" "mus-prompt"
+    in let d = ss-tag-select row "mus-tempo" (ss-labels (spark-config-objects j "tempoMarkings") 0 []) "tempo" "mus-prompt"
+    in let e = ss-tag-select row "mus-key" (spark-config-texts j "keys") "key" "mus-prompt"
+    in let f = ss-tag-select row "mus-scale" (spark-config-texts j "scales") "scale" "mus-prompt"
+    in let sr = ss-settings box "mus" "10" "1" "3" ""
+    in let go = ss-button box "mus-go" "Generate music"
+    in let gk = dom-on-click go (\id -> smg-generate session "mus")
+    in let cancel = dom-on-click (ss-button box "mus-cancel" "Cancel audio") (\id -> ss-cancel-audio "mus")
+    in let regen = dom-on-click (dom-set-style (ss-button box "mus-regen" "") "display" "none") (\id -> smg-regenerate session "mus")
+    in let st = ss-el box "div" "mus-status" ""
+    in let l = ss-el box "div" "mus-list" ""
+    in 0
+
+  ss-labels : List JsonValue, Integer, List Text -> List Text
+  ss-labels (xs) (i) (acc) = if i >= list-length xs then acc else ss-labels xs (i + 1) (list-snoc acc (json-get-str (list-at xs i) "label" ""))
+
+  ss-cancel-audio : Text -> Integer
+  ss-cancel-audio (k) =
+    let busy = state-get "audio-busy" == 1
+    in let cancel = if busy then state-set "audio-cancel" 1 else 0
+    in let status = dom-set-text (dom-get (k & "-status")) (if busy then "Audio cancellation requested." else "No audio generation is running.")
+    in 0
+
+  ss-music-family : Text -> Integer
+  ss-music-family (fam) =
+    let s = dom-set-html (dom-query "#mus-inst") ""
+    in let a = ss-options s (list-push ["instrument"] "") 0
+    in let a2 = dom-set-value s ""
+    in ss-options s (spark-instruments-in spark-music-config-json fam) 0
+
+  ss-settings : DomElement, Text, Text, Text, Text, Text -> Integer
+  ss-settings (box) (k) (dur) (temp) (cfg) (batch) =
+    let row = ss-el box "div" "" ""
+    in let a = ss-el row "span" "" "duration (s) "
+    in let d = ss-style (ss-input row "input" (k & "-dur") dur) ["width", "60px", "margin-right", "10px"] 0
+    in let b = ss-el row "span" "" "temperature "
+    in let t = ss-style (ss-input row "input" (k & "-temp") temp) ["width", "60px", "margin-right", "10px"] 0
+    in let c = ss-el row "span" "" "CFG "
+    in let g = ss-style (ss-input row "input" (k & "-cfg") cfg) ["width", "60px", "margin-right", "10px"] 0
+    in let sl = ss-el row "span" "" "seed (-1 random) "
+    in let seed = ss-style (ss-input row "input" (k & "-seed") "-1") ["width", "100px", "margin-right", "10px"] 0
+    in if text-length batch == 0 then 0
+    else let e = ss-el row "span" "" "variants "
+    in let n = ss-style (ss-input row "input" (k & "-batch") batch) ["width", "40px"] 0
+    in 0
+
+  ss-sfx-panel : DomElement, SmgSession -> Integer
+  ss-sfx-panel (box) (session) =
+    let j = spark-sfx-config-json
+    in let h = ss-style (ss-el box "div" "" "Sound FX") ["color", "#e8e6e1", "font-weight", "600", "margin", "12px 0 4px 0"] 0
+    in let p = ss-input box "textarea" "sfx-prompt" ""
+    in let row = ss-el box "div" "" ""
+    in let cat = ss-select row "sfx-cat" (spark-config-texts j "categories") "category"
+    in let ck = dom-on-input cat (\v -> ss-sfx-filter v)
+    in let pre = ss-select row "sfx-preset" (ss-labels (spark-config-objects j "presets") 0 []) "preset"
+    in let pk = dom-on-input pre (\v -> ss-sfx-preset v)
+    in let sr = ss-settings box "sfx" "1" "1" "3" "3"
+    in let go = ss-button box "sfx-go" "Generate sound"
+    in let gk = dom-on-click go (\id -> smg-generate session "sfx")
+    in let cancel = dom-on-click (ss-button box "sfx-cancel" "Cancel audio") (\id -> ss-cancel-audio "sfx")
+    in let regen = dom-on-click (dom-set-style (ss-button box "sfx-regen" "") "display" "none") (\id -> smg-regenerate session "sfx")
+    in let st = ss-el box "div" "sfx-status" ""
+    in let l = ss-el box "div" "sfx-list" ""
+    in 0
+
+ ApplyPreset: the preset's prompt and category, then that category's
+ default duration, temperature and CFG where the config has them.
+
+  ss-sfx-preset : Text -> Integer
+  ss-sfx-preset (label) =
+    let j = spark-sfx-config-json
+    in let hit = ss-find-label (spark-config-objects j "presets") label 0
+    in if hit < 0 then 0
+    else let pr = list-at (spark-config-objects j "presets") hit
+    in let cat = json-get-str pr "category" ""
+    in let a = dom-set-value (dom-query "#sfx-prompt") (json-get-str pr "prompt" "")
+    in let b = dom-set-value (dom-query "#sfx-cat") cat
+    in let c = ss-sfx-filter cat
+    in when spark-sfx-defaults j cat
+      is Just (d) -> (let x = dom-set-value (dom-query "#sfx-dur") (spark-audio-number d "duration" "1") in let y = dom-set-value (dom-query "#sfx-temp") (spark-audio-number d "temperature" "1") in let z = dom-set-value (dom-query "#sfx-cfg") (spark-audio-number d "cfg" "3") in 0)
+      is None -> 0
+
+  ss-find-label : List JsonValue, Text, Integer -> Integer
+  ss-find-label (xs) (label) (i) = if i >= list-length xs then 0 - 1 else if json-get-str (list-at xs i) "label" "" == label then i else ss-find-label xs label (i + 1)
+
+  ss-sfx-filter : Text -> Integer
+  ss-sfx-filter (cat) =
+    let a = state-set-text "sfx-filter" cat
+    in ss-audio-show "sfx"
+
+ The catalogs: each track found under the project's own Music or SoundFX
+ folder by its file name, played there.
+
+  ss-audio-load : List (List Text), Text -> Integer
+  ss-audio-load (rows) (root) =
+    let a = state-set "audio-open" 1
+    in let b = state-set-text "audio-root" root
+    in let m = state-set "mus-next" 1
+    in let s = state-set "sfx-next" 1
+    in ss-read-then rows (root & "/Music/.music_catalog.json") (\m -> ss-read-then rows (root & "/SoundFX/.sfx_catalog.json") (\s -> ss-audio-loaded rows root m s))
+
+  ss-audio-loaded : List (List Text), Text, Text, Text -> Integer
+  ss-audio-loaded (rows) (root) (m) (s) =
+    let a = state-set-text "mus-json" m
+    in let b = state-set-text "sfx-json" s
+    in let c = ss-audio-names rows root "Music" (spark-audio-tracks m) 0
+    in let d = ss-audio-names rows root "SoundFX" (spark-audio-tracks s) 0
+    in let e = ss-audio-show "mus"
+    in let f = ss-audio-show "sfx"
+    in let ready = state-set "audio-done" 1
+    in state-set "project-picking" 0
+
+  ss-base-name : Text -> Text
+  ss-base-name (p) = let parts = text-split (text-replace p "\\" "/") "/" in list-at parts (list-length parts - 1)
+
+ Each track's picker name (the file-read name), kept by its file name.
+
+  ss-audio-names : List (List Text), Text, Text, List JsonValue, Integer -> Integer
+  ss-audio-names (rows) (root) (dir) (ts) (i) =
+    if i >= list-length ts then i
+    else let base = ss-base-name (json-get-str (list-at ts i) "filePath" "")
+    in let hit = ss-find rows (root & "/" & dir & "/" & base) 0
+    in let a = state-set-text ("afile:" & base) (if hit < 0 then "" else json-obj-field (list-at rows hit) "name")
+    in ss-audio-names rows root dir ts (i + 1)
+
+  ss-audio-show : Text -> Integer
+  ss-audio-show (k) =
+    let ts = spark-audio-tracks (state-get-text (k & "-json"))
+    in let next = spark-audio-next-id ts
+    in let a = state-set (k & "-next") (if next > state-get (k & "-next") then next else state-get (k & "-next"))
+    in let box = dom-set-html (dom-query ("#" & k & "-list")) ""
+    in let n = ss-audio-rows box k ts 0 0
+    in state-set (k & "-shown") n
+
+  ss-audio-rows : DomElement, Text, List JsonValue, Integer, Integer -> Integer
+  ss-audio-rows (box) (k) (ts) (i) (n) =
+    if i >= list-length ts then n
+    else let t = list-at ts i
+    in let cat = json-get-str t "category" ""
+    in let filter = state-get-text "sfx-filter"
+    in if k == "sfx" & text-length filter > 0 & filter /= "All" & cat /= filter then ss-audio-rows box k ts (i + 1) n
+    else let name = state-get-text ("afile:" & ss-base-name (json-get-str t "filePath" ""))
+    in let row = ss-style (ss-el box "div" (k & "t" & show i) "") ["margin", "4px 0"] 0
+    in let label = ss-el row "div" "" ("#" & show (json-get-int t "id" 0) & "  " & json-get-str t "title" "" & (if text-length cat > 0 then "  [" & cat & "]" else "") & "  " & spark-audio-number t "duration" "0" & " s  " & json-get-str t "vibeTag" "" & "  " & ss-stars (json-get-int t "rating" 0))
+    in let au = if text-length name == 0 then ss-el row "div" "" "  file not found in the project" else dom-set-attr (dom-set-attr (ss-el row "audio" (k & "a" & show i) "") "controls" "") "src" (file-url name)
+    in let id = json-get-int t "id" 0
+    in let acts = ss-el row "div" "" "rate "
+    in let r = ss-rate-links acts k id 1
+    in let an = if text-length name == 0 then acts else ss-style (ss-el acts "span" (k & "an" & show i) "  analyze") ["color", "#e0a040", "cursor", "pointer"] 0
+    in let ak = if text-length name == 0 then acts else dom-on-click an (\x -> audio-analyze-then name (\r -> ss-audio-analyzed k i r))
+    in let del = ss-style (ss-el acts "span" (k & "del" & show id) "  delete") ["color", "#e0a040", "cursor", "pointer"] 0
+    in let dk = dom-on-click del (\x -> ss-audio-write k (spark-audio-deleted (state-get-text (k & "-json")) id) "deleted")
+    in let view = ss-style (ss-el row "div" (k & "view" & show i) "") ["margin", "8px 0 16px", "max-width", "100%"] 0
+    in ss-audio-rows box k ts (i + 1) (n + 1)
+
+ MusicAnalyzer's reading of the track's file (the html plug's
+ audio-analyze-then): the estimated BPM and the peak and RMS level.
+
+  ss-audio-analyzed : Text, Integer, Text -> Integer
+  ss-audio-analyzed (k) (i) (r) =
+    let a = state-set-text (k & "an" & show i) r
+    in let media = dom-get (k & "a" & show i)
+    in let clear = audio-on-position media (\p -> 0)
+    in when json-parse r
+      is Just (v) -> (let t = if json-get-bool v "ok" False then "  " & spark-audio-vibe v & "; ~" & spark-audio-bpm-text v & " BPM, peak " & spark-audio-db-text v "peakDb" & " dB, RMS " & spark-audio-db-text v "rmsDb" & " dB" else "  not analyzed: " & json-get-str v "error" "" in let b = dom-set-text (dom-query ("#" & k & "an" & show i)) t in ss-audio-view (k & "view" & show i) media v)
+      is None -> 0
+
+  ss-audio-array : JsonValue -> List JsonValue
+  ss-audio-array (v) = when v
+    is JsonArray (xs) -> xs
+    is otherwise -> []
+
+  ss-audio-field : JsonValue, Text -> List JsonValue
+  ss-audio-field (v) (key) = when json-get v key
+    is Just (xs) -> ss-audio-array xs
+    is None -> []
+
+  ss-audio-real : JsonValue -> Real
+  ss-audio-real (v) = when v
+    is JsonInt (n) -> real-from-int n
+    is JsonNum (n) -> ss-audio-decimal (real-from-int (n.jn-mantissa)) (n.jn-decimals)
+    is otherwise -> 0.0
+
+  ss-audio-decimal : Real, Integer -> Real
+  ss-audio-decimal (value) (places) = if places <= 0 then value else ss-audio-decimal (value / 10.0) (places - 1)
+
+  ss-wave-points : List JsonValue, Integer, Integer, List Text -> List Text
+  ss-wave-points (xs) (i) (dir) (acc) =
+    if i < 0 | i >= list-length xs then acc
+    else let value = ss-audio-real (list-at xs i)
+    in let amp = if value < 0.0 then 0.0 else if value > 1.0 then 1.0 else value
+    in let y = 50 - dir * real-to-int (amp * 45.0)
+    in ss-wave-points xs (i + dir) dir (list-push acc ("L" & show (i * 1000 / list-length xs) & " " & show y & " "))
+
+  ss-audio-view : Text, DomElement, JsonValue -> Integer
+  ss-audio-view (id) (media) (v) =
+    let box = dom-set-html (dom-get id) ""
+    in if json-get-bool v "ok" False == False then 0
+    else let wave = ss-audio-field v "waveform"
+    in let frames = ss-audio-field v "spectrogram"
+    in if list-length wave == 0 then (let e = dom-set-text box "No waveform samples." in 0)
+    else let top = ss-wave-points wave 0 1 (list-push [] "M0 50 ")
+    in let path = text-concat-list (list-push (ss-wave-points wave (list-length wave - 1) (0 - 1) top) "Z")
+    in let plot = dom-set-html (ss-el box "div" (id & "wave") "") ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 100' role='img' aria-label='Waveform over the whole track' style='display:block;width:100%;background:#101a28;border-radius:6px'><path fill='#65b4d4' d='" & path & "'/><line id='" & id & "head' x1='0' x2='0' y1='0' y2='100' stroke='#e0a040' stroke-width='3'/></svg>")
+    in let title = ss-el box "div" "" "Spectrum: bass to treble"
+    in let spec = ss-el box "div" (id & "spec") ""
+    in if list-length frames == 0 then (let e = dom-set-text spec "No spectrum frames." in 0)
+    else let label = dom-set-attr (ss-el box "label" "" "Playback position") "for" (id & "pos")
+    in let slider = dom-set-attr (dom-set-attr (dom-set-attr (dom-set-attr (ss-el box "input" (id & "pos") "") "type" "range") "min" "0") "max" "1000") "step" "1"
+    in let style = ss-style (dom-set-value slider "0") ["width", "100%", "accent-color", "#e0a040"] 0
+    in let reset = state-set (id & "-frame") (0 - 1)
+    in let cb = dom-on-input slider (\s -> ss-audio-seek id media frames (text-to-integer s))
+    in let follow = audio-on-position media (\p -> ss-audio-position id frames p)
+    in 0
+
+  ss-audio-seek : Text, DomElement, List JsonValue, Integer -> Integer
+  ss-audio-seek (id) (media) (frames) (position) =
+    let a = audio-seek media position
+    in ss-audio-position id frames position
+
+  ss-audio-position : Text, List JsonValue, Integer -> Integer
+  ss-audio-position (id) (frames) (position) =
+    let p = if position < 0 then 0 else if position > 1000 then 1000 else position
+    in let slider = dom-set-value (dom-get (id & "pos")) (show p)
+    in let head = dom-set-attr (dom-set-attr (dom-get (id & "head")) "x1" (show p)) "x2" (show p)
+    in ss-audio-spectrum id frames p
+
+  ss-spectrum-peak : List JsonValue, Integer, Real -> Real
+  ss-spectrum-peak (bands) (i) (peak) =
+    if i >= list-length bands then peak
+    else let v = ss-audio-real (list-at bands i)
+    in ss-spectrum-peak bands (i + 1) (if v > peak then v else peak)
+
+  ss-spectrum-bars : List JsonValue, Integer, Real, List Text -> List Text
+  ss-spectrum-bars (bands) (i) (peak) (acc) =
+    if i >= list-length bands then acc
+    else let v = ss-audio-real (list-at bands i)
+    in let h = if v < 0.0 then 0 else real-to-int (v * 90.0 / peak)
+    in let x = i * 1000 / list-length bands
+    in let w = (i + 1) * 1000 / list-length bands - x - 2
+    in ss-spectrum-bars bands (i + 1) peak (list-push acc ("<rect x='" & show (x + 1) & "' y='" & show (100 - h) & "' width='" & show w & "' height='" & show h & "'/>"))
+
+  ss-audio-spectrum : Text, List JsonValue, Integer -> Integer
+  ss-audio-spectrum (id) (frames) (position) =
+    if list-length frames == 0 then 0
+    else let pos = if position < 0 then 0 else if position > 1000 then 1000 else position
+    in let f = pos * list-length frames / 1000
+    in let frame = if f >= list-length frames then list-length frames - 1 else f
+    in if state-get (id & "-frame") == frame then 0
+    else let saved = state-set (id & "-frame") frame
+    in let bands = ss-audio-array (list-at frames frame)
+    in let peak = ss-spectrum-peak bands 0 1.0
+    in let bars = text-concat-list (ss-spectrum-bars bands 0 peak [])
+    in let e = dom-set-html (dom-get (id & "spec")) ("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 100' role='img' aria-label='Spectrum from bass to treble' data-frame='" & show frame & "' style='display:block;width:100%;background:#101a28;border-radius:6px' fill='#b29ce8'>" & bars & "</svg>")
+    in 0
+
+  ss-rate-links : DomElement, Text, Integer, Integer -> Integer
+  ss-rate-links (acts) (k) (id) (n) =
+    if n > 5 then 0
+    else let e = ss-style (ss-el acts "span" (k & "rate" & show id & "-" & show n) (show n & " ")) ["color", "#e0a040", "cursor", "pointer"] 0
+    in let c = dom-on-click e (\x -> ss-audio-rate k id n)
+    in ss-rate-links acts k id (n + 1)
+
+  ss-audio-track : List JsonValue, Integer, Integer -> JsonValue
+  ss-audio-track (tracks) (id) (i) = if i >= list-length tracks then JsonNull else if json-get-int (list-at tracks i) "id" 0 == id then list-at tracks i else ss-audio-track tracks id (i + 1)
+
+  ss-audio-rate : Text, Integer, Integer -> Integer
+  ss-audio-rate (k) (id) (rating) =
+    let original = state-get-text (k & "-json")
+    in let track = if rating <= 2 then ss-audio-track (spark-audio-tracks original) id 0 else JsonNull
+    in ss-audio-write-with k (spark-audio-rated original id rating) ("rated " & show rating) track
+
+ A rating or a deletion rewrites the tab's catalog in the project folder, as
+ the original's SaveCatalog does; a folder opened read-only cannot be written.
+
+  ss-audio-write : Text, Text, Text -> Integer
+  ss-audio-write (k) (json) (said) = ss-audio-write-with k json said JsonNull
+
+  ss-audio-write-with : Text, Text, Text, JsonValue -> Integer
+  ss-audio-write-with (k) (json) (said) (variant) =
+    if state-get "audio-busy" == 1 | state-get "project-picking" == 1 then smg-refuse k "Wait for the current audio or project operation before changing its catalog."
+    else if state-get "writable" /= 1 then (let a = dom-set-text (dom-query ("#" & k & "-status")) "This folder was opened read-only; open it in Edge or Chrome to rate or delete." in 0)
+    else let rel = if k == "mus" then "Music/.music_catalog.json" else "SoundFX/.sfx_catalog.json"
+    in let busy = state-set "audio-busy" 1
+    in file-write-then rel json (\r -> ss-audio-written k json said variant r)
+
+  ss-audio-written : Text, Text, Text, JsonValue, Text -> Integer
+  ss-audio-written (k) (json) (said) (variant) (r) =
+    let busy = state-set "audio-busy" 0
+    in if text-contains r "\"ok\":true" == False then (let a = dom-set-text (dom-query ("#" & k & "-status")) ("not saved: " & r) in 0)
+    else let a = state-set-text (k & "-json") json
+    in let b = ss-audio-show k
+    in let c = dom-set-text (dom-query ("#" & k & "-status")) said
+    in let writes = state-set (k & "-writes") (state-get (k & "-writes") + 1)
+    in when variant
+      is JsonNull -> writes
+      is otherwise -> (let request = state-set-text (k & "-variant") (json-emit variant) in let click = dom-click (dom-get (k & "-regen")) in writes)
+
+  ss-log : Text -> Integer
+  ss-log (t) =
+    let a = dom-append (dom-query "#log") (dom-set-text (dom-create "div") t)
+    in 0
+
+  ss-reroll : Integer -> Integer
+  ss-reroll (z) =
+    let e = dom-set-value (dom-query "#seed") (show (random-int 1 2147483646))
+    in 0
+
+  ss-use-prompt : Text -> Integer
+  ss-use-prompt (t) =
+    let e = dom-set-value (dom-query "#prompt") t
+    in 0
+
+  ss-models-pick : Text -> Integer
+  ss-models-pick (id) = if state-get "image-loading" == 1 | state-get "image-busy" == 1 | state-get "q-busy" == 1 then ss-log "Finish the current image operation before choosing models." else pick-dir-then "" ss-models-listed
+
+  ss-ends : Text, Text -> Boolean
+  ss-ends (t) (s) = text-length t >= text-length s & substring t (text-length t - text-length s) (text-length s) == s
+
+  ss-ending : List (List Text), Integer, Text, List (List Text) -> List (List Text)
+  ss-ending (rows) (i) (suffix) (acc) =
+    if i >= list-length rows then acc
+    else ss-ending rows (i + 1) suffix (if ss-ends (json-obj-field (list-at rows i) "path") suffix then list-snoc acc (list-at rows i) else acc)
+
+  ss-tokenizer-file : List (List Text), Text -> Text
+  ss-tokenizer-file (all) (file) =
+    let hits = ss-ending all 0 ("/" & file) []
+    in if list-length hits > 0 then json-obj-field (list-at hits 0) "name" else ""
+
+  ss-models-listed : Text -> Integer
+  ss-models-listed (r) =
+    let err = json-obj-field (json-parse-obj r) "error"
+    in if err /= "" then ss-log ("Model selection unchanged: " & err)
+    else let all = json-parse-rows r
+    in let rows = ss-ending all 0 ".safetensors" []
+    in let v = state-set-text "vocab-file" (ss-tokenizer-file all "vocab.json")
+    in let m = state-set-text "merges-file" (ss-tokenizer-file all "merges.txt")
+    in let box = dom-set-html (dom-query "#models") ""
+    in let clear-lora = ss-lora-select "" "" 0 "" (0 - 1)
+    in if list-length rows == 0 then ss-log "No .safetensors files in that folder."
+    else ss-classify rows 0 0
+
+  ss-classify : List (List Text), Integer, Integer -> Integer
+  ss-classify (rows) (i) (good) =
+    if i >= list-length rows then ss-log ("Checked " & show (list-length rows) & " files: " & show good & " supported checkpoints. Click one to load it.")
+    else let row = list-at rows i
+    in ss-family-then (json-obj-field row "name") (\family -> ss-model-row rows i good family)
+
+  ss-model-row : List (List Text), Integer, Integer, Text -> Integer
+  ss-model-row (rows) (i) (good) (family) =
+    let row = list-at rows i
+    in let ok = family == "sd15 checkpoint" | family == "sdxl checkpoint"
+    in let e = dom-set-attr (ss-style (ss-el (dom-query "#models") "div" ("m" & show i) (json-obj-field row "path" & (if ok then "" else "  (not a supported checkpoint)"))) ["color", (if ok then "#e8e6e1" else "#6b6860"), "cursor", (if ok then "pointer" else "default")] 0) "data-family" family
+    in let k = if ok then dom-on-click e (\id -> ss-load (json-obj-field row "name") (json-obj-field row "path") (text-to-integer (json-obj-field row "size")) family) else e
+    in let choose = if ok then e else dom-on-click (ss-button e ("lora-use" & show i) "Use LoRA") (\id -> ss-lora-select (json-obj-field row "name") (json-obj-field row "path") (text-to-integer (json-obj-field row "size")) family i)
+    in ss-family-shown rows i (if ok then good + 1 else good) family
+
+  ss-family-shown : List (List Text), Integer, Integer, Text -> Integer
+  ss-family-shown (rows) (i) (good) (fam) =
+    let a = state-set-text ("fam" & show i) fam
+    in let clear-words = state-set-text ("tw" & show i) ""
+    in let clear-hash = state-set-text ("sha" & show i) ""
+    in let b = ss-el (dom-query ("#m" & show i)) "span" ("f" & show i) ("  [" & fam & "]")
+    in let c = if ss-ends fam "LoRA" then ss-trigger-link i (json-obj-field (list-at rows i) "name") else 0
+    in ss-classify rows (i + 1) good
+
+  ss-lora-select : Text, Text, Integer, Text, Integer -> Integer
+  ss-lora-select (file) (path) (size) (family) (i) =
+    if state-get "image-loading" == 1 | state-get "image-busy" == 1 | state-get "q-busy" == 1 then ss-refuse "Finish the current image operation before changing LoRA."
+    else if file /= "" & family /= "sd15 LoRA" & family /= "sdxl LoRA" then ss-refuse ("Unsupported LoRA family or format: " & family)
+    else let a = state-set-text "lora-file" file
+    in let b = state-set-text "lora-path" path
+    in let c = state-set "lora-size" size
+    in let d = state-set-text "lora-family" family
+    in let e = state-set "lora-index" i
+    in let f = dom-set-text (dom-get "lora-selected") ("LoRA: " & (if file == "" then "none" else path) & ". Load a checkpoint to apply changes.")
+    in 0
+
+  ss-lora-inject : Integer -> Integer
+  ss-lora-inject (z) =
+    let words = if state-get-text "lora-file" == "" then "" else state-get-text ("tw" & show (state-get "lora-index"))
+    in let current = dom-get-value (dom-get "prompt-augment")
+    in if words == "" then ss-log "Find trigger words for the selected LoRA first."
+    else if text-contains (text-to-lower current) (text-to-lower words) then 0
+    else let e = dom-set-value (dom-get "prompt-augment") (words & (if current == "" then "" else ", " & current)) in 0
+
+  ss-lora-weight-valid : Text -> Boolean
+  ss-lora-weight-valid (text) =
+    let body = if substring text 0 1 == "-" then substring text 1 (text-length text - 1) else text
+    in text-length text <= 12 & body /= "." & ss-digits-ok body 0 0
+
+  ss-lora-weight : Text -> Real
+  ss-lora-weight (text) = if substring text 0 1 == "-" then 0.0 - bl-real (substring text 1 (text-length text - 1)) else bl-real text
+
+  ss-trigger-link : Integer, Text -> Integer
+  ss-trigger-link (i) (name) =
+    let e = ss-style (ss-el (dom-query ("#m" & show i)) "span" ("tw" & show i) "  find trigger words") ["color", "#e0a040", "cursor", "pointer"] 0
+    in let k = dom-on-click e (\id -> ss-trigger-find i name)
+    in 0
+
+  ss-trigger-find : Integer, Text -> Integer
+  ss-trigger-find (i) (name) =
+    let a = dom-set-text (dom-query ("#tw" & show i)) "  hashing..."
+    in file-sha256-then name (\r -> ss-trigger-hashed i r)
+
+  ss-json-str : Text, Text -> Text
+  ss-json-str (json) (key) = when json-parse json
+    is Just (v) -> json-get-str v key ""
+    is None -> ""
+
+  ss-trigger-hashed : Integer, Text -> Integer
+  ss-trigger-hashed (i) (r) =
+    let hex = ss-json-str r "sha256"
+    in if text-length hex == 0 then (let a = dom-set-text (dom-query ("#tw" & show i)) ("  not hashed: " & r) in 0)
+    else let a = state-set-text ("sha" & show i) hex
+    in let b = dom-set-text (dom-query ("#tw" & show i)) "  asking CivitAI..."
+    in fetch-get-then ("https://civitai.com/" & civitai-hash-path hex) (\body -> ss-trigger-words i body)
+
+  ss-trigger-words : Integer, Text -> Integer
+  ss-trigger-words (i) (body) =
+    let words = civitai-trigger-words body
+    in let a = state-set-text ("tw" & show i) words
+    in let b = state-set ("tw-done" & show i) 1
+    in let c = dom-set-text (dom-query ("#tw" & show i)) (if text-length words == 0 then "  no trigger words on CivitAI" else "  trigger words: " & words)
+    in 0
+
+  ss-family-then : Text, (Text -> Integer) -> Integer
+  ss-family-then (name) (k) = file-read-then name 0 8 (\r -> ss-family-len name r k)
+
+  ss-family-len : Text, Text, (Text -> Integer) -> Integer
+  ss-family-len (name) (r) (k) =
+    let bs = bl-list r
+    in let n = if list-length bs < 8 then 0 else st-read-u64 bs 0
+    in if n <= 0 | n > 100000000 then k "none"
+    else file-read-then name 0 (8 + n) (\h -> k (spark-file-family (st-parse-file (bl-list h))))
+
+  ss-load : Text, Text, Integer, Text -> Integer
+  ss-load (name) (path) (size) (family) =
+    if state-get "image-loading" == 1 | state-get "image-busy" == 1 | state-get "q-busy" == 1 then ss-log "Finish the current image operation before loading a model."
+    else if state-get-text "lora-file" /= "" & spark-image-lora-refusal family (state-get-text "lora-family") /= "" then ss-refuse (spark-image-lora-refusal family (state-get-text "lora-family"))
+    else if state-get-text "lora-file" /= "" & ss-lora-weight-valid (dom-get-value (dom-get "lora-weight")) == False then ss-refuse "LoRA weight must be a finite decimal number."
+    else let unload = dom-click (dom-get "image-unload")
+    in if state-get "loaded" == 1 then ss-log "The previous image model is still busy."
+    else let loading = state-set "image-loading" 1
+    in let clear = dom-set-html (dom-get "go-box") ""
+    in let a = ss-log ("loading " & path)
+    in let lf = state-set-text "loaded-lora-file" (state-get-text "lora-file")
+    in let lp = state-set-text "loaded-lora-path" (state-get-text "lora-path")
+    in let lw = state-set-text "loaded-lora-weight" (dom-get-value (dom-get "lora-weight"))
+    in gpu-trim-then (\why -> if why /= "" then ss-load-refused ("Image model trim failed: " & why) else bl-bpe-then (state-get-text "vocab-file") (state-get-text "merges-file") ss-load-refused (\bpe -> if clip-bpe-status bpe /= 0 then ss-load-refused "The CLIP tokenizer is invalid."
+      else if lf == "" then spark-image-open family name size ss-log (\m -> ss-ready m bpe path family) ss-load-refused
+      else spark-image-open-lora family name size (state-get-text "lora-family") lf (state-get "lora-size") (ss-lora-weight lw) ss-log (\m -> ss-ready m bpe path family) ss-load-refused))
+
+  ss-load-refused : Text -> Integer
+  ss-load-refused (why) = let a = state-set "image-loading" 0 in let b = ss-unloaded-controls 0 in ss-refuse why
+
+  ss-unloaded-controls : Integer -> Integer
+  ss-unloaded-controls (z) =
+    let box = dom-set-html (dom-get "go-box") ""
+    in let go = dom-on-click (ss-button box "go" "Generate (load a checkpoint first)") (\id -> ss-refuse "Choose a models folder, then click an SD1.5 or SDXL checkpoint to load it.")
+    in 0
+
+  ss-unload : SparkImageModel -> Integer
+  ss-unload (model) =
+    if state-get "image-busy" == 1 | state-get "q-busy" == 1 then ss-log "Finish the current image operation before unloading."
+    else if spark-image-close model == False then ss-log "The image engine is busy."
+    else let a = state-set "loaded" 0
+    in let b = ss-unloaded-controls 0
+    in ss-log "Image model unloaded."
+
+  ss-refuse : Text -> Integer
+  ss-refuse (why) = ss-log ("refused: " & why)
+
+ The Generate button is made again for each loaded checkpoint, therefore
+ exactly one click handler is ever live.
+
+  ss-ready : SparkImageModel, ClipBpe, Text, Text -> Integer
+  ss-ready (m) (bpe) (path) (family) =
+    let box = dom-set-html (dom-query "#go-box") ""
+    in let go = ss-button box "go" "Generate"
+    in let a = dom-on-click go (\id -> ss-generate m bpe)
+    in let all = ss-button box "go-all" "Generate all"
+    in let aa = dom-on-click all (\id -> ss-queue-start m bpe)
+    in let rg = dom-set-style (ss-button box "regen" "") "display" "none"
+    in let ra = dom-on-click rg (\id -> ss-regen-next m bpe)
+    in let unload = dom-on-click (ss-button box "image-unload" "Unload image model") (\id -> ss-unload m)
+    in let b = state-set "loaded" 1
+    in let loading = state-set "image-loading" 0
+    in let defaults = ss-image-defaults family
+    in let model = state-set-text "image-model" path
+    in ss-log ("ready: " & path & " on " & (if bl-adapter == "" then "WebGPU" else bl-adapter))
+
+  ss-generate : SparkImageModel, ClipBpe -> Integer
+  ss-generate (m) (bpe) =
+    let why = ss-request-refusal 0
+    in if state-get "image-busy" == 1 | state-get "q-busy" == 1 then ss-log "An image job is already running."
+    else if text-length why > 0 then ss-log ("refused: " & why)
+    else let job = state-get "generated" + 1
+    in let steps = state-get "steps"
+    in let seed = dom-get-value (dom-query "#seed")
+    in let a = ss-log ("job " & show job & ": " & show steps & " steps, CFG " & state-get-text "cfg" & ", seed " & seed)
+    in ss-image-run m bpe (dom-get-value (dom-get "prompt")) (dom-get-value (dom-get "negative")) seed steps (state-get-text "cfg") (\img summary -> ss-made img job summary)
+
+  ss-image-run : SparkImageModel, ClipBpe, Text, Text, Text, Integer, Text, (Integer, Text -> Integer) -> Integer
+  ss-image-run (model) (bpe) (prompt) (negative) (seed-text) (steps) (cfg) (done) =
+    let width = state-get "image-width"
+    in let height = state-get "image-height"
+    in let sampler = state-get-text "image-sampler"
+    in let seed = if seed-text == "-1" then random-int 0 2147483646 else text-to-integer seed-text
+    in let a = state-set "image-busy" 1
+    in let b = state-set "active-width" width
+    in let c = state-set "active-height" height
+    in let d = state-set "active-steps" steps
+    in let e = state-set-text "active-cfg" cfg
+    in let f = state-set-text "active-scheduler" (state-get-text "image-scheduler")
+    in let g = state-set-text "active-negative" negative
+    in let h = state-set-text "active-family" (state-get-text "image-family")
+    in let j = state-set-text "active-model" (state-get-text "image-model")
+    in let k = state-set-text "active-sampler" sampler
+    in let augment = dom-get-value (dom-get "prompt-augment")
+    in let la = state-set-text "active-augment" augment
+    in let lt = state-set-text "active-lora" (if state-get-text "loaded-lora-file" == "" then "" else state-get-text "loaded-lora-path" & ":" & state-get-text "loaded-lora-weight")
+    in set-timeout (\z -> spark-image-run model bpe (prompt & (if augment == "" then "" else ", " & augment)) negative seed steps (bl-real cfg) width height sampler ss-log done) 20
+
+  ss-image-finished : (Text -> Integer), Text -> Integer
+  ss-image-finished (next) (result) = let idle = state-set "image-busy" 0 in next result
+
+  ss-made : Integer, Integer, Text -> Integer
+  ss-made (img) (job) (summary) =
+    if img <= 0 then (let idle = state-set "image-busy" 0 in ss-log ("generation failed: " & summary & " " & gpu-error 0))
+    else gpu-buf-show-then img (state-get "active-width") (state-get "active-height") "#out" (\r -> ss-shown img job summary r)
+
+  ss-shown : Integer, Integer, Text, Text -> Integer
+  ss-shown (img) (job) (summary) (r) =
+    let f = gpu-buf-free img
+    in let idle = state-set "image-busy" 0
+    in if text-contains r "\"ok\":true" == False then ss-log ("image display failed: " & r)
+    else let e = state-set "generated" job
+    in let log = ss-log ("job " & show job & ": done, " & summary)
+    in ss-idle 0
+
+ The original's detail panel, read only: what made the image. Rating and
+ saving write the catalog back, which waits on a page file-write primitive.
+
+  ss-detail : SparkImage -> Text
+  ss-detail (im) =
+    let head = (if im.si-prompt < 10 then "0" else "") & show (im.si-prompt) & "  " & im.si-title & "   " & ss-stars (im.si-rating)
+    in let line2 = "seed " & show (im.si-seed) & "   preset " & im.si-preset & "   " & show (im.si-width) & " x " & show (im.si-height) & "   " & im.si-settings
+    in let line3 = (if text-length (im.si-lora) > 0 then "LoRA " & im.si-lora & "\n" else "") & (if text-length (im.si-augment) > 0 then "augment: " & im.si-augment & "\n" else "")
+    in head & "\n" & line2 & "\n" & line3 & im.si-prompt-text
+
+Section: The queue
+
+ Generate All, as the original's MainViewModel.GenerateAll: every prompt of
+ the open project, runs per prompt jobs each, the prompts shuffled and a
+ prompt's runs together, one job at a time. Each job takes a fresh seed (the
+ original's Seed = -1). Cancel stops the queue after the job in flight.
+
+  ss-store-prompts : List SparkPrompt, Integer -> Integer
+  ss-store-prompts (ps) (i) =
+    if i >= list-length ps then state-set "pcount" (list-length ps)
+    else let p = list-at ps i
+    in let a = state-set-text ("pt" & show i) (spark-prompt-full-text p)
+    in let b = state-set-text ("pl" & show i) ((if p.sp-number < 10 then "0" else "") & show (p.sp-number) & " " & unicode-bytes-to-text (p.sp-title))
+    in let c = state-set ("pn" & show i) (p.sp-number)
+    in let d = state-set-text ("pf" & show i) (spark-prompt-filename p)
+    in let e = state-set-text ("ptitle" & show i) (unicode-bytes-to-text (p.sp-title))
+    in let g = state-set-text ("pseries" & show i) (unicode-bytes-to-text (p.sp-series))
+    in let h = state-set-text ("pstyle" & show i) (unicode-bytes-to-text (p.sp-style))
+    in ss-store-prompts ps (i + 1)
+
+  ss-range : Integer, Integer, List Integer -> List Integer
+  ss-range (n) (i) (acc) = if i >= n then acc else ss-range n (i + 1) (list-snoc acc i)
+
+  ss-shuffle : List Integer, Integer -> List Integer
+  ss-shuffle (xs) (i) =
+    if i <= 0 then xs
+    else let j = random-int 0 i
+    in let t = list-at xs i
+    in let a = list-set-at xs i (list-at xs j)
+    in let b = list-set-at xs j t
+    in ss-shuffle xs (i - 1)
+
+  ss-plan : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ss-plan (order) (i) (runs) (r) (acc) =
+    if i >= list-length order then acc
+    else if r >= runs then ss-plan order (i + 1) runs 0 acc
+    else ss-plan order i runs (r + 1) (list-snoc acc (list-at order i * 1000 + r))
+
+  ss-queue-start : SparkImageModel, ClipBpe -> Integer
+  ss-queue-start (m) (bpe) =
+    let n = state-get "pcount"
+    in if n <= 0 | state-get "done" /= 1 then ss-log "Open a project and wait for its prompts before Generate all."
+    else if state-get "q-busy" == 1 | state-get "image-busy" == 1 then ss-log "A job is running; retry Generate all after it finishes."
+    else if text-length (ss-request-refusal 0) > 0 then ss-log ("refused: " & ss-request-refusal 0)
+    else let busy = state-set "q-busy" 1
+    in let runs0 = text-to-integer (dom-get-value (dom-query "#runs"))
+    in let runs = if runs0 < 1 then 1 else runs0
+    in let jobs = ss-plan (ss-shuffle (ss-range n 0 []) (n - 1)) 0 runs 0 []
+    in let a = state-set "q-cancel" 0
+    in let b = state-set "q-images" 0
+    in let c = state-set-text "q-order" ""
+    in let d = dom-set-html (dom-query "#results") ""
+    in let e = ss-log ("queue: " & show (list-length jobs) & " jobs, " & show runs & " per prompt")
+    in ss-queue-next m bpe jobs 0
+
+  ss-queue-next : SparkImageModel, ClipBpe, List Integer, Integer -> Integer
+  ss-queue-next (m) (bpe) (jobs) (k) =
+    if k >= list-length jobs then (let a = state-set "q-done" k in let b = ss-log ("queue: finished " & show k & " of " & show (list-length jobs)) in ss-idle 0)
+    else if state-get "q-cancel" == 1 then (let a = state-set "q-done" k in let b = ss-log ("queue: cancelled after " & show k & " of " & show (list-length jobs)) in ss-idle 0)
+    else let job = list-at jobs k
+    in let pi = job / 1000
+    in let r = job - pi * 1000
+    in let label = state-get-text ("pl" & show pi)
+    in let o = state-set-text "q-order" (state-get-text "q-order" & label & " r" & show r & "|")
+    in let seed = random-int 1 2147483646
+    in let a = ss-log ("queue " & show (k + 1) & "/" & show (list-length jobs) & ": " & label & " run " & show r & ", seed " & show seed)
+    in ss-image-run m bpe (state-get-text ("pt" & show pi)) (dom-get-value (dom-get "negative")) (show seed) (state-get "steps") (state-get-text "cfg") (\img summary -> ss-queued m bpe jobs k label r img pi seed summary)
+
+  ss-queued : SparkImageModel, ClipBpe, List Integer, Integer, Text, Integer, Integer, Integer, Integer, Text -> Integer
+  ss-queued (m) (bpe) (jobs) (k) (label) (r) (img) (pi) (seed) (summary) =
+    if img <= 0 then (let idle = state-set "image-busy" 0 in let a = ss-log ("  failed (" & show img & "): " & summary & " " & gpu-error 0) in ss-queue-next m bpe jobs (k + 1))
+    else let fig = ss-style (ss-el (dom-query "#results") "div" "" "") ["margin", "0 8px 8px 0", "font-size", "12px", "color", "#9a978f"] 0
+    in let cv = ss-style (ss-el fig "canvas" ("q" & show k) "") ["width", "192px", "height", "auto", "display", "block", "border-radius", "4px"] 0
+    in let cap = ss-el fig "div" "" (label & "  run " & show r)
+    in gpu-buf-show-then img (state-get "active-width") (state-get "active-height") ("#q" & show k) (\x -> if text-contains x "\"ok\":true" then ss-queue-shown m bpe jobs k img pi seed else (let f = gpu-buf-free img in let log = ss-log ("image display failed: " & x) in ss-image-finished (\z -> ss-queue-next m bpe jobs (k + 1)) x))
+
+  ss-queue-shown : SparkImageModel, ClipBpe, List Integer, Integer, Integer, Integer, Integer -> Integer
+  ss-queue-shown (m) (bpe) (jobs) (k) (img) (pi) (seed) =
+    let f = gpu-buf-free img
+    in let a = state-set "q-images" (state-get "q-images" + 1)
+    in if state-get "writable" == 1 then ss-save-result ("#q" & show k) pi seed (\r -> ss-image-finished (\x -> ss-queue-next m bpe jobs (k + 1)) r)
+    else ss-image-finished (\x -> ss-queue-next m bpe jobs (k + 1)) ""
+
+ A rating of 2 or less queues its prompt again with a fresh seed, as the
+ original's EnqueueRegen. The hidden regen button is made with the loaded
+ checkpoint, which only its click handler holds; a regen waits for a queue in
+ flight, and the queue's end starts it.
+
+  ss-idle : Integer -> Integer
+  ss-idle (z) =
+    let a = state-set "q-busy" 0
+    in let b = dom-click (dom-query "#regen")
+    in 0
+
+  ss-prompt-index : Integer, Integer -> Integer
+  ss-prompt-index (n) (i) =
+    if i >= state-get "pcount" then 0 - 1
+    else if state-get ("pn" & show i) == n then i
+    else ss-prompt-index n (i + 1)
+
+  ss-regen-request : Integer -> Integer
+  ss-regen-request (j) =
+    let n = json-get-int (ss-record (state-get-text "cat-json") (state-get-text ("lb-id" & show j))) "promptNumber" 0
+    in let pi = ss-prompt-index n 0
+    in if pi < 0 then 0
+    else if state-get "loaded" /= 1 then ss-log ("regen of prompt " & show n & " waits for a loaded checkpoint")
+    else let a = state-set-text "rg-list" (state-get-text "rg-list" & show pi & ",")
+    in if state-get "q-busy" == 1 | state-get "image-busy" == 1 then 0 else ss-idle 0
+
+  ss-rg-rest : List Text, Integer, Text -> Text
+  ss-rg-rest (xs) (i) (acc) = if i >= list-length xs then acc else ss-rg-rest xs (i + 1) (if text-length (list-at xs i) > 0 then acc & list-at xs i & "," else acc)
+
+  ss-regen-next : SparkImageModel, ClipBpe -> Integer
+  ss-regen-next (m) (bpe) =
+    let pending = state-get-text "rg-list"
+    in if state-get "q-busy" == 1 | state-get "image-busy" == 1 | text-length pending == 0 then 0
+    else if text-length (ss-request-refusal 0) > 0 then ss-log ("regen refused: " & ss-request-refusal 0)
+    else let xs = text-split pending ","
+    in let pi = text-to-integer (list-at xs 0)
+    in let a = state-set-text "rg-list" (ss-rg-rest xs 1 "")
+    in let b = state-set "q-busy" 1
+    in let k = state-get "rg-made"
+    in let seed = random-int 1 2147483646
+    in let c = ss-log ("queue: regen " & state-get-text ("pl" & show pi) & ", seed " & show seed)
+    in ss-image-run m bpe (state-get-text ("pt" & show pi)) (dom-get-value (dom-get "negative")) (show seed) (state-get "steps") (state-get-text "cfg") (\img summary -> ss-regen-made m bpe k pi seed img summary)
+
+  ss-regen-made : SparkImageModel, ClipBpe, Integer, Integer, Integer, Integer, Text -> Integer
+  ss-regen-made (m) (bpe) (k) (pi) (seed) (img) (summary) =
+    if img <= 0 then (let idle = state-set "image-busy" 0 in let a = ss-log ("  regen failed (" & show img & "): " & summary & " " & gpu-error 0) in ss-idle 0)
+    else let fig = ss-style (ss-el (dom-query "#results") "div" "" "") ["margin", "0 8px 8px 0", "font-size", "12px", "color", "#9a978f"] 0
+    in let cv = ss-style (ss-el fig "canvas" ("rg" & show k) "") ["width", "192px", "height", "auto", "display", "block", "border-radius", "4px"] 0
+    in let cap = ss-el fig "div" "" (state-get-text ("pl" & show pi) & "  regen")
+    in let a = state-set "rg-made" (k + 1)
+    in gpu-buf-show-then img (state-get "active-width") (state-get "active-height") ("#rg" & show k) (\x -> if text-contains x "\"ok\":true" then ss-regen-shown k pi seed img else (let f = gpu-buf-free img in let log = ss-log ("image display failed: " & x) in ss-image-finished (\z -> ss-idle 0) x))
+
+  ss-regen-shown : Integer, Integer, Integer, Integer -> Integer
+  ss-regen-shown (k) (pi) (seed) (img) =
+    let f = gpu-buf-free img
+    in if state-get "writable" == 1 then ss-save-result ("#rg" & show k) pi seed (\r -> ss-image-finished (\x -> ss-idle 0) r)
+    else ss-image-finished (\x -> ss-idle 0) ""
+
+Section: Writing the project back
+
+ A folder opened through the File System Access API can be written; one
+ opened through the read-only folder input cannot, and the page says so. A
+ rating rewrites catalog.json with that record's rating changed, as the
+ original's JsonStore rewrites the whole file on every change.
+
+  ss-picked : Text -> Integer
+  ss-picked (r) =
+    let fields = json-parse-obj r
+    in if json-obj-field fields "code" == "NotSupportedError" then pick-dir-then "" ss-readonly-picked
+    else ss-accept-picked r 1
+
+  ss-readonly-picked : Text -> Integer
+  ss-readonly-picked (r) = ss-accept-picked r 0
+
+  ss-accept-picked : Text, Integer -> Integer
+  ss-accept-picked (r) (writable) =
+    let err = json-obj-field (json-parse-obj r) "error"
+    in if err /= "" then (let a = state-set "project-picking" 0 in ss-status ("Project unchanged: " & err))
+    else if list-length (json-parse-rows r) == 0 then (let a = state-set "project-picking" 0 in ss-status "Project unchanged: the selected folder is empty.")
+    else let w = state-set "writable" writable
+    in ss-listed r
+
+  ss-keep-catalog : Text, Text -> Text
+  ss-keep-catalog (out-dir) (ct) =
+    let a = state-set-text "cat-json" ct
+    in let b = state-set-text "cat-rel" (out-dir & "/catalog.json")
+    in let c = state-set-text "out-dir" out-dir
+    in ct
+
+  ss-set-pair : List JsonPair, Integer, Text, JsonValue, Boolean, List JsonPair -> List JsonPair
+  ss-set-pair (ps) (i) (key) (v) (hit) (acc) =
+    if i >= list-length ps then (if hit then acc else list-snoc acc (json-pair key v))
+    else let p = list-at ps i
+    in if p.key == key then ss-set-pair ps (i + 1) key v True (list-snoc acc (json-pair key v))
+    else ss-set-pair ps (i + 1) key v hit (list-snoc acc p)
+
+  ss-set-field : JsonValue, Text, Text, JsonValue -> JsonValue
+  ss-set-field (rec) (id) (key) (v) = when rec
+    is JsonObject (ps) -> if json-get-str rec "id" "" == id then JsonObject (ss-set-pair ps 0 key v False []) else rec
+    is otherwise -> rec
+
+  ss-set-all : List JsonValue, Integer, Text, Text, JsonValue, List JsonValue -> List JsonValue
+  ss-set-all (xs) (i) (id) (key) (v) (acc) = if i >= list-length xs then acc else ss-set-all xs (i + 1) id key v (list-snoc acc (ss-set-field (list-at xs i) id key v))
+
+  ss-catalog-set : Text, Text, Text, JsonValue -> Text
+  ss-catalog-set (json) (id) (key) (v) = when json-parse json
+    is Just (root) -> (when root
+      is JsonArray (xs) -> json-emit (JsonArray (ss-set-all xs 0 id key v []))
+      is otherwise -> json)
+    is None -> json
+
+ The original's RateDetail: the image's previous rating is backed out of the
+ preferences, the new one recorded (strength 1.5 at 4 or 5, 0.5 at 3, a
+ negative 0.5 at 1 or 2), the record keeps the tokens as its positive or
+ negative signals, and both files are written.
+
+  ss-keep-prefs : Text, Text, Text -> Text
+  ss-keep-prefs (out-dir) (pj) (ct) =
+    let a = state-set-text "pref-json" pj
+    in let b = state-set-text "pref-rel" (out-dir & "/preferences.json")
+    in ct
+
+  ss-find-rec : List JsonValue, Text, Integer -> JsonValue
+  ss-find-rec (xs) (id) (i) =
+    if i >= list-length xs then JsonNull
+    else if json-get-str (list-at xs i) "id" "" == id then list-at xs i
+    else ss-find-rec xs id (i + 1)
+
+  ss-record : Text, Text -> JsonValue
+  ss-record (json) (id) = when json-parse json
+    is Just (root) -> (when root
+      is JsonArray (xs) -> ss-find-rec xs id 0
+      is otherwise -> JsonNull)
+    is None -> JsonNull
+
+  ss-texts-json : List Text, Integer, List JsonValue -> List JsonValue
+  ss-texts-json (ts) (i) (acc) = if i >= list-length ts then acc else ss-texts-json ts (i + 1) (list-snoc acc (JsonStr (list-at ts i)))
+
+  ss-rate : Integer, Integer -> Integer
+  ss-rate (j) (n) =
+    if state-get "writable" /= 1 then (let a = dom-set-text (dom-query "#lb-cap") "This folder was opened read-only; open it in Edge or Chrome to rate." in 0)
+    else let id = state-get-text ("lb-id" & show j)
+    in let rec = ss-record (state-get-text "cat-json") id
+    in let prev = json-get-int rec "rating" 0
+    in let text = json-get-str rec "promptText" "" & " " & json-get-str rec "style" ""
+    in let preset = json-get-str rec "refinePreset" "none"
+    in let toks = JsonArray (ss-texts-json (spark-pref-tokens text) 0 [])
+    in let s0 = spark-pref-parse (state-get-text "pref-json")
+    in let s1 = if prev <= 0 then s0 else if prev >= 3 then spark-pref-record s0 text preset (if prev >= 4 then 6 else 2) False else spark-pref-record s0 text preset 2 True
+    in let s2 = if n >= 3 then spark-pref-record s1 text preset (if n >= 4 then 6 else 2) True else spark-pref-record s1 text preset 2 False
+    in let c0 = ss-catalog-set (state-get-text "cat-json") id "rating" (JsonInt n)
+    in let c1 = if prev > 0 then ss-catalog-set c0 id (if prev >= 3 then "negativeSignals" else "positiveSignals") toks else c0
+    in let c2 = ss-catalog-set c1 id (if n >= 3 then "positiveSignals" else "negativeSignals") toks
+    in let p = spark-pref-json s2
+    in let a = state-set-text "cat-json" c2
+    in let b = state-set-text "pref-json" p
+    in file-write-then (state-get-text "cat-rel") c2 (\r -> if text-contains r "\"ok\":true" then file-write-then (state-get-text "pref-rel") p (\r2 -> ss-rated-then j n r2) else ss-rated j n r)
+  ss-rated : Integer, Integer, Text -> Integer
+  ss-rated (j) (n) (r) =
+    if text-contains r "\"ok\":true" then (let a = state-set "rated" n in let b = dom-set-text (dom-query "#lb-cap") ("rated " & ss-stars n & " (" & show n & "), saved to the catalog") in 0)
+    else (let a = state-set "rated" (0 - 1) in let b = dom-set-text (dom-query "#lb-cap") ("not saved: " & r) in 0)
+
+ A rating of 2 or less soft-deletes the image, as the original does after
+ recording it; so does the Delete key (DeleteDetail). The record keeps its
+ place with deletedUtc set, and the original purges it 24 hours later.
+
+  ss-rated-then : Integer, Integer, Text -> Integer
+  ss-rated-then (j) (n) (r) =
+    let a = ss-rated j n r
+    in if n <= 2 & text-contains r "\"ok\":true" then ss-soft-delete j "  (2 or less: moved to deleted, and its prompt queued again)" True else 0
+
+  ss-soft-delete : Integer, Text, Boolean -> Integer
+  ss-soft-delete (j) (why) (regen) =
+    if state-get "writable" /= 1 then (let a = dom-set-text (dom-query "#lb-cap") "This folder was opened read-only; open it in Edge or Chrome to delete." in 0)
+    else let json = ss-catalog-set (state-get-text "cat-json") (state-get-text ("lb-id" & show j)) "deletedUtc" (JsonStr (clock-utc-text 0))
+    in let a = state-set-text "cat-json" json
+    in file-write-then (state-get-text "cat-rel") json (\r -> ss-soft-deleted j why regen r)
+
+  ss-soft-deleted : Integer, Text, Boolean, Text -> Integer
+  ss-soft-deleted (j) (why) (regen) (r) =
+    if text-contains r "\"ok\":true" then (let a = dom-set-style (dom-query ("#t" & show j)) "opacity" "0.25" in let b = state-set "deleted" (state-get "deleted" + 1) in let c = dom-set-text (dom-query "#lb-cap") ("deleted, recoverable for 24 hours" & why) in if regen then ss-regen-request j else 0)
+    else (let a = dom-set-text (dom-query "#lb-cap") ("not deleted: " & r) in 0)
+
+ Save, as the original's SaveDetail: the record is marked saved and a
+ positive signal at the tracker's default strength, 1.0, is recorded.
+
+  ss-save : Integer -> Integer
+  ss-save (j) =
+    if state-get "writable" /= 1 then (let a = dom-set-text (dom-query "#lb-cap") "This folder was opened read-only; open it in Edge or Chrome to save." in 0)
+    else let id = state-get-text ("lb-id" & show j)
+    in let rec = ss-record (state-get-text "cat-json") id
+    in let text = json-get-str rec "promptText" "" & " " & json-get-str rec "style" ""
+    in let s = spark-pref-record (spark-pref-parse (state-get-text "pref-json")) text (json-get-str rec "refinePreset" "none") 4 True
+    in let c0 = ss-catalog-set (state-get-text "cat-json") id "saved" (JsonBool True)
+    in let c1 = ss-catalog-set c0 id "positiveSignals" (JsonArray (ss-texts-json (spark-pref-tokens text) 0 []))
+    in let p = spark-pref-json s
+    in let a = state-set-text "cat-json" c1
+    in let b = state-set-text "pref-json" p
+    in file-write-then (state-get-text "cat-rel") c1 (\r -> if text-contains r "\"ok\":true" then file-write-then (state-get-text "pref-rel") p (\r2 -> ss-saved r2) else ss-saved r)
+
+  ss-saved : Text -> Integer
+  ss-saved (r) =
+    let a = state-set "saved" (if text-contains r "\"ok\":true" then 1 else 0 - 1)
+    in let b = dom-set-text (dom-query "#lb-cap") (if text-contains r "\"ok\":true" then "saved" else "not saved: " & r)
+    in 0
+
+ The original's CleanupExpiredDeletes, run when a project opens writable: a
+ record soft-deleted more than 24 hours ago leaves the catalog and its file
+ is deleted. Both times are ISO 8601 UTC text, so the first 19 characters
+ (to the second) compare as the instants do.
+
+  ss-expired : JsonValue, Text -> Boolean
+  ss-expired (rec) (cutoff) =
+    let d = json-get-str rec "deletedUtc" ""
+    in text-length d >= 19 & substring d 0 19 < substring cutoff 0 19
+
+  ss-purge-split : List JsonValue, Integer, Text, List JsonValue, List Text -> SsPurge
+  ss-purge-split (xs) (i) (cutoff) (keep) (gone) =
+    if i >= list-length xs then SsPurge { sp-keep = keep, sp-gone = gone }
+    else let r = list-at xs i
+    in if ss-expired r cutoff then ss-purge-split xs (i + 1) cutoff keep (list-snoc gone (json-get-str r "filePath" ""))
+    else ss-purge-split xs (i + 1) cutoff (list-snoc keep r) gone
+
+  SsPurge = record {
+    sp-keep : List JsonValue,
+    sp-gone : List Text
+  }
+
+  ss-purge-then : List (List Text), Text, Text, Text, (Text -> Integer) -> Integer
+  ss-purge-then (rows) (root) (out-dir) (ct) (k) =
+    if state-get "writable" /= 1 then k ct
+    else when json-parse ct
+      is Just (v) -> (when v
+        is JsonArray (xs) -> ss-purge-apply (ss-purge-split xs 0 (clock-utc-text (0 - 86400000)) [] []) out-dir ct k
+        is otherwise -> k ct)
+      is None -> k ct
+
+  ss-purge-apply : SsPurge, Text, Text, (Text -> Integer) -> Integer
+  ss-purge-apply (p) (out-dir) (ct) (k) =
+    if list-length (p.sp-gone) == 0 then k ct
+    else let json = json-emit (JsonArray (p.sp-keep))
+    in let a = state-set "purged" (list-length (p.sp-gone))
+    in file-write-then (out-dir & "/catalog.json") json (\r -> ss-purge-files (p.sp-gone) 0 json k)
+
+  ss-purge-files : List Text, Integer, Text, (Text -> Integer) -> Integer
+  ss-purge-files (paths) (i) (json) (k) =
+    if i >= list-length paths then k json
+    else when spark-catalog-relative (list-at paths i)
+      is Just (rel) -> file-delete-then rel (\r -> ss-purge-files paths (i + 1) json k)
+      is None -> ss-purge-files paths (i + 1) json k
+
+ A drawn image is written into the project, as the original's GenerateAsync
+ and AddResultToStacks do: under the folder of the request's settings tag
+ (the seed as -1, as the original tags a random seed), as the prompt's file
+ name with _rNN from the second image of its stack on, and a catalog record
+ with the seed the job used. This page writes the path relative to the
+ project folder (SparkStudio.md section 6). Where the original finds that
+ file already on disk (a soft-deleted image keeps its file) it reports
+ Cached and draws nothing; this page takes the next run index free on disk
+ (SparkStudio.md section 6).
+
+  ss-hex : Integer, Text -> Text
+  ss-hex (n) (acc) = if n <= 0 then acc else ss-hex (n - 1) (acc & substring "0123456789abcdef" (random-int 0 15) 1)
+
+  ss-catalog-items : Text -> List JsonValue
+  ss-catalog-items (json) = when json-parse json
+    is Just (v) -> (when v
+      is JsonArray (xs) -> xs
+      is otherwise -> [])
+    is None -> []
+
+  ss-stack-count : List JsonValue, Integer, Integer, Integer -> Integer
+  ss-stack-count (xs) (n) (i) (c) =
+    if i >= list-length xs then c
+    else let r = list-at xs i
+    in ss-stack-count xs n (i + 1) (if json-get-int r "promptNumber" 0 == n & text-length (json-get-str r "deletedUtc" "") == 0 then c + 1 else c)
+
+  ss-save-result : Text, Integer, Integer, (Text -> Integer) -> Integer
+  ss-save-result (sel) (pi) (seed) (next) =
+    let n = state-get ("pn" & show pi)
+    in let run = ss-stack-count (ss-catalog-items (state-get-text "cat-json")) n 0 0
+    in let s = SparkSettings { ss-width = state-get "active-width", ss-height = state-get "active-height", ss-steps = state-get "active-steps", ss-cfg = ss-cfg-number (state-get-text "active-cfg"), ss-sampler = state-get-text "active-sampler", ss-scheduler = state-get-text "active-scheduler", ss-seed = 0 - 1, ss-negative = state-get-text "active-negative" }
+    in ss-free-run sel pi seed (spark-settings-tag s) run 0 next
+
+  ss-run-rel : Integer, Text, Integer -> Text
+  ss-run-rel (pi) (tag) (run) = state-get-text "out-dir" & "/" & tag & "/" & state-get-text ("pf" & show pi) & (if run > 0 then "_r" & (if run < 10 then "0" else "") & show run else "") & ".png"
+
+ A stack holds at most 99 runs by the original's _rNN, therefore 100 probes
+ bound the search.
+
+  ss-free-run : Text, Integer, Integer, Text, Integer, Integer, (Text -> Integer) -> Integer
+  ss-free-run (sel) (pi) (seed) (tag) (run) (tries) (next) =
+    if tries >= 100 then (let a = ss-log ("  not written: no free run under " & tag) in next "")
+    else let rel = ss-run-rel pi tag run
+    in file-exists-then rel (\r -> if text-contains r "\"exists\":false" then canvas-save-then sel rel (\w -> ss-save-record pi seed tag rel w next)
+      else if text-contains r "\"exists\":true" then ss-free-run sel pi seed tag (run + 1) (tries + 1) next
+      else (let a = ss-log ("  not written: " & r) in next r))
+
+  ss-save-record : Integer, Integer, Text, Text, Text, (Text -> Integer) -> Integer
+  ss-save-record (pi) (seed) (tag) (rel) (r) (next) =
+    if text-contains r "\"ok\":true" == False then (let a = ss-log ("  not written: " & r) in next r)
+    else let rec = JsonObject [json-pair "id" (JsonStr (ss-hex 32 "")), json-pair "promptNumber" (JsonInt (state-get ("pn" & show pi))), json-pair "title" (JsonStr (state-get-text ("ptitle" & show pi))), json-pair "series" (JsonStr (state-get-text ("pseries" & show pi))), json-pair "filePath" (JsonStr rel), json-pair "settingsTag" (JsonStr tag), json-pair "promptText" (JsonStr (state-get-text ("pt" & show pi))), json-pair "style" (JsonStr (state-get-text ("pstyle" & show pi))), json-pair "seed" (JsonInt seed), json-pair "refinePreset" (JsonStr "none"), json-pair "generatedUtc" (JsonStr (clock-utc-text 0)), json-pair "promptAugment" (JsonStr (state-get-text "active-augment")), json-pair "loraTag" (JsonStr (state-get-text "active-lora")), json-pair "modelFamily" (JsonStr (state-get-text "active-family")), json-pair "modelFile" (JsonStr (state-get-text "active-model")), json-pair "negativePrompt" (JsonStr (state-get-text "active-negative")), json-pair "sourceWidth" (JsonInt (state-get "active-width")), json-pair "sourceHeight" (JsonInt (state-get "active-height")), json-pair "seen" (JsonBool False), json-pair "saved" (JsonBool False), json-pair "rating" (JsonInt 0), json-pair "deletedUtc" JsonNull, json-pair "legacyDeleted" (JsonBool False), json-pair "positiveSignals" (JsonArray []), json-pair "negativeSignals" (JsonArray []), json-pair "modifiedPrompt" (JsonStr "")]
+    in let json = json-emit (JsonArray (list-snoc (ss-catalog-items (state-get-text "cat-json")) rec))
+    in file-write-then (state-get-text "cat-rel") json (\r2 -> ss-record-saved rel json r2 next)
+
+  ss-record-saved : Text, Text, Text, (Text -> Integer) -> Integer
+  ss-record-saved (rel) (json) (r) (next) =
+    let ok = text-contains r "\"ok\":true"
+    in let a = if ok then state-set "q-saved" (state-get "q-saved" + 1) else 0
+    in let saved = if ok then state-set-text "cat-json" json else ""
+    in let b = ss-log (if ok then "  written: " & rel else "  image saved but catalog not written for " & rel & ": " & r)
+    in next r

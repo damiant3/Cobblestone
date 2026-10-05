@@ -1,0 +1,66 @@
+Chapter: ShellContrastArm
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+ The palette uses only sRGB channel endpoints. Their linear luminance is
+ exactly 0 or 1, so the WCAG weights and 0.05 offset use integer units of
+ 1/10000 without gamma approximation.
+
+  sca-luma : Integer -> Integer
+  sca-luma (c) = bit-and (bit-shru c 16) 255 * 2126 / 255 + bit-and (bit-shru c 8) 255 * 7152 / 255 + bit-and c 255 * 722 / 255
+
+  sca-endpoints : Integer -> Boolean
+  sca-endpoints (c) =
+    let r = bit-and (bit-shru c 16) 255
+    in let g = bit-and (bit-shru c 8) 255
+    in let b = bit-and c 255
+    in (r == 0 | r == 255) & (g == 0 | g == 255) & (b == 0 | b == 255)
+
+  sca-ratio1000 : Integer, Integer -> Integer
+  sca-ratio1000 (a) (b) =
+    if sca-endpoints a == False | sca-endpoints b == False then 0
+    else let x = sca-luma a
+    in let y = sca-luma b
+    in (math-max x y + 500) * 1000 / (math-min x y + 500)
+
+  sca-style : WidgetStyle -> Boolean
+  sca-style (s) = sca-ratio1000 (s.ws-fg) (s.ws-bg) > 7000 & (s.ws-gradient).gr-enabled == False & (s.ws-bevel).bv-enabled == False
+
+  sca-states : StateStyles -> Boolean
+  sca-states (s) = sca-style (s.ss-normal) & sca-style (s.ss-hover) & sca-style (s.ss-pressed) & sca-style (s.ss-disabled) & sca-style (s.ss-focused)
+
+  sca-yes : Boolean -> Text
+  sca-yes (v) = if v then "yes" else "NO"
+
+  sca-tones : Theme, Integer -> Boolean
+  sca-tones (theme) (tone) =
+    if tone > 5 then True
+    else let node = widget-set-tone (widget-label "tone" "Visible") tone
+    in let style = widget-resolve-style node theme
+    in sca-ratio1000 (comp-fg theme node style) 0 > 7000 & sca-tones theme (tone + 1)
+
+  opening : [Console] Nothing =
+    let theme = gac-theme
+    in let palette = theme.th-palette
+    in let styles = sca-states (theme.th-panel) & sca-states (theme.th-button) & sca-states (theme.th-label) & sca-states (theme.th-input) & sca-states (theme.th-gauge) & sca-states (theme.th-separator)
+    in let tones = sca-tones theme 0 & sca-ratio1000 (palette.pal-accent) 0 > 7000
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let block = poke-32 ds dk-sty-cell (alloc-zeroed dk-settings-bytes 64)
+    in let defaults = dk-settings-into ds (gst-store dk-settings-keys)
+    in let chosen = poke-32 ds dk-scheme-cell 3
+    in let photo = gwp-set-name (dk-wallpaper-state ds) "PHOTO.BMP"
+    in let original = (dk-theme-ds ds).th-name
+    in let result = gsp-act 3 150 (dk-settings-of ds) dk-scheme-count (dk-settings-names 0 [])
+    in let enabled = when result is SettingsCandidate (s) -> dk-settings-into ds s is otherwise -> 0
+    in let on = dk-high-contrast ds & (dk-theme-ds ds).th-name == "High contrast" & (dk-pal ds).pal-bg == 0 & sca-ratio1000 (dk-bar-ink ds) ((dk-pal ds).pal-border) > 7000
+    in let wallpaper = desk-chrome-with (widget-panel "content" DirColumn 0 []) 1024 ds
+    in let hidden = when widget-find wallpaper "content" is Just (node) -> (when node.wn-kind is WkCustom (tag) -> False is otherwise -> True) is None -> False
+    in let invalid = when gst-set (dk-settings-of ds) dk-set-contrast 2 is SetRefused (why) -> text-contains why "shell high contrast" is otherwise -> False
+    in let reset = when gsp-act 3 150 (dk-settings-of ds) dk-scheme-count (dk-settings-names 0 []) is SettingsCandidate (s) -> dk-settings-into ds s is otherwise -> 0
+    in let restored = dk-high-contrast ds == False & (dk-theme-ds ds).th-name == original & gwp-name (dk-wallpaper-state ds) == "PHOTO.BMP"
+    in act
+      print-line-uni ("white-black contrast ratio x1000: " & show (sca-ratio1000 16777215 0))
+      print-line-uni ("all widget states and semantic tones exceed 7:1: " & sca-yes (styles & tones))
+      print-line-uni ("Settings toggles shell consumer and preserves theme: " & sca-yes (on & restored))
+      print-line-uni ("wallpaper suppressed and out-of-range named refusal: " & sca-yes (hidden & invalid))
+    end

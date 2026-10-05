@@ -1,0 +1,143 @@
+Chapter: TownLiveState
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter GameCombatPackets
+
+  TlCloth = record { serial : Integer, quality : Integer, wear : Integer, basis : Integer }
+  TlControl = record { action : Integer, goal : Integer, place : Integer, vendor : Integer,
+    expires : Integer, target : BbSpot }
+  TlResident = record { person : Integer, actor : Integer, home : BbSpot, work : BbSpot, tavern : BbSpot,
+    next-step : Integer, goal : Integer, via-home : Integer, direction : Integer,
+    path : Integer, path-count : Integer, path-next : Integer, blocked : Integer,
+    clothes : List TlCloth, last-speaker : List Integer, last-speech : List Integer, control : TlControl }
+  TlViewer = record { serial : Integer, connection : Integer, inside : Integer }
+  TownLive = record { vendors : GvWorld, items : GsiState, people : TfWorld, mind : TmMind,
+    residents : List TlResident, viewers : List TlViewer, count : Integer, home-capacity : Integer,
+    entrance : BbSpot, nav : TlPath, now : Integer, cursor : Integer }
+  tl-move-seconds : Integer = 12
+  tl-retry-seconds : Integer = 60
+  tl-speech-seconds : Integer = 600
+  tl-max-seconds : Integer = 8760000 * 3600
+  tl-home-region : BbShop = BbShop { title = "Shared lodging", premises = "Sweet Dreams Inn", x1 = 1493, y1 = 1610, x2 = 1498, y2 = 1617 }
+  tl-tavern-region : BbShop = BbShop { title = "Tavern", premises = "The Blue Boar", x1 = 1487, y1 = 1687, x2 = 1491, y2 = 1690 }
+  tl-clothes : Integer, List TlCloth -> List TlCloth
+  tl-clothes (i) (xs) = if i == 3 then xs else tl-clothes (i + 1) (list-push xs (TlCloth { serial = 0, quality = 0, wear = 0, basis = 0 }))
+  tl-residents : Integer, Integer, List TlResident -> List TlResident
+  tl-residents (i) (now) (xs) = if i == 3 then xs else let path = alloc-bytes 256
+    in let zero = wd-zero path 0 256
+    in tl-residents (i + 1) now (list-push xs (TlResident { person = 0, actor = 0,
+      home = BbSpot { x = 0, y = 0, z = 0 }, work = BbSpot { x = 0, y = 0, z = 0 }, tavern = BbSpot { x = 0, y = 0, z = 0 },
+      next-step = now, goal = -1, via-home = 0, direction = 4, path = path, path-count = 0, path-next = 0, blocked = 0,
+      clothes = tl-clothes 0 (__list-with-capacity 3), last-speaker = [0,0,0,0,0], last-speech = [-600,-600,-600,-600,-600],
+      control = TlControl { action = 0, goal = 0, place = 0, vendor = 0, expires = 0, target = BbSpot { x = 0, y = 0, z = 0 } } }))
+  tl-viewers : Integer, List TlViewer -> List TlViewer
+  tl-viewers (i) (xs) = if i == 5 then xs else tl-viewers (i + 1) (list-push xs (TlViewer { serial = 0, connection = -1, inside = 0 }))
+  tl-bind : GvWorld, GsiState, WalkMap, Integer, Integer, TfWorld, TmMind -> TownLive
+  tl-bind (v) (items) (map) (now) (home-capacity) (people) (mind) = TownLive { vendors = v, items = items,
+    people = people, mind = mind, residents = tl-residents 0 now (__list-with-capacity 3),
+    viewers = tl-viewers 0 (__list-with-capacity 5), count = 0, home-capacity = home-capacity,
+    entrance = BbSpot { x = 1495, y = 1618, z = 0 }, nav = tl-path-new map, now = now, cursor = 0 }
+  tl-new : GvWorld, GsiState, WalkMap, Integer, Integer -> TownLive
+  tl-new (v) (items) (map) (now) (home-capacity) = tl-bind v items map now home-capacity (tf-new 0) (tm-new 0)
+  tl-copy-spot : BbSpot, BbSpot -> Integer
+  tl-copy-spot (to) (from) = let a = __record-set to "x" from.x
+    in let b = __record-set to "y" from.y
+    in let c = __record-set to "z" from.z in 0
+  tl-nearest-door : WdState, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-nearest-door (doors) (x) (y) (z) (i) (best) (distance) =
+    if i == doors.count then best else let dx = wd-field doors i 0 - x
+    in if dx > 12 then best
+    else let dy = wd-field doors i 1 - y
+    in let range = max (walk-abs dx) (walk-abs dy)
+    in let matches = wd-field doors i 7 == 1 & range <= 12 & walk-abs (wd-field doors i 2 - z) <= 2
+    in tl-nearest-door doors x y z (i + 1) (if matches & range < distance then i else best) (if matches & range < distance then range else distance)
+  tl-entrance : TownLive, WalkMap, Maybe WdState, BbSpot -> Result Integer Text
+  tl-entrance (t) (map) (optional) (home) = when optional
+    is None -> when walk-ground map t.entrance.x t.entrance.y
+      is Err (e) -> Err e
+      is Ok (z) -> let set = __record-set t.entrance "z" z in Ok 0
+    is Just (doors) ->
+      let row = tl-nearest-door doors 1495 1614 home.z (wd-lower doors 1483 0 doors.count) -1 100
+      in if row < 0 then Err "Shared lodging has no unlocked entrance"
+      else let x = __record-set t.entrance "x" (wd-field doors row 0)
+      in let y = __record-set t.entrance "y" (wd-field doors row 1)
+      in let z = __record-set t.entrance "z" (wd-field doors row 2) in Ok 0
+  tl-outfit : TownLive, TlResident, BbProducer, Integer, Integer -> Result Integer Text
+  tl-outfit (t) (r) (p) (mobile) (i) = if i == 3 then Ok 0
+    else when bb-produce p 46
+      is Err (e) -> Err e
+      is Ok (_) -> when bb-materialise t.vendors t.items p mobile (if i == 0 then #1517 else if i == 1 then #152E else #170F) (if i == 0 then #035F else 0) (if i == 0 then 5 else if i == 1 then 4 else 3) 0 False
+        is Err (e) -> Err e
+        is Ok (serial) -> let cloth = list-at r.clothes i
+          in let a = __record-set cloth "serial" serial
+          in let b = __record-set cloth "quality" p.quality
+          in let c = __record-set cloth "wear" p.wear
+          in let d = __record-set cloth "basis" p.basis
+          in tl-outfit t r p mobile (i + 1)
+  tl-tavern-used : TownLive, BbSpot, Integer -> Boolean
+  tl-tavern-used (t) (spot) (i) = if i == t.count then False
+    else let old = (list-at t.residents i).tavern
+    in (old.x == spot.x & old.y == spot.y & old.z == spot.z) | tl-tavern-used t spot (i + 1)
+  tl-tavern-spot : TownLive, WalkMap, Integer -> Result BbSpot Text
+  tl-tavern-spot (t) (map) (offset) = when bb-placement t.vendors.game.world map tl-tavern-region offset
+    is Err (e) -> Err e
+    is Ok (spot) -> if not (tl-tavern-used t spot 0) then Ok spot
+      else tl-tavern-spot t map ((spot.y - tl-tavern-region.y1) * (tl-tavern-region.x2 - tl-tavern-region.x1 + 1) + spot.x - tl-tavern-region.x1 + 1)
+  tl-populate-people : TownLive, WalkMap, Integer -> Result Integer Text
+  tl-populate-people (t) (map) (i) = if i == 3 then Ok 0
+    else when bb-placement t.vendors.game.world map tl-home-region 0
+      is Err (e) -> Err e
+      is Ok (home) -> when bb-placement t.vendors.game.world map (list-at bb-shops (if i == 0 then 3 else if i == 1 then 1 else 2)) 0
+        is Err (e) -> Err e
+        is Ok (work) -> when tl-tavern-spot t map 0
+          is Err (e) -> Err e
+          is Ok (tavern) ->
+            let name = if i == 0 then "Nell" else if i == 1 then "Jorin" else "Mira"
+            in let job = if i == 0 then 2 else if i == 1 then 3 else 4
+            in let person = tf-add-person t.people name 1 1001 100 job 9000
+            in let purse = eu-open t.vendors.currency 2 (2000 + i)
+            in let actor = if purse < 1 then -1 else ep-admit t.vendors.currency.world purse 100
+            in if person < 1 | actor < 1 then Err "Townsfolk identity budget refused"
+            else when world-create t.vendors.game.world (gs-mobile 0 home.x home.y home.z 400 1002)
+              is Err (e) -> Err e
+              is Ok (serial) ->
+                let p = tf-person t.people person
+                in let linked = __record-set p "world-serial" serial
+                in let r = list-at t.residents i
+                in let id = __record-set r "person" person
+                in let econ = __record-set r "actor" actor
+                in let h = tl-copy-spot r.home home
+                in let w = tl-copy-spot r.work work
+                in let v = tl-copy-spot r.tavern tavern
+                in let fallback = if i == 0 then "Good day. I keep busy at the bakery." else if i == 1 then "Mind the sparks when you visit the forge." else "A sound stitch is worth the time it takes."
+                in let configured = tm-configure t.mind t.people person (name & " is a working resident of Britain.") fallback 8 32 0
+                in if configured /= 0 then Err "Townsfolk persona refused"
+                else when tl-outfit t r (bb-producer t.vendors.currency actor) serial 0
+                  is Err (e) -> Err e
+                  is Ok (_) -> let count = __record-set t "count" (i + 1)
+                    in tl-populate-people t map (i + 1)
+  tl-start-workers : TownLive, Integer -> Result Integer Text
+  tl-start-workers (t) (i) = if i == t.count then Ok 0
+    else let r = list-at t.residents i
+    in let p = tf-person t.people r.person
+    in when world-get t.vendors.game.world p.world-serial
+      is Err (e) -> Err e
+      is Ok (obj) -> when world-update t.vendors.game.world (gs-mobile obj.serial r.work.x r.work.y r.work.z obj.graphic obj.hue)
+        is Err (e) -> Err e
+        is Ok (_) -> tl-start-workers t (i + 1)
+  tl-populate : GvWorld, GsiState, WalkMap, Maybe WdState, Integer, Integer -> Result TownLive Text
+  tl-populate (v) (items) (map) (doors) (now) (home-capacity) =
+    if now < 0 | now > tl-max-seconds - 86400 | home-capacity < 3 | home-capacity > 128
+      | not (world-indexed v.game.world) | v.game.world.capacity - world-count v.game.world < 12
+      | items.world.buffer /= v.game.world.buffer then Err "Townsfolk population binding or budget"
+    else let t = tl-new v items map now home-capacity
+    in let town = tf-add-town t.people "Britain" 100 101 1001
+    in let hour = __record-set t.people "hour" (now / 3600)
+    in when tl-populate-people t map 0
+      is Err (e) -> Err e
+      is Ok (_) -> when tl-entrance t map doors (list-at t.residents 0).home
+        is Err (e) -> Err e
+        is Ok (_) -> when tl-start-workers t 0
+          is Err (e) -> Err e
+          is Ok (_) -> Ok t

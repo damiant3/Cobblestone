@@ -97,10 +97,10 @@ Section: Rule Application - Mulligan
       is MulliganVancouver -> apply-paris-mulligan gs player mulligans seed
       is MulliganLondon -> apply-london-mulligan gs player mulligans seed
 
-  should-mulligan : GameState, Integer, List CardTemplate -> Boolean
-  should-mulligan (gs) (player) (templates) =
+  should-mulligan : GameState, Integer -> Boolean
+  should-mulligan (gs) (player) =
     let p = get-player gs player
-    in let gems = count-gems-in-hand (p.hand) templates 0 (list-length (p.hand)) 0
+    in let gems = count-gems-in-hand (p.hand) gs 0 (list-length (p.hand)) 0
     in let hand-size = list-length (p.hand)
     in if hand-size <= 4 then False
     else if gems == 0 then True
@@ -108,16 +108,16 @@ Section: Rule Application - Mulligan
     else if gems >= hand-size - 1 then True
     else False
 
-  count-gems-in-hand : List Integer, List CardTemplate, Integer, Integer, Integer -> Integer
-  count-gems-in-hand (hand) (templates) (i) (len) (acc) =
+  count-gems-in-hand : List Integer, GameState, Integer, Integer, Integer -> Integer
+  count-gems-in-hand (hand) (gs) (i) (len) (acc) =
     if i >= len then acc
     else let card-id = list-at hand i
-    in if card-id < list-length templates then
-      let t = list-at templates card-id
+    in if game-card-valid gs card-id then
+      let t = get-card-template gs card-id
       in when t.card-type
-        is Gemstone -> count-gems-in-hand hand templates (i + 1) len (acc + 1)
-        is otherwise -> count-gems-in-hand hand templates (i + 1) len acc
-    else count-gems-in-hand hand templates (i + 1) len acc
+        is Gemstone -> count-gems-in-hand hand gs (i + 1) len (acc + 1)
+        is otherwise -> count-gems-in-hand hand gs (i + 1) len acc
+    else count-gems-in-hand hand gs (i + 1) len acc
 
   apply-paris-mulligan : GameState, Integer, Integer, Integer -> GameState
   apply-paris-mulligan (gs) (player) (mulligans) (seed) =
@@ -178,22 +178,22 @@ Section: Rule Application - Mulligan
     if n <= 0 then gs
     else let p = get-player gs player
     in if list-length (p.hand) <= 0 then gs
-    else let worst-idx = find-worst-card-idx (p.hand) (gs.templates) 0 (list-length (p.hand)) 0 999
+    else let worst-idx = find-worst-card-idx (p.hand) gs 0 (list-length (p.hand)) 0 999
     in let card-id = list-at (p.hand) worst-idx
     in let new-hand = remove-at-idx (p.hand) worst-idx 0 (list-length (p.hand)) []
     in let p2 = PlayerState { general = p.general, prismatic = p.prismatic, library = list-push (p.library) card-id, hand = new-hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
     in let gs2 = set-player gs player p2
     in bottom-n-cards gs2 player (n - 1) (seed + 1)
 
-  find-worst-card-idx : List Integer, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
-  find-worst-card-idx (hand) (templates) (i) (len) (best-idx) (best-cost) =
+  find-worst-card-idx : List Integer, GameState, Integer, Integer, Integer, Integer -> Integer
+  find-worst-card-idx (hand) (gs) (i) (len) (best-idx) (best-cost) =
     if i >= len then best-idx
     else let card-id = list-at hand i
-    in if card-id >= list-length templates then find-worst-card-idx hand templates (i + 1) len best-idx best-cost
-    else let t = list-at templates card-id
+    in if game-card-valid gs card-id == False then find-worst-card-idx hand gs (i + 1) len best-idx best-cost
+    else let t = get-card-template gs card-id
     in let card-cost = total-rays (t.light-cost)
-    in if card-cost < best-cost then find-worst-card-idx hand templates (i + 1) len i card-cost
-    else find-worst-card-idx hand templates (i + 1) len best-idx best-cost
+    in if card-cost < best-cost then find-worst-card-idx hand gs (i + 1) len i card-cost
+    else find-worst-card-idx hand gs (i + 1) len best-idx best-cost
 
   remove-at-idx : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   remove-at-idx (xs) (target-idx) (i) (len) (acc) =

@@ -1,0 +1,201 @@
+Chapter: SceneBoundedStepTest
+  cites Works chapter GopScene
+  cites Works chapter GopDesk
+  cites Works chapter GopFont
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopAhci
+  cites Engine chapter Scene3D
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  PstFixture = record {
+    ps-pane : ScenePane,
+    ps-fb : Integer,
+    ps-cs : Integer,
+    ps-font : GopAppFont,
+    ps-q : Integer,
+    ps-mouse : UsbMouse,
+    ps-stats : Integer,
+    ps-ds : Integer
+  }
+
+  pst-guard : Integer = 12345678
+  pst-stride : Integer = 128
+
+  pst-fill : Integer, Integer -> Integer
+  pst-fill (fb) (i) =
+    if i >= pst-stride * 64 then 0
+    else let p = poke-32 fb (i * 4) pst-guard
+    in pst-fill fb (i + 1)
+
+  pst-prefix : Integer, Integer, Integer, Integer -> Boolean
+  pst-prefix (fb) (at) (color) (i) =
+    if i >= pst-stride * 64 then True
+    else let x = int-mod i pst-stride
+    in let y = i / pst-stride
+    in let inside = x >= 7 & x < 80 & y >= 5 & y < 42
+    in let copied = inside & ((y - 5) * 73 + x - 7) < at
+    in let want = if copied then color else pst-guard
+    in peek-32 fb (i * 4) == want & pst-prefix fb at color (i + 1)
+
+  pst-top : Integer, Integer, Integer -> Boolean
+  pst-top (fb) (color) (i) =
+    if i >= 73 * 17 then True
+    else let x = int-mod i 73 + 7
+    in let y = i / 73 + 5
+    in peek-32 fb ((y * pst-stride + x) * 4) == color & pst-top fb color (i + 1)
+
+  pst-build : Integer, Integer -> Scene3DState
+  pst-build (stats) (tick) =
+    let count = poke-qword stats 0 (peek-qword stats 0 + 1)
+    in scene3d-new (gsc-camera 0 1.333)
+
+  pst-new : Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] PstFixture
+  pst-new (ignored) =
+    let fb = alloc-bytes (pst-stride * 64 * 4)
+    in let fill = pst-fill fb 0
+    in let cs = alloc-zeroed 2048 64
+    in let q = di-new 0
+    in let ds = alloc-zeroed dk-ds-bytes 64
+    in let attached = poke-32 ds dk-input-cell q
+    in let pos = alloc-zeroed 64 64
+    in let mouse = UsbMouse {
+      um-ok = False,
+      um-host = xhci-no-host,
+      um-dev = xhci-no-dev,
+      um-dci = 0,
+      um-ring = 0,
+      um-report = 0,
+      um-state = pos,
+      um-pos = pos,
+      um-peers = []
+    }
+    in act
+      sp <- gsc-new fb pst-stride cs 0 37 80 40
+      let shadow = __record-set sp "sp-sh" 0
+      in let service = __record-set (sp.sp-tgt) "r3t-service" (\ignored -> 73)
+      in let placed = gsc-place sp fb pst-stride 7 5 73 37
+      in PstFixture {
+        ps-pane = sp,
+        ps-fb = fb,
+        ps-cs = cs,
+        ps-font = gapp-fallback cbf-init,
+        ps-q = q,
+        ps-mouse = mouse,
+        ps-stats = alloc-zeroed 64 64,
+        ps-ds = ds
+      }
+    end
+
+  pst-call : PstFixture, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Integer
+  pst-call (f) (sc) =
+    let mark = __heap-save
+    in let units-before = bst-units (f.ps-pane)
+    in act
+      r <- gsc-step (f.ps-fb) 96 64 pst-stride (f.ps-font) kbd-no-kbd (f.ps-mouse) (f.ps-cs) (\tick -> pst-build (f.ps-stats) tick) (f.ps-pane) sc 0 (f.ps-q)
+      let count-bad = if bst-units (f.ps-pane) - units-before > 8 then poke-qword (f.ps-stats) 16 1 else 0
+      in let before = ((f.ps-pane).sp-tgt.r3t-service) 0
+      in let used = __heap-save - mark
+      in let restore = __heap-restore mark
+      in let overwrite = alloc-zeroed (used + 256) 64
+      in let after = if before == 73 then ((f.ps-pane).sp-tgt.r3t-service) 0 else 0
+      in let bad = if after == 73 then 0 else poke-qword (f.ps-stats) 8 1
+      in let restore-again = __heap-restore mark
+      in let heap = if __heap-save == mark then 0 else poke-qword (f.ps-stats) 8 1
+      in r
+    end
+
+
+
+  bst-drain : PstFixture, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Boolean
+  bst-drain (f) (left) = act
+    if f.ps-pane.sp-n > 0 then True
+    else if left <= 0 then False
+    else act
+      r <- pst-call f 0
+      bst-drain f (left - 1)
+    end
+  end
+
+  bst-job-phase : ScenePane -> Integer
+  bst-job-phase (sp) = when sp.sp-job is None -> 0 - 1 is Just (job) -> job.sj-phase
+
+  bst-units : ScenePane -> Integer
+  bst-units (sp) = when sp.sp-job is None -> 0 is Just (job) -> job.sj-steps
+
+  bst-await-clear : PstFixture, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Boolean
+  bst-await-clear (f) (left) = act
+    if bst-job-phase (f.ps-pane) >= 5 & bst-job-phase (f.ps-pane) < 9 then True
+    else if left <= 0 then False
+    else act
+      stepped <- pst-call f 0
+      bst-await-clear f (left - 1)
+    end
+  end
+
+  bst-front-equal : ScenePane, Integer, Integer -> Boolean
+  bst-front-equal (sp) (oracle) (i) =
+    if i >= sp.sp-tgt.r3t-w * sp.sp-tgt.r3t-h then True
+    else let x = int-mod i (sp.sp-tgt.r3t-w)
+    in let y = i / sp.sp-tgt.r3t-w
+    in peek-32 (sp.sp-front.r3t-base) ((y * sp.sp-bw + x) * 4) == peek-32 oracle (i * 4) & bst-front-equal sp oracle (i + 1)
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    f <- pst-new 0
+    let sp = f.ps-pane
+    in let own = gsc-own sp (gsc-scene 0) gsc-no-advance
+    in let look = __record-set sp "sp-look" 1
+    in let shadows = __record-set sp "sp-sh" 1
+    in act
+      first <- pst-call f 0
+      let staged = bst-job-phase sp == 1 & sp.sp-ready == 0 & sp.sp-present < 0 & pst-prefix (f.ps-fb) 0 37 0
+      in act
+        stepped <- pst-call f 0
+        let active = gsc-render-active sp
+        in let pushed = di-push (f.ps-q) di-key 0 0 31 0 0 1
+        in let key = desk-input-step kbd-no-kbd (f.ps-mouse) 96 64 (f.ps-ds)
+        in act
+          input <- pst-call f key
+          let dispatch = key == 31 & sp.sp-sh == 0 & bst-job-phase sp == 0 & sp.sp-present < 0
+          in act
+            done <- bst-drain f 100000
+            let oracle = r3d-target-new 73 37 37
+            in let mark = __heap-save
+            in let scene = scene3d-set-camera (gsc-scene 0) (gsc-camera 0 (gsc-aspect 73 37))
+            in let draw = r3d-render-into oracle scene
+            in let restore = __heap-restore mark
+            in let parity = bst-front-equal sp (oracle.r3t-base) 0
+            in let front = sp.sp-front.r3t-base
+            in act
+              another <- pst-call f 0
+              partial <- bst-await-clear f 10000
+              let coherent = partial & sp.sp-ready == 1 & sp.sp-front.r3t-base == front & bst-front-equal sp (oracle.r3t-base) 0
+              in let moved = gsc-place sp (f.ps-fb) pst-stride 8 5 73 37
+              in let canceled = bst-job-phase sp == 0 & sp.sp-ready == 0 & sp.sp-present < 0
+              in let forbidden = __record-set sp "sp-allowed" 0
+              in act
+                blocked <- pst-call f 0
+                let budget = bst-job-phase sp == 0
+                in act
+                  print-line ("staged " & show staged)
+                  print-line ("dispatch " & show (active & dispatch))
+                  print-line ("completed " & show (done & parity & peek-qword (f.ps-stats) 8 == 0))
+                  print-line ("front " & show coherent)
+                  print-line ("cancel " & show canceled)
+                  print-line ("budget " & show budget)
+                  print-line ("quanta " & show (peek-qword (f.ps-stats) 16 == 0))
+                  print-line "bounded-step-end"
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+Page 1

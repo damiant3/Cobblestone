@@ -5,14 +5,14 @@ Chapter: X86-64 Code Generator
 
 Section: Record Types
   X86_64ExitMode =
-   | ExitRepl
-   | Exit
-   | ExitAcpiS5
-   | ExitUefi
+    | ExitRepl
+    | Exit
+    | ExitAcpiS5
+    | ExitUefi
 
   X86_64WatchdogMode =
-   | WatchdogProgress
-   | WatchdogPet
+    | WatchdogProgress
+    | WatchdogPet
 
   UserArity = record {
    name : Text,
@@ -120,7 +120,9 @@ Section: Record Types
    hosted-target : Integer between 0 and 2,
    shared-consts : List CsIndex,
    avx-used : Boolean,
-   avx-local : Boolean
+   avx-local : Boolean,
+   call-census : Boolean,
+   emit-path : Integer between 0 and 2
   }
 
   EffectOpAddr = record {
@@ -176,16 +178,16 @@ Section: Record Types
 Section: Constants
   default-tco-state : TcoState
   default-tco-state =
-   TcoState {
-    active = False,
-    in-tail-pos = False,
-    loop-top = 0,
-    param-locals = [],
-    temp-locals = [],
-    current-func = "",
-    saved-next-local = 0,
-    saved-next-temp = 0,
-    inplace-params = []
+    TcoState {
+     active = False,
+     in-tail-pos = False,
+     loop-top = 0,
+     param-locals = [],
+     temp-locals = [],
+     current-func = "",
+     saved-next-local = 0,
+     saved-next-temp = 0,
+     inplace-params = []
   }
 
   temp-regs : List Integer = [0, 1, 2, 6, 7, 11]
@@ -233,14 +235,14 @@ Section: Rodata Tables
 
   find-cce-for-byte : List Integer, Integer, Integer, Integer -> Integer
   find-cce-for-byte (src) (u) (i) (len) =
-   if i >= len then 68
-   else if int-mod (list-at src i) 256 == u then i
-   else find-cce-for-byte src u (i + 1) len
+    if i >= len then 68
+    else if int-mod (list-at src i) 256 == u then i
+    else find-cce-for-byte src u (i + 1) len
 
   build-reverse-byte-table : List Integer, Integer, Integer, List Integer -> List Integer
   build-reverse-byte-table (src) (i) (len) (acc) =
-   if i >= len then acc
-   else build-reverse-byte-table src (i + 1) len (list-push acc (find-cce-for-byte src i 0 128))
+    if i >= len then acc
+    else build-reverse-byte-table src (i + 1) len (list-push acc (find-cce-for-byte src i 0 128))
 
   unicode-to-cce-byte-table : List Integer
   unicode-to-cce-byte-table = build-reverse-byte-table cce-to-unicode-table 0 128 []
@@ -324,138 +326,146 @@ Section: State Helpers
 
   empty-codegen-state : CodegenState
   empty-codegen-state =
-   CodegenState {
-   workspace = EmitWorkspace { code-buffer = 0, code-capacity = 0, data-buffer = 0, data-capacity = 0 },
-   code-len = 0,
-   data-len = 0,
-   fo-names = [],
-   fo-offsets = [],
-   cp-offsets = [],
-   cp-targets = [],
-   fa-offsets = [],
-   fa-targets = [],
-   rf-poffsets = [],
-   rf-roffsets = [],
-   da-poffsets = [],
-   da-offsets = [],
-   stack-overflow-checks = [],
-   locals = [],
-   next-temp = 0,
-   next-local = 0,
-   spill-count = 0,
-   load-local-toggle = 0,
-   last-jmp-end = 0,
-   tco = TcoState {
-    active = False,
-    in-tail-pos = False,
-    loop-top = 0,
-    param-locals = [],
-    temp-locals = [],
-    current-func = "",
-    saved-next-local = 0,
-    saved-next-temp = 0,
-    inplace-params = []
-   },
-   type-defs = [],
-   builtin-names = sorted-builtin-names,
-   builtin-emitters = x86-builtin-emitters,
-   emit-work = 0,
-   exit-mode = ExitRepl,
-   watchdog-mode = WatchdogProgress,
-   opening-ret-type = NothingTy,
-   state-local = 0 - 1,
-   user-arities = [],
-   bag = empty-bag,
-   deck-bound = False,
-   deck-record-intrinsic = False,
-   effect-op-addrs = [],
-   eo-reads = [],
-   eo-handled = [],
-   vm-profile = vm-profile-spec,
-   poison-alloc = False,
-   trace-alloc = False,
-   stack-guard = False,
-   omit-frame-pointer = False,
-   peak-local = 0,
-   peak-spill = 0,
-   func-local-regs = [],
-   noalias-slots = [],
-   field-cache = [],
-   fresh-slots = [],
-   stype-sites = [],
-   range-env = [],
-   hosted-target = 0,
-   shared-consts = [],
-   avx-used = False,
-   avx-local = False
+    CodegenState {
+    workspace = EmitWorkspace {
+      code-buffer = 0,
+      code-capacity = 0,
+      data-buffer = 0,
+      data-capacity = 0
+    },
+    code-len = 0,
+    data-len = 0,
+    fo-names = [],
+    fo-offsets = [],
+    cp-offsets = [],
+    cp-targets = [],
+    fa-offsets = [],
+    fa-targets = [],
+    rf-poffsets = [],
+    rf-roffsets = [],
+    da-poffsets = [],
+    da-offsets = [],
+    stack-overflow-checks = [],
+    locals = [],
+    next-temp = 0,
+    next-local = 0,
+    spill-count = 0,
+    load-local-toggle = 0,
+    last-jmp-end = 0,
+    tco = TcoState {
+     active = False,
+     in-tail-pos = False,
+     loop-top = 0,
+     param-locals = [],
+     temp-locals = [],
+     current-func = "",
+     saved-next-local = 0,
+     saved-next-temp = 0,
+     inplace-params = []
+    },
+    type-defs = [],
+    builtin-names = sorted-builtin-names,
+    builtin-emitters = x86-builtin-emitters,
+    emit-work = 0,
+    exit-mode = ExitRepl,
+    watchdog-mode = WatchdogProgress,
+    opening-ret-type = NothingTy,
+    state-local = 0 - 1,
+    user-arities = [],
+    bag = empty-bag,
+    deck-bound = False,
+    deck-record-intrinsic = False,
+    effect-op-addrs = [],
+    eo-reads = [],
+    eo-handled = [],
+    vm-profile = vm-profile-spec,
+    poison-alloc = False,
+    trace-alloc = False,
+    stack-guard = False,
+    omit-frame-pointer = False,
+    peak-local = 0,
+    peak-spill = 0,
+    func-local-regs = [],
+    noalias-slots = [],
+    field-cache = [],
+    fresh-slots = [],
+    stype-sites = [],
+    range-env = [],
+    hosted-target = 0,
+    shared-consts = [],
+    avx-used = False,
+    avx-local = False,
+    call-census = False,
+    emit-path = 0
   }
 
   fc-flush : CodegenState -> CodegenState
   fc-flush (st) =
-   let st1 = if list-length (st.field-cache) == 0 then st
+    let st1 = if list-length (st.field-cache) == 0 then st
     else __record-set st "field-cache" []
-   in if list-length (st1.fresh-slots) == 0 then st1
-   else __record-set st1 "fresh-slots" []
+    in if list-length (st1.fresh-slots) == 0 then st1
+    else __record-set st1 "fresh-slots" []
 
   keep-not-int : List Integer, Integer, Integer, List Integer -> List Integer
   keep-not-int (xs) (v) (i) (acc) =
-   if i >= list-length xs then acc
-   else let x = list-at xs i
-   in keep-not-int xs v (i + 1) (if x == v then acc else list-push acc x)
+    if i >= list-length xs then acc
+    else let x = list-at xs i
+    in keep-not-int xs v (i + 1) (if x == v then acc else list-push acc x)
 
   fs-add : CodegenState, Integer -> CodegenState
   fs-add (st) (slot) =
-   __record-set st "fresh-slots" (list-push (st.fresh-slots) slot)
+    __record-set st "fresh-slots" (list-push (st.fresh-slots) slot)
 
   fs-remove : CodegenState, Integer -> CodegenState
   fs-remove (st) (slot) =
-   if list-length (st.fresh-slots) == 0 then st
-   else __record-set st "fresh-slots" (keep-not-int (st.fresh-slots) slot 0 [])
+    if list-length (st.fresh-slots) == 0 then st
+    else __record-set st "fresh-slots" (keep-not-int (st.fresh-slots) slot 0 [])
 
   fs-has : CodegenState, Integer -> Boolean
   fs-has (st) (slot) =
-   tco-list-contains (st.fresh-slots) slot 0
+    tco-list-contains (st.fresh-slots) slot 0
 
   fc-keep-not-reg : List FieldCacheEntry, Integer, Integer, List FieldCacheEntry -> List FieldCacheEntry
   fc-keep-not-reg (es) (reg) (i) (acc) =
-   if i >= list-length es then acc
-   else let e = list-at es i
-   in fc-keep-not-reg es reg (i + 1) (if (e.fc-reg) == reg then acc else list-push acc e)
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in fc-keep-not-reg es reg (i + 1) (if (e.fc-reg) == reg then acc else list-push acc e)
 
   fc-evict-reg : CodegenState, Integer -> CodegenState
   fc-evict-reg (st) (reg) =
-   if list-length (st.field-cache) == 0 then st
-   else __record-set st "field-cache" (fc-keep-not-reg (st.field-cache) reg 0 [])
+    if list-length (st.field-cache) == 0 then st
+    else __record-set st "field-cache" (fc-keep-not-reg (st.field-cache) reg 0 [])
 
   fc-keep-not-slot : List FieldCacheEntry, Integer, Integer, List FieldCacheEntry -> List FieldCacheEntry
   fc-keep-not-slot (es) (slot) (i) (acc) =
-   if i >= list-length es then acc
-   else let e = list-at es i
-   in fc-keep-not-slot es slot (i + 1) (if (e.fc-slot) == slot then acc else list-push acc e)
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in fc-keep-not-slot es slot (i + 1) (if (e.fc-slot) == slot then acc else list-push acc e)
 
   fc-evict-slot : CodegenState, Integer -> CodegenState
   fc-evict-slot (st) (slot) =
-   if list-length (st.field-cache) == 0 then st
-   else __record-set st "field-cache" (fc-keep-not-slot (st.field-cache) slot 0 [])
+    if list-length (st.field-cache) == 0 then st
+    else __record-set st "field-cache" (fc-keep-not-slot (st.field-cache) slot 0 [])
 
   fc-lookup-loop : List FieldCacheEntry, Integer, Integer, Integer -> Integer
   fc-lookup-loop (es) (slot) (off) (i) =
-   if i >= list-length es then -1
-   else let e = list-at es i
-   in if (e.fc-slot) == slot then if (e.fc-offset) == off then e.fc-reg else fc-lookup-loop es slot off (i + 1)
-   else fc-lookup-loop es slot off (i + 1)
+    if i >= list-length es then -1
+    else let e = list-at es i
+    in if (e.fc-slot) == slot then
+      if (e.fc-offset) == off then e.fc-reg else fc-lookup-loop es slot off (i + 1)
+    else fc-lookup-loop es slot off (i + 1)
 
   fc-lookup : CodegenState, Integer, Integer -> Integer
   fc-lookup (st) (slot) (off) =
-   fc-lookup-loop (st.field-cache) slot off 0
+    fc-lookup-loop (st.field-cache) slot off 0
 
   fc-add : CodegenState, Integer, Integer, Integer -> CodegenState
   fc-add (st) (slot) (off) (reg) =
-   __record-set st "field-cache" (list-push (st.field-cache) (FieldCacheEntry {
-    fc-slot = __narrow slot,
-    fc-offset = __narrow off,
-    fc-reg = __narrow reg
-   }))
+    __record-set st "field-cache" (list-push (st.field-cache) (FieldCacheEntry {
+     fc-slot = __narrow slot,
+     fc-offset = __narrow off,
+     fc-reg = __narrow reg
+    }))
 
   st-mark-avx : CodegenState -> CodegenState
   st-mark-avx (st) = if st.avx-used then st else __record-set st "avx-used" True
@@ -465,15 +475,15 @@ Section: State Helpers
 
   st-add-error : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-error (st) (code) (msg) (sp) =
-   __record-set st "bag" (bag-add (st.bag) (make-error code msg sp))
+    __record-set st "bag" (bag-add (st.bag) (make-error code msg sp))
 
   st-add-info : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-info (st) (code) (msg) (sp) =
-   __record-set st "bag" (bag-add (st.bag) (make-info code msg sp))
+    __record-set st "bag" (bag-add (st.bag) (make-info code msg sp))
 
   st-add-warning : CodegenState, Integer between 0 and 65535, Text, SourceSpan -> CodegenState
   st-add-warning (st) (code) (msg) (sp) =
-   __record-set st "bag" (bag-add (st.bag) (make-warning code msg sp))
+    __record-set st "bag" (bag-add (st.bag) (make-warning code msg sp))
 
   emit-fuel-exhausted : CodegenState -> Boolean
   emit-fuel-exhausted (st) = st.emit-work >= max-emit-work
@@ -483,7 +493,8 @@ Section: State Helpers
 
   emit-fuel-error : CodegenState -> CodegenState
   emit-fuel-error (st) =
-   st-add-error st cdx-resource-exhausted ("compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")") synthetic-span
+    let fuel-msg = "compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")"
+    in st-add-error st cdx-resource-exhausted fuel-msg synthetic-span
 
  __buf-write-bytes takes a buffer and an offset and no capacity, so it
  cannot bounds-check, and a function that outgrew the code buffer wrote
@@ -515,120 +526,123 @@ Section: State Helpers
 
   st-append-code : CodegenState, List Integer -> CodegenState
   st-append-code (st) (bytes) =
-   let past = st.code-len + list-length bytes
-   in if past > st.workspace.code-capacity then __record-set st "code-len" past
-   else let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
-   in let st1 = __record-set st "code-len" new-len
-   in if list-length bytes == 5 & list-at bytes 0 == 233
-      then __record-set st1 "last-jmp-end" new-len
-      else st1
+    let past = st.code-len + list-length bytes
+    in if past > st.workspace.code-capacity then __record-set st "code-len" past
+    else let new-len = __buf-write-bytes (st.workspace.code-buffer) (st.code-len) bytes
+    in let st1 = __record-set st "code-len" new-len
+    in if list-length bytes == 5 & list-at bytes 0 == 233
+       then __record-set st1 "last-jmp-end" new-len
+    else st1
 
   record-func-offset : CodegenState, Text -> CodegenState
   record-func-offset (st) (name) =
-   let n1 = list-push (st.fo-names) name
-   in let o1 = list-push (st.fo-offsets) (st.code-len)
-   in let st1 = __record-set st "fo-names" n1
-   in __record-set st1 "fo-offsets" o1
+    let n1 = list-push (st.fo-names) name
+    in let o1 = list-push (st.fo-offsets) (st.code-len)
+    in let st1 = __record-set st "fo-names" n1
+    in __record-set st1 "fo-offsets" o1
 
   fresh-empty-locals : Integer -> List LocalBinding
   fresh-empty-locals (x) = []
 
-  codegen-carry-forward : CodegenState, Integer between 0 and 4294967295, Integer between 0 and 4294967295, Integer between 0 and 4294967295 -> CodegenState
+  codegen-carry-forward : CodegenState, Integer between 0 and 4294967295, Integer between 0 and 4294967295,
+    Integer between 0 and 4294967295 -> CodegenState
   codegen-carry-forward (st) (new-code-len) (new-data-len) (new-emit-work) =
-   CodegenState {
-    workspace = st.workspace,
-    code-len = new-code-len,
-    data-len = new-data-len,
-    fo-names = st.fo-names,
-    fo-offsets = st.fo-offsets,
-    cp-offsets = st.cp-offsets,
-    cp-targets = st.cp-targets,
-    fa-offsets = st.fa-offsets,
-    fa-targets = st.fa-targets,
-    rf-poffsets = st.rf-poffsets,
-    rf-roffsets = st.rf-roffsets,
-    da-poffsets = st.da-poffsets,
-    da-offsets = st.da-offsets,
-    stack-overflow-checks = st.stack-overflow-checks,
-    locals = [],
-    next-temp = 0,
-    next-local = 0,
-    spill-count = 0,
-    peak-local = 0,
-    peak-spill = 0,
-    load-local-toggle = 0,
-    last-jmp-end = 0,
-    tco = default-tco-state,
-    type-defs = st.type-defs,
-    builtin-names = st.builtin-names,
-    builtin-emitters = st.builtin-emitters,
-    emit-work = new-emit-work,
-    exit-mode = st.exit-mode,
-    watchdog-mode = st.watchdog-mode,
-    opening-ret-type = st.opening-ret-type,
-    state-local = 0 - 1,
-    user-arities = st.user-arities,
-    bag = st.bag,
-    deck-bound = st.deck-bound,
-   deck-record-intrinsic = st.deck-record-intrinsic,
-    effect-op-addrs = st.effect-op-addrs,
-    eo-reads = st.eo-reads,
-    eo-handled = st.eo-handled,
-    vm-profile = st.vm-profile,
-    poison-alloc = st.poison-alloc,
-    trace-alloc = st.trace-alloc,
-    stack-guard = st.stack-guard,
-    omit-frame-pointer = st.omit-frame-pointer,
-    func-local-regs = [],
-    noalias-slots = [],
-    field-cache = [],
-    fresh-slots = [],
-    stype-sites = st.stype-sites,
-    range-env = [],
-    hosted-target = st.hosted-target,
-    shared-consts = st.shared-consts,
-    avx-used = st.avx-used,
-    avx-local = st.avx-local
-   }
+    CodegenState {
+     workspace = st.workspace,
+     code-len = new-code-len,
+     data-len = new-data-len,
+     fo-names = st.fo-names,
+     fo-offsets = st.fo-offsets,
+     cp-offsets = st.cp-offsets,
+     cp-targets = st.cp-targets,
+     fa-offsets = st.fa-offsets,
+     fa-targets = st.fa-targets,
+     rf-poffsets = st.rf-poffsets,
+     rf-roffsets = st.rf-roffsets,
+     da-poffsets = st.da-poffsets,
+     da-offsets = st.da-offsets,
+     stack-overflow-checks = st.stack-overflow-checks,
+     locals = [],
+     next-temp = 0,
+     next-local = 0,
+     spill-count = 0,
+     peak-local = 0,
+     peak-spill = 0,
+     load-local-toggle = 0,
+     last-jmp-end = 0,
+     tco = default-tco-state,
+     type-defs = st.type-defs,
+     builtin-names = st.builtin-names,
+     builtin-emitters = st.builtin-emitters,
+     emit-work = new-emit-work,
+     exit-mode = st.exit-mode,
+     watchdog-mode = st.watchdog-mode,
+     opening-ret-type = st.opening-ret-type,
+     state-local = 0 - 1,
+     user-arities = st.user-arities,
+     bag = st.bag,
+     deck-bound = st.deck-bound,
+    deck-record-intrinsic = st.deck-record-intrinsic,
+     effect-op-addrs = st.effect-op-addrs,
+     eo-reads = st.eo-reads,
+     eo-handled = st.eo-handled,
+     vm-profile = st.vm-profile,
+     poison-alloc = st.poison-alloc,
+     trace-alloc = st.trace-alloc,
+     stack-guard = st.stack-guard,
+     omit-frame-pointer = st.omit-frame-pointer,
+     func-local-regs = [],
+     noalias-slots = [],
+     field-cache = [],
+     fresh-slots = [],
+     stype-sites = st.stype-sites,
+     range-env = [],
+     hosted-target = st.hosted-target,
+     shared-consts = st.shared-consts,
+     avx-used = st.avx-used,
+     avx-local = st.avx-local,
+     call-census = st.call-census,
+     emit-path = 0
+    }
 
   reset-func-scratch : CodegenState -> CodegenState
   reset-func-scratch (st1) =
-   let st2 = __record-set st1 "locals" (fresh-empty-locals 0)
-   in let st3 = __record-set st2 "next-temp" 0
-   in let st4 = __record-set st3 "next-local" 0
-   in let st5 = __record-set st4 "spill-count" 0
-   in let st5p = __record-set st5 "peak-local" 0
-   in let st5q = __record-set st5p "peak-spill" 0
-   in let st5a = __record-set st5q "func-local-regs" []
-   in let st5b = __record-set st5a "noalias-slots" []
-   in let st5c = __record-set st5b "field-cache" []
-   in let st5d0 = __record-set st5c "fresh-slots" []
-   in let st5d = __record-set st5d0 "range-env" []
-   in let st6 = __record-set st5d "load-local-toggle" 0
-   in __record-set st6 "tco" (TcoState {
-    active = False,
-    in-tail-pos = False,
-    loop-top = 0,
-    param-locals = [],
-    temp-locals = [],
-    current-func = "",
-    saved-next-local = 0,
-    saved-next-temp = 0,
-    inplace-params = []
-   })
+    let st2 = __record-set st1 "locals" (fresh-empty-locals 0)
+    in let st3 = __record-set st2 "next-temp" 0
+    in let st4 = __record-set st3 "next-local" 0
+    in let st5 = __record-set st4 "spill-count" 0
+    in let st5p = __record-set st5 "peak-local" 0
+    in let st5q = __record-set st5p "peak-spill" 0
+    in let st5a = __record-set st5q "func-local-regs" []
+    in let st5b = __record-set st5a "noalias-slots" []
+    in let st5c = __record-set st5b "field-cache" []
+    in let st5d0 = __record-set st5c "fresh-slots" []
+    in let st5d = __record-set st5d0 "range-env" []
+    in let st6 = __record-set st5d "load-local-toggle" 0
+    in __record-set st6 "tco" (TcoState {
+     active = False,
+     in-tail-pos = False,
+     loop-top = 0,
+     param-locals = [],
+     temp-locals = [],
+     current-func = "",
+     saved-next-local = 0,
+     saved-next-temp = 0,
+     inplace-params = []
+    })
 
   reset-func-state : CodegenState, Text -> CodegenState
   reset-func-state (st) (name) =
-   let n1 = list-push (st.fo-names) name
-   in let o1 = list-push (st.fo-offsets) (st.code-len)
-   in let st0a = __record-set st "fo-names" n1
-   in let st1 = __record-set st0a "fo-offsets" o1
-   in reset-func-scratch st1
+    let n1 = list-push (st.fo-names) name
+    in let o1 = list-push (st.fo-offsets) (st.code-len)
+    in let st0a = __record-set st "fo-names" n1
+    in let st1 = __record-set st0a "fo-offsets" o1
+    in reset-func-scratch st1
 
   repoint-func-offset : CodegenState -> CodegenState
   repoint-func-offset (st) =
-   let n = list-length (st.fo-offsets)
-   in __record-set st "fo-offsets" (list-set-at (st.fo-offsets) (n - 1) (st.code-len))
+    let n = list-length (st.fo-offsets)
+    in __record-set st "fo-offsets" (list-set-at (st.fo-offsets) (n - 1) (st.code-len))
 
 Section: Register Allocation
  The active register pools are per-function. By default locals use the
@@ -641,29 +655,30 @@ Section: Register Allocation
 
   reg-list-without : List Integer, List Integer, Integer, List Integer -> List Integer
   reg-list-without (xs) (excl) (i) (acc) =
-   if i == list-length xs then acc
-   else let x = list-at xs i
-   in if tco-list-contains excl x 0 then reg-list-without xs excl (i + 1) acc
-   else reg-list-without xs excl (i + 1) (list-push acc x)
+    if i == list-length xs then acc
+    else let x = list-at xs i
+    in if tco-list-contains excl x 0 then reg-list-without xs excl (i + 1) acc
+    else reg-list-without xs excl (i + 1) (list-push acc x)
 
   active-temp-regs : CodegenState -> List Integer
   active-temp-regs (st) =
-   if list-length (st.func-local-regs) > 0 then reg-list-without temp-regs (st.func-local-regs) 0 []
-   else temp-regs
+    if list-length (st.func-local-regs) > 0 then
+      reg-list-without temp-regs (st.func-local-regs) 0 []
+    else temp-regs
 
   active-local-regs : CodegenState -> List Integer
   active-local-regs (st) =
-   if list-length (st.func-local-regs) > 0 then st.func-local-regs
-   else local-regs
+    if list-length (st.func-local-regs) > 0 then st.func-local-regs
+    else local-regs
 
   alloc-temp : CodegenState -> EmitResult
   alloc-temp (st) =
-   let pool = active-temp-regs st
-   in let idx = int-mod (st.next-temp) (list-length pool)
-   in let reg = list-at pool idx
-   in EmitResult {
-   state = fc-evict-reg (__record-set st "next-temp" (st.next-temp + 1)) reg,
-   reg = __narrow reg
+    let pool = active-temp-regs st
+    in let idx = int-mod (st.next-temp) (list-length pool)
+    in let reg = list-at pool idx
+    in EmitResult {
+    state = fc-evict-reg (__record-set st "next-temp" (st.next-temp + 1)) reg,
+    reg = __narrow reg
   }
 
  When a value is still live in a temp register, every temp allocated
@@ -675,55 +690,56 @@ Section: Register Allocation
 
   alloc-temp-avoiding : CodegenState, Integer -> EmitResult
   alloc-temp-avoiding (st) (avoid) =
-   let pool = active-temp-regs st
-   in let idx = int-mod (st.next-temp) (list-length pool)
-   in if list-at pool idx == avoid
-      then alloc-temp (__record-set st "next-temp" (st.next-temp + 1))
-      else alloc-temp st
+    let pool = active-temp-regs st
+    in let idx = int-mod (st.next-temp) (list-length pool)
+    in if list-at pool idx == avoid
+       then alloc-temp (__record-set st "next-temp" (st.next-temp + 1))
+    else alloc-temp st
 
   alloc-local : CodegenState -> EmitResult
   alloc-local (st) =
-   let regs = active-local-regs st
-   in let nl = st.next-local + 1
-   in let st-pk = __record-set st "peak-local" (if nl > st.peak-local then nl else st.peak-local)
-   in if st.next-local < list-length regs then let reg = list-at regs (st.next-local)
-   in EmitResult {
-   state = fs-remove (fc-evict-slot (__record-set st-pk "next-local" nl) reg) reg,
-   reg = __narrow reg
+    let regs = active-local-regs st
+    in let nl = st.next-local + 1
+    in let st-pk = __record-set st "peak-local" (if nl > st.peak-local then nl else st.peak-local)
+    in if st.next-local < list-length regs then let reg = list-at regs (st.next-local)
+    in EmitResult {
+    state = fs-remove (fc-evict-slot (__record-set st-pk "next-local" nl) reg) reg,
+    reg = __narrow reg
   }
    else let slot = spill-base + st.spill-count
    in let sc = st.spill-count + 1
    in let st1 = __record-set st-pk "next-local" nl
    in let st2 = __record-set st1 "spill-count" sc
+   in let st3 = __record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill)
    in EmitResult {
-   state = fs-remove (fc-evict-slot (__record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill)) slot) slot,
+   state = fs-remove (fc-evict-slot st3 slot) slot,
    reg = __narrow slot
   }
 
   store-local : CodegenState, Integer, Integer -> CodegenState
   store-local (st) (local) (value-reg) =
-   let st0 = fs-remove (fc-evict-slot st local) local
-   in if local < spill-base then if local == value-reg then st0
-   else st-append-code st0 (mov-rr local value-reg)
-   else if st0.omit-frame-pointer then let offset = (local - spill-base) * 8
-   in st-append-code st0 (mov-store reg-rsp value-reg offset)
-   else let offset = -((local - spill-base + 1) * 8 + 32)
-   in st-append-code st0 (mov-store reg-rbp value-reg offset)
+    let st0 = fs-remove (fc-evict-slot st local) local
+    in if local < spill-base then if local == value-reg then st0
+    else st-append-code st0 (mov-rr local value-reg)
+    else if st0.omit-frame-pointer then let offset = (local - spill-base) * 8
+    in st-append-code st0 (mov-store reg-rsp value-reg offset)
+    else let offset = -((local - spill-base + 1) * 8 + 32)
+    in st-append-code st0 (mov-store reg-rbp value-reg offset)
 
   load-local-scratch-count : Integer = 3
 
   load-local-scratch-for : Integer -> Integer between 0 and 15
   load-local-scratch-for (toggle) =
-   let idx = int-mod toggle load-local-scratch-count
-   in if idx == 0 then reg-r8
-      else if idx == 1 then reg-r9
-      else reg-r15
+    let idx = int-mod toggle load-local-scratch-count
+    in if idx == 0 then reg-r8
+    else if idx == 1 then reg-r9
+    else reg-r15
 
   load-local : CodegenState, Integer -> EmitResult
   load-local (st) (local) =
-   if local < spill-base then EmitResult {
-   state = st,
-   reg = __narrow local
+    if local < spill-base then EmitResult {
+    state = st,
+    reg = __narrow local
   }
    else let scratch = load-local-scratch-for (st.load-local-toggle)
    in let offset = if st.omit-frame-pointer then (local - spill-base) * 8
@@ -742,45 +758,46 @@ Section: Register Allocation
 
   emit-bivy-alloc : CodegenState, Integer -> BivyAlloc
   emit-bivy-alloc (st) (size) =
-   let ptr-loc = alloc-local st
-   in let st1 = st-append-code (ptr-loc.state) (li reg-rdi size)
-   in let st2 = emit-call-to st1 "__alloc"
-   in BivyAlloc {
-    state = store-local st2 (ptr-loc.reg) reg-rax,
-    ptr-loc = ptr-loc.reg
-   }
+    let ptr-loc = alloc-local st
+    in let st1 = st-append-code (ptr-loc.state) (li reg-rdi size)
+    in let st2 = emit-call-to st1 "__alloc"
+    in BivyAlloc {
+     state = store-local st2 (ptr-loc.reg) reg-rax,
+     ptr-loc = ptr-loc.reg
+    }
 
 Section: Byte Patching
   patch-i32-at : List Integer, Integer, Integer -> List Integer
   patch-i32-at (bytes) (pos) (value) =
-   let new-bytes = write-i32 value
-   in patch-4-loop bytes pos new-bytes 0 (list-length bytes) []
+    let new-bytes = write-i32 value
+    in patch-4-loop bytes pos new-bytes 0 (list-length bytes) []
 
   patch-4-loop : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
   patch-4-loop (bytes) (pos) (new-bytes) (i) (len) (acc) =
-   if i == len then acc
-   else if i >= pos & i < pos + 4 then patch-4-loop bytes pos new-bytes (i + 1) len (list-push acc (list-at new-bytes (i - pos)))
-   else patch-4-loop bytes pos new-bytes (i + 1) len (list-push acc (list-at bytes i))
+    if i == len then acc
+    else if i >= pos & i < pos + 4 then
+      patch-4-loop bytes pos new-bytes (i + 1) len (list-push acc (list-at new-bytes (i - pos)))
+    else patch-4-loop bytes pos new-bytes (i + 1) len (list-push acc (list-at bytes i))
 
   st-add-deferred-patch : CodegenState, PatchEntry -> CodegenState
   st-add-deferred-patch (st) (entry) =
-   let r1 = buf-write-i32 (st.workspace.code-buffer) (entry.pos) (entry.value)
-   in st
+    let r1 = buf-write-i32 (st.workspace.code-buffer) (entry.pos) (entry.value)
+    in st
 
   patch-jcc-at : CodegenState, Integer, Integer -> CodegenState
   patch-jcc-at (st) (jcc-pos) (target-pos) =
-   let rel32 = target-pos - (jcc-pos + 6)
-   in st-add-deferred-patch (fc-flush st) (make-i32-patch (jcc-pos + 2) rel32)
+    let rel32 = target-pos - (jcc-pos + 6)
+    in st-add-deferred-patch (fc-flush st) (make-i32-patch (jcc-pos + 2) rel32)
 
   patch-jmp-at : CodegenState, Integer, Integer -> CodegenState
   patch-jmp-at (st) (jmp-pos) (target-pos) =
-   let rel32 = target-pos - (jmp-pos + 5)
-   in st-add-deferred-patch (fc-flush st) (make-i32-patch (jmp-pos + 1) rel32)
+    let rel32 = target-pos - (jmp-pos + 5)
+    in st-add-deferred-patch (fc-flush st) (make-i32-patch (jmp-pos + 1) rel32)
 
   patch-call-at : CodegenState, Integer, Integer -> CodegenState
   patch-call-at (st) (call-pos) (target-pos) =
-   let rel32 = target-pos - (call-pos + 5)
-   in st-add-deferred-patch st (make-i32-patch (call-pos + 1) rel32)
+    let rel32 = target-pos - (call-pos + 5)
+    in st-add-deferred-patch st (make-i32-patch (call-pos + 1) rel32)
 
   PatchEntry = record {
    pos : Integer between 0 and 4294967295,
@@ -789,75 +806,80 @@ Section: Byte Patching
 
   make-i32-patch : Integer, Integer -> PatchEntry
   make-i32-patch (pos) (value) =
-   PatchEntry {
-    pos = __narrow pos,
-    value = value
+    PatchEntry {
+     pos = __narrow pos,
+     value = value
   }
 
   apply-all-patches : List Integer, List PatchEntry -> List Integer
   apply-all-patches (bytes) (patches) =
-   apply-patch-walk bytes patches 0 (list-length bytes) []
+    apply-patch-walk bytes patches 0 (list-length bytes) []
 
   apply-patch-walk : List Integer, List PatchEntry, Integer, Integer, List Integer -> List Integer
   apply-patch-walk (bytes) (patches) (i) (len) (acc) =
-   if i == len then acc
-   else let b = find-patch-byte patches i 0 (list-length patches)
-   in if b >= 0 then apply-patch-walk bytes patches (i + 1) len (list-push acc b)
-      else apply-patch-walk bytes patches (i + 1) len (list-push acc (list-at bytes i))
+    if i == len then acc
+    else let b = find-patch-byte patches i 0 (list-length patches)
+    in if b >= 0 then apply-patch-walk bytes patches (i + 1) len (list-push acc b)
+    else apply-patch-walk bytes patches (i + 1) len (list-push acc (list-at bytes i))
 
   find-patch-byte : List PatchEntry, Integer, Integer, Integer -> Integer
   find-patch-byte (patches) (i) (j) (len) =
-   if j == len then -1
-   else let p = list-at patches j
-   in if i == p.pos then int-mod (p.value) 256
-      else if i == p.pos + 1 then int-mod (floor-div (p.value) 256) 256
-      else if i == p.pos + 2 then int-mod (floor-div (p.value) 65536) 256
-      else if i == p.pos + 3 then int-mod (floor-div (p.value) 16777216) 256
-      else find-patch-byte patches i (j + 1) len
+    if j == len then -1
+    else let p = list-at patches j
+    in if i == p.pos then int-mod (p.value) 256
+    else if i == p.pos + 1 then int-mod (floor-div (p.value) 256) 256
+    else if i == p.pos + 2 then int-mod (floor-div (p.value) 65536) 256
+    else if i == p.pos + 3 then int-mod (floor-div (p.value) 16777216) 256
+    else find-patch-byte patches i (j + 1) len
 
   collect-call-patches : List Integer, List Text, OffsetTable, Integer, List PatchEntry -> List PatchEntry
   collect-call-patches (offsets) (targets) (offset-map) (i) (acc) =
-   if i == list-length offsets then acc
-   else let po = list-at offsets i
-   in let target = list-at targets i
-   in let target-offset = offset-table-lookup offset-map target
-   in let resolved = if target-offset == -1 then offset-table-lookup offset-map "__unresolved_trap" else target-offset
-   in if resolved == -1 then collect-call-patches offsets targets offset-map (i + 1) acc
-      else let rel32 = resolved - (po + 5)
-      in collect-call-patches offsets targets offset-map (i + 1) (list-push acc (make-i32-patch (po + 1) rel32))
+    if i == list-length offsets then acc
+    else let po = list-at offsets i
+    in let target = list-at targets i
+    in let target-offset = offset-table-lookup offset-map target
+    in let resolved = if target-offset == -1 then
+      offset-table-lookup offset-map "__unresolved_trap"
+    else target-offset
+    in if resolved == -1 then collect-call-patches offsets targets offset-map (i + 1) acc
+    else let rel32 = resolved - (po + 5)
+    in collect-call-patches offsets targets offset-map (i + 1) (list-push acc (make-i32-patch (po + 1) rel32))
 
   check-call-patch-targets : CodegenState, OffsetTable, Integer -> CodegenState
   check-call-patch-targets (st) (fm) (i) =
-   if i == list-length (st.cp-targets) then st
-   else let target = list-at (st.cp-targets) i
-   in let off = offset-table-lookup fm target
-   in let trap = offset-table-lookup fm "__unresolved_trap"
-   in if off == -1 & text-starts-with target "__no-instance-"
-    then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("No type-class instance for '" & substring target 14 (text-length target - 14) & "'") synthetic-span) fm (i + 1)
-    else if off == -1
-    then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" & target & "' (redirected to __unresolved_trap)") synthetic-span) fm (i + 1)
+    if i == list-length (st.cp-targets) then st
+    else let target = list-at (st.cp-targets) i
+    in let off = offset-table-lookup fm target
+    in let trap = offset-table-lookup fm "__unresolved_trap"
+    in if off == -1 & text-starts-with target "__no-instance-" then
+      let ni-msg = "No type-class instance for '" & substring target 14 (text-length target - 14) & "'"
+      in check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ni-msg synthetic-span) fm (i + 1)
+    else if off == -1 then
+      let uc-msg = "Unresolved call to '" & target & "' (redirected to __unresolved_trap)"
+      in check-call-patch-targets (st-add-error st cdx-unresolved-func-offset uc-msg synthetic-span) fm (i + 1)
     else check-call-patch-targets st fm (i + 1)
 
   check-func-addr-targets : CodegenState, OffsetTable, Integer -> CodegenState
   check-func-addr-targets (st) (fm) (i) =
-   if i == list-length (st.fa-targets) then st
-   else let target = list-at (st.fa-targets) i
-   in let off = offset-table-lookup fm target
-   in if off == -1
-    then check-func-addr-targets (st-add-error st cdx-unresolved-func-offset (func-addr-error-msg st target) synthetic-span) fm (i + 1)
+    if i == list-length (st.fa-targets) then st
+    else let target = list-at (st.fa-targets) i
+    in let off = offset-table-lookup fm target
+    in if off == -1 then
+      let fa-msg = func-addr-error-msg st target
+      in check-func-addr-targets (st-add-error st cdx-unresolved-func-offset fa-msg synthetic-span) fm (i + 1)
     else check-func-addr-targets st fm (i + 1)
 
   func-addr-error-msg : CodegenState, Text -> Text
   func-addr-error-msg (st) (target) =
-   if is-builtin (st.builtin-names) target
-    then "'" & target & "' is a builtin and has no function value. A builtin is emitted where it is called, so there is nothing to take the address of: it cannot be passed as an argument, stored, or partially applied. Wrap it in a definition and pass that."
+    if is-builtin (st.builtin-names) target then
+      "'" & target & "' is a builtin and has no function value. A builtin is emitted where it is called, so there is nothing to take the address of: it cannot be passed as an argument, stored, or partially applied. Wrap it in a definition and pass that."
     else "Unresolved func-addr reference to '" & target & "' (redirected to __unresolved_trap)"
 
   check-runtime-symbol : CodegenState, OffsetTable, Text -> CodegenState
   check-runtime-symbol (st) (fm) (name) =
-   let off = offset-table-lookup fm name
-   in if off == -1
-    then st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" & name & "'") synthetic-span
+    let off = offset-table-lookup fm name
+    in if off == -1 then
+      st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" & name & "'") synthetic-span
     else st
 
  A handler-table slot is only ever written by a handler clause. A read of a
@@ -878,31 +900,34 @@ Section: Byte Patching
 
   eo-name-seen : List Text, Text, Integer, Integer -> Boolean
   eo-name-seen (xs) (target) (i) (len) =
-   if i >= len then False
-   else if list-at xs i == target then True
-   else eo-name-seen xs target (i + 1) len
+    if i >= len then False
+    else if list-at xs i == target then True
+    else eo-name-seen xs target (i + 1) len
 
   eo-note-read : CodegenState, Text -> CodegenState
   eo-note-read (st) (name) =
-   if eo-name-seen (st.eo-reads) name 0 (list-length (st.eo-reads)) then st
-   else __record-set st "eo-reads" (deck-record (list-push (st.eo-reads) name))
+    if eo-name-seen (st.eo-reads) name 0 (list-length (st.eo-reads)) then st
+    else __record-set st "eo-reads" (deck-record (list-push (st.eo-reads) name))
 
   eo-note-handled : CodegenState, Text -> CodegenState
   eo-note-handled (st) (name) =
-   if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled)) then st
-   else __record-set st "eo-handled" (deck-record (list-push (st.eo-handled) name))
+    if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled)) then st
+    else __record-set st "eo-handled" (deck-record (list-push (st.eo-handled) name))
 
   check-effect-op-reads : CodegenState, Integer -> CodegenState
   check-effect-op-reads (st) (i) =
-   if i == list-length (st.eo-reads) then st
-   else let name = list-at (st.eo-reads) i
-   in if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled))
-    then check-effect-op-reads st (i + 1)
-    else check-effect-op-reads (st-add-error st cdx-unhandled-effect-op ("Effect operation '" & name & "' is read, but no handler in this chapter ever gives it a value; the read would yield zero") synthetic-span) (i + 1)
+    if i == list-length (st.eo-reads) then st
+    else let name = list-at (st.eo-reads) i
+    in if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled))
+     then check-effect-op-reads st (i + 1)
+    else
+      let eo-tail = "' is read, but no handler in this chapter ever gives it a value; the read would yield zero"
+      in let eo-msg = "Effect operation '" & name & eo-tail
+      in check-effect-op-reads (st-add-error st cdx-unhandled-effect-op eo-msg synthetic-span) (i + 1)
 
   align-16 : Integer -> Integer
   align-16 (n) =
-   let r = int-mod n 16
-   in if r == 0 then n else n + 16 - r
+    let r = int-mod n 16
+    in if r == 0 then n else n + 16 - r
 
 Page 2 of 14

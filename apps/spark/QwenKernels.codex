@@ -1,0 +1,785 @@
+Chapter: QwenKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter DeviceMath
+
+ We say:
+
+ Block layouts follow ggml-common.h at llama.cpp 7fe450e. Q4_K, 144 bytes per
+ 256 weights: d and dmin as f16, 12 bytes of packed 6-bit scales and mins,
+ 128 bytes of 4-bit quants. Q6_K, 210 bytes per 256 weights: 128 bytes of low
+ nibbles, 64 bytes of high 2-bit pairs, 16 signed 8-bit scales, d as f16. The
+ operation order matches dequantize_row_q4_K and dequantize_row_q6_K so that
+ f32 results agree bit for bit.
+
+  qk-byte : Integer, Integer -> [Device] Integer
+  qk-byte (b) (o) = act
+    w <- device-load b (o / 4)
+    bit-and (bit-shru w ((o - o / 4 * 4) * 8)) 255
+  end
+
+  q4k-sc : Integer, Integer, Integer -> [Device] Integer
+  q4k-sc (b) (bb) (j) =
+    if j < 4 then act
+      s <- qk-byte b (bb + 4 + j)
+      bit-and s 63
+    end
+    else act
+      lo <- qk-byte b (bb + 8 + j)
+      hi <- qk-byte b (bb + j)
+      bit-or (bit-and lo 15) (bit-shl (bit-shru hi 6) 4)
+    end
+
+  q4k-m : Integer, Integer, Integer -> [Device] Integer
+  q4k-m (b) (bb) (j) =
+    if j < 4 then act
+      s <- qk-byte b (bb + 8 + j)
+      bit-and s 63
+    end
+    else act
+      lo <- qk-byte b (bb + 8 + j)
+      hi <- qk-byte b (bb + 4 + j)
+      bit-or (bit-shru lo 4) (bit-shl (bit-shru hi 6) 4)
+    end
+
+  q4k-at : Integer, Integer, Integer -> [Device] Real
+  q4k-at (wb) (bb) (i) =
+    let j = i / 64
+    in let r = i - j * 64
+    in let sub = if r < 32 then 2 * j else 2 * j + 1
+    in let l = if r < 32 then r else r - 32
+    in act
+      d <- device-load-f16-approx wb (bb / 2)
+      dm <- device-load-f16-approx wb (bb / 2 + 1)
+      sc <- q4k-sc wb bb sub
+      m <- q4k-m wb bb sub
+      q <- qk-byte wb (bb + 16 + j * 32 + l)
+      let nib = if r < 32 then bit-and q 15 else bit-shru q 4
+      in (from-real-approx d * real-from-int sc) * real-from-int nib - from-real-approx dm * real-from-int m
+    end
+
+  q6k-at : Integer, Integer, Integer -> [Device] Real
+  q6k-at (wb) (bb) (i) =
+    let half = i / 128
+    in let k = i - half * 128
+    in let g = k / 32
+    in let l = k - g * 32
+    in let lo-at = bb + half * 64 + (if g == 1 | g == 3 then l + 32 else l)
+    in act
+      a <- qk-byte wb lo-at
+      h <- qk-byte wb (bb + 128 + half * 32 + l)
+      s <- qk-byte wb (bb + 192 + half * 8 + l / 16 + 2 * g)
+      d <- device-load-f16-approx wb ((bb + 208) / 2)
+      let lo = if g < 2 then bit-and a 15 else bit-shru a 4
+      in let q = bit-or lo (bit-shl (bit-and (bit-shru h (g * 2)) 3) 4) - 32
+      in let sc = if s > 127 then s - 256 else s
+      in (from-real-approx d * real-from-int sc) * real-from-int q
+    end
+
+  q4k-dequant : Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-dequant (wb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      v <- q4k-at wb (gid / 256 * 144) (gid - gid / 256 * 256)
+      device-store-f32 yb gid v
+    end
+
+  q6k-dequant : Integer, Integer, Integer, Integer -> [Device] Integer
+  q6k-dequant (wb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      v <- q6k-at wb (gid / 256 * 210) (gid - gid / 256 * 256)
+      device-store-f32 yb gid v
+    end
+
+ A weight row is cols / 256 consecutive superblocks. Compensated summation
+ bounds the rounding error of rows up to 12288 terms long.
+
+  qw-wg-sum : Integer, Real -> [Device] Real
+  qw-wg-sum (t) (v) = act
+    a <- shared-store-approx (t * 4) (to-real-approx v)
+    s0 <- sync-threads
+    qw-wg-level t 128
+  end
+
+  qw-wg-level : Integer, Integer -> [Device] Real
+  qw-wg-level (t) (s) =
+    if s == 0 then act
+      v <- shared-load-approx 0
+      s3 <- sync-threads
+      from-real-approx v
+    end
+    else act
+      a <- shared-load-approx (t * 4)
+      b <- shared-load-approx ((if t < s then t + s else t) * 4)
+      s1 <- sync-threads
+      w <- shared-store-approx (t * 4) (if t < s then a + b else a)
+      s2 <- sync-threads
+      qw-wg-level t (s / 2)
+    end
+
+  q4k-matvec-wg : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-matvec-wg (wb) (xb) (yb) (cols) (rows) (gid) = act
+    t <- thread-idx-x
+    g <- block-idx-x
+    a <- q4k-mv-sb wb xb ((if g * 8 + t / 32 < rows then g * 8 + t / 32 else 0) * (cols / 256) * 144) (t - t / 32 * 32) t 0 (cols / 256) 0.0 0.0
+    y <- sync-threads
+    l <- qw-one-level (t - t / 32 * 32) t 16
+    qw-one-out yb rows (g * 8 + t / 32) (t - t / 32 * 32) t
+  end
+
+  qw-one-stage : Integer, Integer, Integer -> [Device] Integer
+  qw-one-stage (xb) (sb) (t) = act
+    y0 <- sync-threads
+    x0 <- device-load-f32 xb (sb * 256 + t)
+    a <- shared-store-approx (t * 4) (to-real-approx x0)
+    y1 <- sync-threads
+    0
+  end
+
+  q4k-mv-sb : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Integer
+  q4k-mv-sb (wb) (xb) (rb) (lane) (t) (sb) (nsb) (s0) (c0) =
+    if sb >= nsb then act
+      a <- shared-store-approx (4096 + t * 4) (to-real-approx s0)
+      0
+    end
+    else let bb = rb + sb * 144
+    in let j = lane / 8
+    in let xo = j * 64 + (lane - j * 8) * 4
+    in act
+      staged <- qw-one-stage xb sb t
+      q <- device-load wb ((bb + 16) / 4 + lane)
+      d <- device-load-f16-approx wb (bb / 2)
+      dm <- device-load-f16-approx wb (bb / 2 + 1)
+      sl <- q4k-sc wb bb (2 * j)
+      ml <- q4k-m wb bb (2 * j)
+      sh <- q4k-sc wb bb (2 * j + 1)
+      mh <- q4k-m wb bb (2 * j + 1)
+      v0 <- q4k-tile-terms 0 xo q (from-real-approx d * real-from-int sl) (from-real-approx dm * real-from-int ml) (from-real-approx d * real-from-int sh) (from-real-approx dm * real-from-int mh) 0 0.0
+      let n0 = s0 + (v0 - c0)
+      in q4k-mv-sb wb xb rb lane t (sb + 1) nsb n0 ((n0 - s0) - (v0 - c0))
+    end
+
+  qw-one-level : Integer, Integer, Integer -> [Device] Integer
+  qw-one-level (lane) (t) (s) =
+    if s == 0 then 0
+    else let u = (if lane < s then t + s else t) * 4
+    in act
+      a0 <- shared-load-approx (4096 + t * 4)
+      b0 <- shared-load-approx (4096 + u)
+      y1 <- sync-threads
+      w0 <- shared-store-approx (4096 + t * 4) (if lane < s then a0 + b0 else a0)
+      y2 <- sync-threads
+      qw-one-level lane t (s / 2)
+    end
+
+  qw-one-out : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  qw-one-out (yb) (rows) (r) (lane) (t) = act
+    o0 <- shared-load-approx (4096 + t * 4)
+    qw-store-when (if lane == 0 & r < rows then 1 else 0) yb r (from-real-approx o0)
+  end
+
+ A Q4_K superblock is 144 bytes, so its quants are 32 aligned words: word w
+ holds, for j = w / 8, bytes 4 (w % 8) .. +3 of sub-block pair j, the low
+ nibbles weights of sub-block 2j and the high nibbles those 32 places on, of
+ sub-block 2j + 1.
+
+  q6k-matvec-wg : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q6k-matvec-wg (wb) (xb) (yb) (cols) (rows) (gid) = act
+    t <- thread-idx-x
+    g <- block-idx-x
+    a <- q6k-mv-sb wb xb ((if g * 16 + t / 16 < rows then g * 16 + t / 16 else 0) * (cols / 256) * 210) (t - t / 16 * 16) t 0 (cols / 256) 0.0 0.0
+    y <- sync-threads
+    l <- qw-one-level (t - t / 16 * 16) t 8
+    qw-one-out yb rows (g * 16 + t / 16) (t - t / 16 * 16) t
+  end
+
+  q6k-mv-sb : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Integer
+  q6k-mv-sb (wb) (xb) (rb) (lane) (t) (sb) (nsb) (s0) (c0) =
+    if sb >= nsb then act
+      a <- shared-store-approx (4096 + t * 4) (to-real-approx s0)
+      0
+    end
+    else let bb = rb + sb * 210
+    in let half = lane / 8
+    in let l0 = (lane - half * 8) * 4
+    in let so = bb + 192 + half * 8 + l0 / 16
+    in act
+      staged <- qw-one-stage xb sb t
+      a0 <- qk-word wb (bb + half * 64 + l0)
+      a1 <- qk-word wb (bb + half * 64 + 32 + l0)
+      h <- qk-word wb (bb + 128 + half * 32 + l0)
+      d <- device-load-f16-approx wb ((bb + 208) / 2)
+      e0 <- q6k-scale wb so (from-real-approx d)
+      e1 <- q6k-scale wb (so + 2) (from-real-approx d)
+      e2 <- q6k-scale wb (so + 4) (from-real-approx d)
+      e3 <- q6k-scale wb (so + 6) (from-real-approx d)
+      v0 <- q6k-tile-terms 0 (half * 128 + l0) a0 a1 h e0 e1 e2 e3 0 0.0
+      let n0 = s0 + (v0 - c0)
+      in q6k-mv-sb wb xb rb lane t (sb + 1) nsb n0 ((n0 - s0) - (v0 - c0))
+    end
+
+ A Q6_K superblock is 210 bytes, so every other one starts two bytes past a
+ word; an unaligned word is the high half of one load and the low half of the
+ next. For weight half * 128 + g * 32 + l, the low four bits are byte
+ half * 64 + l (g 0 and 2) or + 32 (g 1 and 3), low nibble for g < 2 and high
+ otherwise; the high two bits are bits 2g of byte 128 + half * 32 + l; the
+ signed scale is byte 192 + half * 8 + l / 16 + 2g.
+
+  qk-word : Integer, Integer -> [Device] Integer
+  qk-word (b) (o) =
+    if o - o / 4 * 4 == 0 then act
+      w <- device-load b (o / 4)
+      w
+    end
+    else act
+      w0 <- device-load b (o / 4)
+      w1 <- device-load b (o / 4 + 1)
+      bit-or (bit-and (bit-shru w0 16) 65535) (bit-shl w1 16)
+    end
+
+  q6k-scale : Integer, Integer, Real -> [Device] Real
+  q6k-scale (wb) (o) (d) = act
+    s <- qk-byte wb o
+    d * real-from-int (if s > 127 then s - 256 else s)
+  end
+
+ Decoder kernels for one token. ggml's rms_norm divides the sum of squares by
+ the row length and multiplies by 1/sqrt(mean + eps) before the weight. RoPE
+ is the NeoX pairing (i, i + dim/2); the cos/sin table comes from the host,
+ because WGSL's cos and sin are accurate to 2^-11 only on [-pi, pi]. 1.4426950408889634 is log2(e).
+
+  q4k-row : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-row (wb) (yb) (row) (cols) (gid) =
+    if gid >= cols then 0
+    else act
+      v <- q4k-at wb ((row * (cols / 256) + gid / 256) * 144) (gid - gid / 256 * 256)
+      device-store-f32 yb gid v
+    end
+
+  qw-square-sum : Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  qw-square-sum (xb) (base) (dim) (k) (sum) (correction) =
+    if k >= dim then sum
+    else act
+      x <- device-load-f32 xb (base + k)
+      let term = x * x - correction
+      in let next = sum + term
+      in qw-square-sum xb base dim (k + 256) next ((next - sum) - term)
+    end
+
+  rms-stat : Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  rms-stat (xb) (sb) (dim) (rows) (eps) (gid) = act
+    t <- thread-idx-x
+    r <- block-idx-x
+    total <- qw-wg-sum t (qw-square-sum xb ((if r < rows then r else 0) * dim) dim t 0.0 0.0)
+    (if t == 0 & r < rows then device-store-f32 sb r (1.0 / real-sqrt (total / real-from-int dim + eps)) else 0)
+  end
+
+  rms-apply : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rms-apply (xb) (sb) (nb) (yb) (dim) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb gid
+      s <- device-load-f32 sb (gid / dim)
+      w <- device-load-f32 nb (gid - gid / dim * dim)
+      device-store-f32 yb gid ((x * s) * w)
+    end
+
+  f16-dot-by : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  f16-dot-by (wb) (xb) (base) (xo) (k) (cols) (sum) (correction) =
+    if k >= cols then sum
+    else act
+      w <- device-load-f16-approx wb (base + k)
+      x <- device-load-f32 xb (xo + k)
+      let term = from-real-approx w * x - correction
+      in let next = sum + term
+      in f16-dot-by wb xb base xo (k + 256) cols next ((next - sum) - term)
+    end
+
+  f16-matvec-wg : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  f16-matvec-wg (wb) (xb) (yb) (cols) (rows) (gid) = act
+    t <- thread-idx-x
+    r <- block-idx-x
+    s <- qw-wg-sum t (f16-dot-by wb xb ((if r < rows then r else 0) * cols) 0 t cols 0.0 0.0)
+    (if t == 0 & r < rows then device-store-f32 yb r s else 0)
+  end
+
+  f16-matmat-wg : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  f16-matmat-wg (wb) (xb) (yb) (cols) (rows) (ntok) (gid) = act
+    t <- thread-idx-x
+    r <- block-idx-x
+    f16-mm-tok wb xb yb cols rows ntok r t 0
+  end
+
+  f16-mm-tok : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  f16-mm-tok (wb) (xb) (yb) (cols) (rows) (ntok) (r) (t) (k) =
+    if k >= ntok then 0
+    else act
+      s <- qw-wg-sum t (f16-dot-by wb xb ((if r < rows then r else 0) * cols) (k * cols) t cols 0.0 0.0)
+      w <- qw-store-when (if t == 0 & r < rows then 1 else 0) yb (k * rows + r) s
+      f16-mm-tok wb xb yb cols rows ntok r t (k + 1)
+    end
+  rope-neox : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rope-neox (xb) (tb) (yb) (dim) (n) (gid) =
+    if gid >= n then 0
+    else let base = gid / dim * dim
+    in let i = gid - base
+    in let half = dim / 2
+    in let j = if i < half then i else i - half
+    in act
+      a <- device-load-f32 xb (base + j)
+      b <- device-load-f32 xb (base + j + half)
+      c <- device-load-f32 tb j
+      s <- device-load-f32 tb (half + j)
+      device-store-f32 yb gid (if i < half then a * c - b * s else a * s + b * c)
+    end
+
+  kv-store : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kv-store (xb) (cb) (offset) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb gid
+      device-store-f32 cb (offset + gid) x
+    end
+
+  qw-head-dot : Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  qw-head-dot (qb) (kb) (qa) (ka) (k) (dim) (sum) (correction) =
+    if k >= dim then sum
+    else act
+      q <- device-load-f32 qb (qa + k)
+      x <- device-load-f32 kb (ka + k)
+      let term = q * x - correction
+      in let next = sum + term
+      in qw-head-dot qb kb qa ka (k + 1) dim next ((next - sum) - term)
+    end
+
+  attn-score : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  attn-score (qb) (kb) (sb) (len) (heads) (kvheads) (dim) (scale) (gid) =
+    if gid >= heads * len then 0
+    else let h = gid / len
+    in let t = gid - h * len
+    in let kvh = h / (heads / kvheads)
+    in act
+      d <- qw-head-dot qb kb (h * dim) ((t * kvheads + kvh) * dim) 0 dim 0.0 0.0
+      device-store-f32 sb gid (d * scale)
+    end
+
+  qw-max : Integer, Integer, Integer, Integer, Real -> [Device] Real
+  qw-max (sb) (base) (len) (t) (best) =
+    if t >= len then best
+    else act
+      v <- device-load-f32 sb (base + t)
+      qw-max sb base len (t + 1) (if v > best then v else best)
+    end
+
+  qw-exp-sum : Integer, Integer, Integer, Integer, Integer, Real, Real, Real -> [Device] Real
+  qw-exp-sum (sb) (pb) (base) (len) (t) (top) (sum) (correction) =
+    if t >= len then sum
+    else act
+      v <- device-load-f32 sb (base + t)
+      let e = real-exp2-approx ((v - top) * 1.4426950408889634)
+      in act
+        w <- device-store-f32 pb (base + t) e
+        let term = e - correction
+        in let next = sum + term
+        in qw-exp-sum sb pb base len (t + 1) top next ((next - sum) - term)
+      end
+    end
+
+  qw-scale-row : Integer, Integer, Integer, Integer, Real -> [Device] Integer
+  qw-scale-row (pb) (base) (len) (t) (inv) =
+    if t >= len then 0
+    else act
+      v <- device-load-f32 pb (base + t)
+      w <- device-store-f32 pb (base + t) (v * inv)
+      qw-scale-row pb base len (t + 1) inv
+    end
+
+  attn-softmax : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  attn-softmax (sb) (pb) (len) (heads) (gid) =
+    if gid >= heads then 0
+    else act
+      top <- device-load-f32 sb (gid * len)
+      best <- qw-max sb (gid * len) len 1 top
+      total <- qw-exp-sum sb pb (gid * len) len 0 best 0.0 0.0
+      qw-scale-row pb (gid * len) len 0 (1.0 / total)
+    end
+
+  qw-weighted : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Real -> [Device] Real
+  qw-weighted (pb) (vb) (pa) (va) (stride) (len) (t) (dim) (sum) (correction) =
+    if t >= len then sum
+    else act
+      p <- device-load-f32 pb (pa + t)
+      v <- device-load-f32 vb (va + t * stride)
+      let term = p * v - correction
+      in let next = sum + term
+      in qw-weighted pb vb pa va stride len (t + 1) dim next ((next - sum) - term)
+    end
+
+  attn-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  attn-out (pb) (vb) (ob) (len) (heads) (kvheads) (dim) (gid) =
+    if gid >= heads * dim then 0
+    else let h = gid / dim
+    in let d = gid - h * dim
+    in let kvh = h / (heads / kvheads)
+    in act
+      s <- qw-weighted pb vb (h * len) (kvh * dim + d) (kvheads * dim) len 0 dim 0.0 0.0
+      device-store-f32 ob gid s
+    end
+
+  vec-add : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  vec-add (ab) (bb) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      a <- device-load-f32 ab gid
+      b <- device-load-f32 bb gid
+      device-store-f32 yb gid (a + b)
+    end
+
+  swiglu : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  swiglu (gb) (ub) (yb) (n) (gid) =
+    if gid >= n then 0
+    else act
+      g <- device-load-f32 gb gid
+      u <- device-load-f32 ub gid
+      device-store-f32 yb gid (g / (1.0 + real-exp2-approx (0.0 - g * 1.4426950408889634)) * u)
+    end
+
+ Batched prefill: the activations of np tokens are np consecutive rows. A
+ matrix workgroup computes four tokens of eight Q4_K rows (32 lanes a row, one
+ quant word each) or sixteen Q6_K rows (16 lanes a row). For each superblock
+ its 256 threads first stage the four tokens' 256 activations in shared memory
+ at byte offsets 0, 1024, 2048 and 3072, so every row of the workgroup reads
+ them from there; a lane keeps one compensated sum per token, and the sums are
+ reduced within each row's lanes at byte offsets 4096 + 1024 j. A pass past the
+ last token reads the last token's activations and stores nothing.
+ Attention for query p, at position start + p, sees keys 0 .. start + p; later
+ keys score -1e6, which exp2 underflows to zero.
+
+  q4k-matmat-wg : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-matmat-wg (wb) (xb) (yb) (cols) (rows) (ntok) (gid) = act
+    t <- thread-idx-x
+    g <- block-idx-x
+    q4k-tile-tok wb xb yb cols rows ntok (g * 8 + t / 32) (t - t / 32 * 32) t 0
+  end
+
+  q4k-tile-tok : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-tile-tok (wb) (xb) (yb) (cols) (rows) (ntok) (r) (lane) (t) (k) =
+    if k >= ntok then 0
+    else act
+      a <- q4k-tile-sb wb xb ((if r < rows then r else 0) * (cols / 256) * 144) cols ntok k lane t 0 (cols / 256) 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+      y <- sync-threads
+      l <- qw-tile-level lane t 16
+      w <- qw-tile-out yb rows ntok r lane t k
+      q4k-tile-tok wb xb yb cols rows ntok r lane t (k + 4)
+    end
+
+  qw-tile-stage : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  qw-tile-stage (xb) (cols) (ntok) (k) (sb) (t) =
+    let at = sb * 256 + t
+    in act
+      y0 <- sync-threads
+      x0 <- device-load-f32 xb ((if k < ntok then k else ntok - 1) * cols + at)
+      x1 <- device-load-f32 xb ((if k + 1 < ntok then k + 1 else ntok - 1) * cols + at)
+      x2 <- device-load-f32 xb ((if k + 2 < ntok then k + 2 else ntok - 1) * cols + at)
+      x3 <- device-load-f32 xb ((if k + 3 < ntok then k + 3 else ntok - 1) * cols + at)
+      a <- shared-store-approx (t * 4) (to-real-approx x0)
+      b <- shared-store-approx (t * 4 + 1024) (to-real-approx x1)
+      c <- shared-store-approx (t * 4 + 2048) (to-real-approx x2)
+      e <- shared-store-approx (t * 4 + 3072) (to-real-approx x3)
+      y1 <- sync-threads
+      0
+    end
+
+  q4k-tile-sb : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Real, Real, Real, Real, Real, Real, Real -> [Device] Integer
+  q4k-tile-sb (wb) (xb) (rb) (cols) (ntok) (k) (lane) (t) (sb) (nsb) (s0) (c0) (s1) (c1) (s2) (c2) (s3) (c3) =
+    if sb >= nsb then qw-tile-in t s0 s1 s2 s3
+    else let bb = rb + sb * 144
+    in let j = lane / 8
+    in let xo = j * 64 + (lane - j * 8) * 4
+    in act
+      staged <- qw-tile-stage xb cols ntok k sb t
+      q <- device-load wb ((bb + 16) / 4 + lane)
+      d <- device-load-f16-approx wb (bb / 2)
+      dm <- device-load-f16-approx wb (bb / 2 + 1)
+      sl <- q4k-sc wb bb (2 * j)
+      ml <- q4k-m wb bb (2 * j)
+      sh <- q4k-sc wb bb (2 * j + 1)
+      mh <- q4k-m wb bb (2 * j + 1)
+      let dl = from-real-approx d * real-from-int sl
+      in let mlv = from-real-approx dm * real-from-int ml
+      in let dh = from-real-approx d * real-from-int sh
+      in let mhv = from-real-approx dm * real-from-int mh
+      in act
+        v0 <- q4k-tile-terms 0 xo q dl mlv dh mhv 0 0.0
+        v1 <- q4k-tile-terms 1024 xo q dl mlv dh mhv 0 0.0
+        v2 <- q4k-tile-terms 2048 xo q dl mlv dh mhv 0 0.0
+        v3 <- q4k-tile-terms 3072 xo q dl mlv dh mhv 0 0.0
+        let n0 = s0 + (v0 - c0)
+        in let n1 = s1 + (v1 - c1)
+        in let n2 = s2 + (v2 - c2)
+        in let n3 = s3 + (v3 - c3)
+        in q4k-tile-sb wb xb rb cols ntok k lane t (sb + 1) nsb n0 ((n0 - s0) - (v0 - c0)) n1 ((n1 - s1) - (v1 - c1)) n2 ((n2 - s2) - (v2 - c2)) n3 ((n3 - s3) - (v3 - c3))
+      end
+    end
+
+  q4k-tile-terms : Integer, Integer, Integer, Real, Real, Real, Real, Integer, Real -> [Device] Real
+  q4k-tile-terms (base) (xo) (q) (dl) (mlv) (dh) (mhv) (b) (acc) =
+    if b >= 4 then acc
+    else let byte = bit-and (bit-shru q (b * 8)) 255
+    in act
+      xl <- shared-load-approx (base + (xo + b) * 4)
+      xh <- shared-load-approx (base + (xo + b + 32) * 4)
+      q4k-tile-terms base xo q dl mlv dh mhv (b + 1) (acc + (dl * real-from-int (bit-and byte 15) - mlv) * from-real-approx xl + (dh * real-from-int (bit-shru byte 4) - mhv) * from-real-approx xh)
+    end
+
+  q6k-matmat-wg : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q6k-matmat-wg (wb) (xb) (yb) (cols) (rows) (ntok) (gid) = act
+    t <- thread-idx-x
+    g <- block-idx-x
+    q6k-tile-tok wb xb yb cols rows ntok (g * 16 + t / 16) (t - t / 16 * 16) t 0
+  end
+
+  q6k-tile-tok : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q6k-tile-tok (wb) (xb) (yb) (cols) (rows) (ntok) (r) (lane) (t) (k) =
+    if k >= ntok then 0
+    else act
+      a <- q6k-tile-sb wb xb ((if r < rows then r else 0) * (cols / 256) * 210) cols ntok k lane t 0 (cols / 256) 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+      y <- sync-threads
+      l <- qw-tile-level lane t 8
+      w <- qw-tile-out yb rows ntok r lane t k
+      q6k-tile-tok wb xb yb cols rows ntok r lane t (k + 4)
+    end
+
+  q6k-tile-sb : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Real, Real, Real, Real, Real, Real, Real -> [Device] Integer
+  q6k-tile-sb (wb) (xb) (rb) (cols) (ntok) (k) (lane) (t) (sb) (nsb) (s0) (c0) (s1) (c1) (s2) (c2) (s3) (c3) =
+    if sb >= nsb then qw-tile-in t s0 s1 s2 s3
+    else let bb = rb + sb * 210
+    in let half = lane / 8
+    in let l0 = (lane - half * 8) * 4
+    in let so = bb + 192 + half * 8 + l0 / 16
+    in let xo = half * 128 + l0
+    in act
+      staged <- qw-tile-stage xb cols ntok k sb t
+      a0 <- qk-word wb (bb + half * 64 + l0)
+      a1 <- qk-word wb (bb + half * 64 + 32 + l0)
+      h <- qk-word wb (bb + 128 + half * 32 + l0)
+      d <- device-load-f16-approx wb ((bb + 208) / 2)
+      e0 <- q6k-scale wb so (from-real-approx d)
+      e1 <- q6k-scale wb (so + 2) (from-real-approx d)
+      e2 <- q6k-scale wb (so + 4) (from-real-approx d)
+      e3 <- q6k-scale wb (so + 6) (from-real-approx d)
+      v0 <- q6k-tile-terms 0 xo a0 a1 h e0 e1 e2 e3 0 0.0
+      v1 <- q6k-tile-terms 1024 xo a0 a1 h e0 e1 e2 e3 0 0.0
+      v2 <- q6k-tile-terms 2048 xo a0 a1 h e0 e1 e2 e3 0 0.0
+      v3 <- q6k-tile-terms 3072 xo a0 a1 h e0 e1 e2 e3 0 0.0
+      let n0 = s0 + (v0 - c0)
+      in let n1 = s1 + (v1 - c1)
+      in let n2 = s2 + (v2 - c2)
+      in let n3 = s3 + (v3 - c3)
+      in q6k-tile-sb wb xb rb cols ntok k lane t (sb + 1) nsb n0 ((n0 - s0) - (v0 - c0)) n1 ((n1 - s1) - (v1 - c1)) n2 ((n2 - s2) - (v2 - c2)) n3 ((n3 - s3) - (v3 - c3))
+    end
+
+  q6k-tile-terms : Integer, Integer, Integer, Integer, Integer, Real, Real, Real, Real, Integer, Real -> [Device] Real
+  q6k-tile-terms (base) (xo) (a0) (a1) (h) (c0) (c1) (c2) (c3) (b) (acc) =
+    if b >= 4 then acc
+    else let p = bit-and (bit-shru a0 (b * 8)) 255
+    in let q = bit-and (bit-shru a1 (b * 8)) 255
+    in let hb = bit-and (bit-shru h (b * 8)) 255
+    in act
+      x0 <- shared-load-approx (base + (xo + b) * 4)
+      x1 <- shared-load-approx (base + (xo + b + 32) * 4)
+      x2 <- shared-load-approx (base + (xo + b + 64) * 4)
+      x3 <- shared-load-approx (base + (xo + b + 96) * 4)
+      let w0 = c0 * real-from-int (bit-or (bit-and p 15) (bit-shl (bit-and hb 3) 4) - 32)
+      in let w1 = c1 * real-from-int (bit-or (bit-and q 15) (bit-shl (bit-and (bit-shru hb 2) 3) 4) - 32)
+      in let w2 = c2 * real-from-int (bit-or (bit-shru p 4) (bit-shl (bit-and (bit-shru hb 4) 3) 4) - 32)
+      in let w3 = c3 * real-from-int (bit-or (bit-shru q 4) (bit-shl (bit-and (bit-shru hb 6) 3) 4) - 32)
+      in q6k-tile-terms base xo a0 a1 h c0 c1 c2 c3 (b + 1) (acc + w0 * from-real-approx x0 + w1 * from-real-approx x1 + w2 * from-real-approx x2 + w3 * from-real-approx x3)
+    end
+
+  qw-tile-in : Integer, Real, Real, Real, Real -> [Device] Integer
+  qw-tile-in (t) (s0) (s1) (s2) (s3) = act
+    a <- shared-store-approx (4096 + t * 4) (to-real-approx s0)
+    b <- shared-store-approx (5120 + t * 4) (to-real-approx s1)
+    c <- shared-store-approx (6144 + t * 4) (to-real-approx s2)
+    e <- shared-store-approx (7168 + t * 4) (to-real-approx s3)
+    0
+  end
+
+  qw-tile-level : Integer, Integer, Integer -> [Device] Integer
+  qw-tile-level (lane) (t) (s) =
+    if s == 0 then 0
+    else let u = (if lane < s then t + s else t) * 4
+    in act
+      a0 <- shared-load-approx (4096 + t * 4)
+      b0 <- shared-load-approx (4096 + u)
+      a1 <- shared-load-approx (5120 + t * 4)
+      b1 <- shared-load-approx (5120 + u)
+      a2 <- shared-load-approx (6144 + t * 4)
+      b2 <- shared-load-approx (6144 + u)
+      a3 <- shared-load-approx (7168 + t * 4)
+      b3 <- shared-load-approx (7168 + u)
+      y1 <- sync-threads
+      w0 <- shared-store-approx (4096 + t * 4) (if lane < s then a0 + b0 else a0)
+      w1 <- shared-store-approx (5120 + t * 4) (if lane < s then a1 + b1 else a1)
+      w2 <- shared-store-approx (6144 + t * 4) (if lane < s then a2 + b2 else a2)
+      w3 <- shared-store-approx (7168 + t * 4) (if lane < s then a3 + b3 else a3)
+      y2 <- sync-threads
+      qw-tile-level lane t (s / 2)
+    end
+
+  qw-tile-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  qw-tile-out (yb) (rows) (ntok) (r) (lane) (t) (k) = act
+    o0 <- shared-load-approx (4096 + t * 4)
+    o1 <- shared-load-approx (5120 + t * 4)
+    o2 <- shared-load-approx (6144 + t * 4)
+    o3 <- shared-load-approx (7168 + t * 4)
+    y <- sync-threads
+    w0 <- qw-store-when (if lane == 0 & r < rows then 1 else 0) yb (k * rows + r) (from-real-approx o0)
+    w1 <- qw-store-when (if lane == 0 & r < rows & k + 1 < ntok then 1 else 0) yb ((k + 1) * rows + r) (from-real-approx o1)
+    w2 <- qw-store-when (if lane == 0 & r < rows & k + 2 < ntok then 1 else 0) yb ((k + 2) * rows + r) (from-real-approx o2)
+    qw-store-when (if lane == 0 & r < rows & k + 3 < ntok then 1 else 0) yb ((k + 3) * rows + r) (from-real-approx o3)
+  end
+
+  qw-store-when : Integer, Integer, Integer, Real -> [Device] Integer
+  qw-store-when (on) (yb) (i) (v) =
+    if on == 0 then 0
+    else device-store-f32 yb i v
+
+  q4k-row-at : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  q4k-row-at (wb) (yb) (row) (cols) (at) (gid) =
+    if gid >= cols then 0
+    else act
+      v <- q4k-at wb ((row * (cols / 256) + gid / 256) * 144) (gid - gid / 256 * 256)
+      device-store-f32 yb (at + gid) v
+    end
+
+  rope-neox-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rope-neox-rows (xb) (tb) (yb) (dim) (per) (n) (gid) =
+    if gid >= n then 0
+    else let row = gid / dim
+    in let base = row * dim
+    in let i = gid - base
+    in let half = dim / 2
+    in let j = if i < half then i else i - half
+    in let tab = row / per * dim
+    in act
+      a <- device-load-f32 xb (base + j)
+      b <- device-load-f32 xb (base + j + half)
+      c <- device-load-f32 tb (tab + j)
+      s <- device-load-f32 tb (tab + half + j)
+      device-store-f32 yb gid (if i < half then a * c - b * s else a * s + b * c)
+    end
+
+  attn-score-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  attn-score-rows (qb) (kb) (sb) (start) (np) (heads) (kvheads) (dim) (scale) (gid) =
+    let len = start + np
+    in if gid >= np * heads * len then 0
+    else let row = gid / len
+    in let t = gid - row * len
+    in let p = row / heads
+    in let h = row - p * heads
+    in let kvh = h / (heads / kvheads)
+    in if t > start + p then device-store-f32 sb gid (0.0 - 1000000.0)
+    else act
+      d <- qw-head-dot qb kb (row * dim) ((t * kvheads + kvh) * dim) 0 dim 0.0 0.0
+      device-store-f32 sb gid (d * scale)
+    end
+
+  attn-out-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  attn-out-rows (pb) (vb) (ob) (len) (heads) (kvheads) (dim) (np) (gid) =
+    if gid >= np * heads * dim then 0
+    else let row = gid / dim
+    in let d = gid - row * dim
+    in let h = row - row / heads * heads
+    in let kvh = h / (heads / kvheads)
+    in act
+      s <- qw-weighted pb vb (row * len) (kvh * dim + d) (kvheads * dim) len 0 dim 0.0 0.0
+      device-store-f32 ob gid s
+    end
+
+  vec-copy-from : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  vec-copy-from (xb) (yb) (src) (n) (gid) =
+    if gid >= n then 0
+    else act
+      x <- device-load-f32 xb (src + gid)
+      device-store-f32 yb gid x
+    end
+
+ Greedy decode picks the largest logit on the GPU: a workgroup scans 4096
+ logits into one (value, index) pair, ties to the lower index as the host loop
+ does, and one workgroup reduces the pairs. -1e12 is below every logit.
+
+  qw-amax-scan : Integer, Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  qw-amax-scan (xb) (base) (t) (n) (k) (bv) (bi) =
+    if k >= 16 then act
+      a <- shared-store-approx (t * 4) (to-real-approx bv)
+      b <- shared-store-u32 (1024 + t * 4) bi
+      0
+    end
+    else if base + t + k * 256 >= n then qw-amax-scan xb base t n 16 bv bi
+    else act
+      v <- device-load-f32 xb (base + t + k * 256)
+      qw-amax-scan xb base t n (k + 1) (if v > bv then v else bv) (if v > bv then base + t + k * 256 else bi)
+    end
+
+  qw-amax-pairs : Integer, Integer, Integer, Integer, Real, Integer -> [Device] Integer
+  qw-amax-pairs (pb) (t) (m) (j) (bv) (bi) =
+    if j >= m then act
+      a <- shared-store-approx (t * 4) (to-real-approx bv)
+      b <- shared-store-u32 (1024 + t * 4) bi
+      0
+    end
+    else act
+      v <- device-load-f32 pb (2 * j)
+      i <- device-load pb (2 * j + 1)
+      qw-amax-pairs pb t m (j + 256) (if v > bv | v ~0 bv & i < bi then v else bv) (if v > bv | v ~0 bv & i < bi then i else bi)
+    end
+
+  qw-amax-level : Integer, Integer -> [Device] Integer
+  qw-amax-level (t) (s) =
+    if s == 0 then 0
+    else let u = (if t < s then t + s else t) * 4
+    in act
+      av <- shared-load-approx (t * 4)
+      ai <- shared-load-u32 (1024 + t * 4)
+      bv <- shared-load-approx u
+      bi <- shared-load-u32 (1024 + u)
+      y1 <- sync-threads
+      w0 <- shared-store-approx (t * 4) (if from-real-approx bv > from-real-approx av | from-real-approx bv ~0 from-real-approx av & bi < ai then bv else av)
+      w1 <- shared-store-u32 (1024 + t * 4) (if from-real-approx bv > from-real-approx av | from-real-approx bv ~0 from-real-approx av & bi < ai then bi else ai)
+      y2 <- sync-threads
+      qw-amax-level t (s / 2)
+    end
+
+  qw-store-int-when : Integer, Integer, Integer, Integer -> [Device] Integer
+  qw-store-int-when (on) (yb) (i) (v) =
+    if on == 0 then 0
+    else device-store yb i v
+
+  qw-argmax-part : Integer, Integer, Integer, Integer -> [Device] Integer
+  qw-argmax-part (xb) (pb) (n) (gid) = act
+    t <- thread-idx-x
+    g <- block-idx-x
+    a <- qw-amax-scan xb (g * 4096) t n 0 (0.0 - 1000000000000.0) 2147483647
+    y <- sync-threads
+    l <- qw-amax-level t 128
+    v <- shared-load-approx 0
+    i <- shared-load-u32 1024
+    y2 <- sync-threads
+    w <- qw-store-when (if t == 0 then 1 else 0) pb (g * 2) (from-real-approx v)
+    qw-store-int-when (if t == 0 then 1 else 0) pb (g * 2 + 1) i
+  end
+
+  qw-argmax-final : Integer, Integer, Integer, Integer -> [Device] Integer
+  qw-argmax-final (pb) (ob) (m) (gid) = act
+    t <- thread-idx-x
+    a <- qw-amax-pairs pb t m t (0.0 - 1000000000000.0) 2147483647
+    y <- sync-threads
+    l <- qw-amax-level t 128
+    v <- shared-load-approx 0
+    i <- shared-load-u32 1024
+    y2 <- sync-threads
+    w <- qw-store-int-when (if t == 0 then 1 else 0) ob 0 i
+    qw-store-when (if t == 0 then 1 else 0) ob 1 (from-real-approx v)
+  end

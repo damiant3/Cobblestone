@@ -52,6 +52,9 @@ if (-not (Test-Path -PathType Leaf $PlugCdx)) {
 }
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
 if (-not (Test-Path -PathType Leaf $Kernel)) { Write-Host "REFUSE: no kernel at $Kernel"; exit 2 }
+if (-not (Get-Command 'node' -ErrorAction SilentlyContinue)) {
+    Write-Host 'REFUSE: node is required to package the C64 page for file URLs'; exit 2
+}
 
 . (Join-Path $Repo 'build\vm-config.ps1')
 New-Item -ItemType Directory -Force -Path $WorkDir, $OutDir | Out-Null
@@ -215,5 +218,7 @@ if (Get-Command 'node' -ErrorAction SilentlyContinue) {
     Write-Host '[c64-wasm] node is not on the Path; c64-verify skipped'
 }
 
+& node (Join-Path $Repo 'apps/landing/pack-file-assets.mjs') --web (Join-Path $Repo 'apps/landing/web') --only c64
+if ($LASTEXITCODE -ne 0) { Write-Host 'FAIL: C64 file URL asset packaging'; exit 9 }
 Write-Host '[c64-wasm] done'
 exit 0

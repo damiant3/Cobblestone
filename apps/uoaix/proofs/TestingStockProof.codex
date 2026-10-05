@@ -1,0 +1,101 @@
+Chapter: TestingStockProof
+  cites Uoaix chapter CompositeStore
+
+  tsp-check : Text, Boolean -> [Console] Integer
+  tsp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  tsp-create : Integer -> List Integer
+  tsp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "TestStock" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  tsp-land : WalkMap, Integer -> Integer
+  tsp-land (map) (i) = if i == 4 then 0
+    else let set = walk-set-land map (1420 + int-mod i 2) (1698 + i / 2) 0 0
+    in tsp-land map (i + 1)
+  tsp-rows : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  tsp-rows (packet) (parent) (gump) (count) (i) = if i == count then True
+    else let at = 5 + i * 19
+    in let x = gp-u16 packet (at + 9)
+    in let y = gp-u16 packet (at + 11)
+    in gp-u32 packet (at + 13) == parent
+      & (if gump == #003D then x >= 29 & x < 137 & y >= 34 & y < 128
+         else if gump == #004A then x >= 18 & x < 162 & y >= 105 & y < 178
+         else x >= 44 & x < 186 & y >= 65 & y < 159)
+      & tsp-rows packet parent gump count (i + 1)
+  tsp-contents : GsiState, Integer, Integer -> Boolean
+  tsp-contents (items) (parent) (count) = let packet = gsi-contents items parent 0 [#3C,0,0,0,0] 0
+    in list-length packet == 5 + count * 19 & gp-u16 packet 1 == list-length packet & gp-u16 packet 3 == count
+      & tsp-rows packet parent (gsi-meta items parent).gump count 0
+  tsp-zero-position : WorldTable, Integer -> Result Integer Text
+  tsp-zero-position (world) (serial) = when world-get world serial
+    is Err (e) -> Err e
+    is Ok (item) -> world-update world (__record-set (__record-set item "x" 0) "y" 0)
+  tsp-run : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  tsp-run (owner) (map) = let game = owner.state.checkpoint.game
+    in let input = gn-input 1
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 1
+    in act
+      created <- cs-route owner game input map 2593 (tsp-create 0)
+      serial <- input.session.serial
+      normal <- tsp-check "normal entry grants no testing supplies" (is-ok created & peek-qword owner.state.test-grants 0 == 0 & gmb-bank-find owner.state.items serial 0 == 0)
+      enabled <- __record-set owner.state "testing" True
+      entry <- cg-entry owner.state game input (gs-reply [] "testing entry")
+      pack <- gsi-pack-find game.world serial 0
+      bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+      bank <- gmb-bank-find owner.state.items serial 0
+      coin <- gsi-child-art game.world (world-first-child game.world bank) #0EED 0
+      book <- gsi-child-art game.world (world-first-child game.world bag) #0EFA 0
+      amount <- when world-get game.world coin is Err (_) -> 0 is Ok (item) -> item.amount
+      stocked <- tsp-check "testing entry creates tools spell kit and bank stock" (is-ok entry & bag > 0 & bank > 0 & book > 0 & amount == 10000 & world-child-count game.world bag == list-length cts-tools + list-length cts-reagents + 3 & world-child-count game.world bank == list-length cts-materials + 1 & peek-qword owner.state.test-grants 0 == serial)
+      visible <- tsp-check "3C lists correct parents counts and visible gump coordinates" (tsp-contents owner.state.items pack 1 & tsp-contents owner.state.items bag 31 & tsp-contents owner.state.items bank 9)
+      committed <- cs-commit owner False
+      count <- world-count game.world
+      repeated <- cg-entry owner.state game input (gs-reply [] "repeat")
+      once <- tsp-check "repeat entry does not duplicate supplies" (is-ok committed & is-ok repeated & world-count game.world == count)
+      old-bag <- tsp-zero-position game.world bag
+      old-book <- tsp-zero-position game.world book
+      repaired <- cg-entry owner.state game input (gs-reply [] "repair old positions")
+      repair <- tsp-check "legacy zero-coordinate contents repaired without restocking" (is-ok old-bag & is-ok old-book & is-ok repaired & world-count game.world == count & tsp-contents owner.state.items pack 1 & tsp-contents owner.state.items bag 31)
+      consumed <- world-delete game.world coin
+      saved <- cs-commit owner False
+      durable <- tsp-check "spent testing coin and grant marker commit together" (is-ok consumed & is-ok saved)
+      normal + stocked + visible + once + repair + durable
+    end
+  tsp-restored : CompositeOwner -> [Console] Integer
+  tsp-restored (owner) = let game = owner.state.checkpoint.game
+    in let serial = peek-qword game.characters 0
+    in let input = gn-input 2
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let actor = __record-set input.session "serial" serial
+    in let active = __record-set game "active" serial
+    in let count = world-count game.world
+    in act
+      normal <- tsp-check "restart disables mode but preserves per-character grant" (not owner.state.testing & peek-qword owner.state.test-grants 0 == serial)
+      enabled <- __record-set owner.state "testing" True
+      entered <- cg-entry owner.state game input (gs-reply [] "restart")
+      bank <- gmb-bank-find owner.state.items serial 0
+      coin <- gsi-child-art game.world (world-first-child game.world bank) #0EED 0
+      once <- tsp-check "restart cannot refill spent testing supplies" (is-ok entered & world-count game.world == count & coin == 0)
+      pack <- gsi-pack-find game.world serial 0
+      bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+      visible <- tsp-check "restored packet contents retain visible positions" (tsp-contents owner.state.items pack 1 & tsp-contents owner.state.items bag 31 & tsp-contents owner.state.items bank 8)
+      normal + once + visible
+    end
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> tsp-check e False
+    is Ok (map) -> let filled = tsp-land map 0 in act
+      opened <- us-open 0 131072
+      when opened
+        is Err (e) -> tsp-check e False
+        is Ok (store) -> let fresh = store.head == 0 in act
+          loaded <- cs-load store 0
+          when loaded
+            is Err (e) -> tsp-check e False
+            is Ok (owner) -> if fresh then tsp-run owner map else tsp-restored owner
+        end
+    end

@@ -1,0 +1,85 @@
+Chapter: BrowserClipLoad
+  cites Diffusion chapter BrowserClip
+  cites Diffusion chapter CheckpointLayout
+  cites Foreword chapter StringUtils
+
+ We say:
+
+  BrowserClipLoaded = record { bcl-weights : BcWeights, bcl-handles : List Integer }
+
+  bc-xl-l-spec : ClipSpec
+  bc-xl-l-spec = ClipSpec { cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = False, cs-prefix = "conditioner.embedders.0.transformer.text_model.", cs-part = 1, cs-pad = 49407, cs-skip = 2, cs-final-norm = False }
+
+  bc-xl-g-spec : ClipSpec
+  bc-xl-g-spec = ClipSpec { cs-width = 1280, cs-heads = 20, cs-layers = 32, cs-mlp = 5120, cs-erf-gelu = True, cs-open = True, cs-pool = True, cs-prefix = "conditioner.embedders.1.model.", cs-part = 2, cs-pad = 0, cs-skip = 2, cs-final-norm = False }
+
+  bcl-name : Text -> Text
+  bcl-name (name) =
+    let a = text-replace name ".transformer.resblocks." ".encoder.layers."
+    in let b = text-replace (text-replace a ".ln_1." ".layer_norm1.") ".ln_2." ".layer_norm2."
+    in let c = text-replace (text-replace b ".attn.out_proj." ".self_attn.out_proj.") ".mlp.c_fc." ".mlp.fc1."
+    in let d = text-replace (text-replace c ".mlp.c_proj." ".mlp.fc2.") ".ln_final." ".final_layer_norm."
+    in if text-ends-with d ".token_embedding.weight" then text-replace d ".token_embedding.weight" ".embeddings.token_embedding.weight"
+    else if text-ends-with d ".positional_embedding" then text-replace d ".positional_embedding" ".embeddings.position_embedding.weight"
+    else d
+
+  bcl-third : BoundTensor, Integer, Text -> BoundTensor
+  bcl-third (t) (i) (part) =
+    let matrix = list-length (t.bt-shape) == 2
+    in let shape = if matrix then [list-at (t.bt-shape) 0 / 3, list-at (t.bt-shape) 1] else [list-at (t.bt-shape) 0 / 3]
+    in let suffix = if matrix then "weight" else "bias"
+    in BoundTensor { bt-name = text-replace (bcl-name (t.bt-name)) (".attn.in_proj_" & suffix) (".self_attn." & part & "_proj." & suffix), bt-dtype = t.bt-dtype, bt-shape = shape, bt-offset = t.bt-offset + i * (t.bt-bytes / 3), bt-bytes = t.bt-bytes / 3 }
+
+  bcl-expand : List BoundTensor, Integer, List BoundTensor -> List BoundTensor
+  bcl-expand (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in if text-ends-with (t.bt-name) ".attn.in_proj_weight" | text-ends-with (t.bt-name) ".attn.in_proj_bias" then bcl-expand ts (i + 1) (acc & [bcl-third t 0 "q", bcl-third t 1 "k", bcl-third t 2 "v"])
+    else bcl-expand ts (i + 1) (list-push acc (BoundTensor { bt-name = bcl-name (t.bt-name), bt-dtype = t.bt-dtype, bt-shape = t.bt-shape, bt-offset = t.bt-offset, bt-bytes = t.bt-bytes }))
+
+  browser-clip-close : BrowserClipLoaded -> Integer
+  browser-clip-close (loaded) = bcl-free (loaded.bcl-handles) 0
+
+  bcl-free : List Integer, Integer -> Integer
+  bcl-free (hs) (i) = if i >= list-length hs then 0 else let f = gpu-buf-free (list-at hs i) in bcl-free hs (i + 1)
+
+  bcl-refuse : List Integer, (Text -> Integer), Text -> Integer
+  bcl-refuse (hs) (refuse) (why) = let f = bcl-free hs 0 in refuse why
+
+  bcl-uploaded : Text, Text, ClipSpec, List BoundTensor, Integer, List Text, List Integer, Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserClipLoaded -> Integer), (Text -> Integer), Text -> Integer
+  bcl-uploaded (file) (code) (spec) (ts) (i) (ns) (hs) (h) (patch) (ready) (refuse) (result) =
+    if text-contains result "\"ok\":true" == False then bcl-refuse (list-push hs h) refuse ("CLIP upload failed: " & result)
+    else let t = list-at ts i
+    in if text-ends-with (t.bt-name) ".text_projection" then
+      let dst = gpu-buf-alloc (spec.cs-width * spec.cs-width * 2)
+      in let ok = if dst == 0 then 0 - 1 else bc-run code "bcx_transpose_main" (spec.cs-width * spec.cs-width / 2) [gpu-arg-buf h 0, gpu-arg-buf dst 0, gpu-arg-u32 (spec.cs-width)]
+      in let f = gpu-buf-free h
+      in if ok < 0 then bcl-refuse (if dst == 0 then hs else list-push hs dst) refuse "CLIP projection transpose failed"
+      else bcl-upload file code spec ts (i + 1) (list-push ns (t.bt-name)) (list-push hs dst) patch ready refuse
+    else bcl-upload file code spec ts (i + 1) (list-push ns (t.bt-name)) (list-push hs h) patch ready refuse
+
+  bcl-upload : Text, Text, ClipSpec, List BoundTensor, Integer, List Text, List Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserClipLoaded -> Integer), (Text -> Integer) -> Integer
+  bcl-upload (file) (code) (spec) (ts) (i) (ns) (hs) (patch) (ready) (refuse) =
+    if i >= list-length ts then
+      let weights = browser-clip-weights spec ns hs
+      in if weights.bc-status /= 0 then bcl-refuse hs refuse "CLIP required tensors are missing"
+      else ready (BrowserClipLoaded { bcl-weights = weights, bcl-handles = hs })
+    else let t = list-at ts i
+    in let dt = if t.bt-dtype == st-dtype-f16 then gpu-dt-f16 else if t.bt-dtype == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+    in if dt < 0 then bcl-refuse hs refuse "CLIP tensor dtype is unsupported"
+    else let count = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = gpu-buf-alloc (if bt-half t then (count + 1) / 2 * 4 else count * 4)
+    in if h == 0 then bcl-refuse hs refuse "CLIP tensor allocation failed"
+    else gpu-buf-upload-then h 0 file (t.bt-offset) count dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r ->
+      if text-contains r "\"ok\":true" == False then bcl-uploaded file code spec ts i ns hs h patch ready refuse r
+      else patch t h (\why -> if why /= "" then bcl-refuse (list-push hs h) refuse why
+        else bcl-uploaded file code spec ts i ns hs h patch ready refuse r))
+
+  browser-clip-load : Text, Text, ClipSpec, PartBinding, (BrowserClipLoaded -> Integer), (Text -> Integer) -> Integer
+  browser-clip-load (file) (code) (spec) (part) (ready) (refuse) =
+    browser-clip-load-patched file code spec part (\t h next -> next "") ready refuse
+
+  browser-clip-load-patched : Text, Text, ClipSpec, PartBinding, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserClipLoaded -> Integer), (Text -> Integer) -> Integer
+  browser-clip-load-patched (file) (code) (spec) (part) (patch) (ready) (refuse) =
+    if list-length (part.pb-bound) /= part.pb-required | part.pb-required <= 0 then refuse "CLIP checkpoint part is incomplete"
+    else bcl-upload file code spec (if spec.cs-open then bcl-expand (part.pb-bound) 0 [] else part.pb-bound) 0 [] [] patch ready refuse

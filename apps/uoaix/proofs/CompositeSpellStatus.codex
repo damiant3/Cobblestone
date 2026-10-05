@@ -1,0 +1,102 @@
+Chapter: CompositeSpellStatus
+  cites Uoaix chapter CompositeStore
+
+  css-check : Text, Boolean -> [Console] Integer
+  css-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  css-fill : WalkMap, Integer -> Integer
+  css-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in css-fill map (i + 1)
+  css-create : Integer -> List Integer
+  css-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Mage" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  css-decoration : WalkMap -> Result WdState Text
+  css-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  css-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  css-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  css-find : List (List Integer), Integer, Integer -> List Integer
+  css-find (packets) (op) (i) = if i == list-length packets then []
+    else let packet = list-at packets i
+    in if list-length packet > 0 & list-at packet 0 == op then packet else css-find packets op (i + 1)
+  css-status : CompositeGame, GameShard, GameInput -> List Integer
+  css-status (owner) (game) (input) = when cg-view owner game input (gs-reply [] "probe")
+    is Err (_) -> []
+    is Ok (viewed) -> css-find viewed.packets #11 0
+  css-stat : List Integer, Integer -> Integer
+  css-stat (status) (at) = if list-length status /= 66 then -1 else gp-u16 status at
+
+  css-run : CompositeOwner, WdState, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  css-run (store) (decoration) (map) (specs) = let owner = store.state in act
+    magic <- mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (css-cover map)
+    hooked <- mge-bind magic
+    attached <- __record-set owner "magic" (Just magic)
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (css-create 0)
+    game <- owner.checkpoint.game
+    player <- list-at owner.vendor.players 0
+    ensured <- mgs-ensure magic game player.serial
+    when ensured
+      is Err (e) -> css-check ("actor " & e) False
+      is Ok (actor) -> act
+        base <- when entry is Err (_) -> [] is Ok (viewed) -> css-find viewed.packets #11 0
+        bonus <- poke-qword actor.mods 0 10
+        bonus-until <- poke-qword actor.mods 8 (get-ticks + 100000)
+        curse <- poke-qword actor.mods 48 -5
+        curse-until <- poke-qword actor.mods 56 (get-ticks + 100000)
+        blessed <- cg-view owner game input (gs-reply [] "probe")
+        shown <- when blessed is Err (_) -> [] is Ok (viewed) -> css-find viewed.packets #11 0
+        stamina <- when blessed is Err (_) -> [] is Ok (viewed) -> css-find viewed.packets #A3 0
+        a <- css-check "self status before any effect shows base strength and dexterity" (is-ok entry & css-stat base 44 == actor.strength & css-stat base 46 == actor.dexterity)
+        b <- css-check "a strength bonus and a dexterity curse reach the client status" (css-stat shown 44 == actor.strength + 10 & css-stat shown 46 == actor.dexterity - 5 & css-stat shown 52 == actor.dexterity - 5 & list-length stamina == 9 & gp-u16 stamina 5 == actor.dexterity - 5)
+        cleared-bonus <- poke-qword actor.mods 0 0
+        cleared-curse <- poke-qword actor.mods 48 0
+        expired <- css-status owner game input
+        c <- css-check "expired effects restore the shown stats" (css-stat expired 44 == actor.strength & css-stat expired 46 == actor.dexterity)
+        a + b + c
+      end
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> css-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> css-check e False
+     is Ok (map) -> let filled = css-fill map 0
+      in when css-decoration map
+       is Err (e) -> css-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> css-check ("store " & e) False
+      is Ok (store) -> act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> css-check ("recovery " & e) False
+        is Ok (owner) -> css-run owner decoration map specs
+      end
+    end

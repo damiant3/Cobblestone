@@ -1,0 +1,91 @@
+Chapter: BankCommands
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter ItemTable
+  cites Uoaix chapter ItemActions
+  cites Uoaix chapter WorldAction
+
+ Classic 0x03 speech text starts at byte 8.
+
+  BcDone = record { moved : Integer, packets : List (List Integer) }
+  bc-lower : Integer -> Integer
+  bc-lower (c) = if c >= 65 & c <= 90 then c + 32 else c
+  bc-lowered : List Integer, Integer, List Integer -> List Integer
+  bc-lowered (s) (i) (out) = if i >= list-length s then out else bc-lowered s (i + 1) (list-push out (bc-lower (list-at s i)))
+  bc-said : List Integer, Integer, List Integer -> List Integer
+  bc-said (packet) (i) (out) = if i >= list-length packet then out
+    else let c = list-at packet i in if c == 0 then out else bc-said packet (i + 1) (list-push out (bc-lower c))
+  bc-words : List Integer, Integer, List Integer, List (List Integer) -> List (List Integer)
+  bc-words (s) (i) (word) (out) = if i >= list-length s then (if list-length word > 0 then list-push out word else out)
+    else let c = list-at s i
+    in if c == 32 then bc-words s (i + 1) [] (if list-length word > 0 then list-push out word else out)
+    else bc-words s (i + 1) (list-push word c) out
+  bc-same-at : List Integer, List Integer, Integer -> Boolean
+  bc-same-at (a) (b) (i) = if i >= list-length a then True else list-at a i == list-at b i & bc-same-at a b (i + 1)
+  bc-same : List Integer, List Integer -> Boolean
+  bc-same (a) (b) = list-length a == list-length b & bc-same-at a b 0
+  bc-join : List (List Integer), Integer, List Integer -> List Integer
+  bc-join (words) (i) (out) = if i >= list-length words then out
+    else bc-join words (i + 1) ((if list-length out == 0 then out else list-push out 32) & list-at words i)
+  bc-number : List Integer, Integer, Integer -> Integer
+  bc-number (word) (i) (value) = if i >= list-length word then (if i == 0 then -1 else value)
+    else let c = list-at word i in if c < 48 | c > 57 | value > 999999 then -1 else bc-number word (i + 1) (value * 10 + c - 48)
+  bc-matches : Integer, Integer, List Integer -> Boolean
+  bc-matches (tiles) (graphic) (kind) = if list-length kind == 0 then True
+    else if graphic == #0EED & (bc-same kind [103,111,108,100] | bc-same kind [99,111,105,110,115]) then True
+    else if not (it-present tiles graphic) then False
+    else let at = it-entry tiles graphic + 17
+    in bc-same kind (bc-lowered (it-name-bytes tiles at 0 False 0 []) 0 []) | bc-same kind (bc-lowered (it-name-bytes tiles at 0 True 0 []) 0 [])
+
+  bc-move : GsiState, Integer, Integer, Integer, Integer, Integer -> Result (List WorldEvent) Text
+  bc-move (items) (now) (actor) (serial) (amount) (dest) =
+    let meta = gsi-meta items serial
+    in let request = ItemMove { actor = actor, item = serial, amount = amount, destination = ItemContainer dest 20 20 }
+    in let admission = ItemAdmission { movable = meta.movable, stackable = meta.stackable, destination = True }
+    in when ia-plan (WorldCheckpoint { world = items.world, sequence = 0, tick = now }) now request admission
+      is Err (e) -> Err e
+      is Ok (action) -> when gsi-apply items.world now action
+        is Err (e) -> Err e
+        is Ok (_) -> let last = list-at action.events (list-length action.events - 1)
+          in let registered = if last.operation == 1 then gsi-register items last.object.serial meta.layer meta.gump meta.movable meta.stackable else 0
+          in Ok action.events
+  bc-transfer : GsiState, Integer, Integer, Integer, List Integer, Integer, Integer, BcDone -> BcDone
+  bc-transfer (items) (now) (actor) (serial) (kind) (dest) (want) (done) =
+    if serial == 0 | want <= 0 then done
+    else let next = world-next-sibling items.world serial
+    in when world-get items.world serial
+      is Err (_) -> bc-transfer items now actor next kind dest want done
+      is Ok (item) -> if item.kind /= 2 | not (gsi-known items serial) | not (gsi-meta items serial).movable
+          | not (bc-matches items.tiles item.graphic kind) then bc-transfer items now actor next kind dest want done
+        else let take = min want item.amount
+        in when bc-move items now actor serial take dest
+          is Err (_) -> bc-transfer items now actor next kind dest want done
+          is Ok (events) -> let after = BcDone { moved = done.moved + take, packets = done.packets & gsi-updates items events 0 [] }
+            in bc-transfer items now actor next kind dest (want - take) after
+
+  bc-say : Integer, Text -> GameReply
+  bc-say (serial) (text) = gs-reply [sip-message serial #FFFF 6 text] "bank:command"
+  bc-request : List Integer -> Boolean
+  bc-request (packet) = list-length packet > 9 & list-at packet 0 == 3
+    & (let words = bc-words (bc-said packet 8 []) 0 [] []
+      in list-length words >= 2 & (bc-same (list-at words 0) [100,101,112,111,115,105,116] | bc-same (list-at words 0) [119,105,116,104,100,114,97,119]))
+  bc-handle : GmbState, GameShard, GameInput, List Integer, Integer -> GameReply
+  bc-handle (bank) (shard) (input) (packet) (now) =
+    let words = bc-words (bc-said packet 8 []) 0 [] []
+    in let deposit = bc-same (list-at words 0) [100,101,112,111,115,105,116]
+    in let every = bc-same (list-at words 1) [97,108,108]
+    in let count = if every then 1000000000 else bc-number (list-at words 1) 0 0
+    in let kind = if every then [] else bc-join words 2 []
+    in if count < 1 | (not every & list-length kind == 0) then bc-say input.session.serial "Say: deposit all, deposit <amount> <item>, or withdraw <amount> <item>."
+    else when world-get bank.items.world input.session.serial
+      is Err (_) -> bc-say input.session.serial "You cannot do that now."
+      is Ok (mobile) -> if not (gmb-near-banker bank mobile 0) then bc-say input.session.serial "You must be near a banker."
+        else let box = gmb-bank-find bank.items mobile.serial 0
+        in let pack = gsi-pack-find bank.items.world mobile.serial 0
+        in if box == 0 then bc-say input.session.serial "Say bank first to open your bank box."
+        else if pack == 0 then bc-say input.session.serial "You have no backpack."
+        else let from = if deposit then pack else box
+        in let dest = if deposit then box else pack
+        in let done = bc-transfer bank.items now mobile.serial (world-first-child bank.items.world from) kind dest count (BcDone { moved = 0, packets = [] })
+        in if done.moved == 0 then bc-say input.session.serial "Nothing like that to move."
+        else gs-reply (list-push done.packets (sip-message input.session.serial #FFFF 6
+          ((if deposit then "Deposited " else "Withdrew ") & show done.moved & "."))) "bank:command"

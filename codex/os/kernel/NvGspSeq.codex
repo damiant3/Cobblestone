@@ -1,0 +1,63 @@
+Chapter: NvGspSeq
+  cites Foreword chapter Format
+
+ The GSP-RM CPU sequencer (the RUN_CPU_SEQUENCER RPC's buffer), decoded as
+ tinygrad's run_cpu_seq executes it (tinygrad/runtime/support/nv/ip.py, at
+ c3aec477). rpc_run_cpu_sequencer_v17_00: bufferSizeDWord 0, cmdIndex 4 (the
+ number of command dwords), regSaveArea 8..39, commands from byte 40 as
+ little-endian 32-bit words. Opcodes and their operands:
+ 0 write (addr, value); 1 modify (addr, value, mask), the register becomes
+ (old AND NOT mask) OR (value AND mask); 2 poll (addr, mask, value, two
+ operands unused), wait until (register AND mask) equals value; 3 delay (us);
+ 4 save (addr, index), read the register into regSaveArea; 5 core reset:
+ reset the GSP falcon, then disable its context requests; 6 start the GSP
+ falcon; 7 wait for the GSP falcon to halt; 8 core resume: reset the GSP
+ falcon as RISC-V, write the libos argument address to GSP falcon mailbox 0
+ (low 32 bits) and 1 (high 32 bits), start SEC2, wait for the boot-stage-3
+ handoff, and read SEC2's mailbox 0, which must be zero. Any other opcode
+ stops the sequence.
+
+ A register read here answers seq-model, a fixed function of the address, so
+ that a modify's result is a function of its operands alone.
+
+Section: Trace
+
+  seq-model : Integer -> Integer
+  seq-model (addr) = bit-and (addr * #9E3779B1) #FFFFFFFF
+
+  seq-u32-at : List Integer, Integer -> Integer
+  seq-u32-at (bs) (i) = bit-or (list-at bs i) (bit-or (bit-shl (list-at bs (i + 1)) 8) (bit-or (bit-shl (list-at bs (i + 2)) 16) (bit-shl (list-at bs (i + 3)) 24)))
+
+  seq-words : List Integer, Integer, Integer, List Integer -> List Integer
+  seq-words (bs) (i) (n) (acc) = if n <= 0 then acc else seq-words bs (i + 4) (n - 1) (acc & [seq-u32-at bs i])
+
+  seq-hex : Integer -> Text
+  seq-hex (v) = "0x" & fmt-hex v
+
+  seq-run : List Integer, Integer, Integer, List Text -> List Text
+  seq-run (ws) (i) (libos) (acc) =
+    if i >= list-length ws then acc
+    else let op = list-at ws i
+    in when op
+     is 0 -> seq-run ws (i + 3) libos (acc & ["W " & seq-hex (list-at ws (i + 1)) & " " & seq-hex (list-at ws (i + 2))])
+     is 1 -> seq-run ws (i + 4) libos (acc & seq-modify (list-at ws (i + 1)) (list-at ws (i + 2)) (list-at ws (i + 3)))
+     is 2 -> seq-run ws (i + 6) libos (acc & ["P " & seq-hex (list-at ws (i + 1)) & " " & seq-hex (list-at ws (i + 2)) & " " & seq-hex (list-at ws (i + 3))])
+     is 3 -> seq-run ws (i + 2) libos (acc & ["D " & show (list-at ws (i + 1))])
+     is 4 -> seq-run ws (i + 3) libos (acc & ["R " & seq-hex (list-at ws (i + 1))])
+     is 5 -> seq-run ws (i + 1) libos (acc & ["RESET gsp", "DISCTX gsp"])
+     is 6 -> seq-run ws (i + 1) libos (acc & ["START gsp"])
+     is 7 -> seq-run ws (i + 1) libos (acc & ["HALT gsp"])
+     is 8 -> seq-run ws (i + 1) libos (acc & ["RESET gsp riscv", "MB0 " & seq-hex (bit-and libos #FFFFFFFF), "MB1 " & seq-hex (bit-shru libos 32), "START sec2", "WAIT handoff", "MBR sec2"])
+     is otherwise -> acc & ["BAD " & show op]
+
+  seq-modify : Integer, Integer, Integer -> List Text
+  seq-modify (addr) (value) (mask) =
+    let now = bit-or (bit-and (seq-model addr) (bit-xor mask #FFFFFFFF)) (bit-and value mask)
+    in ["R " & seq-hex addr, "W " & seq-hex addr & " " & seq-hex now]
+
+  nv-gsp-seq-trace : List Integer, Integer -> List Text
+  nv-gsp-seq-trace (buf) (libos) =
+    if list-length buf < 40 then ["BAD header"]
+    else let n = seq-u32-at buf 4
+    in if 40 + 4 * n > list-length buf then ["BAD length"]
+    else seq-run (seq-words buf 40 n []) 0 libos []

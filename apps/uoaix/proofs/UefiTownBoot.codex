@@ -1,0 +1,63 @@
+Chapter: UefiTownBoot
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter BootVolume
+  cites Uoaix chapter TownStore
+  cites Uoaix chapter TownRestartWrite
+  cites Uoaix chapter TownRestartRead
+  cites Kernel chapter VirtioBlkX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Result
+
+  utb-store : UoDevice -> [Console, Device.Block] Nothing
+  utb-store (device) = act
+    region <- uv-open-region device
+    when region
+      is Err (e) -> print-line-uni ("FAIL GPT " & e)
+      is Ok (part) -> act
+        opened <- us-open-on device part.start part.sectors
+        when opened
+          is Err (e) -> print-line-uni ("FAIL store " & e)
+          is Ok (store) -> if store.head == 0 then act
+            absent <- town-store-restore store
+            trr-check "blank store recovery refused" (is-err absent)
+            when world-new 4
+              is Err (e) -> print-line-uni ("FAIL world " & e)
+              is Ok (world) -> trw-run store world
+          end
+          else act
+            restored <- town-store-restore store
+            when restored
+              is Err (e) -> print-line-uni ("FAIL recovery " & e)
+              is Ok (recovered) -> act
+                trr-finish recovered.state recovered.inputs
+                let changed = __record-set store "tick" (store.tick + 1)
+                in act
+                  mismatch <- town-store-restore store
+                  trr-check "recovered head mismatch refused" (is-err mismatch)
+                end
+              end
+          end
+      end
+  end
+
+  opening : [Console, Device.Port, Device.Block] Integer = act
+    initialized <- runtime-init 0
+    print-line-uni "UEFI STORE START"
+    when vbx-find pci-scan-all
+      is Ok (state) -> act
+        print-line-uni "UEFI STORE DEVICE virtio"
+        print-line-uni ("UEFI STORE MMIO=" & show state.device.common)
+        utb-store (UoVirtio state)
+      end
+      is Err (e) -> if e == "virtio block device absent" then act
+        print-line-uni "UEFI STORE DEVICE ide"
+        selected <- block-select 0
+        utb-store UoIde
+      end
+      else print-line-uni ("FAIL device " & e)
+    print-line-uni "UEFI STORE END"
+    port-out-32 244 0
+  end
+
+Page 1

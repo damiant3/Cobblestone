@@ -1,0 +1,76 @@
+Chapter: GameOpcode
+  cites Uoaix chapter GamePackets
+
+ The fixed-length versus three-byte dynamic header convention is adapted
+ from SphereServer Source-X Packet::checkLength, Apache-2.0.
+ GameDispatch.md records attribution; Sphere-LICENSE.txt carries the license.
+
+ Client 1.25.32 CLIENT.EXE has (opcode, length) uint32 pairs at file
+ offset 705408, through B3. Length 8000 hex denotes a dynamic header.
+ SHA256 F78A864042E3762B896CCDF1423E96D3023A969270C4EB6ACBD207CC71D80D07.
+
+  go-lengths : List Integer = [
+    100, 5, 3, 0, 2, 5, 5, 7, 14, 5, 11, 266, 0, 3, 0, 61,
+    215, 0, 0, 10, 6, 9, 1, 0, 0, 0, 0, 37, 0, 5, 4, 8,
+    19, 8, 3, 26, 7, 20, 5, 2, 5, 1, 5, 2, 2, 17, 15, 10,
+    5, 1, 2, 2, 10, 653, 0, 8, 7, 9, 0, 0, 0, 2, 37, 0,
+    201, 0, 0, 553, 713, 5, 0, 11, 73, 93, 5, 9, 0, 0, 6, 2,
+    0, 0, 0, 2, 12, 1, 11, 110, 106, 0, 0, 4, 2, 73, 0, 49,
+    5, 9, 15, 13, 1, 4, 0, 21, 0, 0, 3, 9, 19, 3, 14, 0,
+    28, 0, 5, 2, 0, 35, 16, 17, 0, 9, 0, 2, 0, 13, 2, 0,
+    62, 0, 2, 39, 69, 2, 0, 0, 66, 0, 0, 0, 11, 0, 0, 0,
+    19, 65, 0, 98, 0, 9, 0, 2, 0, 26, 0, 258, 309, 51, 0, 0,
+    3, 9, 9, 9, 149, 0, 0, 4, 0, 0, 5, 0, 0, 0, 0, 13,
+    0, 0, 0, 0]
+
+  go-wire-limit : Integer = 65535
+
+  GameOpcodeSpec = record { opcode : Integer, size : Integer, minimum : Integer, maximum : Integer }
+
+  go-default : Integer -> GameOpcodeSpec
+  go-default (opcode) =
+    let size = if opcode < 0 | opcode >= list-length go-lengths then -1 else list-at go-lengths opcode
+    in if opcode == 3 then GameOpcodeSpec { opcode = opcode, size = 0, minimum = 10, maximum = 137 }
+    else if size == 0 then GameOpcodeSpec { opcode = opcode, size = 0, minimum = 3, maximum = go-wire-limit }
+    else GameOpcodeSpec { opcode = opcode, size = size, minimum = size, maximum = size }
+
+  go-find : List GameOpcodeSpec, Integer, Integer -> GameOpcodeSpec
+  go-find (specs) (opcode) (i) = if i >= list-length specs then go-default opcode
+    else let spec = list-at specs i
+    in if spec.opcode == opcode then spec else go-find specs opcode (i + 1)
+
+  go-spec-valid : GameOpcodeSpec -> Boolean
+  go-spec-valid (spec) = spec.opcode >= 0 & spec.opcode <= 255
+    & spec.maximum <= go-wire-limit & spec.minimum >= 1 & spec.minimum <= spec.maximum
+    & (if spec.size == 0 then spec.minimum >= 3 else spec.size == spec.minimum & spec.size == spec.maximum)
+
+  go-no-duplicate : List GameOpcodeSpec, Integer, Integer -> Boolean
+  go-no-duplicate (specs) (opcode) (i) = if i >= list-length specs then True
+    else (list-at specs i).opcode /= opcode & go-no-duplicate specs opcode (i + 1)
+
+  go-valid-from : List GameOpcodeSpec, Integer -> Boolean
+  go-valid-from (specs) (i) = if i >= list-length specs then True
+    else let spec = list-at specs i
+    in let core = go-default spec.opcode
+    in go-spec-valid spec & go-no-duplicate specs spec.opcode (i + 1)
+      & (if core.size > 0 then spec.size == core.size & spec.minimum == core.minimum & spec.maximum == core.maximum
+        else if core.size == 0 then spec.size == 0 & spec.minimum >= core.minimum & spec.maximum <= core.maximum else True)
+      & go-valid-from specs (i + 1)
+
+  go-valid : List GameOpcodeSpec -> Boolean
+  go-valid (specs) = list-length specs <= 256 & go-valid-from specs 0
+
+  go-header : GameOpcodeSpec -> Integer
+  go-header (spec) = if not (go-spec-valid spec) then 0 else if spec.size == 0 then 3 else spec.size
+
+  go-packet-valid : List GameOpcodeSpec, List Integer -> Boolean
+  go-packet-valid (specs) (packet) =
+    let length = list-length packet
+    in if length < 1 | length > go-wire-limit then False
+    else let spec = go-find specs (list-at packet 0) 0
+    in if not (go-spec-valid spec) then False
+    else if spec.size /= 0 then length == spec.size
+    else if length < 3 | length < spec.minimum | length > spec.maximum then False
+    else gp-u16 packet 1 == length
+
+Page 1

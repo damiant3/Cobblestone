@@ -1,0 +1,104 @@
+Chapter: Sd15UnetLong
+
+  cites Kernel chapter GpuBridge
+  cites Diffusion chapter UNet
+  cites Diffusion chapter UNet15
+  cites Diffusion chapter UNetGraph
+  cites Diffusion chapter UNet15Graph
+  cites Diffusion chapter UNetReference
+  cites Diffusion chapter UNet15LongReference
+
+ One SD1.5 UNet step over a context of two prompt chunks, 154 x 768, against
+ Forge's own UNet fed the same (build/sd15-unet-oracle.py --long). The
+ sabotage reads the same context as one chunk, 77 tokens, and must miss.
+
+ We say:
+
+Section: Inputs
+
+ The formulas build/sd15-unet-oracle.py fed Forge's UNet, at a 16 x 16 latent.
+
+  latent-at : Integer -> Real
+  latent-at (i) = real-from-int (int-mod (i * 37 + 11) 257 - 128) / 128.0
+
+  context-at : Integer -> Real
+  context-at (i) = real-from-int (int-mod (i * 13 + 5) 251 - 125) / 256.0
+
+  build : Integer, Integer, Integer, List Real -> List Real
+  build (which) (i) (n) (acc) =
+    if i >= n then acc
+    else build which (i + 1) n (list-push acc (if which == 0 then latent-at i else context-at i))
+
+  ops-at : Integer -> UNetOps UNetFile
+  ops-at (tokens) = unet-ops-with (\x s cx cs hh ww -> True) (\p -> False) (\p -> False) (\s hd r -> True) (\h -> tokens)
+
+Section: Grading
+
+  abs : Real -> Real
+  abs (x) = if x < 0.0 then 0.0 - x else x
+
+  count-near : List Real, UNetRefBlock, Real, Integer, Integer -> Integer
+  count-near (got) (ref) (tol) (j) (acc) =
+    if j >= unet-ref-samples then acc
+    else let n = list-length got
+    in let v = list-at got (int-mod (j * unet-ref-stride + unet-ref-offset) n)
+    in count-near got ref tol (j + 1) (if abs (v - list-at (ref.urb-samples) j) <= tol * ref.urb-rms then acc + 1 else acc)
+
+  sum-sq : List Real, Integer, Real -> Real
+  sum-sq (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else sum-sq xs (i + 1) (acc + list-at xs i * list-at xs i)
+
+  rms-near : List Real, UNetRefBlock -> Boolean
+  rms-near (got) (ref) =
+    let n = list-length got
+    in let ms = if n == 0 then 0.0 else sum-sq got 0 0.0 / real-from-int n
+    in abs (ms - ref.urb-rms * ref.urb-rms) <= 0.02 * ref.urb-rms * ref.urb-rms
+
+  grade : Integer, Integer, Real -> Text
+  grade (h) (k) (tol) =
+    let ref = list-at unet15-long-ref-blocks k
+    in let n = ref.urb-c * ref.urb-h * ref.urb-w
+    in let got = if h == 0 then [] else un-download h n
+    in if list-length got /= n then ref.urb-name & ": NO OUTPUT"
+    else ref.urb-name & ": " & show (count-near got ref tol 0 0) & "/" & show unet-ref-samples & " within " & show (real-to-int (tol * 100.0)) & "% of rms, rms " & (if rms-near got ref then "near" else "FAR")
+
+Section: Entry
+
+  run-all : Integer -> List Text
+  run-all (z) =
+    let u = unet-open "realisticVisionV60B1_v20Novae.safetensors"
+    in if (u.uf-file).st-valid == False then ["SKIP: no realisticVisionV60B1_v20Novae.safetensors under the model root build-output/diffusion-models"]
+    else run-step (unet-load u)
+
+  run-step : UNetFile -> List Text
+  run-step (u) =
+    let x = un-upload (build 0 0 1024 [])
+    in let ctx = un-upload (build 2 0 118272 [])
+    in let emb = unet15-embedding u unet15-long-ref-t
+    in let embs = un-silu emb 1280
+    in let blocks = unet15-forward-with (ops-at 154) u x embs ctx 16 16
+    in let lines = grade-all blocks 0 []
+    in let one = unet15-forward-with (ops-at 77) u x embs ctx 16 16
+    in lines & ["sabotage, the context read as one chunk, out: " & grade (list-at one 25) 25 0.01]
+
+  grade-all : List Integer, Integer, List Text -> List Text
+  grade-all (hs) (k) (acc) =
+    if k >= list-length unet15-long-ref-blocks then acc
+    else grade-all hs (k + 1) (list-push acc (grade (if k < list-length hs then list-at hs k else 0) k 0.01))
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+  opening : [Console] Integer
+  opening = act
+    print-all (run-all 0) 0
+    let r = 0 in r
+  end

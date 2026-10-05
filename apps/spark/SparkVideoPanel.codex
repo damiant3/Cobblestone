@@ -1,0 +1,282 @@
+Chapter: SparkVideoPanel
+  cites Spark chapter SparkVideo
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites Foreword chapter CCE
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Game chapter Rasterizer
+  cites Spark chapter Timeline
+  cites Spark chapter AnimPlayer
+
+Section: Session
+
+  SvView = record {
+    svv-project : SvProject,
+    svv-files : List (List Text),
+    svv-root : Text,
+    svv-images : List SvImage,
+    svv-timeline : TimelineState,
+    svv-epoch : Integer,
+    svv-playing : Boolean,
+    svv-base : Integer,
+    svv-frame : Integer,
+    svv-run : Integer,
+    svv-busy : Boolean
+  }
+
+  svp-el : DomElement, Text, Text, Text -> DomElement
+  svp-el (parent) (tag) (id) (text) =
+    let e = dom-set-text (dom-set-attr (dom-create tag) "id" id) text
+    in let a = dom-append parent e
+    in e
+
+  svp-status : Text -> Integer
+  svp-status (s) = let e = dom-set-text (dom-get "video-status") s in 0
+
+  spark-video-panel : DomElement -> Integer
+  spark-video-panel (parent) =
+    let box = dom-set-style (dom-set-style (svp-el parent "section" "video" "") "margin" "24px 0") "padding" "16px"
+    in let css = svp-el box "style" "" "#video{background:#1d2027;border-radius:8px}#video button,#video select,#video input,#video textarea{font:inherit;color:#e8e6e1;background:#292d36;border:1px solid #4b505c;border-radius:5px;padding:6px 9px;margin:4px}#video button{cursor:pointer}#video button:hover{border-color:#e0a040}#video textarea{display:block;box-sizing:border-box;width:100%;min-height:64px;margin:6px 0 12px}#video input[type=number]{width:85px}#video input[type=range]{width:220px;accent-color:#e0a040}#video li{padding:5px 0;overflow-wrap:anywhere}#video canvas{margin:12px 0;border-radius:6px;width:100%;max-width:640px;height:auto;background:#101a28}#video-status{color:#c5bdab}#video-time{white-space:nowrap;font-variant-numeric:tabular-nums}"
+    in let title = svp-el box "h2" "" "Video composition"
+    in let status = svp-el box "p" "video-status" "Open a project to compose stills and audio."
+    in let body = svp-el box "div" "video-body" ""
+    in 0
+
+  svp-find : List (List Text), Text, Integer -> Integer
+  svp-find (files) (path) (i) = if i >= list-length files then 0 - 1 else if json-obj-field (list-at files i) "path" == path then i else svp-find files path (i + 1)
+
+  spark-video-load : List (List Text), Text -> Integer
+  spark-video-load (files) (root) =
+    let epoch = state-set "video-epoch" (state-get "video-epoch" + 1)
+    in let pause = media-pause (dom-get "video-audio")
+    in let clear = dom-set-html (dom-get "video-body") ""
+    in let at = svp-find files (root & "/Video/timeline.json") 0
+    in if at < 0 then svp-loaded files root epoch ""
+    else let row = list-at files at
+    in file-read-then (json-obj-field row "name") 0 (text-to-integer (json-obj-field row "size")) (\r -> svp-loaded files root epoch (svp-text r))
+
+  svp-text : Text -> Text
+  svp-text (s) = when json-parse s
+    is Just (JsonArray (xs)) -> utf8-bytes-to-text (svp-bytes xs 0 [])
+    is otherwise -> "invalid timeline read"
+
+  svp-bytes : List JsonValue, Integer, List Integer -> List Integer
+  svp-bytes (xs) (i) (acc) = if i >= list-length xs then acc else svp-bytes xs (i + 1) (list-push acc (when list-at xs i is JsonInt (n) -> n is otherwise -> 0))
+
+  svp-loaded : List (List Text), Text, Integer, Text -> Integer
+  svp-loaded (files) (root) (epoch) (text) =
+    if epoch /= state-get "video-epoch" then 0
+    else let p = sv-read text
+    in if text-length (p.sv-error) > 0 then svp-status (p.sv-error & " The file has not been changed.")
+    else let s = SvView { svv-project = p, svv-files = files, svv-root = root, svv-images = [], svv-timeline = sv-player p, svv-epoch = epoch, svv-playing = False, svv-base = 0, svv-frame = 0, svv-run = 0, svv-busy = True }
+    in let ui = svp-ui s
+    in svp-load-images s 0
+
+  svp-options : SvView, DomElement, Boolean, Integer -> Integer
+  svp-options (s) (select) (audio) (i) =
+    if i >= list-length (s.svv-files) then 0
+    else let row = list-at (s.svv-files) i
+    in let path = json-obj-field row "path"
+    in let low = text-to-lower path
+    in let n = text-length low
+    in let ext = if n >= 4 then substring low (n - 4) 4 else ""
+    in let yes = if audio then ext == ".wav" | ext == ".mp3" | ext == ".ogg" else ext == ".png" | ext == ".jpg" | ext == "webp" | ext == "jpeg"
+    in let rel = substring path (text-length (s.svv-root) + 1) (text-length path - text-length (s.svv-root) - 1)
+    in let add = if yes then dom-set-attr (svp-el select "option" "" rel) "value" rel else select
+    in svp-options s select audio (i + 1)
+
+  svp-ui : SvView -> Integer
+  svp-ui (s) =
+    let box = dom-set-html (dom-get "video-body") ""
+    in let promptLabel = svp-el box "label" "" "Composition notes / future video prompt"
+    in let prompt = dom-set-value (svp-el box "textarea" "video-prompt" "") (s.svv-project.sv-prompt)
+    in let pk = dom-on-input prompt (\v -> let p = __record-set (s.svv-project) "sv-prompt" v in svp-dirty s)
+    in let tools = svp-el box "div" "" "Still image: "
+    in let images = svp-el tools "select" "video-image" ""
+    in let options = svp-options s images False 0
+    in let label = svp-el tools "span" "" (" Duration in frames (" & show (s.svv-project.sv-fps) & " fps): ")
+    in let duration = dom-set-value (dom-set-attr (svp-el tools "input" "video-duration" "") "type" "number") "72"
+    in let fadeLabel = svp-el tools "span" "" " Crossfade frames: "
+    in let fade = dom-set-value (dom-set-attr (svp-el tools "input" "video-fade" "") "type" "number") "12"
+    in let add = dom-on-click (svp-el tools "button" "video-add" "Add still") (\x -> svp-add s)
+    in let clips = svp-el box "ol" "video-clips" ""
+    in let audioLabel = svp-el box "label" "" "Soundtrack: "
+    in let audio = svp-el box "select" "video-soundtrack" ""
+    in let none = dom-set-attr (svp-el audio "option" "" "No soundtrack") "value" ""
+    in let audioOptions = svp-options s audio True 0
+    in let set = dom-set-value audio (s.svv-project.sv-audio)
+    in let ak = dom-on-input audio (\v -> svp-audio s v)
+    in let player = dom-set-attr (svp-el box "audio" "video-audio" "") "preload" "auto"
+    in let canvas = dom-set-style (dom-set-style (svp-el box "canvas" "video-canvas" "") "display" "block") "max-width" "100%"
+    in let controls = svp-el box "div" "" ""
+    in let play = dom-on-click (svp-el controls "button" "video-play" "Play") (\x -> svp-play s)
+    in let pause = dom-on-click (svp-el controls "button" "video-pause" "Pause") (\x -> svp-pause s)
+    in let stop = dom-on-click (svp-el controls "button" "video-stop" "Stop") (\x -> svp-stop s)
+    in let scrub = dom-set-attr (dom-set-attr (dom-set-attr (svp-el controls "input" "video-seek" "") "type" "range") "min" "0") "step" "1"
+    in let sk = dom-on-input scrub (\v -> svp-seek s (text-to-integer v))
+    in let time = svp-el controls "span" "video-time" ""
+    in let save = dom-on-click (svp-el controls "button" "video-save" "Save composition") (\x -> svp-save s)
+    in let gen = dom-on-click (svp-el controls "button" "video-generate" "Generate video") (\x -> svp-status "Video generation is unavailable: no video model is connected. You can compose existing stills and audio.")
+    in svp-audio s (s.svv-project.sv-audio)
+
+  svp-dirty : SvView -> Integer
+  svp-dirty (s) = svp-status "Unsaved composition."
+
+  svp-audio : SvView, Text -> Integer
+  svp-audio (s) (path) =
+    let pause = svp-pause s
+    in let p = __record-set (s.svv-project) "sv-audio" path
+    in let at = svp-find (s.svv-files) (s.svv-root & "/" & path) 0
+    in let el = dom-set-attr (dom-get "video-audio") "src" (if at < 0 then "" else file-url (json-obj-field (list-at (s.svv-files) at) "name"))
+    in if text-length path > 0 & at < 0 then svp-status ("Soundtrack missing: " & path) else svp-dirty s
+
+  svp-has-image : List SvImage, Text, Integer -> Boolean
+  svp-has-image (xs) (path) (i) = if i >= list-length xs then False else if (list-at xs i).svi-file == path then True else svp-has-image xs path (i + 1)
+
+  svp-load-images : SvView, Integer -> Integer
+  svp-load-images (s) (i) =
+    if s.svv-epoch /= state-get "video-epoch" then 0
+    else if i >= list-length (s.svv-project.sv-clips) then (let a = __record-set s "svv-busy" False in let b = svp-rows s in svp-draw s)
+    else let path = (list-at (s.svv-project.sv-clips) i).sv-file
+    in let at = svp-find (s.svv-files) (s.svv-root & "/" & path) 0
+    in if at < 0 | svp-has-image (s.svv-images) path 0 then svp-load-images s (i + 1)
+    else let status = svp-status ("Reading " & path)
+    in image-pixels-then (json-obj-field (list-at (s.svv-files) at) "name") 320 180 (\px -> svp-image-read s i path px)
+
+  svp-image-read : SvView, Integer, Text, List Integer -> Integer
+  svp-image-read (s) (i) (path) (px) =
+    if s.svv-epoch /= state-get "video-epoch" then 0
+    else let images = if list-length px == 57600 then list-push (s.svv-images) (SvImage { svi-file = path, svi-frame = Framebuf { fb-width = 320, fb-height = 180, fb-pixels = px } }) else s.svv-images
+    in let a = __record-set s "svv-images" images
+    in svp-load-images s (i + 1)
+
+  svp-add : SvView -> Integer
+  svp-add (s) =
+    if s.svv-busy then svp-status "Wait for the stills to finish loading."
+    else let file = dom-get-value (dom-get "video-image")
+    in let frames = text-to-integer (dom-get-value (dom-get "video-duration"))
+    in let fade = text-to-integer (dom-get-value (dom-get "video-fade"))
+    in let clips = list-push (for c in s.svv-project.sv-clips -> c) (SvClip { sv-file = file, sv-frames = frames, sv-fade = fade })
+    in let err = sv-check-clips clips 0
+    in if dom-get-value (dom-get "video-duration") /= show frames | dom-get-value (dom-get "video-fade") /= show fade then svp-status "Duration and crossfade must be whole numbers."
+    else if text-length err > 0 then svp-status err
+    else let stop = svp-stop s
+    in let p = __record-set (s.svv-project) "sv-clips" clips
+    in let t = __record-set s "svv-timeline" (sv-player p)
+    in let busy = __record-set s "svv-busy" True
+    in svp-load-images s 0
+
+  svp-rows : SvView -> Integer
+  svp-rows (s) = let box = dom-set-html (dom-get "video-clips") "" in svp-row s box 0
+
+  svp-row : SvView, DomElement, Integer -> Integer
+  svp-row (s) (box) (i) =
+    if i >= list-length (s.svv-project.sv-clips) then 0
+    else let c = list-at (s.svv-project.sv-clips) i
+    in let row = svp-el box "li" "" (c.sv-file & " | " & show (c.sv-frames) & " frames | fade " & show (c.sv-fade) & (if svp-has-image (s.svv-images) (c.sv-file) 0 then " " else " [missing or unreadable] "))
+    in let up = dom-on-click (svp-el row "button" ("video-up" & show i) "Earlier") (\x -> svp-move s i)
+    in let del = dom-on-click (svp-el row "button" ("video-remove" & show i) "Remove") (\x -> svp-remove s i)
+    in svp-row s box (i + 1)
+
+  svp-without : List SvClip, Integer, Integer, List SvClip -> List SvClip
+  svp-without (xs) (drop) (i) (acc) = if i >= list-length xs then acc else svp-without xs drop (i + 1) (if i == drop then acc else list-push acc (list-at xs i))
+
+  svp-remove : SvView, Integer -> Integer
+  svp-remove (s) (i) = if s.svv-busy then 0 else svp-changed s (svp-without (s.svv-project.sv-clips) i 0 [])
+
+  svp-move : SvView, Integer -> Integer
+  svp-move (s) (i) =
+    if s.svv-busy then svp-status "Wait for the stills to finish loading."
+    else if i <= 0 then svp-status "This still is already first."
+    else let xs = for c in s.svv-project.sv-clips -> c
+    in let a = list-at xs i
+    in let b = list-at xs (i - 1)
+    in svp-changed s (list-set-at (list-set-at xs (i - 1) a) i b)
+
+  svp-changed : SvView, List SvClip -> Integer
+  svp-changed (s) (clips) =
+    let stop = svp-stop s
+    in let p = __record-set (s.svv-project) "sv-clips" clips
+    in let t = __record-set s "svv-timeline" (sv-player p)
+    in let images = __record-set s "svv-images" (svp-retain (s.svv-images) clips 0 [])
+    in let rows = svp-rows s
+    in svp-draw s
+
+  svp-referenced : List SvClip, Text, Integer -> Boolean
+  svp-referenced (clips) (path) (i) = if i >= list-length clips then False else if (list-at clips i).sv-file == path then True else svp-referenced clips path (i + 1)
+
+  svp-retain : List SvImage, List SvClip, Integer, List SvImage -> List SvImage
+  svp-retain (images) (clips) (i) (acc) =
+    if i >= list-length images then acc
+    else let img = list-at images i
+    in svp-retain images clips (i + 1) (if svp-referenced clips (img.svi-file) 0 then list-push acc img else acc)
+
+  svp-draw : SvView -> Integer
+  svp-draw (s) =
+    let p = s.svv-project
+    in let total = sv-total (p.sv-clips) 0 0
+    in let frame = s.svv-timeline.tl-player.ap-frame
+    in let fb = sv-render p (s.svv-images) frame 320 180
+    in let painted = canvas-pixels (dom-get "video-canvas") 320 180 (fb.fb-pixels)
+    in let max = dom-set-attr (dom-get "video-seek") "max" (show (if total > 0 then total - 1 else 0))
+    in let value = dom-set-value max (show frame)
+    in let time = dom-set-text (dom-get "video-time") (" Frame " & show frame & " / " & show total & " at " & show (p.sv-fps) & " fps")
+    in let mark = state-set "video-frame" frame
+    in svp-status (if s.svv-playing then "Playing composition." else "Composition ready. Save to keep edits.")
+
+  svp-pause : SvView -> Integer
+  svp-pause (s) =
+    let a = __record-set s "svv-playing" False
+    in let run = __record-set s "svv-run" (s.svv-run + 1)
+    in let t = timeline-pause (s.svv-timeline)
+    in let audio = media-pause (dom-get "video-audio")
+    in svp-status "Paused."
+
+  svp-stop : SvView -> Integer
+  svp-stop (s) = let p = svp-pause s in let t = timeline-stop (s.svv-timeline) in let audio = media-seek-ms (dom-get "video-audio") 0 in let draw = svp-draw s in svp-status "Stopped."
+
+  svp-seek : SvView, Integer -> Integer
+  svp-seek (s) (frame) =
+    let pause = svp-pause s
+    in let total = sv-total (s.svv-project.sv-clips) 0 0
+    in let f = if frame < 0 then 0 else if frame >= total then (if total > 0 then total - 1 else 0) else frame
+    in let t = anim-set-frame (s.svv-timeline.tl-player) f
+    in let audio = media-seek-ms (dom-get "video-audio") (f * 1000 / s.svv-project.sv-fps)
+    in svp-draw s
+
+  svp-play : SvView -> Integer
+  svp-play (s) =
+    if s.svv-playing then svp-status "The composition is already playing."
+    else if s.svv-busy then svp-status "Wait for the stills to finish loading."
+    else if sv-total (s.svv-project.sv-clips) 0 0 == 0 then svp-status "Add a still image before playing."
+    else if text-length (s.svv-project.sv-audio) > 0 & svp-find (s.svv-files) (s.svv-root & "/" & s.svv-project.sv-audio) 0 < 0 then svp-status ("Cannot play: soundtrack missing: " & s.svv-project.sv-audio)
+    else let run = s.svv-run + 1
+    in let keep = __record-set s "svv-run" run
+    in let audio = media-seek-ms (dom-get "video-audio") (s.svv-timeline.tl-player.ap-frame * 1000 / s.svv-project.sv-fps)
+    in media-play-then audio (\err -> svp-playing s run err)
+
+  svp-playing : SvView, Integer, Text -> Integer
+  svp-playing (s) (run) (err) =
+    if s.svv-epoch /= state-get "video-epoch" | run /= s.svv-run then 0
+    else if text-length err > 0 then svp-status ("Audio playback failed: " & err)
+    else let p = __record-set s "svv-playing" True
+    in let b = __record-set s "svv-base" (clock-ms 0)
+    in let f = __record-set s "svv-frame" (s.svv-timeline.tl-player.ap-frame)
+    in let t = timeline-play (s.svv-timeline)
+    in svp-tick s run
+
+  svp-tick : SvView, Integer -> Integer
+  svp-tick (s) (run) =
+    if s.svv-playing == False | s.svv-epoch /= state-get "video-epoch" | run /= s.svv-run then 0
+    else let total = sv-total (s.svv-project.sv-clips) 0 0
+    in let frame = s.svv-frame + (clock-ms 0 - s.svv-base) * s.svv-project.sv-fps / 1000
+    in if frame >= total then svp-seek s (total - 1)
+    else let t = anim-set-frame (s.svv-timeline.tl-player) frame
+    in let draw = svp-draw s
+    in set-timeout (\x -> svp-tick s run) 33
+
+  svp-save : SvView -> Integer
+  svp-save (s) =
+    if state-get "writable" /= 1 then svp-status "This project is read-only. Open a writable folder to save."
+    else file-write-then "Video/timeline.json" (sv-write (s.svv-project)) (\r -> if text-contains r "\"ok\":true" then svp-status "Composition saved." else svp-status ("Not saved: " & r))

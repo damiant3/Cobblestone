@@ -1,0 +1,98 @@
+Chapter: WorldRecordsProof
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  wrp-object : Integer, Integer, Integer -> WorldObject
+  wrp-object (kind) (serial) (container) = WorldObject {
+    serial = serial, kind = kind, x = 1420, y = 1690, z = -5, graphic = 400,
+    hue = 17, container = container, amount = 1, health = 50 }
+
+  wrp-check : Text, Boolean -> [Console] Nothing
+  wrp-check (label) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & label)
+
+  wrp-run : WorldTable -> [Console] Nothing
+  wrp-run (world) = when world-create world (wrp-object 1 0 0)
+    is Err (e) -> print-line-uni ("FAIL create mobile " & e)
+    is Ok (mobile) -> when world-create world (wrp-object 2 0 mobile)
+      is Err (e) -> print-line-uni ("FAIL create pack " & e)
+      is Ok (pack) -> when world-create world (wrp-object 2 0 pack)
+        is Err (e) -> print-line-uni ("FAIL create item " & e)
+        is Ok (item) -> act
+          wrp-check "serial namespaces" (mobile == 1 & pack == 1073741826 & item == 1073741827)
+          wrp-check "bounded population" (world-count world == 3 & is-err (world-create world (wrp-object 2 0 0)) & world-count world == 3)
+          wrp-check "cycle refusal" (is-err (world-update world (wrp-object 2 pack item)))
+          wrp-check "self parent refusal" (is-err (world-update world (wrp-object 2 pack pack)))
+          wrp-check "missing parent refusal" (is-err (world-update world (wrp-object 2 item 99)))
+          wrp-check "kind refusal" (is-err (world-update world (wrp-object 1 item 0)))
+          wrp-check "nonempty deletion refusal" (is-err (world-delete world mobile) & is-err (world-delete world pack))
+          wrp-check "refusals preserve content" (when world-get world pack is Err (e) -> False is Ok (obj) -> obj.container == mobile & obj.kind == 2 & obj.z == -5 & obj.hue == 17)
+          wrp-check "delete child" (is-ok (world-delete world item) & world-count world == 2 & is-err (world-get world item))
+          when world-create world (wrp-object 2 0 pack)
+            is Err (e) -> print-line-uni ("FAIL reuse " & e)
+            is Ok (next) -> act
+              wrp-check "generation invalidates stale serial" (next == item + 3 & is-err (world-get world item) & is-ok (world-get world next))
+              wrp-check "stale mutation refusal" (is-err (world-delete world item) & is-err (world-update world (wrp-object 2 item 0)))
+              wrp-check "slot enumeration" (is-ok (world-at world 2) & is-err (world-at world 3) & is-err (world-at world (-1)))
+              wrp-check "detach and delete container" (is-ok (world-update world (wrp-object 2 next 0)) & is-ok (world-delete world pack) & is-ok (world-delete world mobile) & world-count world == 1)
+            end
+        end
+
+  wrp-fill : WorldTable, WorldObject, Integer -> Boolean
+  wrp-fill (world) (obj) (left) =
+    if left <= 0 then True
+    else let mark = __heap-save
+    in let ok = is-ok (world-create world obj)
+    in let restored = __heap-restore mark
+    in if not ok then False else wrp-fill world obj (left - 1)
+
+  wrp-population : WorldTable -> [Console] Nothing
+  wrp-population (world) =
+    let obj = wrp-object 2 0 0
+    in let before = __heap-save
+    in let filled = wrp-fill world obj 8192
+    in let after = __heap-save
+    in act
+      wrp-check "8192 object population" (filled & world-count world == 8192 & is-ok (world-get world 1073750016))
+      wrp-check "bounded transient heap" (after == before)
+      wrp-check "budget refuses without growth" (is-err (world-create world obj) & world-count world == 8192)
+    end
+
+  wrp-chain : WorldTable, Integer, Integer -> Result Integer Text
+  wrp-chain (world) (parent) (left) =
+    if left == 0 then Ok parent
+    else when world-create world (wrp-object 2 0 parent)
+      is Err (e) -> Err e
+      is Ok (serial) -> wrp-chain world serial (left - 1)
+
+  wrp-depth : WorldTable -> [Console] Nothing
+  wrp-depth (world) = when world-create world (wrp-object 1 0 0)
+    is Err (e) -> print-line-uni "FAIL depth setup"
+    is Ok (root) -> when wrp-chain world root 64
+      is Err (e) -> print-line-uni "FAIL depth chain"
+      is Ok (last) -> act
+        wrp-check "ancestor depth bound" (is-err (world-create world (wrp-object 2 0 last)) & world-count world == 65)
+        when world-create world (wrp-object 1 0 0)
+          is Err (e) -> print-line-uni "FAIL second root"
+          is Ok (second) -> when world-create world (wrp-object 2 0 second)
+            is Err (e) -> print-line-uni "FAIL second pack"
+            is Ok (pack) -> act
+              wrp-check "reparent preserves descendant depth" (is-err (world-update world (wrp-object 2 1073741826 pack)) & world-count world == 67)
+              let invalid = __record-set (wrp-object 2 0 0) "z" 128
+              in wrp-check "invalid fields preserve count" (is-err (world-create world invalid) & world-count world == 67)
+            end
+      end
+
+  opening : [Console] Nothing = act
+    wrp-check "capacity refusal" (is-err (world-new 0) & is-err (world-new 16385))
+    when world-new 3
+      is Err (e) -> print-line-uni ("FAIL new " & e)
+      is Ok (world) -> wrp-run world
+    when world-new 8192
+      is Err (e) -> print-line-uni ("FAIL large " & e)
+      is Ok (world) -> wrp-population world
+    when world-new 70
+      is Err (e) -> print-line-uni "FAIL depth table"
+      is Ok (world) -> wrp-depth world
+  end
+
+Page 1

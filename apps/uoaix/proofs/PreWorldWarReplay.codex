@@ -1,0 +1,76 @@
+Chapter: PreWorldWarReplay
+  cites Uoaix chapter GameNet
+
+  pww-handler : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  pww-handler (calls) (game) (input) (map) (port) (packet) =
+    let called = list-set-at calls 0 (list-at calls 0 + 1)
+    in Ok (Just (gs-reply [packet] "combat hook"))
+  pww-check : Text, Boolean -> [Console] Integer
+  pww-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  pww-ignored : Result GameReply Text -> Boolean
+  pww-ignored (result) = when result
+    is Err (e) -> False
+    is Ok (reply) -> not reply.close & list-length reply.packets == 0
+  pww-feed : GameShard, GameInput, UoLoginWire, List Integer, Integer -> Boolean
+  pww-feed (game) (input) (wire) (packet) (i) = when gn-byte game input (uo-xor-byte wire (list-at packet i))
+    is Err (e) -> False
+    is Ok (done) -> if i + 1 == list-length packet then done
+      else not done & pww-feed game input wire packet (i + 1)
+  pww-run : GameShard, WalkMap -> [Console] Integer
+  pww-run (game) (map) = act
+    calls <- [0]
+    input <- gn-input 23
+    mode <- __record-set input "mode" 1
+    before <- gn-route (pww-handler calls) game input map 2593 [114,1,0,0,0]
+    a <- pww-check "login-stream war ignored before credentials without authentication" (pww-ignored before & not input.listed & input.session.phase == 0 & list-at calls 0 == 0)
+    listed <- __record-set input "listed" True
+    after <- gn-route (pww-handler calls) game input map 2593 [114,0,0,0,0]
+    b <- pww-check "listed login-stream war ignored without relay mutation" (pww-ignored after & input.listed & game.pending-key == 0)
+    relay <- gn-route (pww-handler calls) game input map 2593 [160,0,0]
+    key <- game.pending-key
+    game-input <- gn-input 24
+    s0 <- gn-byte game game-input (bit-and (bit-shru key 24) 255)
+    s1 <- gn-byte game game-input (bit-and (bit-shru key 16) 255)
+    s2 <- gn-byte game game-input (bit-and (bit-shru key 8) 255)
+    s3 <- gn-byte game game-input (bit-and key 255)
+    wire <- uo-wire-new 0
+    w0 <- uo-wire-byte wire (bit-and (bit-shru key 24) 255)
+    w1 <- uo-wire-byte wire (bit-and (bit-shru key 16) 255)
+    w2 <- uo-wire-byte wire (bit-and (bit-shru key 8) 255)
+    w3 <- uo-wire-byte wire (bit-and key 255)
+    framed <- pww-feed game game-input wire [114,1,0,0,0] 0
+    prelogin <- gn-route (pww-handler calls) game game-input map 2593 (__buf-read-bytes game-input.buffer 0 game-input.used)
+    c <- pww-check "encrypted war before game login preserves pending relay and phase" (is-ok relay & framed & pww-ignored prelogin & game.pending-key == key & game-input.session.phase == 0 & list-at calls 0 == 0)
+    reset <- __record-set game-input "used" 0
+    login <- gp-ascii (gp-put32 [145] key) "uoaixtest" 0 30
+    credentials <- login & [104,98,84,92,107,103,88,102,103] & gp-zeros [] 21
+    login-framed <- pww-feed game game-input wire credentials 0
+    logged <- gn-route (pww-handler calls) game game-input map 2593 (__buf-read-bytes game-input.buffer 0 game-input.used)
+    d <- pww-check "next encrypted login remains aligned and authenticates" (login-framed & is-ok logged & game-input.session.phase == 1 & game.pending-key == 0)
+    preworld <- gn-route (pww-handler calls) game game-input map 2593 [114,1,0,0,0]
+    e <- pww-check "character-list war ignored without active mobile or callback" (pww-ignored preworld & game.active == 0 & game-input.session.phase == 1 & list-at calls 0 == 0)
+    short <- gn-route (pww-handler calls) game game-input map 2593 [114,1]
+    invalid <- gn-route (pww-handler calls) game game-input map 2593 [114,256,0,0,0]
+    f <- pww-check "invalid extents and nonbytes are not silently admitted" (is-err short & is-err invalid)
+    mobile <- world-create game.world (gs-mobile 0 1 1 0 400 1002)
+    saved <- poke-qword game.characters 0 1
+    selected <- gn-route (pww-handler calls) game game-input map 2593 ([93] & gp-zeros [] 72)
+    g <- pww-check "selection enters world after ignored requests" (is-ok mobile & is-ok selected & game-input.session.phase == 2 & game.active == 1)
+    active-war <- gn-route (pww-handler calls) game game-input map 2593 [114,1,0,0,0]
+    h <- pww-check "in-world war still reaches registered combat callback" (is-ok active-war & list-at calls 0 == 1)
+    a+b+c+d+e+f+g+h
+  end
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (game) -> when walk-map-new 0 0 4 4
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (map) -> pww-run game map

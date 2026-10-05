@@ -86,7 +86,6 @@ $bad = [ordered]@{
     'an unknown outpaint side'       = @{ prompt = 'a cat'; image = 'pic.png'; outpaint_pixels = 64; outpaint_direction = @('north') }
     'a soft detail below 1'          = @{ prompt = 'a cat'; image = 'pic.png'; mask = 'mask.png'; soft_inpainting = $true; soft_detail = 0.5 }
     'FreeU with Flux'                = @{ prompt = 'a cat'; model = 'flux1-schnell-fp8-e4m3fn.safetensors'; freeu = $true }
-    'PAG with a refiner'             = @{ prompt = 'a cat'; refiner = 'dreamshaperXL_lightningDPMSDE.safetensors'; pag_scale = 3 }
     'a FreeU end past 1'             = @{ prompt = 'a cat'; freeu = $true; freeu_end = 1.2 }
     'a SAG blur sigma of 0'          = @{ prompt = 'a cat'; sag = $true; sag_blur_sigma = 0 }
     'dynthres with Flux'             = @{ prompt = 'a cat'; model = 'flux1-schnell-fp8-e4m3fn.safetensors'; dynthres = $true }
@@ -114,6 +113,8 @@ $r = Call $p 44 'tools/call' @{ name = 'codex_image'; arguments = @{ prompt = 'a
 Check 'a valid outpainting mk2 call reaches the missing driver' ((Refusal $r) -like '*driver is not built*')
 $r = Call $p 45 'tools/call' @{ name = 'codex_image'; arguments = @{ prompt = 'a cat'; cfg = 5; freeu = $true; freeu_b1 = 1.3; freeu_start = 0.2; freeu_end = 0.8; pag_scale = 3; sag = $true } }
 Check 'a valid FreeU, PAG and SAG call reaches the missing driver' ((Refusal $r) -like '*driver is not built*')
+$r = Call $p 48 'tools/call' @{ name = 'codex_image'; arguments = @{ prompt = 'a cat'; cfg = 5; refiner = 'dreamshaperXL_lightningDPMSDE.safetensors'; freeu = $true; sag = $true; pag_scale = 3; dynthres = $true } }
+Check 'a valid call with all four extras and a refiner reaches the missing driver' ((Refusal $r) -like '*driver is not built*')
 $r = Call $p 46 'tools/call' @{ name = 'codex_image'; arguments = @{ prompt = 'a cat'; cfg = 5; dynthres = $true; dynthres_threshold_percentile = 0.95; dynthres_mimic_mode = 'Cosine Down' } }
 Check 'a valid dynamic thresholding call reaches the missing driver' ((Refusal $r) -like '*driver is not built*')
 $r = Call $p 47 'tools/call' @{ name = 'codex_image'; arguments = @{ prompt = 'a cat'; cfg = 5; sampler = 'DDIM CFG++'; sag = $true; pag_scale = 3; dynthres = $true } }
@@ -145,6 +146,7 @@ Check 'staging is empty afterwards' (@(Get-ChildItem -LiteralPath $staging -Forc
 Check 'the models folder is unchanged' ((Get-ChildItem -LiteralPath $models -Recurse -File | Measure-Object -Property Length -Sum).Sum -eq $modelsBefore)
 Check 'the inputs folder is unchanged' (@(Get-ChildItem -LiteralPath $inputs -File).Count -eq 4)
 Check 'no image was written' (@(Get-ChildItem -LiteralPath $out -File -ErrorAction SilentlyContinue).Count -eq 0)
+Check 'no guest output directory is left' (@(Get-ChildItem -LiteralPath $out -Directory -Force -ErrorAction SilentlyContinue).Count -eq 0)
 
 $bare = Join-Path $repo 'build-output\serve-test-models'
 New-Item -ItemType Directory -Force $bare | Out-Null

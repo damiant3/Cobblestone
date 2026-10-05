@@ -1,0 +1,57 @@
+Chapter: GameArmor
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter WorldRecords
+
+ Displayed armor class, pre-AOS: per body region the best equipped piece,
+ weighted by coverage (head 15, neck 7, chest 35, arms 14, hands 7, legs 22
+ percent), summed and divided by 100; Source-X CCharFight.cpp
+ CalcArmorDefense, Apache-2.0, without armor stacking, shields or spells.
+ Piece ratings are UOX3's T2A values (base_armor_t2a.dfn, GPL-2.0-or-later):
+ plate 40, female plate 30, chain 28, ring 22, studded 16, leather 13.
+ The value is shown in status only; combat does not read it.
+
+  gar-def : Integer -> Integer
+  gar-def (g) =
+    if g >= #1410 & g <= #1415 & g /= #1412 then 40 else if g == #1C04 then 30
+    else if g == #13BB | g == #13BE | g == #13BF then 28
+    else if g == #13EB | g == #13EC | g == #13EE | g == #13F0 then 22
+    else if (g >= #13D4 & g <= #13D6) | g == #13DA | g == #13DB | g == #1C02 | g == #1C0C then 16
+    else if (g >= #13C5 & g <= #13C7) | g == #1DB9 | g == #13CB | g == #13CC | g == #1C00 | g == #1C06 | g == #1C08 | g == #1C0A then 13
+    else 0
+
+ Regions: 0 head, 1 neck, 2 chest, 3 arms, 4 hands, 5 legs. Layers: helm 6,
+ collar 10, shirt 5, chest 13, tunic 17, arms 19, gloves 7, pants 4, apron 12,
+ skirt 23, legs 24, cape 20 (arms), robe 22 (chest, arms, legs).
+  gar-covers : Integer, Integer -> Boolean
+  gar-covers (layer) (region) =
+    if region == 0 then layer == 6
+    else if region == 1 then layer == 10
+    else if region == 2 then layer == 5 | layer == 13 | layer == 17 | layer == 22
+    else if region == 3 then layer == 19 | layer == 20 | layer == 22
+    else if region == 4 then layer == 7
+    else layer == 4 | layer == 12 | layer == 23 | layer == 24 | layer == 22
+  gar-weight : Integer -> Integer
+  gar-weight (region) = if region == 0 then 15 else if region == 1 then 7 else if region == 2 then 35
+    else if region == 3 then 14 else if region == 4 then 7 else 22
+
+  gar-best : GsiState, Integer, Integer, Integer -> Integer
+  gar-best (items) (serial) (region) (best) = if serial == 0 then best
+    else let next = world-next-sibling items.world serial
+    in let here = if not (gsi-known items serial) then 0
+      else when world-get items.world serial
+        is Err (_) -> 0
+        is Ok (item) -> if gar-covers (gsi-meta items serial).layer region then gar-def item.graphic else 0
+    in gar-best items next region (max best here)
+  gar-sum : GsiState, Integer, Integer -> Integer
+  gar-sum (items) (mobile) (region) = if region == 6 then 0
+    else gar-weight region * gar-best items (world-first-child items.world mobile) region 0 + gar-sum items mobile (region + 1)
+  gar-class : GsiState, Integer -> Integer
+  gar-class (items) (mobile) = gar-sum items mobile 0 / 100
+
+ Classic 0x11 status: the armor field is the 16-bit value at offset 62.
+  gar-status : GsiState, List Integer -> List Integer
+  gar-status (items) (status) = if list-length status /= 66 | list-at status 0 /= 17 then status
+    else let ar = gar-class items (gp-u32 status 3)
+    in list-set-at (list-set-at status 62 (bit-and (bit-shru ar 8) 255)) 63 (bit-and ar 255)
+
+Page 1

@@ -1,0 +1,109 @@
+Chapter: NetIdle
+  cites Net chapter NetIO
+  cites Net chapter NetCompact
+  cites Kernel chapter Hpet
+  cites Foreword chapter Result
+
+ Native x86 cpu-park enables interrupts and halts until an interrupt. The
+ periodic boot timer bounds a missed NIC wake. HPET deadlines, not park or
+ poll counts, drive the stack's 100ms ticks. Other NetIO callers keep their
+ existing polling policy.
+
+  NetIdleClock = record { epoch : Integer, base-tick : Integer, period : Integer, rx : List Integer }
+  ni-clock : TcpTransportState, List Integer -> Result NetIdleClock Text
+  ni-clock (transport) (rx) = let started = hpet-start
+    in let rate = hpet-ticks-per-second
+    in if rate < 10 then Err "network idle wait requires HPET"
+    else Ok (NetIdleClock { epoch = hpet-ticks, base-tick = transport.session.now-ticks,
+      period = rate / 10, rx = rx })
+  ni-target : NetIdleClock, Integer -> Integer
+  ni-target (clock) (now) = clock.base-tick + max 0 ((now - clock.epoch) / clock.period)
+ A delayed owner can expire the current RTO once. A retry emitted now must
+ receive its full new interval; replaying missed ticks would spend that
+ interval before the peer could ACK the retry.
+
+ An expired countdown is -1 only between stamping and expiry dispatch.
+ RX can clear or rearm that countdown before dispatch decides to give up.
+
+  ni-countdown : Integer, Integer -> Integer
+  ni-countdown (left) (elapsed) = if left == 0 then 0
+    else if left < 0 | elapsed >= left then -1 else left - elapsed
+  ni-elapsed : NetSession, Integer -> NetSession
+  ni-elapsed (session) (target) =
+    let elapsed = target - session.now-ticks
+    in let timed = set-now session target
+    in let retry = set-rexmit timed session.rexmit-queue (ni-countdown session.rexmit-rto elapsed) session.rexmit-tries
+    in set-close-timer retry (ni-countdown session.close-timer elapsed)
+  ni-stamp : TcpTransportState, NetIdleClock, Integer -> TcpTransportState
+  ni-stamp (transport) (clock) (now) =
+    let target = ni-target clock now
+    in if transport.session.now-ticks >= target | net-io-conn-closed transport | transport-stale transport then transport
+    else transport-set-session transport (ni-elapsed transport.session target)
+  ni-dispatch : TcpTransportState, Integer -> [Network.Write] TcpTransportState
+  ni-dispatch (transport) (mark) =
+    if net-io-conn-closed transport | transport-stale transport then transport
+    else if transport.session.rexmit-rto >= 0 & transport.session.close-timer >= 0 then transport
+    else let session = transport.session
+    in let timed = set-now session (session.now-ticks - 1)
+    in let retry = set-rexmit timed session.rexmit-queue (if session.rexmit-rto < 0 then 1 else if session.rexmit-rto > 0 then session.rexmit-rto + 1 else 0) session.rexmit-tries
+    in let closing = set-close-timer retry (if session.close-timer < 0 then 1 else if session.close-timer > 0 then session.close-timer + 1 else 0)
+    in act
+      ticked <- flush-transport-outbox (transport-tick (transport-set-session transport closing))
+      transport-compact-past ticked mark
+    end
+  ni-advance : TcpTransportState, NetIdleClock, Integer, Integer -> [Network.Write] TcpTransportState
+  ni-advance (transport) (clock) (now) (mark) = ni-dispatch (ni-stamp transport clock now) mark
+  ni-ready : TcpTransportState, Boolean -> Boolean
+  ni-ready (transport) (accepting) = if accepting then when transport.session.conn.state
+    is TcpEstablished -> True
+    is otherwise -> False
+    else transport.recv-len > 0
+  ni-feed-at : TcpTransportState, NetIdleClock, Integer, List Integer, Integer -> [Network.Write] TcpTransportState
+  ni-feed-at (transport) (clock) (now) (bytes) (count) = act
+    aged <- ni-stamp transport clock now
+    received <- if count == 0 then act aged end
+      else let frame = net-process-frame-within aged.session bytes count
+      in flush-transport-outbox (transport-feed-range aged frame.session frame.data frame.data-off frame.data-stop)
+    received
+  end
+  ni-frame-at : TcpTransportState, NetIdleClock, Integer, List Integer, Integer, Integer -> [Network.Write] TcpTransportState
+  ni-frame-at (transport) (clock) (now) (bytes) (count) (mark) = act
+    received <- ni-feed-at transport clock now bytes count
+    ni-dispatch received mark
+  end
+  NetIdleRx = record { transport : TcpTransportState, frames : Integer }
+  ni-drain : TcpTransportState, NetIdleClock, Integer, Integer, Integer -> [Network.Read, Network.Write] NetIdleRx
+  ni-drain (transport) (clock) (budget) (mark) (frames) =
+    if budget <= 0 | net-io-peer-finished transport | transport-stale transport
+      | transport.recv-cap - transport.recv-len < net-driver-frame-cap then NetIdleRx { transport = transport, frames = frames }
+    else let before = __heap-save
+    in act
+      count <- net-driver-recv-into clock.rx
+      if count == 0 then let restored = __heap-restore before
+        in NetIdleRx { transport = transport, frames = frames }
+      else act
+        next <- ni-feed-at transport clock hpet-ticks clock.rx count
+        ni-drain (transport-compact-past next mark) clock (budget - 1) mark (frames + 1)
+      end
+    end
+  ni-wait : TcpTransportState, NetIdleClock, Boolean, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
+  ni-wait (transport) (clock) (accepting) (deadline) (mark) =
+    if transport-stale transport | net-io-peer-finished transport then transport
+    else if transport.recv-len > 0 & transport.recv-cap - transport.recv-len < net-driver-frame-cap then transport
+    else act
+      batch <- ni-drain transport clock 16 mark 0
+      count <- batch.frames
+      now <- hpet-ticks
+      timed <- ni-advance batch.transport clock now mark
+      if transport-stale timed | net-io-peer-finished timed | ni-ready timed accepting | now >= deadline then timed
+      else let compacted = transport-compact-past timed mark
+      in let parked = if count == 0 then cpu-park else 0
+      in ni-wait compacted clock accepting deadline mark
+    end
+  ni-recv : TcpTransportState, NetIdleClock, Integer -> [Network.Read, Network.Write] RawRecvResult
+  ni-recv (transport) (clock) (mark) = act
+    ready <- ni-wait transport clock False (hpet-ticks + clock.period) mark
+    if ready.recv-len == 0 then RawRecvResult { transport = ready, data = [], has-data = False }
+    else RawRecvResult { transport = transport-drop-recv ready,
+      data = __buf-read-bytes ready.recv-base 0 ready.recv-len, has-data = True }
+  end

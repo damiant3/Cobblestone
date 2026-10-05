@@ -1,0 +1,56 @@
+Chapter: SassCtrlMaxas
+  cites Sass chapter SassCtrl
+  cites Foreword chapter Format
+
+ The expected output is maxas's own readCtrl, printCtrl and
+ processSassCtrlLine over the same vectors: build/sass-ctrl-oracle.ps1.
+
+Section: Vectors
+
+  vec-count : Integer = 27
+
+  vec-at : Integer -> CtrlCode
+  vec-at (j) =
+    if j == 0 then CtrlCode { stall = 15, yield-bit = 1, write-bar = 7, read-bar = 7, wait-mask = 63, reuse = 15 }
+    else if j == 1 then CtrlCode { stall = 0, yield-bit = 0, write-bar = 0, read-bar = 0, wait-mask = 0, reuse = 0 }
+    else let i = j - 2
+    in CtrlCode { stall = int-mod (i * 7) 16, yield-bit = int-mod i 2, write-bar = int-mod (i * 5) 8, read-bar = int-mod (i * 3 + 2) 8, wait-mask = int-mod (i * 13) 64, reuse = int-mod (i * 11) 16 }
+
+  slot-line : Integer -> Text
+  slot-line (j) =
+    let c = vec-at j
+    in let fields = show c.stall & " " & show c.yield-bit & " " & show c.write-bar & " " & show c.read-bar & " " & show c.wait-mask & " " & show c.reuse
+    in "S " & show j & " " & fields & " " & fmt-hex-pad (sass-ctrl-pack c) 5 & " " & sass-ctrl-text c
+
+  word-slot-text : Integer, Integer -> Text
+  word-slot-text (w) (k) =
+    let c = sass-ctrl-slot w k
+    in sass-ctrl-text c & " " & show c.reuse
+
+  word-line : Integer -> Text
+  word-line (k) =
+    let w = sass-ctrl-word (vec-at (3 * k)) (vec-at (3 * k + 1)) (vec-at (3 * k + 2))
+    in "W " & show k & " " & fmt-hex-pad w 16 & " " & word-slot-text w 0 & " " & word-slot-text w 1 & " " & word-slot-text w 2
+
+Section: Main
+
+  print-slots : Integer -> [Console] Nothing
+  print-slots (j) = act
+   if j >= vec-count then print-text "" else act
+    print-line-uni (slot-line j)
+    print-slots (j + 1)
+   end
+  end
+
+  print-words : Integer -> [Console] Nothing
+  print-words (k) = act
+   if 3 * k >= vec-count then print-text "" else act
+    print-line-uni (word-line k)
+    print-words (k + 1)
+   end
+  end
+
+  opening : [Console] Nothing = act
+   print-slots 0
+   print-words 0
+  end

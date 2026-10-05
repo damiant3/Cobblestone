@@ -1,0 +1,131 @@
+Chapter: SceneTexture
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneRender
+  cites Spark chapter Pipeline3D
+  cites Spark chapter TextureMap
+  cites Spark chapter DepthBuffer
+
+Section: Vertices
+
+  StxClip = record { tx : Real, ty : Real, tz : Real, tw : Real, tu : Real, tv : Real }
+  StxPoint = record { sx : Real, sy : Real, sz : Real, iw : Real, su : Real, sv : Real }
+  StxTriangle = record { ta : StxPoint, tb : StxPoint, tc : StxPoint, area : Real, texture : Texture2D, left : Integer, right : Integer, bottom : Integer }
+
+  stx-vertex : Mat4, Vec3, Vec2 -> StxClip
+  stx-vertex (mvp) (v) (uv) =
+    let p = mat4-transform-vec4 mvp (Vec4 { v4x = v.vx, v4y = v.vy, v4z = v.vz, v4w = 1.0 })
+    in StxClip { tx = p.v4x, ty = p.v4y, tz = p.v4z, tw = p.v4w, tu = uv.v2x, tv = uv.v2y }
+
+  stx-crossing : StxClip, StxClip -> StxClip
+  stx-crossing (a) (b) =
+    let da = a.tz + a.tw
+    in let db = b.tz + b.tw
+    in let t = da / (da - db)
+    in StxClip { tx = a.tx + (b.tx - a.tx) * t, ty = a.ty + (b.ty - a.ty) * t, tz = a.tz + (b.tz - a.tz) * t, tw = a.tw + (b.tw - a.tw) * t, tu = a.tu + (b.tu - a.tu) * t, tv = a.tv + (b.tv - a.tv) * t }
+
+  stx-near : List StxClip, StxClip, Integer, List StxClip -> List StxClip
+  stx-near (xs) (previous) (i) (acc) =
+    if i >= list-length xs then acc
+    else let current = list-at xs i
+    in let a = previous.tz + previous.tw >= 0.0
+    in let b = current.tz + current.tw >= 0.0
+    in let out = if a & b then list-push acc current
+      else if a then list-push acc (stx-crossing previous current)
+      else if b then list-push (list-push acc (stx-crossing previous current)) current
+      else acc
+    in stx-near xs current (i + 1) out
+
+  stx-project : StxClip, Integer, Integer -> StxPoint
+  stx-project (p) (w) (h) = StxPoint {
+    sx = (p.tx / p.tw + 1.0) * real-from-int w / 2.0,
+    sy = (1.0 - p.ty / p.tw) * real-from-int h / 2.0,
+    sz = p.tz / p.tw, iw = 1.0 / p.tw, su = p.tu, sv = p.tv
+  }
+
+  stx-edge : StxPoint, StxPoint, Real, Real -> Real
+  stx-edge (a) (b) (x) (y) = (b.sx - a.sx) * (y - a.sy) - (b.sy - a.sy) * (x - a.sx)
+
+Section: Raster
+
+  stx-triangle : RenderTarget, StxClip, StxClip, StxClip, Texture2D -> RenderTarget
+  stx-triangle (rt) (ca) (cb) (cc) (tex) =
+    if ca.tw <= 0.0 | cb.tw <= 0.0 | cc.tw <= 0.0 then rt
+    else let w = rt.rt-fb.fb-width
+    in let h = rt.rt-fb.fb-height
+    in let a = stx-project ca w h
+    in let b = stx-project cb w h
+    in let c = stx-project cc w h
+    in let area = stx-edge a b (c.sx) (c.sy)
+    in if area ~ 0.0 then rt
+    else let left = tex-clamp-i (real-to-int (real-min (a.sx) (real-min (b.sx) (c.sx)))) 0 (w - 1)
+    in let right = tex-clamp-i (real-to-int (real-max (a.sx) (real-max (b.sx) (c.sx)))) 0 (w - 1)
+    in let top = tex-clamp-i (real-to-int (real-min (a.sy) (real-min (b.sy) (c.sy)))) 0 (h - 1)
+    in let bottom = tex-clamp-i (real-to-int (real-max (a.sy) (real-max (b.sy) (c.sy)))) 0 (h - 1)
+    in stx-pixels rt (StxTriangle { ta = a, tb = b, tc = c, area = area, texture = tex, left = left, right = right, bottom = bottom }) left top
+
+  stx-pixels : RenderTarget, StxTriangle, Integer, Integer -> RenderTarget
+  stx-pixels (rt) (t) (x) (y) =
+    if y > t.bottom then rt
+    else if x > t.right then stx-pixels rt t (t.left) (y + 1)
+    else let px = real-from-int x + 0.5
+    in let py = real-from-int y + 0.5
+    in let a = stx-edge (t.tb) (t.tc) px py / t.area
+    in let b = stx-edge (t.tc) (t.ta) px py / t.area
+    in let c = 1.0 - a - b
+    in let out = if a < 0.0 | b < 0.0 | c < 0.0 then rt else stx-pixel rt t x y a b c
+    in stx-pixels out t (x + 1) y
+
+  stx-pixel : RenderTarget, StxTriangle, Integer, Integer, Real, Real, Real -> RenderTarget
+  stx-pixel (rt) (t) (x) (y) (a) (b) (c) =
+    let z = a * t.ta.sz + b * t.tb.sz + c * t.tc.sz
+    in if z < (0.0 - 1.0) | z > 1.0 then rt
+    else let depth = real-to-int ((z + 1.0) * 1000000.0)
+    in let idx = y * rt.rt-fb.fb-width + x
+    in if depth >= list-at (rt.rt-db.db-data) idx then rt
+    else let w = a * t.ta.iw + b * t.tb.iw + c * t.tc.iw
+    in if w <= 0.0 then rt
+    else let u = (a * t.ta.su * t.ta.iw + b * t.tb.su * t.tb.iw + c * t.tc.su * t.tc.iw) / w
+    in let v = (a * t.ta.sv * t.ta.iw + b * t.tb.sv * t.tb.iw + c * t.tc.sv * t.tc.iw) / w
+    in let color = texture-sample (t.texture) u (1.0 - v)
+    in let put = list-set-at (rt.rt-fb.fb-pixels) idx color
+    in let dz = list-set-at (rt.rt-db.db-data) idx depth
+    in rt
+
+  stx-fan : RenderTarget, List StxClip, Texture2D, Integer -> RenderTarget
+  stx-fan (rt) (xs) (tex) (i) =
+    if i + 1 >= list-length xs then rt
+    else stx-fan (stx-triangle rt (list-at xs 0) (list-at xs i) (list-at xs (i + 1)) tex) xs tex (i + 1)
+
+  stx-mesh : RenderTarget, TriMesh, Mat4, Texture2D, Integer -> RenderTarget
+  stx-mesh (rt) (mesh) (mvp) (tex) (i) =
+    if i >= mesh.tm-face-count then rt
+    else let f = tri-mesh-face mesh i
+    in let a = stx-vertex mvp (tri-mesh-vert mesh (f.tf-v0)) (tri-mesh-uv mesh (f.tf-v0))
+    in let b = stx-vertex mvp (tri-mesh-vert mesh (f.tf-v1)) (tri-mesh-uv mesh (f.tf-v1))
+    in let c = stx-vertex mvp (tri-mesh-vert mesh (f.tf-v2)) (tri-mesh-uv mesh (f.tf-v2))
+    in let clipped = stx-near [a, b, c] c 0 []
+    in stx-mesh (stx-fan rt clipped tex 1) mesh mvp tex (i + 1)
+
+Section: Scene
+
+  scene-render-textured : SceneGraph3D, SceneRenderCtx, List Texture2D, Integer, Integer, Integer -> Framebuf
+  scene-render-textured (sg) (ctx) (textures) (w) (h) (bg) =
+    let rt = render-target-new w h bg
+    in let rendered = stx-nodes sg ctx textures rt 0
+    in rendered.rt-fb
+
+  stx-nodes : SceneGraph3D, SceneRenderCtx, List Texture2D, RenderTarget, Integer -> RenderTarget
+  stx-nodes (sg) (ctx) (textures) (rt) (i) =
+    if i >= sg.sg-count then rt
+    else let node = sg-get-node sg i
+    in let out = when node.sgn-kind
+      is SnkMesh (index) -> (if node.sgn-visible == False | index < 0 | index >= ctx.src-mesh-count | index >= list-length textures then rt
+        else let mvp = mat4-mul (spark-camera-vp (ctx.src-camera)) (sg-world-matrix sg i)
+        in stx-mesh rt (list-at (ctx.src-meshes) index) mvp (list-at textures index) 0)
+      is otherwise -> rt
+    in stx-nodes sg ctx textures out (i + 1)

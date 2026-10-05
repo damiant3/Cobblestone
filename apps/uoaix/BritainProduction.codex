@@ -1,0 +1,148 @@
+Chapter: BritainProduction
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyHarvest
+  cites Foreword chapter Result
+
+  BbProducer = record { currency : EuCurrency, actor : Integer, remaining : Integer,
+    item : Integer, quantity : Integer, quality : Integer, wear : Integer, basis : Integer }
+  bb-producer : EuCurrency, Integer -> BbProducer
+  bb-producer (x) (actor) = BbProducer { currency = x, actor = actor, remaining = 8192,
+    item = 0, quantity = 0, quality = 0, wear = 0, basis = 0 }
+  bb-resource : EgCatalog, Integer, Integer -> Integer
+  bb-resource (c) (item) (i) = if i == list-length c.resources then 0
+    else let r = list-at c.resources i
+    in if r.item == item | r.seed == item then i + 1 else bb-resource c item (i + 1)
+  bb-recipe : EgCatalog, Integer, Integer -> Integer
+  bb-recipe (c) (item) (i) = if i == list-length c.recipes then 0
+    else if (list-at c.recipes i).item == item then i + 1 else bb-recipe c item (i + 1)
+  bb-node : EpWorld, Integer, Integer, Integer -> Integer
+  bb-node (w) (actor) (resource) (i) = if i == w.node-count then eh-source w resource (ep-actor w actor).place
+    else let n = list-at w.nodes i
+    in if n.resource == resource & n.stage == 2 & n.place == (ep-actor w actor).place & (n.owner == 0 | n.owner == actor) then i + 1
+      else bb-node w actor resource (i + 1)
+  bb-station : EpWorld, Integer, Integer, Integer -> Integer
+  bb-station (w) (actor) (kind) (i) = if i == w.station-count then ep-station w actor kind (ep-actor w actor).place
+    else let s = list-at w.stations i
+    in if s.owner == actor & s.kind == kind & s.enabled == 1 & s.place == (ep-actor w actor).place then i + 1
+      else bb-station w actor kind (i + 1)
+  bb-receipt : BbProducer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  bb-receipt (p) (item) (quantity) (quality) (wear) (basis) =
+    let a = ep-actor p.currency.world p.actor
+    in let n = ep-at a.stock item - quantity
+    in let q = ep-at a.quality item - quality
+    in let w = ep-at a.wear item - wear
+    in let c = ep-at a.cost item - basis
+    in if n <= 0 | q < 0 | w < 0 | c < 0 then Err "Britain production receipt invalid"
+    else if int-mod q n /= 0 | int-mod w n /= 0 then Err "Britain production batch is not uniform"
+    else let f0 = __record-set p "item" item
+    in let f1 = __record-set p "quantity" n
+    in let f2 = __record-set p "quality" (q / n)
+    in let f3 = __record-set p "wear" (w / n)
+    in let f4 = __record-set p "basis" c
+    in Ok n
+  bb-ensure : BbProducer, Integer, Integer, Integer -> Result Integer Text
+  bb-ensure (p) (item) (quantity) (depth) =
+    if item == 0 | quantity == 0 then Ok 0
+    else if depth > 16 | p.remaining <= 0 | not (ep-valid-actor p.currency.world p.actor) then Err "Britain production budget or actor invalid"
+    else if ep-at (ep-actor p.currency.world p.actor).stock item >= quantity then Ok 0
+    else when bb-make p item depth
+      is Err (e) -> Err e
+      is Ok (_) -> bb-ensure p item quantity depth
+  bb-harvest : BbProducer, Integer, Integer, Integer -> Result Integer Text
+  bb-harvest (p) (item) (resource) (depth) =
+    let w = p.currency.world
+    in let r = list-at w.catalog.resources (resource - 1)
+    in when bb-ensure p r.tool 1 (depth + 1)
+      is Err (e) -> Err e
+      is Ok (_) ->
+        let node = bb-node w p.actor resource 0
+        in if node < 1 | p.remaining <= 0 then Err "Britain resource budget exhausted"
+        else let a = ep-actor w p.actor
+        in let stock = ep-at a.stock item
+        in let quality = ep-at a.quality item
+        in let wear = ep-at a.wear item
+        in let basis = ep-at a.cost item
+        in let budget = __record-set p "remaining" (p.remaining - 1)
+        in let result = eh-harvest w p.actor node
+        in if result == -2 then Ok 0
+        else if result < 0 then Err ("Britain harvest refused item=" & show item)
+        else bb-receipt p item stock quality wear basis
+  bb-craft : BbProducer, Integer, Integer, Integer -> Result Integer Text
+  bb-craft (p) (item) (recipe) (depth) =
+    let w = p.currency.world
+    in let r = list-at w.catalog.recipes (recipe - 1)
+    in if r.station == 12 then Err "Britain mint requires currency coordinator"
+    else when bb-ensure p r.one (r.one-count + (if r.tool == r.one then 1 else 0)) (depth + 1)
+      is Err (e) -> Err e
+      is Ok (_) -> when bb-ensure p r.two (r.two-count + (if r.tool > 0 & r.tool == r.two then 1 else 0)) (depth + 1)
+        is Err (e) -> Err e
+        is Ok (_) -> when bb-ensure p r.three (r.three-count + (if r.tool > 0 & r.tool == r.three then 1 else 0)) (depth + 1)
+          is Err (e) -> Err e
+          is Ok (_) -> when bb-ensure p r.tool 1 (depth + 1)
+            is Err (e) -> Err e
+            is Ok (_) ->
+              let station = bb-station w p.actor r.station 0
+              in if station < 1 | p.remaining <= 0 then Err "Britain workplace budget exhausted"
+              else let a = ep-actor w p.actor
+              in let stock = ep-at a.stock item
+              in let quality = ep-at a.quality item
+              in let wear = ep-at a.wear item
+              in let basis = ep-at a.cost item
+              in let budget = __record-set p "remaining" (p.remaining - 1)
+              in let result = ep-craft w p.actor recipe station
+              in if result == -2 then Ok 0
+              else if result < 0 then Err ("Britain recipe refused item=" & show item)
+              else bb-receipt p item stock quality wear basis
+  bb-make : BbProducer, Integer, Integer -> Result Integer Text
+  bb-make (p) (item) (depth) = if depth > 16 | p.remaining <= 0 | not (ep-valid-actor p.currency.world p.actor) then Err "Britain production budget or actor invalid"
+    else let c = p.currency.world.catalog
+    in if not (eg-id c item) then Err "Britain item outside catalog"
+    else let source = bb-resource c item 0
+    in let recipe = if source > 0 then 0 else bb-recipe c item 0
+    in let result = if source > 0 then bb-harvest p item source depth
+      else if recipe == 0 then Err "Britain item has no production path" else bb-craft p item recipe depth
+    in when result
+      is Err (e) -> Err e
+      is Ok (n) -> if n == 0 then bb-make p item depth else Ok n
+
+  bb-produce : BbProducer, Integer -> Result Integer Text
+  bb-produce (p) (item) = let mark = __heap-save
+    in when bb-make p item 0
+      is Err (e) -> Err e
+      is Ok (n) -> let restored = __heap-restore mark in Ok n
+  bb-require : BbProducer, Integer, Integer -> Result Integer Text
+  bb-require (p) (item) (quantity) = let mark = __heap-save
+    in when bb-ensure p item quantity 0
+      is Err (e) -> Err e
+      is Ok (n) -> let restored = __heap-restore mark in Ok n
+  bb-coin-copper : Integer = 700
+  bb-coin-silver : Integer = 70
+  bb-placeholder-gold-yield : Integer = 1000
+  bb-placeholder-copper-yield : Integer = 1000
+  bb-placeholder-silver-yield : Integer = 100
+  bb-mint : BbProducer, Integer, Integer, Integer -> Result Integer Text
+  bb-mint (p) (metal) (item) (yield) = when bb-require p item 1
+    is Err (e) -> Err e
+    is Ok (_) -> when bb-require p 62 1
+      is Err (e) -> Err e
+      is Ok (_) -> let station = bb-station p.currency.world p.actor 12 0
+        in if station < 1 | eu-mint-policy p.currency True p.actor metal yield /= 0 then Err "Britain mint policy refused"
+        else if eu-strike p.currency True p.actor station metal 1 /= 0 then Err "Britain mint refused" else Ok 0
+  bb-economy : Integer -> Result EuCurrency Text
+  bb-economy (unused) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (e) -> Err e
+    is Ok (w) -> when eu-new w
+      is Err (e) -> Err e
+      is Ok (x) -> let purse = eu-open x 5 1
+        in let actor = ep-admit w purse 100
+        in if purse /= 2 | actor /= 1 then Err "Britain royal actor refused"
+        else let p = bb-producer x actor
+        in when bb-mint p 3 32 bb-placeholder-gold-yield
+          is Err (e) -> Err e
+          is Ok (_) -> when bb-mint p 1 65 bb-placeholder-copper-yield
+            is Err (e) -> Err e
+            is Ok (_) -> when bb-mint p 2 66 bb-placeholder-silver-yield
+              is Err (e) -> Err e
+              is Ok (_) -> if eu-grant x True actor purse 200 40 100 /= 0 | eu-tax x True actor 1000 /= 0 | eu-rates x True actor bb-coin-copper bb-coin-silver /= 0 then Err "Britain royal funding refused"
+                else Ok x

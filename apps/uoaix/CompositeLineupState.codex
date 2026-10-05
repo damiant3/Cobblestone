@@ -1,0 +1,47 @@
+Chapter: CompositeLineupState
+  cites Uoaix chapter TownLive
+
+  CglLineup = record { resident : Integer, banker : Integer, person : Integer,
+    inside : Integer, speaker : Integer, last : Integer }
+  cgl-label : WorldObject, Text -> List Integer
+  cgl-label (npc) (name) = let label = gvp-speech npc name name
+    in let kind = list-set-at label 9 6 in label
+  cgl-handler : CglLineup, TownLive, GameShard, GameInput, List Integer -> Result (Maybe GameReply) Text
+  cgl-handler (l) (t) (game) (input) (packet) =
+    if list-length packet /= 5 | list-at packet 0 /= 9 then Ok None
+    else if not (gs-byte-range packet 0) then Err "Lineup name packet extent"
+    else let serial = gp-u32 packet 1
+    in if serial == 0 | (serial /= l.resident & serial /= l.banker) then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial then Ok None
+    else when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (viewer) -> when world-get game.world serial
+        is Err (_) -> Ok None
+        is Ok (npc) -> if walk-abs (viewer.x - npc.x) > 18 | walk-abs (viewer.y - npc.y) > 18 then Ok None
+          else let name = if serial == l.banker then "Banker" else (tf-person t.people l.person).name
+          in Ok (Just (gs-reply (gvp-hello npc name) "lineup name"))
+  cgl-pulse : CglLineup, TownLive, GameShard, GameInput -> Result (Maybe GameReply) Text
+  cgl-pulse (l) (t) (game) (input) =
+    if l.resident == 0 | input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else let slot = gv-slot game input.session.serial 0
+    in if slot < 0 then Ok None
+    else when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (viewer) -> when world-get game.world l.resident
+        is Err (_) -> Ok None
+        is Ok (npc) ->
+          let mask = bit-shl 1 slot
+          in let was = bit-and l.inside mask /= 0
+          in let near = viewer.health > 0 & npc.health > 0 & walk-abs (viewer.x - npc.x) <= 3
+            & walk-abs (viewer.y - npc.y) <= 3 & walk-abs (viewer.z - npc.z) <= 16
+          in let changed = if was == near then 0 else let updated = __record-set l "inside" (bit-xor l.inside mask) in 0
+          in let p = tf-person t.people l.person
+          in let persona = list-at t.mind.personas (p.serial - 1)
+          in if not near | was | p.alive == 0 | (l.speaker == viewer.serial & t.now < l.last + tl-speech-seconds)
+            | t.mind.audit-count >= 1024 | persona.request >= 1000000000
+            | (persona.call-hour == t.people.hour & persona.calls >= persona.call-limit) then Ok None
+          else let reply = tm-stub t.mind t.people p.serial 1 (persona.request + 1) ""
+          in let a = __record-set l "speaker" viewer.serial
+          in let b = __record-set l "last" t.now
+          in let touched = world-touch game.world
+          in Ok (Just (gs-reply [gvp-speech npc p.name reply.speech] "lineup greeting"))

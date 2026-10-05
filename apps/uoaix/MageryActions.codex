@@ -1,0 +1,301 @@
+Chapter: MageryActions
+  cites Uoaix chapter MageryEffects
+
+ GPL-2.0 port of ServUO first-three-circle effects and Fourth/Recall.
+ Targeting uses authoritative world positions and the admitted collision
+ cache; the owner supplies disk-backed map coverage for travel.
+
+  MgAim = record { object : WorldObject, point : WorldObject, door : Integer }
+  mga-point : Integer, Integer, Integer -> WorldObject
+  mga-point (x) (y) (z) = WorldObject { serial = 0, kind = 2, x = x, y = y, z = z, graphic = 0, hue = 0, container = 0, amount = 1, health = 0 }
+  mga-top : WorldTable, WorldObject, Integer -> Result WorldObject Text
+  mga-top (world) (item) (left) = if left == 0 then Err "container depth exceeded"
+    else if item.container == 0 then Ok item else when world-get world item.container
+      is Err (e) -> Err e
+      is Ok (parent) -> mga-top world parent (left - 1)
+  mga-root-access : Magery, GameInput, Integer, WorldObject -> Boolean
+  mga-root-access (magic) (input) (slot) (item) = gmb-access magic.bank input slot item.serial
+    & (when mga-top magic.items.world item 65
+      is Err (_) -> False
+      is Ok (top) -> top.kind /= 1 | top.serial == input.session.serial)
+  mga-cell-visible : Magery, Integer, Integer, Integer, Integer -> Boolean
+  mga-cell-visible (magic) (x) (y) (z) (i) = let map = magic.decoration.map
+    in let cell = walk-cell map x y
+    in if cell < 0 then False else let stride = magic.decoration.stride
+    in let count = peek-qword map.solids (cell * stride)
+    in if i >= count then True else let at = cell * stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let flags = peek-qword map.solids (at + 16)
+    in let height = peek-qword map.solids (at + 8) / (if bit-and flags 1024 /= 0 then 2 else 1)
+    in if bit-and flags #3000 /= 0 & base <= z + 1 & base + height >= z then False
+    else mga-cell-visible magic x y z (i + 1)
+  mga-ray : Magery, WorldObject, WorldObject, Integer, Integer -> Boolean
+  mga-ray (magic) (from) (to) (i) (steps) = if i >= steps then True
+    else let x = from.x + mgd-round ((to.x - from.x) * i) steps
+    in let y = from.y + mgd-round ((to.y - from.y) * i) steps
+    in let z = from.z + 14 + mgd-round ((to.z - from.z) * i) steps
+    in if not (walk-ready magic.decoration.map x y) then False
+    else if walk-z magic.decoration.map x y > z then False
+    else if not (mga-cell-visible magic x y z 0) then False else mga-ray magic from to (i + 1) steps
+  mga-visible : Magery, WorldObject, WorldObject -> Boolean
+  mga-visible (magic) (from) (to) = let distance = max (walk-abs (from.x - to.x)) (walk-abs (from.y - to.y))
+    in let reverse = from.x > to.x | (from.x == to.x & from.y > to.y) | (from.x == to.x & from.y == to.y & from.z > to.z)
+    in distance <= 12 & wd-bound magic.decoration
+      & mga-ray magic (if reverse then to else from) (if reverse then from else to) 1 (max 1 (2 * max distance (walk-abs (from.z - to.z))))
+  mga-aim : Magery, GameShard, GameInput, WorldObject, Integer, List Integer -> Result MgAim Text
+  mga-aim (magic) (shard) (input) (source) (spell) (packet) = let serial = gp-u32 packet 7
+    in let slot = cb-slot shard source.serial 0
+    in if mgd-ground spell then
+      let x = gp-u16 packet 11
+      in let y = gp-u16 packet 13
+      in let z = if list-at packet 16 >= 128 then list-at packet 16 - 256 else list-at packet 16
+      in let point = mga-point x y z
+      in if x >= 6144 | y >= 4096 | not (mga-visible magic source point) then Err "That location is out of sight."
+      else Ok (MgAim { object = point, point = point, door = -1 })
+    else if spell == 21 & serial > wd-serial-base & serial <= wd-serial-base + magic.decoration.count then
+      let at = serial - wd-serial-base - 1
+      in let point = mga-point (wd-x magic.decoration at) (wd-y magic.decoration at) (wd-field magic.decoration at 2)
+      in if not (wd-is-door magic.decoration at) | not (mga-visible magic source point) then Err "That cannot be moved by telekinesis."
+      else Ok (MgAim { object = point, point = point, door = at })
+    else when world-get shard.world serial
+      is Err (_) -> Err "That target is gone."
+      is Ok (target) -> when mga-top shard.world target 65
+        is Err (e) -> Err e
+        is Ok (point) -> if not (mga-visible magic source point) then Err "That target is out of sight."
+          else if target.kind == 2 & (slot < 0 | not (mga-root-access magic input slot target)) then Err "That item is not accessible."
+          else if spell == 32 then
+            if not (mgs-known magic serial) then Err "That rune is not marked."
+            else if not (list-at magic.definitions (world-slot shard.world serial)).rune then Err "That rune is not marked."
+            else Ok (MgAim { object = target, point = point, door = -1 })
+          else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then
+            if target.kind /= 2 | not (gsi-known magic.items serial) then Err "Target an ordinary container."
+            else if (gsi-meta magic.items serial).gump == 0 | gmb-root magic.items serial 65 /= 0 then Err "That container cannot be enchanted."
+            else if spell /= 21 & (not (mgs-known magic serial) | (if mgs-known magic serial then not (list-at magic.definitions (world-slot shard.world serial)).lockable else True)) then Err "That container cannot be magically locked or trapped."
+            else Ok (MgAim { object = target, point = point, door = -1 })
+          else if target.kind /= 1 | target.health == 0 then Err "Target a living creature."
+          else when cb-ensure magic.combat shard serial
+            is Err (e) -> Err e
+            is Ok (combat) -> if mgd-harmful spell & combat.immune then Err "That creature is protected."
+              else if spell == 4 then when mgs-ensure magic shard serial
+                is Err (e) -> Err e
+                is Ok (actor) -> if actor.poison >= 0 then Err "You cannot heal poison. Cure it first."
+                  else Ok (MgAim { object = target, point = point, door = -1 })
+              else Ok (MgAim { object = target, point = point, door = -1 })
+  mga-food-art : Integer -> Integer
+  mga-food-art (i) = if i == 0 then #09D1 else if i == 1 then #09C9 else if i == 2 then #097D
+    else if i == 3 then #09EB else if i == 4 then #097B else if i == 5 then #09F2 else if i == 6 then #09B7
+    else if i == 7 then #09C0 else if i == 8 then #09D0 else #09D2
+  mga-food : Magery, GameShard, WorldObject -> Result (List (List Integer)) Text
+  mga-food (magic) (shard) (source) = let pack = gsi-pack-find shard.world source.serial 0
+    in if pack == 0 then Err "conjured food requires backpack"
+    else let food = gs-item pack (mga-food-art (mgs-random magic 10)) 0
+    in let fx = __record-set food "x" (44 + mgs-random magic 98)
+    in let fy = __record-set food "y" (65 + mgs-random magic 29)
+    in when world-create shard.world food
+      is Err (e) -> Err e
+      is Ok (serial) -> let registered = gsi-register magic.items serial 0 0 True True
+        in when world-get shard.world serial
+          is Err (e) -> Err e
+          is Ok (item) -> Ok [sip-item item,mgp-sound source #01E2]
+  mga-mobile : Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> Result (List (List Integer)) Text
+  mga-mobile (magic) (shard) (input) (caster) (source) (aim) (spell) = let target = aim.object
+    in when mgs-ensure magic shard target.serial
+      is Err (e) -> Err e
+      is Ok (actor) -> if spell == 4 then mge-heal magic shard input source.serial target
+        else if spell == 5 | spell == 12 | spell == 18 then
+          let damage = mge-spell-damage magic shard source target spell
+          in when mge-harm magic shard input source.serial target.serial damage
+            is Err (e) -> Err e
+            is Ok (packets) -> Ok ([mgp-effect source target (if spell == 5 then #36E4 else if spell == 18 then #36D4 else #374A) (spell /= 12),
+              mgp-sound target (if spell == 5 then #01E5 else if spell == 18 then #044B else #01F1)] & packets)
+        else if spell == 1 | spell == 3 | spell == 8 | spell == 9 | spell == 10 | spell == 16 | spell == 17 then
+          let amount = 1 + mgs-skill shard source.serial 25 / 100
+          in let until = magic.tick + mgd-ticks (mgs-skill shard source.serial 25 * 120)
+          in let stat = if spell == 1 | spell == 9 then 1 else if spell == 3 | spell == 10 then 2 else 0
+          in let first = mge-mod magic actor stat (if mgd-harmful spell then 0 - amount else amount) until
+          in let blessed = if spell /= 17 then 0 else let dex = mge-mod magic actor 1 amount until in mge-mod magic actor 2 amount until
+          in when mge-stats magic shard input actor
+            is Err (e) -> Err e
+            is Ok (packets) -> Ok (packets & [mgp-effect target target #376A False,mgp-sound target #01EA])
+        else if spell == 6 then
+          let level = 26 * mgs-skill shard source.serial 25 / 1000
+          in let a = __record-set actor "night" (magic.tick + mgd-ticks ((15 + mgs-random magic 25) * 60000))
+          in let b = __record-set actor "light" (min 26 (max 0 level))
+          in let tracked = mgs-track magic actor
+          in let touched = mgs-touch magic
+          in Ok ([mgp-effect target target #376A False,mgp-sound target #01E3] & (if target.serial == input.session.serial then [mgp-light actor] else []))
+        else if spell == 7 then
+          let value = min 75 ((mgs-skill shard source.serial 25 + mgs-skill shard source.serial 46 + mgs-skill shard source.serial 23) / 30)
+          in let changed = __record-set actor "absorb" (max 0 value)
+          in let touched = mgs-touch magic in Ok [mgp-effect target target #376A False,mgp-sound target #01F2]
+        else if spell == 15 then
+          let value = min 75 ((mgs-skill shard source.serial 16 + mgs-skill shard source.serial 46 + mgs-skill shard source.serial 23) / 40)
+          in let amount = __record-set actor "protection" (max 0 value)
+          in let until = __record-set actor "protected-until" (magic.tick + mgd-ticks (max 15000 (min 240000 (mgs-skill shard source.serial 25 * 200))))
+          in let tracked = mgs-track magic actor
+          in let touched = mgs-touch magic in Ok [mgp-effect target target #375A False,mgp-sound target #01ED]
+        else if spell == 11 then
+          let chance = (10000 + mgs-skill shard source.serial 25 * 75 / 10 - (actor.poison + 1) * 1750) / 100
+          in let cured = actor.poison < 0 | mgs-random magic 100 < chance
+          in let changed = if not cured then 0 else let a = __record-set actor "poison" -1
+            in let b = __record-set actor "poison-left" 0 in mgs-touch magic
+          in Ok [mgp-appearance magic input target,mgp-effect target target #373A False,mgp-sound target #01E0,
+            sip-message target.serial target.graphic 6 (if cured then "The poison is cured." else "The poison resists the cure.")]
+        else if spell == 20 then
+          let dx = source.x - target.x
+          in let dy = source.y - target.y
+          in let total = mgs-skill shard source.serial 25 + mgs-skill shard source.serial 30
+          in let level = if mgd-poison-threshold total (dx * dx + dy * dy) 2000 True & mgs-random magic 10 == 0 then 3
+            else if mgd-poison-threshold total (dx * dx + dy * dy) 1700 False then 2
+            else if mgd-poison-threshold total (dx * dx + dy * dy) 1300 False then 1 else 0
+          in let a = __record-set actor "poison" (max actor.poison level)
+          in let b = __record-set actor "poison-due" (magic.tick + mgd-ticks 3500)
+          in let c = __record-set actor "poison-left" 10
+          in let d = __record-set actor "poison-last" 0
+          in let e = __record-set actor "poisoner" source.serial
+          in let tracked = mgs-track magic actor
+          in let touched = mgs-touch magic in Ok [mgp-appearance magic input target,mgp-effect target target #374A False,mgp-sound target #0205]
+        else Err "spell effect is not a mobile effect"
+  mga-trap : Magery, GameShard, GameInput, MgItem, WorldObject -> Result (List (List Integer)) Text
+  mga-trap (magic) (shard) (input) (meta) (point) = if not meta.trapped then Ok []
+    else let disarmed = __record-set meta "trapped" False
+    in let touched = mgs-touch magic
+    in when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> let near = walk-abs (mobile.x - point.x) <= 1 & walk-abs (mobile.y - point.y) <= 1
+        in when (if near then mge-harm magic shard input meta.trapper mobile.serial 1 else Ok [])
+          is Err (e) -> Err e
+          is Ok (packets) -> Ok ([mgp-effect point point #36BD False,mgp-sound point #0307] & packets)
+  mga-container : Magery, GameShard, GameInput, MgAim, Integer -> Result (List (List Integer)) Text
+  mga-container (magic) (shard) (input) (aim) (spell) = if aim.door >= 0 then when wd-toggle magic.decoration shard aim.door
+    is Err (e) -> Err e
+    is Ok (reply) -> let tracked = if list-length reply.packets /= 2 then 0
+        else let bound = wd-connection magic.decoration input.connection in wd-shown magic.decoration aim.door
+      in Ok (reply.packets & [mgp-effect aim.point aim.point #376A False,mgp-sound aim.point #01F5])
+    else when mgs-meta magic aim.object.serial
+      is Err (e) -> Err e
+      is Ok (meta) -> if spell == 21 then
+        if meta.locked then Ok [sip-message aim.object.serial aim.object.graphic 6 "That container is locked."]
+        else if meta.lockable then when mga-trap magic shard input meta aim.point
+          is Err (e) -> Err e
+          is Ok (packets) -> Ok (packets & [mgp-effect aim.point aim.point #376A False,mgp-sound aim.point #01F5])
+        else Ok [gsi-placement magic.items aim.object,sip-open aim.object.serial (gsi-meta magic.items aim.object.serial).gump,
+          gsi-contents magic.items aim.object.serial 0 [#3C,0,0,0,0] 0,mgp-sound aim.point #01F5]
+      else let changed = if spell == 13 then
+          let a = __record-set meta "trapped" True in let b = __record-set meta "trapper" input.session.serial in 0
+        else if spell == 14 then let a = __record-set meta "trapped" False in 0
+        else let a = __record-set meta "locked" (spell == 19) in 0
+      in let touched = mgs-touch magic
+      in Ok [mgp-effect aim.point aim.point #376A False,mgp-sound aim.point (if spell == 13 then #01EF else if spell == 14 then #01F0 else if spell == 19 then #01FA else #01FF)]
+  mga-wall-free : Magery, Integer, Integer -> Integer
+  mga-wall-free (magic) (i) (count) = if i == 32 then count else mga-wall-free magic (i + 1) (count + (if (list-at magic.walls i).serial == 0 then 1 else 0))
+  mga-wall-slot : Magery, Integer -> Integer
+  mga-wall-slot (magic) (i) = if i == 32 then -1 else if (list-at magic.walls i).serial == 0 then i else mga-wall-slot magic (i + 1)
+  mga-solid : Magery, WorldObject -> Result Integer Text
+  mga-solid (magic) (item) = let state = magic.decoration
+    in if not (wd-bound state) then Err "magic field map requires rebind"
+    else let cell = walk-cell state.map item.x item.y
+    in if cell < 0 then Ok 0 else let count = peek-qword state.solids (cell * state.stride)
+    in if count < 0 | count > (state.stride - 8) / 24 then Err "magic field collider count"
+    else if wd-solid-present state cell item.z 20 #2040 0 then Ok 0
+    else if count == (state.stride - 8) / 24 then Err "magic field collider budget"
+    else let at = cell * state.stride + 8 + count * 24
+    in let a = poke-qword state.solids at item.z
+    in let b = poke-qword state.solids (at + 8) 20
+    in let c = poke-qword state.solids (at + 16) #2040
+    in let d = poke-qword state.solids (cell * state.stride) (count + 1) in Ok count
+  mga-overlay : Magery, Integer -> Result Integer Text
+  mga-overlay (magic) (i) = if i == 32 then Ok 0 else let wall = list-at magic.walls i
+    in if wall.serial == 0 then mga-overlay magic (i + 1)
+    else let mark = __heap-save
+    in when world-get magic.items.world wall.serial
+      is Err (_) -> let a = __record-set wall "serial" 0
+        in let b = __record-set wall "until" 0
+        in let touched = mgs-touch magic
+        in let restored = __heap-restore mark in mga-overlay magic (i + 1)
+      is Ok (item) -> when mga-solid magic item
+        is Err (e) -> Err e
+        is Ok (_) -> let restored = __heap-restore mark in mga-overlay magic (i + 1)
+  mga-refresh : Magery -> Result Integer Text
+  mga-refresh (magic) = let state = magic.decoration
+    in if not (wd-bound state) then Err "magic field map requires rebind"
+    else let reset = wd-copy state.base state.solids 0 (state.width * state.height * state.stride / 8)
+    in when wd-solids state (wd-lower state (state.map.x - 1) 0 state.count)
+      is Err (e) -> Err e
+      is Ok (_) -> mga-overlay magic 0
+  mga-occupied : WorldTable, Integer, Integer, Integer, Integer -> Boolean
+  mga-occupied (world) (serial) (except) (z) (left) = if serial == 0 | left == 0 then False
+    else let at = world-slot world serial
+    in if at < 0 then False else let next = world-tile-next world serial
+    in let base = peek-qword world.buffer (48 + at * 80)
+    in if serial /= except & peek-qword world.buffer (24 + at * 80) == 1 & peek-qword world.buffer (88 + at * 80) > 0 & base < z + 16 & base + 16 > z then True
+    else mga-occupied world next except z (left - 1)
+  mga-wall-point : WorldObject, WorldObject, Integer -> WorldObject
+  mga-wall-point (source) (target) (i) = let dx = source.x - target.x
+    in let dy = source.y - target.y
+    in let horizontal = (dx - dy >= 0 & dx + dy < 0) | (dx - dy < 0 & dx + dy >= 0)
+    in mga-point (target.x + (if horizontal then i else 0)) (target.y + (if horizontal then 0 else i)) target.z
+  mga-wall-ready : Magery, GameShard, WorldObject, WorldObject, Integer -> Boolean
+  mga-wall-ready (magic) (shard) (source) (target) (i) = if i == 2 then True
+    else let point = mga-wall-point source target i
+    in if mga-occupied shard.world (world-tile-first shard.world point.x point.y) 0 point.z shard.world.capacity then False
+    else when walk-height magic.decoration.map point.x point.y point.z
+      is Err (_) -> False
+      is Ok (z) -> if z /= point.z then False else mga-wall-ready magic shard source target (i + 1)
+  mga-walls : Magery, GameShard, WorldObject, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mga-walls (magic) (shard) (source) (target) (i) (packets) = if i == 2 then when mga-refresh magic
+      is Err (e) -> Err e
+      is Ok (_) -> Ok (list-push packets (mgp-sound target #01F6))
+    else let point = mga-wall-point source target i
+    in let item = WorldObject { serial = 0, kind = 2, x = point.x, y = point.y, z = point.z, graphic = #0082,
+      hue = 0, container = 0, amount = 1, health = 0 }
+    in let slot = mga-wall-slot magic 0
+    in if slot < 0 then Err "magic field budget changed" else when world-create shard.world item
+      is Err (e) -> Err e
+      is Ok (serial) -> let wall = list-at magic.walls slot
+        in let a = __record-set wall "serial" serial
+        in let b = __record-set wall "until" (magic.tick + mgd-ticks 10000)
+        in let registered = gsi-register magic.items serial 0 0 False False
+        in when world-get shard.world serial
+          is Err (e) -> Err e
+          is Ok (placed) -> mga-walls magic shard source target (i + 1) (list-push packets (sip-ground placed))
+  mga-prepare : Magery, GameShard, GameInput, WorldObject, MgAim, Integer -> [Device.Block] Result (Maybe MgAim) Text
+  mga-prepare (magic) (shard) (input) (source) (aim) (spell) = if spell /= 22 & spell /= 32 then act Ok (Just aim) end
+    else let point = if spell == 22 then aim.point else let rune = list-at magic.definitions (world-slot shard.world aim.object.serial)
+      in mga-point rune.x rune.y rune.z
+    in act
+    covered <- magic.cover point.x point.y point.z
+    when covered
+      is Err (e) -> Err e
+      is Ok (map) -> if map.solids /= magic.decoration.solids | not (wd-bound magic.decoration) then Err "travel cover did not rebind decoration"
+        else when mga-overlay magic 0
+          is Err (e) -> Err e
+          is Ok (_) -> let valid = when walk-height map point.x point.y point.z
+              is Err (_) -> False
+              is Ok (z) -> z == point.z & not (mga-occupied shard.world (world-tile-first shard.world point.x point.y) source.serial z shard.world.capacity)
+            in if valid then Ok (Just (MgAim { object = aim.object, point = point, door = -1 }))
+            else act
+              restored <- magic.cover source.x source.y source.z
+              when restored
+                is Err (e) -> Err e
+                is Ok (_) -> when mga-overlay magic 0
+                  is Err (e) -> Err e
+                  is Ok (_) -> Ok None
+            end
+  end
+  mga-travel : Magery, GameShard, GameInput, WorldObject, WorldObject -> Result (List (List Integer)) Text
+  mga-travel (magic) (shard) (input) (source) (point) =
+    let moved = WorldObject { serial = source.serial, kind = 1, x = point.x, y = point.y, z = point.z,
+      graphic = source.graphic, hue = source.hue, container = 0, amount = 1, health = source.health }
+    in when world-update shard.world moved
+      is Err (e) -> Err e
+      is Ok (_) -> let combat = list-at magic.combat.actors (world-slot shard.world source.serial)
+        in Ok [mgp-effect source source #3728 False,cbp-player moved input.session.direction (cbp-flags combat.war False),
+          mgp-effect moved moved #3728 False,mgp-sound moved #01FE]
+  mga-apply : Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> [Device.Block] Result (List (List Integer)) Text
+  mga-apply (magic) (shard) (input) (caster) (source) (aim) (spell) =
+    if spell == 2 then act mga-food magic shard source end
+    else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then act mga-container magic shard input aim spell end
+    else if spell == 24 then act mga-walls magic shard source aim.point -1 [] end
+    else if spell == 22 | spell == 32 then act mga-travel magic shard input source aim.point end
+    else act mga-mobile magic shard input caster source aim spell end

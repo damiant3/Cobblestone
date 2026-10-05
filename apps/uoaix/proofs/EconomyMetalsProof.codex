@@ -1,0 +1,86 @@
+Chapter: EconomyMetalsProof
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyStateCodec
+  cites Foreword chapter Result
+
+  exp-check : Text, Boolean -> [Console] Nothing
+  exp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  exp-craft : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  exp-craft (w) (actor) (recipe) (station) (tries) = if tries == 0 then -3
+    else let result = ep-craft w actor recipe station
+    in if result == -2 then exp-craft w actor recipe station (tries - 1) else result
+  exp-harvest : EpWorld, Integer, Integer, Integer -> Integer
+  exp-harvest (w) (actor) (node) (tries) = if tries == 0 then -3
+    else let result = eh-harvest w actor node
+    in if result == -2 then exp-harvest w actor node (tries - 1) else result
+  exp-prefix : EgCatalog, EgCatalog, Integer -> Boolean
+  exp-prefix (old) (new) (i) = if i == list-length old.items then True
+    else (list-at old.items i).name == (list-at new.items i).name
+      & (list-at old.items i).chain == (list-at new.items i).chain & exp-prefix old new (i + 1)
+  exp-decoded : EconomyCheckpoint -> [Console] Nothing
+  exp-decoded (s) = act
+    w <- s.world
+    p <- ep-actor w 1
+    exp-check "metals survive existing checkpoint without changing gold balances" (s.tick == 80 & s.sequence == 7 & list-length w.catalog.items == 68 & ep-at p.stock 65 == 1 & ep-at p.stock 66 == 1 & w.money.issued == 0 & em-balanced w.money 1 & ep-census w 1)
+  end
+  exp-run : EpWorld -> [Console] Nothing
+  exp-run (w) = act
+    purse <- em-open w.money 5 1
+    actor <- ep-admit w purse 1
+    p <- ep-actor w actor
+    hand <- ep-station w actor 1 1
+    smelter <- ep-station w actor 3 1
+    mint <- ep-station w actor 12 1
+    stone <- eh-source w 1 1
+    branch <- eh-source w 2 1
+    copper <- eh-source w 25 1
+    silver <- eh-source w 26 1
+    exp-check "metals require mined tools and ingredients" (eh-harvest w actor copper == -1 & eh-harvest w actor silver == -1 & ep-craft w actor 32 smelter == -1 & ep-craft w actor 33 smelter == -1)
+    gathered-stone <- eh-harvest w actor stone
+    gathered-branch <- eh-harvest w actor branch
+    pick <- ep-craft w actor 1 hand
+    hammer <- ep-craft w actor 31 hand
+    exp-check "stone tools made from gathered materials" (gathered-stone == 4 & gathered-branch == 4 & pick == 1 & hammer == 1 & ep-at p.stock 1 == 0 & ep-at p.stock 2 == 2)
+    spare-stone <- eh-source w 1 1
+    spare-branch <- eh-source w 2 1
+    spare-gathered-stone <- eh-harvest w actor spare-stone
+    spare-gathered-branch <- eh-harvest w actor spare-branch
+    spare-pick <- ep-craft w actor 1 hand
+    exp-check "replacement pick consumes gathered materials" (spare-gathered-stone == 4 & spare-gathered-branch == 4 & spare-pick == 1 & ep-at p.stock 25 == 2 & ep-at p.wear 25 == 64)
+    copper-one <- exp-harvest w actor copper 40
+    copper-two-node <- eh-source w 25 1
+    copper-two <- exp-harvest w actor copper-two-node 40
+    silver-one <- exp-harvest w actor silver 40
+    silver-two-node <- eh-source w 26 1
+    silver-two <- exp-harvest w actor silver-two-node 40
+    exp-check "novice mines both ores with practice and wear" (copper-one == 1 & copper-two == 1 & silver-one == 1 & silver-two == 1 & ep-at p.skills 1 > 0 & ep-at p.wear 25 < 64)
+    before <- __heap-save
+    smelt-copper <- exp-craft w actor 32 smelter 40
+    smelt-silver <- exp-craft w actor 33 smelter 40
+    after <- __heap-save
+    exp-check "smelting consumes distinct ore and fuel without action heap" (smelt-copper == 1 & smelt-silver == 1 & ep-at p.stock 63 == 0 & ep-at p.stock 64 == 0 & ep-at p.stock 2 == 3 & ep-at p.stock 65 == 1 & ep-at p.stock 66 == 1 & before == after)
+    exp-check "all three mint recipes refuse generic crafting" (ep-craft w actor 30 mint == -1 & ep-craft w actor 34 mint == -1 & ep-craft w actor 35 mint == -1 & ep-at p.stock 67 == 0 & ep-at p.stock 68 == 0 & w.money.issued == 0)
+    exp-check "metal quantities conserve through mining and smelting" (ep-census w 1 & ep-at w.gathered 63 == 2 & ep-at w.gathered 64 == 2 & ep-at w.consumed 63 == 2 & ep-at w.consumed 64 == 2)
+    bytes <- alloc-bytes es-bytes
+    encoded <- es-encode (EconomyCheckpoint { world = w, tick = 80, sequence = 7 }) bytes es-bytes
+    exp-check "extended catalog admitted by existing checkpoint" (is-ok encoded)
+    when es-decode bytes es-bytes
+      is Err (e) -> print-line-uni ("FAIL metals decode " & e)
+      is Ok (s) -> exp-decoded s
+  end
+  opening : [Console] Nothing = act
+    old <- eg-standard 0
+    before <- __heap-save
+    c <- ex-catalog 0
+    after <- __heap-save
+    exp-check "copper silver material closure" (eg-validate c == 0 & list-length c.items == 68 & list-length c.resources == 26 & list-length c.recipes == 35)
+    exp-check "legacy item identities and gold recipes preserved" (exp-prefix old c 0 & list-length old.items == 62 & (list-at c.recipes 29).item == 51 & (list-at c.recipes 29).one == 32 & (list-at c.recipes 30).item == 62)
+    exp-check "extended catalog construction bounded" (after - before < 16384)
+    when ep-new c (em-new 0)
+      is Err (e) -> print-line-uni ("FAIL metals world " & e)
+      is Ok (w) -> exp-run w
+  end

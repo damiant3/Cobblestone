@@ -1,6 +1,8 @@
 Chapter: GamePage
   cites CodexMagic chapter MagicTheme
   cites UI chapter Layout
+  cites Foreword chapter Parse
+  cites WebApp chapter WebGpu
 
  We say:
 
@@ -24,101 +26,1164 @@ Section: Tree
   game-tree (x) =
     let active = state-get sk-g-active
     in let content = if active == 0 then game-idle-tree 0 else game-active-tree 0
-    in magic-nav-page "g-page" "Game" "g-wrap" [content]
+    in magic-nav-page "g-page" "Game" "g-wrap" [content, game-orders 0, game-orders 1, widget-label "g-message" (state-get-text "g-message")]
 
   game-idle-tree : Integer -> WidgetNode
   game-idle-tree (x) =
     widget-panel "g-idle" DirColumn 16 [
       widget-label "g-title" "CodexMagic Arena",
+      widget-button "g-general-a" ("Your General: " & general-label (state-get "g-general-a")),
+      widget-button "g-general-b" ("Opponent: " & general-label (state-get "g-general-b")),
       widget-button "g-new" "New Game"
     ]
 
   game-active-tree : Integer -> WidgetNode
   game-active-tree (x) =
-    let turn = state-get sk-g-turn
+    let turn = state-get-text sk-g-turn
     in let phase = state-get-text sk-g-phase
-    in let p0-life = state-get sk-g-p0-life
-    in let p1-life = state-get sk-g-p1-life
+    in let p0-life = state-get-text sk-g-p0-life
+    in let p1-life = state-get-text sk-g-p1-life
     in let p0-name = state-get-text sk-g-p0-name
     in let p1-name = state-get-text sk-g-p1-name
     in let rays = state-get-text sk-g-rays
-    in let lib = state-get sk-g-lib
+    in let lib = state-get-text sk-g-lib
     in let over = state-get sk-g-over
     in let winner = state-get-text sk-g-winner
+    in let winning-name = if winner == "0" then p0-name else if winner == "1" then p1-name else "Draw"
     in widget-panel "g-board" DirColumn 8 [
       widget-panel "g-controls" DirRow 8 [
-        widget-button "g-step" "Step",
-        widget-button "g-auto" "Auto",
+        if over == 1 then widget-label "g-finished" "Game over" else if state-get "g-pause-active" == 1 then widget-button "g-resume-now" "Continue" else if state-get "g-disruption-nonce" > 0 then widget-label "g-await-disruption" "Choose a response or Pass" else if state-get "g-commitment-nonce" > 0 then widget-label "g-await-choice" (if state-get "g-commitment-ability" == 1 then "Choose Activate or Hold" else "Choose Cast or Hold") else widget-button "g-step" (if state-get "g-paused" == 1 then "Continue" else "Step"),
+        if state-get "g-pause-active" == 1 | over == 1 | state-get "g-disruption-nonce" > 0 | state-get "g-commitment-nonce" > 0 | state-get "g-combat-nonce" > 0 then widget-label "g-auto-ended" "" else widget-button "g-auto" (if state-get "g-auto-mode" == 1 then "Stop auto" else "Auto"),
+        if over == 1 | state-get "g-pause-active" == 1 then widget-label "g-pause-empty" "" else widget-button "g-pause-now" (if state-get "g-pause-requested" == 1 then "Pausing..." else "Pause now"),
+        widget-button "g-new" "New game",
         widget-label "g-phase" phase,
-        widget-label "g-turn-lbl" ("Turn " & show turn)
+        widget-label "g-turn-lbl" ("Turn " & turn)
       ],
+      widget-panel "g-commitment" DirColumn 6 (if state-get "g-pause-active" == 1 then [] else commitment-controls 0),
+      widget-panel "g-disruption" DirColumn 6 (if state-get "g-pause-active" == 1 then [] else disruption-controls 0),
+      widget-label "g-disruption-result" (state-get-text "g-disruption-result"),
+      widget-panel "g-combat-choice" DirColumn 6 (if state-get "g-pause-active" == 1 then [] else combat-choice-controls 0),
+      widget-panel "g-cleanup" DirColumn 6 (cleanup-controls 0),
       widget-separator "g-s1",
-      widget-label "g-opp" (p1-name & " | Life: " & show p1-life),
+      widget-label "g-opp" (p1-name & " | Life: " & p1-life),
       widget-separator "g-s2",
-      widget-label "g-field" "Battlefield",
+      widget-panel "g-field" DirColumn 6 (field-rows (json-parse-rows (state-get-text "g-battlefield")) 0 []),
       widget-separator "g-s3",
-      widget-label "g-player" (p0-name & " | Life: " & show p0-life),
+      widget-label "g-player" (p0-name & " | Life: " & p0-life),
       widget-separator "g-s4",
-      widget-label "g-status" ("Rays: " & rays & " | Library: " & show lib),
-      if over == 1 then widget-label "g-over" ("Game Over! Winner: " & winner) else widget-label "g-over" ""
+      widget-label "g-status" ((if state-get-text "g-active-player" == "1" then p1-name else p0-name) & " rays: " & rays & (if state-get "g-fluorescence" == 1 then " | Fluorescence active" else "") & " | Libraries: " & lib),
+      widget-panel "g-loyalty" DirColumn 4 (if state-get "g-pause-active" == 1 then [] else loyalty-controls 0),
+      widget-panel "g-permanent-abilities" DirColumn 4 (if state-get "g-pause-active" == 1 then [] else permanent-ability-controls 0),
+      widget-panel "g-queue-abilities" DirColumn 6 (queue-ability-controls 0),
+      widget-panel "g-queue-loyalty" DirColumn 6 (queue-loyalty-controls 0),
+      widget-panel "g-queued-cards" DirColumn 6 (queue-card-controls 0),
+      widget-panel "g-card-orders" DirColumn 6 (hand-order-tree 0),
+      widget-panel "g-manual-hand" DirColumn 4 (if state-get "g-pause-active" == 1 then [] else manual-hand-tree 0),
+      widget-panel "g-manual-targets" DirColumn 6 (if state-get "g-pause-active" == 1 & state-get-text "g-pick-queue-player" == "" then [] else manual-target-controls 0),
+      widget-panel "g-payment" DirColumn 6 (if state-get "g-pause-active" == 1 then [] else payment-draft-tree 0),
+      widget-label "g-block-choice" (if state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & state-get-text "g-stage" == "3" then "Review the suggested attackers. Attack or stay back; Continue confirms your selection, including none." else if state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & state-get-text "g-stage" == "4" then "Choose a blocker, then an attacker. Continue confirms the blocks." else ""),
+      if state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & state-get-text "g-stage" == "4" then widget-button "gb-general" (if state-get-text "g-blocker" == "general" then "General selected" else "Block with the defending General") else widget-label "g-no-general-block" "",
+      if over == 1 then widget-label "g-over" ("Game Over! Winner: " & winning-name) else widget-label "g-over" ""
     ]
+
+  general-label : Integer -> Text
+  general-label (n) = if n == 0 then "Warlord" else if n == 1 then "High Sage" else if n == 2 then "Verdant Keeper" else if n == 3 then "Shadow Prince" else "Dawn Commander"
+
+  stance-label : Integer -> Text
+  stance-label (n) = if n == 1 then "Aggressive" else if n == 2 then "Defensive" else if n == 3 then "Tempo" else if n == 4 then "Control" else "Balanced"
+
+  page-skill : Integer -> Text
+  page-skill (n) = if n == 0 then "Beginner" else if n == 1 then "Intermediate" else if n == 3 then "Master" else "Expert"
+
+  game-orders : Integer -> WidgetNode
+  game-orders (player) =
+    let k = "gp" & show player
+    in let t = "gt" & show player
+    in let targets = state-get-text (k & "-targets")
+    in widget-panel k DirColumn 8 [widget-panel (k & "-settings") DirRow 8 [
+      widget-label (k & "-label") (if player == 0 then "Your orders" else "Opponent orders"),
+      widget-button (k & "-stance") (stance-label (state-get (k & "-stance"))),
+      widget-button (k & "-blocks") ("Blocks: " & page-block-policy (state-get (k & "-blocks"))),
+      widget-button (k & "-paymode") (if state-get (k & "-paymode") == 1 then "Payment: manual" else "Payment: auto"),
+      widget-button (k & "-skill") ("Card choices: " & page-skill (state-get (k & "-skill"))),
+      widget-button (k & "-commitment") (if state-get (k & "-commitment") == 1 then "All-rays choice: on" else "All-rays choice: off"),
+      widget-button (k & "-target-pause") (if state-get (k & "-target-pause") == 1 then "Target choice: on" else "Target choice: off"),
+      widget-button (k & "-combat-pause") (if state-get (k & "-combat-pause") == 1 then "Combat choice: on" else "Combat choice: off"),
+      widget-button (k & "-sacrifice-pause") (if state-get (k & "-sacrifice-pause") == 1 then "Ask before sacrificing" else "Never sacrifice automatically"),
+      widget-button (k & "-disruption-pause") (if state-get (k & "-disruption-pause") == 1 then "Response choice: on" else "Response choice: off")
+    ], widget-panel (k & "-block-limit") DirRow 6 [
+      widget-button (k & "-life-down") "Life threshold -",
+      widget-label (k & "-life-label") ("Protect below: " & show (state-get (k & "-life"))),
+      widget-button (k & "-life-up") "Life threshold +"
+    ], widget-panel (k & "-spell-controls") DirRow 6 [
+      widget-button (k & "-spells") ("Spells: " & page-spell-policy (state-get (k & "-spells"))),
+      widget-button (k & "-reserve-down") "Reserve -",
+      widget-label (k & "-reserve-label") ("Reserve rays: " & show (state-get (k & "-reserve"))),
+      widget-button (k & "-reserve-up") "Reserve +"
+    ], widget-panel (k & "-mana-controls") DirRow 6 (mana-controls player 0 []), widget-panel (k & "-phase-controls") DirRow 6 (phase-controls player 0 []), widget-panel (k & "-target-controls") DirRow 8 [
+      widget-button (t & "-g") "Prioritize enemy General",
+      widget-button (k & "-kind") ("Type: " & target-kind-label (state-get (k & "-kind"))),
+      widget-button (t & "-t") "Add type",
+      widget-button (k & "-threat") ("Threat: " & target-threat-label (state-get (k & "-threat"))),
+      widget-button (t & "-h") "Add threat",
+      widget-button (t & "-c") "Clear targets"
+    ], widget-panel (k & "-target-list") DirColumn 4 (target-order-rows (if text-length targets == 0 then [] else json-parse-rows targets) player 0 [])
+    ]
+
+  target-kind-label : Integer -> Text
+  target-kind-label (n) = if n == 1 then "Equipment" else if n == 2 then "Enchantment" else if n == 3 then "Gemstone" else "Creature"
+
+  page-spell-policy : Integer -> Text
+  page-spell-policy (n) = if n == 1 then "Hold counters" else if n == 2 then "Conserve rays" else if n == 3 then "Manual" else "Play on curve"
+
+  page-block-policy : Integer -> Text
+  page-block-policy (n) = if n == 1 then "manual" else if n == 2 then "none" else if n == 3 then "protect life" else "auto"
+
+  manual-hand-tree : Integer -> List WidgetNode
+  manual-hand-tree (unused) =
+    let player = state-get-text "g-manual-player"
+    in let stage = state-get-text "g-stage"
+    in let combat = state-get "g-combat-cantrip" == 1
+    in if state-get "g-paused" == 0 | (combat == False & ((state-get "g-manual-override" == 0 & state-get-text "g-budget-stop" == "" & state-get ("gp" & player & "-spells") /= 3 & state-get ("gp" & player & "-paymode") == 0) | (stage /= "2" & stage /= "6"))) then []
+    else if combat then (if state-get "g-combat-cantrip-used" == 1 then [widget-label "g-manual-help" "Cantrip used at this freeze. Continue resumes combat."] else manual-card-rows (json-parse-rows (state-get-text "g-manual-hand")) 0 [widget-label "g-manual-help" (state-get-text ("g-p" & player & "-name") & ": one Cantrip at this combat freeze. Choose its target and payment. Continue resumes combat.")])
+    else let raw = state-get-text "g-manual-hand"
+    in let rows = if text-length raw == 0 then [] else json-parse-rows raw
+    in manual-card-rows rows 0 [widget-label "g-manual-help" ((if player == "0" then "Your cards" else "Opponent cards") & (if state-get-text "g-budget-stop" /= "" then ": manual play is available. Continue resumes automatic work with a fresh budget." else if state-get "g-manual-override" == 1 then ": choose manually. Continue resumes automatic play under your General policy." else ": choose a card, then its target. Continue finishes this main phase."))]
+
+  loyalty-controls : Integer -> List WidgetNode
+  loyalty-controls (unused) =
+    let raw = state-get-text "g-loyalty-abilities"
+    in let rows = if raw == "" then [] else json-parse-rows raw
+    in if list-length rows == 0 then []
+    else let player = state-get-text "g-active-player"
+    in let main = state-get-text "g-stage" == "2" | state-get-text "g-stage" == "6"
+    in let status = if state-get sk-g-over == 1 then "Game over." else if state-get "g-loyalty-used" == 1 then "Used this turn." else if state-get "g-paused" == 1 & main then "Target orders choose targets." else "Pause a main phase to activate."
+    in loyalty-rows rows 0 [widget-label "g-loyalty-heading" (state-get-text ("g-p" & player & "-name") & " abilities | Army loyalty: " & state-get-text ("g-p" & player & "-loyalty")), widget-label "g-loyalty-status" status]
+
+  loyalty-rows : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  loyalty-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let label = json-obj-field row "label" & " | Loyalty " & json-obj-field row "cost"
+    in let item = if json-obj-field row "ready" == "true" then widget-button ("gly-" & json-obj-field row "index") label else widget-label ("gly-held-" & show i) (label & ": unavailable")
+    in loyalty-rows rows (i + 1) (list-push acc item)
+
+  manual-card-rows : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  manual-card-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let manual = state-get ("gp" & state-get-text "g-manual-player" & "-paymode") == 1 & json-obj-field row "gem" /= "true"
+    in let cost = json-obj-field row "cost"
+    in let label = json-obj-field row "name" & (if cost == "" then "" else " " & cost) & (if manual then "" else " (" & json-obj-field row "rays" & " rays)")
+    in let item = if json-obj-field row "ready" == "true" then widget-button ("gc-" & show i) ((if manual then "Plan payment: " else "Play ") & label) else widget-label ("gc-held-" & show i) (json-obj-field row "name" & ": unavailable")
+    in manual-card-rows rows (i + 1) (list-push acc item)
+
+  payment-draft-tree : Integer -> List WidgetNode
+  payment-draft-tree (unused) =
+    if state-get-text "g-pay-card" == "" | state-get "g-paused" == 0 | state-get ("gp" & state-get-text "g-manual-player" & "-paymode") == 0 then []
+    else [widget-label "g-pay-title" ("Payment for " & state-get-text "g-pay-name"),
+      widget-label "g-pay-help" "Add stones to a ray, then finish the ray. An empty ray is White. Each finished ray costs one ray.",
+      widget-label "g-pay-mixing" "Ruby + Topaz = Orange. Topaz + Sapphire = Green. Ruby + Sapphire = Purple. Each Diamond doubles that ray's output.",
+      widget-label "g-pay-closed" (state-get-text "g-pay-labels"),
+      widget-label "g-pay-current-view" ("Current ray: " & (if state-get-text "g-pay-current-label" == "" then "White" else state-get-text "g-pay-current-label")),
+      widget-panel "g-pay-actions" DirRow 6 [widget-button "g-pay-ray" "Finish ray", widget-button "g-pay-submit" "Pay and play", widget-button "g-pay-clear" "Clear chains", widget-button "g-pay-cancel" "Cancel payment"]]
+
+  target-threat-label : Integer -> Text
+  target-threat-label (n) = if n == 1 then "Medium" else if n == 2 then "Low" else "High"
+
+  page-phase-name : Integer -> Text
+  page-phase-name (n) = if n == 0 then "Upkeep" else if n == 1 then "Draw" else if n == 2 then "Pre-main" else if n == 3 then "Attackers" else if n == 4 then "Blockers" else if n == 5 then "Damage" else if n == 6 then "Post-main" else "End"
+
+  page-stone-name : Integer -> Text
+  page-stone-name (n) = if n == 0 then "Ruby" else if n == 1 then "Topaz" else if n == 2 then "Sapphire" else if n == 3 then "Carnelian" else if n == 4 then "Emerald" else if n == 5 then "Diamond" else "Obsidian"
+
+  mana-controls : Integer, Integer, List WidgetNode -> List WidgetNode
+  mana-controls (player) (stone) (acc) =
+    if stone >= 7 then acc
+    else let id = "gkeep" & show player & "-" & show stone
+    in let button = widget-button id ("AI " & page-stone-name stone & (if state-get id == 1 then ": keep" else ": use"))
+    in mana-controls player (stone + 1) (list-push acc button)
+
+  phase-controls : Integer, Integer, List WidgetNode -> List WidgetNode
+  phase-controls (player) (phase) (acc) =
+    if phase >= 8 then acc
+    else let id = "gfr" & show player & "-" & show phase
+    in let button = widget-button id (page-phase-name phase & (if state-get id == 1 then ": pause" else ": auto"))
+    in phase-controls player (phase + 1) (list-push acc button)
+
+  target-order-rows : List (List Text), Integer, Integer, List WidgetNode -> List WidgetNode
+  target-order-rows (rows) (player) (i) (acc) =
+    if i >= list-length rows then acc
+    else let k = "gt" & show player & "-r-" & show i
+    in let row = widget-panel (k & "-row") DirRow 4 [widget-label (k & "-label") (show (i + 1) & ". " & json-obj-field (list-at rows i) "label"), widget-button k "Remove"]
+    in target-order-rows rows player (i + 1) (list-push acc row)
+
+  field-rows : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  field-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let p = list-at rows i
+    in let id = json-obj-field p "id"
+    in let name = json-obj-field p "name"
+    in let owner = json-obj-field p "controller"
+    in let card = json-obj-field p "card-id"
+    in let original-owner = if json-obj-field p "owner" == "" then owner else json-obj-field p "owner"
+    in let manual = state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & state-get-text "g-stage" == "4"
+    in let attacking = list-contains (json-parse-rows (state-get-text "g-attackers")) (\a -> json-obj-field a "id" == id)
+    in let choosing-attack = state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & state-get-text "g-stage" == "3" & json-obj-field p "attack-ready" == "true"
+    in let choice = if choosing-attack then widget-button ("gat-" & id) (if attacking then "Attacking: stay back" else "Stay back: attack") else if manual & owner /= state-get-text "g-active-player" & json-obj-field p "type" == "Creature" then widget-button ("gb-" & id) (if state-get-text "g-blocker" == id then "Selected blocker" else "Choose blocker") else if manual & attacking then widget-button ("ga-" & id) "Block this attacker" else widget-label ("gx-" & id) ""
+    in let focus = widget-button ((if owner == "0" then "gt1-p-" else "gt0-p-") & id) (if owner == "0" then "Prioritize for opponent" else "Prioritize for you")
+    in let paying = state-get-text "g-pay-card" /= "" & state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & state-get ("gp" & state-get-text "g-manual-player" & "-paymode") == 1
+    in let stone = if paying & owner == state-get-text "g-manual-player" & json-obj-field p "type" == "Gemstone" & json-obj-field p "tapped" == "false" & json-obj-field p "attached-to" == "-1" & text-to-integer (json-obj-field p "gem-stone") < 6 then widget-button ("gstone-" & show i) "Add to current ray" else widget-label ("gstone-none-" & id) ""
+    in let main = state-get-text "g-stage" == "2" | state-get-text "g-stage" == "6"
+    in let obsidian = if state-get "g-pause-active" == 0 & state-get "g-paused" == 1 & main & state-get "g-fluorescence" == 0 & state-get "g-free-rays" > 0 & owner == state-get-text "g-active-player" & json-obj-field p "type" == "Gemstone" & json-obj-field p "gem-stone" == "6" & json-obj-field p "tapped" == "false" & json-obj-field p "attached-to" == "-1" then widget-button ("gfluor-" & id) "Activate Fluorescence (1 ray)" else widget-label ("gfluor-none-" & id) ""
+    in let flags = if state-get sk-g-over == 0 & json-obj-field p "orderable" == "true" then card-order-controls "b" (text-to-integer original-owner) card (text-to-integer (json-obj-field p "play-order")) ("Recast by " & state-get-text ("g-p" & original-owner & "-name")) else widget-label ("gflag-none-" & id) ""
+    in let row = widget-panel ("gf-" & id) DirRow 6 [widget-label ("gn-" & id) ((if owner == "0" then "Yours: " else "Opponent: ") & name & " " & json-obj-field p "power" & "/" & json-obj-field p "toughness"), choice, focus, stone, obsidian, flags]
+    in field-rows rows (i + 1) (list-push acc row)
 
 Section: Handlers
 
   g-click : Text -> Integer
   g-click (id) =
-    if id == "g-new" then start-game 0
+    if id == "g-pause-now" then request-pause 0
+    else if id == "g-resume-now" & state-get "g-busy" == 0 then resume-now 0
+    else if id == "g-auto" & state-get "g-auto-mode" == 1 then (let stopped = state-set "g-auto-mode" 0 in request-render 0)
+    else if state-get "g-busy" == 1 then 0
+    else if g-prefix id "gdiscard-" then submit-cleanup-card (g-suffix id 9 "")
+    else if id == "g-general-a" | id == "g-general-b" then (let changed = state-set id (int-mod (state-get id + 1) 5) in request-render 0)
+    else if g-prefix id "gco-" then change-card-order id
+    else if id == "gp0-stance" | id == "gp1-stance" then change-order id 5
+    else if id == "gp0-skill" | id == "gp1-skill" then change-skill id
+    else if id == "gp0-spells" | id == "gp1-spells" | id == "gp0-reserve-down" | id == "gp1-reserve-down" | id == "gp0-reserve-up" | id == "gp1-reserve-up" then change-spells id
+    else if id == "gp0-paymode" | id == "gp1-paymode" then change-payment-mode id
+    else if g-prefix id "gstone-" then add-payment-stone id
+    else if g-prefix id "gfluor-" then activate-page-fluorescence id
+    else if g-prefix id "gly-" then activate-page-loyalty id
+    else if g-prefix id "gpa-" then choose-permanent-ability id
+    else if id == "g-pay-ray" then finish-payment-ray 0
+    else if id == "g-pay-submit" then submit-payment 0
+    else if id == "g-pay-clear" then (let cleared = clear-payment-chains 0 in request-render 0)
+    else if id == "g-pay-cancel" then (let cleared = clear-payment-draft 0 in request-render 0)
+    else if g-prefix id "gc-" then submit-card id
+    else if g-prefix id "gmt-" then choose-manual-target id
+    else if id == "g-target-cancel" then (let cleared = clear-payment-draft 0 in request-render 0)
+    else if id == "gp0-freeze" | id == "gp1-freeze" then change-order id 2
+    else if id == "gp0-blocks" | id == "gp1-blocks" | id == "gp0-life-down" | id == "gp1-life-down" | id == "gp0-life-up" | id == "gp1-life-up" then change-block-policy id
+    else if id == "gp0-kind" | id == "gp1-kind" then (let next = state-set id (int-mod (state-get id + 1) 4) in request-render 0)
+    else if id == "gp0-threat" | id == "gp1-threat" then (let next = state-set id (int-mod (state-get id + 1) 3) in request-render 0)
+    else if g-prefix id "gfr0-" | g-prefix id "gfr1-" then change-phase id
+    else if g-prefix id "gkeep0-" | g-prefix id "gkeep1-" then change-mana id
+    else if g-prefix id "gt0-" | g-prefix id "gt1-" then target-command id
+    else if g-prefix id "gb-" then (let picked = state-set-text "g-blocker" (g-suffix id 3 "") in request-render 0)
+    else if g-prefix id "ga-" then submit-block (g-suffix id 3 "")
+    else if g-prefix id "gat-" then submit-attacker (g-suffix id 4 "")
+    else if id == "g-new" then (if state-get sk-g-active == 1 then cancel-game 0 else start-game 0)
+    else if id == "g-commit-cast" then submit-commitment True
+    else if id == "g-commit-hold" then submit-commitment False
+    else if id == "g-commit-override" then submit-override 0
+    else if id == "gp0-commitment" | id == "gp1-commitment" then change-commitment-policy id
+    else if id == "gp0-target-pause" | id == "gp1-target-pause" then change-target-policy id
+    else if id == "gp0-combat-pause" | id == "gp1-combat-pause" then change-combat-policy id
+    else if id == "gp0-sacrifice-pause" | id == "gp1-sacrifice-pause" then change-sacrifice-policy id
+    else if id == "gp0-disruption-pause" | id == "gp1-disruption-pause" then change-disruption-policy id
+    else if id == "g-disruption-pass" then submit-disruption "pass" (0 - 1)
+    else if g-prefix id "gdr-" then choose-disruption id
+    else if g-prefix id "gqa-" then choose-queued-ability id
+    else if g-prefix id "gqc-" then cancel-queued-ability id
+    else if g-prefix id "gql-" then choose-queued-loyalty id
+    else if g-prefix id "gqlc-" then cancel-queued-loyalty id
+    else if g-prefix id "gqf-" then choose-queued-card id
+    else if g-prefix id "gqfc-" then cancel-queued-card id
+    else if g-prefix id "gct-" then choose-commitment-target id
     else if id == "g-step" then step-game 0
     else if id == "g-auto" then auto-game 0
     else 0
 
+  submit-attacker : Text -> Integer
+  submit-attacker (id) =
+    let selected = list-contains (json-parse-rows (state-get-text "g-attackers")) (\a -> json-obj-field a "id" == id)
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/attack?attacker=" & id & "&enabled=" & (if selected then "0" else "1")) step-cb
+
+  cancel-game : Integer -> Integer
+  cancel-game (unused) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then "/api/magic/game/cancel" cancel-game-cb
+
+  cancel-game-cb : Text -> Integer
+  cancel-game-cb (resp) =
+    if json-obj-field (json-parse-obj resp) "error" /= "" then step-cb resp
+    else let cleared = clear-payment-draft 0
+    in let blocker = state-set-text "g-blocker" ""
+    in load-game-cb resp
+
   start-game : Integer -> Integer
   start-game (x) =
-    fetch-get-then "/api/magic/game/new?seed=42" new-game-cb
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/new?general-a=" & show (state-get "g-general-a") & "&general-b=" & show (state-get "g-general-b")) new-game-cb
 
   new-game-cb : Text -> Integer
   new-game-cb (resp) =
     let obj = json-parse-obj resp
-    in let s1 = state-set sk-g-active 1
-    in let s2 = state-set sk-g-turn 1
-    in let s3 = state-set-text sk-g-phase "Untap"
-    in let s4 = state-set sk-g-over 0
-    in request-render 0
+    in let s1 = if text-length (json-obj-field obj "error") == 0 then state-set sk-g-active 1 else 0
+    in step-cb resp
 
   step-game : Integer -> Integer
   step-game (x) =
-    fetch-get-then "/api/magic/game/step" step-cb
+    let stopped = state-set "g-auto-mode" 0
+    in if state-get "g-combat-nonce" > 0 then submit-combat-choice False
+    else let busy = state-set "g-busy" 1
+    in fetch-get-then "/api/magic/game/step?resume=1" step-cb
 
   step-cb : Text -> Integer
   step-cb (resp) =
     let obj = json-parse-obj resp
+    in let busy = state-set "g-busy" 0
+    in let err = json-obj-field obj "error"
+    in if text-length err > 0 then (let stopped = state-set "g-auto-mode" 0 in let msg = state-set-text "g-message" err in if state-get "g-pause-requested" == 1 then send-pause 0 else request-render 0)
+    else let old-stage = state-get-text "g-stage"
+    in let old-player = state-get-text "g-active-player"
     in let s1 = state-set-text sk-g-turn (json-obj-field obj "turn")
-    in let s2 = state-set-text sk-g-phase (json-obj-field obj "step")
+    in let stage = json-obj-field obj "turn-stage"
+    in let draft = if stage /= old-stage | json-obj-field obj "active-player" /= old-player then clear-payment-draft 0 else 0
+    in let s2 = state-set-text sk-g-phase (json-obj-field obj "phase-label")
     in let go = json-obj-field obj "game-over"
     in let s3 = state-set sk-g-over (if go == "true" then 1 else 0)
     in let s4 = state-set-text sk-g-winner (json-obj-field obj "winner")
+    in let paused = json-obj-field obj "paused" == "true"
+    in let user-paused = state-set "g-pause-active" (if json-obj-field obj "pause-active" == "true" then 1 else 0)
+    in let cleanup = state-set-text "g-cleanup" (json-obj-field obj "cleanup")
+    in let budget = state-set-text "g-budget-stop" (json-obj-field obj "budget-stop")
+    in let sp = state-set "g-paused" (if paused then 1 else 0)
+    in let ss = state-set-text "g-stage" stage
+    in let sa = state-set-text "g-active-player" (json-obj-field obj "active-player")
+    in let actor = state-set-text "g-manual-player" (if json-obj-field obj "manual-player" == "" then json-obj-field obj "active-player" else json-obj-field obj "manual-player")
+    in let combat = state-set "g-combat-cantrip" (if json-obj-field obj "combat-cantrip" == "true" then 1 else 0)
+    in let used = state-set "g-combat-cantrip-used" (if json-obj-field obj "combat-cantrip-used" == "true" then 1 else 0)
+    in let bf = state-set-text "g-battlefield" (json-obj-field obj "battlefield")
+    in let at = state-set-text "g-attackers" (json-obj-field obj "attackers")
+    in let manual = state-set "g-manual-override" (if json-obj-field obj "manual-override" == "true" then 1 else 0)
+    in let hand = state-set-text "g-manual-hand" (json-obj-field obj "manual-hand")
+    in let abilities = state-set-text "g-loyalty-abilities" (json-obj-field obj "loyalty-abilities")
+    in let permanent-abilities = state-set-text "g-permanent-abilities" (json-obj-field obj "permanent-abilities")
+    in let queued-abilities = state-set-text "g-queued-abilities" (json-obj-field obj "queued-abilities")
+    in let queue-options = state-set-text "g-queue-options" (json-obj-field obj "queue-options")
+    in let queued-loyalty = state-set-text "g-queued-loyalty" (json-obj-field obj "queued-loyalty")
+    in let loyalty-options = state-set-text "g-queue-loyalty-options" (json-obj-field obj "queue-loyalty-options")
+    in let queued-cards = state-set-text "g-queued-cards" (json-obj-field obj "queued-cards")
+    in let card-options = state-set-text "g-queue-card-options" (json-obj-field obj "queue-card-options")
+    in let loyalty-used = state-set "g-loyalty-used" (if json-obj-field obj "loyalty-used" == "true" then 1 else 0)
+    in let gens = read-generals (json-parse-rows (json-obj-field obj "generals")) 0
+    in let orders = read-orders (json-parse-rows (json-obj-field obj "orders")) 0
+    in let card-orders = state-set-text "g-hand-orders" (json-obj-field obj "hand-orders")
+    in let lib = state-set-text sk-g-lib (json-obj-field obj "libraries")
+    in let pools = json-parse-rows (json-obj-field obj "prismatic-state")
+    in let active = text-to-integer (json-obj-field obj "active-player")
+    in let rays = state-set-text sk-g-rays (if active >= 0 & active < list-length pools then json-obj-field (list-at pools active) "raysUsed" & " used of " & json-obj-field (list-at pools active) "raysTotal" else "")
+    in let pool = if active >= 0 & active < list-length pools then list-at pools active else []
+    in let fluorescence = state-set "g-fluorescence" (if json-obj-field pool "fluorescenceActive" == "true" then 1 else 0)
+    in let available = state-set "g-free-rays" (text-to-integer (json-obj-field pool "raysTotal") - text-to-integer (json-obj-field pool "raysUsed") - text-to-integer (json-obj-field pool "committedRays"))
+    in let msg = state-set-text "g-message" (if state-get "g-pause-active" == 1 then "Paused. Choice timers are suspended; orders remain available." else if state-get-text "g-budget-stop" /= "" then state-get-text "g-budget-stop" & ". Continue starts a fresh budget; manual actions remain available." else if paused then "Paused for your orders." else "")
+    in let stop = if paused | go == "true" then state-set "g-auto-mode" 0 else 0
+    in let decision = read-commitment (json-obj-field obj "commitment")
+    in let disruption = read-disruption (json-obj-field obj "disruption")
+    in let result = read-disruption-result (json-obj-field obj "disruption-result")
+    in let combat-choice = read-combat-choice (json-obj-field obj "combat-choice")
+    in let rendered = request-render 0
+    in if state-get "g-pause-requested" == 1 then send-pause 0 else if state-get "g-auto-mode" == 1 then set-timeout auto-tick 600 else 0
+
+  request-pause : Integer -> Integer
+  request-pause (unused) =
+    let stopped = state-set "g-auto-mode" 0
+    in let queued = state-set "g-pause-requested" 1
+    in if state-get "g-busy" == 1 then (let rendered = request-render 0 in set-timeout pause-boundary 25) else send-pause 0
+
+  cleanup-controls : Integer -> List WidgetNode
+  cleanup-controls (unused) =
+    let raw = state-get-text "g-cleanup"
+    in if raw == "" | raw == "null" | state-get "g-pause-active" == 1 then []
+    else let row = json-parse-obj raw
+    in let cards = json-parse-rows (json-obj-field row "cards")
+    in [widget-label "g-cleanup-title" ("Discard " & json-obj-field row "count" & " to keep seven cards."), widget-label "g-cleanup-help" (if json-obj-field row "manual" == "true" then "Choose each card to discard, then Continue." else "Choose cards yourself, or Continue to let the AI choose."), widget-panel "g-cleanup-cards" DirColumn 4 (for card in cards -> widget-button ("gdiscard-" & json-obj-field card "id") ("Discard " & json-obj-field card "name"))]
+
+  submit-cleanup-card : Text -> Integer
+  submit-cleanup-card (card) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/discard?card=" & card) step-cb
+
+  pause-boundary : Integer -> Integer
+  pause-boundary (unused) =
+    if state-get "g-pause-requested" == 0 then 0
+    else if state-get "g-busy" == 1 then set-timeout pause-boundary 25
+    else send-pause 0
+
+  send-pause : Integer -> Integer
+  send-pause (unused) =
+    let queued = state-set "g-pause-requested" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then "/api/magic/game/pause" step-cb
+
+  resume-now : Integer -> Integer
+  resume-now (unused) =
+    let busy = state-set "g-busy" 1
+    in fetch-get-then "/api/magic/game/resume" step-cb
+
+  read-generals : List (List Text), Integer -> Integer
+  read-generals (rows) (i) =
+    if i >= list-length rows then 0
+    else let p = list-at rows i
+    in let name = state-set-text ("g-p" & show i & "-name") (json-obj-field p "name")
+    in let life = state-set-text ("g-p" & show i & "-life") (json-obj-field p "life")
+    in let loyalty = state-set-text ("g-p" & show i & "-loyalty") (json-obj-field p "loyalty")
+    in read-generals rows (i + 1)
+
+  read-orders : List (List Text), Integer -> Integer
+  read-orders (rows) (i) =
+    if i >= list-length rows then 0
+    else let p = list-at rows i
+    in let k = "gp" & show i
+    in let s = json-obj-field p "stance"
+    in let stance = state-set (k & "-stance") (if s == "1" then 1 else if s == "2" then 2 else if s == "3" then 3 else if s == "4" then 4 else 0)
+    in let level = json-obj-field p "skill"
+    in let skill = state-set (k & "-skill") (if level == "" then 2 else text-to-integer level)
+    in let freeze = state-set (k & "-freeze") (if json-obj-field p "freeze" == "true" then 1 else 0)
+    in let block-mode = json-obj-field p "block-policy"
+    in let blocks = state-set (k & "-blocks") (if block-mode == "" then (if json-obj-field p "auto-block" == "true" then 0 else 1) else text-to-integer block-mode)
+    in let limit = json-obj-field p "block-threshold"
+    in let life = state-set (k & "-life") (if limit == "" then 10 else text-to-integer limit)
+    in let targets = state-set-text (k & "-targets") (json-obj-field p "targets")
+    in let spells = state-set (k & "-spells") (text-to-integer (json-obj-field p "spell-policy"))
+    in let reserve = state-set (k & "-reserve") (text-to-integer (json-obj-field p "ray-reserve"))
+    in let kept = read-kept-stones i (text-to-integer (json-obj-field p "preserved-stones")) 0 1
+    in let manual = state-set (k & "-paymode") (if json-obj-field p "manual-payment" == "true" then 1 else 0)
+    in let commitment = state-set (k & "-commitment") (if json-obj-field p "commitment-pause" == "false" then 0 else 1)
+    in let target-pause = state-set (k & "-target-pause") (if json-obj-field p "target-pause" == "true" then 1 else 0)
+    in let combat-pause = state-set (k & "-combat-pause") (if json-obj-field p "combat-pause" == "true" then 1 else 0)
+    in let sacrifice-pause = state-set (k & "-sacrifice-pause") (if json-obj-field p "sacrifice-pause" == "false" then 0 else 1)
+    in let disruption-pause = state-set (k & "-disruption-pause") (if json-obj-field p "disruption-pause" == "true" then 1 else 0)
+    in let raw = json-obj-field p "freezes"
+    in let phases = read-phases (if text-length raw == 0 then [] else json-parse-rows raw) i 0
+    in read-orders rows (i + 1)
+
+  read-phases : List (List Text), Integer, Integer -> Integer
+  read-phases (rows) (player) (i) =
+    if i >= list-length rows then 0
+    else let row = list-at rows i
+    in let id = "gfr" & show player & "-" & json-obj-field row "phase"
+    in let saved = state-set id (if json-obj-field row "enabled" == "true" then 1 else 0)
+    in read-phases rows player (i + 1)
+
+  change-phase : Text -> Integer
+  change-phase (id) =
+    let player = if g-prefix id "gfr0-" then 0 else 1
+    in let enabled = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/freeze?player=" & show player & "&phase=" & g-suffix id 5 "" & "&enabled=" & show enabled) step-cb
+
+  read-kept-stones : Integer, Integer, Integer, Integer -> Integer
+  read-kept-stones (player) (mask) (stone) (bit) =
+    if stone >= 7 then 0
+    else let saved = state-set ("gkeep" & show player & "-" & show stone) (int-mod (mask / bit) 2)
+    in read-kept-stones player mask (stone + 1) (bit * 2)
+
+  change-mana : Text -> Integer
+  change-mana (id) =
+    let player = if g-prefix id "gkeep0-" then 0 else 1
+    in let keep = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/mana?player=" & show player & "&stone=" & g-suffix id 7 "" & "&keep=" & show keep) step-cb
+
+  activate-page-fluorescence : Text -> Integer
+  activate-page-fluorescence (id) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/fluorescence?stone=" & g-suffix id 7 "") step-cb
+
+  activate-page-loyalty : Text -> Integer
+  activate-page-loyalty (id) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/loyalty?index=" & g-suffix id 4 "") step-cb
+
+  load-game-cb : Text -> Integer
+  load-game-cb (resp) =
+    let obj = json-parse-obj resp
+    in let active = state-set sk-g-active (if json-obj-field obj "game-active" == "true" | json-obj-field obj "game-over" == "true" then 1 else 0)
+    in step-cb resp
+
+  target-command : Text -> Integer
+  target-command (id) =
+    let player = if g-prefix id "gt0-" then 0 else 1
+    in let prefix = "gt" & show player
+    in let k = "gp" & show player
+    in let query = if id == (prefix & "-g") then "kind=general" else if id == (prefix & "-t") then "kind=type&type=" & target-kind-label (state-get (k & "-kind")) else if id == (prefix & "-h") then "kind=threat&level=" & show (state-get (k & "-threat")) else if id == (prefix & "-c") then "kind=clear" else if g-prefix id (prefix & "-r-") then "kind=remove&index=" & g-suffix id 6 "" else "kind=permanent&id=" & g-suffix id 6 ""
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/target?player=" & show player & "&" & query) step-cb
+
+  change-skill : Text -> Integer
+  change-skill (id) =
+    let player = if id == "gp0-skill" then 0 else 1
+    in let level = int-mod (state-get id + 1) 4
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/skill?player=" & show player & "&level=" & show level) step-cb
+
+  change-order : Text, Integer -> Integer
+  change-order (id) (modulus) =
+    let stopped = state-set "g-auto-mode" 0
+    in let changed = int-mod (state-get id + 1) modulus
+    in let player = if g-prefix id "gp0" then 0 else 1
+    in let k = "gp" & show player
+    in let stance = if id == (k & "-stance") then changed else state-get (k & "-stance")
+    in let freeze = if id == (k & "-freeze") then changed else state-get (k & "-freeze")
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/posture?player=" & show player & "&stance=" & show stance & "&freeze=" & show freeze) step-cb
+
+  change-block-policy : Text -> Integer
+  change-block-policy (id) =
+    let player = if g-prefix id "gp0" then 0 else 1
+    in let k = "gp" & show player
+    in let mode = if id == (k & "-blocks") then int-mod (state-get id + 1) 4 else 3
+    in let old = state-get (k & "-life")
+    in let limit = if id == (k & "-life-up") then (if old < 999 then old + 1 else old) else if id == (k & "-life-down") then (if old > 1 then old - 1 else 1) else old
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/blocks?player=" & show player & "&policy=" & show mode & "&threshold=" & show limit) step-cb
+
+  change-spells : Text -> Integer
+  change-spells (id) =
+    let player = if g-prefix id "gp0" then 0 else 1
+    in let k = "gp" & show player
+    in let mode = if id == (k & "-spells") then int-mod (state-get (k & "-spells") + 1) 4 else 2
+    in let old = state-get (k & "-reserve")
+    in let reserve = if id == (k & "-reserve-up") then (if old < 999 then old + 1 else old) else if id == (k & "-reserve-down") then (if old > 0 then old - 1 else 0) else old
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/spells?player=" & show player & "&policy=" & show mode & "&reserve=" & show reserve) step-cb
+
+  submit-card : Text -> Integer
+  submit-card (id) =
+    let rows = json-parse-rows (state-get-text "g-manual-hand")
+    in let index = text-to-integer (g-suffix id 3 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in let cleared = clear-payment-draft 0
+    in let card = state-set-text "g-pick-card" (json-obj-field row "id")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "name" & " " & json-obj-field row "cost")
+    in let gem = state-set "g-pick-gem" (if json-obj-field row "gem" == "true" then 1 else 0)
+    in let stopped = state-set "g-auto-mode" 0
+    in if state-get "g-pick-gem" == 1 then play-chosen-card "" ""
+    else let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/targets?card=" & json-obj-field row "id" & manual-player-query 0) manual-targets-cb
+
+  manual-targets-cb : Text -> Integer
+  manual-targets-cb (resp) =
+    let obj = json-parse-obj resp
+    in let busy = state-set "g-busy" 0
+    in if json-obj-field obj "error" /= "" then step-cb resp
+    else let raw = json-obj-field obj "targets"
+    in if raw == "" then step-cb resp
+    else let saved = state-set-text "g-pick-targets" raw
+    in let recommended = state-set-text "g-pick-recommended" (json-obj-field obj "recommended")
+    in if list-length (json-parse-rows raw) == 0 then play-chosen-card "" "" else request-render 0
+
+  target-choice-buttons : Text, List (List Text), Text, Integer, List WidgetNode -> List WidgetNode
+  target-choice-buttons (prefix) (rows) (recommended) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let label = (if prefix == "gct-" then (if state-get "g-commitment-ability" == 1 then "Activate at " else "Cast at ") else "") & json-obj-field row "label" & (if json-obj-field row "id" == recommended then " (recommended)" else "")
+    in target-choice-buttons prefix rows recommended (i + 1) (list-push acc (widget-button (prefix & show i) label))
+
+  manual-target-controls : Integer -> List WidgetNode
+  manual-target-controls (unused) =
+    let raw = state-get-text "g-pick-targets"
+    in if raw == "" | state-get sk-g-over == 1 | (state-get "g-paused" == 0 & state-get-text "g-pick-queue-player" == "") then []
+    else let rows = json-parse-rows raw
+    in if list-length rows == 0 then []
+    else [widget-label "g-target-title" ("Choose target for " & state-get-text "g-pick-name"), widget-panel "g-target-options" DirRow 4 (target-choice-buttons "gmt-" rows (state-get-text "g-pick-recommended") 0 []), widget-button "g-target-cancel" "Cancel target choice"]
+
+  choose-manual-target : Text -> Integer
+  choose-manual-target (id) =
+    let rows = json-parse-rows (state-get-text "g-pick-targets")
+    in let index = text-to-integer (g-suffix id 4 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in play-chosen-card (json-obj-field row "id") (json-obj-field row "label")
+
+  play-chosen-card : Text, Text -> Integer
+  play-chosen-card (target) (label) =
+    let saved = state-set-text "g-pay-target" target
+    in if state-get-text "g-pick-response-nonce" /= "" then (if state-get-text "g-pick-permanent" /= "" then submit-ability-response target else submit-cantrip-response target)
+    else if state-get-text "g-pick-queue-player" /= "" then (if state-get "g-pick-loyalty" == 1 then submit-queued-loyalty target else if state-get-text "g-pick-card" /= "" then submit-queued-card target else submit-queued-ability target)
+    else if state-get-text "g-pick-permanent" /= "" then submit-permanent-ability target
+    else if state-get ("gp" & state-get-text "g-manual-player" & "-paymode") == 1 & state-get "g-pick-gem" == 0 then
+      (let cleared = clear-payment-chains 0
+       in let card = state-set-text "g-pay-card" (state-get-text "g-pick-card")
+       in let name = state-set-text "g-pay-name" (state-get-text "g-pick-name" & (if label == "" then "" else " targeting " & label))
+       in let done = state-set-text "g-pick-targets" ""
+       in request-render 0)
+    else let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/play?card=" & state-get-text "g-pick-card" & target-query target & manual-player-query 0) paid-card-cb
+
+  target-query : Text -> Text
+  target-query (target) = if target == "" then "" else "&target=" & target
+
+  manual-player-query : Integer -> Text
+  manual-player-query (unused) = if state-get "g-combat-cantrip" == 1 then "&player=" & state-get-text "g-manual-player" else ""
+
+  permanent-ability-controls : Integer -> List WidgetNode
+  permanent-ability-controls (unused) =
+    let raw = state-get-text "g-permanent-abilities"
+    in if state-get sk-g-over == 1 | raw == "" then [] else permanent-ability-rows (json-parse-rows raw) 0 []
+
+  permanent-ability-rows : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  permanent-ability-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let label = json-obj-field row "label" & " | " & json-obj-field row "cost"
+    in let item = if json-obj-field row "ready" == "true" then widget-button ("gpa-" & show i) ("Activate " & label) else widget-label ("gpa-held-" & show i) (label & ": unavailable")
+    in permanent-ability-rows rows (i + 1) (list-push acc item)
+
+  choose-permanent-ability : Text -> Integer
+  choose-permanent-ability (id) =
+    let rows = json-parse-rows (state-get-text "g-permanent-abilities")
+    in let index = text-to-integer (g-suffix id 4 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in let cleared = clear-payment-draft 0
+    in let source = state-set-text "g-pick-permanent" (json-obj-field row "permanent")
+    in let ability = state-set-text "g-pick-ability" (json-obj-field row "index")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "label" & " | " & json-obj-field row "cost")
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/ability-targets?permanent=" & json-obj-field row "permanent" & "&index=" & json-obj-field row "index") manual-targets-cb
+
+  submit-permanent-ability : Text -> Integer
+  submit-permanent-ability (target) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/activate?permanent=" & state-get-text "g-pick-permanent" & "&index=" & state-get-text "g-pick-ability" & target-query target) paid-card-cb
+
+  queue-ability-controls : Integer -> List WidgetNode
+  queue-ability-controls (unused) =
+    if state-get sk-g-over == 1 then []
+    else let raw = state-get-text "g-queued-abilities"
+    in let orders = if raw == "" then [] else json-parse-rows raw
+    in let options = state-get-text "g-queue-options"
+    in let rows = if options == "" then [] else json-parse-rows options
+    in queue-option-buttons rows 0 (queued-order-panels orders 0 [])
+
+  queued-order-panels : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  queued-order-panels (orders) (i) (acc) =
+    if i >= list-length orders then acc
+    else let q = list-at orders i
+    in if json-obj-field q "pending" /= "true" then queued-order-panels orders (i + 1) acc
+    else let player = json-obj-field q "player"
+    in let name = state-get-text ("g-p" & player & "-name")
+    in let panel = widget-panel ("gqueue-" & player) DirColumn 4 [widget-label ("gqueue-label-" & player) (name & ": queued " & json-obj-field q "label"), widget-label ("gqueue-reason-" & player) (json-obj-field q "reason"), widget-button ("gqc-" & player) "Cancel queued ability"]
+    in queued-order-panels orders (i + 1) (list-push acc panel)
+
+  queue-option-buttons : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  queue-option-buttons (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let player = json-obj-field row "player"
+    in let label = "Queue for " & state-get-text ("g-p" & player & "-name") & ": " & json-obj-field row "label"
+    in queue-option-buttons rows (i + 1) (list-push acc (widget-button ("gqa-" & show i) label))
+
+  choose-queued-ability : Text -> Integer
+  choose-queued-ability (id) =
+    let rows = json-parse-rows (state-get-text "g-queue-options")
+    in let index = text-to-integer (g-suffix id 4 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in let cleared = clear-payment-draft 0
+    in let player = state-set-text "g-pick-queue-player" (json-obj-field row "player")
+    in let source = state-set-text "g-pick-permanent" (json-obj-field row "permanent")
+    in let ability = state-set-text "g-pick-ability" (json-obj-field row "index")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "label")
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-targets?player=" & player & "&permanent=" & source & "&index=" & ability) manual-targets-cb
+
+  queue-loyalty-controls : Integer -> List WidgetNode
+  queue-loyalty-controls (unused) =
+    if state-get sk-g-over == 1 then []
+    else let raw = state-get-text "g-queued-loyalty"
+    in let orders = if raw == "" then [] else json-parse-rows raw
+    in let options = state-get-text "g-queue-loyalty-options"
+    in let rows = if options == "" then [] else json-parse-rows options
+    in queue-loyalty-buttons rows 0 (queued-loyalty-panels orders 0 [])
+
+  queued-loyalty-panels : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  queued-loyalty-panels (orders) (i) (acc) =
+    if i >= list-length orders then acc
+    else let q = list-at orders i
+    in if json-obj-field q "pending" /= "true" then queued-loyalty-panels orders (i + 1) acc
+    else let player = json-obj-field q "player"
+    in let name = state-get-text ("g-p" & player & "-name")
+    in let panel = widget-panel ("gloyaltyq-" & player) DirColumn 4 [widget-label ("gloyaltyq-label-" & player) (name & ": queued " & json-obj-field q "label"), widget-label ("gloyaltyq-reason-" & player) (json-obj-field q "reason"), widget-button ("gqlc-" & player) "Cancel queued General ability"]
+    in queued-loyalty-panels orders (i + 1) (list-push acc panel)
+
+  queue-loyalty-buttons : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  queue-loyalty-buttons (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let player = json-obj-field row "player"
+    in let label = "Queue for " & state-get-text ("g-p" & player & "-name") & ": " & json-obj-field row "label"
+    in queue-loyalty-buttons rows (i + 1) (list-push acc (widget-button ("gql-" & show i) label))
+
+  choose-queued-loyalty : Text -> Integer
+  choose-queued-loyalty (id) =
+    let rows = json-parse-rows (state-get-text "g-queue-loyalty-options")
+    in let index = text-to-integer (g-suffix id 4 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in let cleared = clear-payment-draft 0
+    in let player = state-set-text "g-pick-queue-player" (json-obj-field row "player")
+    in let loyalty = state-set "g-pick-loyalty" 1
+    in let ability = state-set-text "g-pick-ability" (json-obj-field row "index")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "label")
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-loyalty-targets?player=" & player & "&index=" & ability) manual-targets-cb
+
+  queue-card-controls : Integer -> List WidgetNode
+  queue-card-controls (unused) =
+    if state-get sk-g-over == 1 then []
+    else let queued = json-parse-rows (state-get-text "g-queued-cards")
+    in let rows = json-parse-rows (state-get-text "g-queue-card-options")
+    in let pending = for q in queued -> if json-obj-field q "pending" == "true" then widget-panel ("gqf-pending-" & json-obj-field q "player") DirColumn 4 [widget-label ("gqf-label-" & json-obj-field q "player") (json-obj-field q "label" & ": " & json-obj-field q "reason"), widget-button ("gqfc-" & json-obj-field q "player") "Cancel queued card"] else widget-label ("gqf-empty-" & json-obj-field q "player") ""
+    in queue-card-buttons rows 0 pending
+
+  queue-card-buttons : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  queue-card-buttons (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else queue-card-buttons rows (i + 1) (list-push acc (widget-button ("gqf-" & show i) ("Queue card: " & json-obj-field (list-at rows i) "label")))
+
+  choose-queued-card : Text -> Integer
+  choose-queued-card (id) =
+    let rows = json-parse-rows (state-get-text "g-queue-card-options")
+    in let index = text-to-integer (g-suffix id 4 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in let cleared = clear-payment-draft 0
+    in let player = state-set-text "g-pick-queue-player" (json-obj-field row "player")
+    in let card = state-set-text "g-pick-card" (json-obj-field row "card")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "label")
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-card-targets?player=" & player & "&card=" & card) manual-targets-cb
+
+  submit-queued-card : Text -> Integer
+  submit-queued-card (target) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-card?choice=queue&player=" & state-get-text "g-pick-queue-player" & "&card=" & state-get-text "g-pick-card" & target-query target) paid-card-cb
+
+  cancel-queued-card : Text -> Integer
+  cancel-queued-card (id) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-card?choice=cancel&player=" & g-suffix id 5 "") step-cb
+
+  submit-queued-loyalty : Text -> Integer
+  submit-queued-loyalty (target) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-loyalty?choice=queue&player=" & state-get-text "g-pick-queue-player" & "&index=" & state-get-text "g-pick-ability" & target-query target) paid-card-cb
+
+  cancel-queued-loyalty : Text -> Integer
+  cancel-queued-loyalty (id) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-loyalty?choice=cancel&player=" & g-suffix id 5 "") step-cb
+
+  submit-queued-ability : Text -> Integer
+  submit-queued-ability (target) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-ability?choice=queue&player=" & state-get-text "g-pick-queue-player" & "&permanent=" & state-get-text "g-pick-permanent" & "&index=" & state-get-text "g-pick-ability" & target-query target) paid-card-cb
+
+  cancel-queued-ability : Text -> Integer
+  cancel-queued-ability (id) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/queue-ability?choice=cancel&player=" & g-suffix id 4 "") step-cb
+
+  change-payment-mode : Text -> Integer
+  change-payment-mode (id) =
+    let player = if g-prefix id "gp0" then 0 else 1
+    in let manual = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/payment-mode?player=" & show player & "&manual=" & show manual) step-cb
+
+  clear-payment-chains : Integer -> Integer
+  clear-payment-chains (unused) =
+    let a = state-set-text "g-pay-current" ""
+    in let b = state-set-text "g-pay-current-label" ""
+    in let c = state-set-text "g-pay-chains" ""
+    in let d = state-set-text "g-pay-labels" ""
+    in state-set "g-pay-rays" 0
+
+  clear-payment-draft : Integer -> Integer
+  clear-payment-draft (unused) =
+    let a = state-set-text "g-pay-card" ""
+    in let b = state-set-text "g-pay-name" ""
+    in let c = state-set-text "g-pay-target" ""
+    in let d = state-set-text "g-pick-card" ""
+    in let e = state-set-text "g-pick-targets" ""
+    in let f = state-set-text "g-pick-permanent" ""
+    in let g = state-set-text "g-pick-ability" ""
+    in let h = state-set-text "g-pick-queue-player" ""
+    in let loyalty = state-set "g-pick-loyalty" 0
+    in let response = state-set-text "g-pick-response-nonce" ""
+    in clear-payment-chains 0
+
+  add-payment-stone : Text -> Integer
+  add-payment-stone (id) =
+    let rows = json-parse-rows (state-get-text "g-battlefield")
+    in let index = text-to-integer (g-suffix id 7 "")
+    in if index < 0 | index >= list-length rows then 0
+    else let row = list-at rows index
+    in let raw = state-get-text "g-pay-current"
+    in let label = state-get-text "g-pay-current-label"
+    in let a = state-set-text "g-pay-current" (raw & (if raw == "" then "" else ",") & json-obj-field row "id")
+    in let b = state-set-text "g-pay-current-label" (label & (if label == "" then "" else " + ") & json-obj-field row "name")
     in request-render 0
+
+  finish-payment-ray : Integer -> Integer
+  finish-payment-ray (unused) =
+    let raw = state-get-text "g-pay-current"
+    in let chains = state-get-text "g-pay-chains"
+    in let label = state-get-text "g-pay-current-label"
+    in let labels = state-get-text "g-pay-labels"
+    in let count = state-get "g-pay-rays" + 1
+    in let a = state-set-text "g-pay-chains" (chains & (if chains == "" then "" else ";") & (if raw == "" then "w" else raw))
+    in let b = state-set-text "g-pay-labels" (labels & (if labels == "" then "" else "; ") & "Ray " & show count & ": " & (if label == "" then "White" else label))
+    in let c = state-set "g-pay-rays" count
+    in let d = state-set-text "g-pay-current" ""
+    in let e = state-set-text "g-pay-current-label" ""
+    in request-render 0
+
+  submit-payment : Integer -> Integer
+  submit-payment (unused) =
+    let card = state-get-text "g-pay-card"
+    in if card == "" then 0
+    else let current = state-get-text "g-pay-current"
+    in let chains = state-get-text "g-pay-chains"
+    in let encoded = chains & (if current == "" then "" else (if chains == "" then "" else ";") & current)
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/play?card=" & card & "&chains=" & encoded & target-query (state-get-text "g-pay-target") & manual-player-query 0) paid-card-cb
+
+  paid-card-cb : Text -> Integer
+  paid-card-cb (resp) =
+    let updated = step-cb resp
+    in if text-length (json-obj-field (json-parse-obj resp) "error") > 0 then updated
+    else let cleared = clear-payment-draft 0
+    in request-render 0
+
+  submit-block : Text -> Integer
+  submit-block (attacker) =
+    if state-get-text "g-blocker" == "" then 0
+    else let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/block?blocker=" & state-get-text "g-blocker" & "&attacker=" & attacker) block-cb
+
+  block-cb : Text -> Integer
+  block-cb (resp) =
+    let updated = step-cb resp
+    in if text-length (json-obj-field (json-parse-obj resp) "error") > 0 then updated
+    else let clear = state-set-text "g-blocker" ""
+    in let msg = state-set-text "g-message" "Block assigned. Choose another blocker or Continue."
+    in request-render 0
+
+  g-prefix : Text, Text -> Boolean
+  g-prefix (s) (prefix) = g-prefix-at s prefix 0
+
+  g-prefix-at : Text, Text, Integer -> Boolean
+  g-prefix-at (s) (prefix) (i) = if i >= text-length prefix then True else if i >= text-length s then False else char-at s i == char-at prefix i & g-prefix-at s prefix (i + 1)
+
+  g-suffix : Text, Integer, Text -> Text
+  g-suffix (s) (i) (acc) = if i >= text-length s then acc else g-suffix s (i + 1) (acc & char-to-text (char-at s i))
 
   auto-game : Integer -> Integer
   auto-game (x) =
-    let over = state-get sk-g-over
-    in if over == 1 then 0
-    else let s = step-game 0
-    in let s2 = set-timeout auto-game 600
-    in 0
+    if state-get "g-paused" == 1 | state-get sk-g-over == 1 then 0
+    else let mode = state-set "g-auto-mode" 1
+    in auto-tick 0
+
+  auto-tick : Integer -> Integer
+  auto-tick (x) =
+    if state-get "g-auto-mode" == 0 | state-get "g-busy" == 1 | state-get "g-paused" == 1 | state-get sk-g-over == 1 then 0
+    else let busy = state-set "g-busy" 1
+    in fetch-get-then "/api/magic/game/step" step-cb
 
 Section: Entry
+
+  page-card-order : Integer -> Text
+  page-card-order (mode) = if mode == 1 then "Do not play" else if mode == 2 then "Play next" else "Auto"
+
+  card-order-controls : Text, Integer, Text, Integer, Text -> WidgetNode
+  card-order-controls (group) (player) (card) (mode) (caption) =
+    let key = "gco-" & group & "-" & show player & "-"
+    in widget-panel ("gflags-" & group & "-" & card) DirColumn 3 [widget-label ("gflag-label-" & group & "-" & card) (caption & " | AI: " & page-card-order mode), widget-panel ("gflag-buttons-" & group & "-" & card) DirRow 4 [widget-button (key & "0-" & card) "Auto", widget-button (key & "1-" & card) "Do not play", widget-button (key & "2-" & card) "Play next"]]
+
+  hand-order-tree : Integer -> List WidgetNode
+  hand-order-tree (x) =
+    let raw = state-get-text "g-hand-orders"
+    in if state-get sk-g-over == 1 | raw == "" then []
+    else hand-order-rows (json-parse-rows raw) (text-to-integer (state-get-text "g-active-player")) 0 []
+
+  hand-order-rows : List (List Text), Integer, Integer, List WidgetNode -> List WidgetNode
+  hand-order-rows (rows) (player) (i) (acc) =
+    if i >= list-length rows then acc
+    else let row = list-at rows i
+    in let controls = card-order-controls "h" player (json-obj-field row "id") (text-to-integer (json-obj-field row "play-order")) (show (i + 1) & ". " & json-obj-field row "name" & " " & json-obj-field row "cost")
+    in hand-order-rows rows player (i + 1) (list-push acc controls)
+
+  change-card-order : Text -> Integer
+  change-card-order (id) =
+    let parts = text-split (g-suffix id 4 "") "-"
+    in if list-length parts /= 4 then 0
+    else let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/card-order?player=" & list-at parts 1 & "&card=" & list-at parts 3 & "&order=" & list-at parts 2) step-cb
+
+  commitment-controls : Integer -> List WidgetNode
+  commitment-controls (x) =
+    if state-get "g-commitment-nonce" <= 0 | state-get sk-g-over == 1 then []
+    else let all = state-get "g-commitment-all" == 1
+    in let raw = state-get-text "g-commitment-targets"
+    in let rows = if raw == "" then [] else json-parse-rows raw
+    in let options = target-choice-buttons "gct-" rows (state-get-text "g-commitment-recommended") 0 []
+    in [widget-label "g-commit-title" (if state-get "g-commitment-ability" == 1 then "Activate " & state-get-text "g-commitment-name" & ": " & state-get-text "g-commitment-description" & " (" & state-get-text "g-commitment-cost" & ")?" else if all then "Cast " & state-get-text "g-commitment-name" & " using all " & show (state-get "g-commitment-rays") & " unreserved rays?" else "Choose a target for " & state-get-text "g-commitment-name"), widget-label "g-commit-timeout" (if state-get "g-commitment-ability" == 1 then "After 15 seconds: Hold. Skip this ability for this main phase." else if all then "After 15 seconds: Hold. Skip this card for this main phase; the AI can choose cheaper spells." else "After 15 seconds: cast at the shown recommendation if still allowed. An all-rays spend means Hold."), widget-panel "g-commit-targets" DirRow 4 options, widget-panel "g-commit-buttons" DirRow 8 [widget-button "g-commit-cast" (if state-get "g-commitment-ability" == 1 then "Activate" else if list-length rows > 0 then "Cast recommended" else "Cast"), widget-button "g-commit-hold" "Hold", widget-button "g-commit-override" "Override"]]
+
+  read-commitment : Text -> Integer
+  read-commitment (raw) =
+    if raw == "" | raw == "null" then state-set "g-commitment-nonce" 0
+    else let row = json-parse-obj raw
+    in let nonce = text-to-integer (json-obj-field row "nonce")
+    in let saved = state-set "g-commitment-nonce" nonce
+    in let name = state-set-text "g-commitment-name" (json-obj-field row "name")
+    in let ability = state-set "g-commitment-ability" (if json-obj-field row "ability" == "true" then 1 else 0)
+    in let description = state-set-text "g-commitment-description" (json-obj-field row "description")
+    in let cost = state-set-text "g-commitment-cost" (json-obj-field row "cost")
+    in let rays = state-set "g-commitment-rays" (text-to-integer (json-obj-field row "rays"))
+    in let all = state-set "g-commitment-all" (if json-obj-field row "all-rays" == "false" then 0 else 1)
+    in let targets = state-set-text "g-commitment-targets" (json-obj-field row "targets")
+    in let recommended = state-set-text "g-commitment-recommended" (json-obj-field row "recommended")
+    in let deadline = state-set "g-commitment-until" (clock-ms 0 + text-to-integer (json-obj-field row "remaining-ms"))
+    in if state-get "g-pause-active" == 0 & state-get "g-pause-requested" == 0 & nonce > 0 & state-get "g-commitment-timer" == 0 then (let started = state-set "g-commitment-timer" 1 in set-timeout commitment-tick 250) else 0
+
+  commitment-tick : Integer -> Integer
+  commitment-tick (x) =
+    if state-get "g-pause-active" == 1 | state-get "g-pause-requested" == 1 | state-get "g-commitment-nonce" <= 0 | state-get sk-g-over == 1 then state-set "g-commitment-timer" 0
+    else let held = if state-get "g-busy" == 0 & clock-ms 0 >= state-get "g-commitment-until" then (if state-get "g-commitment-all" == 1 | state-get "g-commitment-ability" == 1 then submit-commitment False else submit-decision "timeout" "") else 0
+    in set-timeout commitment-tick 250
+
+  submit-commitment : Boolean -> Integer
+  submit-commitment (cast) = submit-decision (if cast then "cast" else "hold") ""
+
+  submit-override : Integer -> Integer
+  submit-override (unused) =
+    if state-get "g-busy" == 1 | state-get "g-pause-active" == 1 | state-get "g-commitment-nonce" <= 0 then 0
+    else let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/override?nonce=" & show (state-get "g-commitment-nonce")) step-cb
+
+  choose-commitment-target : Text -> Integer
+  choose-commitment-target (id) =
+    let rows = json-parse-rows (state-get-text "g-commitment-targets")
+    in let index = text-to-integer (g-suffix id 4 "")
+    in if index < 0 | index >= list-length rows then 0 else submit-decision "cast" (json-obj-field (list-at rows index) "id")
+
+  submit-decision : Text, Text -> Integer
+  submit-decision (choice) (target) =
+    if state-get "g-busy" == 1 | state-get "g-commitment-nonce" <= 0 then 0
+    else let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/commitment?nonce=" & show (state-get "g-commitment-nonce") & "&choice=" & choice & target-query target) step-cb
+
+  change-target-policy : Text -> Integer
+  change-target-policy (id) =
+    let player = if id == "gp0-target-pause" then 0 else 1
+    in let enabled = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/target-policy?player=" & show player & "&enabled=" & show enabled) step-cb
+
+  change-commitment-policy : Text -> Integer
+  change-commitment-policy (id) =
+    let player = if id == "gp0-commitment" then 0 else 1
+    in let enabled = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/commitment-policy?player=" & show player & "&enabled=" & show enabled) step-cb
+
+  combat-choice-controls : Integer -> List WidgetNode
+  combat-choice-controls (unused) =
+    if state-get "g-combat-nonce" <= 0 | state-get sk-g-over == 1 then []
+    else [widget-label "g-combat-title" "Combat risk: the opponent has an untapped creature and available rays.", widget-label "g-combat-timeout" "Continue accepts the shown AI attack plan. Untouched, it proceeds after 15 seconds. Editing attackers cancels the timer; then use Continue."]
+
+  read-combat-choice : Text -> Integer
+  read-combat-choice (raw) =
+    if raw == "" | raw == "null" then state-set "g-combat-nonce" 0
+    else let row = json-parse-obj raw
+    in let nonce = state-set "g-combat-nonce" (text-to-integer (json-obj-field row "nonce"))
+    in let deadline = state-set "g-combat-until" (clock-ms 0 + text-to-integer (json-obj-field row "remaining-ms"))
+    in if state-get "g-pause-active" == 0 & state-get "g-pause-requested" == 0 & state-get "g-combat-nonce" > 0 & state-get "g-combat-timer" == 0 then (let started = state-set "g-combat-timer" 1 in set-timeout combat-choice-tick 250) else 0
+
+  combat-choice-tick : Integer -> Integer
+  combat-choice-tick (unused) =
+    if state-get "g-pause-active" == 1 | state-get "g-pause-requested" == 1 | state-get "g-combat-nonce" <= 0 | state-get sk-g-over == 1 then state-set "g-combat-timer" 0
+    else let continued = if state-get "g-busy" == 0 & clock-ms 0 >= state-get "g-combat-until" then submit-combat-choice True else 0
+    in set-timeout combat-choice-tick 250
+
+  submit-combat-choice : Boolean -> Integer
+  submit-combat-choice (timeout) =
+    if state-get "g-busy" == 1 | state-get "g-combat-nonce" <= 0 then 0
+    else let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/combat-choice?nonce=" & show (state-get "g-combat-nonce") & "&choice=" & (if timeout then "timeout" else "continue")) step-cb
+
+  change-combat-policy : Text -> Integer
+  change-combat-policy (id) =
+    let player = if id == "gp0-combat-pause" then 0 else 1
+    in let enabled = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/combat-policy?player=" & show player & "&enabled=" & show enabled) step-cb
+
+  change-sacrifice-policy : Text -> Integer
+  change-sacrifice-policy (id) =
+    let player = if id == "gp0-sacrifice-pause" then 0 else 1
+    in let enabled = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/sacrifice-policy?player=" & show player & "&enabled=" & show enabled) step-cb
+
+  disruption-controls : Integer -> List WidgetNode
+  disruption-controls (unused) =
+    if state-get "g-disruption-nonce" <= 0 | state-get sk-g-over == 1 then []
+    else let choices = json-parse-rows (state-get-text "g-disruption-choices")
+    in [widget-label "g-disruption-title" ((if state-get "g-disruption-player" == 0 then state-get-text sk-g-p0-name else state-get-text sk-g-p1-name) & ": respond to " & state-get-text "g-disruption-name" & "?"), widget-label "g-disruption-help" (if state-get-text "g-disruption-kind" == "loyalty" then "General activation is committed for this turn. Choose one Cantrip, ordinary ability or Pass. Disruption cannot target loyalty abilities. After 15 seconds: Pass." else if state-get-text "g-disruption-kind" == "ability" then "Activation costs are paid. Choose one Cantrip, ordinary ability or Pass. Disruption cannot target abilities. After 15 seconds: Pass." else "The spell is paid. Choose one Disruption, Cantrip, ordinary ability or Pass. After 15 seconds: Pass."), widget-panel "g-disruption-options" DirRow 4 (disruption-buttons choices 0 []), widget-button "g-disruption-pass" "Pass"]
+
+  disruption-buttons : List (List Text), Integer, List WidgetNode -> List WidgetNode
+  disruption-buttons (choices) (i) (acc) =
+    if i >= list-length choices then acc
+    else let option = list-at choices i
+    in let label = if json-obj-field option "kind" == "ability" then "Activate " & json-obj-field option "name" & " #" & json-obj-field option "index" & " (" & json-obj-field option "cost" & ")" else if json-obj-field option "kind" == "cantrip" then "Cast " & json-obj-field option "name" & " (" & json-obj-field option "rays" & " rays)" else "Disrupt with " & json-obj-field option "name" & " (" & json-obj-field option "rays" & (if json-obj-field option "rays" == "1" then " ray, " else " rays, ") & json-obj-field option "chance" & "% chance)"
+    in disruption-buttons choices (i + 1) (list-push acc (widget-button ("gdr-" & show i) label))
+
+  read-disruption : Text -> Integer
+  read-disruption (raw) =
+    if raw == "" | raw == "null" then (let cleared = if state-get-text "g-pick-response-nonce" /= "" then clear-payment-draft 0 else 0 in state-set "g-disruption-nonce" 0)
+    else let row = json-parse-obj raw
+    in let cleared = if state-get-text "g-pick-response-nonce" /= "" & state-get-text "g-pick-response-nonce" /= json-obj-field row "nonce" then clear-payment-draft 0 else 0
+    in let nonce = state-set "g-disruption-nonce" (text-to-integer (json-obj-field row "nonce"))
+    in let name = state-set-text "g-disruption-name" (json-obj-field row "name")
+    in let player = state-set "g-disruption-player" (text-to-integer (json-obj-field row "player"))
+    in let kind = state-set-text "g-disruption-kind" (json-obj-field row "pending-kind")
+    in let choices = state-set-text "g-disruption-choices" (json-obj-field row "choices")
+    in let deadline = state-set "g-disruption-until" (clock-ms 0 + text-to-integer (json-obj-field row "remaining-ms"))
+    in if state-get "g-pause-active" == 0 & state-get "g-pause-requested" == 0 & state-get "g-disruption-timer" == 0 then (let started = state-set "g-disruption-timer" 1 in set-timeout disruption-tick 250) else 0
+
+  read-disruption-result : Text -> Text
+  read-disruption-result (raw) =
+    if raw == "" | raw == "null" then state-set-text "g-disruption-result" ""
+    else let row = json-parse-obj raw
+    in let outcome = if json-obj-field row "abandoned" == "true" then " was abandoned at game end" else if json-obj-field row "disrupted" == "true" then " was disrupted" else if json-obj-field row "fizzled" == "true" then " had no legal target" else " resolved"
+    in state-set-text "g-disruption-result" (json-obj-field row "name" & outcome & (if json-obj-field row "response-kind" == "ability" then (if json-obj-field row "reply-fizzled" == "true" then " after the ability response fizzled." else " after the ability response.") else if json-obj-field row "response-kind" == "cantrip" then (if json-obj-field row "reply-fizzled" == "true" then " after the Cantrip response fizzled." else " after the Cantrip response.") else if text-to-integer (json-obj-field row "reply") < 0 then " after Pass." else " (" & json-obj-field row "chance" & "% chance, roll " & json-obj-field row "roll" & ")."))
+
+  disruption-tick : Integer -> Integer
+  disruption-tick (unused) =
+    if state-get "g-pause-active" == 1 | state-get "g-pause-requested" == 1 | state-get "g-disruption-nonce" <= 0 | state-get sk-g-over == 1 then state-set "g-disruption-timer" 0
+    else let passed = if state-get "g-busy" == 0 & clock-ms 0 >= state-get "g-disruption-until" then submit-disruption "timeout" (0 - 1) else 0
+    in set-timeout disruption-tick 250
+
+  choose-disruption : Text -> Integer
+  choose-disruption (id) =
+    let choices = json-parse-rows (state-get-text "g-disruption-choices")
+    in let i = text-to-integer (g-suffix id 4 "")
+    in if i < 0 | i >= list-length choices then 0
+    else let row = list-at choices i
+    in if json-obj-field row "kind" == "ability" then choose-ability-response row
+    else if json-obj-field row "kind" /= "cantrip" then submit-disruption "disrupt" (text-to-integer (json-obj-field row "card"))
+    else let cleared = clear-payment-draft 0
+    in let nonce = state-set-text "g-pick-response-nonce" (show (state-get "g-disruption-nonce"))
+    in let card = state-set-text "g-pick-card" (json-obj-field row "card")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "name")
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/response-targets?nonce=" & nonce & "&card=" & card) manual-targets-cb
+
+  choose-ability-response : List Text -> Integer
+  choose-ability-response (row) =
+    let cleared = clear-payment-draft 0
+    in let nonce = state-set-text "g-pick-response-nonce" (show (state-get "g-disruption-nonce"))
+    in let source = state-set-text "g-pick-permanent" (json-obj-field row "permanent")
+    in let index = state-set-text "g-pick-ability" (json-obj-field row "index")
+    in let name = state-set-text "g-pick-name" (json-obj-field row "name")
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/response-ability-targets?nonce=" & nonce & "&permanent=" & source & "&index=" & index) manual-targets-cb
+
+  submit-ability-response : Text -> Integer
+  submit-ability-response (target) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/response-ability?nonce=" & state-get-text "g-pick-response-nonce" & "&permanent=" & state-get-text "g-pick-permanent" & "&index=" & state-get-text "g-pick-ability" & target-query target) paid-card-cb
+
+  submit-cantrip-response : Text -> Integer
+  submit-cantrip-response (target) =
+    let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/disruption?choice=cantrip&nonce=" & state-get-text "g-pick-response-nonce" & "&card=" & state-get-text "g-pick-card" & target-query target) paid-card-cb
+
+  submit-disruption : Text, Integer -> Integer
+  submit-disruption (choice) (card) =
+    if state-get "g-busy" == 1 | state-get "g-disruption-nonce" <= 0 then 0
+    else let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/disruption?nonce=" & show (state-get "g-disruption-nonce") & "&choice=" & choice & (if card >= 0 then "&card=" & show card else "")) step-cb
+
+  change-disruption-policy : Text -> Integer
+  change-disruption-policy (id) =
+    let player = if id == "gp0-disruption-pause" then 0 else 1
+    in let enabled = if state-get id == 1 then 0 else 1
+    in let stopped = state-set "g-auto-mode" 0
+    in let busy = state-set "g-busy" 1
+    in fetch-get-then ("/api/magic/game/disruption-policy?player=" & show player & "&enabled=" & show enabled) step-cb
 
   render-g : Integer -> Integer
   render-g (x) = mount-widget-themed magic-theme (game-tree 0)
 
   opening : [Console] Integer
   opening = act
-    let t = init-magic-theme 0
+    let t = magic-page-init "#g-wrap{display:flex;flex-direction:column;gap:18px;width:100%;min-width:0}#g-wrap .wk-panel{flex:0 0 auto!important;min-width:0;max-width:100%}#g-wrap .wk-row{flex-wrap:wrap}#g-wrap .wk-label{display:block;min-width:0!important;max-width:100%;overflow-wrap:anywhere}#g-commitment .wk-btn,#gp0-skill,#gp1-skill,#g-queued-cards .wk-btn,#g-cleanup .wk-btn,#g-disruption .wk-btn,#g-queue-abilities .wk-btn,#g-queue-loyalty .wk-btn{min-width:0!important;max-width:100%;box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;height:auto!important}"
     in let s1 = state-set sk-g-active 0
+    in let ga = state-set "g-general-a" 0
+    in let gb = state-set "g-general-b" 4
+    in let b0 = state-set "gp0-blocks" 0
+    in let b1 = state-set "gp1-blocks" 0
+    in let skill0 = state-set "gp0-skill" 2
+    in let skill1 = state-set "gp1-skill" 2
+    in let l0 = state-set "gp0-life" 10
+    in let l1 = state-set "gp1-life" 10
     in let s2 = set-render render-g
     in let h = register-handlers no-pick g-click
-    in render-g 0
+    in let busy = state-set "g-busy" 1
+    in let rendered = render-g 0
+    in fetch-get-then "/api/magic/game/state" load-game-cb
   end
 
 Page 1

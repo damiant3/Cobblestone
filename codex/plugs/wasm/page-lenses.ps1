@@ -92,7 +92,7 @@ $PageModules = @(
     # Wire Parser and Byte Slicing sections (PeStdio calls both); ImgPlug keeps
     # Read Helpers.
     @{ plug = 'pe';  file = 'pe-bytes.wasm';  transport = 'bytes'; chapters = 'ByteHelpers,PeWriter,Arm64PeWriter,PePlug:Network Config|Spin|Drain|Body,PeStdio' }
-    @{ plug = 'img'; file = 'img-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,Fat16Writer,Fat32Writer,GptWriter,ImgPlug:Network Config|Streaming Send|Drain|Body,ImgStdio' }
+    @{ plug = 'img'; file = 'img-bytes.wasm'; transport = 'bytes'; chapters = 'ByteHelpers,PlugChain,Fat16Writer,Fat32Writer,GptWriter,ImgPlug:Network Config|Streaming Send|Drain|Refusal|Body,ImgStdio' }
     # The in-tab signer (PRISM-7 stage 2c): a mode byte and a 32-byte Ed25519
     # seed, then mode 0 answers the public key and mode 1 signs the CDX that
     # follows, writing the author key and signature where build.ps1's sign

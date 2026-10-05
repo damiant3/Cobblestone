@@ -1,0 +1,50 @@
+Chapter: GameClock
+
+  GameClock = record { day-seconds : Integer, last-tick : Integer, phase : Integer, due : Integer }
+
+  gc-new : Integer -> GameClock
+  gc-new (now) = GameClock { day-seconds = 7200, last-tick = now, phase = 0, due = 0 }
+
+  gc-rate-valid : Integer -> Boolean
+  gc-rate-valid (seconds) = seconds >= 24 & seconds <= 604800
+
+  gc-can-accrue : GameClock, Integer -> Boolean
+  gc-can-accrue (clock) (now) =
+    if now < clock.last-tick | now - clock.last-tick > 2147483647 then False
+    else clock.due + (clock.phase + (now - clock.last-tick) * 24) / (clock.day-seconds * 100) <= 8760000
+
+  gc-accrue : GameClock, Integer -> Integer
+  gc-accrue (clock) (now) =
+    if not (gc-can-accrue clock now) then -1
+    else let total = clock.phase + (now - clock.last-tick) * 24
+    in let period = clock.day-seconds * 100
+    in let due = __record-set clock "due" (clock.due + total / period)
+    in let phase = __record-set clock "phase" (int-mod total period)
+    in let last = __record-set clock "last-tick" now in 0
+
+  gc-set-rate : GameClock, Integer, Integer -> Integer
+  gc-set-rate (clock) (seconds) (now) =
+    if not (gc-rate-valid seconds) | not (gc-can-accrue clock now) then -1
+    else let accrued = gc-accrue clock now
+    in let phase = clock.phase * seconds / clock.day-seconds
+    in let scaled = __record-set clock "phase" phase
+    in let rate = __record-set clock "day-seconds" seconds in 0
+
+  gc-commit-hour : GameClock -> Integer
+  gc-commit-hour (clock) =
+    if clock.due <= 0 then -1
+    else let consumed = __record-set clock "due" (clock.due - 1) in 0
+
+  gc-drain : GameClock, Integer, (Integer -> Integer), Integer -> Integer
+  gc-drain (clock) (budget) (step) (done) =
+    if clock.due == 0 | done >= budget then done
+    else let result = step 1
+    in if result /= 0 then -1
+    else let consumed = gc-commit-hour clock
+    in gc-drain clock budget step (done + 1)
+
+  gc-poll : GameClock, Integer, Integer, (Integer -> Integer) -> Integer
+  gc-poll (clock) (now) (budget) (step) =
+    if budget < 1 | budget > 24 then -1
+    else if gc-accrue clock now /= 0 then -1
+    else gc-drain clock budget step 0

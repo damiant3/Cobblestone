@@ -1,0 +1,127 @@
+Chapter: GameVendorDemo
+  cites Uoaix chapter GameVendor
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyCurrencyValid
+
+ The standalone acceptance world uses named demonstration mint and loan
+ terms. All coin is mined, smelted and minted; sale stock is harvested.
+ The first character is explicitly the crown-business actor for this demo.
+
+  gvd-mine : EpWorld, Integer -> Boolean
+  gvd-mine (w) (left) = if ep-at (ep-actor w 1).stock 6 >= 2 then True
+    else if left == 0 then False
+    else let node = if (list-at w.nodes 2).stage == 2 then 3 else 4
+    in let result = eh-harvest w 1 node
+    in if result == -1 then False else gvd-mine w (left - 1)
+  gvd-smelt : EpWorld, Integer -> Boolean
+  gvd-smelt (w) (left) = if ep-at (ep-actor w 1).stock 32 > 0 then True
+    else if left == 0 then False
+    else let result = ep-craft w 1 8 2
+    in if result == -1 then False else gvd-smelt w (left - 1)
+  gvd-economy : Integer -> Result EuCurrency Text
+  gvd-economy (unused) = when ep-new (ex-catalog 0) (em-new 0)
+    is Err (e) -> Err e
+    is Ok (w) -> when eu-new w
+      is Err (e) -> Err e
+      is Ok (x) ->
+        let p1 = eu-open x 5 1
+        in let p2 = eu-open x 2 2
+        in let a1 = ep-admit w p1 100
+        in let a2 = ep-admit w p2 100
+        in let st1 = ep-station w 1 1 100
+        in let st2 = ep-station w 1 3 100
+        in let st3 = ep-station w 1 12 100
+        in let n1 = eh-source w 1 100
+        in let n2 = eh-source w 2 100
+        in let n3 = eh-source w 6 100
+        in let n4 = eh-source w 6 100
+        in let n5 = eh-source w 2 100
+        in let stone = eh-harvest w 1 n1
+        in let branches = eh-harvest w 1 n2
+        in let pick = ep-craft w 1 1 st1
+        in let hammer = ep-craft w 1 31 st1
+        in if pick < 1 | hammer < 1 | not (gvd-mine w 64) then Err "demo mining failed"
+        else if not (gvd-smelt w 64) then Err "demo smelting failed"
+        else if eu-mint-policy x True 1 3 1000 /= 0 then Err "demo mint policy failed"
+        else if eu-strike x True 1 st3 3 1 /= 0 then Err "demo mint failed"
+        else if eu-grant x True 1 p1 0 0 100 /= 0 then Err "demo royal business grant failed"
+        else if eu-lend x True 1 p2 3 200 20 48 < 1 then Err "demo vendor loan failed"
+        else if eu-tax x True 1 1000 /= 0 then Err "demo tax failed"
+        else if eh-harvest w 2 n5 /= 4 then Err "demo vendor harvest failed"
+        else if not (euv-valid x) then Err "demo economy census failed"
+        else Ok x
+  gvd-metal-mine : EpWorld, Integer, Integer, Integer, Integer -> Boolean
+  gvd-metal-mine (w) (item) (one) (two) (left) = if ep-at (ep-actor w 1).stock item >= 2 then True
+    else if left == 0 then False
+    else let node = if (list-at w.nodes (one - 1)).stage == 2 then one else two
+    in let result = eh-harvest w 1 node
+    in if result == -1 then False else gvd-metal-mine w item one two (left - 1)
+  gvd-metal-smelt : EpWorld, Integer, Integer, Integer -> Boolean
+  gvd-metal-smelt (w) (recipe) (item) (left) = if ep-at (ep-actor w 1).stock item > 0 then True
+    else if left == 0 then False
+    else let result = ep-craft w 1 recipe 2
+    in if result == -1 then False else gvd-metal-smelt w recipe item (left - 1)
+  gvd-mixed-economy : Integer -> Result EuCurrency Text
+  gvd-mixed-economy (unused) = when gvd-economy 0
+    is Err (e) -> Err e
+    is Ok (x) ->
+      let w = x.world
+      in let stone = eh-source w 1 100
+      in let branches = eh-source w 2 100
+      in let gather1 = eh-harvest w 1 stone
+      in let gather2 = eh-harvest w 1 branches
+      in let pick1 = ep-craft w 1 1 1
+      in let pick2 = ep-craft w 1 1 1
+      in let copper1 = eh-source w 25 100
+      in let copper2 = eh-source w 25 100
+      in let silver1 = eh-source w 26 100
+      in let silver2 = eh-source w 26 100
+      in if pick1 < 1 | pick2 < 1 | not (gvd-metal-mine w 63 copper1 copper2 128) | not (gvd-metal-mine w 64 silver1 silver2 128) then Err "demo copper/silver mining failed"
+      else if not (gvd-metal-smelt w 32 65 128) | not (gvd-metal-smelt w 33 66 128) then Err "demo copper/silver smelting failed"
+      else if eu-mint-policy x True 1 1 1000 /= 0 | eu-mint-policy x True 1 2 100 /= 0 then Err "demo copper/silver mint policy failed"
+      else if eu-strike x True 1 3 1 1 /= 0 | eu-strike x True 1 3 2 1 /= 0 then Err "demo copper/silver mint failed"
+      else if eu-grant x True 1 2 200 40 0 /= 0 | eu-pay x True 2 1 0 0 99 /= 0 then Err "demo mixed purse failed"
+      else if not (euv-valid x) then Err "demo mixed census failed" else Ok x
+  gvd-world : GameShard, EuCurrency, Integer -> Result GvWorld Text
+  gvd-world (game) (currency) (z) =
+    let v = gv-new game currency
+    in when world-create game.world (gs-mobile 0 1421 1698 z 400 1002)
+      is Err (e) -> Err e
+      is Ok (npc) -> when world-create game.world (gs-item npc 3701 0)
+        is Err (e) -> Err e
+        is Ok (stock) -> when world-create game.world (gs-item npc 3701 0)
+          is Err (e) -> Err e
+          is Ok (extra) -> when world-create game.world (gs-item npc 3701 0)
+            is Err (e) -> Err e
+            is Ok (buys) ->
+              let item = gs-item stock 7133 0
+              in let amount = __record-set item "amount" 4
+              in when world-create game.world item
+                is Err (e) -> Err e
+                is Ok (serial) ->
+                  let vendor = gv-add-vendor v npc 2 stock extra buys
+                  in let lot = gv-add-lot v serial 2 2 1000 32 0
+                  in if vendor /= 0 | lot /= 0 then Err "demo vendor binding refused" else Ok v
+  gvd-bind : GvWorld, Integer -> Result Integer Text
+  gvd-bind (v) (serial) = if gv-player v serial 0 >= 0 then Ok 0
+    else if v.player-count /= 0 then Err "demo admits one crown-business character"
+    else when world-create v.game.world (gs-item serial 3701 0)
+      is Err (e) -> Err e
+      is Ok (pack) -> let p = gv-add-player v serial 1 pack
+        in if p < 0 then Err "demo player binding refused" else Ok p
+  gvd-pulse : GvWorld, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  gvd-pulse (v) (shard) (input) (map) (port) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else when gvd-bind v input.session.serial
+      is Err (e) -> Err e
+      is Ok (unused) -> let p = list-at v.players 0
+        in if p.connection == input.connection then Ok None
+        else let connection = __record-set p "connection" input.connection
+        in let side = __record-set p "side" 0
+        in let count = __record-set p "count" 0
+        in when world-get shard.world (list-at v.vendors 0).serial
+          is Err (e) -> Err e
+          is Ok (npc) -> Ok (Just (gs-reply [gvp-mobile npc, gv-equip-packet v p.pack 21,
+            gv-status-packet v p, sip-message #FFFFFFFF #FFFF 6 "Welcome to UOAIX"] "vendor demo ready"))

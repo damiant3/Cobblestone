@@ -72,12 +72,14 @@ function Get-ChapterIndex {
 }
 
 # build-output and build/output hold concatenated units the build wrote (the
-# gate writes build/output/Codex.codex before it runs this), old/ is the retired
-# reference compiler, and docs/ holds archived snapshots. None is source, and
-# each carries stale copies of cite lines.
+# gate writes build/output/Codex.codex before it runs this), and build.ps1's
+# clean phase renames the previous build/output to build/output-<stamp>, so a
+# workspace that has run the full gate twice holds old units there; old/ is the
+# retired reference compiler, and docs/ holds archived snapshots. None is
+# source, and each carries stale copies of cite lines.
 function Test-Excluded {
     param([string]$Path)
-    return ($Path -match '[\\/](build-output|build[\\/]output|old|docs)[\\/]')
+    return ($Path -match '[\\/](build-output|build[\\/]output(-[^\\/]*)?|old|docs)[\\/]')
 }
 
 function Get-DefinedNames {

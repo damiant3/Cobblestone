@@ -1,0 +1,80 @@
+Chapter: SparkDocumentsTest
+  cites Spark chapter SparkDocuments
+
+ Runs the scenario below through the document store: "# name" starts a
+ document whose lines follow, and "? prompt" asks for the prompt's relevant
+ chunks and its context. The expected output is the WPF original's own
+ DocumentStore ingesting the same files and asked the same prompts.
+
+Section: Scenario
+
+  sdt-scenario : Text
+  sdt-scenario = "# a-lore.txt\nThe Ember Crown was forged in the caldera of Mount Vesh, where the old dragons slept beneath copper ash. Every king who wore it heard the dragons dreaming.\n\nVesh is a city of terraced foundries. Its streets climb the mountain in switchbacks lit by amber lamps, and the smiths work through the night because the forges never cool. Pilgrims arrive by the northern road carrying offerings of iron and salt, and the wardens of the gate count every one of them into a ledger bound in dragon's hide. Nobody remembers who first kept the ledger. The ledger is older than the crown, older than the foundries, older than the road itself, and the wardens say the first page is written in a hand no living scribe can read. Some pilgrims come only to see that page. The wardens let them look for the price of one iron nail, and the nails are melted each winter into a new link of the chain that holds the gate. The chain is now so long that it coils twice around the gatehouse, and children of the city count its links on festival days, arguing over the number, because the smiths add links faster than anyone can count them.\n\n\nThe dragon's pact ended when the last queen broke the crown.\n# b-characters.txt\nIlsa Marrow is a cartographer of the foundry city. She carries brass instruments and a map of every switchback in Vesh.\n\nTorvald the Warden keeps the gate ledger. He is old, patient and suspicious of pilgrims with too much salt.\n# c-places.txt\nThe Copper Market sits below the northern road. Lamps of amber glass hang over the stalls.\n# d-market-copy.txt\nThe Copper Market sits below the northern road. Lamps of amber glass hang over the stalls.\n# e-short.txt\na an to of it is at by\n# f-prompts.md\nPROMPT 01 dragon over the foundry city at night, amber lamps\n? the dragon crown over Vesh\n? amber lamps on the northern road\n? copper market at night\n? a map of the city\n? THE the the\n? zzz qqq\n? dragon's hide ledger\n? foundry smiths pilgrims wardens gate ledger iron salt switchbacks amber lamps dragons copper"
+
+  sdt-lines : Text, Integer, Integer, List Text -> List Text
+  sdt-lines (t) (start) (i) (acc) =
+    if i >= text-length t then list-push acc (substring t start (i - start))
+    else if substring t i 1 == "\n" then sdt-lines t (i + 1) (i + 1) (list-push acc (substring t start (i - start)))
+    else sdt-lines t start (i + 1) acc
+
+  sdt-starts : Text, Text -> Boolean
+  sdt-starts (l) (p) = text-length l >= 2 & substring l 0 2 == p
+
+  sdt-rest : Text -> Text
+  sdt-rest (l) = substring l 2 (text-length l - 2)
+
+  sdt-close : List SparkDoc, Text, Text -> List SparkDoc
+  sdt-close (acc) (name) (body) = if text-length name == 0 then acc else list-push acc (spark-doc-index name body)
+
+  sdt-docs : List Text, Integer, Text, Text, Boolean, List SparkDoc -> List SparkDoc
+  sdt-docs (ls) (i) (name) (body) (started) (acc) =
+    if i >= list-length ls then sdt-close acc name body
+    else let l = list-at ls i
+    in if sdt-starts l "# " then sdt-docs ls (i + 1) (sdt-rest l) "" False (sdt-close acc name body)
+    else if sdt-starts l "? " then sdt-docs ls (i + 1) "" "" False (sdt-close acc name body)
+    else if text-length name == 0 then sdt-docs ls (i + 1) name body started acc
+    else sdt-docs ls (i + 1) name (if started then body & "\n" & l else l) True acc
+
+  sdt-esc : Text, Integer, Text -> Text
+  sdt-esc (t) (i) (acc) =
+    if i >= text-length t then acc
+    else sdt-esc t (i + 1) (acc & (if substring t i 1 == "\n" then "\\n" else substring t i 1))
+
+  sdt-keys : List Text, Integer, Text -> Text
+  sdt-keys (ks) (i) (acc) =
+    if i >= list-length ks | i >= 12 then acc
+    else sdt-keys ks (i + 1) (if i == 0 then list-at ks 0 else acc & "," & list-at ks i)
+
+  sdt-doc-lines : List SparkDoc, Integer, Text -> Text
+  sdt-doc-lines (ds) (i) (out) =
+    if i >= list-length ds then out
+    else let d = list-at ds i
+    in sdt-doc-lines ds (i + 1) (out & "D " & d.sd-name & " | " & d.sd-role & " | " & show (list-length (d.sd-keywords)) & " | " & sdt-keys (d.sd-keywords) 0 "" & "\n")
+
+  sdt-hits : List SparkChunk, Integer, Text -> Text
+  sdt-hits (cs) (i) (out) =
+    if i >= list-length cs then out
+    else let c = list-at cs i
+    in sdt-hits cs (i + 1) (out & "R " & c.sc-source & " | " & sdt-esc (c.sc-text) 0 "" & "\n")
+
+  sdt-queries : List Text, List SparkDoc, Integer, Text -> Text
+  sdt-queries (ls) (ds) (i) (out) =
+    if i >= list-length ls then out
+    else let l = list-at ls i
+    in if sdt-starts l "? " == False then sdt-queries ls ds (i + 1) out
+    else let q = sdt-rest l
+    in let hits = sdt-hits (spark-doc-find ds q 5 300) 0 ""
+    in sdt-queries ls ds (i + 1) (out & "Q " & q & "\n" & hits & "C " & sdt-esc (spark-doc-context ds q 400) 0 "" & "\n")
+
+  sdt-trim-nl : Text -> Text
+  sdt-trim-nl (t) = if text-length t > 0 & substring t (text-length t - 1) 1 == "\n" then substring t 0 (text-length t - 1) else t
+
+  sdt-report : Text -> Text
+  sdt-report (s) =
+    let ls = sdt-lines s 0 0 []
+    in let ds = sdt-docs ls 0 "" "" False []
+    in sdt-trim-nl (sdt-doc-lines ds 0 "" & sdt-queries ls ds 0 "")
+
+  opening : [Console] Nothing = act
+    print-line (sdt-report sdt-scenario)
+  end

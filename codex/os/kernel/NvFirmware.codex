@@ -1,0 +1,213 @@
+Chapter: NvFirmware
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Firmware readers take a caller-owned raw byte buffer and its actual size.
+ Returned offsets refer to that buffer; the caller retains the buffer for
+ the consumer's lifetime. Span readers make no payload copy. The booter image
+ constructor allocates one raw output buffer whose lifetime the caller owns.
+
+Section: Bounded binary fields
+
+  nv-fw-span : Integer, Integer, Integer -> Boolean
+  nv-fw-span (total) (offset) (size) =
+    if total < 0 then False
+    else if offset < 0 then False
+    else if size < 0 then False
+    else if offset > total then False
+    else size <= total - offset
+
+  fw-u16 : Integer, Integer -> Integer
+  fw-u16 (buf) (off) = bit-or (peek-byte buf off) (bit-shl (peek-byte buf (off + 1)) 8)
+
+  fw-u32 : Integer, Integer -> Integer
+  fw-u32 (buf) (off) = bit-or (fw-u16 buf off) (bit-shl (fw-u16 buf (off + 2)) 16)
+
+  fw-u64 : Integer, Integer -> Integer
+  fw-u64 (buf) (off) = bit-or (fw-u32 buf off) (bit-shl (fw-u32 buf (off + 4)) 32)
+
+  fw-ascii-equal : Integer, Integer, Text, Integer -> Boolean
+  fw-ascii-equal (buf) (off) (name) (i) =
+    if i >= text-length name then peek-byte buf (off + i) == 0
+    else let ch = to-unicode (char-code (char-at name i))
+    in if ch < 1 then False
+    else if ch > 127 then False
+    else if peek-byte buf (off + i) /= ch then False
+    else fw-ascii-equal buf off name (i + 1)
+
+  fw-name-equal : Integer, Integer, Integer, Integer, Text -> Boolean
+  fw-name-equal (buf) (strings) (size) (offset) (name) =
+    if nv-fw-span size offset (text-length name + 1) == False then False
+    else fw-ascii-equal buf (strings + offset) name 0
+
+Section: GSP ELF sections
+
+ tinygrad's elf_loader and NV_GSP.init_gsp_image select .fwimage and the
+ chip's .fwsignature_* section. This selector admits ELF64 little-endian
+ RISC-V version 1 with ordinary 64-byte section headers and a string table.
+ The first section with each requested name must be nonempty PROGBITS.
+ Extended section counts and other ELF classes are refused.
+
+  NvGspElf = record {
+   image-offset : Integer,
+   image-size : Integer,
+   signature-offset : Integer,
+   signature-size : Integer
+  }
+
+  fw-elf-sections : Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer, Integer, Integer, Integer, Integer -> Maybe NvGspElf
+  fw-elf-sections (buf) (size) (table) (count) (strings) (string-size) (signature) (i) (image-off) (image-size) (sig-off) (sig-size) =
+    if i >= count then
+      if image-off < 0 then None
+      else if sig-off < 0 then None
+      else Just (NvGspElf { image-offset = image-off, image-size = image-size, signature-offset = sig-off, signature-size = sig-size })
+    else let sh = table + i * 64
+    in let name = fw-u32 buf sh
+    in let image-match = image-off < 0 & fw-name-equal buf strings string-size name ".fwimage"
+    in let sig-match = sig-off < 0 & fw-name-equal buf strings string-size name signature
+    in if image-match == False & sig-match == False then fw-elf-sections buf size table count strings string-size signature (i + 1) image-off image-size sig-off sig-size
+    else let offset = fw-u64 buf (sh + 24)
+    in let length = fw-u64 buf (sh + 32)
+    in if fw-u32 buf (sh + 4) /= 1 then None
+    else if length <= 0 then None
+    else if nv-fw-span size offset length == False then None
+    else fw-elf-sections buf size table count strings string-size signature (i + 1) (if image-match then offset else image-off) (if image-match then length else image-size) (if sig-match then offset else sig-off) (if sig-match then length else sig-size)
+
+  nv-gsp-elf64 : Integer, Integer, Text -> Maybe NvGspElf
+  nv-gsp-elf64 (buf) (size) (signature) =
+    if buf <= 0 then None
+    else if size < 64 then None
+    else if fw-u32 buf 0 /= #464C457F then None
+    else if peek-byte buf 4 /= 2 then None
+    else if peek-byte buf 5 /= 1 then None
+    else if peek-byte buf 6 /= 1 then None
+    else if fw-u16 buf 18 /= 243 then None
+    else if fw-u32 buf 20 /= 1 then None
+    else if fw-u16 buf 52 /= 64 then None
+    else if fw-u16 buf 58 /= 64 then None
+    else let table = fw-u64 buf 40
+    in let count = fw-u16 buf 60
+    in let string-index = fw-u16 buf 62
+    in if count == 0 then None
+    else if string-index >= count then None
+    else if nv-fw-span size table (count * 64) == False then None
+    else let sh = table + string-index * 64
+    in let strings = fw-u64 buf (sh + 24)
+    in let string-size = fw-u64 buf (sh + 32)
+    in if fw-u32 buf (sh + 4) /= 3 then None
+    else if nv-fw-span size strings string-size == False then None
+    else fw-elf-sections buf size table count strings string-size signature 0 -1 0 -1 0
+
+Section: r570 boot images
+
+ These readers follow NV_GSP.init_boot_binary_image and NV_FLCN.prep_booter
+ in tinygrad c3aec477. The caller selects the r570 format and verifies file
+ identity separately. The 24-byte nvfw_bin_hdr locates the descriptor and
+ image; its declared bin_size is not a substitute for the actual buffer size.
+
+  fw-bin-valid : Integer, Integer -> Boolean
+  fw-bin-valid (buf) (size) =
+    if buf <= 0 then False
+    else if size < 24 then False
+    else if fw-u32 buf 20 == 0 then False
+    else nv-fw-span size (fw-u32 buf 16) (fw-u32 buf 20)
+
+  NvRiscvBoot = record {
+   descriptor-offset : Integer,
+   image-offset : Integer,
+   image-size : Integer,
+   code-offset : Integer,
+   code-size : Integer,
+   data-offset : Integer,
+   data-size : Integer,
+   manifest-offset : Integer,
+   manifest-size : Integer
+  }
+
+  nv-gsp-bootloader : Integer, Integer -> Maybe NvRiscvBoot
+  nv-gsp-bootloader (buf) (size) =
+    if fw-bin-valid buf size == False then None
+    else let desc = fw-u32 buf 12
+    in let image = fw-u32 buf 16
+    in let image-size = fw-u32 buf 20
+    in if nv-fw-span size desc 84 == False then None
+    else let code-off = fw-u32 buf (desc + 48)
+    in let code-size = fw-u32 buf (desc + 52)
+    in let data-off = fw-u32 buf (desc + 40)
+    in let data-size = fw-u32 buf (desc + 44)
+    in let manifest-off = fw-u32 buf (desc + 32)
+    in let manifest-size = fw-u32 buf (desc + 36)
+    in if nv-fw-span image-size code-off code-size == False then None
+    else if nv-fw-span image-size data-off data-size == False then None
+    else if nv-fw-span image-size manifest-off manifest-size == False then None
+    else Just (NvRiscvBoot { descriptor-offset = desc, image-offset = image, image-size = image-size, code-offset = code-off, code-size = code-size, data-offset = data-off, data-size = data-size, manifest-offset = manifest-off, manifest-size = manifest-size })
+
+  NvBooterLoad = record {
+   image-offset : Integer,
+   image-size : Integer,
+   signature-offset : Integer,
+   signature-size : Integer,
+   patch-offset : Integer,
+   code-offset : Integer,
+   code-size : Integer,
+   data-offset : Integer,
+   data-size : Integer
+  }
+
+  nv-gsp-booter-load : Integer, Integer -> Maybe NvBooterLoad
+  nv-gsp-booter-load (buf) (size) =
+    if fw-bin-valid buf size == False then None
+    else let desc = fw-u32 buf 12
+    in let image = fw-u32 buf 16
+    in let image-size = fw-u32 buf 20
+    in if nv-fw-span size desc 36 == False then None
+    else let sig-base = fw-u32 buf desc
+    in let sig-total = fw-u32 buf (desc + 4)
+    in let patch-loc = fw-u32 buf (desc + 8)
+    in let patch-sig = fw-u32 buf (desc + 12)
+    in let num-sig = fw-u32 buf (desc + 24)
+    in let load = fw-u32 buf (desc + 28)
+    in if nv-fw-span size patch-loc 4 == False then None
+    else if nv-fw-span size patch-sig 4 == False then None
+    else if nv-fw-span size num-sig 4 == False then None
+    else if nv-fw-span size load 20 == False then None
+    else if nv-fw-span size sig-base sig-total == False then None
+    else let count = fw-u32 buf num-sig
+    in let apps = fw-u32 buf (load + 16)
+    in if count == 0 then None
+    else if apps == 0 then None
+    else if nv-fw-span size (load + 20) (apps * 16) == False then None
+    else let sig-size = sig-total / count
+    in let sig-relative = fw-u32 buf patch-sig
+    in let patch = fw-u32 buf patch-loc
+    in let code-off = fw-u32 buf (load + 20)
+    in let code-size = fw-u32 buf (load + 24)
+    in let data-off = fw-u32 buf (load + 8)
+    in let data-size = fw-u32 buf (load + 12)
+    in if sig-size <= 0 then None
+    else if nv-fw-span sig-total sig-relative sig-size == False then None
+    else if nv-fw-span image-size patch sig-size == False then None
+    else if nv-fw-span image-size code-off code-size == False then None
+    else if nv-fw-span image-size data-off data-size == False then None
+    else Just (NvBooterLoad { image-offset = image, image-size = image-size, signature-offset = sig-base + sig-relative, signature-size = sig-size, patch-offset = patch, code-offset = code-off, code-size = code-size, data-offset = data-off, data-size = data-size })
+
+  NvFwImage = record {
+   buffer : Integer,
+   size : Integer
+  }
+
+  fw-booter-copy : Integer, Integer, NvBooterLoad, Integer -> Integer
+  fw-booter-copy (src) (dst) (p) (i) =
+    if i >= p.image-size then dst
+    else let offset = if i >= p.patch-offset & i - p.patch-offset < p.signature-size then p.signature-offset + i - p.patch-offset else p.image-offset + i
+    in let w = poke-byte dst i (peek-byte src offset)
+    in fw-booter-copy src dst p (i + 1)
+
+  nv-gsp-booter-image : Integer, Integer -> Maybe NvFwImage
+  nv-gsp-booter-image (buf) (size) =
+    when nv-gsp-booter-load buf size
+     is None -> None
+     is Just (p) ->
+      let dst = alloc-bytes p.image-size
+      in let result = fw-booter-copy buf dst p 0
+      in Just (NvFwImage { buffer = result, size = p.image-size })

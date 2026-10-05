@@ -1,0 +1,166 @@
+Chapter: NvGspBoot
+  cites Kernel chapter NvFwsec
+  cites Kernel chapter NvFirmware
+  cites Kernel chapter NvGspSysInfo
+  cites Kernel chapter NvGspRegistry
+
+ Ada boot launch from prepared, pinned FWSEC/FRTS and booter images and
+ initialized RPC queues. Addresses and DMA padding are preparation's contract.
+ MMIO offsets/fields follow tinygrad c3aec477's ga102/tu102 register tables.
+ Poll and RPC transports own deadlines and report failure. No hardware
+ adapter is bound here. The boundary is INIT_DONE and BAR1 reset, before
+ golden-context/channel creation. Outcomes: 0 ready; 1 I/O/poll failure;
+ 2 no WPR2; 3 booter mailbox error; 4 inactive GSP; 5 INIT_DONE failure;
+ 6 unsupported FWSEC version. Register reads must return a valid u32 or trap.
+
+Section: Backend and prepared inputs
+
+ Callback calls are synchronous and observably ordered. Delay takes
+ microseconds. Poll succeeds when (read(address) AND mask) equals expected;
+ its Boolean result is True even when the matched field value is zero.
+ Write/delay/rpc-send return True on completion; rpc-send completes after
+ queueing the payload. rpc-wait returns True after the named event arrives.
+ The queue backend owns framing and handling of interleaved firmware events.
+
+  NvBootIo = record {
+   read : Integer -> Integer,
+   write : Integer, Integer -> Boolean,
+   delay : Integer -> Boolean,
+   poll : Integer, Integer, Integer -> Boolean,
+   rpc-send : Integer, List Integer -> Boolean,
+   rpc-wait : Integer -> Boolean
+  }
+
+  NvBootPci = record {
+   bar0 : Integer,
+   bar1 : Integer,
+   bar3 : Integer,
+   bus : Integer,
+   device : Integer,
+   function : Integer,
+   id : Integer,
+   subsystem : Integer,
+   revision : Integer
+  }
+
+  NvBootConfig = record {
+   fwsec : NvFwsec,
+   fwsec-address : Integer,
+   booter : NvBooterLoad,
+   booter-address : Integer,
+   libos-address : Integer,
+   wpr-address : Integer,
+   chip-id : Integer,
+   pci : NvBootPci
+  }
+
+  BootLaunch = record {
+   address : Integer,
+   code-offset : Integer,
+   data-offset : Integer,
+   imem-pa : Integer,
+   imem-va : Integer,
+   imem-size : Integer,
+   dmem-pa : Integer,
+   dmem-size : Integer,
+   pkc-offset : Integer,
+   engine-id : Integer,
+   ucode-id : Integer
+  }
+
+Section: Falcon control
+
+  boot-update : NvBootIo, Integer, Integer, Integer -> Boolean
+  boot-update (io) (addr) (mask) (value) =
+    let old = io.read addr
+    in io.write addr (bit-or (bit-and old (bit-xor mask #FFFFFFFF)) value)
+
+  boot-reset : NvBootIo, Integer, Integer, Boolean -> Boolean
+  boot-reset (io) (base) (chip) (riscv) =
+    if io.write (base + #3C0) 1 == False then False
+    else if io.delay 100000 == False then False
+    else if io.write (base + #3C0) 0 == False then False
+    else if io.poll (base + #F4) #1000 0 == False then False
+    else if riscv then io.write (base + #1668) #110
+    else let hwcfg = io.read (base + #F4)
+    in if bit-and hwcfg #400 == 0 then True
+    else if io.write (base + #1668) 0 == False then False
+    else if io.poll (base + #1668) 1 1 == False then False
+    else io.write (base + #84) chip
+
+  boot-dma-chunks : NvBootIo, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  boot-dma-chunks (io) (base) (cmd) (dest) (offset) (size) (i) =
+    if i >= size then io.poll (base + #118) 2 2
+    else if io.poll (base + #118) 1 0 == False then False
+    else if io.write (base + #114) (dest + i) == False then False
+    else if io.write (base + #11C) (offset + i) == False then False
+    else if io.write (base + #118) cmd == False then False
+    else boot-dma-chunks io base cmd dest offset size (i + 256)
+
+  boot-dma : NvBootIo, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  boot-dma (io) (base) (cmd) (dest) (offset) (source) (size) =
+    if io.poll (base + #118) 1 0 == False then False
+    else if io.write (base + #110) (bit-and (bit-shru source 8) #FFFFFFFF) == False then False
+    else if io.write (base + #128) (bit-and (bit-shru source 40) #1FF) == False then False
+    else boot-dma-chunks io base cmd dest offset size 0
+
+  boot-mailbox : NvBootIo, Integer, Integer -> Boolean
+  boot-mailbox (io) (base) (value) =
+    if io.write (base + #40) (bit-and value #FFFFFFFF) == False then False
+    else io.write (base + #44) (bit-shru value 32)
+
+  boot-start : NvBootIo, Integer -> Boolean
+  boot-start (io) (base) =
+    let ctl = io.read (base + #100)
+    in io.write (base + (if bit-and ctl #40 /= 0 then #130 else #100)) 2
+
+  boot-hs : NvBootIo, Integer, BootLaunch, Integer -> Boolean
+  boot-hs (io) (base) (p) (mailbox) =
+    if boot-update io (base + #624) #80 #80 == False then False
+    else if io.write (base + #10C) 0 == False then False
+    else if boot-update io (base + #600) 7 4 == False then False
+    else if boot-dma io base #614 p.imem-pa p.imem-va (p.address + p.code-offset - p.imem-va) p.imem-size == False then False
+    else if boot-dma io base #600 p.dmem-pa 0 (p.address + p.data-offset) p.dmem-size == False then False
+    else if io.write (base + #1210) p.pkc-offset == False then False
+    else if io.write (base + #119C) p.engine-id == False then False
+    else if io.write (base + #1198) p.ucode-id == False then False
+    else if io.write (base + #1180) 1 == False then False
+    else if io.write (base + #104) p.imem-va == False then False
+    else if (if mailbox >= 0 then boot-mailbox io base mailbox else True) == False then False
+    else if boot-start io base == False then False
+    else io.poll (base + #100) #10 #10
+
+Section: Boot sequence
+
+  boot-fwsec-launch : NvBootConfig -> BootLaunch
+  boot-fwsec-launch (cfg) = BootLaunch { address = cfg.fwsec-address, code-offset = 0, data-offset = cfg.fwsec.imem-size, imem-pa = cfg.fwsec.imem-base, imem-va = cfg.fwsec.imem-virtual, imem-size = cfg.fwsec.imem-size, dmem-pa = cfg.fwsec.dmem-base, dmem-size = cfg.fwsec.dmem-size, pkc-offset = cfg.fwsec.pkc-offset, engine-id = cfg.fwsec.engine-mask, ucode-id = cfg.fwsec.ucode-id }
+
+  boot-booter-launch : NvBootConfig -> BootLaunch
+  boot-booter-launch (cfg) = BootLaunch { address = cfg.booter-address, code-offset = cfg.booter.code-offset, data-offset = cfg.booter.data-offset, imem-pa = 0, imem-va = cfg.booter.code-offset, imem-size = cfg.booter.code-size, dmem-pa = 0, dmem-size = cfg.booter.data-size, pkc-offset = #10, engine-id = 1, ucode-id = 3 }
+
+  boot-launch : NvBootConfig, NvBootIo -> Integer
+  boot-launch (cfg) (io) =
+    if boot-reset io #110000 cfg.chip-id False == False then 1
+    else if boot-hs io #110000 (boot-fwsec-launch cfg) -1 == False then 1
+    else if io.read #1FA828 == 0 then 2
+    else if boot-reset io #110000 cfg.chip-id True == False then 1
+    else if boot-mailbox io #110000 cfg.libos-address == False then 1
+    else if boot-reset io #840000 cfg.chip-id False == False then 1
+    else if boot-hs io #840000 (boot-booter-launch cfg) cfg.wpr-address == False then 1
+    else let mailbox0 = io.read #840040
+    in let mailbox1 = io.read #840044
+    in if mailbox0 /= 0 then 3
+    else if io.write #110080 0 == False then 1
+    else if bit-and (io.read #111388) #80 == 0 then 4
+    else if io.rpc-wait #1001 == False then 5
+    else if io.write #1704 0 == False then 1
+    else 0
+
+  nv-gsp-boot : NvBootConfig, NvBootIo -> Integer
+  nv-gsp-boot (cfg) (io) =
+    if cfg.fwsec.version /= 3 then 6
+    else let p = cfg.pci
+    in let info = nv-gsp-system-info p.bar0 p.bar1 p.bar3 p.bus p.device p.function p.id p.subsystem p.revision False
+    in if io.rpc-send nv-gsp-fn-set-system-info info == False then 1
+    else if io.rpc-send nv-gsp-fn-set-registry (nv-gsp-registry nv-gsp-registry-default) == False then 1
+    else boot-launch cfg io

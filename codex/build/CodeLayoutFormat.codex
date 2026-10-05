@@ -6,7 +6,7 @@ Chapter: CodeLayoutFormat
 
 Section: Lines
 
-  clf-width : Integer = 100
+  clf-width : Integer = 128
 
   clf-lines : Text, Integer, Integer, List Text -> List Text
   clf-lines (t) (i) (start) (acc) =
@@ -42,8 +42,50 @@ Section: Record Literals
   clf-literal (s) =
     if text-length s == 0 then False
     else let c = char-code-at s 0
-    in if c >= 3 & c <= 12 then True
-    else c == char-code '"' | c == char-code '-' | c == char-code '\''
+    in if c == char-code '"' then clf-string-literal s 1
+    else if c == char-code '\'' then text-length s >= 3 & clf-char-end s 0 == text-length s
+    else if s == "True" | s == "False" then True
+    else clf-number s (if c == char-code '-' then 1 else 0)
+
+  clf-string-literal : Text, Integer -> Boolean
+  clf-string-literal (s) (i) =
+    if i >= text-length s then False
+    else let c = char-code-at s i
+    in if c == char-code '\\' then clf-string-literal s (i + 2)
+    else if c == char-code '"' then i + 1 == text-length s
+    else clf-string-literal s (i + 1)
+
+  clf-digit : Integer -> Boolean
+  clf-digit (c) = c >= char-code '0' & c <= char-code '9'
+
+  clf-hex-letter : Integer, Integer -> Boolean
+  clf-hex-letter (c) (i) =
+    if i >= 12 then False
+    else if char-code-at "abcdefABCDEF" i == c then True
+    else clf-hex-letter c (i + 1)
+
+  clf-digits : Text, Integer, Boolean -> Boolean
+  clf-digits (s) (i) (hex) =
+    if i >= text-length s then True
+    else let c = char-code-at s i
+    in if clf-digit c | c == char-code '_' | (hex & clf-hex-letter c 0) then clf-digits s (i + 1) hex
+    else False
+
+  clf-number : Text, Integer -> Boolean
+  clf-number (s) (i) =
+    if i >= text-length s then False
+    else if char-code-at s i == char-code '#' then
+      i + 1 < text-length s & clf-digits s (i + 1) True
+    else if clf-digit (char-code-at s i) then clf-decimal s (i + 1) False
+    else False
+
+  clf-decimal : Text, Integer, Boolean -> Boolean
+  clf-decimal (s) (i) (dot) =
+    if i >= text-length s then True
+    else let c = char-code-at s i
+    in if clf-digit c | c == char-code '_' then clf-decimal s (i + 1) dot
+    else if c == char-code '.' & dot == False then clf-decimal s (i + 1) True
+    else False
 
   clf-all-literal : List Text, Integer -> Boolean
   clf-all-literal (fs) (i) =
@@ -77,8 +119,9 @@ Section: Record Literals
 
   clf-char-end : Text, Integer -> Integer
   clf-char-end (l) (i) =
-    if i + 2 < text-length l & char-code-at l (i + 2) == char-code '\'' then i + 3
-    else if i + 3 < text-length l & char-code-at l (i + 1) == char-code '\\' & char-code-at l (i + 3) == char-code '\'' then i + 4
+    if i + 1 < text-length l & char-code-at l (i + 1) == char-code '\\' then
+      if i + 3 < text-length l & char-code-at l (i + 3) == char-code '\'' then i + 4 else i + 1
+    else if i + 2 < text-length l & char-code-at l (i + 2) == char-code '\'' then i + 3
     else i + 1
 
   clf-lit-end : Text, Integer -> Integer
@@ -148,7 +191,7 @@ Section: Keywords
   clf-first-word (t) = substring t 0 (clf-word-end t 0)
 
   clf-is-kw : Text -> Boolean
-  clf-is-kw (w) = w == "if" | w == "then" | w == "else" | w == "let" | w == "in" | w == "for"
+  clf-is-kw (w) = w == "if" | w == "then" | w == "else" | w == "let" | w == "in" | w == "for" | w == "when" | w == "is"
 
   clf-kw-at : Text, Integer, Integer -> ClfKw
   clf-kw-at (t) (i) (d) =
@@ -192,6 +235,9 @@ Section: Decisions
     st-ad : List Integer,
     st-na : Integer,
     st-fors : Integer,
+    st-whens : List Integer,
+    st-warms : List Integer,
+    st-nwhens : Integer,
     st-depth : Integer,
     st-branch : Integer,
     st-out : List Text
@@ -207,6 +253,9 @@ Section: Decisions
     st-ad = [],
     st-na = n,
     st-fors = n,
+    st-whens = [],
+    st-warms = [],
+    st-nwhens = n,
     st-depth = n,
     st-branch = 0 - 1,
     st-out = []
@@ -223,7 +272,7 @@ Section: Decisions
     let s1 = __record-set st "st-nifs" 0
     in let s2 = __record-set s1 "st-nlets" 0
     in let s3 = __record-set s2 "st-na" 0
-    in let s4 = __record-set s3 "st-fors" 0
+    in let s4 = __record-set (__record-set s3 "st-fors" 0) "st-nwhens" 0
     in let s5 = __record-set s4 "st-depth" 0
     in __record-set s5 "st-branch" (0 - 1)
 
@@ -256,6 +305,7 @@ Section: Decisions
     in let ni = if st.st-depth > 0 then o + clf-anc-delta st o
       else if w == "else" & st.st-nifs > 0 then clf-top (st.st-ifs) (st.st-nifs) o
       else if w == "in" & st.st-fors == 0 & st.st-nlets > 0 then clf-top (st.st-lets) (st.st-nlets) o
+      else if w == "is" & st.st-nwhens > 0 then o + clf-top (st.st-whens) (st.st-nwhens) 0
       else if st.st-branch >= 0 then st.st-branch
       else o + clf-anc-delta st o
     in if ni <= 2 then o else ni
@@ -284,41 +334,86 @@ Section: Decisions
     else if st.st-nlets > 0 then __record-set st "st-nlets" (st.st-nlets - 1)
     else st
 
-  clf-apply : ClfSt, Text, Boolean, Integer -> ClfSt
-  clf-apply (st) (w) (last) (ni) =
-    if w == "if" then clf-push-if st ni
+  clf-apply : ClfSt, ClfKw, Boolean, Integer, Integer -> ClfSt
+  clf-apply (st) (k) (last) (ni) (o) =
+    let w = k.kw-word
+    in if w == "if" then clf-push-if st ni
     else if w == "then" then clf-then st last ni
     else if w == "else" then clf-else st last
     else if w == "let" then clf-push-let st ni
     else if w == "in" then clf-in st
+    else if w == "when" then clf-push-when st (ni - o)
+    else if w == "is" then clf-first-arm st (o + k.kw-start)
     else __record-set st "st-fors" (st.st-fors + 1)
 
-  clf-scan : ClfSt, Text, Integer, Integer, Integer -> ClfSt
-  clf-scan (st) (t) (i) (d) (ni) =
+  clf-push-when : ClfSt, Integer -> ClfSt
+  clf-push-when (st) (dl) =
+    let s1 = __record-set st "st-whens" (clf-put (st.st-whens) (st.st-nwhens) dl)
+    in let s2 = __record-set s1 "st-warms" (clf-put (s1.st-warms) (s1.st-nwhens) (0 - 1))
+    in __record-set s2 "st-nwhens" (s2.st-nwhens + 1)
+
+  clf-first-arm : ClfSt, Integer -> ClfSt
+  clf-first-arm (st) (col) =
+    if st.st-nwhens == 0 then st
+    else if list-at (st.st-warms) (st.st-nwhens - 1) >= 0 then st
+    else __record-set st "st-warms" (list-set-at (st.st-warms) (st.st-nwhens - 1) col)
+
+  clf-when-arm : ClfSt, Integer -> ClfSt
+  clf-when-arm (st) (o) =
+    if st.st-nwhens == 0 then st
+    else let fa = list-at (st.st-warms) (st.st-nwhens - 1)
+    in if fa < 0 then clf-first-arm st o
+    else if fa == o then st
+    else clf-when-arm (__record-set st "st-nwhens" (st.st-nwhens - 1)) o
+
+  clf-scan : ClfSt, Text, Integer, Integer, Integer, Integer -> ClfSt
+  clf-scan (st) (t) (i) (d) (ni) (o) =
     let k = clf-kw-at t i d
     in if k.kw-word == "" then __record-set st "st-depth" (k.kw-depth)
-    else clf-scan (clf-apply st (k.kw-word) (k.kw-end == text-length t) ni) t (k.kw-end) 0 ni
+    else clf-scan (clf-apply st k (k.kw-end == text-length t) ni o) t (k.kw-end) 0 ni o
 
   clf-emit : ClfSt, Integer, Text, Integer -> ClfSt
   clf-emit (st) (o) (t) (ni) =
     let d = st.st-depth
     in let s1 = clf-anc-set st o (ni - o)
     in let s2 = __record-set s1 "st-branch" (0 - 1)
-    in let s3 = clf-scan s2 t 0 d ni
+    in let s3 = clf-scan s2 t 0 d ni o
     in __record-set s3 "st-out" (list-push (s3.st-out) (clf-spaces ni "" & t))
 
   clf-body-line : ClfSt, Integer, Text -> ClfSt
   clf-body-line (st) (o) (t) =
-    let ni = clf-new-indent st o t
-    in if st.st-depth == 0 & ni + text-length t > clf-width then clf-split st o t ni
-    else clf-emit st o t ni
+    if st.st-depth == 0 & t == "then" & st.st-nifs > 0 then clf-join-then st o
+    else clf-body-line-at st o t
+
+  clf-join-then : ClfSt, Integer -> ClfSt
+  clf-join-then (st) (o) =
+    let n = list-length (st.st-out)
+    in if n == 0 then clf-body-line-at st o "then"
+    else let last = list-at (st.st-out) (n - 1)
+    in if clf-trim last == "" then clf-body-line-at st o "then"
+    else clf-then (__record-set st "st-out" (list-set-at (st.st-out) (n - 1) (last & " then"))) True o
+
+  clf-body-line-at : ClfSt, Integer, Text -> ClfSt
+  clf-body-line-at (st) (o) (t) =
+    let s1 = if st.st-depth == 0 & clf-first-word t == "is" then clf-when-arm st o else st
+    in let ni = clf-new-indent s1 o t
+    in if s1.st-depth == 0 & ni + text-length t > clf-width then clf-split s1 o t ni
+    else clf-emit s1 o t ni
 
   clf-split : ClfSt, Integer, Text, Integer -> ClfSt
   clf-split (st) (o) (t) (ni) =
     let th = clf-find-kw t 0 "then"
-    in if th > 0 & th < text-length t then clf-split-then st o t th
+    in if clf-inline-arm t 0 then clf-emit st o t ni
+    else if th > 0 & th < text-length t then clf-split-then st o t th
     else if clf-first-word t == "else" then clf-split-else st o t ni
     else clf-emit st o t ni
+
+  clf-inline-arm : Text, Integer -> Boolean
+  clf-inline-arm (t) (i) =
+    let k = clf-kw-at t i 0
+    in if k.kw-word == "" then False
+    else if k.kw-word == "is" & k.kw-start > 0 then True
+    else clf-inline-arm t (k.kw-end)
 
   clf-split-then : ClfSt, Integer, Text, Integer -> ClfSt
   clf-split-then (st) (o) (t) (th) =
@@ -338,20 +433,19 @@ Section: Decisions
   clf-ends-eq : Text -> Boolean
   clf-ends-eq (t) = char-code-at t (text-length t - 1) == char-code '='
 
-  clf-top-line : ClfSt, Text, Integer, Text -> ClfSt
-  clf-top-line (st) (l) (o) (t) =
+  clf-top-line : ClfSt, Text, Text -> ClfSt
+  clf-top-line (st) (l) (t) =
     let s1 = clf-reset st
     in let s2 = __record-set s1 "st-out" (list-push (s1.st-out) l)
-    in if o < 2 then s2
-    else let s3 = clf-scan s2 t 0 0 4
+    in let s3 = clf-scan s2 t 0 0 4 4
     in if s3.st-branch < 0 & clf-ends-eq t then __record-set s3 "st-branch" 4 else s3
 
   clf-line : ClfSt, Text -> ClfSt
   clf-line (st) (l) =
     let t = clf-trim l
     in let o = clf-indent l 0
-    in if t == "" then __record-set st "st-out" (list-push (st.st-out) l)
-    else if o <= 2 then clf-top-line st l o t
+    in if t == "" | o < 2 then __record-set st "st-out" (list-push (st.st-out) l)
+    else if o == 2 then clf-top-line st l t
     else clf-body-line st o t
 
   clf-layout : List Text, Integer, ClfSt -> ClfSt
@@ -380,6 +474,7 @@ Section: The R7 Report
   clf-long-str : Text, Integer, Integer -> Integer
   clf-long-str (l) (i) (best) =
     if i >= text-length l then best
+    else if char-code-at l i == char-code '\'' then clf-long-str l (clf-char-end l i) best
     else if char-code-at l i == char-code '"' then clf-long-str-at l i (clf-str-end l (i + 1)) best
     else clf-long-str l (i + 1) best
 
@@ -398,6 +493,7 @@ Section: The R7 Report
   clf-table-at (l) (i) =
     let c = clf-close-at l (i + 1) 1
     in if c < 0 then False
+    else if c - i + 1 <= clf-width - clf-indent l 0 then clf-has-table l (i + 1)
     else if clf-all-literal (clf-fields l (i + 1) c 0 (i + 1) []) 0 then True
     else clf-has-table l (i + 1)
 
@@ -412,6 +508,7 @@ Section: The R7 Report
   clf-report (ls) (i) =
     if i >= list-length ls then act print-uni "" end
     else if text-length (list-at ls i) <= clf-width then clf-report ls (i + 1)
+    else if clf-indent (list-at ls i) 0 == 1 then clf-report ls (i + 1)
     else act
       print-line-uni (show (i + 1) & ": " & clf-kind (list-at ls i) & ": " & show (text-length (list-at ls i)))
       clf-report ls (i + 1)

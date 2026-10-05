@@ -1,0 +1,74 @@
+Chapter: AdminProof
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter Townsfolk
+  cites Encode chapter Json
+  cites Foreword chapter Console
+
+  ap-check : Text, Boolean -> [Console] Integer
+  ap-check (name) (pass) = act
+    print-line-uni (name & (if pass then " PASS" else " FAIL"))
+    if pass then 0 else 1
+  end
+
+  ap-proposal : Integer -> TmProposal
+  ap-proposal (kind) = TmProposal { actor = 1, kind = kind, target = 2, item = 1, quantity = 2, destination = 4, speech = "Fresh bread." }
+
+  ap-loop : AdminWorld, Integer -> Integer
+  ap-loop (a) (i) =
+    if i == 1000 then 0
+    else let mark = __heap-save
+    in let text = "persisted \"report\" é λ"
+    in let stored = admin-store a.reports 0 text
+    in let restored = __heap-restore mark
+    in let read = admin-load a.reports 0
+    in let ok = read == "persisted \"report\" é λ"
+    in let clean = __heap-restore mark
+    in if not ok then 1 else ap-loop a (i + 1)
+
+  opening : [Console] Nothing = act
+    world <- tf-new 0
+    town <- tf-add-town world "Britain" 1 2 3
+    one <- tf-add-person world "Mara" town 4 5 2 9000
+    two <- tf-add-person world "Iolo" town 4 6 0 9000
+    bread <- __record-set (tf-person world one) "bread" 10
+    mind <- tm-new 0
+    configured <- tm-configure mind world one "Baker" "Busy." 8 128 3
+    before <- __heap-save
+    state <- admin-world-new world mind
+    retained <- __heap-save - before
+    print-line-uni ("ADMIN retained-bytes=" & show retained)
+    j1 <- admin-job-submit state one 2 1 "morning"
+    busy <- admin-job-submit state one 2 2 "second"
+    c1 <- ap-check "server job admission" (j1 == 1 & busy == -2)
+    result <- admin-job-complete state (ap-proposal 1) 1 20
+    c2 <- ap-check "validated gift" ((tf-person world one).bread == 8 & (tf-person world two).bread == 2 & text-contains result "accepted")
+    wrong <- admin-job-ack state 99
+    c3 <- ap-check "reply retained until matching acknowledgement" (wrong == -1 & admin-job-result state == result)
+    done <- admin-job-ack state 1
+    j2 <- admin-job-submit state one 1 2 "no model"
+    fallback <- admin-job-fallback state
+    c4 <- ap-check "unavailable model logged" (done == 0 & j2 == 2 & fallback == 0 & mind.fallbacks == 1 & text-contains (admin-job-result state) "model-unavailable")
+    done2 <- admin-job-ack state 2
+    j3 <- admin-job-submit state one 1 3 "audit pressure"
+    full <- __record-set mind "audit-count" 1024
+    blocked <- admin-job-fallback state
+    c5 <- ap-check "audit pressure preserves pending job" (blocked == -2 & state.job-state == 1)
+    drained <- tm-ack-audit mind
+    resumed <- admin-job-fallback state
+    c6 <- ap-check "fallback resumes after audit drain" (resumed == 0 & mind.fallbacks == 2 & state.job-state == 2)
+    done3 <- admin-job-ack state 3
+    mark <- __heap-save
+    j4 <- admin-job-submit state one 1 4 ("new allocation " & show world.hour)
+    restored <- __heap-restore mark
+    job <- admin-job-peek state
+    c7 <- ap-check "job owns input after heap restore" (j4 == 4 & text-contains job "new allocation 0")
+    final <- admin-job-fallback state
+    done4 <- admin-job-ack state 4
+    baseline <- __heap-save
+    loop <- ap-loop state 0
+    delta <- __heap-save - baseline
+    c8 <- ap-check "bounded storage survives repeated arena restore" (loop == 0 & delta == 0)
+    c9 <- ap-check "JSON bounds before parser" (not (admin-json-safe "{\"n\":999999999999999999999}" 0 0 False False 0) & not (admin-json-safe "[[[[[[[[[0]]]]]]]]]" 0 0 False False 0))
+    print-line-uni ("UOAIX ADMIN CORE failures=" & show (c1+c2+c3+c4+c5+c6+c7+c8+c9))
+  end

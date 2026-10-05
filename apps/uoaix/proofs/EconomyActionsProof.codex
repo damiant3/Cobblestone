@@ -1,0 +1,164 @@
+Chapter: EconomyActionsProof
+  cites Uoaix chapter EconomyActions
+  cites Uoaix chapter EconomyInputFixtures
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Foreword chapter Result
+
+  eap-check : Text, Boolean -> [Console] Nothing
+  eap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  eap-equal : Integer, Integer, Integer -> Boolean
+  eap-equal (a) (b) (i) = if i == es-bytes then True
+    else peek-qword a i == peek-qword b i & eap-equal a b (i + 8)
+  eap-refuse : EaWorld, Integer, Integer, EaProposal, Integer, Integer, Integer -> Boolean
+  eap-refuse (e) (actor) (kind) (p) (expected) (before) (after) =
+    let checkpoint = EconomyCheckpoint { world = e.world, tick = e.world.hour, sequence = 0 }
+    in let count = e.event-count
+    in let one = is-ok (es-encode checkpoint before es-bytes)
+    in let result = ea-submit e actor kind p
+    in let two = is-ok (es-encode checkpoint after es-bytes)
+    in one & two & result == expected & eap-equal before after 0
+      & e.event-count == count + 1 & (list-at e.events count).result == expected
+  eap-trade : Integer, Integer, Integer, Integer, Integer, Integer -> EaProposal
+  eap-trade (actor) (kind) (target) (item) (quantity) (offer) =
+    EaProposal { actor = actor, kind = kind, target = target, item = item,
+      quantity = quantity, offer = offer, limit = if kind == 2 then 1000000 else 1,
+      recipe = 0, station = 0, node = 0 }
+  eap-currency-equal : Integer, Integer, Integer -> Boolean
+  eap-currency-equal (a) (b) (i) = if i == euc-bytes then True
+    else peek-qword a i == peek-qword b i & eap-currency-equal a b (i + 8)
+  eap-currency : CurrencyCheckpoint -> [Console] Nothing
+  eap-currency (checkpoint) = act
+    x <- checkpoint.currency
+    one <- eu-open x 2 1
+    two <- eu-open x 2 2
+    actor-one <- ep-admit x.world one 100
+    actor-two <- ep-admit x.world two 100
+    node <- eh-source x.world 1 100
+    e <- ea-new x.world
+    before <- alloc-bytes euc-bytes
+    after <- alloc-bytes euc-bytes
+    encoded <- euc-encode checkpoint before euc-bytes
+    posted <- ea-post e actor-one 3 actor-two 1 1 1 10
+    buy <- eap-trade actor-two 2 actor-one 1 1 1
+    sell <- eap-trade actor-one 3 actor-two 1 1 1
+    bought <- ea-submit e actor-two 2 buy
+    sold <- ea-submit e actor-one 3 sell
+    compared <- euc-encode checkpoint after euc-bytes
+    eap-check "denominated trades refuse without bypassing currency" (is-ok encoded & is-ok compared & posted == -17 & bought == -17 & sold == -17 & e.offer-count == 0 & e.event-count == 2 & eap-currency-equal before after 0)
+    work <- ea-request actor-two 1
+    selected <- __record-set work "node" node
+    harvested <- ea-submit e actor-two 1 work
+    eap-check "currency material work retains coordinator alignment" (harvested == 4 & eu-ready x & eu-census x)
+  end
+  eap-run : EpWorld -> [Console] Nothing
+  eap-run (w) = act
+    start <- __heap-save
+    e <- ea-new w
+    built <- __heap-save
+    before <- alloc-bytes es-bytes
+    after <- alloc-bytes es-bytes
+    p <- eap-trade 2 2 1 4 1 999
+    eap-check "no standing consent refuses with canonical economy bytes" (eap-refuse e 2 2 p -12 before after)
+    sell <- ea-post e 1 3 2 4 3 1 (w.hour + 5)
+    bound <- __record-set p "offer" sell
+    eap-check "only the bound principal may act" (sell > 0 & eap-refuse e 1 2 p -10 before after)
+    stranger-purse <- em-open w.money 2 3
+    stranger <- ep-admit w stranger-purse 100
+    other <- eap-trade stranger 2 1 4 1 sell
+    eap-check "named counterparty consent excludes another buyer" (stranger == 3 & eap-refuse e stranger 2 other -12 before after)
+    eap-check "resolved kind cannot replace queued action" (eap-refuse e 2 3 p -15 before after)
+    too-many <- __record-set p "quantity" 4
+    eap-check "offer quantity refuses without consumption" (eap-refuse e 2 2 p -12 before after & (list-at e.offers (sell - 1)).remaining == 3)
+    one <- __record-set p "quantity" 1
+    cheap <- __record-set p "limit" 1
+    eap-check "buyer price cap refuses" (eap-refuse e 2 2 p -13 before after)
+    reset <- __record-set p "limit" 1000000
+    expensive <- ea-post e 1 3 2 4 1 1000000 (w.hour + 5)
+    high-offer <- __record-set p "offer" expensive
+    eap-check "counterparty seller floor binds" (expensive > 0 & eap-refuse e 2 2 p -13 before after)
+    reset-offer <- __record-set p "offer" sell
+    quote <- ep-price w 1 4
+    coins <- (em-purse w.money (ep-actor w 2).purse).coin
+    stock <- ep-at (ep-actor w 2).stock 4
+    count <- e.event-count
+    paid <- ea-submit e 2 2 p
+    row <- list-at e.events count
+    eap-check "consenting purchase transfers stock coin and allowance" (paid == 0 & ep-at (ep-actor w 2).stock 4 == stock + 1 & (em-purse w.money (ep-actor w 2).purse).coin == coins - quote & (list-at e.offers (sell - 1)).remaining == 2 & row.price == quote & row.money-sequence == w.money.sequence & row.actor == 2 & row.principal == 2 & row.offer == sell)
+    foreign <- ea-cancel e 2 sell
+    revoked <- ea-cancel e 1 sell
+    eap-check "only owner revokes and revoked consent refuses" (foreign == -1 & revoked == 0 & eap-refuse e 2 2 p -12 before after)
+    expiry <- ea-post e 1 3 2 4 1 1 w.hour
+    bind-expiry <- __record-set p "offer" expiry
+    advance <- eh-step w
+    eap-check "expired consent is rechecked" (expiry > 0 & advance == 0 & eap-refuse e 2 2 p -12 before after)
+    demand <- ea-post e 1 2 2 10 1 100 (w.hour + 5)
+    sale <- eap-trade 2 3 1 10 1 demand
+    capped <- ea-post e 1 2 2 10 1 1 (w.hour + 5)
+    low-offer <- __record-set sale "offer" capped
+    eap-check "counterparty buyer cap binds" (capped > 0 & eap-refuse e 2 3 sale -13 before after)
+    restored-offer <- __record-set sale "offer" demand
+    dear <- __record-set sale "limit" 1000000
+    eap-check "seller floor and buyer consent both bind" (demand > 0 & eap-refuse e 2 3 sale -13 before after)
+    fair <- __record-set sale "limit" 1
+    sold <- ea-submit e 2 3 sale
+    eap-check "sale consumes buyer offer once" (sold == 0 & (list-at e.offers (demand - 1)).remaining == 0 & eap-refuse e 2 3 sale -12 before after)
+    remote <- ea-post e 1 3 2 4 1 1 (w.hour + 5)
+    bind-remote <- __record-set p "offer" remote
+    moved <- ep-place w 2 101
+    eap-check "live location remains a layer one rule" (remote > 0 & moved == 0 & eap-refuse e 2 2 p -1 before after & (list-at e.offers (remote - 1)).remaining == 1)
+    returned <- ep-place w 2 100
+    public <- ea-post e 1 3 0 4 1 1 (w.hour + 5)
+    public-offer <- __record-set other "offer" public
+    eap-check "unfunded buyer cannot consume open consent" (public > 0 & eap-refuse e stranger 2 other -1 before after & (list-at e.offers (public - 1)).remaining == 1)
+    work <- ea-request 2 1
+    node <- __record-set work "node" 1
+    harvested <- ea-submit e 2 1 work
+    eap-check "work uses admitted resource and owned inventory" (harvested == 4 & (list-at e.events (e.event-count - 1)).node == 1 & eap-refuse e 2 1 work -1 before after)
+    no-node <- __record-set work "node" 0
+    recipe <- __record-set work "recipe" 3
+    station <- __record-set work "station" 1
+    eap-check "craft refuses another actor workplace" (eap-refuse e 2 1 work -1 before after)
+    ore <- eh-source w 5 100
+    novice <- ep-set (ep-actor w 2).skills 1 0
+    attempts <- __record-set (ep-actor w 2) "attempts" 1
+    charges <- ep-at (ep-actor w 2).wear 25
+    failed-work <- ea-request 2 1
+    failed-node <- __record-set failed-work "node" ore
+    failed <- ea-submit e 2 1 failed-work
+    eap-check "skill failure is admitted practice and wear" (failed == -2 & ep-at (ep-actor w 2).skills 1 == 1 & ep-at (ep-actor w 2).wear 25 == charges - 1 & (list-at e.events (e.event-count - 1)).result == -2)
+    unsupported <- ea-request 2 5
+    eap-check "unsupported actions refuse and log" (eap-refuse e 2 5 unsupported -11 before after)
+    eat <- ea-request 2 4
+    food <- __record-set eat "item" 14
+    amount <- __record-set eat "quantity" 1
+    garden <- eh-source w 14 100
+    skilled <- ep-set (ep-actor w 2).skills 5 1000
+    vegetables <- eh-harvest w 2 garden
+    hunger <- (ep-actor w 2).hunger
+    eaten <- ea-submit e 2 4 eat
+    eap-check "eat consumes owned food" (vegetables == 4 & eaten == 0 & ep-at (ep-actor w 2).stock 14 == 3 & (ep-actor w 2).hunger == hunger - 30)
+    growth-start <- __heap-save
+    denied <- ea-submit e 2 5 unsupported
+    growth-end <- __heap-save
+    eap-check "proposal execution retains no new heap" (denied == -11 & growth-start == growth-end)
+    full <- __record-set e "event-count" 1024
+    sequence <- e.sequence
+    eap-check "audit capacity refuses before world mutation" (ea-submit e 2 4 eat == -14 & ep-at (ep-actor w 2).stock 14 == 3 & e.sequence == sequence)
+    acknowledged <- ea-ack e
+    eap-check "acknowledgement retains monotonic sequence" (acknowledged == 0 & e.event-count == 0 & e.sequence == sequence)
+    eap-check "all material and coin checks remain valid" (ep-census w 1 & em-balanced w.money 1 & ev-valid w)
+    print-line-uni ("BOUNDARY-BYTES " & show (built - start))
+  end
+  opening : [Console] Nothing = act
+    when eif-source 0
+      is Err (message) -> print-line-uni ("FAIL fixture " & message)
+      is Ok (state) -> act
+        fixture <- eif-build state
+        if fixture.failed /= 0 then print-line-uni "FAIL fixture setup" else eap-run state.world
+      end
+    when efi-source 0
+      is Err (message) -> print-line-uni ("FAIL currency fixture " & message)
+      is Ok (checkpoint) -> eap-currency checkpoint
+  end

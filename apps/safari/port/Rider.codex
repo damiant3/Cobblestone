@@ -91,7 +91,17 @@ Section: One Physics Step
     in let v = s.v + accel
     in let heading-change = yaw-per-tilt * tilt
     in let mid = s.yaw + heading-change / 2.0
-    in RiderState { segment = s.segment, along = s.along + v * r-cos mid, across = s.across + v * r-sin mid, yaw = s.yaw + heading-change, v = v, tilt = tilt, heading = s.heading + heading-change, gaze-yaw = s.gaze-yaw, focus = s.focus }
+    in RiderState {
+      segment = s.segment,
+      along = s.along + v * r-cos mid,
+      across = s.across + v * r-sin mid,
+      yaw = s.yaw + heading-change,
+      v = v,
+      tilt = tilt,
+      heading = s.heading + heading-change,
+      gaze-yaw = s.gaze-yaw,
+      focus = s.focus
+    }
 
 Section: Projecting the Arc
 
@@ -103,9 +113,9 @@ Section: Projecting the Arc
  Side is which shoulder he left, if any.
 
   Side =
-   | SideLeft
-   | SideNone
-   | SideRight
+    | SideLeft
+    | SideNone
+    | SideRight
 
   PathSim = record {
     side : Side,
@@ -124,18 +134,54 @@ Section: Projecting the Arc
 
   sim-loop : RiderState, Real, Real, Real, Real, Boolean, Integer, RiderState -> PathSim
   sim-loop (start) (left-bound) (right-bound) (start-side) (start-along) (crossed) (i) (phys) =
-    if i >= turn-danger-steps then PathSim { side = SideNone, forward = phys.along - start-along, crossed = crossed, end-across = phys.across, frames = no-frames }
-    else sim-step start left-bound right-bound start-side start-along crossed i (simulate-rider-step phys 0.0 0.0)
+    if i >= turn-danger-steps then
+      PathSim {
+        side = SideNone,
+        forward = phys.along - start-along,
+        crossed = crossed,
+        end-across = phys.across,
+        frames = no-frames
+      }
+    else
+      sim-step start left-bound right-bound start-side start-along crossed i (simulate-rider-step phys 0.0 0.0)
 
   sim-step : RiderState, Real, Real, Real, Real, Boolean, Integer, RiderState -> PathSim
   sim-step (start) (left-bound) (right-bound) (start-side) (start-along) (crossed0) (i) (phys) =
     let across = phys.across
     in let forward = phys.along - start-along
     in let crossed = if across * start-side < 0.0 then True else crossed0
-    in if across < left-bound then PathSim { side = SideLeft, forward = real-min forward min-forward-progress, crossed = crossed, end-across = across, frames = real-from-int i }
-    else if across > right-bound then PathSim { side = SideRight, forward = real-min forward min-forward-progress, crossed = crossed, end-across = across, frames = real-from-int i }
-    else if forward < 0.0 then PathSim { side = SideNone, forward = forward, crossed = crossed, end-across = across, frames = no-frames }
-    else if forward >= min-forward-progress then PathSim { side = SideNone, forward = min-forward-progress, crossed = crossed, end-across = across, frames = no-frames }
+    in if across < left-bound then
+      PathSim {
+        side = SideLeft,
+        forward = real-min forward min-forward-progress,
+        crossed = crossed,
+        end-across = across,
+        frames = real-from-int i
+      }
+    else if across > right-bound then
+      PathSim {
+        side = SideRight,
+        forward = real-min forward min-forward-progress,
+        crossed = crossed,
+        end-across = across,
+        frames = real-from-int i
+      }
+    else if forward < 0.0 then
+      PathSim {
+        side = SideNone,
+        forward = forward,
+        crossed = crossed,
+        end-across = across,
+        frames = no-frames
+      }
+    else if forward >= min-forward-progress then
+      PathSim {
+        side = SideNone,
+        forward = min-forward-progress,
+        crossed = crossed,
+        end-across = across,
+        frames = no-frames
+      }
     else sim-loop start left-bound right-bound start-side start-along crossed (i + 1) phys
 
  The bounds widen to wherever he already is, so a rider who starts outside the
@@ -152,10 +198,10 @@ Section: The Lean Search
 
   want-more-right : PathSim, Real -> Boolean
   want-more-right (sim) (target) =
-   when sim.side
-    is SideLeft -> True
-    is SideRight -> False
-    is SideNone -> sim.end-across < target
+    when sim.side
+     is SideLeft -> True
+     is SideRight -> False
+     is SideNone -> sim.end-across < target
 
  Binary-search the held lean whose arc stays on the road and ends closest to the
  asymptotic centre target. TWELVE ITERATIONS, each running a fresh path
@@ -169,12 +215,23 @@ Section: The Lean Search
 
   lean-target : Real -> Real
   lean-target (across) =
-    if real-abs across < center-lane-epsilon then (if across >= 0.0 then center-lane-epsilon else 0.0 - center-lane-epsilon)
+    if real-abs across < center-lane-epsilon then
+      (if across >= 0.0 then center-lane-epsilon else 0.0 - center-lane-epsilon)
     else across * asymptote-tuning
 
   with-tilt : RiderState, Real -> RiderState
   with-tilt (s) (t) =
-    RiderState { segment = s.segment, along = s.along, across = s.across, yaw = s.yaw, v = s.v, tilt = t, heading = s.heading, gaze-yaw = s.gaze-yaw, focus = s.focus }
+    RiderState {
+      segment = s.segment,
+      along = s.along,
+      across = s.across,
+      yaw = s.yaw,
+      v = s.v,
+      tilt = t,
+      heading = s.heading,
+      gaze-yaw = s.gaze-yaw,
+      focus = s.focus
+    }
 
   search-lean : RiderState, Segment, Real, Real, Real, Integer -> Real
   search-lean (state) (seg) (target) (lo) (hi) (i) =
@@ -185,7 +242,7 @@ Section: The Lean Search
   search-step (state) (seg) (target) (lo) (hi) (i) (mid) =
     if want-more-right (simulate-rider-path (with-tilt state mid) seg) target
       then search-lean state seg target mid hi (i + 1)
-      else search-lean state seg target lo mid (i + 1)
+    else search-lean state seg target lo mid (i + 1)
 
   best-tilt-correction : RiderState, Segment -> Real
   best-tilt-correction (state) (seg) =
@@ -227,7 +284,9 @@ Section: Throttle and Brakes
 
   cat-gate : RiderState, Segment, Real -> Real
   cat-gate (state) (seg) (a) =
-    if seg.has-cat then (if a > 0.0 then (if cat-in-danger (seg.cat.along - state.along) state.v then 0.0 else a) else a) else a
+    if seg.has-cat then
+      (if a > 0.0 then (if cat-in-danger (seg.cat.along - state.along) state.v then 0.0 else a) else a)
+    else a
 
   pig-gate : RiderState, Segment, Real -> Real
   pig-gate (state) (seg) (a) =
@@ -244,10 +303,10 @@ Section: Throttle and Brakes
 
   side-none : PathSim -> Boolean
   side-none (sim) =
-   when sim.side
-    is SideNone -> True
-    is SideLeft -> False
-    is SideRight -> False
+    when sim.side
+     is SideNone -> True
+     is SideLeft -> False
+     is SideRight -> False
 
   shoulder-brake-at : RiderState, PathSim, Real -> Real
   shoulder-brake-at (state) (sim) (a) =
@@ -263,7 +322,9 @@ Section: Throttle and Brakes
   clamp-v (state) (seg) (v-end) (v0) (near) =
     let v1 = if v0 > v-max then v-max else v0
     in let v2 = if v1 < 0.0 then 0.0 else v1
-    in if near then (if v2 < v-end then (if gawk-engaged state seg then v2 else v-end) else v2) else v2
+    in if near then
+      (if v2 < v-end then (if gawk-engaged state seg then v2 else v-end) else v2)
+    else v2
 
   get-forward-accel-decel : RiderState, Segment -> Real
   get-forward-accel-decel (state) (seg) =
@@ -288,7 +349,10 @@ Section: Deciding
   decide : RiderState, Segment -> Decision
   decide (state) (seg) =
     let tilt-step = best-tilt-correction state seg - state.tilt
-    in Decision { tilt-step = tilt-step, accel = get-forward-accel-decel (with-tilt state (state.tilt + tilt-step)) seg }
+    in Decision {
+      tilt-step = tilt-step,
+      accel = get-forward-accel-decel (with-tilt state (state.tilt + tilt-step)) seg
+    }
 
 Section: Crossing a Seam
 
@@ -310,7 +374,17 @@ Section: Crossing a Seam
     in let s = r-sin theta
     in let da = rs.along - (seg.length + hw * s)
     in let dx = rs.across - sgn * hw * (1.0 - c)
-    in RiderState { segment = seg.exit-to, along = c * da + sgn * s * dx, across = (0.0 - sgn) * s * da + c * dx, yaw = rs.yaw - sgn * theta, v = rs.v, tilt = rs.tilt, heading = rs.heading, gaze-yaw = 0.0, focus = rs.focus }
+    in RiderState {
+      segment = seg.exit-to,
+      along = c * da + sgn * s * dx,
+      across = (0.0 - sgn) * s * da + c * dx,
+      yaw = rs.yaw - sgn * theta,
+      v = rs.v,
+      tilt = rs.tilt,
+      heading = rs.heading,
+      gaze-yaw = 0.0,
+      focus = rs.focus
+    }
 
 Section: One Frame
 
@@ -326,12 +400,22 @@ Section: One Frame
   finish-clamp (moved) (seg) =
     let in-zone = (seg.length - moved.along) < approach-intersection-dist
     in if moved.along >= seg.length then stopped-at moved seg.length
-       else if in-zone then (if moved.v < 0.1 then stopped-at moved seg.length else moved)
-       else moved
+    else if in-zone then (if moved.v < 0.1 then stopped-at moved seg.length else moved)
+    else moved
 
   stopped-at : RiderState, Real -> RiderState
   stopped-at (s) (at) =
-    RiderState { segment = s.segment, along = at, across = s.across, yaw = s.yaw, v = 0.0, tilt = s.tilt, heading = s.heading, gaze-yaw = s.gaze-yaw, focus = s.focus }
+    RiderState {
+      segment = s.segment,
+      along = at,
+      across = s.across,
+      yaw = s.yaw,
+      v = 0.0,
+      tilt = s.tilt,
+      heading = s.heading,
+      gaze-yaw = s.gaze-yaw,
+      focus = s.focus
+    }
 
   resolve-cross : RiderState, Segment, List Segment -> RiderState
   resolve-cross (moved) (seg) (segs) =
@@ -346,7 +430,9 @@ Section: One Frame
     let seg = list-at segs state.segment
     in let dec = decide state seg
     in let moved = simulate-rider-step state dec.tilt-step dec.accel
-    in let resolved = if seg.terminates then finish-clamp moved seg else resolve-cross moved seg segs
+    in let resolved = if seg.terminates then
+      finish-clamp moved seg
+    else resolve-cross moved seg segs
     in next-rider-gaze resolved segs
 
   is-finished : RiderState, List Segment -> Boolean

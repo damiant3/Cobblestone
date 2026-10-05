@@ -1,0 +1,67 @@
+Chapter: WorldIndexProof
+  cites Uoaix chapter WorldSnapshot
+
+  wip-object : Integer, Integer, Integer, Integer, Integer -> WorldObject
+  wip-object (kind) (serial) (parent) (x) (y) = WorldObject { serial = serial, kind = kind, container = parent,
+    x = x, y = y, z = 0, graphic = 400, hue = 0, amount = 1, health = 50 }
+  wip-id : Result Integer Text -> Integer
+  wip-id (result) = when result is Err (_) -> 0 is Ok (serial) -> serial
+  wip-check : Text, Boolean -> [Console] Integer
+  wip-check (label) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & label)
+    if ok then 0 else 1
+  end
+  wip-moves : WorldTable, Integer, Integer -> Boolean
+  wip-moves (world) (serial) (i) = if i == 5000 then True
+    else let mark = __heap-save
+    in let x = int-mod (i * 123) 6144
+    in let y = int-mod (i * 97) 4096
+    in let moved = world-update world (wip-object 1 serial 0 x y)
+    in let found = is-ok moved & world-tile-first world x y == serial
+    in let restored = __heap-restore mark
+    in if not found then False else wip-moves world serial (i + 1)
+  wip-run : WorldTable -> [Console] Integer
+  wip-run (world) = let a = wip-id (world-create world (wip-object 1 0 0 10 10))
+    in let b = wip-id (world-create world (wip-object 1 0 0 11 10))
+    in let pack = wip-id (world-create world (wip-object 2 0 a 0 0))
+    in let child = wip-id (world-create world (wip-object 2 0 pack 0 0))
+    in let shirt = wip-id (world-create world (wip-object 2 0 a 0 0))
+    in let other = wip-id (world-create world (wip-object 2 0 a 0 0))
+    in act
+      c1 <- wip-check "children are indexed separately from tile occupants" (world-child-count world a == 3 & world-child-count world pack == 1 & world-tile-first world 10 10 == a & world-tile-next world a == 0)
+      one <- world-set-layer world shirt 5
+      two <- world-set-layer world other 5
+      c2 <- wip-check "layer table chooses stable lowest slot" (one == 0 & two == 0 & world-layer-serial world a 5 == shirt)
+      removed <- world-delete world shirt
+      changed <- world-set-layer world other 4
+      c3 <- wip-check "layer deletion and reassignment update owner" (is-ok removed & changed == 0 & world-layer-serial world a 5 == 0 & world-layer-serial world a 4 == other)
+      moved <- world-update world (wip-object 2 pack b 0 0)
+      c4 <- wip-check "reparent updates child counts and subtree heights" (is-ok moved & world-child-count world a == 1 & world-first-child world b == pack & world-child-count world pack == 1 & peek-qword (wi-row world.index (world-slot world a)) 32 == 1 & peek-qword (wi-row world.index (world-slot world b)) 32 == 2)
+      detached <- world-update world (wip-object 2 child 0 1000 1000)
+      c5 <- wip-check "detached item enters tile index and lowers ancestors" (is-ok detached & world-child-count world pack == 0 & world-tile-first world 1000 1000 == child & peek-qword (wi-row world.index (world-slot world b)) 32 == 1)
+      same-tile <- world-update world (wip-object 1 b 0 10 10)
+      c6 <- wip-check "tile chain preserves both occupants" (is-ok same-tile & world-tile-first world 10 10 == b & world-tile-next world b == a)
+      mark <- __heap-save
+      walked <- wip-moves world b 0
+      c7 <- wip-check "tile pages recycle without retained heap growth" (walked & __heap-save == mark & world-tile-first world 10 10 == a)
+      snapshot <- alloc-bytes (ws-size world.capacity)
+      encoded <- ws-encode (WorldCheckpoint { world = world, sequence = 1, tick = 1 }) snapshot (ws-size world.capacity)
+      c8 <- when encoded
+        is Err (_) -> wip-check "snapshot restores derived indexes" False
+        is Ok (size) -> when ws-decode snapshot size
+          is Err (_) -> wip-check "snapshot restores derived indexes" False
+          is Ok (restored) -> wip-check "snapshot restores derived indexes" (world-child-count restored.world b == 1 & world-first-child restored.world b == pack & world-tile-first restored.world 1000 1000 == child)
+      before <- alloc-bytes (16 + world.capacity * 80)
+      copied <- ws-copy world.buffer before (16 + world.capacity * 80) 0
+      deleted <- world-delete world other
+      restored <- ws-copy before world.buffer (16 + world.capacity * 80) 0
+      indexed <- world-reindex world
+      c9 <- wip-check "raw rollback rebuild preserves layer binding" (is-ok deleted & indexed & world-layer-serial world a 4 == other & world-child-count world a == 1)
+      c1+c2+c3+c4+c5+c6+c7+c8+c9
+    end
+  opening : [Console] Integer = when world-new 16384
+    is Err (e) -> act
+      print-line-uni ("FAIL world " & e)
+      1
+    end
+    is Ok (world) -> wip-run world

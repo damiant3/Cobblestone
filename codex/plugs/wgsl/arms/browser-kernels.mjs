@@ -118,16 +118,16 @@ try {
 
   // GroupNorm: C = 8 channels of HW = 64, 4 groups, so 4 rows of 128.
   {
-    const C = 8, HW = 64, G = 4, L = (C / G) * HW, R = G, NN = C * HW, eps = 1e-5;
+    const C = 8, HW = 320, G = 4, L = (C / G) * HW, R = G, NN = C * HW, eps = 1e-5;
     const epsBits = new Int32Array(new Float32Array([eps]).buffer)[0];
-    const xv = wordsOf(i => ((i * 53) % 2048 - 1024) / 64).f.slice(0, NN);
+    const xv = new Float32Array(NN).map((_, i) => ((i * 53) % 2048 - 1024) / 64);
     const xw = Array.from(new Int32Array(xv.buffer.slice(0, NN * 4)));
     const mean = [], rstd = [];
     for (let r = 0; r < R; r++) { let s = 0; for (let j = 0; j < L; j++) s += xv[r * L + j]; const m = s / L; let q = 0; for (let j = 0; j < L; j++) q += (xv[r * L + j] - m) ** 2; mean.push(m); rstd.push(1 / Math.sqrt(q / L + eps)); }
     const mb = bindingsOf('bk_row_mean'), rb = bindingsOf('bk_row_rstd');
     const statsRun = async (src) => {
-      const a = await evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_row_mean_main', ${JSON.stringify([[mb.m.sb, null, FILL, R * 2], [mb.m.xb, xw, 0, NN]])}, ${mb.m.sb}, ${mb.ub}, [${L}, ${R}], 64)`);
-      const b = await evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_row_rstd_main', ${JSON.stringify([[rb.m.sb, null, FILL, R * 2], [rb.m.xb, xw, 0, NN]])}, ${rb.m.sb}, ${rb.ub}, [${L}, ${epsBits}, ${R}], 64)`);
+      const a = await evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_row_mean_main', ${JSON.stringify([[mb.m.sb, null, FILL, R * 2], [mb.m.xb, xw, 0, NN]])}, ${mb.m.sb}, ${mb.ub}, [${L}, ${R}], ${R * 256}, 256)`);
+      const b = await evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_row_rstd_main', ${JSON.stringify([[rb.m.sb, null, FILL, R * 2], [rb.m.xb, xw, 0, NN]])}, ${rb.m.sb}, ${rb.ub}, [${L}, ${epsBits}, ${R}], ${R * 256}, 256)`);
       return { errs: a.errs.concat(b.errs), out: a.out.map((v, i) => (i % 2 ? b.out[i] : v)) };
     };
     const statsBad = (res) => { let bad = 0; for (let r = 0; r < R; r++) { if (!within(asF(res.out[r * 2]), mean[r])) bad++; if (!within(asF(res.out[r * 2 + 1]), rstd[r])) bad++; } return bad; };
@@ -136,6 +136,9 @@ try {
     const rstdMut = code.replace('0x1.000000p+0f / sqrt(', '0x1.000000p+0f / abs(');
     const s2 = await statsRun(rstdMut);
     ok('bk_row_rstd: control, |var + eps| in place of its square root, is caught', rstdMut !== code && statsBad(s2) > 0, `${statsBad(s2)} of ${R * 2} outside`);
+    const treeMut = code.replaceAll('bk_wg_level(op, t, 128)', 'bk_wg_level(op, t, 0)');
+    const s3 = await statsRun(treeMut);
+    ok('bk_row_mean, bk_row_rstd: control, thread 0\'s partial alone without the workgroup tree, is caught', treeMut !== code && statsBad(s3) > 0, `${statsBad(s3)} of ${R * 2} outside`);
 
     const gv = new Float32Array(C).map((_, i) => 0.5 + i / 8), bv = new Float32Array(C).map((_, i) => i / 16 - 0.25);
     const sv = new Float32Array(R * 2); for (let r = 0; r < R; r++) { sv[r * 2] = mean[r]; sv[r * 2 + 1] = rstd[r]; }
@@ -148,8 +151,8 @@ try {
     const a2 = await affRun(code.replace(/bk_group_affine_gb_buf\[ch__a\]|bk_group_affine_gb_buf\[ch\]/, 'bk_group_affine_gb_buf[0]'));
     ok('bk_group_affine: control, one gamma for every channel, is caught', affBad(a2) > 0, `${affBad(a2)} of ${NN} outside`);
 
-    // LayerNorm: 8 rows of dim 64, gamma and beta dim wide, over the same x.
-    const D = 64, R2 = NN / D, lsv = new Float32Array(R2 * 2);
+    // LayerNorm: 8 rows of dim 320, gamma and beta dim wide, over the same x.
+    const D = 320, R2 = NN / D, lsv = new Float32Array(R2 * 2);
     for (let r = 0; r < R2; r++) { let s = 0; for (let j = 0; j < D; j++) s += xv[r * D + j]; const m = s / D; let q = 0; for (let j = 0; j < D; j++) q += (xv[r * D + j] - m) ** 2; lsv[r * 2] = m; lsv[r * 2 + 1] = 1 / Math.sqrt(q / D + eps); }
     const lg = new Float32Array(D).map((_, i) => 0.25 + i / 32), lbv = new Float32Array(D).map((_, i) => i / 64 - 0.5);
     const la = bindingsOf('bk_layer_affine');
@@ -162,7 +165,7 @@ try {
     const l2 = await lnRun(lnMut);
     ok('bk_layer_affine: control, one gamma for every column, is caught', lnMut !== code && lnBad(l2) > 0, `${lnBad(l2)} of ${NN} outside`);
 
-    // Softmax: 8 rows of 64 scores in [-16, 16), out of place.
+    // Softmax: 8 rows of 320 scores in [-16, 16), out of place.
     const smWant = new Float64Array(NN);
     for (let r = 0; r < R2; r++) { let m = -Infinity; for (let j = 0; j < D; j++) m = Math.max(m, xv[r * D + j]); let z = 0; for (let j = 0; j < D; j++) z += Math.exp(xv[r * D + j] - m); for (let j = 0; j < D; j++) smWant[r * D + j] = Math.exp(xv[r * D + j] - m) / z; }
     const sm = bindingsOf('bk_softmax');
@@ -175,22 +178,33 @@ try {
     const g2 = smGrade(await smRun(smMut));
     ok('bk_softmax: control, e in place of 2 as the base, is caught', smMut !== code && g2.bad > 0, `${g2.bad} of ${NN} outside`);
 
-    // The three-launch softmax over the same rows: bk_softmax's arithmetic in
-    // its order, so its output bit for bit.
+    // The three-launch softmax over the same rows, a workgroup reduction per
+    // row, so within tolerance rather than bk_softmax bit for bit.
     const rm = bindingsOf('bk_row_max'), rx = bindingsOf('bk_row_expsum'), sa = bindingsOf('bk_softmax_apply');
     const rowRun = async (shift) => {
-      const a = await evalIn(`(${runInPage})(${JSON.stringify(code)}, 'bk_row_max_main', ${JSON.stringify([[rm.m.mb, null, FILL, R2 * 2], [rm.m.sb, xw, 0, NN]])}, ${rm.m.mb}, ${rm.ub}, [${D}, ${R2}], 64)`);
-      const b = await evalIn(`(${runInPage})(${JSON.stringify(code)}, 'bk_row_expsum_main', ${JSON.stringify([[rx.m.mb, a.out, 0, R2 * 2], [rx.m.sb, xw, 0, NN]])}, ${rx.m.mb}, ${rx.ub}, [${D}, ${R2}], 64)`);
+      const a = await evalIn(`(${runInPage})(${JSON.stringify(code)}, 'bk_row_max_main', ${JSON.stringify([[rm.m.mb, null, FILL, R2 * 2], [rm.m.sb, xw, 0, NN]])}, ${rm.m.mb}, ${rm.ub}, [${D}, ${R2}], ${R2 * 256}, 256)`);
+      const b = await evalIn(`(${runInPage})(${JSON.stringify(code)}, 'bk_row_expsum_main', ${JSON.stringify([[rx.m.mb, a.out, 0, R2 * 2], [rx.m.sb, xw, 0, NN]])}, ${rx.m.mb}, ${rx.ub}, [${D}, ${R2}], ${R2 * 256}, 256)`);
       const st = shift ? b.out.slice(2).concat(b.out.slice(0, 2)) : b.out;
       const c = await evalIn(`(${runInPage})(${JSON.stringify(code)}, 'bk_softmax_apply_main', ${JSON.stringify([[sa.m.yb, null, FILL, NN + 48], [sa.m.sb, xw, 0, NN], [sa.m.mb, st, 0, R2 * 2]])}, ${sa.m.yb}, ${sa.ub}, [${D}, ${NN}], ${NN + 48})`);
       return { errs: a.errs.concat(b.errs, c.errs), out: c.out };
     };
     const w1 = await rowRun(false), wg1 = smGrade(w1);
     const same = w1.out.slice(0, NN).filter((v, i) => v !== m1.out[i]).length;
-    ok('bk_row_max, bk_row_expsum, bk_softmax_apply: bk_softmax bit for bit, within tolerance', w1.errs.length === 0 && same === 0 && wg1.bad === 0, `${same} of ${NN} differ from bk_softmax, ${wg1.bad} outside ${w1.errs.join('; ').slice(0, 120)}`);
+    ok('bk_row_max, bk_row_expsum, bk_softmax_apply: every row within tolerance', w1.errs.length === 0 && wg1.bad === 0, `${same} of ${NN} differ from bk_softmax (not graded),${wg1.bad} outside ${w1.errs.join('; ').slice(0, 120)}`);
     ok('bk_softmax_apply: leaves the threads past n untouched', w1.out.slice(NN).filter(v => v !== FILL).length === 0, `${w1.out.slice(NN).filter(v => v !== FILL).length} of 48 written`);
     const wg2 = smGrade(await rowRun(true));
     ok('bk_softmax_apply: control, each row given the next row\'s max and sum, is caught', wg2.bad > 0, `${wg2.bad} of ${NN} outside`);
+
+    // The one-launch softmax in place over the same rows: the row buffer holds
+    // the inputs and 48 FILL words past them, and must hold the probabilities.
+    const sr = bindingsOf('bk_softmax_rows');
+    const srRun = (src) => evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_softmax_rows_main', ${JSON.stringify([[sr.m.sb, xw.concat(new Array(48).fill(FILL)), 0, NN + 48]])}, ${sr.m.sb}, ${sr.ub}, [${D}, ${R2}], ${R2 * 256}, 256)`);
+    const sr1 = await srRun(code), sg1 = smGrade(sr1);
+    ok('bk_softmax_rows: in place, every row within tolerance', sr1.errs.length === 0 && sg1.bad === 0, `${sg1.bad} of ${NN} outside; worst ${sg1.worst.toExponential(2)} of 1e-6 ${sr1.errs.join('; ').slice(0, 120)}`);
+    ok('bk_softmax_rows: leaves the words past rows x cols untouched', sr1.out.slice(NN).filter(v => v !== FILL).length === 0, `${sr1.out.slice(NN).filter(v => v !== FILL).length} of 48 written`);
+    const srMut = code.replace(/(fn bk_softmax_rows_main[\s\S]*?)bk_wg_reduce\(1,/, '$1bk_wg_reduce(0,');
+    const sg2 = smGrade(await srRun(srMut));
+    ok('bk_softmax_rows: control, the row sum in place of its max, is caught', srMut !== code && sg2.bad > 0, `${sg2.bad} of ${NN} outside`);
   }
 
   // Layout: one launch per kernel, n + 48 threads, the output
@@ -240,10 +254,10 @@ try {
     const tg3 = tGrade(await launch(tMut2, 'bk_timestep', [['tb', tw]], [TD, lpBits, tn], tn));
     ok('bk_timestep: control, half + 1 in the cosine frequency, is caught', tMut2 !== code && tg3.bad > 0, `${tg3.bad} of ${tn} outside`);
 
-    // Linear y = x w^T + b, 16 x 16 tiles through workgroup memory: mm 37,
-    // nn 45, kk 70 leave partial tiles on every edge. Inputs are multiples of
+    // Linear y = x w^T + b, 64 x 64 tiles, 4 x 4 outputs a thread: mm 137,
+    // nn 145, kk 70 leave partial tiles on every edge. Inputs are multiples of
     // 1/64 in [-1, 1), so every product and partial sum is exact in f32.
-    const LM = 37, LN = 45, LK = 70, tilesN = Math.ceil(LN / 16), tiles = Math.ceil(LM / 16) * tilesN, ln = LM * LN;
+    const LM = 137, LN = 145, LK = 70, tilesN = Math.ceil(LN / 64), tiles = Math.ceil(LM / 64) * tilesN, ln = LM * LN;
     const q = (i, s) => ((i * s) % 128 - 64) / 64;
     const lx = new Float32Array(LM * LK).map((_, i) => q(i, 37)), lw = new Float32Array(LN * LK).map((_, i) => q(i, 53)), lb = new Float32Array(LN).map((_, i) => q(i, 11));
     const yWant = []; for (let r = 0; r < LM; r++) for (let c = 0; c < LN; c++) { let s = lb[c]; for (let k = 0; k < LK; k++) s += lx[r * LK + k] * lw[c * LK + k]; yWant.push(s); }
@@ -254,12 +268,15 @@ try {
     const y1 = await linRun(code);
     ok('bk_linear: every element of x w^T + b within tolerance', y1.errs.length === 0 && linBad(y1) === 0, `${linBad(y1)} of ${ln} outside ${y1.errs.join('; ').slice(0, 160)}`);
     ok('bk_linear: leaves the elements past mm x nn untouched', tail(y1, ln) === 0, `${tail(y1, ln)} of 48 written`);
-    const yMut1 = code.replace('((256 + (lx * 16)) + k)', '((256 + (k * 16)) + lx)');
+    const yMut1 = code.replaceAll('cx_shared[((((1040 + (k * 65)) + lx) * 4)) / 4]', 'cx_shared[((((1040 + (lx * 65)) + k) * 4)) / 4]');
     const y2 = await linRun(yMut1);
     ok('bk_linear: control, w tile read untransposed, is caught', yMut1 !== code && linBad(y2) > 0, `${linBad(y2)} of ${ln} outside`);
     const yMut2 = code.replace('(v + bitcast<f32>(bk_linear_bb_buf[col]))', 'v');
     const y3 = await linRun(yMut2);
     ok('bk_linear: control, bias dropped, is caught', yMut2 !== code && linBad(y3) > 0, `${linBad(y3)} of ${ln} outside`);
+    const yMut3 = code.replaceAll('(col + 48), a03)', '(col + 48), a02)');
+    const y4 = await linRun(yMut3);
+    ok('bk_linear: control, a thread\'s fourth column stored from its third accumulator, is caught', yMut3 !== code && linBad(y4) > 0, `${linBad(y4)} of ${ln} outside`);
 
     // bk_linear_h: the same product with w packed as f16 (element i the low
     // half of word i / 2 when even). The weights are exact in f16, so the
@@ -271,31 +288,66 @@ try {
     const h1 = await linHRun(code);
     ok('bk_linear_h: f16 weights give bk_linear\'s f32 output bit for bit', h1.errs.length === 0 && exactBad(h1, y1.out.slice(0, ln)) === 0, `${exactBad(h1, y1.out.slice(0, ln))} of ${ln} differ ${h1.errs.join('; ').slice(0, 160)}`);
     ok('bk_linear_h: leaves the elements past mm x nn untouched', tail(h1, ln) === 0, `${tail(h1, ln)} of 48 written`);
-    const hMut = code.replace('[(((r * cols) + c)) % 2]', '[((((r * cols) + c)) + 1) % 2]');
+    const hMut = code.replaceAll('[(((r * cols) + c)) % 2]', '[((((r * cols) + c)) + 1) % 2]');
     const h2 = await linHRun(hMut);
     ok('bk_linear_h: control, the two halves of a word swapped, is caught', hMut !== code && exactBad(h2, y1.out.slice(0, ln)) > 0, `${exactBad(h2, y1.out.slice(0, ln))} of ${ln} differ`);
 
-    // Conv2d as an implicit GEMM: cin 3, 9 x 11, cout 20, 3 x 3, stride 1 and
-    // 2, pad 1. Inputs are multiples of 1/64 in [-1, 1), exact in f32.
-    const CI = 3, CH = 9, CW = 11, CO = 20, KH = 3, KW = 3, cb = bindingsOf('bk_conv2d');
+    // Conv2d as an implicit GEMM: cin 3, 13 x 11, cout 70, 3 x 3, stride 1 and
+    // 2, pad 1 (at stride 1, two 64-tiles of cout and three of pixels, every
+    // edge partial). Inputs are multiples of 1/64 in [-1, 1), exact in f32.
+    const CI = 3, CH = 13, CW = 11, CO = 70, KH = 3, KW = 3, cb = bindingsOf('bk_conv2d');
     const cx = new Float32Array(CI * CH * CW).map((_, i) => q(i, 29)), cwt = new Float32Array(CO * CI * KH * KW).map((_, i) => q(i, 43)), cbias = new Float32Array(CO).map((_, i) => q(i, 7));
-    const convWant = (st, pd, oh, ow) => { const o = []; for (let m = 0; m < CO; m++) for (let n = 0; n < oh * ow; n++) { let s = cbias[m]; const oy = Math.floor(n / ow), ox = n % ow; for (let ci = 0; ci < CI; ci++) for (let ky = 0; ky < KH; ky++) for (let kx = 0; kx < KW; kx++) { const iy = oy * st - pd + ky, ix = ox * st - pd + kx; if (iy >= 0 && iy < CH && ix >= 0 && ix < CW) s += cx[(ci * CH + iy) * CW + ix] * cwt[m * CI * KH * KW + (ci * KH + ky) * KW + kx]; } o.push(s); } return o; };
-    const convRun = (src, st, pd, oh, ow) => evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_conv2d_main', ${JSON.stringify([[cb.m.yb, null, FILL, CO * oh * ow + 48], [cb.m.xb, f32w(cx), 0, cx.length], [cb.m.wb, f32w(cwt), 0, cwt.length], [cb.m.bb, f32w(cbias), 0, CO]])}, ${cb.m.yb}, ${cb.ub}, [${CI}, ${CH}, ${CW}, ${CO}, ${KH}, ${KW}, ${st}, ${pd}, ${oh}, ${ow}], ${Math.ceil(CO / 16) * Math.ceil(oh * ow / 16) * 256}, 256)`);
+    const convWant = (st, pd, oh, ow, kh = KH, kw = KW, w = cwt) => { const o = []; for (let m = 0; m < CO; m++) for (let n = 0; n < oh * ow; n++) { let s = cbias[m]; const oy = Math.floor(n / ow), ox = n % ow; for (let ci = 0; ci < CI; ci++) for (let ky = 0; ky < kh; ky++) for (let kx = 0; kx < kw; kx++) { const iy = oy * st - pd + ky, ix = ox * st - pd + kx; if (iy >= 0 && iy < CH && ix >= 0 && ix < CW) s += cx[(ci * CH + iy) * CW + ix] * w[m * CI * kh * kw + (ci * kh + ky) * kw + kx]; } o.push(s); } return o; };
+    const convRun = (src, st, pd, oh, ow, kh = KH, kw = KW, w = cwt) => evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_conv2d_main', ${JSON.stringify([[cb.m.yb, null, FILL, CO * oh * ow + 48], [cb.m.xb, f32w(cx), 0, cx.length], [cb.m.wb, f32w(w), 0, w.length], [cb.m.bb, f32w(cbias), 0, CO]])}, ${cb.m.yb}, ${cb.ub}, [${CI}, ${CH}, ${CW}, ${CO}, ${kh}, ${kw}, ${st}, ${pd}, ${oh}, ${ow}], ${Math.ceil(CO / 64) * Math.ceil(oh * ow / 64) * 256}, 256)`);
     const convBad = (res, want) => want.reduce((bad, w, i) => bad + (within(asF(res.out[i]), w) ? 0 : 1), 0);
-    for (const [st, pd] of [[1, 1], [2, 1]]) {
-      const oh = Math.floor((CH + 2 * pd - KH) / st) + 1, ow = Math.floor((CW + 2 * pd - KW) / st) + 1, want = convWant(st, pd, oh, ow), cn = CO * oh * ow;
-      const r1 = await convRun(code, st, pd, oh, ow);
-      ok(`bk_conv2d stride ${st} pad ${pd}: every element within tolerance`, r1.errs.length === 0 && convBad(r1, want) === 0, `${convBad(r1, want)} of ${cn} outside ${r1.errs.join('; ').slice(0, 160)}`);
-      ok(`bk_conv2d stride ${st} pad ${pd}: leaves the elements past cout x oh ow untouched`, tail(r1, cn) === 0, `${tail(r1, cn)} of 48 written`);
+    // 3 x 3 and 1 x 1 take the literal-divisor paths; 2 x 2 and 5 x 5 the general one.
+    for (const [kh, kw, st, pd] of [[3, 3, 1, 1], [3, 3, 2, 1], [1, 1, 1, 0], [2, 2, 2, 0], [5, 5, 1, 2]]) {
+      const w = kh === KH && kw === KW ? cwt : new Float32Array(CO * CI * kh * kw).map((_, i) => q(i, 43));
+      const oh = Math.floor((CH + 2 * pd - kh) / st) + 1, ow = Math.floor((CW + 2 * pd - kw) / st) + 1, want = convWant(st, pd, oh, ow, kh, kw, w), cn = CO * oh * ow;
+      const r1 = await convRun(code, st, pd, oh, ow, kh, kw, w);
+      ok(`bk_conv2d ${kh} x ${kw} stride ${st} pad ${pd}: every element within tolerance`, r1.errs.length === 0 && convBad(r1, want) === 0, `${convBad(r1, want)} of ${cn} outside ${r1.errs.join('; ').slice(0, 160)}`);
+      ok(`bk_conv2d ${kh} x ${kw} stride ${st} pad ${pd}: leaves the elements past cout x oh ow untouched`, tail(r1, cn) === 0, `${tail(r1, cn)} of 48 written`);
     }
     {
       const oh = CH, ow = CW, want = convWant(1, 1, oh, ow), cn = CO * oh * ow;
-      const pMut = code.replace('((((n / ow) * stride) - pad) + (rest / kw))', '(((n / ow) * stride) + (rest / kw))');
+      const pMut = code.replaceAll('(((n / ow) * stride) - pad), (n < npix))', '((n / ow) * stride), (n < npix))');
       const r2 = await convRun(pMut, 1, 1, oh, ow);
       ok('bk_conv2d: control, the vertical pad dropped, is caught', pMut !== code && convBad(r2, want) > 0, `${convBad(r2, want)} of ${cn} outside`);
       const bMut = code.replace('bk_conv2d_bb_buf[m]', 'bk_conv2d_bb_buf[0]');
       const r3 = await convRun(bMut, 1, 1, oh, ow);
       ok('bk_conv2d: control, one bias for every channel, is caught', bMut !== code && convBad(r3, want) > 0, `${convBad(r3, want)} of ${cn} outside`);
+      const aMut = code.replaceAll('(n + 48), a03)', '(n + 48), a02)');
+      const r4 = await convRun(aMut, 1, 1, oh, ow);
+      ok('bk_conv2d: control, a thread\'s fourth pixel stored from its third accumulator, is caught', aMut !== code && convBad(r4, want) > 0, `${convBad(r4, want)} of ${cn} outside`);
+      const chb = bindingsOf('bk_conv2d_h');
+      const convHRun = (src) => evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_conv2d_h_main', ${JSON.stringify([[chb.m.yb, null, FILL, cn + 48], [chb.m.xb, f32w(cx), 0, cx.length], [chb.m.wb, packH(cwt), 0, Math.ceil(cwt.length / 2)], [chb.m.bb, f32w(cbias), 0, CO]])}, ${chb.m.yb}, ${chb.ub}, [${CI}, ${CH}, ${CW}, ${CO}, ${KH}, ${KW}, 1, 1, ${oh}, ${ow}], ${Math.ceil(CO / 64) * Math.ceil(oh * ow / 64) * 256}, 256)`);
+      const c32 = await convRun(code, 1, 1, oh, ow), c16 = await convHRun(code);
+      ok('bk_conv2d_h: f16 weights give bk_conv2d\'s f32 output bit for bit', c16.errs.length === 0 && exactBad(c16, c32.out.slice(0, cn)) === 0, `${exactBad(c16, c32.out.slice(0, cn))} of ${cn} differ ${c16.errs.join('; ').slice(0, 160)}`);
+      ok('bk_conv2d_h: leaves the elements past cout x oh ow untouched', tail(c16, cn) === 0, `${tail(c16, cn)} of 48 written`);
+      const chMut = code.replaceAll('[(((r * cols) + c)) % 2]', '[((((r * cols) + c)) + 1) % 2]');
+      const c16m = await convHRun(chMut);
+      ok('bk_conv2d_h: control, the two halves of a word swapped, is caught', chMut !== code && exactBad(c16m, c32.out.slice(0, cn)) > 0, `${exactBad(c16m, c32.out.slice(0, cn))} of ${cn} differ`);
+
+      // Split k: bk_conv2d_hs writes each slice's partial product, the bias in
+      // slice 0, and bk_sum_splits adds them. 3 x 3 has k 27, so 2 slices are
+      // 16 and 11 and a third is empty; 5 x 5 has k 75, 3 slices of 32, 32, 11.
+      const hsb = bindingsOf('bk_conv2d_hs'), ssb = bindingsOf('bk_sum_splits');
+      const splitRun = async (src, kh, kw, pd, w, S, sumS) => {
+        const oh2 = CH + 2 * pd - kh + 1, ow2 = CW + 2 * pd - kw + 1, n2 = CO * oh2 * ow2, tl = Math.ceil(CO / 64) * Math.ceil(oh2 * ow2 / 64);
+        const p = await evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_conv2d_hs_main', ${JSON.stringify([[hsb.m.yb, null, FILL, S * n2], [hsb.m.xb, f32w(cx), 0, cx.length], [hsb.m.wb, packH(w), 0, Math.ceil(w.length / 2)], [hsb.m.bb, f32w(cbias), 0, CO]])}, ${hsb.m.yb}, ${hsb.ub}, [${CI}, ${CH}, ${CW}, ${CO}, ${kh}, ${kw}, 1, ${pd}, ${oh2}, ${ow2}, ${S}], ${S * tl * 256}, 256)`);
+        const y = await evalIn(`(${runInPage})(${JSON.stringify(src)}, 'bk_sum_splits_main', ${JSON.stringify([[ssb.m.yb, null, FILL, n2 + 48], [ssb.m.pb, p.out, 0, S * n2]])}, ${ssb.m.yb}, ${ssb.ub}, [${sumS}, ${n2}], ${n2 + 48})`);
+        return { errs: p.errs.concat(y.errs), out: y.out, n2, want: convWant(1, pd, oh2, ow2, kh, kw, w) };
+      };
+      const w5 = new Float32Array(CO * CI * 25).map((_, i) => q(i, 43));
+      for (const [kh, kw, pd, w, S] of [[3, 3, 1, cwt, 2], [3, 3, 1, cwt, 3], [5, 5, 2, w5, 3]]) {
+        const r = await splitRun(code, kh, kw, pd, w, S, S);
+        ok(`bk_conv2d_hs + bk_sum_splits: ${kh} x ${kw} in ${S} slices, every element within tolerance`, r.errs.length === 0 && convBad(r, r.want) === 0, `${convBad(r, r.want)} of ${r.n2} outside ${r.errs.join('; ').slice(0, 160)}`);
+      }
+      const rs1 = await splitRun(code, 5, 5, 2, w5, 3, 2);
+      ok('bk_sum_splits: control, the last slice left out, is caught', convBad(rs1, rs1.want) > 0, `${convBad(rs1, rs1.want)} of ${rs1.n2} outside`);
+      const bsMut = code.replace(/(fn bk_conv_slice[\s\S]*?)select\(0, 1, \(s == 0\)\)/, '$1select(1, 1, (s == 0))');
+      const rs2 = await splitRun(bsMut, 5, 5, 2, w5, 3, 3);
+      ok('bk_conv2d_hs: control, the bias in every slice, is caught', bsMut !== code && convBad(rs2, rs2.want) > 0, `${convBad(rs2, rs2.want)} of ${rs2.n2} outside`);
     }
 
     // The SD1.5 path's remaining kernels, each bound from its cx-kernel line
@@ -303,7 +355,7 @@ try {
     // scalar ({ f: v } for a Real, sent as its f32 bits).
     const header = (k) => { const m = new RegExp(`// cx-kernel ${k}_main wg=(\\d+)([^\\n]*)`).exec(code); return m[2].trim().split(/\s+/).map(t => { const [p, s] = t.split('='); return { p, s: s[0], i: Number(s.slice(1)) }; }); };
     const fbits = v => new Int32Array(new Float32Array([v]).buffer)[0];
-    const launchK = (src, k, args, n, outName) => { const h = header(k), out = h.find(e => e.p === (outName || 'yb')); const bufs = [], sc = []; for (const e of h) { const a = args[e.p]; if (e.s === 'b') bufs.push(e === out ? [e.i, null, FILL, n + 48] : [e.i, a, 0, a.length]); else sc[e.i] = typeof a === 'object' ? fbits(a.f) : a; } return evalIn(`(${runInPage})(${JSON.stringify(src)}, '${k}_main', ${JSON.stringify(bufs)}, ${out.i}, ${h.filter(e => e.s === 'b').length}, ${JSON.stringify(sc)}, ${n + 48})`); };
+    const launchK = (src, k, args, n, outName, threads, wg) => { const h = header(k), out = h.find(e => e.p === (outName || 'yb')); const bufs = [], sc = []; for (const e of h) { const a = args[e.p]; if (e.s === 'b') bufs.push(e === out ? [e.i, null, FILL, n + 48] : [e.i, a, 0, a.length]); else sc[e.i] = typeof a === 'object' ? fbits(a.f) : a; } return evalIn(`(${runInPage})(${JSON.stringify(src)}, '${k}_main', ${JSON.stringify(bufs)}, ${out.i}, ${h.filter(e => e.s === 'b').length}, ${JSON.stringify(sc)}, ${threads || n + 48}, ${wg || 64})`); };
     const Xw = X.w, Yw = Y.w, Xs = X.f.map(v => v / 16), Xsw = f32w(Float32Array.from(Xs)), Zf = Float32Array.from(X.f).reverse(), Zw = f32w(Zf);
     const HS = 2, SQ = 6, SK = 7, DD = 8;
     const more = [
@@ -314,16 +366,82 @@ try {
       { k: 'bk_quick_gelu', args: { xb: Xw, n: 2000 }, n: 2000, ref: i => X.f[i] / (1 + Math.exp(-1.702 * X.f[i])), mut: s => s.replace('0x1.b3b644p+0f', '0x1.000000p+0f'), what: '1 in place of 1.702' },
       { k: 'bk_transpose', args: { xb: Xw, rows: 16, cols: 20, n: 320 }, n: 320, ref: i => X.f[(i % 16) * 20 + Math.floor(i / 16)], mut: s => s.replace('* cols) + (gid / rows))', '* rows) + (gid / rows))'), what: 'rows in place of cols' },
       { k: 'bk_softmax_causal', args: { sb: Xsw, cols: SK, sq: SQ, n: HS * SQ * SK }, n: HS * SQ * SK, ref: i => { const r = Math.floor(i / SK), j = i % SK, seen = Math.min(r % SQ + 1, SK); if (j >= seen) return 0; let m = -Infinity; for (let t = 0; t < seen; t++) m = Math.max(m, Xs[r * SK + t]); let z = 0; for (let t = 0; t < seen; t++) z += Math.exp(Xs[r * SK + t] - m); return Math.exp(Xs[r * SK + j] - m) / z; }, mut: s => s.replace('if ((j >= seen))', 'if ((j > seen))'), what: 'one entry past the causal edge' },
-      { k: 'bk_attn_scores', args: { qb: Xsw.slice(0, SQ * HS * DD), kb: Xsw.slice(200, 200 + SK * HS * DD), heads: HS, sq: SQ, sk: SK, d: DD, scale: { f: 1 / Math.sqrt(DD) }, n: HS * SQ * SK }, n: HS * SQ * SK, out: 'sb', ref: i => { const h = Math.floor(i / (SQ * SK)), qi = Math.floor((i % (SQ * SK)) / SK), kj = i % SK; let s = 0; for (let t = 0; t < DD; t++) s += Xs[(qi * HS + h) * DD + t] * Xs[200 + (kj * HS + h) * DD + t]; return s * Math.fround(1 / Math.sqrt(DD)); }, mut: s => s.replace('0, d, 0.0) * scale))', '0, d, 0.0)))'), what: 'the scale dropped' },
-      { k: 'bk_attn_values', args: { pb: Xsw.slice(0, HS * SQ * SK), vb: Xsw.slice(300, 300 + SK * HS * DD), heads: HS, sq: SQ, sk: SK, d: DD, n: SQ * HS * DD }, n: SQ * HS * DD, ref: i => { const qi = Math.floor(i / (HS * DD)), h = Math.floor((i % (HS * DD)) / DD), c = i % DD; let s = 0; for (let j = 0; j < SK; j++) s += Xs[(h * SQ + qi) * SK + j] * Xs[300 + h * DD + c + j * HS * DD]; return s; }, mut: s => s.replace('(heads * d), 0, sk, 0.0)', '(heads * d), 0, (sk - 1), 0.0)'), what: 'the last key dropped' },
+      { k: 'bk_attn_scores', args: { qb: Xsw.slice(0, SQ * HS * DD), kb: Xsw.slice(200, 200 + SK * HS * DD), heads: HS, sq: SQ, sk: SK, d: DD, scale: { f: 1 / Math.sqrt(DD) }, n: HS * SQ * SK }, n: HS * SQ * SK, out: 'sb', ref: i => { const h = Math.floor(i / (SQ * SK)), qi = Math.floor((i % (SQ * SK)) / SK), kj = i % SK; let s = 0; for (let t = 0; t < DD; t++) s += Xs[(qi * HS + h) * DD + t] * Xs[200 + (kj * HS + h) * DD + t]; return s * Math.fround(1 / Math.sqrt(DD)); }, threads: HS * Math.ceil(SQ / 64) * Math.ceil(SK / 64) * 256, wg: 256, mut: s => s.replaceAll('((v) * scale)', '(v)'), what: 'the scale dropped' },
+      { k: 'bk_attn_values', args: { pb: Xsw.slice(0, HS * SQ * SK), vb: Xsw.slice(300, 300 + SK * HS * DD), heads: HS, sq: SQ, sk: SK, d: DD, n: SQ * HS * DD }, n: SQ * HS * DD, ref: i => { const qi = Math.floor(i / (HS * DD)), h = Math.floor((i % (HS * DD)) / DD), c = i % DD; let s = 0; for (let j = 0; j < SK; j++) s += Xs[(h * SQ + qi) * SK + j] * Xs[300 + h * DD + c + j * HS * DD]; return s; }, threads: HS * Math.ceil(SQ / 64) * Math.ceil(DD / 64) * 256, wg: 256, mut: s => s.replaceAll('bk_attn_values_vb_buf[', 'bk_attn_values_pb_buf['), what: 'v read from p\'s buffer' },
     ];
     for (const K of more) {
       const grade = (res) => { let bad = 0, worst = 0; for (let i = 0; i < K.n; i++) { const w = K.ref(i), g = asF(res.out[i]); if (!within(g, w)) bad++; worst = Math.max(worst, Math.abs(g - w) / (1 + Math.abs(w))); } return { bad, worst, tail: res.out.slice(K.n).filter(v => v !== FILL).length, errs: res.errs }; };
-      const r1 = grade(await launchK(code, K.k, K.args, K.n, K.out));
+      const r1 = grade(await launchK(code, K.k, K.args, K.n, K.out, K.threads, K.wg));
       ok(`${K.k}: within tolerance on every element`, r1.errs.length === 0 && r1.bad === 0, `${r1.bad} of ${K.n} outside; worst ${r1.worst.toExponential(2)} of 1e-6 ${r1.errs.join('; ').slice(0, 120)}`);
       ok(`${K.k}: leaves the threads past n untouched`, r1.tail === 0, `${r1.tail} of 48 written`);
-      const mutated = K.mut(code), r2 = grade(await launchK(mutated, K.k, K.args, K.n, K.out));
+      const mutated = K.mut(code), r2 = grade(await launchK(mutated, K.k, K.args, K.n, K.out, K.threads, K.wg));
       ok(`${K.k}: control, ${K.what}, is caught`, mutated !== code && r2.bad > 0, `${r2.bad} of ${K.n} outside`);
+    }
+
+    // bk_attn_scores at CLIP's shape class: 2 heads, 70 queries, 77 keys,
+    // d 40, so two tiles each way, partial edges, and a partial k step. Values
+    // mod 127, so no two rows 16 apart are equal and a block swap shows.
+    {
+      const H2 = 2, Q2 = 70, K2 = 77, D2 = 40, qf = new Float32Array(Q2 * H2 * D2).map((_, i) => ((i * 37) % 127 - 64) / 256), kf = new Float32Array(K2 * H2 * D2).map((_, i) => ((i * 53) % 127 - 64) / 256), sc2 = Math.fround(1 / Math.sqrt(D2));
+      const want = (i) => { const h = Math.floor(i / (Q2 * K2)), qi = Math.floor((i % (Q2 * K2)) / K2), kj = i % K2; let s = 0; for (let t = 0; t < D2; t++) s += qf[(qi * H2 + h) * D2 + t] * kf[(kj * H2 + h) * D2 + t]; return s * sc2; };
+      const n2 = H2 * Q2 * K2, th = H2 * Math.ceil(Q2 / 64) * Math.ceil(K2 / 64) * 256;
+      const args2 = { qb: f32w(qf), kb: f32w(kf), heads: H2, sq: Q2, sk: K2, d: D2, scale: { f: sc2 }, n: n2 };
+      const bad2 = (res) => { let b = 0; for (let i = 0; i < n2; i++) if (!within(asF(res.out[i]), want(i))) b++; return b; };
+      const s1 = await launchK(code, 'bk_attn_scores', args2, n2, 'sb', th, 256);
+      ok(`bk_attn_scores: ${H2} heads of ${Q2} x ${K2} at d ${D2}, every score within tolerance`, s1.errs.length === 0 && bad2(s1) === 0, `${bad2(s1)} of ${n2} outside ${s1.errs.join('; ').slice(0, 120)}`);
+      ok('bk_attn_scores: leaves the scores past heads x sq x sk untouched', s1.out.slice(n2).filter(v => v !== FILL).length === 0, `${s1.out.slice(n2).filter(v => v !== FILL).length} of 48 written`);
+      const kMut = code.replaceAll('bk_attn_scores_kb_buf[', 'bk_attn_scores_qb_buf[');
+      const s2 = await launchK(kMut, 'bk_attn_scores', args2, n2, 'sb', th, 256);
+      ok('bk_attn_scores: control, k read from q\'s buffer, is caught', kMut !== code && bad2(s2) > 0, `${bad2(s2)} of ${n2} outside`);
+      const aMut = code.replaceAll('scale, row, (col + 48), a03)', 'scale, row, (col + 48), a02)');
+      const s3 = await launchK(aMut, 'bk_attn_scores', args2, n2, 'sb', th, 256);
+      ok('bk_attn_scores: control, a thread\'s fourth key stored from its third accumulator, is caught', aMut !== code && bad2(s3) > 0, `${bad2(s3)} of ${n2} outside`);
+    }
+
+    // bk_attn_values at a shape with partial tiles every way: 2 heads, 70
+    // queries, 77 keys (a partial k step), d 80 (two column tiles, the second
+    // partial). Values mod 127, so a block swap shows.
+    {
+      const H3 = 2, Q3 = 70, K3 = 77, D3 = 80, pf = new Float32Array(H3 * Q3 * K3).map((_, i) => ((i * 37) % 127 - 64) / 256), vf = new Float32Array(K3 * H3 * D3).map((_, i) => ((i * 53) % 127 - 64) / 256);
+      const want = (i) => { const qi = Math.floor(i / (H3 * D3)), h = Math.floor((i % (H3 * D3)) / D3), c = i % D3; let s = 0; for (let j = 0; j < K3; j++) s += pf[(h * Q3 + qi) * K3 + j] * vf[(j * H3 + h) * D3 + c]; return s; };
+      const n3 = Q3 * H3 * D3, th = H3 * Math.ceil(Q3 / 64) * Math.ceil(D3 / 64) * 256;
+      const args3 = { pb: f32w(pf), vb: f32w(vf), heads: H3, sq: Q3, sk: K3, d: D3, n: n3 };
+      const bad3 = (res) => { let b = 0; for (let i = 0; i < n3; i++) if (!within(asF(res.out[i]), want(i))) b++; return b; };
+      const v1 = await launchK(code, 'bk_attn_values', args3, n3, 'yb', th, 256);
+      ok(`bk_attn_values: ${H3} heads of ${Q3} x ${K3} into d ${D3}, every output within tolerance`, v1.errs.length === 0 && bad3(v1) === 0, `${bad3(v1)} of ${n3} outside ${v1.errs.join('; ').slice(0, 120)}`);
+      ok('bk_attn_values: leaves the outputs past sq x heads x d untouched', v1.out.slice(n3).filter(v => v !== FILL).length === 0, `${v1.out.slice(n3).filter(v => v !== FILL).length} of 48 written`);
+      const cMut = code.replaceAll('bk_pv_out(heads, sq, d, h, row, (col + 48), a03)', 'bk_pv_out(heads, sq, d, h, row, (col + 48), a02)');
+      const v2 = await launchK(cMut, 'bk_attn_values', args3, n3, 'yb', th, 256);
+      ok('bk_attn_values: control, a thread\'s fourth column stored from its third accumulator, is caught', cMut !== code && bad3(v2) > 0, `${bad3(v2)} of ${n3} outside`);
+      const kMut = code.replace(/(fn bk_pv_4x4[\s\S]*?)\(k0 \+ 16\)/, '$1(k0 + 32)');
+      const v3 = await launchK(kMut, 'bk_attn_values', args3, n3, 'yb', th, 256);
+      ok('bk_attn_values: control, every other k step skipped, is caught', kMut !== code && bad3(v3) > 0, `${bad3(v3)} of ${n3} outside`);
+    }
+
+    // bk_attn_flash: softmax(q k^T scale) v in one launch, against the three
+    // steps in f64: partial query and key tiles, one key tile and three (the
+    // running max and sum rescaled twice), d 40 and 32. Values mod 127 / 64,
+    // so scores span several units and the running max moves between tiles.
+    {
+      const flashCase = async (src, H, Q, K, D) => {
+        const qf = new Float32Array(Q * H * D).map((_, i) => ((i * 37) % 127 - 64) / 64), kf = new Float32Array(K * H * D).map((_, i) => ((i * 53) % 127 - 64) / 64), vf = new Float32Array(K * H * D).map((_, i) => ((i * 29) % 127 - 64) / 64), sc = Math.fround(1 / Math.sqrt(D));
+        const want = new Float64Array(Q * H * D);
+        for (let h = 0; h < H; h++) for (let i = 0; i < Q; i++) { const s = new Float64Array(K); let m = -Infinity; for (let j = 0; j < K; j++) { let a = 0; for (let c = 0; c < D; c++) a += qf[(i * H + h) * D + c] * kf[(j * H + h) * D + c]; s[j] = a * sc; m = Math.max(m, s[j]); } let z = 0; for (let j = 0; j < K; j++) { s[j] = Math.exp(s[j] - m); z += s[j]; } for (let c = 0; c < D; c++) { let o = 0; for (let j = 0; j < K; j++) o += s[j] * vf[(j * H + h) * D + c]; want[(i * H + h) * D + c] = o / z; } }
+        const n = Q * H * D, r = await launchK(src, 'bk_attn_flash', { qb: f32w(qf), kb: f32w(kf), vb: f32w(vf), heads: H, sq: Q, sk: K, d: D, scale: { f: sc } }, n, 'ob', H * Math.ceil(Q / 64) * 256, 256);
+        let bad = 0, worst = 0; for (let i = 0; i < n; i++) { const g = asF(r.out[i]); if (!within(g, want[i])) bad++; worst = Math.max(worst, Math.abs(g - want[i]) / (1 + Math.abs(want[i]))); }
+        return { bad, worst, n, errs: r.errs, tail: r.out.slice(n).filter(v => v !== FILL).length };
+      };
+      for (const [H, Q, K, D] of [[2, 70, 77, 40], [2, 130, 150, 40], [1, 64, 192, 32]]) {
+        const r = await flashCase(code, H, Q, K, D);
+        ok(`bk_attn_flash: ${H} heads, ${Q} queries, ${K} keys, d ${D}, every output within tolerance`, r.errs.length === 0 && r.bad === 0, `${r.bad} of ${r.n} outside; worst ${r.worst.toExponential(2)} of 1e-6 ${r.errs.join('; ').slice(0, 160)}`);
+        ok(`bk_attn_flash: ${H} x ${Q} x ${K}: leaves the words past sq x heads x d untouched`, r.tail === 0, `${r.tail} of 48 written`);
+      }
+      const reMut = code.replace('(o00 * al0)', 'o00');
+      const r2 = await flashCase(reMut, 2, 130, 150, 40);
+      ok('bk_attn_flash: control, one output left unrescaled when the running max moves, is caught', reMut !== code && r2.bad > 0, `${r2.bad} of ${r2.n} outside`);
+      const mkMut = code.replace('if ((col < sk)) {\n  return (a * s);', 'if ((col < (sk + 64))) {\n  return (a * s);');
+      const r3 = await flashCase(mkMut, 2, 70, 77, 40);
+      ok('bk_attn_flash: control, keys past sk left unmasked, is caught', mkMut !== code && r3.bad > 0, `${r3.bad} of ${r3.n} outside`);
     }
 
     // Speed, reported and not graded: 1024^3, buffers made once, 20 launches
@@ -336,7 +454,7 @@ try {
       e.push({ binding: ub, resource: { buffer: u } });
       const p = d.createComputePipeline({ layout: 'auto', compute: { module: d.createShaderModule({ code }), entryPoint: ep } });
       const bg = d.createBindGroup({ layout: p.getBindGroupLayout(0), entries: e });
-      const run = () => { const c = d.createCommandEncoder(), q = c.beginComputePass(); q.setPipeline(p); q.setBindGroup(0, bg); q.dispatchWorkgroups((S / 16) * (S / 16)); q.end(); d.queue.submit([c.finish()]); return d.queue.onSubmittedWorkDone(); };
+      const run = () => { const c = d.createCommandEncoder(), q = c.beginComputePass(); q.setPipeline(p); q.setBindGroup(0, bg); q.dispatchWorkgroups((S / 64) * (S / 64)); q.end(); d.queue.submit([c.finish()]); return d.queue.onSubmittedWorkDone(); };
       await run(); const t0 = performance.now(); for (let i = 0; i < 20; i++) await run(); const s = (performance.now() - t0) / 1000; d.destroy();
       return 20 * 2 * S * S * S / s / 1e9;
     }`;

@@ -1,0 +1,218 @@
+Chapter: GameCraftReplay
+  cites Uoaix chapter GameCraft
+  cites Uoaix chapter GameCraftCodec
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter GameVendorCodec
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  gct-find : EpWorld, Integer, Integer -> Integer
+  gct-find (w) (kind) (i) = if i == w.station-count then 0
+    else let station = list-at w.stations i
+    in if station.kind == kind & station.owner == 1 & station.place == 100 & station.enabled == 1 then i + 1
+    else gct-find w kind (i + 1)
+  gct-gather : EpWorld, Integer, Integer -> Boolean
+  gct-gather (w) (resource) (left) = if left == 0 then True
+    else let roll = __record-set (ep-actor w 1) "attempts" 0
+    in let node = eh-source w resource 100
+    in eh-harvest w 1 node > 0 & gct-gather w resource (left - 1)
+  gct-make : EpWorld, Integer, Integer -> Boolean
+  gct-make (w) (recipe) (left) = if left == 0 then True
+    else let roll = __record-set (ep-actor w 1) "attempts" 0
+    in let station = gct-find w (list-at w.catalog.recipes (recipe - 1)).station 0
+    in ep-craft w 1 recipe station > 0 & gct-make w recipe (left - 1)
+  gct-bootstrap : EpWorld -> Boolean
+  gct-bootstrap (w) =
+    let spinner = ep-station w 1 4 100
+    in let loom = ep-station w 1 5 100
+    in let bench = ep-station w 1 8 100
+    in let smith = ep-station w 1 9 100
+    in let tailor = ep-station w 1 11 100
+    in gct-gather w 1 3 & gct-gather w 2 8
+      & gct-make w 1 1 & gct-make w 2 1 & gct-make w 3 1
+      & gct-gather w 5 32 & gct-make w 7 16
+      & gct-gather w 15 6 & gct-make w 16 3
+      & gct-gather w 10 4 & gct-make w 12 2 & gct-make w 15 1
+      & gct-make w 17 1 & gct-make w 20 3 & gct-gather w 5 2
+  gct-item : GameHarvest, GvPlayer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gct-item (h) (player) (item) (graphic) (quantity) (quality) (wear) =
+    let obj = __record-set (gs-item player.pack graphic 0) "amount" quantity
+    in when world-create h.items.world obj
+      is Err (_) -> 0
+      is Ok (serial) ->
+        let p = ep-actor h.vendor.currency.world player.actor
+        in let share = if ep-at p.stock item == 0 then 0 else ep-at p.cost item * quantity / ep-at p.stock item
+        in let lot = gv-add-lot h.vendor serial player.actor item quality wear share
+        in let known = gsi-register h.items serial (gcr-layer item) 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  gct-material : GameHarvest, GvPlayer, Integer, Integer -> Boolean
+  gct-material (h) (player) (item) (graphic) =
+    let p = ep-actor h.vendor.currency.world player.actor
+    in let quantity = ep-at p.stock item
+    in if quantity == 0 then False
+    else let quality = ep-at p.quality item / quantity
+    in let high = int-mod (ep-at p.quality item) quantity
+    in let low = quantity - high
+    in let a = if low > 0 then gct-item h player item graphic low quality 32 else 1
+    in let b = if high > 0 then gct-item h player item graphic high (quality + 1) 32 else 1
+    in a > 0 & b > 0
+  gct-lookup : EpWorld, WalkMap, WorldObject, Integer, Integer -> Integer
+  gct-lookup (w) (map) (mobile) (recipe) (category) =
+    if mobile.x /= 1420 | mobile.y /= 1698 | mobile.z /= 0 then 0
+    else gct-find w (list-at w.catalog.recipes (recipe - 1)).station 0
+  gct-choice : Integer, Integer, Integer -> List Integer
+  gct-choice (tool) (context) (choice) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] tool) context) choice) 0) 0
+  gct-use : GameCraft, GameInput, WalkMap, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  gct-use (state) (input) (map) (tool) (choice) (tick) =
+    let h = state.harvest
+    in let begin = gcr-handler-at (gct-lookup h.vendor.currency.world) state h.vendor.game input map 2593 (gp-put32 [6] tool) tick
+    in let context = (list-at state.requests 0).menu
+    in gcr-handler-at (gct-lookup h.vendor.currency.world) state h.vendor.game input map 2593 (gct-choice tool context choice) (tick + 1)
+  gct-live : GameHarvest, GameInput, WalkMap -> [Console] Nothing
+  gct-live (h) (input) (map) = act
+    player <- list-at h.vendor.players 0
+    w <- h.vendor.currency.world
+    p <- ep-actor w player.actor
+    state <- gcr-state h
+    hammer <- gct-item h player 62 #13E3 1 1000 (ep-at p.wear 62)
+    axe <- gct-item h player 26 #0F49 1 1000 (ep-at p.wear 26)
+    knife <- gct-item h player 27 #0EC4 1 1000 (ep-at p.wear 27)
+    quality <- ep-at p.quality 42 / 3
+    remainder <- int-mod (ep-at p.quality 42) 3
+    sewing <- gct-item h player 42 #0F9D 1 (quality + (if remainder > 0 then 1 else 0)) 32
+    saw <- gct-item h player 42 #1034 1 (quality + (if remainder > 1 then 1 else 0)) 32
+    tinker <- gct-item h player 42 #1EB8 1 quality 32
+    materials <- gct-material h player 31 #1BF2 & gct-material h player 38 #1BD7
+      & gct-material h player 39 #102E & gct-material h player 37 #175D & gct-material h player 36 #0FA0
+      & gct-material h player 5 #19B9 & gct-material h player 2 #1BDD
+    cbr-check "craft fixtures materialize real production stock" (hammer > 0 & axe > 0 & knife > 0 & sewing > 0 & saw > 0 & tinker > 0 & materials & ep-census w 1 & gvsc-valid h.vendor)
+    opened <- gcr-handler-at (gct-lookup w) state h.vendor.game input map 2593 (gp-put32 [6] hammer) 100
+    menu <- cbr-packet opened 0
+    cbr-check "legacy craft menu has bounded framing and tool identity" (list-length menu > 11 & list-at menu 0 == #7C & gp-u16 menu 1 == list-length menu & gp-u32 menu 3 == hammer & list-at menu (10 + text-length "Blacksmithing") == 5)
+    when world-get h.items.world player.serial
+      is Err (e) -> print-line-uni ("FAIL player " & e)
+      is Ok (mobile) -> act
+        context <- (list-at state.requests 0).menu
+        away <- world-update h.items.world (ia-copy mobile mobile.serial 1 0 1430 1698 0)
+        before <- p.attempts
+        refused <- gcr-handler-at (gct-lookup w) state h.vendor.game input map 2593 (gct-choice hammer context 2) 101
+        cbr-check "moving away from workshop refuses craft" (is-ok refused & p.attempts == before)
+        back <- world-update h.items.world mobile
+        cbr-check "player returns to workshop" (is-ok back)
+      end
+    iron <- ep-at p.stock 31
+    boards <- ep-at p.stock 38
+    roll1 <- __record-set p "attempts" 0
+    smith <- gct-use state input map hammer 4 1000
+    cbr-check "blacksmithing consumes exact materials and gains skill" (cbr-opcode smith #25 0 & ep-at p.stock 40 == 1 & ep-at p.stock 31 == iron - 2 & ep-at p.stock 38 == boards - 1 & ep-at p.skills 8 == 501)
+    roll2 <- __record-set p "attempts" 0
+    tailor <- gct-use state input map sewing 2 2000
+    cbr-check "tailoring consumes cloth and preserves unselected thread quality" (cbr-opcode tailor #25 0 & ep-at p.stock 46 == 1 & ep-at p.stock 37 == 0 & ep-at p.stock 36 == 1 & ep-at p.quality 36 == 101 & ep-at p.skills 10 == 501)
+    roll3 <- __record-set p "attempts" 0
+    carpenter <- gct-use state input map saw 2 3000
+    cbr-check "carpentry consumes boards and nails" (cbr-opcode carpenter #25 0 & ep-at p.stock 47 == 1 & ep-at p.stock 39 == 2)
+    boards-left <- ep-at p.stock 38
+    axe-wear <- ep-at p.wear 26
+    fail-roll <- __record-set p "attempts" 1
+    failed <- gct-use state input map saw 2 4000
+    cbr-check "failed craft preserves materials but practices and wears tool" (is-ok failed & ep-at p.stock 47 == 1 & ep-at p.stock 38 == boards-left & ep-at p.wear 26 == axe-wear - 1)
+    roll4 <- __record-set p "attempts" 0
+    tinkered <- gct-use state input map tinker 1 5000
+    cbr-check "tinkering creates a quality-backed tool lot" (cbr-opcode tinkered #25 0 & ep-at p.stock 42 == 4 & ep-at p.skills 8 == 502)
+    roll5 <- __record-set p "attempts" 0
+    made-sewing <- gct-use state input map tinker 2 6000
+    roll6 <- __record-set p "attempts" 0
+    made-saw <- gct-use state input map tinker 3 7000
+    cbr-check "tinkering makes usable sewing and carpentry tools" (cbr-opcode made-sewing #25 0 & cbr-opcode made-saw #25 0 & ep-at p.stock 42 == 6)
+    hammer-wear <- ep-at p.wear 62
+    ingots <- ep-at p.stock 31
+    roll7 <- __record-set p "attempts" 0
+    smelted <- gct-use state input map hammer 1 8000
+    cbr-check "forge menu smelts harvested ore without phantom tool wear" (cbr-opcode smelted #25 0 & ep-at p.stock 5 == 0 & ep-at p.stock 31 == ingots + 1 & ep-at p.wear 62 == hammer-wear)
+    attempts <- p.attempts
+    stale <- gcr-handler-at (gct-lookup w) state h.vendor.game input map 2593 (gct-choice tinker #4006 1) 8002
+    cbr-check "used craft menu cannot consume materials twice" (is-ok stale & p.attempts == attempts)
+    cbr-check "craft census and physical lot recovery validate" (ep-census w 1 & gvsc-valid h.vendor)
+    buf <- alloc-bytes 112
+    encoded <- gcrc-encode state 8100 buf 112
+    restored <- gcr-state h
+    decoded <- gcrc-decode restored 8000 buf 112
+    cbr-check "craft recovery rebases cooldown and clears menu authority" (is-ok encoded & is-ok decoded & (list-at restored.requests 0).next == 8201 & (list-at restored.requests 0).menu == 0)
+    cbr-check "short craft codec refuses before read" (is-err (gcrc-decode restored 0 0 0))
+  end
+  gct-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  gct-run (shard) (map) (currency) = act
+    built <- gct-bootstrap currency.world
+    cbr-check "craft bootstrap uses only gathering and production recipes" built
+    if not built then print-line-uni "FAIL bootstrap stopped"
+    else act
+      input <- gn-input-with ((gsi-specs 0) & [gcr-spec]) 1
+      when gs-relay-key shard
+        is Err (e) -> print-line-uni ("FAIL relay " & e)
+        is Ok (key) -> act
+          keyed <- __record-set input.session "key" key
+          login <- gs-handle shard input.session map (cbr-login key)
+          create <- cbr-create 0
+          smith <- list-set-at create 74 7
+          tailor <- list-set-at create 76 34
+          carpenter <- list-set-at create 78 11
+          created <- gs-handle shard input.session map create
+          mode <- __record-set input "mode" 2
+          v <- gv-new shard currency
+          items <- gsi-new shard.world
+          actor <- gsi-session items shard input 0
+          when gsi-pack items actor
+            is Err (e) -> print-line-uni ("FAIL pack " & e)
+            is Ok (pack) -> act
+              bound <- gv-add-player v input.session.serial 1 pack.serial
+              h <- gh-state v items
+              gct-live h input map
+            end
+        end
+    end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 8 8
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- cbr-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> when gvd-economy 0
+            is Err (e) -> print-line-uni ("FAIL economy " & e)
+            is Ok (currency) -> gct-run shard map currency
+      end
+  end
+
+Page 1

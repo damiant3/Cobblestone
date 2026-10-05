@@ -1,0 +1,488 @@
+Chapter: GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameAccounts
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter GameOpcode
+  cites Uoaix chapter GameHuffman
+  cites Uoaix chapter LoginWire
+  cites Uoaix chapter WalkLoad
+  cites Uoaix chapter MulClient
+  cites Net chapter NetIO
+  cites Net chapter NetIdle
+  cites Net chapter NetCompact
+  cites Net chapter NetDriver
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+  GameInput = record { wire : UoLoginWire, session : GameSession,
+    mode : Integer, buffer : Integer, used : Integer, need : Integer, listed : Boolean,
+    connection : Integer, raw : Integer, raw-next : Integer, raw-count : Integer, opcode : Integer,
+    opcodes : List GameOpcodeSpec }
+  GameChunk = record { transport : TcpTransportState, close : Boolean }
+
+  gn-log : Text -> Text
+  gn-log (message) = let rate = hpet-ticks-per-second
+    in let now = hpet-ticks
+    in message & " ms=" & show (if rate <= 0 then 0 else now / rate * 1000 + int-mod now rate * 1000 / rate)
+  gn-micros : Integer -> Integer
+  gn-micros (ticks) = let rate = hpet-ticks-per-second
+    in if rate <= 0 then 0 else ticks / rate * 1000000 + int-mod ticks rate * 1000000 / rate
+
+  gn-input : Integer -> GameInput
+  gn-input (number) = gn-input-with [] number
+
+  gn-input-with : List GameOpcodeSpec, Integer -> GameInput
+  gn-input-with (specs) (number) = GameInput { wire = uo-wire-new 0, session = gs-session 0,
+    mode = 0, buffer = alloc-bytes go-wire-limit, used = 0, need = 0, listed = False,
+    connection = number, raw = alloc-bytes 256, raw-next = 0, raw-count = 0, opcode = -1, opcodes = specs }
+
+  gn-remember : GameInput, Integer -> Integer
+  gn-remember (state) (byte) =
+    let stored = poke-byte state.raw state.raw-next byte
+    in let next = __record-set state "raw-next" (int-mod (state.raw-next + 1) 256)
+    in let count = __record-set state "raw-count" (if state.raw-count < 256 then state.raw-count + 1 else 256)
+    in 0
+
+ Raw UO bytes must not pass transport-try-recv's repository framing during
+ accept. Retain an ACK's payload verbatim when the handshake establishes.
+
+  gn-accept : TcpTransportState, Integer, List Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
+  gn-accept (transport) (tries) (rx) (mark) =
+    if tries >= net-io-max-polls then transport
+    else when ni-clock transport rx
+      is Err (_) -> transport
+      is Ok (clock) -> let waiting-mark = __heap-save
+        in ni-wait transport clock True (clock.epoch + clock.period * max 1 ((net-io-max-polls - tries) / net-io-tick-interval)) waiting-mark
+
+  gn-byte : GameShard, GameInput, Integer -> Result Boolean Text
+  gn-byte (shard) (state) (byte) =
+    if byte < 0 | byte > 255 then Err "wire input is not a byte"
+    else let remembered = gn-remember state byte
+    in if state.mode == 0 then
+      let seeded = uo-wire-byte state.wire byte
+      in if seeded.seed-count < 4 then Ok False
+      else let game = shard.pending-key /= 0 & seeded.seed == shard.pending-key
+      in let mode = __record-set state "mode" (if game then 2 else 1)
+      in let key = __record-set state.session "key" seeded.seed
+      in let login = __record-set state.wire "game" False
+      in Ok False
+    else let plain = uo-xor-byte state.wire byte
+    in let opcode = if state.used == 0 then __record-set state "opcode" plain else state
+    in if state.used < 0 | state.used >= go-wire-limit then Err "wire buffer budget"
+    else
+        let need = if state.used /= 0 then state.need
+          else if state.mode == 1 & plain == 128 then 62
+          else if state.mode == 1 & plain == 160 then 3
+          else go-header (go-find state.opcodes plain 0)
+        in if need <= 0 | need > go-wire-limit then Err "wire packet opcode/budget"
+        else let stored = poke-byte state.buffer state.used plain
+        in let a = __record-set state "used" (state.used + 1)
+        in let b = __record-set a "need" need
+        in if state.used == 3 & (go-find state.opcodes state.opcode 0).size == 0 then
+          let spec = go-find state.opcodes state.opcode 0
+          in let length = peek-byte state.buffer 1 * 256 + peek-byte state.buffer 2
+          in if length < spec.minimum | length > spec.maximum then Err "variable wire length outside declared bounds"
+          else let expanded = __record-set state "need" length in Ok (state.used == length)
+        else Ok (state.used == need)
+
+  gn-shards : Integer -> List Integer
+  gn-shards (flag) =
+    let a = gp-put16 (list-push (gp-put16 (gp-start 168) 46) 93) 1
+    in let b = gp-ascii (gp-put16 a 0) "UOAIX" 0 32
+    in b & [0, 0, 1, 0, 0, 127]
+
+  gn-login : GameShard, GameInput, Integer, List Integer -> Result GameReply Text
+  gn-login (shard) (state) (host-port) (packet) =
+    let opcode = list-at packet 0
+    in if opcode == 128 & not state.listed then when ga-admit shard.accounts packet 1 31
+      is Err (e) -> Ok (GameReply { packets = [[130, 3]], close = True, note = "login credentials refused: " & e })
+      is Ok (_) ->
+        let listed = __record-set state "listed" True
+        in Ok (gs-reply [gn-shards (list-at packet 61)] "shard-list")
+    else if not state.listed then Err "account login required"
+    else if opcode == 164 then Ok (gs-reply [] "hardware-info")
+    else if opcode == 115 then Ok (gs-reply [packet] "ping")
+    else if opcode == 160 & gp-u16 packet 1 == 0 then when gs-relay-key shard
+      is Err (e) -> Err e
+      is Ok (key) ->
+        let response = gp-put32 (gp-put16 ((gp-start 140) & [127, 0, 0, 1]) host-port) key
+        in Ok (GameReply { packets = [response], close = True, note = "relay" })
+    else Err "login packet order or shard refused"
+
+ Each checked drain admits a prefix or waits net-io-drain-ticks. Six total
+ waits exceed the transport's bounded retransmission ladder without spinning
+ forever when traffic prevents a timer from advancing.
+
+  gn-send-wait-with : (TcpTransportState, List Integer, Integer, Integer -> [e] NetSendResult),
+    TcpTransportState, List Integer, Integer, Integer -> [Console, e] NetSendResult
+  gn-send-wait-with (sender) (transport) (bytes) (offset) (waits) =
+    if net-io-conn-closed transport | transport-stale transport then
+      NetSendResult { ns-transport = transport, ns-sent = offset, ns-complete = False }
+    else act
+      sent <- sender transport bytes offset (list-length bytes)
+      if sent.ns-complete | net-io-conn-closed sent.ns-transport | transport-stale sent.ns-transport
+        | not (net-rexmit-full sent.ns-transport.session) | waits <= 1 then sent
+      else act
+        print-line-uni ("WAIT game send offset=" & show sent.ns-sent & " remaining-drains=" & show (waits - 1))
+        gn-send-wait-with sender sent.ns-transport bytes sent.ns-sent (waits - 1)
+      end
+    end
+
+  gn-wire-append : List Integer, Integer, List Integer -> List Integer
+  gn-wire-append (bytes) (i) (out) = if i >= list-length bytes then out
+    else gn-wire-append bytes (i + 1) (list-push out (list-at bytes i))
+  gn-wire-reply : Integer, Boolean, List (List Integer), Integer, List Integer -> Result (List Integer) Text
+  gn-wire-reply (huffman) (compress) (packets) (i) (out) =
+    if i >= list-length packets then Ok out
+    else let packet = list-at packets i
+    in if list-length packet > 65536 then Err "game reply packet budget"
+    else let encoded = if compress then gh-encode huffman packet else Ok packet
+    in when encoded
+      is Err (e) -> Err e
+      is Ok (bytes) -> if list-length bytes > 65536 - list-length out then Err "game reply wire budget"
+        else gn-wire-reply huffman compress packets (i + 1) (gn-wire-append bytes 0 out)
+
+  gn-send : TcpTransportState, Integer, Boolean, List (List Integer),
+    Integer -> [Console, Network.Read, Network.Write] GameChunk
+  gn-send (transport) (huffman) (compress) (packets) (i) =
+    let started = hpet-ticks
+    in when gn-wire-reply huffman compress packets i []
+      is Err (e) -> act
+        print-line-uni (gn-log ("REFUSE " & e))
+        GameChunk { transport = transport, close = True }
+      end
+      is Ok (bytes) -> act
+        encoded <- hpet-ticks
+        sent <- gn-send-wait-with net-io-send-chunk-checked transport bytes 0 6
+        finished <- hpet-ticks
+        logged <- print-line-uni (gn-log ("SEND packets=" & show (list-length packets - i) & " bytes=" & show (list-length bytes) & " encode-us=" & show (gn-micros (encoded - started)) & " tx-us=" & show (gn-micros (finished - encoded))))
+        if not sent.ns-complete then act
+          print-line-uni (gn-log ("REFUSE game send incomplete " & show sent.ns-sent
+            & " queue=" & show (list-length sent.ns-transport.session.rexmit-queue)
+            & " full=" & show (net-rexmit-full sent.ns-transport.session)
+            & " closed=" & show (net-io-conn-closed sent.ns-transport)
+            & " stale=" & show (transport-stale sent.ns-transport)))
+          GameChunk { transport = sent.ns-transport, close = True }
+        end
+        else GameChunk { transport = sent.ns-transport, close = False }
+      end
+
+  gn-send-timed : NetIdleClock, TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk
+  gn-send-timed (clock) (transport) (huffman) (compress) (packets) (i) = act
+    received <- ni-wait transport clock False hpet-ticks __heap-save
+    gn-send (ni-stamp received clock hpet-ticks) huffman compress packets i
+  end
+
+  gn-chunk : TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
+    List Integer, Integer -> [Console, Network.Read, Network.Write] GameChunk
+  gn-chunk (transport) (shard) (state) (map) (huffman) (host-port) (bytes) (i) =
+    gn-chunk-with gn-default-handler transport shard state map huffman host-port bytes i
+
+  gn-default-handler : GameShard, GameInput, WalkMap, Integer, List Integer -> Result GameReply Text
+  gn-default-handler (shard) (state) (map) (host-port) (packet) =
+    if not (go-packet-valid state.opcodes packet) | not (gs-byte-range packet 0) then Err "packet framing invalid"
+    else if gp-packet-size (list-at packet 0) == 0 & list-at packet 0 /= 128 & list-at packet 0 /= 160 then
+      Ok (gs-reply [] ("unhandled packet skipped length=" & show (list-length packet) & " mode=" & show state.mode & " phase=" & show state.session.phase))
+    else if list-length packet == 5 & list-at packet 0 == 114
+      & (state.mode == 1 | (state.mode == 2 & state.session.phase < 2)) then
+      if not (gs-byte-range packet 0) then Err "non-byte war-mode packet"
+      else Ok (gs-reply [] ("pre-world war mode ignored mode=" & show state.mode & " phase=" & show state.session.phase))
+    else if state.mode == 1 then gn-login shard state host-port packet
+    else if list-at packet 0 == 114 then Ok (gs-reply [] "unhandled war mode skipped")
+    else gs-handle shard state.session map packet
+
+  gn-route : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result (Maybe GameReply) Text),
+    GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text
+  gn-route (handler) (shard) (state) (map) (host-port) (packet) =
+    if list-length packet == 0 then act Err "empty extension packet" end
+    else let opcode = list-at packet 0
+    in if state.mode /= 2 | state.session.phase /= 2 | opcode == 128 | opcode == 160 | opcode == 145 | opcode == 0 | opcode == 93 then act gn-default-handler shard state map host-port packet end
+    else if not (go-packet-valid state.opcodes packet) then act Err "extension packet profile refused" end
+    else if not (gs-byte-range packet 0) then act Err "extension packet is not bytes" end
+    else act
+      handled <- handler shard state map host-port packet
+      when handled
+        is Err (e) -> Err e
+        is Ok (maybe) -> when maybe
+          is None -> gn-default-handler shard state map host-port packet
+          is Just (reply) -> Ok reply
+    end
+
+  gn-no-pulse : GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  gn-no-pulse (shard) (state) (map) (host-port) (tick) = Ok None
+
+  gn-pulse : (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text
+  gn-pulse (handler) (shard) (state) (map) (host-port) (tick) =
+    if state.mode /= 2 | state.session.phase /= 2 then act Ok None end
+    else handler shard state map host-port tick
+
+  gn-send-pulse : (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
+  gn-send-pulse (pulse) (transport) (shard) (state) (map) (huffman) (host-port) = act
+    gn-send-pulse-via gn-send pulse transport shard state map huffman host-port
+  end
+
+  gn-send-pulse-via : (TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
+  gn-send-pulse-via (sender) (pulse) (transport) (shard) (state) (map) (huffman) (host-port) = act
+    handled <- gn-pulse pulse shard state map host-port get-ticks
+    when handled
+      is Err (e) -> act
+        diagnosed <- gn-refuse state e
+        GameChunk { transport = transport, close = True }
+      end
+      is Ok (maybe) -> when maybe
+        is None -> GameChunk { transport = transport, close = False }
+        is Just (reply) -> act
+          print-line-uni (gn-log ("PULSE " & reply.note & " connection=" & show state.connection))
+          sent <- sender transport huffman True reply.packets 0
+          GameChunk { transport = sent.transport, close = reply.close | sent.close }
+        end
+  end
+
+  gn-chunk-with : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
+    List Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
+  gn-chunk-with (handler) (transport) (shard) (state) (map) (huffman) (host-port) (bytes) (i) =
+    gn-chunk-via gn-send handler transport shard state map huffman host-port bytes i
+
+  gn-chunk-via : (TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk),
+    (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
+    List Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
+  gn-chunk-via (sender) (handler) (transport) (shard) (state) (map) (huffman) (host-port) (bytes) (i) =
+    if i >= list-length bytes then GameChunk { transport = transport, close = False }
+    else when gn-byte shard state (list-at bytes i)
+      is Err (e) -> act
+        diagnosed <- gn-refuse state e
+        GameChunk { transport = transport, close = True }
+      end
+      is Ok (complete) ->
+        if not complete then gn-chunk-via sender handler transport shard state map huffman host-port bytes (i + 1)
+        else let packet = __buf-read-bytes state.buffer 0 state.used
+        in let reset = __record-set state "used" 0
+        in let handled = handler shard state map host-port packet
+        in when handled
+          is Err (e) -> act
+            diagnosed <- gn-refuse state e
+            GameChunk { transport = transport, close = True }
+          end
+          is Ok (reply) -> act
+            print-line-uni (gn-log ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show state.connection))
+            positioned <- gn-position shard state.session
+            sent <- sender transport huffman (state.mode == 2) reply.packets 0
+            if reply.close | sent.close then act
+              diagnosed <- if sent.close | (reply.close & list-at packet 0 /= 160 & list-at packet 0 /= 1) then gn-refuse state reply.note else act 0 end
+              GameChunk { transport = sent.transport, close = True }
+            end
+            else gn-chunk-via sender handler sent.transport shard state map huffman host-port bytes (i + 1)
+          end
+
+  gn-position : GameShard, GameSession -> [Console] Integer
+  gn-position (shard) (session) =
+    if session.phase /= 2 then 0
+    else when world-get shard.world session.serial
+      is Err (e) -> act
+        print-line-uni (gn-log ("REFUSE position " & e))
+        1
+      end
+      is Ok (mobile) -> act
+        print-line-uni ("POSITION " & show mobile.serial & " " & show mobile.x & " " & show mobile.y & " " & show mobile.z)
+        0
+      end
+
+  gn-connection : TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
+    Integer -> [Console, Network.Read, Network.Write] Integer
+  gn-connection (transport) (shard) (state) (map) (huffman) (host-port) (mark) =
+    gn-connection-with gn-default-handler transport shard state map huffman host-port mark
+
+  gn-connection-with : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
+    Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-connection-with (handler) (transport) (shard) (state) (map) (huffman) (host-port) (mark) =
+    gn-connection-hooks handler gn-no-pulse transport shard state map huffman host-port mark
+
+  gn-connection-hooks : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-connection-hooks (handler) (pulse) (transport) (shard) (state) (map) (huffman) (host-port) (mark) =
+    gn-connection-hooks-with-disconnect handler pulse gn-no-disconnect transport shard state map huffman host-port mark
+
+  gn-no-disconnect : GameShard, GameInput -> Result Integer Text
+  gn-no-disconnect (shard) (state) = Ok 0
+
+  gn-finish-disconnect : (GameShard, GameInput -> [e] Result Integer Text), GameShard, GameInput -> [Console, e] Integer
+  gn-finish-disconnect (disconnect) (shard) (state) = act
+    flushed <- disconnect shard state
+    when flushed
+      is Err (reason) -> act
+        print-line-uni (gn-log ("REFUSE disconnect flush connection=" & show state.connection & " reason=" & reason))
+        1
+      end
+      is Ok (done) -> let gone = gs-disconnect shard state.session in 0
+  end
+
+  gn-connection-hooks-with-disconnect : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-connection-hooks-with-disconnect (handler) (pulse) (disconnect) (transport) (shard) (state) (map) (huffman) (host-port) (mark) =
+    when ni-clock transport (net-driver-frame-buffer net-driver-frame-cap)
+      is Err (reason) -> act
+        print-line-uni (gn-log ("REFUSE " & reason))
+        closed <- net-io-close transport
+        ended <- gn-finish-disconnect disconnect shard state
+        1
+      end
+      is Ok (clock) -> let waiting-mark = __heap-save
+        in gn-connection-idle-loop handler pulse disconnect transport shard state map huffman host-port clock waiting-mark
+
+  gn-connection-idle-loop : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer, NetIdleClock, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-connection-idle-loop (handler) (pulse) (disconnect) (transport) (shard) (state) (map) (huffman) (host-port) (clock) (mark) = act
+    recv <- ni-recv transport clock mark
+    processed <- if recv.has-data then gn-chunk-via (gn-send-timed clock) handler recv.transport shard state map huffman host-port recv.data 0
+      else if not (net-io-peer-finished recv.transport) & not (transport-stale recv.transport) then act GameChunk { transport = recv.transport, close = False } end
+      else act
+        diagnosed <- if state.used > 0 | ((state.wire).seed-count > 0 & (state.wire).seed-count < 4) then gn-refuse state "incomplete packet at EOF" else act 0 end
+        GameChunk { transport = recv.transport, close = True }
+      end
+    result <- if processed.close then act processed end
+      else gn-send-pulse-via (gn-send-timed clock) pulse processed.transport shard state map huffman host-port
+    if result.close then act
+      closed <- net-io-close result.transport
+      gn-finish-disconnect disconnect shard state
+    end
+    else let next = transport-compact result.transport mark
+    in gn-connection-idle-loop handler pulse disconnect next shard state map huffman host-port clock mark
+  end
+
+  gn-connection-step : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
+  gn-connection-step (handler) (transport) (shard) (state) (map) (huffman) (host-port) = act
+    recv <- if transport.recv-len > 0 then mc-recv transport
+      else net-io-recv-raw transport (net-io-max-polls - net-io-tick-interval)
+    if recv.has-data then gn-chunk-with handler recv.transport shard state map huffman host-port recv.data 0
+    else if not (net-io-peer-finished recv.transport) & not (transport-stale recv.transport) then
+      GameChunk { transport = recv.transport, close = False }
+    else act
+      diagnosed <- if state.used > 0 | ((state.wire).seed-count > 0 & (state.wire).seed-count < 4) then gn-refuse state "incomplete packet at EOF" else act 0 end
+      GameChunk { transport = recv.transport, close = True }
+    end
+  end
+
+  gn-raw-pieces : GameInput, Integer, List Text -> List Text
+  gn-raw-pieces (state) (i) (parts) =
+    if i >= state.raw-count then parts
+    else let digits = "0123456789ABCDEF"
+    in let byte = peek-byte state.raw (int-mod (state.raw-next - state.raw-count + i + 256) 256)
+    in let hex = char-to-text (char-at digits (byte / 16)) & char-to-text (char-at digits (bit-and byte 15))
+    in gn-raw-pieces state (i + 1) (list-push parts hex)
+
+  gn-refuse : GameInput, Text -> [Console] Integer
+  gn-refuse (state) (reason) =
+    let mode = if state.mode == 0 then "seed-clear" else if state.mode == 1 then "login-xor" else "game-xor"
+    in act
+      print-line-uni (gn-log ("REFUSE connection=" & show state.connection & " mode=" & mode & " opcode=" & show state.opcode & " reason=" & reason
+        & " raw-count=" & show state.raw-count & " raw=" & text-concat-list (gn-raw-pieces state 0 [])))
+      0
+    end
+
+  gn-loop : GameShard, WalkMap, Integer, Integer,
+    Integer -> [Console, Network.Read, Network.Write] Integer
+  gn-loop (shard) (map) (huffman) (host-port) (number) =
+    gn-loop-with gn-default-handler shard map huffman host-port number
+
+  gn-loop-with : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    GameShard, WalkMap, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-loop-with (handler) (shard) (map) (huffman) (host-port) (number) =
+    gn-loop-hooks [] handler gn-no-pulse shard map huffman host-port number
+
+  gn-loop-hooks : List GameOpcodeSpec,
+    (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    GameShard, WalkMap, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-loop-hooks (specs) (handler) (pulse) (shard) (map) (huffman) (host-port) (number) =
+    gn-loop-hooks-with-disconnect specs handler pulse gn-no-disconnect shard map huffman host-port number
+
+  gn-loop-hooks-with-disconnect : List GameOpcodeSpec,
+    (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text),
+    GameShard, WalkMap, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gn-loop-hooks-with-disconnect (specs) (handler) (pulse) (disconnect) (shard) (map) (huffman) (host-port) (number) =
+    let mark = __heap-save
+    in let session = net-session-new net-driver-mac [10, 0, 2, 15] [10, 0, 2, 2] 2593 0 [10, 0, 2, 2] 1000
+    in let arp = arp-cache-add session.arp [10, 0, 2, 2] [82, 85, 10, 0, 2, 2]
+    in let transport = transport-arenas (net-io-listen (transport-new-with-cap (set-arp session arp) 4096))
+    in let rx = net-driver-frame-buffer net-driver-frame-cap
+    in let accept-mark = __heap-save
+    in act
+      print-line-uni (gn-log ("LISTEN game-server " & show number))
+      accepted <- gn-accept transport 0 rx accept-mark
+      when (accepted.session).conn.state
+        is TcpEstablished ->
+          let state = gn-input-with specs number
+          in let connection-mark = __heap-save
+          in act
+            ended <- gn-connection-hooks-with-disconnect handler pulse disconnect accepted shard state map huffman host-port connection-mark
+            if ended /= 0 then ended else let restored = __heap-restore mark
+            in gn-loop-hooks-with-disconnect specs handler pulse disconnect shard map huffman host-port (number + 1)
+          end
+        is otherwise -> act
+          closed <- net-io-close accepted
+          let restored = __heap-restore mark
+          in gn-loop-hooks-with-disconnect specs handler pulse disconnect shard map huffman host-port number
+        end
+    end
+
+  game-server : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  game-server (host-port) (window-size) = game-server-with [] gn-default-handler gn-no-pulse host-port window-size
+
+  game-server-with : List GameOpcodeSpec,
+    (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  game-server-with (specs) (handler) (pulse) (host-port) (window-size) =
+    game-server-with-disconnect specs handler pulse gn-no-disconnect host-port window-size
+
+  game-server-with-disconnect : List GameOpcodeSpec,
+    (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text),
+    Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  game-server-with-disconnect (specs) (handler) (pulse) (disconnect) (host-port) (window-size) =
+    if not (go-valid specs) then act
+      print-line-uni "REFUSE opcode registry"
+      1
+    end
+    else act
+    card <- net-driver-bring-up
+    let arena = nc-set-acquire (nc-pool-cell process-get-pid)
+    in let released = nc-set-release arena
+    in let huffman = gh-new 0
+    in act
+      loaded <- wl-load 1408 1680 window-size window-size
+      when loaded
+        is Err (e) -> act
+          print-line-uni ("REFUSE preload " & e)
+          1
+        end
+        is Ok (map) -> when gs-new 0
+          is Err (e) -> act
+            print-line-uni (gn-log ("REFUSE shard " & e))
+            1
+          end
+          is Ok (shard) -> gn-loop-hooks-with-disconnect specs handler pulse disconnect shard map huffman host-port 0
+    end
+  end

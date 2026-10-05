@@ -218,7 +218,7 @@ if (!only.length) {
       const h = exports.sp_new(77, suits);
       const cards = [];
       for (let c = 0; c < 10; c++) {
-        for (let i = 0; i < exports.sp_coln(h, c); i++) cards.push(exports.sp_card(h, c, i));
+        for (let i = 0; i < exports.sp_coln(h, c); i++) cards.push(exports.sp_peek(h, c, i));
       }
       // The tableau holds 54; the rest is still in the stock, so the deck
       // is checked through what is dealt plus what the counters say.
@@ -566,8 +566,7 @@ if (!only.length) {
             const any = [...Array(52).keys()].find(c =>
               ex.ce_has(h, 0, c) === 1 && ex.ce_canplay(h, c) === 1);
             if (any !== undefined) d.move(500 + any);
-            else if (ex.ce_canpen(h) === 1) d.act(1);
-            else if (ex.ce_stuck(h) === 1) d.act(0);
+            else if (ex.ce_candraw(h) === 1) d.act(0);
             else break;
             continue;
           }
@@ -620,11 +619,14 @@ if (!only.length) {
     // A card is drawn, and the number of pips IS the rank. Counted here
     // rather than shown as a table for somebody to read, because a table
     // becomes decoration the first time nobody reads it. Spider's opening
-    // deal is the fixture: 54 cards face up, every rank among them.
+    // deal is the fixture, turned face up: sp_card hides a face-down card and
+    // sp_down counts them, so the fixture reads through sp_peek and reports
+    // none down, and all 54 cards reach the renderer, every rank among them.
     {
       const g = GAMES.find(x => x.id === 'spider');
-      const ex = new WebAssembly.Instance(new WebAssembly.Module(
+      const raw = new WebAssembly.Instance(new WebAssembly.Module(
         readFileSync(join(modDir, 'spider.wasm'))), IMPORTS).exports;
+      const ex = { ...raw, sp_card: raw.sp_peek, sp_down: () => 0 };
       const d = driver(g, ex);
       d.reset(4);
       const html = renderHtml(d.view(), true);

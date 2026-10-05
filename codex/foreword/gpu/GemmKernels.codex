@@ -52,48 +52,52 @@ Section: Implicit GEMM Conv2d
 
   conv-stage-a : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   conv-stage-a (sa) (w) (cout) (kk) (m0) (k0) (t) (j) =
-   if j >= 8 then 0
-   else let e = t + j * 128
-   in let r = e / 16
-   in let m = m0 + r
-   in let kx = k0 + e - r * 16
-   in act
-    v <- if m < cout then (if kx < kk then device-load-u16 (w + (m * kk + kx) * 2) else 0) else 0
-    s <- shared-store-u16 (sa + e * 2) v
-    conv-stage-a sa w cout kk m0 k0 t (j + 1)
-   end
+    if j >= 8 then 0
+    else let e = t + j * 128
+    in let r = e / 16
+    in let m = m0 + r
+    in let kx = k0 + e - r * 16
+    in act
+     v <- if m < cout then (if kx < kk then device-load-u16 (w + (m * kk + kx) * 2) else 0) else 0
+     s <- shared-store-u16 (sa + e * 2) v
+     conv-stage-a sa w cout kk m0 k0 t (j + 1)
+    end
 
   conv-stage-b : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   conv-stage-b (sb) (x) (cin) (h) (wd) (kh) (kw) (stride) (pad) (ow) (npix) (k0) (n0) (t) (j) =
-   if j >= 8 then 0
-   else let e = t + j * 128
-   in let r = e / 64
-   in let n = n0 + e - r * 64
-   in let kx = k0 + r
-   in let ci = kx / (kh * kw)
-   in let rest = kx - ci * kh * kw
-   in let ky = rest / kw
-   in let oy = n / ow
-   in let iy = oy * stride - pad + ky
-   in let ix = (n - oy * ow) * stride - pad + rest - ky * kw
-   in act
-    v <- if ci < cin then (if n < npix then (if iy >= 0 then (if iy < h then (if ix >= 0 then (if ix < wd then device-load-u16 (x + ((ci * h + iy) * wd + ix) * 2) else 0) else 0) else 0) else 0) else 0) else 0
-    s <- shared-store-u16 (sb + e * 2) v
-    conv-stage-b sb x cin h wd kh kw stride pad ow npix k0 n0 t (j + 1)
-   end
+    if j >= 8 then 0
+    else let e = t + j * 128
+    in let r = e / 64
+    in let n = n0 + e - r * 64
+    in let kx = k0 + r
+    in let ci = kx / (kh * kw)
+    in let rest = kx - ci * kh * kw
+    in let ky = rest / kw
+    in let oy = n / ow
+    in let iy = oy * stride - pad + ky
+    in let ix = (n - oy * ow) * stride - pad + rest - ky * kw
+    in act
+     v <- if ci < cin then
+       (if n < npix then (if iy >= 0 then (if iy < h then (if ix >= 0 then (if ix < wd then device-load-u16 (x + ((ci * h + iy) * wd + ix) * 2) else 0) else 0) else 0) else 0) else 0)
+     else 0
+     s <- shared-store-u16 (sb + e * 2) v
+     conv-stage-b sb x cin h wd kh kw stride pad ow npix k0 n0 t (j + 1)
+    end
 
   conv-store-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   conv-store-out (sc) (y) (cout) (npix) (m0) (n0) (t) (j) =
-   if j >= 32 then 0
-   else let e = t + j * 128
-   in let r = e / 64
-   in let m = m0 + r
-   in let n = n0 + e - r * 64
-   in act
-    v <- shared-load-u32 (sc + e * 4)
-    s <- if m < cout then (if n < npix then device-store-u32 (y + (m * npix + n) * 4) v else 0) else 0
-    conv-store-out sc y cout npix m0 n0 t (j + 1)
-   end
+    if j >= 32 then 0
+    else let e = t + j * 128
+    in let r = e / 64
+    in let m = m0 + r
+    in let n = n0 + e - r * 64
+    in act
+     v <- shared-load-u32 (sc + e * 4)
+     s <- if m < cout then
+       (if n < npix then device-store-u32 (y + (m * npix + n) * 4) v else 0)
+     else 0
+     conv-store-out sc y cout npix m0 n0 t (j + 1)
+    end
 
   kernel-conv2d-wmma : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-conv2d-wmma (x) (w) (y) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (oh) (ow) (k) = act
@@ -117,7 +121,8 @@ Section: Implicit GEMM Conv2d
    m2 <- wmma-mma-f32 2 1 0
    m3 <- wmma-mma-f32 3 1 1
    b2 <- sync-threads
-   if k + 16 < cin * kh * kw then kernel-conv2d-wmma x w y cin h wd cout kh kw stride pad oh ow (k + 16)
+   if k + 16 < cin * kh * kw then
+     kernel-conv2d-wmma x w y cin h wd cout kh kw stride pad oh ow (k + 16)
    else act
     s0 <- wmma-store-f32-shared 0 (base + 4096 + ((tid / 64) * 32 * 64 + (tid / 32 - (tid / 64) * 2) * 32) * 4) 64
     s1 <- wmma-store-f32-shared 1 (base + 4096 + ((tid / 64) * 32 * 64 + (tid / 32 - (tid / 64) * 2) * 32 + 16) * 4) 64
@@ -137,30 +142,32 @@ Section: Linear
 
   linear-stage-b : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   linear-stage-b (sb) (w) (nn) (kk) (n0) (k0) (t) (j) =
-   if j >= 8 then 0
-   else let e = t + j * 128
-   in let c = e / 16
-   in let r = e - c * 16
-   in let n = n0 + c
-   in let kx = k0 + r
-   in act
-    v <- if n < nn then (if kx < kk then device-load-u16 (w + (n * kk + kx) * 2) else 0) else 0
-    s <- shared-store-u16 (sb + (r * 64 + c) * 2) v
-    linear-stage-b sb w nn kk n0 k0 t (j + 1)
-   end
+    if j >= 8 then 0
+    else let e = t + j * 128
+    in let c = e / 16
+    in let r = e - c * 16
+    in let n = n0 + c
+    in let kx = k0 + r
+    in act
+     v <- if n < nn then (if kx < kk then device-load-u16 (w + (n * kk + kx) * 2) else 0) else 0
+     s <- shared-store-u16 (sb + (r * 64 + c) * 2) v
+     linear-stage-b sb w nn kk n0 k0 t (j + 1)
+    end
 
   linear-store-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   linear-store-out (sc) (y) (b) (mm) (nn) (m0) (n0) (t) (j) =
-   if j >= 32 then 0
-   else let e = t + j * 128
-   in let r = e / 64
-   in let m = m0 + r
-   in let n = n0 + e - r * 64
-   in act
-    v <- shared-load-u32 (sc + e * 4)
-    s <- if m < mm then (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + n * 4)))) else 0) else 0
-    linear-store-out sc y b mm nn m0 n0 t (j + 1)
-   end
+    if j >= 32 then 0
+    else let e = t + j * 128
+    in let r = e / 64
+    in let m = m0 + r
+    in let n = n0 + e - r * 64
+    in act
+     v <- shared-load-u32 (sc + e * 4)
+     s <- if m < mm then
+       (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + n * 4)))) else 0)
+     else 0
+     linear-store-out sc y b mm nn m0 n0 t (j + 1)
+    end
 
  An e4m3 byte (sign, four exponent bits biased by 7, three mantissa bits, no
  infinity, S.1111.111 the one NaN) is exact in f16: a normal value moves its
@@ -169,13 +176,14 @@ Section: Linear
 
   f8-e4m3-f16 : Integer -> Integer
   f8-e4m3-f16 (v) =
-   let s = v / 128
-   in let e = (v - s * 128) / 8
-   in let m = v - s * 128 - e * 8
-   in let mag = if e == 0 then (if m == 0 then 0 else if m == 1 then 6144 else if m == 2 then 7168 else if m == 3 then 7680 else if m == 4 then 8192 else if m == 5 then 8448 else if m == 6 then 8704 else 8960)
+    let s = v / 128
+    in let e = (v - s * 128) / 8
+    in let m = v - s * 128 - e * 8
+    in let mag = if e == 0 then
+      (if m == 0 then 0 else if m == 1 then 6144 else if m == 2 then 7168 else if m == 3 then 7680 else if m == 4 then 8192 else if m == 5 then 8448 else if m == 6 then 8704 else 8960)
     else if e == 15 then (if m == 7 then 32256 else (e + 8) * 1024 + m * 128)
     else (e + 8) * 1024 + m * 128
-   in s * 32768 + mag
+    in s * 32768 + mag
 
  The e4m3 W tile: each thread loads two words of four consecutive k (kk a
  multiple of 4, so every word is aligned) and stores their bytes as f16 in
@@ -183,18 +191,20 @@ Section: Linear
 
   linear-stage-b-fp8 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   linear-stage-b-fp8 (sb) (w) (nn) (kk) (n0) (k0) (t) (j) =
-   if j >= 2 then 0
-   else let q = t + j * 128
-   in let c = q / 4
-   in let kq = (q - c * 4) * 4
-   in act
-    wd <- if n0 + c < nn then (if k0 + kq < kk then device-load-u32 (w + (n0 + c) * kk + k0 + kq) else 0) else 0
-    s0 <- shared-store-u16 (sb + (kq * 64 + c) * 2) (f8-e4m3-f16 (wd - (wd / 256) * 256))
-    s1 <- shared-store-u16 (sb + ((kq + 1) * 64 + c) * 2) (f8-e4m3-f16 (wd / 256 - (wd / 65536) * 256))
-    s2 <- shared-store-u16 (sb + ((kq + 2) * 64 + c) * 2) (f8-e4m3-f16 (wd / 65536 - (wd / 16777216) * 256))
-    s3 <- shared-store-u16 (sb + ((kq + 3) * 64 + c) * 2) (f8-e4m3-f16 (wd / 16777216))
-    linear-stage-b-fp8 sb w nn kk n0 k0 t (j + 1)
-   end
+    if j >= 2 then 0
+    else let q = t + j * 128
+    in let c = q / 4
+    in let kq = (q - c * 4) * 4
+    in act
+     wd <- if n0 + c < nn then
+       (if k0 + kq < kk then device-load-u32 (w + (n0 + c) * kk + k0 + kq) else 0)
+     else 0
+     s0 <- shared-store-u16 (sb + (kq * 64 + c) * 2) (f8-e4m3-f16 (wd - (wd / 256) * 256))
+     s1 <- shared-store-u16 (sb + ((kq + 1) * 64 + c) * 2) (f8-e4m3-f16 (wd / 256 - (wd / 65536) * 256))
+     s2 <- shared-store-u16 (sb + ((kq + 2) * 64 + c) * 2) (f8-e4m3-f16 (wd / 65536 - (wd / 16777216) * 256))
+     s3 <- shared-store-u16 (sb + ((kq + 3) * 64 + c) * 2) (f8-e4m3-f16 (wd / 16777216))
+     linear-stage-b-fp8 sb w nn kk n0 k0 t (j + 1)
+    end
 
   kernel-linear-wmma : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-linear-wmma (x) (w) (b) (y) (mm) (nn) (kk) (k) = lw-linear x w b y mm nn kk k 0
@@ -223,7 +233,9 @@ Section: Linear
    z2 <- if k == 0 then wmma-fill-f32 2 else 0
    z3 <- if k == 0 then wmma-fill-f32 3 else 0
    sa <- conv-stage-a base x mm kk (by * 64) k tid 0
-   sb <- if fp8 == 0 then linear-stage-b (base + 2048) w nn kk (bx * 64) k tid 0 else linear-stage-b-fp8 (base + 2048) w nn kk (bx * 64) k tid 0
+   sb <- if fp8 == 0 then
+     linear-stage-b (base + 2048) w nn kk (bx * 64) k tid 0
+   else linear-stage-b-fp8 (base + 2048) w nn kk (bx * 64) k tid 0
    b1 <- sync-threads
    la0 <- wmma-load-a-f16-shared 0 (base + (tid / 64) * 32 * 32) 16
    la1 <- wmma-load-a-f16-shared 1 (base + ((tid / 64) * 32 + 16) * 32) 16
@@ -260,13 +272,13 @@ Section: Linear, Pipelined
 
   lf-load-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   lf-load-rows (dst) (src) (rows) (kk) (r0) (k0) (c) =
-   let row = c / 4
-   in let kc = k0 + (c - row * 4) * 8
-   in let ok = if r0 + row < rows then (if kc < kk then 16 else 0) else 0
-   in let from = if ok > 0 then src + ((r0 + row) * kk + kc) * 2 else src
-   in act
-    cp-async-16 (dst + row * 80 + (c - row * 4) * 16) from ok
-   end
+    let row = c / 4
+    in let kc = k0 + (c - row * 4) * 8
+    in let ok = if r0 + row < rows then (if kc < kk then 16 else 0) else 0
+    in let from = if ok > 0 then src + ((r0 + row) * kk + kc) * 2 else src
+    in act
+     cp-async-16 (dst + row * 80 + (c - row * 4) * 16) from ok
+    end
 
   lf-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   lf-stage (buf) (x) (w) (mm) (nn) (kk) (row0) (col0) (k0) (t) = act
@@ -279,15 +291,17 @@ Section: Linear, Pipelined
 
   lf-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   lf-out (st) (y) (b) (mm) (nn) (r0) (c0) (lane) (q) =
-   if q >= 8 then 0
-   else let e = lane + q * 32
-   in let m = r0 + e / 16
-   in let n = c0 + e - (e / 16) * 16
-   in act
-    v <- shared-load-u32 (st + e * 4)
-    s <- if m < mm then (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + n * 4)))) else 0) else 0
-    lf-out st y b mm nn r0 c0 lane (q + 1)
-   end
+    if q >= 8 then 0
+    else let e = lane + q * 32
+    in let m = r0 + e / 16
+    in let n = c0 + e - (e / 16) * 16
+    in act
+     v <- shared-load-u32 (st + e * 4)
+     s <- if m < mm then
+       (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + n * 4)))) else 0)
+     else 0
+     lf-out st y b mm nn r0 c0 lane (q + 1)
+    end
 
   kernel-linear-fast : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-linear-fast (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = lf-linear x w b y mm nn kk k s
@@ -318,7 +332,9 @@ Section: Linear, Pipelined
    z6 <- if k == 0 then wmma-fill-f32 6 else 0
    z7 <- if k == 0 then wmma-fill-f32 7 else 0
    p0 <- if k == 0 then lf-stage base x w mm nn kk (by * 128) (bx * 128) 0 tid else 0
-   p1 <- if k + 32 < kk then lf-stage (base + (1 - s) * 20480) x w mm nn kk (by * 128) (bx * 128) (k + 32) tid else 0
+   p1 <- if k + 32 < kk then
+     lf-stage (base + (1 - s) * 20480) x w mm nn kk (by * 128) (bx * 128) (k + 32) tid
+   else 0
    wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
    b1 <- sync-threads
    ab <- base + s * 20480 + wm * 32 * 80
@@ -409,13 +425,13 @@ Section: Linear, Pipelined
 
   lf8-load-w : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   lf8-load-w (dst) (src) (rows) (kk) (r0) (k0) (c) =
-   let row = c / 2
-   in let kc = k0 + (c - row * 2) * 16
-   in let ok = if r0 + row < rows then (if kc < kk then 16 else 0) else 0
-   in let from = if ok > 0 then src + (r0 + row) * kk + kc else src
-   in act
-    cp-async-16 (dst + row * 32 + (c - row * 2) * 16) from ok
-   end
+    let row = c / 2
+    in let kc = k0 + (c - row * 2) * 16
+    in let ok = if r0 + row < rows then (if kc < kk then 16 else 0) else 0
+    in let from = if ok > 0 then src + (r0 + row) * kk + kc else src
+    in act
+     cp-async-16 (dst + row * 32 + (c - row * 2) * 16) from ok
+    end
 
   lf8-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   lf8-stage (xbuf) (wbuf) (x) (w) (mm) (nn) (kk) (row0) (col0) (k0) (t) = act
@@ -430,20 +446,20 @@ Section: Linear, Pipelined
 
   lf8-convert : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   lf8-convert (w8) (wf) (lut) (t) (j) =
-   if j >= 4 then 0
-   else let q = t + j * 256
-   in let row = q / 8
-   in let c = q - row * 8
-   in act
-    v <- shared-load-u32 (w8 + row * 32 + c * 4)
-    h0 <- lf8-half lut (v - (v / 256) * 256)
-    h1 <- lf8-half lut (v / 256 - (v / 65536) * 256)
-    h2 <- lf8-half lut (v / 65536 - (v / 16777216) * 256)
-    h3 <- lf8-half lut (v / 16777216)
-    s0 <- shared-store-u32 (wf + row * 80 + c * 8) (h1 * 65536 + h0)
-    s1 <- shared-store-u32 (wf + row * 80 + c * 8 + 4) (h3 * 65536 + h2)
-    lf8-convert w8 wf lut t (j + 1)
-   end
+    if j >= 4 then 0
+    else let q = t + j * 256
+    in let row = q / 8
+    in let c = q - row * 8
+    in act
+     v <- shared-load-u32 (w8 + row * 32 + c * 4)
+     h0 <- lf8-half lut (v - (v / 256) * 256)
+     h1 <- lf8-half lut (v / 256 - (v / 65536) * 256)
+     h2 <- lf8-half lut (v / 65536 - (v / 16777216) * 256)
+     h3 <- lf8-half lut (v / 16777216)
+     s0 <- shared-store-u32 (wf + row * 80 + c * 8) (h1 * 65536 + h0)
+     s1 <- shared-store-u32 (wf + row * 80 + c * 8 + 4) (h3 * 65536 + h2)
+     lf8-convert w8 wf lut t (j + 1)
+    end
 
   kernel-linear-fast-fp8 : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-linear-fast-fp8 (x) (w) (b) (y) (mm) (nn) (kk) (k) (s) = lf8-linear x w b y mm nn kk k s 0
@@ -468,8 +484,12 @@ Section: Linear, Pipelined
    z6 <- if k == 0 then wmma-fill-f32 6 else 0
    z7 <- if k == 0 then wmma-fill-f32 7 else 0
    l0 <- if k == 0 then lf8-lut (base + 38912) tid else 0
-   p0 <- if k == 0 then lf8-stage base (base + 30720) x w mm nn kk (by * 128) (bx * 128) 0 tid else 0
-   p1 <- if k + 32 < kk then lf8-stage (base + (1 - s) * 10240) (base + 30720 + (1 - s) * 4096) x w mm nn kk (by * 128) (bx * 128) (k + 32) tid else 0
+   p0 <- if k == 0 then
+     lf8-stage base (base + 30720) x w mm nn kk (by * 128) (bx * 128) 0 tid
+   else 0
+   p1 <- if k + 32 < kk then
+     lf8-stage (base + (1 - s) * 10240) (base + 30720 + (1 - s) * 4096) x w mm nn kk (by * 128) (bx * 128) (k + 32) tid
+   else 0
    wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
    b1 <- sync-threads
    cv <- lf8-convert (base + 30720 + s * 4096) (base + 20480) (base + 38912) tid 0
@@ -576,7 +596,9 @@ Section: Linear, Pipelined
    z6 <- if k == 0 then wmma-fill-f32 6 else 0
    z7 <- if k == 0 then wmma-fill-f32 7 else 0
    p0 <- if k == 0 then lf-stage-n64 base x w mm nn kk (by * 128) (bx * 64) 0 tid else 0
-   p1 <- if k + 32 < kk then lf-stage-n64 (base + (1 - s) * 15360) x w mm nn kk (by * 128) (bx * 64) (k + 32) tid else 0
+   p1 <- if k + 32 < kk then
+     lf-stage-n64 (base + (1 - s) * 15360) x w mm nn kk (by * 128) (bx * 64) (k + 32) tid
+   else 0
    wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
    b1 <- sync-threads
    ab <- base + s * 15360 + wm * 32 * 80
@@ -665,15 +687,17 @@ Section: Conv2d, Pipelined
 
   cf-load-cols : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   cf-load-cols (dst) (xh) (cin) (h) (wd) (iy0) (ix0) (ky) (kx) (ci) (c) =
-   let row = c / 4
-   in let kc = (c - row * 4) * 8
-   in let iy = iy0 + ky
-   in let ix = ix0 + kx
-   in let ok = if iy >= 0 then (if iy < h then (if ix >= 0 then (if ix < wd then 16 else 0) else 0) else 0) else 0
-   in let from = if ok > 0 then xh + ((iy * wd + ix) * cin + ci + kc) * 2 else xh
-   in act
-    cp-async-16 (dst + row * 80 + kc * 2) from ok
-   end
+    let row = c / 4
+    in let kc = (c - row * 4) * 8
+    in let iy = iy0 + ky
+    in let ix = ix0 + kx
+    in let ok = if iy >= 0 then
+      (if iy < h then (if ix >= 0 then (if ix < wd then 16 else 0) else 0) else 0)
+    else 0
+    in let from = if ok > 0 then xh + ((iy * wd + ix) * cin + ci + kc) * 2 else xh
+    in act
+     cp-async-16 (dst + row * 80 + kc * 2) from ok
+    end
 
   cf-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   cf-stage (buf) (xh) (wp) (cout) (kk) (cin) (h) (wd) (row0) (k0) (t) (ky) (kx) (ci) (ya) (xa) (yb) (xb) = act
@@ -686,15 +710,17 @@ Section: Conv2d, Pipelined
 
   cf-out : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   cf-out (st) (y) (b) (mm) (nn) (r0) (c0) (lane) (q) =
-   if q >= 8 then 0
-   else let e = lane + q * 32
-   in let m = r0 + e / 16
-   in let n = c0 + e - (e / 16) * 16
-   in act
-    v <- shared-load-u32 (st + e * 4)
-    s <- if m < mm then (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + m * 4)))) else 0) else 0
-    cf-out st y b mm nn r0 c0 lane (q + 1)
-   end
+    if q >= 8 then 0
+    else let e = lane + q * 32
+    in let m = r0 + e / 16
+    in let n = c0 + e - (e / 16) * 16
+    in act
+     v <- shared-load-u32 (st + e * 4)
+     s <- if m < mm then
+       (if n < nn then (if b == 0 then device-store-u32 (y + (m * nn + n) * 4) v else device-store-u32 (y + (m * nn + n) * 4) (f32-add-bits v (device-load-u32 (b + m * 4)))) else 0)
+     else 0
+     cf-out st y b mm nn r0 c0 lane (q + 1)
+    end
 
   kernel-conv2d-fast : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-conv2d-fast (xh) (wp) (b) (y) (cin) (h) (wd) (cout) (kh) (kw) (stride) (pad) (oh) (ow) (k) (s) (ky) (kx) (ci) (ya) (xa) (yb) (xb) = act
@@ -722,8 +748,12 @@ Section: Conv2d, Pipelined
    z5 <- if k == 0 then wmma-fill-f32 5 else 0
    z6 <- if k == 0 then wmma-fill-f32 6 else 0
    z7 <- if k == 0 then wmma-fill-f32 7 else 0
-   p0 <- if k == 0 then cf-stage base xh wp cout kk cin h wd (by * 128) 0 tid 0 0 0 ya2 xa2 yb2 xb2 else 0
-   p1 <- if k + 32 < kk then cf-stage (base + (1 - s) * 20480) xh wp cout kk cin h wd (by * 128) (k + 32) tid ky1 kx1 ci1 ya2 xa2 yb2 xb2 else 0
+   p0 <- if k == 0 then
+     cf-stage base xh wp cout kk cin h wd (by * 128) 0 tid 0 0 0 ya2 xa2 yb2 xb2
+   else 0
+   p1 <- if k + 32 < kk then
+     cf-stage (base + (1 - s) * 20480) xh wp cout kk cin h wd (by * 128) (k + 32) tid ky1 kx1 ci1 ya2 xa2 yb2 xb2
+   else 0
    wt <- if k + 32 < kk then cp-async-wait-one else cp-async-wait-all
    b1 <- sync-threads
    ab <- base + s * 20480 + wm * 32 * 80
@@ -757,7 +787,8 @@ Section: Conv2d, Pipelined
    n6 <- wmma-mma-rc-f32 6 1 2
    n7 <- wmma-mma-rc-f32 7 1 3
    b2 <- sync-threads
-   if k + 32 < kk then kernel-conv2d-fast xh wp b y cin h wd cout kh kw stride pad oh ow (k + 32) (1 - s) (if ci1 + 32 >= cin then (if kx1 + 1 >= kw then ky1 + 1 else ky1) else ky1) (if ci1 + 32 >= cin then (if kx1 + 1 >= kw then 0 else kx1 + 1) else kx1) (if ci1 + 32 >= cin then 0 else ci1 + 32) ya2 xa2 yb2 xb2
+   if k + 32 < kk then
+     kernel-conv2d-fast xh wp b y cin h wd cout kh kw stride pad oh ow (k + 32) (1 - s) (if ci1 + 32 >= cin then (if kx1 + 1 >= kw then ky1 + 1 else ky1) else ky1) (if ci1 + 32 >= cin then (if kx1 + 1 >= kw then 0 else kx1 + 1) else kx1) (if ci1 + 32 >= cin then 0 else ci1 + 32) ya2 xa2 yb2 xb2
    else act
     st <- base + (tid / 32) * 1024
     lane <- tid - (tid / 32) * 32
@@ -808,26 +839,30 @@ Section: Conv2d, Pipelined
 
   nt-load : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   nt-load (sb) (x) (c) (hw) (c0) (p0) (t) (j) =
-   if j >= 4 then 0
-   else let r = t / 32 + j * 8
-   in let q = t - (t / 32) * 32
-   in act
-    v <- if c0 + r < c then (if p0 + q < hw then device-load-u16 (x + ((c0 + r) * hw + p0 + q) * 2) else 0) else 0
-    s <- shared-store-u16 (sb + (r * 34 + q) * 2) v
-    nt-load sb x c hw c0 p0 t (j + 1)
-   end
+    if j >= 4 then 0
+    else let r = t / 32 + j * 8
+    in let q = t - (t / 32) * 32
+    in act
+     v <- if c0 + r < c then
+       (if p0 + q < hw then device-load-u16 (x + ((c0 + r) * hw + p0 + q) * 2) else 0)
+     else 0
+     s <- shared-store-u16 (sb + (r * 34 + q) * 2) v
+     nt-load sb x c hw c0 p0 t (j + 1)
+    end
 
   nt-store : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   nt-store (sb) (out) (c) (hw) (c0) (p0) (t) (j) =
-   if j >= 4 then 0
-   else let r = t / 32 + j * 8
-   in let q = t - (t / 32) * 32
-   in let e = q * 34 + r
-   in act
-    w <- shared-load-u32 (sb + (e / 2) * 4)
-    s <- if p0 + r < hw then (if c0 + q < c then device-store-u16 (out + ((p0 + r) * c + c0 + q) * 2) (if e - (e / 2) * 2 == 0 then w - (w / 65536) * 65536 else w / 65536) else 0) else 0
-    nt-store sb out c hw c0 p0 t (j + 1)
-   end
+    if j >= 4 then 0
+    else let r = t / 32 + j * 8
+    in let q = t - (t / 32) * 32
+    in let e = q * 34 + r
+    in act
+     w <- shared-load-u32 (sb + (e / 2) * 4)
+     s <- if p0 + r < hw then
+       (if c0 + q < c then device-store-u16 (out + ((p0 + r) * c + c0 + q) * 2) (if e - (e / 2) * 2 == 0 then w - (w / 65536) * 65536 else w / 65536) else 0)
+     else 0
+     nt-store sb out c hw c0 p0 t (j + 1)
+    end
 
   kernel-nchw-to-nhwc : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-nchw-to-nhwc (x) (out) (c) (hw) (n) = act
@@ -871,51 +906,51 @@ Section: Fused Attention
 
   fa-stage-rows : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   fa-stage-rows (dst) (src) (rows) (ld) (col) (row0) (t) (step) (j) =
-   if j >= 4 then 0
-   else let c = t + j * step
-   in let row = c / 8
-   in let part = c - row * 8
-   in let ok = if row0 + row < rows then 16 else 0
-   in let from = if ok > 0 then src + ((row0 + row) * ld + col + part * 8) * 2 else src
-   in act
-    s <- cp-async-16 (dst + row * 144 + part * 16) from ok
-    fa-stage-rows dst src rows ld col row0 t step (j + 1)
-   end
+    if j >= 4 then 0
+    else let c = t + j * step
+    in let row = c / 8
+    in let part = c - row * 8
+    in let ok = if row0 + row < rows then 16 else 0
+    in let from = if ok > 0 then src + ((row0 + row) * ld + col + part * 8) * 2 else src
+    in act
+     s <- cp-async-16 (dst + row * 144 + part * 16) from ok
+     fa-stage-rows dst src rows ld col row0 t step (j + 1)
+    end
 
   fa-max : Integer, Integer, Integer, Integer -> [Device] Integer
   fa-max (row) (i) (n) (acc) =
-   if i >= n then acc
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    fa-max row (i + 1) n (f32-max-bits acc v)
-   end
+    if i >= n then acc
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     fa-max row (i + 1) n (f32-max-bits acc v)
+    end
 
   fa-expsum : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   fa-expsum (row) (i) (n) (m) (acc) =
-   if i >= n then acc
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    fa-expsum row (i + 1) n m (f32-add-bits acc (f32-ex2-bits (f32-sub-bits v m)))
-   end
+    if i >= n then acc
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     fa-expsum row (i + 1) n m (f32-add-bits acc (f32-ex2-bits (f32-sub-bits v m)))
+    end
 
   fa-probs : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   fa-probs (row) (prow) (i) (n) (m) =
-   if i >= 32 then 0
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    p <- if i < n then f32-to-f16-bits (f32-ex2-bits (f32-sub-bits v m)) else 0
-    s <- shared-store-u16 (prow + i * 2) p
-    fa-probs row prow (i + 1) n m
-   end
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     p <- if i < n then f32-to-f16-bits (f32-ex2-bits (f32-sub-bits v m)) else 0
+     s <- shared-store-u16 (prow + i * 2) p
+     fa-probs row prow (i + 1) n m
+    end
 
   fa-out : Integer, Integer, Integer -> [Device] Integer
   fa-out (row) (dst) (i) =
-   if i >= 32 then 0
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    s <- device-store-u32 (dst + i * 4) v
-    fa-out row dst (i + 1)
-   end
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     s <- device-store-u32 (dst + i * 4) v
+     fa-out row dst (i + 1)
+    end
 
   kernel-attention-fused : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-attention-fused (q) (k) (v) (o) (sq) (sk) (ld) = fa-run q k v o sq sk ld 0 0 #FF800000 0
@@ -1004,7 +1039,9 @@ Section: Fused Attention
    x2 <- if pass == 0 then shared-store-u32 (pb + 128 + lane * 4) ps else 0
    y3 <- sync-warp
    pp <- shared-load-u32 (pb + 128 + (lane + 1 - hh * 2) * 4)
-   ln <- if pass == 0 then f32-add-bits (f32-mul-bits l (f32-ex2-bits (f32-sub-bits m mn))) (f32-add-bits ps pp) else l
+   ln <- if pass == 0 then
+     f32-add-bits (f32-mul-bits l (f32-ex2-bits (f32-sub-bits m mn))) (f32-add-bits ps pp)
+   else l
    pw <- if pass == 1 then fa-probs srow (pb + r * 144 + hh * 64) 0 nv m else 0
    y4 <- sync-warp
    pa0 <- if pass == 1 then wmma-load-a-f16-shared 4 pb 72 else 0
@@ -1073,44 +1110,44 @@ Section: Fused Attention
 
   fb-stage : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   fb-stage (dst) (src) (rows) (ld) (col) (row0) (t) (step) (count) (cpr) (stride) (j) =
-   if j >= count then 0
-   else let c = t + j * step
-   in let row = c / cpr
-   in let part = c - row * cpr
-   in let ok = if row0 + row < rows then 16 else 0
-   in let from = if ok > 0 then src + ((row0 + row) * ld + col + part * 8) * 2 else src
-   in act
-    s <- cp-async-16 (dst + row * stride + part * 16) from ok
-    fb-stage dst src rows ld col row0 t step count cpr stride (j + 1)
-   end
+    if j >= count then 0
+    else let c = t + j * step
+    in let row = c / cpr
+    in let part = c - row * cpr
+    in let ok = if row0 + row < rows then 16 else 0
+    in let from = if ok > 0 then src + ((row0 + row) * ld + col + part * 8) * 2 else src
+    in act
+     s <- cp-async-16 (dst + row * stride + part * 16) from ok
+     fb-stage dst src rows ld col row0 t step count cpr stride (j + 1)
+    end
 
   fc-probs : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   fc-probs (row) (prow) (i) (n) (m) (acc) =
-   if i >= 16 then acc
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    e <- if i < n then f32-ex2-bits (f32-sub-bits v m) else 0
-    s <- shared-store-u16 (prow + i * 2) (f32-to-f16-bits e)
-    fc-probs row prow (i + 1) n m (f32-add-bits acc e)
-   end
+    if i >= 16 then acc
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     e <- if i < n then f32-ex2-bits (f32-sub-bits v m) else 0
+     s <- shared-store-u16 (prow + i * 2) (f32-to-f16-bits e)
+     fc-probs row prow (i + 1) n m (f32-add-bits acc e)
+    end
 
   fc-scale : Integer, Integer, Integer -> [Device] Integer
   fc-scale (row) (i) (al) =
-   if i >= 32 then 0
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    s <- shared-store-u32 (row + i * 4) (f32-mul-bits v al)
-    fc-scale row (i + 1) al
-   end
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     s <- shared-store-u32 (row + i * 4) (f32-mul-bits v al)
+     fc-scale row (i + 1) al
+    end
 
   fc-out : Integer, Integer, Integer, Integer -> [Device] Integer
   fc-out (row) (dst) (i) (inv) =
-   if i >= 32 then 0
-   else act
-    v <- shared-load-u32 (row + i * 4)
-    s <- device-store-u32 (dst + i * 4) (f32-mul-bits v inv)
-    fc-out row dst (i + 1) inv
-   end
+    if i >= 32 then 0
+    else act
+     v <- shared-load-u32 (row + i * 4)
+     s <- device-store-u32 (dst + i * 4) (f32-mul-bits v inv)
+     fc-out row dst (i + 1) inv
+    end
 
  A row's running max moves only when the tile's max passes it by more than 8
  (#41000000, 8.0 in f32), so p stays at most 2^8 in f16 and the output tile
@@ -1254,7 +1291,9 @@ Section: Fused Attention
     f7 <- wmma-store-f32-shared 7 (wb + 192) 68
     y7 <- sync-warp
     inv <- f32-ex2-bits (f32-sub-bits 0 (f32-lg2-bits ln))
-    if q0 + r < sq then fc-out (wb + r * 272 + hh * 128) (o + ((q0 + r) * ld + col + half * 64 + hh * 32) * 4) 0 inv else 0
+    if q0 + r < sq then
+      fc-out (wb + r * 272 + hh * 128) (o + ((q0 + r) * ld + col + half * 64 + hh * 32) * 4) 0 inv
+    else 0
    end
   end
 

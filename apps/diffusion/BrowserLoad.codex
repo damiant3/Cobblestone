@@ -1,0 +1,226 @@
+Chapter: BrowserLoad
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGpu
+  cites AI chapter SafeTensors
+  cites AI chapter ClipBpe
+  cites Diffusion chapter CheckpointLayout
+  cites Diffusion chapter BrowserClip
+  cites Diffusion chapter BrowserUNet
+  cites Diffusion chapter BrowserVae
+  cites Diffusion chapter BrowserTxt2Img
+
+Section: Bytes Across The Boundary
+
+ "[b,b,...]" in one pass, each number pushed in place: text-split's
+ list append copies the list per piece in the page's JavaScript, which made a
+ 312 KB header take 115 s.
+
+  bl-list : Text -> List Integer
+  bl-list (t) = if text-length t < 3 then [] else bl-scan t 1 (text-length t - 1) (char-code-at "0" 0) (char-code-at "-" 0) 0 False False []
+
+  bl-scan : Text, Integer, Integer, Integer, Integer, Integer, Boolean, Boolean, List Integer -> List Integer
+  bl-scan (t) (i) (stop) (zero) (minus) (n) (neg) (inside) (acc) =
+    if i >= stop then (if inside then list-push acc (if neg then 0 - n else n) else acc)
+    else let c = char-code-at t i
+    in if c >= zero & c <= zero + 9 then bl-scan t (i + 1) stop zero minus (n * 10 + c - zero) neg True acc
+    else if c == minus then bl-scan t (i + 1) stop zero minus n True True acc
+    else if inside then bl-scan t (i + 1) stop zero minus 0 False False (list-push acc (if neg then 0 - n else n))
+    else bl-scan t (i + 1) stop zero minus 0 False False acc
+
+  bl-join : List Integer, Integer, Text -> Text
+  bl-join (xs) (i) (acc) = if i >= list-length xs then acc else bl-join xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  bl-poke : Integer, List Integer, Integer -> Integer
+  bl-poke (a) (bs) (i) =
+    if i >= list-length bs then a
+    else let p = poke-byte a i (list-at bs i)
+    in bl-poke a bs (i + 1)
+
+  bl-heap : List Integer -> Integer
+  bl-heap (bs) = bl-poke (alloc-bytes (list-length bs + 8)) bs 0
+
+Section: Classifying A File
+
+  bl-sd15 : Text -> Boolean
+  bl-sd15 (h) =
+    let f = st-parse-file (bl-list h)
+    in f.st-valid & bl-parts-bound ((layout-bind f sd15-layout).lb-parts) 0
+
+  bl-parts-bound : List PartBinding, Integer -> Boolean
+  bl-parts-bound (ps) (i) =
+    if i >= list-length ps then True
+    else let p = list-at ps i
+    in if list-length (p.pb-missing) > 0 | list-length (p.pb-misshapen) > 0 | list-length (p.pb-bound) == 0 then False
+    else bl-parts-bound ps (i + 1)
+
+  bl-classify-then : Text, (Boolean -> Integer) -> Integer
+  bl-classify-then (name) (k) = file-read-then name 0 8 (\r -> bl-classify-len name r k)
+
+  bl-classify-len : Text, Text, (Boolean -> Integer) -> Integer
+  bl-classify-len (name) (r) (k) =
+    let bs = bl-list r
+    in let n = if list-length bs < 8 then 0 else st-read-u64 bs 0
+    in if n <= 0 | n > 100000000 then k False
+    else file-read-then name 0 (8 + n) (\h -> k (bl-sd15 h))
+
+  bl-family : Text -> Text
+  bl-family (header) =
+    let f = st-parse-file (bl-list header)
+    in if f.st-valid == False then ""
+    else if bl-parts-bound ((layout-bind f sd15-layout).lb-parts) 0 then "SD1.5"
+    else if bl-parts-bound ((layout-bind f sdxl-layout).lb-parts) 0 then "SDXL"
+    else ""
+
+  bl-family-then : Text, (Text -> Integer) -> Integer
+  bl-family-then (name) (k) = file-read-then name 0 8 (\r -> bl-family-len name r k)
+
+  bl-family-len : Text, Text, (Text -> Integer) -> Integer
+  bl-family-len (name) (r) (k) =
+    let bytes = bl-list r
+    in let n = if list-length bytes /= 8 then 0 else st-read-u64 bytes 0
+    in if n <= 0 | n > 16777216 then k ""
+    else file-read-then name 0 (8 + n) (\h -> k (bl-family h))
+
+Section: Loading A Checkpoint
+
+  bl-adapter : Text
+  bl-adapter = state-get-text "bl-adapter"
+
+  bl-load-then : Text, (Integer, Integer -> Integer), (Text -> Integer), (BrowserModel -> Integer) -> Integer
+  bl-load-then (name) (say) (refuse) (done) =
+    bl-load-patched-then name (\t h next -> next "") say refuse done
+
+  bl-load-patched-then : Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (Integer, Integer -> Integer), (Text -> Integer), (BrowserModel -> Integer) -> Integer
+  bl-load-patched-then (name) (patch) (say) (refuse) (done) =
+    let f = state-set-text "bl-file" name
+    in let w = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0
+    in if state-get "bl-gpu" == 1 then bl-opened "{\"ok\":true}" patch say refuse done
+    else gpu-open-then (\r -> bl-opened r patch say refuse done)
+
+  bl-free-weights : List Integer, Integer -> Integer
+  bl-free-weights (hs) (i) =
+    if i >= list-length hs then bl-weights-cleared
+    else let f = if list-at hs i > 0 then gpu-buf-free (list-at hs i) else False
+    in bl-free-weights hs (i + 1)
+
+  bl-weights-cleared : Integer
+  bl-weights-cleared =
+    let t = state-set-text "bl-weights" ""
+    in 0
+
+  bl-opened : Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (Integer, Integer -> Integer), (Text -> Integer), (BrowserModel -> Integer) -> Integer
+  bl-opened (r) (patch) (say) (refuse) (done) =
+    if text-contains r "\"ok\":true" then (let g = state-set "bl-gpu" 1 in let ad = (if bl-adapter == "" then state-set-text "bl-adapter" (json-obj-field (json-parse-obj r) "adapter") else "") in file-read-then (state-get-text "bl-file") 0 8 (\l -> bl-got-len l patch say refuse done))
+    else refuse "WebGPU is not available in this browser."
+
+  bl-got-len : Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (Integer, Integer -> Integer), (Text -> Integer), (BrowserModel -> Integer) -> Integer
+  bl-got-len (r) (patch) (say) (refuse) (done) =
+    let bytes = bl-list r
+    in let n = if list-length bytes == 8 then st-read-u64 bytes 0 else 0
+    in if n <= 0 | n > 16777216 then refuse "SD1.5 checkpoint header length is invalid"
+    else file-read-then (state-get-text "bl-file") 0 (8 + n) (\h -> bl-got-header h patch say refuse done)
+
+  bl-part : List PartBinding, Integer, Text -> List BoundTensor
+  bl-part (parts) (i) (name) =
+    if i >= list-length parts then []
+    else if (list-at parts i).pb-name == name then (list-at parts i).pb-bound
+    else bl-part parts (i + 1) name
+
+  bl-vae : List BoundTensor, Integer, List BoundTensor -> List BoundTensor
+  bl-vae (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else let n = (list-at ts i).bt-name
+    in bl-vae ts (i + 1) (if text-starts-with n "first_stage_model.decoder." | text-starts-with n "first_stage_model.post_quant_conv." then list-snoc acc (list-at ts i) else acc)
+
+  bl-got-header : Text, (BoundTensor, Integer, (Text -> Integer) -> Integer), (Integer, Integer -> Integer), (Text -> Integer), (BrowserModel -> Integer) -> Integer
+  bl-got-header (r) (patch) (say) (refuse) (done) =
+    let lb = layout-bind (st-parse-file (bl-list r)) sd15-layout
+    in let clip = bl-part (lb.lb-parts) 0 "clip-l"
+    in let unet = bl-part (lb.lb-parts) 0 "unet"
+    in let vae = bl-vae (bl-part (lb.lb-parts) 0 "vae") 0 []
+    in let total = list-length clip + list-length unet + list-length vae
+    in if bl-parts-bound (lb.lb-parts) 0 == False then refuse "This file is not a complete SD1.5 checkpoint."
+    else bl-upload clip 0 "" [] [] 0 total patch say refuse (\cn ch d1 -> bl-upload unet 0 "model.diffusion_model." [] [] d1 total patch say (\why -> (let f = bl-free-weights ch 0 in refuse why)) (\un uh d2 -> bl-upload vae 0 "first_stage_model." [] [] d2 total patch say (\why -> (let f = bl-free-weights (ch & uh) 0 in refuse why)) (\vn vh d3 -> bl-loaded cn ch un uh vn vh done)))
+
+  bl-dt : Integer -> Integer
+  bl-dt (d) = if d == st-dtype-f16 then gpu-dt-f16 else if d == st-dtype-f32 then gpu-dt-f32 else 0 - 1
+
+  bl-short : Text, Text -> Text
+  bl-short (prefix) (n) = substring n (text-length prefix) (text-length n - text-length prefix)
+
+  bl-upload : List BoundTensor, Integer, Text, List Text, List Integer, Integer, Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer), (Integer, Integer -> Integer), (Text -> Integer), (List Text, List Integer, Integer -> Integer) -> Integer
+  bl-upload (ts) (i) (prefix) (ns) (hs) (done) (total) (patch) (say) (refuse) (next) =
+    if i >= list-length ts then next ns hs done
+    else let t = list-at ts i
+    in let dt = bl-dt (t.bt-dtype)
+    in let elems = t.bt-bytes / st-dtype-width (t.bt-dtype)
+    in let h = if dt < 0 then 0 else gpu-buf-alloc (if bt-half t then (elems + 1) / 2 * 4 else elems * 4)
+    in let ns2 = list-snoc ns (bl-short prefix (t.bt-name))
+    in let s = if done - done / 25 * 25 == 0 then say done total else 0
+    in if h == 0 then (let f = bl-free-weights hs 0 in refuse "Unsupported tensor dtype or GPU weight allocation refused.")
+    else gpu-buf-upload-then h 0 (state-get-text "bl-file") (t.bt-offset) elems dt (if bt-half t then gpu-dt-f16 else gpu-dt-f32) (\r ->
+      if text-contains r "\"ok\":true" == False then (let f = bl-free-weights (list-snoc hs h) 0 in refuse ("Weight upload failed: " & r))
+      else patch t h (\why -> if why /= "" then (let f = bl-free-weights (list-snoc hs h) 0 in refuse why)
+        else bl-upload ts (i + 1) prefix ns2 (list-snoc hs h) (done + 1) total patch say refuse next))
+
+  bl-loaded : List Text, List Integer, List Text, List Integer, List Text, List Integer, (BrowserModel -> Integer) -> Integer
+  bl-loaded (cn) (ch) (un) (uh) (vn) (vh) (done) =
+    let m = BrowserModel { bm-code = page-data "bk", bm-clip = browser-clip-weights bc-l15-spec cn ch, bm-unet = BuWeights { bu-names = un, bu-handles = uh }, bm-vae = BvWeights { bw-names = vn, bw-handles = vh } }
+    in let w = state-set-text "bl-weights" (bl-join (ch & uh & vh) 0 "")
+    in done m
+
+Section: The Tokenizer
+
+  bl-bpe-of : List Integer, List Integer -> ClipBpe
+  bl-bpe-of (vb) (mb) = clip-bpe-load (bl-heap vb) (list-length vb) (bl-heap mb) (list-length mb)
+
+ A tokenizer over CLIP's files is about 4.7 MB of page heap, which nothing
+ reclaims, so a page builds one per pair of tokenizer files and every model
+ load reuses it.
+
+  bl-bpe-kept : Integer -> ClipBpe
+  bl-bpe-kept (z) = ClipBpe { cb-status = 0, cb-vocab-count = state-get "bpe-vocab-count", cb-merge-count = state-get "bpe-merge-count", cb-arena = state-get "bpe-arena", cb-dir = state-get "bpe-dir", cb-str-slots = state-get "bpe-str-slots", cb-pair-slots = state-get "bpe-pair-slots", cb-byte-ids = state-get "bpe-byte-ids", cb-u2b = state-get "bpe-u2b", cb-cell = state-get "bpe-cell", cb-scratch = state-get "bpe-scratch" }
+
+  bl-bpe-keep : Text, ClipBpe -> ClipBpe
+  bl-bpe-keep (key) (t) =
+    if t.cb-status /= 0 then t
+    else let a = state-set "bpe-vocab-count" (t.cb-vocab-count)
+    in let b = state-set "bpe-merge-count" (t.cb-merge-count)
+    in let c = state-set "bpe-arena" (t.cb-arena)
+    in let d = state-set "bpe-dir" (t.cb-dir)
+    in let e = state-set "bpe-str-slots" (t.cb-str-slots)
+    in let f = state-set "bpe-pair-slots" (t.cb-pair-slots)
+    in let g = state-set "bpe-byte-ids" (t.cb-byte-ids)
+    in let h = state-set "bpe-u2b" (t.cb-u2b)
+    in let i = state-set "bpe-cell" (t.cb-cell)
+    in let j = state-set "bpe-scratch" (t.cb-scratch)
+    in let kept = state-set-text "bpe-key" key
+    in t
+
+  bl-bpe-then : Text, Text, (Text -> Integer), (ClipBpe -> Integer) -> Integer
+  bl-bpe-then (vocab-file) (merges-file) (refuse) (k) =
+    let key = if text-length (page-data "vocab") > 2 then "page-data" else vocab-file & " " & merges-file
+    in if state-get-text "bpe-key" == key then k (bl-bpe-kept 0)
+    else if text-length (page-data "vocab") > 2 then k (bl-bpe-keep key (bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))))
+    else if vocab-file == "" | merges-file == "" then refuse "No CLIP tokenizer in the models folder: put vocab.json and merges.txt in tokenizers/clip (the setup page's step 5)."
+    else file-read-then vocab-file 0 100000000 (\v -> file-read-then merges-file 0 100000000 (\mg -> k (bl-bpe-keep key (bl-bpe-of (bl-list v) (bl-list mg)))))
+
+Section: Generating
+
+  bl-digits : Text -> Integer
+  bl-digits (t) = if text-length t == 0 then 0 else text-to-integer t
+
+  bl-real : Text -> Real
+  bl-real (t) =
+    let parts = text-split t "."
+    in let whole = real-from-int (bl-digits (list-at parts 0))
+    in if list-length parts < 2 then whole
+    else let f = list-at parts 1
+    in whole + real-from-int (bl-digits f) / bl-pow10 (text-length f) 1.0
+
+  bl-pow10 : Integer, Real -> Real
+  bl-pow10 (k) (acc) = if k <= 0 then acc else bl-pow10 (k - 1) (acc * 10.0)
+
+  bl-run : BrowserModel, ClipBpe, Text, Text, Text, Text, Text, (Text -> Integer), (Integer, Text -> Integer) -> Integer
+  bl-run (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (log) (made) =
+    browser-txt2img-timed m bpe prompt negative (bl-digits seed) (bl-digits steps) (bl-real cfg) 512 512 log made

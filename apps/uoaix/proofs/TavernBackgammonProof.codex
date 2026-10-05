@@ -1,0 +1,209 @@
+Chapter: TavernBackgammonProof
+  cites Uoaix chapter TavernBackgammon
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Foreword chapter Result
+
+  tbp-check : Text, Boolean -> [Console] Integer
+  tbp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  tbp-patron : Integer, Integer, Boolean -> TbPatron
+  tbp-patron (id) (purse) (npc) = TbPatron { identity = id, purse = purse, npc = npc,
+    skill = 900, drink = 0, appetite = 1000, wager-limit = 100 }
+  tbp-points : BackgammonBoard, BackgammonBoard, Integer -> Boolean
+  tbp-points (a) (b) (i) = if i == 24 then True else list-at a.points i == list-at b.points i & tbp-points a b (i + 1)
+  tbp-position : BackgammonBoard, BackgammonBoard -> Boolean
+  tbp-position (a) (b) = tbp-points a b 0 & a.bar-white == b.bar-white & a.bar-black == b.bar-black
+    & a.off-white == b.off-white & a.off-black == b.off-black
+  tbp-human : TbTable -> Integer
+  tbp-human (t) = let player = (list-at t.players t.board.current-player).identity
+    in if t.state == 1 & t.board.offered == 1 then tb-answer t (list-at t.players (1 - t.board.current-player)).identity True True
+    else if t.state == 1 then tb-roll t player True
+    else let dice = tb-dice-list t 0 []
+    in let move = bg-ai-pick t.board dice
+    in if move < 0 then tb-pass t player True else tb-move t player (bit-and move 31) (bit-shru move 5) True
+  tbp-step : TbTable -> Boolean
+  tbp-step (t) = let old = bg-clone t.board
+    in let dice = tb-dice-list t 0 []
+    in let count = t.event-count
+    in let seat = if t.board.offered == 1 then 1 - t.board.current-player else t.board.current-player
+    in let result = if t.state == 3 then tb-settle t else if (list-at t.players seat).npc then tb-npc t else tbp-human t
+    in if result /= 0 | t.event-count /= count + 1 then False
+    else let at = count * 48
+    in let kind = peek-qword t.events (at + 8)
+    in let a = peek-qword t.events (at + 24)
+    in let b = peek-qword t.events (at + 32)
+    in if kind == 3 then bg-legal old dice a b & tbp-position (bg-play old dice a b) t.board
+      & t.board.current-player == (if t.state == 1 then 1 - old.current-player else old.current-player)
+    else if kind == 2 then a >= 1 & a <= 6 & b >= 1 & b <= 6 & tbp-position old t.board
+      & (if t.state == 1 then t.turn == 0 & a == b else t.dice-count == (if a == b then 4 else 2)
+        & list-at t.dice 0 == a & list-at t.dice 1 == b)
+    else if kind == 5 then t.board.offered == 1 & tbp-position old t.board
+    else if kind == 6 then t.board.cube == old.cube * 2 & t.board.offered == 0 & t.board.cube-owner == 1 - old.current-player
+    else if kind == 7 then bg-winner t.board == old.current-player & bg-points t.board == old.cube
+    else if kind == 4 then bg-max-use old dice 24 == 0 & tbp-position old t.board
+    else kind == 8 & t.state == 4
+  tbp-game : TbTable, Integer -> Boolean
+  tbp-game (t) (left) = if t.state == 4 then True else if left == 0 then False
+    else let mark = __heap-save
+    in let valid = tbp-step t
+    in let restored = __heap-restore mark
+    in valid & tbp-game t (left - 1)
+  tbp-ready : TbTable, Integer -> Boolean
+  tbp-ready (t) (left) = if t.turn > 0 & t.state == 1 & t.board.offered == 0 then True else if left == 0 then False
+    else let mark = __heap-save
+    in let valid = tbp-step t
+    in let restored = __heap-restore mark
+    in valid & tbp-ready t (left - 1)
+  tbp-start : TbTable, Integer -> Boolean
+  tbp-start (t) (left) = if t.state == 2 then True else if left == 0 then False
+    else let mark = __heap-save
+    in let valid = tbp-step t
+    in let restored = __heap-restore mark
+    in valid & tbp-start t (left - 1)
+  tbp-retry : TbTable -> Boolean
+  tbp-retry (t) =
+    let accepted = tb-accept t 202 True True
+    in let ready = tbp-ready t 32
+    in let principal = (list-at t.players t.board.current-player).identity
+    in let other = (list-at t.players (1 - t.board.current-player)).identity
+    in let offered = tb-double t principal True
+    in let wrong = tb-answer t principal False True
+    in let dropped = tb-answer t other False True
+    in let before = t.currency.count
+    in let logs = t.event-count
+    in let exhausted = __record-set t.currency "count" em-rows
+    in let refused = tb-settle t
+    in let pending = t.state == 3 & t.event-count == logs & t.paid == 0
+    in let restored = __record-set t.currency "count" before
+    in let paid = tb-settle t
+    in let replay = tb-settle t
+    in accepted == 0 & ready & offered == 0 & wrong == -1 & dropped == 0 & bg-result-kind t.board == 1
+      & refused == -1 & pending & paid == 0 & replay == -1 & t.currency.count == before + 1 & t.payout == t.stake
+  tbp-drunk : EuCurrency -> Boolean
+  tbp-drunk (x) =
+    let one = tbp-patron 101 3 False
+    in let two = tbp-patron 202 4 True
+    in when tb-new x one two 1 1 42 True
+      is Err (e) -> False
+      is Ok (probe) -> let choice = int-mod (tb-random probe) 1000
+        in let appetite = __record-set two "appetite" choice
+        in when tb-new x one two 1 1 42 True
+          is Err (e) -> False
+          is Ok (sober) -> let refused = tb-accept sober 202 True True
+            in let drunk = __record-set two "drink" 1000
+            in when tb-new x one two 1 1 42 True
+              is Err (e) -> False
+              is Ok (drinking) -> let accepted = tb-accept drinking 202 True True
+                in let weaker = tb-strength (list-at drinking.players 1) < tb-strength (list-at sober.players 1)
+                in let advanced = tb-hour drinking (drinking.hour + 40)
+                in let dried = (list-at drinking.players 1).drink == 0
+                in let served = tb-drink drinking 202 True
+                in let denied = tb-drink drinking 202 False
+                in refused == 1 & sober.state == 5 & accepted == 0 & weaker & advanced == 0 & dried
+                  & served == 0 & denied == -1 & (list-at drinking.players 1).drink == 200
+  tbp-decline : EuCurrency -> Boolean
+  tbp-decline (x) =
+    let one = tbp-patron 101 3 False
+    in let purse = eu-open x 2 999
+    in let two = tbp-patron 303 purse False
+    in when tb-new x one two 1 1 8 True
+      is Err (e) -> False
+      is Ok (t) -> let events = x.count
+        in let wrong = tb-decline t 101 True
+        in let denied = tb-decline t 303 False
+        in let declined = tb-decline t 303 True
+        in wrong == -1 & denied == -1 & declined == 0 & t.state == 5 & x.count == events
+          & t.event-count == 1 & peek-qword t.events 8 == 9 & tb-accept t 303 True True == -1
+  tbp-human-ready : TbTable, Integer -> Boolean
+  tbp-human-ready (t) (left) = if t.turn > 0 & t.state == 1 & t.board.offered == 0 & t.board.current-player == 0 then True
+    else if left == 0 then False else let mark = __heap-save
+    in let valid = tbp-step t
+    in let restored = __heap-restore mark
+    in valid & tbp-human-ready t (left - 1)
+  tbp-unfunded : TbTable -> Boolean
+  tbp-unfunded (t) = let accepted = tb-accept t 202 True True
+    in let ready = tbp-human-ready t 100
+    in let offered = tb-double t 101 True
+    in let wants-take = bg-ai-take t.board
+    in let balance = (em-purse t.currency.copper 4).coin
+    in let moved = eu-pay t.currency True 4 3 balance 0 0
+    in let answered = tb-npc t
+    in accepted == 0 & ready & offered == 0 & wants-take & moved == 0 & answered == 0 & t.state == 3 & t.board.dropped == 1
+  tbp-run : TbTable -> [Console] Integer
+  tbp-run (t) = act
+    a <- tbp-check "server setup matches the cited engine" (tbp-position t.board backgammon-new & t.board.cube == 1 & t.dice-count == 0)
+    denied <- tb-accept t 101 True True
+    accepted <- tb-accept t 202 True True
+    rolled <- tbp-start t 16
+    before <- bg-clone t.board
+    count <- t.event-count
+    dice-before <- t.dice-count
+    first-die <- list-at t.dice 0
+    outsider <- tb-move t 999 99 first-die True
+    bad <- tb-move t (list-at t.players t.board.current-player).identity 99 first-die True
+    b <- tbp-check "only the invited patron accepts and an active player's illegal move leaves board intact" (denied == -1 & accepted == 0 & rolled & outsider == -1 & bad == -1 & tbp-position before t.board & t.event-count == count & t.dice-count == dice-before & list-at t.dice 0 == first-die)
+    one <- (em-purse t.currency.copper 3).coin
+    two <- (em-purse t.currency.copper 4).coin
+    treasury <- (em-purse t.currency.copper 1).coin
+    events <- t.currency.count
+    heap-before <- __heap-save
+    completed <- tbp-game t 1800
+    heap-after <- __heap-save
+    print-line-uni ("TAVERN-GAME-RETAINED-BYTES " & show (heap-after - heap-before))
+    print-line-uni ("TAVERN-GAME-TURNS " & show t.turn & " EVENTS " & show t.event-count)
+    c <- tbp-check "full human-script versus NPC game reaches bearing off and agrees with engine moves and server dice" (completed & t.state == 4 & t.board.dropped == -1 & (t.board.off-white == 15 | t.board.off-black == 15))
+    winner <- bg-winner t.board
+    gross <- t.stake * bg-points t.board
+    tax <- gross * t.currency.copper.tax / 10000
+    after-one <- (em-purse t.currency.copper 3).coin
+    after-two <- (em-purse t.currency.copper 4).coin
+    d <- tbp-check "scored wager moves real copper through one coordinator event with tax conserved" (t.payout == gross & t.paid == events + 1 & t.currency.count == events + 1
+      & after-one == one + (if winner == 0 then gross - tax else 0 - gross)
+      & after-two == two + (if winner == 1 then gross - tax else 0 - gross)
+      & (em-purse t.currency.copper 1).coin == treasury + tax & eu-census t.currency)
+    e <- tbp-check "finished game cannot settle twice and request heap stays bounded" (tb-settle t == -1 & heap-after == heap-before)
+    f <- tbp-check "drink changes actual challenge acceptance and dulls persona play strength" (tbp-drunk t.currency)
+    when tb-new t.currency (tbp-patron 101 3 False) (tbp-patron 202 4 True) 1 1 7 True
+      is Err (error) -> act
+        print-line-uni ("FAIL second table " & error)
+        a + b + c + d + e + f + 1
+      end
+      is Ok (retry) -> act
+        g <- tbp-check "cube drop scores once and refused payment remains retryable without duplicate transfer" (tbp-retry retry)
+        h <- tbp-check "human invitee can decline even with an empty purse" (tbp-decline t.currency)
+        when tb-new t.currency (tbp-patron 101 3 False) (tbp-patron 202 4 True) 1 1 19 True
+          is Err (error) -> act
+            print-line-uni ("FAIL unfunded offer fixture " & error)
+            a + b + c + d + e + f + g + h + 1
+          end
+          is Ok (unfunded) -> act
+            i <- tbp-check "NPC drops an offer when another admitted payment removes its cover" (tbp-unfunded unfunded)
+            a + b + c + d + e + f + g + h + i
+          end
+      end
+  end
+  opening : [Console] Integer = act
+    when efi-source 0
+      is Err (e) -> act
+        print-line-uni ("FAIL currency setup " & e)
+        1
+      end
+      is Ok (state) -> act
+        fixture <- efi-build state
+        table-before <- __heap-save
+        when tb-new state.currency (tbp-patron 101 3 False) (tbp-patron 202 4 True) 1 7 12345 True
+          is Err (e) -> act
+            print-line-uni ("FAIL table " & e)
+            1
+          end
+          is Ok (t) -> act
+            table-after <- __heap-save
+            print-line-uni ("TAVERN-TABLE-BYTES " & show (table-after - table-before))
+            failures <- tbp-run t
+            print-line-uni ("UOAIX TAVERN failures=" & show failures)
+            failures
+          end
+      end
+  end

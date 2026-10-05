@@ -11,7 +11,12 @@ param([string]$Subject, [string]$Kernel)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
+# wasmtime's stdout is decoded with [Console]::OutputEncoding, which is ibm437 in
+# a pwsh launched detached with redirected output (as the release gate runs), so
+# any non-ASCII answer read as two characters against the UTF-8 x86-64 truth.
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
+$Repo =(Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir = $PSScriptRoot
 $PlugCdx = Join-Path $PlugDir 'build-output\wasm-plug.cdx'
 $TestDir = Join-Path $PlugDir 'test'

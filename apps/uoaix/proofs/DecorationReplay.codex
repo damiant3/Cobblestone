@@ -1,0 +1,234 @@
+Chapter: DecorationReplay
+  cites Uoaix chapter DecorationCodec
+  cites Uoaix chapter DecorationLoad
+  cites Uoaix chapter WorldTimers
+
+  dr-check : Text, Boolean -> [Console] Integer
+  dr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  dr-land : WalkMap, Integer -> Integer
+  dr-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in dr-land map (i + 1)
+  dr-text : Integer, Text, Integer -> Integer
+  dr-text (buffer) (text) (i) = if i == text-length text then 0 else let wrote = poke-byte buffer i (to-unicode (char-code (char-at text i)))
+    in dr-text buffer text (i + 1)
+  dr-row : Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  dr-row (data) (i) (x) (y) (art) (kind) (name) = let at = 64 + i * 176
+    in let a = poke-qword data at x
+    in let b = poke-qword data (at + 8) y
+    in let c = poke-qword data (at + 24) art
+    in let d = poke-qword data (at + 56) kind
+    in let e = poke-qword data (at + 64) art
+    in let f = poke-qword data (at + 88) -1
+    in let text = dr-text (data + at + 112) name 0 in 0
+  dr-fixture : WalkMap -> Integer
+  dr-fixture (map) = let data = alloc-bytes 592
+    in let zero = wd-zero data 0 592
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 3
+    in let c = poke-qword data 16 map.x
+    in let d = poke-qword data 24 map.y
+    in let e = poke-qword data 32 (map.width + 8)
+    in let f = poke-qword data 40 map.height
+    in let g = poke-qword data 48 42
+    in let door = dr-row data 0 1422 1698 #0675 1 "door"
+    in let flags = poke-qword data (64 + 40) 64
+    in let height = poke-qword data (64 + 48) 20
+    in let opened = poke-qword data (64 + 64) #0676
+    in let dx = poke-qword data (64 + 72) -1
+    in let dy = poke-qword data (64 + 80) 1
+    in let lamp = dr-row data 1 1422 1697 #0B26 3 "lamp"
+    in let light = poke-qword data (64 + 176 + 88) 1
+    in let sign = dr-row data 2 1423 1698 #0B98 2 "Test Shop" in data
+  dr-reply : Result (Maybe GameReply) Text -> GameReply
+  dr-reply (result) = when result
+    is Err (e) -> gs-reply [] ("ERROR " & e)
+    is Ok (maybe) -> when maybe
+      is None -> gs-reply [] "NONE"
+      is Just (reply) -> reply
+  dr-many-rows : Integer, Integer -> Integer
+  dr-many-rows (data) (i) = if i == 33 then 0 else let row = dr-row data i 20 20 (#0B98 + i) 2 "sign"
+    in dr-many-rows data (i + 1)
+  dr-visible : WdState, Integer, Integer -> Integer
+  dr-visible (state) (i) (count) = if i == state.count then count else dr-visible state (i + 1) (count + peek-byte state.visible i)
+  dr-moving : WalkMap, GameShard -> [Console] Integer
+  dr-moving (map) (shard) = act
+    data <- alloc-bytes 5872
+    zero <- wd-zero data 0 5872
+    magic <- poke-qword data 0 #31445744
+    count <- poke-qword data 8 33
+    width <- poke-qword data 32 128
+    height <- poke-qword data 40 64
+    identity <- poke-qword data 48 43
+    rows <- dr-many-rows data 0
+    made <- wd-read data 5872 map 200
+    when made
+      is Err (e) -> act
+        print-line-uni ("FAIL moving fixture " & e)
+        1
+      end
+      is Ok (state) -> act
+        player <- world-create shard.world (gs-mobile 0 20 20 0 400 1002)
+        active <- __record-set shard "active" 1
+        input <- gn-input-with (gsi-specs 0) 30
+        mode <- __record-set input "mode" 2
+        phase <- __record-set input.session "phase" 2
+        serial <- __record-set input.session "serial" 1
+        first <- wd-pulse state shard input map 2593 0
+        rest <- wd-pulse state shard input map 2593 1
+        initial <- dr-visible state 0 0
+        move-one <- poke-qword shard.world.buffer 32 60
+        leaving <- wd-pulse state shard input map 2593 2
+        pending <- dr-visible state 0 0
+        move-two <- poke-qword shard.world.buffer 32 100
+        departed <- wd-pulse state shard input map 2593 3
+        final <- dr-visible state 0 0
+        returned <- poke-qword shard.world.buffer 32 20
+        back <- dr-reply (wd-pulse state shard input map 2593 4)
+        back-rest <- dr-reply (wd-pulse state shard input map 2593 5)
+        dr-check "client culls departed objects and reentry resumes bounded additions" (initial == 33 & pending == 0 & final == 0 & (dr-reply leaving).note == "NONE" & (dr-reply departed).note == "NONE" & list-length back.packets == 32 & list-length back-rest.packets == 1)
+      end
+  end
+  dr-closing : WdState, WorldTimers, GameShard, Integer, List (List Integer) -> List (List Integer)
+  dr-closing (state) (timers) (shard) (tick) (packets) = if wtm-next timers tick < 0 then packets
+    else dr-closing state timers shard tick (packets & wd-autoclose state timers shard timers.key tick)
+  dr-autoclose : WdState, GameShard, WalkMap, GameInput -> [Console] Integer
+  dr-autoclose (state) (shard) (map) (input) = when wtm-new 8 256 1000
+    is Err (e) -> act
+      print-line-uni ("FAIL autoclose wheel " & e)
+      1
+    end
+    is Ok (timers) -> act
+      before <- peek-byte state.opened 0
+      opened <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+      armed <- wd-track state timers 0 before 1000
+      quiet <- dr-closing state timers shard (1000 + wd-close-ticks - 1) []
+      blocked <- poke-qword shard.world.buffer 32 1422
+      held <- dr-closing state timers shard (1000 + wd-close-ticks) []
+      still <- peek-byte state.opened 0
+      waiting <- timers.used
+      unblocked <- poke-qword shard.world.buffer 32 1421
+      early <- dr-closing state timers shard (1000 + 2 * wd-close-ticks - 1) []
+      closed <- dr-closing state timers shard (1000 + 2 * wd-close-ticks) []
+      shut <- peek-byte state.opened 0
+      a <- dr-check "open door closes after twenty seconds and an occupied doorway defers it" (opened.note == "decoration:door-open" & armed >= 0 & list-length quiet == 0 & list-length held == 0 & still == 1 & waiting == 1 & list-length early == 0 & list-length closed == 3 & shut == 0 & timers.used == 0 & is-err (walk-height map 1422 1698 0))
+      reopen-before <- peek-byte state.opened 0
+      reopened <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+      rearmed <- wd-track state timers 0 reopen-before 5000
+      close-before <- peek-byte state.opened 0
+      by-hand <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+      disarmed <- wd-track state timers 0 close-before 5001
+      none <- dr-closing state timers shard (5000 + 2 * wd-close-ticks) []
+      b <- dr-check "closing a door by hand cancels its autoclose" (reopened.note == "decoration:door-open" & rearmed >= 0 & by-hand.note == "decoration:door-close" & disarmed == 1 & timers.used == 0 & list-length none == 0 & peek-byte state.opened 0 == 0)
+      a + b
+    end
+  dr-moving-world : Integer -> [Console] Integer
+  dr-moving-world (unused) = when walk-map-new 0 0 128 64
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (map) -> when gs-new 0
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (shard) -> dr-moving map shard
+  dr-run : WalkMap, GameShard -> [Console] Integer
+  dr-run (map) (shard) = act
+    land <- dr-land map 0
+    data <- dr-fixture map
+    made <- wd-read data 592 map 200
+    when made
+      is Err (e) -> act
+        print-line-uni ("FAIL fixture " & e)
+        1
+      end
+      is Ok (state) -> act
+        mobile <- world-create shard.world (gs-mobile 0 1421 1698 0 400 1002)
+        active <- __record-set shard "active" 1
+        input <- gn-input-with (gsi-specs 0) 20
+        mode <- __record-set input "mode" 2
+        phase <- __record-set input.session "phase" 2
+        who <- __record-set input.session "serial" 1
+        before <- walk-height map 1422 1698 0
+        a <- dr-check "closed door contributes collision" (is-err before)
+        opened <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+        after <- walk-height map 1422 1698 0
+        b <- dr-check "double-click opens door and changes art position collision" (opened.note == "decoration:door-open" & peek-byte state.opened 0 == 1 & wd-art state 0 == #0676 & wd-x state 0 == 1421 & wd-y state 0 == 1699 & is-ok after & list-length opened.packets == 3 & list-at (list-at opened.packets 2) 0 == #54)
+        saved <- alloc-bytes (wdc-size state)
+        encoded <- wdc-write state saved (wdc-size state)
+        blocked <- poke-qword shard.world.buffer 32 1422
+        cannot-close <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+        c <- dr-check "occupied doorway refuses close without state change" (cannot-close.note == "The doorway is blocked." & peek-byte state.opened 0 == 1)
+        unblocked <- poke-qword shard.world.buffer 32 1421
+        blocking-sign <- poke-qword data (64 + 2 * 176) 1422
+        sign-flags <- poke-qword data (64 + 2 * 176 + 40) 64
+        sign-height <- poke-qword data (64 + 2 * 176 + 48) 4
+        blocked-by-deco <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+        obstruction <- dr-check "blocking decoration also refuses door close" (blocked-by-deco.note == "The doorway is blocked." & peek-byte state.opened 0 == 1)
+        sign-back <- poke-qword data (64 + 2 * 176) 1423
+        sign-clear <- poke-qword data (64 + 2 * 176 + 40) 0
+        closed <- dr-reply (wd-handler state shard input map 2593 [6,#7E,0,0,1])
+        d <- dr-check "door closes and restores collision" (closed.note == "decoration:door-close" & is-err (walk-height map 1422 1698 0))
+        auto <- dr-autoclose state shard map input
+        restored <- wdc-read state saved (wdc-size state)
+        e <- dr-check "WDS1 restores open state and rebuilds collision" (is-ok encoded & is-ok restored & peek-byte state.opened 0 == 1 & is-ok (walk-height map 1422 1698 0) & state.connection == -1)
+        sign <- dr-reply (wd-handler state shard input map 2593 [9,#7E,0,0,3])
+        f <- dr-check "single click returns the sign name" (sign.note == "decoration:name" & wd-name state 2 == "Test Shop" & gp-u32 (list-at sign.packets 0) 3 == wd-serial-base + 3)
+        lamp <- wd-packet state 1
+        g <- dr-check "light pattern occupies legacy direction byte" (list-length lamp == 15 & gp-u16 lamp 9 == #8000 + 1422 & list-at lamp 13 == 1)
+        lift <- dr-reply (wd-handler state shard input map 2593 [7,#7E,0,0,2,0,1])
+        h <- dr-check "decoration cannot enter item inventory" (lift.note == "decoration:immovable")
+        view <- dr-reply (wd-pulse state shard input map 2593 100)
+        repeated <- dr-reply (wd-pulse state shard input map 2593 101)
+        i <- dr-check "view emits once per connection and suppresses unchanged objects" (list-length view.packets == 3 & repeated.note == "NONE")
+        moved <- poke-qword shard.world.buffer 32 1445
+        gone <- dr-reply (wd-pulse state shard input map 2593 102)
+        j <- dr-check "leaving range forgets decoration without removal packets" (list-length gone.packets == 0 & state.shown-count == 0)
+        invalid <- poke-byte saved 26 1
+        bad <- wdc-read state saved (wdc-size state)
+        k <- dr-check "codec refuses an open bit on static sign" (is-err bad & peek-byte state.opened 0 == 1)
+        mismatched <- poke-qword saved 8 43
+        bad-id <- wdc-read state saved (wdc-size state)
+        l <- dr-check "codec refuses another decoration identity" (is-err bad-id)
+        saved-again <- wdc-write state saved (wdc-size state)
+        rebased <- __record-set map "x" 1416
+        marker <- poke-qword map.solids 0 7
+        refused <- wdc-read state saved (wdc-size state)
+        refused-cell <- wd-rebuild-cell state 1422 1698
+        m <- dr-check "same-pointer map rebase refuses codec and collider writes" (is-err refused & is-err refused-cell & peek-qword map.solids 0 == 7 & peek-byte state.opened 0 == 1)
+        new-base <- walk-zero map.land map.solids 0 (map.width * map.height)
+        fresh-land <- dr-land map 0
+        bound <- wd-rebind state map 200
+        n <- dr-check "explicit rebind preserves door state on fresh base map" (is-ok bound & wd-bound state & peek-byte state.opened 0 == 1 & is-ok (walk-height map 1422 1698 0))
+        wide-buffer <- alloc-bytes (map.width * map.height * 392)
+        wide-zero <- wd-zero wide-buffer 0 (map.width * map.height * 392)
+        wide-map <- __record-set map "solids" wide-buffer
+        wide-result <- wd-read data 592 map 392
+        wide-ok <- when wide-result
+          is Err (e) -> False
+          is Ok (wide) -> wide.stride == 392 & peek-qword wide.solids (walk-cell map 1422 1698 * 392) == 1
+        p <- dr-check "expanded collider stride uses supplied cell extent" wide-ok
+        a+b+c+obstruction+d+auto+e+f+g+h+i+j+k+l+m+n+p
+      end
+  end
+  opening : [Console] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (map) -> when gs-new 0
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (shard) -> act
+        failures <- dr-run map shard
+        moving <- dr-moving-world 0
+        print-line-uni ("DECORATION REPLAY failures=" & show (failures + moving))
+        failures + moving
+      end

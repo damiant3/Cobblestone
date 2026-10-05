@@ -1,0 +1,63 @@
+Chapter: ContextProof
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter AdminContext
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Foreword chapter Console
+
+  cp-check : Text, Boolean -> [Console] Integer
+  cp-check (name) (ok) = act
+    print-line-uni (name & (if ok then " PASS" else " FAIL"))
+    if ok then 0 else 1
+  end
+
+  cp-extra : Text, Integer, Integer -> Text
+  cp-extra (topic) (id) (after) =
+    if topic == "town-culture" & id == 1 then "{\"available\":true,\"dialect\":\"Britain\",\"jargon\":\"oven-friend\",\"values\":\"hospitality\",\"customs\":\"bread at dawn\"}"
+    else if topic == "opinions" & id == 1 then "{\"available\":true,\"opinions\":[\"grain is dear\"],\"happiness\":70,\"alarm\":5}"
+    else ""
+
+  cp-loop : AdminWorld, Integer -> Integer
+  cp-loop (a) (n) =
+    if n == 0 then 0
+    else let mark = __heap-save
+    in let reply = admin-dispatch a 2 "{\"command\":\"context-read\",\"topic\":\"town-culture\",\"id\":1,\"after\":0}"
+    in let ok = text-contains reply "oven-friend"
+    in let restored = __heap-restore mark
+    in if ok then cp-loop a (n - 1) else 1
+
+  opening : [Console] Nothing = act
+    w <- tf-new 0
+    town <- tf-add-town w "Britain" 10 11 12
+    one <- tf-add-person w "Mara \"Baker\"" town 4 5 2 9000
+    two <- tf-add-person w "Iolo" town 4 6 0 9000
+    child <- tf-add-person w "Child" town 4 4 0 100
+    parent <- __record-set (tf-person w child) "parent-a" one
+    married <- tf-marry w one two
+    m <- tm-new 0
+    configured <- tm-configure m w one "Baker é" "The ovens need me." 8 128 0
+    a <- admin-world-new w m
+    before <- w.sequence
+    health <- admin-dispatch a 1 "{\"command\":\"context-read\",\"topic\":\"npc\",\"id\":1,\"after\":0}"
+    c1 <- cp-check "health role cannot read private context" (text-contains health "role")
+    identity <- admin-dispatch a 2 "{\"command\":\"context-read\",\"topic\":\"npc\",\"id\":1,\"after\":0}"
+    persona <- cx-read w m a.context-extra "persona" one 0
+    family <- cx-read w m a.context-extra "family" one 0
+    memory <- cx-read w m a.context-extra "memory" one 0
+    c2 <- cp-check "identity persona family and memory are quoted live data" (text-contains identity "Mara \\\"Baker\\\"" & text-contains persona "Baker é" & text-contains family "\"spouse\":2" & text-contains family "\"children\":[3]" & text-contains memory "event_ids")
+    market <- cx-read w m a.context-extra "market" town 0
+    registry <- cx-read w m a.context-extra "registry" 0 0
+    events <- cx-read w m a.context-extra "events" town 0
+    missing <- cx-read w m a.context-extra "town-culture" town 0
+    bad <- cx-read w m a.context-extra "kick" one 0
+    c3 <- cp-check "bounded registry stock events and explicit missing culture" (text-contains market "layer1-town-market" & text-contains market "\"price\":3" & text-contains registry "Child" & text-contains events "unacknowledged-town-events" & text-contains missing "culture-adapter-not-bound" & text-contains bad "context-topic")
+    bound <- __record-set a "context-extra" cp-extra
+    culture <- cx-read w m a.context-extra "town-culture" town 0
+    opinions <- cx-read w m a.context-extra "opinions" one 0
+    c4 <- cp-check "trusted culture and opinion adapter stays read-only" (text-contains culture "oven-friend" & text-contains opinions "grain is dear" & w.sequence == before & w.hour == 0 & (tf-person w one).coin == 0 & a.report-count == 0)
+    mark <- __heap-save
+    repeated <- cp-loop a 1000
+    retained <- __heap-save - mark
+    c5 <- cp-check "context queries survive scratch reclamation" (repeated == 0 & retained == 0)
+    print-line-uni ("UOAIX CONTEXT failures=" & show (c1+c2+c3+c4+c5))
+  end

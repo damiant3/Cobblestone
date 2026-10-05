@@ -1,0 +1,44 @@
+Chapter: SparkPreferencesTest
+  cites Spark chapter SparkPreferences
+
+ Runs the scenario below through the preference tracker: "+ q | preset |
+ text" rates an image positively with strength q quarters, "-" negatively, and
+ "?" adjusts a prompt. The expected output is the WPF original's own
+ PreferenceTracker driven by the same scenario.
+
+Section: Scenario
+
+  stp-scenario : Text
+  stp-scenario = "? warm amber light over a bold landscape\n+ 6 | vivid | cinematic wide landscape, amber and copper, painterly\n+ 6 | vivid | cinematic wide shot, amber sky, concept art\n- 6 | none | dark, blurry, saturated crowds, cinematic\n? a quiet portrait\n+ 2 | none | soft warm portrait, painterly\n- 4 | none | blurry dark saturated alley\n? A DARK, blurry scene,, with SATURATED neon\n? amber streets, bold motion\n+ 4 | moody | moebius geometric scale contrast\n+ 4 | moody | moebius geometric"
+
+  stp-field : Text, Integer, Integer -> Integer
+  stp-field (t) (i) (n) =
+    if i + 3 > text-length t then text-length t
+    else if substring t i 3 == " | " then (if n == 0 then i else stp-field t (i + 3) (n - 1))
+    else stp-field t (i + 1) n
+
+  stp-lines : Text, Integer, Integer, List Text -> List Text
+  stp-lines (t) (start) (i) (acc) =
+    if i >= text-length t then list-push acc (substring t start (i - start))
+    else if substring t i 1 == "\n" then stp-lines t (i + 1) (i + 1) (list-push acc (substring t start (i - start)))
+    else stp-lines t start (i + 1) acc
+
+  stp-int : Text, Integer, Integer, Integer -> Integer
+  stp-int (t) (i) (e) (acc) = if i >= e then acc else stp-int t (i + 1) e (acc * 10 + char-code-at t i - char-code-at "0" 0)
+
+  stp-run : List Text, Integer, PrefState, Text -> Text
+  stp-run (ls) (i) (s) (out) =
+    if i >= list-length ls then out & "S " & spark-pref-suggested-preset s
+    else let l = list-at ls i
+    in let rest = substring l 2 (text-length l - 2)
+    in if substring l 0 1 == "?" then stp-run ls (i + 1) s (let r = spark-pref-adjust s rest in out & "A " & r.pa-prompt & " || " & r.pa-explanation & "\n")
+    else let a = stp-field rest 0 0
+    in let b = stp-field rest (a + 3) 0
+    in let q = stp-int rest 0 a 0
+    in let preset = substring rest (a + 3) (b - a - 3)
+    in let text = substring rest (b + 3) (text-length rest - b - 3)
+    in stp-run ls (i + 1) (spark-pref-record s text preset q (substring l 0 1 == "+")) out
+
+  opening : [Console] Nothing = act
+    print-line (stp-run (stp-lines stp-scenario 0 0 []) 0 spark-pref-empty "")
+  end

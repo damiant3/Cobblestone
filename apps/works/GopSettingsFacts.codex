@@ -1,0 +1,268 @@
+Chapter: GopSettingsFacts
+  cites Works chapter GopSettings
+  cites Works chapter GopFacts
+  cites Encode chapter Json
+  cites Encode chapter Hex
+  cites Foreword chapter CCE
+
+  SettingsRead =
+    | SettingsLoaded (SettingsStore)
+    | SettingsMigrated (SettingsStore)
+    | SettingsLegacy (SettingsStore) (Text)
+    | SettingsMissing
+    | SettingsUnavailable
+    | SettingsLoadRefused (Text)
+
+  gsf-kind : Integer = 28
+  gsf-prefix : Text = "shell-settings/1\n"
+  gsf-limit : Integer = 65536
+
+ UTF-8 text values are hex inside an ASCII JSON envelope. The fact store
+ transports CCE text; this format does not require it to interpret Unicode.
+
+  gsf-value-json : SettingsStore, SettingKey -> JsonValue
+  gsf-value-json (s) (k) =
+    if k.sk-kind == gst-kind-text then JsonStr (hex-encode (text-to-utf8-bytes (gst-get-text s (k.sk-id) "")))
+    else if k.sk-kind == gst-kind-bool then JsonBool (gst-get-bool s (k.sk-id) False)
+    else JsonInt (gst-get s (k.sk-id) 0)
+
+  gsf-rows : SettingsStore, Integer, List JsonValue -> List JsonValue
+  gsf-rows (s) (i) (acc) =
+    if i >= s.st-count then acc
+    else let k = list-at (s.st-keys) i
+    in gsf-rows s (i + 1) (list-push acc (JsonArray [JsonInt (k.sk-id), JsonInt (k.sk-kind), gsf-value-json s k]))
+
+  gsf-encode : SettingsStore -> Text
+  gsf-encode (s) = gsf-prefix & json-emit (JsonArray (gsf-rows s 0 []))
+
+  gsf-values-why : SettingsStore, Integer, Integer -> Text
+  gsf-values-why (s) (i) (budget) =
+    if budget > gsf-limit then "settings snapshot exceeds storage limit"
+    else if i >= s.st-count then ""
+    else let k = list-at (s.st-keys) i
+    in if k.sk-kind == gst-kind-text then
+      let n = text-length (list-at (s.st-texts) i)
+      in if n > k.sk-text-limit then k.sk-name & " exceeds text limit"
+      else if n > gsf-limit / 8 then "settings snapshot exceeds storage limit"
+      else gsf-values-why s (i + 1) (budget + 64 + n * 8)
+    else let n = list-at (s.st-vals) i
+    in if n < k.sk-lo | n > k.sk-hi then k.sk-name & " is outside its range"
+    else gsf-values-why s (i + 1) (budget + 64)
+
+  gsf-store-why : SettingsStore -> Text
+  gsf-store-why (s) =
+    let why = gst-schema-why (s.st-keys) 0
+    in if why /= "" then why
+    else if s.st-count /= list-length (s.st-keys) | s.st-count /= list-length (s.st-vals) | s.st-count /= list-length (s.st-texts) then "settings store shape is invalid"
+    else gsf-values-why s 0 64
+
+  gsf-set-json : SettingsStore, Integer, Integer, JsonValue -> SetResult
+  gsf-set-json (s) (id) (kind) (v) =
+    if kind == gst-kind-int then when v
+      is JsonInt (n) -> gst-set-value s id (SettingInteger n)
+      is otherwise -> SetRefused "stored integer has the wrong type"
+    else if kind == gst-kind-bool then when v
+      is JsonBool (b) -> gst-set-value s id (SettingBoolean b)
+      is otherwise -> SetRefused "stored boolean has the wrong type"
+    else if kind == gst-kind-text then when v
+      is JsonStr (hex) -> when hex-decode-checked hex
+        is None -> SetRefused "stored text is not hexadecimal UTF-8"
+        is Just (bytes) ->
+          let text = utf8-bytes-to-text bytes
+          in if hex-encode (text-to-utf8-bytes text) /= hex then SetRefused "stored text is not canonical UTF-8 hex"
+          else gst-set-value s id (SettingText text)
+      is otherwise -> SetRefused "stored text has the wrong type"
+    else SetRefused "stored setting type is unknown"
+
+  gsf-decode-rows : SettingsStore, List JsonValue, Integer, Integer -> SetResult
+  gsf-decode-rows (s) (rows) (i) (seen) =
+    if i >= list-length rows then SetOk s
+    else when list-at rows i
+      is JsonArray (row) -> if list-length row /= 3 then SetRefused "stored setting row has the wrong shape"
+        else when list-at row 0
+          is JsonInt (id) -> when list-at row 1
+            is JsonInt (kind) ->
+              let idx = gst-index-of s id 0
+              in if idx < 0 then SetRefused ("stored setting is unknown: " & show id)
+              else if bit-and seen (bit-shl 1 idx) /= 0 then SetRefused ("duplicate stored setting: " & show id)
+              else if (list-at (s.st-keys) idx).sk-kind /= kind then SetRefused ((list-at (s.st-keys) idx).sk-name & " has the wrong stored type")
+              else when gsf-set-json s id kind (list-at row 2)
+                is SetRefused (why) -> SetRefused why
+                is SetOk (next) -> gsf-decode-rows next rows (i + 1) (bit-or seen (bit-shl 1 idx))
+            is otherwise -> SetRefused "stored setting type is not an integer"
+          is otherwise -> SetRefused "stored setting id is not an integer"
+      is otherwise -> SetRefused "stored setting row is not an array"
+
+  gsf-decode : SettingsStore, Text -> SetResult
+  gsf-decode (defaults) (text) =
+    let why = gst-schema-why (defaults.st-keys) 0
+    in if why /= "" then SetRefused why
+    else if text-length text > gsf-limit then SetRefused "settings snapshot exceeds storage limit"
+    else if text-starts-with text gsf-prefix == False then SetRefused "unsupported settings snapshot version"
+    else let body = substring text (text-length gsf-prefix) (text-length text - text-length gsf-prefix)
+    in when json-parse body
+      is None -> SetRefused "invalid settings snapshot JSON"
+      is Just (v) -> if json-emit v /= body then SetRefused "settings snapshot is not canonical JSON"
+        else when v
+          is JsonArray (rows) -> if list-length rows > gst-max-keys then SetRefused "too many stored settings"
+            else gsf-decode-rows (gst-store (defaults.st-keys)) rows 0 0
+          is otherwise -> SetRefused "settings snapshot is not an array"
+
+  gsf-ascii : Text, Integer -> Boolean
+  gsf-ascii (text) (i) = if i >= text-length text then True else if char-code-at text i < 0 | char-code-at text i >= 97 then False else gsf-ascii text (i + 1)
+
+  gsf-last-into : List Text, Integer, Integer -> Integer
+  gsf-last-into (rows) (i) (buf) =
+    if i < 0 then 0
+    else let text = list-at rows i
+    in if text-starts-with text "shell-settings/" == False then gsf-last-into rows (i - 1) buf
+    else if text-length text > gsf-limit | gsf-ascii text 0 == False then 0 - 2
+    else let copy = pack-text buf 0 text in text-length text
+
+  gsf-read-into : Integer -> [Device.Port] Integer
+  gsf-read-into (buf) = act
+    mounted <- gfs-mount-checked
+    when mounted
+      is GfsAbsent -> 0 - 1
+      is GfsMountFailed (why) -> gsf-read-error buf why
+      is GfsMounted (st) -> act
+        result <- gfs-scan-all-checked st gsf-kind
+        when result
+          is GfsReadFailed (why) -> gsf-read-error buf why
+          is GfsRows (rows) -> gsf-last-into rows (list-length rows - 1) buf
+      end
+  end
+
+  gsf-read-error : Integer, Text -> Integer
+  gsf-read-error (buf) (why) = let copied = pack-text buf 0 why in 0 - 3 - text-length why
+
+ The bounded output buffer predates the scan mark. Only its bytes and a
+ scalar length survive history reclamation; decoded Text is built afterwards.
+
+  gsf-load : SettingsStore -> [Device.Port] SettingsRead
+  gsf-load (defaults) =
+    let why = gst-schema-why (defaults.st-keys) 0
+    in if why /= "" then SettingsLoadRefused why
+    else let buf = alloc-bytes gsf-limit
+    in let mark = __heap-save
+    in act
+      len <- gsf-read-into buf
+      let released = __heap-restore mark
+      in if len == (0 - 1) then SettingsUnavailable
+      else if len <= (0 - 3) then SettingsLoadRefused (unpack-text buf 0 (0 - 3 - len))
+      else if len < 0 then SettingsLoadRefused "stored settings exceed the snapshot encoding limit"
+      else if len == 0 then SettingsMissing
+      else when gsf-decode defaults (unpack-text buf 0 len)
+        is SetOk (s) -> SettingsLoaded s
+        is SetRefused (why) -> SettingsLoadRefused why
+    end
+
+  gsf-write : SettingsStore, Integer -> [Device.Port] Integer
+  gsf-write (s) (timestamp) = act
+    mounted <- gfs-mount-checked
+    when mounted
+      is GfsAbsent -> 1
+      is GfsMountFailed (why) -> 5
+      is GfsMounted (st) -> gsf-write-mounted st s timestamp
+  end
+
+  gsf-write-mounted : GopFactStore, SettingsStore, Integer -> [Device.Port] Integer
+  gsf-write-mounted (st) (s) (timestamp) =
+    let text = gsf-encode s
+    in if text-length text > gsf-limit then 2
+    else act
+      written <- gfs-write-and-checkpoint st gsf-kind text timestamp
+      if written.gfs-head == st.gfs-head then 3
+      else act
+        verified <- gfs-mount-checked
+        when verified
+          is GfsMounted (v) -> if v.gfs-head == written.gfs-head & v.gfs-count == written.gfs-count & v.gfs-gen == written.gfs-gen then 0 else 4
+          is otherwise -> 4
+      end
+    end
+
+  gsf-save : SettingsStore, Integer -> [Device.Port] SetResult
+  gsf-save (s) (timestamp) =
+    let why = gsf-store-why s
+    in if why /= "" then SetRefused why
+    else let mark = __heap-save
+    in act
+      status <- gsf-write s timestamp
+      let released = __heap-restore mark
+      in if status == 0 then SetOk s
+      else SetRefused (if status == 1 then "settings fact store is unavailable" else if status == 2 then "settings snapshot exceeds storage limit" else if status == 3 then "settings fact write was refused" else if status == 5 then "settings fact store could not be read safely" else "settings checkpoint was not published")
+    end
+
+  gsf-legacy-rows : SettingsStore, Integer, Integer, Integer -> SetResult
+  gsf-legacy-rows (s) (buf) (n) (i) =
+    if i >= n then SetOk s
+    else let off = gst-hdr-bytes + i * gst-rec-bytes
+    in let id = gst-u32-at buf off
+    in let value = gst-u32-at buf (off + 4) - gst-bias
+    in if gst-index-of s id 0 < 0 then gsf-legacy-rows s buf n (i + 1)
+    else when gst-set s id value
+      is SetRefused (why) -> SetRefused ("legacy " & why)
+      is SetOk (next) -> gsf-legacy-rows next buf n (i + 1)
+
+  gsf-legacy-decode : SettingsStore, Integer, Integer -> SetResult
+  gsf-legacy-decode (defaults) (buf) (len) =
+    let why = gst-schema-why (defaults.st-keys) 0
+    in if why /= "" then SetRefused why
+    else if len < gst-hdr-bytes then SetRefused "legacy settings header is truncated"
+    else if peek-byte buf 0 /= gst-magic0 | peek-byte buf 1 /= gst-magic1 | peek-byte buf 2 /= gst-magic2 | peek-byte buf 3 /= gst-magic3 then SetRefused "legacy settings header is invalid"
+    else let n = gst-u16-at buf 4
+    in if n > gst-max-keys | gst-hdr-bytes + n * gst-rec-bytes /= len then SetRefused "legacy settings records are invalid"
+    else gsf-legacy-rows (gst-store (defaults.st-keys)) buf n 0
+
+  gsf-copy-bytes : Integer, Integer, Integer, Integer -> Integer
+  gsf-copy-bytes (src) (dst) (len) (i) = if i >= len then len else let p = poke-byte dst i (peek-byte src i) in gsf-copy-bytes src dst len (i + 1)
+
+  gsf-legacy-into : Integer -> [Device.Port] Integer
+  gsf-legacy-into (buf) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then 0
+    else act
+      f <- gfat-read-file (m.gm-vol) "SETTINGS.DAT"
+      if f.gf-ok == False then 0
+      else if f.gf-len > gst-buf-bytes then 0 - 1
+      else if f.gf-len == 0 then 0 - 2
+      else gsf-copy-bytes (f.gf-buf) buf (f.gf-len) 0
+    end
+  end
+
+  gsf-legacy : SettingsStore -> [Device.Port] Maybe SetResult
+  gsf-legacy (defaults) =
+    let buf = alloc-bytes gst-buf-bytes
+    in let mark = __heap-save
+    in act
+      len <- gsf-legacy-into buf
+      let released = __heap-restore mark
+      in if len == 0 then None
+      else if len == (0 - 1) then Just (SetRefused "legacy settings file is too large")
+      else if len < 0 then Just (SetRefused "legacy settings header is truncated")
+      else Just (gsf-legacy-decode defaults buf len)
+    end
+
+  gsf-import : SettingsStore, Integer, Boolean -> [Device.Port] SettingsRead
+  gsf-import (defaults) (timestamp) (available) = act
+    legacy <- gsf-legacy defaults
+    when legacy
+      is None -> if available then SettingsMissing else SettingsUnavailable
+      is Just (SetRefused (why)) -> SettingsLoadRefused why
+      is Just (SetOk (s)) -> if available == False then SettingsLegacy s "settings fact store is unavailable"
+        else act
+          result <- gsf-save s timestamp
+          when result
+            is SetOk (saved) -> SettingsMigrated saved
+            is SetRefused (why) -> SettingsLegacy s why
+        end
+  end
+
+  gsf-load-or-migrate : SettingsStore, Integer -> [Device.Port] SettingsRead
+  gsf-load-or-migrate (defaults) (timestamp) = act
+    loaded <- gsf-load defaults
+    when loaded
+      is SettingsMissing -> gsf-import defaults timestamp True
+      is SettingsUnavailable -> gsf-import defaults timestamp False
+      is otherwise -> loaded
+  end

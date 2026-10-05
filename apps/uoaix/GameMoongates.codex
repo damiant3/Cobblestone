@@ -1,0 +1,244 @@
+Chapter: GameMoongates
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter GameClock
+
+ Source-X CWorldGameTime, CChar::Use_MoonGate/Spell_Teleport and send.cpp,
+ copyright 2026 SphereServer development team, Apache-2.0; Sphere-LICENSE.txt.
+ Classic locations follow UOX3 felucca_moongates.jsdata; ports/UOX3-LICENSE.txt.
+
+  GmgGate = record { serial : Integer, x : Integer, y : Integer, z : Integer }
+  GmgFollower = record { serial : Integer, leader : Integer, following : Boolean }
+  GmgViewer = record { serial : Integer, connection : Integer, visible : Integer }
+  GameMoongates = record { game : GameShard, items : GsiState, combat : GameCombat,
+    gates : List GmgGate, followers : List GmgFollower, viewers : List GmgViewer,
+    nav : TlPath, path : Integer, sequence : Integer }
+  GmgTravel = record { sequence : Integer, source : Integer, destination : Integer,
+    seconds : Integer, members : List WorldObject }
+  GmgMove = record { before : WorldObject, after : WorldObject }
+  gmg-limit : Integer = 1000000000
+  gmg-gates : Integer -> List GmgGate
+  gmg-gates (unused) = [
+    GmgGate { serial = 0, x = 4467, y = 1283, z = 5 },
+    GmgGate { serial = 0, x = 1336, y = 1997, z = 5 },
+    GmgGate { serial = 0, x = 1499, y = 3771, z = 5 },
+    GmgGate { serial = 0, x = 771, y = 752, z = 5 },
+    GmgGate { serial = 0, x = 2701, y = 692, z = 5 },
+    GmgGate { serial = 0, x = 1828, y = 2948, z = -20 },
+    GmgGate { serial = 0, x = 643, y = 2067, z = 5 },
+    GmgGate { serial = 0, x = 3563, y = 2139, z = 34 }]
+  gmg-followers : Integer, List GmgFollower -> List GmgFollower
+  gmg-followers (i) (xs) = if i == 32 then xs
+    else gmg-followers (i + 1) (list-push xs (GmgFollower { serial = 0, leader = 0, following = False }))
+  gmg-viewers : Integer, List GmgViewer -> List GmgViewer
+  gmg-viewers (i) (xs) = if i == 5 then xs
+    else gmg-viewers (i + 1) (list-push xs (GmgViewer { serial = 0, connection = -1, visible = 0 }))
+  gmg-new : GameShard, GsiState, GameCombat, WalkMap -> Result GameMoongates Text
+  gmg-new (game) (items) (combat) (map) = if items.world.buffer /= game.world.buffer
+    | list-length combat.actors /= game.world.capacity | not (world-indexed game.world) then Err "moongate world binding"
+    else Ok (GameMoongates { game = game, items = items, combat = combat, gates = gmg-gates 0,
+      followers = gmg-followers 0 (__list-with-capacity 32), viewers = gmg-viewers 0 (__list-with-capacity 5),
+      nav = tl-path-new map, path = alloc-bytes 256, sequence = 0 })
+  gmg-phase : Integer, Boolean -> Integer
+  gmg-phase (seconds) (felucca) = let period = if felucca then 840 else 105
+    in int-mod ((int-mod (seconds / 60) period * 8 + period / 2) / period) 8
+  gmg-destination : Integer, Integer -> Integer
+  gmg-destination (source) (seconds) = int-mod (source + gmg-phase seconds False + 8 - gmg-phase seconds True) 8
+  gmg-time : GameClock, Integer -> Integer
+  gmg-time (clock) (hour) = if not (gc-rate-valid clock.day-seconds) | hour < 0 | hour > 8760000
+    | clock.phase < 0 | clock.phase >= clock.day-seconds * 100 | clock.due < 0 then -1
+    else hour * 3600 + (if clock.due > 0 then 0 else clock.phase * 36 / clock.day-seconds)
+  gmg-bound : GameMoongates, Integer, Integer -> Boolean
+  gmg-bound (g) (i) (serial) = if serial <= 0 then False
+    else let gate = list-at g.gates i
+    in when world-get g.game.world serial
+      is Err (_) -> False
+      is Ok (item) -> item.kind == 2 & item.graphic == #0F6C & item.container == 0 & item.amount == 1
+        & item.x == gate.x & item.y == gate.y & item.z == gate.z
+        & gsi-known g.items serial & not (gsi-meta g.items serial).movable
+  gmg-install-at : GameMoongates, Integer -> Result Integer Text
+  gmg-install-at (g) (i) = if i == 8 then Ok 8
+    else let p = list-at g.gates i
+    in when world-create g.game.world (WorldObject { serial = 0, kind = 2, x = p.x, y = p.y, z = p.z,
+      graphic = #0F6C, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register g.items serial 0 0 False False /= 0 then Err "moongate item registration"
+        else let bound = __record-set p "serial" serial in gmg-install-at g (i + 1)
+  gmg-empty : GameMoongates, Integer -> Boolean
+  gmg-empty (g) (i) = if i == 8 then True else (list-at g.gates i).serial == 0 & gmg-empty g (i + 1)
+  gmg-install : GameMoongates -> Result Integer Text
+  gmg-install (g) = if not (gmg-empty g 0) | g.game.world.capacity - world-count g.game.world < 8 then Err "moongate installation budget or existing binding"
+    else gmg-install-at g 0
+  gmg-follower-valid : GameMoongates, Integer, Integer -> Boolean
+  gmg-follower-valid (g) (leader) (serial) = if leader == serial | cb-slot g.game leader 0 < 0 | cb-slot g.game serial 0 >= 0 then False
+    else when world-get g.game.world leader
+      is Err (_) -> False
+      is Ok (owner) -> when world-get g.game.world serial
+        is Err (_) -> False
+        is Ok (pet) -> owner.kind == 1 & pet.kind == 1 & pet.health > 0
+  gmg-find-follower : GameMoongates, Integer, Integer -> Integer
+  gmg-find-follower (g) (serial) (i) = if i == 32 then -1
+    else if (list-at g.followers i).serial == serial then i else gmg-find-follower g serial (i + 1)
+  gmg-following-count : GameMoongates, Integer, Integer, Integer -> Integer
+  gmg-following-count (g) (leader) (except) (i) = if i == 32 then 0
+    else let f = list-at g.followers i
+    in (if f.serial /= 0 & f.serial /= except & f.leader == leader & f.following then 1 else 0) + gmg-following-count g leader except (i + 1)
+  gmg-bind : GameMoongates, Boolean, Integer, Integer, Boolean -> Integer
+  gmg-bind (g) (verified-control) (leader) (serial) (following) = if not verified-control
+    | g.sequence >= gmg-limit | not (gmg-follower-valid g leader serial) then -1
+    else if following & gmg-following-count g leader serial 0 >= 8 then -1
+    else let old = gmg-find-follower g serial 0
+    in let at = if old >= 0 then old else gmg-find-follower g 0 0
+    in if at < 0 then -1
+    else let row = list-at g.followers at
+    in let a = __record-set row "serial" serial
+    in let b = __record-set row "leader" leader
+    in let c = __record-set row "following" following
+    in let sequence = __record-set g "sequence" (g.sequence + 1)
+    in let touched = world-touch g.game.world in 0
+  gmg-tidy : GameMoongates, Integer -> Integer
+  gmg-tidy (g) (i) = if i == 32 then 0
+    else let f = list-at g.followers i
+    in if f.serial == 0 | gmg-follower-valid g f.leader f.serial then gmg-tidy g (i + 1)
+    else if g.sequence >= gmg-limit then -1
+    else let a = __record-set f "serial" 0
+    in let b = __record-set f "leader" 0
+    in let c = __record-set f "following" False
+    in let sequence = __record-set g "sequence" (g.sequence + 1)
+    in let touched = world-touch g.game.world in gmg-tidy g (i + 1)
+  gmg-at : GameMoongates, WorldObject, Integer -> Integer
+  gmg-at (g) (m) (i) = if i == 8 then -1 else let p = list-at g.gates i
+    in if m.x == p.x & m.y == p.y & walk-abs (m.z - p.z) <= 3 then i else gmg-at g m (i + 1)
+  gmg-collect : (Integer, Integer -> Boolean), GameMoongates, WalkMap, Maybe WdState, WorldObject, Integer, Integer, List WorldObject -> List WorldObject
+  gmg-collect (permit) (g) (map) (doors) (before) (destination) (i) (out) = if i == 32 then out
+    else let f = list-at g.followers i
+    in if f.serial == 0 | f.leader /= before.serial | not f.following | not (permit f.serial destination)
+      | not (gmg-follower-valid g f.leader f.serial) then gmg-collect permit g map doors before destination (i + 1) out
+    else when world-get g.game.world f.serial
+      is Err (_) -> gmg-collect permit g map doors before destination (i + 1) out
+      is Ok (pet) -> if walk-abs (pet.x - before.x) > 18 | walk-abs (pet.y - before.y) > 18 then gmg-collect permit g map doors before destination (i + 1) out
+        else let mark = __heap-save
+        in let reachable = if pet.x == before.x & pet.y == before.y & walk-abs (pet.z - before.z) <= 2 then True
+          else tl-plan g.nav g.game.world map doors pet before.x before.y before.z g.path > 0
+        in let restored = __heap-restore mark
+        in gmg-collect permit g map doors before destination (i + 1) (if reachable then list-push out pet else out)
+  gmg-prepare : (Integer, Integer -> Boolean), GameMoongates, GameInput, WalkMap, Maybe WdState, WorldObject, Integer -> Result (Maybe GmgTravel) Text
+  gmg-prepare (permit) (g) (input) (map) (doors) (before) (seconds) =
+    if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= g.game.active then Ok None
+    else if before.serial /= input.session.serial | before.kind /= 1 | seconds < 0 | seconds > 8760000 * 3600 then Err "moongate admission or clock"
+    else when world-get g.game.world before.serial
+      is Err (e) -> Err e
+      is Ok (now) -> if now.x == before.x & now.y == before.y then Ok None
+        else if walk-abs (now.x - before.x) > 1 | walk-abs (now.y - before.y) > 1 then Ok None
+        else let source = gmg-at g now 0
+        in if source < 0 then Ok None
+        else if not (gmg-bound g source (list-at g.gates source).serial) then Err "moongate source binding"
+        else let destination = gmg-destination source seconds
+        in if not (permit now.serial destination) then Ok None
+        else let members = gmg-collect permit g map doors before destination 0 (list-push (__list-with-capacity 9) now)
+        in Ok (Just (GmgTravel { sequence = g.sequence, source = source, destination = destination, seconds = seconds, members = members }))
+  gmg-party : List WorldObject, Integer, Integer -> Boolean
+  gmg-party (members) (serial) (i) = if i == list-length members then False
+    else (list-at members i).serial == serial | gmg-party members serial (i + 1)
+  gmg-occupied : WorldTable, List WorldObject, Integer, Integer -> Boolean
+  gmg-occupied (world) (members) (serial) (z) = if serial == 0 then False
+    else when world-get world serial
+      is Err (_) -> True
+      is Ok (m) -> (m.kind == 1 & m.health > 0 & walk-abs (m.z - z) < 16 & not (gmg-party members serial 0))
+        | gmg-occupied world members (world-tile-next world serial) z
+  gmg-reserved : List GmgMove, Integer, Integer, Integer -> Boolean
+  gmg-reserved (moves) (x) (y) (i) = if i == list-length moves then False
+    else let m = (list-at moves i).after
+    in (m.x == x & m.y == y) | gmg-reserved moves x y (i + 1)
+  gmg-fit : GameMoongates, WalkMap, GmgTravel, WorldObject, Integer, List GmgMove -> Result WorldObject Text
+  gmg-fit (g) (map) (plan) (m) (attempt) (moves) = if attempt == 9 then Err "moongate arrival is occupied or blocked"
+    else let p = list-at g.gates plan.destination
+    in let x = p.x + (if attempt == 0 then 0 else walk-dx (attempt - 1))
+    in let y = p.y + (if attempt == 0 then 0 else walk-dy (attempt - 1))
+    in let surface = if attempt == 0 then walk-height map x y p.z else walk-step map p.x p.y p.z (attempt - 1)
+    in when surface
+      is Err (_) -> gmg-fit g map plan m (attempt + 1) moves
+      is Ok (z) -> if gmg-reserved moves x y 0 | gmg-occupied g.game.world plan.members (world-tile-first g.game.world x y) z then gmg-fit g map plan m (attempt + 1) moves
+        else Ok (WorldObject { serial = m.serial, kind = m.kind, x = x, y = y, z = z,
+          graphic = m.graphic, hue = m.hue, container = m.container, amount = m.amount, health = m.health })
+  gmg-arrivals : GameMoongates, WalkMap, GmgTravel, Integer, List GmgMove -> Result (List GmgMove) Text
+  gmg-arrivals (g) (map) (plan) (i) (moves) = if i == list-length plan.members then Ok moves
+    else let m = list-at plan.members i
+    in when gmg-fit g map plan m 0 moves
+      is Err (e) -> Err e
+      is Ok (after) -> gmg-arrivals g map plan (i + 1) (list-push moves (GmgMove { before = m, after = after }))
+  gmg-still : (Integer, Integer -> Boolean), GameMoongates, GmgTravel, Integer -> Boolean
+  gmg-still (permit) (g) (plan) (i) = if i == list-length plan.members then True
+    else let old = list-at plan.members i
+    in when world-get g.game.world old.serial
+      is Err (_) -> False
+      is Ok (now) -> now.kind == 1 & now.x == old.x & now.y == old.y & now.z == old.z
+        & now.graphic == old.graphic & now.health == old.health & permit now.serial plan.destination & gmg-still permit g plan (i + 1)
+  gmg-relocate : GameMoongates, List GmgMove, Integer -> Result Integer Text
+  gmg-relocate (g) (moves) (i) = if i == list-length moves then Ok i
+    else let m = (list-at moves i).after
+    in when world-update g.game.world m
+      is Err (e) -> Err e
+      is Ok (_) -> when cb-ensure g.combat g.game m.serial
+        is Err (e) -> Err e
+        is Ok (actor) -> let stopped = cb-stop g.combat actor
+          in let cleared = cb-clear-target g.combat m.serial 0
+          in gmg-relocate g moves (i + 1)
+  gmg-effect : WorldObject -> List Integer
+  gmg-effect (m) = let a = gp-put16 (gp-put32 (gp-put32 [#70,2] 0) 0) #3728
+    in let b = list-push (gp-put16 (gp-put16 a m.x) m.y) (bit-and m.z 255)
+    in let c = list-push (gp-put16 (gp-put16 b m.x) m.y) (bit-and m.z 255)
+    in c & [10,10,0,0,1,0]
+  gmg-sound : WorldObject -> List Integer
+  gmg-sound (m) = gp-put16 (gp-put16 (gp-put16 [#54,1,1,#FE,0,0] m.x) m.y) m.z
+  gmg-apply : (Integer, Integer -> Boolean), GameMoongates, GameInput, WalkMap, GmgTravel, GameReply -> Result GameReply Text
+  gmg-apply (permit) (g) (input) (map) (plan) (prior) =
+    if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= g.game.active | prior.close
+      | plan.sequence /= g.sequence | g.sequence >= gmg-limit
+      | plan.source < 0 | plan.source >= 8 | plan.destination < 0 | plan.destination >= 8
+      | list-length plan.members < 1 | list-length plan.members > 9 then Err "moongate stale plan or admission"
+    else if (list-at plan.members 0).serial /= input.session.serial
+      | plan.destination /= gmg-destination plan.source plan.seconds
+      | not (gmg-bound g plan.destination (list-at g.gates plan.destination).serial)
+      | not (gmg-still permit g plan 0) then Err "moongate plan binding changed"
+    else when gmg-arrivals g map plan 0 (__list-with-capacity 9)
+      is Err (_) -> Ok (__record-set prior "packets" (list-push prior.packets (sip-message input.session.serial #FFFF 6 "The way through the moongate is blocked.")))
+      is Ok (moves) -> when gmg-relocate g moves 0
+        is Err (e) -> Err e
+        is Ok (_) ->
+          let sequence = __record-set g "sequence" (g.sequence + 1)
+          in let reset = __record-set input.session "sequence" 0
+          in let m = (list-at moves 0).after
+          in let actor = list-at g.combat.actors (world-slot g.game.world m.serial)
+          in let packets = prior.packets & [gmg-effect (list-at plan.members 0), cbp-player m input.session.direction (cbp-flags actor.war (m.health == 0)), cbp-target 0, gmg-effect m, gmg-sound m]
+          in Ok (GameReply { packets = packets, close = prior.close, note = "moongate destination=" & show plan.destination & " travellers=" & show (list-length moves) })
+  gmg-visible : GameMoongates, GmgViewer, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gmg-visible (g) (view) (m) (i) (packets) = if i == 8 then Ok packets
+    else let p = list-at g.gates i
+    in if not (gmg-bound g i p.serial) then Err "moongate visible binding"
+    else let near = walk-abs (m.x - p.x) <= 18 & walk-abs (m.y - p.y) <= 18
+    in let bit = bit-shl 1 i
+    in let was = bit-and view.visible bit /= 0
+    in let changed = if was == near then 0 else let mask = __record-set view "visible" (bit-xor view.visible bit) in 0
+    in if was == near then gmg-visible g view m (i + 1) packets
+    else if not near then gmg-visible g view m (i + 1) (list-push packets (cbp-remove p.serial))
+    else when world-get g.game.world p.serial
+      is Err (e) -> Err e
+      is Ok (item) -> gmg-visible g view m (i + 1) (list-push packets (sip-ground item))
+  gmg-view : GameMoongates, GameInput, GameReply -> Result GameReply Text
+  gmg-view (g) (input) (reply) = if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= g.game.active then Ok reply
+    else let slot = cb-slot g.game input.session.serial 0
+    in if slot < 0 then Err "moongate viewer binding"
+    else let view = list-at g.viewers slot
+    in let reset = if view.serial == input.session.serial & view.connection == input.connection then 0 else
+      let actor = __record-set view "serial" input.session.serial
+      in let link = __record-set view "connection" input.connection
+      in let mask = __record-set view "visible" 0 in 0
+    in when world-get g.game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (m) -> when gmg-visible g view m 0 reply.packets
+        is Err (e) -> Err e
+        is Ok (packets) -> Ok (__record-set reply "packets" packets)
+
+Page 1

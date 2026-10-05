@@ -1099,7 +1099,7 @@ function Invoke-PlugVmFileSerial {
     if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }
     if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') }
     $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
-    $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', "$MemMB", '-chardev', "socket,id=ch0,host=127.0.0.1,port=$port,server=on,wait=on,nodelay=on", '-serial', 'chardev:ch0', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
+    $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', "$MemMB", '-chardev', (Get-VmChardevData -Port $port), '-chardev', (Get-VmChardevCtrl -Port ($port + 1)), '-serial', 'chardev:ch0', '-serial', 'chardev:ch1', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
     if ($DiskFile) { $vmArgs += @('-drive', "file=$DiskFile,format=raw,if=ide,index=0") }
     $startArgs = @{ FilePath = $script:FallbackVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }
     if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }
@@ -1115,7 +1115,20 @@ function Invoke-PlugVmFileSerial {
         [Console]::Error.WriteLine("FAIL: could not reach the QEMU serial socket on port $port")
         return $false
     }
+    # COM1 init writes FCR = 0xC7, which clears the 16550 receive FIFO, so a byte
+    # written before it is lost. The guest sends READY on COM2 after COM1 init.
+    $ctrl = $null
+    while ([DateTime]::UtcNow -lt $deadline -and -not $proc.HasExited) {
+        try { $ctrl = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port + 1); break } catch { Start-Sleep -Milliseconds 200 }
+    }
+    if (-not $ctrl -or -not (Read-VmReady -Conn @{ Ctrl = $ctrl } -TimeoutSec $TimeoutSec)) {
+        $client.Close(); if ($ctrl) { $ctrl.Close() }
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        [Console]::Error.WriteLine("FAIL: the guest sent no READY on COM2, so its input was not written")
+        return $false
+    }
     $ok = $true
+    $trapped = $false
     try {
         $stream = $client.GetStream()
         $stream.ReadTimeout = $TimeoutSec * 1000
@@ -1126,20 +1139,84 @@ function Invoke-PlugVmFileSerial {
         $buf = New-Object byte[] 65536
         # The guest closing the wire is the end of the answer. A read timeout is
         # NOT, so it is reported rather than written out as a whole result.
+        # A trap dump ends in cli; hlt, which QEMU never leaves, and carries no end
+        # marker, so the first two quiet seconds after !EXC= end it, as codex-vm's
+        # exit on the halt would.
+        $carry = ''
         try {
             while ($true) {
                 $n = $stream.Read($buf, 0, $buf.Length)
                 if ($n -le 0) { break }
                 $outMs.Write($buf, 0, $n)
+                if (-not $trapped) {
+                    $tail = $carry + [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
+                    if ($tail.Contains('!EXC=')) { $trapped = $true; $stream.ReadTimeout = 2000 }
+                    $carry = $tail.Substring([Math]::Max(0, $tail.Length - 4))
+                }
             }
         } catch [System.IO.IOException] {
-            if (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine("FAIL: the QEMU serial read ended by timeout, so the capture may be short") }
+            if ($trapped) { [Console]::Error.WriteLine("FAIL: the guest trapped; its !EXC dump is the output") }
+            elseif (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine("FAIL: the QEMU serial read ended by timeout, so the capture may be short") }
         }
         [System.IO.File]::WriteAllBytes($OutputFile, $outMs.ToArray())
     } finally {
         $client.Close()
-        if (-not $proc.HasExited) { $null = $proc.WaitForExit(20000) }
-        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $ok = $false }
+        if ($ctrl) { $ctrl.Close() }
+        if (-not $proc.HasExited -and -not $trapped) { $null = $proc.WaitForExit(20000) }
+        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; if (-not $trapped) { $ok = $false } }
     }
     return $ok
+}
+
+
+function Get-CdxContentExtent([string]$CdxFile) {
+    $bytes = [System.IO.File]::ReadAllBytes($CdxFile)
+    $length = $bytes.Length
+    if (($length -lt 224)) {
+        throw 'CDX header is truncated'
+    }
+    if ((-not ([string]::Equals(([Text.Encoding]::ASCII).GetString($bytes, 0, 4), 'CDX1', ([StringComparison]::Ordinal))))) {
+        throw 'CDX magic is invalid'
+    }
+    $at = [long]([BitConverter]::ToUInt32($bytes, 220))
+    if (($at -eq 0)) {
+        return $length
+    }
+    if ((($at -lt 224) -or ($at -gt ($length - 12)))) {
+        throw 'MAP1 offset is outside the file'
+    }
+    if ((-not ([string]::Equals(([Text.Encoding]::ASCII).GetString($bytes, $at, 4), 'MAP1', ([StringComparison]::Ordinal))))) {
+        throw 'MAP1 magic is invalid'
+    }
+    $count = [long]([BitConverter]::ToUInt32($bytes, ($at + 4)))
+    $stringOffset = [long]([BitConverter]::ToUInt32($bytes, ($at + 8)))
+    $tableEnd = (12 + ($count * 12))
+    if ((($count -eq 0) -or (-not ($stringOffset -eq $tableEnd)))) {
+        throw 'MAP1 entry table is invalid'
+    }
+    $strings = ($at + $stringOffset)
+    if (($strings -ge $length)) {
+        throw 'MAP1 string table is outside the file'
+    }
+    $pos = $strings
+    $i = 0
+    while (($i -lt $count)) {
+        $entry = (($at + 20) + ($i * 12))
+        $nameOffset = [long]([BitConverter]::ToUInt32($bytes, $entry))
+        if ((-not ($nameOffset -eq ($pos - $strings)))) {
+            throw 'MAP1 name offsets do not describe a contiguous string table'
+        }
+        while ((($pos -lt $length) -and (-not ($bytes[$pos] -eq 0)))) {
+            $pos++
+        }
+        if (($pos -ge $length)) {
+            throw 'MAP1 name is unterminated'
+        }
+        $pos++
+        $i++
+    }
+    if ((-not ($pos -eq $length))) {
+        throw 'MAP1 extent does not end at EOF'
+    }
+    return $at
 }

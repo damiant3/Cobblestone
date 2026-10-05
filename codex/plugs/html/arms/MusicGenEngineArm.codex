@@ -1,0 +1,67 @@
+Chapter: MusicGenEngineArm
+  cites Spark chapter MusicGenEngine
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  ea-refuse : Text -> Integer
+  ea-refuse (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  ea-list : List Integer, Integer, Integer -> Text
+  ea-list (xs) (lo) (hi) = if hi - lo == 1 then show (list-at xs lo) else let mid = (lo + hi) / 2 in ea-list xs lo mid & "," & ea-list xs mid hi
+
+  ea-progress : Text, Integer, Integer -> Integer
+  ea-progress (phase) (current) (total) = let p = state-set-text "phase" phase in let n = state-set "progress" current in if state-get "cancel" == 1 & phase == "generating" & current == 1 then 0 - 1 else 0
+
+  ea-saved : MusicGenEngine, Integer, Text -> Integer
+  ea-saved (engine) (case) (result) =
+    if text-contains result "\"ok\":true" == False then ea-refuse result
+    else let s = state-set-text ("saved" & show case) result in ea-case engine (case + 1)
+
+  ea-audio : MusicGenEngine, Integer, MusicGenAudio -> Integer
+  ea-audio (engine) (case) (audio) =
+    let tokens = audio.mga-codes
+    in let saved = state-set-text ("tokens" & show case) ("[" & ea-list tokens 0 (list-length tokens) & "]")
+    in let wave = audio.mga-wave
+    in file-save-bytes-then ("audio/case" & show case & ".wav") (wave.mw-address) (wave.mw-bytes) (\r -> ea-saved engine case r)
+
+  ea-settings : Integer -> MusicGenSettings
+  ea-settings (case) = MusicGenSettings { mg-frames = text-to-integer (page-data ("frames" & show case)), mg-seed = text-to-integer (page-data ("seed" & show case)), mg-sampling = True, mg-top-k = 250, mg-temperature = real-from-int (text-to-integer (page-data ("temperature" & show case))) / 1000.0, mg-guidance = real-from-int (text-to-integer (page-data ("cfg" & show case))) / 1000.0 }
+
+  ea-case : MusicGenEngine, Integer -> Integer
+  ea-case (engine) (case) =
+    if case >= text-to-integer (page-data "count") then
+      let c = state-set "closed" (if musicgen-close engine & musicgen-close engine then 1 else 0)
+      in musicgen-generate engine "closed" (ea-settings 0) ea-progress (\a -> ea-refuse "Closed engine accepted work") (\why -> (let e = state-set-text "closed-error" why in state-set "done" 1))
+    else let c = state-set "case" case
+    in musicgen-generate engine (page-data ("prompt" & show case)) (ea-settings case) ea-progress (\a -> ea-audio engine case a) ea-refuse
+
+  ea-cancelled : MusicGenEngine, Text -> Integer
+  ea-cancelled (engine) (why) =
+    let e = state-set-text "cancel-error" why
+    in let c = state-set "cancel" 0
+    in ea-case engine 0
+
+  ea-ready : MusicGenEngine -> Integer
+  ea-ready (engine) =
+    let c = state-set "cancel" 1
+    in let start = musicgen-generate engine (page-data "prompt0") (ea-settings 0) ea-progress (\a -> ea-refuse "Cancelled work completed") (\why -> ea-cancelled engine why)
+    in let close = state-set "busy-close" (if musicgen-close engine then 1 else 0)
+    in musicgen-generate engine "busy" (ea-settings 0) ea-progress (\a -> ea-refuse "Busy engine accepted work") (\why -> (let e = state-set-text "busy-error" why in 0))
+
+  ea-file : Integer -> MusicGenFile
+  ea-file (i) = MusicGenFile { mgf-name = state-get-text ("file" & show i), mgf-size = state-get ("size" & show i) }
+
+  ea-picked : Integer, Text -> Integer
+  ea-picked (i) (data) =
+    let obj = json-parse-obj data
+    in let f = state-set-text ("file" & show i) (json-obj-field obj "name")
+    in let s = state-set ("size" & show i) (text-to-integer (json-obj-field obj "size"))
+    in if i < 3 then state-set "need" (i + 1)
+    else musicgen-open (MusicGenSources { mgs-tokenizer = ea-file 0, mgs-text = ea-file 1, mgs-model = ea-file 2, mgs-audio = ea-file 3 }) (MusicGenShaders { mgh-base = page-data "base", mgh-text = page-data "text", mgh-model = page-data "model", mgh-audio = page-data "audio" }) ea-ready ea-refuse
+
+  ea-pick : Text -> Integer
+  ea-pick (id) = let i = state-get "need" in if i < 0 | i > 3 then 0 else let b = state-set "need" (0 - 1) in pick-file-then ".json,.safetensors,.bin" (\data -> ea-picked i data)
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") ea-pick in state-set "need" 0

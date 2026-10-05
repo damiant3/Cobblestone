@@ -1,0 +1,27 @@
+Chapter: DiffusionSqrtFixed
+  cites Diffusion chapter NoiseGen
+  cites Foreword chapter Console
+
+ We say:
+
+  old-loop : Real, Real, Integer -> Real
+  old-loop (x) (g) (k) = if k >= 60 then g else old-loop x ((g + x / g) / 2.0) (k + 1)
+
+  different : Real -> Integer
+  different (x) =
+    let old = if x <= 0.0 then 0.0 else old-loop x (if x > 1.0 then x else 1.0) 0
+    in if real-to-bits old == real-to-bits (sm-sqrt x) then 0 else 1
+
+  cases : Integer, Integer -> Integer
+  cases (i) (bad) =
+    if i >= 4096 then bad
+    else let exponent = int-mod i 2046 + 1
+    in let mantissa = bit-and (nz-mix i) #000FFFFFFFFFFFFF
+    in let spread = bits-to-real (bit-or (bit-shl exponent 52) mantissa)
+    in let dense = real-from-int i / 64.0
+    in cases (i + 1) (bad + different spread + different dense)
+
+  opening : [Console] Nothing
+  opening = act
+    print-line-uni ("sqrt old-loop bit differences: " & show (cases 0 0 + different (0.0 - 1.0) + different 1.0 + different 2.0 + different 4.0 + different (bits-to-real 1) + different (bits-to-real #8000000000000000)))
+  end

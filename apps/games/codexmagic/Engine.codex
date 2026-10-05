@@ -14,27 +14,477 @@ Section: Game Loop
 
   run-game : GameState, Integer -> GameState
   run-game (gs) (max-turns) =
-    if gs.game-over then gs
+    if gs.game-over | game-budget-stopped gs then gs
     else if gs.turn-number > max-turns then gs
     else let gs2 = run-turn gs
     in let gs3 = check-state-based-actions gs2
-    in if gs3.game-over then gs3
+    in if gs3.game-over | game-budget-stopped gs3 then gs3
     else let gs4 = advance-turn gs3
     in run-game gs4 max-turns
 
   run-turn : GameState -> GameState
-  run-turn (gs) =
-    let player = gs.active-player
-    in let gen-template = get-general gs player
+  run-turn (gs) = run-turn-orders gs posture-unattended posture-unattended
+
+  run-turn-orders : GameState, Posture, Posture -> GameState
+  run-turn-orders (gs) (pa) (pb) = if game-budget-stopped gs then gs else (advance-supervised (supervised-start gs) pa pb False).game
+
+  Commitment = record { card : Integer, rays : Integer, nonce : Integer, deadline : Integer, choices : List TargetCandidate, recommended : Integer, all-rays : Boolean, source : Integer, ability : Integer }
+
+  commitment-pending : Commitment -> Boolean
+  commitment-pending (p) = p.card >= 0 | p.source >= 0
+
+  commitment-none : Commitment
+  commitment-none = Commitment { card = 0 - 1, rays = 0, nonce = 0, deadline = 0, choices = [], recommended = 0 - 3, all-rays = False, source = 0 - 1, ability = 0 - 1 }
+
+  CombatChoice = record { pending : Boolean, nonce : Integer, deadline : Integer }
+
+  combat-choice-none : CombatChoice
+  combat-choice-none = CombatChoice { pending = False, nonce = 0, deadline = 0 }
+
+  SupervisedTurn = record {
+    combat-cantrip-stage : Integer,
+    game : GameState,
+    combat : CombatState,
+    stage : Integer,
+    paused : Boolean,
+    manual-override : Boolean,
+    commitment : Commitment,
+    held-cards : List Integer,
+    combat-choice : CombatChoice,
+    used-abilities : List AbilityUse
+  }
+
+  supervised-start : GameState -> SupervisedTurn
+  supervised-start (gs) = supervised-start-work (if game-budget-stopped gs then gs else game-work-reset gs)
+
+  supervised-start-work : GameState -> SupervisedTurn
+  supervised-start-work (gs) = SupervisedTurn { combat-cantrip-stage = 0 - 1, manual-override = False, game = (if gs.game-over then gs else stage-game gs ai-stage-upkeep), combat = CombatState { attackers = [], blockers = [], num-attackers = 0, num-blockers = 0 }, stage = (if gs.game-over then ai-stage-done else ai-stage-upkeep), paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+
+  advance-supervised : SupervisedTurn, Posture, Posture, Boolean -> SupervisedTurn
+  advance-supervised (turn) (pa) (pb) (resume) =
+    if resume & turn.manual-override then advance-supervised (__record-set (ability-turn turn (turn.game) (turn.paused) (turn.commitment) (turn.used-abilities)) "manual-override" False) pa pb True
+    else if resume & game-budget-stopped (turn.game) then advance-supervised-work (ability-turn turn (game-work-reset (turn.game)) (turn.paused) (turn.commitment) (turn.used-abilities)) pa pb True
+    else advance-supervised-work turn pa pb resume
+
+  advance-supervised-work : SupervisedTurn, Posture, Posture, Boolean -> SupervisedTurn
+  advance-supervised-work (given) (pa) (pb) (resume) =
+    let gs = settle-loyalty (refresh-queued-loyalty (refresh-queued-cards (if (given.game).game-over then given.game else stage-game (given.game) (given.stage)) 0) 0) pa pb
+    in let turn = if has-loyalty-gain (get-general gs 0) | has-loyalty-gain (get-general gs 1) | loyalty-pending (given.game) | (list-at ((given.game).queued-loyalty) 0).source >= 0 | (list-at ((given.game).queued-loyalty) 1).source >= 0 then ability-turn given gs (given.paused) (given.commitment) (given.used-abilities) else given
+    in let player = gs.active-player
+    in let mine = if player == 0 then pa else pb
+    in let theirs = if player == 0 then pb else pa
+    in let owner = if turn.stage == ai-stage-blockers then theirs else mine
+    in if game-budget-stopped gs & gs.game-over == False then SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = gs, combat = turn.combat, stage = (if turn.stage >= ai-stage-done then ai-stage-end else turn.stage), paused = True, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
+    else if gs.game-over | turn.stage >= ai-stage-done then SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = turn.combat, stage = ai-stage-done, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+    else if disruption-pending gs then settle-supervised-disruption (ability-turn turn gs (turn.paused) (turn.commitment) (turn.used-abilities)) pa pb
+    else if commitment-pending (turn.commitment) | (turn.combat-choice).pending then turn
+    else if turn.stage == ai-stage-end & mine.spell-policy == ManualSpells & cleanup-excess gs > 0 then supervised-pause turn gs mine
+    else if resume == False & (turn.paused | posture-freezes owner (turn.stage) | (manual-main-stage (turn.stage) & manual-main-orders mine) | (turn.stage == ai-stage-attackers & combat-gamble-needed gs mine) | (turn.stage == ai-stage-blockers & theirs.block-policy == ManualBlock & (turn.combat).num-attackers > 0)) then supervised-pause turn gs mine
+    else let gen = get-general gs player
+    in let stance = effective-stance mine gen ((get-player gs player).general)
+    in let next = (if turn.stage == ai-stage-upkeep then
+        SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = do-upkeep gs, combat = turn.combat, stage = ai-stage-draw, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+      else if turn.stage == ai-stage-draw then
+        SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = do-draw gs, combat = turn.combat, stage = ai-stage-main-1, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+      else if turn.stage == ai-stage-main-1 then
+        supervised-queued-main turn gs stance mine ai-stage-attackers
+      else if turn.stage == ai-stage-attackers then
+        (let cs = if turn.paused then legal-attack-plan gs ((turn.combat).attackers) 0 (CombatState { attackers = [], blockers = [], num-attackers = 0, num-blockers = 0 }) else planned-attackers gs mine
+         in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = tap-attackers gs cs, combat = cs, stage = ai-stage-blockers, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] })
+      else if turn.stage == ai-stage-blockers then
+        (let defender = if player == 0 then 1 else 0
+         in let ds = effective-stance theirs (get-general gs defender) ((get-player gs defender).general)
+         in let cs = ai-assign-blockers-policy gs (turn.combat) defender ds (theirs.primary-targets) (theirs.block-policy)
+         in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = cs, stage = ai-stage-damage, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] })
+      else if turn.stage == ai-stage-damage then
+        SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = check-state-based-actions ((resolve-combat-damage gs (turn.combat)).game), combat = turn.combat, stage = ai-stage-main-2, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+      else if turn.stage == ai-stage-main-2 then
+        supervised-queued-main turn gs stance mine ai-stage-end
+      else SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = do-cleanup (cleanup-hand-at-skill gs stance (mine.skill)), combat = turn.combat, stage = ai-stage-done, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] })
+    in if commitment-pending (next.commitment) then next else advance-supervised next pa pb False
+
+  supervised-queued-main : SupervisedTurn, GameState, Stance, Posture, Integer -> SupervisedTurn
+  supervised-queued-main (turn) (gs) (stance) (orders) (next-stage) =
+    let after-card = perform-queued-card gs (gs.active-player) (turn.stage) orders
+    in let frame = ability-turn turn after-card False (turn.commitment) (turn.used-abilities)
+    in if after-card.game-over | game-budget-stopped after-card | disruption-pending after-card | loyalty-pending after-card then frame
+    else if (list-at (after-card.queued-loyalty) (after-card.active-player)).source < 0 then supervised-queued-ability-main frame after-card stance orders next-stage
+    else let after-loyalty = perform-queued-loyalty after-card (after-card.active-player) (turn.stage)
+    in let ready = ability-turn frame after-loyalty False (frame.commitment) (frame.used-abilities)
+    in if after-loyalty.game-over | game-budget-stopped after-loyalty | disruption-pending after-loyalty | loyalty-pending after-loyalty then ready
+    else supervised-queued-ability-main ready after-loyalty stance orders next-stage
+
+  supervised-queued-ability-main : SupervisedTurn, GameState, Stance, Posture, Integer -> SupervisedTurn
+  supervised-queued-ability-main (turn) (gs) (stance) (orders) (next-stage) =
+    let q = list-at (gs.queued-abilities) (gs.active-player)
+    in let due = queued-ability-due gs (turn.stage) q
+    in let used = if due & ability-used (turn.used-abilities) (q.source) (q.ability) == False then record-ability-use (turn.used-abilities) (AbilityUse { source = q.source, ability = q.ability }) else turn.used-abilities
+    in let after = if due then perform-queued-ability gs (gs.active-player) (turn.stage) else gs
+    in let frame = if due then ability-turn turn after False commitment-none used else turn
+    in let ready = if after.game-over | game-budget-stopped after | disruption-pending after | turn.stage /= ai-stage-main-1 | manual-main-orders orders then after else ai-play-gem after (after.active-player)
+    in supervised-main frame ready stance orders next-stage
+
+  supervised-main : SupervisedTurn, GameState, Stance, Posture, Integer -> SupervisedTurn
+  supervised-main (turn) (gs) (stance) (orders) (next-stage) =
+    if loyalty-pending gs then ability-turn turn gs False (turn.commitment) (turn.used-abilities)
+    else if game-budget-stopped gs then ability-turn turn gs True (turn.commitment) (turn.used-abilities)
+    else if gs.game-over then SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = turn.combat, stage = ai-stage-done, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+    else if manual-main-orders orders then SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = turn.combat, stage = next-stage, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+    else let cast = ai-cast-progress gs (gs.active-player) stance orders (turn.held-cards) (0 - 1)
+    in if game-budget-stopped (cast.game) then ability-turn turn (cast.game) True commitment-none (turn.used-abilities)
+    else if cast.card >= 0 then commitment-turn turn cast
+    else if disruption-pending (cast.game) | loyalty-pending (cast.game) then ability-turn turn (cast.game) False commitment-none (turn.used-abilities)
+    else if (cast.game).game-over then SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = cast.game, combat = turn.combat, stage = ai-stage-done, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+    else let before = list-length ((get-player (cast.game) (gs.active-player)).hand)
+    in let activated = ai-activate-loyalty (cast.game) (gs.active-player) (orders.primary-targets)
+    in let final = if activated.game-over | list-length ((get-player activated (gs.active-player)).hand) <= before then cast-complete activated False else ai-cast-progress activated (gs.active-player) stance orders (turn.held-cards) (0 - 1)
+    in if final.card >= 0 then commitment-turn turn final
+    else if disruption-pending (final.game) | loyalty-pending (final.game) then ability-turn turn (final.game) False commitment-none (turn.used-abilities)
+    else supervised-abilities (ability-turn turn (final.game) False commitment-none (turn.used-abilities)) stance orders next-stage
+
+  settle-supervised-disruption : SupervisedTurn, Posture, Posture -> SupervisedTurn
+  settle-supervised-disruption (turn) (pa) (pb) =
+    let gs = turn.game
+    in if disruption-pending gs == False | gs.game-over then turn
+    else let state = gs.disruption
+    in let window = state.window
+    in if list-length (window.choices) > 0 then ability-turn turn gs True commitment-none (turn.used-abilities)
+    else let orders = if window.caster == 0 then pb else pa
+    in let choices = if orders.disruption-pause then disruption-options gs orders True 0 [] else []
+    in if list-length choices > 0 then
+      (let saved = SpellWindow { activation = window.activation, card = window.card, caster = window.caster, targets = window.targets, hardness = window.hardness, manual = window.manual, nonce = 0, deadline = 0, choices = choices }
+       in ability-turn turn (game-with-disruption gs (DisruptionState { seed = state.seed, index = state.index, window = saved, result = state.result })) True commitment-none (turn.used-abilities))
+    else let answered = resolve-disruption-window gs orders (ai-disruption-card gs orders) False
+    in finish-supervised-disruption turn answered pa pb
+
+  finish-supervised-disruption : SupervisedTurn, GameState, Posture, Posture -> SupervisedTurn
+  finish-supervised-disruption (turn) (gs) (pa) (pb) =
+    if disruption-pending gs then turn
+    else let manual = (((turn.game).disruption).window).manual
+    in let next = ability-turn turn gs manual commitment-none (turn.used-abilities)
+    in if manual & gs.game-over == False then next else advance-supervised-work next pa pb True
+
+  supervised-disruption-choice : SupervisedTurn, Posture, Posture, Integer -> SupervisedTurn
+  supervised-disruption-choice (turn) (pa) (pb) (card) =
+    let gs = turn.game
+    in let window = (gs.disruption).window
+    in if disruption-pending gs == False | gs.game-over | (card >= 0 & list-contains (window.choices) (\o -> o.card == card) == False) then turn
+    else let orders = if window.caster == 0 then pb else pa
+    in finish-supervised-disruption turn (resolve-disruption-window gs orders card True) pa pb
+
+  supervised-cantrip-response : SupervisedTurn, Posture, Posture, Integer, Integer -> SupervisedTurn
+  supervised-cantrip-response (turn) (pa) (pb) (card) (target) =
+    let gs = turn.game
+    in let window = (gs.disruption).window
+    in if gs.game-over | disruption-pending gs == False | list-contains (window.choices) (\o -> o.card == card) == False then turn
+    else let orders = if window.caster == 0 then pb else pa
+    in finish-supervised-disruption turn (resolve-cantrip-response gs orders card target) pa pb
+
+  supervised-ability-response : SupervisedTurn, Posture, Posture, Integer, Integer, Integer -> SupervisedTurn
+  supervised-ability-response (turn) (pa) (pb) (source) (index) (target) =
+    let gs = turn.game
+    in let window = (gs.disruption).window
+    in if gs.game-over | disruption-pending gs == False | list-contains (window.choices) (\o -> o.source == source & o.ability == index & source >= 0) == False then turn
+    else let orders = if window.caster == 0 then pb else pa
+    in finish-supervised-disruption turn (resolve-ability-response gs orders source index target) pa pb
+
+  ability-turn : SupervisedTurn, GameState, Boolean, Commitment, List AbilityUse -> SupervisedTurn
+  ability-turn (turn) (gs) (paused) (pending) (used) = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = gs, combat = turn.combat, stage = turn.stage, paused = paused, commitment = pending, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = used }
+
+  supervised-abilities : SupervisedTurn, Stance, Posture, Integer -> SupervisedTurn
+  supervised-abilities (turn) (stance) (orders) (next-stage) =
+    let gs = turn.game
+    in let budget = pending-available-rays gs orders
+    in let pick = next-automatic-ability gs orders (turn.used-abilities) budget 0 0
+    in if game-budget-stopped gs then ability-turn turn gs True (turn.commitment) (turn.used-abilities)
+    else if gs.game-over | pick.source < 0 then SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = turn.combat, stage = (if gs.game-over then ai-stage-done else next-stage), paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+    else if (gs.automatic-work).count >= automatic-action-limit then ability-turn turn (game-work-stop gs 1 ((gs.automatic-work).count) ((gs.automatic-work).last)) True commitment-none (turn.used-abilities)
+    else let perm = find-permanent (gs.battlefield) (pick.source) 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (perm.template-id)).abilities) (pick.ability)
+      is ActivatedAbility (cost) (eff) ->
+        (let targets = loyalty-effect-targets gs (gs.active-player) eff (orders.primary-targets)
+         in let recommended = if list-length targets > 0 then list-at targets 0 else 0 - 3
+         in let used = record-ability-use (turn.used-abilities) pick
+         in let next = ability-turn turn gs False commitment-none used
+         in let ambiguous = orders.target-pause & ambiguous-spell-target gs (make-cantrip (0 - 1) "" light-cost-zero [StaticAbility eff]) (gs.active-player) (orders.primary-targets) False
+         in let all = cost.rays > 0 & cost.rays == budget
+         in if cost.sacrifice-self & recommended == pick.source then supervised-abilities next stance orders next-stage
+         else if cost.sacrifice-self | (orders.commitment-pause & all) | ambiguous then
+           ability-turn next gs True (Commitment { card = 0 - 1, rays = cost.rays, nonce = 0, deadline = 0, choices = (if effect-needs-target eff then effect-target-candidates gs (gs.active-player) eff else []), recommended = recommended, all-rays = all, source = pick.source, ability = pick.ability }) used
+         else let after = activate-permanent-ability (game-work-action gs ((get-template gs (perm.template-id)).name)) (gs.active-player) (pick.source) (pick.ability) (orders.primary-targets) True
+         in supervised-main next after stance orders next-stage)
+      is otherwise -> turn
+
+  supervised-ability-choice : SupervisedTurn, Posture, Posture, Boolean, Integer -> SupervisedTurn
+  supervised-ability-choice (turn) (pa) (pb) (activate) (target) =
+    let gs = turn.game
+    in let pending = turn.commitment
+    in let orders = if gs.active-player == 0 then pa else pb
+    in let choosing = list-length (pending.choices) > 0
+    in let picked = if choosing then target-choice-posture orders target else orders
+    in let ready = manual-main-orders orders == False & automatic-ability-ready gs picked (pending.source) (pending.ability) (pending-available-rays gs orders)
+    in let valid = if ready == False then False else (target /= pending.source | activation-sacrifices gs (pending.source) (pending.ability) == False) & (choosing == False | (list-contains (pending.choices) (\c -> c.target == target) & effect-target-legal gs (gs.active-player) (activation-effect gs (pending.source) (pending.ability)) target))
+    in if activate & valid == False then turn
+    else let after = if activate then activate-permanent-ability gs (gs.active-player) (pending.source) (pending.ability) (picked.primary-targets) True else gs
+    in let cleared = ability-turn turn after False commitment-none (turn.used-abilities)
+    in advance-supervised-work cleared pa pb True
+
+  commitment-turn : SupervisedTurn, CastProgress -> SupervisedTurn
+  commitment-turn (turn) (cast) = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = cast.game, combat = turn.combat, stage = turn.stage, paused = True, commitment = Commitment { card = cast.card, rays = cast.rays, nonce = 0, deadline = 0, choices = cast.choices, recommended = cast.recommended, all-rays = cast.all-rays, source = 0 - 1, ability = 0 - 1 }, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
+
+  supervised-commitment : SupervisedTurn, Posture, Posture, Boolean -> SupervisedTurn
+  supervised-commitment (turn) (pa) (pb) (cast) = supervised-commitment-target turn pa pb cast ((turn.commitment).recommended)
+
+  supervised-override : SupervisedTurn -> SupervisedTurn
+  supervised-override (turn) =
+    if (turn.game).game-over | disruption-pending (turn.game) | commitment-pending (turn.commitment) == False | turn.paused == False | manual-main-stage (turn.stage) == False then turn
+    else let pending = turn.commitment
+    in let held = if pending.source < 0 then turn.held-cards & [pending.card] else turn.held-cards
+    in let used = if pending.source >= 0 then record-ability-use (turn.used-abilities) (AbilityUse { source = pending.source, ability = pending.ability }) else turn.used-abilities
+    in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = True, game = turn.game, combat = turn.combat, stage = turn.stage, paused = True, commitment = commitment-none, held-cards = held, combat-choice = combat-choice-none, used-abilities = used }
+
+  supervised-commitment-target : SupervisedTurn, Posture, Posture, Boolean, Integer -> SupervisedTurn
+  supervised-commitment-target (turn) (pa) (pb) (cast) (target) =
+    if commitment-pending (turn.commitment) == False | (turn.game).game-over | turn.paused == False | manual-main-stage (turn.stage) == False then turn
+    else if (turn.commitment).source >= 0 then supervised-ability-choice turn pa pb cast target
+    else let gs = turn.game
+    in let player = gs.active-player
+    in let prior = if player == 0 then pa else pb
+    in let card = (turn.commitment).card
+    in let picking = list-length ((turn.commitment).choices) > 0
+    in let valid = picking == False | (list-contains ((turn.commitment).choices) (\c -> c.target == target) & pending-target-legal gs prior card target)
+    in let orders = if picking then target-choice-posture prior target else prior
+    in let stance = effective-stance orders (get-general gs player) ((get-player gs player).general)
+    in let result = if cast & valid & int-list-has ((get-player gs player).hand) card then ai-cast-progress gs player stance orders [] card else cast-complete gs False
+    in if cast & result.played == False then turn
+    else let held = if cast then turn.held-cards else turn.held-cards & [card]
+    in let next = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = result.game, combat = turn.combat, stage = turn.stage, paused = False, commitment = commitment-none, held-cards = held, combat-choice = combat-choice-none, used-abilities = turn.used-abilities }
+    in advance-supervised-work next pa pb True
+
+  pending-target-legal : GameState, Posture, Integer, Integer -> Boolean
+  pending-target-legal (gs) (orders) (card) (target) =
+    if game-card-valid gs card == False then False
+    else let player = gs.active-player
     in let p = get-player gs player
-    in let stance = effective-stance posture-default gen-template (p.general)
-    in let gs1 = do-upkeep gs
-    in let gs2 = do-draw gs1
-    in let gs3 = ai-play-gem gs2 player
-    in let gs4 = ai-cast-spells gs3 player stance
-    in let gs5 = ai-combat-phase gs4 player stance gen-template
-    in let gs6 = ai-cast-spells gs5 player stance
-    in do-cleanup gs6
+    in let available = pending-available-rays gs orders
+    in let template = get-card-template gs card
+    in let active = (p.prismatic).fluorescence-active | ai-fluorescence-stone gs template player available (orders.preserved-stones) ((target-choice-posture orders target).primary-targets) >= 0
+    in spell-target-legal gs template player active target
+
+  pending-available-rays : GameState, Posture -> Integer
+  pending-available-rays (gs) (orders) =
+    let player = gs.active-player
+    in let p = get-player gs player
+    in let policy-reserve = when orders.spell-policy is ConserveMana (n) -> if n > 0 then n else 0 is HoldCounters -> counter-ray-reserve gs player (p.hand) (prismatic-available-rays (p.prismatic)) 0 (0 - 1) is otherwise -> 0
+    in let general-reserve = general-ray-reserve ((get-general gs player).modifiers) 0 0
+    in prismatic-available-rays (p.prismatic) - (if policy-reserve > general-reserve then policy-reserve else general-reserve)
+
+  pending-spends-all : SupervisedTurn, Posture -> Boolean
+  pending-spends-all (turn) (orders) =
+    let gs = turn.game
+    in let pending = turn.commitment
+    in if game-card-valid gs (pending.card) == False then False
+    else let t = get-card-template gs (pending.card)
+    in let available = pending-available-rays gs orders
+    in let targets = if list-length (pending.choices) == 0 then orders.primary-targets else (target-choice-posture orders (pending.recommended)).primary-targets
+    in let stone = ai-fluorescence-stone gs t (gs.active-player) available (orders.preserved-stones) targets
+    in let extra = if stone >= 0 then 1 else 0
+    in let cost = light-payment-rays-keeping gs (gs.active-player) (t.light-cost) (available - extra) (orders.preserved-stones)
+    in cost >= 0 & cost + extra > 0 & cost + extra == available
+
+  stage-game : GameState, Integer -> GameState
+  stage-game (gs) (stage) =
+    if stage >= ai-stage-done then gs
+    else let phase = if stage <= ai-stage-draw then phase-beginning else if stage == ai-stage-main-1 then phase-main-1 else if stage <= ai-stage-damage then phase-combat else if stage == ai-stage-main-2 then phase-main-2 else phase-ending
+    in let step = if stage == ai-stage-upkeep then step-upkeep else if stage == ai-stage-draw then step-draw else if stage == ai-stage-main-1 then 3 else if stage == ai-stage-attackers then step-attackers else if stage == ai-stage-blockers then step-blockers else if stage == ai-stage-damage then step-damage else if stage == ai-stage-main-2 then 8 else step-cleanup
+    in let priority = if disruption-pending gs then (if ((gs.disruption).window).caster == 0 then 1 else 0) else if stage == ai-stage-blockers then non-active-player gs else gs.active-player
+    in if gs.phase == phase & gs.step == step & gs.priority-player == priority then gs
+    else GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work, players = gs.players, generals = gs.generals, battlefield = gs.battlefield, active-player = gs.active-player, priority-player = priority, turn-number = gs.turn-number, phase = phase, step = step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities }
+
+  manual-main-stage : Integer -> Boolean
+  manual-main-stage (stage) = stage == ai-stage-main-1 | stage == ai-stage-main-2
+
+  manual-main-orders : Posture -> Boolean
+  manual-main-orders (orders) = orders.spell-policy == ManualSpells | orders.manual-payment
+
+  ai-main-actions : GameState, Integer, Stance, Posture -> GameState
+  ai-main-actions (gs) (player) (stance) (orders) =
+    let cast = ai-cast-spells-keeping gs player stance (orders.primary-targets) (orders.spell-policy) (orders.preserved-stones)
+    in if cast.game-over then cast
+    else let hand-size = list-length ((get-player cast player).hand)
+    in let announced = ai-activate-loyalty cast player (orders.primary-targets)
+    in let activated = if disruption-pending announced then resolve-disruption-window announced posture-unattended (0 - 1) False else announced
+    in if activated.game-over | list-length ((get-player activated player).hand) <= hand-size then activated
+    else ai-cast-spells-keeping activated player stance (orders.primary-targets) (orders.spell-policy) (orders.preserved-stones)
+
+  supervised-loyalty-ready : SupervisedTurn, Posture, Integer -> Boolean
+  supervised-loyalty-ready (turn) (orders) (index) = disruption-pending (turn.game) == False & commitment-pending (turn.commitment) == False & turn.paused & manual-main-stage (turn.stage) & loyalty-ability-ready (turn.game) ((turn.game).active-player) index (orders.primary-targets)
+
+  supervised-permanent-ready : SupervisedTurn, Posture, Integer, Integer -> Boolean
+  supervised-permanent-ready (turn) (orders) (source) (index) = disruption-pending (turn.game) == False & commitment-pending (turn.commitment) == False & turn.paused & manual-main-stage (turn.stage) & permanent-ability-ready (turn.game) ((turn.game).active-player) source index (orders.primary-targets) False
+
+  supervised-activate-permanent : SupervisedTurn, Posture, Integer, Integer -> SupervisedTurn
+  supervised-activate-permanent (turn) (orders) (source) (index) =
+    if supervised-permanent-ready turn orders source index == False then turn
+    else let after = activate-permanent-ability (turn.game) ((turn.game).active-player) source index (orders.primary-targets) False
+    in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = (after.game-over == False & turn.manual-override), game = after, combat = turn.combat, stage = (if after.game-over then ai-stage-done else turn.stage), paused = after.game-over == False, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
+
+  supervised-use-loyalty : SupervisedTurn, Posture, Integer -> SupervisedTurn
+  supervised-use-loyalty (turn) (orders) (index) =
+    if supervised-loyalty-ready turn orders index == False then turn
+    else let after = activate-loyalty-ability (turn.game) ((turn.game).active-player) index (orders.primary-targets)
+    in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = (after.game-over == False & turn.manual-override), game = after, combat = turn.combat, stage = (if after.game-over then ai-stage-done else turn.stage), paused = after.game-over == False, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
+
+  combat-card-stage : Integer -> Boolean
+  combat-card-stage (stage) = stage == ai-stage-attackers | stage == ai-stage-blockers | stage == ai-stage-damage
+
+  manual-card-player : SupervisedTurn -> Integer
+  manual-card-player (turn) = if turn.stage == ai-stage-blockers then (if (turn.game).active-player == 0 then 1 else 0) else (turn.game).active-player
+
+  manual-card-pause : SupervisedTurn, Posture -> Boolean
+  manual-card-pause (turn) (orders) =
+    if turn.paused == False | (turn.game).game-over | disruption-pending (turn.game) | commitment-pending (turn.commitment) | (turn.combat-choice).pending then False
+    else if combat-card-stage (turn.stage) then posture-freezes orders (turn.stage) & turn.combat-cantrip-stage /= turn.stage
+    else manual-main-stage (turn.stage) & (manual-main-orders orders | game-budget-stopped (turn.game) | turn.manual-override)
+
+  supervised-card-ready : SupervisedTurn, Posture, Integer -> Boolean
+  supervised-card-ready (turn) (orders) (card) =
+    let gs = turn.game
+    in let player = manual-card-player turn
+    in let p = get-player gs player
+    in if manual-card-pause turn orders == False then False
+    else if game-card-valid gs card == False | int-list-has (p.hand) card == False then False
+    else let t = get-card-template gs card
+    in if (combat-card-stage (turn.stage) & t.card-type /= Cantrip) | t.card-type == Disruption | t.card-type == General then False
+    else if t.card-type == Gemstone then p.gem-drop-used == False
+    else if light-payment-possible gs player (t.light-cost) (prismatic-available-rays (p.prismatic)) == False then False
+    else let mark = __heap-save
+    in let targets = ai-pick-targets-ordered gs t player (orders.primary-targets)
+    in let ready = is-permanent-type (t.card-type) | spell-targets-required-active (t.abilities) ((p.prismatic).fluorescence-active) 0 == False | list-length targets > 0
+    in let restored = __heap-restore mark
+    in ready
+
+  supervised-play-card : SupervisedTurn, Posture, Integer -> SupervisedTurn
+  supervised-play-card (turn) (orders) (card) =
+    if supervised-card-ready turn orders card == False then turn
+    else let gs = turn.game
+    in let player = manual-card-player turn
+    in let t = get-card-template gs card
+    in if orders.manual-payment & t.card-type /= Gemstone then turn
+    else supervised-finish-card turn orders card (if t.card-type == Gemstone then LightPayment { rays = 0, stones = [], hardness = 0 } else plan-light-payment gs player (t.light-cost) (prismatic-available-rays ((get-player gs player).prismatic)))
+
+  supervised-play-manual : SupervisedTurn, Posture, Integer, List (List Integer) -> SupervisedTurn
+  supervised-play-manual (turn) (orders) (card) (chains) =
+    if orders.manual-payment == False | supervised-card-ready turn orders card == False then turn
+    else let gs = turn.game
+    in let t = get-card-template gs card
+    in let plan = if t.card-type == Gemstone then LightPayment { rays = (if list-length chains == 0 then 0 else 0 - 1), stones = [], hardness = 0 } else plan-manual-payment gs (manual-card-player turn) (t.light-cost) chains
+    in if plan.rays < 0 then turn else supervised-finish-card turn orders card plan
+
+  supervised-finish-card : SupervisedTurn, Posture, Integer, LightPayment -> SupervisedTurn
+  supervised-finish-card (turn) (orders) (card) (plan) =
+    let gs = turn.game
+    in let player = manual-card-player turn
+    in let t = get-card-template gs card
+    in let after = if t.card-type == Gemstone then play-gem-from-hand gs player card
+      else (let targets = ai-pick-targets-ordered gs t player (orders.primary-targets)
+        in let paid = apply-light-payment gs player plan
+        in let removed = set-player paid player (player-remove-from-hand (get-player paid player) card)
+        in announce-paid-spell removed card player targets (plan.hardness) True)
+    in let checked = check-state-based-actions after
+    in SupervisedTurn { combat-cantrip-stage = (if combat-card-stage (turn.stage) then turn.stage else turn.combat-cantrip-stage), manual-override = (checked.game-over == False & turn.manual-override), game = checked, combat = (if combat-card-stage (turn.stage) then combat-live-plan checked (turn.combat) else turn.combat), stage = (if checked.game-over then ai-stage-done else turn.stage), paused = checked.game-over == False, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
+
+  planned-attackers : GameState, Posture -> CombatState
+  planned-attackers (gs) (orders) =
+    let player = gs.active-player
+    in let gen = get-general gs player
+    in let stance = effective-stance orders gen ((get-player gs player).general)
+    in let empty = CombatState { attackers = [], blockers = [], num-attackers = 0, num-blockers = 0 }
+    in if should-attack-check stance gen then ai-plan-attack gs player stance gen empty else empty
+
+  supervised-pause : SupervisedTurn, GameState, Posture -> SupervisedTurn
+  supervised-pause (turn) (gs) (orders) =
+    let combat = if turn.stage == ai-stage-attackers & turn.paused == False then planned-attackers gs orders else turn.combat
+    in let timed = turn.stage == ai-stage-attackers & turn.paused == False & posture-freezes orders ai-stage-attackers == False & combat-gamble-needed gs orders
+    in let choice = if timed then CombatChoice { pending = True, nonce = 0, deadline = 0 } else turn.combat-choice
+    in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = gs, combat = combat, stage = turn.stage, paused = True, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = choice, used-abilities = turn.used-abilities }
+
+  combat-gamble-needed : GameState, Posture -> Boolean
+  combat-gamble-needed (gs) (orders) =
+    if orders.combat-pause == False then False
+    else let enemy = if gs.active-player == 0 then 1 else 0
+    in prismatic-available-rays ((get-player gs enemy).prismatic) > 0 & ready-enemy-creature gs enemy 0
+
+  ready-enemy-creature : GameState, Integer, Integer -> Boolean
+  ready-enemy-creature (gs) (enemy) (i) =
+    if i >= list-length (gs.battlefield) then False
+    else let p = list-at (gs.battlefield) i
+    in if p.controller == enemy & p.tapped == False & (get-template gs (p.template-id)).card-type == Creature then True else ready-enemy-creature gs enemy (i + 1)
+
+  supervised-combat-continue : SupervisedTurn, Posture, Posture -> SupervisedTurn
+  supervised-combat-continue (turn) (pa) (pb) =
+    if (turn.combat-choice).pending == False | turn.paused == False | turn.stage /= ai-stage-attackers | (turn.game).game-over then turn
+    else let chosen = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = turn.game, combat = turn.combat, stage = turn.stage, paused = True, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = combat-choice-none, used-abilities = [] }
+    in advance-supervised-work chosen pa pb True
+
+  legal-attacker : GameState, Integer -> Boolean
+  legal-attacker (gs) (id) =
+    if id < 0 | list-contains (gs.battlefield) (\p -> p.id == id & p.controller == gs.active-player) == False then False
+    else let p = find-permanent (gs.battlefield) id 0 (list-length (gs.battlefield))
+    in (get-template gs (p.template-id)).card-type == Creature & can-attack p (p.keywords)
+
+  legal-attack-plan : GameState, List Attacker, Integer, CombatState -> CombatState
+  legal-attack-plan (gs) (attackers) (i) (acc) =
+    if i >= list-length attackers then acc
+    else let id = (list-at attackers i).permanent-id
+    in legal-attack-plan gs attackers (i + 1) (if legal-attacker gs id then declare-attacker acc id else acc)
+
+  supervised-attack-ready : SupervisedTurn, Integer -> Boolean
+  supervised-attack-ready (turn) (id) = turn.paused & turn.stage == ai-stage-attackers & (turn.game).game-over == False & legal-attacker (turn.game) id
+
+  supervised-attack : SupervisedTurn, Integer, Boolean -> SupervisedTurn
+  supervised-attack (turn) (id) (enabled) =
+    if supervised-attack-ready turn id == False then turn
+    else let before = (turn.combat).attackers
+    in let present = list-contains before (\a -> a.permanent-id == id)
+    in if present == enabled then turn
+    else let selected = attackers-without before id 0 []
+    in let chosen = if enabled then list-push selected (Attacker { permanent-id = id, blocked-by = [], damage-assigned = 0 }) else selected
+    in let combat = CombatState { attackers = chosen, blockers = [], num-attackers = list-length chosen, num-blockers = 0 }
+    in SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = turn.game, combat = combat, stage = turn.stage, paused = True, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = combat-choice-none, used-abilities = [] }
+
+  attackers-without : List Attacker, Integer, Integer, List Attacker -> List Attacker
+  attackers-without (attackers) (id) (i) (acc) =
+    if i >= list-length attackers then acc
+    else let a = list-at attackers i
+    in attackers-without attackers id (i + 1) (if a.permanent-id == id then acc else list-push acc a)
+
+  supervised-block : SupervisedTurn, Integer, Integer -> SupervisedTurn
+  supervised-block (turn) (blocker) (attacker) =
+    let gs = turn.game
+    in let bf = gs.battlefield
+    in if turn.stage /= ai-stage-blockers | turn.paused == False then turn
+    else if list-contains ((turn.combat).attackers) (\a -> a.permanent-id == attacker) == False then turn
+    else if list-contains ((turn.combat).blockers) (\b -> b.permanent-id == blocker) then turn
+    else if blocker == general-block-id (if gs.active-player == 0 then 1 else 0) then
+      (if list-contains bf (\p -> p.id == attacker & p.controller == gs.active-player) == False then turn
+       else let ap = find-permanent bf attacker 0 (list-length bf)
+       in if general-can-block gs (if gs.active-player == 0 then 1 else 0) ap == False then turn
+       else SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = declare-blocker (turn.combat) blocker attacker, stage = ai-stage-blockers, paused = True, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] })
+    else if list-contains bf (\p -> p.id == blocker & p.controller /= gs.active-player) == False then turn
+    else if list-contains bf (\p -> p.id == attacker & p.controller == gs.active-player) == False then turn
+    else let bp = find-permanent bf blocker 0 (list-length bf)
+    in let ap = find-permanent bf attacker 0 (list-length bf)
+    in if (get-template gs (bp.template-id)).card-type /= Creature | can-block bp (bp.keywords) ap (ap.keywords) == False then turn
+    else SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = False, game = gs, combat = declare-blocker (turn.combat) blocker attacker, stage = ai-stage-blockers, paused = True, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] }
+
+  supervised-fluorescence-ready : SupervisedTurn, Integer -> Boolean
+  supervised-fluorescence-ready (turn) (stone) = disruption-pending (turn.game) == False & commitment-pending (turn.commitment) == False & turn.paused & manual-main-stage (turn.stage) & (turn.game).game-over == False & can-activate-fluorescence (turn.game) ((turn.game).active-player) stone
+
+  supervised-fluorescence : SupervisedTurn, Integer -> SupervisedTurn
+  supervised-fluorescence (turn) (stone) =
+    if supervised-fluorescence-ready turn stone == False then turn
+    else SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = activate-fluorescence (turn.game) ((turn.game).active-player) stone, combat = turn.combat, stage = turn.stage, paused = True, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
 
 Section: Upkeep
 
@@ -49,7 +499,7 @@ Section: Upkeep
     in untap-all-permanents gs2 (gs.active-player)
 
   untap-all-permanents : GameState, Integer -> GameState
-  untap-all-permanents (gs) (player-idx) = GameState { players = gs.players, generals = gs.generals, battlefield = untap-player-perms (gs.battlefield) player-idx 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+  untap-all-permanents (gs) (player-idx) = GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work, players = gs.players, generals = gs.generals, battlefield = untap-player-perms (gs.battlefield) player-idx 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities }
 
   untap-player-perms : List Permanent, Integer, Integer, Integer, List Permanent -> List Permanent
   untap-player-perms (perms) (player-idx) (i) (len) (acc) =
@@ -71,16 +521,80 @@ Section: Cleanup
 
   do-cleanup : GameState -> GameState
   do-cleanup (gs) =
-    clear-all-damage gs
+      check-state-based-actions (end-fluorescence (clear-all-damage (cleanup-hand gs Balanced)))
+
+  cleanup-excess : GameState -> Integer
+  cleanup-excess (gs) =
+    let n = list-length ((get-player gs (gs.active-player)).hand) - 7
+    in if n > 0 then n else 0
+
+  cleanup-worst : GameState, Stance, List Integer, Integer, Integer, Integer -> Integer
+  cleanup-worst (gs) (stance) (kept) (i) (worst) (skill) =
+    if i >= list-length kept then worst
+    else let score = skill-card-score gs (gs.active-player) (list-at kept i) stance skill
+    in let low = skill-card-score gs (gs.active-player) (list-at kept worst) stance skill
+    in cleanup-worst gs stance kept (i + 1) (if score <= low then i else worst) skill
+
+  cleanup-keep : GameState, Stance, List Integer, Integer, List Integer, Integer -> List Integer
+  cleanup-keep (gs) (stance) (hand) (i) (kept) (skill) =
+    if i >= list-length hand then kept
+    else let card = list-at hand i
+    in if list-length kept < 7 then cleanup-keep gs stance hand (i + 1) (list-push kept card) skill
+    else let worst = cleanup-worst gs stance kept 1 0 skill
+    in let better = skill-card-score gs (gs.active-player) card stance skill > skill-card-score gs (gs.active-player) (list-at kept worst) stance skill
+    in cleanup-keep gs stance hand (i + 1) (if better then cleanup-replace kept worst card else kept) skill
+
+  cleanup-replace : List Integer, Integer, Integer -> List Integer
+  cleanup-replace (kept) (i) (card) =
+    if i >= list-length kept - 1 then list-set-at kept i card
+    else cleanup-replace (list-set-at kept i (list-at kept (i + 1))) (i + 1) card
+
+  cleanup-partition : List Integer, List Integer, Integer, List Integer, List Integer -> (List Integer, List Integer)
+  cleanup-partition (hand) (kept) (i) (remain) (graveyard) =
+    if i >= list-length hand then (remain, graveyard)
+    else let card = list-at hand i
+    in if int-list-has kept card then cleanup-partition hand kept (i + 1) (list-push remain card) graveyard
+    else cleanup-partition hand kept (i + 1) remain (list-push graveyard card)
+
+  cleanup-hand : GameState, Stance -> GameState
+  cleanup-hand (gs) (stance) = cleanup-hand-at-skill gs stance 2
+
+  cleanup-hand-at-skill : GameState, Stance, Integer -> GameState
+  cleanup-hand-at-skill (gs) (stance) (skill) =
+    if gs.game-over | cleanup-excess gs == 0 then gs
+    else let p = get-player gs (gs.active-player)
+    in let kept = cleanup-keep gs stance (p.hand) 0 [] skill
+    in let zones = cleanup-partition (p.hand) kept 0 [] (for card in p.graveyard -> card)
+    in let changed = PlayerState { general = p.general, prismatic = p.prismatic, library = p.library, hand = pair-first zones, graveyard = pair-second zones, exile = p.exile, gem-drop-used = p.gem-drop-used }
+    in cleanup-set-player gs changed
+
+  supervised-discard-ready : SupervisedTurn, Integer -> Boolean
+  supervised-discard-ready (turn) (card) =
+    (turn.game).game-over == False & turn.paused & turn.stage == ai-stage-end & cleanup-excess (turn.game) > 0
+    & disruption-pending (turn.game) == False & commitment-pending (turn.commitment) == False
+    & int-list-has ((get-player (turn.game) ((turn.game).active-player)).hand) card
+
+  supervised-discard : SupervisedTurn, Integer -> SupervisedTurn
+  supervised-discard (turn) (card) =
+    if supervised-discard-ready turn card == False then turn
+    else let gs = turn.game
+    in let p = get-player gs (gs.active-player)
+    in let changed = PlayerState { general = p.general, prismatic = p.prismatic, library = p.library, hand = gs-list-remove (p.hand) card, graveyard = list-push (for old in p.graveyard -> old) card, exile = p.exile, gem-drop-used = p.gem-drop-used }
+    in ability-turn turn (cleanup-set-player gs changed) True (turn.commitment) (turn.used-abilities)
+
+  cleanup-set-player : GameState, PlayerState -> GameState
+  cleanup-set-player (gs) (changed) =
+    let copy = GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work, players = for old in gs.players -> old, generals = gs.generals, battlefield = gs.battlefield, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities }
+    in set-player copy (gs.active-player) changed
 
   clear-all-damage : GameState -> GameState
-  clear-all-damage (gs) = GameState { players = clear-general-damage (gs.players) 0 (list-length (gs.players)) [], generals = gs.generals, battlefield = clear-perm-damage (gs.battlefield) 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates }
+  clear-all-damage (gs) = GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work, players = clear-general-damage (gs.players) 0 (list-length (gs.players)) [], generals = gs.generals, battlefield = clear-perm-damage (gs.battlefield) 0 (list-length (gs.battlefield)) [], active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities }
 
   clear-perm-damage : List Permanent, Integer, Integer, List Permanent -> List Permanent
   clear-perm-damage (perms) (i) (len) (acc) =
     if i >= len then acc
     else let perm = list-at perms i
-    in clear-perm-damage perms (i + 1) len (list-push acc (permanent-clear-damage perm))
+    in clear-perm-damage perms (i + 1) len (list-push acc (permanent-expire (permanent-clear-damage perm)))
 
   clear-general-damage : List PlayerState, Integer, Integer, List PlayerState -> List PlayerState
   clear-general-damage (players) (i) (len) (acc) =

@@ -5,13 +5,12 @@ and platform constraints for the Codex bare-metal compiler.
 
 ## Memory Layout
 
-The bare-metal system occupies a single flat physical address space.
-All addresses are identity-mapped (virtual = physical). The single
-governing constant is `bare-metal-ram-size` (3 GB) in
-`codex/compiler/Emit/X86_64State.codex`. Every other memory value derives from
-it.
+The bare-metal system occupies a flat physical address space with identity
+mapping (virtual = physical). Native boot uses `bare-metal-ram-size`
+(3 GiB by default) in `codex/compiler/Emit/X86_64State.codex`.
+UEFI root and process-pool allocations have the separate contract below.
 
-### Static Layout (boot time)
+### Static Layout (native boot)
 
 ```
 Address              Size       Region
@@ -35,6 +34,64 @@ Address              Size       Region
      │                           ◄── Stack grows DOWN
 0x0C0000000 (3 GB)    ────      Stack top (bare-metal-stack-top = ram-size)
 ```
+
+### UEFI-owned process pool
+
+`build/cdx-to-pe.ps1 -OwnedProcessPool` retains the root heap allocation
+request and allocates a separate 512 MiB `EfiLoaderData` process pool
+afterward. It requires the `__spawn_pool_carve_v2` runtime marker, default
+`opening` entry and `-ExitBootServices`. Allocation failure stops before
+payload entry with serial `Q` and a purple framebuffer. It never falls back
+to unreserved memory. The unchanged default PE path retains its legacy heap
+exclusion behavior; that path is not evidence of working physical USB input.
+
+The v4 GOP handoff keeps all v3 fields and extends its size from 224 to 256
+bytes. Offsets from physical address 126976 are:
+
+| Offset | Qword |
+|---|---|
+| 224 | Active process-pool base |
+| 232 | Root allocation base |
+| 240 | Root allocation end, exclusive |
+| 248 | Process-pool span, 536870912 bytes |
+
+Before enabling scheduling, `runtime-init` validates the versioned extent,
+page alignment, fixed pool span, root range and live root stack, and disjoint
+root/pool ranges. The pool must begin at or above 6 MiB and end at or below
+2 GiB, inside the runtime demand-mapping interval. Invalid v4 metadata
+refuses through the memory-failure path; it cannot select the legacy pool.
+Native `__start` and legacy handoffs initialize the active base to 1 GiB,
+preserving the native contract. A legacy overlapping root remains unsupported.
+
+PID classification, child carving, and FX save/init/restore all read the same
+base. The process table still has sixteen 32 MiB slots. Slot zero supplies
+the root FX page; each other slot supplies its child's heap, stack and FX
+page. UEFI owns the entire pool for the boot lifetime. Natural process exit
+reuses a slot without releasing that firmware allocation. The initial root
+allocation is never freed or relocated by the owned-pool path. Its address
+can still vary when a different PE image changes firmware's loader footprint.
+
+Heap/time: one additional fixed 512 MiB firmware reservation on the opt-in
+path; PID/FX lookup remains constant-time and allocation-free. PID lookup
+uses one saved scratch register and one cached pool-base read. Pool admission
+is a bounded startup check. Firmware fragmentation can refuse the reservation.
+
+`apps/works/proofs/owned-process-pool.ps1` snapshots its compiler, converter
+pair and probe closure. Supply `-Kernel`, `-LegacyStub` (the converter from
+main before 33898) and a fresh `-OutDir`. It checks exact traces, root/child
+PIDs, all spawn variants, child allocation and saved-stack bounds, slot reuse,
+timer preemption of a non-yielding child, a parent sentinel and targeted FX
+canaries. Legacy layout means fixed-base selection, not root disjointness.
+FX canary coverage is required for the owned desktop-size arm and its control.
+Malformed span, overlap, alignment and root-range cases must refuse.
+
+The legacy comparison PE is padded only in `SizeOfImage` and trailing file
+bytes to match the owned PE's loader footprint; its executable sections are
+unchanged. This prevents an added stub page from masquerading as heap
+relocation. The recorded original hash and footprint fields identify this
+controlled input. Paired entry-heap/root-end equality and a deliberately
+different-placement control grade preservation. This is allocator evidence,
+not physical DMA reachability or USB input acceptance.
 
 ### Kernel Metadata Cells (0x7000 region)
 
@@ -95,7 +152,8 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 30000 | ata-sector-count-addr | 8 | ATA detected sector count |
 | 30008 | slice-table-addr | 32 | Scheduler time-slice table |
 | 30040 | fork-free-head-addr | 8 | Fork pool free-list head |
-| 30048 | starve-counter-addr | 8 | Scheduler starvation counter |
+| 30048 | starve-counter-addr | 4 | Scheduler starvation counter |
+| 30052 | starve-cursor-addr | 4 | Last slot selected for periodic low-priority relief |
 | 30056 | boot-factstore-addr | 8 | Boot fact store pointer |
 | 30064 | identity-table-base | 512 | Spans 30064..30575 |
 | 30576 | **device-seed-addr** | 32 | Entropy seed, filled by the Option A UEFI stub from RDRAND where the processor has it and four rotated TSC samples where it does not. `GopWizard` and `IdentityManager` both mix it into keygen; it is weak in the TSC case and is never the all-zero cell the first keygen mixed in |
@@ -127,7 +185,7 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 36240 | **devint-count-addr** | 8 | Interrupts taken on a vector that is neither the PIT's (32) nor the local timer's (48). `__interrupt_common` answers those two specially and returns from every other vector, so without this cell a delivered device interrupt and a dropped one are indistinguishable from inside the guest. Incremented with a locked add; the timer vectors branch away before reaching it, so the periodic tick cannot appear here |
 | 36248 | **devint-last-vec-addr** | 8 | The vector of the most recent such interrupt. A test programs a line, then demands that line answered rather than merely that something arrived. Read with 36240 by `codex/test/hpet-interrupt.codex` |
 | 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor starts in real mode knowing nothing, with no id in any register, so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
-| 36264 | **net-driver-cb** | 56 | Which NIC the network seam is bound to, and its six addresses: card selector at +0 (0 = NE2000, 1 = e1000), then mmio, rx-ring, rx-bufs, ctrl-blk, tx-ring, tx-bufs at +8 through +48. Written once by `net-driver-bind-e1000` (`codex/os/net/NetDriver.codex`) with the selector LAST, so a half-written block is never live. Zero until something binds, which is why a guest that never probes PCI keeps serving off the NE2000. The seam takes no device argument, and a module-level record binding is a recipe rather than a cell that allocates again on every reference, so this is the only place the bound card can live |
+| 36264 | **net-driver-cb** | 56 | NIC selector at +0: 0 NE2000, 1 e1000, 2 virtio-net, 3 unavailable. The e1000 addresses are mmio, rx-ring, rx-bufs, ctrl-blk, tx-ring and tx-bufs at +8 through +48. For card 2, +8 instead holds the persistent virtio control-block address; the other address cells are unused. Binding writes the selector last. A discovered but refused virtio device binds card 3 and does not fall back to another NIC. Zero preserves the NE2000 path for callers that never probe. DMA lifetime and failure semantics: [x86 virtio network driver](../apps/uoaix/VirtioNetX86.md). |
 | 36320 | **guard-page-base-addr** | 8 | The demand-paging guard page, published rather than recomputed: `emit-demand-unmap` (`codex/compiler/Emit/X86_64Boot.codex`) derives it once from the reported RAM size and stores it here, and `build` (`Core/PhaseAllocator.codex`) reads it to decide whether a deck reservation would leap the page. Two places deriving the same geometry is how they drift apart. **This row was missing from this table until 2026-08-14**, which is exactly the failure the warning below describes: the chapter that claims the cell says in its own prose that 36320 is the next free scalar above `net-driver-cb`, so a reader who trusted this table alone would have taken a cell the compiler already owns |
 | 36328 | **net-driver-poll-cell** | 8 | Empty receive polls per NetIO tick, measured once by `net-driver-calibrate` (`codex/os/net/NetDriver.codex`) at bring-up and read by `net-io-tick-interval`. Zero until something brings a driver up, and a value below the floor reads as the 100000 fallback NetIO shipped until 2026-08-14, so a guest that never probes keeps the numbers it was tuned with. It exists because the cost of one poll belongs to the DRIVER: one million empty polls cost 15.52 s on the NE2000 model and 0.029 s on the e1000, which reads a descriptor from RAM where the NE2000 takes a VM exit, and every retransmit bound in `NetworkStack` is a count of ticks |
 | 36336 | deck-ceiling-addr | 8 | Deck allocator ceiling (`X86_64Boot.codex`) |

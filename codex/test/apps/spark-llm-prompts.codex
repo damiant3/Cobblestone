@@ -1,0 +1,33 @@
+Chapter: SparkLlmPromptsArm
+  cites Spark chapter SparkLlm
+  cites Foreword chapter Console
+
+  slp-check : Text, Integer -> JsonValue
+  slp-check (text) (count) = when json-parse (spark-llm-prompts-check (json-emit (JsonObject [json-pair "text" (JsonStr text), json-pair "count" (JsonInt count)])))
+    is Just (value) -> value
+    is None -> JsonNull
+
+  slp-refused : Text, Integer, Text -> Boolean
+  slp-refused (text) (count) (reason) =
+    let result = slp-check text count
+    in json-get-bool result "ok" True == False & text-contains (json-get-str result "error" "") reason
+
+  slp-line : Text, Boolean -> Text
+  slp-line (name) (yes) = name & (if yes then ": yes" else ": NO")
+
+  slp-grow : Integer, Text -> Text
+  slp-grow (n) (text) = if n <= 0 then text else slp-grow (n - 1) (text & text)
+
+  opening : [Console] Nothing =
+    let one = "PROMPT 01 - \"Coast\"\nA quiet coast.\n\nOil painting.\n\n"
+    in let two = "PROMPT 02 - \"Harbor\"\nA busy harbor.\n"
+    in let good = slp-check (one & two) 2
+    in let manual = slp-check "PROMPT 42 - \"Coast\"\nA quiet coast.\n" 0
+    in act
+      print-line-uni (slp-line "parsed prompt count and manual numbering" (json-get-bool good "ok" False & json-get-int good "count" 0 == 2 & json-get-bool manual "ok" False))
+      print-line-uni (slp-line "missing headers and scene refuse by name" (slp-refused "hello" 0 "No valid PROMPT" & slp-refused "PROMPT 01 - \"Empty\"\n" 0 "title and scene"))
+      print-line-uni (slp-line "count duplicate and sequence refuse" (slp-refused one 2 "Expected 2" & slp-refused (one & one) 0 "Duplicate" & slp-refused two 1 "sequentially"))
+      print-line-uni (slp-line "huge number refused before parsing" (slp-refused "PROMPT 123456789012345678901234567890 - \"Bad\"\nScene\n" 0 "four digits"))
+      print-line-uni (slp-line "text and marker limits refuse" (slp-refused (slp-grow 17 "q" & "q") 0 "text limit" & slp-refused (slp-grow 6 one) 0 "50-marker"))
+      print-line-uni (slp-line "invalid requested count refuses" (slp-refused one 51 "0 to 50"))
+    end

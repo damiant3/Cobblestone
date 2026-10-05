@@ -1,0 +1,71 @@
+Chapter: MageryPackets
+  cites Uoaix chapter MageryState
+
+ Source-X PacketItemContents(spellbook), PacketManaUpdate, PacketEffect and
+ PacketPlaySound, Apache-2.0, adapted to legacy packets without grid bytes.
+
+  mgp-mana : MgActor -> List Integer
+  mgp-mana (actor) = gp-put16 (gp-put16 (gp-put32 [#A2] actor.serial) (mgs-stat actor 2)) actor.mana
+  mgp-light : MgActor -> List Integer
+  mgp-light (actor) = list-push (gp-put32 [#4E] actor.serial) actor.light
+  mgp-target : Integer, Boolean -> List Integer
+  mgp-target (cursor) (ground) = let packet = sip-target cursor
+    in let kind = list-set-at packet 1 (if ground then 1 else 0) in packet
+  mgp-book-rows : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mgp-book-rows (book) (mask) (spell) (count) (out) = if spell == 65 then
+      let a = list-set-at out 3 (count / 256)
+      in let b = list-set-at out 4 (int-mod count 256) in sip-length out
+    else if bit-and mask (bit-shl 1 (spell - 1)) == 0 then mgp-book-rows book mask (spell + 1) count out
+    else let a = gp-put16 ((gp-put16 (gp-put32 out (#41000000 + spell)) #1F2E) & [0]) spell
+    in let b = gp-put32 (gp-put16 (gp-put16 a 0) 0) book
+    in mgp-book-rows book mask (spell + 1) (count + 1) (gp-put16 b 0)
+  mgp-book : GsiState, WorldObject, Integer -> GameReply
+  mgp-book (items) (book) (mask) = gs-reply [gsi-placement items book,sip-open book.serial #FFFF,
+    mgp-book-rows book.serial mask 1 0 [#3C,0,0,0,0]] "magery:spellbook"
+  mgp-sound : WorldObject, Integer -> List Integer
+  mgp-sound (mobile) (sound) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put16 [#54,1] sound) 0) mobile.x) mobile.y) (bit-and mobile.z #FFFF)
+  mgp-effect : WorldObject, WorldObject, Integer, Boolean -> List Integer
+  mgp-effect (source) (target) (art) (moving) =
+    let a = gp-put16 (gp-put32 (gp-put32 [#70,if moving then 0 else if target.serial == 0 then 2 else 3] (if moving then source.serial else target.serial)) (if moving then target.serial else 0)) art
+    in let b = list-push (gp-put16 (gp-put16 a source.x) source.y) (bit-and source.z 255)
+    in let c = list-push (gp-put16 (gp-put16 b target.x) target.y) (bit-and target.z 255)
+    in c & [5,if moving then 0 else 10,0,0,if moving then 0 else 1,0]
+  mgp-fizzle : WorldObject -> List (List Integer)
+  mgp-fizzle (mobile) = [mgp-effect mobile mobile #3735 False,mgp-sound mobile #005C,
+    sip-message mobile.serial mobile.graphic 6 "The spell fizzles."]
+  mgp-word-at : List Integer, Integer, Integer -> Integer
+  mgp-word-at (packet) (at) (value) = let a = list-set-at packet at (bit-and (bit-shru value 8) 255)
+    in let b = list-set-at packet (at + 1) (bit-and value 255) in 0
+  mgp-status : MgActor, List Integer -> List Integer
+  mgp-status (actor) (packet) =
+    let maximum = mgp-word-at packet 39 (min 65535 (max 1 (actor.maximum + mgs-stat actor 0 - actor.strength)))
+    in let a = mgp-word-at packet 44 (mgs-stat actor 0)
+    in let b = mgp-word-at packet 46 (mgs-stat actor 1)
+    in let c = mgp-word-at packet 48 (mgs-stat actor 2)
+    in let stamina = mgp-word-at packet 50 (min (gp-u16 packet 50) (mgs-stat actor 1))
+    in let capacity = mgp-word-at packet 52 (mgs-stat actor 1)
+    in let d = mgp-word-at packet 54 actor.mana
+    in let e = mgp-word-at packet 56 (mgs-stat actor 2) in packet
+  mgp-rewrite : Magery, List Integer -> List Integer
+  mgp-rewrite (magic) (packet) = if list-length packet < 5 then packet else let opcode = list-at packet 0
+    in let serial = if opcode == #11 | opcode == #78 then if list-length packet < 7 then 0 else gp-u32 packet 3 else gp-u32 packet 1
+    in let slot = world-slot magic.items.world serial
+    in if slot < 0 then packet else let actor = list-at magic.actors slot
+    in if actor.serial /= serial then packet
+    else if opcode == #11 & list-length packet == 66 then mgp-status actor packet
+    else let at = if opcode == #78 & list-length packet >= 23 then 17 else if opcode == #77 & list-length packet == 17 then 15 else if opcode == #20 & list-length packet == 19 then 10 else -1
+    in if at < 0 then packet else let old = bit-and (list-at packet at) #FB
+    in let changed = list-set-at packet at (bit-or old (if actor.poison >= 0 then 4 else 0)) in packet
+  mgp-replies : Magery, List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  mgp-replies (magic) (packets) (i) (out) = if i == list-length packets then out
+    else mgp-replies magic packets (i + 1) (list-push out (mgp-rewrite magic (list-at packets i)))
+  mgp-reply : Magery, GameReply -> GameReply
+  mgp-reply (magic) (reply) = GameReply { packets = mgp-replies magic reply.packets 0 [], close = reply.close, note = reply.note }
+  mgp-appearance : Magery, GameInput, WorldObject -> List Integer
+  mgp-appearance (magic) (input) (mobile) = let slot = world-slot magic.items.world mobile.serial
+    in let actor = list-at magic.actors slot
+    in let combat = list-at magic.combat.actors slot
+    in let flags = bit-or (cbp-flags combat.war (mobile.health == 0)) (if actor.poison >= 0 then 4 else 0)
+    in if mobile.serial == input.session.serial then cbp-player mobile input.session.direction flags
+    else let reply = gmb-reply magic.items (gs-reply [cbp-mobile mobile 4 flags (if combat.npc & not combat.immune then 3 else 1)] "")
+    in list-at reply.packets 0

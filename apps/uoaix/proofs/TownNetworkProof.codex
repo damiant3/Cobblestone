@@ -1,0 +1,109 @@
+Chapter: TownNetworkProof
+  cites Uoaix chapter TownNetwork
+  cites Foreword chapter Result
+
+  tnp-check : Text, Boolean -> [Console] Nothing
+  tnp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tnp-refused : Result TnModel Text -> Boolean
+  tnp-refused (result) = when result is Err (_) -> True is Ok (_) -> False
+  tnp-repeat : TnModel, TnState, Integer -> Integer
+  tnp-repeat (m) (s) (n) = if n == 0 then 0
+    else let a = tn-step m s in tnp-repeat m s (n - 1)
+  tnp-population : Integer, List TnState -> List TnState
+  tnp-population (n) (xs) = if n == 0 then xs
+    else tnp-population (n - 1) (list-push xs (tn-new 0))
+  tnp-round : TnModel, List TnState, Integer -> Integer
+  tnp-round (m) (states) (i) = if i == list-length states then 0
+    else let a = tn-step m (list-at states i) in tnp-round m states (i + 1)
+  tnp-ones : List Integer, Integer -> Integer
+  tnp-ones (xs) (i) = if i == 10 then 0
+    else let a = list-set-at xs i 1000 in tnp-ones xs (i + 1)
+  tnp-drain : TnState, Integer -> Boolean
+  tnp-drain (s) (i) = if i == 11 then tn-pop s == 0
+    else tn-pop s == i & tnp-drain s (i + 1)
+  tnp-full : Integer -> [Console] Nothing
+  tnp-full (unused) = act
+    ob <- tn-zeros 14
+    positive <- tnp-ones ob 0
+    when tn-model (tn-zeros 512) (tn-zeros 16) (tn-zeros 224) ob
+      is Err (e) -> print-line-uni ("FAIL full model " & e)
+      is Ok (m) -> act
+        s <- tn-new 0
+        stepped <- tn-step m s
+        tnp-check "full queue and stable tied action IDs" (s.count == 10 & tnp-drain s 1)
+      end
+  end
+
+  opening : [Console] Nothing = act
+    hw <- tn-zeros 512
+    hb <- tn-zeros 16
+    ow <- tn-zeros 224
+    ob <- tn-zeros 14
+    a <- list-set-at hw 0 1000
+    b <- list-set-at hw 33 -1000
+    c <- list-set-at hw 94 1000
+    upper-a <- list-set-at hw 96 4000
+    upper-b <- list-set-at hw 97 -4000
+    d <- list-set-at ow 0 1000
+    e <- list-set-at ow 16 2000
+    f <- list-set-at ow 32 2000
+    g <- list-set-at ow 48 -1000
+    h <- list-set-at ow 160 1000
+    i <- list-set-at ow 177 1000
+    j <- list-set-at ow 192 -2000
+    k <- list-set-at ow 208 4000
+    prior <- list-set-at ow 146 1000
+    tnp-check "wrong shapes refused" (tnp-refused (tn-model [] hb ow ob) & tnp-refused (tn-model hw hb [] ob))
+    bad <- list-set-at hb 0 4001
+    tnp-check "oversized weights refused" (tnp-refused (tn-model hw hb ow ob))
+    reset <- list-set-at hb 0 0
+    when tn-model hw hb ow ob
+      is Err (message) -> print-line-uni ("FAIL model " & message)
+      is Ok (model) -> act
+        before <- __heap-save
+        s <- tn-new 0
+        built <- __heap-save
+        tnp-check "empty state and neutral initial happiness" (tn-pop s == 0 & tn-happiness s == 500 & tn-alarm s == 0)
+        first <- tn-input s 0 600
+        second <- tn-input s 1 -800
+        tnp-check "input bounds refuse without mutation" (first == 0 & second == 0 & tn-input s 0 1001 == -1 & tn-input s -1 2 == -1 & tn-input s 30 3 == -1 & list-at s.inputs 0 == 600)
+        start <- __heap-save
+        stepped <- tn-step model s
+        finish <- __heap-save
+        tnp-check "hidden upper saturation" (list-at s.hidden 3 == 4000)
+        tnp-check "fixed point dense layers and signed outputs" (tn-happiness s == 600 & tn-alarm s == 800 & tn-opinion s 0 == -1000 & tn-opinion s 1 == 1000)
+        one <- tn-pop s
+        two <- tn-pop s
+        three <- tn-pop s
+        four <- tn-pop s
+        tnp-check "priority order stable ties and nonpositive omission" (one == 2 & two == 3 & three == 1 & four == 10 & tn-pop s == 0 & tn-pop s == 0)
+        tnp-check "step retains no new heap" (stepped == 0 & finish == start)
+        next <- tn-step model s
+        tnp-check "prior emotional state feeds the next step" (list-at s.inputs 30 == 600 & list-at s.inputs 31 == 800 & list-at s.outputs 9 == 600)
+        other <- tn-new 0
+        other-step <- tn-step model other
+        tnp-check "shared weights keep NPC state separate" (tn-happiness other == 0 & tn-alarm other == 0 & tn-happiness s == 600 & list-at hw 0 == 1000)
+        low <- tn-input s 0 -1000
+        low-step <- tn-step model s
+        tnp-check "hidden ReLU clips negative input" (list-at s.hidden 0 == 0 & tn-happiness s == 0)
+        population-mark <- __heap-save
+        population <- tnp-population 128 (__list-with-capacity 128)
+        population-end <- __heap-save
+        round-start <- __heap-save
+        round <- tnp-round model population 0
+        round-end <- __heap-save
+        tnp-check "population shares model without retained growth" (round == 0 & round-end == round-start & list-length population == 128)
+        repeat-start <- __heap-save
+        repeated <- tnp-repeat model s 1000
+        repeat-end <- __heap-save
+        tnp-check "repeated inference retains no new heap" (repeated == 0 & repeat-end == repeat-start)
+        tnp-check "nonpositive actions leave an empty queue" (s.count == 0 & tn-pop s == 0)
+        print-line-uni ("STATE-BYTES " & show (built - before))
+        print-line-uni ("POPULATION-BYTES " & show (population-end - population-mark))
+        parameters <- list-length hw + list-length hb + list-length ow + list-length ob
+        macs <- tn-input-count * tn-hidden-count + tn-hidden-count * tn-output-count
+        print-line-uni ("PARAMETERS " & show parameters)
+        print-line-uni ("MACS-PER-STEP " & show macs)
+      end
+    tnp-full 0
+  end

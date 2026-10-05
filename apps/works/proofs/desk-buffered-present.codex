@@ -1,0 +1,88 @@
+Chapter: DeskBufferedPresentProof
+  cites Works chapter GopPresent
+  cites Works chapter GopPanePolicy
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+  dbp-fill : Integer, Integer, Integer -> Integer
+  dbp-fill (base) (n) (value) =
+    if n <= 0 then 0
+    else let p = poke-32 base ((n - 1) * 4) value
+    in dbp-fill base (n - 1) value
+
+  dbp-check : Integer, Integer, Integer -> Boolean
+  dbp-check (base) (n) (value) =
+    if n <= 0 then True
+    else peek-32 base ((n - 1) * 4) == value & dbp-check base (n - 1) value
+
+  dbp-image : Integer, Integer -> Boolean
+  dbp-image (base) (i) =
+    if i >= 27 then True
+    else let want = if int-mod i 9 >= 7 then 99 else if i == 11 then 37 else 4
+    in peek-32 base (i * 4) == want & dbp-image base (i + 1)
+
+  opening : [Console] Nothing = act
+    let clock = hpet-start
+    in let screen = alloc-zeroed 108 64
+    in let fill = dbp-fill screen 27 99
+    in let state = dsp-new screen 7 3 9
+    in let back = peek-qword state 8
+    in let mark = __heap-save
+    in let clear = dbp-fill back 27 4
+    in let draw = poke-32 back 44 37
+    in let held = dbp-check screen 27 99
+    in let shown = dsp-due state 100 60000
+    in let image = dbp-image screen 0
+    in let cleared = dbp-fill back 27 0
+    in let pending = dsp-request state
+    in let early = dsp-due state 101 60000
+    in let unexposed = dbp-image screen 0
+    in let restored = dbp-fill back 27 4
+    in let redrawn = poke-32 back 44 37
+    in let same = dsp-due state 1100 60000
+    in let survived = dbp-image screen 0
+    in let distinct = poke-32 back 44 72
+    in let later = dsp-request state
+    in let updated = dsp-due state 2100 60000
+    in let advanced = peek-32 screen 44 == 72
+    in let held-rect = dsp-hold state 2 1 3 1
+    in let partial = poke-32 back 44 88
+    in let outside = poke-32 back 0 91
+    in let interleaved = dsp-publish state
+    in let held-partial = peek-32 screen 44 == 72 & peek-32 screen 0 == 91
+    in let rollback = dsp-rollback state
+    in let release = dsp-hold state 0 0 0 0
+    in let cancelled = dsp-publish state
+    in let rollback-held = peek-32 screen 44 == 72 & peek-32 back 44 == 72
+    in let final = poke-32 back 44 88
+    in let completed = dsp-publish state
+    in let released = peek-32 screen 44 == 88
+    in let heap = __heap-save == mark
+    in let policy = pp-new 0
+    in let a = pp-yield-at policy False 0 1000000
+    in let b = pp-yield-at policy False 1000 1000000
+    in let c = pp-yield-at policy False 2000 1000000
+    in act
+      print-line ("held " & show held)
+      print-line ("image-and-padding " & show image)
+      print-line ("no-clear-published " & show (unexposed & survived))
+      print-line ("later-frame " & show advanced)
+      print-line ("partial-scene-held " & show (held-partial & released))
+      print-line ("cancelled-copy-rolled-back " & show rollback-held)
+      print-line ("allocation-free " & show heap)
+      print-line ("yield-cadence " & show (a == False & b == False & c))
+      let large-screen = alloc-zeroed (1920 * 1080 * 4) 64
+      in let large = dsp-new large-screen 1920 1080 1920
+      in let init = dsp-publish large
+      in let start = hpet-ticks
+      in let publish = dsp-publish large
+      in let elapsed = bit-and (hpet-ticks - start) 4294967295
+      in act
+        print-line ("unchanged-1080p-ticks " & show elapsed)
+        print-line ("ticks-per-second " & show hpet-ticks-per-second)
+        print-line "buffered-present-end"
+      end
+    end
+  end
+
+Page 1

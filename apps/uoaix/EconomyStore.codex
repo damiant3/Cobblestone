@@ -1,0 +1,43 @@
+Chapter: EconomyStore
+  cites Uoaix chapter EconomyInput
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  EconomyRecovery = record { state : EconomyCheckpoint, inputs : Integer }
+  economy-store-suffix : UoStore, EconomyCheckpoint, Integer, Integer, Integer -> [Device.Block] Result EconomyRecovery Text
+  economy-store-suffix (store) (state) (at) (buf) (count) =
+    if at == store.head then
+      if state.sequence /= store.sequence | state.tick /= store.tick then act Err "economy recovery head metadata mismatch" end
+      else if not (ev-valid state.world) then act Err "economy recovered state invalid" end
+      else act Ok (EconomyRecovery { state = state, inputs = count }) end
+    else if at < 0 | at > store.head | count >= 4096 then act Err "economy recovery extent or input budget invalid" end
+    else let mark = __heap-save
+    in act
+      read <- us-read store at buf ei-frame-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) ->
+          if row.kind /= 2 | row.next <= at | row.next > store.head then Err "economy recovery input record invalid"
+          else let next = row.next
+          in when ei-decode-record buf row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (entry) -> when ei-apply state entry
+              is Err (e) -> Err e
+              is Ok (result) -> let restored = __heap-restore mark in economy-store-suffix store state next buf (count + 1)
+    end
+  economy-store-restore : UoStore -> [Device.Block] Result EconomyRecovery Text
+  economy-store-restore (store) =
+    if store.fault /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "economy recovery requires committed checkpoint" end
+    else let snapshot = alloc-bytes es-bytes
+    in let input = alloc-bytes ei-frame-bytes
+    in act
+      read <- us-read store store.snapshot snapshot es-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) -> if row.kind /= 1 | row.next > store.head then Err "economy recovery checkpoint record invalid"
+          else when es-decode-record snapshot row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (state) -> economy-store-suffix store state row.next input 0
+    end

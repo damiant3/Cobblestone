@@ -1,0 +1,43 @@
+Chapter: EconomyCurrencyStore
+  cites Uoaix chapter EconomyCurrencyInput
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  CurrencyRecovery = record { state : CurrencyCheckpoint, inputs : Integer }
+  currency-store-suffix : UoStore, CurrencyCheckpoint, Integer, Integer, Integer -> [Device.Block] Result CurrencyRecovery Text
+  currency-store-suffix (store) (state) (at) (buf) (count) =
+    if at == store.head then
+      if state.sequence /= store.sequence | state.tick /= store.tick then act Err "currency recovery head metadata mismatch" end
+      else if not (euv-valid state.currency) then act Err "currency recovered state invalid" end
+      else act Ok (CurrencyRecovery { state = state, inputs = count }) end
+    else if at < 0 | at > store.head | count >= 4096 then act Err "currency recovery extent or input budget invalid" end
+    else let mark = __heap-save
+    in act
+      read <- us-read store at buf eui-frame-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) ->
+          if row.kind /= 2 | row.next <= at | row.next > store.head then Err "currency recovery input record invalid"
+          else let next = row.next
+          in when eui-decode-record buf row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (entry) -> when eui-apply state entry
+              is Err (e) -> Err e
+              is Ok (result) -> let restored = __heap-restore mark in currency-store-suffix store state next buf (count + 1)
+    end
+  currency-store-restore : UoStore -> [Device.Block] Result CurrencyRecovery Text
+  currency-store-restore (store) =
+    if store.fault /= 0 | store.tail /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "currency recovery requires clean committed checkpoint" end
+    else let snapshot = alloc-bytes euc-bytes
+    in let input = alloc-bytes eui-frame-bytes
+    in act
+      read <- us-read store store.snapshot snapshot euc-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) -> if row.kind /= 1 | row.next > store.head then Err "currency recovery checkpoint record invalid"
+          else when euc-decode-record snapshot row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (state) -> currency-store-suffix store state row.next input 0
+    end

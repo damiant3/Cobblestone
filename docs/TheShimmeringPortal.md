@@ -80,6 +80,13 @@ to get a page out.
 
 To build the plug itself: `pwsh codex\plugs\html\build.ps1`.
 
+**`run.ps1` uses the plug CDX already in `codex/plugs/html/build-output`, which is
+not in the depot, so an edit to `HtmlEmitter.codex` does nothing until that
+build runs.** A page built before it still compiles: a primitive the stale
+plug does not know is emitted as its Codex stub (`file-exists-then (path)
+(cb) = 0`) and silently does nothing. Rebuild the plug after every emitter
+edit, and grep the page for `function <name>(` before testing a new primitive.
+
 ### Path B: The Compiled Page Plus a CDX Server (the explorer)
 
 Same compiled front end as Path A, but the data lives in a bare-metal
@@ -320,9 +327,41 @@ tree, its data helpers, and its click/input handlers.
   call it after `mount-widget-themed` in the render function. Input is not
   routed: a modal does not block clicks beneath it.
 - **Events** -- `register-handlers pick click`, `register-input-handler`,
-  `dom-on-click`, `dom-on-input`, `dom-on-key`. `WkButton` nodes wire
+  `dom-on-click`, `dom-on-input`, `dom-on-key`; `dom-click el` clicks an
+  element from code, reaching a closure only its handler holds. `WkButton` nodes wire
   their own click to the registered click handler, keyed by `wn-id`;
   `WkInput` nodes wire `input` the same way.
+- **Audio position** -- `audio-on-position el cb` calls `cb` with an Integer
+  from 0 to 1000, the playback fraction rounded to thousandths. The callback
+  runs immediately and on `timeupdate`, `seeked`, `loadedmetadata` and
+  `ended`. An unknown or zero duration reports 0. Rebinding replaces the
+  previous position callback; disconnected elements suppress reports and
+  resume on later events after reattachment.
+  `audio-seek el position` seeks to that fraction, clamped to 0 through 1000,
+  only when the media duration is finite and positive. Missing elements are
+  ignored by both operations. Both typed stubs live in `WebRuntime.codex`;
+  the HTML plug supplies the browser bodies and must be rebuilt after a
+  runtime change. Spark Studio grades playback, seeking and rebinding in
+  `apps/spark/audio-analyze.mjs`.
+- **Image pixels** -- `image-pixels-then name w h cb` decodes a picked image
+  into a `List Integer` of row-major packed RGB pixels (`r * 65536 + g * 256 + b`).
+  It contains the image within the requested size, centered on black.
+  `texture-pixels-then name w h cb` instead maps the entire image to that
+  size, without letterboxing. Both flatten transparency onto black, answer
+  an empty list on failure, and invoke the callback once. Dimensions must
+  be positive and the output must fit within 1,048,576 pixels.
+  `canvas-pixels el w h pixels` presents that RGB buffer; missing canvases,
+  invalid dimensions or a mismatched pixel count leave the canvas unchanged.
+  The typed declarations are in `WebRuntime.codex`, and the HTML plug owns
+  decoding and presentation. Compositing and scene rasterization remain in
+  the Codex app chapters.
+- **Media transport** -- `media-play-then el cb` starts playback and answers
+  with empty text on success or an error message on failure. A missing
+  element or empty source answers success without playing. `media-pause el`
+  pauses; `media-seek-ms el ms` seeks in milliseconds, clamped to the media
+  duration. Seeking before metadata loads retains the latest request until
+  `loadedmetadata`. Spark's video grader checks transport and presentation;
+  the scene grader checks the texture decode and framebuffer path.
 - **State + render loop** -- `state-get/set`, `state-get-text/set-text`,
   `set-render f`, `request-render`, `state-set-render` (set a key and
   schedule a repaint on the next animation frame)
@@ -383,12 +422,41 @@ tree, its data helpers, and its click/input handlers.
   tables, emitted from `CCE.codex`, and a char literal or pattern is the
   Unicode character of its CCE code. Text stays a JavaScript string, so within
   tier 0 a code is the byte native Text holds and beyond it a page sees the
-  whole code point where native Text holds its encoded bytes.
+  whole code point where native Text holds its encoded bytes. Therefore
+  `utf8-bytes-to-text`, `text-to-unicode-bytes` and `unicode-bytes-to-text`,
+  whose `CCE.codex` bodies assemble encoded bytes one at a time, are the
+  runtime's own in a page: each drops a code point CCE has no place for, as
+  natively (`apps/spark/studio-page.mjs` reads an em-dash prompt file through
+  them).
 - WebGPU refuses a launch that binds one buffer twice as writable storage (every
   `BrowserKernels` buffer is `read_write`), and the refusal can leave
   `gpu-error` empty while the output buffer keeps its old contents: an in-place
   `bk_silu` read as a norm without SiLU (`vae-ops.mjs`, 2026-09-29). Give every
   launch an output apart from its inputs, and grade the output, not the error.
+- `pick-dir-then` lists a folder the user picks (an `input` with
+  `webkitdirectory`, every file under it by path, none read); a headless test
+  answers Chrome's file chooser with the folder's own path, not its files.
+  `file-url name` is an object URL for one of those files (made once per
+  file), for an `img` or a link, so a picked image is shown without reading it
+  into Codex. `dir-open-then cb` opens a folder read-write through the File
+  System Access API and lists it as `pick-dir-then` does, or answers
+  `{"error":...}` in a browser without it; `file-write-then path text cb`
+  then writes text to a path relative to that folder, making the folders on
+  the way, `canvas-save-then selector path cb` writes a canvas there as a
+  PNG, `file-exists-then path cb` answers `{"ok":true,"exists":...}`,
+  `file-sha256-then name cb` answers a picked file's SHA256 as
+  `{"ok":true,"sha256":"<upper-case hex>"}`, read in 4 MiB slices (the plug's
+  own JavaScript, graded against OpenSSL by `apps/spark/lora-hash.mjs`),
+  `audio-analyze-then name cb` answers a picked 16-bit PCM WAV's MusicAnalyzer
+  reading (sample rate, duration, peak and RMS in dB, BPM, RMS envelope,
+  spectral centroid, the 64-band spectrogram by FFT, and the 2000-point waveform) in
+  float32 as the WPF Spark computes it (graded by
+  `apps/spark/audio-analyze.mjs`), and
+  `file-delete-then path cb` removes one; `clock-utc-text ms` is
+  the time now plus `ms` as ISO 8601 UTC text, which .NET reads as a
+  `DateTime`. A headless test cannot answer the directory picker, so it replaces
+  `showDirectoryPicker` with one that returns an origin-private folder
+  (`apps/spark/studio-page.mjs`).
 - A page has a byte heap: `alloc-bytes`, `peek-byte`, `poke-byte`, `peek-32`,
   `poke-32` and `__memset` run over one growable ArrayBuffer, emitted only into
   a page that calls one of them, so a chapter written over raw memory (the

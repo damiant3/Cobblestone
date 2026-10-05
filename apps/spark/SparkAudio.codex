@@ -1,0 +1,285 @@
+Chapter: SparkAudio
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+
+ The WPF original's Music Director and Sound FX tabs without the generator
+ (D:\Projects\Spark\Spark: MusicPresenter.cs, SfxPresenter.cs, MusicConfig.cs,
+ SfxConfig.cs, MusicTrack.cs, SfxTrack.cs): each tab's catalog, the title and
+ file name of a new track, a tag added to the prompt, a sound's category, and
+ the two config files. .NET counts a string's length in UTF-16 units, so a
+ character outside the Basic Multilingual Plane is two there and one here.
+
+Section: Catalogs
+
+ Music/.music_catalog.json and SoundFX/.sfx_catalog.json: the tracks the
+ original lists are the ones not deleted, in file order; the next id is one
+ past the largest id among them.
+
+  sa-items : Text -> List JsonValue
+  sa-items (json) = when json-parse json
+    is Just (v) -> (when v
+      is JsonArray (xs) -> xs
+      is otherwise -> [])
+    is None -> []
+
+  sa-live : List JsonValue, Integer, List JsonValue -> List JsonValue
+  sa-live (xs) (i) (acc) = if i >= list-length xs then acc else sa-live xs (i + 1) (if json-get-bool (list-at xs i) "deleted" False then acc else list-snoc acc (list-at xs i))
+
+  spark-audio-tracks : Text -> List JsonValue
+  spark-audio-tracks (json) = sa-live (sa-items json) 0 []
+
+  sa-next : List JsonValue, Integer, Integer -> Integer
+  sa-next (xs) (i) (n) = if i >= list-length xs then n else sa-next xs (i + 1) (if json-get-int (list-at xs i) "id" 0 >= n then json-get-int (list-at xs i) "id" 0 + 1 else n)
+
+  spark-audio-next-id : List JsonValue -> Integer
+  spark-audio-next-id (ts) = sa-next ts 0 1
+
+ RateTrack and DeleteTrack: SaveCatalog writes the tracks the tab lists, so
+ a deleted one, and one rated 2 or less, leaves the file.
+
+  sa-set-rating : List JsonPair, Integer, Integer, Boolean, List JsonPair -> List JsonPair
+  sa-set-rating (ps) (i) (n) (hit) (acc) =
+    if i >= list-length ps then (if hit then acc else list-snoc acc (json-pair "rating" (JsonInt n)))
+    else if (list-at ps i).key == "rating" then sa-set-rating ps (i + 1) n True (list-snoc acc (json-pair "rating" (JsonInt n)))
+    else sa-set-rating ps (i + 1) n hit (list-snoc acc (list-at ps i))
+
+  sa-rate-all : List JsonValue, Integer, Integer, Integer, List JsonValue -> List JsonValue
+  sa-rate-all (ts) (i) (id) (n) (acc) =
+    if i >= list-length ts then acc
+    else let t = list-at ts i
+    in if json-get-int t "id" 0 /= id then sa-rate-all ts (i + 1) id n (list-snoc acc t)
+    else if n <= 2 then sa-rate-all ts (i + 1) id n acc
+    else sa-rate-all ts (i + 1) id n (list-snoc acc (when t
+      is JsonObject (ps) -> JsonObject (sa-set-rating ps 0 n False [])
+      is otherwise -> t))
+
+  spark-audio-rated : Text, Integer, Integer -> Text
+  spark-audio-rated (json) (id) (n) = json-emit (JsonArray (sa-rate-all (spark-audio-tracks json) 0 id (if n < 1 then 1 else if n > 5 then 5 else n) []))
+
+  spark-audio-deleted : Text, Integer -> Text
+  spark-audio-deleted (json) (id) = json-emit (JsonArray (sa-rate-all (spark-audio-tracks json) 0 id 0 []))
+
+ MusicAnalysis's BPM as VibeDescription prints it ({EstimatedBpm:F0}): .NET
+ rounds the exact value, a tie to even (62.5 prints 62).
+
+  sa-round-even : JsonNumber -> Integer
+  sa-round-even (n) =
+    if n.jn-decimals <= 0 then n.jn-mantissa * sa-pow10 (0 - n.jn-decimals) 1
+    else let d = sa-pow10 (n.jn-decimals) 1
+    in let neg = n.jn-mantissa < 0
+    in let m = if neg then 0 - n.jn-mantissa else n.jn-mantissa
+    in let q = m / d
+    in let r = m - q * d
+    in let t = if 2 * r > d | (2 * r == d & q - q / 2 * 2 == 1) then q + 1 else q
+    in if neg then 0 - t else t
+
+  sa-pow10 : Integer, Integer -> Integer
+  sa-pow10 (k) (acc) = if k <= 0 then acc else sa-pow10 (k - 1) (acc * 10)
+
+  spark-audio-bpm-text : JsonValue -> Text
+  spark-audio-bpm-text (v) = when json-get-num v "bpm"
+    is Just (n) -> show (sa-round-even n)
+    is None -> "?"
+
+ VibeDescription: energy by the RMS level, tempo by the BPM, brightness by
+ the spectral centroid, each band's bound exclusive.
+
+  sa-above : JsonValue, Text, Integer -> Boolean
+  sa-above (v) (key) (k) = when json-get-num v key
+    is Just (n) -> (if n.jn-decimals <= 0 then n.jn-mantissa * sa-pow10 (0 - n.jn-decimals) 1 > k else n.jn-mantissa > k * sa-pow10 (n.jn-decimals) 1)
+    is None -> False
+
+  spark-audio-vibe : JsonValue -> Text
+  spark-audio-vibe (v) =
+    let energy = if sa-above v "rmsDb" (0 - 10) then "high-energy" else if sa-above v "rmsDb" (0 - 20) then "moderate-energy" else "soft, ambient"
+    in let tempo = if sa-above v "bpm" 140 then "fast-tempo" else if sa-above v "bpm" 100 then "mid-tempo" else if sa-above v "bpm" 60 then "relaxed-tempo" else "very slow"
+    in let bright = if sa-above v "centroid" 3000 then "bright, trebly" else if sa-above v "centroid" 1500 then "balanced spectrum" else "dark, bassy"
+    in energy & ", " & tempo & " (" & spark-audio-bpm-text v & " BPM), " & bright
+
+  spark-audio-db-text : JsonValue, Text -> Text
+  spark-audio-db-text (v) (key) = when json-get-num v key
+    is Just (n) -> (let t = sa-round-even (JsonNumber { jn-mantissa = n.jn-mantissa, jn-decimals = n.jn-decimals - 1 }) in (if t < 0 then "-" else "") & show ((if t < 0 then 0 - t else t) / 10) & "." & show ((if t < 0 then 0 - t else t) - (if t < 0 then 0 - t else t) / 10 * 10))
+    is None -> "?"
+
+ A number field as the original writes it back, or its default.
+
+ .NET prints a double without trailing zeros: 1.0 is 1.
+
+  sa-norm : JsonNumber -> JsonNumber
+  sa-norm (n) = if n.jn-decimals > 0 & n.jn-mantissa - n.jn-mantissa / 10 * 10 == 0 then sa-norm (JsonNumber { jn-mantissa = n.jn-mantissa / 10, jn-decimals = n.jn-decimals - 1 }) else n
+
+  spark-audio-number : JsonValue, Text, Text -> Text
+  spark-audio-number (t) (key) (dflt) = when json-get-num t key
+    is Just (n) -> json-emit-num (sa-norm n)
+    is None -> dflt
+
+Section: Titles and File Names
+
+ Characters, not bytes: one CCE character is one to four bytes.
+
+  sa-char-len : Text, Integer -> Integer
+  sa-char-len (t) (i) = cce-decode-length (char-code-at t i)
+
+  sa-prefix : Text, Integer, Integer, Integer -> Text
+  sa-prefix (t) (i) (n) (max) =
+    if i >= text-length t | n >= max then substring t 0 i
+    else sa-prefix t (i + sa-char-len t i) (n + 1) max
+
+  sa-words : List Text, Integer, Integer, Text, Integer -> Text
+  sa-words (ws) (i) (taken) (acc) (max) =
+    if i >= list-length ws | taken >= max then acc
+    else if text-length (list-at ws i) == 0 then sa-words ws (i + 1) taken acc max
+    else sa-words ws (i + 1) (taken + 1) (if taken == 0 then list-at ws i else acc & " " & list-at ws i) max
+
+ ExtractTitle: the first words split at spaces, cut to a character count
+ (MusicPresenter: 5 words, 40; SfxPresenter: 4 words, 35).
+
+  spark-audio-title : Text, Integer, Integer -> Text
+  spark-audio-title (prompt) (words) (max) = sa-prefix (sa-words (text-split prompt " ") 0 0 "" words) 0 0 max
+
+ SanitizeFileName: lower case, and every character but a letter, a digit or
+ an underscore becomes an underscore.
+
+  sa-keep : Integer -> Boolean
+  sa-keep (c) = (c >= 3 & c <= 12) | (c >= 13 & c <= 64) | (c >= 97 & c <= 127) | c == char-code-at "_" 0
+
+  sa-sanitize : Text, Integer, Text -> Text
+  sa-sanitize (t) (i) (acc) =
+    if i >= text-length t then acc
+    else let n = sa-char-len t i
+    in if n > 1 then sa-sanitize t (i + n) (acc & (if cce-is-letter-any (cce-decode-at t i) then substring t i n else "_"))
+    else sa-sanitize t (i + 1) (acc & (if sa-keep (char-code-at t i) then substring t i 1 else "_"))
+
+  spark-audio-sanitize : Text -> Text
+  spark-audio-sanitize (name) = sa-sanitize (text-to-lower name) 0 ""
+
+  sa-three : Integer -> Text
+  sa-three (n) = if n < 10 then "00" & show n else if n < 100 then "0" & show n else show n
+
+  spark-music-file-name : Integer, Text -> Text
+  spark-music-file-name (id) (prompt) = "track_" & sa-three id & "_" & spark-audio-sanitize (spark-audio-title prompt 5 40) & ".wav"
+
+  spark-sfx-file-name : Integer, Text -> Text
+  spark-sfx-file-name (id) (prompt) = "sfx_" & sa-three id & "_" & spark-audio-sanitize (spark-audio-title prompt 4 35) & ".wav"
+
+Section: The Prompt
+
+ InjectTag: a blank tag changes nothing; a prompt that does not already end
+ in a comma has its trailing white space trimmed and ", " added first.
+
+  sa-blank : Text, Integer -> Boolean
+  sa-blank (t) (i) = if i >= text-length t then True else if substring t i 1 == " " | substring t i 1 == "\n" then sa-blank t (i + 1) else False
+
+  sa-trim-end : Text, Integer -> Text
+  sa-trim-end (t) (n) = if n > 0 & (substring t (n - 1) 1 == " " | substring t (n - 1) 1 == "\n") then sa-trim-end t (n - 1) else substring t 0 n
+
+  sa-ends : Text, Text -> Boolean
+  sa-ends (t) (s) = text-length t >= text-length s & substring t (text-length t - text-length s) (text-length s) == s
+
+  spark-inject-tag : Text, Text -> Text
+  spark-inject-tag (prompt) (tag) =
+    if sa-blank tag 0 then prompt
+    else if text-length prompt > 0 & sa-ends prompt ", " == False & sa-ends prompt "," == False then sa-trim-end prompt (text-length prompt) & ", " & tag
+    else prompt & tag
+
+ DetectCategory: the first category any of whose words the lower-cased
+ prompt contains, in the original's order; "" when none does.
+
+  sa-categories : List (List Text)
+  sa-categories = [
+    ["UI", "ui", "button", "click", "menu", "notification", "interface", "coin", "level up", "inventory", "quest", "purchase", "checkbox", "hover", "tab switch"],
+    ["Firearms", "gun", "pistol", "rifle", "shotgun", "sniper", "bullet", "reload", "ammo", "laser blaster", "plasma cannon", "machine gun"],
+    ["Combat", "sword", "arrow", "explosion", "shield", "combat", "weapon", "battle", "axe", "mace", "whip", "knife", "parry", "armor"],
+    ["Nature", "wind", "rain", "thunder", "fire", "water", "tree", "nature", "bird", "owl", "crow", "earthquake", "avalanche", "volcano", "waterfall", "river", "campfire"],
+    ["Movement", "footstep", "door", "jump", "walk", "run", "climb", "ladder", "rope", "swimming", "sliding", "rolling"],
+    ["Magic", "magic", "spell", "heal", "teleport", "arcane", "power up", "enchant", "summon", "dispel", "mana", "resurrect", "curse", "potion"],
+    ["Mechanical", "gear", "machine", "steam", "lever", "mechanical", "clockwork", "chain", "drawbridge", "trap", "portcullis", "lock", "key turn", "elevator", "conveyor", "pressure plate"],
+    ["Ambient", "ocean", "cave", "ambient", "cricket", "atmosphere", "swamp", "desert", "tavern", "dungeon ambient", "space station", "library", "marketplace", "church interior", "battlefield"],
+    ["Creature", "monster", "wolf", "dragon", "insect", "creature", "beast", "growl", "roar", "snake", "bear", "horse", "zombie", "ghoul", "vampire", "giant", "bat", "spider", "goblin", "orc", "skeleton", "werewolf"],
+    ["Impact", "punch", "glass", "break", "impact", "crash", "smash", "thud", "hit", "slap", "headbutt", "wall smash", "table flip"],
+    ["Voice", "voice", "grunt", "cry", "shout", "scream", "gasp", "laugh", "whisper", "cough", "sigh", "snoring", "eating", "crowd cheer", "crowd boo"],
+    ["Horror", "horror", "creepy", "ghost", "demon", "jumpscare", "haunted", "coffin", "eerie children", "midnight", "squelch", "heartbeat", "scratching"],
+    ["Sci-Fi", "sci-fi", "laser", "hologram", "warp", "robot", "emp", "cryopod", "lightsaber", "alien", "scanner", "forcefield", "hydraulic"],
+    ["Vehicle", "engine", "car", "helicopter", "spaceship", "train", "bicycle", "motorcycle", "boat", "jet", "tank", "tires", "vehicle", "horse cart"],
+    ["Household", "door knock", "phone", "alarm clock", "doorbell", "toilet", "faucet", "microwave", "key jingle", "light switch", "typing", "paper", "zipper"],
+    ["Musical", "drum roll", "cymbal", "gong", "horn blast", "bell toll", "harp", "string pluck", "piano chord", "record scratch", "tuning fork"],
+    ["Weather", "hail", "blizzard", "tornado", "sandstorm", "lightning strike"],
+    ["Liquid", "dripping", "pouring", "bubbling", "underwater", "lava", "acid", "liquid"],
+    ["Destruction", "collapse", "demolition", "wrecking", "timber", "bridge break", "car crash", "ground crack"],
+    ["Communication", "radio", "walkie", "morse", "sonar", "distress signal"],
+    ["Sports", "kick", "bounce", "bat hit", "whistle", "boxing", "diving"],
+    ["Food", "sizzling", "cork", "can open", "chopping", "ice cubes", "cooking"],
+    ["Textile", "cloth", "leather", "velcro", "flag", "cape", "fabric"],
+    ["Alarm", "siren", "alarm", "klaxon", "alert"]
+  ]
+
+  sa-any : Text, List Text, Integer -> Boolean
+  sa-any (p) (ws) (i) = if i >= list-length ws then False else if text-contains p (list-at ws i) then True else sa-any p ws (i + 1)
+
+  sa-category : Text, Integer -> Text
+  sa-category (p) (i) =
+    if i >= list-length sa-categories then ""
+    else let row = list-at sa-categories i
+    in if sa-any p row 1 then list-at row 0 else sa-category p (i + 1)
+
+  spark-sfx-category : Text -> Text
+  spark-sfx-category (prompt) = sa-category (text-to-lower prompt) 0
+
+Section: The Config Files
+
+ music_config.json and sfx_config.json as MusicConfig and SfxConfig read
+ them; a missing or unreadable file reads as empty.
+
+  sa-root : Text -> JsonValue
+  sa-root (json) = when json-parse json
+    is Just (v) -> v
+    is None -> JsonNull
+
+  sa-texts : List JsonValue, Integer, List Text -> List Text
+  sa-texts (xs) (i) (acc) = if i >= list-length xs then acc else sa-texts xs (i + 1) (list-snoc acc (when list-at xs i
+    is JsonStr (s) -> s
+    is otherwise -> ""))
+
+  sa-array : JsonValue, Text -> List JsonValue
+  sa-array (v) (key) = when json-get v key
+    is Just (x) -> (when x
+      is JsonArray (xs) -> xs
+      is otherwise -> [])
+    is None -> []
+
+  spark-config-texts : Text, Text -> List Text
+  spark-config-texts (json) (key) = sa-texts (sa-array (sa-root json) key) 0 []
+
+  sa-pairs : JsonValue, Text -> List JsonPair
+  sa-pairs (v) (key) = when json-get v key
+    is Just (x) -> (when x
+      is JsonObject (ps) -> ps
+      is otherwise -> [])
+    is None -> []
+
+  sa-keys : List JsonPair, Integer, List Text -> List Text
+  sa-keys (ps) (i) (acc) = if i >= list-length ps then acc else sa-keys ps (i + 1) (list-snoc acc ((list-at ps i).key))
+
+  spark-instrument-families : Text -> List Text
+  spark-instrument-families (json) = sa-keys (sa-pairs (sa-root json) "instruments") 0 []
+
+  spark-instruments-in : Text, Text -> List Text
+  spark-instruments-in (json) (family) = when json-get (JsonObject (sa-pairs (sa-root json) "instruments")) family
+    is Just (x) -> (when x
+      is JsonArray (xs) -> sa-texts xs 0 []
+      is otherwise -> [])
+    is None -> []
+
+ tempoMarkings and presets are lists of objects; each is read field by field.
+
+  spark-config-objects : Text, Text -> List JsonValue
+  spark-config-objects (json) (key) = sa-array (sa-root json) key
+
+  spark-sfx-duration : Text, Text, Text -> Text
+  spark-sfx-duration (json) (key) (dflt) = spark-audio-number (sa-root json) key dflt
+
+  spark-sfx-defaults : Text, Text -> Maybe JsonValue
+  spark-sfx-defaults (json) (category) = json-get (JsonObject (sa-pairs (sa-root json) "categoryDefaults")) category

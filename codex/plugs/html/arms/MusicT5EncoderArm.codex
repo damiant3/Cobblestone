@@ -1,0 +1,115 @@
+Chapter: MusicT5EncoderArm
+  cites Spark chapter MusicT5Load
+  cites Spark chapter MusicT5Tokenizer
+  cites AI chapter T5Tokenizer
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  te-refuse : Text -> Integer
+  te-refuse (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  te-heap-fill : Integer, List Integer, Integer -> Integer
+  te-heap-fill (a) (bs) (i) = if i >= list-length bs then a else let w = poke-byte a i (list-at bs i) in te-heap-fill a bs (i + 1)
+
+  te-join : List Integer, Integer, Text -> Text
+  te-join (xs) (i) (acc) = if i >= list-length xs then acc else te-join xs (i + 1) (acc & (if i == 0 then "" else ",") & show (list-at xs i))
+
+  te-mask : Integer, Integer, List Integer -> List Integer
+  te-mask (n) (value) (acc) = if list-length acc >= n then acc else te-mask n value (list-push acc value)
+
+  te-got : T5Tok, MusicT5Model, MusicT5Output, Integer, Integer, Integer, Text -> Integer
+  te-got (tok) (w) (out) (case) (rows) (index) (data) =
+    let written = state-set-text ("c" & show case & "-v" & show index) data
+    in te-download tok w out case rows (index + 1)
+
+  te-download : T5Tok, MusicT5Model, MusicT5Output, Integer, Integer, Integer -> Integer
+  te-download (tok) (w) (out) (case) (rows) (index) =
+    if index >= 14 then (let f = music-t5-output-free out in te-production tok w case)
+    else let h = if index < 12 then list-at (out.t5o-blocks) index else if index == 12 then out.t5o-hidden else out.t5o-condition
+    in let width = if index == 13 then w.t5m-width else 768
+    in gpu-buf-download-then h 0 (rows * width * 4) (\r -> te-got tok w out case rows index r)
+
+  te-production-got : T5Tok, MusicT5Model, MusicT5Output, Integer, Text -> Integer
+  te-production-got (tok) (w) (out) (case) (data) =
+    let a = state-set-text ("production" & show case) data
+    in let f = music-t5-output-free out
+    in te-case tok w (case + 1)
+
+  te-production : T5Tok, MusicT5Model, Integer -> Integer
+  te-production (tok) (w) (case) =
+    let prompt = page-data ("prompt" & show case)
+    in let ids = music-t5-tokenize tok prompt
+    in let mask = te-mask (list-length ids) (if prompt == "" then 0 else 1) []
+    in let out = music-t5-encode (page-data "base") (page-data "code") w ids mask False
+    in if out.t5o-condition == 0 then (let f = music-t5-output-free out in let f2 = bt5-close w in te-refuse "T5 production encoding failed")
+    else gpu-buf-download-then (out.t5o-condition) 0 (list-length ids * w.t5m-width * 4) (\r -> te-production-got tok w out case r)
+
+  te-case : T5Tok, MusicT5Model, Integer -> Integer
+  te-case (tok) (w) (case) =
+    if case >= text-to-integer (page-data "count") then (let f = bt5-close w in let e = state-set-text "error" (gpu-error 0) in state-set "done" 1)
+    else let prompt = page-data ("prompt" & show case)
+    in let ids = music-t5-tokenize tok prompt
+    in let rows = list-length ids
+    in let mask = te-mask rows (if prompt == "" then 0 else 1) []
+    in let a = state-set-text ("ids" & show case) (te-join ids 0 "")
+    in let b = state-set-text ("mask" & show case) (te-join mask 0 "")
+    in let c = state-set "case" case
+    in let out = music-t5-encode (page-data "base") (page-data "code") w ids mask True
+    in if out.t5o-condition == 0 then (let f = music-t5-output-free out in let f2 = bt5-close w in te-refuse ("T5 encoding failed: " & gpu-error 0))
+    else te-download tok w out case rows 0
+
+  te-buckets : T5Tok, MusicT5Model, Integer, Text -> Integer
+  te-buckets (tok) (w) (handle) (data) =
+    let a = state-set-text "buckets" data
+    in let f = be-drop handle
+    in te-case tok w 0
+
+  te-ready : T5Tok, MusicT5Model -> Integer
+  te-ready (tok) (w) =
+    let a = state-set "need" 3
+    in let h = gpu-buf-alloc 2052
+    in let r = if h == 0 then 0 - 1 else gpu-launch (page-data "code") "m5_buckets_main" (be-grid 513) [gpu-arg-buf h 0, gpu-arg-u32 (0 - 256), gpu-arg-u32 513]
+    in if r < 0 then (let f = be-drop h in let f2 = bt5-close w in te-refuse "T5 bucket dispatch failed")
+    else gpu-buf-download-then h 0 2052 (\data -> te-buckets tok w h data)
+
+  te-projection-picked : T5Tok, MusicT5Model, Text -> Integer
+  te-projection-picked (tok) (w) (data) =
+    let obj = json-parse-obj data
+    in music-t5-load-projection (json-obj-field obj "name") (text-to-integer (json-obj-field obj "size")) w (\model -> te-ready tok model) te-refuse
+
+  te-encoder-loaded : T5Tok, MusicT5Model -> Integer
+  te-encoder-loaded (tok) (w) =
+    let c = dom-on-click (dom-query "html") (\id -> (if state-get "need" == 2 then (let busy = state-set "need" (0 - 1) in pick-file-then ".bin" (\data -> te-projection-picked tok w data)) else 0))
+    in state-set "need" 2
+
+  te-opened : T5Tok, Text, Integer, Text -> Integer
+  te-opened (tok) (file) (size) (result) =
+    if text-contains result "\"ok\":true" then music-t5-load-encoder file size (\w -> te-encoder-loaded tok w) te-refuse else te-refuse result
+
+  te-encoder-picked : T5Tok, Text -> Integer
+  te-encoder-picked (tok) (data) =
+    let obj = json-parse-obj data
+    in let file = json-obj-field obj "name"
+    in let size = text-to-integer (json-obj-field obj "size")
+    in gpu-open-then (\r -> te-opened tok file size r)
+
+  te-tokenizer-read : Text -> Integer
+  te-tokenizer-read (data) =
+    let bytes = el-bytes data
+    in let a = te-heap-fill (alloc-bytes (list-length bytes + 8)) bytes 0
+    in let tables = t5-json-tables a (list-length bytes)
+    in if tables.tt-why /= "" then te-refuse (tables.tt-why)
+    else let tok = t5-tok-load (tables.tt-vocab) (tables.tt-charsmap)
+    in if tok.tk-count /= 32100 then te-refuse "Expected t5-base tokenizer vocabulary"
+    else let c = dom-on-click (dom-query "html") (\id -> (if state-get "need" == 1 then (let busy = state-set "need" (0 - 1) in pick-file-then ".safetensors" (\r -> te-encoder-picked tok r)) else 0))
+    in state-set "need" 1
+
+  te-tokenizer-picked : Text -> Integer
+  te-tokenizer-picked (data) = let obj = json-parse-obj data in file-read-then (json-obj-field obj "name") 0 (text-to-integer (json-obj-field obj "size")) te-tokenizer-read
+
+  te-pick : Text -> Integer
+  te-pick (id) = if state-get "need" == 0 then (let busy = state-set "need" (0 - 1) in pick-file-then ".json" te-tokenizer-picked) else 0
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") te-pick in state-set "need" 0

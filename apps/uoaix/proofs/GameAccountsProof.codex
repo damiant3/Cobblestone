@@ -1,0 +1,153 @@
+Chapter: GameAccountsProof
+  cites Uoaix chapter GameAccounts
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  gap-check : Text, Boolean -> [Console] Nothing
+  gap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gap-text : Text, Integer, Integer, List Integer -> List Integer
+  gap-text (text) (shift) (i) (out) = if i >= 30 then out
+    else gap-text text shift (i + 1) (list-push out (if i < text-length text then to-unicode (char-code (char-at text i)) - shift else 0))
+  gap-login : Text, Text -> List Integer
+  gap-login (name) (password) = list-push (gap-text password 13 0 (gap-text name 0 0 [128])) 0
+  gap-game : Text, Text -> List Integer
+  gap-game (name) (password) = gap-text password 13 0 (gap-text name 0 0 [145, 0, 0, 0, 1])
+
+  gap-index : Result Integer Text -> Integer
+  gap-index (r) = when r is Err (_) -> 0 - 2 is Ok (i) -> i
+
+  gap-same : Integer, Integer, Integer, Integer -> Boolean
+  gap-same (a) (b) (bytes) (i) = if i >= bytes then True
+    else if peek-byte a i /= peek-byte b i then False
+    else gap-same a b bytes (i + 1)
+
+  gap-logins : Integer -> [Console] Nothing
+  gap-logins (table) = act
+    gap-check "a fresh world holds only British" (ga-count table == 1 & ga-british table == 0 & ga-bound table == 0)
+    gap-check "British keeps the default password" (ga-british-default table)
+    gap-check "British admits Astronaut" (gap-index (ga-admit table (gap-login "British" "Astronaut") 1 31) == 0)
+    gap-check "British refuses another password" (is-err (ga-admit table (gap-login "British" "astronaut") 1 31))
+    gap-check "development admits an unknown name without creating it" (gap-index (ga-admit table (gap-login "uoaixtest" "uoaixtest") 1 31) == 0 - 1 & ga-count table == 1)
+    gap-check "game login creates the unknown account" (gap-index (ga-login table (gap-game "uoaixtest" "uoaixtest") 5 35) == 1 & ga-count table == 2)
+    gap-check "a second game login finds the same account" (gap-index (ga-login table (gap-game "uoaixtest" "uoaixtest") 5 35) == 1 & ga-count table == 2)
+    gap-check "a name differing only in case is the same account" (gap-index (ga-login table (gap-game "UOAIXTEST" "uoaixtest") 5 35) == 1 & ga-count table == 2)
+    gap-check "a wrong password is refused and creates nothing" (is-err (ga-login table (gap-game "uoaixtest" "uoaixtesT") 5 35) & ga-count table == 2)
+    gap-check "a name with a space is refused" (is-err (ga-admit table (gap-login "uoaix test" "pw") 1 31))
+    gap-check "an empty name is refused" (is-err (ga-admit table (gap-login "" "pw") 1 31))
+    gap-check "an empty password is refused" (is-err (ga-admit table (gap-login "someone" "") 1 31))
+    gap-check "two accounts with one password store different salts and hashes" (gap-index (ga-login table (gap-game "second" "uoaixtest") 5 35) == 2
+      & not (gap-same (ga-at table 1 + 32) (ga-at table 2 + 32) 16 0) & not (gap-same (ga-at table 1 + 48) (ga-at table 2 + 48) 32 0))
+    let public = ga-set-mode table ga-public
+    in gap-check "public mode refuses an unknown name at both logins" (is-err (ga-admit table (gap-login "newcomer" "pw") 1 31) & is-err (ga-login table (gap-game "newcomer" "pw") 5 35) & ga-count table == 3)
+    gap-check "public mode admits an existing account" (gap-index (ga-login table (gap-game "uoaixtest" "uoaixtest") 5 35) == 1)
+    let dev = ga-set-mode table ga-dev
+    in let full = poke-qword table 0 ga-capacity
+    in gap-check "a full table admits no unknown name" (is-err (ga-admit table (gap-login "newcomer" "pw") 1 31))
+    let restored = poke-qword table 0 3
+    in gap-check "British password replacement" (is-ok (ga-british-password-set table [83,101,99,114,101,116]) & not (ga-british-default table)
+      & gap-index (ga-admit table (gap-login "British" "Secret") 1 31) == 0 & is-err (ga-admit table (gap-login "British" "Astronaut") 1 31))
+  end
+
+  gap-slots : GameShard, Integer, Integer -> [Console] Nothing
+  gap-slots (game) (mobile) (other) = act
+    gap-check "binding an account loads its empty slots" (ga-bind game.accounts game.characters 1 & ga-bound game.accounts == 1 & gs-free-slot game.characters 0 == 0)
+    let a = poke-qword game.characters 0 mobile
+    in gap-check "first free slot skips an occupied slot" (gs-free-slot game.characters 0 == 1)
+    let b = poke-qword game.characters 160 other
+    in let c = poke-qword game.characters 320 other
+    in let d = poke-qword game.characters 480 other
+    in let e = poke-qword game.characters 640 other
+    in gap-check "five occupied slots leave none free" (gs-free-slot game.characters 0 == 5)
+    let f = poke-qword game.characters 160 0
+    in let g = poke-qword game.characters 320 0
+    in let h = poke-qword game.characters 480 0
+    in let i = poke-qword game.characters 640 0
+    in gap-check "rebinding saves the working slots into the account" (ga-bind game.accounts game.characters 2 & peek-qword (ga-slots game.accounts 1) 0 == mobile & peek-qword game.characters 0 == 0)
+    gap-check "binding back restores the account's slots" (ga-bind game.accounts game.characters 1 & peek-qword game.characters 0 == mobile)
+    gap-check "binding the bound account changes nothing" (not (ga-bind game.accounts game.characters 1))
+  end
+
+  gap-british : GameShard -> [Console] Nothing
+  gap-british (game) = let accounts = ga-new ga-dev
+    in let unlogged = not (ga-is-british accounts)
+    in let created = gs-store-create game.characters 0 gap-packet 0
+    in let bound = ga-bind accounts game.characters 0
+    in let logged = ga-logged accounts
+    in let lord = ga-is-british accounts
+    in let doll = sip-paperdoll-titled game.characters 0 7 lord
+    in let made = ga-login accounts (gap-game "uoaixtest" "uoaixtest") 5 35
+    in let other = ga-bind accounts game.characters (gap-index made)
+    in act
+      gap-check "British powers need a login as British" (unlogged & lord & not (ga-is-british accounts))
+      gap-check "British's paperdoll carries the Lord title" (list-at doll 5 == 76 & list-at doll 6 == 111 & list-at doll 7 == 114 & list-at doll 8 == 100 & list-at doll 9 == 32 & list-at doll 10 == 65 & list-length doll == 66)
+    end
+
+  gap-packet : List Integer
+  gap-packet = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Avatar" 0 30) "" 0 30
+    in let stats = name & [0, 30, 20, 15, 0, 50, 1, 50, 2, 0]
+    in let skin = gp-put16 stats 1002
+    in let appearance = gp-zeros skin 12
+    in gp-put16 (gp-put16 (gp-put32 (gp-put16 appearance 0) 0) 55) 77
+
+  gap-codec : GameShard, Integer -> [Console] Nothing
+  gap-codec (game) (mobile) =
+    let a = gs-store-create game.characters 0 gap-packet 0
+    in let moded = ga-set-mode game.accounts ga-dev
+    in let seeded = ga-set-entropy game.accounts [7, 8, 9, 10] 0
+    in let state = TownState { checkpoint = WorldCheckpoint { world = game.world, tick = 5, sequence = 6 }, townsfolk = tf-new 0, mind = tm-new 0 }
+    in let size = gc-size game.world.capacity
+    in let buf = alloc-bytes size
+    in when gc-encode state game buf size
+      is Err (error) -> print-line-uni ("FAIL encode " & error)
+      is Ok (_) -> act
+        gap-check "encoding drops the mode and the boot entropy" (peek-qword buf 80 == 0 & peek-qword buf 96 == 0 & peek-qword buf 120 == 0)
+        when gc-decode-record buf size 5 6
+          is Err (error) -> print-line-uni ("FAIL decode " & error)
+          is Ok (restored) -> act
+            let accounts = restored.game.accounts
+            in gap-check "decode restores every account and the binding" (ga-count accounts == 3 & ga-bound accounts == 1 & ga-mode accounts == ga-public & accounts /= game.accounts)
+            gap-check "decode loads the bound account's slots" (peek-qword restored.game.characters 0 == mobile & peek-byte restored.game.characters 18 == 65)
+            gap-check "decoded hashes still verify" (gap-index (ga-admit accounts (gap-login "uoaixtest" "uoaixtest") 1 31) == 1)
+          end
+        let encoded = gc-encode state game buf size
+        in let unbound = poke-qword buf 72 (0 - 1)
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gap-check "a rehashed unbound table is refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let renamed = poke-byte buf 128 32
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gap-check "a rehashed name holding a space is refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let duplicate = ws-copy (buf + 1008) (buf + 1888) 32 0
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gap-check "a rehashed duplicate name is refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let stray = poke-byte buf (64 + 64 + 3 * ga-record + 5) 1
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gap-check "a rehashed byte past the last account is refused" (is-err (gc-decode buf size))
+      end
+
+  opening : [Console] Nothing = when gs-new 0
+    is Err (error) -> print-line-uni ("FAIL world " & error)
+    is Ok (game) -> when world-create game.world (gs-mobile 0 1421 1698 (-5) 400 1002)
+      is Err (error) -> print-line-uni ("FAIL mobile " & error)
+      is Ok (mobile) -> when world-create game.world (gs-mobile 0 1422 1698 (-5) 400 1002)
+        is Err (error) -> print-line-uni ("FAIL other " & error)
+        is Ok (other) -> act
+          gap-logins game.accounts
+          gap-slots game mobile other
+          gap-codec game mobile
+          gap-british game
+        end
+
+Page 1

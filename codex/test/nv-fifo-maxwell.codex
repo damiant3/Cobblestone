@@ -1,0 +1,44 @@
+Chapter: NvFifoMaxwell
+  cites Kernel chapter NvFifo
+  cites Foreword chapter Format
+
+ The expected output is NVIDIA's clb06f.h field ranges packed by Mesa's
+ drf.h, compiled by MSVC: build/nv-fifo-oracle.ps1. Runlist entries use
+ nouveau's gm107_runl_insert_chan. Refusals grade our input contract.
+
+Section: Main
+
+  hex64 : Integer -> Text
+  hex64 (v) = fmt-hex-pad (bit-and v #FFFFFFFF) 8 & " " & fmt-hex-pad (bit-shru v 32) 8
+
+  runlist-line : Integer, Integer, Integer -> Text
+  runlist-line (n) (chid) (addr) =
+    let ws = nv-runlist-channel chid addr
+    in "RL " & show n & " " & show (list-length ws) & " " & fmt-hex-pad (list-at ws 0) 8 & " " & fmt-hex-pad (list-at ws 1) 8
+
+  ramfc-hex : List Integer, Integer -> Text
+  ramfc-hex (ws) (i) = if i >= list-length ws then "" else " " & fmt-hex-pad (list-at ws i) 8 & ramfc-hex ws (i + 1)
+
+  ramfc-line : Integer, List Integer -> Text
+  ramfc-line (n) (ws) = "RAMFC " & show n & " " & show (list-length ws) & ramfc-hex ws 0
+
+  opening : [Console] Nothing = act
+   print-line-uni ("GP 0 " & hex64 (nv-gp-entry #12345678 16 0 0))
+   print-line-uni ("GP 1 " & hex64 (nv-gp-entry #FFFFFFFFFC #1FFFFF 1 1))
+   print-line-uni ("GP 2 " & hex64 (nv-gp-entry #1000 1 0 1))
+   print-line-uni ("GP 3 " & hex64 (nv-gp-entry #AB00000004 #ABCDE 1 0))
+   print-line-uni ("MH 0 " & fmt-hex-pad (nv-method-header 1 1 #2B4 1) 8)
+   print-line-uni ("MH 1 " & fmt-hex-pad (nv-method-header 1 1 #2BC 1) 8)
+   print-line-uni ("MH 2 " & fmt-hex-pad (nv-method-header 3 7 #3FFC #1FFF) 8)
+   print-line-uni ("MH 3 " & fmt-hex-pad (nv-method-header 4 2 #110 #ABC) 8)
+   print-line-uni ("MH 4 " & fmt-hex-pad (nv-method-header 5 5 #4 0) 8)
+   print-line-uni (runlist-line 0 0 0)
+   print-line-uni (runlist-line 1 3 #12345678000)
+   print-line-uni (runlist-line 2 2047 #ABCDE000)
+   print-line-uni (runlist-line 3 #FFFFFFFF #FFFFFFFF000)
+   print-line-uni ("REFUSE " & show (list-length (nv-runlist-channel -1 0)) & " " & show (list-length (nv-runlist-channel #100000000 0)) & " " & show (list-length (nv-runlist-channel 0 -4096)) & " " & show (list-length (nv-runlist-channel 0 #1000FFFFFFFF)) & " " & show (list-length (nv-runlist-channel 0 #100000000000)))
+   print-line-uni (ramfc-line 0 (nv-maxwell-ramfc #12345678900 #AB12345000 256 #123 False 3))
+   print-line-uni (ramfc-line 1 (nv-maxwell-ramfc #ABCDEF00100 #FFFFFFFFF8 65536 #FFF True 2047))
+   print-line-uni (ramfc-line 2 (nv-maxwell-ramfc 0 0 8 0 False 0))
+   print-line-uni ("RAMFC-REFUSE " & show (list-length (nv-maxwell-ramfc 0 0 0 0 False 0)) & " " & show (list-length (nv-maxwell-ramfc 0 0 24 0 False 0)) & " " & show (list-length (nv-maxwell-ramfc 0 1 8 0 False 0)) & " " & show (list-length (nv-maxwell-ramfc 0 0 8 #1000 False 0)) & " " & show (list-length (nv-maxwell-ramfc -1 0 8 0 False 0)))
+  end

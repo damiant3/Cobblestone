@@ -14,8 +14,9 @@ consequence of the line above it.
 
 ## Scope
 
-- The width is **100 columns**, counted from column 1 (Damian, 2026-09-30:
-  one panel of a two-panel AgentGrid at the default font).
+- The width is **128 columns**, counted from column 1 (Damian, 2026-10-01).
+  Keep code already formatted at 100 as it is. Hand rewrites address eligible
+  lines over 200 first; a long signature wraps after a comma or an arrow (the table below).
 - In: every `.codex` chapter written by hand.
 - Out: long string constants (a string is not broken to meet the width);
   literal tables, a list whose every element is a literal (a 41,588-column
@@ -37,6 +38,7 @@ Each of these is read from the compiler, not assumed.
 | A bound expression must START on its binding line (`let x =` then a newline is CDX1023). | `docs/DevelopersGuide.md`, "Pitfalls" |
 | A line may not start with `.` (CDX1071) or with `& ...` (a new expression, not a continuation). | same section; "No multi-line `&` chains" |
 | Inside an `act` block a newline separates statements. | `docs/DevelopersGuide.md`, the act syntax |
+| A signature's type may break after a comma or an arrow onto a line indented deeper than the signature's first line; every later line of it may sit at that depth or deeper. A break onto the signature's own column is CDX1081. | `Parser.codex`, `type-continues-below`; `codex/test/signature-continuation`, `codex/test/errors/signature-*-same-column` |
 
 `docs/DevelopersGuide.md` also says, in its syntax section, that "multi-line
 function applications work everywhere". That sentence is wrong for
@@ -195,6 +197,59 @@ opens) from the parse tree, whose tokens carry line and column. It then
 re-emits the same token sequence with new line breaks and indentation, and
 lists every line R7 names.
 
+## Current width report
+
+`LAYOUTREPORT` uses 128 columns. It omits column-2 prose. Its `string` and
+`table` rows identify exemptions and are excluded from work counts. A short
+literal-list argument does not exempt the surrounding call: the literal
+span itself must exceed the available width. Computed list entries are not
+literals. Quoted characters do not open strings; escaped characters and
+numeric separators are recognized using Codex's syntax.
+
+Measured 2026-10-01, main 34159 plus COMPILER-109 DEV34136 and DEV34150,
+69 chapters from `build/compiler-order.txt`. The auditor was compiled with
+depot seed 66AE634E870CA342:
+
+| Quire | Current source over 128 | Current source over 200 | R7 output over 128 | R7 output over 200 |
+|---|---:|---:|---:|---:|
+| Ast | 127 | 17 | 127 | 17 |
+| Core | 66 | 8 | 66 | 8 |
+| Emit | 259 | 40 | 259 | 40 |
+| IR | 263 | 36 | 263 | 36 |
+| Semantics | 18 | 0 | 18 | 0 |
+| Syntax | 60 | 6 | 60 | 6 |
+| Top | 70 | 17 | 70 | 17 |
+| Types | 276 | 53 | 270 | 52 |
+| Total | 1,139 | 177 | 1,133 | 176 |
+
+All columns exclude string/table exemptions and prose. The current-source
+counts include 126 signatures over 128, 11 of them over 200; the remaining
+166 lines over 200 are non-signature code, including three cite declarations.
+Syntax has no eligible expression over 200; its six remaining long lines
+are signatures. R7 counts follow an in-memory formatter pass, not a
+repository rewrite, and do not classify signatures.
+
+Current census evidence is in `D:/Projects/Cobblestone-reek/build-output/compiler109-batch2-rebased/`:
+`census/inventory.json` records source, formatter and auditor hashes;
+`census/rows.json` carries original file/line/text for current-source rows;
+`census/summary.json` and per-chapter output retain both views. `audit.codex`
+wraps the formatter with raw and formatted report sections. `census.ps1`
+records the invocation and exclusions; it is a lane-local runner, not a
+general command. It requires the compiled auditor, an unused output
+directory and an owned status path. No generated chapters were found by
+its first-24-line header check. Column-2 prose is replaced with blank lines
+in guest input, preserving source line numbers and admitting
+`TypeCheckerInference` despite its non-CCE prose. Remaining source is checked
+as ASCII; reported raw widths and all source hashes are checked unchanged.
+
+Formatter boundary controls in `build-output/layout128/` accept 128 and report
+129, 200 and 201. Short-list calls,
+computed entries and quote characters remain code; long primitive tables
+and strings retain exemption labels. A computed-list rewrite is token- and
+whole-CDX-identical, and a changed-token control is detected. A narrow
+fixture remains unchanged. These checks do not prove arbitrary formatter
+output; each future rewrite still needs the proof below.
+
 ## The proof
 
 1. **Token identity.** For each formatted chapter, the lexer's token sequence
@@ -215,10 +270,19 @@ lists every line R7 names.
 
 ## Rollout
 
-One quire per landing, the compiler first. A compiler quire is seed-affecting
-(positions change), so each such landing takes the token and the seed path in
-`CLAUDE.md`, R-GATE. The R7 report of each quire is cleared by hand rewrites in
-the same landing, or listed in that quire's backlog.
+The rollout measurements below were taken at the former 100-column limit.
+They are not the current compiler census.
+
+One quire per landing, the compiler first. A compiler quire's landing takes the
+token (it is compiler source), but it needs no seed. The proof is the
+concatenated compiler compiled by the depot seed with `-Repl`: the
+formatted source must compile to the same bytes as the original, and both
+must equal the depot seed outside the signature window (offsets 40..135).
+Controls: a literal changed on a formatted line in a reached definition of
+each chapter moves the CDX. The symbol map does not say which definitions
+are reached, because inlined definitions are missing from it too. The R7
+report of each quire is cleared by hand rewrites on the seed path, or
+counted in that quire's backlog.
 
 ## Stages
 
@@ -263,7 +327,7 @@ the same landing, or listed in that quire's backlog.
   the same bytes, and a literal bumped on a changed line moves each one;
   `ParserExpressions.codex` is token-identical at 8766 tokens (79 to 51 lines
   over 100). **The R7 report is built**: given `LAYOUTREPORT` as its first
-  input line, the formatter prints only the lines over 100 of its formatted
+  input line, the formatter prints only the lines over 128 of its formatted
   output, as `line: kind: width`, where kind is `string` (a literal longer
   than the room), `table`, `& chain` or `application`. A synthetic chapter
   with 1 line of each kind classifies all 4 correctly. The tracker's 9 R7
@@ -272,4 +336,109 @@ the same landing, or listed in that quire's backlog.
   literal changed inside each rewritten chapter moves it. `codex/tracker`
   has 0 lines over 100, and the formatter leaves it unchanged. **Stage 2 is
   done.**
-- **3**, the compiler, quire by quire.
+- **3**, the compiler, quire by quire. **A `when` arm's column is
+  semantic**: `parse-match-branches` (`ParserExpressions.codex`) takes an
+  `is` as the next arm only on the previous arm's line or at exactly the first
+  arm's column. So the formatter moves every arm of one `when` by that
+  `when` line's own shift: an `is` line belongs to the innermost open `when`
+  whose first arm (a mid-line `is` counts) had the same original column, and
+  closes the `when`s it passes. R2 does not split a line with a depth-0 `is`
+  after its start, because the split would move a same-line arm off its line.
+  The formatter also appends a lone `then` line to the line above. A
+  column-2 prose line inside a body keeps every open `if`, `let` and
+  `when`; only a line at column 3 (a definition) resets them. The
+  arm rule was found on Semantics (`collect-ctor-names`' arms ramped right
+  once `in` lines had moved), and both column facts on IR and Types, where
+  token-identical text failed to compile (CDX1078) until they held. **Semantics is formatted** (2026-09-30): token
+  identity at 5704 and 5191 tokens; the compiler compiles to the depot seed's
+  bytes outside the signature window (3,813,351 bytes, 0 differing); controls
+  in `collect-top-level-names` and `add-duplicate-cite-error` each move the
+  CDX, while one in `assign-chapters` moved nothing because nothing reaches
+  that definition. **Ast, Core and Syntax are formatted** (2026-09-30, 24
+  chapters, one landing): every chapter token-identical, the compiler again
+  0 bytes from the depot seed outside the signature window, and one string
+  control per quire (`AstNodes`, `Severity`, `Lexer`) moves the CDX. Lines
+  over 100: Ast 319 to 275, Core 155 to 150, Syntax 343 to 231. **IR and
+  Types are formatted** the same way (controls in `IRCheck` and `Builtins`):
+  IR 876 to 647, Types 931 to 610. `TypeCheckerInference.codex` is not
+  formatted: its prose holds U+22A2, which has no CCE code point, so it cannot
+  be handed to the guest. **Emit and the top-level chapters are formatted**
+  (controls in `CodexEmitter` and `opening.codex`): Emit 793 to 670, top level
+  221 to 159. **Stage 3 is done** except `TypeCheckerInference.codex`. R7:
+  COMPILER-109.
+- **Binary identity does not cover a check that parses SOURCE text**: the
+  IR and Types pass broke `check-builtin-alloc`'s one-line row parse, and
+  the release gate found it (fixed at main 32394). So every landing also runs
+  `build.ps1`'s static source checks (`check-constants`,
+  `check-effect-vocab`, `check-sidecars`, `check-cdx-registry`,
+  `check-facts-guid`, `check-backlog-ids`, `check-annotation-targets`,
+  `check-shell-raw`, `check-pipe-verdicts`, `check-tools`,
+  `check-cite-names`, `check-builtin-alloc`, `check-plug-types`) on the
+  formatted tree (L-NOGATE). All 13 pass at main 32394, with every earlier pass
+  landed.
+- **4**, every other quire (`codex/foreword`, `codex/os`, `codex/plugs`,
+  `apps`), by the stage 2 recipe: token identity per chapter, and an
+  identical CDX from an entry that reaches the changed definitions (a
+  test or an app build), with a moving control. **The 23 Foreword and Math
+  chapters the compiler cites are formatted** (2026-09-30, 16 changed) by the
+  stage 3 proof, because `concat-codex-self.ps1` preloads them into the
+  compiler's unit: the compiler is 0 bytes from the depot seed outside the
+  signature window, and a control in `map-list-loop` (`ListUtils`) moves it.
+  Lines over 100 in those chapters: 172 to 122. **The rest of the foreword
+  is formatted except `engine`, `shell` and `punctual`** (2026-09-30, 278
+  chapters). The instrument is a CDX per test. `cite-gate.ps1 -ListOnly`
+  selects every `codex/test` chapter that reaches a changed chapter. Each is
+  compiled before and after (2,003 selections over 10 quires), and every
+  one is identical. The 39 that fail both times are `codex/test/errors`
+  subjects, which fail by design. The control is a literal bumped on a
+  changed line, graded through a test that cites that chapter directly,
+  not through `foreword-all-compile`, which cites every chapter and calls
+  none. Each landed quire has one control that moved. `engine` (6 tries),
+  `shell` (3) and `punctual` (1) found none, so they are not formatted.
+  `gpu/BrowserKernels.codex` is excluded while red edits it. Lines over 100:
+  compress 147 to 104, math 31 to 12, sim 37 to 10, signal 30 to 19, gpu 108
+  to 90, game 147 to 40, ai 451 to 311, ui 412 to 223, encode 513 to 284,
+  core 447 to 248. **`codex/plugs` is formatted** (reek, 2026-09-30, 147 of 309 chapters): the
+  instrument is each plug's own build (`codex/plugs/<p>/build.ps1`, the
+  depot seed), and a chapter lands only if every changed line appears in its
+  plug's bundle. All 57 plug builds are byte-identical before and after, and
+  each has a literal control in its own chapters that moved. Held back, 110
+  chapters whose changed lines do not all appear in their own plug's bundle:
+  chiefly the `Stdio` variants, `html/arms`, the `test`, `test-input` and
+  `corpus` subjects, and babbage. Lines over 100 in the landed ones: 6,391
+  to 4,981. **`codex/os` (9 quires) and `codex/boards` are formatted**
+  the same way (145 chapters, 945 selections, all identical, a moving control
+  in each quire; the 13 source checks green). The instrument cannot see 3
+  arm64 subjects (`arm64-net-calibrate`, `arm64-timer`, `arm64-web-server`),
+  which build through the cross plug and fail as x86 CDX both before and
+  after. `codex/product` (no test reaches it) and `codex/workflow` (no
+  control) are not formatted. Lines over 100: os 1,194 to 601, boards 75
+  to 63. **An app is proven through its `opening` chapters as well as the
+  tests**: every entry chapter in the app is compiled before and after, and
+  a changed chapter outside the cite closure of everything compiled is not
+  formatted. `apps/data`, `apps/erp` and `apps/explorer` are formatted
+  (60 chapters; 103, 15 and 15 compiles identical; a moving control in
+  each), and so are `apps/accp`, `apps/browser`, `apps/circuits`,
+  `apps/cvmm` and `apps/safari` (107 chapters; 4, 80, 1, 26 and 19
+  compiles identical; a moving control in each, cvmm's on the sixth try).
+  `apps/mathbook`, `market`, `globe`, `vision`, `diagram`, `fishtank`,
+  `helm`, `edgemesh` and `c64` are formatted the same way (60 chapters; a
+  moving control in each, diagram's and helm's through the app's own
+  `opening`). Not formatted, because no compiled entry reaches them: 7
+  chapters in erp, 7 in accp, 18 in circuits, 8 in cvmm, 4 in mathbook, 4 in
+  market, 5 in globe, `ExplorerData`, `ExplorerDb`,
+  `browser/pages/dashboard`, `SafariWasm`, `HelmGameBridge`, and all 14
+  changed `gpushow` kernels (gpushow has no entry). Lines over 100: data 548
+  to 298, erp 120 to 36, explorer 262 to 221, accp 103 to 53, browser 43 to
+  40, circuits 158 to 125, cvmm 372 to 240, safari 285 to 168, mathbook 69
+  to 21, market 34 to 17, globe 36 to 26, vision 50 to 26, diagram 76 to
+  26, fishtank 151 to 127, helm 57 to 38, edgemesh 25 to 13, c64 37 to 28.
+  33 more apps are formatted the same way (74 chapters, 1,255 to 922 lines
+  over 100); a single-chapter app's control is graded through its own
+  compile. Not formatted: chat, compliance, fontai, fontexplorer, gpu,
+  guios, iot, perf, radio and realtime (no changed line carries a literal
+  whose change moves the CDX), assetforge and site (no entry reaches the
+  changed chapters), and `FireworksShow`, `MlpKernels`, `NetToolPersist`,
+  `WebGraphics` and 3 workflow chapters (no entry reaches them). Not yet
+  taken: works, diffusion, games, codexmagic-mobile, modbuilder, spark,
+  prism and landing (other lanes' work on 2026-09-30).

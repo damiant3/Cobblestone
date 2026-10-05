@@ -1,0 +1,159 @@
+Chapter: GameWorldSpawnReplay
+  cites Uoaix chapter GameWorldSpawnCodec
+
+  check : Text, Boolean -> [Console] Nothing
+  check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  profile : Text, Integer, Integer -> WsProfile
+  profile (name) (body) (ai) = WsProfile { key = name, name = name, body = body, hue = 0, hue-high = 0, water = False,
+    strength-low = 30, strength-high = 30, dex-low = 40, dex-high = 40,
+    hits-low = 30, hits-high = 30, damage-low = 2, damage-high = 5,
+    skill-low = 300, skill-high = 300, tactics-low = 300, tactics-high = 300, ai = ai }
+  catalog : Integer -> WsCatalog
+  catalog (unused) = WsCatalog { revision = 1234,
+    profiles = [profile "Orc" 17 2, profile "Deer" 237 12],
+    groups = [WsGroup { key = "hostile", choices = [WsChoice { key = "orc", profile = 0, group = -1, weight = 1 }] },
+      WsGroup { key = "wildlife", choices = [WsChoice { key = "deer", profile = 1, group = -1, weight = 1 }] }],
+    regions = [WsRegion { id = 1, name = "wild camp", area = WsRect { x1 = 1421, y1 = 1698, x2 = 1423, y2 = 1701 },
+      maximum = 1, batch = 3, minimum-minutes = 1, maximum-minutes = 1, group = 0,
+      preferred-height = 18, fixed-height = -129, outside = False,
+      exclusions = [WsRect { x1 = 1421, y1 = 1698, x2 = 1421, y2 = 1701 }] },
+      WsRegion { id = 2, name = "field", area = WsRect { x1 = 1424, y1 = 1698, x2 = 1427, y2 = 1702 },
+      maximum = 1, batch = 3, minimum-minutes = 1, maximum-minutes = 1, group = 1,
+      preferred-height = 18, fixed-height = -129, outside = False, exclusions = [] }] }
+  fill : WalkMap, Integer -> Integer
+  fill (map) (i) = if i == map.width * map.height then 0
+    else let done = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in fill map (i + 1)
+  login : Integer -> List Integer
+  login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  create : Integer -> List Integer
+  create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Spawn proof" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  opcode-in : List (List Integer), Integer, Integer -> Boolean
+  opcode-in (packets) (op) (i) = if i == list-length packets then False
+    else list-at (list-at packets i) 0 == op | opcode-in packets op (i + 1)
+  opcode : Result (Maybe GameReply) Text, Integer -> Boolean
+  opcode (reply) (op) = when reply
+    is Err (_) -> False
+    is Ok (maybe) -> when maybe is None -> False is Just (r) -> opcode-in r.packets op 0
+  pulse : GameWorldSpawn, GameShard, GameInput, WalkMap, Integer -> Result (Maybe GameReply) Text
+  pulse (g) (shard) (input) (map) (tick) = gws-after gws-ground g shard input map tick (Ok None)
+  codec : GameWorldSpawn, GameShard -> [Console] Nothing
+  codec (g) (shard) = act
+    bytes <- gwsc-size g
+    buf <- alloc-bytes bytes
+    encoded <- gwsc-encode g shard.world 6000 buf bytes
+    when gws-new g.catalog g.combat 3
+      is Err (e) -> print-line-uni ("FAIL restored state " & e)
+      is Ok (restored) -> act
+        decoded <- gwsc-decode restored shard.world 10000 buf bytes
+        check "restart restores slots populations and rebased timers" (is-ok encoded & is-ok decoded
+          & (list-at restored.slots 0).serial == (list-at g.slots 0).serial
+          & peek-qword restored.populations 0 == 1 & peek-qword restored.populations 8 == 1
+          & peek-qword restored.deadlines 0 == 16000 & restored.due == 10100)
+        check "restart clears visibility connection and preserves catalog identity" (restored.connection == -1
+          & not (list-at restored.slots 0).visible & peek-qword buf 16 == g.catalog.revision)
+        row <- gwsc-row g buf 2
+        corrupt <- poke-qword row 32 (gm-ticks 5000 + 1)
+        refused <- gwsc-decode restored shard.world 20000 buf bytes
+        check "malformed final row refuses before mutation" (is-err refused & restored.due == 10100 & g.combat.tick == 10000)
+        fixed <- poke-qword row 32 0
+        changed <- poke-qword buf 16 1235
+        mismatch <- gwsc-decode restored shard.world 20000 buf bytes
+        check "changed catalog and truncated bytes refuse" (is-err mismatch & is-err (gwsc-decode restored shard.world 20000 buf (bytes - 1)))
+        revision <- poke-qword buf 16 1234
+        first <- gwsc-row g buf 0
+        second <- gwsc-row g buf 1
+        saved <- peek-qword second 0
+        duplicate <- poke-qword second 0 (peek-qword first 0)
+        invalid <- gwsc-decode restored shard.world 20000 buf bytes
+        check "duplicate live binding refuses" (is-err invalid & restored.due == 10100)
+        serial <- poke-qword second 0 saved
+        stale <- world-delete shard.world saved
+        rebound <- gwsc-decode restored shard.world 20000 buf bytes
+        check "stale world serial refuses" (is-ok stale & is-err rebound)
+      end
+  end
+  run : GameShard, WalkMap -> [Console] Nothing
+  run (shard) (map) = act
+    combat <- cb-new shard 104729
+    input <- gn-input-with (cb-specs 0) 1
+    when gws-new (catalog 0) combat 3
+      is Err (e) -> print-line-uni ("FAIL state " & e)
+      is Ok (g) -> act
+        denied <- pulse g shard input map 0
+        check "unauthenticated pulse leaves world empty" (is-ok denied & world-count shard.world == 0)
+        when gs-relay-key shard
+          is Err (e) -> print-line-uni ("FAIL relay " & e)
+          is Ok (key) -> act
+            bound <- __record-set input.session "key" key
+            logged <- gs-handle shard input.session map (login key)
+            created <- gs-handle shard input.session map (create 0)
+            mode <- __record-set input "mode" 2
+            intro <- pulse g shard input map 0
+            first <- list-at g.slots 0
+            second <- list-at g.slots 1
+            serial <- first.serial
+            check "region caps override larger batch and create actual mobiles" (is-ok logged & is-ok created & is-ok intro
+              & serial > 0 & second.serial > 0 & (list-at g.slots 2).serial == 0
+              & world-count shard.world == 5 & opcode intro 120)
+            check "spawn creates no inventory or gold" (world-child-count shard.world serial == 0
+              & world-child-count shard.world second.serial == 0 & peek-qword g.populations 0 == 1 & peek-qword g.populations 8 == 1)
+            when world-get shard.world serial
+              is Err (e) -> print-line-uni ("FAIL mobile " & e)
+              is Ok (m) -> act
+                check "spawn honors exclusion and tile index occupancy" (m.x /= 1421 & gws-occupied shard.world m.x m.y)
+                excluded <- gws-step g shard map first m 6
+                check "exclusion prevents west step at border" (if m.x == 1422 then not excluded else True)
+              end
+            early <- pulse g shard input map 99
+            check "movement waits for PIT deadline" (is-ok early & not (opcode early 119))
+            active <- pulse g shard input map 100
+            attacker <- list-at combat.actors (world-slot shard.world serial)
+            animal <- list-at combat.actors (world-slot shard.world second.serial)
+            check "hostile type targets player while wildlife does not" (is-ok active & attacker.target == input.session.serial & animal.target == 0)
+            neutral <- __record-set (list-at g.catalog.profiles 1) "ai" 6
+            when cb-ensure combat shard input.session.serial
+              is Err (e) -> print-line-uni ("FAIL player binding " & e)
+              is Ok (own) -> when world-get shard.world own.serial
+                is Err (e) -> print-line-uni ("FAIL player lookup " & e)
+                is Ok (viewer) -> when world-get shard.world second.serial
+                  is Err (e) -> print-line-uni ("FAIL animal lookup " & e)
+                  is Ok (m) -> act
+                    retaliated <- cb-select combat shard animal own
+                    ready <- __record-set second "due" 100
+                    defended <- gws-act g shard map second m viewer
+                    check "neutral wildlife retains admitted retaliation" (retaliated & animal.target == own.serial)
+                  end
+            peaceful <- cb-stop combat animal
+            scared <- __record-set (list-at g.catalog.profiles 1) "ai" 12
+            unknown <- __record-set (list-at (list-at g.catalog.groups 0).choices 0) "profile" -1
+            check "unresolved source choice yields no replacement type" (gws-pick g 0 0 == -1)
+            known <- __record-set (list-at (list-at g.catalog.groups 0).choices 0) "profile" 0
+            removed <- world-delete shard.world serial
+            noticed <- pulse g shard input map 101
+            check "deleted NPC releases regional count" (is-ok removed & is-ok noticed & first.serial == 0 & peek-qword g.populations 0 == 0)
+            waiting <- pulse g shard input map 5999
+            check "region minute timer prevents immediate replacement" (is-ok waiting & first.serial == 0)
+            ready <- __record-set g "due" 6000
+            replacement <- pulse g shard input map 6000
+            check "region replacement uses fresh serial at timer" (is-ok replacement & first.serial > 0 & first.serial /= serial & world-count shard.world == 5)
+            codec g shard
+          end
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 16 16
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        filled <- fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> run shard map
+      end
+  end
+
+Page 1

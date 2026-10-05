@@ -1,0 +1,82 @@
+Chapter: ClipXlArm
+  cites Diffusion chapter BrowserClipLoad
+  cites Diffusion chapter BrowserTxt2Img
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  xa-fail : Text -> Integer
+  xa-fail (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  xa-list : Text -> List Integer
+  xa-list (t) = if text-length t < 3 then [] else bt-text-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  xa-variant : BcWeights, Boolean, Integer -> BcWeights
+  xa-variant (w) (erf) (pad) =
+    let s = w.bc-spec
+    in BcWeights { bc-spec = ClipSpec { cs-width = s.cs-width, cs-heads = s.cs-heads, cs-layers = s.cs-layers, cs-mlp = s.cs-mlp, cs-erf-gelu = erf, cs-open = s.cs-open, cs-pool = s.cs-pool, cs-prefix = s.cs-prefix, cs-part = s.cs-part, cs-pad = pad, cs-skip = s.cs-skip, cs-final-norm = s.cs-final-norm }, bc-status = w.bc-status, bc-tok = w.bc-tok, bc-pos = w.bc-pos, bc-layers = w.bc-layers, bc-final-g = w.bc-final-g, bc-final-b = w.bc-final-b, bc-proj = w.bc-proj }
+
+  xa-down : BrowserClipLoaded, BrowserClipLoaded, Integer, List Integer, List Integer, Integer -> Integer
+  xa-down (l) (g) (case) (hs) (sizes) (i) =
+    if i >= list-length hs then xa-case l g (case + 1)
+    else gpu-buf-download-then (list-at hs i) 0 (list-at sizes i * 4) (\r -> (let saved = state-set-text ("case" & show case & "-" & show i) r in let f = gpu-buf-free (list-at hs i) in xa-down l g case hs sizes (i + 1)))
+
+  xa-case : BrowserClipLoaded, BrowserClipLoaded, Integer -> Integer
+  xa-case (l) (g) (case) =
+    if case >= 5 then let a = browser-clip-close l in let b = browser-clip-close g in let e = state-set-text "error" (gpu-error 0) in state-set "done" 1
+    else let progress = state-set "case" case
+    in let ids = xa-list (state-get-text (if case == 1 then "ids-hero" else "ids-cat"))
+    in let ops = browser-clip-ops (page-data "base")
+    in if case < 2 then
+      let lo = clip-encode-with ops (l.bcl-weights) ids
+      in let go = clip-encode-with ops (g.bcl-weights) ids
+      in if lo.co-status /= 0 | go.co-status /= 0 then xa-fail "Dual CLIP encoding failed"
+      else xa-down l g case [lo.co-cond, go.co-cond, go.co-pooled] [77 * 768, 77 * 1280, 1280] 0
+    else let w = if case == 2 then xa-variant (l.bcl-weights) True 49407 else xa-variant (g.bcl-weights) (case == 4) (if case == 4 then 49407 else 0)
+    in let o = clip-encode-with ops w ids
+    in let f = if o.co-pooled == 0 then True else gpu-buf-free (o.co-pooled)
+    in if o.co-status /= 0 then xa-fail "CLIP control encoding failed"
+    else xa-down l g case [o.co-cond] [77 * (w.bc-spec).cs-width] 0
+
+  xa-l-loaded : LayoutBinding, BrowserClipLoaded -> Integer
+  xa-l-loaded (binding) (l) = browser-clip-load (state-get-text "file") (page-data "extra") bc-xl-g-spec (list-at (binding.lb-parts) 2) (\g -> xa-case l g 0) (\why -> (let f = browser-clip-close l in xa-fail why))
+
+  xa-header : Text -> Integer
+  xa-header (data) =
+    let binding = layout-bind (st-parse-file (xa-list data)) sdxl-layout
+    in let vb = xa-list (page-data "vocab")
+    in let mb = xa-list (page-data "merges")
+    in let bpe = clip-bpe-load (xa-heap vb) (list-length vb) (xa-heap mb) (list-length mb)
+    in let cat = xa-pad (clip-bpe-with-specials (clip-bpe-tokenize bpe (page-data "cat")))
+    in let hero = xa-pad (clip-bpe-with-specials (clip-bpe-tokenize bpe (page-data "hero")))
+    in let a = state-set-text "ids-cat" ("[" & xa-join cat 0 (list-length cat) & "]")
+    in let b = state-set-text "ids-hero" ("[" & xa-join hero 0 (list-length hero) & "]")
+    in if clip-bpe-status bpe /= 0 | list-length cat /= 77 | list-length hero /= 77 then xa-fail "CLIP tokenizer failed"
+    else browser-clip-load (state-get-text "file") (page-data "extra") bc-xl-l-spec (list-at (binding.lb-parts) 1) (\l -> xa-l-loaded binding l) xa-fail
+
+  xa-pad : List Integer -> List Integer
+  xa-pad (ids) = if list-length ids >= 77 then ids else xa-pad (list-push ids 49407)
+
+  xa-join : List Integer, Integer, Integer -> Text
+  xa-join (xs) (lo) (hi) = if hi - lo == 1 then show (list-at xs lo) else let mid = (lo + hi) / 2 in xa-join xs lo mid & "," & xa-join xs mid hi
+
+  xa-poke : Integer, List Integer, Integer -> Integer
+  xa-poke (a) (bs) (i) = if i >= list-length bs then a else let p = poke-byte a i (list-at bs i) in xa-poke a bs (i + 1)
+
+  xa-heap : List Integer -> Integer
+  xa-heap (bs) = xa-poke (alloc-bytes (list-length bs + 8)) bs 0
+
+  xa-length : Text -> Integer
+  xa-length (data) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (xa-list data) 0) xa-header
+
+  xa-opened : Text -> Integer
+  xa-opened (data) = if text-contains data "\"ok\":true" then file-read-then (state-get-text "file") 0 8 xa-length else xa-fail data
+
+  xa-picked : Text -> Integer
+  xa-picked (data) = let f = state-set-text "file" (json-obj-field (json-parse-obj data) "name") in gpu-open-then xa-opened
+
+  xa-pick : Text -> Integer
+  xa-pick (id) = if state-get "picked" == 1 then 0 else let p = state-set "picked" 1 in pick-file-then ".safetensors" xa-picked
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") xa-pick in state-set "armed" 1

@@ -1,0 +1,61 @@
+Chapter: GopFocusRingArm
+  cites Works chapter GopComposite
+  cites Foreword chapter Console
+
+  gfr-yes : Boolean -> Text
+  gfr-yes (v) = if v then "yes" else "NO"
+
+  gfr-check : Integer, LayoutRect, LayoutRect, Integer, Boolean, Boolean, Integer -> Boolean
+  gfr-check (buf) (box) (clip) (s) (active) (complete) (i) =
+    if i >= 4096 then peek-32 buf 16384 == 12345
+    else let x = i - i / 64 * 64
+    in let y = i / 64
+    in let inside = x >= box.lr-x & x < box.lr-x + box.lr-w & y >= box.lr-y & y < box.lr-y + box.lr-h
+    in let clipped = x >= clip.lr-x & x < clip.lr-x + clip.lr-w & y >= clip.lr-y & y < clip.lr-y + clip.lr-h
+    in let edge = math-min (math-min (x - box.lr-x) (box.lr-x + box.lr-w - 1 - x)) (math-min (y - box.lr-y) (box.lr-y + box.lr-h - 1 - y))
+    in let expected = if active & inside & clipped & edge < 2 * s then if edge < s then 0 else 16777215 else 4473924
+    in (if complete | (inside & clipped & edge < 2 * s) then peek-32 buf (i * 4) == expected else True) & gfr-check buf box clip s active complete (i + 1)
+
+  gfr-case : Integer, Integer, LayoutRect, Boolean -> Boolean
+  gfr-case (flags) (s) (clip) (active) =
+    let mark = __heap-save
+    in let reserve = __heap-advance 16392
+    in let filled = gop-fill-rect mark 64 64 0 0 64 64 4473924
+    in let guard = poke-32 mark 16384 12345
+    in let node = widget-set-flags (widget-button "go" "Go") flags
+    in let positioned = __record-set node "wn-bounds" (layout-rect 4 4 24 20)
+    in let box = comp-mul-rect (comp-border-box (node.wn-bounds) (widget-resolve-style node theme-terminal)) s
+    in let drawn = comp-focus-ring mark 64 64 clip node theme-terminal s
+    in let correct = gfr-check mark box clip s active True 0
+    in let restored = __heap-restore mark
+    in correct
+
+  gfr-integrated : Boolean =
+    let mark = __heap-save
+    in let reserve = __heap-advance 16392
+    in let guard = poke-32 mark 16384 12345
+    in let node = widget-set-flags (widget-button "go" "") (flag-focused + flag-invalid + flag-busy + flag-checked)
+    in let positioned = __record-set node "wn-bounds" (layout-rect 4 4 24 20)
+    in let box = comp-border-box (node.wn-bounds) (widget-resolve-style node theme-terminal)
+    in let clip = layout-rect 0 0 64 64
+    in let drawn = comp-draw-node mark 64 64 clip cbf-init gfont-none node theme-terminal 1
+    in let correct = gfr-check mark box clip 1 True False 0
+    in let restored = __heap-restore mark
+    in correct
+
+  opening : [Console] Nothing =
+    let full = layout-rect 0 0 64 64
+    in let basic = gfr-case flag-focused 1 full True
+    in let hover = gfr-case (flag-focused + flag-hovered) 1 full True
+    in let pressed = gfr-case (flag-focused + flag-pressed) 1 full True
+    in let disabled = gfr-case (flag-focused + flag-disabled) 1 full False
+    in let plain = gfr-case 0 1 full False
+    in let scaled = gfr-case flag-focused 2 full True
+    in let clipped = gfr-case flag-focused 2 (layout-rect 12 12 24 24) True
+    in act
+      print-line-uni ("ordinary focus paints black and white ring: " & gfr-yes basic)
+      print-line-uni ("hover and press retain focus ring: " & gfr-yes (hover & pressed))
+      print-line-uni ("disabled and unfocused controls omit ring: " & gfr-yes (disabled & plain))
+      print-line-uni ("scaled clipped ring preserves every other pixel: " & gfr-yes (scaled & clipped))
+      print-line-uni ("node rendering keeps ring above status marks: " & gfr-yes gfr-integrated)
+    end

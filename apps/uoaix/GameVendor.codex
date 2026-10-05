@@ -1,0 +1,233 @@
+Chapter: GameVendor
+  cites Uoaix chapter GameVendorUndo
+  cites Uoaix chapter GameVendorBuys
+  cites Uoaix chapter GameNet
+  cites Foreword chapter Maybe
+
+ SphereServer X receive.cpp PacketVendorBuyReq/PacketVendorSellReq and
+ CClientMsg.cpp addShopMenuBuy/addShopMenuSell, Apache-2.0, translated to
+ bounded Codex offers and serial lots. Source and changes: GameVendor.md.
+
+  gv-specs : List GameOpcodeSpec = [
+    GameOpcodeSpec { opcode = 59, size = 0, minimum = 8, maximum = 232 },
+    GameOpcodeSpec { opcode = 159, size = 0, minimum = 9, maximum = 201 },
+    GameOpcodeSpec { opcode = 6, size = 5, minimum = 5, maximum = 5 }]
+  gv-quote-ticks : Integer = (60000 * pit-input-hz + 1000 * pit-count - 1) / (1000 * pit-count)
+  gv-slot : GameShard, Integer, Integer -> Integer
+  gv-slot (s) (serial) (i) = if i == 5 then -1
+    else if peek-qword s.characters (i * 160) == serial then i else gv-slot s serial (i + 1)
+  gv-status-packet : GvWorld, GvPlayer -> List Integer
+  gv-status-packet (v) (p) = when world-get v.game.world p.serial
+    is Err (e) -> []
+    is Ok (mobile) -> let slot = gv-slot v.game p.serial 0
+      in let purse = (ep-actor v.currency.world p.actor).purse
+      in let value = eu-value v.currency (em-purse v.currency.copper purse).coin (em-purse v.currency.silver purse).coin (em-purse v.currency.world.money purse).coin
+      in if slot < 0 then [] else gvp-status mobile v.game.characters slot (value / v.currency.copper-rate)
+  gv-fill : GvWorld, GvPlayer, GvVendor, Integer, Integer -> Integer
+  gv-fill (v) (p) (vendor) (side) (i) = if i == v.lot-count | p.count == 32 then p.count
+    else let l = list-at v.lots i
+    in let owner = if side == 1 then vendor.serial else p.serial
+    in let actor = if side == 1 then vendor.actor else p.actor
+    in if l.actor /= actor | not (gv-owned v.game.world l.serial owner 65) then gv-fill v p vendor side (i + 1)
+    else if side == 2 & not (gv-under v.game.world l.serial p.pack 65) then gv-fill v p vendor side (i + 1)
+    else when world-get v.game.world l.serial
+      is Err (e) -> gv-fill v p vendor side (i + 1)
+      is Ok (obj) -> if obj.amount /= l.quantity | obj.amount <= 0 | world-child-count v.game.world obj.serial > 0
+        | (side == 1 & obj.container /= vendor.stock & obj.container /= vendor.extra) then gv-fill v p vendor side (i + 1)
+        else let ask = if side == 1 then ep-price v.currency.world vendor.actor l.item else ep-at vendor.prices l.item
+        in if ask < 1 then gv-fill v p vendor side (i + 1)
+        else let bid = if ask / 2 < 1 then 1 else if ask / 2 > 65535 then 65535 else ask / 2
+        in let price = if side == 1 then ask else bid
+        in let saved = if side == 1 then ep-set vendor.prices l.item ask else 0
+        in let q = list-at p.offers p.count
+        in let a = __record-set q "serial" obj.serial
+        in let b = __record-set q "quantity" (if obj.amount > 65535 then 65535 else obj.amount)
+        in let c = __record-set q "price" price
+        in let d = __record-set q "graphic" obj.graphic
+        in let e = __record-set q "hue" obj.hue
+        in let f = __record-set q "item" l.item
+        in let g = __record-set q "lot" i
+        in let n = __record-set p "count" (p.count + 1)
+        in gv-fill v p vendor side (i + 1)
+  gv-sell-offer : GvWorld, GvPlayer, Integer, WorldObject -> Integer
+  gv-sell-offer (v) (p) (role) (obj) = if obj.kind /= 2 | obj.amount <= 0 then 0
+    else let lot = gv-lot v obj.serial 0
+    in let usable = if lot < 0 then True else (list-at v.lots lot).actor == p.actor & (list-at v.lots lot).quantity == obj.amount
+    in let item = if lot < 0 then gvb-item-of obj.graphic else (list-at v.lots lot).item
+    in let bid = if usable then gvb-bid v.currency.world role item else 0
+    in if bid < 1 then 0
+    else let q = list-at p.offers p.count
+    in let a = __record-set q "serial" obj.serial
+    in let b = __record-set q "quantity" (if obj.amount > 65535 then 65535 else obj.amount)
+    in let c = __record-set q "price" bid
+    in let d = __record-set q "graphic" obj.graphic
+    in let e = __record-set q "hue" obj.hue
+    in let f = __record-set q "item" item
+    in let g = __record-set q "lot" lot
+    in let n = __record-set p "count" (p.count + 1)
+    in 1
+  gv-sell-walk : GvWorld, GvPlayer, Integer, Integer, Integer -> Integer
+  gv-sell-walk (v) (p) (role) (serial) (depth) = if serial == 0 | depth == 0 | p.count == 32 then 0
+    else let next = world-next-sibling v.game.world serial
+    in let here = when world-get v.game.world serial
+      is Err (_) -> 0
+      is Ok (obj) -> if world-child-count v.game.world serial > 0 then gv-sell-walk v p role (world-first-child v.game.world serial) (depth - 1)
+        else gv-sell-offer v p role obj
+    in gv-sell-walk v p role next depth
+  gv-subset : GvWorld, GvPlayer, Integer, Integer, List GvQuote -> List GvQuote
+  gv-subset (v) (p) (container) (i) (out) = if i == p.count then out
+    else let q = list-at p.offers i
+    in when world-get v.game.world q.serial
+      is Err (e) -> gv-subset v p container (i + 1) out
+      is Ok (obj) -> gv-subset v p container (i + 1) (if obj.container == container then list-push out q else out)
+  gv-equip-packet : GvWorld, Integer, Integer -> List Integer
+  gv-equip-packet (v) (serial) (layer) = when world-get v.game.world serial
+    is Err (e) -> []
+    is Ok (obj) -> gp-equip obj layer
+ The answering vendor speaks overhead, so the player sees which one it is.
+  gv-menu : GvWorld, GvPlayer, GvVendor, WorldObject, Integer, Integer, Integer, Integer -> GameReply
+  gv-menu (v) (p) (vendor) (npc) (role) (side) (connection) (tick) =
+    let a = __record-set p "count" 0
+    in let b = __record-set p "vendor" vendor.serial
+    in let c = __record-set p "side" side
+    in let d = __record-set p "connection" connection
+    in let e = __record-set p "expires" (tick + gv-quote-ticks)
+    in let cr = __record-set p "copper-rate" v.currency.copper-rate
+    in let sr = __record-set p "silver-rate" v.currency.silver-rate
+    in let count = if side == 2 then gv-sell-walk v p role (world-first-child v.game.world p.pack) 4 else gv-fill v p vendor side 0
+    in let base = [gv-equip-packet v p.pack 21, gv-equip-packet v vendor.stock 26, gv-equip-packet v vendor.extra 27, gv-equip-packet v vendor.buys 28]
+    in if side == 2 & p.count == 0 then
+      let closed = __record-set p "side" 0
+      in gs-reply [gvp-speech npc "Vendor" "You have nothing I would be interested in."] "vendor sell menu empty"
+    else if side == 2 then gs-reply (base & [gvp-sell v.currency.world.catalog p.offers p.count vendor.serial, gvp-speech npc "Vendor" "Let me see what you have."]) "vendor sell menu"
+    else let stock = gv-subset v p vendor.stock 0 []
+    in let extra = gv-subset v p vendor.extra 0 []
+    in gs-reply (base & [gvp-contents stock (list-length stock) vendor.stock,
+      gvp-buy v.currency.world.catalog stock (list-length stock) vendor.stock,
+      gvp-contents extra (list-length extra) vendor.extra,
+      gvp-buy v.currency.world.catalog extra (list-length extra) vendor.extra,
+      gvp-open vendor.serial, gv-status-packet v p, gvp-speech npc "Vendor" "Take a look at my goods."]) "vendor buy menu"
+  gv-refuse : GvPlayer, Integer, Text -> GameReply
+  gv-refuse (p) (vendor) (reason) = let a = __record-set p "side" 0
+    in let b = __record-set p "count" 0
+    in gs-reply [gvp-close vendor] ("vendor refused: " & reason)
+  gv-updates : GvWorld, List GvLine, Integer, Integer, List (List Integer) -> List (List Integer)
+  gv-updates (v) (lines) (side) (i) (out) = if i == list-length lines then out
+    else let line = list-at lines i
+    in let source = (list-at v.lots line.lot).serial
+    in let serial = if side == 1 then line.delivered else source
+    in when world-get v.game.world serial
+      is Err (e) -> gv-updates v lines side (i + 1) out
+      is Ok (obj) -> gv-updates v lines side (i + 1) (list-push out (if side == 2 & source == line.delivered then gvp-remove source else gvp-contained obj))
+  gv-tax-total : GvWorld, List GvLine, Integer, Integer -> Integer
+  gv-tax-total (v) (lines) (metal) (i) = if i == list-length lines then 0
+    else let line = list-at lines i
+    in let amount = if metal == 1 then line.copper else if metal == 2 then line.silver else line.gold
+    in amount * (eu-money v.currency metal).tax / 10000 + gv-tax-total v lines metal (i + 1)
+  gv-coin-text : Integer, Integer, Integer -> Text
+  gv-coin-text (c) (s) (g) = show g & " gold, " & show s & " silver, " & show c & " copper"
+  gv-tender-message : GvWorld, GvVendor, List GvLine, Integer -> List Integer
+  gv-tender-message (v) (vendor) (lines) (side) = when world-get v.game.world vendor.serial
+    is Err (e) -> []
+    is Ok (npc) -> let c = gv-metal-total lines 1 0
+      in let s = gv-metal-total lines 2 0
+      in let g = gv-metal-total lines 3 0
+      in let tc = gv-tax-total v lines 1 0
+      in let ts = gv-tax-total v lines 2 0
+      in let tg = gv-tax-total v lines 3 0
+      in gvp-speech npc "Provisioner" (if side == 1 then "Paid " & gv-coin-text c s g & "."
+        else "Received " & gv-coin-text (c - tc) (s - ts) (g - tg) & "; tax " & gv-coin-text tc ts tg & ".")
+  gv-cart : GvWorld, GvPlayer, GvVendor, GameInput, List Integer, Integer -> GameReply
+  gv-cart (v) (p) (vendor) (input) (packet) (tick) =
+    let side = if list-at packet 0 == 59 then 1 else 2
+    in let count = if side == 1 then (list-length packet - 8) / 7 else gp-u16 packet 7
+    in let cancelled = if side == 1 then list-at packet 7 == 0 else count == 0
+    in if cancelled then gv-refuse p vendor.serial "cancelled"
+    else if p.vendor /= vendor.serial | p.side /= side | p.connection /= input.connection | tick < 0 | tick >= p.expires then gv-refuse p vendor.serial "quote absent or expired"
+    else if p.copper-rate /= v.currency.copper-rate | p.silver-rate /= v.currency.silver-rate then gv-refuse p vendor.serial "exchange rate changed"
+    else if count < 1 | count > 32 | list-length packet /= (if side == 1 then 8 + count * 7 else 9 + count * 6) then gv-refuse p vendor.serial "cart extent"
+    else when gv-read-lines v p packet count 9 (if side == 1 then 7 else 6) 0 []
+      is Err (e) -> gv-refuse p vendor.serial e
+      is Ok (lines) ->
+        let buyer = if side == 1 then p.actor else vendor.actor
+        in let seller = if side == 1 then vendor.actor else p.actor
+        in let owner = if side == 1 then vendor.serial else p.serial
+        in let destination = if side == 1 then p.pack else vendor.extra
+        in when gv-checkout v lines buyer seller owner destination p.serial
+          is Err (e) -> gv-refuse p vendor.serial e
+          is Ok (n) ->
+            let a = __record-set p "side" 0
+            in let b = __record-set p "count" 0
+            in let packets = gv-updates v lines side 0 [gvp-close vendor.serial]
+            in let receipt = packets & [gv-status-packet v p]
+            in let audible = when world-get v.game.world p.serial
+              is Err (_) -> receipt
+              is Ok (mobile) -> list-push receipt (gvp-coin-sound mobile)
+            in gs-reply (list-push audible (gv-tender-message v vendor lines side)) ("vendor trade side=" & show side & " lines=" & show n & " action=" & show v.sequence & " copper=" & show (gv-metal-total lines 1 0) & " silver=" & show (gv-metal-total lines 2 0) & " gold=" & show (gv-metal-total lines 3 0))
+ Spoken trade is `buy` or `sell`, optionally after `vendor` or a role word
+ ("blacksmith sell"); exactly one vendor answers, the closest of that role.
+  gv-fold : Integer -> Integer
+  gv-fold (c) = if c >= 65 & c <= 90 then c + 32 else c
+  gv-chars-at : Text, Integer, Text, Integer -> Boolean
+  gv-chars-at (text) (at) (word) (i) = if i == text-length word then True
+    else if at + i >= text-length text then False
+    else if gv-fold (to-unicode (char-code (char-at text (at + i)))) /= to-unicode (char-code (char-at word i)) then False
+    else gv-chars-at text at word (i + 1)
+  gv-tail : Text, Text -> Integer
+  gv-tail (text) (word) = let n = text-length text
+    in let k = text-length word
+    in if n == k & gv-chars-at text 0 word 0 then 0
+    else if n > k & gv-chars-at text (n - k) word 0 & to-unicode (char-code (char-at text (n - k - 1))) == 32 then n - k - 1
+    else 0 - 1
+  gv-role-word : Text, Integer, Integer -> Integer
+  gv-role-word (text) (length) (i) = if i == list-length gvb-role-words then 0 - 2
+    else if text-length (list-at gvb-role-words i) == length & gv-chars-at text 0 (list-at gvb-role-words i) 0 then i
+    else gv-role-word text length (i + 1)
+  gv-speech-role : Text, Integer -> Integer
+  gv-speech-role (text) (prefix) = if prefix == 0 then 0 - 1
+    else if prefix == 6 & gv-chars-at text 0 "vendor" 0 then 0 - 1
+    else gv-role-word text prefix 0
+  gv-nearest : GvWorld, WorldObject, Integer -> Integer
+  gv-nearest (v) (mobile) (role) = gv-closest v mobile role 0 -1 0
+  gv-closest : GvWorld, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  gv-closest (v) (mobile) (role) (i) (best) (distance) = if i == v.vendor-count then best
+    else if role >= 0 & gvb-role i /= role then gv-closest v mobile role (i + 1) best distance
+    else when world-get v.game.world (list-at v.vendors i).serial
+      is Err (e) -> gv-closest v mobile role (i + 1) best distance
+      is Ok (vendor) -> let d = (vendor.x - mobile.x) * (vendor.x - mobile.x) + (vendor.y - mobile.y) * (vendor.y - mobile.y)
+        in if gv-near mobile vendor & (best < 0 | d < distance) then gv-closest v mobile role (i + 1) i d
+        else gv-closest v mobile role (i + 1) best distance
+  gv-handle-at : GvWorld, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  gv-handle-at (v) (shard) (input) (packet) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else if not (world-indexed shard.world) then Err "vendor world index unavailable"
+    else if shard.world.buffer /= v.game.world.buffer | shard.active /= input.session.serial then Err "vendor session binding"
+    else if list-length packet < 1 then Ok None
+    else let opcode = list-at packet 0
+    in if opcode /= 3 & opcode /= 6 & opcode /= 59 & opcode /= 159 then Ok None
+    else if not (go-packet-valid gv-specs packet) | not (gs-byte-range packet 0) then Err "vendor packet extent"
+    else if opcode == 3 & not (gp-speech-valid packet) then Err "vendor speech profile"
+    else let speech = if opcode == 3 then gp-speech-text packet else ""
+    in let sell-at = gv-tail speech "sell"
+    in let buy-at = gv-tail speech "buy"
+    in let prefix = if sell-at >= 0 then sell-at else buy-at
+    in let spoken-role = gv-speech-role speech prefix
+    in let side = if spoken-role < 0 - 1 then 0 else if sell-at >= 0 then 2 else if buy-at >= 0 then 1 else 0
+    in if opcode == 3 & side == 0 then Ok None
+    else let player = gv-player v input.session.serial 0
+    in if player < 0 then Ok None
+    else let p = list-at v.players player
+    in when world-get shard.world p.serial
+      is Err (e) -> Err e
+      is Ok (mobile) ->
+        let vendor-index = if opcode == 3 then gv-nearest v mobile spoken-role else gv-vendor v (gp-u32 packet (if opcode == 6 then 1 else 3)) 0
+        in if vendor-index < 0 then if opcode == 6 | opcode == 3 then Ok None else Ok (Just (gv-refuse p p.vendor "unknown vendor"))
+        else let vendor = list-at v.vendors vendor-index
+        in when world-get shard.world vendor.serial
+          is Err (e) -> Err e
+          is Ok (npc) -> if not (gv-near mobile npc) | not (gv-owned shard.world p.pack p.serial 65) then Ok (Just (gv-refuse p vendor.serial "out of range"))
+            else if not (gv-owned shard.world vendor.stock vendor.serial 65 & gv-owned shard.world vendor.extra vendor.serial 65 & gv-owned shard.world vendor.buys vendor.serial 65) then Ok (Just (gv-refuse p vendor.serial "vendor containers changed"))
+            else if opcode == 3 | opcode == 6 then Ok (Just (gv-menu v p vendor npc (gvb-role vendor-index) (if opcode == 6 then 1 else side) input.connection tick))
+            else Ok (Just (gv-cart v p vendor input packet tick))
+  gv-handler : GvWorld, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  gv-handler (v) (shard) (input) (map) (host-port) (packet) = gv-handle-at v shard input packet get-ticks

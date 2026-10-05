@@ -1,0 +1,87 @@
+Chapter: NvMmu
+
+ GM107/GM200 GPU MMU entries and the instance block's page-directory
+ fields, from NVIDIA's published references (open-gpu-kernel-modules
+ 570.144, src/common/inc/swref/published/maxwell/gm107: dev_mmu.h and
+ dev_ram.h). A field (w*32+hi):(w*32+lo) is bits lo..hi of 32-bit word w.
+
+ PTE, 8 bytes. Word 0: VALID 0, PRIVILEGE 1, READ_ONLY 2, ENCRYPTED 3, and
+ the address shifted right by 12 at bit 4, in 25 bits (28:4) for video
+ memory and 28 bits (31:4) for system memory. Word 1: VOL 0, APERTURE 2:1
+ (VIDEO_MEMORY 0, PEER_MEMORY 1, SYSTEM_COHERENT_MEMORY 2,
+ SYSTEM_NON_COHERENT_MEMORY 3), LOCK 3, KIND 11:4, COMPTAGLINE 28:12,
+ READ_DISABLE 30, WRITE_DISABLE 31.
+
+ PDE, 8 bytes. Word 0: APERTURE_BIG 1:0 (INVALID 0, VIDEO_MEMORY 1,
+ SYSTEM_COHERENT_MEMORY 2, SYSTEM_NON_COHERENT_MEMORY 3), SIZE 3:2 (FULL 0,
+ HALF 1, QUARTER 2, EIGHTH 3), the big-page table address shifted right by
+ 12 at bit 4 (25 bits in video memory, 28 in system memory). Word 1:
+ APERTURE_SMALL 1:0, VOL_SMALL 2, VOL_BIG 3, the small-page table address as
+ in word 0.
+
+ Instance block, words 128..131: PAGE_DIR_BASE_TARGET 1:0 (VID_MEM 0,
+ SYS_MEM_COHERENT 2, SYS_MEM_NONCOHERENT 3), PAGE_DIR_BASE_VOL 2, and bits
+ 31:12 of the page directory's address in place; word 129 bits 7:0 are
+ address bits 39:32; words 130 and 131 hold ADR_LIMIT the same way.
+
+Section: Entries
+
+  nv-mmu-in : Integer, Integer, Integer -> Boolean
+  nv-mmu-in (v) (lo) (hi) = if v < lo then False else v <= hi
+
+  nv-mmu-frame-bits : Integer -> Integer
+  nv-mmu-frame-bits (aperture) = if aperture <= 1 then 25 else 28
+
+  nv-mmu-addr-ok : Integer, Integer -> Boolean
+  nv-mmu-addr-ok (addr) (aperture) =
+    if addr < 0 then False
+    else if bit-and addr #FFF /= 0 then False
+    else bit-shru addr 12 < bit-shl 1 (nv-mmu-frame-bits aperture)
+
+  nv-mmu-pte : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nv-mmu-pte (addr) (aperture) (vol) (kind) (ro) (priv) =
+    if aperture == 1 then -1
+    else if nv-mmu-in aperture 0 3 == False then -1
+    else if nv-mmu-addr-ok addr aperture == False then -1
+    else if nv-mmu-in vol 0 1 == False then -1
+    else if nv-mmu-in kind 0 255 == False then -1
+    else if nv-mmu-in ro 0 1 == False then -1
+    else if nv-mmu-in priv 0 1 == False then -1
+    else let w0 = bit-or 1 (bit-or (bit-shl priv 1) (bit-or (bit-shl ro 2) (bit-shl (bit-shru addr 12) 4)))
+    in let w1 = bit-or vol (bit-or (bit-shl aperture 1) (bit-shl kind 4))
+    in bit-or w0 (bit-shl w1 32)
+
+  nv-mmu-pde-half : Integer, Integer -> Integer
+  nv-mmu-pde-half (addr) (aperture) = if aperture == 0 then 0 else bit-shl (bit-shru addr 12) 4
+
+  nv-mmu-pde-side-ok : Integer, Integer -> Boolean
+  nv-mmu-pde-side-ok (addr) (aperture) =
+    if nv-mmu-in aperture 0 3 == False then False
+    else if aperture == 0 then addr == 0
+    else nv-mmu-addr-ok addr (if aperture == 1 then 0 else aperture)
+
+  nv-mmu-pde : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  nv-mmu-pde (big) (big-ap) (small) (small-ap) (big-vol) (small-vol) (size) =
+    if nv-mmu-pde-side-ok big big-ap == False then -1
+    else if nv-mmu-pde-side-ok small small-ap == False then -1
+    else if nv-mmu-in big-vol 0 1 == False then -1
+    else if nv-mmu-in small-vol 0 1 == False then -1
+    else if nv-mmu-in size 0 3 == False then -1
+    else let w0 = bit-or big-ap (bit-or (bit-shl size 2) (nv-mmu-pde-half big big-ap))
+    in let w1 = bit-or small-ap (bit-or (bit-shl small-vol 2) (bit-or (bit-shl big-vol 3) (nv-mmu-pde-half small small-ap)))
+    in bit-or w0 (bit-shl w1 32)
+
+  nv-ramin-pdb : Integer, Integer, Integer, Integer -> List Integer
+  nv-ramin-pdb (pdb) (target) (vol) (limit) =
+    if target == 1 then []
+    else if nv-mmu-in target 0 3 == False then []
+    else if nv-mmu-in vol 0 1 == False then []
+    else if nv-mmu-in pdb 0 #FFFFFFFFFF == False then []
+    else if bit-and pdb #FFF /= 0 then []
+    else if nv-mmu-in limit 0 #FFFFFFFFFF == False then []
+    else [
+     bit-or target (bit-or (bit-shl vol 2) (bit-and pdb #FFFFF000)),
+     bit-shru pdb 32,
+     bit-and limit #FFFFF000,
+     bit-shru limit 32
+    ]

@@ -1,0 +1,94 @@
+Chapter: SettingsFocusArm
+  cites Works chapter GopDesk
+  cites Foreword chapter Console
+
+  sfa-yes : Boolean -> Text
+  sfa-yes (v) = if v then "yes" else "NO"
+
+  sfa-visible : Integer, Text -> Boolean
+  sfa-visible (ds) (id) =
+    let laid = dk-settings-layout 640 480 ds gfont-none
+    in when widget-find laid "settings-scroll"
+      is None -> False
+      is Just (view) -> when widget-find view id
+        is None -> True
+        is Just (control) ->
+          let box = box-content-from-style (view.wn-bounds) (widget-resolve-style view (dk-theme-ds ds))
+          in let r = control.wn-bounds
+          in r.lr-y >= box.lr-y & r.lr-y + r.lr-h <= box.lr-y + box.lr-h
+
+  sfa-walk : Integer, WidgetNode, List GaxTarget, Integer -> Boolean
+  sfa-walk (ds) (laid) (targets) (i) =
+    if i >= list-length targets then True
+    else let target = list-at targets i
+    in let moved = dk-settings-focus-next ds (dk-settings-layout 640 480 ds gfont-none) False
+    in let id = dk-settings-focus-id ds
+    in let actionable = gsp-code id /= 0 | id == "settings-wallpaper-file"
+    in let role = a11y-is-interactive ((target.gt-info).ai-role)
+    in id == target.gt-id & actionable & role & sfa-visible ds id & sfa-walk ds laid targets (i + 1)
+
+  sfa-page : Integer, Integer -> Boolean
+  sfa-page (ds) (page) =
+    let blk = peek-32 ds dk-sty-cell
+    in let set = poke-32 blk 64 page
+    in let top = poke-32 blk 76 0
+    in let clear = dk-settings-focus-put (dk-settings-a11y ds) "" 0
+    in let laid = dk-settings-layout 640 480 ds gfont-none
+    in when gax-collect laid []
+      is GaxRefused (why) -> False
+      is GaxReady (targets) ->
+        let walked = sfa-walk ds laid targets 0
+        in let next = dk-settings-focus-next ds laid False
+        in let wrapped = dk-settings-focus-id ds == (list-at targets 0).gt-id
+        in let back = dk-settings-focus-next ds laid True
+        in walked & wrapped & dk-settings-focus-id ds == (list-at targets (list-length targets - 1)).gt-id
+
+  sfa-pages : Integer, List Integer, Integer -> Boolean
+  sfa-pages (ds) (pages) (i) = if i >= list-length pages then True else sfa-page ds (list-at pages i) & sfa-pages ds pages (i + 1)
+
+  opening : [Console] Nothing =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let blk = alloc-zeroed dk-settings-bytes 64
+    in let keep = poke-32 ds dk-sty-cell blk
+    in let defaults = dk-settings-into ds (gst-store dk-settings-keys)
+    in let narrow = dk-wnd-place blk 16 16 400 220
+    in let pages = sfa-pages ds [0,1,2,3,4,5,10,11,12,13,20] 0
+    in let home = poke-32 blk 64 0
+    in let clear = dk-settings-focus-put (dk-settings-a11y ds) "" 0
+    in let first = dk-settings-focus-key 640 480 ds gfont-none 15
+    in let actual-announcement = when gax-read (dk-settings-a11y ds + 128) 0 is Just (a) -> a.ga-text == "Appearance, button" is None -> False
+    in let activate = dk-settings-focus-key 640 480 ds gfont-none 28 == 101
+    in let space = dk-settings-focus-key 640 480 ds gfont-none 57 == 101
+    in let shift = dk-settings-focus-key 640 480 ds gfont-none 42
+    in let reverse = dk-settings-focus-key 640 480 ds gfont-none 15
+    in let reverse-id = dk-settings-focus-id ds == "settings-down"
+    in let released = dk-settings-focus-key 640 480 ds gfont-none 170
+    in let again = dk-settings-focus-key 640 480 ds gfont-none 15
+    in let forward = dk-settings-focus-id ds == "settings-appearance"
+    in let state = dk-settings-a11y ds
+    in let mark = __heap-save
+    in let temporary = dk-settings-focus-id ds & show (peek-qword state 8)
+    in let focused = dk-settings-focus-put state (substring temporary 0 (text-length temporary - 1)) 0
+    in let said = gax-publish (state + 128) (temporary & ", retained") LivePolite
+    in let drop = __heap-restore mark
+    in let overwrite = alloc-zeroed 1048576 64
+    in let retained = dk-settings-focus-id ds == "settings-appearance" & (when gax-read (state + 128) 0 is Just (a) -> a.ga-text == "settings-appearance0, retained" is None -> False)
+    in let rendered = when widget-find (dk-settings-tree ds) "settings-appearance"
+          is Just (node) -> flag-has (widget-flags node) flag-focused
+          is None -> False
+    in let appearance = poke-32 blk 64 1
+    in let border = dk-settings-focus-put state "style-border" 0
+    in let changed = dk-settings-into ds (gst-or-keep (dk-settings-of ds) (gst-set (dk-settings-of ds) 2 0))
+    in let announce = dk-settings-announce ds
+    in let mutation = when gax-read (state + 128) 0 is Just (a) -> text-starts-with (a.ga-text) "Borders, checkbox, not checked" is None -> False
+    in let idle-font = gfont-none
+    in let idle-mark = __heap-save
+    in let idle = dk-settings-focus-key 640 480 ds idle-font 0
+    in let no-idle-allocation = __heap-save == idle-mark
+    in act
+      print-line-uni ("all Settings pages expose actionable roles and wrapping order: " & sfa-yes pages)
+      print-line-uni ("Tab Enter Shift-Tab route through Settings input: " & sfa-yes (first == 145 & activate & space & reverse-id & forward & actual-announcement))
+      print-line-uni ("focus and announcement survive scratch overwrite: " & sfa-yes retained)
+      print-line-uni ("Settings render tree carries focused control: " & sfa-yes rendered)
+      print-line-uni ("changed state announced and idle input allocates nothing: " & sfa-yes (mutation & no-idle-allocation))
+    end

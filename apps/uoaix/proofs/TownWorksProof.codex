@@ -1,0 +1,165 @@
+Chapter: TownWorksProof
+  cites Uoaix chapter TownWorks
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter EconomyClock
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyStateValid
+  cites Foreword chapter Result
+
+  twp-check : Text, Boolean -> [Console] Nothing
+  twp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  twp-people : TfWorld, Integer -> Boolean
+  twp-people (people) (i) = if i == 55 then True
+    else tf-add-person people ("Worker " & show i) 1 (1000 + i) 100 0 10000 == i & twp-people people (i + 1)
+  twp-hours : EpWorld, Integer -> Integer
+  twp-hours (w) (n) = if n == 0 then 0 else if eh-step w /= 0 then -1 else twp-hours w (n - 1)
+  twp-days : TgWorld, Integer -> Boolean
+  twp-days (g) (n) = if n == 0 then True
+    else twp-hours g.economy 24 == 0 & tg-close-day g == 0 & ev-valid g.economy & twp-days g (n - 1)
+  twp-run : EcClock -> [Console] Nothing
+  twp-run (clock) = act
+    w <- clock.world
+    economy <- ec-run clock 720 False
+    people <- tf-new 0
+    town1 <- tf-add-town people "Britain" 100 101 102
+    town2 <- tf-add-town people "Minoc" 200 201 202
+    populated <- twp-people people 1
+    outsider <- tf-add-person people "Visitor" 2 2000 200 0 10000
+    outsider-purse <- em-open w.money 2 outsider
+    outsider-actor <- ep-admit w outsider-purse 200
+    outsider-skill <- ec-skill (ep-actor w outsider-actor) 1
+    town-purse <- em-open w.money 4 1
+    winner <- em-open w.money 3 77
+    g <- tg-new people w
+    registered <- tg-register g True 1 1 town-purse
+    funded <- tg-grant g True 1 1000
+    hired1 <- tg-hire g 1 1 2 3 3
+    hired2 <- tg-hire g 1 1 3 4 3
+    tax <- em-set-tax w.money True 1000
+    mark <- __heap-save
+    t <- tw-new g
+    built <- __heap-save
+    twp-check "world-funded civic fixture" (economy == 0 & town1 == 1 & town2 == 2 & populated & outsider == 55 & outsider-purse == 57 & outsider-actor == 56 & town-purse == 58 & winner == 59 & registered == 0 & funded == 0 & hired1 == 1 & hired2 == 2 & tax == 0 & ev-valid w)
+    twp-check "site admission needs mayor and property permission" (tw-admit-site t 4 1 10 True == -1 & tw-admit-site t 1 1 10 False == -1 & tw-admit-site t 1 1 10 True == 0 & tw-admit-site t 1 1 9 True == 0 & tw-admit-site t 1 1 17 True == 0)
+    twp-check "raid calls eligible militia once" (tw-raid t False 1 100 == -1 & tw-raid t True 1 100 == 0 & (list-at t.towns 0).militia == 52 & ep-at t.militia 1 == 0 & ep-at t.militia 2 == 0 & ep-at t.militia 54 == 0 & tw-raid t True 1 100 == -1)
+    damage <- TwDamage { station = 10, boards = 2, nails = 1, hours = 2, fee = 50 }
+    repair <- tw-end-raid t True 1 100 damage
+    twp-check "raid end disables damaged workplace and orders repair" (repair == 1 & (list-at t.towns 0).militia == 0 & (list-at t.towns 0).damaged == 1 & (list-at w.stations 9).enabled == 0 & ep-craft w 34 10 10 == -1 & tw-end-raid t True 1 100 damage == -1)
+    worker <- tw-candidate t 1 6 1
+    twp-check "repair assignment respects residence and role" (worker == 4 & tw-candidate t 0 6 1 == 0 & tw-assign-repair t 1 repair outsider-actor == -1 & tw-assign-repair t 1 repair worker == 0)
+    boards <- ec-get clock worker 38 2
+    nails <- ec-get clock worker 39 1
+    hammer <- ec-get clock worker 62 1
+    before-boards <- ep-at w.consumed 38
+    before-nails <- ep-at w.consumed 39
+    twp-check "repair delivery consumes actual materials" (boards & nails & hammer & tw-deliver t worker repair 3 1 == -1 & tw-deliver t worker repair 2 1 == 0 & ep-at w.consumed 38 == before-boards + 2 & ep-at w.consumed 39 == before-nails + 1)
+    worker-coin <- (em-purse w.money (ep-actor w worker).purse).coin
+    first-work <- tw-work t worker repair
+    repeated-work <- tw-work t worker repair
+    next-hour <- eh-step w
+    second-work <- tw-work t worker repair
+    twp-check "work hours restore workplace and pay real fee" (first-work == 0 & repeated-work == -1 & next-hour == 0 & second-work == 0 & (list-at t.orders 0).status == 3 & (list-at t.orders 0).progress == 2 & (list-at w.stations 9).enabled == 1 & (list-at t.towns 0).repaired == 1 & (em-purse w.money (ep-actor w worker).purse).coin == worker-coin + 45)
+    flour <- ec-get clock 34 33 2
+    water <- ec-get clock 34 4 1
+    fuel <- ec-get clock 34 2 1
+    twp-check "repaired bakery actually produces" (flour & water & fuel & ep-craft w 34 10 10 == 4)
+    vacant <- __record-set (list-at w.stations 8) "enabled" 0
+    missing <- tw-essential t 1 1 2
+    twp-check "essential scan creates only missing request" (missing == 2 & tw-essential t 1 1 2 == 0 & tw-essential t 1 1 9 == 0 & tw-essential t 1 1 6 == 0)
+    miller <- tw-candidate t 1 5 1
+    mill <- ep-station w miller 2 100
+    admitted-mill <- tw-admit-site t 1 1 mill True
+    assigned <- tw-staff t 1 missing miller mill
+    wheat <- ec-get clock miller 13 2
+    twp-check "missing mill gets qualified operator and output" (miller == 4 & admitted-mill == 0 & assigned == 0 & (list-at t.orders 1).worker == miller & (list-at t.orders 1).station == mill & wheat & ep-craft w miller 9 mill == 2)
+    player-actor <- ep-admit w winner 100
+    smith <- ep-set (ep-actor w player-actor).skills 8 1000
+    player-forge <- ep-station w player-actor 9 100
+    private-forge <- tw-revoke-site t 1 1 17
+    admitted-forge <- tw-admit-site t 1 1 player-forge True
+    twp-check "qualified player workplace also meets town need" (player-actor == 57 & private-forge == 0 & admitted-forge == 0 & tw-essential t 1 1 9 == 0)
+    twp-check "bounty requires authoritative threat eligibility" (tw-post t 1 1 42 1 100 False == -1)
+    bounty <- tw-post t 1 1 42 1 100 True
+    winner-before <- (em-purse w.money winner).coin
+    twp-check "bounty claim requires matching verified clearing" (bounty == 1 & tw-claim t False bounty 42 1 1010 winner == -1 & tw-claim t True bounty 43 1 1010 winner == -1 & tw-claim t True bounty 42 1 1010 winner == 0 & tw-pay-bounty t 4 bounty == -1 & tw-pay-bounty t 1 bounty == 0 & (em-purse w.money winner).coin == winner-before + 90)
+    twp-check "bounty cannot be paid or posted twice for same threat" (tw-pay-bounty t 1 bounty == -1 & tw-claim t True bounty 42 1 1011 winner == -1 & tw-post t 1 1 42 1 100 True == -1)
+    expensive <- tw-post t 1 1 42 2 1000 True
+    claimed <- tw-claim t True expensive 42 2 2010 winner
+    empty-payment <- tw-pay-bounty t 1 expensive
+    twp-check "verified bounty survives insufficient funds" (expensive == 2 & claimed == 0 & empty-payment == -1 & (list-at t.bounties 1).status == 2)
+    grant <- tg-grant g True 1 500
+    settled <- tw-pay-bounty t 1 expensive
+    twp-check "funded bounty pays recorded winner" (grant == 0 & settled == 0 & (list-at t.bounties 1).status == 3 & (em-purse w.money winner).coin == winner-before + 990)
+    twp-check "undamaged raid can stand down" (tw-raid t True 1 101 == 0 & tw-stand-down t True 1 101 == 0 & (list-at t.towns 0).active-raid == 0 & (list-at t.towns 0).militia == 0 & tw-raid t True 1 100 == -1)
+    start <- __heap-save
+    days <- twp-days g 30
+    finish <- __heap-save
+    twp-check "30 government days retain balanced purses and no heap" (days & start == finish & em-total w.money 1 == 6000000 & (em-purse w.money town-purse).coin == 170 & (tg-office g 1).unpaid == 0)
+    second-raid <- tw-raid t True 1 102
+    costly <- TwDamage { station = 10, boards = 1, nails = 1, hours = 1, fee = 500 }
+    costly-order <- tw-end-raid t True 1 102 costly
+    costly-assigned <- tw-assign-repair t 1 costly-order worker
+    costly-boards <- ec-get clock worker 38 1
+    costly-nails <- ec-get clock worker 39 1
+    costly-delivered <- tw-deliver t worker costly-order 1 1
+    costly-worked <- tw-work t worker costly-order
+    twp-check "completed repair retains unpaid fee" (second-raid == 0 & costly-order == 3 & costly-assigned == 0 & costly-boards & costly-nails & costly-delivered == 0 & costly-worked == 0 & (list-at t.orders 2).status == 4 & (list-at w.stations 9).enabled == 1 & tw-pay-repair t 1 costly-order == -1)
+    third-raid <- tw-raid t True 1 103
+    volunteer <- TwDamage { station = 10, boards = 1, nails = 1, hours = 1, fee = 0 }
+    third-order <- tw-end-raid t True 1 103 volunteer
+    third-assigned <- tw-assign-repair t 1 third-order worker
+    third-boards <- ec-get clock worker 38 1
+    third-nails <- ec-get clock worker 39 1
+    third-delivered <- tw-deliver t worker third-order 1 1
+    twp-check "worker cannot count one hour across two orders" (third-raid == 0 & third-order == 4 & third-assigned == 0 & third-boards & third-nails & third-delivered == 0 & tw-work t worker third-order == -1 & (list-at t.orders 3).progress == 0)
+    later-hour <- eh-step w
+    third-worked <- tw-work t worker third-order
+    repair-grant <- tg-grant g True 1 500
+    repair-paid <- tw-pay-repair t 1 costly-order
+    twp-check "repair debt settles once after real funding" (later-hour == 0 & third-worked == 0 & repair-grant == 0 & repair-paid == 0 & tw-pay-repair t 1 costly-order == -1 & (list-at t.orders 2).status == 3 & (list-at t.orders 3).status == 3 & (em-purse w.money town-purse).coin == 170)
+    fourth-raid <- tw-raid t True 1 104
+    shared <- TwDamage { station = 10, boards = 1, nails = 1, hours = 2, fee = 0 }
+    shared-order <- tw-end-raid t True 1 104 shared
+    shared-assigned <- tw-assign-repair t 1 shared-order worker
+    shared-boards <- ec-get clock worker 38 1
+    mining-tool <- ec-get clock 5 25 1
+    mined-ore <- eh-harvest w 5 (ec-node w 5 5 0)
+    gathered-fuel <- eh-harvest w 2 (ec-node w 2 2 0)
+    smelter-ore <- ec-get clock 31 5 2
+    smelter-fuel <- ec-get clock 31 2 1
+    made-ingot <- ep-craft w 31 7 7
+    nail-ingots <- ec-get clock 41 31 1
+    nail-hammer <- ec-get clock 41 62 1
+    made-nails <- ep-craft w 41 17 17
+    twp-check "repair supply replenished through real forge recipe" (mining-tool & mined-ore == 4 & gathered-fuel == 4 & smelter-ore & smelter-fuel & made-ingot == 1 & nail-ingots & nail-hammer & made-nails == 4)
+    shared-nails <- ec-get clock worker 39 1
+    shared-delivered <- tw-deliver t worker shared-order 1 1
+    shared-hour <- eh-step w
+    shared-work <- tw-work t worker shared-order
+    live-reassignment <- tw-assign-repair t 1 shared-order 5
+    departed <- __record-set (tf-person people 4) "alive" 0
+    successor-hour <- eh-step w
+    departed-work <- tw-work t worker shared-order
+    successor <- tw-candidate t 1 6 1
+    successor-tool <- ec-get clock successor 62 1
+    successor-assigned <- tw-assign-repair t 1 shared-order successor
+    twp-check "ineligible worker replaced without losing supplied work" (fourth-raid == 0 & shared-order == 5 & shared-assigned == 0 & shared-boards & shared-nails & shared-delivered == 0 & shared-hour == 0 & shared-work == 0 & live-reassignment == -1 & successor-hour == 0 & departed-work == -1 & successor == 5 & successor-tool & successor-assigned == 0 & (list-at t.orders 4).progress == 1 & (list-at t.orders 4).delivered-boards == 1 & (list-at t.orders 4).delivered-nails == 1)
+    successor-work <- tw-work t successor shared-order
+    returned <- __record-set (tf-person people 4) "alive" 1
+    twp-check "successor finishes admitted repair" (successor-work == 0 & (list-at t.orders 4).status == 3 & (list-at w.stations 9).enabled == 1)
+    print-line-uni ("WORKS-BYTES " & show (built - mark))
+    count <- g.event-count
+    full <- __record-set g "event-count" 2048
+    orders <- t.order-count
+    twp-check "full civic audit refuses new commitments" (tw-post t 1 1 99 5 1 True == -1 & tw-raid t True 1 105 == -1 & t.order-count == orders & (list-at t.towns 0).active-raid == 0)
+    restored <- __record-set g "event-count" count
+    twp-check "final material and money state valid" (ep-census w 1 & ev-valid w)
+  end
+  opening : [Console] Nothing = act
+    when ec-fixture 0
+      is Err (e) -> print-line-uni ("FAIL fixture " & e)
+      is Ok (clock) -> twp-run clock
+  end

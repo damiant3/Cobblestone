@@ -39,6 +39,7 @@ $QuireDirs = @{
     'ModBuilder' = 'apps\modbuilder\native'
     'Csharp' = 'codex\plugs\csharp'
     'Pe' = 'codex\plugs\pe'
+    'Sass' = 'codex\plugs\sass'
     'WaDemo' = 'apps\wademo'
     'Diffusion' = 'apps\diffusion'
     'Explorer' = 'apps\explorer'; 'FontExplorer' = 'apps\fontexplorer'
@@ -119,6 +120,7 @@ $QuireDirs = @{
     'Diag' = 'build\boot\diag'
 }
 $QuireDirs['Accp'] = 'apps\accp'
+$QuireDirs['Uoaix'] = 'apps\uoaix'
 
 # A QUIRE IS A DIRECTORY OR A MANIFEST. A directory quire resolves a cite to
 # <dir>\<chapter name>.codex, one file per chapter, which every quire above

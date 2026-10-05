@@ -3,8 +3,11 @@ Chapter: Name Resolution
   cites Codex chapter Build Settings (max-recursion-depth, demand-scope-guard-band)
   cites Codex chapter Diagnostics (make-error)
   cites Codex chapter Builtins (builtins, builtin-names-from)
-  cites Codex chapter SkipListText (skip-list-text-empty, skip-list-text-has, skip-list-text-insert, skip-list-text-clone, skip-list-text-from-list)
-  cites Codex chapter CdxCodes (cdx-duplicate-definition, cdx-class-shadows-derived, cdx-applied-local-is-builtin)
+  cites Codex chapter SkipListText (skip-list-text-empty, skip-list-text-has)
+  cites Codex chapter SkipListText (skip-list-text-insert, skip-list-text-clone)
+  cites Codex chapter SkipListText (skip-list-text-from-list)
+  cites Codex chapter CdxCodes (cdx-duplicate-definition, cdx-class-shadows-derived)
+  cites Codex chapter CdxCodes (cdx-applied-local-is-builtin)
   cites Codex chapter Chapter Scoper (rename-lookup)
 
 Section: Scope
@@ -25,27 +28,37 @@ Section: Scope
    chapter-renames : List RenameEntry
   }
 
-  empty-scope : Scope = Scope { names = skip-list-text-empty, locals = skip-list-text-empty, builtins = skip-list-text-empty, chapter-renames = [] }
+  empty-scope : Scope = Scope {
+    names = skip-list-text-empty,
+    locals = skip-list-text-empty,
+    builtins = skip-list-text-empty,
+    chapter-renames = []
+  }
 
   scope-has : Scope, Text -> Boolean
   scope-has (sc) (name) =
-   if skip-list-text-has (sc.locals) name then True
-   else let resolved = rename-lookup (sc.chapter-renames) name
-   in skip-list-text-has (sc.names) resolved
+    if skip-list-text-has (sc.locals) name then True
+    else let resolved = rename-lookup (sc.chapter-renames) name
+    in skip-list-text-has (sc.names) resolved
 
   scope-add : Scope, Text -> Scope
   scope-add (sc) (name) =
-   let __seq = sc.names = skip-list-text-insert (sc.names) name
-   in sc
+    let __seq = sc.names = skip-list-text-insert (sc.names) name
+    in sc
 
   scope-add-local : Scope, Text -> Scope
   scope-add-local (sc) (name) =
-   let __seq = sc.locals = skip-list-text-insert (sc.locals) name
-   in sc
+    let __seq = sc.locals = skip-list-text-insert (sc.locals) name
+    in sc
 
   scope-fork : Scope -> Scope
   scope-fork (sc) =
-   Scope { names = sc.names, locals = skip-list-text-clone (sc.locals), builtins = sc.builtins, chapter-renames = sc.chapter-renames }
+    Scope {
+      names = sc.names,
+      locals = skip-list-text-clone (sc.locals),
+      builtins = sc.builtins,
+      chapter-renames = sc.chapter-renames
+    }
 
 Section: Built-in Names
 
@@ -55,13 +68,13 @@ Section: Built-in Names
 Section: Name Classification
   is-type-name : Text -> Boolean
   is-type-name (name) =
-   if text-length name == 0 then False
-   else is-letter (char-at name 0) & is-upper-char (char-at name 0)
+    if text-length name == 0 then False
+    else is-letter (char-at name 0) & is-upper-char (char-at name 0)
 
   is-upper-char : Char -> Boolean
   is-upper-char (c) =
-   let code = char-code c
-   in code >= char-code 'E' & code <= char-code 'Z'
+    let code = char-code c
+    in code >= char-code 'E' & code <= char-code 'Z'
 
 Section: Resolution Result
   ResolveResult = record {
@@ -86,15 +99,17 @@ Section: Scope Results
 Section: Collect Names
   collect-top-level-names : List ADef, Integer, Integer, SkipListText, List Diagnostic -> CollectResult
   collect-top-level-names (defs) (i) (len) (acc) (errs) =
-   if i == len then deck-record (CollectResult {
-    names = acc,
-    errors = errs
-   })
-   else let def = list-at defs i
-   in let name = def.name.value
-   in if skip-list-text-has acc name
-      then collect-top-level-names defs (i + 1) len acc (errs & [make-error cdx-duplicate-definition ("Duplicate definition: " & name) (def.span)])
-      else collect-top-level-names defs (i + 1) len (skip-list-text-insert acc name) errs
+    if i == len then deck-record (CollectResult {
+     names = acc,
+     errors = errs
+    })
+    else let def = list-at defs i
+    in let name = def.name.value
+    in if skip-list-text-has acc name then
+      collect-top-level-names defs (i + 1) len acc (errs & [
+        make-error cdx-duplicate-definition ("Duplicate definition: " & name) (def.span)
+      ])
+    else collect-top-level-names defs (i + 1) len (skip-list-text-insert acc name) errs
 
   CollectResult = record {
    names : SkipListText,
@@ -102,25 +117,26 @@ Section: Collect Names
   }
 
   collect-ctor-names : List ATypeDef, Integer, Integer, SkipListText, SkipListText, List Diagnostic -> CtorCollectResult
-  collect-ctor-names (type-defs) (i) (len) (type-acc) (ctor-acc) (errs) =
-   if i == len then deck-record (CtorCollectResult {
-    type-names = type-acc,
-    ctor-names = ctor-acc,
-    errors = errs
-   })
-   else let td = list-at type-defs i
-   in when td
-     is AVariantTypeDef (name) (params) (ctors) (s) ->
-      let dup-check = check-type-name-dup type-acc (name.value) s errs
-   in let ctor-result = collect-variant-ctors ctors 0 (list-length ctors) ctor-acc (dup-check.errors)
-   in collect-ctor-names type-defs (i + 1) len (dup-check.type-acc) (ctor-result.ctor-acc) (ctor-result.errors)
-     is ARecordTypeDef (name) (params) (fields) (is-mut) (s) ->
-      let dup-check = check-type-name-dup type-acc (name.value) s errs
-   in collect-ctor-names type-defs (i + 1) len (dup-check.type-acc) ctor-acc (dup-check.errors)
-     is AUnitTypeDef (name) (base) (s) ->
-      let dup-check = check-type-name-dup type-acc (name.value) s errs
-   in let unit-ctor-acc = skip-list-text-insert ctor-acc (name.value)
-   in collect-ctor-names type-defs (i + 1) len (dup-check.type-acc) unit-ctor-acc (dup-check.errors)
+  collect-ctor-names (types) (i) (len) (type-acc) (ctor-acc) (errs) =
+    if i == len then deck-record (CtorCollectResult {
+      type-names = type-acc,
+      ctor-names = ctor-acc,
+      errors = errs
+    })
+    else let td = list-at types i
+    in when td
+      is AVariantTypeDef (name) (params) (ctors) (s) ->
+        let checked = check-type-name-dup type-acc (name.value) s errs
+        in let count = list-length ctors
+        in let found = collect-variant-ctors ctors 0 count ctor-acc (checked.errors)
+        in collect-ctor-names types (i + 1) len (checked.type-acc) (found.ctor-acc) (found.errors)
+      is ARecordTypeDef (name) (params) (fields) (is-mut) (s) ->
+        let checked = check-type-name-dup type-acc (name.value) s errs
+        in collect-ctor-names types (i + 1) len (checked.type-acc) ctor-acc (checked.errors)
+      is AUnitTypeDef (name) (base) (s) ->
+        let checked = check-type-name-dup type-acc (name.value) s errs
+        in let unit-ctors = skip-list-text-insert ctor-acc (name.value)
+        in collect-ctor-names types (i + 1) len (checked.type-acc) unit-ctors (checked.errors)
 
   CtorCollectResult = record {
    type-names : SkipListText,
@@ -130,13 +146,13 @@ Section: Collect Names
 
   count-typecheck-units : List ATypeDef, Integer, Integer, Integer -> Integer
   count-typecheck-units (tds) (i) (n) (acc) =
-   if i == n then acc
-   else let td = list-at tds i
-   in let c = when td
+    if i == n then acc
+    else let td = list-at tds i
+    in let c = when td
       is AVariantTypeDef (name) (params) (ctors) (s) -> list-length ctors
       is ARecordTypeDef (name) (params) (fields) (is-mut) (s) -> 1
       is AUnitTypeDef (name) (base) (s) -> 1
-   in count-typecheck-units tds (i + 1) n (acc + c)
+    in count-typecheck-units tds (i + 1) n (acc + c)
 
   TypeNameDupResult = record {
    type-acc : SkipListText,
@@ -145,14 +161,16 @@ Section: Collect Names
 
   check-type-name-dup : SkipListText, Text, SourceSpan, List Diagnostic -> TypeNameDupResult
   check-type-name-dup (type-acc) (name) (span) (errs) =
-   if skip-list-text-has type-acc name then deck-record (TypeNameDupResult {
-    type-acc = type-acc,
-    errors = errs & [make-error cdx-duplicate-definition ("Duplicate type definition: '" & name & "' is already defined") span]
-   })
-   else deck-record (TypeNameDupResult {
-    type-acc = skip-list-text-insert type-acc name,
-    errors = errs
-   })
+    if skip-list-text-has type-acc name then
+      deck-record (let msg = "Duplicate type definition: '" & name & "' is already defined"
+      in TypeNameDupResult {
+        type-acc = type-acc,
+        errors = errs & [make-error cdx-duplicate-definition msg span]
+      })
+    else deck-record (TypeNameDupResult {
+      type-acc = skip-list-text-insert type-acc name,
+      errors = errs
+    })
 
   VariantCtorResult = record {
    ctor-acc : SkipListText,
@@ -161,12 +179,14 @@ Section: Collect Names
 
   collect-variant-ctors : List AVariantCtorDef, Integer, Integer, SkipListText, List Diagnostic -> VariantCtorResult
   collect-variant-ctors (ctors) (i) (len) (acc) (errs) =
-   if i == len then deck-record (VariantCtorResult { ctor-acc = acc, errors = errs })
-   else let c = list-at ctors i
-   in let name = c.name.value
-   in if skip-list-text-has acc name
-      then collect-variant-ctors ctors (i + 1) len acc (errs & [make-error cdx-duplicate-definition ("Duplicate constructor: '" & name & "' is already defined") (c.span)])
-      else collect-variant-ctors ctors (i + 1) len (skip-list-text-insert acc name) errs
+    if i == len then deck-record (VariantCtorResult { ctor-acc = acc, errors = errs })
+    else let c = list-at ctors i
+    in let name = c.name.value
+    in if skip-list-text-has acc name then
+      let msg = "Duplicate constructor: '" & name & "' is already defined"
+      in let error = make-error cdx-duplicate-definition msg (c.span)
+      in collect-variant-ctors ctors (i + 1) len acc (errs & [error])
+    else collect-variant-ctors ctors (i + 1) len (skip-list-text-insert acc name) errs
 
 Section: Collect Effect Op Names
   EffectOpCollectResult = record {
@@ -174,38 +194,50 @@ Section: Collect Effect Op Names
    errors : List Diagnostic
   }
 
-  collect-effect-op-names : List AEffectDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic -> EffectOpCollectResult
+  collect-effect-op-names : List AEffectDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic ->
+    EffectOpCollectResult
   collect-effect-op-names (effs) (top-names) (ctor-names) (i) (len) (op-acc) (errs) =
-   if i == len then deck-record (EffectOpCollectResult { op-names = op-acc, errors = errs })
-   else let eff = list-at effs i
-   in let after = collect-ops-of-effect (eff.ops) top-names ctor-names 0 (list-length (eff.ops)) op-acc errs
-   in collect-effect-op-names effs top-names ctor-names (i + 1) len (after.op-names) (after.errors)
+    if i == len then deck-record (EffectOpCollectResult { op-names = op-acc, errors = errs })
+    else let eff = list-at effs i
+    in let count = list-length (eff.ops)
+    in let after = collect-ops-of-effect (eff.ops) top-names ctor-names 0 count op-acc errs
+    in collect-effect-op-names effs top-names ctor-names (i + 1) len (after.op-names) (after.errors)
 
-  collect-ops-of-effect : List AEffectOpDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic -> EffectOpCollectResult
+  collect-ops-of-effect : List AEffectOpDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic ->
+    EffectOpCollectResult
   collect-ops-of-effect (ops) (top-names) (ctor-names) (i) (len) (op-acc) (errs) =
-   if i == len then deck-record (EffectOpCollectResult { op-names = op-acc, errors = errs })
-   else let op = list-at ops i
-   in let name = op.name.value
-   in let op-is-dup = skip-list-text-has op-acc name
-   in let collides = op-is-dup | skip-list-text-has top-names name | skip-list-text-has ctor-names name
-   in let new-acc = if op-is-dup then op-acc else skip-list-text-insert op-acc name
-   in let new-errs = if collides then errs & [make-error cdx-duplicate-definition ("Effect operation '" & name & "' conflicts with existing name") (op.span)] else errs
-   in collect-ops-of-effect ops top-names ctor-names (i + 1) len new-acc new-errs
+    if i == len then deck-record (EffectOpCollectResult { op-names = op-acc, errors = errs })
+    else let op = list-at ops i
+    in let name = op.name.value
+    in let op-is-dup = skip-list-text-has op-acc name
+    in let top-collision = op-is-dup | skip-list-text-has top-names name
+    in let collides = top-collision | skip-list-text-has ctor-names name
+    in let new-acc = if op-is-dup then op-acc else skip-list-text-insert op-acc name
+    in let new-errs = if collides then
+      let msg = "Effect operation '" & name & "' conflicts with existing name"
+      in errs & [make-error cdx-duplicate-definition msg (op.span)]
+    else errs
+    in collect-ops-of-effect ops top-names ctor-names (i + 1) len new-acc new-errs
 
 Section: Build Initial Scope
   build-all-names-scope : SkipListText, SkipListText, List Text -> Scope
   build-all-names-scope (top-names) (ctor-names) (builtins) =
-   let top-list = skip-list-text-to-list top-names
-   in let sc = add-names-to-scope empty-scope top-list 0 (list-length top-list)
-   in let ctor-list = skip-list-text-to-list ctor-names
-   in let sc2 = add-names-to-scope sc ctor-list 0 (list-length ctor-list)
-   in let sc3 = add-names-to-scope sc2 builtins 0 (list-length builtins)
-   in Scope { names = sc3.names, locals = sc3.locals, builtins = skip-list-text-from-list builtins, chapter-renames = sc3.chapter-renames }
+    let top-list = skip-list-text-to-list top-names
+    in let sc = add-names-to-scope empty-scope top-list 0 (list-length top-list)
+    in let ctor-list = skip-list-text-to-list ctor-names
+    in let sc2 = add-names-to-scope sc ctor-list 0 (list-length ctor-list)
+    in let sc3 = add-names-to-scope sc2 builtins 0 (list-length builtins)
+    in Scope {
+      names = sc3.names,
+      locals = sc3.locals,
+      builtins = skip-list-text-from-list builtins,
+      chapter-renames = sc3.chapter-renames
+    }
 
   add-names-to-scope : Scope, List Text, Integer, Integer -> Scope
   add-names-to-scope (sc) (names) (i) (len) =
-   if i == len then sc
-   else add-names-to-scope (scope-add sc (list-at names i)) names (i + 1) len
+    if i == len then sc
+    else add-names-to-scope (scope-add sc (list-at names i)) names (i + 1) len
 
 Section: Resolve Expressions
   resolve-expr : Scope, AExpr -> List Diagnostic
@@ -213,184 +245,254 @@ Section: Resolve Expressions
 
   resolve-expr-at : Scope, AExpr, Integer -> List Diagnostic
   resolve-expr-at (sc) (expr) (depth) =
-   if depth >= max-recursion-depth then [make-error cdx-resource-exhausted ("compiler resource exhausted in name-resolver.resolve-expr (budget " & integer-to-text max-recursion-depth & ")") (aexpr-span expr)]
-   else when expr
-    is ALitExpr (val) (kind) (s) -> []
-    is ANameExpr (name) (s) ->
-     if scope-has sc (name.value) | is-type-name (name.value) then []
-     else [make-error cdx-undefined-name ("Undefined name: " & name.value & (if name.value == "do" then " (note: `do` is not Codex; use act ... end)" else "")) s]
-    is ABinaryExpr (left) (op) (right) (s) ->
-     resolve-expr-at sc left (depth + 1) & resolve-expr-at sc right (depth + 1)
-    is AUnaryExpr (operand) (s) -> resolve-expr-at sc operand (depth + 1)
-    is AApplyExpr (func) (arg) (s) ->
-     applied-local-builtin sc func & resolve-expr-at sc func (depth + 1) & resolve-expr-at sc arg (depth + 1)
-    is AIfExpr (cond) (then-e) (else-e) (s) ->
-     resolve-expr-at sc cond (depth + 1) & resolve-expr-at sc then-e (depth + 1) & resolve-expr-at sc else-e (depth + 1)
-    is ALetExpr (bindings) (body) (s) ->
-     resolve-let (scope-fork sc) bindings body
-    is ALambdaExpr (params) (body) (s) ->
-     let param-result = add-lambda-params sc params 0 (list-length params) s skip-list-text-empty []
-     in param-result.errors & resolve-expr-at (param-result.scope) body (depth + 1)
-    is AMatchExpr (scrutinee) (arms) (s) ->
-     resolve-expr-at sc scrutinee (depth + 1) & resolve-match-arms sc arms 0 (list-length arms) []
-    is AListExpr (elems) (s) ->
-     resolve-list-elems sc elems 0 (list-length elems) []
-    is ARecordExpr (name) (fields) (s) ->
-     resolve-record-fields sc fields 0 (list-length fields) []
-    is AFieldAccess (obj) (field) (s) -> resolve-expr-at sc obj (depth + 1)
-    is AActExpr (stmts) (s) -> resolve-act-stmts (scope-fork sc) stmts 0 (list-length stmts) skip-list-text-empty []
-    is AHandleExpr (eff) (body) (clauses) (s) ->
-     resolve-expr-at sc body (depth + 1) & resolve-handle-clauses sc clauses 0 (list-length clauses) []
-    is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
-     resolve-expr-at sc body (depth + 1)
-    is ATryExpr (max) (body) (fb) (fail) (s) ->
-     resolve-try-region sc body & resolve-try-region sc fb & resolve-try-region sc fail
-    is AFieldAssignExpr (rec) (field) (val) (s) ->
-     resolve-expr-at sc rec (depth + 1) & resolve-expr-at sc val (depth + 1)
-    is ALazyExpr (inner) (s) -> resolve-expr-at sc inner (depth + 1)
-    is AErrorExpr (msg) (s) -> []
-    is AInductionExpr (scrut) (arms) (s) ->
-     let sc2 = when scrut is ANameExpr (nm) (ss) -> scope-add-local (scope-fork sc) (nm.value) is otherwise -> sc
-     in resolve-match-arms sc2 arms 0 (list-length arms) []
+    if depth >= max-recursion-depth then
+      let prefix = "compiler resource exhausted in name-resolver.resolve-expr (budget "
+      in let msg = prefix & integer-to-text max-recursion-depth & ")"
+      in [make-error cdx-resource-exhausted msg (aexpr-span expr)]
+    else when expr
+      is ALitExpr (val) (kind) (s) -> []
+      is ANameExpr (name) (s) ->
+        let resolved = rename-lookup (sc.chapter-renames) (name.value)
+        in if skip-list-text-has (sc.locals) (name.value) == False & text-starts-with resolved ambiguity-marker then
+          let amb0 = "'" & name.value & "' is defined in more than one other chapter ("
+          in let marker-len = text-length ambiguity-marker
+          in let amb1 = amb0 & substring resolved marker-len (text-length resolved - marker-len)
+          in let amb1b = amb1 & ") and in none of this chapter's; cite the one you mean by name: cites <Quire> chapter <Name> ("
+          in let amb2 = amb1b & name.value & ")"
+          in [make-error cdx-ambiguous-chapter-name amb2 s]
+        else if scope-has sc (name.value) | is-type-name (name.value) then []
+        else
+          let hint = if name.value == "do" then
+            " (note: `do` is not Codex; use act ... end)"
+          else ""
+          in let msg = "Undefined name: " & name.value & hint
+          in [make-error cdx-undefined-name msg s]
+      is ABinaryExpr (left) (op) (right) (s) ->
+        resolve-expr-at sc left (depth + 1) & resolve-expr-at sc right (depth + 1)
+      is AUnaryExpr (operand) (s) -> resolve-expr-at sc operand (depth + 1)
+      is AApplyExpr (func) (arg) (s) ->
+        let local-errors = applied-local-builtin sc func
+        in let func-errors = resolve-expr-at sc func (depth + 1)
+        in let leading = local-errors & func-errors
+        in leading & resolve-expr-at sc arg (depth + 1)
+      is AIfExpr (cond) (then-e) (else-e) (s) ->
+        let cond-errors = resolve-expr-at sc cond (depth + 1)
+        in let then-errors = resolve-expr-at sc then-e (depth + 1)
+        in let leading = cond-errors & then-errors
+        in leading & resolve-expr-at sc else-e (depth + 1)
+      is ALetExpr (bindings) (body) (s) ->
+        resolve-let (scope-fork sc) bindings body
+      is ALambdaExpr (params) (body) (s) ->
+        let n = list-length params
+        in let param-result = add-lambda-params sc params 0 n s skip-list-text-empty []
+        in param-result.errors & resolve-expr-at (param-result.scope) body (depth + 1)
+      is AMatchExpr (scrutinee) (arms) (s) ->
+        let scrut-errors = resolve-expr-at sc scrutinee (depth + 1)
+        in scrut-errors & resolve-match-arms sc arms 0 (list-length arms) []
+      is AListExpr (elems) (s) ->
+        resolve-list-elems sc elems 0 (list-length elems) []
+      is ARecordExpr (name) (fields) (s) ->
+        resolve-record-fields sc fields 0 (list-length fields) []
+      is AFieldAccess (obj) (field) (s) -> resolve-expr-at sc obj (depth + 1)
+      is AActExpr (stmts) (s) ->
+        let inner = scope-fork sc
+        in resolve-act-stmts inner stmts 0 (list-length stmts) skip-list-text-empty []
+      is AHandleExpr (eff) (body) (clauses) (s) ->
+        let body-errors = resolve-expr-at sc body (depth + 1)
+        in body-errors & resolve-handle-clauses sc clauses 0 (list-length clauses) []
+      is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
+        resolve-expr-at sc body (depth + 1)
+      is ATryExpr (max) (body) (fb) (fail) (s) ->
+        resolve-try-region sc body & resolve-try-region sc fb & resolve-try-region sc fail
+      is AFieldAssignExpr (rec) (field) (val) (s) ->
+        resolve-expr-at sc rec (depth + 1) & resolve-expr-at sc val (depth + 1)
+      is ALazyExpr (inner) (s) -> resolve-expr-at sc inner (depth + 1)
+      is AErrorExpr (msg) (s) -> []
+      is AInductionExpr (scrut) (arms) (s) ->
+        let sc2 = when scrut
+          is ANameExpr (nm) (ss) -> scope-add-local (scope-fork sc) (nm.value)
+          is otherwise -> sc
+        in resolve-match-arms sc2 arms 0 (list-length arms) []
 
   applied-local-builtin : Scope, AExpr -> List Diagnostic
   applied-local-builtin (sc) (func) =
-   when func
-    is ANameExpr (name) (s) ->
-     if skip-list-text-has (sc.locals) (name.value) & skip-list-text-has (sc.builtins) (name.value)
-     then [make-error cdx-applied-local-is-builtin ("'" & name.value & "' is applied here, and it is both a local binding and a builtin, so the call does not say which one it means; rename the local") s]
-     else []
-    is otherwise -> []
+    when func
+      is ANameExpr (name) (s) ->
+        let local-name = skip-list-text-has (sc.locals) (name.value)
+        in if local-name & skip-list-text-has (sc.builtins) (name.value) then
+          [
+            let suffix = "' is applied here, and it is both a local binding and a builtin, so the call does not say which one it means; rename the local"
+            in let msg = "'" & name.value & suffix
+            in make-error cdx-applied-local-is-builtin msg s
+          ]
+        else []
+      is otherwise -> []
 
   resolve-try-region : Scope, List AActStmt -> List Diagnostic
   resolve-try-region (sc) (stmts) =
-   resolve-act-stmts (scope-fork sc) stmts 0 (list-length stmts) skip-list-text-empty []
+    resolve-act-stmts (scope-fork sc) stmts 0 (list-length stmts) skip-list-text-empty []
 
   resolve-handle-clauses : Scope, List AHandleClause, Integer, Integer, List Diagnostic -> List Diagnostic
   resolve-handle-clauses (sc) (clauses) (i) (len) (errs) =
-   if i == len then errs
-   else let c = list-at clauses i
-   in let clause-scope = scope-fork sc
-   in let sc2 = scope-add-local clause-scope (c.resume-name.value)
-   in let resume-seen = skip-list-text-insert skip-list-text-empty (c.resume-name.value)
-   in let param-result = scope-add-clause-params sc2 (c.params) 0 (list-length (c.params)) (c.span) resume-seen []
-   in let clause-errs = resolve-expr (param-result.scope) (c.body)
-   in resolve-handle-clauses sc clauses (i + 1) len (errs & param-result.errors & clause-errs)
+    if i == len then errs
+    else let c = list-at clauses i
+    in let clause-scope = scope-fork sc
+    in let sc2 = scope-add-local clause-scope (c.resume-name.value)
+    in let resume-seen = skip-list-text-insert skip-list-text-empty (c.resume-name.value)
+    in let count = list-length (c.params)
+    in let param-result = scope-add-clause-params sc2 (c.params) 0 count (c.span) resume-seen []
+    in let clause-errs = resolve-expr (param-result.scope) (c.body)
+    in resolve-handle-clauses sc clauses (i + 1) len (errs & param-result.errors & clause-errs)
 
   scope-add-clause-params : Scope, List Name, Integer, Integer, SourceSpan, SkipListText, List Diagnostic -> ResolveScopeResult
   scope-add-clause-params (sc) (ps) (i) (len) (clause-span) (seen) (errs) =
-   if i >= len then deck-record (ResolveScopeResult { scope = sc, errors = errs })
-   else let name = (list-at ps i).value
-   in if skip-list-text-has seen name
-      then scope-add-clause-params sc ps (i + 1) len clause-span seen (errs & [make-error cdx-duplicate-definition ("Duplicate parameter: '" & name & "'") clause-span])
-      else scope-add-clause-params (scope-add-local sc name) ps (i + 1) len clause-span (skip-list-text-insert seen name) errs
+    if i >= len then deck-record (ResolveScopeResult { scope = sc, errors = errs })
+    else let name = (list-at ps i).value
+    in if skip-list-text-has seen name then
+      scope-add-clause-params sc ps (i + 1) len clause-span seen (errs & [
+        make-error cdx-duplicate-definition ("Duplicate parameter: '" & name & "'") clause-span
+      ])
+    else let inner = scope-add-local sc name
+    in let next-seen = skip-list-text-insert seen name
+    in scope-add-clause-params inner ps (i + 1) len clause-span next-seen errs
 
 Section: Resolve Let
 
   resolve-let-binds : Scope, List ALetBind, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
   resolve-let-binds (sc) (bindings) (i) (len) (seen) (errs) =
-   if i == len then errs
-   else let b = list-at bindings i
-   in let name = b.name.value
-   in let bind-errs = resolve-expr sc (b.value)
-   in let dup-errs = if skip-list-text-has seen name then [make-error cdx-duplicate-definition ("Duplicate binding: '" & name & "'") (b.span)] else []
-   in let sc2 = scope-add-local sc name
-   in resolve-let-binds sc2 bindings (i + 1) len (skip-list-text-insert seen name) (errs & bind-errs & dup-errs)
+    if i == len then errs
+    else let b = list-at bindings i
+    in let name = b.name.value
+    in let bind-errs = resolve-expr sc (b.value)
+    in let dup-errs = if skip-list-text-has seen name then
+      [make-error cdx-duplicate-definition ("Duplicate binding: '" & name & "'") (b.span)]
+    else []
+    in let sc2 = scope-add-local sc name
+    in let next-seen = skip-list-text-insert seen name
+    in let next-errs = errs & bind-errs & dup-errs
+    in resolve-let-binds sc2 bindings (i + 1) len next-seen next-errs
 
   resolve-let : Scope, List ALetBind, AExpr -> List Diagnostic
   resolve-let (sc) (bindings) (body) =
-   let bind-errs = resolve-let-binds sc bindings 0 (list-length bindings) skip-list-text-empty []
-   in bind-errs & resolve-expr sc body
+    let bind-errs = resolve-let-binds sc bindings 0 (list-length bindings) skip-list-text-empty []
+    in bind-errs & resolve-expr sc body
 
 Section: Resolve Lambda Parameters
   add-lambda-params : Scope, List Name, Integer, Integer, SourceSpan, SkipListText, List Diagnostic -> ResolveScopeResult
   add-lambda-params (sc) (params) (i) (len) (lam-span) (seen) (errs) =
-   if i == len then deck-record (ResolveScopeResult { scope = sc, errors = errs })
-   else let name = (list-at params i).value
-   in if skip-list-text-has seen name
-      then add-lambda-params sc params (i + 1) len lam-span seen (errs & [make-error cdx-duplicate-definition ("Duplicate parameter: '" & name & "'") lam-span])
-      else add-lambda-params (scope-add-local sc name) params (i + 1) len lam-span (skip-list-text-insert seen name) errs
+    if i == len then deck-record (ResolveScopeResult { scope = sc, errors = errs })
+    else let name = (list-at params i).value
+    in if skip-list-text-has seen name then
+      add-lambda-params sc params (i + 1) len lam-span seen (errs & [
+        make-error cdx-duplicate-definition ("Duplicate parameter: '" & name & "'") lam-span
+      ])
+    else let inner = scope-add-local sc name
+    in let next-seen = skip-list-text-insert seen name
+    in add-lambda-params inner params (i + 1) len lam-span next-seen errs
 
 Section: Resolve Match Arms
   resolve-match-arms : Scope, List AMatchArm, Integer, Integer, List Diagnostic -> List Diagnostic
   resolve-match-arms (sc) (arms) (i) (len) (errs) =
-   if i == len then errs
-   else let arm = list-at arms i
-   in let arm-scope = scope-fork sc
-   in let pat-result = collect-pattern-names arm-scope (arm.pattern)
-   in let guard-errs = resolve-expr (pat-result.scope) (arm.guard)
-   in let arm-errs = resolve-expr (pat-result.scope) (arm.body)
-   in resolve-match-arms sc arms (i + 1) len (errs & pat-result.errors & guard-errs & arm-errs)
+    if i == len then errs
+    else let arm = list-at arms i
+    in let arm-scope = scope-fork sc
+    in let pat-result = collect-pattern-names arm-scope (arm.pattern)
+    in let guard-errs = resolve-expr (pat-result.scope) (arm.guard)
+    in let arm-errs = resolve-expr (pat-result.scope) (arm.body)
+    in resolve-match-arms sc arms (i + 1) len (errs & pat-result.errors & guard-errs & arm-errs)
 
   collect-pattern-names : Scope, APat -> ResolveScopeResult
   collect-pattern-names (sc) (pat) =
-   let pr = collect-pattern-names-at sc pat 0 skip-list-text-empty []
-   in deck-record (ResolveScopeResult { scope = pr.scope, errors = pr.errors })
+    let pr = collect-pattern-names-at sc pat 0 skip-list-text-empty []
+    in deck-record (ResolveScopeResult { scope = pr.scope, errors = pr.errors })
 
   collect-pattern-names-at : Scope, APat, Integer, SkipListText, List Diagnostic -> PatResult
   collect-pattern-names-at (sc) (pat) (depth) (seen) (errs) =
-   if depth >= max-recursion-depth then deck-record (PatResult { scope = sc, seen = seen, errors = errs })
-   else when pat
-    is AVarPat (name) (s) ->
-     if skip-list-text-has seen (name.value)
-     then deck-record (PatResult { scope = sc, seen = seen, errors = errs & [make-error cdx-duplicate-definition ("Duplicate pattern variable: '" & name.value & "'") s] })
-     else deck-record (PatResult { scope = scope-add-local sc (name.value), seen = skip-list-text-insert seen (name.value), errors = errs })
-    is ACtorPat (name) (subs) (s) -> collect-ctor-pat-names sc subs 0 (list-length subs) (depth + 1) seen errs
-    is AVecPat (subs) (s) -> collect-ctor-pat-names sc subs 0 (list-length subs) (depth + 1) seen errs
-    is ALitPat (val) (kind) (s) | AWildPat (s) -> deck-record (PatResult { scope = sc, seen = seen, errors = errs })
+    if depth >= max-recursion-depth then
+      deck-record (PatResult { scope = sc, seen = seen, errors = errs })
+    else when pat
+      is AVarPat (name) (s) ->
+        if skip-list-text-has seen (name.value) then
+          deck-record (let msg = "Duplicate pattern variable: '" & name.value & "'"
+          in PatResult {
+            scope = sc,
+            seen = seen,
+            errors = errs & [make-error cdx-duplicate-definition msg s]
+          })
+        else
+          deck-record (PatResult {
+            scope = scope-add-local sc (name.value),
+            seen = skip-list-text-insert seen (name.value),
+            errors = errs
+          })
+      is ACtorPat (name) (subs) (s) ->
+        collect-ctor-pat-names sc subs 0 (list-length subs) (depth + 1) seen errs
+      is AVecPat (subs) (s) ->
+        collect-ctor-pat-names sc subs 0 (list-length subs) (depth + 1) seen errs
+      is ALitPat (val) (kind) (s) | AWildPat (s) -> deck-record (PatResult {
+        scope = sc,
+        seen = seen,
+        errors = errs
+      })
 
   collect-ctor-pat-names : Scope, List APat, Integer, Integer, Integer, SkipListText, List Diagnostic -> PatResult
   collect-ctor-pat-names (sc) (subs) (i) (len) (depth) (seen) (errs) =
-   if i == len then deck-record (PatResult { scope = sc, seen = seen, errors = errs })
-   else let sub = list-at subs i
-   in let result = collect-pattern-names-at sc sub depth seen errs
-   in collect-ctor-pat-names (result.scope) subs (i + 1) len depth (result.seen) (result.errors)
+    if i == len then deck-record (PatResult { scope = sc, seen = seen, errors = errs })
+    else let sub = list-at subs i
+    in let result = collect-pattern-names-at sc sub depth seen errs
+    in collect-ctor-pat-names (result.scope) subs (i + 1) len depth (result.seen) (result.errors)
 
 Section: Resolve List Elements
   resolve-list-elems : Scope, List AExpr, Integer, Integer, List Diagnostic -> List Diagnostic
   resolve-list-elems (sc) (elems) (i) (len) (errs) =
-   if i == len then errs
-   else let errs2 = resolve-expr sc (list-at elems i)
-   in resolve-list-elems sc elems (i + 1) len (errs & errs2)
+    if i == len then errs
+    else let errs2 = resolve-expr sc (list-at elems i)
+    in resolve-list-elems sc elems (i + 1) len (errs & errs2)
 
 Section: Resolve Record Fields
   resolve-record-fields : Scope, List AFieldExpr, Integer, Integer, List Diagnostic -> List Diagnostic
   resolve-record-fields (sc) (fields) (i) (len) (errs) =
-   if i == len then errs
-   else let f = list-at fields i
-   in let errs2 = resolve-expr sc (f.value)
-   in resolve-record-fields sc fields (i + 1) len (errs & errs2)
+    if i == len then errs
+    else let f = list-at fields i
+    in let errs2 = resolve-expr sc (f.value)
+    in resolve-record-fields sc fields (i + 1) len (errs & errs2)
 
 Section: Resolve Act Statements
   resolve-act-stmts : Scope, List AActStmt, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
   resolve-act-stmts (sc) (stmts) (i) (len) (seen) (errs) =
-   if i == len then errs
-   else let stmt = list-at stmts i
-   in when stmt
-     is AActExprStmt (e) (s) ->
-      when e
-       is ALetExpr (binds) (lbody) (ls) -> resolve-act-let sc binds lbody stmts i len seen errs
-       is otherwise ->
+    if i == len then errs
+    else let stmt = list-at stmts i
+    in when stmt
+      is AActExprStmt (e) (s) ->
+        when e
+          is ALetExpr (binds) (lbody) (ls) -> resolve-act-let sc binds lbody stmts i len seen errs
+          is otherwise ->
+            let errs2 = resolve-expr sc e
+            in resolve-act-stmts sc stmts (i + 1) len seen (errs & errs2)
+      is AActBindStmt (name) (e) (s) ->
         let errs2 = resolve-expr sc e
-        in resolve-act-stmts sc stmts (i + 1) len seen (errs & errs2)
-     is AActBindStmt (name) (e) (s) ->
-      let errs2 = resolve-expr sc e
-   in let dup-errs = if skip-list-text-has seen (name.value) then [make-error cdx-duplicate-definition ("Duplicate binding: '" & name.value & "'") s] else []
-   in let sc2 = scope-add-local sc (name.value)
-   in resolve-act-stmts sc2 stmts (i + 1) len (skip-list-text-insert seen (name.value)) (errs & errs2 & dup-errs)
+        in let dup-errs = if skip-list-text-has seen (name.value) then
+          [make-error cdx-duplicate-definition ("Duplicate binding: '" & name.value & "'") s]
+        else []
+        in let sc2 = scope-add-local sc (name.value)
+        in let next-seen = skip-list-text-insert seen (name.value)
+        in let next-errs = errs & errs2 & dup-errs
+        in resolve-act-stmts sc2 stmts (i + 1) len next-seen next-errs
 
-  resolve-act-let : Scope, List ALetBind, AExpr, List AActStmt, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
+  resolve-act-let : Scope, List ALetBind, AExpr, List AActStmt, Integer, Integer, SkipListText, List Diagnostic ->
+    List Diagnostic
   resolve-act-let (sc) (binds) (body) (stmts) (i) (len) (seen) (errs) =
-   let bind-errs = resolve-let-binds sc binds 0 (list-length binds) skip-list-text-empty []
-   in when body
-    is ALetExpr (binds2) (body2) (ls2) -> resolve-act-let sc binds2 body2 stmts i len seen (errs & bind-errs)
-    is otherwise ->
-     let body-errs = resolve-expr sc body
-     in resolve-act-stmts sc stmts (i + 1) len seen (errs & bind-errs & body-errs)
+    let bind-errs = resolve-let-binds sc binds 0 (list-length binds) skip-list-text-empty []
+    in when body
+      is ALetExpr (binds2) (body2) (ls2) ->
+        resolve-act-let sc binds2 body2 stmts i len seen (errs & bind-errs)
+      is otherwise ->
+        let body-errs = resolve-expr sc body
+        in resolve-act-stmts sc stmts (i + 1) len seen (errs & bind-errs & body-errs)
 
 Section: Resolve All Definitions
 
- The ceiling is the SCOPE deck reservation's top, and this loop checks it
+ The limit is the SCOPE deck reservation's top, and this loop checks it
  because it is the phase's bulk deck writer -- not through its own records
  but through resolve-expr's pattern path, whose per-pattern-variable
  deck-record wraps the scope and seen skiplist inserts, so every insert
@@ -404,25 +506,34 @@ Section: Resolve All Definitions
  diagnostics collected so far; compile-desugar-and-scope reads
  deck-short-of again after the walk and raises CDX9002 from there.
 
-  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer -> List Diagnostic
-  resolve-all-defs (sc) (defs) (i) (len) (errs) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (ceiling) =
-   if i == len then errs
-   else if deck-short-of ceiling demand-scope-guard-band then errs
-   else let def = list-at defs i
-   in let chapter-rn = if def.chapter-slug == cur-slug then cur-chapter-rn
-      else apply-cite-overrides (build-chapter-rename-map colliding assignments (def.chapter-slug)) citations colliding assignments cite-slugs (def.chapter-slug) 0
-   in let bivy-mark = __heap-save
-   in let deck-mark = __deck-pos
-   in let fresh-scope = Scope { names = sc.names, locals = skip-list-text-empty, builtins = sc.builtins, chapter-renames = chapter-rn }
-   in let param-result = add-def-params fresh-scope (def.params) 0 (list-length (def.params)) []
-   in let body-scope = add-forall-binders (param-result.scope) def
-   in let errs2 = resolve-expr body-scope (def.body)
-   in let errs-new = param-result.errors & errs2
-   in if list-length errs-new == 0
-      then let deck-back = __deck-set deck-mark
-       in let bivy-back = __heap-restore bivy-mark
-       in resolve-all-defs sc defs (i + 1) len errs colliding assignments citations cite-slugs (def.chapter-slug) chapter-rn ceiling
-      else resolve-all-defs sc defs (i + 1) len (errs & errs-new) colliding assignments citations cite-slugs (def.chapter-slug) chapter-rn ceiling
+  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl,
+    List Text, Text, List RenameEntry, Integer -> List Diagnostic
+  resolve-all-defs (sc) (defs) (i) (n) (errs) (dups) (assigns) (refs) (slugs) (cur) (rn) (limit) =
+    if i == n then errs
+    else if deck-short-of limit demand-scope-guard-band then errs
+    else let def = list-at defs i
+    in let slug = def.chapter-slug
+    in let next-rn = if slug == cur then rn
+    else let base = build-chapter-rename-map dups assigns slug
+    in apply-cite-overrides base refs dups assigns slugs slug 0
+    in let bivy-mark = __heap-save
+    in let deck-mark = __deck-pos
+    in let fresh-scope = Scope {
+      names = sc.names,
+      locals = skip-list-text-empty,
+      builtins = sc.builtins,
+      chapter-renames = next-rn
+    }
+    in let param-result = add-def-params fresh-scope (def.params) 0 (list-length (def.params)) []
+    in let body-scope = add-forall-binders (param-result.scope) def
+    in let errs2 = resolve-expr body-scope (def.body)
+    in let errs-new = param-result.errors & errs2
+    in if list-length errs-new == 0 then
+      let deck-back = __deck-set deck-mark
+      in let bivy-back = __heap-restore bivy-mark
+      in resolve-all-defs sc defs (i + 1) n errs dups assigns refs slugs slug next-rn limit
+    else let all-errs = errs & errs-new
+    in resolve-all-defs sc defs (i + 1) n all-errs dups assigns refs slugs slug next-rn limit
 
  A definition's resolution answers only its diagnostics; every scope,
  pattern result and rename lookup it built is dead once resolve-expr
@@ -437,94 +548,124 @@ Section: Resolve All Definitions
 
   add-forall-binders : Scope, ADef -> Scope
   add-forall-binders (sc) (def) =
-   if list-length (def.declared-type) == 0 then sc
-   else add-forall-binder-names sc (list-at (def.declared-type) 0)
+    if list-length (def.declared-type) == 0 then sc
+    else add-forall-binder-names sc (list-at (def.declared-type) 0)
 
   add-forall-binder-names : Scope, ATypeExpr -> Scope
   add-forall-binder-names (sc) (t) =
-   when t
-    is AForallType (v) (vt) (p) (s) -> add-forall-binder-names (scope-add-local sc (v.value)) p
-    is otherwise -> sc
+    when t
+      is AForallType (v) (vt) (p) (s) -> add-forall-binder-names (scope-add-local sc (v.value)) p
+      is otherwise -> sc
 
   add-def-params : Scope, List AParam, Integer, Integer, List Diagnostic -> ResolveScopeResult
   add-def-params (sc) (params) (i) (len) (errs) =
-   if i == len then deck-record (ResolveScopeResult { scope = sc, errors = errs })
-   else let p = list-at params i
-   in let name = p.name.value
-   in if skip-list-text-has (sc.locals) name
-      then add-def-params sc params (i + 1) len (errs & [make-error cdx-duplicate-definition ("Duplicate parameter: '" & name & "'") (p.span)])
-      else add-def-params (scope-add-local sc name) params (i + 1) len errs
+    if i == len then deck-record (ResolveScopeResult { scope = sc, errors = errs })
+    else let p = list-at params i
+    in let name = p.name.value
+    in if skip-list-text-has (sc.locals) name then
+      add-def-params sc params (i + 1) len (errs & [
+        make-error cdx-duplicate-definition ("Duplicate parameter: '" & name & "'") (p.span)
+      ])
+    else add-def-params (scope-add-local sc name) params (i + 1) len errs
 
 Section: Resolve Chapter
   resolve-chapter : AChapter, SkipListText, List ChapterAssignment, Integer -> ResolveResult
   resolve-chapter (mod) (colliding) (assignments) (ceiling) =
-   resolve-chapter-with-citations mod [] colliding assignments ceiling
+    resolve-chapter-with-citations mod [] colliding assignments ceiling
 
   resolve-chapter-with-citations : AChapter, List ResolveResult, SkipListText, List ChapterAssignment, Integer -> ResolveResult
-  resolve-chapter-with-citations (mod) (imported) (colliding) (assignments) (ceiling) =
-   let top = collect-top-level-names (mod.defs) 0 (list-length (mod.defs)) skip-list-text-empty []
-   in let ctors = collect-ctor-names (mod.type-defs) 0 (list-length (mod.type-defs)) skip-list-text-empty skip-list-text-empty []
-   in let effect-ops = collect-effect-op-names (mod.effect-defs) (top.names) (ctors.ctor-names) 0 (list-length (mod.effect-defs)) skip-list-text-empty []
-   in let cited-names = collect-cited-names imported 0 (list-length imported) skip-list-text-empty
-   in let class-method-names = collect-class-method-names-nr (mod.class-defs) 0 (list-length (mod.class-defs)) skip-list-text-empty
-   in let dict-placeholder-names = collect-dict-placeholder-names-nr (mod.class-defs) (mod.instance-defs) 0 (list-length (mod.class-defs)) skip-list-text-empty
-   in let all-top = skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-union (skip-list-text-clone (top.names)) (effect-ops.op-names)) cited-names) class-method-names) dict-placeholder-names
-   in let sc = build-all-names-scope all-top (ctors.ctor-names) builtin-names
-   in let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-   in let cite-slugs = for c in (mod.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
-   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) [] colliding assignments (mod.citations) cite-slugs "" [] ceiling
-   in let class-errs = derived-class-name-errors (mod.class-defs) 0 (list-length (mod.class-defs)) []
-   in let ctor-list = deck-record (skip-list-text-to-list (ctors.ctor-names))
-   in deck-record (ResolveResult {
-     bag = deck-record (bag-from-list (top.errors & ctors.errors & effect-ops.errors & expr-errs & class-errs)),
-     top-level-names = top.names,
-     type-names = ctors.type-names,
-     ctor-names = ctor-list
+  resolve-chapter-with-citations (mod) (imported) (dups) (assigns) (limit) =
+    let defs = mod.defs
+    in let n = list-length defs
+    in let top = collect-top-level-names defs 0 n skip-list-text-empty []
+    in let types = mod.type-defs
+    in let type-n = list-length types
+    in let ctors = collect-ctor-names types 0 type-n skip-list-text-empty skip-list-text-empty []
+    in let effects = mod.effect-defs
+    in let top-set = top.names
+    in let ctor-set = ctors.ctor-names
+    in let count = list-length effects
+    in let ops = collect-effect-op-names effects top-set ctor-set 0 count skip-list-text-empty []
+    in let cited = collect-cited-names imported 0 (list-length imported) skip-list-text-empty
+    in let classes = mod.class-defs
+    in let nclass = list-length classes
+    in let methods = collect-class-method-names-nr classes 0 nclass skip-list-text-empty
+    in let instances = mod.instance-defs
+    in let dicts = collect-dict-placeholder-names-nr classes instances 0 nclass skip-list-text-empty
+    in let with-ops = skip-list-text-union (skip-list-text-clone top-set) (ops.op-names)
+    in let with-cites = skip-list-text-union with-ops cited
+    in let with-methods = skip-list-text-union with-cites methods
+    in let all-top = skip-list-text-union with-methods dicts
+    in let sc = build-all-names-scope all-top ctor-set builtin-names
+    in let cache = for a in assigns -> cite-key (a.chapter-slug)
+    in let refs = mod.citations
+    in let slugs = for c in refs -> (
+      let quire = c.quire.value
+      in let name = c.chapter-name.value
+      in find-slug-for-cite-name quire name assigns cache)
+    in let expr-errs = resolve-all-defs sc defs 0 n [] dups assigns refs slugs "" [] limit
+    in let class-errs = derived-class-name-errors classes 0 nclass []
+    in let ctor-list = deck-record (skip-list-text-to-list ctor-set)
+    in deck-record (ResolveResult {
+      bag = deck-record (let prefix = top.errors & ctors.errors & ops.errors
+      in bag-from-list (prefix & expr-errs & class-errs)),
+      top-level-names = top.names,
+      type-names = ctors.type-names,
+      ctor-names = ctor-list
     })
 
   collect-cited-names : List ResolveResult, Integer, Integer, SkipListText -> SkipListText
   collect-cited-names (results) (i) (len) (acc) =
-   if i == len then acc
-   else let r = list-at results i
-   in let acc2 = skip-list-text-union acc (r.top-level-names)
-   in let acc3 = skip-list-text-union acc2 (skip-list-text-from-list (r.ctor-names))
-   in collect-cited-names results (i + 1) len acc3
+    if i == len then acc
+    else let r = list-at results i
+    in let acc2 = skip-list-text-union acc (r.top-level-names)
+    in let acc3 = skip-list-text-union acc2 (skip-list-text-from-list (r.ctor-names))
+    in collect-cited-names results (i + 1) len acc3
 
   derived-class-name-errors : List AClassDef, Integer, Integer, List Diagnostic -> List Diagnostic
   derived-class-name-errors (cds) (i) (len) (errs) =
-   if i == len then errs
-   else let cd = list-at cds i
-   in let name = cd.name.value
-   in if name == "Eq" | name == "Show" | name == "Ord"
-    then derived-class-name-errors cds (i + 1) len (errs & [make-error cdx-class-shadows-derived ("class '" & name & "' has the name of a derived class, so a constraint naming it would never consult this class or its instances; rename the class") (cd.span)])
+    if i == len then errs
+    else let cd = list-at cds i
+    in let name = cd.name.value
+    in if name == "Eq" | name == "Show" | name == "Ord" then
+      derived-class-name-errors cds (i + 1) len (errs & [
+        let suffix = "' has the name of a derived class, so a constraint naming it would never consult this class or its instances; rename the class"
+        in let msg = "class '" & name & suffix
+        in make-error cdx-class-shadows-derived msg (cd.span)
+      ])
     else derived-class-name-errors cds (i + 1) len errs
 
   collect-class-method-names-nr : List AClassDef, Integer, Integer, SkipListText -> SkipListText
   collect-class-method-names-nr (cds) (i) (len) (acc) =
-   if i == len then acc
-   else let cd = list-at cds i
-   in collect-class-method-names-nr cds (i + 1) len (add-class-method-names-nr (cd.methods) 0 (list-length (cd.methods)) acc)
+    if i == len then acc
+    else let cd = list-at cds i
+    in let methods = cd.methods
+    in let count = list-length methods
+    in let names = add-class-method-names-nr methods 0 count acc
+    in collect-class-method-names-nr cds (i + 1) len names
 
   add-class-method-names-nr : List AEffectOpDef, Integer, Integer, SkipListText -> SkipListText
   add-class-method-names-nr (ops) (i) (len) (acc) =
-   if i == len then acc
-   else let op = list-at ops i
-   in add-class-method-names-nr ops (i + 1) len (skip-list-text-insert acc (op.name.value))
+    if i == len then acc
+    else let op = list-at ops i
+    in add-class-method-names-nr ops (i + 1) len (skip-list-text-insert acc (op.name.value))
 
   collect-dict-placeholder-names-nr : List AClassDef, List AInstanceDef, Integer, Integer, SkipListText -> SkipListText
   collect-dict-placeholder-names-nr (cds) (ids) (i) (len) (acc) =
-   if i == len then acc
-   else let cd = list-at cds i
-   in let ic = count-instances-nr ids (cd.name.value) 0 (list-length ids) 0
-   in if ic > 1
-    then collect-dict-placeholder-names-nr cds ids (i + 1) len (skip-list-text-insert acc ("__dict-of-" & (cd.name.value)))
+    if i == len then acc
+    else let cd = list-at cds i
+    in let ic = count-instances-nr ids (cd.name.value) 0 (list-length ids) 0
+    in if ic > 1 then
+      let name = "__dict-of-" & cd.name.value
+      in let names = skip-list-text-insert acc name
+      in collect-dict-placeholder-names-nr cds ids (i + 1) len names
     else collect-dict-placeholder-names-nr cds ids (i + 1) len acc
 
   count-instances-nr : List AInstanceDef, Text, Integer, Integer, Integer -> Integer
   count-instances-nr (ids) (cname) (i) (len) (acc) =
-   if i == len then acc
-   else let id = list-at ids i
-   in count-instances-nr ids cname (i + 1) len (if (id.class-name.value) == cname then acc + 1 else acc)
+    if i == len then acc
+    else let id = list-at ids i
+    in let count = if id.class-name.value == cname then acc + 1 else acc
+    in count-instances-nr ids cname (i + 1) len count
 
 Page 1
-

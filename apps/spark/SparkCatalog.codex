@@ -1,0 +1,106 @@
+Chapter: SparkCatalog
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+
+ A Spark project's Concept/catalog.json, as the WPF original writes it
+ (ImageRecord's camelCase JSON, one array of records). The original stores
+ each image's absolute Windows path; SparkStudio.md section 6 reads it from
+ its Concept component onward, relative to the project folder.
+
+Section: Records
+
+  SparkImage = record {
+    si-id : Text,
+    si-prompt : Integer,
+    si-title : Text,
+    si-series : Text,
+    si-settings : Text,
+    si-path : Text,
+    si-missing : Boolean,
+    si-seen : Boolean,
+    si-saved : Boolean,
+    si-rating : Integer,
+    si-deleted : Boolean,
+    si-prompt-text : Text,
+    si-seed : Integer,
+    si-preset : Text,
+    si-augment : Text,
+    si-lora : Text,
+    si-generated : Text,
+    si-width : Integer,
+    si-height : Integer
+  }
+
+Section: The Path Rule
+
+  scat-slashes : Text, Integer, Text -> Text
+  scat-slashes (t) (i) (acc) =
+    if i >= text-length t then acc
+    else let c = char-at t i
+    in scat-slashes t (i + 1) (acc & (if c == char-at "\\" 0 then "/" else substring t i 1))
+
+  scat-concept-at : Text, Integer -> Integer
+  scat-concept-at (p) (i) =
+    if i + 8 > text-length p then 0 - 1
+    else if substring p i 8 == "Concept/" & (i == 0 | substring p (i - 1) 1 == "/") then i
+    else scat-concept-at p (i + 1)
+
+  spark-catalog-relative : Text -> Maybe Text
+  spark-catalog-relative (raw) =
+    let p = scat-slashes raw 0 ""
+    in let at = scat-concept-at p 0
+    in if at < 0 then None else Just (substring p at (text-length p - at))
+
+Section: Parse
+
+  scat-deleted : JsonValue -> Boolean
+  scat-deleted (r) =
+    let legacy = json-get-bool r "legacyDeleted" False
+    in when json-get r "deletedUtc"
+      is Just (v) -> (when v
+        is JsonNull -> legacy
+        is otherwise -> True)
+      is None -> legacy
+
+  scat-record : JsonValue -> SparkImage
+  scat-record (r) =
+    let raw = json-get-str r "filePath" ""
+    in let rel = spark-catalog-relative raw
+    in SparkImage {
+      si-id = json-get-str r "id" "",
+      si-prompt = json-get-int r "promptNumber" 0,
+      si-title = json-get-str r "title" "",
+      si-series = json-get-str r "series" "",
+      si-settings = json-get-str r "settingsTag" "",
+      si-path = (when rel
+        is Just (t) -> t
+        is None -> raw),
+      si-missing = (when rel
+        is Just (t) -> False
+        is None -> True),
+      si-seen = json-get-bool r "seen" False,
+      si-saved = json-get-bool r "saved" False,
+      si-rating = json-get-int r "rating" 0,
+      si-deleted = scat-deleted r,
+      si-prompt-text = json-get-str r "promptText" "",
+      si-seed = json-get-int r "seed" (0 - 1),
+      si-preset = json-get-str r "refinePreset" "none",
+      si-augment = json-get-str r "promptAugment" "",
+      si-lora = json-get-str r "loraTag" "",
+      si-generated = json-get-str r "generatedUtc" "",
+      si-width = json-get-int r "sourceWidth" 0,
+      si-height = json-get-int r "sourceHeight" 0
+    }
+
+  scat-records : List JsonValue, Integer, List SparkImage -> List SparkImage
+  scat-records (vs) (i) (acc) =
+    if i >= list-length vs then acc
+    else scat-records vs (i + 1) (list-push acc (scat-record (list-at vs i)))
+
+  spark-catalog-parse : Text -> List SparkImage
+  spark-catalog-parse (t) =
+    when json-parse t
+      is Just (v) -> (when v
+        is JsonArray (vs) -> scat-records vs 0 []
+        is otherwise -> [])
+      is None -> []

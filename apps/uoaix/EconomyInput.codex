@@ -1,0 +1,123 @@
+Chapter: EconomyInput
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMint
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  EconomyInput = record { sequence : Integer, tick : Integer, operation : Integer,
+    expected : Integer, args : List Integer }
+  ei-frame-bytes : Integer = 128
+  ei-new : Integer, Integer, Integer -> EconomyInput
+  ei-new (sequence) (tick) (operation) = EconomyInput { sequence = sequence,
+    tick = tick, operation = operation, expected = 0, args = [0,0,0,0,0,0,0,0] }
+  ei-count : Integer -> Integer
+  ei-count (op) = if op == 1 | op == 2 | op == 6 | op == 9 | op == 14 | op == 15 | op == 18 then 2
+    else if op == 3 | op == 5 | op == 7 | op == 11 | op == 12 | op == 13 | op == 16 | op == 19 | op == 20 then 3
+    else if op == 4 then 2 else if op == 8 | op == 17 then 4
+    else if op == 10 then 5 else if op == 21 then 1 else 0
+  ei-unused : List Integer, Integer -> Boolean
+  ei-unused (args) (i) = if i == 8 then True else list-at args i == 0 & ei-unused args (i + 1)
+  ei-shape : EconomyInput -> Boolean
+  ei-shape (entry) =
+    if entry.sequence <= 0 | entry.sequence > ep-limit | not (ev-range entry.tick ep-limit) | entry.operation < 1 | entry.operation > 22 | list-length entry.args /= 8 then False
+    else if not (ei-unused entry.args (ei-count entry.operation)) then False
+    else if entry.operation == 7 | entry.operation == 8 | entry.operation == 9 | entry.operation == 13 then ev-range (list-at entry.args 0) 1
+    else if entry.operation == 20 then ev-range (list-at entry.args 2) 1
+    else True
+  ei-execute : EpWorld, EconomyInput -> Integer
+  ei-execute (w) (entry) =
+    let a = list-at entry.args 0
+    in let b = list-at entry.args 1
+    in let c = list-at entry.args 2
+    in let d = list-at entry.args 3
+    in let e = list-at entry.args 4
+    in let op = entry.operation
+    in if op == 1 then em-open w.money a b
+    else if op == 2 then ep-admit w a b
+    else if op == 3 then ep-station w a b c
+    else if op == 4 then eh-source w a b
+    else if op == 5 then eh-ground w a b c
+    else if op == 6 then ep-place w a b
+    else if op == 7 then emi-configure w (a == 1) b c
+    else if op == 8 then emi-strike w (a == 1) b c d
+    else if op == 9 then em-set-tax w.money (a == 1) b
+    else if op == 10 then em-lend w.money a b c d e
+    else if op == 11 then em-repay w.money a b c
+    else if op == 12 then em-pay w.money a b c
+    else if op == 13 then em-grant w.money (a == 1) b c
+    else if op == 14 then em-reclaim w.money a b
+    else if op == 15 then eh-harvest w a b
+    else if op == 16 then ep-craft w a b c
+    else if op == 17 then ep-buy w a b c d
+    else if op == 18 then ep-eat w a b
+    else if op == 19 then eh-plant w a b c
+    else if op == 20 then eh-care w a b (c == 1)
+    else if op == 21 then eh-eaten w a
+    else eh-step w
+  ei-apply : EconomyCheckpoint, EconomyInput -> Result Integer Text
+  ei-apply (state) (entry) =
+    if not (ei-shape entry) then Err "economy input shape invalid"
+    else if state.sequence >= ep-limit | entry.sequence /= state.sequence + 1 | entry.tick < state.tick then Err "economy input sequence or tick invalid"
+    else let result = ei-execute state.world entry
+    in if result /= entry.expected then Err "economy input outcome mismatch; discard candidate"
+    else let a = __record-set state "sequence" entry.sequence
+    in let b = __record-set state "tick" entry.tick
+    in Ok result
+  ei-write-args : Integer, List Integer, Integer -> Integer
+  ei-write-args (buf) (args) (i) = if i == 8 then 0
+    else let a = poke-qword buf (64 + i * 8) (list-at args i)
+    in ei-write-args buf args (i + 1)
+  ei-read-args : Integer, List Integer, Integer -> Integer
+  ei-read-args (buf) (args) (i) = if i == 8 then 0
+    else let a = list-set-at args i (peek-qword buf (64 + i * 8))
+    in ei-read-args buf args (i + 1)
+  ei-encode : EconomyInput, Integer, Integer -> Result Integer Text
+  ei-encode (entry) (buf) (capacity) =
+    if capacity < ei-frame-bytes | not (ei-shape entry) then Err "economy input shape or destination invalid"
+    else let a = poke-qword buf 0 #31494555
+    in let b = poke-qword buf 8 1
+    in let c = poke-qword buf 16 ei-frame-bytes
+    in let d = poke-qword buf 24 entry.operation
+    in let e = poke-qword buf 32 entry.tick
+    in let f = poke-qword buf 40 entry.sequence
+    in let g = poke-qword buf 48 0
+    in let h = poke-qword buf 56 entry.expected
+    in let args = ei-write-args buf entry.args 0
+    in let checksum = poke-qword buf 48 (ws-hash buf ei-frame-bytes 0 2166136261)
+    in Ok ei-frame-bytes
+  ei-decode : Integer, Integer -> Result EconomyInput Text
+  ei-decode (buf) (size) =
+    if size /= ei-frame-bytes then Err "economy input length invalid"
+    else if peek-qword buf 0 /= #31494555 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size then Err "economy input format invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "economy input checksum invalid"
+    else let entry = ei-new (peek-qword buf 40) (peek-qword buf 32) (peek-qword buf 24)
+    in let a = __record-set entry "expected" (peek-qword buf 56)
+    in let b = ei-read-args buf entry.args 0
+    in if not (ei-shape entry) then Err "economy input fields invalid" else Ok entry
+  ei-decode-record : Integer, Integer, Integer, Integer -> Result EconomyInput Text
+  ei-decode-record (buf) (size) (tick) (sequence) =
+    if size /= ei-frame-bytes then Err "economy input record length invalid"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "economy input record metadata mismatch"
+    else ei-decode buf size
+  ei-replay-loop : EconomyCheckpoint, Integer, Integer, Integer -> Result EconomyCheckpoint Text
+  ei-replay-loop (state) (buf) (count) (i) =
+    if i == count then if ev-valid state.world then Ok state else Err "economy replay final state invalid"
+    else let mark = __heap-save
+    in when ei-decode (buf + i * ei-frame-bytes) ei-frame-bytes
+      is Err (e) -> Err e
+      is Ok (entry) -> when ei-apply state entry
+        is Err (e) -> Err e
+        is Ok (result) -> let restored = __heap-restore mark in ei-replay-loop state buf count (i + 1)
+  ei-replay : EconomyCheckpoint, Integer, Integer -> Result EconomyCheckpoint Text
+  ei-replay (source) (buf) (bytes) =
+    if bytes < 0 | bytes > 4096 * ei-frame-bytes | int-mod bytes ei-frame-bytes /= 0 then Err "economy replay batch length invalid"
+    else let snapshot = alloc-bytes es-bytes
+    in when es-encode source snapshot es-bytes
+      is Err (e) -> Err e
+      is Ok (size) -> when es-decode snapshot size
+        is Err (e) -> Err e
+        is Ok (state) -> ei-replay-loop state buf (bytes / ei-frame-bytes) 0

@@ -1,0 +1,80 @@
+Chapter: UefiStorageBoot
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter BootVolume
+  cites Kernel chapter VirtioBlkX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Result
+
+  usb-store : UoDevice, UvRegion -> [Console, Device.Block] Nothing
+  usb-store (device) (region) = act
+    opened <- us-open-on device region.start region.sectors
+    when opened
+      is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+      is Ok (store) -> if store.head == 0 then
+        when world-new 3
+          is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+          is Ok (world) ->
+            let obj = WorldObject { serial = 0, kind = 1, x = 1420, y = 1690, z = -5,
+              graphic = 400, hue = 17, container = 0, amount = 1, health = 50 }
+            in when world-create world obj
+             is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+             is Ok (serial) -> let checkpoint = WorldCheckpoint { world = world, tick = 720, sequence = 0 }
+            in let buf = alloc-bytes 320
+            in when ws-encode checkpoint buf 320
+              is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+              is Ok (size) -> act
+                saved <- us-append store 1 0 720 buf size
+                when saved
+                  is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+                  is Ok (at) -> print-line-uni ("UEFI STORE SAVED count=" & show (world-count world) & " tick=" & show checkpoint.tick)
+              end
+      else let buf = alloc-bytes 320
+      in act
+        loaded <- us-read store store.snapshot buf 320
+        when loaded
+          is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+          is Ok (entry) -> when ws-decode buf entry.length
+            is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+            is Ok (checkpoint) -> when world-get checkpoint.world 1
+              is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+              is Ok (obj) ->
+                if world-count checkpoint.world == 1 & checkpoint.tick == entry.tick & checkpoint.tick == 720
+                  & checkpoint.sequence == entry.sequence & checkpoint.sequence == 0
+                  & obj.serial == 1 & obj.kind == 1 & obj.x == 1420 & obj.y == 1690 & obj.z == -5
+                  & obj.graphic == 400 & obj.hue == 17 & obj.container == 0 & obj.amount == 1 & obj.health == 50
+                then print-line-uni "UEFI STORE RESTORED count=1 tick=720"
+                else print-line-uni "UEFI STORE FAIL restored fields"
+      end
+  end
+
+  usb-device : UoDevice -> [Console, Device.Block] Nothing
+  usb-device (device) = act
+    region <- uv-open-region device
+    when region
+      is Err (e) -> print-line-uni ("UEFI STORE FAIL " & e)
+      is Ok (found) -> usb-store device found
+  end
+
+  opening : [Console, Device.Port, Device.Block] Integer = act
+    initialized <- runtime-init 0
+    print-line-uni "UEFI STORE START"
+    when vbx-find pci-scan-all
+      is Ok (state) -> act
+        print-line-uni "UEFI STORE DEVICE virtio"
+        print-line-uni ("UEFI STORE MMIO=" & show state.device.common)
+        usb-device (UoVirtio state)
+      end
+      is Err (e) -> if e == "virtio block device absent" then act
+        print-line-uni "UEFI STORE DEVICE ide"
+        selected <- block-select 0
+        usb-device UoIde
+      end
+      else print-line-uni ("UEFI STORE FAIL " & e)
+    print-line-uni "UEFI STORE END"
+    port-out-32 244 0
+  end
+
+Page 1

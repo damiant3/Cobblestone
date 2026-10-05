@@ -19,6 +19,7 @@ Chapter: MagicServer
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
   cites Net chapter WebServer
+  cites Kernel chapter Hpet
 
  We say:
 
@@ -26,7 +27,11 @@ Section: Server State
 
   MagicStore = record {
     game : GameState,
+    turn : SupervisedTurn,
+    orders : List Posture,
     game-active : Boolean,
+    pause-active : Boolean,
+    pause-remaining : Integer,
     templates : List CardTemplate,
     generals : List GeneralTemplate,
     accounts : List PlayerAccount,
@@ -54,10 +59,11 @@ Section: Server State
   magic-store-new =
     let s1 = season-new 2026 3 "Age of Embers"
     in let s1b = season-activate s1
-    in MagicStore { game = game-new full-card-pool general-warlord general-dawn-commander, game-active = False, templates = full-card-pool, generals = [general-warlord, general-high-sage, general-verdant-keeper, general-shadow-prince, general-dawn-commander], accounts = [], num-accounts = 0, tokens = [], ledger = ledger-new 100, current-season = s1b, match-record = match-record-new 0 0 0 0 0, account-keys = [], next-nonce = 1000, platform = platform-new, next-token-id = 1000, total-minted = 0, total-burned = 0, coin-for-sale = 0, coin-price = 1 }
+    in let game = game-new full-card-pool general-warlord general-dawn-commander
+    in MagicStore { pause-active = False, pause-remaining = 0, game = game, turn = supervised-start game, orders = [posture-default, posture-default], game-active = False, templates = full-card-pool, generals = [general-warlord, general-high-sage, general-verdant-keeper, general-shadow-prince, general-dawn-commander], accounts = [], num-accounts = 0, tokens = [], ledger = ledger-new 100, current-season = s1b, match-record = match-record-new 0 0 0 0 0, account-keys = [], next-nonce = 1000, platform = platform-new, next-token-id = 1000, total-minted = 0, total-burned = 0, coin-for-sale = 0, coin-price = 1 }
 
   store-set : MagicStore, GameState, Boolean, List PlayerAccount, Integer, List CardToken, ManaCoinLedger, PlatformAuthority, Integer -> MagicStore
-  store-set (s) (g) (ga) (accts) (na) (toks) (led) (plat) (ntid) = MagicStore { game = g, game-active = ga, templates = s.templates, generals = s.generals, accounts = accts, num-accounts = na, tokens = toks, ledger = led, current-season = s.current-season, match-record = s.match-record, account-keys = s.account-keys, next-nonce = s.next-nonce, platform = plat, next-token-id = ntid, total-minted = s.total-minted, total-burned = s.total-burned, coin-for-sale = s.coin-for-sale, coin-price = s.coin-price }
+  store-set (s) (g) (ga) (accts) (na) (toks) (led) (plat) (ntid) = MagicStore { pause-active = s.pause-active, pause-remaining = s.pause-remaining, game = g, turn = s.turn, orders = s.orders, game-active = ga, templates = s.templates, generals = s.generals, accounts = accts, num-accounts = na, tokens = toks, ledger = led, current-season = s.current-season, match-record = s.match-record, account-keys = s.account-keys, next-nonce = s.next-nonce, platform = plat, next-token-id = ntid, total-minted = s.total-minted, total-burned = s.total-burned, coin-for-sale = s.coin-for-sale, coin-price = s.coin-price }
 
   update-store-game : MagicStore, GameState, Boolean -> MagicStore
   update-store-game (store) (gs) (active) = store-set store gs active (store.accounts) (store.num-accounts) (store.tokens) (store.ledger) (store.platform) (store.next-token-id)
@@ -80,7 +86,7 @@ Section: Response Helpers
   magic-respond-json (store) (body) = MagicStep { store = store, resp = body }
 
   magic-respond-error : MagicStore, Text -> MagicStep
-  magic-respond-error (store) (msg) = MagicStep { store = store, resp = "{\"error\":\"" & msg & "\"}" }
+  magic-respond-error (store) (msg) = MagicStep { store = store, resp = "{\"error\":" & jstr msg & "}" }
 
   magic-respond-not-found : MagicStore -> MagicStep
   magic-respond-not-found (store) = MagicStep { store = store, resp = "{\"error\":\"not found\"}" }
@@ -109,40 +115,195 @@ Section: Request Dispatch
 
 Section: Game Handlers
 
+  pause-store : MagicStore, Boolean, Integer -> MagicStore
+  pause-store (store) (active) (remaining) =
+    let fresh = update-store-game store (store.game) (store.game-active)
+    in __record-set (__record-set fresh "pause-active" active) "pause-remaining" remaining
+
+  choice-remaining : MagicStore, Integer, Integer -> Integer
+  choice-remaining (store) (deadline) (now) =
+    if store.pause-active then store.pause-remaining
+    else if now < 0 | deadline <= now then 0 else deadline - now
+
+  handle-game-pause-at : MagicStore, Integer -> MagicStep
+  handle-game-pause-at (store) (now) =
+    if store.game-active == False | (store.game).game-over then magic-respond-error store "no active game"
+    else if store.pause-active then handle-game-state store
+    else let turn = store.turn
+    in let window = ((store.game).disruption).window
+    in let deadline = if response-window-pending window then window.deadline else if commitment-pending (turn.commitment) then (turn.commitment).deadline else if (turn.combat-choice).pending then (turn.combat-choice).deadline else 0
+    in handle-game-state (pause-store store True (choice-remaining store deadline now))
+
+  handle-game-resume-at : MagicStore, Integer -> MagicStep
+  handle-game-resume-at (store) (now) =
+    if store.pause-active == False then handle-game-state store
+    else let turn = store.turn
+    in let pending = turn.commitment
+    in let combat = turn.combat-choice
+    in let state = (store.game).disruption
+    in let window = state.window
+    in let deadline = if now < 0 then 0 else now + store.pause-remaining
+    in let choice = Commitment { card = pending.card, rays = pending.rays, nonce = pending.nonce, deadline = (if commitment-pending pending then deadline else pending.deadline), choices = pending.choices, recommended = pending.recommended, all-rays = pending.all-rays, source = pending.source, ability = pending.ability }
+    in let cc = CombatChoice { pending = combat.pending, nonce = combat.nonce, deadline = (if combat.pending then deadline else combat.deadline) }
+    in let wc = SpellWindow { activation = window.activation, card = window.card, caster = window.caster, targets = window.targets, hardness = window.hardness, manual = window.manual, nonce = window.nonce, deadline = deadline, choices = window.choices }
+    in let gs = if response-window-pending window then game-with-disruption (store.game) (DisruptionState { seed = state.seed, index = state.index, window = wc, result = state.result }) else store.game
+    in let restored = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = gs, combat = turn.combat, stage = turn.stage, paused = turn.paused, commitment = choice, held-cards = turn.held-cards, combat-choice = cc, used-abilities = turn.used-abilities }
+    in let resumed = store-turn (pause-store store False 0) restored (store.game-active)
+    in if turn.paused | commitment-pending pending | combat.pending | response-window-pending window then handle-game-state resumed
+    else handle-game-step resumed False
+
   handle-game : MagicStore, Text, Text -> MagicStep
   handle-game (store) (line) (path) =
-    if text-starts-with path "/api/magic/game/new" then handle-game-new store line
-    else if text-starts-with path "/api/magic/game/step" then handle-game-step store
+    let pending = (store.turn).commitment
+    in let combat = (store.turn).combat-choice
+    in let window = ((store.game).disruption).window
+    in if text-starts-with path "/api/magic/game/new" | text-starts-with path "/api/magic/game/cancel" then handle-game-current store line path
+    else if path == "/api/magic/game/pause" | path == "/api/magic/game/resume" | path == "/api/magic/game/override" | store.pause-active then handle-game-current store line path
+    else let now = if commitment-pending pending | combat.pending | response-window-pending window then game-clock-ms else 0
+    in if response-window-pending window & (now < 0 | window.deadline <= 0 | now >= window.deadline) then handle-game-disruption-at store (window.nonce) (0 - 1) now
+    else if commitment-pending pending & (now < 0 | pending.deadline <= 0 | now >= pending.deadline) then handle-game-commitment-at store (pending.nonce) False now
+    else if combat.pending & (now < 0 | combat.deadline <= 0 | now >= combat.deadline) then handle-game-combat-choice-at store (combat.nonce) True now
+    else handle-game-current store line path
+
+  handle-game-current : MagicStore, Text, Text -> MagicStep
+  handle-game-current (store) (line) (path) =
+    if path == "/api/magic/game/pause" then handle-game-pause-at store game-clock-ms
+    else if path == "/api/magic/game/resume" then handle-game-resume-at store game-clock-ms
+    else if path == "/api/magic/game/override" then handle-game-override-at store (game-query-id (extract-query-param line "nonce")) game-clock-ms
+    else if text-starts-with path "/api/magic/game/new" then handle-game-new store line
+    else if text-starts-with path "/api/magic/game/cancel" then handle-game-cancel store
+    else if path == "/api/magic/game/discard" then handle-game-discard store line
+    else if text-starts-with path "/api/magic/game/combat-policy" then handle-game-combat-policy store line
+    else if text-starts-with path "/api/magic/game/sacrifice-policy" then handle-game-sacrifice-policy store line
+    else if text-starts-with path "/api/magic/game/disruption-policy" then handle-game-disruption-policy store line
+    else if path == "/api/magic/game/response-targets" then handle-game-response-targets store line
+    else if path == "/api/magic/game/response-ability-targets" then handle-game-response-ability-targets store line
+    else if path == "/api/magic/game/response-ability" then handle-game-response-ability store line
+    else if text-starts-with path "/api/magic/game/disruption" then handle-game-disruption store line
+    else if path == "/api/magic/game/queue-card-targets" then handle-game-queue-card-targets store line
+    else if path == "/api/magic/game/queue-card" then handle-game-queue-card store line
+    else if path == "/api/magic/game/queue-loyalty-targets" then handle-game-queue-loyalty-targets store line
+    else if path == "/api/magic/game/queue-loyalty" then handle-game-queue-loyalty store line
+    else if text-starts-with path "/api/magic/game/queue-targets" then handle-game-queue-targets store line
+    else if text-starts-with path "/api/magic/game/queue-ability" then handle-game-queue-ability store line
+    else if text-starts-with path "/api/magic/game/combat-choice" then handle-game-combat-choice store line
+    else if text-starts-with path "/api/magic/game/card-order" then handle-game-card-order store line
+    else if text-starts-with path "/api/magic/game/commitment-policy" then handle-game-commitment-policy store line
+    else if text-starts-with path "/api/magic/game/commitment" then handle-game-commitment store line
+    else if text-starts-with path "/api/magic/game/step" then handle-game-step store (extract-query-param line "resume" == "1")
+    else if text-starts-with path "/api/magic/game/posture" then handle-game-posture store line
+    else if path == "/api/magic/game/skill" then handle-game-skill store line
+    else if text-starts-with path "/api/magic/game/freeze" then handle-game-freeze store line
+    else if text-starts-with path "/api/magic/game/spells" then handle-game-spells store line
+    else if text-starts-with path "/api/magic/game/mana" then handle-game-mana store line
+    else if text-starts-with path "/api/magic/game/payment-mode" then handle-game-payment-mode store line
+    else if text-starts-with path "/api/magic/game/fluorescence" then handle-game-fluorescence store line
+    else if text-starts-with path "/api/magic/game/loyalty" then handle-game-loyalty store line
+    else if text-starts-with path "/api/magic/game/ability-targets" then handle-game-ability-targets store line
+    else if text-starts-with path "/api/magic/game/activate" then handle-game-activate store line
+    else if text-starts-with path "/api/magic/game/blocks" then handle-game-block-policy store line
+    else if text-starts-with path "/api/magic/game/play" then handle-game-play store line
+    else if text-starts-with path "/api/magic/game/target-policy" then handle-game-target-policy store line
+    else if text-starts-with path "/api/magic/game/targets" then handle-game-targets store line
+    else if text-starts-with path "/api/magic/game/target" then handle-game-target store line
+    else if text-starts-with path "/api/magic/game/attack" then handle-game-attack store line
+    else if text-starts-with path "/api/magic/game/block" then handle-game-block store line
     else if text-starts-with path "/api/magic/game/state" then handle-game-state store
     else magic-respond-not-found store
 
+  handle-game-cancel : MagicStore -> MagicStep
+  handle-game-cancel (store) =
+    let idle = game-new (store.templates) (get-general (store.game) 0) (get-general (store.game) 1)
+    in handle-game-state (store-fresh-game store idle False)
+
+  handle-game-discard : MagicStore, Text -> MagicStep
+  handle-game-discard (store) (line) =
+    let card = game-query-id (extract-query-param line "card")
+    in if store.pause-active then magic-respond-error store "game is paused"
+    else if store.game-active == False | card < 0 | supervised-discard-ready (store.turn) card == False then magic-respond-error store "card cannot be discarded at this pause"
+    else handle-game-state (store-turn store (supervised-discard (store.turn) card) True)
+
+  cleanup-json : MagicStore -> Text
+  cleanup-json (store) =
+    let turn = store.turn
+    in let gs = store.game
+    in if store.game-active == False | gs.game-over | turn.stage /= ai-stage-end | turn.paused == False | cleanup-excess gs == 0 then "null"
+    else "{\"count\":" & show (cleanup-excess gs) & ",\"manual\":" & jbool ((list-at (store.orders) (gs.active-player)).spell-policy == ManualSpells) & ",\"cards\":[" & text-concat-list (cleanup-cards-json gs ((get-player gs (gs.active-player)).hand) 0 []) & "]}"
+
+  cleanup-cards-json : GameState, List Integer, Integer, List Text -> List Text
+  cleanup-cards-json (gs) (hand) (i) (chunks) =
+    if i >= list-length hand then chunks
+    else let card = list-at hand i
+    in let row = (if i == 0 then "" else ",") & "{\"id\":" & show card & ",\"name\":" & jstr ((get-card-template gs card).name) & "}"
+    in cleanup-cards-json gs hand (i + 1) (list-push chunks row)
+
+  standing-target-orders : List TargetOrder, Integer, List TargetOrder -> List TargetOrder
+  standing-target-orders (orders) (i) (acc) =
+    if i >= list-length orders then acc
+    else let order = list-at orders i
+    in let keep = when order is PriorityPermanent (id) -> False is otherwise -> True
+    in standing-target-orders orders (i + 1) (if keep then list-push acc order else acc)
+
+  fresh-game-posture : Posture -> Posture
+  fresh-game-posture (p) = Posture { skill = p.skill, stance = p.stance, primary-targets = standing-target-orders (p.primary-targets) 0 [], phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause }
+
+  store-fresh-game : MagicStore, GameState, Boolean -> MagicStore
+  store-fresh-game (store) (gs) (active) =
+    let next = store-turn (pause-store store False 0) (supervised-start gs) active
+    in __record-set next "orders" (for p in store.orders -> fresh-game-posture p)
+
   handle-game-new : MagicStore, Text -> MagicStep
   handle-game-new (store) (line) =
-    let gen-a = get-general-by-id (store.generals) 0
-    in let gen-b = get-general-by-id (store.generals) 4
-    in let deck-a = gen-starter-deck gen-a (store.templates) 42
-    in let deck-b = gen-starter-deck gen-b (store.templates) 99
-    in let gs = game-new (store.templates) gen-a gen-b
-    in let gs2 = load-deck-cards gs 0 (shuffle-deck (deck-a.cards) 777) 0
-    in let gs3 = load-deck-cards gs2 1 (shuffle-deck (deck-b.cards) 888) 0
-    in let gs4 = draw-cards gs3 0 7
-    in let gs5 = draw-cards gs4 1 7
-    in let ns = update-store-game store gs5 True
-    in magic-respond-json ns (game-state-to-json gs5 gen-a gen-b (store.templates))
+    let ar = extract-query-param line "general-a"
+    in let br = extract-query-param line "general-b"
+    in let aid = if ar == "" then 0 else game-query-id ar
+    in let bid = if br == "" then 4 else game-query-id br
+    in let sr = extract-query-param line "seed"
+    in let seed = if sr == "" then 0 else game-query-id sr
+    in if seed < 0 then magic-respond-error store "invalid contest seed"
+    else if list-contains (store.generals) (\g -> g.id == aid) == False | list-contains (store.generals) (\g -> g.id == bid) == False then magic-respond-error store "unknown General"
+    else let gen-a = get-general-by-id (store.generals) aid
+    in let gen-b = get-general-by-id (store.generals) bid
+    in when gen-starter-deck gen-a (store.templates) 42
+      is StarterRefused (why) -> magic-respond-error store why
+      is StarterDeck (deck-a) -> (when gen-starter-deck gen-b (store.templates) 99
+        is StarterRefused (why) -> magic-respond-error store why
+        is StarterDeck (deck-b) ->
+          let gs = game-contest-seed (game-new (store.templates) gen-a gen-b) seed
+          in let gs2 = load-deck-cards gs 0 (shuffle-deck (deck-a.cards) 777) 0
+          in let gs3 = load-deck-cards gs2 1 (shuffle-deck (deck-b.cards) 888) 0
+          in let gs4 = draw-cards gs3 0 7
+          in let gs5 = draw-cards gs4 1 7
+          in let ns = store-fresh-game store gs5 True
+          in handle-game-state ns)
 
-  handle-game-step : MagicStore -> MagicStep
-  handle-game-step (store) =
-    if store.game-active == False then magic-respond-error store "no active game"
+  handle-game-skill : MagicStore, Text -> MagicStep
+  handle-game-skill (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let skill = game-query-id (extract-query-param line "level")
+    in if player < 0 | player > 1 | skill < 0 | skill > 3 then magic-respond-error store "invalid skill level"
+    else let orders = for p in store.orders -> p
+    in let changed = list-set-at orders player (posture-at-skill (list-at orders player) skill)
+    in handle-game-state (__record-set (update-store-game store (store.game) (store.game-active)) "orders" changed)
+
+  handle-game-step : MagicStore, Boolean -> MagicStep
+  handle-game-step (store) (resume) =
+    if store.pause-active then (if resume then handle-game-resume-at store game-clock-ms else handle-game-state store)
+    else if store.game-active == False then magic-respond-error store "no active game"
     else if store.game.game-over then magic-respond-error store "game is over"
-    else let gs = store.game
-    in let gs2 = run-turn gs
+    else let progress = advance-supervised (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1) resume
+    in finish-game-progress store progress
+
+  finish-game-progress : MagicStore, SupervisedTurn -> MagicStep
+  finish-game-progress (store) (given) =
+    let progress = settle-supervised-disruption given (list-at (store.orders) 0) (list-at (store.orders) 1)
+    in let gs2 = progress.game
     in let gs3 = check-state-based-actions gs2
-    in let gs4 = if gs3.game-over then gs3 else advance-turn gs3
-    in let gen-a = get-general-by-id (store.generals) 0
-    in let gen-b = get-general-by-id (store.generals) 4
-    in let ns = update-store-game store gs4 (if gs4.game-over then False else True)
+    in let gs4 = if gs3.game-over | game-budget-stopped gs3 | progress.stage < ai-stage-done then gs3 else advance-turn gs3
+    in let next = if gs4.game-over then SupervisedTurn { combat-cantrip-stage = progress.combat-cantrip-stage, manual-override = False, game = gs4, combat = progress.combat, stage = ai-stage-done, paused = False, commitment = commitment-none, held-cards = [], combat-choice = combat-choice-none, used-abilities = [] } else if game-budget-stopped gs4 then SupervisedTurn { combat-cantrip-stage = progress.combat-cantrip-stage, manual-override = progress.manual-override, game = gs4, combat = progress.combat, stage = (if progress.stage >= ai-stage-done then ai-stage-end else progress.stage), paused = True, commitment = progress.commitment, held-cards = progress.held-cards, combat-choice = progress.combat-choice, used-abilities = progress.used-abilities } else if progress.stage >= ai-stage-done then supervised-start gs4 else SupervisedTurn { combat-cantrip-stage = progress.combat-cantrip-stage, manual-override = progress.manual-override, game = gs4, combat = progress.combat, stage = progress.stage, paused = progress.paused, commitment = progress.commitment, held-cards = progress.held-cards, combat-choice = progress.combat-choice, used-abilities = progress.used-abilities }
+    in let ns = store-turn store next (if gs4.game-over then False else True)
     in let ns2 = if gs4.game-over then finalize-match ns gs4 else ns
-    in magic-respond-json ns2 (game-state-to-json gs4 gen-a gen-b (store.templates))
+    in handle-game-state ns2
 
   finalize-match : MagicStore, GameState -> MagicStore
   finalize-match (store) (gs) =
@@ -161,9 +322,882 @@ Section: Game Handlers
 
   handle-game-state : MagicStore -> MagicStep
   handle-game-state (store) =
-    let gen-a = get-general-by-id (store.generals) 0
-    in let gen-b = get-general-by-id (store.generals) 4
-    in magic-respond-json store (game-state-to-json (store.game) gen-a gen-b (store.templates))
+    if store.pause-active | store.game-active == False | loyalty-pending (store.game) == False then handle-game-state-view store
+    else let gs = settle-loyalty (store.game) (list-at (store.orders) 0) (list-at (store.orders) 1)
+    in let prior = store.turn
+    in let turn = ability-turn prior gs (if gs.game-over then False else prior.paused | game-budget-stopped gs) (if gs.game-over then commitment-none else prior.commitment) (prior.used-abilities)
+    in let ended = if gs.game-over then __record-set (__record-set turn "stage" ai-stage-done) "manual-override" False else turn
+    in let next = store-turn store ended (gs.game-over == False)
+    in handle-game-state-view (if gs.game-over then finalize-match next gs else next)
+
+  handle-game-state-view : MagicStore -> MagicStep
+  handle-game-state-view (store) =
+    let gen-a = get-general (store.game) 0
+    in let gen-b = get-general (store.game) 1
+    in let body = game-state-to-json (store.game) gen-a gen-b (store.templates)
+    in magic-respond-json store (text-take body (text-length body - 1) & ",\"game-active\":" & jbool (store.game-active) & ",\"paused\":" & jbool (store.pause-active | (store.turn).paused) & ",\"manual-override\":" & jbool ((store.turn).manual-override) & ",\"pause-active\":" & jbool (store.pause-active) & ",\"turn-stage\":" & show ((store.turn).stage) & ",\"phase-label\":" & jstr (if (store.game).game-over then "Game over" else ai-stage-name ((store.turn).stage)) & ",\"budget-stop\":" & jstr (budget-stop-reason (store.game)) & ",\"cleanup\":" & cleanup-json store & ",\"disruption\":" & disruption-json store & ",\"disruption-result\":" & disruption-result-json (store.game) & ",\"combat-choice\":" & combat-choice-json store & ",\"commitment\":" & commitment-json store & ",\"loyalty-used\":" & jbool (((get-player (store.game) ((store.game).active-player)).general).loyalty-turn == (store.game).turn-number) & ",\"loyalty-abilities\":[" & loyalty-abilities-json store 0 "" & "],\"permanent-abilities\":[" & permanent-abilities-json store & "],\"queued-cards\":[" & queued-card-json store ((store.game).active-player) & "],\"queue-card-options\":[" & queue-card-options-json store & "],\"queued-loyalty\":[" & queued-loyalty-json (store.game) 0 & "," & queued-loyalty-json (store.game) 1 & "],\"queue-loyalty-options\":[" & queue-loyalty-options-json store & "],\"queued-abilities\":[" & queued-orders-json (store.game) & "],\"queue-options\":[" & queue-options-json store & "],\"hand-orders\":[" & hand-orders-json store ((store.game).active-player) & "],\"manual-player\":" & show (manual-card-player (store.turn)) & ",\"combat-cantrip\":" & jbool (combat-card-stage ((store.turn).stage) & posture-freezes (list-at (store.orders) (manual-card-player (store.turn))) ((store.turn).stage)) & ",\"combat-cantrip-used\":" & jbool ((store.turn).combat-cantrip-stage == (store.turn).stage) & ",\"manual-hand\":[" & manual-hand-json store 0 "" & "],\"attackers\":[" & attacking-json ((store.turn).combat) 0 "" & "],\"orders\":[" & posture-json (store.game) (list-at (store.orders) 0) & "," & posture-json (store.game) (list-at (store.orders) 1) & "]}")
+
+  card-order-editable : GameState, Integer, Integer -> Boolean
+  card-order-editable (gs) (player) (card) =
+    if player < 0 | player >= list-length (gs.players) | game-card-valid gs card == False then False
+    else if int-list-has ((get-player gs player).hand) card then True
+    else if (get-card-template gs card).is-token then False
+    else list-contains (gs.battlefield) (\p -> p.card-id == card & p.owner == player)
+
+  handle-game-card-order : MagicStore, Text -> MagicStep
+  handle-game-card-order (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let card = game-query-id (extract-query-param line "card")
+    in let mode = game-query-id (extract-query-param line "order")
+    in if store.game-active == False | (store.game).game-over | mode < 0 | mode > 2 | card-order-editable (store.game) player card == False then magic-respond-error store "invalid card order"
+    else let game = set-card-play-order (store.game) card mode
+    in let old = store.turn
+    in let turn = SupervisedTurn { combat-cantrip-stage = old.combat-cantrip-stage, manual-override = old.manual-override, game = game, combat = old.combat, stage = old.stage, paused = old.paused, commitment = old.commitment, held-cards = old.held-cards, combat-choice = old.combat-choice, used-abilities = old.used-abilities }
+    in handle-game-state (store-turn store turn True)
+
+  hand-orders-json : MagicStore, Integer -> Text
+  hand-orders-json (store) (player) =
+    if store.game-active == False then ""
+    else text-concat-list (hand-order-chunks (store.game) ((get-player (store.game) player).hand) 0 [])
+
+  hand-order-chunks : GameState, List Integer, Integer, List Text -> List Text
+  hand-order-chunks (gs) (hand) (i) (acc) =
+    if i >= list-length hand then acc
+    else let card = list-at hand i
+    in if game-card-valid gs card == False then hand-order-chunks gs hand (i + 1) acc
+    else let template = get-card-template gs card
+    in let row = "{\"id\":" & show card & ",\"template-id\":" & show (card-template-id gs card) & ",\"name\":" & jstr (template.name) & ",\"cost\":" & jstr (format-light-cost (template.light-cost)) & ",\"play-order\":" & show (card-play-order gs card) & "}"
+    in hand-order-chunks gs hand (i + 1) (list-push acc ((if list-length acc == 0 then "" else ",") & row))
+
+  manual-hand-json : MagicStore, Integer, Text -> Text
+  manual-hand-json (store) (i) (acc) =
+    let turn = store.turn
+    in let player = manual-card-player turn
+    in let orders = list-at (store.orders) player
+    in let hand = (get-player (turn.game) player).hand
+    in if store.game-active == False | manual-card-pause turn orders == False | i >= list-length hand then acc
+    else let card = list-at hand i
+    in if game-card-valid (turn.game) card == False then manual-hand-json store (i + 1) acc
+    else let t = get-card-template (turn.game) card
+    in if combat-card-stage (turn.stage) & t.card-type /= Cantrip then manual-hand-json store (i + 1) acc
+    else let rays = if t.card-type == Gemstone then 0 else light-payment-rays (turn.game) player (t.light-cost) (prismatic-available-rays ((get-player (turn.game) player).prismatic))
+    in manual-hand-json store (i + 1) (acc & (if text-length acc == 0 then "" else ",") & "{\"id\":" & show card & ",\"template-id\":" & show (card-template-id (turn.game) card) & ",\"name\":" & jstr (t.name) & ",\"cost\":" & jstr (format-light-cost (t.light-cost)) & ",\"rays\":" & show rays & ",\"gem\":" & jbool (t.card-type == Gemstone) & ",\"play-order\":" & show (card-play-order (turn.game) card) & ",\"ready\":" & jbool (supervised-card-ready turn orders card) & "}")
+
+  handle-game-play : MagicStore, Text -> MagicStep
+  handle-game-play (store) (line) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else if combat-card-stage ((store.turn).stage) & game-query-id (extract-query-param line "player") /= manual-card-player (store.turn) then magic-respond-error store "wrong player for this combat freeze"
+    else let card = game-query-id (extract-query-param line "card")
+    in let player = manual-card-player (store.turn)
+    in let prior = list-at (store.orders) player
+    in let raw-target = extract-query-param line "target"
+    in let target = game-target-id raw-target
+    in if store.game-active == False | supervised-card-ready (store.turn) prior card == False then magic-respond-error store "card cannot be played at this pause"
+    else if raw-target /= "" & (target == (0 - 3) | spell-target-legal (store.game) (get-card-template (store.game) card) player (((get-player (store.game) player).prismatic).fluorescence-active) target == False) then magic-respond-error store "invalid spell target"
+    else let orders = if raw-target == "" then prior else target-choice-posture prior target
+    in let chains = if orders.manual-payment then parse-payment-chains (extract-query-param line "chains") else []
+    in let t = get-card-template (store.game) card
+    in let valid = if orders.manual-payment == False then True else if t.card-type == Gemstone then list-length chains == 0 else manual-payment-possible (store.game) player (t.light-cost) chains
+    in if valid == False then magic-respond-error store "invalid gemstone payment"
+    else let played = if orders.manual-payment then supervised-play-manual (store.turn) orders card chains else supervised-play-card (store.turn) orders card
+    in let turn = settle-supervised-disruption played (list-at (store.orders) 0) (list-at (store.orders) 1)
+    in let next = store-turn store turn ((turn.game).game-over == False)
+    in handle-game-state (if (turn.game).game-over then finalize-match next (turn.game) else next)
+
+  game-target-id : Text -> Integer
+  game-target-id (raw) = if raw == "-1" then 0 - 1 else if raw == "-2" then 0 - 2 else let id = game-query-id raw in if id < 0 then 0 - 3 else id
+
+  handle-game-targets : MagicStore, Text -> MagicStep
+  handle-game-targets (store) (line) =
+    let card = game-query-id (extract-query-param line "card")
+    in let gs = store.game
+    in let player = manual-card-player (store.turn)
+    in let orders = list-at (store.orders) player
+    in if combat-card-stage ((store.turn).stage) & game-query-id (extract-query-param line "player") /= player then magic-respond-error store "wrong player for this combat freeze"
+    else if store.pause-active then magic-respond-error store "game is paused"
+    else if store.game-active == False | supervised-card-ready (store.turn) orders card == False then magic-respond-error store "card cannot be played at this pause"
+    else let cs = spell-target-candidates-active gs (get-card-template gs card) player (((get-player gs player).prismatic).fluorescence-active)
+    in let recommended = ordered-target cs (orders.primary-targets) 0
+    in magic-respond-json store ("{\"card\":" & show card & ",\"recommended\":" & show recommended & ",\"targets\":[" & target-choices-json gs cs & "]}")
+
+  target-choices-json : GameState, List TargetCandidate -> Text
+  target-choices-json (gs) (cs) = text-concat-list (target-choice-chunks gs cs 0 [])
+
+  target-choice-chunks : GameState, List TargetCandidate, Integer, List Text -> List Text
+  target-choice-chunks (gs) (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else let id = (list-at cs i).target
+    in let label = if id < 0 then "General: " & (get-general gs (0 - 1 - id)).name else target-order-label gs (PriorityPermanent id) & " #" & show id
+    in let row = (if i == 0 then "" else ",") & "{\"id\":" & show id & ",\"label\":" & jstr label & "}"
+    in target-choice-chunks gs cs (i + 1) (list-push acc row)
+
+  parse-payment-chains : Text -> List (List Integer)
+  parse-payment-chains (raw) = if raw == "" then [] else parse-payment-rows (text-split raw ";") 0 []
+
+  handle-game-fluorescence : MagicStore, Text -> MagicStep
+  handle-game-fluorescence (store) (line) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let stone = game-query-id (extract-query-param line "stone")
+    in if store.game-active == False | stone < 0 | supervised-fluorescence-ready (store.turn) stone == False then magic-respond-error store "cannot activate Fluorescence"
+    else handle-game-state (store-turn store (supervised-fluorescence (store.turn) stone) True)
+
+  handle-game-queue-targets : MagicStore, Text -> MagicStep
+  handle-game-queue-targets (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let source = game-query-id (extract-query-param line "permanent")
+    in let index = game-query-id (extract-query-param line "index")
+    in let gs = store.game
+    in if store.game-active == False | gs.game-over | queued-definition-valid gs player source index == False then magic-respond-error store "ability cannot be queued"
+    else let eff = activation-effect gs source index
+    in let cs = effect-target-candidates gs player eff
+    in if effect-needs-target eff & list-length cs == 0 then magic-respond-error store "no legal target for queued ability"
+    else let target = ordered-target cs ((list-at (store.orders) player).primary-targets) 0
+    in magic-respond-json store ("{\"player\":" & show player & ",\"permanent\":" & show source & ",\"index\":" & show index & ",\"recommended\":" & show target & ",\"targets\":[" & target-choices-json gs cs & "]}")
+
+  handle-game-queue-card-targets : MagicStore, Text -> MagicStep
+  handle-game-queue-card-targets (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let card = game-query-id (extract-query-param line "card")
+    in let gs = store.game
+    in if store.game-active == False | gs.game-over | queued-card-valid gs player card == False then magic-respond-error store "card cannot be queued"
+    else let cs = spell-target-candidates-active gs (get-card-template gs card) player (((get-player gs player).prismatic).fluorescence-active)
+    in let target = if list-length cs == 0 then 0 - 3 else ordered-target cs ((list-at (store.orders) player).primary-targets) 0
+    in if queued-card-target-valid gs player card target == False then magic-respond-error store "no legal target for queued card"
+    else magic-respond-json store ("{\"player\":" & show player & ",\"card\":" & show card & ",\"recommended\":" & show target & ",\"targets\":[" & target-choices-json gs cs & "]}")
+
+  handle-game-queue-card : MagicStore, Text -> MagicStep
+  handle-game-queue-card (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let choice = extract-query-param line "choice"
+    in if player < 0 | player > 1 | (choice /= "queue" & choice /= "cancel") then magic-respond-error store "invalid queued card order"
+    else if choice == "cancel" then handle-game-state (store-queued-game store (game-set-queued-card (store.game) player queued-card-none))
+    else let card = game-query-id (extract-query-param line "card")
+    in let gs = store.game
+    in if store.game-active == False | gs.game-over | queued-card-valid gs player card == False then magic-respond-error store "card cannot be queued"
+    else let raw = extract-query-param line "target"
+    in let cs = if raw == "" then spell-target-candidates-active gs (get-card-template gs card) player (((get-player gs player).prismatic).fluorescence-active) else []
+    in let target = if raw /= "" then game-target-id raw else if list-length cs > 0 then ordered-target cs ((list-at (store.orders) player).primary-targets) 0 else 0 - 3
+    in if queued-card-target-valid gs player card target == False then magic-respond-error store "invalid queued card target"
+    else let label = (get-card-template gs card).name & " #" & show card & (if target == (0 - 3) then "" else " targeting " & queue-target-label gs target)
+    in handle-game-state (store-queued-game store (queue-card-order gs player card target ((store.turn).stage) label))
+
+  queued-card-json : MagicStore, Integer -> Text
+  queued-card-json (store) (player) =
+    let q = list-at ((store.game).queued-cards) player
+    in if q.card < 0 then "{\"player\":" & show player & ",\"pending\":false}"
+    else "{\"player\":" & show player & ",\"pending\":true,\"card\":" & show (q.card) & ",\"target\":" & show (q.target) & ",\"label\":" & jstr (q.label) & ",\"reason\":" & jstr (queued-card-display-reason (store.game) player q (list-at (store.orders) player)) & "}"
+
+  queue-card-options-json : MagicStore -> Text
+  queue-card-options-json (store) =
+    if store.game-active == False | (store.game).game-over then ""
+    else let player = (store.game).active-player
+    in text-concat-list (queue-card-option-chunks (store.game) player ((get-player (store.game) player).hand) 0 [])
+
+  queue-card-option-chunks : GameState, Integer, List Integer, Integer, List Text -> List Text
+  queue-card-option-chunks (gs) (player) (hand) (i) (chunks) =
+    if i >= list-length hand then chunks
+    else let card = list-at hand i
+    in if game-card-valid gs card == False | (get-card-template gs card).card-type == General | (get-card-template gs card).card-type == Disruption then queue-card-option-chunks gs player hand (i + 1) chunks
+    else let label = (get-card-template gs card).name & " #" & show card & " | " & format-light-cost ((get-card-template gs card).light-cost)
+    in let row = (if list-length chunks == 0 then "" else ",") & "{\"player\":" & show player & ",\"card\":" & show card & ",\"label\":" & jstr label & "}"
+    in queue-card-option-chunks gs player hand (i + 1) (list-push chunks row)
+
+  queue-target-label : GameState, Integer -> Text
+  queue-target-label (gs) (target) = if target < 0 then "General: " & (get-general gs (0 - 1 - target)).name else target-order-label gs (PriorityPermanent target) & " #" & show target
+
+  queue-ability-label : GameState, Integer, Integer -> Text
+  queue-ability-label (gs) (source) (index) =
+    let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in when list-at (t.abilities) index is ActivatedAbility (cost) (eff) -> t.name & " #" & show source & ": " & loyalty-effect-label eff & " | " & activation-cost-label cost is otherwise -> "Unavailable ability"
+
+  store-queued-game : MagicStore, GameState -> MagicStore
+  store-queued-game (store) (gs) =
+    let old = store.turn
+    in store-turn store (ability-turn old gs (old.paused) (old.commitment) (old.used-abilities)) (store.game-active)
+
+  handle-game-queue-ability : MagicStore, Text -> MagicStep
+  handle-game-queue-ability (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let choice = extract-query-param line "choice"
+    in if player < 0 | player > 1 | (choice /= "queue" & choice /= "cancel") then magic-respond-error store "invalid queued order"
+    else if choice == "cancel" then handle-game-state (store-queued-game store (game-set-queued-ability (store.game) player queued-ability-none))
+    else let source = game-query-id (extract-query-param line "permanent")
+    in let index = game-query-id (extract-query-param line "index")
+    in let gs = store.game
+    in if store.game-active == False | gs.game-over | queued-definition-valid gs player source index == False then magic-respond-error store "ability cannot be queued"
+    else let eff = activation-effect gs source index
+    in let raw = extract-query-param line "target"
+    in let picked = if raw == "" then loyalty-effect-targets gs player eff ((list-at (store.orders) player).primary-targets) else []
+    in let target = if raw /= "" then game-target-id raw else if list-length picked > 0 then list-at picked 0 else 0 - 3
+    in if queued-target-valid gs player source index target == False then magic-respond-error store "invalid queued target"
+    else let label = queue-ability-label gs source index & (if target == (0 - 3) then "" else " targeting " & queue-target-label gs target)
+    in let next = queue-ability-order gs player source index target ((store.turn).stage) label
+    in handle-game-state (store-queued-game store next)
+
+  queue-loyalty-label : GameState, Integer, Integer -> Text
+  queue-loyalty-label (gs) (player) (index) =
+    when list-at ((get-general gs player).abilities) index
+      is LoyaltyCostAbility (cost) (eff) -> (get-general gs player).name & ": " & loyalty-effect-label eff & " | loyalty " & show cost
+      is otherwise -> "Unavailable General ability"
+
+  handle-game-queue-loyalty-targets : MagicStore, Text -> MagicStep
+  handle-game-queue-loyalty-targets (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let index = game-query-id (extract-query-param line "index")
+    in let gs = store.game
+    in if store.game-active == False | queued-loyalty-definition-valid gs player index == False then magic-respond-error store "General ability cannot be queued"
+    else let eff = queued-loyalty-effect gs player index
+    in let cs = effect-target-candidates gs player eff
+    in if effect-needs-target eff & list-length cs == 0 then magic-respond-error store "no legal target for queued General ability"
+    else let target = if list-length cs == 0 then 0 - 3 else ordered-target cs ((list-at (store.orders) player).primary-targets) 0
+    in magic-respond-json store ("{\"player\":" & show player & ",\"index\":" & show index & ",\"recommended\":" & show target & ",\"targets\":[" & target-choices-json gs cs & "]}")
+
+  handle-game-queue-loyalty : MagicStore, Text -> MagicStep
+  handle-game-queue-loyalty (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let choice = extract-query-param line "choice"
+    in if player < 0 | player > 1 | (choice /= "queue" & choice /= "cancel") then magic-respond-error store "invalid queued General order"
+    else if choice == "cancel" then handle-game-state (store-queued-game store (game-set-queued-loyalty (store.game) player queued-ability-none))
+    else let index = game-query-id (extract-query-param line "index")
+    in let gs = store.game
+    in if store.game-active == False | queued-loyalty-definition-valid gs player index == False then magic-respond-error store "General ability cannot be queued"
+    else let raw = extract-query-param line "target"
+    in let picked = if raw == "" then loyalty-effect-targets gs player (queued-loyalty-effect gs player index) ((list-at (store.orders) player).primary-targets) else []
+    in let target = if raw /= "" then game-target-id raw else if list-length picked > 0 then list-at picked 0 else 0 - 3
+    in if queued-loyalty-target-valid gs player index target == False then magic-respond-error store "invalid queued General target"
+    else let label = queue-loyalty-label gs player index & (if target == (0 - 3) then "" else " targeting " & queue-target-label gs target)
+    in handle-game-state (store-queued-game store (queue-loyalty-order gs player index target ((store.turn).stage) label))
+
+  queued-loyalty-json : GameState, Integer -> Text
+  queued-loyalty-json (gs) (player) =
+    let q = list-at (gs.queued-loyalty) player
+    in if q.source < 0 then "{\"player\":" & show player & ",\"pending\":false}"
+    else "{\"player\":" & show player & ",\"pending\":true,\"index\":" & show (q.ability) & ",\"target\":" & show (q.target) & ",\"label\":" & jstr (q.label) & ",\"reason\":" & jstr (queued-loyalty-display-reason gs player q) & "}"
+
+  queue-loyalty-options-json : MagicStore -> Text
+  queue-loyalty-options-json (store) = if store.game-active == False | (store.game).game-over then "" else text-concat-list (queue-loyalty-option-chunks (store.game) 0 0 [])
+
+  queue-loyalty-option-chunks : GameState, Integer, Integer, List Text -> List Text
+  queue-loyalty-option-chunks (gs) (player) (index) (chunks) =
+    if player >= 2 then chunks
+    else if index >= list-length ((get-general gs player).abilities) then queue-loyalty-option-chunks gs (player + 1) 0 chunks
+    else if queued-loyalty-definition-valid gs player index == False then queue-loyalty-option-chunks gs player (index + 1) chunks
+    else let row = (if list-length chunks == 0 then "" else ",") & "{\"player\":" & show player & ",\"index\":" & show index & ",\"label\":" & jstr (queue-loyalty-label gs player index) & "}"
+    in queue-loyalty-option-chunks gs player (index + 1) (list-push chunks row)
+
+  queued-orders-json : GameState -> Text
+  queued-orders-json (gs) = queued-order-json gs 0 & "," & queued-order-json gs 1
+
+  queued-order-json : GameState, Integer -> Text
+  queued-order-json (gs) (player) =
+    let q = list-at (gs.queued-abilities) player
+    in if q.source < 0 then "{\"player\":" & show player & ",\"pending\":false}"
+    else "{\"player\":" & show player & ",\"pending\":true,\"permanent\":" & show (q.source) & ",\"index\":" & show (q.ability) & ",\"target\":" & show (q.target) & ",\"label\":" & jstr (q.label) & ",\"reason\":" & jstr (queued-display-reason gs player q) & "}"
+
+  queue-options-json : MagicStore -> Text
+  queue-options-json (store) = if store.game-active == False | (store.game).game-over then "" else text-concat-list (queue-option-chunks (store.game) 0 0 [])
+
+  queue-option-chunks : GameState, Integer, Integer, List Text -> List Text
+  queue-option-chunks (gs) (i) (j) (chunks) =
+    if i >= list-length (gs.battlefield) then chunks
+    else let p = list-at (gs.battlefield) i
+    in let t = get-template gs (p.template-id)
+    in if j >= list-length (t.abilities) | t.card-type == General | p.controller < 0 | p.controller > 1 then queue-option-chunks gs (i + 1) 0 chunks
+    else when list-at (t.abilities) j
+      is ActivatedAbility (cost) (eff) ->
+        (if cost.rays < 0 | cost.pay-life < 0 | loyalty-effect-supported eff == False then queue-option-chunks gs i (j + 1) chunks
+         else let label = t.name & " #" & show (p.id) & ": " & loyalty-effect-label eff & " | " & activation-cost-label cost
+         in let row = (if list-length chunks == 0 then "" else ",") & "{\"player\":" & show (p.controller) & ",\"permanent\":" & show (p.id) & ",\"index\":" & show j & ",\"label\":" & jstr label & "}"
+         in queue-option-chunks gs i (j + 1) (list-push chunks row))
+      is otherwise -> queue-option-chunks gs i (j + 1) chunks
+
+  handle-game-activate : MagicStore, Text -> MagicStep
+  handle-game-activate (store) (line) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let source = game-query-id (extract-query-param line "permanent")
+    in let index = game-query-id (extract-query-param line "index")
+    in let player = (store.game).active-player
+    in let prior = list-at (store.orders) player
+    in if store.game-active == False | supervised-permanent-ready (store.turn) prior source index == False then magic-respond-error store "permanent ability unavailable"
+    else let raw = extract-query-param line "target"
+    in let target = game-target-id raw
+    in let eff = activation-effect (store.game) source index
+    in if raw /= "" & (target == (0 - 3) | effect-target-legal (store.game) player eff target == False) then magic-respond-error store "invalid ability target"
+    else let orders = if raw == "" then prior else target-choice-posture prior target
+    in let announced = supervised-activate-permanent (store.turn) orders source index
+    in let turn = settle-supervised-disruption announced (list-at (store.orders) 0) (list-at (store.orders) 1)
+    in let next = store-turn store turn ((turn.game).game-over == False)
+    in handle-game-state (if (turn.game).game-over then finalize-match next (turn.game) else next)
+
+  handle-game-ability-targets : MagicStore, Text -> MagicStep
+  handle-game-ability-targets (store) (line) =
+    let source = game-query-id (extract-query-param line "permanent")
+    in let index = game-query-id (extract-query-param line "index")
+    in let player = (store.game).active-player
+    in let orders = list-at (store.orders) player
+    in if store.game-active == False | supervised-permanent-ready (store.turn) orders source index == False then magic-respond-error store "permanent ability unavailable"
+    else let cs = effect-target-candidates (store.game) player (activation-effect (store.game) source index)
+    in magic-respond-json store ("{\"permanent\":" & show source & ",\"index\":" & show index & ",\"recommended\":" & show (ordered-target cs (orders.primary-targets) 0) & ",\"targets\":[" & target-choices-json (store.game) cs & "]}")
+
+  permanent-abilities-json : MagicStore -> Text
+  permanent-abilities-json (store) =
+    if store.game-active == False | (store.turn).paused == False | manual-main-stage ((store.turn).stage) == False | commitment-pending ((store.turn).commitment) then ""
+    else text-concat-list (permanent-ability-chunks store 0 0 [])
+
+  permanent-ability-chunks : MagicStore, Integer, Integer, List Text -> List Text
+  permanent-ability-chunks (store) (i) (j) (acc) =
+    let gs = store.game
+    in if i >= list-length (gs.battlefield) then acc
+    else let p = list-at (gs.battlefield) i
+    in let t = get-template gs (p.template-id)
+    in if p.controller /= gs.active-player | t.card-type == General | j >= list-length (t.abilities) then permanent-ability-chunks store (i + 1) 0 acc
+    else when list-at (t.abilities) j
+      is ActivatedAbility (cost) (eff) ->
+        (let ready = supervised-permanent-ready (store.turn) (list-at (store.orders) (gs.active-player)) (p.id) j
+         in let row = (if list-length acc == 0 then "" else ",") & "{\"permanent\":" & show (p.id) & ",\"index\":" & show j & ",\"label\":" & jstr (t.name & " #" & show (p.id) & ": " & loyalty-effect-label eff) & ",\"cost\":" & jstr (activation-cost-label cost) & ",\"ready\":" & jbool ready & "}"
+         in permanent-ability-chunks store i (j + 1) (list-push acc row))
+      is otherwise -> permanent-ability-chunks store i (j + 1) acc
+
+  handle-game-loyalty : MagicStore, Text -> MagicStep
+  handle-game-loyalty (store) (line) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let index = game-query-id (extract-query-param line "index")
+    in let orders = list-at (store.orders) ((store.game).active-player)
+    in if store.game-active == False | supervised-loyalty-ready (store.turn) orders index == False then magic-respond-error store "General ability unavailable"
+    else let announced = supervised-use-loyalty (store.turn) orders index
+    in let turn = settle-supervised-disruption announced (list-at (store.orders) 0) (list-at (store.orders) 1)
+    in let next = store-turn store turn ((turn.game).game-over == False)
+    in handle-game-state (if (turn.game).game-over then finalize-match next (turn.game) else next)
+
+  loyalty-abilities-json : MagicStore, Integer, Text -> Text
+  loyalty-abilities-json (store) (i) (acc) =
+    let gs = store.game
+    in let abs = (get-general gs (gs.active-player)).abilities
+    in if i >= list-length abs then acc
+    else let entry = when list-at abs i
+      is LoyaltyCostAbility (cost) (eff) -> "{\"index\":" & show i & ",\"label\":" & jstr (loyalty-effect-label eff) & ",\"cost\":" & show cost & ",\"ready\":" & jbool (store.game-active & supervised-loyalty-ready (store.turn) (list-at (store.orders) (gs.active-player)) i) & "}"
+      is otherwise -> ""
+    in loyalty-abilities-json store (i + 1) (if entry == "" then acc else acc & (if acc == "" then "" else ",") & entry)
+
+  parse-payment-rows : List Text, Integer, List (List Integer) -> List (List Integer)
+  parse-payment-rows (rows) (i) (acc) =
+    if i >= list-length rows then acc
+    else let raw = list-at rows i
+    in let chain = if raw == "w" then [] else for token in text-split raw "," -> game-query-id token
+    in parse-payment-rows rows (i + 1) (list-push acc chain)
+
+  attacking-json : CombatState, Integer, Text -> Text
+  attacking-json (cs) (i) (acc) =
+    if i >= cs.num-attackers then acc
+    else attacking-json cs (i + 1) (acc & (if i == 0 then "" else ",") & "{\"id\":" & show ((list-at (cs.attackers) i).permanent-id) & "}")
+
+  game-query-id : Text -> Integer
+  game-query-id (s) =
+    if text-length s == 0 | text-length s > 9 then 0 - 1
+    else let n = parse-int s (0 - 1)
+    in if s == show n then n else 0 - 1
+
+  store-turn : MagicStore, SupervisedTurn, Boolean -> MagicStore
+  store-turn (store) (given) (active) =
+    let turn = ability-turn given (refresh-queued-loyalty (refresh-queued-cards (given.game) 0) 0) (given.paused) (given.commitment) (given.used-abilities)
+    in store-clean-turn store turn active
+
+  store-clean-turn : MagicStore, SupervisedTurn, Boolean -> MagicStore
+  store-clean-turn (store) (turn) (active) =
+    let next = update-store-game store (turn.game) active
+    in if disruption-pending (turn.game) then store-disruption-turn next turn
+    else if commitment-pending (turn.commitment) == False | (turn.commitment).nonce > 0 then store-combat-turn next turn
+    else let now = game-clock-ms
+    in let pending = turn.commitment
+    in let stamped = Commitment { card = pending.card, rays = pending.rays, nonce = store.next-nonce, deadline = (if now < 0 then 0 else now + 15000), choices = pending.choices, recommended = pending.recommended, all-rays = pending.all-rays, source = pending.source, ability = pending.ability }
+    in let saved = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = turn.game, combat = turn.combat, stage = turn.stage, paused = turn.paused, commitment = stamped, held-cards = turn.held-cards, combat-choice = turn.combat-choice, used-abilities = turn.used-abilities }
+    in __record-set (__record-set next "turn" saved) "next-nonce" (store.next-nonce + 1)
+
+  store-disruption-turn : MagicStore, SupervisedTurn -> MagicStore
+  store-disruption-turn (store) (turn) =
+    let state = (turn.game).disruption
+    in let window = state.window
+    in if window.nonce > 0 then __record-set store "turn" turn
+    else let now = game-clock-ms
+    in let stamped = SpellWindow { activation = window.activation, card = window.card, caster = window.caster, targets = window.targets, hardness = window.hardness, manual = window.manual, nonce = store.next-nonce, deadline = (if now < 0 then 0 else now + 15000), choices = window.choices }
+    in let gs = game-with-disruption (turn.game) (DisruptionState { seed = state.seed, index = state.index, window = stamped, result = state.result })
+    in let next = update-store-game store gs (store.game-active)
+    in __record-set (__record-set next "turn" (ability-turn turn gs True (turn.commitment) (turn.used-abilities))) "next-nonce" (store.next-nonce + 1)
+
+  handle-game-disruption-at : MagicStore, Integer, Integer, Integer -> MagicStep
+  handle-game-disruption-at (store) (nonce) (card) (now) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let window = ((store.game).disruption).window
+    in if store.game-active == False | (store.game).game-over | response-window-pending window == False | nonce /= window.nonce then magic-respond-error store "disruption decision is no longer pending"
+    else let expired = now < 0 | window.deadline <= 0 | now >= window.deadline
+    in if expired == False & card >= 0 & (window.activation).source >= 0 then magic-respond-error store (if (window.activation).loyalty then "Disruption cannot respond to a General loyalty ability; choose Cantrip, ordinary ability or Pass" else "Disruption cannot respond to an activated ability; choose Cantrip, ordinary ability or Pass")
+    else let next = supervised-disruption-choice (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1) (if expired then 0 - 1 else card)
+    in if (((next.game).disruption).window).nonce == nonce then magic-respond-error store "disruption is no longer payable; choose Pass"
+    else finish-game-progress store next
+
+  handle-game-disruption : MagicStore, Text -> MagicStep
+  handle-game-disruption (store) (line) =
+    let nonce = game-query-id (extract-query-param line "nonce")
+    in let choice = extract-query-param line "choice"
+    in let card = if choice == "disrupt" | choice == "cantrip" then game-query-id (extract-query-param line "card") else 0 - 1
+    in let window = ((store.game).disruption).window
+    in let now = game-clock-ms
+    in if nonce < 0 | (choice /= "disrupt" & choice /= "cantrip" & choice /= "pass" & choice /= "timeout") | ((choice == "disrupt" | choice == "cantrip") & card < 0) then magic-respond-error store "invalid disruption choice"
+    else if choice == "cantrip" then
+      (let raw = extract-query-param line "target"
+       in let target = if raw == "" then response-recommended store card else game-target-id raw
+       in if raw /= "" & target == (0 - 3) then magic-respond-error store "invalid response target"
+       else handle-game-cantrip-at store nonce card target now)
+    else if choice == "timeout" & nonce == window.nonce & now >= 0 & now < window.deadline then handle-game-state store
+    else handle-game-disruption-at store nonce card now
+
+  response-recommended : MagicStore, Integer -> Integer
+  response-recommended (store) (card) =
+    if game-card-valid (store.game) card == False then 0 - 3
+    else let gs = store.game
+    in let player = if ((gs.disruption).window).caster == 0 then 1 else 0
+    in let cs = spell-target-candidates-active gs (get-card-template gs card) player (((get-player gs player).prismatic).fluorescence-active)
+    in if list-length cs == 0 then 0 - 3 else ordered-target cs ((list-at (store.orders) player).primary-targets) 0
+
+  response-ability-target : MagicStore, Integer, Integer -> Integer
+  response-ability-target (store) (source) (index) =
+    let gs = store.game
+    in if response-ability-ready gs source index == False then 0 - 3
+    else let player = if ((gs.disruption).window).caster == 0 then 1 else 0
+    in let cs = effect-target-candidates gs player (activation-effect gs source index)
+    in if list-length cs == 0 then 0 - 3 else ordered-target cs ((list-at (store.orders) player).primary-targets) 0
+
+  handle-game-response-ability-targets : MagicStore, Text -> MagicStep
+  handle-game-response-ability-targets (store) (line) =
+    let source = game-query-id (extract-query-param line "permanent")
+    in let index = game-query-id (extract-query-param line "index")
+    in let nonce = game-query-id (extract-query-param line "nonce")
+    in let gs = store.game
+    in let window = (gs.disruption).window
+    in if store.pause-active then magic-respond-error store "game is paused"
+    else if store.game-active == False | response-window-pending window == False | nonce /= window.nonce | list-contains (window.choices) (\o -> o.source == source & o.ability == index & source >= 0) == False | response-ability-ready gs source index == False then magic-respond-error store "ability response is no longer available"
+    else let player = if window.caster == 0 then 1 else 0
+    in let cs = effect-target-candidates gs player (activation-effect gs source index)
+    in magic-respond-json store ("{\"permanent\":" & show source & ",\"index\":" & show index & ",\"recommended\":" & show (response-ability-target store source index) & ",\"targets\":[" & target-choices-json gs cs & "]}")
+
+  handle-game-response-ability-at : MagicStore, Integer, Integer, Integer, Integer, Integer -> MagicStep
+  handle-game-response-ability-at (store) (nonce) (source) (index) (target) (now) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let window = ((store.game).disruption).window
+    in if store.game-active == False | (store.game).game-over | response-window-pending window == False | nonce /= window.nonce then magic-respond-error store "response is no longer pending"
+    else if now < 0 | window.deadline <= 0 | now >= window.deadline then handle-game-disruption-at store nonce (0 - 1) now
+    else let next = supervised-ability-response (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1) source index target
+    in if (((next.game).disruption).window).nonce == nonce then magic-respond-error store "ability response is no longer payable; choose Pass"
+    else finish-game-progress store next
+
+  handle-game-response-ability : MagicStore, Text -> MagicStep
+  handle-game-response-ability (store) (line) =
+    let source = game-query-id (extract-query-param line "permanent")
+    in let index = game-query-id (extract-query-param line "index")
+    in let nonce = game-query-id (extract-query-param line "nonce")
+    in let raw = extract-query-param line "target"
+    in let target = if raw == "" then response-ability-target store source index else game-target-id raw
+    in if source < 0 | index < 0 | nonce < 0 | (raw /= "" & target == (0 - 3)) then magic-respond-error store "invalid ability response"
+    else handle-game-response-ability-at store nonce source index target game-clock-ms
+
+  handle-game-response-targets : MagicStore, Text -> MagicStep
+  handle-game-response-targets (store) (line) =
+    let card = game-query-id (extract-query-param line "card")
+    in let nonce = game-query-id (extract-query-param line "nonce")
+    in let gs = store.game
+    in let window = (gs.disruption).window
+    in if store.pause-active then magic-respond-error store "game is paused"
+    else if store.game-active == False | gs.game-over | response-window-pending window == False | nonce /= window.nonce | game-card-valid gs card == False | list-contains (window.choices) (\o -> o.card == card) == False then magic-respond-error store "response is no longer pending"
+    else if (get-card-template gs card).card-type /= Cantrip then magic-respond-error store "response is not a Cantrip"
+    else if response-target-available gs card == False then magic-respond-error store "no legal Cantrip target"
+    else let player = if window.caster == 0 then 1 else 0
+    in let cs = spell-target-candidates-active gs (get-card-template gs card) player (((get-player gs player).prismatic).fluorescence-active)
+    in let target = if list-length cs == 0 then 0 - 3 else ordered-target cs ((list-at (store.orders) player).primary-targets) 0
+    in magic-respond-json store ("{\"card\":" & show card & ",\"recommended\":" & show target & ",\"targets\":[" & target-choices-json gs cs & "]}")
+
+  handle-game-cantrip-at : MagicStore, Integer, Integer, Integer, Integer -> MagicStep
+  handle-game-cantrip-at (store) (nonce) (card) (target) (now) =
+    let window = ((store.game).disruption).window
+    in if store.pause-active then magic-respond-error store "game is paused"
+    else if store.game-active == False | (store.game).game-over | response-window-pending window == False | nonce /= window.nonce then magic-respond-error store "response is no longer pending"
+    else if now < 0 | window.deadline <= 0 | now >= window.deadline then handle-game-disruption-at store nonce (0 - 1) now
+    else let next = supervised-cantrip-response (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1) card target
+    in if (((next.game).disruption).window).nonce == nonce then magic-respond-error store "Cantrip is no longer payable; choose Pass"
+    else finish-game-progress store next
+
+  handle-game-disruption-policy : MagicStore, Text -> MagicStep
+  handle-game-disruption-policy (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if player < 0 | player > 1 | enabled < 0 | enabled > 1 then magic-respond-error store "invalid disruption policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = enabled == 1 })
+    in handle-game-state (__record-set (update-store-game store (store.game) (store.game-active)) "orders" changed)
+
+  disruption-json : MagicStore -> Text
+  disruption-json (store) =
+    let window = ((store.game).disruption).window
+    in if response-window-pending window == False then "null"
+    else let remaining = choice-remaining store (window.deadline) game-clock-ms
+    in "{\"nonce\":" & show (window.nonce) & ",\"card\":" & show (window.card) & ",\"pending-kind\":" & jstr (if (window.activation).source >= 0 then (if (window.activation).loyalty then "loyalty" else "ability") else "spell") & ",\"source\":" & show ((window.activation).source) & ",\"index\":" & show ((window.activation).index) & ",\"name\":" & jstr (if (window.activation).source >= 0 then (window.activation).label else (get-card-template (store.game) (window.card)).name) & ",\"player\":" & show (if window.caster == 0 then 1 else 0) & ",\"remaining-ms\":" & show (if remaining > 0 then remaining else 0) & ",\"choices\":[" & text-concat-list (disruption-options-json (store.game) (window.choices) 0 []) & "]}"
+
+  disruption-options-json : GameState, List DisruptionOption, Integer, List Text -> List Text
+  disruption-options-json (gs) (options) (i) (chunks) =
+    if i >= list-length options then chunks
+    else let option = list-at options i
+    in let row = (if i == 0 then "" else ",") & "{\"card\":" & show (option.card) & ",\"name\":" & jstr (if option.source >= 0 then (get-template gs ((find-permanent (gs.battlefield) (option.source) 0 (list-length (gs.battlefield))).template-id)).name else (get-card-template gs (option.card)).name) & ",\"kind\":" & jstr (if option.source >= 0 then "ability" else if (get-card-template gs (option.card)).card-type == Cantrip then "cantrip" else "disruption") & ",\"rays\":" & show (option.rays) & ",\"chance\":" & show (option.chance) & ",\"permanent\":" & show (option.source) & ",\"index\":" & show (option.ability) & ",\"cost\":" & jstr (if option.source < 0 then "" else ability-response-cost-label gs (option.source) (option.ability)) & "}"
+    in disruption-options-json gs options (i + 1) (list-push chunks row)
+
+  disruption-result-json : GameState -> Text
+  disruption-result-json (gs) =
+    let result = (gs.disruption).result
+    in if result.card < 0 & (result.activation).source < 0 then "null" else "{\"name\":" & jstr (if (result.activation).source >= 0 then (result.activation).label else (get-card-template gs (result.card)).name) & ",\"pending-kind\":" & jstr (if (result.activation).source >= 0 then (if (result.activation).loyalty then "loyalty" else "ability") else "spell") & ",\"source\":" & show ((result.activation).source) & ",\"index\":" & show ((result.activation).index) & ",\"reply-fizzled\":" & jbool (result.reply-fizzled) & ",\"abandoned\":" & jbool (result.abandoned) & ",\"response-kind\":" & jstr (if result.reply-source >= 0 then "ability" else if result.reply < 0 then "pass" else if (get-card-template gs (result.reply)).card-type == Cantrip then "cantrip" else "disruption") & ",\"reply-source\":" & show (result.reply-source) & ",\"reply-ability\":" & show (result.reply-ability) & ",\"reply\":" & show (result.reply) & ",\"chance\":" & show (result.chance) & ",\"roll\":" & show (result.roll) & ",\"fizzled\":" & jbool (result.fizzled) & ",\"disrupted\":" & jbool (result.disrupted) & "}"
+
+  store-combat-turn : MagicStore, SupervisedTurn -> MagicStore
+  store-combat-turn (store) (turn) =
+    let choice = turn.combat-choice
+    in if choice.pending == False | choice.nonce > 0 then __record-set store "turn" turn
+    else let now = game-clock-ms
+    in let stamped = CombatChoice { pending = True, nonce = store.next-nonce, deadline = (if now < 0 then 0 else now + 15000) }
+    in let saved = SupervisedTurn { combat-cantrip-stage = turn.combat-cantrip-stage, manual-override = turn.manual-override, game = turn.game, combat = turn.combat, stage = turn.stage, paused = turn.paused, commitment = turn.commitment, held-cards = turn.held-cards, combat-choice = stamped, used-abilities = turn.used-abilities }
+    in __record-set (__record-set store "turn" saved) "next-nonce" (store.next-nonce + 1)
+
+  handle-game-combat-choice-at : MagicStore, Integer, Boolean, Integer -> MagicStep
+  handle-game-combat-choice-at (store) (nonce) (timeout) (now) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let choice = (store.turn).combat-choice
+    in if store.game-active == False | (store.game).game-over | choice.pending == False | nonce /= choice.nonce then magic-respond-error store "combat decision is no longer pending"
+    else if timeout & now >= 0 & choice.deadline > 0 & now < choice.deadline then handle-game-state store
+    else finish-game-progress store (supervised-combat-continue (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1))
+
+  handle-game-combat-choice : MagicStore, Text -> MagicStep
+  handle-game-combat-choice (store) (line) =
+    let nonce = game-query-id (extract-query-param line "nonce")
+    in let choice = extract-query-param line "choice"
+    in if nonce < 0 | (choice /= "continue" & choice /= "timeout") then magic-respond-error store "invalid combat choice"
+    else handle-game-combat-choice-at store nonce (choice == "timeout") game-clock-ms
+
+  handle-game-combat-policy : MagicStore, Text -> MagicStep
+  handle-game-combat-policy (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if player < 0 | player > 1 | enabled < 0 | enabled > 1 then magic-respond-error store "invalid combat policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = enabled == 1, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  combat-choice-json : MagicStore -> Text
+  combat-choice-json (store) =
+    let choice = (store.turn).combat-choice
+    in if choice.pending == False then "null"
+    else let remaining = choice-remaining store (choice.deadline) game-clock-ms
+    in "{\"nonce\":" & show (choice.nonce) & ",\"remaining-ms\":" & show (if remaining > 0 then remaining else 0) & "}"
+
+  game-clock-ms : Integer
+  game-clock-ms =
+    let started = hpet-start
+    in let rate = hpet-ticks-per-second
+    in if rate <= 0 then 0 - 1
+    else let ticks = hpet-ticks
+    in (ticks / rate) * 1000 + int-mod ticks rate * 1000 / rate
+
+  handle-game-commitment-at : MagicStore, Integer, Boolean, Integer -> MagicStep
+  handle-game-commitment-at (store) (nonce) (cast) (now) = handle-game-commitment-target-at store nonce cast (((store.turn).commitment).recommended) now
+
+  handle-game-override-at : MagicStore, Integer, Integer -> MagicStep
+  handle-game-override-at (store) (nonce) (now) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else if disruption-pending (store.game) then magic-respond-error store (if ((((store.game).disruption).window).activation).loyalty then "cannot override a committed General response window" else "cannot override a paid response window")
+    else let pending = (store.turn).commitment
+    in if store.game-active == False | commitment-pending pending == False | nonce < 0 | nonce /= pending.nonce then magic-respond-error store "decision is no longer pending"
+    else if now < 0 | pending.deadline <= 0 | now >= pending.deadline then handle-game-commitment-at store nonce False now
+    else let turn = supervised-override (store.turn)
+    in if commitment-pending (turn.commitment) then magic-respond-error store "action cannot be overridden at this phase"
+    else handle-game-state (store-turn store turn True)
+
+  handle-game-commitment-target-at : MagicStore, Integer, Boolean, Integer, Integer -> MagicStep
+  handle-game-commitment-target-at (store) (nonce) (cast) (target) (now) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let pending = (store.turn).commitment
+    in if store.game-active == False | commitment-pending pending == False | nonce /= pending.nonce then magic-respond-error store "decision is no longer pending"
+    else let expired = now < 0 | pending.deadline <= 0 | now >= pending.deadline
+    in let current = list-at (store.orders) ((store.game).active-player)
+    in let permitted = if expired then pending.source < 0 & now >= 0 & pending.deadline > 0 & pending.all-rays == False & manual-main-orders current == False & card-play-order (store.game) (pending.card) /= card-order-hold & pending-spends-all (store.turn) current == False else cast
+    in let attempted = supervised-commitment-target (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1) permitted (if expired then pending.recommended else target)
+    in let next = if expired & (attempted.commitment).nonce == nonce then supervised-commitment (store.turn) (list-at (store.orders) 0) (list-at (store.orders) 1) False else attempted
+    in if (next.commitment).nonce == nonce then magic-respond-error store "pending action is no longer available; choose Hold"
+    else finish-game-progress store next
+
+  handle-game-commitment : MagicStore, Text -> MagicStep
+  handle-game-commitment (store) (line) =
+    let choice = extract-query-param line "choice"
+    in let nonce = game-query-id (extract-query-param line "nonce")
+    in let pending = (store.turn).commitment
+    in let raw = extract-query-param line "target"
+    in let target = if raw == "" then pending.recommended else game-target-id raw
+    in let now = game-clock-ms
+    in if nonce < 0 | (choice /= "cast" & choice /= "hold" & choice /= "timeout") | (raw /= "" & (target == (0 - 3) | list-length (pending.choices) == 0)) then magic-respond-error store "invalid commitment choice"
+    else if choice == "timeout" & nonce == pending.nonce & now >= 0 & now < pending.deadline then handle-game-state store
+    else handle-game-commitment-target-at store nonce (choice == "cast") target now
+
+  handle-game-target-policy : MagicStore, Text -> MagicStep
+  handle-game-target-policy (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if player < 0 | player > 1 | enabled < 0 | enabled > 1 then magic-respond-error store "invalid target policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = enabled == 1, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  handle-game-commitment-policy : MagicStore, Text -> MagicStep
+  handle-game-commitment-policy (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if player < 0 | player > 1 | enabled < 0 | enabled > 1 then magic-respond-error store "invalid commitment policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = enabled == 1, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  commitment-json : MagicStore -> Text
+  commitment-json (store) =
+    let pending = (store.turn).commitment
+    in if pending.source >= 0 then ability-commitment-json store
+    else if pending.card < 0 | game-card-valid (store.game) (pending.card) == False then "null"
+    else let remaining = choice-remaining store (pending.deadline) game-clock-ms
+    in "{\"nonce\":" & show (pending.nonce) & ",\"card\":" & show (pending.card) & ",\"name\":" & jstr ((get-card-template (store.game) (pending.card)).name) & ",\"rays\":" & show (pending.rays) & ",\"all-rays\":" & jbool (pending.all-rays) & ",\"recommended\":" & show (pending.recommended) & ",\"targets\":[" & target-choices-json (store.game) (pending.choices) & "],\"remaining-ms\":" & show (if remaining > 0 then remaining else 0) & "}"
+
+  ability-commitment-json : MagicStore -> Text
+  ability-commitment-json (store) =
+    let pending = (store.turn).commitment
+    in if list-contains ((store.game).battlefield) (\p -> p.id == pending.source) == False then ability-commitment-labels store "Unavailable permanent" "Choose Hold" ""
+    else let p = find-permanent ((store.game).battlefield) (pending.source) 0 (list-length ((store.game).battlefield))
+    in let t = get-template (store.game) (p.template-id)
+    in if pending.ability < 0 | pending.ability >= list-length (t.abilities) then ability-commitment-labels store (t.name) "Choose Hold" ""
+    else when list-at (t.abilities) (pending.ability)
+      is ActivatedAbility (cost) (eff) -> ability-commitment-labels store (t.name) (loyalty-effect-label eff) (activation-cost-label cost)
+      is otherwise -> ability-commitment-labels store (t.name) "Choose Hold" ""
+
+  ability-commitment-labels : MagicStore, Text, Text, Text -> Text
+  ability-commitment-labels (store) (name) (description) (cost) =
+    let pending = (store.turn).commitment
+    in let remaining = choice-remaining store (pending.deadline) game-clock-ms
+    in "{\"nonce\":" & show (pending.nonce) & ",\"ability\":true,\"source\":" & show (pending.source) & ",\"index\":" & show (pending.ability) & ",\"name\":" & jstr name & ",\"description\":" & jstr description & ",\"cost\":" & jstr cost & ",\"rays\":" & show (pending.rays) & ",\"all-rays\":" & jbool (pending.all-rays) & ",\"recommended\":" & show (pending.recommended) & ",\"targets\":[" & target-choices-json (store.game) (pending.choices) & "],\"remaining-ms\":" & show (if remaining > 0 then remaining else 0) & "}"
+
+  handle-game-sacrifice-policy : MagicStore, Text -> MagicStep
+  handle-game-sacrifice-policy (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if player < 0 | player > 1 | enabled < 0 | enabled > 1 then magic-respond-error store "invalid sacrifice policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = enabled == 1, disruption-pause = p.disruption-pause })
+    in handle-game-state (__record-set (update-store-game store (store.game) (store.game-active)) "orders" changed)
+
+  stance-index : Stance -> Integer
+  stance-index (s) = when s is Balanced -> 0 is Aggressive -> 1 is Defensive -> 2 is Tempo -> 3 is Control -> 4
+
+  stance-at : Integer -> Stance
+  stance-at (n) = if n == 1 then Aggressive else if n == 2 then Defensive else if n == 3 then Tempo else if n == 4 then Control else Balanced
+
+  posture-json : GameState, Posture -> Text
+  posture-json (gs) (p) = "{\"stance\":" & show (stance-index (p.stance)) & ",\"skill\":" & show (p.skill) & ",\"freeze\":" & jbool (posture-freezes p ai-stage-attackers) & ",\"freezes\":[" & freezes-json p 0 "" & "],\"auto-block\":" & jbool (p.block-policy /= ManualBlock) & ",\"block-policy\":" & show (block-policy-index (p.block-policy)) & ",\"block-threshold\":" & show (block-policy-threshold (p.block-policy)) & ",\"spell-policy\":" & show (spell-policy-index (p.spell-policy)) & ",\"ray-reserve\":" & show (spell-policy-reserve (p.spell-policy)) & ",\"preserved-stones\":" & show (p.preserved-stones) & ",\"manual-payment\":" & jbool (p.manual-payment) & ",\"commitment-pause\":" & jbool (p.commitment-pause) & ",\"combat-pause\":" & jbool (p.combat-pause) & ",\"target-pause\":" & jbool (p.target-pause) & ",\"disruption-pause\":" & jbool (p.disruption-pause) & ",\"sacrifice-pause\":" & jbool (p.sacrifice-pause) & ",\"targets\":[" & target-orders-json gs (p.primary-targets) 0 "" & "]}"
+
+  handle-game-mana : MagicStore, Text -> MagicStep
+  handle-game-mana (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let stone = game-query-id (extract-query-param line "stone")
+    in let keep = game-query-id (extract-query-param line "keep")
+    in if player < 0 | player > 1 | stone < 0 | stone > 6 | keep < 0 | keep > 1 then magic-respond-error store "invalid mana order"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let old = stone-preserved (p.preserved-stones) stone
+    in let mask = if old == (keep == 1) then p.preserved-stones else if keep == 1 then p.preserved-stones + stone-mask-bit stone else p.preserved-stones - stone-mask-bit stone
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = mask, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  block-policy-index : BlockPolicy -> Integer
+  block-policy-index (policy) = when policy is AutoBlock -> 0 is ManualBlock -> 1 is NoBlock -> 2 is ProtectLife (limit) -> 3
+
+  block-policy-threshold : BlockPolicy -> Integer
+  block-policy-threshold (policy) = when policy is ProtectLife (limit) -> limit is otherwise -> 10
+
+  handle-game-block-policy : MagicStore, Text -> MagicStep
+  handle-game-block-policy (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let mode = game-query-id (extract-query-param line "policy")
+    in let limit = game-query-id (extract-query-param line "threshold")
+    in if player < 0 | player > 1 | mode < 0 | mode > 3 | limit < 1 | limit > 999 then magic-respond-error store "invalid block policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let chosen = if mode == 1 then ManualBlock else if mode == 2 then NoBlock else if mode == 3 then ProtectLife limit else AutoBlock
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = chosen, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  handle-game-payment-mode : MagicStore, Text -> MagicStep
+  handle-game-payment-mode (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let manual = game-query-id (extract-query-param line "manual")
+    in if player < 0 | player > 1 | manual < 0 | manual > 1 then magic-respond-error store "invalid payment mode"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = manual == 1, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  spell-policy-index : SpellPolicy -> Integer
+  spell-policy-index (policy) = when policy is PlayOnCurve -> 0 is HoldCounters -> 1 is ConserveMana (amount) -> 2 is ManualSpells -> 3
+
+  spell-policy-reserve : SpellPolicy -> Integer
+  spell-policy-reserve (policy) = when policy is ConserveMana (amount) -> amount is otherwise -> 0
+
+  handle-game-spells : MagicStore, Text -> MagicStep
+  handle-game-spells (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let policy = game-query-id (extract-query-param line "policy")
+    in let reserve = game-query-id (extract-query-param line "reserve")
+    in if player < 0 | player > 1 | policy < 0 | policy > 3 | reserve < 0 | reserve > 999 then magic-respond-error store "invalid spell policy"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let chosen = if policy == 1 then HoldCounters else if policy == 2 then ConserveMana reserve else if policy == 3 then ManualSpells else PlayOnCurve
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = chosen, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  freezes-json : Posture, Integer, Text -> Text
+  freezes-json (p) (i) (acc) =
+    if i >= ai-stage-done then acc
+    else freezes-json p (i + 1) (acc & (if i == 0 then "" else ",") & "{\"phase\":" & show i & ",\"label\":" & jstr (ai-stage-name i) & ",\"enabled\":" & jbool (posture-freezes p i) & "}")
+
+  handle-game-freeze : MagicStore, Text -> MagicStep
+  handle-game-freeze (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let phase = game-query-id (extract-query-param line "phase")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if player < 0 | player > 1 | phase < 0 | phase >= ai-stage-done | enabled < 0 | enabled > 1 then magic-respond-error store "invalid phase freeze"
+    else let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = set-phase-freeze (p.phase-freezes) phase (enabled == 1), block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  target-orders-json : GameState, List TargetOrder, Integer, Text -> Text
+  target-orders-json (gs) (orders) (i) (acc) =
+    if i >= list-length orders then acc
+    else target-orders-json gs orders (i + 1) (acc & (if i == 0 then "" else ",") & "{\"label\":" & jstr (target-order-label gs (list-at orders i)) & "}")
+
+  target-order-label : GameState, TargetOrder -> Text
+  target-order-label (gs) (order) = when order
+    is PriorityGeneral -> "Enemy General"
+    is PriorityPermanent (id) -> (if list-contains (gs.battlefield) (\p -> p.id == id) then (get-template gs ((find-permanent (gs.battlefield) id 0 (list-length (gs.battlefield))).template-id)).name else "Departed permanent")
+    is PriorityType (kind) -> card-type-name kind
+    is PriorityThreat (level) -> (if level == 0 then "High threat" else if level == 1 then "Medium threat" else "Low threat")
+
+  same-target-order : TargetOrder, TargetOrder -> Boolean
+  same-target-order (a) (b) = when a
+    is PriorityGeneral -> (when b is PriorityGeneral -> True is otherwise -> False)
+    is PriorityPermanent (id) -> (when b is PriorityPermanent (other) -> id == other is otherwise -> False)
+    is PriorityType (kind) -> (when b is PriorityType (other) -> kind == other is otherwise -> False)
+    is PriorityThreat (level) -> (when b is PriorityThreat (other) -> level == other is otherwise -> False)
+
+  live-target-orders : GameState, Integer, List TargetOrder, Integer, List TargetOrder -> List TargetOrder
+  live-target-orders (gs) (player) (orders) (i) (acc) =
+    if i >= list-length orders then acc
+    else let order = list-at orders i
+    in let live = when order is PriorityPermanent (id) -> list-contains (gs.battlefield) (\p -> p.id == id & p.controller /= player) is otherwise -> True
+    in live-target-orders gs player orders (i + 1) (if live then list-push acc order else acc)
+
+  set-target-orders : MagicStore, Integer, List TargetOrder -> MagicStep
+  set-target-orders (store) (player) (targets) =
+    let orders = for p in store.orders -> p
+    in let p = list-at orders player
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = p.stance, primary-targets = targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  append-target-order : MagicStore, Integer, TargetOrder -> MagicStep
+  append-target-order (store) (player) (order) =
+    let targets = live-target-orders (store.game) player ((list-at (store.orders) player).primary-targets) 0 []
+    in set-target-orders store player (if list-contains targets (\t -> same-target-order t order) then targets else list-push targets order)
+
+  target-types : List CardType
+  target-types = [Gemstone, Creature, Equipment, Cantrip, Incantation, Disruption, Enchantment, General]
+
+  target-type-index : Text, Integer -> Integer
+  target-type-index (name) (i) = if i >= list-length target-types then 0 - 1 else if card-type-name (list-at target-types i) == name then i else target-type-index name (i + 1)
+
+  remove-target-order : List TargetOrder, Integer, Integer, List TargetOrder -> List TargetOrder
+  remove-target-order (orders) (index) (i) (acc) =
+    if i >= list-length orders then acc
+    else remove-target-order orders index (i + 1) (if i == index then acc else list-push acc (list-at orders i))
+
+  handle-game-target : MagicStore, Text -> MagicStep
+  handle-game-target (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let kind = extract-query-param line "kind"
+    in if player < 0 | player > 1 then magic-respond-error store "invalid target player"
+    else if kind == "clear" then set-target-orders store player []
+    else if kind == "general" then append-target-order store player PriorityGeneral
+    else if kind == "permanent" then
+      (let id = game-query-id (extract-query-param line "id")
+       in if id < 0 | list-contains ((store.game).battlefield) (\p -> p.id == id & p.controller /= player) == False then magic-respond-error store "target is not an opposing permanent"
+       else append-target-order store player (PriorityPermanent id))
+    else if kind == "type" then
+      (let index = target-type-index (extract-query-param line "type") 0
+       in if index < 0 then magic-respond-error store "invalid target type" else append-target-order store player (PriorityType (list-at target-types index)))
+    else if kind == "threat" then
+      (let level = game-query-id (extract-query-param line "level")
+       in if level < 0 | level > 2 then magic-respond-error store "invalid threat level" else append-target-order store player (PriorityThreat level))
+    else if kind == "remove" then
+      (let index = game-query-id (extract-query-param line "index")
+       in let targets = (list-at (store.orders) player).primary-targets
+       in if index < 0 | index >= list-length targets then magic-respond-error store "invalid target index" else set-target-orders store player (remove-target-order targets index 0 []))
+    else magic-respond-error store "invalid target order"
+
+  handle-game-posture : MagicStore, Text -> MagicStep
+  handle-game-posture (store) (line) =
+    let player = game-query-id (extract-query-param line "player")
+    in let stance = game-query-id (extract-query-param line "stance")
+    in let freeze = game-query-id (extract-query-param line "freeze")
+    in let raw-blocks = extract-query-param line "blocks"
+    in let blocks = game-query-id raw-blocks
+    in if player < 0 | player > 1 | stance < 0 | stance > 4 | freeze < 0 | freeze > 1 | (raw-blocks /= "" & (blocks < 0 | blocks > 1)) then magic-respond-error store "invalid posture"
+    else let orders = for p in store.orders -> p
+    in let p = list-at (store.orders) player
+    in let chosen = if raw-blocks == "" then p.block-policy else if blocks == 1 then AutoBlock else ManualBlock
+    in let changed = list-set-at orders player (Posture { skill = p.skill, stance = stance-at stance, primary-targets = p.primary-targets, phase-freezes = set-phase-freeze (p.phase-freezes) ai-stage-attackers (freeze == 1), block-policy = chosen, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause })
+    in let next = update-store-game store (store.game) (store.game-active)
+    in handle-game-state (__record-set next "orders" changed)
+
+  handle-game-attack : MagicStore, Text -> MagicStep
+  handle-game-attack (store) (line) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let id = game-query-id (extract-query-param line "attacker")
+    in let enabled = game-query-id (extract-query-param line "enabled")
+    in if store.game-active == False | enabled < 0 | enabled > 1 | supervised-attack-ready (store.turn) id == False then magic-respond-error store "illegal attacker choice"
+    else handle-game-state (store-turn store (supervised-attack (store.turn) id (enabled == 1)) True)
+
+  handle-game-block : MagicStore, Text -> MagicStep
+  handle-game-block (store) (line) =
+    if store.pause-active then magic-respond-error store "game is paused"
+    else let raw = extract-query-param line "blocker"
+    in let blocker = if raw == "general" then general-block-id (if (store.game).active-player == 0 then 1 else 0) else game-query-id raw
+    in let attacker = game-query-id (extract-query-param line "attacker")
+    in if (raw /= "general" & blocker < 0) | attacker < 0 then magic-respond-error store "illegal block"
+    else let old = (store.turn).combat
+    in let count = old.num-blockers
+    in let turn = supervised-block (store.turn) blocker attacker
+    in if (turn.combat).num-blockers == count then magic-respond-error store "illegal block"
+    else handle-game-state (store-turn store turn (store.game-active))
 
 Section: Pool Handler
 
@@ -186,14 +1220,42 @@ Section: Deck Handler
       let gen-id = parse-int (extract-query-param line "general") 0
       in let seed = parse-int (extract-query-param line "seed") 42
       in let gen = get-general-by-id (store.generals) gen-id
-      in let deck = gen-starter-deck gen (store.templates) seed
-      in let cards-json = int-list-to-str (deck.cards) 0 (deck.num-cards) ""
-      in magic-respond-json store ("{\"cards\":[" & cards-json & "],\"count\":" & show (deck.num-cards) & ",\"general\":" & show gen-id & "}")
+      in (when gen-starter-deck gen (store.templates) seed
+        is StarterRefused (why) -> magic-respond-error store why
+        is StarterDeck (deck) ->
+          let cards-json = int-list-to-str (deck.cards) 0 (deck.num-cards) ""
+          in magic-respond-json store ("{\"cards\":[" & cards-json & "],\"count\":" & show (deck.num-cards) & ",\"general\":" & show gen-id & "}"))
     else if text-starts-with path "/api/magic/deck/validate" then
-      let gen-id = parse-int (extract-query-param line "general") 0
-      in let gen = get-general-by-id (store.generals) gen-id
-      in magic-respond-json store "{\"valid\":true,\"reason\":\"\"}"
+      let result = deck-query-validation store line
+      in magic-respond-json store ("{\"valid\":" & jbool result.valid & ",\"reason\":" & jstr result.reason & "}")
     else magic-respond-not-found store
+
+  deck-query-validation : MagicStore, Text -> ValidationResult
+  deck-query-validation (store) (line) =
+    let general = extract-query-param line "general"
+    in let id = if general == "" then 0 else game-query-id general
+    in if list-contains (store.generals) (\g -> g.id == id) == False then validate-fail ("Unknown General: " & (if general == "" then "0" else general))
+    else let format = extract-query-param line "format"
+    in if format /= "" & format /= "standard" & format /= "Standard" then validate-fail ("Unsupported deck format: " & format & "; expected Standard")
+    else let raw = extract-query-param line "cards"
+    in let decoded = text-replace (text-replace raw "%2C" ",") "%2c" ","
+    in let parts = if decoded == "" then [] else text-split decoded ","
+    in let cards = for part in parts -> game-query-id part
+    in let ids = deck-query-ids parts cards (store.templates) 0
+    in if ids.valid == False then ids
+    else validate-deck (make-deck id cards FormatStandard) (store.templates) (get-general-by-id (store.generals) id)
+
+  deck-query-ids : List Text, List Integer, List CardTemplate, Integer -> ValidationResult
+  deck-query-ids (parts) (cards) (templates) (i) =
+    if i >= list-length cards then validate-ok
+    else let id = list-at cards i
+    in if id < 0 then validate-fail ("Invalid card template ID at position " & show (i + 1) & ": " & list-at parts i)
+    else if id >= list-length templates then validate-fail ("Unknown card template ID: " & show id)
+    else let t = list-at templates id
+    in if t.is-token then validate-fail (t.name & " is a token and cannot appear in the deck")
+    else when t.card-type
+      is General -> validate-fail (t.name & " is a General and cannot appear in the deck")
+      is otherwise -> deck-query-ids parts cards templates (i + 1)
 
 Section: Store Handler
 
@@ -335,7 +1397,7 @@ Section: Auth Handler
     in let ledger2 = ledger-mint (store.ledger) (store.num-accounts) 500
     in let ns = update-store-accounts store new-accts (store.num-accounts + 1)
     in let ns2 = update-store-ledger ns ledger2
-    in magic-respond-json ns2 ("{\"token\":\"" & session & "\",\"handle\":\"" & handle & "\",\"display\":\"" & disp & "\",\"id\":" & show (acct3.account-id) & ",\"admin\":" & if acct3.admin then "true" else "false" & ",\"starterGrant\":true,\"starterBalance\":500}")
+    in magic-respond-json ns2 ("{\"token\":" & jstr session & ",\"handle\":" & jstr handle & ",\"display\":" & jstr disp & ",\"id\":" & show (acct3.account-id) & ",\"admin\":" & jbool (acct3.admin) & ",\"starterGrant\":true,\"starterBalance\":500}")
 
   handle-login : MagicStore, Text -> MagicStep
   handle-login (store) (line) =
@@ -350,7 +1412,7 @@ Section: Auth Handler
     in let acct2 = set-account-session acct session
     in let new-accts = list-set-at (store.accounts) idx acct2
     in let ns = update-store-accounts store new-accts (store.num-accounts)
-    in magic-respond-json ns ("{\"token\":\"" & session & "\",\"handle\":\"" & handle & "\",\"display\":\"" & acct2.display-name & "\",\"id\":" & show (acct2.account-id) & ",\"admin\":" & if acct2.admin then "true" else "false" & "}")
+    in magic-respond-json ns ("{\"token\":" & jstr session & ",\"handle\":" & jstr handle & ",\"display\":" & jstr (acct2.display-name) & ",\"id\":" & show (acct2.account-id) & ",\"admin\":" & jbool (acct2.admin) & "}")
 
   handle-me : MagicStore, Text -> MagicStep
   handle-me (store) (line) =
@@ -358,7 +1420,7 @@ Section: Auth Handler
     in let idx = find-account-by-session (store.accounts) tok 0 (store.num-accounts)
     in if idx < 0 then magic-respond-error store "not authenticated"
     else let acct = list-at (store.accounts) idx
-    in magic-respond-json store ("{\"handle\":\"" & acct.handle & "\",\"display\":\"" & acct.display-name & "\",\"id\":" & show (acct.account-id) & ",\"admin\":" & if acct.admin then "true" else "false" & "}")
+    in magic-respond-json store ("{\"handle\":" & jstr (acct.handle) & ",\"display\":" & jstr (acct.display-name) & ",\"id\":" & show (acct.account-id) & ",\"admin\":" & jbool (acct.admin) & "}")
 
   handle-logout : MagicStore, Text -> MagicStep
   handle-logout (store) (line) =
@@ -379,7 +1441,7 @@ Section: Auth Handler
     else let acct = list-at (store.accounts) idx
     in let bal = ledger-balance (store.ledger) (acct.account-id)
     in let token-count = count-tokens-owned (store.tokens) (acct.account-id) 0 (list-length (store.tokens)) 0
-    in magic-respond-json store ("{\"handle\":\"" & acct.handle & "\",\"display\":\"" & acct.display-name & "\",\"id\":" & show (acct.account-id) & ",\"admin\":" & if acct.admin then "true" else "false" & ",\"balance\":" & show bal & ",\"tokens\":" & show token-count & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"rating\":" & show (acct.rating) & ",\"subscription\":\"" & sub-tier-name (acct.subscription) & "\",\"clanId\":" & show (acct.clan-id) & "}")
+    in magic-respond-json store ("{\"handle\":" & jstr (acct.handle) & ",\"display\":" & jstr (acct.display-name) & ",\"id\":" & show (acct.account-id) & ",\"admin\":" & jbool (acct.admin) & ",\"balance\":" & show bal & ",\"tokens\":" & show token-count & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"rating\":" & show (acct.rating) & ",\"subscription\":" & jstr (sub-tier-name (acct.subscription)) & ",\"clanId\":" & show (acct.clan-id) & "}")
 
   handle-collection : MagicStore, Text -> MagicStep
   handle-collection (store) (line) =
@@ -557,7 +1619,7 @@ Section: State Persistence
     in let sep = if i > 0 then "," else ""
     in let bal = ledger-balance led i
     in let owned-json = dump-owned-tokens tokens i 0 (list-length tokens) ""
-    in let entry = sep & "{\"Id\":" & show (a.account-id) & ",\"Handle\":\"" & a.handle & "\",\"Display\":\"" & a.display-name & "\",\"Password\":\"" & a.password & "\",\"PwScore\":" & show (a.pw-score) & ",\"Admin\":" & if a.admin then "true" else "false" & ",\"Banned\":" & if a.banned then "true" else "false" & ",\"Balance\":" & show bal & ",\"Rating\":" & show (a.rating) & ",\"Wins\":" & show (a.wins) & ",\"Losses\":" & show (a.losses) & ",\"Subscription\":\"" & sub-tier-name (a.subscription) & "\",\"ClanId\":" & show (a.clan-id) & ",\"OwnedCards\":[" & owned-json & "]}"
+    in let entry = sep & "{\"Id\":" & show (a.account-id) & ",\"Handle\":" & jstr (a.handle) & ",\"Display\":" & jstr (a.display-name) & ",\"Password\":" & jstr (a.password) & ",\"PwScore\":" & show (a.pw-score) & ",\"Admin\":" & jbool (a.admin) & ",\"Banned\":" & jbool (a.banned) & ",\"Balance\":" & show bal & ",\"Rating\":" & show (a.rating) & ",\"Wins\":" & show (a.wins) & ",\"Losses\":" & show (a.losses) & ",\"Subscription\":" & jstr (sub-tier-name (a.subscription)) & ",\"ClanId\":" & show (a.clan-id) & ",\"OwnedCards\":[" & owned-json & "]}"
     in dump-accounts accts led tokens (i + 1) len (acc & entry)
 
   dump-owned-tokens : List CardToken, Integer, Integer, Integer, Text -> Text
@@ -566,7 +1628,7 @@ Section: State Persistence
     else let t = list-at tokens i
     in if t.owner == owner then
       let sep = if text-length acc > 0 then "," else ""
-      in let entry = sep & "{\"cardId\":" & show (t.card-template-id) & ",\"rarity\":\"Common\",\"mintSource\":\"" & mint-source-name (t.mint-source) & "\",\"tokenId\":" & show (t.token-id) & "}"
+      in let entry = sep & "{\"cardId\":" & show (t.card-template-id) & ",\"rarity\":\"Common\",\"mintSource\":" & jstr (mint-source-name (t.mint-source)) & ",\"tokenId\":" & show (t.token-id) & "}"
       in dump-owned-tokens tokens owner (i + 1) len (acc & entry)
     else dump-owned-tokens tokens owner (i + 1) len acc
 
@@ -605,7 +1667,7 @@ Section: Admin Handlers
   handle-admin-mint (store) (line) =
     let amt = parse-int (extract-query-param line "amount") 0
     in if amt <= 0 then magic-respond-error store "amount must be positive"
-    else let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted + amt, total-burned = store.total-burned, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price }
+    else let ns = MagicStore { pause-active = store.pause-active, pause-remaining = store.pause-remaining, game = store.game, turn = store.turn, orders = store.orders, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted + amt, total-burned = store.total-burned, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price }
     in magic-respond-json ns ("{\"ok\":true,\"supply\":" & show (ns.total-minted - ns.total-burned) & ",\"minted\":" & show (ns.total-minted) & "}")
 
   handle-admin-grant : MagicStore, Text -> MagicStep
@@ -623,7 +1685,7 @@ Section: Admin Handlers
   handle-admin-burn (store) (line) =
     let amt = parse-int (extract-query-param line "amount") 0
     in if amt <= 0 then magic-respond-error store "amount must be positive"
-    else let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted, total-burned = store.total-burned + amt, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price }
+    else let ns = MagicStore { pause-active = store.pause-active, pause-remaining = store.pause-remaining, game = store.game, turn = store.turn, orders = store.orders, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted, total-burned = store.total-burned + amt, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price }
     in magic-respond-json ns ("{\"ok\":true,\"supply\":" & show (ns.total-minted - ns.total-burned) & ",\"burned\":" & show (ns.total-burned) & "}")
 
   handle-admin-users : MagicStore -> MagicStep
@@ -637,7 +1699,7 @@ Section: Admin Handlers
     else let a = list-at accts i
     in let sep = if i > 0 then "," else ""
     in let bal = ledger-balance led i
-    in let entry = sep & "{\"id\":" & show (a.account-id) & ",\"handle\":\"" & a.handle & "\",\"display\":\"" & a.display-name & "\",\"admin\":" & if a.admin then "true" else "false" & ",\"banned\":" & if a.banned then "true" else "false" & ",\"balance\":" & show bal & ",\"rating\":" & show (a.rating) & ",\"wins\":" & show (a.wins) & ",\"losses\":" & show (a.losses) & "}"
+    in let entry = sep & "{\"id\":" & show (a.account-id) & ",\"handle\":" & jstr (a.handle) & ",\"display\":" & jstr (a.display-name) & ",\"admin\":" & jbool (a.admin) & ",\"banned\":" & jbool (a.banned) & ",\"balance\":" & show bal & ",\"rating\":" & show (a.rating) & ",\"wins\":" & show (a.wins) & ",\"losses\":" & show (a.losses) & "}"
     in admin-users-json accts led (i + 1) len (acc & entry)
 
 Section: Market Handlers
@@ -682,7 +1744,7 @@ Section: Clan Authority Handlers
     in let result = register-clan (store.platform) name tag founder instance-key (store.next-nonce)
     in if result.success == False then magic-respond-error store "registration failed: tag already taken"
     else let ns = update-store-platform store (result.platform)
-    in let ns2 = MagicStore { game = ns.game, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform, next-token-id = ns.next-token-id, total-minted = ns.total-minted, total-burned = ns.total-burned, coin-for-sale = ns.coin-for-sale, coin-price = ns.coin-price }
+    in let ns2 = MagicStore { pause-active = ns.pause-active, pause-remaining = ns.pause-remaining, game = ns.game, turn = ns.turn, orders = ns.orders, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform, next-token-id = ns.next-token-id, total-minted = ns.total-minted, total-burned = ns.total-burned, coin-for-sale = ns.coin-for-sale, coin-price = ns.coin-price }
     in magic-respond-json ns2 ("{\"registered\":true,\"clan-id\":" & show (result.clan-id) & ",\"name\":" & jstr name & ",\"tag\":" & jstr tag & ",\"auth-token\":" & show (result.auth-token) & "}")
 
   handle-clan-authorize : MagicStore, Text -> MagicStep
@@ -776,20 +1838,23 @@ Section: JSON Serializers
   game-state-to-json (gs) (gen-a) (gen-b) (templates) =
     let p0 = get-player gs 0
     in let p1 = get-player gs 1
-    in "{\"turn\":" & show (gs.turn-number) & ",\"step\":" & show (gs.step) & ",\"active-player\":" & show (gs.active-player) & ",\"game-over\":" & jbool (gs.game-over) & ",\"winner\":" & show (gs.winner) & ",\"generals\":[" & general-to-json gen-a (p0.general) (army-loyalty gs 0) & "," & general-to-json gen-b (p1.general) (army-loyalty gs 1) & "],\"battlefield\":[" & battlefield-to-json (gs.battlefield) templates 0 (list-length (gs.battlefield)) "" & "],\"hands\":[{\"size\":" & show (list-length (p0.hand)) & ",\"cards\":[" & int-list-to-str (p0.hand) 0 (list-length (p0.hand)) "" & "]},{\"size\":" & show (list-length (p1.hand)) & "}],\"libraries\":[" & show (list-length (p0.library)) & "," & show (list-length (p1.library)) & "],\"prismatic-state\":[" & prismatic-to-json (p0.prismatic) & "," & prismatic-to-json (p1.prismatic) & "]}"
+    in "{\"turn\":" & show (gs.turn-number) & ",\"step\":" & show (gs.step) & ",\"active-player\":" & show (gs.active-player) & ",\"game-over\":" & jbool (gs.game-over) & ",\"winner\":" & show (gs.winner) & ",\"generals\":[" & general-to-json gen-a (p0.general) (army-loyalty gs 0) & "," & general-to-json gen-b (p1.general) (army-loyalty gs 1) & "],\"battlefield\":[" & battlefield-to-json (gs.battlefield) gs 0 (list-length (gs.battlefield)) "" & "],\"hands\":[{\"size\":" & show (list-length (p0.hand)) & ",\"cards\":[" & int-list-to-str (p0.hand) 0 (list-length (p0.hand)) "" & "]},{\"size\":" & show (list-length (p1.hand)) & "}],\"libraries\":[" & show (list-length (p0.library)) & "," & show (list-length (p1.library)) & "],\"prismatic-state\":[" & prismatic-to-json (p0.prismatic) & "," & prismatic-to-json (p1.prismatic) & "]}"
 
   general-to-json : GeneralTemplate, GeneralState, Integer -> Text
   general-to-json (template) (state) (loyalty) =
     "{\"name\":" & jstr (template.name) & ",\"power\":" & show (template.power + state.power-mod) & ",\"toughness\":" & show (template.toughness + state.toughness-mod) & ",\"defense\":" & show (template.defense + state.defense-mod) & ",\"life\":" & show (state.life) & ",\"starting-life\":" & show (template.life) & ",\"loyalty\":" & show loyalty & ",\"tapped\":" & jbool (state.is-tapped) & "}"
 
-  battlefield-to-json : List Permanent, List CardTemplate, Integer, Integer, Text -> Text
-  battlefield-to-json (perms) (templates) (i) (len) (acc) =
+  battlefield-to-json : List Permanent, GameState, Integer, Integer, Text -> Text
+  battlefield-to-json (perms) (gs) (i) (len) (acc) = battlefield-to-json-scaled (scale-bonuses gs) perms gs i len acc
+
+  battlefield-to-json-scaled : ScaleBonuses, List Permanent, GameState, Integer, Integer, Text -> Text
+  battlefield-to-json-scaled (bonuses) (perms) (gs) (i) (len) (acc) =
     if i >= len then acc
     else let perm = list-at perms i
-    in let t = list-at templates (perm.template-id)
+    in let t = get-template gs (perm.template-id)
     in let sep = if i > 0 then "," else ""
-    in let pj = sep & "{\"id\":" & show (perm.id) & ",\"name\":" & jstr (t.name) & ",\"template-id\":" & show (perm.template-id) & ",\"controller\":" & show (perm.controller) & ",\"type\":" & jstr (card-type-name (t.card-type)) & ",\"power\":" & show (t.power + perm.power-mod) & ",\"toughness\":" & show (t.toughness + perm.toughness-mod) & ",\"defense\":" & show (t.defense + perm.defense-mod) & ",\"tapped\":" & jbool (perm.tapped) & ",\"summoning-sick\":" & jbool (perm.summoning-sick) & ",\"damage-marked\":" & show (perm.damage-marked) & "}"
-    in battlefield-to-json perms templates (i + 1) len (acc & pj)
+    in let pj = sep & "{\"attack-ready\":" & jbool (perm.controller == gs.active-player & t.card-type == Creature & can-attack perm (perm.keywords)) & ",\"id\":" & show (perm.id) & ",\"card-id\":" & show (perm.card-id) & ",\"name\":" & jstr (t.name) & ",\"template-id\":" & show (perm.template-id) & ",\"owner\":" & show (perm.owner) & ",\"play-order\":" & show (card-play-order gs (perm.card-id)) & ",\"orderable\":" & jbool (game-card-valid gs (perm.card-id) & t.is-token == False) & ",\"controller\":" & show (perm.controller) & ",\"type\":" & jstr (card-type-name (t.card-type)) & ",\"gem-stone\":" & show (t.gem-stone) & ",\"attached-to\":" & show (perm.attached-to) & ",\"power\":" & show ((effective-power bonuses t perm)) & ",\"toughness\":" & show ((effective-toughness bonuses t perm)) & ",\"defense\":" & show ((effective-defense bonuses t perm)) & ",\"tapped\":" & jbool (perm.tapped) & ",\"summoning-sick\":" & jbool (perm.summoning-sick) & ",\"damage-marked\":" & show (perm.damage-marked) & "}"
+    in battlefield-to-json-scaled bonuses perms gs (i + 1) len (acc & pj)
 
   prismatic-to-json : PrismaticState -> Text
   prismatic-to-json (ps) =
@@ -823,11 +1888,7 @@ Section: Helpers
 
   load-deck-cards : GameState, Integer, List Integer, Integer -> GameState
   load-deck-cards (gs) (player-idx) (cards) (i) =
-    if i >= list-length cards then gs
-    else let p = get-player gs player-idx
-    in let p2 = PlayerState { general = p.general, prismatic = p.prismatic, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used }
-    in let gs2 = set-player gs player-idx p2
-    in load-deck-cards gs2 player-idx cards (i + 1)
+    game-load-library gs player-idx cards i
 
   draw-cards : GameState, Integer, Integer -> GameState
   draw-cards (gs) (player-idx) (n) =

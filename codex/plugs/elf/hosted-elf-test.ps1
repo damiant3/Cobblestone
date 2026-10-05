@@ -69,7 +69,8 @@ if (-not $ListSubjects -and -not $ListDropped -and -not (Test-Path $Kernel)) { t
 # The depot seed is exempt: a sync stamps every file with the sync time, so a
 # container change that landed without a seed (main 29787) makes the seed read
 # as older than the container while the pair is exactly head.
-$isSeed = (Resolve-Path $Kernel -ErrorAction SilentlyContinue).Path -eq (Join-Path $Repo 'seed\Codex.cdx')
+$kernelPath = Resolve-Path $Kernel -ErrorAction SilentlyContinue
+$isSeed = $null -ne $kernelPath -and $kernelPath.Path -eq (Join-Path $Repo 'seed\Codex.cdx')
 if (-not $ListSubjects -and -not $ListDropped -and -not $isSeed) {
     $kernelAge = (Get-Item $Kernel).LastWriteTime
     foreach ($c in @((Join-Path $PSScriptRoot 'cdx-to-elf.ps1'),

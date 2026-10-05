@@ -1,0 +1,186 @@
+Chapter: TownDisputes
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+  cites Encode chapter Json
+
+  TdCase = record { town : Integer, kind : Integer, claimant-kind : Integer,
+    claimant-id : Integer, respondent-kind : Integer, respondent-id : Integer,
+    reference : Integer, metal : Integer, opened : Integer, status : Integer,
+    resolution : Integer, report : Integer, source-event : Integer,
+    last-event : Integer, lender : Integer, borrower : Integer }
+  TdEvent = record { sequence : Integer, hour : Integer, kind : Integer,
+    case-id : Integer, mayor : Integer, reference : Integer }
+  TdReportFacts = record { verified : Boolean, account : Text, happened : Text,
+    location : Text, wall-time : Text, evidence : Text }
+  TdWorld = record { government : TgWorld, registry : TrRegistry,
+    admin : AdminWorld, currency : Maybe EuCurrency, cases : List TdCase,
+    events : List TdEvent, used : Integer, count : Integer, hour : Integer }
+  td-cases : Integer, List TdCase -> List TdCase
+  td-cases (i) (xs) = if i == 128 then xs else td-cases (i + 1) (list-push xs (TdCase {
+    town = 0, kind = 0, claimant-kind = 0, claimant-id = 0, respondent-kind = 0,
+    respondent-id = 0, reference = 0, metal = 0, opened = 0, status = 0,
+    resolution = 0, report = 0, source-event = 0, last-event = 0, lender = 0, borrower = 0 }))
+  td-events : Integer, List TdEvent -> List TdEvent
+  td-events (i) (xs) = if i == 256 then xs else td-events (i + 1) (list-push xs (TdEvent {
+    sequence = 0, hour = 0, kind = 0, case-id = 0, mayor = 0, reference = 0 }))
+  td-new : TgWorld, TrRegistry, AdminWorld, Maybe EuCurrency -> TdWorld
+  td-new (government) (registry) (admin) (currency) = TdWorld {
+    government = government, registry = registry, admin = admin, currency = currency,
+    cases = td-cases 0 [], events = td-events 0 [], used = 0, count = 0, hour = government.economy.hour }
+  td-ready : TdWorld -> Boolean
+  td-ready (d) = d.government.economy.hour >= d.hour & d.government.economy.hour <= ep-limit
+    & (when d.currency
+      is None -> True
+      is Just (x) -> eu-ready x & x.world.hour == d.government.economy.hour)
+  td-room : TdWorld -> Boolean
+  td-room (d) = td-ready d & d.count < 256
+  td-money : TdWorld, Integer -> EmMoney
+  td-money (d) (metal) = when d.currency
+    is None -> d.government.economy.money
+    is Just (x) -> eu-money x metal
+  td-metal : TdWorld, Integer -> Boolean
+  td-metal (d) (metal) = when d.currency
+    is None -> metal == 3
+    is Just (x) -> eu-metal metal
+  td-local : TdWorld, TrParty, Integer -> Boolean
+  td-local (d) (party) (town) = if not (tr-party-valid party) then False
+    else if party.kind /= 2 then True
+    else if not (tf-valid-person d.government.people party.id) then False
+    else let p = tf-person d.government.people party.id
+    in p.alive == 1 & p.town == town
+  td-purse-party : EmPurse, TrParty -> Boolean
+  td-purse-party (p) (party) =
+    (p.kind == 2 & party.kind == 2 & p.owner == party.id)
+      | (p.kind == 3 & party.kind == 1 & p.owner == party.id)
+      | (p.kind == 4 & party.kind == 4 & p.owner == party.id)
+      | ((p.kind == 1 | p.kind == 5) & party.kind == 5 & party.id == 0)
+  td-duplicate : TdWorld, Integer, Integer, Integer -> Boolean
+  td-duplicate (d) (town) (source-event) (i) = if i == d.used then False
+    else let c = list-at d.cases i
+    in (c.town == town & c.source-event == source-event) | td-duplicate d town source-event (i + 1)
+  td-log : TdWorld, Integer, Integer, Integer, Integer -> Integer
+  td-log (d) (kind) (id) (mayor) (reference) =
+    let e = list-at d.events d.count
+    in let a = __record-set e "sequence" (d.count + 1)
+    in let b = __record-set e "hour" d.government.economy.hour
+    in let c = __record-set e "kind" kind
+    in let f = __record-set e "case-id" id
+    in let g = __record-set e "mayor" mayor
+    in let h = __record-set e "reference" reference
+    in let j = __record-set d "count" (d.count + 1)
+    in let k = __record-set d "hour" d.government.economy.hour
+    in let l = __record-set (list-at d.cases (id - 1)) "last-event" d.count
+    in 0
+  td-debt-facts : TdWorld, TrParty, TrParty, Integer, Integer -> Boolean
+  td-debt-facts (d) (claimant) (respondent) (metal) (reference) =
+    if not (td-metal d metal) then False
+    else let m = td-money d metal
+    in if reference <= 0 | reference > m.loan-count then False
+    else let loan = list-at m.loans (reference - 1)
+    in loan.status /= 2 & td-purse-party (em-purse m loan.lender) claimant & td-purse-party (em-purse m loan.borrower) respondent
+  td-file : TdWorld, Boolean, Integer, Integer, Integer, TrParty, TrParty, Integer, Integer, Integer -> Integer
+  td-file (d) (verified) (mayor) (town) (kind) (claimant) (respondent) (reference) (metal) (source-event) =
+    if not verified | not (td-room d) | d.used == 128 | not (tg-mayor d.government mayor town)
+      | kind < 1 | kind > 4 | reference <= 0 | reference > ep-limit | source-event <= 0 | source-event > ep-limit
+      | not (td-local d claimant town) | not (td-local d respondent town)
+      | tr-same claimant respondent.kind respondent.id | td-duplicate d town source-event 0 then -1
+    else if kind == 1 & not (td-debt-facts d claimant respondent metal reference) then -1
+    else if kind /= 1 & metal /= 0 then -1
+    else if kind == 3 & not (tr-serial-valid reference) then -1
+    else if kind == 4 & respondent.kind /= 1 then -1
+    else let id = d.used + 1
+    in let c = list-at d.cases d.used
+    in let a = __record-set c "town" town
+    in let b = __record-set c "kind" kind
+    in let f = __record-set c "claimant-kind" claimant.kind
+    in let g = __record-set c "claimant-id" claimant.id
+    in let h = __record-set c "respondent-kind" respondent.kind
+    in let j = __record-set c "respondent-id" respondent.id
+    in let k = __record-set c "reference" reference
+    in let l = __record-set c "metal" metal
+    in let m = __record-set c "opened" d.government.economy.hour
+    in let n = __record-set c "status" 1
+    in let o = __record-set c "source-event" source-event
+    in let loan = if kind == 1 then
+      let entry = list-at (td-money d metal).loans (reference - 1)
+      in let lender = __record-set c "lender" entry.lender
+      in let borrower = __record-set c "borrower" entry.borrower in 0 else 0
+    in let used = __record-set d "used" id
+    in let logged = td-log d 1 id mayor source-event
+    in id
+  td-current : TdWorld, Integer, Integer -> Boolean
+  td-current (d) (mayor) (id) = if not (td-room d) | id <= 0 | id > d.used then False
+    else let c = list-at d.cases (id - 1)
+    in c.status == 1 & tg-mayor d.government mayor c.town
+  td-close : TdWorld, Integer, Integer, Integer, Integer -> Integer
+  td-close (d) (mayor) (id) (resolution) (reference) =
+    let c = list-at d.cases (id - 1)
+    in let a = __record-set c "status" 2
+    in let b = __record-set c "resolution" resolution
+    in td-log d 2 id mayor reference
+  td-debt-settled : TdWorld, Integer, Integer -> Integer
+  td-debt-settled (d) (mayor) (id) = if not (td-current d mayor id) then -1
+    else let c = list-at d.cases (id - 1)
+    in if c.kind /= 1 | not (td-metal d c.metal) then -1
+    else let m = td-money d c.metal
+    in if c.reference <= 0 | c.reference > m.loan-count then -1
+    else let loan = list-at m.loans (c.reference - 1)
+    in if loan.lender /= c.lender | loan.borrower /= c.borrower | loan.status /= 2 | loan.paid /= loan.principal + loan.interest then -1
+    else td-close d mayor id 1 m.sequence
+  td-title-ok : TdWorld, TdCase, TrEvidence -> Boolean
+  td-title-ok (d) (c) (evidence) =
+    if evidence.serial /= c.reference | not (tr-same evidence.owner c.claimant-kind c.claimant-id)
+      | tr-check-mark d.registry evidence /= 1 then False
+    else let mark = __heap-save
+    in let valid = when tr-owner d.registry c.reference
+      is Err (e) -> False
+      is Ok (owner) -> tr-same owner c.claimant-kind c.claimant-id
+    in let restored = __heap-restore mark
+    in valid
+  td-title-settled : TdWorld, Integer, Integer, Boolean, TrEvidence -> Integer
+  td-title-settled (d) (mayor) (id) (verified-restitution) (evidence) =
+    if not verified-restitution | not (td-current d mayor id) then -1
+    else let c = list-at d.cases (id - 1)
+    in if c.kind /= 3 | not (td-title-ok d c evidence) then -1
+    else td-close d mayor id 2 d.registry.sequence
+  td-land-settled : TdWorld, Integer, Integer, Boolean, Integer -> Integer
+  td-land-settled (d) (mayor) (id) (verified-land-agreement) (land-event) =
+    if not verified-land-agreement | not (td-current d mayor id) | land-event <= 0 | land-event > ep-limit then -1
+    else let c = list-at d.cases (id - 1)
+    in if c.kind /= 2 then -1 else td-close d mayor id 3 land-event
+  td-queue : TdWorld, Integer, TdReportFacts -> Integer
+  td-queue (d) (id) (facts) =
+    let c = list-at d.cases (id - 1)
+    in let kind = if c.respondent-kind == 1 then "account" else if c.respondent-kind == 2 then "npc" else "world"
+    in let subject = if c.respondent-kind == 1 then 0 else if c.respondent-kind == 2 then c.respondent-id else c.town
+    in let evidence = facts.evidence & "; dispute " & show id & "; source " & show c.source-event & "; object " & show c.reference
+    in let report = JsonObject [json-pair "subject_kind" (JsonStr kind), json-pair "subject_id" (JsonInt subject),
+      json-pair "account" (JsonStr facts.account), json-pair "happened" (JsonStr facts.happened),
+      json-pair "location" (JsonStr facts.location), json-pair "wall_time" (JsonStr facts.wall-time),
+      json-pair "game_hour" (JsonInt d.government.economy.hour), json-pair "evidence" (JsonStr evidence)]
+    in let result = admin-report d.admin report
+    in admin-int (json-parse-value result 0 (text-length result)).value "queued"
+  td-escalate : TdWorld, Integer, Integer, TdReportFacts -> Integer
+  td-escalate (d) (mayor) (id) (facts) =
+    if not facts.verified | not (td-current d mayor id) | text-length facts.account > 64
+      | text-length facts.happened == 0 | text-length facts.happened > 256
+      | text-length facts.location == 0 | text-length facts.location > 64
+      | text-length facts.wall-time == 0 | text-length facts.wall-time > 64
+      | text-length facts.evidence == 0 | text-length facts.evidence > 400 then -1
+    else let c = list-at d.cases (id - 1)
+    in if (c.respondent-kind == 1 & text-length facts.account == 0)
+      | (c.respondent-kind /= 1 & facts.account /= "") then -1
+    else let mark = __heap-save
+    in let queued = td-queue d id facts
+    in let restored = __heap-restore mark
+    in if queued <= 0 then -1
+    else let a = __record-set c "status" 3
+    in let b = __record-set c "report" queued
+    in td-log d 3 id mayor queued

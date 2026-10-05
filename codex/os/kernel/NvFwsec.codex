@@ -1,0 +1,163 @@
+Chapter: NvFwsec
+  cites Kernel chapter NvFirmware
+  cites Foreword chapter Maybe
+
+ The VBIOS lookup follows tinygrad c3aec477 NV_FLCN.prep_ucode: PCI ROM
+ images establish the expansion base, BIT at 0x1b0 selects Falcon data v2,
+ and ucode table v1 selects application 0x85. The last matching entry wins.
+ Descriptor v3 follows tinygrad's fields and last 384-byte signature;
+ descriptor v2 follows Linux v6.12 nvkm_gsp_fwsec_v2. Returned spans borrow
+ the input buffer. No signature verification, firmware copy or MMIO occurs.
+
+Section: Relative bounds
+
+  fwsec-relative : Integer, Integer, Integer, Integer -> Integer
+  fwsec-relative (size) (base) (offset) (length) =
+    if nv-fw-span size base 0 == False then -1
+    else if nv-fw-span (size - base) offset length == False then -1
+    else base + offset
+
+Section: ROM and BIT lookup
+
+  fwsec-rom-base : Integer, Integer, Integer, Integer -> Integer
+  fwsec-rom-base (buf) (size) (off) (base-size) =
+    if nv-fw-span size off 26 == False then -1
+    else let pci = fwsec-relative size off (fw-u16 buf (off + 24)) 22
+    in if pci < 0 then -1
+    else let length = fw-u16 buf (pci + 16) * 512
+    in let kind = peek-byte buf (pci + 20)
+    in if kind == #E0 then (if base-size <= 0 then -1 else if base-size > off then -1 else off - base-size)
+    else if length == 0 then -1
+    else if nv-fw-span size off length == False then -1
+    else fwsec-rom-base buf size (off + length) (if kind == 0 then length else base-size)
+
+  fwsec-entries : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fwsec-entries (buf) (size) (base) (entries) (stride) (count) (i) (chosen) =
+    if i >= count then chosen
+    else let entry = entries + i * stride
+    in if peek-byte buf entry /= #85 then fwsec-entries buf size base entries stride count (i + 1) chosen
+    else let desc = fwsec-relative size base (fw-u32 buf (entry + 2)) 4
+    in if desc < 0 then -2
+    else fwsec-entries buf size base entries stride count (i + 1) desc
+
+  fwsec-table : Integer, Integer, Integer, Integer, Integer -> Integer
+  fwsec-table (buf) (size) (base) (data) (chosen) =
+    let table = fwsec-relative size base (fw-u32 buf data) 6
+    in if table < 0 then -2
+    else if peek-byte buf table /= 1 then -2
+    else let header = peek-byte buf (table + 1)
+    in let stride = peek-byte buf (table + 2)
+    in let count = peek-byte buf (table + 3)
+    in if header < 6 then -2
+    else if stride < 6 then -2
+    else let entries = fwsec-relative size table header (count * stride)
+    in if entries < 0 then -2
+    else fwsec-entries buf size base entries stride count 0 chosen
+
+  fwsec-tokens : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fwsec-tokens (buf) (size) (base) (tokens) (stride) (count) (i) (chosen) =
+    if i >= count then chosen
+    else let token = tokens + i * stride
+    in if peek-byte buf token /= #70 then fwsec-tokens buf size base tokens stride count (i + 1) chosen
+    else if peek-byte buf (token + 1) /= 2 then fwsec-tokens buf size base tokens stride count (i + 1) chosen
+    else let length = fw-u16 buf (token + 2)
+    in if length < 4 then fwsec-tokens buf size base tokens stride count (i + 1) chosen
+    else let data = fw-u16 buf (token + 4)
+    in if nv-fw-span size data length == False then -2
+    else let found = fwsec-table buf size base data chosen
+    in if found == -2 then -2 else fwsec-tokens buf size base tokens stride count (i + 1) found
+
+Section: Descriptor fields
+
+  NvFwsec = record {
+   version : Integer,
+   descriptor-offset : Integer,
+   descriptor-size : Integer,
+   image-offset : Integer,
+   image-size : Integer,
+   imem-base : Integer,
+   imem-size : Integer,
+   imem-virtual : Integer,
+   dmem-offset : Integer,
+   dmem-base : Integer,
+   dmem-size : Integer,
+   interface-offset : Integer,
+   v2-nonsec-size : Integer,
+   v2-sec-base : Integer,
+   v2-sec-size : Integer,
+   signature-offset : Integer,
+   signature-size : Integer,
+   pkc-offset : Integer,
+   engine-mask : Integer,
+   ucode-id : Integer,
+   signature-count : Integer,
+   signature-versions : Integer
+  }
+
+ v2 uses IMEMLoadSize + DMEMLoadSize as the image extent, as nouveau's
+ constructor does. v3 uses StoredSize rounded to 256, as tinygrad does.
+ Fields absent from a version are zero. Interface and PKC offsets are
+ relative to DMEM; descriptor/image/signature offsets are file-relative.
+
+  fwsec-v2 : Integer, Integer, Integer, Integer -> Maybe NvFwsec
+  fwsec-v2 (buf) (size) (desc) (length) =
+    if length < 60 then None
+    else let imem = fw-u32 buf (desc + 24)
+    in let dmem = fw-u32 buf (desc + 48)
+    in let data-off = fw-u32 buf (desc + 40)
+    in let secure = fw-u32 buf (desc + 36)
+    in let interface = fw-u32 buf (desc + 16)
+    in let image-size = imem + dmem
+    in if secure > imem then None
+    else if nv-fw-span size (desc + length) image-size == False then None
+    else if nv-fw-span image-size data-off dmem == False then None
+    else if nv-fw-span dmem interface 4 == False then None
+    else Just (NvFwsec { version = 2, descriptor-offset = desc, descriptor-size = length, image-offset = desc + length, image-size = image-size, imem-base = fw-u32 buf (desc + 20), imem-size = imem, imem-virtual = fw-u32 buf (desc + 28), dmem-offset = data-off, dmem-base = fw-u32 buf (desc + 44), dmem-size = dmem, interface-offset = interface, v2-nonsec-size = imem - secure, v2-sec-base = fw-u32 buf (desc + 32), v2-sec-size = secure, signature-offset = 0, signature-size = 0, pkc-offset = 0, engine-mask = 0, ucode-id = 0, signature-count = 0, signature-versions = 0 })
+
+  fwsec-v3 : Integer, Integer, Integer, Integer -> Maybe NvFwsec
+  fwsec-v3 (buf) (size) (desc) (length) =
+    if length < 44 then None
+    else let stored = fw-u32 buf (desc + 4)
+    in let image-size = ((stored + 255) / 256) * 256
+    in let imem = fw-u32 buf (desc + 20)
+    in let dmem = fw-u32 buf (desc + 32)
+    in let pkc = fw-u32 buf (desc + 8)
+    in let interface = fw-u32 buf (desc + 12)
+    in let signatures = peek-byte buf (desc + 39)
+    in if signatures == 0 then None
+    else if signatures * 384 > length - 44 then None
+    else if nv-fw-span size (desc + length) image-size == False then None
+    else if nv-fw-span stored imem dmem == False then None
+    else if nv-fw-span dmem pkc 384 == False then None
+    else if nv-fw-span dmem interface 4 == False then None
+    else Just (NvFwsec { version = 3, descriptor-offset = desc, descriptor-size = length, image-offset = desc + length, image-size = image-size, imem-base = fw-u32 buf (desc + 16), imem-size = imem, imem-virtual = fw-u32 buf (desc + 24), dmem-offset = imem, dmem-base = fw-u32 buf (desc + 28), dmem-size = dmem, interface-offset = interface, v2-nonsec-size = 0, v2-sec-base = 0, v2-sec-size = 0, signature-offset = desc + length - 384, signature-size = 384, pkc-offset = pkc, engine-mask = fw-u16 buf (desc + 36), ucode-id = peek-byte buf (desc + 38), signature-count = signatures, signature-versions = fw-u16 buf (desc + 40) })
+
+  nv-fwsec-descriptor : Integer, Integer, Integer -> Maybe NvFwsec
+  nv-fwsec-descriptor (buf) (size) (desc) =
+    if buf <= 0 then None
+    else if nv-fw-span size desc 4 == False then None
+    else let header = fw-u32 buf desc
+    in let length = bit-shru header 16
+    in let version = bit-and (bit-shru header 8) 255
+    in if bit-and header 1 == 0 then None
+    else if nv-fw-span size desc length == False then None
+    else if version == 2 then fwsec-v2 buf size desc length
+    else if version == 3 then fwsec-v3 buf size desc length
+    else None
+
+  nv-vbios-fwsec : Integer, Integer -> Maybe NvFwsec
+  nv-vbios-fwsec (buf) (size) =
+    if buf <= 0 then None
+    else if nv-fw-span size #1B0 12 == False then None
+    else if fw-u32 buf #1B2 /= #00544942 then None
+    else let base = fwsec-rom-base buf size 0 0
+    in if base < 0 then None
+    else let header = peek-byte buf #1B8
+    in let stride = peek-byte buf #1B9
+    in let count = peek-byte buf #1BA
+    in if header < 12 then None
+    else if stride < 6 then None
+    else let tokens = fwsec-relative size #1B0 header (stride * count)
+    in if tokens < 0 then None
+    else let desc = fwsec-tokens buf size base tokens stride count 0 -1
+    in if desc < 0 then None else nv-fwsec-descriptor buf size desc

@@ -1,0 +1,159 @@
+Chapter: GameDeltaProof
+  cites Uoaix chapter GameDelta
+  cites Uoaix chapter GameTransaction
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter Result
+
+  gdl-check : Text, Boolean -> [Console] Nothing
+  gdl-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gdl-game : Integer -> Result GameShard Text
+  gdl-game (unused) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (game) -> let key = __record-set game "next-key" 100 in Ok game
+
+  gdl-map : WalkMap, Integer -> Integer
+  gdl-map (map) (i) = if i >= map.width * map.height then 0
+    else let marked = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in gdl-map map (i + 1)
+
+  gdl-create : Integer -> List Integer
+  gdl-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Avatar" 0 30) "" 0 30
+    in let skin = gp-put16 (name & [0,30,20,15,0,50,1,50,2,0]) 1002
+    in let hair = gp-put16 (gp-put16 skin 8251) 1102
+    in let beard = gp-put16 (gp-put16 hair 8254) 1102
+    in gp-put32 (gp-put32 (gp-zeros beard 2) 0) 0
+
+  gdl-negative : Text, GameShard, WorldCheckpoint, Integer, Integer, Integer, Integer, Integer, Boolean -> [Console] Nothing
+  gdl-negative (name) (game) (checkpoint) (original) (buf) (size) (offset) (value) (rehash) =
+    let world-size = 16 + game.world.capacity * 80
+    in let before = alloc-bytes (world-size + 800)
+    in let saved-world = ws-copy game.world.buffer before world-size 0
+    in let saved-characters = ws-copy game.characters (before + world-size) 800 0
+    in let copied = ws-copy original buf size 0
+    in let changed = poke-qword buf offset value
+    in let hash = if rehash then poke-qword buf 48 (ws-hash buf size 0 2166136261) else 0
+    in let refused = is-err (gd-apply checkpoint game buf size)
+    in gdl-check name (refused & checkpoint.sequence == 0 & checkpoint.tick == 0 & game.next-key == 100
+      & gt-equal before game.world.buffer world-size 0 & gt-equal (before + world-size) game.characters 800 0)
+
+  gdl-overwrite : Integer, Integer, Integer -> Integer
+  gdl-overwrite (buf) (size) (i) = if i >= size then 0
+    else let written = poke-byte buf i 165 in gdl-overwrite buf size (i + 1)
+
+  gdl-refusals : GameShard, Integer, Integer -> [Console] Nothing
+  gdl-refusals (target) (original) (size) =
+    let checkpoint = WorldCheckpoint { world = target.world, sequence = 0, tick = 0 }
+    in let buf = alloc-bytes gd-max-bytes
+    in act
+      gdl-negative "checksum corruption refuses" target checkpoint original buf size 912 999 False
+      gdl-negative "before-image mismatch refuses" target checkpoint original buf size 64 101 True
+      gdl-negative "out-of-range slot refuses" target checkpoint original buf size gd-entries target.world.capacity True
+      gdl-negative "duplicate slot refuses" target checkpoint original buf size (gd-entries + gd-entry-bytes) 0 True
+      gdl-negative "generation mismatch rolls back applied state" target checkpoint original buf size (gd-entries + 88) 65 True
+      gdl-negative "invalid free head rolls back applied state" target checkpoint original buf size 904 -2 True
+      gdl-negative "invalid character padding rolls back applied state" target checkpoint original buf size (912 + 144) 1 True
+      gdl-negative "sequence gap refuses" target checkpoint original buf size 32 2 True
+      gdl-negative "clock reversal refuses" target checkpoint original buf size 40 -1 True
+      gdl-check "record metadata mismatch refuses" (is-err (gd-apply-record checkpoint target original size 2 10) & checkpoint.sequence == 0)
+      gdl-check "input overlap refuses before writing" (is-err (gd-apply checkpoint target target.world.buffer size) & ws-table-valid target.world)
+    end
+
+  gdl-relay : GameShard, GameShard, WorldCheckpoint, WalkMap, Integer -> [Console] Nothing
+  gdl-relay (source) (target) (checkpoint) (map) (buf) =
+    let inactive = __record-set source "active" 0
+    in let input = gn-input 0
+    in let mode = __record-set input "mode" 1
+    in let listed = __record-set input "listed" True
+    in when gt-prepare source input map 2593 [160,0,0]
+      is Err (e) -> print-line-uni ("FAIL relay preparation " & e)
+      is Ok (prepared) -> when gd-encode prepared.undo 3 12 buf gd-max-bytes
+        is Err (e) -> print-line-uni ("FAIL relay encoding " & e)
+        is Ok (size) ->
+          let applied = gd-apply checkpoint target buf size
+          in let accepted = gt-accept prepared.undo
+          in gdl-check "relay-only delta persists counter but no live authority" (is-ok applied & size == gd-entries & checkpoint.sequence == 3 & target.next-key == 101 & target.pending-key == 0 & target.active == 0)
+
+  gdl-move : GameShard, GameShard, WorldCheckpoint, GameInput, WalkMap, Integer -> [Console] Nothing
+  gdl-move (source) (target) (checkpoint) (input) (map) (buf) = when gt-prepare source input map 2593 [2,2,0]
+    is Err (e) -> print-line-uni ("FAIL turn " & e)
+    is Ok (turn) -> act
+      gdl-check "session-only operation has no delta" (is-err (gd-encode turn.undo 2 11 buf gd-max-bytes))
+      let accepted = gt-accept turn.undo
+      in when gt-prepare source input map 2593 [2,2,1]
+        is Err (e) -> print-line-uni ("FAIL movement " & e)
+        is Ok (move) -> when gd-encode move.undo 2 11 buf gd-max-bytes
+          is Err (e) -> print-line-uni ("FAIL movement encoding " & e)
+          is Ok (size) ->
+            let saved = alloc-bytes size
+            in let preserved = ws-copy buf saved size 0
+            in let world-size = 16 + target.world.capacity * 80
+            in let before = alloc-bytes world-size
+            in let captured = ws-copy target.world.buffer before world-size 0
+            in let bad-parent = poke-qword buf (gd-entries + 88 + 56) 1
+            in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+            in let refused = is-err (gd-apply checkpoint target buf size)
+            in act
+              gdl-check "movement cannot reparent a live object" (refused & checkpoint.sequence == 1 & checkpoint.tick == 10 & gt-equal before target.world.buffer world-size 0 & gt-equal source.characters target.characters 800 0)
+              let restored = ws-copy saved buf size 0
+              in let applied = gd-apply-record checkpoint target buf size 2 11
+              in let accepted = gt-accept move.undo
+              in act
+                gdl-check "ordered movement delta reproduces world bytes" (is-ok applied & checkpoint.sequence == 2 & checkpoint.tick == 11 & gt-equal source.world.buffer target.world.buffer (16 + source.world.capacity * 80) 0)
+                gdl-relay source target checkpoint map buf
+              end
+            end
+    end
+
+  gdl-run : GameShard, GameShard, GameShard, WalkMap -> [Console] Nothing
+  gdl-run (source) (target) (negative) (map) =
+    let input = gn-input 0
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 1
+    in let buf = alloc-bytes gd-max-bytes
+    in let copy = alloc-bytes gd-max-bytes
+    in let checkpoint = WorldCheckpoint { world = target.world, sequence = 0, tick = 0 }
+    in when gt-prepare source input map 2593 (gdl-create 0)
+      is Err (e) -> print-line-uni ("FAIL preparation " & e)
+      is Ok (prepared) -> act
+        gdl-check "encoding destination overlap refuses" (is-err (gd-encode prepared.undo 1 10 prepared.undo.bytes gd-max-bytes))
+        when gd-encode prepared.undo 1 10 buf gd-max-bytes
+          is Err (e) -> print-line-uni ("FAIL creation encoding " & e)
+          is Ok (size) ->
+            let preserved = ws-copy buf copy size 0
+            in act
+              gdl-refusals negative copy size
+              let applied = gd-apply-record checkpoint target buf size 1 10
+              in let accepted = gt-accept prepared.undo
+              in act
+                gdl-check "creation replay reproduces world and character bytes" (is-ok applied & checkpoint.sequence == 1 & checkpoint.tick == 10 & gt-equal source.world.buffer target.world.buffer (16 + source.world.capacity * 80) 0 & gt-equal source.characters target.characters 800 0 & ws-table-valid target.world)
+                gdl-check "duplicate replay refuses without changing commit position" (is-err (gd-apply checkpoint target buf size) & checkpoint.sequence == 1 & world-count target.world == 5)
+                let overwritten = gdl-overwrite buf size 0
+                in act
+                  gdl-check "replayed state owns bytes independently of input" (gt-equal source.world.buffer target.world.buffer (16 + source.world.capacity * 80) 0 & gt-equal source.characters target.characters 800 0)
+                  gdl-move source target checkpoint input map buf
+                end
+              end
+            end
+      end
+
+  opening : [Console] Nothing = when walk-map-new 1418 1696 8 8
+    is Err (e) -> print-line-uni ("FAIL map " & e)
+    is Ok (map) ->
+      let filled = gdl-map map 0
+      in when gdl-game 0
+        is Err (e) -> print-line-uni ("FAIL source " & e)
+        is Ok (source) -> when gdl-game 0
+          is Err (e) -> print-line-uni ("FAIL target " & e)
+          is Ok (target) -> when gdl-game 0
+            is Err (e) -> print-line-uni ("FAIL negative target " & e)
+            is Ok (negative) -> gdl-run source target negative map
+
+Page 1

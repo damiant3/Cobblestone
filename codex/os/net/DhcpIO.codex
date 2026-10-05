@@ -38,7 +38,7 @@ Section: Waiting
     in act
       got <- udp-io-recv sk 1
       if got.ur-got == False then let restored = __heap-restore hp
-        in dhcp-io-await sk (fuel - 1) want
+      in dhcp-io-await sk (fuel - 1) want
       else let lease = dhcp-parse-response (got.ur-data)
       in if lease.valid & lease.msg-type == want then lease
       else let restored2 = __heap-restore hp
@@ -46,6 +46,67 @@ Section: Waiting
     end
 
 Section: Configuration
+
+  dhcp-io-client-matches : List Integer, List Integer, Integer -> Boolean
+  dhcp-io-client-matches (data) (mac) (i) =
+    if i >= 6 then True
+    else list-at data (28 + i) == list-at mac i & dhcp-io-client-matches data mac (i + 1)
+
+  dhcp-io-reply-matches : UdpRecv, List Integer, Integer -> Boolean
+  dhcp-io-reply-matches (got) (mac) (xid) =
+    if got.ur-got == False | got.ur-src-port /= dhcp-server-port | list-length mac /= 6 then False
+    else let data = got.ur-data
+    in if list-length data < dhcp-header-size + 4 then False
+    else if list-at data 0 /= dhcp-op-reply | list-at data 1 /= dhcp-htype-ethernet | list-at data 2 /= dhcp-hlen-ethernet then False
+    else if dhcp-read-be32 data 4 /= bit-and xid #FFFFFFFF then False
+    else if list-at data 236 /= 99 | list-at data 237 /= 130 | list-at data 238 /= 83 | list-at data 239 /= 99 then False
+    else dhcp-io-client-matches data mac 0 & dhcp-io-options-fit data (dhcp-header-size + 4) (list-length data)
+
+  dhcp-io-options-fit : List Integer, Integer, Integer -> Boolean
+  dhcp-io-options-fit (data) (at) (size) =
+    if at >= size then False
+    else let option = list-at data at
+    in if option == dhcp-opt-end then True
+    else if option == 0 then dhcp-io-options-fit data (at + 1) size
+    else if at + 1 >= size then False
+    else let next = at + 2 + list-at data (at + 1)
+    in if next > size then False else dhcp-io-options-fit data next size
+
+  dhcp-io-reply-lease : UdpRecv, List Integer, Integer, Integer, List Integer -> DhcpLease
+  dhcp-io-reply-lease (got) (mac) (xid) (want) (server) =
+    let lease = if dhcp-io-reply-matches got mac xid then dhcp-parse-response (got.ur-data) else dhcp-lease-empty
+    in let server-ok = if list-length server == 0 then True else ip-equal (lease.server-id) server
+    in if lease.valid & lease.msg-type == want & server-ok & ip-equal (lease.client-ip) [0, 0, 0, 0] == False & ip-equal (lease.subnet-mask) [0, 0, 0, 0] == False & lease.lease-time > 0 then lease else dhcp-lease-empty
+
+  dhcp-io-await-window : UdpSocket, List Integer, Integer, Integer, List Integer, Integer, (Integer -> Boolean), Integer -> [Concurrent, Network.Read] DhcpLease
+  dhcp-io-await-window (sk) (mac) (xid) (want) (server) (deadline) (keep) (fuel) =
+    if fuel <= 0 | get-ticks >= deadline | keep 0 == False then dhcp-lease-empty
+    else let hp = __heap-save
+    in act
+      got <- udp-io-recv sk 1
+      let lease = dhcp-io-reply-lease got mac xid want server
+      in if lease.valid then lease
+      else let restored = __heap-restore hp
+      in act
+        yielded <- if int-mod fuel 256 == 0 then process-yield else 0
+        dhcp-io-await-window sk mac xid want server deadline keep (fuel - 1)
+      end
+    end
+
+  dhcp-io-configure-window : List Integer, Text, Integer, Integer, (Integer -> Boolean) -> [Concurrent, Network.Read, Network.Write] NetworkConfig
+  dhcp-io-configure-window (mac) (hostname) (xid) (ticks) (keep) =
+    let sk = dhcp-io-socket mac [0, 0, 0, 0]
+    in let cfg = net-config-empty mac hostname
+    in act
+      sent <- udp-io-send sk (dhcp-build-discover xid mac)
+      offer <- dhcp-io-await-window sk mac xid dhcp-msg-offer [] (get-ticks + ticks) keep 50000000
+      if dhcp-is-offer offer == False then cfg
+      else act
+        requested <- udp-io-send sk (dhcp-build-request xid mac (offer.client-ip) (offer.server-id))
+        lease <- dhcp-io-await-window sk mac xid dhcp-msg-ack (offer.server-id) (get-ticks + ticks) keep 50000000
+        dhcp-io-apply cfg lease (get-ticks / 100)
+      end
+    end
 
   dhcp-io-configure : List Integer, Text, Integer, Integer, Integer -> [Network.Read, Network.Write] NetworkConfig
   dhcp-io-configure (mac) (hostname) (xid) (fuel) (now) =

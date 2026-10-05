@@ -1,0 +1,164 @@
+Chapter: TownDisputesProof
+  cites Uoaix chapter TownDisputes
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+
+  tdp-check : Text, Boolean -> [Console] Nothing
+  tdp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tdp-people : TfWorld, Integer -> Integer
+  tdp-people (w) (i) = if i == 8 then 0
+    else let p = tf-add-person w ("Person " & show i) 1 (1000 + i) 100 0 10000
+    in if p /= i then -1 else tdp-people w (i + 1)
+  tdp-party : Integer, Integer -> TrParty
+  tdp-party (kind) (id) = TrParty { kind = kind, id = id }
+  tdp-facts : Text -> TdReportFacts
+  tdp-facts (account) = TdReportFacts { verified = True, account = account,
+    happened = "Unsettled dispute", location = "Britain market",
+    wall-time = "2026-10-04T20:00:00Z", evidence = "fixture world log 9001" }
+  tdp-json : Text -> JsonValue
+  tdp-json (body) = (json-parse-value body 0 (text-length body)).value
+  tdp-no-account : Text -> Boolean
+  tdp-no-account (body) = when json-get (tdp-json body) "account"
+    is None -> True
+    is Just (value) -> False
+  tdp-queue-recovery : AdminWorld -> Boolean
+  tdp-queue-recovery (a) = let buf = alloc-bytes ac-size
+    in let first = admin-report-peek a
+    in when ac-encode a 100 7 buf ac-size
+      is Err (e) -> False
+      is Ok (size) -> when ac-decode-record buf size 100 7 a.world a.mind
+        is Err (e) -> False
+        is Ok (b) -> b.report-count == a.report-count & b.report-sequence == a.report-sequence & admin-report-peek b == first
+  tdp-fill : TdWorld, TrParty, TrParty -> Integer
+  tdp-fill (d) (claimant) (respondent) = if d.used == 128 then 0
+    else if td-file d True 4 1 2 claimant respondent (10000 + d.used) 0 (20000 + d.used) < 0 then -1
+    else tdp-fill d claimant respondent
+  tdp-run : EuCurrency, TrRegistry, WorldTable -> [Console] Nothing
+  tdp-run (x) (registry) (world) = act
+    people <- tf-new 0
+    town <- tf-add-town people "Britain" 100 101 102
+    residents <- tdp-people people 1
+    town-purse <- eu-open x 4 1
+    when tg-new-currency people x 1
+      is Err (e) -> print-line-uni ("FAIL currency government " & e)
+      is Ok (g) -> tdp-cases x registry world people g town residents town-purse
+  end
+  tdp-cases : EuCurrency, TrRegistry, WorldTable, TfWorld, TgWorld, Integer, Integer, Integer -> [Console] Nothing
+  tdp-cases (x) (registry) (world) (people) (g) (town) (residents) (town-purse) = act
+    registered-town <- tg-register g True 1 1 town-purse
+    admin <- admin-world-new people (tm-new 0)
+    binding <- Just x
+    mark <- __heap-save
+    d <- td-new g registry admin binding
+    built <- __heap-save
+    print-line-uni ("DISPUTES-BYTES " & show (built - mark))
+    crown <- tdp-party 5 0
+    debtor <- tdp-party 2 7
+    claimant <- tdp-party 2 2
+    respondent <- tdp-party 2 3
+    local-town <- tdp-party 4 1
+    player <- tdp-party 1 9
+    facts <- tdp-facts ""
+    player-facts <- tdp-facts "PlayerNine"
+    debt <- td-file d True 1 1 1 crown debtor 1 3 1001
+    tdp-check "mayor authority and actual denomination loan bind case" (town == 1 & residents == 0 & registered-town == 0 & debt == 1 & td-file d True 2 1 1 crown debtor 1 3 1002 == -1 & td-file d False 1 1 1 crown debtor 1 3 1002 == -1 & td-file d True 1 1 1 crown respondent 1 3 1002 == -1)
+    tdp-check "default and partial repayment cannot settle debt" (td-debt-settled d 1 debt == -1 & (list-at d.cases 0).status == 1)
+    paid-player <- eu-pay x True 4 3 0 0 1
+    paid-crown <- eu-pay x True 2 3 0 0 1
+    paid-debt <- eu-repay x True 3 3 1 2
+    before-close <- __heap-save
+    settled <- td-debt-settled d 1 debt
+    after-close <- __heap-save
+    tdp-check "only actual full repayment closes debt without another money move" (paid-player == 0 & paid-crown == 0 & paid-debt == 0 & settled == 0 & (list-at d.cases 0).status == 2 & td-debt-settled d 1 debt == -1 & eu-census x & before-close == after-close)
+    tdp-check "duplicate source event cannot reopen closed case" (td-file d True 1 1 2 claimant local-town 99 0 1001 == -1 & d.used == 1)
+    created <- world-create world (WorldObject { serial = 0, kind = 2, x = 100, y = 100, z = 0, graphic = 1000, hue = 0, container = 0, amount = 1, health = 100 })
+    serial <- when created
+      is Ok (value) -> value
+      is Err (e) -> -1
+    evidence <- TrEvidence { serial = serial, present = True, marked = True, owner = claimant, mark = claimant, mark-revision = 1 }
+    title <- tr-register registry True 1 claimant evidence x.world.hour
+    theft <- td-file d True 1 1 3 claimant respondent serial 0 1002
+    forged <- TrEvidence { serial = serial, present = True, marked = True, owner = claimant, mark = respondent, mark-revision = 2 }
+    tdp-check "registry mismatch and unverified restitution refuse settlement" (title == 1 & theft == 2 & td-title-settled d 1 theft False evidence == -1 & td-title-settled d 1 theft True forged == -1 & (list-at d.cases 1).status == 1)
+    offer <- TrCommand { kind = 2, verified = True, registrar = 1, actor = claimant, recipient = respondent, evidence = evidence, nonce = 0, event = 0, parent = 0, hour = x.world.hour }
+    when tr-prepare registry offer
+      is Err (e) -> print-line-uni ("FAIL prepared registry " & e)
+      is Ok (undo) -> act
+        tdp-check "prepared registry cannot supply settlement truth" (td-title-settled d 1 theft True evidence == -1 & (list-at d.cases 1).status == 1)
+        rolled-back <- tr-rollback undo
+        tdp-check "registry rollback leaves original title available" (rolled-back == 0 & registry.count == 1 & tr-check-mark registry evidence == 1)
+      end
+    tdp-check "registered truth and verified restitution close item dispute" (td-title-settled d 1 theft True evidence == 0 & (list-at d.cases 1).resolution == 2 & registry.count == 1)
+    land <- td-file d True 1 1 2 claimant local-town 77 0 1003
+    tdp-check "land closure requires admitted external agreement" (land == 3 & td-land-settled d 1 land False 9001 == -1 & td-land-settled d 1 land True 9001 == 0 & (list-at d.cases 2).resolution == 3)
+    conduct <- td-file d True 1 1 4 claimant player 888 0 1004
+    changed-input <- __record-set player "id" 99
+    tdp-check "filed identities detach and misconduct cannot be locally settled" (conduct == 4 & (list-at d.cases 3).respondent-id == 9 & td-debt-settled d 1 conduct == -1 & td-land-settled d 1 conduct True 9002 == -1 & td-title-settled d 1 conduct True evidence == -1)
+    tdp-check "player report requires bound account identity" (td-escalate d 1 conduct facts == -1 & admin.report-count == 0)
+    unverified <- __record-set player-facts "verified" False
+    tdp-check "unverified report facts cannot reach keeper queue" (td-escalate d 1 conduct player-facts == -1 & admin.report-count == 0 & (list-at d.cases 3).status == 1)
+    verified <- __record-set player-facts "verified" True
+    old-money <- x.count
+    report-before <- __heap-save
+    reported <- td-escalate d 1 conduct player-facts
+    report-after <- __heap-save
+    account-report <- admin-report-peek admin
+    tdp-check "player misconduct queues evidence once without account or money action" (reported == 0 & admin.report-count == 1 & (list-at d.cases 3).report == 1 & td-escalate d 1 conduct player-facts == -1 & json-get-str (tdp-json account-report) "account" "" == "PlayerNine" & text-contains account-report "source 1004" & text-contains account-report "object 888" & x.count == old-money & people.used == 7 & report-before == report-after)
+    acknowledged <- admin-report-ack admin 1
+    npc-case <- td-file d True 1 1 3 claimant respondent serial 0 1005
+    npc-report <- td-escalate d 1 npc-case facts
+    npc-body <- admin-report-peek admin
+    tdp-check "unsettled NPC dispute names NPC without invented account" (npc-report == 0 & admin-report-kind (tdp-json npc-body) == "npc" & admin-report-subject-id (tdp-json npc-body) == 3 & tdp-no-account npc-body)
+    npc-ack <- admin-report-ack admin 2
+    world-case <- td-file d True 1 1 2 claimant local-town 88 0 1006
+    world-report <- td-escalate d 1 world-case facts
+    world-body <- admin-report-peek admin
+    tdp-check "unsettled land matter names world town and plot evidence" (world-report == 0 & admin-report-kind (tdp-json world-body) == "world" & admin-report-subject-id (tdp-json world-body) == 1 & text-contains world-body "object 88" & tdp-no-account world-body)
+    pending <- td-file d True 1 1 3 claimant respondent serial 0 1007
+    queue-count <- admin.report-count
+    audit-count <- d.count
+    full-queue <- __record-set admin "report-count" 32
+    tdp-check "keeper queue backpressure preserves pending case and audit" (td-escalate d 1 pending facts == -1 & (list-at d.cases (pending - 1)).status == 1 & d.count == audit-count)
+    queue-restored <- __record-set admin "report-count" queue-count
+    full-audit <- __record-set d "count" 256
+    tdp-check "dispute audit exhaustion refuses before queue mutation" (td-escalate d 1 pending facts == -1 & admin.report-count == queue-count & (list-at d.cases (pending - 1)).status == 1)
+    audit-restored <- __record-set d "count" audit-count
+    replacement <- tg-appoint g True 1 4
+    tdp-check "replacement mayor changes settlement and report authority immediately" (replacement == 0 & td-escalate d 1 pending facts == -1 & td-escalate d 4 pending facts == 0 & admin.report-count == queue-count + 1)
+    queued-mark <- __heap-save
+    queue-saved <- tdp-queue-recovery admin
+    queue-cleaned <- __heap-restore queued-mark
+    tdp-check "keeper queue checkpoint retains dispute reports" queue-saved
+    budget-before <- __heap-save
+    filled <- tdp-fill d claimant local-town
+    budget-after <- __heap-save
+    tdp-check "case capacity refuses without overwriting history or growing action heap" (filled == 0 & d.used == 128 & td-file d True 4 1 2 claimant local-town 123 0 99999 == -1 & (list-at d.cases 0).source-event == 1001 & budget-before == budget-after)
+  end
+  tdp-registry : EuCurrency, WorldTable -> [Console] Nothing
+  tdp-registry (x) (world) = act
+    when tr-new 2
+      is Err (e) -> print-line-uni ("FAIL registry " & e)
+      is Ok (r) -> tdp-run x r world
+  end
+  tdp-world : EuiScenario -> [Console] Nothing
+  tdp-world (scenario) = act
+    tdp-check "currency debt fixture" (scenario.failed == 0 & efi-valid scenario.state)
+    when world-new 16
+      is Err (e) -> print-line-uni ("FAIL world " & e)
+      is Ok (world) -> tdp-registry scenario.state.currency world
+  end
+  opening : [Console] Nothing = act
+    when efi-source 0
+      is Err (e) -> print-line-uni ("FAIL currency fixture " & e)
+      is Ok (state) -> tdp-world (efi-build state)
+  end

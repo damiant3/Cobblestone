@@ -1,0 +1,81 @@
+Chapter: ItemTableProof
+  cites Uoaix chapter ItemTable
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  itp-check : Text, Boolean -> [Console] Integer
+  itp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  itp-poke : Integer, Integer, List Integer, Integer -> Integer
+  itp-poke (tiles) (at) (bytes) (i) = if i >= list-length bytes then 0
+    else let saved = poke-byte tiles (at + i) (list-at bytes i) in itp-poke tiles at bytes (i + 1)
+  itp-tile : Integer, Integer, Integer, List Integer -> Integer
+  itp-tile (tiles) (graphic) (weight) (name) = let w = poke-byte tiles (it-entry tiles graphic + 4) weight
+    in itp-poke tiles (it-entry tiles graphic + 17) name 0
+  itp-make : WorldTable, Integer, Integer, Integer, Integer -> Integer
+  itp-make (world) (owner) (graphic) (amount) (layer) =
+    let item = __record-set (gs-item owner graphic 0) "amount" amount
+    in when world-create world item
+      is Err (_) -> 0
+      is Ok (serial) -> let placed = if layer > 0 then world-set-layer world serial layer else 0 in serial
+  itp-status : Integer -> List Integer
+  itp-status (serial) = gp-zeros (gp-put32 (gp-put16 (gp-start 17) 66) serial) 59
+
+  opening : [Console] Integer = act
+    when gs-new 0
+      is Err (e) -> act
+        print-line-uni ("FAIL shard " & e)
+        1
+      end
+      is Ok (shard) -> act
+        let world = shard.world
+        in let tiles = alloc-bytes 608256
+        in let t1 = itp-tile tiles #0E75 3 [98,97,99,107,112,97,99,107]
+        in let t2 = itp-tile tiles #103B 1 [98,114,101,97,100,32,108,111,97,37,118,101,115,47,102,37]
+        in let t3 = itp-tile tiles #13E3 8 [115,109,105,116,104]
+        in let t4 = itp-tile tiles #09B2 3 [98,97,99,107,112,97,99,107]
+        in let t5 = itp-tile tiles #1BF2 0 [105,114,111,110,32,105,110,103,111,116,37,115]
+        in let t6 = itp-tile tiles #0F6C 255 [103,97,116,101]
+        in let t7 = itp-tile tiles #0F7A 0 [112,101,97,114,108]
+        in let t8 = poke-byte tiles (it-entry tiles #0F7A + 1) 8
+        in when world-create world (gs-mobile 0 10 10 0 400 0)
+          is Err (e) -> act
+            print-line-uni ("FAIL mobile " & e)
+            1
+          end
+          is Ok (mobile) ->
+            let pack = itp-make world mobile #0E75 1 21
+            in let bank = itp-make world mobile #09B2 1 29
+            in let banked = itp-make world bank #0EED 500 0
+            in let gold = itp-make world pack #0EED 120 0
+            in let bread = itp-make world pack #103B 2 0
+            in let fixed = itp-make world pack #0F6C 1 0
+            in let pearls = itp-make world pack #0F7A 25 0
+            in let hammer = itp-make world mobile #13E3 1 1
+            in let status = itp-status mobile
+            in let rewritten = it-status world tiles mobile 0 0 status
+            in let ground = itp-make world 0 #13E3 1 0
+            in let lifting = itp-status mobile
+            in let lifted = it-status world tiles mobile ground 1 lifting
+            in let own = itp-status mobile
+            in let pocketed = it-status world tiles mobile hammer 1 own
+            in let bare = itp-status mobile
+            in let control = it-status world 0 mobile 0 0 bare
+            in act
+              a <- itp-check "plural markup picks singular and plural forms" (it-name tiles #103B 1 == "bread loaf" & it-name tiles #103B 2 == "bread loaves"
+                & it-name tiles #1BF2 1 == "iron ingot" & it-name tiles #1BF2 3 == "iron ingots")
+              b <- itp-check "carried weight sums pack tree and worn items, skips bank and immovable art, generic stacks 0.1 each" (it-carried world tiles mobile False == 19)
+              c <- itp-check "carried gold excludes the bank box" (it-carried world tiles mobile True == 120)
+              d <- itp-check "0x11 gold and weight written big-endian" (gp-u32 status 58 == 120 & gp-u16 status 64 == 19 & gp-u16 status 62 == 0)
+              e <- itp-check "without the table only gold weighs and names fall back" (gp-u16 bare 64 == 3 & gp-u32 bare 58 == 120 & it-name 0 #103B 1 == "")
+              f <- itp-check "other serials are not rewritten" (let other = itp-status (mobile + 1) in let r = it-status world tiles mobile 0 0 other in gp-u32 other 58 == 0)
+              g <- itp-check "a held item from the ground weighs at once, one already carried does not double" (gp-u16 lifting 64 == 27 & gp-u16 own 64 == 19)
+              print-line-uni ("ITEM TABLE PROOF failures=" & show (a + b + c + d + e + f + g))
+              a + b + c + d + e + f + g
+            end
+      end
+  end

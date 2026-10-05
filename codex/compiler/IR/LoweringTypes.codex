@@ -9,57 +9,57 @@ Section: Lookup Overlay
  O(1) per binding regardless of depth.
 
   LookupOverlay =
-   | OverlayNil
-   | OverlayCons (TypeBinding) (LookupOverlay)
+    | OverlayNil
+    | OverlayCons (TypeBinding) (LookupOverlay)
 
   lookup-overlay : LookupOverlay, Text -> CodexType
   lookup-overlay (ovl) (name) =
-   when ovl
-    is OverlayNil -> ErrorTy
-    is OverlayCons (b) (rest) ->
-     if b.name == name then b.bound-type
-     else lookup-overlay rest name
+    when ovl
+     is OverlayNil -> ErrorTy
+     is OverlayCons (b) (rest) ->
+      if b.name == name then b.bound-type
+      else lookup-overlay rest name
 
 Section: Type Lookup
   lookup-type : List TypeBinding, Text -> CodexType
   lookup-type (bindings) (name) =
-   lookup-type-loop bindings name 0 (list-length bindings)
+    lookup-type-loop bindings name 0 (list-length bindings)
 
   lookup-type-loop : List TypeBinding, Text, Integer, Integer -> CodexType
   lookup-type-loop (bindings) (name) (i) (len) =
-   if i == len then ErrorTy
-   else let b = list-at bindings i
-   in if b.name == name then b.bound-type
-      else lookup-type-loop bindings name (i + 1) len
+    if i == len then ErrorTy
+    else let b = list-at bindings i
+    in if b.name == name then b.bound-type
+    else lookup-type-loop bindings name (i + 1) len
 
   lookup-type-bsearch : List TypeBinding, Text -> CodexType
   lookup-type-bsearch (bindings) (name) =
-   let len = list-length bindings
-   in if len == 0 then ErrorTy
-   else let pos = bsearch-text-pos bindings name 0 len
-   in if pos >= len then ErrorTy
-   else let b = list-at bindings pos
-   in if b.name == name then b.bound-type else ErrorTy
+    let len = list-length bindings
+    in if len == 0 then ErrorTy
+    else let pos = bsearch-text-pos bindings name 0 len
+    in if pos >= len then ErrorTy
+    else let b = list-at bindings pos
+    in if b.name == name then b.bound-type else ErrorTy
 
   lookup-type-split : LookupOverlay, List TypeBinding, Text -> CodexType
   lookup-type-split (overlay) (base) (name) =
-   let overlay-hit = lookup-overlay overlay name
-   in when overlay-hit
-    is ErrorTy -> lookup-type-bsearch base name
-    is otherwise -> overlay-hit
+    let overlay-hit = lookup-overlay overlay name
+    in when overlay-hit
+     is ErrorTy -> lookup-type-bsearch base name
+     is otherwise -> overlay-hit
 
   compare-binding-names : TypeBinding, TypeBinding -> Integer
   compare-binding-names (a) (b) =
-   let by-name = text-compare (a.name) (b.name)
-   in if by-name /= 0 then by-name
-   else binding-shape-rank (a.bound-type) - binding-shape-rank (b.bound-type)
+    let by-name = text-compare (a.name) (b.name)
+    in if by-name /= 0 then by-name
+    else binding-shape-rank (a.bound-type) - binding-shape-rank (b.bound-type)
 
   binding-shape-rank : CodexType -> Integer
   binding-shape-rank (ty) =
-   when ty
-    is SumTy (sn) (sa) (sc) | RecordTy (rn) (ra) (rf) -> 0
-    is ForAllTy (id) (body) | ForAllEff (id) (body) -> 2
-    is otherwise -> 1
+    when ty
+     is SumTy (sn) (sa) (sc) | RecordTy (rn) (ra) (rf) -> 0
+     is ForAllTy (id) (body) | ForAllEff (id) (body) -> 2
+     is otherwise -> 1
 
   sort-bindings : List TypeBinding -> List TypeBinding
   sort-bindings (xs) = sort-by xs compare-binding-names
@@ -67,69 +67,89 @@ Section: Type Lookup
 Section: Type Substitution
   subst-type-vars-from-arg : CodexType, CodexType, CodexType -> CodexType
   subst-type-vars-from-arg (param-ty) (arg-ty) (target) =
-   when param-ty
-    is TypeVar (id) -> subst-type-var-in-target target id arg-ty
-    is ListTy (pe) -> subst-from-list pe arg-ty target
-    is FunTy (pp) (prow) (pr) -> subst-from-fun pp pr arg-ty target
-    is TypeApply (pf) (pa) -> when arg-ty is TypeApply (af) (aa) -> let t2 = subst-type-vars-from-arg pf af target in subst-type-vars-from-arg pa aa t2 is otherwise -> target
-    is SumTy (pn) (pargs) (pctors) -> when arg-ty is SumTy (an) (aargs) (actors) -> subst-from-named (pn.value) (an.value) pargs aargs target is otherwise -> target
-    is RecordTy (pn) (pargs) (pfields) -> when arg-ty is RecordTy (an) (aargs) (afields) -> subst-from-named (pn.value) (an.value) pargs aargs target is otherwise -> target
-    is ConstructedTy (pn) (pargs) -> when arg-ty is ConstructedTy (an) (aargs) -> subst-from-named (pn.value) (an.value) pargs aargs target is otherwise -> target
-    is LinkedListTy (pe) -> when arg-ty is LinkedListTy (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
-    is VectorTy (pw) (pe) -> when arg-ty is VectorTy (aw) (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
-    is SizedVecTy (pw) (pe) -> when arg-ty is SizedVecTy (aw) (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
-    is UnitTy (pn) (pe) -> when arg-ty is UnitTy (an) (ae) -> if pn.value == an.value then subst-type-vars-from-arg pe ae target else target is otherwise -> target
-    is LinearTy (pe) -> when arg-ty is LinearTy (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
-    is otherwise -> target
+    when param-ty
+     is TypeVar (id) -> subst-type-var-in-target target id arg-ty
+     is ListTy (pe) -> subst-from-list pe arg-ty target
+     is FunTy (pp) (prow) (pr) -> subst-from-fun pp pr arg-ty target
+     is TypeApply (pf) (pa) ->
+       when arg-ty
+        is TypeApply (af) (aa) ->
+          let t2 = subst-type-vars-from-arg pf af target
+          in subst-type-vars-from-arg pa aa t2
+        is otherwise -> target
+     is SumTy (pn) (pargs) (pctors) ->
+       when arg-ty
+        is SumTy (an) (aargs) (actors) -> subst-from-named (pn.value) (an.value) pargs aargs target
+        is otherwise -> target
+     is RecordTy (pn) (pargs) (pfields) ->
+       when arg-ty
+        is RecordTy (an) (aargs) (afields) -> subst-from-named (pn.value) (an.value) pargs aargs target
+        is otherwise -> target
+     is ConstructedTy (pn) (pargs) ->
+       when arg-ty
+        is ConstructedTy (an) (aargs) -> subst-from-named (pn.value) (an.value) pargs aargs target
+        is otherwise -> target
+     is LinkedListTy (pe) -> when arg-ty is LinkedListTy (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
+     is VectorTy (pw) (pe) -> when arg-ty is VectorTy (aw) (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
+     is SizedVecTy (pw) (pe) ->
+       when arg-ty
+        is SizedVecTy (aw) (ae) -> subst-type-vars-from-arg pe ae target
+        is otherwise -> target
+     is UnitTy (pn) (pe) ->
+       when arg-ty
+        is UnitTy (an) (ae) -> if pn.value == an.value then subst-type-vars-from-arg pe ae target else target
+        is otherwise -> target
+     is LinearTy (pe) -> when arg-ty is LinearTy (ae) -> subst-type-vars-from-arg pe ae target is otherwise -> target
+     is otherwise -> target
 
   subst-from-named : Text, Text, List CodexType, List CodexType, CodexType -> CodexType
   subst-from-named (pn) (an) (pargs) (aargs) (target) =
-   if pn == an then subst-from-tyargs pargs aargs target 0 else target
+    if pn == an then subst-from-tyargs pargs aargs target 0 else target
 
   subst-from-tyargs : List CodexType, List CodexType, CodexType, Integer -> CodexType
   subst-from-tyargs (ps) (as) (target) (i) =
-   if i >= list-length ps then target
-   else if i >= list-length as then target
-   else let t2 = subst-type-vars-from-arg (list-at ps i) (list-at as i) target
-   in subst-from-tyargs ps as t2 (i + 1)
+    if i >= list-length ps then target
+    else if i >= list-length as then target
+    else let t2 = subst-type-vars-from-arg (list-at ps i) (list-at as i) target
+    in subst-from-tyargs ps as t2 (i + 1)
 
   subst-from-list : CodexType, CodexType, CodexType -> CodexType
   subst-from-list (pe) (arg-ty) (target) =
-   when arg-ty
-    is ListTy (ae) -> subst-type-vars-from-arg pe ae target
-    is otherwise -> target
+    when arg-ty
+     is ListTy (ae) -> subst-type-vars-from-arg pe ae target
+     is otherwise -> target
 
   subst-from-fun : CodexType, CodexType, CodexType, CodexType -> CodexType
   subst-from-fun (pp) (pr) (arg-ty) (target) =
-   when arg-ty
-    is FunTy (ap) (arow) (ar) ->
-     let t2 = subst-type-vars-from-arg pp ap target
-     in subst-type-vars-from-arg pr ar t2
-    is otherwise -> target
+    when arg-ty
+     is FunTy (ap) (arow) (ar) ->
+      let t2 = subst-type-vars-from-arg pp ap target
+      in subst-type-vars-from-arg pr ar t2
+     is otherwise -> target
 
   subst-type-var-in-target : CodexType, Integer, CodexType -> CodexType
   subst-type-var-in-target (ty) (var-id) (replacement) =
-   if ty-has-typevars ty == False then ty
-   else when ty
-    is TypeVar (id) -> if id == var-id then replacement else ty
-    is ForAllTy (fid) (body) ->
-     if fid == var-id then ty
-     else ForAllTy fid (subst-type-var-in-target body var-id replacement)
-    is ForAllEff (fid) (body) -> ForAllEff fid (subst-type-var-in-target body var-id replacement)
-    is otherwise -> codex-type-map-children (\c -> subst-type-var-in-target c var-id replacement) ty
+    if ty-has-typevars ty == False then ty
+    else when ty
+     is TypeVar (id) -> if id == var-id then replacement else ty
+     is ForAllTy (fid) (body) ->
+      if fid == var-id then ty
+      else ForAllTy fid (subst-type-var-in-target body var-id replacement)
+     is ForAllEff (fid) (body) -> ForAllEff fid (subst-type-var-in-target body var-id replacement)
+     is otherwise -> codex-type-map-children (\c -> subst-type-var-in-target c var-id replacement) ty
 
   is-text-type : CodexType -> Boolean
   is-text-type (ty) =
-   when ty
-    is TextTy -> True
-    is otherwise -> False
+    when ty
+     is TextTy -> True
+     is otherwise -> False
 
 Section: Binary Op Lowering
   is-number-type : CodexType -> Boolean
   is-number-type (ty) =
-   when ty
-    is RealTy (w) (m) -> True
-    is otherwise -> False
+    when ty
+     is RealTy (w) (m) -> True
+     is otherwise -> False
 
  These three drive opcode selection and they ask about the MODE alone,
  which is why f32 answers True for trapping and saturating now: before
@@ -147,22 +167,22 @@ Section: Binary Op Lowering
 
   is-vector-type : CodexType -> Boolean
   is-vector-type (ty) =
-   when ty
-    is VectorTy (n) (t) -> True
-    is otherwise -> False
+    when ty
+     is VectorTy (n) (t) -> True
+     is otherwise -> False
 
   is-boolean-type : CodexType -> Boolean
   is-boolean-type (ty) =
-   when ty
-    is BooleanTy -> True
-    is otherwise -> False
+    when ty
+     is BooleanTy -> True
+     is otherwise -> False
 
   is-list-type : CodexType -> Boolean
   is-list-type (ty) =
-   when ty
-    is ListTy (e) -> True
-    is LinkedListTy (e) -> True
-    is otherwise -> False
+    when ty
+     is ListTy (e) -> True
+     is LinkedListTy (e) -> True
+     is otherwise -> False
 
  A Text's header word is its BYTE LENGTH and a list's is its ELEMENT
  COUNT, so the two append opcodes are not interchangeable at runtime:
@@ -171,28 +191,30 @@ Section: Binary Op Lowering
 
   append-op-unclassified : BinaryOp, CodexType -> Boolean
   append-op-unclassified (op) (ty0) =
-   let ty = strip-unit-ty ty0
-   in when op
-    is OpAppend -> if is-text-type ty then False else if is-list-type ty then False else True
-    is OpAnd -> if is-text-type ty then False else if is-boolean-type ty then False else if is-list-type ty then False else True
-    is otherwise -> False
+    let ty = strip-unit-ty ty0
+    in when op
+     is OpAppend -> if is-text-type ty then False else if is-list-type ty then False else True
+     is OpAnd -> if is-text-type ty then
+       False
+     else if is-boolean-type ty then False else if is-list-type ty then False else True
+     is otherwise -> False
 
   is-integer-type : CodexType -> Boolean
   is-integer-type (ty) =
-   when ty
-    is IntegerTy (lo) (hi) (m) -> True
-    is otherwise -> False
+    when ty
+     is IntegerTy (lo) (hi) (m) -> True
+     is otherwise -> False
 
   arith-op-unclassified : BinaryOp, CodexType -> Boolean
   arith-op-unclassified (op) (ty0) =
-   let ty = strip-unit-ty ty0
-   in when op
-    is OpAdd | OpSub | OpMul | OpDiv ->
-     if is-vector-type ty then False
-     else if is-number-type ty then False
-     else if is-integer-type ty then False
-     else True
-    is otherwise -> False
+    let ty = strip-unit-ty ty0
+    in when op
+     is OpAdd | OpSub | OpMul | OpDiv ->
+      if is-vector-type ty then False
+      else if is-number-type ty then False
+      else if is-integer-type ty then False
+      else True
+     is otherwise -> False
 
  The operand type is stripped of any `unit` wrapper before the dispatch
  below reads it, because a unit is erased at codegen and every predicate
@@ -207,58 +229,95 @@ Section: Binary Op Lowering
 
   lower-bin-op : BinaryOp, CodexType -> IRBinaryOp
   lower-bin-op (op) (ty0) =
-   let ty = strip-unit-ty ty0
-   in when op
-    is OpAdd -> if is-vector-type ty then IrAddVec else if is-real-saturating-type ty then IrAddRealSaturating else if is-real-trapping-type ty then IrAddRealTrapping else if is-real-approx-type ty then IrAddRealApprox else if is-number-type ty then IrAddNum else IrAddInt
-    is OpSub -> if is-vector-type ty then IrSubVec else if is-real-saturating-type ty then IrSubRealSaturating else if is-real-trapping-type ty then IrSubRealTrapping else if is-real-approx-type ty then IrSubRealApprox else if is-number-type ty then IrSubNum else IrSubInt
-    is OpMul -> if is-vector-type ty then IrMulVec else if is-real-saturating-type ty then IrMulRealSaturating else if is-real-trapping-type ty then IrMulRealTrapping else if is-real-approx-type ty then IrMulRealApprox else if is-number-type ty then IrMulNum else IrMulInt
-    is OpDiv -> if is-vector-type ty then IrDivVec else if is-real-saturating-type ty then IrDivRealSaturating else if is-real-trapping-type ty then IrDivRealTrapping else if is-real-approx-type ty then IrDivRealApprox else if is-number-type ty then IrDivNum else IrDivInt
-    is OpPow -> IrPowInt
-    is OpEq -> IrEq
-    is OpNotEq -> IrNotEq
-    is OpLt -> if is-vector-type ty then IrLtVec else IrLt
-    is OpGt -> if is-vector-type ty then IrGtVec else IrGt
-    is OpLtEq -> if is-vector-type ty then IrLtEqVec else IrLtEq
-    is OpGtEq -> if is-vector-type ty then IrGtEqVec else IrGtEq
-    is OpDefEq -> IrEq
-    is OpAppend -> if is-text-type ty then IrAppendText else IrAppendList
-    is OpCons -> IrConsList
-    is OpAnd -> if is-text-type ty then IrAppendText else if is-boolean-type ty then IrAnd else IrAppendList
-    is OpBoolAnd -> IrAnd
-    is OpOr -> IrOr
-    is OpApproxEq -> IrApproxEq
-    is OpApproxEqExact -> IrApproxEqExact
+    let ty = strip-unit-ty ty0
+    in when op
+     is OpAdd -> if is-vector-type ty then
+       IrAddVec
+     else if is-real-saturating-type ty then
+       IrAddRealSaturating
+     else if is-real-trapping-type ty then
+       IrAddRealTrapping
+     else if is-real-approx-type ty then
+       IrAddRealApprox
+     else if is-number-type ty then IrAddNum else IrAddInt
+     is OpSub -> if is-vector-type ty then
+       IrSubVec
+     else if is-real-saturating-type ty then
+       IrSubRealSaturating
+     else if is-real-trapping-type ty then
+       IrSubRealTrapping
+     else if is-real-approx-type ty then
+       IrSubRealApprox
+     else if is-number-type ty then IrSubNum else IrSubInt
+     is OpMul -> if is-vector-type ty then
+       IrMulVec
+     else if is-real-saturating-type ty then
+       IrMulRealSaturating
+     else if is-real-trapping-type ty then
+       IrMulRealTrapping
+     else if is-real-approx-type ty then
+       IrMulRealApprox
+     else if is-number-type ty then IrMulNum else IrMulInt
+     is OpDiv -> if is-vector-type ty then
+       IrDivVec
+     else if is-real-saturating-type ty then
+       IrDivRealSaturating
+     else if is-real-trapping-type ty then
+       IrDivRealTrapping
+     else if is-real-approx-type ty then
+       IrDivRealApprox
+     else if is-number-type ty then IrDivNum else IrDivInt
+     is OpPow -> IrPowInt
+     is OpEq -> IrEq
+     is OpNotEq -> IrNotEq
+     is OpLt -> if is-vector-type ty then IrLtVec else IrLt
+     is OpGt -> if is-vector-type ty then IrGtVec else IrGt
+     is OpLtEq -> if is-vector-type ty then IrLtEqVec else IrLtEq
+     is OpGtEq -> if is-vector-type ty then IrGtEqVec else IrGtEq
+     is OpDefEq -> IrEq
+     is OpAppend -> if is-text-type ty then IrAppendText else IrAppendList
+     is OpCons -> IrConsList
+     is OpAnd -> if is-text-type ty then
+       IrAppendText
+     else if is-boolean-type ty then IrAnd else IrAppendList
+     is OpBoolAnd -> IrAnd
+     is OpOr -> IrOr
+     is OpApproxEq -> IrApproxEq
+     is OpApproxEqExact -> IrApproxEqExact
 
   vec-cmp-builtin : BinaryOp, CodexType -> Text
   vec-cmp-builtin (op) (ty) =
-   when strip-unit-ty ty
-    is VectorTy (n) (et) ->
-     when op
-      is OpEq -> if n == 2 & is-integer-type et then "vec-eq" else ""
-      is OpNotEq -> if n == 2 & is-integer-type et then "vec-ne" else ""
-      is OpApproxEq -> if n == 2 & is-real-type et & is-real-f32 et == False then "vec-approx-eq" else if n == 4 & is-real-f32 et then "vec4-approx-eq" else ""
-      is OpApproxEqExact -> if n == 2 & is-real-type et & is-real-f32 et == False then "vec-approx-exact" else if n == 4 & is-real-f32 et then "vec4-approx-exact" else ""
-      is otherwise -> ""
-    is otherwise -> ""
+    when strip-unit-ty ty
+     is VectorTy (n) (et) ->
+      when op
+       is OpEq -> if n == 2 & is-integer-type et then "vec-eq" else ""
+       is OpNotEq -> if n == 2 & is-integer-type et then "vec-ne" else ""
+       is OpApproxEq -> if n == 2 & is-real-type et & is-real-f32 et == False then
+         "vec-approx-eq"
+       else if n == 4 & is-real-f32 et then "vec4-approx-eq" else ""
+       is OpApproxEqExact -> if n == 2 & is-real-type et & is-real-f32 et == False then
+         "vec-approx-exact"
+       else if n == 4 & is-real-f32 et then "vec4-approx-exact" else ""
+       is otherwise -> ""
+     is otherwise -> ""
 
   binary-result-type : BinaryOp, CodexType, CodexType -> CodexType
   binary-result-type (op) (left-ty) (expected-ty) =
-   when op
-    is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq | OpDefEq | OpApproxEq | OpApproxEqExact ->
-     when left-ty
-      is VectorTy (n) (et) -> VectorMaskTy n et
-      is otherwise -> BooleanTy
-    is OpAnd -> if is-boolean-type left-ty then BooleanTy
-           else if is-text-type left-ty then TextTy
-           else left-ty
-    is OpBoolAnd -> BooleanTy
-    is OpOr -> BooleanTy
-    is OpAppend -> if is-text-type left-ty then TextTy
-           else if is-text-type expected-ty then TextTy
-           else left-ty
-    is OpCons -> if is-list-type expected-ty then expected-ty
-           else deck-record (ListTy left-ty)
-    is otherwise -> left-ty
+    when op
+     is OpEq | OpNotEq | OpLt | OpGt | OpLtEq | OpGtEq | OpDefEq | OpApproxEq | OpApproxEqExact ->
+      when left-ty
+       is VectorTy (n) (et) -> VectorMaskTy n et
+       is otherwise -> BooleanTy
+     is OpAnd -> if is-boolean-type left-ty then BooleanTy
+     else if is-text-type left-ty then TextTy
+     else left-ty
+     is OpBoolAnd -> BooleanTy
+     is OpOr -> BooleanTy
+     is OpAppend -> if is-text-type left-ty then TextTy
+     else if is-text-type expected-ty then TextTy
+     else left-ty
+     is OpCons -> if is-list-type expected-ty then expected-ty
+     else deck-record (ListTy left-ty)
+     is otherwise -> left-ty
 
 Page 2 of 2
-

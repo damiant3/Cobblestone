@@ -1,0 +1,84 @@
+import {readFileSync,mkdtempSync,createReadStream,writeFileSync} from 'node:fs';
+import {join,resolve,dirname} from 'node:path';
+import {tmpdir} from 'node:os';
+import {fileURLToPath} from 'node:url';
+import {spawn,execFileSync,spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import http from 'node:http';
+
+const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../../..');
+const [htmlPath,basePath,extraPath,referencePath,outPath,evidencePath,wArg='1024',hArg='1024',samplerArg='0',noisePath=join(dirname(htmlPath||''),'noise.wasm')]=process.argv.slice(2);
+const expectedWidth=Number(wArg),expectedHeight=Number(hArg),sampler=Number(samplerArg);
+const samplerNames=['Euler','DPM++ SDE','DPM++ 2M','DPM++ 2M SDE','DPM++ 2M SDE Heun','DPM++ 2S a','DPM++ 3M SDE'];
+if(!Number.isInteger(sampler)||sampler<0||sampler>=samplerNames.length)throw new Error('Unsupported sampler');
+if(!['1024x1024','1344x768','768x1344'].includes(`${expectedWidth}x${expectedHeight}`))throw new Error('Unsupported grade dimensions');
+if(!evidencePath)throw new Error('Usage: node codex/plugs/html/arms/sdxl-image.mjs arm.html BrowserKernels.wgsl BrowserClipKernels.wgsl native.png browser.png reference-evidence.json [width height sampler-id noise.wasm]');
+const ckpt=join(repo,'build-output/diffusion-models/dreamshaperXL_lightningDPMSDE.safetensors');
+const checkpointHash=createHash('sha256');for await(const bytes of createReadStream(ckpt))checkpointHash.update(bytes);
+const checkpointSha256=checkpointHash.digest('hex');console.log('Checkpoint SHA256 '+checkpointSha256);
+const prompt='painterly fantasy concept art, norse viking theme, warm firelight against cold blue night, cinematic lighting, rich detail, game key art, four iron-bound wooden chests around a carpenter workbench, joined by glowing golden rune threads, inside a torch-lit longhouse';
+const negative='text, letters, words, watermark, signature, logo, ui, blurry, deformed, ugly, lowres, jpeg artifacts, photo, photograph, modern';
+const expectedParameters=prompt+'\nNegative prompt: '+negative+'\nSteps: 6, Sampler: '+samplerNames[sampler]+', Schedule type: Karras, CFG scale: 2, Seed: 7201, Size: '+expectedWidth+'x'+expectedHeight+', Model: dreamshaperXL_lightningDPMSDE';
+const reference=readFileSync(referencePath);let parameters='',width=0,height=0;
+if(reference.subarray(0,8).toString('hex')!=='89504e470d0a1a0a')throw new Error('Invalid native PNG signature');
+for(let off=8;off<reference.length;){const n=reference.readUInt32BE(off),type=reference.toString('ascii',off+4,off+8);if(off+12+n>reference.length)throw new Error('Truncated reference PNG');if(type==='IHDR'){width=reference.readUInt32BE(off+8);height=reference.readUInt32BE(off+12);}if(type==='tEXt'){const t=reference.toString('utf8',off+8,off+8+n);if(t.startsWith('parameters\0'))parameters=t.slice(11);}off+=12+n;}
+if(width!==expectedWidth||height!==expectedHeight||parameters!==expectedParameters)throw new Error('Native reference dimensions/request metadata differ');
+console.log('Native PNG SHA256 '+createHash('sha256').update(reference).digest('hex'));
+const tokenizer='D:/AI/DiffusionForge/webui/backend/huggingface/stabilityai/stable-diffusion-xl-base-1.0/tokenizer';
+const evidence=JSON.parse(readFileSync(evidencePath,'utf8'));
+const hashFile=async path=>{const h=createHash('sha256');for await(const b of createReadStream(path))h.update(b);return h.digest('hex');};
+const sameHash=(actual,recorded)=>typeof recorded==='string'&&actual===recorded.toLowerCase();
+if(evidence.nativeExit!==0||!new RegExp(`^png ${width}x${height}: [0-9]+ bytes$`).test(evidence.nativeResult)||!sameHash(checkpointSha256,evidence.checkpointSha256)||!sameHash(createHash('sha256').update(reference).digest('hex'),evidence.imageSha256)||!sameHash(await hashFile(join(tokenizer,'vocab.json')),evidence.vocabSha256)||!sameHash(await hashFile(join(tokenizer,'merges.txt')),evidence.mergesSha256)||!sameHash(await hashFile(join(dirname(evidencePath),'reference.cdx')),evidence.nativeCdxSha256)||!sameHash(await hashFile(join(repo,'build/sdxl-browser-reference.codex')),evidence.nativeSourceSha256))throw new Error('Native reference provenance differs');
+if(sampler!==0||evidence.generatedSourceSha256||expectedWidth!==1024||expectedHeight!==1024){if(evidence.width!==width||evidence.height!==height||!sameHash(await hashFile(join(dirname(evidencePath),'reference.codex')),evidence.generatedSourceSha256))throw new Error('Generated reference dimensions/source differ');}
+if(sampler!==0&&evidence.sampler!==sampler)throw new Error('Native reference sampler differs');
+const fixtureHashes={'brownian-noise.bin':'0ba4e23c96d0d8237d8bc5f52156a29c3e38b28a60182d398feb9787615897a5','brownian-sigmas.bin':'139cb5300c3fa5d4a3af4f0c797ecff30cdc0880de547484fd51c2a0d992ad8e','brownian-queries.bin':'6b95982ba125502dfbd0d29aa8a83adaabebde50d81c8cdd51ba05cefd98b343'};
+const fixtureWords=name=>{const b=readFileSync(join(repo,'codex/test/gpu-files',name));if(b.length%4||createHash('sha256').update(b).digest('hex')!==fixtureHashes[name])throw new Error('Brownian fixture provenance differs: '+name);const words=Array.from({length:b.length/4},(_,i)=>{if(!Number.isFinite(b.readFloatLE(i*4)))throw new Error('Nonfinite fixture');return b.readInt32LE(i*4);});return JSON.stringify(words);};
+const html=readFileSync(htmlPath,'utf8'),data={'sdxl-noise':readFileSync(noisePath).toString('base64'),width:String(width),height:String(height),sampler:String(sampler),'noise-fixture':fixtureWords('brownian-noise.bin'),'noise-sigmas':fixtureWords('brownian-sigmas.bin'),'noise-queries':fixtureWords('brownian-queries.bin'),base:readFileSync(basePath,'utf8'),extra:readFileSync(extraPath,'utf8'),prompt,negative,vocab:JSON.stringify(Array.from(readFileSync(join(tokenizer,'vocab.json')))),merges:JSON.stringify(Array.from(readFileSync(join(tokenizer,'merges.txt'))))};
+console.log('Artifacts '+JSON.stringify(Object.fromEntries([['html',html],['base',data.base],['extra',data.extra],['noise',readFileSync(noisePath)]].map(([k,v])=>[k,createHash('sha256').update(v).digest('hex')]))));
+const work=mkdtempSync(join(tmpdir(),'sdxl-image-')),pause=ms=>new Promise(r=>setTimeout(r,ms));
+let server,edge,socket,gpuMonitor;const gpuSamples=[];
+const sampleGpu=()=>{const r=spawnSync('nvidia-smi',['--query-gpu=memory.used,utilization.gpu','--format=csv,noheader,nounits'],{encoding:'utf8',windowsHide:true});if(r.status===0){const [usedMiB,utilization]=r.stdout.trim().split(',').map(Number);if(Number.isFinite(usedMiB)&&Number.isFinite(utilization))gpuSamples.push({ms:performance.now(),usedMiB,utilization});}};
+try{
+  sampleGpu();gpuMonitor=setInterval(sampleGpu,2000);
+  server=http.createServer((q,r)=>{r.writeHead(200,{'Content-Type':'text/html'});r.end(html.replace('<script>',`<script>window.__DATA=${JSON.stringify(data)};</script><script>`));});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  edge=spawn('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',['--headless=new','--remote-debugging-port=0',`--user-data-dir=${join(work,'profile')}`,'--enable-unsafe-webgpu','--no-first-run','about:blank'],{stdio:'ignore'});
+  console.log(`SDXL image browser PID ${edge.pid}; evidence ${work}`);
+  let target;
+  for(let i=0;i<120&&!target;i++){try{const port=readFileSync(join(work,'profile/DevToolsActivePort'),'utf8').split('\n')[0];target=(await(await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t=>t.type==='page');}catch{}if(!target)await pause(250);}
+  if(!target)throw new Error('Browser startup timed out');
+  socket=new WebSocket(target.webSocketDebuggerUrl);await new Promise((r,j)=>{socket.addEventListener('open',r);socket.addEventListener('error',j);});
+  const pending=new Map(),errors=[];let sequence=0;
+  const send=(method,params={})=>new Promise((resolve,reject)=>{const id=++sequence,timer=setTimeout(()=>{pending.delete(id);reject(new Error(`CDP timeout ${method}`));},120000);pending.set(id,reply=>{clearTimeout(timer);reply.error||reply.result?.exceptionDetails?reject(new Error(JSON.stringify(reply.error||reply.result.exceptionDetails))):resolve(reply.result);});socket.send(JSON.stringify({id,method,params}));});
+  socket.addEventListener('message',event=>{const r=JSON.parse(event.data);if(pending.has(r.id)){pending.get(r.id)(r);pending.delete(r.id);}if(r.method==='Runtime.exceptionThrown')errors.push(JSON.stringify(r.params));if(r.method==='Page.fileChooserOpened')send('DOM.setFileInputFiles',{files:[ckpt],backendNodeId:r.params.backendNodeId}).catch(e=>errors.push(String(e)));});
+  for(const d of ['Page','DOM','Runtime'])await send(`${d}.enable`);
+  await send('Page.setInterceptFileChooserDialog',{enabled:true});
+  const evaluate=async expression=>(await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true})).result?.value;
+  const wait=async expression=>{let last='';for(let i=0;i<4800;i++){if(errors.length)throw new Error(errors.join('\n'));const s=await evaluate(`({ok:(${expression}),error:typeof _st==='undefined'?'':String(_st.error||''),case:typeof _st==='undefined'?null:String(_st.phase||'')+':'+String(_st.progress||0)})`);if(s.error)throw new Error(s.error);if(s.ok)return;if(s.case!==last){console.log('progress '+s.case);last=s.case;}await pause(250);}throw new Error('SDXL image timed out');};
+  await send('Page.navigate',{url:`http://127.0.0.1:${server.address().port}/`});
+  await wait("typeof _st!=='undefined' && Number(_st.armed)===1");
+  const noise=await evaluate("({pass:Number(_st['noise-fixture-pass']),queryBad:Number(_st['noise-query-bad']),values:Number(_st['noise-fixture-values']),wrong:Number(_st['noise-wrong-draw']),heapBytes:_hp})");
+  console.log(JSON.stringify({noise}));if(noise.queryBad!==0||noise.pass!==1||noise.values!==3840||noise.wrong<1)throw new Error("Brownian fixture/control failed");
+  const started=performance.now();
+  for(const type of ['mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:5,y:5,button:'left',clickCount:1});
+  await wait('Number(_st.done)===1');
+  const state=await evaluate("({noiseCancelled:Number(_st['noise-cancelled']||0),noisePolls:Number(_st['noise-polls']||0),noiseWorkers:_noiseJobs.size,samplerRefused:Number(_st['sampler-refused']),cancelled:Number(_st.cancelled||0),heapBytes:_hp,refusals:Number(_st['dimension-refusals']),steps:Number(_st.steps),order:Number(_st['step-order-error']||0),busyClose:Number(_st['busy-close']),busyError:String(_st['busy-error']),closed:Number(_st.closed),active:_gb.filter(Boolean).length,retainedBytes:[...new Set(_gb.filter(Boolean).concat(Object.values(_gpool).flat()))].reduce((n,b)=>n+b.size,0)})");
+  sampleGpu();console.log(JSON.stringify({...state,clickToReadbackMs:performance.now()-started,sampledPeakMiB:gpuSamples.length?Math.max(...gpuSamples.map(s=>s.usedMiB)):null}));
+  if(state.noiseCancelled!==(sampler===6?1:0)||(sampler===6&&state.noisePolls!==2)||state.noiseWorkers!==0||state.samplerRefused!==1||state.cancelled!==(sampler===6?1:0)||state.refusals!==6||state.steps!==6||state.order!==0||state.busyClose!==0||state.busyError!=='SDXL model is busy or closed'||state.closed!==1||state.active!==0)throw new Error('Generation/lifetime contract differs');
+  const raw=await evaluate(`(()=>{const words=JSON.parse(_st.pixels);if(!Array.isArray(words)||words.length!==3*${width}*${height}||words.some(v=>!Number.isInteger(v)||v < -2147483648||v > 2147483647))throw new Error('Invalid raw f32 word transport');const pixels=new Float32Array(new Int32Array(words).buffer);let sum=0,sq=0,bad=0;for(const v of pixels){if(!Number.isFinite(v))bad++;sum+=v;sq+=v*v;}const mean=sum/pixels.length;return {length:pixels.length,bad,mean,sd:Math.sqrt(sq/pixels.length-mean*mean)}})()`);
+  if(raw.length!==3*width*height||raw.bad!==0||!(raw.sd>0.05))throw new Error('Output is missing, nonfinite or flat');
+  console.log(JSON.stringify({floatOutput:raw}));
+  const png=await evaluate("document.querySelector('#out').toDataURL('image/png').split(',')[1]");
+  writeFileSync(outPath,Buffer.from(png,'base64'));
+  const refUrl='data:image/png;base64,'+reference.toString('base64');
+  const compare=await evaluate(`new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>{const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0);const out=document.querySelector('#out');if(image.width!==${width}||image.height!==${height}||out.width!==${width}||out.height!==${height}){reject(new Error('Rendered dimensions differ'));return;}const a=ctx.getImageData(0,0,${width},${height}).data,b=out.getContext('2d').getImageData(0,0,${width},${height}).data;let sum=0,max=0,within8=0,n=0;for(let i=0;i<a.length;i++){if(i%4===3)continue;const d=Math.abs(a[i]-b[i]);sum+=d;max=Math.max(max,d);if(d<=8)within8++;n++;}resolve({mean:sum/n,max,within8:within8/n,count:n});};image.onerror=()=>reject(new Error('Native PNG did not decode'));image.src=${JSON.stringify(refUrl)};})`);
+  console.log(JSON.stringify({comparison:compare,output:outPath,sha256:createHash('sha256').update(Buffer.from(png,'base64')).digest('hex')}));
+  if(compare.count!==3*width*height||!(compare.mean<4))throw new Error('SDXL exceeds the existing txt2img mean<4/255 native-render grade');
+  console.log(`PASS: ${samplerNames[sampler]} ${width}x${height} SDXL within native-render grade; six dimension refusals, ordered sampler steps, finite output, busy/close guards and handle cleanup`);
+}finally{
+  if(gpuMonitor)clearInterval(gpuMonitor);writeFileSync(outPath+'.gpu.json',JSON.stringify(gpuSamples,null,2)+'\n');
+  if(socket)socket.close();
+  if(edge&&edge.exitCode===null)edge.kill();
+  execFileSync('pwsh',['-NoProfile','-Command',`$ErrorActionPreference='Stop';function Owned { @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -like '*${join(work,'profile').replace(/'/g,"''")}*' }) };foreach($p in (Owned)){Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue};for($i=0;$i -lt 20;$i++){if(@(Owned).Count -eq 0){exit 0};Start-Sleep -Milliseconds 100};throw 'Owned Edge cleanup did not finish'`],{stdio:'inherit'});
+  if(server)server.close();
+}

@@ -1,0 +1,92 @@
+Chapter: ClipXlPromptArm
+  cites Diffusion chapter BrowserClipPrompt
+  cites WebApp chapter WebRuntime
+
+ We say:
+
+  xp-fail : Text -> Integer
+  xp-fail (why) = let e = state-set-text "error" why in state-set "done" 1
+
+  xp-list : Text -> List Integer
+  xp-list (t) = if text-length t < 3 then [] else bt-text-ints (text-split (substring t 1 (text-length t - 2)) ",") 0 []
+
+  xp-join : List Integer, Integer, Integer -> Text
+  xp-join (xs) (lo) (hi) = if hi - lo == 1 then show (list-at xs lo) else let mid = (lo + hi) / 2 in xp-join xs lo mid & "," & xp-join xs mid hi
+
+  xp-weight-bits : List Real, Integer, List Integer -> List Integer
+  xp-weight-bits (ws) (i) (acc) = if i >= list-length ws then acc else xp-weight-bits ws (i + 1) (list-push acc (cp-f32-bits (list-at ws i)))
+
+  xp-save-chunks : List ClipChunk, Integer, Integer -> Integer
+  xp-save-chunks (cs) (case) (i) =
+    if i >= list-length cs then state-set ("chunks" & show case) (list-length cs)
+    else let c = list-at cs i
+    in let ids = c.cc-ids
+    in let ws = xp-weight-bits (c.cc-mults) 0 []
+    in let a = state-set-text ("ids" & show case & "-" & show i) ("[" & xp-join ids 0 (list-length ids) & "]")
+    in let b = state-set-text ("weights" & show case & "-" & show i) ("[" & xp-join ws 0 (list-length ws) & "]")
+    in xp-save-chunks cs case (i + 1)
+
+  xp-ones : List ClipChunk, Integer, List ClipChunk -> List ClipChunk
+  xp-ones (cs) (i) (acc) = if i >= list-length cs then acc else xp-ones cs (i + 1) (list-push acc (ClipChunk { cc-ids = (list-at cs i).cc-ids, cc-mults = xp-one-weights 0 [] }))
+
+  xp-one-weights : Integer, List Real -> List Real
+  xp-one-weights (i) (acc) = if i >= 77 then acc else xp-one-weights (i + 1) (list-push acc 1.0)
+
+  xp-down : BrowserClipLoaded, BrowserClipLoaded, ClipBpe, Integer, List Integer, List Integer, Integer -> Integer
+  xp-down (l) (g) (bpe) (case) (hs) (sizes) (i) =
+    if i >= list-length hs then xp-case l g bpe (case + 1)
+    else gpu-buf-download-then (list-at hs i) 0 (list-at sizes i * 4) (\r -> (let saved = state-set-text ("case" & show case & "-" & show i) r in let f = gpu-buf-free (list-at hs i) in xp-down l g bpe case hs sizes (i + 1)))
+
+  xp-conditioned : BrowserClipLoaded, BrowserClipLoaded, ClipBpe, Integer, ClipCond -> Integer
+  xp-conditioned (l) (g) (bpe) (case) (c) =
+    let h = browser-clip-crossattn (page-data "base") c
+    in if h == 0 then xp-fail "Cross-attention concatenation failed"
+    else xp-down l g bpe case [c.cn-cond-l, c.cn-cond-g, c.cn-pooled, h] [77 * c.cn-chunks * 768, 77 * c.cn-chunks * 1280, 1280, 77 * c.cn-chunks * 2048] 0
+
+  xp-case : BrowserClipLoaded, BrowserClipLoaded, ClipBpe, Integer -> Integer
+  xp-case (l) (g) (bpe) (case) =
+    if case >= 5 then
+      let changed = xp-save-chunks (clip-prompt-chunks-back bpe (page-data "prompt2") 0) 5 0
+      in let a = browser-clip-close l
+      in let b = browser-clip-close g
+      in let e = state-set-text "error" (gpu-error 0)
+      in state-set "done" 1
+    else let progress = state-set "case" case
+    in let prompt = if case == 3 then "" else page-data ("prompt" & show (if case == 4 then 1 else case))
+    in let cs = clip-prompt-chunks bpe prompt
+    in let saved = xp-save-chunks cs case 0
+    in if case == 4 then browser-clip-chunks-then (page-data "base") (l.bcl-weights) (g.bcl-weights) (xp-ones cs 0 []) False (\c -> xp-conditioned l g bpe case c) xp-fail
+    else browser-clip-condition-then (page-data "base") (l.bcl-weights) (g.bcl-weights) bpe prompt (case == 3) (\c -> xp-conditioned l g bpe case c) xp-fail
+
+  xp-poke : Integer, List Integer, Integer -> Integer
+  xp-poke (a) (bs) (i) = if i >= list-length bs then a else let p = poke-byte a i (list-at bs i) in xp-poke a bs (i + 1)
+
+  xp-heap : List Integer -> Integer
+  xp-heap (bs) = xp-poke (alloc-bytes (list-length bs + 8)) bs 0
+
+  xp-l-loaded : LayoutBinding, ClipBpe, BrowserClipLoaded -> Integer
+  xp-l-loaded (binding) (bpe) (l) = browser-clip-load (state-get-text "file") (page-data "extra") bc-xl-g-spec (list-at (binding.lb-parts) 2) (\g -> xp-case l g bpe 0) (\why -> (let f = browser-clip-close l in xp-fail why))
+
+  xp-header : Text -> Integer
+  xp-header (data) =
+    let binding = layout-bind (st-parse-file (xp-list data)) sdxl-layout
+    in let vb = xp-list (page-data "vocab")
+    in let mb = xp-list (page-data "merges")
+    in let bpe = clip-bpe-load (xp-heap vb) (list-length vb) (xp-heap mb) (list-length mb)
+    in if clip-bpe-status bpe /= 0 then xp-fail "Tokenizer failed"
+    else browser-clip-load (state-get-text "file") (page-data "extra") bc-xl-l-spec (list-at (binding.lb-parts) 1) (\l -> xp-l-loaded binding bpe l) xp-fail
+
+  xp-length : Text -> Integer
+  xp-length (data) = file-read-then (state-get-text "file") 0 (8 + st-read-u64 (xp-list data) 0) xp-header
+
+  xp-opened : Text -> Integer
+  xp-opened (data) = if text-contains data "\"ok\":true" then file-read-then (state-get-text "file") 0 8 xp-length else xp-fail data
+
+  xp-picked : Text -> Integer
+  xp-picked (data) = let f = state-set-text "file" (json-obj-field (json-parse-obj data) "name") in gpu-open-then xp-opened
+
+  xp-pick : Text -> Integer
+  xp-pick (id) = if state-get "picked" == 1 then 0 else let p = state-set "picked" 1 in pick-file-then ".safetensors" xp-picked
+
+  opening : [Console] Integer
+  opening = let c = dom-on-click (dom-query "html") xp-pick in state-set "armed" 1

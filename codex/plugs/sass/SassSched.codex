@@ -1,0 +1,171 @@
+Chapter: SassSched
+  cites Sass chapter SassEncode
+  cites Sass chapter SassCtrl
+
+ Class latencies are maxas's (lib/MaxAs/MaxAsGrammar.pm at 54eda7af, the
+ lat field of each instruction type): x32 6, shift 6, cmp 13, s2r 2, gmem 2.
+ S2R and global memory complete after a variable delay and are ordered only
+ through the six dependency barriers: a variable-latency result is read
+ safely once the reader waits on the barrier its producer set, and a store's
+ source registers may be overwritten once the writer waits on the store's
+ read barrier.
+
+Section: Classes
+
+  sass-class-latency : SassBody -> Integer
+  sass-class-latency (b) =
+    when b
+     is SIsetp (p) (c) (u) (x) (s) -> 13
+     is SIsetpc (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) -> 13
+     is SFsetp (p) (c) (x) (s) -> 13
+     is SS2r (d) (id) -> 2
+     is SLdg (d) (a) (off) (w) -> 2
+     is SStg (a) (off) (r) (w) -> 2
+     is otherwise -> 6
+
+  sass-variable : SassBody -> Boolean
+  sass-variable (b) =
+    when b
+     is SS2r (d) (id) -> True
+     is SLdg (d) (a) (off) (w) -> True
+     is SStg (a) (off) (r) (w) -> True
+     is otherwise -> False
+
+Section: Registers
+
+  sched-src-regs : SassSrc -> List Integer
+  sched-src-regs (s) =
+    when s
+     is SrcReg (r) -> [r]
+     is otherwise -> []
+
+  sched-pair : Integer, Integer -> List Integer
+  sched-pair (r) (w) = if w == 64 then [r, r + 1] else [r]
+
+  sched-reads-raw : SassBody -> List Integer
+  sched-reads-raw (b) =
+    when b
+     is SIadd (d) (x) (s) -> [x] & sched-src-regs s
+     is SIaddc (d) (x) (s) (fl) -> [x] & sched-src-regs s
+     is SFadd (d) (x) (s) -> [x] & sched-src-regs s
+     is SFmul (d) (x) (s) -> [x] & sched-src-regs s
+     is SFfma (d) (x) (s) (z) -> [x, z] & sched-src-regs s
+     is SMov (d) (s) -> sched-src-regs s
+     is SIsetp (p) (c) (u) (x) (s) -> [x] & sched-src-regs s
+     is SIsetpc (p) (c) (u) (xf) (x) (s) (bo) (q) (qn) -> [x] & sched-src-regs s
+     is SFsetp (p) (c) (x) (s) -> [x] & sched-src-regs s
+     is SShl (d) (x) (s) -> [x] & sched-src-regs s
+     is SShr (d) (u) (x) (s) -> [x] & sched-src-regs s
+     is SShf (rt) (d) (x) (s) (c) (w) (ty) (hi) -> [x, c] & sched-src-regs s
+     is SLop (d) (op) (x) (s) -> [x] & sched-src-regs s
+     is SIscadd (d) (x) (s) (sh) -> [x] & sched-src-regs s
+     is SXmad (d) (x) (ah) (s) (bh) (c) (pm) (cm) -> [x, c] & sched-src-regs s
+     is SLdg (d) (a) (off) (w) -> [a, a + 1]
+     is SStg (a) (off) (r) (w) -> [a, a + 1] & sched-pair r w
+     is otherwise -> []
+
+  sched-writes-raw : SassBody -> List Integer
+  sched-writes-raw (b) =
+    when b
+     is SIadd (d) (x) (s) -> [d]
+     is SIaddc (d) (x) (s) (fl) -> [d]
+     is SFadd (d) (x) (s) -> [d]
+     is SFmul (d) (x) (s) -> [d]
+     is SFfma (d) (x) (s) (z) -> [d]
+     is SMov (d) (s) -> [d]
+     is SMov32i (d) (v) -> [d]
+     is SS2r (d) (id) -> [d]
+     is SShl (d) (x) (s) -> [d]
+     is SShr (d) (u) (x) (s) -> [d]
+     is SShf (rt) (d) (x) (s) (c) (w) (ty) (hi) -> [d]
+     is SLop (d) (op) (x) (s) -> [d]
+     is SIscadd (d) (x) (s) (sh) -> [d]
+     is SXmad (d) (x) (ah) (s) (bh) (c) (pm) (cm) -> [d]
+     is SLdg (d) (a) (off) (w) -> sched-pair d w
+     is otherwise -> []
+
+  sched-drop-rz : List Integer, Integer, List Integer -> List Integer
+  sched-drop-rz (rs) (i) (acc) =
+    if i >= list-length rs then acc
+    else if list-at rs i == 255 then sched-drop-rz rs (i + 1) acc
+    else sched-drop-rz rs (i + 1) (acc & [list-at rs i])
+
+  sched-reads : SassBody -> List Integer
+  sched-reads (b) = sched-drop-rz (sched-reads-raw b) 0 []
+
+  sched-writes : SassBody -> List Integer
+  sched-writes (b) = sched-drop-rz (sched-writes-raw b) 0 []
+
+  sched-has : List Integer, Integer, Integer -> Boolean
+  sched-has (rs) (r) (i) =
+    if i >= list-length rs then False
+    else if list-at rs i == r then True
+    else sched-has rs r (i + 1)
+
+Section: Scheduling
+
+
+  SchedPend = record {
+   reg : Integer,
+   bar : Integer,
+   kind : Integer
+  }
+
+  SchedState = record {
+   pending : List SchedPend,
+   next-bar : Integer,
+   codes : List CtrlCode
+  }
+
+  sched-blocks : SchedPend, List Integer, List Integer -> Boolean
+  sched-blocks (p) (reads) (writes) =
+    if sched-has writes p.reg 0 then True
+    else if p.kind == 0 then sched-has reads p.reg 0
+    else False
+
+  SchedSplit = record {
+   mask : Integer,
+   kept : List SchedPend
+  }
+
+  sched-split : List SchedPend, List Integer, List Integer, Integer, Integer, Integer, List SchedPend -> SchedSplit
+  sched-split (ps) (reads) (writes) (bar) (i) (mask) (kept) =
+    if i >= list-length ps then SchedSplit { mask = mask, kept = kept }
+    else let p = list-at ps i
+    in if p.bar == bar then sched-split ps reads writes bar (i + 1) (bit-or mask (bit-shl 1 p.bar)) kept
+    else if sched-blocks p reads writes then sched-split ps reads writes bar (i + 1) (bit-or mask (bit-shl 1 p.bar)) kept
+    else sched-split ps reads writes bar (i + 1) mask (kept & [p])
+
+  sched-add : List SchedPend, List Integer, Integer, Integer, Integer -> List SchedPend
+  sched-add (ps) (rs) (bar) (kind) (i) =
+    if i >= list-length rs then ps
+    else sched-add (ps & [SchedPend { reg = list-at rs i, bar = bar, kind = kind }]) rs bar kind (i + 1)
+
+  sched-is-store : SassBody -> Boolean
+  sched-is-store (b) =
+    when b
+     is SStg (a) (off) (r) (w) -> True
+     is otherwise -> False
+
+  sched-step : SchedState, SassInsn -> SchedState
+  sched-step (st) (i) =
+    let b = i.body
+    in let reads = sched-reads b
+    in let writes = sched-writes b
+    in let var = sass-variable b
+    in let bar = if var then st.next-bar else -1
+    in let sp = sched-split st.pending reads writes bar 0 0 []
+    in let is-store = sched-is-store b
+    in let wbar = if var then (if is-store then 7 else bar) else 7
+    in let rbar = if is-store then bar else 7
+    in let pend = if var then (if is-store then sched-add sp.kept reads bar 1 0 else sched-add sp.kept writes bar 0 0) else sp.kept
+    in let code = CtrlCode { stall = sass-class-latency b, yield-bit = 1, write-bar = wbar, read-bar = rbar, wait-mask = sp.mask, reuse = 0 }
+    in SchedState { pending = pend, next-bar = if var then int-mod (st.next-bar + 1) 6 else st.next-bar, codes = st.codes & [code] }
+
+  sched-run : List SassInsn, Integer, SchedState -> SchedState
+  sched-run (insns) (k) (st) =
+    if k >= list-length insns then st
+    else sched-run insns (k + 1) (sched-step st (list-at insns k))
+
+  sass-schedule : List SassInsn -> List CtrlCode
+  sass-schedule (insns) = (sched-run insns 0 (SchedState { pending = [], next-bar = 0, codes = [] })).codes

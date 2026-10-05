@@ -771,7 +771,7 @@ dropped, a byte of 128 or more kept, the rest mapped through the CCE table, then
 `dispatch-on-mode` does. `fat16-read-source` maps a high byte on its own, so a
 UTF-8 identifier (`ident-letters`) compiled to different text on the guest.
 
-**Shards.** `test-run.ps1` gives a guest 60 s and the img plug aborted its
+**Shards.** The img plug aborted its
 connection on a 20 MB payload, so the corpus is imaged in shards of 250 subjects
 or 6 MB of bundles. Measured 2026-09-29: 982 bundles are 80.6 MB (a subject
 citing the compiler bundles to 2.8 MB), 15 shards, the slowest guest 11 s, each
@@ -1010,6 +1010,17 @@ one `test-cross-batch.ps1` sizes its admission by.
   three acquire from a pool whose head is an x86-64 process-table address.
 ### Open, unowned
 
+| Source | JSON emission gap |
+|---|---|
+| `codex/build/applyannotationsScript.codex:34`, generated `build/apply-annotations.ps1:86` | The sidecar builder quotes target/kind/author without escaping and applies replacement only to body. Repair the generator, regenerate the script and prove quoted/backslash/control metadata round-trips. Source-inspected 2026-10-01 at main 33668. |
+
+- **Document-count patterns and published counts need reconciliation.** On
+  2026-09-30, `build/check-doc-counts.ps1` reported 18 advisory failures against
+  the depot baseline before MusicGen stage 0; 14 remain after the affected plug
+  and test counts were corrected. Six `TechnicalDetails.md` patterns do not
+  match the document's dated forms. Re-run the checker before taking the work;
+  change its Codex generator for pattern repairs, not the generated script.
+
 - **The gate's unaccounted wall time: `p4-stale-check` now runs `p4 status -a`,
   and whether that removed it is NOT yet measured.** The bare `p4 status` it
   replaced was 77.8 s of the 101.1 s outside every phase in red's 2026-09-25
@@ -1028,6 +1039,12 @@ one `test-cross-batch.ps1` sizes its admission by.
   `apps/*/web/*.html` artifacts are orphans with no Page chapter to regenerate
   them; the script warns and continues, so the shortfall is invisible unless the
   printed count is compared against the artifact count.
+- **`test.ps1` and `bvt.ps1` fan GPU subjects out over one GPU against a fixed
+  60 s wall budget.** At `-Jobs 16` (14 slots) the Update 65 battery failed 11
+  diffusion subjects on the budget and 10 passed serially the same hour
+  (2026-09-30). A subject whose `.vmargs` names `-gpu-files` needs a slot class
+  of its own, one GPU guest at a time, or every release battery reds on
+  contention. Re-run the reds with `bvt.ps1 -Jobs 1 -SubjectsFile <list>`.
 
 ## Quire tables that are copies or derivations
 

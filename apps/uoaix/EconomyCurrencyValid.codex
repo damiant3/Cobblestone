@@ -1,0 +1,117 @@
+Chapter: EconomyCurrencyValid
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyFields
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyStateValid
+  cites Foreword chapter Result
+
+  euv-money-shape : EmMoney -> Boolean
+  euv-money-shape (m) = m.purse-count >= 1 & m.purse-count <= 256
+    & ev-range m.loan-count 128 & ev-range m.entry-count em-rows
+    & list-length m.purses == 256 & list-length m.loans == 128 & list-length m.ledger == em-rows
+  euv-purses : EmMoney, EmMoney, Integer -> Boolean
+  euv-purses (a) (b) (i) = if i == 256 then True
+    else euf-equal-purse (list-at a.purses i) (list-at b.purses i) & euv-purses a b (i + 1)
+  euv-loans : EmMoney, EmMoney, Integer -> Boolean
+  euv-loans (a) (b) (i) = if i == 128 then True
+    else euf-equal-loan (list-at a.loans i) (list-at b.loans i) & euv-loans a b (i + 1)
+  euv-ledger : EmMoney, EmMoney, Integer -> Boolean
+  euv-ledger (a) (b) (i) = if i == em-rows then True
+    else euf-equal-entry (list-at a.ledger i) (list-at b.ledger i) & euv-ledger a b (i + 1)
+  euv-money : EmMoney, EmMoney -> Boolean
+  euv-money (a) (b) = euf-equal-money a b & euv-purses a b 0 & euv-loans a b 0 & euv-ledger a b 0
+  euv-events : EuCurrency, EuCurrency, Integer -> Boolean
+  euv-events (a) (b) (i) = if i == em-rows then True
+    else euf-equal-event (list-at a.events i) (list-at b.events i) & euv-events a b (i + 1)
+  euv-shadow : EpWorld -> EpWorld
+  euv-shadow (w) = EpWorld { catalog = w.catalog, money = em-new 0,
+    actors = w.actors, stations = w.stations, nodes = w.nodes, actor-count = 0,
+    station-count = w.station-count, node-count = w.node-count, hour = 0,
+    gathered = w.gathered, found = w.found, crafted = w.crafted, consumed = w.consumed,
+    sales = w.sales, turnover = w.turnover, crown-turnover = w.crown-turnover,
+    trades = w.trades, trade-count = w.trade-count, mint-owner = 0, mint-rate = 0, mint-ingots = 0 }
+  euv-mint : EuCurrency, EuEvent -> Integer
+  euv-mint (x) (e) = if not (eu-room x) | not (eu-metal e.metal) | e.reference <= 0 | e.reference > 1000 then -1
+    else let owner = if e.metal == 1 then x.copper-owner else if e.metal == 2 then x.silver-owner else x.world.mint-owner
+    in let yield = if e.metal == 1 then x.copper-yield else if e.metal == 2 then x.silver-yield else x.world.mint-rate
+    in let used = if e.metal == 1 then x.copper-ingots else if e.metal == 2 then x.silver-ingots else x.world.mint-ingots
+    in let m = eu-money x e.metal
+    in let coins = yield * e.reference
+    in if e.actor /= owner | not (eu-royal x True e.actor) | yield <= 0 | used > ep-limit - e.reference
+      | not (em-room m 2) | m.issued > em-limit - coins | (em-purse m 1).coin > em-limit - coins then -1
+    else let a = em-issue m True coins 2
+    in let b = em-row m (ep-actor x.world e.actor).purse 1 0 12 e.reference
+    in let c = if e.metal == 1 then __record-set x "copper-ingots" (used + e.reference)
+      else if e.metal == 2 then __record-set x "silver-ingots" (used + e.reference)
+      else let updated = __record-set x.world "mint-ingots" (used + e.reference) in x
+    in eu-log x 7 e.actor 1 e.metal (if e.metal == 1 then coins else 0) (if e.metal == 2 then coins else 0) (if e.metal == 3 then coins else 0) e.reference
+  euv-hour : EuCurrency -> Integer
+  euv-hour (x) = if not (eu-room x) | x.world.hour >= ep-limit then -1
+    else let hour = x.world.hour + 1
+    in if not (eu-can-advance x.copper hour) | not (eu-can-advance x.silver hour) | not (eu-can-advance x.world.money hour) then -1
+    else let c = em-advance x.copper hour
+    in let s = em-advance x.silver hour
+    in let g = em-advance x.world.money hour
+    in let advanced = __record-set x.world "hour" hour
+    in eu-log x 10 0 0 0 0 0 0 hour
+  euv-step : EuCurrency, EuCurrency, EuEvent -> Integer
+  euv-step (source) (x) (e) =
+    if e.kind == 1 then eu-open x e.metal e.actor
+    else if e.kind == 2 then eu-rates x True e.actor e.copper-rate e.silver-rate
+    else if e.kind == 3 then eu-tax x True e.actor e.reference
+    else if e.kind == 4 then eu-pay x True e.actor e.party e.copper e.silver e.gold
+    else if e.kind == 5 then eu-grant x True e.actor e.party e.copper e.silver e.gold
+    else if e.kind == 6 then eu-mint-policy x True e.actor e.metal e.reference
+    else if e.kind == 7 then euv-mint x e
+    else if e.kind == 8 then
+      if not (eu-metal e.metal) | e.reference <= 0 | e.reference > 128 then -1
+      else let m = eu-money source e.metal
+      in if e.reference > m.loan-count then -1
+      else let loan = list-at m.loans (e.reference - 1)
+      in eu-lend x True e.actor e.party e.metal loan.principal loan.interest loan.due
+    else if e.kind == 9 then eu-repay x True e.actor e.metal e.reference (if e.metal == 1 then e.copper else if e.metal == 2 then e.silver else e.gold)
+    else if e.kind == 10 then euv-hour x
+    else if e.kind == 11 then eu-sale x True e.actor e.party e.reference e.copper e.silver e.gold
+    else if e.kind == 12 then eu-exchange x e.actor e.metal e.reference (if e.copper > 0 then 1 else if e.silver > 0 then 2 else 3) else -1
+  euv-replay : EuCurrency, EuCurrency, Integer -> Boolean
+  euv-replay (source) (x) (i) = if i == source.count then True
+    else let e = list-at source.events i
+    in let result = euv-step source x e
+    in if result < 0 | x.count /= i + 1 then False
+    else euf-equal-event e (list-at x.events i) & euv-replay source x (i + 1)
+  euv-reconstructed : EuCurrency, EuCurrency -> Boolean
+  euv-reconstructed (source) (x) =
+    let actors = __record-set x.world "actor-count" source.world.actor-count
+    in euv-replay source x 0 & euf-equal-policy source x
+      & source.world.hour == x.world.hour & source.world.mint-owner == x.world.mint-owner
+      & source.world.mint-rate == x.world.mint-rate & source.world.mint-ingots == x.world.mint-ingots
+      & euv-money source.copper x.copper & euv-money source.silver x.silver
+      & euv-money source.world.money x.world.money & euv-events source x 0
+  euv-find-trade : EpWorld, Integer, Integer, Integer -> Integer
+  euv-find-trade (w) (action) (low) (high) = if low >= high then low
+    else let middle = low + (high - low) / 2
+    in if (list-at w.trades middle).action < action then euv-find-trade w action (middle + 1) high
+      else euv-find-trade w action low middle
+  euv-sale-events : EuCurrency, Integer -> Boolean
+  euv-sale-events (x) (i) = if i == x.count then True
+    else let e = list-at x.events i
+    in if e.kind /= 11 then euv-sale-events x (i + 1)
+    else let at = euv-find-trade x.world e.gold-seq 0 x.world.trade-count
+    in if at == x.world.trade-count then False
+    else let t = list-at x.world.trades at
+    in t.action == e.gold-seq & t.hour == e.hour & t.buyer == e.actor & t.seller == e.party & t.gross == e.reference
+      & euv-sale-events x (i + 1)
+  euv-valid : EuCurrency -> Boolean
+  euv-valid (source) =
+    if not (ev-range source.count em-rows) | list-length source.events /= em-rows
+      | not (euv-money-shape source.copper) | not (euv-money-shape source.silver) then False
+    else if not (ev-valid source.world) | not (eu-catalog source.world) | not (eu-census source) then False
+    else if not (euv-sale-events source 0) then False
+    else let mark = __heap-save
+    in let shadow = euv-shadow source.world
+    in let valid = when eu-new shadow
+      is Err (e) -> False
+      is Ok (x) -> euv-reconstructed source x
+    in let restored = __heap-restore mark
+    in valid

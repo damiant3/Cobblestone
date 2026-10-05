@@ -1,0 +1,84 @@
+Chapter: TownNetworkActionsProof
+  cites Uoaix chapter TownNetworkActions
+  cites Uoaix chapter EconomyInputFixtures
+  cites Uoaix chapter EconomyStateValid
+  cites Foreword chapter Result
+
+  tnap-check : Text, Boolean -> [Console] Nothing
+  tnap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tnap-resolve : Integer, List EaProposal -> List EaProposal
+  tnap-resolve (kind) (xs) = if kind == 11 then xs
+    else tnap-resolve (kind + 1) (list-push xs (ea-request 2 kind))
+  tnap-unsupported : EaWorld, Integer, Integer -> Boolean
+  tnap-unsupported (e) (base) (kind) = if kind == 11 then True
+    else let row = list-at e.events (base + kind - 1)
+    in row.kind == kind & row.result == -11 & tnap-unsupported e base (kind + 1)
+  tnap-run : EpWorld -> [Console] Nothing
+  tnap-run (w) = act
+    e <- ea-new w
+    farmer <- ep-set (ep-actor w 1).skills 5 1000
+    garden <- eh-source w 14 100
+    gathered <- eh-harvest w 1 garden
+    offer <- ea-post e 1 3 2 14 1 1 (w.hour + 10)
+    demand <- ea-post e 1 2 2 10 1 100 (w.hour + 10)
+    resolved <- tnap-resolve 1 (__list-with-capacity 10)
+    work <- list-at resolved 0
+    node <- __record-set work "node" 1
+    buy <- list-at resolved 1
+    b1 <- __record-set buy "target" 1
+    b2 <- __record-set buy "item" 14
+    b3 <- __record-set buy "quantity" 1
+    b4 <- __record-set buy "offer" offer
+    b5 <- __record-set buy "limit" 100
+    sell <- list-at resolved 2
+    s1 <- __record-set sell "target" 1
+    s2 <- __record-set sell "item" 10
+    s3 <- __record-set sell "quantity" 1
+    s4 <- __record-set sell "offer" demand
+    s5 <- __record-set sell "limit" 1
+    eat <- list-at resolved 3
+    e1 <- __record-set eat "item" 14
+    e2 <- __record-set eat "quantity" 1
+    ob <- [800,1000,700,900,600,500,400,300,200,100,500,0,0,0]
+    when tn-model (tn-zeros 512) (tn-zeros 16) (tn-zeros 224) ob
+      is Err (message) -> print-line-uni ("FAIL model " & message)
+      is Ok (model) -> act
+        s <- tn-new 0
+        stepped <- tn-step model s
+        count <- e.event-count
+        hunger <- (ep-actor w 2).hunger
+        heap-before <- __heap-save
+        ran <- tna-run e 2 s resolved
+        heap-after <- __heap-save
+        tnap-check "queue executes buy before eat on changing state" (gathered == 4 & offer > 0 & demand > 0 & ran == 0 & (list-at e.events count).kind == 2 & (list-at e.events count).result == 0 & (list-at e.events (count + 1)).kind == 4 & (list-at e.events (count + 1)).result == 0 & ep-at (ep-actor w 2).stock 14 == 0 & (ep-actor w 2).hunger == hunger - 30)
+        tnap-check "queue logs work sale and every unsupported action" (e.event-count == count + 10 & (list-at e.events (count + 2)).kind == 1 & (list-at e.events (count + 2)).result == 4 & (list-at e.events (count + 3)).kind == 3 & (list-at e.events (count + 3)).result == 0 & tnap-unsupported e count 5)
+        tnap-check "drained queue cannot execute twice" (s.head == s.count & tna-run e 2 s resolved == 0 & e.event-count == count + 10)
+        tnap-check "queue execution retains no new heap" (heap-before == heap-after)
+        replaced <- tn-step model s
+        remaining <- e.event-count
+        capacity <- __record-set e "event-count" 1020
+        tnap-check "insufficient audit capacity preserves entire queue" (tna-run e 2 s resolved == -14 & s.head == 0 & e.event-count == 1020)
+        restore <- __record-set e "event-count" remaining
+        saved-queue <- s.queue
+        saved-count <- s.count
+        short <- __record-set s "queue" []
+        short-count <- __record-set s "count" 1
+        tnap-check "short queue refuses before indexed access" (tna-run e 2 s resolved == -16 & s.head == 0 & e.event-count == remaining)
+        restore-queue <- __record-set s "queue" saved-queue
+        restore-count <- __record-set s "count" saved-count
+        tnap-check "malformed binding preserves queue" (tna-run e 2 s [] == -16 & s.head == 0 & e.event-count == remaining)
+        changed <- __record-set buy "actor" 1
+        revoked <- ea-cancel e 1 offer
+        again <- tna-run e 2 s resolved
+        tnap-check "queue never gains another actor authority" (again == 0 & (list-at e.events remaining).result == -10 & (list-at e.events remaining).actor == 1 & (list-at e.events remaining).principal == 2)
+        tnap-check "queue preserves economy material coin and state checks" (ep-census w 1 & em-balanced w.money 1 & ev-valid w)
+      end
+  end
+  opening : [Console] Nothing = act
+    when eif-source 0
+      is Err (message) -> print-line-uni ("FAIL fixture " & message)
+      is Ok (state) -> act
+        fixture <- eif-build state
+        if fixture.failed /= 0 then print-line-uni "FAIL fixture setup" else tnap-run state.world
+      end
+  end

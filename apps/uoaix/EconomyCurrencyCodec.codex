@@ -1,0 +1,116 @@
+Chapter: EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyFields
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateFields
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter TownStateFields
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  CurrencyCheckpoint = record { currency : EuCurrency, tick : Integer, sequence : Integer }
+  euc-money-bytes : Integer = 64 + 256 * 24 + 128 * 56 + em-rows * 56
+  euc-gold-at : Integer = 192
+  euc-copper-at : Integer = euc-gold-at + es-bytes
+  euc-silver-at : Integer = euc-copper-at + euc-money-bytes
+  euc-events-at : Integer = euc-silver-at + euc-money-bytes
+  euc-bytes : Integer = euc-events-at + em-rows * 120
+  euc-v1-bytes : Integer = euc-bytes - es-bytes + es-v1-bytes
+  euc-v2-bytes : Integer = euc-bytes - es-bytes + es-v2-bytes
+
+  euc-write-purses : Integer, EmMoney, Integer -> Integer
+  euc-write-purses (buf) (m) (i) = if i == 256 then 0
+    else let a = es-write-purse buf (64 + i * 24) (list-at m.purses i)
+    in euc-write-purses buf m (i + 1)
+  euc-read-purses : Integer, EmMoney, Integer -> Integer
+  euc-read-purses (buf) (m) (i) = if i == 256 then 0
+    else let a = es-read-purse buf (64 + i * 24) (list-at m.purses i)
+    in euc-read-purses buf m (i + 1)
+  euc-write-loans : Integer, EmMoney, Integer -> Integer
+  euc-write-loans (buf) (m) (i) = if i == 128 then 0
+    else let a = es-write-loan buf (64 + 256 * 24 + i * 56) (list-at m.loans i)
+    in euc-write-loans buf m (i + 1)
+  euc-read-loans : Integer, EmMoney, Integer -> Integer
+  euc-read-loans (buf) (m) (i) = if i == 128 then 0
+    else let a = es-read-loan buf (64 + 256 * 24 + i * 56) (list-at m.loans i)
+    in euc-read-loans buf m (i + 1)
+  euc-write-ledger : Integer, EmMoney, Integer -> Integer
+  euc-write-ledger (buf) (m) (i) = if i == em-rows then 0
+    else let a = es-write-entry buf (64 + 256 * 24 + 128 * 56 + i * 56) (list-at m.ledger i)
+    in euc-write-ledger buf m (i + 1)
+  euc-read-ledger : Integer, EmMoney, Integer -> Integer
+  euc-read-ledger (buf) (m) (i) = if i == em-rows then 0
+    else let a = es-read-entry buf (64 + 256 * 24 + 128 * 56 + i * 56) (list-at m.ledger i)
+    in euc-read-ledger buf m (i + 1)
+  euc-write-money : Integer, EmMoney -> Integer
+  euc-write-money (buf) (m) = let a = es-write-money buf 0 m
+    in let b = euc-write-purses buf m 0
+    in let c = euc-write-loans buf m 0
+    in euc-write-ledger buf m 0
+  euc-read-money : Integer, EmMoney -> Integer
+  euc-read-money (buf) (m) = let a = es-read-money buf 0 m
+    in let b = euc-read-purses buf m 0
+    in let c = euc-read-loans buf m 0
+    in euc-read-ledger buf m 0
+  euc-write-events : Integer, EuCurrency, Integer -> Integer
+  euc-write-events (buf) (x) (i) = if i == em-rows then 0
+    else let a = euf-write-event buf (euc-events-at + i * 120) (list-at x.events i)
+    in euc-write-events buf x (i + 1)
+  euc-read-events : Integer, EuCurrency, Integer, Integer -> Integer
+  euc-read-events (buf) (x) (at) (i) = if i == em-rows then 0
+    else let a = euf-read-event buf (at + i * 120) (list-at x.events i)
+    in euc-read-events buf x at (i + 1)
+  euc-empty : EpWorld -> EuCurrency
+  euc-empty (w) = EuCurrency { world = w, copper = em-new 0, silver = em-new 0,
+    events = eu-events 0 [], count = 0, copper-rate = 100, silver-rate = 10,
+    copper-owner = 0, silver-owner = 0, copper-yield = 0, silver-yield = 0,
+    copper-ingots = 0, silver-ingots = 0, copper-seq = 0, silver-seq = 0, gold-seq = 0, purse-count = 1 }
+  euc-encode : CurrencyCheckpoint, Integer, Integer -> Result Integer Text
+  euc-encode (checkpoint) (buf) (capacity) =
+    if capacity < euc-bytes | not (ev-range checkpoint.tick ep-limit) | not (ev-range checkpoint.sequence ep-limit) then Err "currency destination or metadata invalid"
+    else if not (euv-valid checkpoint.currency) then Err "currency state disagrees with history"
+    else let x = checkpoint.currency
+    in let clear = ts-zero buf euc-bytes 0
+    in let a = poke-qword buf 0 #31435545
+    in let b = poke-qword buf 8 (es-version es-bytes)
+    in let c = poke-qword buf 16 euc-bytes
+    in let d = poke-qword buf 24 es-bytes
+    in let e = poke-qword buf 32 checkpoint.tick
+    in let f = poke-qword buf 40 checkpoint.sequence
+    in let policy = euf-write-policy buf 64 x
+    in when es-encode (EconomyCheckpoint { world = x.world, tick = checkpoint.tick, sequence = checkpoint.sequence }) (buf + euc-gold-at) es-bytes
+      is Err (e) -> Err e
+      is Ok (size) ->
+        let copper = euc-write-money (buf + euc-copper-at) x.copper
+        in let silver = euc-write-money (buf + euc-silver-at) x.silver
+        in let events = euc-write-events buf x 0
+        in let hash = poke-qword buf 48 (ws-hash buf euc-bytes 0 2166136261)
+        in Ok euc-bytes
+  euc-decode : Integer, Integer -> Result CurrencyCheckpoint Text
+  euc-decode (buf) (size) =
+    if es-version (size - euc-bytes + es-bytes) == 0 then Err "currency checkpoint length invalid"
+    else let economy = size - euc-bytes + es-bytes
+    in let copper-at = euc-gold-at + economy
+    in let silver-at = copper-at + euc-money-bytes
+    in if peek-qword buf 0 /= #31435545 | peek-qword buf 8 /= es-version economy | peek-qword buf 16 /= size | peek-qword buf 24 /= economy | peek-qword buf 56 /= 0 then Err "currency checkpoint format invalid"
+    else if not (ev-range (peek-qword buf 32) ep-limit) | not (ev-range (peek-qword buf 40) ep-limit) | not (ev-range (peek-qword buf 64) em-rows) then Err "currency checkpoint metadata invalid"
+    else if not (es-zero-range buf 168 euc-gold-at) then Err "currency header reserved bytes nonzero"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "currency checkpoint checksum invalid"
+    else when es-decode-record (buf + euc-gold-at) economy (peek-qword buf 32) (peek-qword buf 40)
+      is Err (e) -> Err e
+      is Ok (gold) ->
+        let x = euc-empty gold.world
+        in let policy = euf-read-policy buf 64 x
+        in let copper = euc-read-money (buf + copper-at) x.copper
+        in let silver = euc-read-money (buf + silver-at) x.silver
+        in let events = euc-read-events buf x (silver-at + euc-money-bytes) 0
+        in if not (euv-valid x) then Err "currency checkpoint history or state invalid"
+        else Ok (CurrencyCheckpoint { currency = x, tick = gold.tick, sequence = gold.sequence })
+  euc-decode-record : Integer, Integer, Integer, Integer -> Result CurrencyCheckpoint Text
+  euc-decode-record (buf) (size) (tick) (sequence) =
+    if es-version (size - euc-bytes + es-bytes) == 0 then Err "currency record length invalid"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "currency record metadata mismatch"
+    else euc-decode buf size

@@ -1,0 +1,136 @@
+Chapter: SparkRequestTest
+  cites Spark chapter SparkRequest
+  cites Spark chapter SparkPromptFile
+  cites Encode chapter Json
+
+ Runs the scenario below through the request builder. "@presets",
+ "@directions" and "@pools" hold the project's three JSON files; each "C"
+ case builds one generation request (fields: number, title, text with ~ for
+ a newline, preset, prompt override, LoRA tag, augment, run, direction,
+ width, height, steps, CFG, sampler, scheduler, seed, "-" for none), and each
+ "L" line formats a prompt file's LoRA weight. The expected output is the WPF
+ original's own GenerateAsync payload for the same cases.
+
+Section: Scenario
+
+  srt-scenario : Text
+  srt-scenario = "@presets\n[\n  { \"name\": \"none\" },\n  { \"name\": \"hires\",     \"width\": 1920, \"height\": 1080, \"steps\": 30,  \"promptSuffix\": \", ultra high resolution, extremely detailed, 8K\", \"negativeSuffix\": \", low resolution, pixelated\" },\n  { \"name\": \"anime\",     \"cfgScale\": 9.0, \"steps\": 25,  \"promptSuffix\": \", anime art style, cel shading, bold linework\", \"negativeSuffix\": \", photorealistic, photo, 3d render\" },\n  { \"name\": \"realism\",   \"cfgScale\": 5.5, \"steps\": 25,  \"promptSuffix\": \", photorealistic, RAW photo, film grain\", \"negativeSuffix\": \", anime, cartoon\" },\n  { \"name\": \"quarter\",   \"cfgScale\": 6.25, \"promptSuffix\": \"\" },\n  { \"name\": \"tenint\",    \"cfgScale\": 10, \"steps\": 12, \"negativeSuffix\": \", noisy\" }\n]\n@directions\n{\n  \"groups\": [\n    { \"category\": \"Style\", \"emoji\": \"S\", \"items\": [\n      { \"label\": \"More Anime\", \"promptAdd\": \"anime style, cel shaded\", \"negativeAdd\": \"photorealistic\" },\n      { \"label\": \"Warmer\", \"promptAdd\": \"warm golden light\" }\n    ] },\n    { \"category\": \"Tuning\", \"emoji\": \"T\", \"items\": [\n      { \"label\": \"Punchy\", \"promptAdd\": \"high contrast\", \"cfgNudge\": 1.5, \"stepsNudge\": -5 },\n      { \"label\": \"Wild\", \"promptAdd\": \"chaotic\", \"negativeAdd\": \"calm, still\", \"cfgNudge\": -20, \"stepsNudge\": 45 }\n    ] }\n  ]\n}\n@pools\n{\n  \"colorThemes\": [ \"teal and gold palette\", \"ice blue and white palette\" ],\n  \"compositions\": [ \"wide establishing shot composition\" ],\n  \"inspirations\": [ \"inspired by Moebius linework\", \"in the manner of Syd Mead\" ],\n  \"moods\": [ \"serene awe-struck wonder\" ],\n  \"lightingSetups\": [ \"golden hour rim lighting\", \"chiaroscuro dramatic contrast\" ],\n  \"samplerHints\": [ \"\", \"Euler a\" ]\n}\n@cases\nC 1 | First Light | a lighthouse at dawn | none | - | - | - | 0 | - | 1344 | 768 | 20 | 7 | DPM++ 2M SDE | karras | -1\nC 2 | Twin Moons | two moons over a desert~~painted in oils | hires | - | <lora:dunes:0.8> | wind-blown sand | 1 | - | 1344 | 768 | 20 | 7 | DPM++ 2M SDE | karras | -1\nC 3 | The Forge | a smithy full of sparks | anime | - | - |   | 2 | - | 1024 | 1024 | 28 | 6.5 | Euler a | normal | 42\nC 12 | Glass City | a city of glass towers | realism | story context~a city of glass towers | - | reflections | 12 | - | 832 | 1216 | 20 | 7 | DPM++ 3M SDE | exponential | 1244773863\nC 5 | Quiet Pond | a pond at night | quarter | - | <lora:koi:1.0> | - | 0 | Warmer | 512 | 768 | 20 | 7 | DPM++ 2M SDE | polyexponential | -1\nC 6 | Neon Alley | an alley in the rain | tenint | - | - | glowing signs | 0 | Punchy | 1344 | 768 | 20 | 14 | DPM++ 2M SDE | karras | 7\nC 7 | Storm Wall | a storm over a wall | none | - | - | - | 3 | Wild | 1344 | 768 | 20 | 7 | DPM++ 2M SDE | karras | -1\nC 8 | Kite Day | kites over a hill | missing | - | - | - | 0 | More Anime | 960 | 640 | 20 | 7.5 | DPM++ 2M SDE | karras | -1\nL dunes | 0.8\nL koi | 1\nL half | 0.25\nL three | 0.75\nL tick | 0.65\nL drop | 0.85\nL tiny | 0.05\nL big | 1.35\nL zero | 0"
+
+  srt-lines : Text, Integer, Integer, List Text -> List Text
+  srt-lines (t) (start) (i) (acc) =
+    if i >= text-length t then list-push acc (substring t start (i - start))
+    else if substring t i 1 == "\n" then srt-lines t (i + 1) (i + 1) (list-push acc (substring t start (i - start)))
+    else srt-lines t start (i + 1) acc
+
+  srt-section-loop : List Text, Text, Integer, Boolean, Text -> Text
+  srt-section-loop (ls) (name) (i) (inside) (acc) =
+    if i >= list-length ls then acc
+    else let l = list-at ls i
+    in if text-length l > 0 & substring l 0 1 == "@" then srt-section-loop ls name (i + 1) (l == ("@" & name)) acc
+    else if inside then srt-section-loop ls name (i + 1) inside (if text-length acc == 0 then l else acc & "\n" & l)
+    else srt-section-loop ls name (i + 1) inside acc
+
+  srt-section : List Text, Text -> Text
+  srt-section (ls) (name) = srt-section-loop ls name 0 False ""
+
+  srt-fields : Text, Integer, Integer, List Text -> List Text
+  srt-fields (t) (start) (i) (acc) =
+    if i + 3 > text-length t then list-push acc (substring t start (text-length t - start))
+    else if substring t i 3 == " | " then srt-fields t (i + 3) (i + 3) (list-push acc (substring t start (i - start)))
+    else srt-fields t start (i + 1) acc
+
+  srt-tilde : Text, Integer, Text -> Text
+  srt-tilde (t) (i) (acc) = if i >= text-length t then acc else srt-tilde t (i + 1) (acc & (if substring t i 1 == "~" then "\n" else substring t i 1))
+
+  srt-esc : Text, Integer, Text -> Text
+  srt-esc (t) (i) (acc) = if i >= text-length t then acc else srt-esc t (i + 1) (acc & (if substring t i 1 == "\n" then "\\n" else substring t i 1))
+
+  srt-num : Text -> JsonNumber
+  srt-num (t) = when json-parse t
+    is Just (v) -> (when v
+      is JsonNum (n) -> n
+      is JsonInt (i) -> JsonNumber { jn-mantissa = i, jn-decimals = 0 }
+      is otherwise -> JsonNumber { jn-mantissa = 0, jn-decimals = 0 })
+    is None -> JsonNumber { jn-mantissa = 0, jn-decimals = 0 }
+
+  srt-int : Text -> Integer
+  srt-int (t) = (srt-num t).jn-mantissa
+
+  srt-join : List Text, Text, Integer, Text -> Text
+  srt-join (xs) (sep) (i) (acc) = if i >= list-length xs then acc else srt-join xs sep (i + 1) (if i == 0 then list-at xs 0 else acc & sep & list-at xs i)
+
+  srt-names : List SparkPreset, Integer, List Text -> List Text
+  srt-names (ps) (i) (acc) = if i >= list-length ps then acc else srt-names ps (i + 1) (list-push acc ((list-at ps i).pr-name))
+
+  srt-dirs : List SparkDirection, Integer, Text -> Text
+  srt-dirs (ds) (i) (out) =
+    if i >= list-length ds then out
+    else let d = list-at ds i
+    in let cfg = if d.dr-has-cfg then spark-decimal-text (d.dr-cfg) else "-"
+    in let steps = if d.dr-has-steps then show (d.dr-steps) else "-"
+    in srt-dirs ds (i + 1) (out & "G " & d.dr-category & " | " & d.dr-label & " | " & d.dr-prompt-add & " | " & d.dr-negative-add & " | " & cfg & " | " & steps & "\n")
+
+  srt-pool : Text, List Text -> Text
+  srt-pool (name) (xs) = "O " & name & " | " & srt-join xs " | " 0 "" & "\n"
+
+  srt-pools : SparkPools -> Text
+  srt-pools (p) = srt-pool "ColorThemes" (p.po-colors) & srt-pool "Compositions" (p.po-comps) & srt-pool "Inspirations" (p.po-insps) & srt-pool "Moods" (p.po-moods) & srt-pool "LightingSetups" (p.po-lights) & srt-pool "SamplerHints" (p.po-samplers)
+
+  srt-settings : List Text -> SparkSettings
+  srt-settings (f) = SparkSettings {
+    ss-width = srt-int (list-at f 9),
+    ss-height = srt-int (list-at f 10),
+    ss-steps = srt-int (list-at f 11),
+    ss-cfg = srt-num (list-at f 12),
+    ss-sampler = list-at f 13,
+    ss-scheduler = list-at f 14,
+    ss-seed = srt-int (list-at f 15),
+    ss-negative = spark-settings-default.ss-negative
+  }
+
+  srt-filename : Integer, Text -> Text
+  srt-filename (n) (title) = spark-prompt-filename (SparkPrompt { sp-number = n, sp-title = text-to-unicode-bytes title, sp-series = [], sp-scene = [], sp-style = [], sp-lora = [], sp-weight-cents = 80 })
+
+  srt-opt : Text -> Text
+  srt-opt (t) = if t == "-" then "" else t
+
+  srt-case : List Text, List SparkPreset, List SparkDirection -> Text
+  srt-case (f) (ps) (ds) =
+    let base = srt-settings f
+    in let di = if list-at f 8 == "-" then 0 - 1 else spark-direction-find ds (list-at f 8) 0
+    in let s = if di >= 0 then spark-direction-apply (list-at ds di) base else base
+    in let aug = if di >= 0 then spark-direction-augment (list-at ds di) (srt-opt (list-at f 6)) else srt-opt (list-at f 6)
+    in let text = srt-tilde (if list-at f 4 == "-" then list-at f 2 else list-at f 4) 0 ""
+    in let r = spark-request text (srt-filename (srt-int (list-at f 0)) (list-at f 1)) (srt-int (list-at f 7)) ps (list-at f 3) s (srt-opt (list-at f 5)) aug
+    in let rs = r.rq-settings
+    in "F " & r.rq-path & "\nP " & srt-esc (r.rq-prompt) 0 "" & "\nM " & srt-esc (r.rq-negative) 0 "" & "\nS " & show (rs.ss-width) & " " & show (rs.ss-height) & " " & show (rs.ss-steps) & " " & spark-decimal-text (rs.ss-cfg) & " " & rs.ss-sampler & " " & rs.ss-scheduler & " " & show (rs.ss-seed) & "\n"
+
+  srt-cents : Text -> Integer
+  srt-cents (t) =
+    let n = srt-num t
+    in if n.jn-decimals >= 2 then n.jn-mantissa else if n.jn-decimals == 1 then n.jn-mantissa * 10 else n.jn-mantissa * 100
+
+  srt-cases : List Text, Integer, List SparkPreset, List SparkDirection, Text -> Text
+  srt-cases (ls) (i) (ps) (ds) (out) =
+    if i >= list-length ls then out
+    else let l = list-at ls i
+    in let rest = if text-length l > 2 then substring l 2 (text-length l - 2) else ""
+    in if text-length l > 2 & substring l 0 2 == "C " then srt-cases ls (i + 1) ps ds (out & srt-case (srt-fields rest 0 0 []) ps ds)
+    else if text-length l > 2 & substring l 0 2 == "L " then srt-cases ls (i + 1) ps ds (let f = srt-fields rest 0 0 [] in out & "L " & spark-lora-tag (list-at f 0) (srt-cents (list-at f 1)) & "\n")
+    else srt-cases ls (i + 1) ps ds out
+
+  srt-report : Text -> Text
+  srt-report (sc) =
+    let ls = srt-lines sc 0 0 []
+    in let ps = spark-presets-parse (srt-section ls "presets")
+    in let ds = spark-directions-parse (srt-section ls "directions")
+    in let pools = spark-pools-parse (srt-section ls "pools")
+    in let head = "N " & srt-join (srt-names ps 0 []) "," 0 "" & "\n" & srt-dirs ds 0 "" & srt-pools pools
+    in head & srt-cases ls 0 ps ds ""
+
+  srt-trim-nl : Text -> Text
+  srt-trim-nl (t) = if text-length t > 0 & substring t (text-length t - 1) 1 == "\n" then substring t 0 (text-length t - 1) else t
+
+  opening : [Console] Nothing = act
+    print-line (srt-trim-nl (srt-report srt-scenario))
+  end

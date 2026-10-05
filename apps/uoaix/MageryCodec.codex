@@ -1,0 +1,191 @@
+Chapter: MageryCodec
+  cites Uoaix chapter MageryTick
+
+ MGM1 stores a 64-byte header,240-byte actor rows,64-byte item rows and32
+ 16-byte wall rows. Remaining durations rebase to the supplied PIT clock.
+ Cast cursors, active-list positions and owner callbacks are not serialized.
+
+  mgc-size : Magery -> Integer
+  mgc-size (magic) = 576 + magic.items.world.capacity * 304
+  mgc-left : Integer, Integer -> Integer
+  mgc-left (until) (now) = if until <= now then 0 else until - now
+  mgc-until : Integer, Integer -> Integer
+  mgc-until (left) (now) = max 1 (now + left)
+  mgc-mod-write : MgActor, Integer, Integer, Integer -> Integer
+  mgc-mod-write (actor) (buffer) (now) (i) = if i == 6 then 0 else let value = peek-qword actor.mods (i * 16)
+    in let a = poke-qword buffer (144 + i * 16) value
+    in let b = poke-qword buffer (152 + i * 16) (if value == 0 then 0 else mgc-left (peek-qword actor.mods (i * 16 + 8)) now)
+    in mgc-mod-write actor buffer now (i + 1)
+  mgc-actor-write : Magery, MgActor, Integer, Integer, Integer -> Integer
+  mgc-actor-write (magic) (actor) (slot) (buffer) (now) = if actor.serial == 0 | world-slot magic.items.world actor.serial /= slot then mgs-zero buffer 0 30
+    else let a = poke-qword buffer 0 actor.serial
+    in let b = poke-qword buffer 8 actor.strength
+    in let c = poke-qword buffer 16 actor.dexterity
+    in let d = poke-qword buffer 24 actor.intelligence
+    in let e = poke-qword buffer 32 actor.maximum
+    in let f = poke-qword buffer 40 actor.mana
+    in let g = poke-qword buffer 48 (mgc-left actor.regen now)
+    in let h = poke-qword buffer 56 (mgc-left actor.night now)
+    in let j = poke-qword buffer 64 actor.light
+    in let k = poke-qword buffer 72 actor.absorb
+    in let l = poke-qword buffer 80 actor.protection
+    in let n = poke-qword buffer 88 (mgc-left actor.protected-until now)
+    in let p = poke-qword buffer 96 actor.poison
+    in let q = poke-qword buffer 104 (if actor.poison < 0 then 0 else mgc-left actor.poison-due now)
+    in let r = poke-qword buffer 112 (if actor.poison < 0 then 0 else actor.poison-left)
+    in let s = poke-qword buffer 120 (if actor.poison < 0 then 0 else actor.poison-last)
+    in let t = poke-qword buffer 128 (if actor.poison < 0 then 0 else actor.poisoner)
+    in let u = poke-qword buffer 136 (mgc-left actor.recovery now)
+    in mgc-mod-write actor buffer now 0
+  mgc-item-write : Magery, MgItem, Integer, Integer -> Integer
+  mgc-item-write (magic) (item) (slot) (buffer) = if item.serial == 0 | world-slot magic.items.world item.serial /= slot then mgs-zero buffer 0 8
+    else let a = poke-qword buffer 0 item.serial
+    in let b = poke-qword buffer 8 item.spells
+    in let c = poke-qword buffer 16 ((if item.rune then 1 else 0) + (if item.lockable then 2 else 0) + (if item.locked then 4 else 0) + (if item.trapped then 8 else 0))
+    in let d = poke-qword buffer 24 (if item.rune then item.x else 0)
+    in let e = poke-qword buffer 32 (if item.rune then item.y else 0)
+    in let f = poke-qword buffer 40 (if item.rune then item.z else 0)
+    in let g = poke-qword buffer 48 (if item.trapped then item.trapper else 0)
+    in poke-qword buffer 56 0
+  mgc-write-rows : Magery, Integer, Integer, Integer -> Integer
+  mgc-write-rows (magic) (buffer) (now) (i) = if i == magic.items.world.capacity then 0
+    else let actor = mgc-actor-write magic (list-at magic.actors i) i (buffer + 64 + i * 240) now
+    in let item = mgc-item-write magic (list-at magic.definitions i) i (buffer + 64 + magic.items.world.capacity * 240 + i * 64)
+    in mgc-write-rows magic buffer now (i + 1)
+  mgc-write-walls : Magery, Integer, Integer, Integer -> Integer
+  mgc-write-walls (magic) (buffer) (now) (i) = if i == 32 then 0 else let wall = list-at magic.walls i
+    in let serial = if world-slot magic.items.world wall.serial < 0 then 0 else wall.serial
+    in let a = poke-qword buffer (i * 16) serial
+    in let b = poke-qword buffer (i * 16 + 8) (if serial == 0 then 0 else mgc-left wall.until now)
+    in mgc-write-walls magic buffer now (i + 1)
+  mgc-write : Magery, Integer, Integer, Integer -> Result Integer Text
+  mgc-write (magic) (buffer) (length) (now) = if length /= mgc-size magic | now < magic.tick then Err "MGM1 output extent or clock"
+    else let cleared = mgs-zero buffer 0 8
+    in let a = poke-qword buffer 0 #314D474D
+    in let b = poke-qword buffer 8 1
+    in let c = poke-qword buffer 16 magic.items.world.capacity
+    in let d = poke-qword buffer 24 magic.seed
+    in let e = poke-qword buffer 32 magic.decoration.identity
+    in let rows = mgc-write-rows magic buffer now 0
+    in let walls = mgc-write-walls magic (buffer + 64 + magic.items.world.capacity * 304) now 0
+    in Ok length
+  mgc-range : Integer, Integer, Integer, Integer -> Boolean
+  mgc-range (buffer) (at) (lo) (hi) = let value = peek-qword buffer at in value >= lo & value <= hi
+  mgc-zero : Integer, Integer, Integer -> Boolean
+  mgc-zero (buffer) (i) (count) = if i == count then True else if peek-qword buffer (i * 8) /= 0 then False else mgc-zero buffer (i + 1) count
+  mgc-time : Integer, Integer -> Boolean
+  mgc-time (buffer) (at) = mgc-range buffer at 0 (mgd-ticks 86400000)
+  mgc-mod-valid : Integer, Integer -> Boolean
+  mgc-mod-valid (buffer) (i) = if i == 6 then True
+    else if not (mgc-range buffer (144 + i * 16) (if int-mod i 2 == 0 then 0 else -1000) (if int-mod i 2 == 0 then 1000 else 0))
+      | not (mgc-time buffer (152 + i * 16)) then False
+    else mgc-mod-valid buffer (i + 1)
+  mgc-actor-valid : Magery, Integer, Integer -> Boolean
+  mgc-actor-valid (magic) (buffer) (i) = let serial = peek-qword buffer 0
+    in if serial == 0 then mgc-zero buffer 0 30
+    else world-slot magic.items.world serial == i & peek-qword magic.items.world.buffer (24 + i * 80) == 1
+      & (list-at magic.combat.actors i).serial == serial
+      & mgc-range buffer 8 1 65535 & mgc-range buffer 16 1 1000 & mgc-range buffer 24 1 65535
+      & mgc-range buffer 32 1 65535 & mgc-range buffer 40 0 65535
+      & peek-qword buffer 40 <= min 65535 (max 1 (peek-qword buffer 24 + peek-qword buffer 208 + peek-qword buffer 224))
+      & mgc-time buffer 48 & mgc-time buffer 56 & mgc-range buffer 64 0 26 & mgc-range buffer 72 0 75
+      & mgc-range buffer 80 0 75 & mgc-time buffer 88 & mgc-range buffer 96 -1 3
+      & mgc-time buffer 104 & mgc-range buffer 112 0 10 & mgc-range buffer 120 0 26
+      & mgc-range buffer 128 0 world-serial-mask & mgc-time buffer 136 & mgc-mod-valid buffer 0
+  mgc-item-valid : Magery, Integer, Integer -> Boolean
+  mgc-item-valid (magic) (buffer) (i) = let serial = peek-qword buffer 0
+    in if serial == 0 then mgc-zero buffer 0 8 else let flags = peek-qword buffer 16
+    in let graphic = peek-qword magic.items.world.buffer (56 + i * 80)
+    in world-slot magic.items.world serial == i & peek-qword magic.items.world.buffer (24 + i * 80) == 2
+      & flags >= 0 & flags <= 15 & peek-qword buffer 56 == 0
+      & (peek-qword buffer 8 == 0 | graphic == #0EFA)
+      & (bit-and flags 1 == 0 | (graphic == #1F14 & mgc-range buffer 24 0 6143 & mgc-range buffer 32 0 4095 & mgc-range buffer 40 -128 127))
+      & (bit-and flags 12 == 0 | bit-and flags 2 /= 0)
+      & (bit-and flags 2 == 0 | (gsi-known magic.items serial & (if gsi-known magic.items serial then (gsi-meta magic.items serial).gump > 0 else False) & gmb-root magic.items serial 65 == 0))
+      & mgc-range buffer 48 0 world-serial-mask
+  mgc-rows-valid : Magery, Integer, Integer -> Boolean
+  mgc-rows-valid (magic) (buffer) (i) = if i == magic.items.world.capacity then True
+    else if not (mgc-actor-valid magic (buffer + 64 + i * 240) i)
+      | not (mgc-item-valid magic (buffer + 64 + magic.items.world.capacity * 240 + i * 64) i) then False
+    else mgc-rows-valid magic buffer (i + 1)
+  mgc-wall-unique : Integer, Integer, Integer -> Boolean
+  mgc-wall-unique (buffer) (serial) (left) = if left == 0 then True
+    else if peek-qword buffer ((left - 1) * 16) == serial then False else mgc-wall-unique buffer serial (left - 1)
+  mgc-walls-valid : Magery, Integer, Integer -> Boolean
+  mgc-walls-valid (magic) (buffer) (i) = if i == 32 then True else let serial = peek-qword buffer (i * 16)
+    in let slot = world-slot magic.items.world serial
+    in let valid = if serial == 0 then peek-qword buffer (i * 16 + 8) == 0 else if slot < 0 then False
+      else peek-qword magic.items.world.buffer (24 + slot * 80) == 2 & peek-qword magic.items.world.buffer (56 + slot * 80) == #0082
+        & peek-qword magic.items.world.buffer (72 + slot * 80) == 0 & mgc-time buffer (i * 16 + 8) & mgc-wall-unique buffer serial i
+    in if not valid then False else mgc-walls-valid magic buffer (i + 1)
+  mgc-mod-read : MgActor, Integer, Integer, Integer -> Integer
+  mgc-mod-read (actor) (buffer) (now) (i) = if i == 6 then 0 else let value = peek-qword buffer (144 + i * 16)
+    in let a = poke-qword actor.mods (i * 16) value
+    in let b = poke-qword actor.mods (i * 16 + 8) (if value == 0 then 0 else mgc-until (peek-qword buffer (152 + i * 16)) now)
+    in mgc-mod-read actor buffer now (i + 1)
+  mgc-actor-read : Magery, MgActor, Integer, Integer -> Integer
+  mgc-actor-read (magic) (actor) (buffer) (now) = let serial = peek-qword buffer 0
+    in let a = __record-set actor "serial" serial
+    in let position = __record-set actor "position" -1
+    in let cast = mgs-reset-cast actor
+    in let connection = __record-set actor "connection" -1
+    in if serial == 0 then 0 else let b = __record-set actor "strength" (peek-qword buffer 8)
+    in let c = __record-set actor "dexterity" (peek-qword buffer 16)
+    in let d = __record-set actor "intelligence" (peek-qword buffer 24)
+    in let e = __record-set actor "maximum" (peek-qword buffer 32)
+    in let f = __record-set actor "mana" (peek-qword buffer 40)
+    in let mods = mgc-mod-read actor buffer now 0
+    in let g = __record-set actor "regen" (if actor.mana == mgs-stat actor 2 then 0 else mgc-until (peek-qword buffer 48) now)
+    in let h = __record-set actor "night" (if peek-qword buffer 56 == 0 & peek-qword buffer 64 == 0 then 0 else mgc-until (peek-qword buffer 56) now)
+    in let j = __record-set actor "light" (peek-qword buffer 64)
+    in let k = __record-set actor "absorb" (peek-qword buffer 72)
+    in let l = __record-set actor "protection" (peek-qword buffer 80)
+    in let n = __record-set actor "protected-until" (if peek-qword buffer 88 == 0 & actor.protection == 0 then 0 else mgc-until (peek-qword buffer 88) now)
+    in let p = __record-set actor "poison" (peek-qword buffer 96)
+    in let q = __record-set actor "poison-due" (if actor.poison < 0 then 0 else mgc-until (peek-qword buffer 104) now)
+    in let r = __record-set actor "poison-left" (peek-qword buffer 112)
+    in let s = __record-set actor "poison-last" (peek-qword buffer 120)
+    in let t = __record-set actor "poisoner" (peek-qword buffer 128)
+    in let u = __record-set actor "recovery" (if peek-qword buffer 136 == 0 then 0 else mgc-until (peek-qword buffer 136) now)
+    in let synced = mge-sync magic actor
+    in let active = if mgt-needed actor then mgs-track magic actor else 0 in 0
+  mgc-item-read : MgItem, Integer -> Integer
+  mgc-item-read (item) (buffer) = let flags = peek-qword buffer 16
+    in let a = __record-set item "serial" (peek-qword buffer 0)
+    in let b = __record-set item "spells" (peek-qword buffer 8)
+    in let c = __record-set item "rune" (bit-and flags 1 /= 0)
+    in let d = __record-set item "lockable" (bit-and flags 2 /= 0)
+    in let e = __record-set item "locked" (bit-and flags 4 /= 0)
+    in let f = __record-set item "trapped" (bit-and flags 8 /= 0)
+    in let g = __record-set item "x" (peek-qword buffer 24)
+    in let h = __record-set item "y" (peek-qword buffer 32)
+    in let j = __record-set item "z" (peek-qword buffer 40)
+    in let k = __record-set item "trapper" (peek-qword buffer 48) in 0
+  mgc-read-rows : Magery, Integer, Integer, Integer -> Integer
+  mgc-read-rows (magic) (buffer) (now) (i) = if i == magic.items.world.capacity then 0
+    else let actor = mgc-actor-read magic (list-at magic.actors i) (buffer + 64 + i * 240) now
+    in let item = mgc-item-read (list-at magic.definitions i) (buffer + 64 + magic.items.world.capacity * 240 + i * 64)
+    in mgc-read-rows magic buffer now (i + 1)
+  mgc-read-walls : Magery, Integer, Integer, Integer -> Integer
+  mgc-read-walls (magic) (buffer) (now) (i) = if i == 32 then 0 else let wall = list-at magic.walls i
+    in let serial = peek-qword buffer (i * 16)
+    in let a = __record-set wall "serial" serial
+    in let b = __record-set wall "until" (if serial == 0 then 0 else mgc-until (peek-qword buffer (i * 16 + 8)) now)
+    in mgc-read-walls magic buffer now (i + 1)
+  mgc-read : Magery, Integer, Integer, Integer -> Result Integer Text
+  mgc-read (magic) (buffer) (length) (now) = if length /= mgc-size magic | now < 0 | now > 9223372036844775807 then Err "MGM1 input extent or clock"
+    else if not (world-indexed magic.items.world) | not (wd-bound magic.decoration) then Err "MGM1 world or map not ready"
+    else if peek-qword buffer 0 /= #314D474D | peek-qword buffer 8 /= 1 | peek-qword buffer 16 /= magic.items.world.capacity
+      | not (mgc-range buffer 24 0 #FFFFFFFF) | peek-qword buffer 32 /= magic.decoration.identity
+      | not (mgc-zero (buffer + 40) 0 3) then Err "MGM1 header"
+    else if not (mgc-rows-valid magic buffer 0) | not (mgc-walls-valid magic (buffer + 64 + magic.items.world.capacity * 304) 0) then Err "MGM1 row or world binding"
+    else let count = __record-set magic "count" 0
+    in let tick = __record-set magic "tick" now
+    in let nonce = __record-set magic "next-target" 1
+    in let seed = __record-set magic "seed" (peek-qword buffer 24)
+    in let rows = mgc-read-rows magic buffer now 0
+    in let walls = mgc-read-walls magic (buffer + 64 + magic.items.world.capacity * 304) now 0
+    in let bound = mge-bind magic
+    in when mga-refresh magic
+      is Err (e) -> Err e
+      is Ok (_) -> Ok length

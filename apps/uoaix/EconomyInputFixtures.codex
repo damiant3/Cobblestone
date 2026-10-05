@@ -1,0 +1,125 @@
+Chapter: EconomyInputFixtures
+  cites Uoaix chapter EconomyInput
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Foreword chapter Result
+
+  EiScenario = record { state : EconomyCheckpoint, entries : List EconomyInput,
+    middle : Integer, failed : Integer }
+  eif-source : Integer -> Result EconomyCheckpoint Text
+  eif-source (unused) = when ep-new (eg-standard 0) (em-new 0)
+    is Err (e) -> Err e
+    is Ok (world) -> Ok (EconomyCheckpoint { world = world, tick = 0, sequence = 0 })
+  eif-send : EiScenario, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  eif-send (s) (op) (a) (b) (c) (d) (e) =
+    if list-length s.entries == 256 then let failed = __record-set s "failed" 1 in -999
+    else let sequence = s.state.sequence + 1
+    in let entry = ei-new sequence (sequence * 10) op
+    in let a0 = list-set-at entry.args 0 a
+    in let a1 = list-set-at entry.args 1 b
+    in let a2 = list-set-at entry.args 2 c
+    in let a3 = list-set-at entry.args 3 d
+    in let a4 = list-set-at entry.args 4 e
+    in let result = ei-execute s.state.world entry
+    in let outcome = __record-set entry "expected" result
+    in let position = __record-set s.state "sequence" sequence
+    in let tick = __record-set s.state "tick" (sequence * 10)
+    in let saved = __record-set s "entries" (list-push s.entries entry)
+    in result
+  eif-mine : EiScenario, Integer -> Integer
+  eif-mine (s) (tries) =
+    if ep-at (ep-actor s.state.world 1).stock 6 >= 2 then 0
+    else if tries == 0 then let a = __record-set s "failed" 1 in -1
+    else let node = if (list-at s.state.world.nodes 3).stage == 2 then 4 else 5
+    in let result = eif-send s 15 1 node 0 0 0
+    in if result == -1 | result == -999 then let a = __record-set s "failed" 1 in -1
+    else eif-mine s (tries - 1)
+  eif-craft : EiScenario, Integer, Integer, Integer, Integer -> Integer
+  eif-craft (s) (recipe) (station) (item) (tries) =
+    if ep-at (ep-actor s.state.world 1).stock item >= 1 then 0
+    else if tries == 0 then let a = __record-set s "failed" 1 in -1
+    else let result = eif-send s 16 1 recipe station 0 0
+    in if result == -1 | result == -999 then let a = __record-set s "failed" 1 in -1
+    else eif-craft s recipe station item (tries - 1)
+  eif-cotton : EiScenario, Integer, Integer, Integer -> Integer
+  eif-cotton (s) (node) (quantity) (tries) =
+    if ep-at (ep-actor s.state.world 2).stock 10 >= quantity then 0
+    else if tries == 0 then let a = __record-set s "failed" 1 in -1
+    else let result = eif-send s 15 2 node 0 0 0
+    in if result == -1 | result == -999 then let a = __record-set s "failed" 1 in -1
+    else eif-cotton s node quantity (tries - 1)
+  eif-hours : EiScenario, Integer -> Integer
+  eif-hours (s) (hours) = if hours == 0 then 0
+    else if eif-send s 22 0 0 0 0 0 /= 0 then let a = __record-set s "failed" 1 in -1
+    else eif-hours s (hours - 1)
+  eif-build : EconomyCheckpoint -> EiScenario
+  eif-build (state) =
+    let s = EiScenario { state = state, entries = [], middle = 0, failed = 0 }
+    in let p1 = eif-send s 1 5 1 0 0 0
+    in let a1 = eif-send s 2 2 100 0 0 0
+    in let p2 = eif-send s 1 2 2 0 0 0
+    in let a2 = eif-send s 2 3 100 0 0 0
+    in let st1 = eif-send s 3 1 1 100 0 0
+    in let st2 = eif-send s 3 1 3 100 0 0
+    in let st3 = eif-send s 3 1 12 100 0 0
+    in let st4 = eif-send s 3 1 10 100 0 0
+    in let n1 = eif-send s 4 1 100 0 0 0
+    in let n2 = eif-send s 4 2 100 0 0 0
+    in let n3 = eif-send s 4 3 100 0 0 0
+    in let n4 = eif-send s 4 6 100 0 0 0
+    in let n5 = eif-send s 4 6 100 0 0 0
+    in let n6 = eif-send s 4 4 100 0 0 0
+    in let n7 = eif-send s 4 10 100 0 0 0
+    in let gather1 = eif-send s 15 1 1 0 0 0
+    in let gather2 = eif-send s 15 1 2 0 0 0
+    in let gather3 = eif-send s 15 1 3 0 0 0
+    in let pick = eif-send s 16 1 1 1 0 0
+    in let hammer = eif-send s 16 1 31 1 0 0
+    in let ore = eif-mine s 64
+    in let smelt = eif-craft s 8 2 32 64
+    in let configure = eif-send s 7 1 1 1000 0 0
+    in let denied = eif-send s 8 0 1 3 1 0
+    in let struck = eif-send s 8 1 1 3 1 0
+    in let middle = __record-set s "middle" s.state.sequence
+    in let loan = eif-send s 10 1 3 200 20 2
+    in let grant = eif-send s 13 1 2 100 0 0
+    in let tax = eif-send s 9 1 1000 0 0 0
+    in let bought = eif-send s 17 2 1 25 1 0
+    in let bucket = eif-craft s 6 4 30 64
+    in let water = eif-send s 15 1 6 0 0 0
+    in let bought-water = eif-send s 17 2 1 4 1 0
+    in let cotton = eif-cotton s 7 1 64
+    in let ground = eif-send s 5 2 100 1 0 0
+    in let planted = eif-send s 19 2 8 10 0 0
+    in let watered = eif-send s 20 2 8 1 0 0
+    in let tended = eif-send s 20 2 8 0 0 0
+    in let early = eif-hours s 3
+    in let repaid = eif-send s 11 3 1 20 0 0
+    in let reclaimed = eif-send s 14 3 5 0 0 0
+    in let granted = eif-send s 13 1 2 30 0 0
+    in let denied-food = eif-send s 18 2 34 0 0 0
+    in let later = eif-hours s 73
+    in let farmed = eif-cotton s 8 2 64
+    in let valid = ev-valid s.state.world
+    in let failed = if p1 /= 2 | a1 /= 1 | p2 /= 3 | a2 /= 2 | denied /= -1 | struck /= 0 | loan /= 1 | grant /= 0 | tax /= 0 | bought /= 0 | bucket /= 0 | water /= 4 | bought-water /= 0 | ground /= 8 | planted /= 0 | watered /= 0 | tended /= 0 | repaid /= 0 | reclaimed /= 0 | granted /= 0 | denied-food /= -1 | not valid then __record-set s "failed" 1 else s
+    in s
+  eif-valid : EconomyCheckpoint -> Boolean
+  eif-valid (state) = let w = state.world
+    in let royal = ep-actor w 1
+    in let npc = ep-actor w 2
+    in let plot = list-at w.nodes 7
+    in w.hour == 76 & w.money.hour == 76 & w.money.issued == 1000 & w.money.defaults == 1
+      & (em-purse w.money 1).coin == 696 & (em-purse w.money 2).coin == 146 & (em-purse w.money 3).coin == 158
+      & (list-at w.money.loans 0).principal == 200 & (list-at w.money.loans 0).interest == 20
+      & (list-at w.money.loans 0).paid == 20 & (list-at w.money.loans 0).status == 3
+      & w.mint-owner == 1 & w.mint-rate == 1000 & w.mint-ingots == 1
+      & ep-at npc.stock 25 == 1 & ep-at npc.wear 25 > 0 & ep-at npc.wear 25 < 32
+      & ep-at npc.stock 10 == 2 & ep-at npc.stock 54 == 1 & ep-at npc.stock 4 == 0
+      & ep-at royal.stock 30 == 1 & plot.owner == 2 & plot.resource == 10 & plot.stage == 0 & plot.ready == 148
+      & w.trade-count == 2 & ev-valid w
+  eif-pack : EiScenario, Integer, Integer -> Boolean
+  eif-pack (s) (buf) (i) = if i == list-length s.entries then True
+    else is-ok (ei-encode (list-at s.entries i) (buf + i * ei-frame-bytes) ei-frame-bytes) & eif-pack s buf (i + 1)

@@ -56,7 +56,16 @@ Section: Device Scanning
     else let device-id = pci-read-device-id bus dev func
     in let class-info = pci-read-class bus dev func
     in let hdr-type = pci-read-header-type bus dev func
-    in let entry = PciDevice { pci-bus = __narrow bus, pci-dev = __narrow dev, pci-func = __narrow func, pci-vendor = __narrow vendor, pci-device-id = __narrow device-id, pci-class = __narrow (bit-and (bit-shru class-info 8) 255), pci-subclass = __narrow (bit-and class-info 255), pci-header-type = __narrow (bit-and hdr-type pci-header-type-mask) }
+    in let entry = PciDevice {
+      pci-bus = __narrow bus,
+      pci-dev = __narrow dev,
+      pci-func = __narrow func,
+      pci-vendor = __narrow vendor,
+      pci-device-id = __narrow device-id,
+      pci-class = __narrow (bit-and (bit-shru class-info 8) 255),
+      pci-subclass = __narrow (bit-and class-info 255),
+      pci-header-type = __narrow (bit-and hdr-type pci-header-type-mask)
+    }
     in let multi = bit-and hdr-type 128 > 0
     in if func == 0 then
       if multi then pci-scan-loop bus dev 1 (list-push acc entry) (count + 1)
@@ -76,7 +85,7 @@ Section: The Whole Bus Tree
 
   pci-sec-bus : PciDevice -> Integer
   pci-sec-bus (d) =
-   bit-and (bit-shru (pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 24) 8) 255
+    bit-and (bit-shru (pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 24) 8) 255
 
   PciWalk = record {
     pw-devs : List PciDevice,
@@ -85,30 +94,30 @@ Section: The Whole Bus Tree
 
   pci-scan-all : PciScanResult
   pci-scan-all =
-   let w = pci-collect 0 0 (PciWalk { pw-devs = [], pw-cut = False })
-   in PciScanResult { devices = w.pw-devs, count = list-length (w.pw-devs), truncated = w.pw-cut }
+    let w = pci-collect 0 0 (PciWalk { pw-devs = [], pw-cut = False })
+    in PciScanResult { devices = w.pw-devs, count = list-length (w.pw-devs), truncated = w.pw-cut }
 
   pci-collect : Integer, Integer, PciWalk -> PciWalk
   pci-collect (bus) (depth) (w) =
-   if depth > pci-scan-max-depth then PciWalk { pw-devs = w.pw-devs, pw-cut = True }
-   else let s = pci-scan-bus bus
-   in let here = PciWalk { pw-devs = (w.pw-devs) & (s.devices), pw-cut = w.pw-cut }
-   in pci-bridges (s.devices) (s.count) 0 bus depth here
+    if depth > pci-scan-max-depth then PciWalk { pw-devs = w.pw-devs, pw-cut = True }
+    else let s = pci-scan-bus bus
+    in let here = PciWalk { pw-devs = (w.pw-devs) & (s.devices), pw-cut = w.pw-cut }
+    in pci-bridges (s.devices) (s.count) 0 bus depth here
 
   pci-bridges : List PciDevice, Integer, Integer, Integer, Integer, PciWalk -> PciWalk
   pci-bridges (devs) (n) (i) (bus) (depth) (w) =
-   if i >= n then w
-   else if (list-at devs i).pci-header-type == 1
-   then pci-bridge-one (list-at devs i) devs n i bus depth w
-   else pci-bridges devs n (i + 1) bus depth w
+    if i >= n then w
+    else if (list-at devs i).pci-header-type == 1
+    then pci-bridge-one (list-at devs i) devs n i bus depth w
+    else pci-bridges devs n (i + 1) bus depth w
 
   pci-bridge-one : PciDevice, List PciDevice, Integer, Integer, Integer, Integer, PciWalk -> PciWalk
   pci-bridge-one (d) (devs) (n) (i) (bus) (depth) (w) =
-   let sec = pci-sec-bus d
-   in if sec > bus
-   then let sub = pci-collect sec (depth + 1) w
-   in pci-bridges devs n (i + 1) bus depth sub
-   else pci-bridges devs n (i + 1) bus depth w
+    let sec = pci-sec-bus d
+    in if sec > bus
+    then let sub = pci-collect sec (depth + 1) w
+    in pci-bridges devs n (i + 1) bus depth sub
+    else pci-bridges devs n (i + 1) bus depth w
 
 Section: Config Space Reads
   pci-read-config : Integer, Integer, Integer, Integer -> Integer
@@ -173,7 +182,7 @@ Section: Device Queries
     if i >= len then None
     else let d = list-at devs i
     in if d.pci-class == cls then if d.pci-subclass == subcls then Just d
-      else pci-find-class-loop devs cls subcls (i + 1) len
+    else pci-find-class-loop devs cls subcls (i + 1) len
     else pci-find-class-loop devs cls subcls (i + 1) len
 
   pci-index-class : PciScanResult, Integer, Integer, Integer -> Integer
@@ -184,7 +193,7 @@ Section: Device Queries
     if i >= len then -1
     else let d = list-at devs i
     in if d.pci-class == cls then if d.pci-subclass == subcls then i
-      else pci-index-class-loop devs cls subcls (i + 1) len
+    else pci-index-class-loop devs cls subcls (i + 1) len
     else pci-index-class-loop devs cls subcls (i + 1) len
 
   pci-count-class : PciScanResult, Integer, Integer -> Integer
@@ -194,7 +203,8 @@ Section: Device Queries
   pci-count-class-loop (devs) (cls) (subcls) (i) (len) (n) =
     if i >= len then n
     else let d = list-at devs i
-    in if d.pci-class == cls then if d.pci-subclass == subcls then pci-count-class-loop devs cls subcls (i + 1) len (n + 1)
+    in if d.pci-class == cls then
+      if d.pci-subclass == subcls then pci-count-class-loop devs cls subcls (i + 1) len (n + 1)
       else pci-count-class-loop devs cls subcls (i + 1) len n
     else pci-count-class-loop devs cls subcls (i + 1) len n
 
@@ -207,7 +217,7 @@ Section: Device ID Search
     if i >= len then None
     else let d = list-at devs i
     in if d.pci-vendor == vendor then if d.pci-device-id == did then Just d
-      else pci-find-dev-loop devs vendor did (i + 1) len
+    else pci-find-dev-loop devs vendor did (i + 1) len
     else pci-find-dev-loop devs vendor did (i + 1) len
 
 Section: BAR Parsing
@@ -217,7 +227,12 @@ Section: BAR Parsing
     in let is-io = bit-and raw 1 == 1
     in let is-64 = if is-io then False else bit-and (bit-shru raw 1) 3 == 2
     in let base = if is-io then bit-and raw 65532 else bit-and raw 4294967280
-    in PciBar { bar-index = __narrow bar-idx, bar-base = base, bar-is-io = is-io, bar-is-64bit = is-64 }
+    in PciBar {
+      bar-index = __narrow bar-idx,
+      bar-base = base,
+      bar-is-io = is-io,
+      bar-is-64bit = is-64
+    }
 
 Section: PCI Config Write
   pci-write-config : Integer, Integer, Integer, Integer, Integer -> Integer

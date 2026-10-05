@@ -81,7 +81,12 @@ Section: Segment Construction
     in (write-be16 src-port & write-be16 dst-port & write-be32 seq & write-be32 ack & write-be16 off-flags & write-be16 window & [0, 0, 0, 0] & payload)
 
   write-be32 : Integer -> List Integer
-  write-be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+  write-be32 (v) = [
+    bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 16) 255,
+    bit-and (bit-shru v 8) 255,
+    bit-and v 255
+  ]
 
   read-be32 : List Integer, Integer -> Integer
   read-be32 (buf) (off) =
@@ -250,16 +255,52 @@ Section: State Transitions
     is TcpTimeWait -> TcpStep { conn = conn, action = ActNone }
 
   tcp-set-state : TcpConnection, TcpState -> TcpConnection
-  tcp-set-state (c) (s) = TcpConnection { state = s, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = c.send-next, recv-next = c.recv-next, send-window = c.send-window }
+  tcp-set-state (c) (s) = TcpConnection {
+    state = s,
+    local-port = c.local-port,
+    remote-port = c.remote-port,
+    local-ip = c.local-ip,
+    remote-ip = c.remote-ip,
+    send-next = c.send-next,
+    recv-next = c.recv-next,
+    send-window = c.send-window
+  }
 
   set-send-next : TcpConnection, Integer -> TcpConnection
-  set-send-next (c) (n) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = tcp-seq-wrap n, recv-next = c.recv-next, send-window = c.send-window }
+  set-send-next (c) (n) = TcpConnection {
+    state = c.state,
+    local-port = c.local-port,
+    remote-port = c.remote-port,
+    local-ip = c.local-ip,
+    remote-ip = c.remote-ip,
+    send-next = tcp-seq-wrap n,
+    recv-next = c.recv-next,
+    send-window = c.send-window
+  }
 
   set-recv-next : TcpConnection, Integer -> TcpConnection
-  set-recv-next (c) (n) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = c.remote-port, local-ip = c.local-ip, remote-ip = c.remote-ip, send-next = c.send-next, recv-next = tcp-seq-wrap n, send-window = c.send-window }
+  set-recv-next (c) (n) = TcpConnection {
+    state = c.state,
+    local-port = c.local-port,
+    remote-port = c.remote-port,
+    local-ip = c.local-ip,
+    remote-ip = c.remote-ip,
+    send-next = c.send-next,
+    recv-next = tcp-seq-wrap n,
+    send-window = c.send-window
+  }
 
   set-remote : TcpConnection, Integer, List Integer -> TcpConnection
-  set-remote (c) (rp) (rip) = TcpConnection { state = c.state, local-port = c.local-port, remote-port = __narrow rp, local-ip = c.local-ip, remote-ip = rip, send-next = c.send-next, recv-next = c.recv-next, send-window = c.send-window }
+  set-remote (c) (rp) (rip) = TcpConnection {
+    state = c.state,
+    local-port = c.local-port,
+    remote-port = __narrow rp,
+    local-ip = c.local-ip,
+    remote-ip = rip,
+    send-next = c.send-next,
+    recv-next = c.recv-next,
+    send-window = c.send-window
+  }
 
 Section: CLOSED State
 
@@ -295,7 +336,8 @@ Section: SYN_SENT State
         let c1 = set-recv-next (tcp-set-state conn TcpEstablished) (seg.seq-num + 1)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
         in TcpStep { conn = c1, action = ActSend ack }
-      else if tcp-has-flag seg tcp-flag-rst then TcpStep { conn = tcp-set-state conn TcpClosed, action = ActError "connection refused" }
+      else if tcp-has-flag seg tcp-flag-rst then
+        TcpStep { conn = tcp-set-state conn TcpClosed, action = ActError "connection refused" }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
@@ -309,7 +351,10 @@ Section: SYN_RECEIVED State
         if tcp-seg-payload-len seg > 0 then
           let c1 = set-recv-next (tcp-set-state conn TcpEstablished) (seg.seq-num + tcp-seg-payload-len seg)
           in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
-          in TcpStep { conn = c1, action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack }
+          in TcpStep {
+            conn = c1,
+            action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack
+          }
         else TcpStep { conn = tcp-set-state conn TcpEstablished, action = ActEstablished }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
@@ -332,7 +377,10 @@ Section: ESTABLISHED State
       else if tcp-seg-payload-len seg > 0 then
         let c1 = set-recv-next conn (seg.seq-num + tcp-seg-payload-len seg)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
-        in TcpStep { conn = c1, action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack }
+        in TcpStep {
+          conn = c1,
+          action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack
+        }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose ->
       let fin = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (conn.recv-next) (bit-or tcp-flag-fin tcp-flag-ack) (conn.send-window) []
@@ -348,7 +396,8 @@ Section: FIN_WAIT_1 State
         let c1 = set-recv-next (tcp-set-state conn TcpTimeWait) (seg.seq-num + 1)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
         in TcpStep { conn = c1, action = ActSend ack }
-      else if tcp-has-flag seg tcp-flag-ack then TcpStep { conn = tcp-set-state conn TcpFinWait2, action = ActNone }
+      else if tcp-has-flag seg tcp-flag-ack then
+        TcpStep { conn = tcp-set-state conn TcpFinWait2, action = ActNone }
       else if tcp-has-flag seg tcp-flag-fin then
         let c1 = set-recv-next (tcp-set-state conn TcpTimeWait) (seg.seq-num + 1)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
@@ -396,14 +445,16 @@ Section: RST In A Synchronized State
 
   tcp-step-rst : TcpConnection, TcpSegment -> TcpStep
   tcp-step-rst (conn) (seg) =
-    if seg.seq-num == conn.recv-next then TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
+    if seg.seq-num == conn.recv-next then
+      TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
     else TcpStep { conn = conn, action = ActNone }
 
 Section: LAST_ACK State
   tcp-step-last-ack : TcpConnection, TcpEvent -> TcpStep
   tcp-step-last-ack (conn) (ev) = when ev
     is EvSegment (seg) ->
-      if tcp-has-flag seg tcp-flag-ack then TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
+      if tcp-has-flag seg tcp-flag-ack then
+        TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }

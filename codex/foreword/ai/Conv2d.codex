@@ -28,13 +28,24 @@ Section: Types
 Section: Construction
   conv2d-params : Integer, Integer, Integer, Integer, Integer -> Conv2dParams
   conv2d-params (in-ch) (out-ch) (k) (stride) (pad) =
-    Conv2dParams { c2-in-channels = in-ch, c2-out-channels = out-ch, c2-kernel-h = k, c2-kernel-w = k, c2-stride = stride, c2-padding = pad }
+    Conv2dParams {
+      c2-in-channels = in-ch,
+      c2-out-channels = out-ch,
+      c2-kernel-h = k,
+      c2-kernel-w = k,
+      c2-stride = stride,
+      c2-padding = pad
+    }
 
   conv2d-layer : Conv2dParams, List Integer, List Integer -> Conv2dLayer
   conv2d-layer (params) (weight-data) (bias-data) =
     let wrows = params.c2-out-channels
     in let wcols = params.c2-in-channels * params.c2-kernel-h * params.c2-kernel-w
-    in Conv2dLayer { c2-params = params, c2-weights = tensor-from wrows wcols weight-data, c2-bias = tensor-from (params.c2-out-channels) 1 bias-data }
+    in Conv2dLayer {
+      c2-params = params,
+      c2-weights = tensor-from wrows wcols weight-data,
+      c2-bias = tensor-from (params.c2-out-channels) 1 bias-data
+    }
 
 Section: Output Dimensions
   conv2d-out-dim : Integer, Integer, Integer, Integer -> Integer
@@ -77,7 +88,8 @@ Section: Forward Pass (CPU)
   conv2d-kernel-sum : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Conv2dParams, Integer, Integer, Integer -> Integer
   conv2d-kernel-sum (layer) (input) (in-h) (in-w) (oc) (ic) (oh) (ow) (p) (kh) (kw) (acc) =
     if kh >= p.c2-kernel-h then acc
-    else if kw >= p.c2-kernel-w then conv2d-kernel-sum layer input in-h in-w oc ic oh ow p (kh + 1) 0 acc
+    else if kw >= p.c2-kernel-w then
+      conv2d-kernel-sum layer input in-h in-w oc ic oh ow p (kh + 1) 0 acc
     else let ih = oh * p.c2-stride - p.c2-padding + kh
     in let iw = ow * p.c2-stride - p.c2-padding + kw
     in let in-val = conv2d-sample input in-h in-w ic ih iw
@@ -134,7 +146,8 @@ Section: Transpose Convolution (for upsampling)
   conv2d-trans-kernel : Conv2dLayer, List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Conv2dParams, Integer, Integer, Integer -> Integer
   conv2d-trans-kernel (layer) (input) (in-h) (in-w) (oc) (ic) (oh) (ow) (p) (kh) (kw) (acc) =
     if kh >= p.c2-kernel-h then acc
-    else if kw >= p.c2-kernel-w then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p (kh + 1) 0 acc
+    else if kw >= p.c2-kernel-w then
+      conv2d-trans-kernel layer input in-h in-w oc ic oh ow p (kh + 1) 0 acc
     else let src-h = oh + p.c2-padding - kh
     in let src-w = ow + p.c2-padding - kw
     in let valid-h = src-h >= 0
@@ -145,8 +158,10 @@ Section: Transpose Convolution (for upsampling)
     in let mod-w = if valid-w then src-w - div-w * p.c2-stride else 1
     in if mod-h /= 0 then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
     else if mod-w /= 0 then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
-    else if div-h >= in-h then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
-    else if div-w >= in-w then conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
+    else if div-h >= in-h then
+      conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
+    else if div-w >= in-w then
+      conv2d-trans-kernel layer input in-h in-w oc ic oh ow p kh (kw + 1) acc
     else let in-val = list-at input (ic * in-h * in-w + div-h * in-w + div-w)
     in let w-idx = ic * (p.c2-out-channels * p.c2-kernel-h * p.c2-kernel-w) + oc * (p.c2-kernel-h * p.c2-kernel-w) + kh * p.c2-kernel-w + kw
     in let w-val = list-at (layer.c2-weights.data) w-idx

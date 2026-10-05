@@ -5,9 +5,9 @@ Section: Library
 
   unity-has-op : List SExp, Text, Integer -> Boolean
   unity-has-op (ops) (name) (i) =
-   if i >= list-length ops then False
-   else if sexp-str (list-at ops i) == name then True
-   else unity-has-op ops name (i + 1)
+    if i >= list-length ops then False
+    else if sexp-str (list-at ops i) == name then True
+    else unity-has-op ops name (i + 1)
 
   unity-profile-header : Text = "UNITY windows-x64-mono-6000.0.75f1\n"
 
@@ -16,141 +16,149 @@ Section: Library
 
   unity-opening-statement : Text, CodexType -> CstStmt
   unity-opening-statement (class-name) (ret) =
-   let call = CstCall (CstMemberAccess (CstName class-name []) opening-entry-point []) []
-   in let output = when ret
-    is EffectfulTy (effs) (scope) (inner) -> call
-    is NothingTy -> call
-    is ProofTy -> call
-    is PropEqTy (left) (right) -> call
-    is VoidTy -> call
-    is TextTy -> unity-console-call (CstCall (CstMemberAccess (CstName "_Cce" []) "ToUnicode" []) [unity-argument call])
-    is otherwise -> unity-console-call call
-   in CstExpression output
+    let call = CstCall (CstMemberAccess (CstName class-name []) opening-entry-point []) []
+    in let output = when ret
+     is EffectfulTy (effs) (scope) (inner) -> call
+     is NothingTy -> call
+     is ProofTy -> call
+     is PropEqTy (left) (right) -> call
+     is VoidTy -> call
+     is TextTy -> unity-console-call (CstCall (CstMemberAccess (CstName "_Cce" []) "ToUnicode" []) [
+       unity-argument call
+     ])
+     is otherwise -> unity-console-call call
+    in CstExpression output
 
   unity-argument : CstExpr -> CstArgument
   unity-argument (value) = CstArgument { ca-mode = [], ca-name = "", ca-value = value }
 
   unity-console-call : CstExpr -> CstExpr
-  unity-console-call (value) = CstCall (CstMemberAccess (CstName "Console" []) "WriteLine" []) [unity-argument value]
+  unity-console-call (value) = CstCall (CstMemberAccess (CstName "Console" []) "WriteLine" []) [
+    unity-argument value
+  ]
 
  Only scalar dependency masks cross the per-definition heap restore.
  Bits 1, 2 and 4 select the shared helpers, state and CCE runtime.
 
   unity-runtime-mask : Text -> Integer
   unity-runtime-mask (t) =
-   (if text-contains t "_Buf." | text-contains t "_CxText." | text-contains t "_ICodexVariant" then 1 else 0)
-   + (if text-contains t "_State." then 2 else 0)
-   + (if text-contains t "_Cce." then 4 else 0)
+    (if text-contains t "_Buf." | text-contains t "_CxText." | text-contains t "_ICodexVariant" then 1 else 0)
+    + (if text-contains t "_State." then 2 else 0)
+    + (if text-contains t "_Cce." then 4 else 0)
 
   unity-stream : Text, List IrSpan, CsCtx, Integer, Integer, Integer, Integer -> [Console] Nothing
   unity-stream (t) (defs) (ctx) (i) (n) (cce-mask) (runtime-mask) =
-   if i >= n then
-    let shared = if bit-and runtime-mask 1 /= 0 then emit-buf-runtime else ""
-    in let mask = bit-or cce-mask (cs-cce-mask shared)
+    if i >= n then
+      let shared = if bit-and runtime-mask 1 /= 0 then emit-buf-runtime else ""
+      in let mask = bit-or cce-mask (cs-cce-mask shared)
+      in act
+       print-uni "}\n"
+       print-uni shared
+       print-uni (if bit-and runtime-mask 2 /= 0 then emit-state-runtime else "")
+       print-uni (if bit-and runtime-mask 5 /= 0 then emit-cce-runtime mask else "")
+      end
+    else let h = __heap-save
+    in let cs = emit-def (parse-def (ips-tree t (list-at defs i))) ctx
+    in let cm = bit-or cce-mask (cs-cce-mask cs)
+    in let rm = bit-or runtime-mask (unity-runtime-mask cs)
     in act
-     print-uni "}\n"
-     print-uni shared
-     print-uni (if bit-and runtime-mask 2 /= 0 then emit-state-runtime else "")
-     print-uni (if bit-and runtime-mask 5 /= 0 then emit-cce-runtime mask else "")
+     print-uni cs
+     print-uni "\n"
+     let restored = __heap-restore h
+     in unity-stream t defs ctx (i + 1) n cm rm
     end
-   else let h = __heap-save
-   in let cs = emit-def (parse-def (ips-tree t (list-at defs i))) ctx
-   in let cm = bit-or cce-mask (cs-cce-mask cs)
-   in let rm = bit-or runtime-mask (unity-runtime-mask cs)
-   in act
-    print-uni cs
-    print-uni "\n"
-    let restored = __heap-restore h
-    in unity-stream t defs ctx (i + 1) n cm rm
-   end
 
   plug-emit-ir-stream : Text -> [Console] Nothing
   plug-emit-ir-stream (input) =
-   if text-starts-with input unity-profile-header == False then
-    print-line-uni "REFUSED unsupported Unity target profile"
-   else let t = text-drop input (text-length unity-profile-header)
-   in if ir-text-is-chapter t == False then print-line-uni "REFUSED invalid Unity IR"
-   else unity-emit-library t
+    if text-starts-with input unity-profile-header == False then
+      print-line-uni "REFUSED unsupported Unity target profile"
+    else let t = text-drop input (text-length unity-profile-header)
+    in if ir-text-is-chapter t == False then print-line-uni "REFUSED invalid Unity IR"
+    else unity-emit-library t
 
   unity-emit-library : Text -> [Console] Nothing
   unity-emit-library (t) =
-   let len = text-length t
-   in let top = ips-skip t 0 len
-   in let chap = IrSpan { sp-lo = top, sp-hi = ips-form-end t (top + 1) len 1 }
-   in let kids = ips-kids t chap
-   in let nk = list-length kids
-   in let chap-name = sexp-str (ips-tree t (list-at kids 1))
-   in let type-defs = parse-atype-defs (sexp-list (ips-tree t (ips-named t kids 0 nk "type-defs")))
-   in let defs = ips-kids t (ips-named t kids 0 nk "defs")
-   in let n = list-length defs
-   in let arities = ips-arities t defs 1 n []
-   in let muts = ips-muts t defs 1 n []
-   in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
-   in let class-name = "Codex_" & sanitize chap-name
-   in let ops = sexp-list (ips-tree t (ips-named t kids 0 nk "eff-ops"))
-   in let storage = unity-has-op ops "unity-storage-start" 1
-   in let meadows = unity-has-op ops "unity-meadows-spawns-start" 1
-   in let arc = unity-has-op ops "unity-circumhorizontal-arc-start" 1
-   in let hover = unity-has-op ops "unity-station-hover-start" 1
-   in let hud = unity-has-op ops "unity-hud-layout-start" 1
-   in let rows = unity-has-op ops "unity-plant-rows-start" 1
-   in let tools = unity-has-op ops "unity-tool-kit-start" 1
-   in let firekeeping = unity-has-op ops "unity-firekeeping-start" 1
-   in let camera = unity-has-op ops "unity-build-camera-start" 1
-   in let loadout = unity-has-op ops "unity-loadout-start" 1
-   in let farming = unity-has-op ops "unity-farming-start" 1
-   in let has-mod = storage | meadows | hover | hud | rows | tools | arc | firekeeping | camera | loadout | farming
-   in if lookup-arity arities opening-entry-point < 0 then print-line-uni "REFUSED missing opening"
-   else act
-    print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
-    print-uni (cst-namespace-open "PrismGenerated")
-    print-uni (cst-member 0 (CstUsingAlias "Console" (CstAliasType "global" (CstNamedType "System.Console" []))))
-    let h = __heap-save
-    in let entry = unity-entry class-name (ips-opening-ret t defs 1 n) has-mod
-    in let tdefs = emit-type-defs type-defs 0 muts
-    in let declarations = entry & tdefs
-    in let mask = cs-cce-mask declarations
-    in let runtimes = bit-or (unity-runtime-mask declarations) (if arc | hover then 4 else 0)
-    in act
-     print-uni (cst-member 0 (unity-local-saves-node 0))
-     print-uni entry
-     print-uni tdefs
-     if storage | meadows | hover | hud | rows | tools | camera | loadout | farming then unity-method-bridge-emit else print-uni ""
-     if storage then act
-      unity-valheim-storage-emit
-      unity-valheim-inventory-emit
-      unity-valheim-construction-emit
-     end else print-uni ""
-     if meadows then unity-meadows-spawns-emit else print-uni ""
-     if arc then unity-circumhorizontal-arc-emit else print-uni ""
-     if hover then unity-station-hover-emit else print-uni ""
-     if hud then unity-hud-layout-emit else print-uni ""
-     if rows | tools | farming then unity-plant-rows-emit else print-uni ""
-     if tools | farming then unity-tool-kit-emit else print-uni ""
-     if firekeeping then unity-firekeeping-emit else print-uni ""
-     if camera then unity-build-camera-emit else print-uni ""
-     if loadout then unity-loadout-emit else print-uni ""
-     if farming then unity-farming-emit else print-uni ""
-     if has-mod then unity-mod-identity-emit else print-uni ""
-     print-uni (emit-class-header chap-name)
-     if storage then let factory = list-at unity-effect-members 0
-      in print-uni (cst-member 1 (factory 0)) else print-uni ""
-     if meadows then print-uni (cst-member 1 (unity-meadows-spawns-effect 0)) else print-uni ""
-     if arc then print-uni (cst-member 1 (unity-circumhorizontal-arc-effect 0)) else print-uni ""
-     if hover then print-uni (cst-member 1 (unity-station-hover-effect 0)) else print-uni ""
-     if hud then print-uni (cst-member 1 (unity-hud-layout-effect 0)) else print-uni ""
-     if rows then print-uni (cst-member 1 (unity-plant-rows-effect 0)) else print-uni ""
-     if tools then print-uni (cst-member 1 (unity-tool-kit-effect 0)) else print-uni ""
-     if firekeeping then print-uni (cst-member 1 (unity-firekeeping-effect 0)) else print-uni ""
-     if camera then print-uni (cst-member 1 (unity-build-camera-effect 0)) else print-uni ""
-     if loadout then print-uni (cst-member 1 (unity-loadout-effect 0)) else print-uni ""
-     if farming then print-uni (cst-member 1 (unity-farming-effect 0)) else print-uni ""
-     let restored = __heap-restore h
+    let len = text-length t
+    in let top = ips-skip t 0 len
+    in let chap = IrSpan { sp-lo = top, sp-hi = ips-form-end t (top + 1) len 1 }
+    in let kids = ips-kids t chap
+    in let nk = list-length kids
+    in let chap-name = sexp-str (ips-tree t (list-at kids 1))
+    in let type-defs = parse-atype-defs (sexp-list (ips-tree t (ips-named t kids 0 nk "type-defs")))
+    in let defs = ips-kids t (ips-named t kids 0 nk "defs")
+    in let n = list-length defs
+    in let arities = ips-arities t defs 1 n []
+    in let muts = ips-muts t defs 1 n []
+    in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
+    in let class-name = "Codex_" & sanitize chap-name
+    in let ops = sexp-list (ips-tree t (ips-named t kids 0 nk "eff-ops"))
+    in let storage = unity-has-op ops "unity-storage-start" 1
+    in let meadows = unity-has-op ops "unity-meadows-spawns-start" 1
+    in let arc = unity-has-op ops "unity-circumhorizontal-arc-start" 1
+    in let hover = unity-has-op ops "unity-station-hover-start" 1
+    in let hud = unity-has-op ops "unity-hud-layout-start" 1
+    in let rows = unity-has-op ops "unity-plant-rows-start" 1
+    in let tools = unity-has-op ops "unity-tool-kit-start" 1
+    in let firekeeping = unity-has-op ops "unity-firekeeping-start" 1
+    in let camera = unity-has-op ops "unity-build-camera-start" 1
+    in let loadout = unity-has-op ops "unity-loadout-start" 1
+    in let farming = unity-has-op ops "unity-farming-start" 1
+    in let has-mod = storage | meadows | hover | hud | rows | tools | arc | firekeeping | camera | loadout | farming
+    in if lookup-arity arities opening-entry-point < 0 then print-line-uni "REFUSED missing opening"
+    else act
+     print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
+     print-uni (cst-namespace-open "PrismGenerated")
+     print-uni (cst-member 0 (CstUsingAlias "Console" (CstAliasType "global" (CstNamedType "System.Console" []))))
+     let h = __heap-save
+     in let entry = unity-entry class-name (ips-opening-ret t defs 1 n) has-mod
+     in let tdefs = emit-type-defs type-defs 0 muts
+     in let declarations = entry & tdefs
+     in let mask = cs-cce-mask declarations
+     in let runtimes = bit-or (unity-runtime-mask declarations) (if arc | hover then 4 else 0)
      in act
-      unity-stream t defs ctx 1 n mask runtimes
-      print-uni cst-close-scope
-      print-uni (cst-member 0 (CstNamespace "System.Runtime.CompilerServices" [CstClass (CstClassHead { ch-modifiers = [CstInternal, CstStatic], ch-name = "IsExternalInit", ch-bases = [] }) []]))
-      unity-export-emit
+      print-uni (cst-member 0 (unity-local-saves-node 0))
+      print-uni entry
+      print-uni tdefs
+      if storage | meadows | hover | hud | rows | tools | camera | loadout | farming then
+        unity-method-bridge-emit
+      else print-uni ""
+      if storage then act
+       unity-valheim-storage-emit
+       unity-valheim-inventory-emit
+       unity-valheim-construction-emit
+      end else print-uni ""
+      if meadows then unity-meadows-spawns-emit else print-uni ""
+      if arc then unity-circumhorizontal-arc-emit else print-uni ""
+      if hover then unity-station-hover-emit else print-uni ""
+      if hud then unity-hud-layout-emit else print-uni ""
+      if rows | tools | farming then unity-plant-rows-emit else print-uni ""
+      if tools | farming then unity-tool-kit-emit else print-uni ""
+      if firekeeping then unity-firekeeping-emit else print-uni ""
+      if camera then unity-build-camera-emit else print-uni ""
+      if loadout then unity-loadout-emit else print-uni ""
+      if farming then unity-farming-emit else print-uni ""
+      if has-mod then unity-mod-identity-emit else print-uni ""
+      print-uni (emit-class-header chap-name)
+      if storage then let factory = list-at unity-effect-members 0
+      in print-uni (cst-member 1 (factory 0)) else print-uni ""
+      if meadows then print-uni (cst-member 1 (unity-meadows-spawns-effect 0)) else print-uni ""
+      if arc then print-uni (cst-member 1 (unity-circumhorizontal-arc-effect 0)) else print-uni ""
+      if hover then print-uni (cst-member 1 (unity-station-hover-effect 0)) else print-uni ""
+      if hud then print-uni (cst-member 1 (unity-hud-layout-effect 0)) else print-uni ""
+      if rows then print-uni (cst-member 1 (unity-plant-rows-effect 0)) else print-uni ""
+      if tools then print-uni (cst-member 1 (unity-tool-kit-effect 0)) else print-uni ""
+      if firekeeping then print-uni (cst-member 1 (unity-firekeeping-effect 0)) else print-uni ""
+      if camera then print-uni (cst-member 1 (unity-build-camera-effect 0)) else print-uni ""
+      if loadout then print-uni (cst-member 1 (unity-loadout-effect 0)) else print-uni ""
+      if farming then print-uni (cst-member 1 (unity-farming-effect 0)) else print-uni ""
+      let restored = __heap-restore h
+      in act
+       unity-stream t defs ctx 1 n mask runtimes
+       print-uni cst-close-scope
+       print-uni (cst-member 0 (CstNamespace "System.Runtime.CompilerServices" [
+         CstClass (CstClassHead { ch-modifiers = [CstInternal, CstStatic], ch-name = "IsExternalInit", ch-bases = [] }) []
+       ]))
+       unity-export-emit
+      end
      end
     end
-   end

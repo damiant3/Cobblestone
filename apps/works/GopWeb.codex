@@ -3,17 +3,16 @@ Chapter: GopWeb
   cites Net chapter NetIO
   cites Net chapter NetCompact
   cites Net chapter NetDriver
+  cites Net chapter DhcpIO
+  cites Net chapter NetworkConfig
+  cites Works chapter GopWebAdmin
   cites Foreword chapter Capability
   cites Foreword chapter CCE
   cites UI chapter Widget
   cites Works chapter GopAhci
 
- We say:
 
 Section: The Service's Routes
-
-  gopweb-port : Integer
-  gopweb-port = 9100
 
   gopweb-page : Text
   gopweb-page =
@@ -32,145 +31,176 @@ Section: The Service's Routes
     else
       HttpResponse { status = http-404, content-type = "text/plain", body = "Not found" }
 
-Section: The Block the Desk and the Service Share
+Section: Service State
 
-  gopweb-blk-pid : Integer = 64
-  gopweb-blk-count : Integer = 72
-  gopweb-blk-paused : Integer = 76
-  gopweb-blk-cmd : Integer = 80
-  gopweb-blk-seen : Integer = 84
-  gopweb-blk-served : Integer = 88
-  gopweb-blk-shown : Integer = 92
-  gopweb-ring : Integer = 128
-  gopweb-ring-slots : Integer = 16
-  gopweb-slot-bytes : Integer = 64
-  gopweb-cmd-stop : Integer = 1
-  gopweb-cmd-start : Integer = 2
+  gopweb-dhcp-window : Integer = 500
 
-  gopweb-blk-bytes : Integer
-  gopweb-blk-bytes = gopweb-ring + gopweb-ring-slots * gopweb-slot-bytes
+  gopweb-state : Integer, Integer -> Integer
+  gopweb-state (blk) (state) =
+    let written = poke-qword blk gopweb-blk-state state
+    in gopweb-bump blk
 
-  gopweb-blk-new : Integer
-  gopweb-blk-new = alloc-zeroed gopweb-blk-bytes 64
+  gopweb-lease : Integer, NetworkConfig -> Integer
+  gopweb-lease (blk) (cfg) =
+    let ip = poke-qword blk gopweb-blk-ip (gopweb-ip-pack (cfg.local-ip))
+    in let gateway = poke-qword blk gopweb-blk-gateway (gopweb-ip-pack (cfg.gateway))
+    in let mask = poke-qword blk gopweb-blk-mask (gopweb-ip-pack (cfg.subnet-mask))
+    in let dns = poke-qword blk gopweb-blk-dns (gopweb-ip-pack (cfg.dns-server))
+    in let seconds = poke-qword blk gopweb-blk-lease-seconds (cfg.lease-time)
+    in poke-qword blk gopweb-blk-lease-start get-ticks
 
-  gopweb-slot-at : Integer, Integer -> Integer
-  gopweb-slot-at (blk) (i) =
-    blk + gopweb-ring + (i - (i / gopweb-ring-slots) * gopweb-ring-slots) * gopweb-slot-bytes
+  gopweb-bind : WebMux, NetworkConfig -> WebMux
+  gopweb-bind (m) (cfg) =
+    let sess = net-session-new (cfg.local-mac) (cfg.local-ip) (cfg.gateway) gopweb-port 0 (cfg.gateway) 1000
+    in let ts = transport-set-session (web-mux-next-listen m gopweb-port) sess
+    in WebMux { listen = net-io-listen ts, conns = [], served = m.served }
 
-  gopweb-log-write : Integer, List Integer, Integer, Integer -> Integer
-  gopweb-log-write (dst) (bs) (i) (n) =
-    if i >= n then 0
-    else let p = poke-byte dst (1 + i) (list-at bs i)
-    in gopweb-log-write dst bs (i + 1) n
+  gopweb-configure : Integer, WebMux, Integer -> [Concurrent, Network.Read, Network.Write] WebMux
+  gopweb-configure (blk) (m) (sequence) =
+    let starting = gopweb-state blk 1
+    in let clear = poke-qword blk gopweb-blk-ip 0
+    in let gateway = poke-qword blk gopweb-blk-gateway 0
+    in let mask = poke-qword blk gopweb-blk-mask 0
+    in let dns = poke-qword blk gopweb-blk-dns 0
+    in let duration = poke-qword blk gopweb-blk-lease-seconds 0
+    in act
+      cfg <- dhcp-io-configure-window net-driver-mac "cobblestone" (305419896 + get-ticks) gopweb-dhcp-window (\ignored -> peek-qword blk gopweb-blk-command-seq == sequence)
+      if net-is-configured cfg == False | cfg.lease-time <= 0 then
+        let failed = if peek-qword blk gopweb-blk-command-seq == sequence then gopweb-state blk 4 else 0 in m
+      else let leased = gopweb-lease blk cfg
+      in let bound = gopweb-bind m cfg
+      in let running = gopweb-state blk 2
+      in bound
+    end
 
-  gopweb-log : Integer, Text -> Integer
-  gopweb-log (blk) (line) =
-    let c = peek-32 blk gopweb-blk-count
-    in let dst = gopweb-slot-at blk c
-    in let bs = text-to-utf8-bytes line
-    in let n = if list-length bs > gopweb-slot-bytes - 1 then gopweb-slot-bytes - 1 else list-length bs
-    in let l = poke-byte dst 0 n
-    in let b = gopweb-log-write dst bs 0 n
-    in poke-32 blk gopweb-blk-count (c + 1)
+  gopweb-acknowledge : Integer, Integer, Integer -> Integer
+  gopweb-acknowledge (blk) (sequence) (requested) =
+    let now = get-ticks
+    in let ack = poke-qword blk gopweb-blk-ack now
+    in let latency = poke-qword blk gopweb-blk-latency (if now < requested then 0 else (now - requested) * 10)
+    in let committed = poke-qword blk gopweb-blk-ack-seq sequence
+    in gopweb-bump blk
 
-  gopweb-log-bytes : Integer, Integer, Integer, List Integer -> List Integer
-  gopweb-log-bytes (src) (i) (n) (acc) =
-    if i > n then acc
-    else gopweb-log-bytes src (i + 1) n (list-push acc (peek-byte src i))
+  gopweb-command : Integer, WebMux -> [Concurrent, Network.Read, Network.Write] WebMux
+  gopweb-command (blk) (m) =
+    let sequence = peek-qword blk gopweb-blk-command-seq
+    in let command = peek-qword blk gopweb-blk-cmd
+    in let requested = peek-qword blk gopweb-blk-requested
+    in if int-mod sequence 2 /= 0 | sequence == peek-qword blk gopweb-blk-ack-seq | sequence /= peek-qword blk gopweb-blk-command-seq then m
+    else if command == gopweb-cmd-start & peek-qword blk gopweb-blk-state == 2 then
+      let ack = gopweb-acknowledge blk sequence requested in m
+    else let stopping = gopweb-state blk 3
+    in act
+      closed <- web-mux-close m 0
+      next <- if command == gopweb-cmd-stop then closed else gopweb-configure blk closed sequence
+      let stopped = if command == gopweb-cmd-stop then gopweb-state blk 0 else 0
+      in let ack = gopweb-acknowledge blk sequence requested
+      in next
+    end
 
-  gopweb-log-read : Integer, Integer -> Text
-  gopweb-log-read (blk) (i) =
-    let src = gopweb-slot-at blk i
-    in utf8-bytes-to-text (gopweb-log-bytes src 1 (peek-byte src 0) [])
+  gopweb-lease-expired : Integer -> Boolean
+  gopweb-lease-expired (blk) =
+    peek-qword blk gopweb-blk-state == 2 & (get-ticks - peek-qword blk gopweb-blk-lease-start) / 100 >= peek-qword blk gopweb-blk-lease-seconds
 
-  gopweb-log-first : Integer -> Integer
-  gopweb-log-first (c) = if c > gopweb-ring-slots then c - gopweb-ring-slots else 0
+  gopweb-pulse : Integer -> Integer
+  gopweb-pulse (blk) =
+    let used = __heap-save - peek-qword blk gopweb-blk-heap-base
+    in let heap = poke-qword blk gopweb-blk-heap used
+    in let peak = if used > peek-qword blk gopweb-blk-peak then poke-qword blk gopweb-blk-peak used else 0
+    in if get-ticks - peek-qword blk gopweb-blk-heartbeat < 100 then 0
+    else let beat = poke-qword blk gopweb-blk-heartbeat get-ticks
+    in gopweb-bump blk
 
-Section: The Pane's Tree
-
-  gopweb-log-rows : Integer, Integer, Integer, List WidgetNode -> List WidgetNode
-  gopweb-log-rows (blk) (i) (c) (acc) =
-    if i >= c then acc
-    else gopweb-log-rows blk (i + 1) c (list-push acc (widget-label ("web-row-" & show i) (gopweb-log-read blk i)))
-
-  gopweb-head : Integer -> Text
-  gopweb-head (c) =
-    if c == 0 then "No requests yet"
-    else if c > gopweb-ring-slots then "Last " & show gopweb-ring-slots & " of " & show c & " requests"
-    else show c & " requests"
-
-  gopweb-state-text : Integer -> Text
-  gopweb-state-text (blk) =
-    if peek-32 blk gopweb-blk-paused /= 0 then "Stopped"
-    else "Serving on port " & show gopweb-port
-
-  gopweb-tree : Integer -> WidgetNode
-  gopweb-tree (blk) =
-    let c = peek-32 blk gopweb-blk-count
-    in widget-panel "web-body" DirColumn 4 ([
-         widget-panel "web-bar" DirRow 8 [
-           widget-button "web-stop" "Stop",
-           widget-button "web-start" "Start",
-           widget-label "web-state" (gopweb-state-text blk) ],
-         widget-label "web-head" (gopweb-head c) ]
-         & gopweb-log-rows blk (gopweb-log-first c) c [])
+  gopweb-refuse : Integer, List Integer, Integer -> [Network.Write] Integer
+  gopweb-refuse (blk) (frame) (stop) =
+    if web-frame-valid frame stop == False then 0
+    else let seg = frame-seg-within frame stop
+    in if seg.dst-port /= gopweb-port | tcp-has-flag seg tcp-flag-rst then 0
+    else let ip = gopweb-ip-pack (ip-src-at frame eth-header-size)
+    in let duplicate = peek-qword blk gopweb-blk-refused > 0 & peek-qword blk gopweb-blk-refused-ip == ip & peek-qword blk gopweb-blk-refused-port == seg.src-port & peek-qword blk gopweb-blk-refused-seq == seg.seq-num
+    in let leased = peek-qword blk gopweb-blk-ip /= 0 & peek-qword blk gopweb-blk-lease-seconds > 0 & (get-ticks - peek-qword blk gopweb-blk-lease-start) / 100 < peek-qword blk gopweb-blk-lease-seconds
+    in let mine = gopweb-ip-pack (ip-dst-at frame eth-header-size) == peek-qword blk gopweb-blk-ip
+    in act
+      sent <- if leased & mine then net-driver-send-frame (web-closed-reply frame stop net-driver-mac) else 0
+      if duplicate | tcp-has-flag seg tcp-flag-syn == False then 0
+      else let peer = poke-qword blk gopweb-blk-refused-ip ip
+      in let port = poke-qword blk gopweb-blk-refused-port (seg.src-port)
+      in let sequence = poke-qword blk gopweb-blk-refused-seq (seg.seq-num)
+      in let count = poke-qword blk gopweb-blk-refused (peek-qword blk gopweb-blk-refused + 1)
+      in gopweb-bump blk
+    end
 
 Section: The Service
 
-  gopweb-service : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  gopweb-service : Integer, Integer -> [Console, Concurrent, Network.Read, Network.Write] Integer
   gopweb-service (blk) (ignored) =
-    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport gopweb-port), conns = [], served = 0 }
-    in gopweb-pump blk m0 0 0 [] 0 0
+    let heap = poke-qword blk gopweb-blk-heap-base __heap-save
+    in let started = poke-qword blk gopweb-blk-started get-ticks
+    in let pid = poke-qword blk gopweb-blk-pid process-get-pid
+    in let requested = gopweb-action blk gopweb-cmd-start
+    in act
+      card <- net-driver-bring-up
+      let device = poke-qword blk gopweb-blk-card card
+      in let m = WebMux { listen = web-listen-configured net-driver-mac [0, 0, 0, 0] [0, 0, 0, 0] gopweb-port, conns = [], served = 0 }
+      in let set = nc-set-acquire (nc-pool-cell process-get-pid)
+      in let spare = nc-set-release (nc-set-acquire (nc-pool-cell process-get-pid))
+      in let rx = net-io-rx []
+      in let mark = __heap-save
+      in gopweb-pump blk m 0 0 rx set mark
+    end
 
-  gopweb-take-cmd : Integer -> Integer
-  gopweb-take-cmd (blk) =
-    let cmd = peek-32 blk gopweb-blk-cmd
-    in if cmd == 0 then 0
-    else let p = poke-32 blk gopweb-blk-paused (if cmd == gopweb-cmd-stop then 1 else 0)
-    in poke-32 blk gopweb-blk-cmd 0
-
-  gopweb-pump : Integer, WebMux, Integer, Integer, List Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  gopweb-pump : Integer, WebMux, Integer, Integer, List Integer, Integer, Integer -> [Console, Concurrent, Network.Read, Network.Write] Integer
   gopweb-pump (blk) (m) (since) (empties) (rx) (set) (mark) =
-    if list-length rx == 0 then let s = nc-set-acquire (nc-pool-cell process-get-pid)
-      in let rx1 = net-io-rx rx
-      in let mk = __heap-save
-      in gopweb-pump blk m since empties rx1 s mk
-    else let tc = gopweb-take-cmd blk
-    in if since >= web-sweep-interval then act
-      m1 <- web-mux-sweep m 0
-      gopweb-pump blk (web-mux-compact m1 set mark) 0 empties rx set mark
+    let pulse = gopweb-pulse blk
+    in if peek-qword blk gopweb-blk-command-seq /= peek-qword blk gopweb-blk-ack-seq then act
+      next <- gopweb-command blk m
+      gopweb-pump blk (web-mux-compact next set mark) 0 0 rx set mark
+    end
+    else if gopweb-lease-expired blk then act
+      closed <- web-mux-close m 0
+      let expired = gopweb-state blk 6
+      in gopweb-pump blk (web-mux-compact closed set mark) 0 0 rx set mark
+    end
+    else if since >= web-sweep-interval & peek-qword blk gopweb-blk-state == 2 then act
+      next <- web-mux-sweep m 0
+      gopweb-pump blk (web-mux-compact next set mark) 0 empties rx set mark
     end
     else let hp = __heap-save
     in act
       n <- net-driver-recv-into rx
-      if n == 0 | peek-32 blk gopweb-blk-paused /= 0 then
+      if n > 0 & peek-qword blk gopweb-blk-state /= 2 then act
+        refused <- gopweb-refuse blk rx n
         let restored = __heap-restore hp
-        in let y = process-yield
-        in let w = web-idle-wait empties
-        in gopweb-pump blk m (since + 1 + w) (empties + 1) rx set mark
+        in let yielded = process-yield
+        in gopweb-pump blk m (since + 1) 0 rx set mark
+      end
+      else if n == 0 then
+        let restored = __heap-restore hp
+        in let yielded = process-yield
+        in let waited = web-idle-wait empties
+        in gopweb-pump blk m (since + 1 + waited) (empties + 1) rx set mark
       else act
-        m1 <- web-mux-feed-within gopweb-route (\line -> gopweb-log blk line) m rx n gopweb-port
-        let sv = poke-32 blk gopweb-blk-served (m1.served)
-        in gopweb-pump blk (web-mux-compact m1 set mark) (since + 1) 0 rx set mark
+        next <- web-mux-feed-observed gopweb-route web-observe-none (\event -> gopweb-observe blk event) (gopweb-ip-unpack (peek-qword blk gopweb-blk-mask)) m rx n gopweb-port
+        gopweb-pump blk (web-mux-compact next set mark) (since + 1) 0 rx set mark
       end
     end
 
-Section: Starting It
-
-  gopweb-heap-bytes : Integer = 8388608
+Section: Starting
 
   gopweb-start : Integer -> [Concurrent] Integer
-  gopweb-start (blk) = process-spawn-with-heap (\x -> gopweb-service blk x) gopweb-heap-bytes
-
-Section: Holding the Network
+  gopweb-start (blk) = act
+    pid <- process-spawn-with-heap (\x -> gopweb-service blk x) gopweb-heap-bytes
+    let stored = poke-qword blk gopweb-blk-pid pid
+    in let failed = if pid < 0 then gopweb-state blk 5 else 0
+    in pid
+  end
 
   gopweb-hold : [Concurrent, Capability, Network.Read, Network.Write] Integer
   gopweb-hold =
     let blk = gopweb-blk-new
     in act
       pid <- gopweb-start blk
-      let pp = poke-32 blk gopweb-blk-pid pid
-      in gopweb-hold-rest blk
+      gopweb-hold-rest blk
     end
 
   gopweb-hold-rest : Integer -> [Capability] Integer
@@ -179,5 +209,3 @@ Section: Holding the Network
     w <- process-restrict-cap process-get-pid cap-network-write
     blk
   end
-
-Page 1

@@ -1,0 +1,106 @@
+Chapter: TownGovernmentProof
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter EconomyInputFixtures
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter EconomyStateCodec
+  cites Foreword chapter Result
+
+  tgp-check : Text, Boolean -> [Console] Nothing
+  tgp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tgp-hours : EpWorld, Integer -> Integer
+  tgp-hours (w) (n) = if n == 0 then 0 else if eh-step w /= 0 then -1 else tgp-hours w (n - 1)
+  tgp-payroll-owner : TgWorld, Integer -> Boolean
+  tgp-payroll-owner (g) (i) = if i == g.event-count then True
+    else let e = list-at g.events i
+    in (e.kind /= 7 | e.actor == 0) & tgp-payroll-owner g (i + 1)
+  tgp-days : TgWorld, Integer -> Boolean
+  tgp-days (g) (day) = if day == 31 then True
+    else let a = tgp-hours g.economy 24
+    in let appoint = if day == 16 then tg-appoint g True 1 3 else 0
+    in let old = if day == 16 then tg-set-dues g 1 1 99 else -1
+    in let current = (tg-office g 1).mayor
+    in let changed = if day == 16 then tg-set-dues g 3 1 2 else 0
+    in let one = tg-collect g current 1 3 True
+    in let two = tg-collect g current 1 4 True
+    in let three = tg-collect g 4 2 6 True
+    in let duplicate = tg-collect g current 1 3 True
+    in let paid = tg-close-day g
+    in let count = g.event-count
+    in let repeated = tg-close-day g
+    in a == 0 & appoint == 0 & old == -1 & changed == 0 & one == 0 & two == 0 & three == 0 & duplicate == -1 & paid == 0 & repeated == 0 & g.event-count == count & ev-valid g.economy & tgp-days g (day + 1)
+  tgp-run : EiScenario -> [Console] Nothing
+  tgp-run (scenario) = act
+    w <- scenario.state.world
+    people <- tf-new 0
+    britain <- tf-add-town people "Britain" 100 101 102
+    minoc <- tf-add-town people "Minoc" 200 201 202
+    mayor1 <- tf-add-person people "Ada" 1 1001 100 0 10000
+    guard1 <- tf-add-person people "Bram" 1 1002 100 0 10000
+    deputy <- tf-add-person people "Cora" 1 1003 100 0 10000
+    mayor2 <- tf-add-person people "Dena" 2 2001 200 0 10000
+    guard2 <- tf-add-person people "Eren" 2 2002 200 0 10000
+    p4 <- em-open w.money 2 3
+    p5 <- em-open w.money 2 4
+    p6 <- em-open w.money 2 5
+    a3 <- ep-admit w p4 100
+    a4 <- ep-admit w p5 200
+    a5 <- ep-admit w p6 200
+    funded1 <- em-lend w.money 1 p4 80 0 2000
+    funded2 <- em-lend w.money 1 p6 80 0 2000
+    purse1 <- em-open w.money 4 1
+    purse2 <- em-open w.money 4 2
+    mark <- __heap-save
+    g <- tg-new people w
+    built <- __heap-save
+    tgp-check "town admission and authority" (scenario.failed == 0 & britain == 1 & minoc == 2 & mayor1 == 1 & guard1 == 2 & deputy == 3 & mayor2 == 4 & guard2 == 5 & p4 == 4 & p5 == 5 & p6 == 6 & a3 == 3 & a4 == 4 & a5 == 5 & funded1 == 2 & funded2 == 3 & purse1 == 7 & purse2 == 8 & tg-register g False 1 1 purse1 == -1 & tg-register g True 1 4 purse1 == -1 & tg-register g True 1 1 purse1 == 0 & tg-register g True 2 4 purse2 == 0)
+    tgp-check "empty town requests real royal funding" (tg-request g 1 1 1 120 == 0 & (tg-office g 1).request == 120 & tg-grant g False 1 120 == -1 & tg-grant g True 1 120 == 0 & (tg-office g 1).request == 0 & tg-request g 4 2 2 120 == 0 & tg-loan g True 2 120 0 1036 == 4 & (tg-office g 2).request == 0 & ev-valid w)
+    tgp-check "crown business grant behavior unchanged" (em-grant w.money True purse1 1 == -1)
+    tgp-check "dues and employment scoped to mayor and town" (tg-set-dues g 1 2 2 == -1 & tg-set-dues g 1 1 2 == 0 & tg-set-dues g 4 2 2 == 0 & tg-hire g 1 1 2 3 3 == 1 & tg-hire g 4 2 5 6 3 == 2 & tg-hire g 1 1 2 3 3 == -1 & tg-hire g 4 2 2 3 3 == -1)
+    start <- __heap-save
+    days <- tgp-days g 1
+    finish <- __heap-save
+    tgp-check "30 daily town censuses and duplicate admission" (days & g.day == 33 & em-total w.money 1 == 1000)
+    tgp-check "replacement immediately removes former mayor powers" ((tg-office g 1).mayor == 3 & tg-set-dues g 1 1 0 == -1 & tg-appoint g False 1 1 == -1 & (tg-office g 1).dues == 2)
+    tgp-check "town purses balance dues and wages" ((em-purse w.money purse1).coin == 150 & (em-purse w.money purse2).coin == 90 & (tg-office g 1).collected == 120 & (tg-office g 2).collected == 60 & (tg-office g 1).paid == 90 & (tg-office g 2).paid == 90 & (tg-office g 1).unpaid == 0 & (tg-office g 2).unpaid == 0 & (em-purse w.money 3).coin == 188 & (em-purse w.money 6).coin == 110)
+    tgp-check "payroll and dues retain no heap" (start == finish)
+    tgp-check "clock payroll does not impersonate incumbent mayor" (tgp-payroll-owner g 0)
+    print-line-uni ("GOVERNMENT-BYTES " & show (built - mark))
+    extra-person <- tf-add-person people "Fenn" 1 1004 100 0 10000
+    extra-purse <- em-open w.money 2 extra-person
+    extra-actor <- ep-admit w extra-purse 100
+    extra-guard <- tg-hire g 3 1 extra-person extra-purse 200
+    next <- tgp-hours w 24
+    unpaid <- tg-close-day g
+    tgp-check "insufficient purse records wages still owed" (extra-person == 6 & extra-purse == 9 & extra-actor == 6 & extra-guard == 3 & next == 0 & unpaid == 0 & (list-at g.guards 2).arrears == 200 & (tg-office g 1).unpaid == 200 & (em-purse w.money 9).coin == 0)
+    retired <- tg-retire g 3 3
+    tgp-check "retirement preserves arrears" (retired == 0 & (list-at g.guards 2).active == 0 & (list-at g.guards 2).arrears == 200 & (tg-office g 1).unpaid == 200)
+    request <- tg-request g 3 1 1 400
+    grant <- tg-grant g True 1 200
+    settle <- tg-settle g 3 3 200
+    tgp-check "funded arrears settle through existing coin" (request == 0 & grant == 0 & settle == 0 & (list-at g.guards 2).arrears == 0 & (tg-office g 1).unpaid == 0 & (em-purse w.money 9).coin == 180 & ev-valid w)
+    saved-count <- g.event-count
+    full <- __record-set g "event-count" 2048
+    treasury <- (em-purse w.money 1).coin
+    tgp-check "full civic audit refuses before coin moves" (tg-grant g True 1 1 == -1 & (em-purse w.money 1).coin == treasury)
+    restored-count <- __record-set g "event-count" saved-count
+    saved-ledger <- w.money.entry-count
+    full-ledger <- __record-set w.money "entry-count" em-rows
+    office-before <- (em-purse w.money purse1).coin
+    tgp-check "full money ledger refuses before civic audit" (tg-grant g True 1 1 == -1 & g.event-count == saved-count & (em-purse w.money purse1).coin == office-before)
+    restored-ledger <- __record-set w.money "entry-count" saved-ledger
+    buf <- alloc-bytes es-bytes
+    checkpoint <- EconomyCheckpoint { world = w, tick = 10000, sequence = 200 }
+    encoded <- es-encode checkpoint buf es-bytes
+    decoded <- es-decode buf es-bytes
+    tgp-check "town grant ledger survives economy codec" (is-ok encoded & is-ok decoded & em-total w.money 1 == 1000)
+    tgp-check "audit retains every successful civic action" (g.event-count == g.sequence & g.event-count > 190 & (list-at g.events 0).kind == 1)
+  end
+  opening : [Console] Nothing = act
+    when eif-source 0
+      is Err (e) -> print-line-uni ("FAIL fixture " & e)
+      is Ok (state) -> tgp-run (eif-build state)
+  end

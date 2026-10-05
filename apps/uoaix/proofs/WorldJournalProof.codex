@@ -1,0 +1,98 @@
+Chapter: WorldJournalProof
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  wjp-object : Integer, Integer, Integer, Integer -> WorldObject
+  wjp-object (serial) (kind) (container) (amount) = WorldObject { serial = serial, kind = kind,
+    x = 1420, y = 1690, z = -5, graphic = 400, hue = 17, container = container, amount = amount, health = 50 }
+
+  wjp-frame : Integer, Integer, Integer, Integer, WorldObject -> Boolean
+  wjp-frame (buf) (index) (seq) (op) (obj) =
+    is-ok (wj-encode (WorldEvent { sequence = seq, tick = 90 + seq, operation = op, object = obj }) (buf + index * 128) 128)
+
+  wjp-check : Text, Boolean -> [Console] Nothing
+  wjp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  wjp-seed : Integer -> Boolean
+  wjp-seed (buf) =
+    let a = wjp-frame buf 0 11 1 (wjp-object 1 1 0 1)
+    in let b = wjp-frame buf 1 12 1 (wjp-object 1073741826 2 1 1)
+    in let c = wjp-frame buf 2 13 2 (wjp-object 1073741826 2 1 5)
+    in let d = wjp-frame buf 3 14 3 (wjp-object 1073741826 2 1 5)
+    in let e = wjp-frame buf 4 15 1 (wjp-object 1073741829 2 1 7)
+    in a & b & c & d & e
+
+  wjp-rehash : Integer -> Integer
+  wjp-rehash (buf) = poke-qword buf 112 (wj-hash buf 0 2166136261)
+
+  wjp-run : WorldTable -> [Console] Nothing
+  wjp-run (world) =
+    let checkpoint = WorldCheckpoint { world = world, tick = 100, sequence = 10 }
+    in let buf = alloc-bytes 640
+    in let seeded = wjp-seed buf
+    in act
+      wjp-check "event encoding" seeded
+      when wj-replay checkpoint buf 640
+        is Err (e) -> print-line-uni ("FAIL replay " & e)
+        is Ok (r) -> act
+          wjp-check "ordered create update delete replay" (r.applied == 5 & r.tail-bytes == 0 & world-count r.checkpoint.world == 2 & r.checkpoint.tick == 105 & r.checkpoint.sequence == 15)
+          wjp-check "replayed value and generation" (when world-get r.checkpoint.world 1073741829 is Err (e) -> False is Ok (obj) -> obj.amount == 7 & obj.container == 1 & is-err (world-get r.checkpoint.world 1073741826))
+        end
+      wjp-check "checkpoint stays unchanged" (world-count world == 0)
+      when wj-replay checkpoint buf 639
+        is Err (e) -> print-line-uni "FAIL partial replay"
+        is Ok (r) -> wjp-check "partial tail reported" (r.applied == 4 & r.tail-bytes == 127 & r.checkpoint.sequence == 14 & world-count r.checkpoint.world == 1)
+      let changed = poke-qword buf 136 99
+      in let hash = wjp-rehash (buf + 128)
+      in wjp-check "sequence gap refused atomically" (is-err (wj-replay checkpoint buf 640) & world-count world == 0)
+      let reset = wjp-seed buf
+      in let changed = poke-qword buf 144 99
+      in let hash = wjp-rehash (buf + 128)
+      in wjp-check "clock reversal refused" (is-err (wj-replay checkpoint buf 640))
+      let reset = wjp-seed buf
+      in let changed = poke-qword buf 160 1073741827
+      in let hash = wjp-rehash (buf + 128)
+      in wjp-check "allocator mismatch refused" (is-err (wj-replay checkpoint buf 640) & world-count world == 0)
+      let reset = wjp-seed buf
+      in let changed = poke-byte buf 132 255
+      in wjp-check "complete corrupt frame refused" (is-err (wj-replay checkpoint buf 640))
+      wjp-check "replay budget refusal" (is-err (wj-replay checkpoint buf (-1)) & is-err (wj-replay checkpoint buf 2097153))
+      wjp-check "short output refusal" (is-err (wj-encode (WorldEvent { sequence = 11, tick = 101, operation = 1, object = wjp-object 1 1 0 1 }) buf 127))
+    end
+
+  wjp-fill : Integer, Integer -> Boolean
+  wjp-fill (buf) (i) =
+    if i >= 8192 then True
+    else let mark = __heap-save
+    in let ok = wjp-frame buf i (i + 1) 1 (wjp-object (1073741825 + i) 2 0 1)
+    in let restored = __heap-restore mark
+    in if not ok then False else wjp-fill buf (i + 1)
+
+  wjp-large : WorldTable -> [Console] Nothing
+  wjp-large (world) =
+    let buf = alloc-bytes (8192 * 128)
+    in let filled = wjp-fill buf 0
+    in let checkpoint = WorldCheckpoint { world = world, tick = 0, sequence = 0 }
+    in let before = __heap-save
+    in let replay = wj-replay checkpoint buf (8192 * 128)
+    in let after = __heap-save
+    in when replay
+      is Err (e) -> print-line-uni ("FAIL large replay " & e)
+      is Ok (r) -> act
+        wjp-check "8192 event replay" (filled & r.applied == 8192 & world-count r.checkpoint.world == 8192)
+        let reserved = 16 + world.capacity * 80 + wi-bytes world.capacity
+        in wjp-check "replay heap bounded by table and index" (after - before >= reserved & after - before <= reserved + 256)
+      end
+
+  opening : [Console] Nothing = act
+    when world-new 3
+      is Err (e) -> print-line-uni "FAIL small setup"
+      is Ok (world) -> wjp-run world
+    when world-new 8192
+      is Err (e) -> print-line-uni "FAIL large setup"
+      is Ok (world) -> wjp-large world
+  end
+
+Page 1

@@ -464,6 +464,12 @@ $toCompile = @($toCompile | Sort-Object {
 # slot, never a subset (L-COUNT).
 $Jobs = Get-VmAdmittedSlots -Slots $Jobs -GuestMB 2200 -What 'phase 1 batch compile'
 Write-Host "Tests: $($tests.Count) total, $($tests.Count - $toCompile.Count) skipped, $($toCompile.Count) to compile ($Jobs batch slots)"
+# A model root a test's .vmargs names must exist, or its guest refuses to start and prints nothing.
+& (Join-Path $PSScriptRoot 'diffusion-roots.ps1') -Subjects $toCompile
+if (-not ($LASTEXITCODE -eq 0)) {
+    Write-Host 'ERROR: battery refused: a diffusion model root a test names is missing (above)'
+    exit 1
+}
 
 
 # ===========================================================================
@@ -891,6 +897,7 @@ foreach ($src in $toCompile) {
         $smpCores = [int]((Get-Content -TotalCount 1 $smpFile).Trim())
     }
 
+    $diskSourceBytes = -1
     if (Test-Path -PathType Leaf $diskSrcFile) {
         $peer = (Get-Content -TotalCount 1 $diskSrcFile).Trim()
         $peerBin = Join-Path (Join-Path $OutRoot $peer) "$peer.cdx"
@@ -898,12 +905,20 @@ foreach ($src in $toCompile) {
             "FAIL_DISK_SOURCE`t$name`t$peer produced no cdx" | Set-Content -Path $resultFile -Encoding UTF8
             continue
         }
+        $oracleExpected = (Get-Content $expectedFile -Raw -ErrorAction SilentlyContinue)
+        if ($oracleExpected.Contains('{{disk-source-content-bytes}}')) {
+            if (((-not $srcOf.ContainsKey($peer)) -or ((Get-BatchExit $peer) -ne '0'))) {
+                throw 'Disk source did not compile in this run'
+            }
+            $diskSourceBytes = (Get-CdxContentExtent $peerBin)
+        }
+
         $diskFile = $peerBin
     }
 
     $needsRun.Add(@{
         Name = $name; Bin = $bin; Expected = $expectedFile;
-        Stdin = $stdinFile; Keys = $keysFile; Disk = $diskFile; Smp = $smpCores
+        Stdin = $stdinFile; Keys = $keysFile; Disk = $diskFile; Smp = $smpCores; DiskSourceBytes = $diskSourceBytes
         Disk2 = $disk2File
         VmArgs = $vmArgsFile
     })
@@ -999,6 +1014,13 @@ if ($needsRun.Count -gt 0) {
             return
         }
         $expectedBytes = (Read-LogShared $t.Expected) -replace "`r", ''
+        if ($expectedBytes.Contains('{{disk-source-content-bytes}}')) {
+            if (($t.DiskSourceBytes -lt 0)) {
+                throw 'Expected disk-source-content-bytes requires a freshly compiled .disk-src'
+            }
+            $expectedBytes = $expectedBytes.Replace('{{disk-source-content-bytes}}', $t.DiskSourceBytes.ToString(([Globalization.CultureInfo]::InvariantCulture)))
+        }
+
         if ([string]::Equals($expectedBytes, $txt, [StringComparison]::Ordinal)) {
             "PASS_EXPECTED`t$name`t" | Set-Content -Path $resultFile -Encoding UTF8
         } else {

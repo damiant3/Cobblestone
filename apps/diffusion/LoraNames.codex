@@ -1,0 +1,263 @@
+Chapter: LoraNames
+  cites AI chapter SafeTensors
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+  cites Diffusion chapter CheckpointLayout
+
+ The names under which a LoRA module is found for a checkpoint tensor, as
+ Diffusion Forge finds them: either kohya naming of the weight, the LDM form
+ (lora_unet_ + the name, dots to underscores) or the diffusers form
+ (packages_3rdparty/comfyui_lora_collection/utils.py:189, unet_to_diffusers,
+ applied here to one name at a time). Lora.codex and FluxLora.codex merge
+ through them; they read a header only.
+
+ We say:
+
+Section: Files
+
+  LoraFile = record {
+    lf-path : Text,
+    lf-file : SafeTensorFile,
+    lf-names : NameIndex,
+    lf-strength : Real
+  }
+
+  lora-meta : LoraFile, Text -> Maybe StTensorMeta
+  lora-meta (l) (name) =
+    let i = name-find (l.lf-names) name
+    in if i < 0 then None else Just (list-at ((l.lf-file).st-tensors) i)
+
+  lora-has : LoraFile, Text -> Boolean
+  lora-has (l) (name) = name-find (l.lf-names) name >= 0
+
+Section: Kohya Names
+
+ The diffusers name of an LDM UNet weight, for res-blocks residual blocks per
+ level: input block n = 1 + (res-blocks + 1) x + i holds down block x's i-th
+ resnet and attention, or its downsampler when i = res-blocks; output block
+ n = (res-blocks + 1) x + i holds up block x's; "" when the weight has none.
+
+  lora-join : List Text, Integer, Text -> Text
+  lora-join (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else lora-join ps (i + 1) (if acc == "" then list-at ps i else acc & "." & list-at ps i)
+
+  lora-rest : List Text, Integer -> Text
+  lora-rest (ps) (i) = lora-join ps i ""
+
+  lora-resnet : List Text, Integer -> Text
+  lora-resnet (ps) (i) =
+    let a = list-at ps i
+    in let b = if i + 1 < list-length ps then list-at ps (i + 1) else ""
+    in if a == "in_layers" & b == "2" then "conv1." & lora-rest ps (i + 2)
+    else if a == "in_layers" & b == "0" then "norm1." & lora-rest ps (i + 2)
+    else if a == "emb_layers" & b == "1" then "time_emb_proj." & lora-rest ps (i + 2)
+    else if a == "out_layers" & b == "3" then "conv2." & lora-rest ps (i + 2)
+    else if a == "out_layers" & b == "0" then "norm2." & lora-rest ps (i + 2)
+    else if a == "skip_connection" then "conv_shortcut." & lora-rest ps (i + 1)
+    else ""
+
+  lora-prefixed : Text, Text -> Text
+  lora-prefixed (p) (tail) = if tail == "" then "" else p & tail
+
+  lora-input : List Text, Integer -> Text
+  lora-input (ps) (r) =
+    let n = text-to-integer (list-at ps 1)
+    in let b = list-at ps 2
+    in if n == 0 then (if b == "0" then "conv_in." & lora-rest ps 3 else "")
+    else let x = (n - 1) / (r + 1)
+    in let i = n - 1 - x * (r + 1)
+    in if i == r then (if b == "0" & list-at ps 3 == "op" then "down_blocks." & show x & ".downsamplers.0.conv." & lora-rest ps 4 else "")
+    else if b == "0" then lora-prefixed ("down_blocks." & show x & ".resnets." & show i & ".") (lora-resnet ps 3)
+    else if b == "1" then "down_blocks." & show x & ".attentions." & show i & "." & lora-rest ps 3
+    else ""
+
+  lora-output : List Text, Integer -> Text
+  lora-output (ps) (r) =
+    let n = text-to-integer (list-at ps 1)
+    in let b = list-at ps 2
+    in let x = n / (r + 1)
+    in let i = n - x * (r + 1)
+    in if b == "0" then lora-prefixed ("up_blocks." & show x & ".resnets." & show i & ".") (lora-resnet ps 3)
+    else if list-at ps 3 == "conv" then "up_blocks." & show x & ".upsamplers.0.conv." & lora-rest ps 4
+    else if b == "1" then "up_blocks." & show x & ".attentions." & show i & "." & lora-rest ps 3
+    else ""
+
+  lora-middle : List Text -> Text
+  lora-middle (ps) =
+    let b = list-at ps 1
+    in if b == "0" then lora-prefixed "mid_block.resnets.0." (lora-resnet ps 2)
+    else if b == "2" then lora-prefixed "mid_block.resnets.1." (lora-resnet ps 2)
+    else if b == "1" then "mid_block.attentions.0." & lora-rest ps 2
+    else ""
+
+  lora-basic : List Text -> List Text
+  lora-basic (ps) =
+    let p = list-at ps 0 & "." & list-at ps 1
+    in let tail = lora-rest ps 2
+    in if p == "time_embed.0" then ["time_embedding.linear_1." & tail]
+    else if p == "time_embed.2" then ["time_embedding.linear_2." & tail]
+    else if p == "out.0" then ["conv_norm_out." & tail]
+    else if p == "out.2" then ["conv_out." & tail]
+    else if list-length ps > 3 & p == "label_emb.0" then
+      (if list-at ps 2 == "0" then ["class_embedding.linear_1." & lora-rest ps 3, "add_embedding.linear_1." & lora-rest ps 3]
+       else if list-at ps 2 == "2" then ["class_embedding.linear_2." & lora-rest ps 3, "add_embedding.linear_2." & lora-rest ps 3]
+       else [])
+    else []
+
+  lora-diffusers-names : Text, Integer -> List Text
+  lora-diffusers-names (name) (r) =
+    let ps = text-split name "."
+    in let head = list-at ps 0
+    in let one = if head == "input_blocks" then lora-input ps r
+      else if head == "output_blocks" then lora-output ps r
+      else if head == "middle_block" then lora-middle ps
+      else ""
+    in if one /= "" then [one]
+    else if list-length ps >= 3 then lora-basic ps
+    else []
+
+  lora-kohya : Text -> Text
+  lora-kohya (name) = "lora_unet_" & text-replace (substring name 0 (text-length name - 7)) "." "_"
+
+ Every kohya module name of an LDM UNet weight ("....weight"): the LDM form
+ first, then the diffusers forms.
+
+  lora-unet-keys : Text, Integer -> List Text
+  lora-unet-keys (name) (r) =
+    if not (text-ends-with name ".weight") then []
+    else lora-kohya-all (lora-diffusers-names name r) 0 [lora-kohya name]
+
+  lora-kohya-all : List Text, Integer, List Text -> List Text
+  lora-kohya-all (ds) (i) (acc) =
+    if i >= list-length ds then acc
+    else lora-kohya-all ds (i + 1) (acc & [lora-kohya (list-at ds i)])
+
+Section: Text Encoder Names
+
+ The kohya names of a text-encoder weight of an SDXL checkpoint, as Forge maps
+ them (comfyui_lora_collection/lora.py:196, model_lora_keys_clip): CLIP-L's
+ weights carry Hugging Face names under prefix-l; OpenCLIP-G's carry open_clip
+ names under prefix-g, where Forge's transformers_convert (utils.py:67) splits
+ attn.in_proj_weight into q, k and v row slices and renames the rest.
+
+  LoraSlot = record {
+    ls-keys : List Text,
+    ls-row0 : Integer,
+    ls-rows : Integer,
+    ls-bias : Boolean
+  }
+
+  lora-slot : List Text, Integer, Integer, Boolean -> List LoraSlot
+  lora-slot (keys) (row0) (rows) (bias) = if list-length keys == 0 then [] else [LoraSlot { ls-keys = keys, ls-row0 = row0, ls-rows = rows, ls-bias = bias }]
+
+  lora-clip-module : Text -> Text
+  lora-clip-module (m) =
+    if m == "mlp.fc1" then "mlp_fc1"
+    else if m == "mlp.fc2" then "mlp_fc2"
+    else if m == "self_attn.k_proj" then "self_attn_k_proj"
+    else if m == "self_attn.q_proj" then "self_attn_q_proj"
+    else if m == "self_attn.v_proj" then "self_attn_v_proj"
+    else if m == "self_attn.out_proj" then "self_attn_out_proj"
+    else ""
+
+ Forge also takes lora_te_ for CLIP-L and the diffusers names text_encoder. and
+ text_encoder_2. with the module in dots (lora.py:207-233).
+
+  lora-te-key : Text, Text, Text -> List Text
+  lora-te-key (te) (layer) (m) =
+    if m == "" then []
+    else let kohya = "lora_" & te & "_text_model_encoder_layers_" & layer & "_" & m
+    in let dotted = lora-clip-dotted m
+    in if te == "te1" then [kohya, "lora_te_text_model_encoder_layers_" & layer & "_" & m, "text_encoder.text_model.encoder.layers." & layer & "." & dotted]
+    else [kohya, "text_encoder_2.text_model.encoder.layers." & layer & "." & dotted]
+
+  lora-clip-dotted : Text -> Text
+  lora-clip-dotted (m) =
+    if m == "mlp_fc1" then "mlp.fc1"
+    else if m == "mlp_fc2" then "mlp.fc2"
+    else if m == "self_attn_k_proj" then "self_attn.k_proj"
+    else if m == "self_attn_q_proj" then "self_attn.q_proj"
+    else if m == "self_attn_v_proj" then "self_attn.v_proj"
+    else "self_attn.out_proj"
+
+  lora-te-l : List Text, Integer -> List LoraSlot
+  lora-te-l (ps) (rows) =
+    if list-length ps /= 7 | list-at ps 0 /= "text_model" | list-at ps 1 /= "encoder" | list-at ps 2 /= "layers" then []
+    else if list-at ps 6 /= "weight" & list-at ps 6 /= "bias" then []
+    else lora-slot (lora-te-key "te1" (list-at ps 3) (lora-clip-module (list-at ps 4 & "." & list-at ps 5))) 0 rows (list-at ps 6 == "bias")
+
+  lora-te-g-one : Text, Text, Integer, Boolean -> List LoraSlot
+  lora-te-g-one (layer) (m) (rows) (bias) = lora-slot (lora-te-key "te2" layer m) 0 rows bias
+
+  lora-te-g-qkv : Text, Integer, Boolean -> List LoraSlot
+  lora-te-g-qkv (layer) (rows) (bias) =
+    let d = rows / 3
+    in lora-slot (lora-te-key "te2" layer "self_attn_q_proj") 0 d bias & lora-slot (lora-te-key "te2" layer "self_attn_k_proj") d d bias & lora-slot (lora-te-key "te2" layer "self_attn_v_proj") (2 * d) d bias
+
+  lora-te-g : List Text, Integer -> List LoraSlot
+  lora-te-g (ps) (rows) =
+    if list-length ps < 5 | list-at ps 0 /= "transformer" | list-at ps 1 /= "resblocks" then []
+    else let layer = list-at ps 2
+    in let m = lora-rest ps 3
+    in if m == "attn.in_proj_weight" then lora-te-g-qkv layer rows False
+    else if m == "attn.in_proj_bias" then lora-te-g-qkv layer rows True
+    else if m == "attn.out_proj.weight" then lora-te-g-one layer "self_attn_out_proj" rows False
+    else if m == "attn.out_proj.bias" then lora-te-g-one layer "self_attn_out_proj" rows True
+    else if m == "mlp.c_fc.weight" then lora-te-g-one layer "mlp_fc1" rows False
+    else if m == "mlp.c_fc.bias" then lora-te-g-one layer "mlp_fc1" rows True
+    else if m == "mlp.c_proj.weight" then lora-te-g-one layer "mlp_fc2" rows False
+    else if m == "mlp.c_proj.bias" then lora-te-g-one layer "mlp_fc2" rows True
+    else []
+
+ The slots of a full checkpoint tensor name with rows rows: a UNet weight is
+ one slot over all its rows, a bias one slot under its weight's keys (Forge
+ sends diff_b and b_norm to the module's bias, lora.py:176,186); a
+ text-encoder tensor is as above; anything else has none. SD1.5's CLIP-L sits under cond_stage_model. and takes the same keys.
+
+  lora-slots : Text, Integer, Integer, Text, Text -> List LoraSlot
+  lora-slots (name) (rows) (res-blocks) (prefix-l) (prefix-g) =
+    if text-starts-with name "model.diffusion_model." then
+      (let unet = substring name 22 (text-length name - 22)
+       in if text-ends-with unet ".bias" then lora-slot (lora-unet-keys (substring unet 0 (text-length unet - 5) & ".weight") res-blocks) 0 rows True
+       else lora-slot (lora-unet-keys unet res-blocks) 0 rows False)
+    else if text-starts-with name (prefix-l & "transformer.") then lora-te-l (text-split (substring name (text-length prefix-l + 12) (text-length name - text-length prefix-l - 12)) ".") rows
+    else if text-starts-with name "cond_stage_model.transformer." then lora-te-l (text-split (substring name 29 (text-length name - 29)) ".") rows
+    else if text-starts-with name "text_model." then lora-te-l (text-split name ".") rows
+    else if text-starts-with name (prefix-g & "model.") then lora-te-g (text-split (substring name (text-length prefix-g + 6) (text-length name - text-length prefix-g - 6)) ".") rows
+    else []
+
+  sdxl-te-l : Text = "conditioner.embedders.0."
+
+  sdxl-te-g : Text = "conditioner.embedders.1."
+
+Section: Module Lookup
+
+  lora-weight-kinds : List Text
+  lora-weight-kinds = [".lora_down.weight", ".hada_w1_a", ".lokr_w1", ".lokr_w1_a", ".lokr_w2", ".lokr_w2_a", ".diff", ".w_norm", ".a1.weight"]
+
+  lora-bias-kinds : List Text
+  lora-bias-kinds = [".diff_b", ".b_norm"]
+
+  lora-kinds-of : LoraSlot -> List Text
+  lora-kinds-of (s) = if s.ls-bias then lora-bias-kinds else lora-weight-kinds
+
+  lora-names-module : LoraFile, Text, List Text, Integer -> Boolean
+  lora-names-module (l) (m) (kinds) (j) =
+    if j >= list-length kinds then False
+    else if lora-has l (m & list-at kinds j) then True
+    else lora-names-module l m kinds (j + 1)
+
+  lora-module : LoraFile, LoraSlot, Integer -> Text
+  lora-module (l) (slot) (i) =
+    if i >= list-length (slot.ls-keys) then ""
+    else if lora-names-module l (list-at (slot.ls-keys) i) (lora-kinds-of slot) 0 then list-at (slot.ls-keys) i
+    else lora-module l slot (i + 1)
+
+ A kohya Flux LoRA module is lora_unet_ and the Flux key without .weight, dots
+ to underscores (comfyui_lora_collection lora.py:273).
+
+  flux-lora-slots : Text, Integer -> List LoraSlot
+  flux-lora-slots (name) (rows) = if text-ends-with name ".weight" then lora-slot [lora-kohya name] 0 rows False else []

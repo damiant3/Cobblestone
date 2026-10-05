@@ -16,5 +16,8 @@ Design: `apps/explorer/design/Active/`. The working server is
 
 | # | Capability | State of the gap |
 |---|---|---|
+| EXP-JSON-THEME | JSON request text | `ExplorerTheme.codex:433` inserts prompt and negative prompt raw in `gen-body`. Quote/backslash/control characters can change the JSON shape. Source census 2026-10-01, main 33668. |
+| EXP-JSON-VOICE | JSON catalog text | `VoiceStudio.codex:233`, `:243`, `:253` quote profile, emotion and use-case fields without escaping. Current catalogs are fixed records; the helper contracts accept arbitrary Text. Preserve values rather than stripping quotes. |
+| EXP-JSON-WORKFLOW | JSON workflow keys and values | `WorkflowExporter.codex:23`, `:26`, `:29`, `:32`, `:36` quote node IDs/classes, input keys, string values and references raw. Prompt/checkpoint values reach `input-str`; reference callers currently use fixed keys/IDs. |
 | EXP-5 | **`CardDesignerApp` is a card designer** | Routed at `/card`, and the page is a stub: `opening` prints `card-designer-app loaded` and nothing else. Its dimensions (model, sampler, steps, CFG, LoRA) are SD knobs, so the page needs `/api/config` to list the WebUI's models, samplers and LoRAs, which answers only `current_model` today. |
 | EXP-6 | **`VoiceStudio` and `WorkflowExporterMain` are pages** | Both `opening`s print a hand-written HTML and JS document as text, so the HTML plug renders the source, escaped, and no route serves them. Nothing answers VoiceStudio's `/api/tts/status` or `/api/tts/generate`. |

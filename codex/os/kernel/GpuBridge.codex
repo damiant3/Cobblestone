@@ -77,9 +77,9 @@ Section: Dispatch
   gpu-ring : Integer -> Integer
   gpu-ring (cmd-bytes) =
     let a = if bit-and (peek-32 gpu-latch 0) #FFFFFFFF == gpu-latch-magic then 0
-       else let p1 = port-out-32 gpu-port-cmd-addr gpu-cmd-buf
-       in let p2 = port-out-32 gpu-port-reply-addr gpu-reply-buf
-       in poke-32 gpu-latch 0 gpu-latch-magic
+    else let p1 = port-out-32 gpu-port-cmd-addr gpu-cmd-buf
+    in let p2 = port-out-32 gpu-port-reply-addr gpu-reply-buf
+    in poke-32 gpu-latch 0 gpu-latch-magic
     in let p3 = port-out-32 gpu-port-doorbell cmd-bytes
     in port-in-32 gpu-port-reply-len
 
@@ -109,7 +109,8 @@ Section: High-Level Operations
     in let rlen = gpu-ring (20 + n * 4)
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
-    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 n 0 [], rows = t.rows, cols = t.cols })
+    else
+      Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 n 0 [], rows = t.rows, cols = t.cols })
 
 Section: The Rest of the Operations
 
@@ -121,7 +122,12 @@ Section: The Rest of the Operations
     in let rlen = gpu-ring (20 + n * 4)
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
-    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [], rows = out-rows, cols = out-cols })
+    else
+      Just (Tensor {
+        data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [],
+        rows = out-rows,
+        cols = out-cols
+      })
 
   gpu-run2 : Integer, Integer, Integer, Integer, Tensor, Tensor, Integer, Integer -> Maybe Tensor
   gpu-run2 (op) (ra) (ca) (cb) (x) (y) (out-rows) (out-cols) =
@@ -133,7 +139,12 @@ Section: The Rest of the Operations
     in let rlen = gpu-ring (20 + (nx + ny) * 4)
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
-    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [], rows = out-rows, cols = out-cols })
+    else
+      Just (Tensor {
+        data = gpu-get-tensor gpu-reply-buf 4 (out-rows * out-cols) 0 [],
+        rows = out-rows,
+        cols = out-cols
+      })
 
   gpu-bridge-softmax : GpuBridge, Tensor -> Maybe Tensor
   gpu-bridge-softmax (bridge) (t) =
@@ -220,7 +231,12 @@ Section: The Rest of the Operations
     in let rlen = gpu-ring (40 + (ni + nk) * 4)
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
-    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 (cout * oh * ow) 0 [], rows = cout, cols = oh * ow })
+    else
+      Just (Tensor {
+        data = gpu-get-tensor gpu-reply-buf 4 (cout * oh * ow) 0 [],
+        rows = cout,
+        cols = oh * ow
+      })
 
 Section: A Kernel On The Actual Device
 
@@ -258,7 +274,12 @@ Section: A Kernel On The Actual Device
     in let rlen = gpu-ring (32 + ptx-len + name-len + n * 4)
     in if rlen <= 0 then None
     else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
-    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 4 n-out 0 [], rows = out-rows, cols = out-cols })
+    else
+      Just (Tensor {
+        data = gpu-get-tensor gpu-reply-buf 4 n-out 0 [],
+        rows = out-rows,
+        cols = out-cols
+      })
 
 Section: Device Buffers
 
@@ -415,8 +436,12 @@ Section: Buffer Pool
     in let i = gpu-pool-find bytes 0 n
     in if i >= 0 then gpu-pool-take i n bytes
     else let h1 = gpu-buf-alloc-raw bytes
-    in let h = if h1 > 0 then h1 else (if gpu-buf-pool-drain 0 > 0 then gpu-buf-alloc-raw bytes else 0)
-    in if h > 0 & h <= gpu-pool-slots then (let r = gpu-set64 gpu-pool-sizes ((h - 1) * 8) bytes in h) else h
+    in let h = if h1 > 0 then
+      h1
+    else (if gpu-buf-pool-drain 0 > 0 then gpu-buf-alloc-raw bytes else 0)
+    in if h > 0 & h <= gpu-pool-slots then
+      (let r = gpu-set64 gpu-pool-sizes ((h - 1) * 8) bytes in h)
+    else h
 
   gpu-buf-free : Integer -> Boolean
   gpu-buf-free (h) =

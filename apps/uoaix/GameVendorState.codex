@@ -1,0 +1,168 @@
+Chapter: GameVendorState
+  cites Uoaix chapter GameVendorPackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  GvVendor = record { serial : Integer, actor : Integer, stock : Integer,
+    extra : Integer, buys : Integer, prices : Integer }
+  GvPlayer = record { serial : Integer, actor : Integer, pack : Integer,
+    connection : Integer, vendor : Integer, side : Integer, expires : Integer,
+    copper-rate : Integer, silver-rate : Integer,
+    offers : List GvQuote, count : Integer }
+  GvLot = record { serial : Integer, actor : Integer, item : Integer,
+    quantity : Integer, quality : Integer, wear : Integer, basis : Integer }
+  GvOwner = record { serial : Integer, actor : Integer }
+  GvSale = record { source : Integer, delivered : Integer, buyer : Integer,
+    seller : Integer, item : Integer, quantity : Integer, quality : Integer,
+    wear : Integer, gross : Integer, currency-event : Integer, gold-action : Integer,
+    hour : Integer }
+  GvWorld = record { game : GameShard, currency : EuCurrency,
+    vendors : List GvVendor, players : List GvPlayer, lots : List GvLot,
+    sales : List GvSale, vendor-count : Integer, player-count : Integer,
+    lot-count : Integer, sale-count : Integer, sequence : Integer,
+    owners : List GvOwner, owner-count : Integer }
+  gv-owners : Integer, List GvOwner -> List GvOwner
+  gv-owners (i) (xs) = if i == 128 then xs
+    else gv-owners (i + 1) (list-push xs (GvOwner { serial = 0, actor = 0 }))
+  gv-offers : Integer, List GvQuote -> List GvQuote
+  gv-offers (i) (xs) = if i == 32 then xs else gv-offers (i + 1) (list-push xs (GvQuote {
+    serial = 0, quantity = 0, price = 0, graphic = 0, hue = 0, item = 0, lot = 0 }))
+  gv-vendors : Integer, List GvVendor -> List GvVendor
+  gv-vendors (i) (xs) = if i == 16 then xs else gv-vendors (i + 1) (list-push xs (GvVendor {
+    serial = 0, actor = 0, stock = 0, extra = 0, buys = 0, prices = ep-buffer 129 }))
+  gv-players : Integer, List GvPlayer -> List GvPlayer
+  gv-players (i) (xs) = if i == 5 then xs else gv-players (i + 1) (list-push xs (GvPlayer {
+    serial = 0, actor = 0, pack = 0, connection = -1, vendor = 0, side = 0, expires = 0,
+    copper-rate = 0, silver-rate = 0,
+    offers = gv-offers 0 (__list-with-capacity 32), count = 0 }))
+  gv-lot-limit : Integer = 128
+  gv-lots : Integer, List GvLot -> List GvLot
+  gv-lots (i) (xs) = if i == gv-lot-limit then xs else gv-lots (i + 1) (list-push xs (GvLot {
+    serial = 0, actor = 0, item = 0, quantity = 0, quality = 0, wear = 0, basis = 0 }))
+  gv-sales : Integer, List GvSale -> List GvSale
+  gv-sales (i) (xs) = if i == 1024 then xs else gv-sales (i + 1) (list-push xs (GvSale {
+    source = 0, delivered = 0, buyer = 0, seller = 0, item = 0, quantity = 0,
+    quality = 0, wear = 0, gross = 0, currency-event = 0, gold-action = 0, hour = 0 }))
+  gv-new : GameShard, EuCurrency -> GvWorld
+  gv-new (game) (currency) = GvWorld { game = game, currency = currency,
+    vendors = gv-vendors 0 (__list-with-capacity 16), players = gv-players 0 (__list-with-capacity 5),
+    lots = gv-lots 0 (__list-with-capacity gv-lot-limit), sales = gv-sales 0 (__list-with-capacity 1024),
+    vendor-count = 0, player-count = 0, lot-count = 0, sale-count = 0, sequence = 0,
+    owners = gv-owners 0 (__list-with-capacity 128), owner-count = 0 }
+  gv-owner : GvWorld, Integer, Integer -> Integer
+  gv-owner (v) (serial) (i) = if i == v.owner-count then -1
+    else if (list-at v.owners i).serial == serial then i else gv-owner v serial (i + 1)
+  gv-actor-bound : GvWorld, Integer, Integer -> Boolean
+  gv-actor-bound (v) (actor) (i) = if i < v.vendor-count then
+      (list-at v.vendors i).actor == actor | gv-actor-bound v actor (i + 1)
+    else if i < v.vendor-count + v.player-count then
+      (list-at v.players (i - v.vendor-count)).actor == actor | gv-actor-bound v actor (i + 1)
+    else if i < v.vendor-count + v.player-count + v.owner-count then
+      (list-at v.owners (i - v.vendor-count - v.player-count)).actor == actor | gv-actor-bound v actor (i + 1)
+    else False
+  gv-add-owner : GvWorld, Integer, Integer -> Integer
+  gv-add-owner (v) (serial) (actor) = if v.owner-count == 128 | gv-owner v serial 0 >= 0
+    | gv-vendor v serial 0 >= 0 | gv-player v serial 0 >= 0
+    | not (ep-valid-actor v.currency.world actor) | gv-actor-bound v actor 0 then -1
+    else if (em-purse v.currency.world.money (ep-actor v.currency.world actor).purse).kind /= 2 then -1
+    else when world-get v.game.world serial
+      is Err (_) -> -1
+      is Ok (m) -> if m.kind /= 1 | m.health <= 0 then -1
+        else let row = list-at v.owners v.owner-count
+        in let a = __record-set row "serial" serial
+        in let b = __record-set row "actor" actor
+        in let at = v.owner-count
+        in let c = __record-set v "owner-count" (at + 1) in at
+  gv-vendor : GvWorld, Integer, Integer -> Integer
+  gv-vendor (v) (serial) (i) = if i == v.vendor-count then -1
+    else if (list-at v.vendors i).serial == serial then i else gv-vendor v serial (i + 1)
+  gv-player : GvWorld, Integer, Integer -> Integer
+  gv-player (v) (serial) (i) = if i == v.player-count then -1
+    else if (list-at v.players i).serial == serial then i else gv-player v serial (i + 1)
+  gv-lot : GvWorld, Integer, Integer -> Integer
+  gv-lot (v) (serial) (i) = if i == v.lot-count then -1
+    else if (list-at v.lots i).serial == serial then i else gv-lot v serial (i + 1)
+  gv-owned : WorldTable, Integer, Integer, Integer -> Boolean
+  gv-owned (world) (serial) (owner) (left) = if left <= 0 then False
+    else when world-get world serial
+      is Err (e) -> False
+      is Ok (obj) -> if obj.kind == 1 then obj.serial == owner
+        else if obj.container == 0 then False else gv-owned world obj.container owner (left - 1)
+  gv-under : WorldTable, Integer, Integer, Integer -> Boolean
+  gv-under (world) (serial) (container) (left) = if left <= 0 then False
+    else if serial == container then True
+    else when world-get world serial
+      is Err (e) -> False
+      is Ok (obj) -> if obj.kind /= 2 | obj.container == 0 then False else gv-under world obj.container container (left - 1)
+  gv-sale-source : GvWorld, Integer, Integer, Integer -> Boolean
+  gv-sale-source (v) (serial) (owner) (actor) =
+    let player = gv-player v owner 0
+    in if player >= 0 then let p = list-at v.players player
+      in p.actor == actor & gv-owned v.game.world p.pack owner 65 & gv-under v.game.world serial p.pack 65
+    else let vendor = gv-vendor v owner 0
+    in if vendor < 0 then let at = gv-owner v owner 0
+      in at >= 0 & (if at < 0 then False else (list-at v.owners at).actor == actor & gv-owned v.game.world serial owner 65)
+    else let p = list-at v.vendors vendor
+    in p.actor == actor & (gv-under v.game.world serial p.stock 65 | gv-under v.game.world serial p.extra 65)
+  gv-near : WorldObject, WorldObject -> Boolean
+  gv-near (one) (two) = one.kind == 1 & two.kind == 1 & one.health > 0 & two.health > 0
+    & one.x >= two.x - 4 & one.x <= two.x + 4 & one.y >= two.y - 4 & one.y <= two.y + 4
+    & one.z >= two.z - 16 & one.z <= two.z + 16
+  gv-add-vendor : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  gv-add-vendor (v) (serial) (actor) (stock) (extra) (buys) =
+    if v.vendor-count == 16 | gv-vendor v serial 0 >= 0 | gv-owner v serial 0 >= 0 | gv-actor-bound v actor 0 | not (ep-valid-actor v.currency.world actor)
+      | stock == extra | stock == buys | extra == buys then -1
+    else if not (gv-owned v.game.world stock serial 65 & gv-owned v.game.world extra serial 65 & gv-owned v.game.world buys serial 65) then -1
+    else let vendor = list-at v.vendors v.vendor-count
+    in let a = __record-set vendor "serial" serial
+    in let b = __record-set vendor "actor" actor
+    in let c = __record-set vendor "stock" stock
+    in let d = __record-set vendor "extra" extra
+    in let e = __record-set vendor "buys" buys
+    in let id = v.vendor-count
+    in let count = __record-set v "vendor-count" (id + 1)
+    in id
+  gv-add-player : GvWorld, Integer, Integer, Integer -> Integer
+  gv-add-player (v) (serial) (actor) (pack) =
+    if v.player-count == 5 | gv-player v serial 0 >= 0 | gv-owner v serial 0 >= 0 | gv-actor-bound v actor 0 | not (ep-valid-actor v.currency.world actor)
+      | not (gv-owned v.game.world pack serial 65) then -1
+    else let p = list-at v.players v.player-count
+    in let a = __record-set p "serial" serial
+    in let b = __record-set p "actor" actor
+    in let c = __record-set p "pack" pack
+    in let id = v.player-count
+    in let count = __record-set v "player-count" (id + 1)
+    in id
+  gv-represented : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  gv-represented (v) (actor) (item) (field) (i) = if i == v.lot-count then 0
+    else let l = list-at v.lots i
+    in let n = if l.actor /= actor | l.item /= item then 0
+      else if field == 0 then l.quantity else if field == 1 then l.quantity * l.quality
+      else if field == 2 then l.quantity * l.wear else l.basis
+    in n + gv-represented v actor item field (i + 1)
+  gv-add-lot : GvWorld, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gv-add-lot (v) (serial) (actor) (item) (quality) (wear) (basis) =
+    if v.lot-count == gv-lot-limit | gv-lot v serial 0 >= 0 | not (ep-valid-actor v.currency.world actor)
+      | not (eg-id v.currency.world.catalog item) | quality < 0 | quality > 1000 | wear < 0 | wear > 32 | basis < 0 | basis > ep-limit then -1
+    else when world-get v.game.world serial
+      is Err (e) -> -1
+      is Ok (obj) ->
+        let p = ep-actor v.currency.world actor
+        in if obj.kind /= 2 | gv-represented v actor item 0 0 + obj.amount > ep-at p.stock item
+          | gv-represented v actor item 1 0 + obj.amount * quality > ep-at p.quality item
+          | gv-represented v actor item 2 0 + obj.amount * wear > ep-at p.wear item
+          | gv-represented v actor item 3 0 + basis > ep-at p.cost item then -1
+        else let l = list-at v.lots v.lot-count
+        in let a = __record-set l "serial" serial
+        in let b = __record-set l "actor" actor
+        in let c = __record-set l "item" item
+        in let d = __record-set l "quantity" obj.amount
+        in let e = __record-set l "quality" quality
+        in let f = __record-set l "wear" wear
+        in let g = __record-set l "basis" basis
+        in let id = v.lot-count
+        in let used = __record-set v "lot-count" (id + 1)
+        in id

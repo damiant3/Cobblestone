@@ -1,5 +1,16 @@
 # Works -- open capabilities
 
+## SdExplorer JSON strings
+
+Source-inspected 2026-10-01 at main 33668; separate from WebRoute's shared
+helper repair.
+
+| Source | Gap |
+|---|---|
+| `SdExplorer.codex:18` | `respond-error` quotes arbitrary message text without escaping. Caller reachability remains ungraded. |
+| `SdExplorer.codex:110-115` | The local `json-escape` handles quote/backslash but leaves NUL/LF raw. All local `jstr` consumers inherit the gap. |
+| `SdExplorer.codex:344` | `cache_url` quotes query-derived prompt hash and filename raw. Filename sanitization admits punctuation between ASCII A and z, including backslash. |
+
 App-domain backlog. There is no platform-wide register any more:
 `docs/PM/BACKLOG.md` was deleted 2026-07-23 and must not be recreated.
 `docs/PM/CurrentPlan.md` carries the shape and the priority order for
@@ -16,6 +27,66 @@ exits, the cursor bracket, why the palette arrives as a parameter. Read it
 before adding a pane or taking a cell. This file is what is missing; that one
 is what must not be broken.
 
+## DeskScheduler: physical worker acceptance
+
+The production render worker still needs a physical sitting: animate Aquarium
+while using the menu, dragging/resizing, minimizing/restoring and closing or
+replacing it with 3D View; exercise HTTP at the same time. Record any input
+stall, stale frame or refusal. Native/OVMF component tests do not establish
+physical input latency or scanout behavior. The separate `D5FD7CB6` input/LAN
+candidate predates worker integration. The owning contract and diagnostic
+commands are in [DeskScheduler](../../docs/Designs/Active/OS/DeskScheduler.md#production-render-worker).
+
+## WORKS-81: physical DHCP and HTTP acceptance
+
+The remaining acceptance is a coordinated sitting with a newly built image:
+acquire the LAN's DHCP lease, display the actual binding, and load `/` from
+another machine during Aquarium animation. Confirm Start/Stop/Restart on
+the physical link and locate the request with the log's filters and search.
+The physical image `160653BC` failed on 2026-10-01 with PID -1 and
+"Service process unavailable", before DHCP. Main 33898 excludes the UEFI
+root heap from the fixed child-process pool; a controlled OVMF placement
+pair reproduces and repairs the spawn failure. ASUS placement remains
+unmeasured. Flashed `07A837D1` then failed input acceptance: stationary
+cursor on two boots, keyboard working through login, desktop keyboard
+delivery unmeasured. Main 33967 prevents idle-screen USB handback after
+decoded keyboard input; the ASUS mouse cause remains unconfirmed.
+Image `D5FD7CB6` also failed on metal: Damian reported no desktop mouse,
+no keyboard commands and no reset after three Ctrl+Alt+Delete presses.
+The earlier `160653BC` had working mouse input; its desktop CDX is identical
+to `07A837D1`, isolating that pair's change to the main 33898 PE stub.
+The active candidate uses `160653BC` desktop/input source with a separately
+owned child/FX pool and on-screen heap/DMA/PID facts. It excludes main 33967.
+Physical cause and acceptance remain unproved. See
+[the sitting record](../../docs/Hardware/HardwareSitting.md#works-81-owned-pool-diagnostic-candidate).
+
+The implementation contract is [Web Server administration](works-desk-contract.md#web-server-administration).
+Main 33787 contains the controls, DHCP binding and structured log. Its
+2026-10-01 proof covers 88 focused test subjects, six native/OVMF lifecycle
+and refusal/control cases, and OVMF GUI rehearsal at 1920x1080 with Aquarium
+and 78 HTTP requests. The emulator proof does not establish physical LAN
+acceptance. Detailed evidence and limits are in the implementation CL.
+
+## WORKS-80: physical confirmation of the 3D View's absent-GPU refusal
+
+Main 33438 retains `desk-gpu-present` separately from the current rendering
+mode. When the boot probe found no host GPU, `GopScene` refuses `G`, keeps
+software work intact and shows "GPU unavailable: boot found no host GPU.
+Using software." The reason survives software repaint. The GPU itself
+remains the GSP campaign; this change supplies no hardware renderer.
+
+`apps/works/proofs/scene-gpu-refusal.ps1 -Kernel seed/Codex.cdx` bundles the
+actual desk probe forced to zero and runs it in codex-vm. Five checks passed:
+software state, visible message pixels, repeated refusal, repaint and
+simulated available-GPU toggles. `-Sabotage` bypasses the guard and breaks
+the refusal checks. The existing scene-place regression passes. These are
+component checks, not physical key routing or scanout proof.
+
+Remaining: boot an image containing the fix on the ASUS, press `G` and
+photograph the refusal while software rendering continues. Damian recalls
+`G` working on that board; no sitting records it. Keep this observation in
+the next desk sitting rather than treating the VM result as metal proof.
+
 ## WORKS-79: System Info repaints without end on metal
 
 Sitting 18 (ASUS, 2026-09-30, Damian): opening Settings > System Info
@@ -28,32 +99,10 @@ metal (WORKS-78) that is a desk that never stops painting. The tick now paints
 the Monitor window and whatever is over it (`desk-wnd-paint-from`, as the Clock
 does): the top-bar pixel reads 0 writes a second and a pixel inside the window
 3, and a 10-second frame pair differs only in the clock row, the `it/s`
-readout and the taskbar clock. Open: the metal reading at the next sitting;
-the window is most of the screen, so its own repaint each second is still
-WORKS-78's cost.
-## WORKS-78: every desk action repaints the whole desk, and the screen flashes on metal
-
-Sitting 18 (ASUS, 2026-09-30, Damian): opening the Cobblestone menu, selecting
-a row in any list and every other click or key repaints the whole UI, and each
-repaint visibly flashes the screen. `ShellRefinement.md` ("UNMEASURED ... what
-the drag repaint RATE costs ON METAL") records the mechanism: raise, maximise,
-Tab and move all call `desk-wnd-repaint`, the full repaint, and a desk paint
-measures near a second on metal against about 16 ms in the bed (L-ARENA). What
-is missing: a repaint bounded to what changed (the menu, the selected row, the
-moved window), and a frame composed off screen and presented once, so no
-intermediate fill reaches the glass. The second half is DeskScheduler's
-presentation contract (`DeskScheduler.md`, "Render into owned offscreen
-storage and publish"); settle ownership with fester's stage 2 before editing
-the paint path. Acceptance is a metal reading, not a bed one.
-
-## WORKS-77: the preview background fill is never called
-
-`dk-prev-render` (`GopDesk.codex`) calls `gop-fill-rect` with 7 arguments, and
-`gop-fill-rect` (`GopDraw.codex`) takes 8 (`base stride rows px py pw ph
-color`; the call omits `rows`). The result `bg` is therefore a partial
-application that nothing calls, the compiler accepts the unused binding
-silently, and the preview is drawn over whatever the buffer held. The fix passes
-the preview's row count and must be checked against every preview golden.
+readout and the taskbar clock. Open: a specific sustained System Info
+observation on metal. Damian's 2026-10-01 general GUI/repaint acceptance of
+`90B8CEFA` closes WORKS-78 but does not name System Info or an observation
+duration; `HardwareSitting.md` holds the report.
 
 ## WORKS-68: a light pane's open state is freed by the next root rebuild
 
@@ -128,17 +177,6 @@ pixels the moment the first window is minimised, and the bottom of the
 content box sits under the band. `codex/test/apps/desk-pane-origin` asserts
 containment with an empty registry and with one minimised window; an
 under-reserving cache turns `slot inside box` and `equal` to NO.
-
-## WORKS-48: the Web Server pane and `ds` cell 248
-
-`desk-focus-web` is the pane and `ds` cell 248 (`dk-web-cell`) is the block
-the desk shares with the spawned web service. The pane offers Stop, Start,
-the service's state, and the last sixteen requests its route answered.
-`web-dispatch` takes an observer beside the route and calls it for EVERY
-request with the response actually returned, so `/api/health` and
-`/api/status`, which `web-standard` answers before the route is consulted,
-reach the log as well. `works-desk-contract.md` cites cell 248 and
-`PreemptiveScheduler.md` stage 3 holds the design.
 
 ## WORKS-25: every USB entry point picks its controller by what it finds there
 

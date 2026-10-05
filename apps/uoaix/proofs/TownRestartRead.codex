@@ -1,0 +1,73 @@
+Chapter: TownRestartRead
+  cites Uoaix chapter TownInput
+  cites Uoaix chapter TownInputCodec
+  cites Uoaix chapter TownReplay
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  trr-check : Text, Boolean -> [Console] Nothing
+  trr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  trr-finish : TownState, Integer -> [Console] Nothing
+  trr-finish (state) (count) = act
+    w <- state.townsfolk
+    m <- state.mind
+    guest <- tf-person w 4
+    persona <- list-at m.personas 3
+    trr-check "checkpoint plus ordered suffix" (count == 46 - 9 & state.checkpoint.sequence == 46 & state.checkpoint.tick == 460 & w.hour == 26)
+    trr-check "reboot populations and family" (w.used == 4 & (tf-town w 1).population == 4 & (tf-town w 1).births == 1 & (tf-person w 3).parent-a == 1 & (tf-person w 3).parent-b == 2)
+    trr-check "post-checkpoint strings owned" (guest.name == "Guest\nTail" & persona.description == "Fresh\npersona" & persona.fallback == "At the inn.")
+    trr-check "reboot counters and pending audit" (m.sequence == 3 & m.fallbacks == 3 & m.refusals == 1 & m.audit-count == 1 & w.event-count == 0 & w.sequence == 2 & persona.request == 1)
+    trr-check "reboot world and state invariants" (world-count state.checkpoint.world == 0 & ts-state-valid state.checkpoint w m)
+  end
+
+  trr-loop : UoStore, TownState, Integer, Integer, Integer -> [Console, Device.Block] Nothing
+  trr-loop (store) (state) (at) (buf) (count) =
+    if at == store.head then trr-finish state count
+    else if count >= 4096 then print-line-uni "FAIL recovery record budget"
+    else let mark = __heap-save
+    in act
+      read <- us-read store at buf ti-frame-bytes
+      when read
+        is Err (e) -> print-line-uni ("FAIL input read " & e)
+        is Ok (row) ->
+          if row.kind /= 2 then print-line-uni "FAIL expected input after newest checkpoint"
+          else let next = row.next
+          in when ti-decode-record buf row.length row.tick row.sequence
+            is Err (e) -> print-line-uni ("FAIL input decode " & e)
+            is Ok (entry) -> when ti-apply state entry
+              is Err (e) -> print-line-uni ("FAIL input replay " & e)
+              is Ok (outcome) ->
+                if ti-retains-text entry outcome.code then trr-loop store state next buf (count + 1)
+                else let restored = __heap-restore mark in trr-loop store state next buf (count + 1)
+    end
+
+  trr-read : UoStore -> [Console, Device.Block] Nothing
+  trr-read (store) =
+    let snapshot = alloc-bytes (ts-size world-max-objects)
+    in let input = alloc-bytes ti-frame-bytes
+    in act
+      trr-check "store reopened" (store.sequence == 46 & store.tick == 460 & store.tail == 0 & store.snapshot > 0)
+      saved <- us-read store store.snapshot snapshot (ts-size world-max-objects)
+      when saved
+        is Err (e) -> print-line-uni ("FAIL snapshot read " & e)
+        is Ok (row) -> if row.kind /= 1 then print-line-uni "FAIL expected checkpoint"
+          else when ts-decode-record snapshot row.length row.tick row.sequence
+            is Err (e) -> print-line-uni ("FAIL checkpoint decode " & e)
+            is Ok (state) -> act
+              trr-check "combined checkpoint restored" (state.checkpoint.sequence == 9 & state.checkpoint.tick == 90 & state.townsfolk.used == 2 & (tf-person state.townsfolk 1).name == "Mara\nBaker" & state.mind.sequence == 2 & state.mind.audit-count == 2)
+              trr-loop store state row.next input 0
+            end
+    end
+
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 8192
+    when opened
+      is Err (e) -> print-line-uni ("FAIL store reopen " & e)
+      is Ok (store) -> trr-read store
+  end

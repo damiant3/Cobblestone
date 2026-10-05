@@ -1,0 +1,170 @@
+Chapter: ShardServerProof
+  cites Uoaix chapter ShardServer
+  cites Uoaix chapter ShardLinks
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameHuffman
+  cites Uoaix chapter WalkMap
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Works chapter Http
+  cites Foreword chapter Result
+
+  ssp-check : Text, Boolean -> [Console] Nothing
+  ssp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  ssp-game : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console] Result GameReply Text
+  ssp-game (calls) (game) (input) (map) (port) (packet) =
+    let count = list-set-at calls 0 (list-at calls 0 + 1)
+    in act
+      print-line-uni "GAME CALLBACK COMPLETE"
+      Ok (gs-reply [packet] "shared fixture")
+    end
+
+  ssp-http : List Integer, HttpRequest -> [Console] Result HttpResponse Text
+  ssp-http (calls) (request) =
+    let count = list-set-at calls 1 (list-at calls 1 + 1)
+    in act
+      print-line-uni "HTTP CALLBACK COMPLETE"
+      if request.valid & request.path == "/health" then Ok (http-plain "health fixture") else Err "fixture request"
+    end
+
+  ssp-clear : ShardServer, Integer -> Integer
+  ssp-clear (server) (i) = if i >= list-length server.links.slots then 0
+    else let slot = list-at server.links.slots i
+    in let transport = transport-set-session slot.transport (set-outbox slot.transport.session [])
+    in let saved = __record-set slot "transport" transport
+    in ssp-clear server (i + 1)
+
+  ssp-feed : ShardServer, Integer, List Integer -> Integer
+  ssp-feed (server) (i) (bytes) =
+    let slot = list-at server.links.slots i
+    in let fed = transport-feed-raw slot.transport bytes
+    in let saved = __record-set slot "transport" fed in 0
+
+  ssp-open : ShardServer, Integer -> Integer
+  ssp-open (server) (i) =
+    let slot = list-at server.links.slots i
+    in let connection = tcp-new-connection slot.port [10,0,2,15] 50000 [10,0,2,2] 1000
+    in let transport = transport-set-session slot.transport (set-conn slot.transport.session (tcp-set-state connection TcpEstablished))
+    in let saved = __record-set slot "transport" transport
+    in let occupied = __record-set slot "occupied" True
+    in let epoch = __record-set slot "epoch" 1
+    in ss-reset server i 0
+
+  ssp-fill : Integer, List Integer -> List Integer
+  ssp-fill (left) (out) = if left == 0 then out else ssp-fill (left - 1) (list-push out 239)
+
+  ssp-empty-packets : Integer, List (List Integer) -> List (List Integer)
+  ssp-empty-packets (left) (out) = if left == 0 then out else ssp-empty-packets (left - 1) (list-push out [])
+
+  ssp-idle : (GameShard, GameInput, WalkMap, Integer, List Integer -> [Console] Result GameReply Text), (HttpRequest -> [Console] Result HttpResponse Text), ShardServer, Integer -> [Console] Integer
+  ssp-idle (game-handler) (http-handler) (server) (left) = if left == 0 then 0 else act
+    progress <- ss-pass game-handler http-handler server 0 3
+    ssp-idle game-handler http-handler server (left - 1)
+  end
+
+  ssp-pipeline : (GameShard, GameInput, WalkMap, Integer, List Integer -> [Console] Result GameReply Text), (HttpRequest -> [Console] Result HttpResponse Text), ShardServer, List Integer -> [Console] Nothing
+  ssp-pipeline (game-handler) (http-handler) (server) (calls) =
+    let request = http-text-to-ascii "GET /health HTTP/1.0" & [13,10,13,10]
+    in let fed = ssp-feed server 1 (request & request)
+    in act
+      first <- ss-pass game-handler http-handler server 0 3
+      let flushed = ssp-clear server 0
+      in when sl-compact server.links
+        is Err (e) -> print-line-uni ("FAIL pipelined compaction " & e)
+        is Ok (n) -> act
+          second <- ss-pass game-handler http-handler server 0 3
+          ssp-check "pipelined HTTP dispatches each request after compaction" (list-at calls 1 == 3 & (list-at server.links.slots 1).transport.recv-len == 0)
+        end
+    end
+
+  ssp-run : ShardServer, List Integer -> [Console] Nothing
+  ssp-run (server) (calls) =
+    let game-handler = ssp-game calls
+    in let http-handler = ssp-http calls
+    in let retained = __record-set server.links "mark" __heap-save
+    in let ga = ssp-open server 0
+    in let ha = ssp-open server 1
+    in let protocol = list-at server.protocols 0
+    in let mode = __record-set protocol.game "mode" 1
+    in let a = ssp-feed server 0 [115]
+    in let b = ssp-feed server 1 (http-text-to-ascii "GET /health HTTP/1.0" & [13,10,13,10])
+    in let flattened = when ss-game-replies server.huffman False [[1,2],[3]]
+      is Err (e) -> False
+      is Ok (bytes) -> list-length bytes == 3 & list-at bytes 0 == 1 & list-at bytes 1 == 2 & list-at bytes 2 == 3
+    in let capped = when ss-game-replies server.huffman False (ssp-empty-packets 65 (__list-with-capacity 65))
+      is Err (e) -> True
+      is Ok (bytes) -> False
+    in act
+      ssp-check "reply assembly preserves packet byte order" flattened
+      ssp-check "empty reply packets cannot evade count budget" capped
+      first <- ss-pass game-handler http-handler server 0 1
+      ssp-check "HTTP progresses beside an incomplete game packet" (list-at calls 0 == 0 & list-at calls 1 == 1 & protocol.game.used == 1 & (list-at server.links.slots 1).tx.used > 0)
+      let flushed = ssp-clear server 0
+      in when sl-compact server.links
+        is Err (e) -> print-line-uni ("FAIL compaction " & e)
+        is Ok (n) ->
+          let scratch = ssp-fill 20000 (__list-with-capacity 20000)
+          in let tail = ssp-feed server 0 [199]
+          in act
+            second <- ss-pass game-handler http-handler server 0 2
+            let slot = list-at server.links.slots 0
+            in let frame = list-at slot.transport.session.outbox 0
+            in act
+              ssp-check "game parser survives common scratch compaction" (list-at calls 0 == 1 & list-at calls 1 == 1 & protocol.game.used == 0 & slot.tx.used == 2 & list-at frame 54 == 115 & list-at frame 55 == 1)
+              let cleared = ssp-clear server 0
+              in act
+                pipelined <- ssp-pipeline game-handler http-handler server calls
+                0
+              end
+              let flushed = ssp-clear server 0
+              in let partial = ssp-feed server 1 (http-text-to-ascii "GET /")
+              in act
+              waiting <- ss-pass game-handler http-handler server 0 3
+              let before = __heap-save
+              in act
+                idle <- ssp-idle game-handler http-handler server 100
+                let growth = __heap-save - before
+                in let http = list-at server.links.slots 1
+                in let fin = net-receive-segment http.transport.session (tcp-segment-of 50000 2594 0 http.transport.session.conn.send-next 17 8192 [])
+                in let ended = __record-set http "transport" (transport-set-session http.transport (set-outbox fin.session []))
+                in act
+                  ssp-check "unchanged partial HTTP does not allocate on idle polls" (growth == 0 & list-at calls 1 == 3)
+                  eof <- ss-pass game-handler http-handler server 0 4
+                  ssp-check "partial HTTP at EOF aborts its connection" ((list-at server.protocols 1).closing == 2 & protocol.closing == 0)
+                end
+              end
+              end
+              let flushed = ssp-clear server 0
+              in let serial = __record-set protocol.game.session "serial" 9
+              in let active = __record-set server.game "active" 9
+              in let closing = __record-set protocol "closing" 1
+              in act
+                closed <- ss-close-pass server 0
+                ssp-check "closing game disconnects once" (server.game.active == 0 & protocol.disconnected)
+                let next-player = __record-set server.game "active" 9
+                in let flushed = ssp-clear server 0
+                in act
+                  repeated <- ss-close-pass server 0
+                  ssp-check "old closing slot preserves a newer active character" (server.game.active == 9)
+                  let reset = ss-reset server 0 3
+                  in ssp-check "protocol reuse resets framing without another disconnect" (server.game.active == 9 & protocol.game.used == 0 & protocol.game.mode == 0 & protocol.game.raw-count == 0 & protocol.game.wire.seed-count == 0 & not protocol.disconnected)
+                end
+              end
+            end
+          end
+    end
+
+  opening : [Console] Nothing =
+    let calls = [0,0]
+    in when gs-new 0
+      is Err (e) -> print-line-uni ("FAIL game " & e)
+      is Ok (game) -> when walk-map-new 0 0 4 4
+        is Err (e) -> print-line-uni ("FAIL map " & e)
+        is Ok (map) -> when ss-new game map (gh-new 0) 2593 [2593,2594] [2,0,0,0,0,1] [10,0,2,15] [10,0,2,2] [255,255,255,0] 0
+          is Err (e) -> print-line-uni ("FAIL server " & e)
+          is Ok (server) -> ssp-run server calls
+
+Page 1

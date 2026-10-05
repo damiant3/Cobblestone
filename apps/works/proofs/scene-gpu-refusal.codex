@@ -1,0 +1,71 @@
+Chapter: SceneGpuRefusal
+  cites Works chapter GopDesk
+  cites Works chapter GopScene
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Works chapter GopXhci
+  cites Works chapter GopFont
+  cites Works chapter GopDraw
+  cites Engine chapter Renderer3D
+  cites Kernel chapter BitmapFont
+  cites Foreword chapter Console
+
+  sgr-band : Integer, Integer, Integer -> Boolean
+  sgr-band (actual) (expected) (at) =
+    if at >= 640 * 96 then True
+    else if peek-32 actual (at * 4) /= peek-32 expected (at * 4) then False
+    else sgr-band actual expected (at + 1)
+
+  sgr-lit : Integer, Integer, Integer -> Integer
+  sgr-lit (pixels) (at) (count) =
+    if at >= 640 * 96 then count
+    else sgr-lit pixels (at + 1) (count + (if peek-32 pixels (at * 4) == 65280 then 1 else 0))
+
+  opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
+    present <- desk-gpu-present 0
+    let fb = alloc-zeroed (640 * 96 * 4) 64
+    in let expected = alloc-zeroed (640 * 96 * 4) 64
+    in let cs = alloc-zeroed 2048 64
+    in let q = di-new 0
+    in let pos = alloc-zeroed 64 64
+    in let font = gapp-fallback cbf-init
+    in let mouse = UsbMouse { um-ok = False, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = pos, um-pos = pos, um-peers = [] }
+    in act
+      sp <- gsc-new fb 640 cs present 37 640 96
+      let ready = __record-set sp "sp-ready" 1
+      in let at = __record-set sp "sp-present" 13
+      in let count = __record-set sp "sp-n" 7
+      in let bg = gop-fill-rect expected 640 96 0 76 640 20 37
+      in let text = gapp-ui-text-fit expected 640 96 font 8 (96 - gapp-ui-h font 1) 632 "GPU unavailable: boot found no host GPU. Using software." 65280 1
+      in act
+        refused <- gsc-step fb 640 96 640 font kbd-no-kbd mouse cs gsc-scene sp 34 0 q
+        let kept = present == 0 & sp.sp-gpu == 0 & sp.sp-gpu-present == 0 & sp.sp-ready == 1 & sp.sp-present == 13 & sp.sp-n == 7
+        in let visible = sgr-lit fb (640 * 76) 0 > 0 & sgr-band fb expected (640 * 76)
+        in act
+          again <- gsc-step fb 640 96 640 font kbd-no-kbd mouse cs gsc-scene sp 34 0 q
+          let repeated = sp.sp-gpu == 0 & sp.sp-present == 13 & sgr-band fb expected (640 * 76)
+          in let clear = r3d-target-clear (sp.sp-tgt) 37
+          in act
+            shown <- gsc-show 640 font gsc-scene sp
+            let retained = sgr-band fb expected (640 * 76)
+            in let cap = __record-set sp "sp-gpu-present" 1
+            in act
+              enabled <- gsc-step fb 640 96 640 font kbd-no-kbd mouse cs gsc-scene sp 34 0 q
+              let on = sp.sp-gpu == 1 & sp.sp-ready == 0 & sp.sp-present == -1 & sp.sp-n == 0
+              in act
+                disabled <- gsc-step fb 640 96 640 font kbd-no-kbd mouse cs gsc-scene sp 34 0 q
+                print-line ("absent-preserves-software " & show kept)
+                print-line ("visible-reason " & show visible)
+                print-line ("repeated-refusal " & show repeated)
+                print-line ("repaint-keeps-reason " & show retained)
+                print-line ("present-can-toggle " & show (on & sp.sp-gpu == 0 & sp.sp-gpu-present == 1))
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+Page 1

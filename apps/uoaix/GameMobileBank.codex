@@ -1,0 +1,167 @@
+Chapter: GameMobileBank
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameVendorPackets
+
+ Adapted from SphereServer Source-X send.cpp PacketCharacter, CClientMsg.cpp
+ addBankOpen, CCharStatus.cpp GetBank/CanTouch and CItemContainer.cpp OnOpenEvent.
+ Apache-2.0; Sphere-LICENSE.txt. Local bindings: MobileBank.md.
+
+  GmbLease = record { serial : Integer, connection : Integer, bank : Integer, x : Integer, y : Integer, z : Integer }
+  GmbState = record { items : GsiState, bankers : List Integer, count : Integer, leases : List GmbLease, gump : Integer }
+  gmb-leases : Integer, List GmbLease -> List GmbLease
+  gmb-leases (n) (out) = if n == 0 then out else gmb-leases (n - 1) (list-push out (GmbLease { serial = 0, connection = -1, bank = 0, x = 0, y = 0, z = 0 }))
+  gmb-new : GsiState, Integer -> GmbState
+  gmb-new (items) (gump) = GmbState { items = items, bankers = gp-zeros [] 16, count = 0, leases = gmb-leases 5 [], gump = gump }
+  gmb-add-banker : GmbState, Integer -> Integer
+  gmb-add-banker (state) (serial) = if state.count == 16 then -1 else when world-get state.items.world serial
+    is Err (e) -> -1
+    is Ok (npc) -> if npc.kind /= 1 then -1 else let saved = list-set-at state.bankers state.count serial
+      in let next = __record-set state "count" (state.count + 1) in 0
+  gmb-layer : GsiState, Integer, Integer, Integer -> Integer
+  gmb-layer (state) (owner) (layer) (i) = world-layer-serial state.world owner layer
+  gmb-clothe : GsiState, Integer, Integer, Integer, Integer -> Result Integer Text
+  gmb-clothe (state) (owner) (graphic) (hue) (layer) = let found = gmb-layer state owner layer 0
+    in if found /= 0 then Ok found else when world-get state.world owner
+      is Err (e) -> Err e
+      is Ok (mobile) -> if mobile.kind /= 1 | layer < 1 | layer > 25 then Err "clothing owner or layer"
+        else when world-create state.world (gs-item owner graphic hue)
+          is Err (e) -> Err e
+          is Ok (serial) -> let registered = gsi-register state serial layer 0 False False in Ok serial
+  gmb-dress : GsiState, Integer -> Result Integer Text
+  gmb-dress (state) (owner) = if state.world.capacity - world-count state.world < 3 then Err "clothing capacity"
+    else when gmb-clothe state owner #1517 #035F 5
+      is Err (e) -> Err e
+      is Ok (shirt) -> when gmb-clothe state owner #152E 0 4
+        is Err (e) -> Err e
+        is Ok (pants) -> gmb-clothe state owner #170F 0 3
+  gmb-equipment : GsiState, Integer, Integer, Integer, List Integer -> List Integer
+  gmb-equipment (state) (owner) (i) (sent) (out) =
+    gmb-equipment-rows state (gmb-equipment-list state owner 1 (__list-with-capacity 25)) 0 out
+  gmb-equipment-insert : WorldTable, List Integer, Integer, Integer -> List Integer
+  gmb-equipment-insert (world) (items) (serial) (at) = if at == 0 then let placed = list-set-at items 0 serial in items
+    else let previous = list-at items (at - 1)
+    in if world-slot world previous <= world-slot world serial then let placed = list-set-at items at serial in items
+    else let shifted = list-set-at items at previous in gmb-equipment-insert world items serial (at - 1)
+  gmb-equipment-list : GsiState, Integer, Integer, List Integer -> List Integer
+  gmb-equipment-list (state) (owner) (layer) (items) = if layer == 26 then items
+    else let serial = world-layer-serial state.world owner layer
+    in if serial == 0 | not (gsi-known state serial) then gmb-equipment-list state owner (layer + 1) items
+    else let at = list-length items
+    in let extended = list-push items serial
+    in let ordered = gmb-equipment-insert state.world extended serial at
+    in gmb-equipment-list state owner (layer + 1) ordered
+  gmb-equipment-rows : GsiState, List Integer, Integer, List Integer -> List Integer
+  gmb-equipment-rows (state) (items) (i) (out) = if i == list-length items then gp-put32 out 0
+    else let serial = list-at items i
+    in let slot = world-slot state.world serial
+    in let layer = (gsi-meta state serial).layer
+    in let at = 16 + slot * 80
+    in let graphic = peek-qword state.world.buffer (at + 40)
+    in let hue = peek-qword state.world.buffer (at + 48)
+    in let row = list-push (gp-put16 (gp-put32 out serial) (bit-or (bit-and graphic #7FFF) (if hue == 0 then 0 else #8000))) layer
+    in gmb-equipment-rows state items (i + 1) (if hue == 0 then row else gp-put16 row hue)
+  gmb-mobile : GsiState, WorldObject -> List Integer
+  gmb-mobile (state) (mobile) = let a = gp-put16 (gp-put32 [#78,0,0] mobile.serial) mobile.graphic
+    in let b = list-push (list-push (gp-put16 (gp-put16 a mobile.x) mobile.y) (bit-and mobile.z 255)) 0
+    in sip-length (gmb-equipment state mobile.serial 0 0 ((gp-put16 b mobile.hue) & [0,1]))
+  gmb-header : List Integer, Integer, List Integer -> List Integer
+  gmb-header (packet) (i) (out) = if i == 19 then out else gmb-header packet (i + 1) (list-push out (list-at packet i))
+  gmb-rewrite : GsiState, List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  gmb-rewrite (state) (packets) (i) (out) = if i == list-length packets then out else let packet = list-at packets i
+    in let next = if list-length packet < 23 then packet else if list-at packet 0 /= #78 then packet
+      else when world-get state.world (gp-u32 packet 3)
+        is Err (e) -> packet
+        is Ok (mobile) -> if mobile.kind /= 1 then packet else sip-length (gmb-equipment state mobile.serial 0 0 (gmb-header packet 0 []))
+    in gmb-rewrite state packets (i + 1) (list-push out next)
+  gmb-reply : GsiState, GameReply -> GameReply
+  gmb-reply (state) (reply) = GameReply { packets = gmb-rewrite state reply.packets 0 [], close = reply.close, note = reply.note }
+  gmb-near-banker : GmbState, WorldObject, Integer -> Boolean
+  gmb-near-banker (state) (mobile) (i) = if i == state.count then False else when world-get state.items.world (list-at state.bankers i)
+    is Err (e) -> gmb-near-banker state mobile (i + 1)
+    is Ok (npc) -> if npc.kind == 1 & gmb-in-range mobile npc then True else gmb-near-banker state mobile (i + 1)
+  gmb-is-banker : GmbState, Integer, Integer -> Boolean
+  gmb-is-banker (state) (serial) (i) = if i == state.count then False
+    else if list-at state.bankers i == serial then True else gmb-is-banker state serial (i + 1)
+  gmb-range : Integer = 20
+  gmb-in-range : WorldObject, WorldObject -> Boolean
+  gmb-in-range (actor) (npc) = npc.x >= actor.x - gmb-range & npc.x <= actor.x + gmb-range
+    & npc.y >= actor.y - gmb-range & npc.y <= actor.y + gmb-range & npc.z >= actor.z - 20 & npc.z <= actor.z + 20
+ The First Bank of Britain; ServUO's banker spawner stands at 1433,1687.
+  gmb-bank-x : Integer = 1433
+  gmb-bank-y : Integer = 1687
+  gmb-find-banker : GsiState, Integer -> Integer
+  gmb-find-banker (state) (serial) = if serial == 0 then 0
+    else when world-get state.world serial
+      is Err (_) -> gmb-find-banker state (world-tile-next state.world serial)
+      is Ok (obj) -> if obj.kind == 1 & obj.graphic == 400 & obj.hue == 1002 then serial
+        else gmb-find-banker state (world-tile-next state.world serial)
+  gmb-ensure-banker : GmbState, Integer -> Result Integer Text
+  gmb-ensure-banker (state) (z) =
+    let found = gmb-find-banker state.items (world-tile-first state.items.world gmb-bank-x gmb-bank-y)
+    in when (if found /= 0 then Ok found else world-create state.items.world (gs-mobile 0 gmb-bank-x gmb-bank-y z 400 1002))
+      is Err (e) -> Err e
+      is Ok (serial) -> when gmb-dress state.items serial
+        is Err (e) -> Err e
+        is Ok (_) -> if gmb-add-banker state serial < 0 then Err "bank banker binding" else Ok serial
+  gmb-bank-find : GsiState, Integer, Integer -> Integer
+  gmb-bank-find (items) (owner) (i) = gsi-child-art items.world (world-first-child items.world owner) #09B2 0
+  gmb-open : GmbState, GameInput, Integer -> GameReply
+  gmb-open (state) (input) (slot) = when world-get state.items.world input.session.serial
+    is Err (e) -> gsi-denied "Your bank is unavailable."
+    is Ok (mobile) -> if not (gmb-near-banker state mobile 0) then gsi-denied "You must be near a banker."
+      else if state.gump < 1 | state.gump > 65535 then gsi-denied "Bank container is unavailable."
+      else let found = gmb-bank-find state.items mobile.serial 0
+      in when (if found == 0 then world-create state.items.world (gs-item mobile.serial #09B2 0) else Ok found)
+        is Err (e) -> gsi-denied "Your bank is unavailable."
+        is Ok (serial) -> let registered = gsi-register state.items serial 29 state.gump False False
+          in let lease = list-at state.leases slot
+          in let a = __record-set lease "serial" mobile.serial
+          in let b = __record-set lease "connection" input.connection
+          in let c = __record-set lease "bank" serial
+          in let d = __record-set lease "x" mobile.x
+          in let e = __record-set lease "y" mobile.y
+          in let f = __record-set lease "z" mobile.z
+          in when world-get state.items.world serial
+            is Err (e) -> gsi-denied "Your bank is unavailable."
+            is Ok (box) -> gs-reply [gp-equip box 29,sip-open serial state.gump,gsi-contents state.items serial 0 [#3C,0,0,0,0] 0] "bank:open"
+  gmb-root : GsiState, Integer, Integer -> Integer
+  gmb-root (state) (serial) (left) = if serial == 0 | serial == #FFFFFFFF then 0 else if left == 0 then -1
+    else when world-get state.world serial
+      is Err (e) -> 0
+      is Ok (obj) -> if obj.kind /= 2 then 0
+        else if obj.graphic == #09B2 then obj.serial
+        else if gsi-known state serial then if (gsi-meta state serial).layer == 29 then serial else gmb-root state obj.container (left - 1)
+        else gmb-root state obj.container (left - 1)
+  gmb-access : GmbState, GameInput, Integer, Integer -> Boolean
+  gmb-access (state) (input) (slot) (serial) = let root = gmb-root state.items serial 65
+    in if root == 0 then True else if root < 0 then False else let lease = list-at state.leases slot
+    in if lease.bank /= root | lease.serial /= input.session.serial | lease.connection /= input.connection then False
+    else when world-get state.items.world input.session.serial
+      is Err (e) -> False
+      is Ok (mobile) -> when world-get state.items.world root
+        is Err (e) -> False
+        is Ok (box) -> box.container == mobile.serial & mobile.x == lease.x & mobile.y == lease.y & mobile.z == lease.z
+  gmb-handle : GmbState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  gmb-handle (state) (shard) (input) (map) (port) (packet) =
+    if input.mode /= 2 | input.session.phase /= 2 | list-length packet == 0 then Ok None
+    else if shard.world.buffer /= state.items.world.buffer | shard.active /= input.session.serial then Err "bank session binding"
+    else let op = list-at packet 0
+    in if op /= 3 & op /= 6 & op /= 7 & op /= 8 & op /= 9 & op /= 19 & op /= #6C then Ok None
+    else if not (go-packet-valid (gsi-specs 0) packet) | not (gs-byte-range packet 0) then Err "bank packet extent"
+    else if op == 3 & not (gp-speech-valid packet) then Err "bank speech extent"
+    else if op == 3 & gp-speech-text packet /= "bank" & gp-speech-text packet /= "banker bank" then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #47530000 then Ok None
+    else let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 then Err "bank character binding"
+    else if op == 9 & gmb-is-banker state (gp-u32 packet 1) 0 then when world-get state.items.world (gp-u32 packet 1)
+      is Err (e) -> Ok None
+      is Ok (npc) -> Ok (Just (gs-reply (gvp-hello npc "Banker") "bank:name"))
+    else if op == 3 | (op == 6 & gmb-is-banker state (bit-and (gp-u32 packet 1) #7FFFFFFF) 0) then Ok (Just (gmb-open state input slot))
+    else let serial = if op == #6C then gp-u32 packet 7 else bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let target = if op == 8 then gp-u32 packet 10 else if op == 19 then gp-u32 packet 6 else 0
+    in let held = (list-at state.items.actors slot).holding
+    in if gmb-access state input slot serial & gmb-access state input slot target & (if op == 8 | op == 19 then gmb-access state input slot held else True) then Ok None
+    else if op == 7 then Ok (Just (gs-reply [sip-bounce 1] "bank:access-refused"))
+    else if op == 8 | op == 19 then let actor = gsi-session state.items shard input slot
+      in Ok (Just (gsi-bounce state.items actor 1))
+    else Ok (Just (gsi-denied "Open your bank at a nearby banker first."))

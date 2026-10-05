@@ -1,0 +1,117 @@
+Chapter: EconomyHarvest
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+
+  eh-source : EpWorld, Integer, Integer -> Integer
+  eh-source (w) (resource) (place) =
+    if resource <= 0 | resource > list-length w.catalog.resources | place <= 0 | w.node-count == ep-node-limit then -1
+    else let r = list-at w.catalog.resources (resource - 1)
+    in let n = list-at w.nodes w.node-count
+    in let id = w.node-count + 1
+    in let a = __record-set n "resource" resource
+    in let b = __record-set n "place" place
+    in let c = __record-set n "ground" r.ground
+    in let d = __record-set n "stage" 2
+    in let e = __record-set w "node-count" id
+    in id
+  eh-ground : EpWorld, Integer, Integer, Integer -> Integer
+  eh-ground (w) (actor) (place) (ground) =
+    if not (ep-valid-actor w actor) | place <= 0 | ground < 1 | ground > 2 | w.node-count == ep-node-limit then -1
+    else if (ep-actor w actor).place /= place then -1
+    else let n = list-at w.nodes w.node-count
+    in let id = w.node-count + 1
+    in let a = __record-set n "place" place
+    in let b = __record-set n "owner" actor
+    in let c = __record-set n "ground" ground
+    in let d = __record-set w "node-count" id
+    in id
+  eh-valid-node : EpWorld, Integer -> Boolean
+  eh-valid-node (w) (node) = node > 0 & node <= w.node-count
+  eh-plant : EpWorld, Integer, Integer, Integer -> Integer
+  eh-plant (w) (actor) (node) (resource) =
+    if not (ep-valid-actor w actor) | not (eh-valid-node w node) | resource <= 0 | resource > list-length w.catalog.resources then -1
+    else let p = ep-actor w actor
+    in let n = list-at w.nodes (node - 1)
+    in let r = list-at w.catalog.resources (resource - 1)
+    in if r.seed == 0 | n.owner /= actor | n.place /= p.place | n.ground /= r.ground | (n.resource /= 0 & n.stage /= 3) | w.hour > ep-limit - r.regrow then -1
+    else if ep-at p.stock r.seed < 1 then -1
+    else let a = ep-consume w p r.seed 1
+    in let b = __record-set n "resource" resource
+    in let c = __record-set n "planted" 1
+    in let d = __record-set n "stage" 0
+    in let e = __record-set n "ready" (w.hour + r.regrow)
+    in let f = __record-set n "water" 0
+    in let g = __record-set n "tended" 0
+    in 0
+  eh-care : EpWorld, Integer, Integer, Boolean -> Integer
+  eh-care (w) (actor) (node) (water) =
+    if not (ep-valid-actor w actor) | not (eh-valid-node w node) then -1
+    else let p = ep-actor w actor
+    in let n = list-at w.nodes (node - 1)
+    in if n.owner /= actor | n.place /= p.place | n.planted == 0 | n.stage >= 2 then -1
+    else if water & (not (eg-id w.catalog 4) | ep-at p.stock 4 < 1) then -1
+    else if water then let a = ep-consume w p 4 1 in let b = __record-set n "water" 1 in 0
+    else let a = __record-set n "tended" 1 in 0
+  eh-eaten : EpWorld, Integer -> Integer
+  eh-eaten (w) (node) = if not (eh-valid-node w node) then -1
+    else let n = list-at w.nodes (node - 1)
+    in if n.planted == 0 then -1 else let a = __record-set n "stage" 3 in 0
+
+  eh-add-yield : EpWorld, EpActor, Integer, Integer, Integer -> Integer
+  eh-add-yield (w) (p) (item) (quantity) (quality) =
+    let a = ep-add p.stock item quantity
+    in let b = ep-add p.quality item (quantity * quality)
+    in let c = ep-add p.wear item (quantity * 32)
+    in let d = if list-length w.catalog.items >= 68 then ep-add p.cost item quantity else 0
+    in ep-add w.gathered item quantity
+  eh-harvest : EpWorld, Integer, Integer -> Integer
+  eh-harvest (w) (actor) (node) =
+    if not (ep-valid-actor w actor) | not (eh-valid-node w node) then -1
+    else let p = ep-actor w actor
+    in let n = list-at w.nodes (node - 1)
+    in if n.resource == 0 | n.stage /= 2 | n.place /= p.place | (n.owner /= 0 & n.owner /= actor) | p.attempts >= ep-limit then -1
+    else let r = list-at w.catalog.resources (n.resource - 1)
+    in let level = if r.skill == 0 then 1000 else ep-at p.skills r.skill
+    in let quantity = 1 + (r.quantity - 1) * level / 1000
+    in if r.item == 51 | r.seed == 51 | not (ep-tool p r.tool) | not (ep-room p r.item quantity) | ep-at w.gathered r.item > ep-limit - quantity | w.hour > ep-limit - r.regrow then -1
+    else if r.seed > 0 & (not (ep-room p r.seed 1) | ep-at w.gathered r.seed >= ep-limit) then -1
+    else let success = ep-practice p r.skill
+    in let wear = ep-wear w p r.tool
+    in if not success then -2
+    else let a = eh-add-yield w p r.item quantity (100 + level * 9 / 10)
+    in let b = if r.seed > 0 then eh-add-yield w p r.seed 1 1000 else 0
+    in let c = __record-set n "stage" 0
+    in let d = __record-set n "ready" (w.hour + r.regrow)
+    in let e = __record-set n "water" 0
+    in let f = __record-set n "tended" 0
+    in quantity
+
+  eh-grow : EpWorld, Integer -> Integer
+  eh-grow (w) (i) = if i == w.node-count then 0
+    else let n = list-at w.nodes i
+    in let a = if n.resource == 0 | n.stage >= 2 then 0
+      else let r = list-at w.catalog.resources (n.resource - 1)
+      in if w.hour >= n.ready then
+        let b = __record-set n "stage" (if n.planted == 1 & (n.water == 0 | n.tended == 0) then 3 else 2) in 0
+      else if w.hour >= n.ready - r.regrow / 2 then let b = __record-set n "stage" 1 in 0
+      else 0
+    in eh-grow w (i + 1)
+  eh-needs : EpWorld, Integer -> Integer
+  eh-needs (w) (i) = if i == w.actor-count then 0
+    else let p = list-at w.actors i
+    in let a = __record-set p "hunger" (if p.hunger > 97 then 100 else p.hunger + 3)
+    in eh-needs w (i + 1)
+  eh-demand : EpWorld, Integer -> Integer
+  eh-demand (w) (item) = if item > list-length w.catalog.items then 0
+    else let a = ep-set w.sales item (ep-at w.sales item / 2)
+    in eh-demand w (item + 1)
+  eh-step : EpWorld -> Integer
+  eh-step (w) = if w.hour >= ep-limit | w.hour /= w.money.hour then -1
+    else let advanced = em-advance w.money (w.hour + 1)
+    in if advanced /= 0 then -1
+    else let a = __record-set w "hour" (w.hour + 1)
+    in let b = eh-grow w 0
+    in let c = eh-needs w 0
+    in let d = if int-mod w.hour 24 == 0 then eh-demand w 1 else 0
+    in 0

@@ -1,0 +1,58 @@
+Chapter: CompositeLaunch
+  cites Foreword chapter Result
+  grounds Device.Port
+
+ A launch record is one line: `UOAIX TESTING`, `UOAIX DEV`, or
+ `UOAIX PUBLIC <password>`, which sets account British's password before
+ public mode opens. No record is public mode with British's password
+ unchanged. Testing implies development account creation.
+
+  CompositeLaunchMode = record { testing : Boolean, dev : Boolean, british : List Integer }
+
+  cl-testing : List Integer = [85,79,65,73,88,32,84,69,83,84,73,78,71,10]
+  cl-dev : List Integer = [85,79,65,73,88,32,68,69,86,10]
+  cl-public : List Integer = [85,79,65,73,88,32,80,85,66,76,73,67,32]
+  cl-limit : Integer = 64
+  cl-matches : List Integer, List Integer, Integer -> Boolean
+  cl-matches (bytes) (option) (i) = if i == list-length option then True
+    else if list-length bytes <= i | list-at bytes i /= list-at option i then False
+    else cl-matches bytes option (i + 1)
+  cl-password : List Integer, Integer, List Integer -> Result (List Integer) Text
+  cl-password (bytes) (i) (out) = if i >= list-length bytes then Err "public launch password unterminated"
+    else let b = list-at bytes i
+    in if b == 10 then (if i == list-length bytes - 1 & list-length out >= 1 & list-length out <= 30 then Ok out else Err "public launch password length")
+    else if b < 32 | b > 126 then Err "public launch password holds a non-printable character"
+    else cl-password bytes (i + 1) (list-push out b)
+  cl-parse : List Integer -> Result CompositeLaunchMode Text
+  cl-parse (bytes) = if list-length bytes == 0 then Ok (CompositeLaunchMode { testing = False, dev = False, british = [] })
+    else if list-length bytes == list-length cl-testing & cl-matches bytes cl-testing 0 then Ok (CompositeLaunchMode { testing = True, dev = True, british = [] })
+    else if list-length bytes == list-length cl-dev & cl-matches bytes cl-dev 0 then Ok (CompositeLaunchMode { testing = False, dev = True, british = [] })
+    else if cl-matches bytes cl-public 0 then when cl-password bytes (list-length cl-public) []
+      is Err (e) -> Err e
+      is Ok (password) -> Ok (CompositeLaunchMode { testing = False, dev = False, british = password })
+    else Err "unrecognized composite launch option"
+
+ The codex-vm input-file ABI fills the 1MiB serial ring at0x500000 and
+ republishes its write/read counters at28704/28712 on the first UART poll.
+ Read only a complete bounded launch record; no console wait or network
+ packet can enable a mode. Hosted images supply no testing or dev record.
+
+  cl-copy-ring : Integer, Integer, Integer, List Integer -> List Integer
+  cl-copy-ring (read) (count) (i) (out) = if i == count then out
+    else cl-copy-ring read count (i + 1) (list-push out (peek-byte #500000 (bit-and (read + i) #FFFFF)))
+  cl-read : Integer -> [Device.Port] Result CompositeLaunchMode Text
+  cl-read (unused) = act
+    polled <- port-in-byte #3FD
+    let write = peek-qword 28704 0
+    in let read = peek-qword 28712 0
+    in if write == read then cl-parse []
+    else if write < read | read < 0 | write - read > cl-limit then Err "invalid composite launch input"
+    else let bytes = cl-copy-ring read (write - read) 0 (__list-with-capacity cl-limit)
+    in when cl-parse bytes
+      is Err (e) -> Err e
+      is Ok (mode) -> let wiped = cl-wipe read (write - read) 0
+        in let consumed = poke-qword 28712 0 write in Ok mode
+  end
+  cl-wipe : Integer, Integer, Integer -> Integer
+  cl-wipe (read) (count) (i) = if i == count then 0
+    else let cleared = poke-byte #500000 (bit-and (read + i) #FFFFF) 0 in cl-wipe read count (i + 1)

@@ -108,6 +108,13 @@ AgentGrid's display and a lane's own estimate are both wrong after a
 `/compact`. Write what you measured, and if you have not measured since your
 last write, measure before you write.
 
+**A Codex-backend (Astra) lane writes `status.json` anyway, with
+`"context": null` and `"backend": "Codex"`** (root, 2026-09-30):
+`measure-context.ps1` reads Claude transcripts only, so no number exists,
+and a lane that skips the write leaves the commander arbitrating the GPU
+blind. `state`, `task`, `claim` and `runs` (PID, log, whether it holds the
+GPU) stay mandatory at every change.
+
 ```json
 { "state": "Working", "task": "fixing lexer fuel cap", "claim": ["codex/compiler/Lexer"], "context": 62 }
 ```
@@ -531,6 +538,16 @@ serialises GATES on the same code; it says nothing about two lanes each
 booting guests at the same time, and an overcommit still kills guests with a
 plausible-looking codegen error (`OperatorsManual.md`, "The compile batch
 asks for 12 GB").
+
+**Commit is a third resource, and free RAM does not show it** (red,
+2026-09-30). Windows refuses an allocation when committed memory reaches the
+commit limit (RAM plus page file, 83 to 102 GB on this box), however much RAM
+is free: a headless WebGPU page run (the in-browser SD1.5 page) commits about
+20 GB, and one run beside a browser tab holding 11 GB and 18 MCP servers
+holding 3 GB each failed with VirtualAlloc refused and nvidia-smi out of
+memory at 22 GB of free RAM. Before a browser GPU run, read the headroom
+(`(Get-CimInstance Win32_OperatingSystem).FreeVirtualMemory / 1MB`, in GB)
+and launch above 25 GB.
 
 **GPU memory is a box resource the RAM bar does not see (root, 2026-09-29).**
 The RTX 4060 Ti holds 16 GB; a full SDXL run needs about 7 GB before

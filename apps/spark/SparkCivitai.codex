@@ -1,0 +1,321 @@
+Chapter: SparkCivitai
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+
+ CivitAI's REST API as the WPF original reads it
+ (D:\Projects\Spark\Spark\Services\CivitAiClient.cs): the request paths for
+ a LoRA search and a trigger-word lookup by file hash, and what each answer
+ parses to. System.Text.Json's nodes read a JSON null and a missing key alike,
+ and a value of the wrong type throws; the original catches every throw and
+ answers an empty result, so a search answers no rows at all when any row it
+ reads is malformed. Its scans stop at the first match, so a malformed entry
+ after the match is never read. Its List.Sort is an insertion sort up to 16
+ rows (stable) and an introsort above; this sort is stable.
+
+Section: Request paths
+
+  civ-unreserved : Integer -> Boolean
+  civ-unreserved (b) = (b >= 65 & b <= 90) | (b >= 97 & b <= 122) | (b >= 48 & b <= 57) | b == 45 | b == 46 | b == 95 | b == 126
+
+  civ-escape-loop : List Integer, Integer, Text -> Text
+  civ-escape-loop (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else let b = list-at bs i
+    in civ-escape-loop bs (i + 1) (acc & (if civ-unreserved b then unicode-bytes-to-text [b] else "%" & substring "0123456789ABCDEF" (b / 16) 1 & substring "0123456789ABCDEF" (b - b / 16 * 16) 1))
+
+ Uri.EscapeDataString: UTF-8, every octet but RFC 3986's unreserved set
+ percent-encoded in upper-case hex.
+
+  civitai-escape : Text -> Text
+  civitai-escape (t) = civ-escape-loop (text-to-utf8-bytes t) 0 ""
+
+  civ-blank : Text, Integer -> Boolean
+  civ-blank (t) (i) =
+    if i >= text-length t then True
+    else if substring t i 1 == " " | substring t i 1 == "\n" then civ-blank t (i + 1)
+    else False
+
+  civitai-search-path : Text, Boolean -> Text
+  civitai-search-path (query) (by-downloads) =
+    let base = "api/v1/models?types=LORA&sort=" & civitai-escape (if by-downloads then "Most Downloaded" else "Highest Rated") & "&limit=30&nsfw=false"
+    in if civ-blank query 0 then base else base & "&query=" & civitai-escape query
+
+  civitai-hash-path : Text -> Text
+  civitai-hash-path (hash) = "api/v1/model-versions/by-hash/" & hash
+
+Section: Reading nodes
+
+ None is a throw. Just JsonNull is a missing key or a null.
+
+  civ-at : JsonValue, Text -> Maybe JsonValue
+  civ-at (v) (key) = when v
+    is JsonNull -> Just JsonNull
+    is JsonObject (ps) -> (when json-get v key
+      is Just (x) -> Just x
+      is None -> Just JsonNull)
+    is otherwise -> None
+
+  civ-str : JsonValue, Text -> Maybe Text
+  civ-str (v) (dflt) = when v
+    is JsonNull -> Just dflt
+    is JsonStr (s) -> Just s
+    is otherwise -> None
+
+ GetValue<int>: a JSON integer inside Int32.
+
+  civ-int : JsonValue -> Maybe Integer
+  civ-int (v) = when v
+    is JsonNull -> Just 0
+    is JsonInt (n) -> if n > 2147483647 | n < 0 - 2147483648 then None else Just n
+    is otherwise -> None
+
+  civ-pow10 : Integer, Integer -> Integer
+  civ-pow10 (k) (acc) = if k <= 0 then acc else civ-pow10 (k - 1) (acc * 10)
+
+ Math.Round(rating, 1) to even, in tenths.
+
+  civ-tenths : JsonNumber -> Integer
+  civ-tenths (n) =
+    if n.jn-decimals <= 1 then n.jn-mantissa * civ-pow10 (1 - n.jn-decimals) 1
+    else let d = civ-pow10 (n.jn-decimals - 1) 1
+    in let neg = n.jn-mantissa < 0
+    in let m = if neg then 0 - n.jn-mantissa else n.jn-mantissa
+    in let q = m / d
+    in let r = m - q * d
+    in let up = 2 * r > d | (2 * r == d & q - q / 2 * 2 == 1)
+    in let t = if up then q + 1 else q
+    in if neg then 0 - t else t
+
+  civ-rating : JsonValue -> Maybe Integer
+  civ-rating (v) = when v
+    is JsonNull -> Just 0
+    is JsonInt (n) -> Just (n * 10)
+    is JsonNum (n) -> Just (civ-tenths n)
+    is otherwise -> None
+
+  civ-arr : JsonValue -> Maybe (List JsonValue)
+  civ-arr (v) = when v
+    is JsonNull -> Just []
+    is JsonArray (xs) -> Just xs
+    is otherwise -> None
+
+ Joins the strings of an array with ", ", dropping empty ones, at most max.
+
+  civ-join : List JsonValue, Integer, Integer, Integer, Text -> Maybe Text
+  civ-join (xs) (i) (taken) (max) (acc) =
+    if i >= list-length xs | taken >= max then Just acc
+    else when civ-str (list-at xs i) ""
+      is None -> None
+      is Just (s) -> if text-length s == 0 then civ-join xs (i + 1) taken max acc
+        else civ-join xs (i + 1) (taken + 1) max (if taken == 0 then s else acc & ", " & s)
+
+Section: Trigger words by hash
+
+  civ-words-of : JsonValue -> Maybe Text
+  civ-words-of (root) = when civ-at root "trainedWords"
+    is None -> None
+    is Just (tw) -> (when civ-arr tw
+      is None -> None
+      is Just (xs) -> civ-join xs 0 0 1000000 "")
+
+  civitai-trigger-words : Text -> Text
+  civitai-trigger-words (json) = when json-parse json
+    is None -> ""
+    is Just (root) -> (when civ-words-of root
+      is Just (s) -> s
+      is None -> "")
+
+Section: A LoRA search
+
+  LoraResult = record {
+    lr-name : Text,
+    lr-base : Text,
+    lr-downloads : Integer,
+    lr-rating-tenths : Integer,
+    lr-tags : Text,
+    lr-trigger : Text,
+    lr-thumb : Text,
+    lr-download : Text,
+    lr-file : Text,
+    lr-sdxl : Boolean,
+    lr-page : Text
+  }
+
+ A parsed row, a skipped row (no versions), or a throw.
+
+  CivRow =
+  | CivThrow
+  | CivSkip
+  | CivOk (LoraResult)
+
+  civ-upper : Text -> Text
+  civ-upper (t) = text-to-upper t
+
+  civ-contains-ci : Text, Text -> Boolean
+  civ-contains-ci (t) (s) = text-contains (civ-upper t) (civ-upper s)
+
+  civ-ends-ci : Text, Text -> Boolean
+  civ-ends-ci (t) (s) = text-length t >= text-length s & civ-upper (substring t (text-length t - text-length s) (text-length s)) == civ-upper s
+
+ The first version whose baseModel contains SDXL; Just JsonNull when none.
+
+  civ-sdxl-version : List JsonValue, Integer -> Maybe JsonValue
+  civ-sdxl-version (vs) (i) =
+    if i >= list-length vs then Just JsonNull
+    else let v = list-at vs i
+    in when civ-at v "baseModel"
+      is None -> None
+      is Just (b) -> (when civ-str b ""
+        is None -> None
+        is Just (s) -> if civ-contains-ci s "SDXL" then Just v else civ-sdxl-version vs (i + 1))
+
+  CivFile = record {
+    cf-url : Text,
+    cf-name : Text
+  }
+
+  civ-file-field : JsonValue, Text -> Maybe Text
+  civ-file-field (f) (key) = when civ-at f key
+    is None -> None
+    is Just (x) -> civ-str x ""
+
+  civ-safetensors : List JsonValue, Integer -> Maybe (Maybe CivFile)
+  civ-safetensors (fs) (i) =
+    if i >= list-length fs then Just None
+    else let f = list-at fs i
+    in when civ-file-field f "name"
+      is None -> None
+      is Just (n) -> if civ-ends-ci n ".safetensors" then (when civ-file-field f "downloadUrl"
+          is None -> None
+          is Just (u) -> Just (Just (CivFile { cf-url = u, cf-name = n })))
+        else civ-safetensors fs (i + 1)
+
+  civ-files : List JsonValue -> Maybe CivFile
+  civ-files (fs) = when civ-safetensors fs 0
+    is None -> None
+    is Just (hit) -> (when hit
+      is Just (cf) -> Just cf
+      is None -> if list-length fs == 0 then Just (CivFile { cf-url = "", cf-name = "" })
+        else (when civ-file-field (list-at fs 0) "downloadUrl"
+          is None -> None
+          is Just (u) -> (when civ-file-field (list-at fs 0) "name"
+            is None -> None
+            is Just (n) -> Just (CivFile { cf-url = u, cf-name = n }))))
+
+  civ-get-str : JsonValue, Text, Text -> Maybe Text
+  civ-get-str (v) (key) (dflt) = when civ-at v key
+    is None -> None
+    is Just (x) -> civ-str x dflt
+
+  civ-get-int : JsonValue, Text -> Maybe Integer
+  civ-get-int (v) (key) = when civ-at v key
+    is None -> None
+    is Just (x) -> civ-int x
+
+  civ-get-arr : JsonValue, Text -> Maybe (List JsonValue)
+  civ-get-arr (v) (key) = when civ-at v key
+    is None -> None
+    is Just (x) -> civ-arr x
+
+  civ-thumb : JsonValue -> Maybe Text
+  civ-thumb (best) = when civ-get-arr best "images"
+    is None -> None
+    is Just (ims) -> if list-length ims == 0 then Just "" else civ-get-str (list-at ims 0) "url" ""
+
+  civ-version-part : JsonValue, Integer, Text, Integer, Integer, Text -> CivRow
+  civ-version-part (best) (id) (name) (downloads) (rating) (tags) =
+    when civ-get-str best "baseModel" "Unknown"
+      is None -> CivThrow
+      is Just (base) -> (when civ-get-int best "id"
+        is None -> CivThrow
+        is Just (vid) -> (when civ-get-arr best "trainedWords"
+          is None -> CivThrow
+          is Just (tw) -> (when civ-join tw 0 0 1000000 ""
+            is None -> CivThrow
+            is Just (trigger) -> (when civ-thumb best
+              is None -> CivThrow
+              is Just (thumb) -> (when civ-get-arr best "files"
+                is None -> CivThrow
+                is Just (fs) -> (when civ-files fs
+                  is None -> CivThrow
+                  is Just (cf) -> CivOk (LoraResult { lr-name = name, lr-base = base, lr-downloads = downloads, lr-rating-tenths = rating, lr-tags = tags, lr-trigger = trigger, lr-thumb = thumb, lr-download = cf.cf-url, lr-file = cf.cf-name, lr-sdxl = civ-contains-ci base "SDXL", lr-page = if id > 0 then "https://civitai.com/models/" & show id & "?modelVersionId=" & show vid else "" })))))))
+
+  civ-versions-part : JsonValue, Integer, Text, Integer, Integer, Text -> CivRow
+  civ-versions-part (item) (id) (name) (downloads) (rating) (tags) =
+    when civ-get-arr item "modelVersions"
+      is None -> CivThrow
+      is Just (vs) -> if list-length vs == 0 then CivSkip
+        else (when civ-sdxl-version vs 0
+          is None -> CivThrow
+          is Just (hit) -> civ-version-part (if civ-null hit then list-at vs 0 else hit) id name downloads rating tags)
+
+  civ-null : JsonValue -> Boolean
+  civ-null (v) = when v
+    is JsonNull -> True
+    is otherwise -> False
+
+  civ-stats : JsonValue -> Maybe JsonValue
+  civ-stats (item) = civ-at item "stats"
+
+  civ-row : JsonValue -> CivRow
+  civ-row (item) =
+    when civ-get-int item "id"
+      is None -> CivThrow
+      is Just (id) -> (when civ-get-str item "name" ""
+        is None -> CivThrow
+        is Just (name) -> (when civ-stats item
+          is None -> CivThrow
+          is Just (st) -> (when civ-get-int st "downloadCount"
+            is None -> CivThrow
+            is Just (downloads) -> (when civ-at st "rating"
+              is None -> CivThrow
+              is Just (rv) -> (when civ-rating rv
+                is None -> CivThrow
+                is Just (rating) -> (when civ-get-arr item "tags"
+                  is None -> CivThrow
+                  is Just (ts) -> (when civ-join ts 0 0 5 ""
+                    is None -> CivThrow
+                    is Just (tags) -> civ-versions-part item id name downloads rating tags)))))))
+
+  civ-rows : List JsonValue, Integer, List LoraResult -> Maybe (List LoraResult)
+  civ-rows (items) (i) (acc) =
+    if i >= list-length items then Just acc
+    else let item = list-at items i
+    in if civ-null item then civ-rows items (i + 1) acc
+    else when civ-row item
+      is CivThrow -> None
+      is CivSkip -> civ-rows items (i + 1) acc
+      is CivOk (r) -> civ-rows items (i + 1) (list-snoc acc r)
+
+ SDXL rows first, then more downloads first.
+
+  civ-before : LoraResult, LoraResult -> Boolean
+  civ-before (a) (b) = (a.lr-sdxl & b.lr-sdxl == False) | (a.lr-sdxl == b.lr-sdxl & a.lr-downloads > b.lr-downloads)
+
+  civ-insert : List LoraResult, LoraResult, Integer, List LoraResult -> List LoraResult
+  civ-insert (xs) (r) (i) (acc) =
+    if i >= list-length xs then list-snoc acc r
+    else if civ-before r (list-at xs i) then civ-append (list-snoc acc r) xs i
+    else civ-insert xs r (i + 1) (list-snoc acc (list-at xs i))
+
+  civ-append : List LoraResult, List LoraResult, Integer -> List LoraResult
+  civ-append (acc) (xs) (i) = if i >= list-length xs then acc else civ-append (list-snoc acc (list-at xs i)) xs (i + 1)
+
+  civ-sort : List LoraResult, Integer, List LoraResult -> List LoraResult
+  civ-sort (xs) (i) (acc) = if i >= list-length xs then acc else civ-sort xs (i + 1) (civ-insert acc (list-at xs i) 0 [])
+
+  civ-items : JsonValue -> Maybe (List JsonValue)
+  civ-items (root) = when civ-at root "items"
+    is None -> None
+    is Just (x) -> civ-arr x
+
+  civitai-search-results : Text -> List LoraResult
+  civitai-search-results (json) = when json-parse json
+    is None -> []
+    is Just (root) -> (when civ-items root
+      is None -> []
+      is Just (items) -> (when civ-rows items 0 []
+        is None -> []
+        is Just (rows) -> civ-sort rows 0 []))

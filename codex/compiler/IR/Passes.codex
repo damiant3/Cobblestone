@@ -76,15 +76,26 @@ Section: Pass Registry
 
   run-ir-pass : Text, IRChapter -> IRPassResult
   run-ir-pass (name) (ch) =
-   if name == "fold-constants" then IRPassResult { chapter = fold-constants-in-chapter ch, violations = [], infos = [] }
-   else if name == "inline-leaf-calls" then IRPassResult { chapter = inline-leaf-calls-in-chapter ch, violations = [], infos = [] }
-   else if name == "inline-single-caller" then IRPassResult { chapter = inline-single-caller-in-chapter ch, violations = [], infos = [] }
-   else if name == "inline-cost-based" then IRPassResult { chapter = inline-cost-based-in-chapter ch, violations = [], infos = [] }
-   else if name == "ir-check" then IRPassResult { chapter = ch, violations = ir-check ch, infos = [] }
-   else if name == "occ-report" then IRPassResult { chapter = ch, violations = [], infos = occ-report-chapter ch }
-   else if name == "simplify" then let o = simplify-run ch in IRPassResult { chapter = o.chapter, violations = [], infos = o.infos }
-   else if name == "lir-dump" then IRPassResult { chapter = ch, violations = [], infos = [] }
-   else IRPassResult { chapter = ch, violations = [], infos = [] }
+    if name == "fold-constants" then
+      IRPassResult { chapter = fold-constants-in-chapter ch, violations = [], infos = [] }
+    else if name == "inline-leaf-calls" then
+      IRPassResult { chapter = inline-leaf-calls-in-chapter ch, violations = [], infos = [] }
+    else if name == "inline-single-caller" then
+      IRPassResult { chapter = inline-single-caller-in-chapter ch, violations = [], infos = [] }
+    else if name == "inline-cost-based" then
+      IRPassResult { chapter = inline-cost-based-in-chapter ch, violations = [], infos = [] }
+    else if name == "ir-check" then
+      IRPassResult { chapter = ch, violations = ir-check ch, infos = [] }
+    else if name == "occ-report" then
+      IRPassResult { chapter = ch, violations = [], infos = occ-report-chapter ch }
+    else if name == "simplify" then
+      let o = simplify-run ch in IRPassResult {
+        chapter = o.chapter,
+        violations = [],
+        infos = o.infos
+      }
+    else if name == "lir-dump" then IRPassResult { chapter = ch, violations = [], infos = [] }
+    else IRPassResult { chapter = ch, violations = [], infos = [] }
 
 Section: Pipeline
 
@@ -107,8 +118,9 @@ Section: Pipeline
 
   pipeline-names-text : List Text, Integer, Integer, Text -> Text
   pipeline-names-text (names) (i) (n) (acc) =
-   if i >= n then acc
-   else pipeline-names-text names (i + 1) n (if acc == "" then list-at names i else acc & "," & list-at names i)
+    if i >= n then acc
+    else
+      pipeline-names-text names (i + 1) n (if acc == "" then list-at names i else acc & "," & list-at names i)
 
  Measured 2026-08-04 on the compiler's own source (2,999,659 bytes, CDX path):
  `fold-constants` +10,052,336, `inline-leaf-calls` +685,944,
@@ -120,29 +132,32 @@ Section: Pipeline
 
   run-ir-pipeline : List Text, IRChapter, Boolean -> IRPassResult
   run-ir-pipeline (names) (ch) (trace) =
-   let n = list-length names
-   in let line = "PIPELINE " & (if n == 0 then "(empty)" else pipeline-names-text names 0 n "")
-   in run-ir-pipeline-loop names 0 n ch [] [line] trace
+    let n = list-length names
+    in let line = "PIPELINE " & (if n == 0 then "(empty)" else pipeline-names-text names 0 n "")
+    in run-ir-pipeline-loop names 0 n ch [] [line] trace
 
   pass-frontier-mark : Text, Integer, Integer -> Text
   pass-frontier-mark (name) (before) (after) =
-   "PASS " & name & " frontier +" & integer-to-text (after - before) & " abs " & integer-to-text after
+    "PASS " & name & " frontier +" & integer-to-text (after - before) & " abs " & integer-to-text after
 
   run-ir-pipeline-loop : List Text, Integer, Integer, IRChapter, List Text, List Text, Boolean -> IRPassResult
   run-ir-pipeline-loop (names) (i) (len) (ch) (vs) (infos) (trace) =
-   if i >= len then IRPassResult { chapter = ch, violations = vs, infos = infos }
-   else let h-before = __heap-save
-   in let r = run-ir-pass (list-at names i) ch
-   in let h-after = __heap-save
-   in let vs2 = tag-pass-violations vs i (r.violations) 0 (list-length (r.violations))
-   in let infos2 = tag-pass-violations infos i (r.infos) 0 (list-length (r.infos))
-   in let infos3 = if trace then list-push infos2 (pass-frontier-mark (list-at names i) h-before h-after) else infos2
-   in run-ir-pipeline-loop names (i + 1) len (r.chapter) vs2 infos3 trace
+    if i >= len then IRPassResult { chapter = ch, violations = vs, infos = infos }
+    else let h-before = __heap-save
+    in let r = run-ir-pass (list-at names i) ch
+    in let h-after = __heap-save
+    in let vs2 = tag-pass-violations vs i (r.violations) 0 (list-length (r.violations))
+    in let infos2 = tag-pass-violations infos i (r.infos) 0 (list-length (r.infos))
+    in let infos3 = if trace then
+      list-push infos2 (pass-frontier-mark (list-at names i) h-before h-after)
+    else infos2
+    in run-ir-pipeline-loop names (i + 1) len (r.chapter) vs2 infos3 trace
 
   tag-pass-violations : List Text, Integer, List Text, Integer, Integer -> List Text
   tag-pass-violations (acc) (slot) (vs) (i) (len) =
-   if i >= len then acc
-   else tag-pass-violations (list-push acc ("pass " & integer-to-text slot & ": " & (list-at vs i))) slot vs (i + 1) len
+    if i >= len then acc
+    else
+      tag-pass-violations (list-push acc ("pass " & integer-to-text slot & ": " & (list-at vs i))) slot vs (i + 1) len
 
 Section: Configuration
 

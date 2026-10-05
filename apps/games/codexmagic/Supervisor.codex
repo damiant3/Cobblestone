@@ -6,33 +6,513 @@ Chapter: Supervisor
   cites CodexMagic chapter Combat
   cites CodexMagic chapter Action
   cites CodexMagic chapter General
+  cites CodexMagic chapter Payment
+  cites CodexMagic chapter Stack
 
  We say:
 
 Section: Posture
 
+  settle-loyalty : GameState, Posture, Posture -> GameState
+  settle-loyalty (given) (pa) (pb) =
+    if given.game-over | disruption-pending given | game-budget-stopped given then given
+    else if has-loyalty-gain (get-general given 0) == False & has-loyalty-gain (get-general given 1) == False & loyalty-pending given == False then given
+    else let gs = check-state-based-actions given
+    in let state = gs.loyalty-state
+    in if gs.game-over | game-budget-stopped gs then gs
+    else if loyalty-pending gs == False then (if list-length (state.pending) == 0 then gs else game-with-loyalty gs (LoyaltyState { seen-a = state.seen-a, seen-b = state.seen-b, pending = [], cursor = 0 }))
+    else if (gs.automatic-work).count >= automatic-action-limit then game-work-stop gs 1 ((gs.automatic-work).count) ((gs.automatic-work).last)
+    else let event = list-at (state.pending) (state.cursor)
+    in let orders = if event.player == 0 then pa else pb
+    in let advanced = game-with-loyalty gs (LoyaltyState { seen-a = state.seen-a, seen-b = state.seen-b, pending = state.pending, cursor = state.cursor + 1 })
+    in let counted = game-work-action advanced ("LoyaltyGain player " & show (event.player) & " ability " & show (event.index))
+    in let targets = loyalty-effect-targets counted (event.player) (event.effect) (orders.primary-targets)
+    in let eff = event.effect
+    in let applied = if effect-needs-target eff & list-length targets == 0 then counted else (when eff
+      is BoostPTD (pw) (to) (de) -> entry-creature-grant counted (list-at targets 0) eff
+      is GainKeyword (kw) -> entry-creature-grant counted (list-at targets 0) eff
+      is otherwise -> apply-effect-direct counted eff (event.player) targets)
+    in settle-loyalty applied pa pb
+
+  ai-stage-upkeep : Integer = 0
+  ai-stage-draw : Integer = 1
+  ai-stage-main-1 : Integer = 2
+  ai-stage-attackers : Integer = 3
+  ai-stage-blockers : Integer = 4
+  ai-stage-damage : Integer = 5
+  ai-stage-main-2 : Integer = 6
+  ai-stage-end : Integer = 7
+  ai-stage-done : Integer = 8
+
+  ai-stage-name : Integer -> Text
+  ai-stage-name (n) = if n == ai-stage-upkeep then "Upkeep" else if n == ai-stage-draw then "Draw" else if n == ai-stage-main-1 then "Pre-combat main" else if n == ai-stage-attackers then "Declare attackers" else if n == ai-stage-blockers then "Declare blockers" else if n == ai-stage-damage then "Combat damage" else if n == ai-stage-main-2 then "Post-combat main" else if n == ai-stage-end then "End step" else "Turn complete"
+
+  TargetOrder =
+   | PriorityGeneral
+   | PriorityPermanent (Integer)
+   | PriorityType (CardType)
+   | PriorityThreat (Integer)
+
   Posture = record {
+    skill : Integer,
     stance : Stance,
-    phase-freeze-combat : Boolean,
-    block-policy-auto : Boolean
+    primary-targets : List TargetOrder,
+    phase-freezes : List Integer,
+    block-policy : BlockPolicy,
+    spell-policy : SpellPolicy,
+    preserved-stones : Integer,
+    manual-payment : Boolean,
+    commitment-pause : Boolean,
+    target-pause : Boolean,
+    combat-pause : Boolean,
+    sacrifice-pause : Boolean,
+    disruption-pause : Boolean
   }
 
+  SpellPolicy =
+   | PlayOnCurve
+   | HoldCounters
+   | ConserveMana (Integer)
+   | ManualSpells
+
+  BlockPolicy =
+   | AutoBlock
+   | ManualBlock
+   | NoBlock
+   | ProtectLife (Integer)
+
   posture-default : Posture
-  posture-default = Posture { stance = Balanced, phase-freeze-combat = False, block-policy-auto = True }
+  posture-default = Posture { skill = 2, stance = Balanced, primary-targets = [], phase-freezes = [], block-policy = AutoBlock, spell-policy = PlayOnCurve, preserved-stones = 0, manual-payment = False, commitment-pause = True, target-pause = False, combat-pause = False, sacrifice-pause = True, disruption-pause = False }
+
+  posture-unattended : Posture
+  posture-unattended = __record-set (__record-set posture-default "commitment-pause" False) "sacrifice-pause" False
+
+  skill-name : Integer -> Text
+  skill-name (skill) = if skill == 0 then "Beginner" else if skill == 1 then "Intermediate" else if skill == 3 then "Master" else "Expert"
+
+  posture-at-skill : Posture, Integer -> Posture
+  posture-at-skill (p) (skill) = Posture { skill = skill, stance = p.stance, primary-targets = p.primary-targets, phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause }
+
+  posture-freezes : Posture, Integer -> Boolean
+  posture-freezes (p) (stage) = int-list-has (p.phase-freezes) stage
+
+  set-phase-freeze : List Integer, Integer, Boolean -> List Integer
+  set-phase-freeze (phases) (stage) (enabled) =
+    if enabled then (if int-list-has phases stage then phases else phases & [stage])
+    else gs-list-remove phases stage
+
+Section: General Abilities
+
+  loyalty-effect-supported : Effect -> Boolean
+  loyalty-effect-supported (eff) = when eff
+    is BoostPTD (pw) (to) (de) -> True
+    is GainKeyword (kw) -> True
+    is ReturnToHand -> True
+    is ExileTarget -> True
+    is DiscardCards (n) -> True
+    is DealDamage (n) -> True
+    is GainLife (n) -> True
+    is LoseLife (n) -> True
+    is DrawCards (n) -> True
+    is DestroyTarget -> True
+    is DestroyEquipment -> True
+    is otherwise -> False
+
+  loyalty-effect-label : Effect -> Text
+  loyalty-effect-label (eff) = when eff
+    is BoostPTD (pw) (to) (de) -> "Boost creature " & show pw & "/" & show to & "/" & show de
+    is GainKeyword (kw) -> "Grant " & keyword-name kw
+    is ReturnToHand -> "Return a permanent to hand"
+    is ExileTarget -> "Exile a permanent"
+    is DiscardCards (n) -> "Opponent discards " & show n & " cards"
+    is DealDamage (n) -> "Deal " & show n & " damage"
+    is GainLife (n) -> "Gain " & show n & " life"
+    is LoseLife (n) -> "Opponent loses " & show n & " life"
+    is DrawCards (n) -> "Draw " & show n & " cards"
+    is DestroyTarget -> "Destroy a creature"
+    is DestroyEquipment -> "Destroy equipment"
+    is otherwise -> "Unavailable ability"
+
+  loyalty-effect-targets : GameState, Integer, Effect, List TargetOrder -> List Integer
+  loyalty-effect-targets (gs) (player) (eff) (orders) =
+    if effect-needs-target eff == False then []
+    else let mark = __heap-save
+    in let ability = make-cantrip (0 - 1) "" light-cost-zero [StaticAbility eff]
+    in let targets = ai-pick-targets-ordered gs ability player orders
+    in let chosen = if list-length targets == 0 then 0 - 3 else list-at targets 0
+    in let restored = __heap-restore mark
+    in if chosen == (0 - 3) then [] else [chosen]
+
+  loyalty-ability-ready : GameState, Integer, Integer, List TargetOrder -> Boolean
+  loyalty-ability-ready (gs) (player) (index) (orders) =
+    if gs.game-over | gs.active-player /= player | (gs.phase /= phase-main-1 & gs.phase /= phase-main-2) then False
+    else if ((get-player gs player).general).loyalty-turn == gs.turn-number then False
+    else let abs = (get-general gs player).abilities
+    in if index < 0 | index >= list-length abs then False
+    else when list-at abs index
+      is LoyaltyCostAbility (cost) (eff) ->
+        (if cost < 0 | can-pay-loyalty gs player cost == False | loyalty-effect-supported eff == False then False
+         else if effect-needs-target eff == False then True
+         else let mark = __heap-save
+         in let targets = loyalty-effect-targets gs player eff orders
+         in let ready = list-length targets > 0
+         in let restored = __heap-restore mark
+         in ready)
+      is otherwise -> False
+
+  activate-loyalty-ability : GameState, Integer, Integer, List TargetOrder -> GameState
+  activate-loyalty-ability (gs) (player) (index) (orders) = activate-loyalty-ability-mode gs player index orders True
+
+  activate-loyalty-ability-mode : GameState, Integer, Integer, List TargetOrder, Boolean -> GameState
+  activate-loyalty-ability-mode (gs) (player) (index) (orders) (manual) =
+    if loyalty-ability-ready gs player index orders == False then gs
+    else when list-at ((get-general gs player).abilities) index
+      is LoyaltyCostAbility (cost) (eff) ->
+        (let targets = loyalty-effect-targets gs player eff orders
+         in let p = get-player gs player
+         in let marked = set-player gs player (PlayerState { general = general-use-loyalty (p.general) (gs.turn-number), prismatic = p.prismatic, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used })
+         in let cleared = if (list-at (marked.queued-loyalty) player).source >= 0 then game-set-queued-loyalty marked player queued-ability-none else marked
+         in let gen = get-general cleared player
+         in let pending = PendingActivation { loyalty = True, source = gen.id, index = index, effect = eff, label = gen.name & ": " & loyalty-effect-label eff }
+         in announce-paid-activation cleared player pending targets manual)
+      is otherwise -> gs
+
+  useful-loyalty-effect : GameState, Integer, Effect -> Boolean
+  useful-loyalty-effect (gs) (player) (eff) = when eff
+    is BoostPTD (pw) (to) (de) -> gs.phase /= phase-main-2 & pw >= 0 & to >= 0 & de >= 0 & (pw > 0 | to > 0 | de > 0)
+    is GainKeyword (kw) -> gs.phase /= phase-main-2 & kw /= Stalwart & kw /= Flash
+    is ReturnToHand -> True
+    is ExileTarget -> True
+    is DiscardCards (n) -> n > 0 & list-length ((get-player gs (if player == 0 then 1 else 0)).hand) > 0
+    is DealDamage (n) -> n > 0
+    is GainLife (n) -> n > 0
+    is LoseLife (n) -> n > 0
+    is DrawCards (n) -> n > 0 & list-length ((get-player gs player).library) > n
+    is DestroyTarget -> True
+    is DestroyEquipment -> True
+    is otherwise -> False
+
+  ai-loyalty-index : GameState, Integer, List TargetOrder, Integer -> Integer
+  ai-loyalty-index (gs) (player) (orders) (i) =
+    let abs = (get-general gs player).abilities
+    in if i >= list-length abs then 0 - 1
+    else let useful = when list-at abs i is LoyaltyCostAbility (cost) (eff) -> useful-loyalty-effect gs player eff is otherwise -> False
+    in if useful & loyalty-ability-ready gs player i orders then i else ai-loyalty-index gs player orders (i + 1)
+
+  ai-activate-loyalty : GameState, Integer, List TargetOrder -> GameState
+  ai-activate-loyalty (gs) (player) (orders) =
+    if (list-at (gs.queued-loyalty) player).source >= 0 then gs
+    else let index = ai-loyalty-index gs player orders 0
+    in if index < 0 then gs else activate-loyalty-ability-mode gs player index orders False
+
+Section: Permanent Abilities
+
+  AbilityUse = record { source : Integer, ability : Integer }
+
+  ability-used : List AbilityUse, Integer, Integer -> Boolean
+  ability-used (used) (source) (index) =
+    let slot = ability-use-slot used source index 0 (list-length used)
+    in if slot >= list-length used then False else (list-at used slot).source == source & (list-at used slot).ability == index
+
+  ability-use-slot : List AbilityUse, Integer, Integer, Integer, Integer -> Integer
+  ability-use-slot (used) (source) (index) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = lo + (hi - lo) / 2
+    in let u = list-at used mid
+    in if u.source < source | (u.source == source & u.ability < index) then ability-use-slot used source index (mid + 1) hi else ability-use-slot used source index lo mid
+
+  record-ability-use : List AbilityUse, AbilityUse -> List AbilityUse
+  record-ability-use (used) (pick) =
+    let slot = ability-use-slot used (pick.source) (pick.ability) 0 (list-length used)
+    in list-insert-at (for u in used -> u) slot pick
+
+  automatic-ability-ready : GameState, Posture, Integer, Integer, Integer -> Boolean
+  automatic-ability-ready (gs) (orders) (source) (index) (budget) =
+    let player = gs.active-player
+    in if permanent-ability-ready gs player source index (orders.primary-targets) True == False then False
+    else let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (p.template-id)).abilities) index
+      is ActivatedAbility (cost) (eff) -> cost.rays <= budget & useful-loyalty-effect gs player eff & (cost.sacrifice-self == False | orders.sacrifice-pause)
+      is otherwise -> False
+
+  next-automatic-ability : GameState, Posture, List AbilityUse, Integer, Integer, Integer -> AbilityUse
+  next-automatic-ability (gs) (orders) (used) (budget) (i) (j) =
+    if i >= list-length (gs.battlefield) then AbilityUse { source = 0 - 1, ability = 0 - 1 }
+    else let p = list-at (gs.battlefield) i
+    in let abs = (get-template gs (p.template-id)).abilities
+    in if p.controller /= gs.active-player | j >= list-length abs then next-automatic-ability gs orders used budget (i + 1) 0
+    else if queued-ability-reserved gs (gs.active-player) (p.id) j == False & ability-used used (p.id) j == False & automatic-ability-ready gs orders (p.id) j budget then AbilityUse { source = p.id, ability = j }
+    else next-automatic-ability gs orders used budget i (j + 1)
+
+  activation-cost-ready : GameState, Integer, Permanent, ActivationCost, Boolean -> Boolean
+  activation-cost-ready (gs) (player) (perm) (cost) (automatic) =
+    let p = get-player gs player
+    in let creature = (get-template gs (perm.template-id)).card-type == Creature
+    in cost.rays >= 0 & cost.pay-life >= 0 & cost.rays <= prismatic-available-rays (p.prismatic)
+      & (p.general).life > 0 & cost.pay-life <= (p.general).life & (automatic == False | cost.pay-life < (p.general).life)
+      & (cost.tap-self == False | (perm.tapped == False & (creature == False | perm.summoning-sick == False | has-keyword (perm.keywords) Alacrity)))
+
+  permanent-ability-ready : GameState, Integer, Integer, Integer, List TargetOrder, Boolean -> Boolean
+  permanent-ability-ready (gs) (player) (source) (index) (orders) (automatic) =
+    let mark = __heap-save
+    in let ready = permanent-ability-check gs player source index orders automatic
+    in let restored = __heap-restore mark
+    in ready
+
+  permanent-ability-check : GameState, Integer, Integer, Integer, List TargetOrder, Boolean -> Boolean
+  permanent-ability-check (gs) (player) (source) (index) (orders) (automatic) =
+    if gs.game-over | player /= gs.active-player | (gs.phase /= phase-main-1 & gs.phase /= phase-main-2) then False
+    else ordinary-ability-check gs player source index orders automatic
+
+  ordinary-ability-check : GameState, Integer, Integer, Integer, List TargetOrder, Boolean -> Boolean
+  ordinary-ability-check (gs) (player) (source) (index) (orders) (automatic) =
+    if gs.game-over | source < 0 | list-contains (gs.battlefield) (\p -> p.id == source & p.controller == player) == False then False
+    else let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in if t.card-type == General | index < 0 | index >= list-length (t.abilities) then False
+    else when list-at (t.abilities) index
+      is ActivatedAbility (cost) (eff) -> activation-cost-ready gs player p cost automatic & loyalty-effect-supported eff & (effect-needs-target eff == False | list-length (loyalty-effect-targets gs player eff orders) > 0)
+      is otherwise -> False
+
+  activate-permanent-ability : GameState, Integer, Integer, Integer, List TargetOrder, Boolean -> GameState
+  activate-permanent-ability (gs) (player) (source) (index) (orders) (automatic) =
+    if permanent-ability-ready gs player source index orders automatic == False then gs
+    else let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (p.template-id)).abilities) index
+      is ActivatedAbility (cost) (eff) ->
+        (let targets = loyalty-effect-targets gs player eff orders
+         in let pending = PendingActivation { loyalty = False, source = source, index = index, effect = eff, label = (get-template gs (p.template-id)).name & " #" & show source & ": " & loyalty-effect-label eff }
+         in let alive = pay-ordinary-ability gs player source cost
+         in if alive.game-over then alive else announce-paid-activation alive player pending targets (automatic == False))
+      is otherwise -> gs
+
+  pay-ordinary-ability : GameState, Integer, Integer, ActivationCost -> GameState
+  pay-ordinary-ability (gs) (player) (source) (cost) =
+    let paid = player-spend-rays (get-player gs player) (cost.rays)
+    in let payer = PlayerState { general = general-gain-life (paid.general) (0 - cost.pay-life), prismatic = paid.prismatic, library = paid.library, hand = paid.hand, graveyard = paid.graveyard, exile = paid.exile, gem-drop-used = paid.gem-drop-used }
+    in let rays = set-player gs player payer
+    in let tapped = if cost.tap-self then tap-permanent-by-id rays source else rays
+    in check-state-based-actions (if cost.sacrifice-self then destroy-permanent tapped source else tapped)
+
+  activation-cost-label : ActivationCost -> Text
+  activation-cost-label (cost) = show (cost.rays) & (if cost.rays == 1 then " ray" else " rays") & (if cost.tap-self then ", tap" else "") & (if cost.sacrifice-self then ", sacrifice this permanent" else "") & (if cost.pay-life > 0 then ", pay " & show (cost.pay-life) & " life" else "")
+
+  activation-sacrifices : GameState, Integer, Integer -> Boolean
+  activation-sacrifices (gs) (source) (index) =
+    let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (p.template-id)).abilities) index is ActivatedAbility (cost) (eff) -> cost.sacrifice-self is otherwise -> False
+
+  activation-effect : GameState, Integer, Integer -> Effect
+  activation-effect (gs) (source) (index) =
+    let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (p.template-id)).abilities) index is ActivatedAbility (cost) (eff) -> eff is otherwise -> NoEffect
+
+  effect-target-candidates : GameState, Integer, Effect -> List TargetCandidate
+  effect-target-candidates (gs) (player) (eff) = spell-target-candidates-active gs (make-cantrip (0 - 1) "" light-cost-zero [StaticAbility eff]) player False
+
+  effect-target-legal : GameState, Integer, Effect, Integer -> Boolean
+  effect-target-legal (gs) (player) (eff) (target) =
+    let mark = __heap-save
+    in let cs = effect-target-candidates gs player eff
+    in let valid = list-contains cs (\c -> c.target == target)
+    in let restored = __heap-restore mark
+    in valid
+
+Section: Queued Abilities
+
+  queued-card-valid : GameState, Integer, Integer -> Boolean
+  queued-card-valid (gs) (player) (card) =
+    if player < 0 | player >= list-length (gs.players) | game-card-valid gs card == False then False
+    else if int-list-has ((get-player gs player).hand) card == False then False
+    else let kind = (get-card-template gs card).card-type
+    in kind /= General & kind /= Disruption
+
+  queued-card-target-valid : GameState, Integer, Integer, Integer -> Boolean
+  queued-card-target-valid (gs) (player) (card) (target) =
+    if queued-card-valid gs player card == False then False
+    else let t = get-card-template gs card
+    in let active = ((get-player gs player).prismatic).fluorescence-active
+    in let needed = spell-targets-required-active (t.abilities) active 0 & (is-permanent-type (t.card-type) == False | active)
+    in if needed then spell-target-legal gs t player active target else target == (0 - 3)
+
+  queue-card-order : GameState, Integer, Integer, Integer, Integer, Text -> GameState
+  queue-card-order (gs) (player) (card) (target) (stage) (label) =
+    if gs.game-over | queued-card-target-valid gs player card target == False then gs
+    else game-set-queued-card gs player (QueuedCard { card = card, target = target, after-turn = gs.turn-number, after-stage = stage, attempt-turn = 0 - 1, attempt-stage = 0 - 1, label = label, reason = "Waiting for a later own main phase" })
+
+  queued-card-due : GameState, Integer, QueuedCard -> Boolean
+  queued-card-due (gs) (stage) (q) = q.card >= 0 & (gs.turn-number > q.after-turn | (gs.turn-number == q.after-turn & stage > q.after-stage)) & (q.attempt-turn /= gs.turn-number | q.attempt-stage /= stage)
+
+  refresh-queued-cards : GameState, Integer -> GameState
+  refresh-queued-cards (gs) (player) =
+    if player >= list-length (gs.queued-cards) then gs
+    else let q = list-at (gs.queued-cards) player
+    in let next = if q.card >= 0 & queued-card-target-valid gs player (q.card) (q.target) == False then game-set-queued-card gs player queued-card-none else gs
+    in refresh-queued-cards next (player + 1)
+
+  queued-card-cost-reason : GameState, Integer, QueuedCard, Posture -> Text
+  queued-card-cost-reason (gs) (player) (q) (orders) =
+    if orders.manual-payment then "Manual payment required"
+    else let p = get-player gs player
+    in let t = get-card-template gs (q.card)
+    in if t.card-type == Gemstone then (if p.gem-drop-used then "Waiting for the next gemstone drop" else "")
+    else let rays = light-payment-rays-keeping gs player (t.light-cost) (prismatic-available-rays (p.prismatic)) (orders.preserved-stones)
+    in if rays < 0 then "Waiting for available unkept gemstone payment" else ""
+
+  queued-card-display-reason : GameState, Integer, QueuedCard, Posture -> Text
+  queued-card-display-reason (gs) (player) (q) (orders) =
+    if queued-card-target-valid gs player (q.card) (q.target) == False then "Card or target is unavailable"
+    else if q.attempt-turn < 0 then q.reason
+    else let reason = queued-card-cost-reason gs player q orders
+    in if reason == "" then "Ready for a later own main phase" else reason
+
+  perform-queued-card : GameState, Integer, Integer, Posture -> GameState
+  perform-queued-card (gs) (player) (stage) (orders) =
+    let q = list-at (gs.queued-cards) player
+    in if gs.game-over | game-budget-stopped gs | gs.active-player /= player | (gs.phase /= phase-main-1 & gs.phase /= phase-main-2) | (stage /= ai-stage-main-1 & stage /= ai-stage-main-2) | queued-card-due gs stage q == False then gs
+    else if queued-card-target-valid gs player (q.card) (q.target) == False then game-set-queued-card gs player queued-card-none
+    else let reason = queued-card-cost-reason gs player q orders
+    in if reason /= "" then game-set-queued-card gs player (QueuedCard { card = q.card, target = q.target, after-turn = q.after-turn, after-stage = q.after-stage, attempt-turn = gs.turn-number, attempt-stage = stage, label = q.label, reason = reason })
+    else let cleared = game-set-queued-card gs player queued-card-none
+    in let t = get-card-template cleared (q.card)
+    in if t.card-type == Gemstone then play-gem-from-hand cleared player (q.card)
+    else let plan = plan-light-payment-keeping cleared player (t.light-cost) (prismatic-available-rays ((get-player cleared player).prismatic)) (orders.preserved-stones)
+    in let paid = apply-light-payment cleared player plan
+    in let removed = set-player paid player (player-remove-from-hand (get-player paid player) (q.card))
+    in check-state-based-actions (announce-paid-spell removed (q.card) player (if q.target == (0 - 3) then [] else [q.target]) (plan.hardness) False)
+
+  queued-definition-valid : GameState, Integer, Integer, Integer -> Boolean
+  queued-definition-valid (gs) (player) (source) (index) =
+    if player < 0 | player >= list-length (gs.players) | source < 0 then False
+    else if list-contains (gs.battlefield) (\p -> p.id == source & p.controller == player) == False then False
+    else let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in if t.card-type == General | index < 0 | index >= list-length (t.abilities) then False
+    else when list-at (t.abilities) index
+      is ActivatedAbility (cost) (eff) -> cost.rays >= 0 & cost.pay-life >= 0 & loyalty-effect-supported eff
+      is otherwise -> False
+
+  queued-target-valid : GameState, Integer, Integer, Integer, Integer -> Boolean
+  queued-target-valid (gs) (player) (source) (index) (target) =
+    if queued-definition-valid gs player source index == False then False
+    else let eff = activation-effect gs source index
+    in if effect-needs-target eff then effect-target-legal gs player eff target else target == (0 - 3)
+
+  queued-loyalty-definition-valid : GameState, Integer, Integer -> Boolean
+  queued-loyalty-definition-valid (gs) (player) (index) =
+    if player < 0 | player > 1 | gs.game-over then False
+    else let abs = (get-general gs player).abilities
+    in if index < 0 | index >= list-length abs then False
+    else when list-at abs index is LoyaltyCostAbility (cost) (eff) -> cost >= 0 & loyalty-effect-supported eff is otherwise -> False
+
+  queued-loyalty-effect : GameState, Integer, Integer -> Effect
+  queued-loyalty-effect (gs) (player) (index) =
+    if queued-loyalty-definition-valid gs player index == False then NoEffect
+    else when list-at ((get-general gs player).abilities) index is LoyaltyCostAbility (cost) (eff) -> eff is otherwise -> NoEffect
+
+  queued-loyalty-target-valid : GameState, Integer, Integer, Integer -> Boolean
+  queued-loyalty-target-valid (gs) (player) (index) (target) =
+    if queued-loyalty-definition-valid gs player index == False then False
+    else let eff = queued-loyalty-effect gs player index
+    in if effect-needs-target eff then effect-target-legal gs player eff target else target == (0 - 3)
+
+  queue-loyalty-order : GameState, Integer, Integer, Integer, Integer, Text -> GameState
+  queue-loyalty-order (gs) (player) (index) (target) (stage) (label) =
+    if queued-loyalty-target-valid gs player index target == False then gs
+    else game-set-queued-loyalty gs player (QueuedAbility { source = (get-general gs player).id, ability = index, target = target, after-turn = gs.turn-number, after-stage = stage, attempt-turn = 0 - 1, attempt-stage = 0 - 1, label = label, reason = "Waiting for a later own main phase" })
+
+  refresh-queued-loyalty : GameState, Integer -> GameState
+  refresh-queued-loyalty (gs) (player) =
+    if player >= 2 | gs.game-over then gs
+    else let q = list-at (gs.queued-loyalty) player
+    in if q.source < 0 then refresh-queued-loyalty gs (player + 1)
+    else let valid = q.source == (get-general gs player).id & queued-loyalty-target-valid gs player (q.ability) (q.target)
+    in refresh-queued-loyalty (if valid then gs else game-set-queued-loyalty gs player queued-ability-none) (player + 1)
+
+  queued-loyalty-reason : GameState, Integer, QueuedAbility -> Text
+  queued-loyalty-reason (gs) (player) (q) =
+    if queued-loyalty-definition-valid gs player (q.ability) == False then "General ability unavailable"
+    else if ((get-player gs player).general).loyalty-turn == gs.turn-number then "General already activated this turn"
+    else when list-at ((get-general gs player).abilities) (q.ability)
+      is LoyaltyCostAbility (cost) (eff) -> if army-loyalty gs player < cost then "Waiting for army loyalty " & show cost else ""
+      is otherwise -> "General ability unavailable"
+
+  queued-loyalty-display-reason : GameState, Integer, QueuedAbility -> Text
+  queued-loyalty-display-reason (gs) (player) (q) =
+    let reason = queued-loyalty-reason gs player q
+    in if reason == "" then "Waiting for a later own main phase" else reason
+
+  perform-queued-loyalty : GameState, Integer, Integer -> GameState
+  perform-queued-loyalty (gs) (player) (stage) =
+    let q = list-at (gs.queued-loyalty) player
+    in if gs.game-over | gs.active-player /= player | (gs.phase /= phase-main-1 & gs.phase /= phase-main-2) | queued-ability-due gs stage q == False then gs
+    else if q.source /= (get-general gs player).id | queued-loyalty-target-valid gs player (q.ability) (q.target) == False then game-set-queued-loyalty gs player queued-ability-none
+    else let reason = queued-loyalty-reason gs player q
+    in if reason /= "" then game-set-queued-loyalty gs player (QueuedAbility { source = q.source, ability = q.ability, target = q.target, after-turn = q.after-turn, after-stage = q.after-stage, attempt-turn = gs.turn-number, attempt-stage = stage, label = q.label, reason = reason })
+    else activate-loyalty-ability-mode gs player (q.ability) (if q.target == (0 - 3) then [] else [if q.target < 0 then PriorityGeneral else PriorityPermanent (q.target)]) False
+
+  queue-ability-order : GameState, Integer, Integer, Integer, Integer, Integer, Text -> GameState
+  queue-ability-order (gs) (player) (source) (index) (target) (stage) (label) =
+    if gs.game-over | queued-target-valid gs player source index target == False then gs
+    else game-set-queued-ability gs player (QueuedAbility { source = source, ability = index, target = target, after-turn = gs.turn-number, after-stage = stage, attempt-turn = 0 - 1, attempt-stage = 0 - 1, label = label, reason = "Waiting for a later own main phase" })
+
+  queued-ability-reserved : GameState, Integer, Integer, Integer -> Boolean
+  queued-ability-reserved (gs) (player) (source) (index) =
+    let q = list-at (gs.queued-abilities) player
+    in q.source == source & q.ability == index
+
+  queued-ability-due : GameState, Integer, QueuedAbility -> Boolean
+  queued-ability-due (gs) (stage) (q) = q.source >= 0 & (gs.turn-number > q.after-turn | (gs.turn-number == q.after-turn & stage > q.after-stage)) & (q.attempt-turn /= gs.turn-number | q.attempt-stage /= stage)
+
+  queued-cost-reason : GameState, Integer, QueuedAbility -> Text
+  queued-cost-reason (gs) (player) (q) =
+    let p = find-permanent (gs.battlefield) (q.source) 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in when list-at (t.abilities) (q.ability)
+      is ActivatedAbility (cost) (eff) ->
+        (let payer = get-player gs player
+         in if cost.pay-life == (payer.general).life & cost.pay-life > 0 then "Would pay last life"
+         else if cost.pay-life > (payer.general).life then "Waiting for enough life"
+         else if cost.rays > prismatic-available-rays (payer.prismatic) then "Waiting for enough rays"
+         else if cost.tap-self & p.tapped then "Waiting for source to untap"
+         else if cost.tap-self & t.card-type == Creature & p.summoning-sick & has-keyword (p.keywords) Alacrity == False then "Waiting for summoning sickness to end"
+         else "")
+      is otherwise -> "Ability unavailable"
+
+  queued-display-reason : GameState, Integer, QueuedAbility -> Text
+  queued-display-reason (gs) (player) (q) =
+    if queued-definition-valid gs player (q.source) (q.ability) == False then "Source or control is unavailable"
+    else if queued-target-valid gs player (q.source) (q.ability) (q.target) == False then "Target is no longer legal"
+    else if q.attempt-turn < 0 then q.reason
+    else let reason = queued-cost-reason gs player q
+    in if reason == "" then "Ready for a later own main phase" else reason
+
+  perform-queued-ability : GameState, Integer, Integer -> GameState
+  perform-queued-ability (gs) (player) (stage) =
+    let q = list-at (gs.queued-abilities) player
+    in if gs.game-over | gs.active-player /= player | (gs.phase /= phase-main-1 & gs.phase /= phase-main-2) | (stage /= ai-stage-main-1 & stage /= ai-stage-main-2) | queued-ability-due gs stage q == False then gs
+    else if queued-target-valid gs player (q.source) (q.ability) (q.target) == False then game-set-queued-ability gs player queued-ability-none
+    else let reason = queued-cost-reason gs player q
+    in if reason /= "" then game-set-queued-ability gs player (QueuedAbility { source = q.source, ability = q.ability, target = q.target, after-turn = q.after-turn, after-stage = q.after-stage, attempt-turn = gs.turn-number, attempt-stage = stage, label = q.label, reason = reason })
+    else let cleared = game-set-queued-ability gs player queued-ability-none
+    in let targets = if q.target == (0 - 3) then [] else [if q.target < 0 then PriorityGeneral else PriorityPermanent (q.target)]
+    in activate-permanent-ability cleared player (q.source) (q.ability) targets True
 
 Section: Effective Stance
 
   effective-stance : Posture, GeneralTemplate, GeneralState -> Stance
   effective-stance (posture) (gen-template) (gen-state) =
     let threshold = get-aggression-threshold (gen-template.modifiers)
-    in if threshold > 0 then
+    in if posture.stance /= Balanced then posture.stance
+    else if threshold > 0 then
       if gen-state.life <= threshold then Aggressive
       else resolve-stance (posture.stance) (gen-template.modifiers)
     else resolve-stance (posture.stance) (gen-template.modifiers)
 
   resolve-stance : Stance, List BehavioralModifier -> Stance
   resolve-stance (player-stance) (mods) =
-    if has-stance-override mods then get-stance-override mods
+    if player-stance /= Balanced then player-stance
+    else if has-stance-override mods then get-stance-override mods
     else player-stance
 
 Section: AI Gem Play
@@ -41,66 +521,293 @@ Section: AI Gem Play
   ai-play-gem (gs) (player) =
     let p = get-player gs player
     in if p.gem-drop-used then gs
-    else let gem-id = find-gem-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand))
+    else let gem-id = find-gem-in-hand (p.hand) gs 0 (list-length (p.hand))
     in if gem-id >= 0 then play-gem-from-hand gs player gem-id
     else gs
 
-  find-gem-in-hand : List Integer, List CardTemplate, Integer, Integer -> Integer
-  find-gem-in-hand (hand) (templates) (i) (len) =
-    if i >= len then -1
+  find-gem-in-hand : List Integer, GameState, Integer, Integer -> Integer
+  find-gem-in-hand (hand) (gs) (i) (len) =
+    find-ordered-gem hand gs i len (0 - 1)
+
+  find-ordered-gem : List Integer, GameState, Integer, Integer, Integer -> Integer
+  find-ordered-gem (hand) (gs) (i) (len) (first) =
+    if i >= len then first
     else let card-id = list-at hand i
-    in if card-id < list-length templates then
-      let t = list-at templates card-id
+    in if game-card-valid gs card-id & card-play-order gs card-id /= card-order-hold & queued-card-reserved gs card-id == False then
+      let t = get-card-template gs card-id
       in when t.card-type
-        is Gemstone -> card-id
-        is otherwise -> find-gem-in-hand hand templates (i + 1) len
-    else find-gem-in-hand hand templates (i + 1) len
+        is Gemstone -> if card-play-order gs card-id == card-order-next then card-id else find-ordered-gem hand gs (i + 1) len (if first < 0 then card-id else first)
+        is otherwise -> find-ordered-gem hand gs (i + 1) len first
+    else find-ordered-gem hand gs (i + 1) len first
 
   play-gem-from-hand : GameState, Integer, Integer -> GameState
   play-gem-from-hand (gs) (player) (card-id) =
     let p = get-player gs player
-    in let p2 = PlayerState { general = p.general, prismatic = p.prismatic, library = p.library, hand = gs-list-remove (p.hand) card-id, graveyard = p.graveyard, exile = p.exile, gem-drop-used = True }
+    in if p.gem-drop-used | int-list-has (p.hand) card-id == False | game-card-valid gs card-id == False then gs
+    else if (get-card-template gs card-id).card-type /= Gemstone then gs
+    else let p2 = PlayerState { general = p.general, prismatic = p.prismatic, library = p.library, hand = gs-list-remove (p.hand) card-id, graveyard = p.graveyard, exile = p.exile, gem-drop-used = True }
     in let gs2 = set-player gs player p2
-    in let perm = permanent-new (gs2.next-permanent-id) card-id card-id player
-    in let template = get-template gs2 card-id
-    in let perm2 = Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = False, summoning-sick = False, damage-marked = 0, counters = 0, keywords = template.keywords, attached-to = -1, power-mod = 0, toughness-mod = 0, defense-mod = 0, equipped-to = -1, socketed-gem = -1 }
-    in GameState { players = gs2.players, generals = gs2.generals, battlefield = list-push (gs2.battlefield) perm2, active-player = gs2.active-player, priority-player = gs2.priority-player, turn-number = gs2.turn-number, phase = gs2.phase, step = gs2.step, next-permanent-id = gs2.next-permanent-id + 1, next-instance-id = gs2.next-instance-id, game-over = gs2.game-over, winner = gs2.winner, templates = gs2.templates }
+    in let perm = permanent-new (gs2.next-permanent-id) card-id (card-template-id gs2 card-id) player
+    in let template = get-card-template gs2 card-id
+    in let perm2 = Permanent { id = perm.id, card-id = perm.card-id, template-id = perm.template-id, controller = perm.controller, owner = perm.owner, tapped = False, summoning-sick = False, damage-marked = 0, counters = 0, keywords = template.keywords, attached-to = -1, power-mod = 0, toughness-mod = 0, defense-mod = 0, equipped-to = -1, socketed-gem = -1, temporary = temporary-none }
+    in let played = GameState { queued-loyalty = gs2.queued-loyalty, loyalty-state = gs2.loyalty-state, queued-cards = gs2.queued-cards, automatic-work = gs2.automatic-work, players = gs2.players, generals = gs2.generals, battlefield = list-push (gs2.battlefield) perm2, active-player = gs2.active-player, priority-player = gs2.priority-player, turn-number = gs2.turn-number, phase = gs2.phase, step = gs2.step, next-permanent-id = gs2.next-permanent-id + 1, next-instance-id = gs2.next-instance-id, game-over = gs2.game-over, winner = gs2.winner, templates = gs2.templates, card-templates = gs2.card-templates, card-orders = gs2.card-orders, disruption = gs2.disruption, queued-abilities = gs2.queued-abilities }
+    in consume-play-next played card-id
 
 Section: AI Spell Casting
 
   ai-cast-spells : GameState, Integer, Stance -> GameState
-  ai-cast-spells (gs) (player) (stance) =
-    let p = get-player gs player
-    in let avail-rays = prismatic-available-rays (p.prismatic)
-    in let best = find-best-castable (p.hand) (gs.templates) avail-rays stance 0 (list-length (p.hand)) (-1) (-1)
-    in if best >= 0 then
-      let template = get-template gs best
-      in let ray-cost = total-rays (template.light-cost)
-      in if ray-cost <= avail-rays then
-        let p2 = player-spend-rays (player-remove-from-hand p best) ray-cost
-        in let gs2 = set-player gs player p2
-        in let gs3 = resolve-spell-direct gs2 best best player
-        in let gs4 = check-state-based-actions gs3
-        in ai-cast-spells gs4 player stance
-      else gs
-    else gs
+  ai-cast-spells (gs) (player) (stance) = ai-cast-spells-ordered gs player stance []
 
-  find-best-castable : List Integer, List CardTemplate, Integer, Stance, Integer, Integer, Integer, Integer -> Integer
-  find-best-castable (hand) (templates) (avail-rays) (stance) (i) (len) (best) (best-score) =
+  ai-cast-spells-ordered : GameState, Integer, Stance, List TargetOrder -> GameState
+  ai-cast-spells-ordered (gs) (player) (stance) (orders) = ai-cast-spells-policy gs player stance orders PlayOnCurve
+
+  ai-cast-spells-policy : GameState, Integer, Stance, List TargetOrder, SpellPolicy -> GameState
+  ai-cast-spells-policy (gs) (player) (stance) (orders) (policy) =
+    ai-cast-spells-keeping gs player stance orders policy 0
+
+  ai-cast-spells-keeping : GameState, Integer, Stance, List TargetOrder, SpellPolicy, Integer -> GameState
+  ai-cast-spells-keeping (gs) (player) (stance) (orders) (policy) (kept) =
+    if policy == ManualSpells then gs
+    else let p = get-player gs player
+    in let reserve = when policy
+      is ConserveMana (amount) -> if amount > 0 then amount else 0
+      is HoldCounters -> counter-ray-reserve gs player (p.hand) (prismatic-available-rays (p.prismatic)) 0 (0 - 1)
+      is otherwise -> 0
+    in let general-reserve = general-ray-reserve ((get-general gs player).modifiers) 0 0
+    in cast-candidates gs player stance orders (if reserve > general-reserve then reserve else general-reserve) kept (p.hand) False
+
+  counter-ray-reserve : GameState, Integer, List Integer, Integer, Integer, Integer -> Integer
+  counter-ray-reserve (gs) (player) (hand) (available) (i) (best) =
+    if i >= list-length hand then (if best < 0 then 0 else best)
+    else let id = list-at hand i
+    in if game-card-valid gs id == False | card-play-order gs id == card-order-hold then counter-ray-reserve gs player hand available (i + 1) best
+    else let t = get-card-template gs id
+    in let cost = if t.card-type == Disruption then light-payment-rays gs player (t.light-cost) available else 0 - 1
+    in let chosen = if cost >= 0 & (best < 0 | cost < best) then cost else best
+    in counter-ray-reserve gs player hand available (i + 1) chosen
+
+  cast-candidates : GameState, Integer, Stance, List TargetOrder, Integer, Integer, List Integer, Boolean -> GameState
+  cast-candidates (gs) (player) (stance) (orders) (reserve) (kept) (candidates) (owned) =
+    (cast-candidates-progress gs player stance orders reserve kept candidates owned False [] False False False 2).game
+
+  CastProgress = record { game : GameState, card : Integer, rays : Integer, played : Boolean, choices : List TargetCandidate, recommended : Integer, all-rays : Boolean }
+
+  cast-complete : GameState, Boolean -> CastProgress
+  cast-complete (gs) (played) = CastProgress { game = gs, card = 0 - 1, rays = 0, played = played, choices = [], recommended = 0 - 3, all-rays = False }
+
+  unheld-candidates : List Integer, List Integer -> List Integer
+  unheld-candidates (hand) (held) = if list-length held == 0 then hand else for card in hand -> if int-list-has held card then 0 - 1 else card
+
+  ai-cast-progress : GameState, Integer, Stance, Posture, List Integer, Integer -> CastProgress
+  ai-cast-progress (gs) (player) (stance) (posture) (held) (single) =
+    let p = get-player gs player
+    in let reserve = when posture.spell-policy
+      is ConserveMana (amount) -> if amount > 0 then amount else 0
+      is HoldCounters -> counter-ray-reserve gs player (p.hand) (prismatic-available-rays (p.prismatic)) 0 (0 - 1)
+      is otherwise -> 0
+    in let general-reserve = general-ray-reserve ((get-general gs player).modifiers) 0 0
+    in cast-candidates-progress gs player stance (posture.primary-targets) (if reserve > general-reserve then reserve else general-reserve) (posture.preserved-stones) (if single >= 0 then [single] else unheld-candidates (p.hand) held) False (posture.commitment-pause & single < 0) held (single >= 0) (posture.target-pause & single < 0) True (posture.skill)
+
+  cast-candidates-progress : GameState, Integer, Stance, List TargetOrder, Integer, Integer, List Integer, Boolean, Boolean, List Integer, Boolean, Boolean, Boolean, Integer -> CastProgress
+  cast-candidates-progress (gs) (player) (stance) (orders) (reserve) (kept) (candidates) (owned) (pause) (held) (single) (choose) (defer) (skill) =
+    if game-budget-stopped gs & single == False then cast-complete gs False
+    else let p = get-player gs player
+    in let mods = (get-general gs player).modifiers
+    in let avail-rays = prismatic-available-rays (p.prismatic) - reserve
+    in let best = find-best-castable-at-skill candidates gs avail-rays stance mods 0 (list-length candidates) (-1) (-1) single skill player
+    in if best >= 0 & single == False & (gs.automatic-work).count >= automatic-action-limit then cast-complete (game-work-stop gs 1 ((gs.automatic-work).count) ((gs.automatic-work).last)) False
+    else if best >= 0 then
+      let template = get-card-template gs best
+      in let stone = ai-fluorescence-stone gs template player avail-rays kept orders
+      in let active = (p.prismatic).fluorescence-active | stone >= 0
+      in let budget = avail-rays - (if stone >= 0 then 1 else 0)
+      in let targets = ai-pick-targets-active gs template player orders active
+      in let dormant = is-permanent-type (template.card-type) == False & only-fluorescence (template.abilities) 0 & active == False
+      in let unsafe-bonus = active & has-fluorescence (template.abilities) 0 & fluorescence-beneficial gs template player == False
+      in let useless-grant = is-permanent-type (template.card-type) == False & automatic-grants-useful gs player (template.abilities) active 0 == False
+      in let cost = light-payment-rays-keeping gs player (template.light-cost) budget kept
+      in let spend = cost + (if stone >= 0 then 1 else 0)
+      in if dormant | unsafe-bonus | useless-grant | cost < 0 | (is-permanent-type (template.card-type) == False & spell-targets-required-active (template.abilities) active 0 & list-length targets == 0) then
+        (let choices = if owned then candidates else (for c in candidates -> c)
+         in let slot = candidate-slot choices best 0
+         in cast-candidates-progress gs player stance orders reserve kept (list-set-at choices slot (0 - 1)) True pause held single choose defer skill)
+      else let all = spend > 0 & spend == avail-rays
+      in let choices = if choose & ambiguous-spell-target gs template player orders active then spell-target-candidates-active gs template player active else []
+      in if (pause & all) | list-length choices > 1 then CastProgress { game = gs, card = best, rays = spend, played = False, choices = choices, recommended = (if list-length targets == 0 then 0 - 3 else list-at targets 0), all-rays = all }
+      else let counted = if single then gs else game-work-action gs (template.name)
+        in let lit = if stone >= 0 then activate-fluorescence counted player stone else counted
+        in let plan = plan-light-payment-keeping lit player (template.light-cost) budget kept
+        in let paid = apply-light-payment lit player plan
+        in let gs2 = set-player paid player (player-remove-from-hand (get-player paid player) best)
+        in let gs3 = announce-paid-spell gs2 best player targets (plan.hardness) False
+        in let answered = if defer | disruption-pending gs3 == False then gs3 else resolve-disruption-window gs3 posture-unattended (ai-disruption-card gs3 posture-unattended) False
+        in let gs4 = check-state-based-actions answered
+        in if gs4.game-over | single | disruption-pending gs4 | loyalty-pending gs4 then cast-complete gs4 True else cast-candidates-progress gs4 player stance orders reserve kept (unheld-candidates ((get-player gs4 player).hand) held) False pause held False choose defer skill
+    else cast-complete gs False
+
+  automatic-grants-useful : GameState, Integer, List Ability, Boolean, Integer -> Boolean
+  automatic-grants-useful (gs) (player) (abs) (active) (i) =
+    if i >= list-length abs then True
+    else let eff = when list-at abs i is StaticAbility (e) -> e is FluorescenceAbility (e) -> (if active then e else NoEffect) is otherwise -> NoEffect
+    in let useful = when eff is BoostPTD (pw) (to) (de) -> useful-loyalty-effect gs player eff is GainKeyword (kw) -> useful-loyalty-effect gs player eff is otherwise -> True
+    in useful & automatic-grants-useful gs player abs active (i + 1)
+
+  candidate-slot : List Integer, Integer, Integer -> Integer
+  candidate-slot (cs) (card) (i) = if i >= list-length cs then i else if list-at cs i == card then i else candidate-slot cs card (i + 1)
+
+  fluorescence-draw-demand : List Ability, Integer -> Integer
+  fluorescence-draw-demand (abs) (i) =
+    if i >= list-length abs then 0
+    else let n = when list-at abs i
+      is StaticAbility (eff) -> (when eff is DrawCards (count) -> count is otherwise -> 0)
+      is FluorescenceAbility (eff) -> (when eff is DrawCards (count) -> count is otherwise -> 0)
+      is ActivatedAbility (cost) (eff) -> 0
+      is LoyaltyCostAbility (cost) (eff) -> (when eff is DrawCards (count) -> count is otherwise -> 0)
+      is otherwise -> 0
+    in (if n > 0 then n else 0) + fluorescence-draw-demand abs (i + 1)
+
+  useful-fluorescence : List Ability, Boolean, Boolean, Integer, Boolean -> Boolean
+  useful-fluorescence (abs) (draw-safe) (discard-safe) (i) (seen) =
+    if i >= list-length abs then seen
+    else when list-at abs i
+      is FluorescenceAbility (eff) ->
+        (let useful = when eff
+          is DealDamage (n) -> n > 0
+          is GainLife (n) -> n > 0
+          is LoseLife (n) -> n > 0
+          is DrawCards (n) -> n > 0 & draw-safe
+          is DiscardCards (n) -> n > 0 & discard-safe
+          is DestroyTarget -> True
+          is DestroyEquipment -> True
+          is ReturnToHand -> True
+          is ExileTarget -> True
+          is BoostPTD (pw) (to) (de) -> pw >= 0 & to >= 0 & de >= 0 & (pw > 0 | to > 0 | de > 0)
+          is GainKeyword (kw) -> kw /= Stalwart & kw /= Flash
+          is otherwise -> False
+         in if useful then useful-fluorescence abs draw-safe discard-safe (i + 1) True else False)
+      is otherwise -> useful-fluorescence abs draw-safe discard-safe (i + 1) seen
+
+  entry-draw-demand : List Ability, Integer -> Integer
+  entry-draw-demand (abs) (i) =
+    if i >= list-length abs then 0
+    else let count = when list-at abs i is FluorescenceAbility (eff) -> (when eff is DrawCards (n) -> if n > 0 then n else 0 is otherwise -> 0) is otherwise -> 0
+    in count + entry-draw-demand abs (i + 1)
+
+  entry-grants-useful : CardTemplate, Integer -> Boolean
+  entry-grants-useful (template) (i) =
+    if i >= list-length (template.abilities) then True
+    else let useful = when list-at (template.abilities) i
+      is FluorescenceAbility (eff) -> (when eff
+        is BoostPTD (pw) (to) (de) -> template.card-type == Creature
+        is GainKeyword (kw) -> template.card-type == Creature & has-keyword (template.keywords) kw == False
+        is otherwise -> True)
+      is otherwise -> True
+    in useful & entry-grants-useful template (i + 1)
+
+  fluorescence-beneficial : GameState, CardTemplate, Integer -> Boolean
+  fluorescence-beneficial (gs) (template) (player) =
+    let permanent = is-permanent-type (template.card-type)
+    in let draws = if permanent then entry-draw-demand (template.abilities) 0 else fluorescence-draw-demand (template.abilities) 0
+    in useful-fluorescence (template.abilities) (list-length ((get-player gs player).library) > draws) (list-length ((get-player gs (if player == 0 then 1 else 0)).hand) > 0) 0 False
+      & (permanent == False | entry-grants-useful template 0)
+
+  only-fluorescence : List Ability, Integer -> Boolean
+  only-fluorescence (abs) (i) =
+    if i >= list-length abs then i > 0
+    else when list-at abs i is FluorescenceAbility (eff) -> only-fluorescence abs (i + 1) is otherwise -> False
+
+  has-fluorescence : List Ability, Integer -> Boolean
+  has-fluorescence (abs) (i) = if i >= list-length abs then False else when list-at abs i is FluorescenceAbility (eff) -> True is otherwise -> has-fluorescence abs (i + 1)
+
+  ai-fluorescence-stone : GameState, CardTemplate, Integer, Integer, Integer, List TargetOrder -> Integer
+  ai-fluorescence-stone (gs) (template) (player) (available) (kept) (orders) =
+    let p = get-player gs player
+    in if (p.prismatic).fluorescence-active | available < 1 | stone-preserved kept 6 then 0 - 1
+    else if fluorescence-beneficial gs template player == False then 0 - 1
+    else let stone = find-ready-obsidian gs player 0
+    in if stone < 0 | light-payment-rays-keeping gs player (template.light-cost) (available - 1) kept < 0 then 0 - 1
+    else if fluorescence-targets-required template 0 == False then stone
+    else let mark = __heap-save
+    in let targets = ai-pick-targets-active gs template player orders True
+    in let valid = list-length targets > 0
+    in let restored = __heap-restore mark
+    in if valid then stone else 0 - 1
+
+  find-best-castable : List Integer, GameState, Integer, Stance, List BehavioralModifier, Integer, Integer, Integer, Integer, Boolean -> Integer
+  find-best-castable (hand) (gs) (avail-rays) (stance) (mods) (i) (len) (best) (best-score) (manual) =
+    find-best-castable-at-skill hand gs avail-rays stance mods i len best best-score manual 2 (gs.active-player)
+
+  find-best-castable-at-skill : List Integer, GameState, Integer, Stance, List BehavioralModifier, Integer, Integer, Integer, Integer, Boolean, Integer, Integer -> Integer
+  find-best-castable-at-skill (hand) (gs) (avail-rays) (stance) (mods) (i) (len) (best) (best-score) (manual) (skill) (player) =
     if i >= len then best
     else let card-id = list-at hand i
-    in if card-id < list-length templates then
-      let t = list-at templates card-id
+    in if game-card-valid gs card-id & (manual | (card-play-order gs card-id /= card-order-hold & queued-card-reserved gs card-id == False)) then
+      let t = get-card-template gs card-id
       in when t.card-type
-        is Gemstone -> find-best-castable hand templates avail-rays stance (i + 1) len best best-score
+        is Gemstone -> find-best-castable-at-skill hand gs avail-rays stance mods (i + 1) len best best-score manual skill player
+        is Disruption -> find-best-castable-at-skill hand gs avail-rays stance mods (i + 1) len best best-score manual skill player
         is otherwise ->
-          let ray-cost = total-rays (t.light-cost)
-          in if ray-cost <= avail-rays then
-            let score = score-card t stance
-            in if score > best-score then find-best-castable hand templates avail-rays stance (i + 1) len card-id score
-            else find-best-castable hand templates avail-rays stance (i + 1) len best best-score
-          else find-best-castable hand templates avail-rays stance (i + 1) len best best-score
-    else find-best-castable hand templates avail-rays stance (i + 1) len best best-score
+          if avail-rays >= 0 then
+            let score = skill-card-score gs player card-id stance skill + (if skill == 0 then 0 else general-spell-priority mods (t.card-type) 0 0)
+            in let priority = manual == False & card-play-order gs card-id == card-order-next
+            in let prior = manual == False & card-play-order gs best == card-order-next
+            in if (priority & prior == False) | (priority == prior & score > best-score) then find-best-castable-at-skill hand gs avail-rays stance mods (i + 1) len card-id score manual skill player
+            else find-best-castable-at-skill hand gs avail-rays stance mods (i + 1) len best best-score manual skill player
+          else find-best-castable-at-skill hand gs avail-rays stance mods (i + 1) len best best-score manual skill player
+    else find-best-castable-at-skill hand gs avail-rays stance mods (i + 1) len best best-score manual skill player
+
+  skill-card-score : GameState, Integer, Integer, Stance, Integer -> Integer
+  skill-card-score (gs) (player) (card) (stance) (skill) =
+    if skill == 0 then 0
+    else let t = get-card-template gs card
+    in let base = score-card t (if skill == 1 then Balanced else stance)
+    in if skill /= 3 then base
+    else let mark = __heap-save
+    in let value = skill-ability-value gs player t 0 0
+    in let restored = __heap-restore mark
+    in base + value
+
+  skill-ability-value : GameState, Integer, CardTemplate, Integer, Integer -> Integer
+  skill-ability-value (gs) (player) (t) (i) (sum) =
+    if i >= list-length (t.abilities) then sum
+    else let eff = when list-at (t.abilities) i
+      is StaticAbility (e) -> if is-permanent-type (t.card-type) then NoEffect else e
+      is FluorescenceAbility (e) -> if ((get-player gs player).prismatic).fluorescence-active then e else NoEffect
+      is otherwise -> NoEffect
+    in skill-ability-value gs player t (i + 1) (sum + skill-effect-value gs player t eff)
+
+  skill-effect-value : GameState, Integer, CardTemplate, Effect -> Integer
+  skill-effect-value (gs) (player) (t) (eff) =
+    let mine = get-player gs player
+    in let opponent = if player == 0 then 1 else 0
+    in let theirs = get-player gs opponent
+    in when eff
+      is DealDamage (n) -> if n <= 0 then 0 else if n >= (theirs.general).life & spell-target-legal gs t player ((mine.prismatic).fluorescence-active) (0 - 1 - opponent) then 1000 else n * 12
+      is LoseLife (n) -> if n <= 0 then 0 else if n >= (theirs.general).life then 1000 else n * 12
+      is GainLife (n) -> if n <= 0 then 0 else n * (if (mine.general).life < 10 then 12 else 3)
+      is DrawCards (n) -> if n > 0 & list-length (mine.library) > n then n * 20 else 0
+      is DiscardCards (n) -> if n <= 0 then 0 else (if n < list-length (theirs.hand) then n else list-length (theirs.hand)) * 15
+      is DestroyTarget -> skill-target-value gs player eff
+      is DestroyEquipment -> skill-target-value gs player eff
+      is ReturnToHand -> skill-target-value gs player eff
+      is ExileTarget -> skill-target-value gs player eff
+      is BoostPTD (pw) (to) (de) -> if skill-target-value gs player eff > 0 then (if pw > 0 then pw * 10 else 0) + (if to > 0 then to * 5 else 0) + (if de > 0 then de * 8 else 0) else 0
+      is GainKeyword (kw) -> if skill-target-value gs player eff > 0 then 20 else 0
+      is otherwise -> 0
+
+  skill-target-value : GameState, Integer, Effect -> Integer
+  skill-target-value (gs) (player) (eff) =
+    let mark = __heap-save
+    in let cs = effect-target-candidates gs player eff
+    in let value = skill-target-max cs 0 0
+    in let restored = __heap-restore mark
+    in value
+
+  skill-target-max : List TargetCandidate, Integer, Integer -> Integer
+  skill-target-max (cs) (i) (best) =
+    if i >= list-length cs then best
+    else let value = 20 + (list-at cs i).score
+    in skill-target-max cs (i + 1) (if value > best then value else best)
 
   score-card : CardTemplate, Stance -> Integer
   score-card (t) (stance) =
@@ -121,22 +828,254 @@ Section: AI Spell Casting
     else when list-at abs i
       is StaticAbility (eff) -> when eff
         is DestroyTarget -> True
+        is DestroyEquipment -> True
         is DealDamage (n) -> True
         is otherwise -> has-destroy-loop abs (i + 1) len
       is otherwise -> has-destroy-loop abs (i + 1) len
 
 Section: Spell Resolution
 
+  announce-paid-spell : GameState, Integer, Integer, List Integer, Integer, Boolean -> GameState
+  announce-paid-spell (gs) (card) (caster) (targets) (hardness) (manual) =
+    let t = get-card-template gs card
+    in let ready = consume-play-next gs card
+    in if is-disruptable (t.card-type) == False | (hand-has-response gs ((get-player gs (if caster == 0 then 1 else 0)).hand) 0 == False & board-has-response gs (if caster == 0 then 1 else 0) 0 == False) then resolve-spell-targets ready card (t.id) caster targets
+    else let prior = ready.disruption
+    in let window = SpellWindow { activation = pending-activation-none, card = card, caster = caster, targets = targets, hardness = hardness, manual = manual, nonce = 0, deadline = 0, choices = [] }
+    in let opened = __record-set (game-with-disruption ready (DisruptionState { seed = prior.seed, index = prior.index, window = window, result = prior.result })) "priority-player" (if caster == 0 then 1 else 0)
+    in if any-affordable-response opened then opened else resolve-spell-targets ready card (t.id) caster targets
+
+  announce-paid-activation : GameState, Integer, PendingActivation, List Integer, Boolean -> GameState
+  announce-paid-activation (gs) (player) (pending) (targets) (manual) =
+    let opponent = if player == 0 then 1 else 0
+    in if hand-has-response gs ((get-player gs opponent).hand) 0 == False & board-has-response gs opponent 0 == False then check-state-based-actions (apply-effect-direct gs (pending.effect) player targets)
+    else let prior = gs.disruption
+    in let window = SpellWindow { activation = pending, card = 0 - 1, caster = player, targets = targets, hardness = 0, manual = manual, nonce = 0, deadline = 0, choices = [] }
+    in let opened = __record-set (game-with-disruption gs (DisruptionState { seed = prior.seed, index = prior.index, window = window, result = prior.result })) "priority-player" opponent
+    in if any-affordable-response opened then opened else check-state-based-actions (apply-effect-direct gs (pending.effect) player targets)
+
+  resolve-pending-activation : GameState -> GameState
+  resolve-pending-activation (gs) =
+    let state = gs.disruption
+    in let window = state.window
+    in let pending = window.activation
+    in let valid = effect-needs-target (pending.effect) == False | (list-length (window.targets) > 0 & effect-target-legal gs (window.caster) (pending.effect) (list-at (window.targets) 0))
+    in let result = ContestResult { activation = pending, reply-source = 0 - 1, reply-ability = 0 - 1, card = 0 - 1, reply = 0 - 1, chance = 0, roll = 0, disrupted = False, fizzled = valid == False, reply-fizzled = False, abandoned = False }
+    in let cleared = __record-set (game-with-disruption gs (DisruptionState { seed = state.seed, index = state.index, window = spell-window-none, result = result })) "priority-player" (gs.active-player)
+    in check-state-based-actions (if valid then apply-effect-direct cleared (pending.effect) (window.caster) (window.targets) else cleared)
+
+  abandon-pending-response : GameState, SpellWindow -> GameState
+  abandon-pending-response (gs) (window) =
+    if (window.activation).source >= 0 then gs
+    else set-player gs (window.caster) (player-add-to-graveyard (get-player gs (window.caster)) (window.card))
+
+  hand-has-response : GameState, List Integer, Integer -> Boolean
+  hand-has-response (gs) (hand) (i) =
+    if i >= list-length hand then False
+    else let card = list-at hand i
+    in if game-card-valid gs card & ((get-card-template gs card).card-type == Disruption | (get-card-template gs card).card-type == Cantrip) then True else hand-has-response gs hand (i + 1)
+
+  any-affordable-response : GameState -> Boolean
+  any-affordable-response (gs) =
+    let mark = __heap-save
+    in let choices = disruption-options gs posture-unattended True 0 []
+    in let available = list-length choices > 0
+    in let restored = __heap-restore mark
+    in available
+
+  board-has-response : GameState, Integer, Integer -> Boolean
+  board-has-response (gs) (player) (i) =
+    if i >= list-length (gs.battlefield) then False
+    else let p = list-at (gs.battlefield) i
+    in if p.controller == player & (get-template gs (p.template-id)).card-type /= General & list-contains ((get-template gs (p.template-id)).abilities) (\a -> when a is ActivatedAbility (cost) (eff) -> True is otherwise -> False) then True
+    else board-has-response gs player (i + 1)
+
+  response-ability-ready : GameState, Integer, Integer -> Boolean
+  response-ability-ready (gs) (source) (index) =
+    if gs.game-over | disruption-pending gs == False then False
+    else let player = if ((gs.disruption).window).caster == 0 then 1 else 0
+    in let mark = __heap-save
+    in let ready = ordinary-ability-check gs player source index [] False
+    in let restored = __heap-restore mark
+    in ready
+
+  ability-response-cost-label : GameState, Integer, Integer -> Text
+  ability-response-cost-label (gs) (source) (index) =
+    let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (p.template-id)).abilities) index
+      is ActivatedAbility (cost) (eff) -> activation-cost-label cost
+      is otherwise -> ""
+
+  ability-response-options : GameState, Integer, Integer, List DisruptionOption -> List DisruptionOption
+  ability-response-options (gs) (i) (index) (options) =
+    if i >= list-length (gs.battlefield) then options
+    else let p = list-at (gs.battlefield) i
+    in let abs = (get-template gs (p.template-id)).abilities
+    in if index >= list-length abs then ability-response-options gs (i + 1) 0 options
+    else let ready = response-ability-ready gs (p.id) index
+    in let next = if ready then (when list-at abs index is ActivatedAbility (cost) (eff) -> list-push options (DisruptionOption { source = p.id, ability = index, card = 0 - 1, rays = cost.rays, hardness = 0, chance = 0 }) is otherwise -> options) else options
+    in ability-response-options gs i (index + 1) next
+
+  disruption-ray-budget : GameState, Integer, Posture -> Integer
+  disruption-ray-budget (gs) (player) (orders) =
+    let reserve = when orders.spell-policy is ConserveMana (n) -> if n > 0 then n else 0 is otherwise -> 0
+    in let general = general-ray-reserve ((get-general gs player).modifiers) 0 0
+    in prismatic-available-rays ((get-player gs player).prismatic) - (if reserve > general then reserve else general)
+
+  disruption-option-none : DisruptionOption
+  disruption-option-none = DisruptionOption { source = 0 - 1, ability = 0 - 1, card = 0 - 1, rays = 0, hardness = 0, chance = 0 }
+
+  disruption-option : GameState, Posture, Integer, Boolean -> DisruptionOption
+  disruption-option (gs) (orders) (card) (manual) =
+    if gs.game-over | disruption-pending gs == False | game-card-valid gs card == False then disruption-option-none
+    else let window = (gs.disruption).window
+    in let player = if window.caster == 0 then 1 else 0
+    in if int-list-has ((get-player gs player).hand) card == False then disruption-option-none
+    else let t = get-card-template gs card
+    in if ((window.activation).source >= 0 & t.card-type == Disruption) | (t.card-type /= Disruption & (manual == False | t.card-type /= Cantrip)) | (manual == False & (card-play-order gs card == card-order-hold | orders.spell-policy == ManualSpells | orders.manual-payment)) then disruption-option-none
+    else let mark = __heap-save
+    in let available = if manual then prismatic-available-rays ((get-player gs player).prismatic) else disruption-ray-budget gs player orders
+    in let plan = plan-light-payment-keeping gs player (t.light-cost) available (orders.preserved-stones)
+    in let rays = plan.rays
+    in let hardness = plan.hardness
+    in let chance = if t.card-type == Cantrip then 0 else disruption-chance ((get-card-template gs (window.card)).base-focus + window.hardness) (t.base-focus + hardness)
+    in let restored = __heap-restore mark
+    in if rays < 0 then disruption-option-none else DisruptionOption { source = 0 - 1, ability = 0 - 1, card = card, rays = rays, hardness = hardness, chance = chance }
+
+  disruption-options : GameState, Posture, Boolean, Integer, List DisruptionOption -> List DisruptionOption
+  disruption-options (gs) (orders) (manual) (i) (options) =
+    let hand = (get-player gs (if ((gs.disruption).window).caster == 0 then 1 else 0)).hand
+    in if i >= list-length hand then (if manual then ability-response-options gs 0 0 options else options)
+    else let choice = disruption-option gs orders (list-at hand i) manual
+    in let legal = if choice.card < 0 then False else response-target-available gs (list-at hand i)
+    in disruption-options gs orders manual (i + 1) (if legal then list-push options choice else options)
+
+  response-target-available : GameState, Integer -> Boolean
+  response-target-available (gs) (card) =
+    if game-card-valid gs card == False then False
+    else let t = get-card-template gs card
+    in if t.card-type /= Cantrip then True
+    else let player = if ((gs.disruption).window).caster == 0 then 1 else 0
+    in let active = ((get-player gs player).prismatic).fluorescence-active
+    in if spell-targets-required-active (t.abilities) active 0 == False then True
+    else let mark = __heap-save
+    in let cs = spell-target-candidates-active gs t player active
+    in let legal = list-length cs > 0
+    in let restored = __heap-restore mark
+    in legal
+
+  best-disruption-option : GameState, List DisruptionOption, Integer, DisruptionOption -> Integer
+  best-disruption-option (gs) (options) (i) (best) =
+    if i >= list-length options then best.card
+    else let option = list-at options i
+    in let next = card-play-order gs (option.card) == card-order-next
+    in let old-next = best.card >= 0 & card-play-order gs (best.card) == card-order-next
+    in let better = best.card < 0 | (next & old-next == False) | (next == old-next & (option.chance > best.chance | (option.chance == best.chance & option.rays < best.rays)))
+    in best-disruption-option gs options (i + 1) (if option.chance >= 50 & better then option else best)
+
+  ai-disruption-card : GameState, Posture -> Integer
+  ai-disruption-card (gs) (orders) =
+    let mark = __heap-save
+    in let options = disruption-options gs orders False 0 []
+    in let card = best-disruption-option gs options 0 disruption-option-none
+    in let restored = __heap-restore mark
+    in card
+
+  resolve-disruption-window : GameState, Posture, Integer, Boolean -> GameState
+  resolve-disruption-window (gs) (orders) (card) (manual) =
+    if disruption-pending gs == False then gs
+    else if (((gs.disruption).window).activation).source >= 0 then (if card >= 0 then gs else resolve-pending-activation gs)
+    else if card >= 0 & (game-card-valid gs card == False | (get-card-template gs card).card-type /= Disruption) then gs
+    else let state = gs.disruption
+    in let window = state.window
+    in let player = if window.caster == 0 then 1 else 0
+    in let option = if card < 0 then disruption-option-none else disruption-option gs orders card manual
+    in if card >= 0 & option.card < 0 then gs
+    else let available = if manual then prismatic-available-rays ((get-player gs player).prismatic) else disruption-ray-budget gs player orders
+    in let paid = if card < 0 then gs else apply-light-payment gs player (plan-light-payment-keeping gs player ((get-card-template gs card).light-cost) available (orders.preserved-stones))
+    in let spent = if card < 0 then paid else set-player paid player (player-add-to-graveyard (player-remove-from-hand (get-player paid player) card) card)
+    in let marked = if card < 0 then spent else consume-play-next spent card
+    in let roll = if card < 0 then 0 else disruption-roll (state.seed) (state.index)
+    in let disrupted = card >= 0 & roll <= option.chance
+    in let t = get-card-template marked (window.card)
+    in let target-valid = is-permanent-type (t.card-type) | spell-targets-required-active (t.abilities) (((get-player marked (window.caster)).prismatic).fluorescence-active) 0 == False | (list-length (window.targets) > 0 & spell-target-legal marked t (window.caster) (((get-player marked (window.caster)).prismatic).fluorescence-active) (list-at (window.targets) 0))
+    in let result = ContestResult { activation = window.activation, reply-source = 0 - 1, reply-ability = 0 - 1, reply-fizzled = False, abandoned = False, card = window.card, reply = card, chance = option.chance, roll = roll, disrupted = disrupted, fizzled = target-valid == False }
+    in let cleared = __record-set (game-with-disruption marked (DisruptionState { seed = state.seed, index = state.index + (if card >= 0 then 1 else 0), window = spell-window-none, result = result })) "priority-player" (gs.active-player)
+    in let resolved = if disrupted | target-valid == False then set-player cleared (window.caster) (player-add-to-graveyard (get-player cleared (window.caster)) (window.card)) else resolve-spell-targets cleared (window.card) (t.id) (window.caster) (window.targets)
+    in check-state-based-actions resolved
+
+  resolve-cantrip-response : GameState, Posture, Integer, Integer -> GameState
+  resolve-cantrip-response (gs) (orders) (card) (target) =
+    if gs.game-over | disruption-pending gs == False | game-card-valid gs card == False then gs
+    else if (get-card-template gs card).card-type /= Cantrip then gs
+    else let state = gs.disruption
+    in let window = state.window
+    in let player = if window.caster == 0 then 1 else 0
+    in let option = disruption-option gs orders card True
+    in if option.card < 0 then gs
+    else let t = get-card-template gs card
+    in let plan = plan-light-payment-keeping gs player (t.light-cost) (prismatic-available-rays ((get-player gs player).prismatic)) (orders.preserved-stones)
+    in let paid = apply-light-payment gs player plan
+    in let removed = set-player paid player (player-remove-from-hand (get-player paid player) card)
+    in let active = ((get-player removed player).prismatic).fluorescence-active
+    in let required = spell-targets-required-active (t.abilities) active 0
+    in let valid = if required then spell-target-legal removed t player active target else target == (0 - 3)
+    in let marked = consume-play-next removed card
+    in let answered = if valid then resolve-spell-targets marked card (t.id) player (if required then [target] else []) else set-player marked player (player-add-to-graveyard (get-player marked player) card)
+    in let checked = check-state-based-actions answered
+    in let ended = checked.game-over
+    in let resolved = if ended then abandon-pending-response checked window else resolve-disruption-window checked orders (0 - 1) True
+    in let prior = (resolved.disruption).result
+    in let result = ContestResult { activation = window.activation, reply-source = 0 - 1, reply-ability = 0 - 1, card = window.card, reply = card, chance = 0, roll = 0, disrupted = False, fizzled = (if ended then False else prior.fizzled), reply-fizzled = valid == False, abandoned = ended }
+    in __record-set (game-with-disruption resolved (DisruptionState { seed = state.seed, index = state.index, window = spell-window-none, result = result })) "priority-player" (gs.active-player)
+
+  resolve-ability-response : GameState, Posture, Integer, Integer, Integer -> GameState
+  resolve-ability-response (gs) (orders) (source) (index) (target) =
+    if response-ability-ready gs source index == False then gs
+    else let state = gs.disruption
+    in let window = state.window
+    in let player = if window.caster == 0 then 1 else 0
+    in let p = find-permanent (gs.battlefield) source 0 (list-length (gs.battlefield))
+    in when list-at ((get-template gs (p.template-id)).abilities) index
+      is ActivatedAbility (cost) (eff) ->
+        (let paid = pay-ordinary-ability gs player source cost
+         in let required = effect-needs-target eff
+         in let valid = if required then effect-target-legal paid player eff target else target == (0 - 3)
+         in let answered = if paid.game-over | valid == False then paid else apply-effect-direct paid eff player (if required then [target] else [])
+         in let checked = check-state-based-actions answered
+         in let ended = checked.game-over
+         in let resolved = if ended then abandon-pending-response checked window else resolve-disruption-window checked orders (0 - 1) True
+         in let prior = (resolved.disruption).result
+         in let result = ContestResult { activation = window.activation, reply-source = source, reply-ability = index, card = window.card, reply = 0 - 1, chance = 0, roll = 0, disrupted = False, fizzled = (if ended then False else prior.fizzled), reply-fizzled = valid == False, abandoned = ended }
+         in __record-set (game-with-disruption resolved (DisruptionState { seed = state.seed, index = state.index, window = spell-window-none, result = result })) "priority-player" (gs.active-player))
+      is otherwise -> gs
+
   resolve-spell-direct : GameState, Integer, Integer, Integer -> GameState
   resolve-spell-direct (gs) (card-id) (template-id) (controller) =
-    let template = get-template gs template-id
+    if template-id < 0 | template-id >= list-length (gs.templates) then gs
+    else resolve-spell-targets gs card-id template-id controller (ai-pick-targets gs (get-template gs template-id) controller)
+
+  resolve-spell-targets : GameState, Integer, Integer, Integer, List Integer -> GameState
+  resolve-spell-targets (gs) (card-id) (template-id) (controller) (targets) =
+    if template-id < 0 | template-id >= list-length (gs.templates) then gs
+    else if card-id >= 0 & (game-card-valid gs card-id == False | card-template-id gs card-id /= template-id) then gs
+    else let template = get-template gs template-id
+    in let ready = consume-play-next gs card-id
     in if is-permanent-type (template.card-type)
-      then enter-battlefield-direct gs card-id template-id controller
-      else apply-spell-effects-direct gs template controller
+      then enter-battlefield-targets ready card-id template-id controller targets
+      else let resolved = apply-abilities-direct ready (template.abilities) controller targets
+      in if card-id < 0 then resolved else set-player resolved controller (player-add-to-graveyard (get-player resolved controller) card-id)
 
   enter-battlefield-direct : GameState, Integer, Integer, Integer -> GameState
   enter-battlefield-direct (gs) (card-id) (template-id) (controller) =
-    let perm = permanent-new (gs.next-permanent-id) card-id template-id controller
+    if template-id < 0 | template-id >= list-length (gs.templates) then gs
+    else enter-battlefield-targets gs card-id template-id controller (ai-pick-targets gs (get-template gs template-id) controller)
+
+  enter-battlefield-targets : GameState, Integer, Integer, Integer, List Integer -> GameState
+  enter-battlefield-targets (gs) (card-id) (template-id) (controller) (targets) =
+    if template-id < 0 | template-id >= list-length (gs.templates) then gs
+    else if card-id >= 0 & (game-card-valid gs card-id == False | card-template-id gs card-id /= template-id) then gs
+    else let perm = permanent-new (gs.next-permanent-id) card-id template-id controller
     in let template = get-template gs template-id
     in let perm-with-kws = Permanent {
       id = perm.id, card-id = perm.card-id, template-id = perm.template-id,
@@ -146,9 +1085,9 @@ Section: Spell Resolution
       damage-marked = 0, counters = 0,
       keywords = template.keywords, attached-to = -1,
       power-mod = 0, toughness-mod = 0, defense-mod = 0,
-      equipped-to = -1, socketed-gem = -1
+      equipped-to = -1, socketed-gem = -1, temporary = temporary-none
     }
-    in GameState {
+    in let entered = GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work,
       players = gs.players,
       generals = gs.generals,
       battlefield = list-push (gs.battlefield) perm-with-kws,
@@ -158,15 +1097,31 @@ Section: Spell Resolution
       phase = gs.phase,
       step = gs.step,
       next-permanent-id = gs.next-permanent-id + 1,
-      next-instance-id = gs.next-instance-id + 1,
+      next-instance-id = gs.next-instance-id,
       game-over = gs.game-over,
       winner = gs.winner,
-      templates = gs.templates
+      templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities
     }
+    in if ((get-player entered controller).prismatic).fluorescence-active then apply-entry-fluorescence entered (template.abilities) controller (perm.id) targets 0 else entered
+
+  apply-entry-fluorescence : GameState, List Ability, Integer, Integer, List Integer, Integer -> GameState
+  apply-entry-fluorescence (gs) (abs) (controller) (id) (targets) (i) =
+    if i >= list-length abs then gs
+    else let next = when list-at abs i
+      is FluorescenceAbility (eff) -> (when eff
+        is BoostPTD (pw) (to) (de) -> entry-creature-grant gs id eff
+        is GainKeyword (kw) -> entry-creature-grant gs id eff
+        is otherwise -> apply-effect-direct gs eff controller targets)
+      is otherwise -> gs
+    in apply-entry-fluorescence next abs controller id targets (i + 1)
+
+  entry-creature-grant : GameState, Integer, Effect -> GameState
+  entry-creature-grant (gs) (id) (eff) =
+    __record-set gs "battlefield" (for p in gs.battlefield -> if p.id /= id | (get-template gs (p.template-id)).card-type /= Creature then p else when eff is BoostPTD (pw) (to) (de) -> permanent-boost p pw to de False is GainKeyword (kw) -> permanent-grant p kw False is otherwise -> p)
 
   apply-spell-effects-direct : GameState, CardTemplate, Integer -> GameState
   apply-spell-effects-direct (gs) (template) (controller) =
-    apply-abilities-direct gs (template.abilities) controller []
+    apply-abilities-direct gs (template.abilities) controller (ai-pick-targets gs template controller)
 
   apply-abilities-direct : GameState, List Ability, Integer, List Integer -> GameState
   apply-abilities-direct (gs) (abs) (controller) (targets) =
@@ -184,7 +1139,9 @@ Section: Spell Resolution
     when ab
       is StaticAbility (eff) -> apply-effect-direct gs eff controller targets
       is TriggeredAbility (cond) (eff) -> gs
-      is ActivatedAbility (cost) (eff) -> apply-effect-direct gs eff controller targets
+      is ActivatedAbility (cost) (eff) -> gs
+      is LoyaltyGainAbility (threshold) (eff) -> gs
+      is LoyaltyScaleAbility (divisor) (pw) (to) (de) -> gs
       is FluorescenceAbility (eff) ->
         let p = get-player gs controller
         in if p.prismatic.fluorescence-active then apply-effect-direct gs eff controller targets
@@ -200,8 +1157,17 @@ Section: Spell Resolution
     when eff
       is DealDamage (amount) ->
         if list-length targets > 0
-          then deal-damage-to-permanent gs (list-at targets 0) amount
+          then (let target = list-at targets 0
+            in if target == (0 - 1) | target == (0 - 2) then damage-target-general gs (0 - 1 - target) amount
+            else if list-contains (gs.battlefield) (\p -> p.id == target) then deal-damage-to-permanent gs target amount else gs)
           else gs
+      is DestroyTarget -> destroy-spell-target gs targets Creature
+      is DestroyEquipment -> destroy-spell-target gs targets Equipment
+      is ReturnToHand -> move-spell-target gs targets False
+      is ExileTarget -> move-spell-target gs targets True
+      is DiscardCards (count) -> discard-opponent gs controller count
+      is BoostPTD (pw) (to) (de) -> apply-friendly-effect gs eff controller targets
+      is GainKeyword (kw) -> apply-friendly-effect gs eff controller targets
       is GainLife (amount) ->
         let p = get-player gs controller
         in let new-general = general-gain-life (p.general) amount
@@ -232,6 +1198,44 @@ Section: Spell Resolution
         in set-player gs opp new-player
       is otherwise -> gs
 
+  apply-friendly-effect : GameState, Effect, Integer, List Integer -> GameState
+  apply-friendly-effect (gs) (eff) (controller) (targets) =
+    if list-length targets == 0 then gs
+    else let id = list-at targets 0
+    in if list-contains (gs.battlefield) (\p -> p.id == id & p.controller == controller & (get-template gs (p.template-id)).card-type == Creature) == False then gs
+    else __record-set gs "battlefield" (for p in gs.battlefield -> if p.id /= id then p else when eff is BoostPTD (pw) (to) (de) -> permanent-boost p pw to de True is GainKeyword (kw) -> permanent-grant p kw True is otherwise -> p)
+
+  move-spell-target : GameState, List Integer, Boolean -> GameState
+  move-spell-target (gs) (targets) (exile) =
+    if list-length targets == 0 then gs
+    else let id = list-at targets 0
+    in if list-contains (gs.battlefield) (\p -> p.id == id) == False then gs
+    else let perm = find-permanent (gs.battlefield) id 0 (list-length (gs.battlefield))
+    in let template = get-template gs (perm.template-id)
+    in if template.card-type == General then gs
+    else let owner = get-player gs (perm.owner)
+    in let updated = if perm.card-id < 0 | template.is-token then owner
+      else if exile then __record-set owner "exile" (list-push (owner.exile) (perm.card-id))
+      else player-add-to-hand owner (perm.card-id)
+    in let moved = set-player gs (perm.owner) updated
+    in __record-set moved "battlefield" (remove-permanent-from-list (gs.battlefield) id 0 (list-length (gs.battlefield)) [])
+
+  discard-opponent : GameState, Integer, Integer -> GameState
+  discard-opponent (gs) (controller) (count) =
+    if count <= 0 then gs
+    else let opponent = if controller == 0 then 1 else 0
+    in let p = get-player gs opponent
+    in let taken = if count < list-length (p.hand) then count else list-length (p.hand)
+    in if taken == 0 then gs
+    else let graveyard = discard-prefix (p.hand) 0 taken (p.graveyard)
+    in let hand = list-drop-front-loop (p.hand) taken (list-length (p.hand)) []
+    in set-player gs opponent (__record-set (__record-set p "hand" hand) "graveyard" graveyard)
+
+  discard-prefix : List Integer, Integer, Integer, List Integer -> List Integer
+  discard-prefix (hand) (i) (count) (graveyard) =
+    if i >= count then graveyard
+    else discard-prefix hand (i + 1) count (list-push graveyard (list-at hand i))
+
   draw-n : GameState, Integer, Integer -> GameState
   draw-n (gs) (player-idx) (count) =
     if count <= 0 then gs
@@ -240,13 +1244,188 @@ Section: Spell Resolution
     in let gs2 = set-player gs player-idx p2
     in draw-n gs2 player-idx (count - 1)
 
+  damage-target-general : GameState, Integer, Integer -> GameState
+  damage-target-general (gs) (player) (amount) =
+    let p = get-player gs player
+    in set-player gs player (PlayerState { general = general-deal-damage (p.general) amount, prismatic = p.prismatic, library = p.library, hand = p.hand, graveyard = p.graveyard, exile = p.exile, gem-drop-used = p.gem-drop-used })
+
+  destroy-spell-target : GameState, List Integer, CardType -> GameState
+  destroy-spell-target (gs) (targets) (kind) =
+    if list-length targets == 0 then gs
+    else let id = list-at targets 0
+    in if list-contains (gs.battlefield) (\p -> p.id == id) == False then gs
+    else let p = find-permanent (gs.battlefield) id 0 (list-length (gs.battlefield))
+    in if (get-template gs (p.template-id)).card-type /= kind | has-keyword (p.keywords) Indestructible then gs else destroy-permanent gs id
+
+  spell-targets-required : List Ability, Integer -> Boolean
+  spell-targets-required (abs) (i) = spell-targets-required-active abs False i
+
+  effect-needs-target : Effect -> Boolean
+  effect-needs-target (e) = when e is DealDamage (n) -> True is DestroyTarget -> True is DestroyEquipment -> True is ReturnToHand -> True is ExileTarget -> True is BoostPTD (pw) (to) (de) -> True is GainKeyword (kw) -> True is otherwise -> False
+
+  spell-targets-required-active : List Ability, Boolean, Integer -> Boolean
+  spell-targets-required-active (abs) (active) (i) =
+    if i >= list-length abs then False
+    else let required = when list-at abs i
+      is StaticAbility (e) -> effect-needs-target e
+      is FluorescenceAbility (e) -> active & effect-needs-target e
+      is otherwise -> False
+    in if required then True else spell-targets-required-active abs active (i + 1)
+
+  target-kind-accepts : List Ability, CardType, Boolean, Integer -> Boolean
+  target-kind-accepts (abs) (kind) (indestructible) (i) =
+    if i >= list-length abs then True
+    else let accepts = when list-at abs i
+      is StaticAbility (e) -> (when e is DealDamage (n) -> kind == Creature | kind == General is DestroyTarget -> kind == Creature & indestructible == False is DestroyEquipment -> kind == Equipment & indestructible == False is ReturnToHand -> kind /= General is ExileTarget -> kind /= General is BoostPTD (pw) (to) (de) -> kind == Creature is GainKeyword (kw) -> kind == Creature is otherwise -> True)
+      is otherwise -> True
+    in accepts & target-kind-accepts abs kind indestructible (i + 1)
+
+  target-owner-accepts : List Ability, Boolean, KeywordSet, Integer -> Boolean
+  target-owner-accepts (abs) (friendly) (keywords) (i) =
+    if i >= list-length abs then True
+    else let accepts = when list-at abs i
+      is StaticAbility (e) -> (when e
+        is BoostPTD (pw) (to) (de) -> friendly
+        is GainKeyword (kw) -> friendly & has-keyword keywords kw == False
+        is otherwise -> effect-needs-target e == False | friendly == False)
+      is otherwise -> True
+    in accepts & target-owner-accepts abs friendly keywords (i + 1)
+
+  TargetCandidate = record { target : Integer, kind : CardType, score : Integer }
+
+  target-candidates : GameState, Integer, List Ability, Integer, List TargetCandidate -> List TargetCandidate
+  target-candidates (gs) (player) (abs) (i) (acc) = target-candidates-scaled (scale-bonuses gs) gs player abs i acc
+
+  target-candidates-scaled : ScaleBonuses, GameState, Integer, List Ability, Integer, List TargetCandidate -> List TargetCandidate
+  target-candidates-scaled (bonuses) (gs) (player) (abs) (i) (acc) =
+    if i >= list-length (gs.battlefield) then acc
+    else let p = list-at (gs.battlefield) i
+    in let t = get-template gs (p.template-id)
+    in if target-owner-accepts abs (p.controller == player) (p.keywords) 0 == False | has-keyword (p.keywords) Shroud | (p.controller /= player & has-keyword (p.keywords) Hexproof) | target-kind-accepts abs (t.card-type) (has-keyword (p.keywords) Indestructible) 0 == False then target-candidates-scaled bonuses gs player abs (i + 1) acc
+    else let score = score-card t Balanced + (p.power-mod + scale-power bonuses t p) * 10 + (p.toughness-mod + scale-toughness bonuses t p) * 5 + (p.defense-mod + scale-defense bonuses t p) * 8 + general-target-priority ((get-general gs player).modifiers) (t.card-type) 0 0
+    in target-candidates-scaled bonuses gs player abs (i + 1) (list-push acc (TargetCandidate { target = p.id, kind = t.card-type, score = score }))
+
   ai-pick-targets : GameState, CardTemplate, Integer -> List Integer
-  ai-pick-targets (gs) (template) (player) =
-    if has-destroy-in-abilities (template.abilities) then
-      let opp = if player == 0 then 1 else 0
-      in let biggest = find-biggest-threat (gs.battlefield) (gs.templates) opp 0 (list-length (gs.battlefield)) (-1) 0
-      in if biggest >= 0 then [biggest] else []
-    else []
+  ai-pick-targets (gs) (template) (player) = ai-pick-targets-ordered gs template player []
+
+  ai-pick-targets-ordered : GameState, CardTemplate, Integer, List TargetOrder -> List Integer
+  ai-pick-targets-ordered (gs) (template) (player) (orders) =
+    ai-pick-targets-active gs template player orders (((get-player gs player).prismatic).fluorescence-active)
+
+  active-target-abilities : List Ability, Boolean -> List Ability
+  active-target-abilities (abs) (active) =
+    if active == False then abs
+    else for ab in abs -> when ab is FluorescenceAbility (eff) -> StaticAbility eff is otherwise -> ab
+
+  entry-target-effect : Effect -> Effect
+  entry-target-effect (eff) = when eff is BoostPTD (pw) (to) (de) -> NoEffect is GainKeyword (kw) -> NoEffect is otherwise -> eff
+
+  fluorescence-targets-required : CardTemplate, Integer -> Boolean
+  fluorescence-targets-required (template) (i) =
+    if is-permanent-type (template.card-type) == False then spell-targets-required-active (template.abilities) True 0
+    else if i >= list-length (template.abilities) then False
+    else let required = when list-at (template.abilities) i is FluorescenceAbility (eff) -> effect-needs-target (entry-target-effect eff) is otherwise -> False
+    in required | fluorescence-targets-required template (i + 1)
+
+  ai-pick-targets-active : GameState, CardTemplate, Integer, List TargetOrder, Boolean -> List Integer
+  ai-pick-targets-active (gs) (template) (player) (orders) (active) =
+    if spell-targets-required-active (template.abilities) active 0 == False | (is-permanent-type (template.card-type) & active == False) then []
+    else let mark = __heap-save
+    in let cs = spell-target-candidates-active gs template player active
+    in let chosen = ordered-target cs orders 0
+    in let restored = __heap-restore mark
+    in if chosen == (0 - 3) then [] else [chosen]
+
+  spell-target-candidates-active : GameState, CardTemplate, Integer, Boolean -> List TargetCandidate
+  spell-target-candidates-active (gs) (template) (player) (active) =
+    if spell-targets-required-active (template.abilities) active 0 == False | (is-permanent-type (template.card-type) & active == False) then []
+    else let abs = if is-permanent-type (template.card-type) then (for ab in template.abilities -> when ab is FluorescenceAbility (eff) -> StaticAbility (entry-target-effect eff) is otherwise -> StaticAbility NoEffect) else active-target-abilities (template.abilities) active
+    in let required = spell-targets-required abs 0
+    in let cs = if required then target-candidates gs player abs 0 [] else []
+    in let opp = if player == 0 then 1 else 0
+    in let gen = get-general gs opp
+    in if required & target-kind-accepts abs General False 0 & has-keyword (gen.keywords) Shroud == False & has-keyword (gen.keywords) Hexproof == False then list-push cs (TargetCandidate { target = 0 - 1 - opp, kind = General, score = general-target-priority ((get-general gs player).modifiers) General 0 0 }) else cs
+
+  spell-target-legal : GameState, CardTemplate, Integer, Boolean, Integer -> Boolean
+  spell-target-legal (gs) (template) (player) (active) (target) =
+    let mark = __heap-save
+    in let cs = spell-target-candidates-active gs template player active
+    in let valid = list-contains cs (\c -> c.target == target)
+    in let restored = __heap-restore mark
+    in valid
+
+  ambiguous-spell-target : GameState, CardTemplate, Integer, List TargetOrder, Boolean -> Boolean
+  ambiguous-spell-target (gs) (template) (player) (orders) (active) =
+    let mark = __heap-save
+    in let cs = spell-target-candidates-active gs template player active
+    in let needed = list-length cs > 1 & matching-target-order cs orders 0 == False
+    in let restored = __heap-restore mark
+    in needed
+
+  matching-target-order : List TargetCandidate, List TargetOrder, Integer -> Boolean
+  matching-target-order (cs) (orders) (i) =
+    if i >= list-length orders then False
+    else if target-for-order cs (list-at orders i) /= (0 - 3) then True else matching-target-order cs orders (i + 1)
+
+  target-choice-posture : Posture, Integer -> Posture
+  target-choice-posture (p) (target) = Posture { skill = p.skill, stance = p.stance, primary-targets = [if target < 0 then PriorityGeneral else PriorityPermanent target], phase-freezes = p.phase-freezes, block-policy = p.block-policy, spell-policy = p.spell-policy, preserved-stones = p.preserved-stones, manual-payment = p.manual-payment, commitment-pause = p.commitment-pause, target-pause = p.target-pause, combat-pause = p.combat-pause, sacrifice-pause = p.sacrifice-pause, disruption-pause = p.disruption-pause }
+
+  ordered-target : List TargetCandidate, List TargetOrder, Integer -> Integer
+  ordered-target (cs) (orders) (i) =
+    if i >= list-length orders then best-target cs 0 (0 - 3) 0
+    else let chosen = target-for-order cs (list-at orders i)
+    in if chosen == (0 - 3) then ordered-target cs orders (i + 1) else chosen
+
+  best-target : List TargetCandidate, Integer, Integer, Integer -> Integer
+  best-target (cs) (i) (best) (score) =
+    if i >= list-length cs then best
+    else let c = list-at cs i
+    in best-target cs (i + 1) (if best == (0 - 3) | c.score > score then c.target else best) (if best == (0 - 3) | c.score > score then c.score else score)
+
+  target-for-order : List TargetCandidate, TargetOrder -> Integer
+  target-for-order (cs) (order) =
+    let mark = __heap-save
+    in let matches = for c in cs -> target-matches c order
+    in let selected = matching-targets cs matches 0 []
+    in let chosen = when order
+      is PriorityThreat (level) -> threat-target selected level
+      is otherwise -> best-target selected 0 (0 - 3) 0
+    in let restored = __heap-restore mark
+    in chosen
+
+  target-matches : TargetCandidate, TargetOrder -> Boolean
+  target-matches (c) (order) = when order
+    is PriorityGeneral -> c.kind == General
+    is PriorityPermanent (id) -> c.target == id
+    is PriorityType (kind) -> c.kind == kind
+    is PriorityThreat (level) -> c.kind /= General
+
+  matching-targets : List TargetCandidate, List Boolean, Integer, List TargetCandidate -> List TargetCandidate
+  matching-targets (cs) (matches) (i) (acc) =
+    if i >= list-length cs then acc
+    else matching-targets cs matches (i + 1) (if list-at matches i then list-push acc (list-at cs i) else acc)
+
+  threat-target : List TargetCandidate, Integer -> Integer
+  threat-target (cs) (level) =
+    if list-length cs == 0 then 0 - 3
+    else if level == 0 then best-target cs 0 (0 - 3) 0
+    else let low = target-extreme cs 1 ((list-at cs 0).score) False
+    in let high = target-extreme cs 1 ((list-at cs 0).score) True
+    in let wanted = if level == 2 then low else low / 2 + high / 2
+    in closest-target cs wanted 0 (0 - 3) 0
+
+  target-extreme : List TargetCandidate, Integer, Integer, Boolean -> Integer
+  target-extreme (cs) (i) (best) (high) =
+    if i >= list-length cs then best
+    else let score = (list-at cs i).score
+    in target-extreme cs (i + 1) (if (high & score > best) | (high == False & score < best) then score else best) high
+
+  closest-target : List TargetCandidate, Integer, Integer, Integer, Integer -> Integer
+  closest-target (cs) (wanted) (i) (best) (gap) =
+    if i >= list-length cs then best
+    else let c = list-at cs i
+    in let distance = if c.score > wanted then c.score - wanted else wanted - c.score
+    in closest-target cs wanted (i + 1) (if best == (0 - 3) | distance < gap then c.target else best) (if best == (0 - 3) | distance < gap then distance else gap)
 
   find-biggest-threat : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer, Integer -> Integer
   find-biggest-threat (perms) (templates) (opp) (i) (len) (best-id) (best-power) =
@@ -271,10 +1450,11 @@ Section: AI Combat
     in if my-creatures == 0 then gs
     else let should-atk = should-attack-check stance gen-template
     in if should-atk then
-      let combat = ai-select-attackers (gs.battlefield) (gs.templates) player stance gen-template 0 (list-length (gs.battlefield)) combat-empty
+      let combat = ai-plan-attack gs player stance gen-template (CombatState { attackers = [], blockers = [], num-attackers = 0, num-blockers = 0 })
       in if combat.num-attackers == 0 then gs
       else let gs2 = tap-attackers gs combat
-      in let combat2 = ai-assign-blockers gs2 combat defender stance
+      in let defending-stance = effective-stance posture-default (get-general gs2 defender) ((get-player gs2 defender).general)
+      in let combat2 = ai-assign-blockers gs2 combat defender defending-stance
       in let result = resolve-combat-damage gs2 combat2
       in let gs3 = check-state-based-actions (result.game)
       in gs3
@@ -282,7 +1462,8 @@ Section: AI Combat
 
   should-attack-check : Stance, GeneralTemplate -> Boolean
   should-attack-check (stance) (gen-template) =
-    if has-combat-bias (gen-template.modifiers) then
+    if stance == Defensive | stance == Control then False
+    else if has-combat-bias (gen-template.modifiers) then
       when get-combat-bias (gen-template.modifiers)
         is AlwaysAttack -> True
         is SuicidalCharge -> True
@@ -292,6 +1473,8 @@ Section: AI Combat
           is otherwise -> False
         is Cautious -> when stance
           is Aggressive -> True
+          is Balanced -> True
+          is Tempo -> True
           is otherwise -> False
     else when stance
       is Aggressive -> True
@@ -299,54 +1482,328 @@ Section: AI Combat
       is Tempo -> True
       is otherwise -> False
 
+  ai-plan-attack : GameState, Integer, Stance, GeneralTemplate, CombatState -> CombatState
+  ai-plan-attack (gs) (player) (stance) (gen) (empty) = ai-plan-attack-scaled (scale-bonuses gs) gs player stance gen empty
+
+  ai-plan-attack-scaled : ScaleBonuses, GameState, Integer, Stance, GeneralTemplate, CombatState -> CombatState
+  ai-plan-attack-scaled (bonuses) (gs) (player) (stance) (gen) (empty) =
+    let cs = ai-select-attackers-scaled bonuses (gs.battlefield) (gs.templates) player stance gen 0 (list-length (gs.battlefield)) empty
+    in if stance == Aggressive | has-combat-bias (gen.modifiers) == False | get-combat-bias (gen.modifiers) /= Cautious then cs
+    else filter-general-threat-scaled bonuses gs player cs 0 (CombatState { attackers = [], blockers = [], num-attackers = 0, num-blockers = 0 })
+
+  filter-general-threat : GameState, Integer, CombatState, Integer, CombatState -> CombatState
+  filter-general-threat (gs) (player) (cs) (i) (kept) = filter-general-threat-scaled (scale-bonuses gs) gs player cs i kept
+
+  filter-general-threat-scaled : ScaleBonuses, GameState, Integer, CombatState, Integer, CombatState -> CombatState
+  filter-general-threat-scaled (bonuses) (gs) (player) (cs) (i) (kept) =
+    if i >= cs.num-attackers then kept
+    else let id = (list-at (cs.attackers) i).permanent-id
+    in let p = find-permanent (gs.battlefield) id 0 (list-length (gs.battlefield))
+    in let defender = if player == 0 then 1 else 0
+    in let safe = favorable-general-attack-scaled bonuses gs p defender
+    in filter-general-threat-scaled bonuses gs player cs (i + 1) (if safe then declare-attacker kept id else kept)
+
+  favorable-general-attack : GameState, Permanent, Integer -> Boolean
+  favorable-general-attack (gs) (p) (defender) =
+    let mark = __heap-save
+    in let result = favorable-general-attack-scaled (scale-bonuses gs) gs p defender
+    in let restored = __heap-restore mark
+    in result
+
+  favorable-general-attack-scaled : ScaleBonuses, GameState, Permanent, Integer -> Boolean
+  favorable-general-attack-scaled (bonuses) (gs) (p) (defender) =
+    let g = get-general gs defender
+    in let state = (get-player gs defender).general
+    in let t = get-template gs (p.template-id)
+    in let power = (effective-power bonuses t p)
+    in let hits = combat-damage-with-deathtouch power (g.defense + state.defense-mod) (has-keyword (p.keywords) Exsanguinate)
+    in if hits == False then False
+    else if power >= state.life | general-can-block gs defender p == False then True
+    else combat-damage-with-deathtouch (g.power + state.power-mod) ((effective-defense bonuses t p)) (has-keyword (g.keywords) Exsanguinate) == False | (has-keyword (g.keywords) Exsanguinate == False & g.power + state.power-mod < (effective-toughness bonuses t p) - p.damage-marked)
+
   ai-select-attackers : List Permanent, List CardTemplate, Integer, Stance, GeneralTemplate, Integer, Integer, CombatState -> CombatState
-  ai-select-attackers (perms) (templates) (player) (stance) (gen-template) (i) (len) (cs) =
-    if i >= len then cs
+  ai-select-attackers (perms) (templates) (player) (stance) (gen-template) (i) (len) (cs) = ai-select-attackers-scaled scale-bonuses-none perms templates player stance gen-template i len cs
+
+  ai-select-attackers-scaled : ScaleBonuses, List Permanent, List CardTemplate, Integer, Stance, GeneralTemplate, Integer, Integer, CombatState -> CombatState
+  ai-select-attackers-scaled (bonuses) (perms) (templates) (player) (stance) (gen-template) (i) (len) (cs) =
+    let biased = has-combat-bias (gen-template.modifiers) & stance /= Aggressive
+    in let cap = if biased & get-combat-bias (gen-template.modifiers) == NeverOverextend then attack-ready-count perms templates player 0 0 / 2 else len
+    in let careful = biased & get-combat-bias (gen-template.modifiers) == Cautious
+    in select-attackers-limited-scaled bonuses perms templates player stance i len cs cap careful
+
+  attack-ready-count : List Permanent, List CardTemplate, Integer, Integer, Integer -> Integer
+  attack-ready-count (ps) (ts) (player) (i) (n) =
+    if i >= list-length ps then n
+    else let p = list-at ps i
+    in let ready = p.controller == player & (list-at ts (p.template-id)).card-type == Creature & can-attack p (p.keywords)
+    in attack-ready-count ps ts player (i + 1) (if ready then n + 1 else n)
+
+  select-attackers-limited : List Permanent, List CardTemplate, Integer, Stance, Integer, Integer, CombatState, Integer, Boolean -> CombatState
+  select-attackers-limited (perms) (templates) (player) (stance) (i) (len) (cs) (cap) (careful) = select-attackers-limited-scaled scale-bonuses-none perms templates player stance i len cs cap careful
+
+  select-attackers-limited-scaled : ScaleBonuses, List Permanent, List CardTemplate, Integer, Stance, Integer, Integer, CombatState, Integer, Boolean -> CombatState
+  select-attackers-limited-scaled (bonuses) (perms) (templates) (player) (stance) (i) (len) (cs) (cap) (careful) =
+    if i >= len | cs.num-attackers >= cap then cs
     else let perm = list-at perms i
     in if perm.controller == player then
       let t = list-at templates (perm.template-id)
       in when t.card-type
         is Creature ->
-          if can-attack perm (perm.keywords) then
-            let dominated = t.power + perm.power-mod <= 0
+          if can-attack perm (perm.keywords) & (careful == False | favorable-attack-scaled bonuses perms templates perm 0) then
+            let dominated = (effective-power bonuses t perm) <= 0
             in if dominated then
               when stance
-                is Aggressive -> ai-select-attackers perms templates player stance gen-template (i + 1) len (declare-attacker cs (perm.id))
-                is otherwise -> ai-select-attackers perms templates player stance gen-template (i + 1) len cs
-            else ai-select-attackers perms templates player stance gen-template (i + 1) len (declare-attacker cs (perm.id))
-          else ai-select-attackers perms templates player stance gen-template (i + 1) len cs
-        is otherwise -> ai-select-attackers perms templates player stance gen-template (i + 1) len cs
-    else ai-select-attackers perms templates player stance gen-template (i + 1) len cs
+                is Aggressive -> select-attackers-limited-scaled bonuses perms templates player stance (i + 1) len (declare-attacker cs (perm.id)) cap careful
+                is otherwise -> select-attackers-limited-scaled bonuses perms templates player stance (i + 1) len cs cap careful
+            else select-attackers-limited-scaled bonuses perms templates player stance (i + 1) len (declare-attacker cs (perm.id)) cap careful
+          else select-attackers-limited-scaled bonuses perms templates player stance (i + 1) len cs cap careful
+        is otherwise -> select-attackers-limited-scaled bonuses perms templates player stance (i + 1) len cs cap careful
+    else select-attackers-limited-scaled bonuses perms templates player stance (i + 1) len cs cap careful
+
+  favorable-attack : List Permanent, List CardTemplate, Permanent, Integer -> Boolean
+  favorable-attack (ps) (ts) (atk) (i) =
+    let mark = __heap-save
+    in let result = favorable-attack-scaled scale-bonuses-none ps ts atk i
+    in let restored = __heap-restore mark
+    in result
+
+  favorable-attack-scaled : ScaleBonuses, List Permanent, List CardTemplate, Permanent, Integer -> Boolean
+  favorable-attack-scaled (bonuses) (ps) (ts) (atk) (i) =
+    if i >= list-length ps then True
+    else let b = list-at ps i
+    in let bt = list-at ts (b.template-id)
+    in if b.controller == atk.controller | bt.card-type /= Creature | can-block b (b.keywords) atk (atk.keywords) == False then favorable-attack-scaled bonuses ps ts atk (i + 1)
+    else let at = list-at ts (atk.template-id)
+    in let ap = (effective-power bonuses at atk)
+    in let bp = (effective-power bonuses bt b)
+    in let survives = (bp <= (effective-defense bonuses at atk) & has-keyword (b.keywords) Exsanguinate == False) | (bp < (effective-toughness bonuses at atk) - atk.damage-marked & has-keyword (b.keywords) Exsanguinate == False)
+    in let kills = (ap > (effective-defense bonuses bt b) & ap >= (effective-toughness bonuses bt b) - b.damage-marked) | (ap > 0 & has-keyword (atk.keywords) Exsanguinate)
+    in survives & kills & favorable-attack-scaled bonuses ps ts atk (i + 1)
 
   ai-assign-blockers : GameState, CombatState, Integer, Stance -> CombatState
-  ai-assign-blockers (gs) (combat) (defender) (stance) =
+  ai-assign-blockers (gs) (combat) (defender) (stance) = ai-assign-blockers-scaled (scale-bonuses gs) gs combat defender stance
+
+  ai-assign-blockers-scaled : ScaleBonuses, GameState, CombatState, Integer, Stance -> CombatState
+  ai-assign-blockers-scaled (bonuses) (gs) (combat) (defender) (stance) = ai-assign-blockers-ordered-scaled bonuses gs combat defender stance []
+
+  ai-assign-blockers-ordered : GameState, CombatState, Integer, Stance, List TargetOrder -> CombatState
+  ai-assign-blockers-ordered (gs) (combat) (defender) (stance) (orders) = ai-assign-blockers-ordered-scaled (scale-bonuses gs) gs combat defender stance orders
+
+  ai-assign-blockers-ordered-scaled : ScaleBonuses, GameState, CombatState, Integer, Stance, List TargetOrder -> CombatState
+  ai-assign-blockers-ordered-scaled (bonuses) (gs) (combat) (defender) (stance) (orders) =
+    assign-ordered-blockers-scaled bonuses gs combat defender stance orders (0 - 1)
+
+  projected-defender-life : GameState, CombatState, Integer -> Integer
+  projected-defender-life (gs) (combat) (defender) =
+    let mark = __heap-save
+    in let result = projected-defender-life-scaled (scale-bonuses gs) gs combat defender
+    in let restored = __heap-restore mark
+    in result
+
+  projected-defender-life-scaled : ScaleBonuses, GameState, CombatState, Integer -> Integer
+  projected-defender-life-scaled (bonuses) (gs) (combat) (defender) =
+    let mark = __heap-save
+    in let players = for p in gs.players -> p
+    in let copy = GameState { queued-loyalty = gs.queued-loyalty, loyalty-state = gs.loyalty-state, queued-cards = gs.queued-cards, automatic-work = gs.automatic-work, players = players, generals = gs.generals, battlefield = gs.battlefield, active-player = gs.active-player, priority-player = gs.priority-player, turn-number = gs.turn-number, phase = gs.phase, step = gs.step, next-permanent-id = gs.next-permanent-id, next-instance-id = gs.next-instance-id, game-over = gs.game-over, winner = gs.winner, templates = gs.templates, card-templates = gs.card-templates, card-orders = gs.card-orders, disruption = gs.disruption, queued-abilities = gs.queued-abilities }
+    in let result = resolve-combat-damage-scaled bonuses copy combat
+    in let life = ((get-player (result.game) defender).general).life
+    in let restored = __heap-restore mark
+    in life
+
+  life-threat-power : GameState, Integer, Permanent -> Integer
+  life-threat-power (gs) (defender) (atk) =
+    let mark = __heap-save
+    in let result = life-threat-power-scaled (scale-bonuses gs) gs defender atk
+    in let restored = __heap-restore mark
+    in result
+
+  life-threat-power-scaled : ScaleBonuses, GameState, Integer, Permanent -> Integer
+  life-threat-power-scaled (bonuses) (gs) (defender) (atk) =
+    let power = (effective-power bonuses (get-template gs (atk.template-id)) atk)
+    in let defense = (get-general gs defender).defense + ((get-player gs defender).general).defense-mod
+    in if power > 0 & combat-damage-with-deathtouch power defense (has-keyword (atk.keywords) Exsanguinate) then power else 0
+
+  ordered-life-threats : GameState, CombatState, Integer, List TargetOrder -> List Attacker
+  ordered-life-threats (gs) (combat) (defender) (orders) = ordered-life-threats-scaled (scale-bonuses gs) gs combat defender orders
+
+  ordered-life-threats-scaled : ScaleBonuses, GameState, CombatState, Integer, List TargetOrder -> List Attacker
+  ordered-life-threats-scaled (bonuses) (gs) (combat) (defender) (orders) =
+    if list-length orders > 0 then ordered-attackers-scaled bonuses gs combat orders
+    else let out = for a in combat.attackers -> a
+    in let mark = __heap-save
+    in let ranked = for a in combat.attackers -> RankedAttacker { attack = a, priority = 0, value = life-threat-power-scaled bonuses gs defender (find-permanent (gs.battlefield) (a.permanent-id) 0 (list-length (gs.battlefield))), level = 0 }
+    in let sorted = sort-attackers ranked 0 1
+    in let copied = copy-ranked-attacks out sorted 0
+    in let restored = __heap-restore mark
+    in copied
+
+  ai-assign-blockers-policy : GameState, CombatState, Integer, Stance, List TargetOrder, BlockPolicy -> CombatState
+  ai-assign-blockers-policy (gs) (combat) (defender) (stance) (orders) (policy) = ai-assign-blockers-policy-scaled (scale-bonuses gs) gs combat defender stance orders policy
+
+  ai-assign-blockers-policy-scaled : ScaleBonuses, GameState, CombatState, Integer, Stance, List TargetOrder, BlockPolicy -> CombatState
+  ai-assign-blockers-policy-scaled (bonuses) (gs) (combat) (defender) (stance) (orders) (policy) = if combat.num-attackers == 0 then combat else when policy
+    is AutoBlock -> ai-assign-blockers-ordered-scaled bonuses gs combat defender stance orders
+    is ProtectLife (limit) -> if projected-defender-life-scaled bonuses gs combat defender < limit then assign-ordered-blockers-scaled bonuses gs combat defender Defensive orders limit else combat
+    is otherwise -> combat
+
+  assign-ordered-blockers : GameState, CombatState, Integer, Stance, List TargetOrder, Integer -> CombatState
+  assign-ordered-blockers (gs) (combat) (defender) (stance) (orders) (limit) = assign-ordered-blockers-scaled (scale-bonuses gs) gs combat defender stance orders limit
+
+  assign-ordered-blockers-scaled : ScaleBonuses, GameState, CombatState, Integer, Stance, List TargetOrder, Integer -> CombatState
+  assign-ordered-blockers-scaled (bonuses) (gs) (combat) (defender) (stance) (orders) (limit) =
     let available = get-untapped-creatures (gs.battlefield) (gs.templates) defender 0 (list-length (gs.battlefield)) []
-    in assign-blockers-loop gs combat defender stance available 0 (combat.num-attackers)
+    in let unused = mark-used-blockers available (combat.blockers) 0
+    in let attacks = if limit >= 0 then ordered-life-threats-scaled bonuses gs combat defender orders else ordered-attackers-scaled bonuses gs combat orders
+    in assign-blockers-loop-scaled bonuses gs combat defender stance unused attacks 0 (combat.num-attackers) limit
 
-  assign-blockers-loop : GameState, CombatState, Integer, Stance, List Integer, Integer, Integer -> CombatState
-  assign-blockers-loop (gs) (combat) (defender) (stance) (available) (i) (num-atk) =
+  mark-used-blockers : List Integer, List Blocker, Integer -> List Integer
+  mark-used-blockers (available) (blocks) (i) =
+    if i >= list-length available then available
+    else let id = list-at available i
+    in let next = if list-contains blocks (\b -> b.permanent-id == id) then list-set-at available i (0 - 1) else available
+    in mark-used-blockers next blocks (i + 1)
+
+  assign-blockers-loop : GameState, CombatState, Integer, Stance, List Integer, List Attacker, Integer, Integer, Integer -> CombatState
+  assign-blockers-loop (gs) (combat) (defender) (stance) (available) (attacks) (i) (num-atk) (limit) = assign-blockers-loop-scaled (scale-bonuses gs) gs combat defender stance available attacks i num-atk limit
+
+  assign-blockers-loop-scaled : ScaleBonuses, GameState, CombatState, Integer, Stance, List Integer, List Attacker, Integer, Integer, Integer -> CombatState
+  assign-blockers-loop-scaled (bonuses) (gs) (combat) (defender) (stance) (available) (attacks) (i) (num-atk) (limit) =
     if i >= num-atk then combat
-    else if list-length available == 0 then combat
-    else let attacker = list-at (combat.attackers) i
-    in let atk-perm = find-permanent (gs.battlefield) (attacker.permanent-id) 0 (list-length (gs.battlefield))
-    in let atk-template = get-template gs (atk-perm.template-id)
-    in let atk-power = atk-template.power + atk-perm.power-mod
+    else let attacker = list-at attacks i
+    in if list-length (attacker.blocked-by) > 0 then assign-blockers-loop-scaled bonuses gs combat defender stance available attacks (i + 1) num-atk limit
+    else let atk-perm = find-permanent (gs.battlefield) (attacker.permanent-id) 0 (list-length (gs.battlefield))
+    in let harmless = if limit >= 0 then life-threat-power-scaled bonuses gs defender atk-perm == 0 else False
+    in if harmless then assign-blockers-loop-scaled bonuses gs combat defender stance available attacks (i + 1) num-atk limit
+    else let atk-template = get-template gs (atk-perm.template-id)
+    in let atk-power = (effective-power bonuses atk-template atk-perm)
     in let gen-state = (get-player gs defender).general
-    in let blocker-id = pick-best-blocker gs atk-power (gen-state.life) stance available 0 (list-length available) (-1) 0
-    in if blocker-id >= 0 then
+    in let ordinary = pick-best-blocker-scaled bonuses gs atk-perm atk-power (gen-state.life) stance available 0 (list-length available) (-1) 0
+    in let used-general = list-contains (combat.blockers) (\b -> b.permanent-id == general-block-id defender)
+    in let use-general = if limit >= 0 then False else used-general == False & general-block-worth-scaled bonuses gs defender atk-perm ordinary stance
+    in let blocker-id = if use-general then general-block-id defender else ordinary
+    in if use-general | blocker-id >= 0 then
       let combat2 = declare-blocker combat blocker-id (attacker.permanent-id)
-      in let available2 = gs-list-remove available blocker-id
-      in assign-blockers-loop gs combat2 defender stance available2 (i + 1) num-atk
-    else assign-blockers-loop gs combat defender stance available (i + 1) num-atk
+      in let safe = if limit >= 0 then projected-defender-life-scaled bonuses gs combat2 defender >= limit else False
+      in if safe then combat2
+      else let available2 = gs-list-remove available blocker-id
+      in assign-blockers-loop-scaled bonuses gs combat2 defender stance available2 attacks (i + 1) num-atk limit
+    else assign-blockers-loop-scaled bonuses gs combat defender stance available attacks (i + 1) num-atk limit
 
-  pick-best-blocker : GameState, Integer, Integer, Stance, List Integer, Integer, Integer, Integer, Integer -> Integer
-  pick-best-blocker (gs) (atk-power) (my-life) (stance) (available) (i) (len) (best) (best-score) =
+  RankedAttacker = record { attack : Attacker, priority : Integer, value : Integer, level : Integer }
+
+  attacker-order-index : List TargetOrder, Integer, CardType, Integer -> Integer
+  attacker-order-index (orders) (id) (kind) (i) =
+    if i >= list-length orders then i
+    else let matches = when list-at orders i
+      is PriorityGeneral -> False
+      is PriorityPermanent (target) -> target == id
+      is PriorityType (wanted) -> wanted == kind
+      is PriorityThreat (level) -> True
+    in if matches then i else attacker-order-index orders id kind (i + 1)
+
+  rank-attackers : GameState, List Attacker, List TargetOrder, Integer, List RankedAttacker -> List RankedAttacker
+  rank-attackers (gs) (attacks) (orders) (i) (acc) = rank-attackers-scaled (scale-bonuses gs) gs attacks orders i acc
+
+  rank-attackers-scaled : ScaleBonuses, GameState, List Attacker, List TargetOrder, Integer, List RankedAttacker -> List RankedAttacker
+  rank-attackers-scaled (bonuses) (gs) (attacks) (orders) (i) (acc) =
+    if i >= list-length attacks then acc
+    else let a = list-at attacks i
+    in let p = find-permanent (gs.battlefield) (a.permanent-id) 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in let priority = attacker-order-index orders (p.id) (t.card-type) 0
+    in let level = if priority >= list-length orders then 0 else (when list-at orders priority is PriorityThreat (n) -> n is otherwise -> 0)
+    in let score = score-card t Balanced + (p.power-mod + scale-power bonuses t p) * 10 + (p.toughness-mod + scale-toughness bonuses t p) * 5 + (p.defense-mod + scale-defense bonuses t p) * 8
+    in rank-attackers-scaled bonuses gs attacks orders (i + 1) (list-push acc (RankedAttacker { attack = a, priority = priority, value = score, level = level }))
+
+  attacker-extreme : List RankedAttacker, Integer, Integer, Boolean -> Integer
+  attacker-extreme (rs) (i) (value) (high) =
+    if i >= list-length rs then value
+    else let n = (list-at rs i).value
+    in attacker-extreme rs (i + 1) (if (high & n > value) | (high == False & n < value) then n else value) high
+
+  attacker-rank-value : RankedAttacker, Integer -> Integer
+  attacker-rank-value (r) (middle) =
+    if r.level == 2 then 0 - r.value
+    else if r.level == 1 then 0 - (if r.value > middle then r.value - middle else middle - r.value)
+    else r.value
+
+  sort-attackers : List RankedAttacker, Integer, Integer -> List RankedAttacker
+  sort-attackers (rs) (middle) (i) =
+    if i >= list-length rs then rs else sort-attackers (shift-attacker rs middle i) middle (i + 1)
+
+  shift-attacker : List RankedAttacker, Integer, Integer -> List RankedAttacker
+  shift-attacker (rs) (middle) (i) =
+    if i <= 0 then rs
+    else let a = list-at rs i
+    in let b = list-at rs (i - 1)
+    in if a.priority < b.priority | (a.priority == b.priority & attacker-rank-value a middle > attacker-rank-value b middle) then
+      (let moved = list-set-at (list-set-at rs (i - 1) a) i b
+       in shift-attacker moved middle (i - 1))
+    else rs
+
+  copy-ranked-attacks : List Attacker, List RankedAttacker, Integer -> List Attacker
+  copy-ranked-attacks (out) (rs) (i) =
+    if i >= list-length rs then out else copy-ranked-attacks (list-set-at out i ((list-at rs i).attack)) rs (i + 1)
+
+  ordered-attackers : GameState, CombatState, List TargetOrder -> List Attacker
+  ordered-attackers (gs) (cs) (orders) = ordered-attackers-scaled (scale-bonuses gs) gs cs orders
+
+  ordered-attackers-scaled : ScaleBonuses, GameState, CombatState, List TargetOrder -> List Attacker
+  ordered-attackers-scaled (bonuses) (gs) (cs) (orders) =
+    if list-length orders == 0 | cs.num-attackers == 0 then cs.attackers
+    else let out = for a in cs.attackers -> a
+    in let mark = __heap-save
+    in let ranks = rank-attackers-scaled bonuses gs (cs.attackers) orders 0 []
+    in let middle = attacker-extreme ranks 1 ((list-at ranks 0).value) False / 2 + attacker-extreme ranks 1 ((list-at ranks 0).value) True / 2
+    in let sorted = sort-attackers ranks middle 1
+    in let result = copy-ranked-attacks out sorted 0
+    in let restored = __heap-restore mark
+    in result
+
+  general-block-worth : GameState, Integer, Permanent, Integer, Stance -> Boolean
+  general-block-worth (gs) (defender) (atk) (ordinary) (stance) =
+    let mark = __heap-save
+    in let result = general-block-worth-scaled (scale-bonuses gs) gs defender atk ordinary stance
+    in let restored = __heap-restore mark
+    in result
+
+  general-block-worth-scaled : ScaleBonuses, GameState, Integer, Permanent, Integer, Stance -> Boolean
+  general-block-worth-scaled (bonuses) (gs) (defender) (atk) (ordinary) (stance) =
+    if general-can-block gs defender atk == False then False
+    else let gen = get-general gs defender
+    in let state = (get-player gs defender).general
+    in let power = (effective-power bonuses (get-template gs (atk.template-id)) atk)
+    in let absorbs = combat-damage-with-deathtouch power (gen.defense + state.defense-mod) (has-keyword (atk.keywords) Exsanguinate) == False
+    in if absorbs == False & power >= state.life then False
+    else if has-combat-bias (gen.modifiers) & get-combat-bias (gen.modifiers) == NeverOverextend & power < state.life / 3 then False
+    else let at = get-template gs (atk.template-id)
+    in let gp = gen.power + state.power-mod
+    in let kills = combat-damage-with-deathtouch gp ((effective-defense bonuses at atk)) (has-keyword (gen.keywords) Exsanguinate) & (gp >= (effective-toughness bonuses at atk) - atk.damage-marked | has-keyword (gen.keywords) Exsanguinate)
+    in let score = if absorbs then 100 else if kills then 40 else 0
+    in if score <= 0 then False
+    else if ordinary < 0 then True
+    else let p = find-permanent (gs.battlefield) ordinary 0 (list-length (gs.battlefield))
+    in let t = get-template gs (p.template-id)
+    in let old = (if (effective-defense bonuses t p) >= power then 100 else if (effective-toughness bonuses t p) > power then 50 else if power >= state.life / 3 then 30 else 0) + (if stance == Defensive then 20 else if stance == Control then 15 else 0)
+    in score > old
+
+  pick-best-blocker : GameState, Permanent, Integer, Integer, Stance, List Integer, Integer, Integer, Integer, Integer -> Integer
+  pick-best-blocker (gs) (atk) (atk-power) (my-life) (stance) (available) (i) (len) (best) (best-score) =
+    let mark = __heap-save
+    in let result = pick-best-blocker-scaled (scale-bonuses gs) gs atk atk-power my-life stance available i len best best-score
+    in let restored = __heap-restore mark
+    in result
+
+  pick-best-blocker-scaled : ScaleBonuses, GameState, Permanent, Integer, Integer, Stance, List Integer, Integer, Integer, Integer, Integer -> Integer
+  pick-best-blocker-scaled (bonuses) (gs) (atk) (atk-power) (my-life) (stance) (available) (i) (len) (best) (best-score) =
     if i >= len then best
     else let perm-id = list-at available i
-    in let perm = find-permanent (gs.battlefield) perm-id 0 (list-length (gs.battlefield))
-    in let t = get-template gs (perm.template-id)
-    in let my-toughness = t.toughness + perm.toughness-mod
-    in let my-defense = t.defense + perm.defense-mod
+    in if perm-id < 0 then pick-best-blocker-scaled bonuses gs atk atk-power my-life stance available (i + 1) len best best-score
+    else let perm = find-permanent (gs.battlefield) perm-id 0 (list-length (gs.battlefield))
+    in if can-block perm (perm.keywords) atk (atk.keywords) == False then pick-best-blocker-scaled bonuses gs atk atk-power my-life stance available (i + 1) len best best-score
+    else let t = get-template gs (perm.template-id)
+    in let my-toughness = (effective-toughness bonuses t perm)
+    in let my-defense = (effective-defense bonuses t perm)
     in let survives = my-toughness > atk-power
     in let absorbs = my-defense >= atk-power
     in let score = if absorbs then 100 else if survives then 50 else if atk-power >= my-life / 3 then 30 else 0
@@ -355,8 +1812,8 @@ Section: AI Combat
       is Control -> 15
       is otherwise -> 0
     in let total = score + stance-bonus
-    in if total > best-score then pick-best-blocker gs atk-power my-life stance available (i + 1) len perm-id total
-    else pick-best-blocker gs atk-power my-life stance available (i + 1) len best best-score
+    in if total > best-score then pick-best-blocker-scaled bonuses gs atk atk-power my-life stance available (i + 1) len perm-id total
+    else pick-best-blocker-scaled bonuses gs atk atk-power my-life stance available (i + 1) len best best-score
 
 Section: Utility
 

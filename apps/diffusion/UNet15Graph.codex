@@ -22,9 +22,11 @@ Section: Attention
     in let q = ops.linear-b u x sq c c (p & "to_q") False
     in let k = ops.linear-b u ctx sk kv c (p & "to_k") False
     in let v = ops.linear-b u ctx sk kv c (p & "to_v") False
-    in let s = ops.alloc (8 * sq * sk * 4)
+    in let fl = if ops.flash-at d then ops.probs-at p == False else False
+    in let s = if fl then 0 else ops.alloc (8 * sq * sk * 4)
     in let o = ops.alloc (sq * c * 4)
-    in let ok = if q == 0 | k == 0 | v == 0 | s == 0 | o == 0 then False
+    in let ok = if fl then (if q == 0 | k == 0 | v == 0 | o == 0 then False else ops.flash q k v o 8 sq sk d (u15-scale d))
+       else if q == 0 | k == 0 | v == 0 | s == 0 | o == 0 then False
        else if ops.attn-scores q k s 8 sq sk d (u15-scale d) == False then False
        else if ops.softmax-rows s sk (8 * sq) == False then False
        else if (if ops.probs-at p then ops.probs s 8 sq == False else False) then False
@@ -38,7 +40,7 @@ Section: Attention
     in let a1 = if ops.self-v (p & "attn1.") then un-value-attn-with ops u n1 rows c (p & "attn1.") else u15-attention-with ops u n1 rows c n1 rows c (p & "attn1.")
     in let x1 = ops.add x a1 (rows * c)
     in let n2 = ops.layer-norm u x1 rows c (p & "norm2")
-    in let a2 = u15-attention-with ops u n2 rows c ctx 77 768 (p & "attn2.")
+    in let a2 = u15-attention-with ops u n2 rows c ctx (ops.ctx-len ctx) 768 (p & "attn2.")
     in let x2 = ops.add x1 a2 (rows * c)
     in let n3 = ops.layer-norm u x2 rows c (p & "norm3")
     in let f = un-feed-forward-with ops u n3 rows c (p & "ff.")

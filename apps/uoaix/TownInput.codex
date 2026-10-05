@@ -1,0 +1,59 @@
+Chapter: TownInput
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldRecords
+
+  TownInput = record {
+    sequence : Integer, tick : Integer, operation : Integer, expected : Integer,
+    args : List Integer, text : Text, extra : Text,
+    proposal : TmProposal, world-event : WorldEvent
+  }
+
+  ti-new : Integer, Integer, Integer, Integer -> TownInput
+  ti-new (sequence) (tick) (operation) (expected) = TownInput {
+    sequence = sequence, tick = tick, operation = operation, expected = expected,
+    args = tf-zeros 8 [], text = "", extra = "",
+    proposal = TmProposal { actor = 0, kind = 0, target = 0, item = 0, quantity = 0, destination = 0, speech = "" },
+    world-event = WorldEvent { sequence = 0, tick = 0, operation = 0,
+      object = WorldObject { serial = 0, kind = 0, x = 0, y = 0, z = 0, graphic = 0, hue = 0, container = 0, amount = 0, health = 0 } }
+  }
+
+  ti-arg-count : Integer -> Integer
+  ti-arg-count (op) =
+    if op == 2 then 3 else if op == 3 then 5 else if op == 4 | op == 5 | op == 13 then 2
+    else if op == 6 | op == 9 then 4 else if op == 10 then 5 else if op == 11 then 3 else 0
+
+  ti-unused-args : List Integer, Integer -> Boolean
+  ti-unused-args (args) (i) =
+    if i == 8 then True
+    else list-at args i == 0 & ti-unused-args args (i + 1)
+
+  ti-unused-proposal : TmProposal -> Boolean
+  ti-unused-proposal (p) = p.actor == 0 & p.kind == 0 & p.target == 0 & p.item == 0 & p.quantity == 0 & p.destination == 0 & p.speech == ""
+
+  ti-unused-world : WorldEvent -> Boolean
+  ti-unused-world (event) =
+    event.sequence == 0 & event.tick == 0 & event.operation == 0
+    & event.object.serial == 0 & event.object.kind == 0 & event.object.x == 0 & event.object.y == 0 & event.object.z == 0
+    & event.object.graphic == 0 & event.object.hue == 0 & event.object.container == 0 & event.object.amount == 0 & event.object.health == 0
+
+  ti-shape-valid : TownInput -> Boolean
+  ti-shape-valid (entry) =
+    if entry.sequence <= 0 | entry.tick < 0 | entry.operation < 1 | entry.operation > 13 then False
+    else if list-length entry.args /= 8 | text-length entry.text > 512 | text-length entry.extra > 128 | text-length entry.proposal.speech > 256 then False
+    else if not (ti-unused-args entry.args (ti-arg-count entry.operation)) then False
+    else if entry.operation /= 1 & not (ti-unused-world entry.world-event) then False
+    else if entry.operation /= 10 & not (ti-unused-proposal entry.proposal) then False
+    else if entry.operation /= 9 & entry.extra /= "" then False
+    else if entry.operation /= 2 & entry.operation /= 3 & entry.operation /= 9 & entry.operation /= 10 & entry.operation /= 11 & entry.text /= "" then False
+    else if entry.operation == 1 then entry.world-event.operation >= 1 & entry.world-event.operation <= 3 & entry.world-event.object.serial > 0 & entry.world-event.object.serial <= 2147483647
+    else if entry.operation == 2 then ti-place-args entry.args 0 3
+    else if entry.operation == 3 then ti-place-args entry.args 1 3
+    else True
+
+  ti-place-args : List Integer, Integer, Integer -> Boolean
+  ti-place-args (args) (i) (limit) =
+    if i == limit then True
+    else let n = list-at args i
+    in n >= -2147483647 & n <= 2147483647 & ti-place-args args (i + 1) limit

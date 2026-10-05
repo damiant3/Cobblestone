@@ -1,0 +1,160 @@
+Chapter: GameNpcSpeech
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter NpcSpeechText
+
+  NsRow = record { serial : Integer, kind : Integer, index : Integer, name : Text, alias : Text,
+    greeting : Text, last : List Integer }
+  NsView = record { serial : Integer, connection : Integer, inside : Integer }
+  NpcSpeech = record { town : TownLive, shops : BbTown, banks : GmbState,
+    rows : List NsRow, count : Integer, viewers : List NsView }
+  ns-role : Integer -> Text
+  ns-role (i) = if i == 0 then "provisioner" else if i == 1 then "blacksmith" else if i == 2 then "tailor"
+    else if i == 3 then "baker" else if i == 4 then "healer" else "innkeeper"
+  ns-rows : Integer, List NsRow -> List NsRow
+  ns-rows (i) (xs) = if i == 40 then xs else ns-rows (i + 1) (list-push xs
+    (NsRow { serial = 0, kind = 0, index = 0, name = "", alias = "", greeting = "", last = [-600,-600,-600,-600,-600] }))
+  ns-viewers : Integer, List NsView -> List NsView
+  ns-viewers (i) (xs) = if i == 5 then xs else ns-viewers (i + 1) (list-push xs (NsView { serial = 0, connection = -1, inside = 0 }))
+  ns-add : NpcSpeech, Integer, Integer, Integer, Text, Text, Text -> Integer
+  ns-add (s) (serial) (kind) (index) (name) (alias) (greeting) = let r = list-at s.rows s.count
+    in let a = __record-set r "serial" serial
+    in let b = __record-set r "kind" kind
+    in let c = __record-set r "index" index
+    in let d = __record-set r "name" name
+    in let e = __record-set r "alias" alias
+    in let f = __record-set r "greeting" greeting
+    in let n = __record-set s "count" (s.count + 1) in 0
+  ns-bind-rows : NpcSpeech, Integer, Integer -> Integer
+  ns-bind-rows (s) (kind) (i) = if kind == 4 then 0
+    else let count = if kind == 1 then s.shops.vendors.vendor-count else if kind == 2 then s.banks.count else s.town.count
+    in if i == count then ns-bind-rows s (kind + 1) 0
+    else let serial = if kind == 1 then (list-at s.shops.vendors.vendors i).serial else if kind == 2 then list-at s.banks.bankers i
+      else (tf-person s.town.people (list-at s.town.residents i).person).world-serial
+    in let name = if kind == 1 then (list-at bb-shops (int-mod i bb-shop-count)).title else if kind == 2 then "Banker"
+      else (tf-person s.town.people (list-at s.town.residents i).person).name
+    in let alias = if kind == 1 then ns-role (int-mod i bb-shop-count) else ""
+    in let greeting = if kind == 1 then "Welcome. Say vendor buy or vendor sell, and I shall show you my prices."
+      else if kind == 2 then "Welcome to the bank. Step close and say bank for your chest." else ""
+    in let added = ns-add s serial kind i name alias greeting
+    in ns-bind-rows s kind (i + 1)
+  ns-bind : TownLive, BbTown, GmbState -> Result NpcSpeech Text
+  ns-bind (town) (shops) (banks) = if (shops.vendors.vendor-count /= bb-shop-count & shops.vendors.vendor-count /= 2 * bb-shop-count) | town.count /= 3 | banks.count < 0 | banks.count > 16
+    | town.vendors.game.world.buffer /= shops.vendors.game.world.buffer | banks.items.world.buffer /= shops.items.world.buffer
+    | town.items.world.buffer /= shops.items.world.buffer then Err "NPC speech shared bindings"
+    else let s = NpcSpeech { town = town, shops = shops, banks = banks, rows = ns-rows 0 (__list-with-capacity 40), count = 0,
+      viewers = ns-viewers 0 (__list-with-capacity 5) }
+    in let bound = ns-bind-rows s 1 0 in Ok s
+  ns-distance : WorldObject, WorldObject -> Integer
+  ns-distance (a) (b) = max (walk-abs (a.x - b.x)) (walk-abs (a.y - b.y))
+  ns-near : WorldObject, WorldObject, Integer -> Boolean
+  ns-near (a) (b) (range) = a.kind == 1 & b.kind == 1 & a.health > 0 & b.health > 0
+    & ns-distance a b <= range & walk-abs (a.z - b.z) <= 16
+  ns-named : NpcSpeech, Text, Integer -> Integer
+  ns-named (s) (text) (i) = if i == s.count then -1
+    else let r = list-at s.rows i
+    in let name = if r.kind == 1 then (list-at bb-shops (int-mod r.index bb-shop-count)).premises else if r.kind == 3 then r.name else ""
+    in if ns-has text name then i else ns-named s text (i + 1)
+  ns-aliased : NpcSpeech, Text, Integer -> Integer
+  ns-aliased (s) (text) (i) = if i == s.count then -1
+    else if ns-has text (list-at s.rows i).alias then i else ns-aliased s text (i + 1)
+  ns-nearest : NpcSpeech, WorldObject, Integer, Integer, Integer, Integer, Integer -> Integer
+  ns-nearest (s) (viewer) (kind) (range) (i) (best) (distance) = if i == s.count then best
+    else let r = list-at s.rows i
+    in if kind > 0 & r.kind /= kind then ns-nearest s viewer kind range (i + 1) best distance
+    else when world-get s.shops.vendors.game.world r.serial
+      is Err (_) -> ns-nearest s viewer kind range (i + 1) best distance
+      is Ok (npc) -> let d = ns-distance viewer npc
+        in let chosen = ns-near viewer npc range & (best < 0 | d < distance)
+        in ns-nearest s viewer kind range (i + 1) (if chosen then i else best) (if chosen then d else distance)
+  ns-person-reply : NpcSpeech, NsRow, Text -> GameReply
+  ns-person-reply (s) (r) (text) = let t = s.town
+    in let person = (list-at t.residents r.index).person
+    in let p = tf-person t.people person
+    in let persona = list-at t.mind.personas (person - 1)
+    in if p.alive == 0 | t.mind.audit-count >= 1024 | persona.request >= 1000000000
+      | (persona.call-hour == t.people.hour & persona.calls >= persona.call-limit) then gs-reply [] "NPC speech budget exhausted"
+    else let reply = tm-stub t.mind t.people person 1 (persona.request + 1) text
+    in let touched = world-touch t.vendors.game.world
+    in when world-get t.vendors.game.world r.serial
+      is Err (_) -> gs-reply [] "NPC absent"
+      is Ok (npc) -> gs-reply [gvp-speech npc r.name reply.speech] "townsfolk named fallback"
+  ns-vendor-menu : NpcSpeech, NsRow, WorldObject, GameInput, Integer, Integer -> GameReply
+  ns-vendor-menu (s) (r) (npc) (input) (side) (tick) = let v = s.shops.vendors
+    in let at = gv-player v input.session.serial 0
+    in if at < 0 then gsi-denied "Your trading account is unavailable."
+    else let p = list-at v.players at
+    in let vendor = list-at v.vendors r.index
+    in if not (world-indexed v.game.world) | not (gv-owned v.game.world p.pack p.serial 65)
+      | not (gv-owned v.game.world vendor.stock vendor.serial 65 & gv-owned v.game.world vendor.extra vendor.serial 65 & gv-owned v.game.world vendor.buys vendor.serial 65)
+      | tick < 0 | tick > 9223372036854775807 - gv-quote-ticks then gsi-denied "Vendor trade binding unavailable."
+    else bb-reply s.shops (gv-menu v p vendor npc (gvb-role r.index) side input.connection tick)
+  ns-answer : NpcSpeech, NsRow, WorldObject, GameInput, Integer, Text, Integer, Integer -> GameReply
+  ns-answer (s) (r) (npc) (input) (slot) (text) (command) (tick) =
+    if r.kind == 1 & (command == 1 | command == 2) then ns-vendor-menu s r npc input command tick
+    else if r.kind == 2 & command == 3 then gmb-open s.banks input slot
+    else if r.kind == 3 then ns-person-reply s r text
+    else gs-reply [gvp-speech npc r.name r.greeting] "NPC greeting"
+  ns-handler-at : NpcSpeech, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
+  ns-handler-at (s) (game) (input) (map) (port) (packet) (tick) =
+    if list-length packet < 1 | list-at packet 0 /= 3 then Ok None
+    else if list-length packet < 9 | list-length packet > 256 then Err "NPC speech packet extent"
+    else if not (gs-byte-range packet 0) | not (gp-speech-valid packet) then Err "NPC speech packet profile"
+    else if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial
+      | game.world.buffer /= s.shops.vendors.game.world.buffer then Err "NPC speech session binding"
+    else let slot = gv-slot game input.session.serial 0
+    in if slot < 0 then Err "NPC speech player slot"
+    else when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (viewer) -> let echo = gp-speech viewer game.characters slot packet
+        in let text = gp-speech-text packet
+        in let command = ns-command text
+        in let exact = ns-named s text 0
+        in let named = if exact >= 0 then exact else ns-aliased s text 0
+        in let range = if list-at packet 3 == 8 then 1 else 4
+        in let kind = if ns-has text "banker" | command == 3 then 2 else if ns-has text "vendor" | command == 1 | command == 2 then 1 else 0
+        in let target = if named >= 0 then named else if command <= 0 & kind == 0 then -1
+          else ns-nearest s viewer kind range 0 -1 5
+        in if list-at packet 3 == 2 | command == -1 | target < 0 then Ok (Just (gs-reply [echo] "speech"))
+        else let r = list-at s.rows target
+        in when world-get game.world r.serial
+          is Err (_) -> Ok (Just (gs-reply [echo] "speech target absent"))
+          is Ok (npc) -> if not (ns-near viewer npc range) then Ok (Just (gs-reply [echo] "speech out of range"))
+            else let reply = ns-answer s r npc input slot text command tick
+            in Ok (Just (GameReply { packets = [echo] & reply.packets, close = reply.close, note = reply.note }))
+  ns-handler : NpcSpeech, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  ns-handler (s) (game) (input) (map) (port) (packet) = ns-handler-at s game input map port packet get-ticks
+  ns-greet : NpcSpeech, NsView, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
+  ns-greet (s) (view) (viewer) (slot) (i) (packets) = if i == s.count then packets
+    else let r = list-at s.rows i
+    in if r.kind == 3 then ns-greet s view viewer slot (i + 1) packets
+    else when world-get s.shops.vendors.game.world r.serial
+      is Err (_) -> ns-greet s view viewer slot (i + 1) packets
+      is Ok (npc) -> let mask = bit-shl 1 i
+        in let was = bit-and view.inside mask /= 0
+        in let near = ns-near viewer npc 3
+        in let change = if was == near then 0 else let a = __record-set view "inside" (bit-xor view.inside mask) in 0
+        in if not near | was | s.town.now < list-at r.last slot + 600 then ns-greet s view viewer slot (i + 1) packets
+        else let saved = list-set-at r.last slot s.town.now
+        in let touched = world-touch s.shops.vendors.game.world
+        in ns-greet s view viewer slot (i + 1) (list-push packets (gvp-speech npc r.name r.greeting))
+  ns-pulse : NpcSpeech, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  ns-pulse (s) (game) (input) (map) (port) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else if game.active /= input.session.serial | game.world.buffer /= s.shops.vendors.game.world.buffer then Err "NPC greeting session binding"
+    else let slot = gv-slot game input.session.serial 0
+    in if slot < 0 then Err "NPC greeting player slot"
+    else let view = list-at s.viewers slot
+    in let reset = if view.serial == input.session.serial & view.connection == input.connection then 0 else
+      let same = view.serial == input.session.serial
+      in let a = __record-set view "serial" input.session.serial
+      in let b = __record-set view "connection" input.connection
+      in let c = __record-set view "inside" 0
+      in if same then 0 else let cleared = ns-clear-player s slot 0
+        in world-touch game.world
+    in when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (viewer) -> let packets = ns-greet s view viewer slot 0 []
+        in if list-length packets == 0 then Ok None else Ok (Just (gs-reply packets "bank/vendor approach greeting"))
+  ns-clear-player : NpcSpeech, Integer, Integer -> Integer
+  ns-clear-player (s) (slot) (i) = if i == s.count then 0 else let a = list-set-at (list-at s.rows i).last slot -600
+    in ns-clear-player s slot (i + 1)

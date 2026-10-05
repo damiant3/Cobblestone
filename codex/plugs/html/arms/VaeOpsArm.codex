@@ -31,6 +31,30 @@ Section: Data
     in let w = gpu-buf-write-words h 0 (vo-words 0 n s [])
     in h
 
+ A conv weight is packed f16, element i the low half of word i / 2 when even.
+ vo-val is (k - 64) / 64 for k below 128, exact in f16: magnitude m / 64 with
+ m below 65 is 2^e (1 + f) for the largest 2^e not above m, exponent field
+ e - 6 + 15.
+
+  vo-h16 : Integer, Integer -> Integer
+  vo-h16 (i) (s) =
+    let k = i * s - (i * s) / 128 * 128
+    in if k == 64 then 0 else if k < 64 then 32768 + vo-h16-e (64 - k) 6 64 else vo-h16-e (k - 64) 6 64
+
+  vo-h16-e : Integer, Integer, Integer -> Integer
+  vo-h16-e (m) (e) (p) = if p <= m then (e + 9) * 1024 + (m - p) * 1024 / p else vo-h16-e m (e - 1) (p / 2)
+
+  vo-hwords : Integer, Integer, Integer, List Integer -> List Integer
+  vo-hwords (i) (n) (s) (acc) =
+    if i >= n then acc
+    else vo-hwords (i + 2) n s (list-snoc acc (vo-h16 i s + vo-h16 (i + 1) s * 65536))
+
+  vo-hbuf : Integer, Integer -> Integer
+  vo-hbuf (n) (s) =
+    let h = gpu-buf-alloc (n * 2)
+    in let w = gpu-buf-write-words h 0 (vo-hwords 0 n s [])
+    in h
+
 Section: Run
 
   opening : [Console] Integer
@@ -39,12 +63,12 @@ Section: Run
   vo-opened : Text -> Integer
   vo-opened (r) =
     let code = page-data "bk"
-    in let w = BvWeights { bw-names = ["n.weight", "n.bias", "c.weight", "c.bias"], bw-handles = [vo-buf 64 37, vo-buf 64 11, vo-buf (64 * 64 * 9) 53, vo-buf 64 29] }
+    in let w = BvWeights { bw-names = ["n.weight", "n.bias", "c.weight", "c.bias"], bw-handles = [vo-buf 64 37, vo-buf 64 11, vo-hbuf (64 * 64 * 9) 53, vo-buf 64 29] }
     in let x = BvAct { ah = vo-buf (64 * 16) 41, ac = 64, ahh = 4, aww = 4 }
     in let n = bv-norm code w x "n" True
     in let y = bv-conv code w n "c" 64 3 1
     in let s = state-set "ok" (if y.ah == 0 then 0 else 1)
-    in let aw = BvWeights { bw-names = ["a.norm.weight", "a.norm.bias", "a.q.weight", "a.q.bias", "a.k.weight", "a.k.bias", "a.v.weight", "a.v.bias", "a.proj_out.weight", "a.proj_out.bias"], bw-handles = [vo-buf 64 37, vo-buf 64 11, vo-buf 4096 13, vo-buf 64 17, vo-buf 4096 19, vo-buf 64 23, vo-buf 4096 31, vo-buf 64 43, vo-buf 4096 47, vo-buf 64 59] }
+    in let aw = BvWeights { bw-names = ["a.norm.weight", "a.norm.bias", "a.q.weight", "a.q.bias", "a.k.weight", "a.k.bias", "a.v.weight", "a.v.bias", "a.proj_out.weight", "a.proj_out.bias"], bw-handles = [vo-buf 64 37, vo-buf 64 11, vo-hbuf 4096 13, vo-buf 64 17, vo-hbuf 4096 19, vo-buf 64 23, vo-hbuf 4096 31, vo-buf 64 43, vo-hbuf 4096 47, vo-buf 64 59] }
     in let a = bv-attention code aw x "a."
     in let t = state-set "attn-handle" (a.ah)
     in gpu-buf-download-then (y.ah) 0 (64 * 16 * 4) vo-got

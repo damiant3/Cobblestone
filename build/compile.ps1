@@ -409,6 +409,53 @@ try {
         if ($hitExc) {
             continue compile_loop
         }
+        if ($Measure) {
+            $mStart = -1
+            $mPost = -1
+            $mEnd = -1
+            $i = 0
+            while ($i -lt $outLines.Count) {
+                $t = $outLines[$i].TrimEnd([char]13)
+                if ($t.StartsWith('PHASE-h0-start:')) {
+                    $mStart = $i
+                }
+                if ($t.StartsWith('PHASE-h-post-emit:')) {
+                    $mPost = $i
+                }
+                if ($t -match '^EMIT-BYTES:\d+$') {
+                    if ($mEnd -ge 0) {
+                        $mEnd = -2
+                        break
+                    }
+                    $mEnd = $i
+                }
+                $i++
+            }
+            if ((($mStart -ge 0) -and ($mPost -gt $mStart)) -and ($mEnd -gt $mPost)) {
+                if ((Test-Path -PathType Leaf $stderrFile)) {
+                    $dropLines = @(((Get-Content $stderrFile -ErrorAction 'SilentlyContinue') | Where-Object { ($_ -match ' guest serial byte\(s\) DROPPED') }))
+                    if ($dropLines.Count -gt 0) {
+                        Add-Content -Path $Log -Value 'FAIL: codex-vm dropped guest serial bytes, so the measurement before EMIT-BYTES is not the whole record.' -Encoding UTF8
+                        foreach ($dl in $dropLines) {
+                            Add-Content -Path $Log -Value "  $dl" -Encoding UTF8
+                        }
+                        exit 6
+                    }
+                }
+                $mText = ([System.Text.StringBuilder]::new())
+                $i = $mStart
+                while ($i -le $mEnd) {
+                    $t = $outLines[$i].TrimEnd([char]13)
+                    if ($t -match '^(PHASE-|DECK-|EMIT-BYTES:)') {
+                        [void]$mText.Append($t).Append("`n")
+                    }
+                    $i++
+                }
+                [System.IO.File]::WriteAllText($Out, $mText.ToString(), ([System.Text.UTF8Encoding]::new($false)))
+                exit 0
+            }
+            Add-Content -Path $Log -Value "FAIL: -Measure needs one PHASE-h0-start, then PHASE-h-post-emit, then exactly one EMIT-BYTES line; found indices $mStart, $mPost, $mEnd (-2 is a second EMIT-BYTES)." -Encoding UTF8
+        }
         if ($IrUni) {
             $irFrom = -1; $irTo = -1
             for ($i = 0; $i -lt $outLines.Count; $i++) {
