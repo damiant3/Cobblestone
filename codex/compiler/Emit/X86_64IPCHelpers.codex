@@ -1616,19 +1616,57 @@ Section: IPC and Network Helpers
 
     let fn-off = st.code-len
 
-    in let n = list-push (st.fo-names) "hardware-random"
+    in let n = list-push (st.fo-names) "__hardware-random-word"
 
     in let o = list-push (st.fo-offsets) fn-off
 
     in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-    in let retry-pos = st0.code-len
+    in st-append-code (emit-rdrand-bounded st0) x86-ret
 
-    in let st1 = st-append-code st0 [72, 15, 199, 240]
+ RDRAND is retried at most ten times, the bound Intel's DRNG software guide
+ gives for a transient underflow. 0 and all-ones are refused as draws: AMD
+ family 17h parts with stale microcode answer all-ones with CF set after a
+ resume. CPUID leaf 1 ECX bit 30 is read first because RDRAND raises #UD on a
+ processor without it. rax holds the draw, or 0 when refused; rcx is
+ clobbered and rbx is preserved around CPUID.
 
-    in let st2 = st-append-code st1 (jcc cc-ae (retry-pos - (st1.code-len + 6)))
+  rdrand-retries : Integer = 10
 
-    in st-append-code st2 x86-ret
+  emit-rdrand-bounded : CodegenState -> CodegenState
+  emit-rdrand-bounded (st) =
+    let st1 = st-append-code st (push-r reg-rbx)
+    in let st2 = st-append-code st1 (li reg-rax 1)
+    in let st3 = st-append-code st2 (li reg-rcx 0)
+    in let st4 = st-append-code st3 [15, 162]
+    in let st5 = st-append-code st4 (pop-r reg-rbx)
+    in let st6 = st-append-code st5 (test-ri reg-rcx 1073741824)
+    in let absent = st6.code-len
+    in let st7 = st-append-code st6 (jcc cc-e 0)
+    in let st8 = st-append-code st7 (li reg-rcx rdrand-retries)
+    in let retry = st8.code-len
+    in let st9 = st-append-code st8 [72, 15, 199, 240]
+    in let no-carry = st9.code-len
+    in let st10 = st-append-code st9 (jcc cc-ae 0)
+    in let st11 = st-append-code st10 (test-rr reg-rax reg-rax)
+    in let zero = st11.code-len
+    in let st12 = st-append-code st11 (jcc cc-e 0)
+    in let st13 = st-append-code st12 (cmp-ri reg-rax (0 - 1))
+    in let ones = st13.code-len
+    in let st14 = st-append-code st13 (jcc cc-e 0)
+    in let drawn = st14.code-len
+    in let st15 = st-append-code st14 (jmp 0)
+    in let again = st15.code-len
+    in let st16 = st-append-code st15 (sub-ri reg-rcx 1)
+    in let st17 = st-append-code st16 (jcc cc-ne (retry - (st16.code-len + 6)))
+    in let refused = st17.code-len
+    in let st18 = st-append-code st17 (li reg-rax 0)
+    in let finish = st18.code-len
+    in let p1 = patch-jcc-at st18 absent refused
+    in let p2 = patch-jcc-at p1 no-carry again
+    in let p3 = patch-jcc-at p2 zero again
+    in let p4 = patch-jcc-at p3 ones again
+    in patch-jmp-at p4 drawn finish
 
   emit-identity-whoami-helper : CodegenState -> CodegenState
 

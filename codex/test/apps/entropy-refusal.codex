@@ -1,0 +1,65 @@
+Chapter: EntropyRefusal
+  cites Kernel chapter IdentityManager
+  cites Kernel chapter DiskFacts
+  cites Works chapter GopWizard
+  cites Foreword chapter FactStore
+  cites Foreword chapter Random
+  cites Foreword chapter Maybe
+
+  report : Text, Boolean -> [Console] Nothing
+  report (label) (ok) = print-line-uni (label & "=" & (if ok then "yes" else "no"))
+
+  bare-disk : DiskFactStore
+  bare-disk = DiskFactStore { superblock = empty-superblock, mem = fact-store-empty, base = 0, limit = 0 }
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (list-push acc 0)
+
+  ones-but-word : Integer, Integer, List Integer -> List Integer
+  ones-but-word (hole) (i) (acc) =
+    if i >= 32 then acc
+    else ones-but-word hole (i + 1) (list-push acc (if i >= hole * 8 & i < hole * 8 + 8 then 0 else 7))
+
+  draws-ok : Maybe (List Integer) -> Boolean
+  draws-ok (m) = when m
+    is None -> False
+    is Just (ws) -> list-length ws == 4 & draws-distinct ws 0 & draws-proper ws 0
+
+  draws-proper : List Integer, Integer -> Boolean
+  draws-proper (ws) (i) =
+    if i >= list-length ws then True
+    else if list-at ws i == 0 | list-at ws i == 0 - 1 then False
+    else draws-proper ws (i + 1)
+
+  draws-distinct : List Integer, Integer -> Boolean
+  draws-distinct (ws) (i) =
+    if i >= list-length ws - 1 then True
+    else if list-at ws i == list-at ws (i + 1) then False
+    else draws-distinct ws (i + 1)
+
+  idm-verdict : IdmOutcome -> Text
+  idm-verdict (o) = when o.idm-result
+    is IdmError (e) -> e
+    is otherwise -> "no refusal"
+
+  zero-seed-word : Integer -> Integer
+  zero-seed-word (word) = poke-qword 30576 (word * 8) 0
+
+  opening : [Console] Nothing
+  opening = act
+    report "live-seed-present" (device-seed-present (idm-read-device-seed))
+    report "live-draws-proper" (draws-ok (hardware-random-words 4))
+    report "zero-seed-absent" (device-seed-present (zeros 32 []) == False)
+    report "one-zero-word-absent" (device-seed-present (ones-but-word 2 0 []) == False)
+    report "full-seed-present" (device-seed-present (ones-but-word 9 0 []))
+    report "short-seed-absent" (device-seed-present (zeros 8 []) == False)
+    after-zero (zero-seed-word 2)
+  end
+
+  after-zero : Integer -> [Console] Nothing
+  after-zero (z) = act
+    report "zeroed-seed-absent" (device-seed-present (idm-read-device-seed) == False)
+    o <- idm-change-passphrase bare-disk 1
+    print-line-uni ("identity-change=" & idm-verdict o)
+    report "wizard-seed-absent" (wz-seed-present == False)
+  end

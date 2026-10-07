@@ -195,7 +195,7 @@ never names its function, or a missing line; `open` rows print. At head: 63 trus
 (98 class lines), 31 waived, 22 open, exit 0. Ablations, each exit 1: a class line the arm does not print
 (`h = 4 mod 4`), the `rsa-verify-pkcs1-sha384` row removed (a new verifier with no row), a stale row and a Pbkdf arm
 pointed at a test that never calls it. Limits: a trust decision outside `codex/foreword`, or answering another type, is
-not discovered (every census row above is outside it); the check is in no gate yet.
+not discovered (every census row above is outside it). The release gate `build.ps1` runs it after the sidecar check and fails on its exit 1 (main, from 2026-10-07).
 
 ## The verifier's input checks by revision (verified)
 
@@ -222,6 +222,4 @@ never meant "signed by the depot's signer" (part B, fixed main 38219 by pinning 
 
 ## Open
 
-- `build/checks/degenerate-arms.ps1` is in no gate until shelf 38249 (the `BuildScript.codex` generator and
-  `build.ps1` together) lands on MAIN OPEN after the release (root, 2026-10-07).
 - The census's unverified list, and per-finding rows for the verified table, are blu's (root, 2026-10-07).

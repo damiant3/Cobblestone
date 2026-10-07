@@ -2140,12 +2140,12 @@ Section: Expression Emission
     in when expr
      is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrCharLit (v) (sp) ->
       if target < spill-base then let st1 = st-append-code st (li target v)
-      in __record-set st1 "next-temp" (st1.next-temp + 1)
+      in __record-set st1 "next-temp" (temp-step (st1.next-temp))
       else let t = emit-int-lit st v in store-local (t.state) target (t.reg)
      is IrBoolLit (v) (sp) ->
       let iv = if v then 1 else 0
       in if target < spill-base then let st1 = st-append-code st (li target iv)
-      in __record-set st1 "next-temp" (st1.next-temp + 1)
+      in __record-set st1 "next-temp" (temp-step (st1.next-temp))
       else let t = emit-int-lit st iv in store-local (t.state) target (t.reg)
      is IrIf (cond) (then-e) (else-e) (ty) (sp) ->
       emit-if-to-local st cond then-e else-e target in-tail
@@ -2158,11 +2158,11 @@ Section: Expression Emission
              is IrAddInt ->
               let l = emit-expr (st-set-tail-pos st False) left
               in let st1 = st-append-code (l.state) (lea target (l.reg) v)
-              in __record-set st1 "next-temp" (st1.next-temp + 1)
+              in __record-set st1 "next-temp" (temp-step (st1.next-temp))
              is IrSubInt ->
               let l = emit-expr (st-set-tail-pos st False) left
               in let st1 = st-append-code (l.state) (lea target (l.reg) (0 - v))
-              in __record-set st1 "next-temp" (st1.next-temp + 1)
+              in __record-set st1 "next-temp" (temp-step (st1.next-temp))
              is otherwise ->
               let r = emit-expr (st-set-tail-pos st in-tail) expr
               in store-local (r.state) target (r.reg)
@@ -2688,12 +2688,12 @@ Section: Expression Emission
         let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
         in let evicted = fc-evict-reg (r.state) (r.reg)
         in let st2 = st-append-code evicted (pop-r pop-reg & add-rr (r.reg) pop-reg & int-trap-after ty)
-        in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
+        in EmitResult { state = __record-set st2 "next-temp" (temp-step (st2.next-temp)), reg = r.reg }
        is IrMulInt ->
         let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
         in let evicted = fc-evict-reg (r.state) (r.reg)
         in let st2 = st-append-code evicted (pop-r pop-reg & imul-rr (r.reg) pop-reg & int-trap-after ty)
-        in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
+        in EmitResult { state = __record-set st2 "next-temp" (temp-step (st2.next-temp)), reg = r.reg }
        is otherwise ->
         let st2 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
         in let st3 = st-append-code st2 (pop-r reg-r8)
@@ -2794,7 +2794,7 @@ Section: Expression Emission
   emit-reg-right-inplace : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-reg-right-inplace (st) (op) (l-reg) (right-reg) (lty) =
     let st2 = st-append-code (fc-evict-reg st l-reg) (inplace-int-op op l-reg right-reg lty)
-    in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = __narrow l-reg }
+    in EmitResult { state = __record-set st2 "next-temp" (temp-step (st2.next-temp)), reg = __narrow l-reg }
 
   emit-binary-reg-right : CodegenState, IRBinaryOp, IRExpr, Integer, IRExpr, CodexType -> EmitResult
   emit-binary-reg-right (st) (op) (left) (right-reg) (right) (ty) =
@@ -2859,7 +2859,7 @@ Section: Expression Emission
     if is-commutative-int-op op then
       let r = emit-expr (st-set-tail-pos st False) right
       in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (inplace-int-op op (r.reg) left-reg ty)
-      in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
+      in EmitResult { state = __record-set st2 "next-temp" (temp-step (st2.next-temp)), reg = r.reg }
     else if is-safe-for-reg-left st op right then
       let r = emit-expr (st-set-tail-pos st False) right
       in emit-binary-op (r.state) op left-reg (r.reg) (ir-expr-type left) ty

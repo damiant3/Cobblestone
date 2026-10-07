@@ -94,17 +94,34 @@ Chapter: CompositeLaborProof
           census <- clp-check ("day " & show day & ": currency and material census valid") (euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1 & gvsc-valid owner.vendor)
           ran + each + coins + census
         end
+ 300 world ticks are one game hour.
+  clp-idle : CompositeGame, WalkMap -> [Console] Integer
+  clp-idle (owner) (map) = when owner.network
+    is None -> act clp-check "town network bound" False end
+    is Just (n) -> let x = owner.vendor.currency
+      in let rows = x.count
+      in let hour = x.world.hour
+      in let book = n.actions.book.sequence
+      in let ore = ep-at x.world.gathered 6
+      in let ended = clp-ticks owner map (list-at owner.vendor.vendors 0).serial 100 300 0
+      in act
+        print-line-uni ("LABOR unseeded mint-ingots=" & show x.world.mint-ingots & " economy-hour=" & show x.world.hour & " currency-rows=" & show x.count & " book=" & show n.actions.book.sequence & " ore=" & show (ep-at x.world.gathered 6))
+        closed <- clp-check "a fresh world with founding gold but no king's strike: no NPC works, earns, trades or mines for a game hour" (ended > 0 & not (cg-seeded owner) & x.world.mint-ingots > 0 & not owner.labor & x.count == rows & x.world.hour == hour & n.actions.book.sequence == book & ep-at x.world.gathered 6 == ore)
+        seeded <- clp-check "the king's struck gold opens the economy" (cg-seed-gold owner == 1 & cg-seeded owner)
+        closed + seeded
+      end
   clp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   clp-first (store) (map) = let owner = store.state in act
-    one <- clp-day owner map 100 1
-    two <- clp-day owner map (100 + 720000) 2
+    idle <- clp-idle owner map
+    one <- clp-day owner map 30100 1
+    two <- clp-day owner map (30100 + 720000) 2
     committed <- cs-commit store True
     saved <- clp-check "two working days commit" (is-ok committed)
-    one + two + saved
+    idle + one + two + saved
   end
   clp-later : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   clp-later (store) (map) = let owner = store.state in act
-    restored <- clp-check "restart restores the residents with their wages" (when owner.town is None -> False is Just (t) -> t.count == 3)
+    restored <- clp-check "restart restores the residents with their wages, and the opened economy stays open" (cg-seeded owner & (when owner.town is None -> False is Just (t) -> t.count == 3))
     three <- clp-day owner map 100 3
     restored + three
   end

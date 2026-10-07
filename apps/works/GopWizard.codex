@@ -14,6 +14,7 @@ Chapter: GopWizard
   cites Foreword chapter StringUtils
   cites Foreword chapter CCE
   cites Foreword chapter HeapScrub
+  cites Foreword chapter Random
 
  Identity follows the IdentityManager recipe: entropy is hashed with
  SHA-256 into an Ed25519 seed, the public key's hash is the
@@ -370,6 +371,19 @@ Section: Key Generation
     in let z = wz-zero-list mix 0
     in seed
 
+  wz-no-entropy : Text = "no entropy: device seed absent"
+
+  wz-seed-present : Boolean
+  wz-seed-present = device-seed-present (wz-peek-bytes wz-device-seed-addr 32 0 [])
+
+  wz-no-entropy-screen : WzCtx -> [Device.Port] Integer
+  wz-no-entropy-screen (c) =
+    let d0 = wz-clear c
+    in let t0 = wz-text c 0 "No Entropy" wz-col-title
+    in let t1 = wz-text c 2 "This processor gave no random seed at boot, so no key can be made." wz-col-warn
+    in let t2 = wz-text c 4 "Press Enter to continue." wz-col-green
+    in wz-wait-enter c
+
   wz-keygen : List Integer, Text -> WzIdentity
   wz-keygen (seed) (passphrase) =
     let dev = wz-peek-bytes wz-device-seed-addr 32 0 []
@@ -693,7 +707,9 @@ Section: Flow
  old file standing, so the old passphrase still unlocks.
 
   wz-change-pass : WzCtx, WzIdentity, List Integer, Integer -> [Device.Port, Device.Mmio, Identity] Integer
-  wz-change-pass (c) (wid) (seed) (mark) = act
+  wz-change-pass (c) (wid) (seed) (mark) =
+    if wz-seed-present == False then wz-no-entropy-screen c
+    else act
     pp <- wz-passphrase c "Setting a new passphrase."
     let wid2 = wz-keygen seed (pp.gl-text)
     in act
@@ -752,7 +768,12 @@ Section: Flow
         t4 <- wz-trace c 6 "wz: upstream screen"
         up <- wz-upstream c
         tz <- wz-zone c
-        let mark = __heap-save
+        if wz-seed-present == False then act
+          n <- wz-no-entropy-screen c
+          let r = wz-no-entropy
+          in r
+        end
+        else let mark = __heap-save
         in act
           pp <- wz-passphrase c ""
           t3 <- wz-trace c 6 "wz: entropy screen"

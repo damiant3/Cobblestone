@@ -533,6 +533,15 @@ if (Test-Path $chkSidecars) {
     }
 }
 
+$chkDegenerate = (Join-Path $PSScriptRoot 'checks/degenerate-arms.ps1')
+if ((Test-Path -PathType Leaf $chkDegenerate)) {
+    & pwsh -NoProfile -File $chkDegenerate 2>&1 | ForEach-Object { Write-Host "  $_" }
+    if ((-not ($LASTEXITCODE -eq 0))) {
+        Write-Host "FAIL: a foreword trust decision has no registered degenerate arm, waiver or owned gap"
+        exit 1
+    }
+}
+
 # The diagnostic catalogue (CdxCodes.codex) is read by nobody in the compiler
 # -- cdx-lookup has no caller and whole-program DCE prunes the whole table --
 # so a code raised with no row, or a row whose Name drifted from its constant,

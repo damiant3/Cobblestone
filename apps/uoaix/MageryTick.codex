@@ -6,7 +6,17 @@ Chapter: MageryTick
     else if peek-qword actor.mods (i * 16) /= 0 then True else mgt-modified actor (i + 1)
   mgt-needed : MgActor -> Boolean
   mgt-needed (actor) = actor.stage /= 0 | actor.mana < mgs-stat actor 2 | actor.night > 0
-    | actor.protected-until > 0 | actor.poison >= 0 | mgt-modified actor 0 | actor.incognito > 0 | actor.fuse > 0
+    | actor.protected-until > 0 | actor.poison >= 0 | mgt-modified actor 0 | actor.incognito > 0 | actor.fuse > 0 | actor.invisible > 0
+ An Invisibility that runs out unhides its holder. A player's expiry waits for that player's own pulse, as Incognito's
+ does, so the self packet reaches its client; a creature's expires in any pulse.
+  mgt-invisible : Magery, GameShard, GameInput, MgActor, WorldObject -> List (List Integer)
+  mgt-invisible (magic) (shard) (input) (actor) (mobile) =
+    if actor.invisible == 0 | actor.invisible > magic.tick then []
+    else if cb-slot shard actor.serial 0 >= 0 & actor.serial /= input.session.serial then []
+    else let cleared = __record-set actor "invisible" 0
+    in let shown = magic.hide-hook actor.serial False
+    in let touched = mgs-touch magic
+    in if actor.serial == input.session.serial then [mga-self-shown magic shard input mobile False] else []
  ServUO Sixth/Explosion (pre-AOS): the blast lands 2.5 s after the cast, 23 to 44 before scaling, effect 0x36BD, sound
  0x307; a caster gone by then detonates nothing.
   mgt-fuse : Magery, GameShard, GameInput, MgActor, WorldObject -> Result (List (List Integer)) Text
@@ -87,7 +97,7 @@ Chapter: MageryTick
         is Err (e) -> act Err e end
         is Ok (stats) -> when mgt-incognito magic shard input actor
         is Err (e) -> act Err e end
-        is Ok (disguise) -> let packets = stats & disguise
+        is Ok (disguise) -> let packets = stats & disguise & mgt-invisible magic shard input actor mobile
         in when mgt-poison magic shard input actor mobile
           is Err (e) -> act Err e end
           is Ok (poisoned) -> when mgt-fuse magic shard input actor mobile

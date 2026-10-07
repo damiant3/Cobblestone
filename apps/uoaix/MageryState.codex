@@ -16,7 +16,7 @@ Chapter: MageryState
     due : Integer, cursor : Integer, connection : Integer, x : Integer, y : Integer, z : Integer, health : Integer,
     recovery : Integer, position : Integer, armed : Integer, incognito : Integer, inc-name : Integer, inc-hue : Integer,
     inc-hair : Integer, inc-hair-hue : Integer, inc-beard : Integer, inc-beard-hue : Integer, scroll : Integer,
-    fuse : Integer, fuser : Integer, reflect : Integer }
+    fuse : Integer, fuser : Integer, reflect : Integer, invisible : Integer }
   MgItem = record { serial : Integer, spells : Integer, rune : Boolean, x : Integer, y : Integer, z : Integer,
     lockable : Boolean, locked : Boolean, trapped : Boolean, trapper : Integer, key : Integer, chart : Boolean }
   MgWall = record { serial : Integer, until : Integer, caster : Integer, next : Integer }
@@ -24,7 +24,12 @@ Chapter: MageryState
     actors : List MgActor, definitions : List MgItem, walls : List MgWall,
     active : Integer, count : Integer, seed : Integer, next-target : Integer, tick : Integer,
     cover : (Integer, Integer, Integer -> [Device.Block] Result WalkMap Text),
-    wheel : Maybe WorldTimers, due : Integer, due-count : Integer, unarmed : Integer, visits : Integer, wall-due : Integer, wall-visits : Integer }
+    wheel : Maybe WorldTimers, due : Integer, due-count : Integer, unarmed : Integer, visits : Integer, wall-due : Integer, wall-visits : Integer,
+    hide-hook : (Integer, Boolean -> Integer), hidden-hook : (Integer -> Boolean) }
+  mgs-hide-none : Integer, Boolean -> Integer
+  mgs-hide-none (serial) (hidden) = 0
+  mgs-hidden-none : Integer -> Boolean
+  mgs-hidden-none (serial) = False
   mgs-zero : Integer, Integer, Integer -> Integer
   mgs-zero (buffer) (i) (size) = if i == size then 0 else let zero = poke-qword buffer (i * 8) 0 in mgs-zero buffer (i + 1) size
   mgs-actors : Integer, List MgActor -> List MgActor
@@ -38,7 +43,7 @@ Chapter: MageryState
       poison = -1, poison-due = 0, poison-left = 0, poison-last = 0, poisoner = 0, spell = 0, stage = 0,
       due = 0, cursor = 0, connection = -1, x = 0, y = 0, z = 0, health = 0, recovery = 0, position = -1, armed = 0,
       incognito = 0, inc-name = 0, inc-hue = 0, inc-hair = 0, inc-hair-hue = 0, inc-beard = 0, inc-beard-hue = 0, scroll = 0,
-      fuse = 0, fuser = 0, reflect = 0 }))
+      fuse = 0, fuser = 0, reflect = 0, invisible = 0 }))
   mgs-items : Integer, List MgItem -> List MgItem
   mgs-items (left) (out) = if left == 0 then out else mgs-items (left - 1) (list-push out (MgItem {
     serial = 0, spells = 0, rune = False, x = 0, y = 0, z = 0, lockable = False, locked = False, trapped = False, trapper = 0, key = 0, chart = False }))
@@ -60,7 +65,8 @@ Chapter: MageryState
     in Magery { items = items, bank = bank, combat = combat, decoration = decoration, vendor = vendor,
       actors = mgs-actors capacity (__list-with-capacity capacity), definitions = mgs-items capacity (__list-with-capacity capacity),
       walls = mgs-walls 32 (__list-with-capacity 32), active = alloc-bytes (capacity * 8), count = 0,
-      seed = 42, next-target = 1, tick = 0, cover = cover, wheel = None, due = alloc-bytes (capacity * 8), due-count = 0, unarmed = 0, visits = 0, wall-due = 0, wall-visits = 0 }
+      seed = 42, next-target = 1, tick = 0, cover = cover, wheel = None, due = alloc-bytes (capacity * 8), due-count = 0, unarmed = 0, visits = 0, wall-due = 0, wall-visits = 0,
+      hide-hook = mgs-hide-none, hidden-hook = mgs-hidden-none }
   mgs-touch : Magery -> Integer
   mgs-touch (magic) = world-touch magic.items.world
   mgs-random : Magery, Integer -> Integer
@@ -81,7 +87,8 @@ Chapter: MageryState
     in let poison = if actor.poison >= 0 then mgs-earlier regen actor.poison-due else regen
     in let fused = mgs-earlier poison actor.fuse
     in let disguised = mgs-earlier fused actor.incognito
-    in if actor.stage /= 0 then mgs-earlier disguised actor.due else disguised
+    in let unseen = mgs-earlier disguised actor.invisible
+    in if actor.stage /= 0 then mgs-earlier unseen actor.due else unseen
  One wheel entry per tracked actor, keyed by its world slot, at its earliest deadline. An entry already
  pending at or before that deadline is kept: its firing re-arms. A full pool leaves the actor unarmed and
  counted, and the next pulse visits the unarmed actors until each arms.

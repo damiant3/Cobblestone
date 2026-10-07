@@ -184,9 +184,18 @@ refusing it.** `bytes-to-words` (`Sha256.codex`) and its siblings in
 `Sha512.codex` and `Sha1.codex` OR each shifted element into the block word
 unmasked, so `sha256 [0, 0, 0, 256]` equals `sha256 [0, 0, 1, 0]` and
 `[0, 0, 0, -1]` equals `[255, 255, 255, 255]` (val probe, seed 279DF926).
-Text callers cannot reach it (`text-to-bytes` yields CCE bytes); a caller
-passing a raw Integer list is unaudited. Open: a census of raw-list callers,
-and a refusal of non-octet input the way `pbkdf-hash` refuses it.
+Text callers cannot reach it (`text-to-bytes` yields CCE bytes). Raw-list callers
+DO reach it, on purpose: `generate-keypair (sha256 (text-to-bytes ...))` hands the
+eight 32-bit digest WORDS to `sha256-bytes` as if they were bytes (18 call sites of
+that shape alone), so keys, identities and pinned outputs depend on the alias.
+Shelf 38341 (fester) made the plain functions answer `[]` on a non-octet and red
+pulled it from arc 68: it reddened repo-tombstone-signed (`verified=[]`),
+repo-tombstone-replay, repo-source-fact, colophon-dogfood and secrets-alias-probe
+(!EXC=06), all green without it. Open, in order: keep the plain functions' digests
+as they are and refuse only in the shelf's `sha256-checked`, `sha512-checked`,
+`sha384-checked` and `sha1-checked` (arm `sha-octet-refusal` grades them); decide
+the shelf's `hmac-sha256` octet guard against those five; census the word-as-bytes
+callers as their own row, since fixing them moves every derived key.
 
 ## CCE has no Dingbats block
 

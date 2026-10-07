@@ -29,6 +29,18 @@ count does.
 
 ## Done
 
+### Update 67 -- six reds past the compiler stages, none a compiler defect
+
+The compiler stages were green first time (SUT === stage1 in one pass, DDC holds, poison clean). What stopped the gate, in order, each with its fix:
+
+- `p4-stale-check` refused an untracked `.md` in the release workspace. Move such a file out before the gate and back after.
+- `sem-equiv` red at 123 bodies: `compare-codex-semantic` read COMPILER-109's wrapped signature continuations as bodies, and stage1 prints `not x` as `x == False`. Instrument fix, red 38264; a planted body change still fails it.
+- The raw-shell ratchet refused that fix's 13 raw lines (red 38327).
+- A resumed gate that skips `cdx-fixedpoint` must preset ` = 'one-pass'` beside the `` list, or it dies after `cdx-exports`.
+- `plug-binary`: arm64 and elf plugs carried a duplicate `a64-emit-call-to` that this cycle's new CDX3027 ambiguity refusal catches (red 38352).
+- `gen-scripts`: `bvt.ps1` and `check-sidecars.ps1` had been hand-edited (COMPILER-123 `.wall`) without their generators; drift recorded (38365), port owed.
+
+Also: the battery refuses to start until `build/diffusion-roots.ps1 -Provision` has made the junctions, and the gate's `clean` wipes them, so provision after `clean`. `test.ps1` cannot select one subject, so a GPU wall-budget red is re-run by tier or not at all. Diag arm `b3-short` hangs on any codex-vm after 35609 (fast NAT acks): the harness now sets `CODEX_VM_NET_TRACE=1` (red 38362) and the payload's unbounded send heap is fixed (reek 38374).
 ### Update 66 -- the full gate has no resume, and its reds past test-run were the bed and the corpus
 
 Three reds at step 0b, 2026-10-02, none a compiler defect; the compiler stages

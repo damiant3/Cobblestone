@@ -198,7 +198,7 @@ Chapter: BritainShops
         is Err (e) -> Err e
         is Ok (_) -> when bb-materialise v items p merchant.stock art 0 (bb-layer product) 0 True
           is Err (e) -> Err e
-          is Ok (_) -> when bb-sync-goods v merchant.actor (bb-goods index) 0
+          is Ok (_) -> when bb-sync-actor v merchant.actor 0
           is Err (e) -> Err e
           is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
             in let touched = world-touch v.game.world in Ok 1
@@ -216,7 +216,8 @@ Chapter: BritainShops
       is Ok (_) -> bb-back v p container goods (i + 1)
  A recipe's tool wears in the shop's economy stock (ep-wear); when the shop also sells that tool (the smith's stone hammer,
  item 62), its lots follow in the same step: a worn-out unit leaves a lot and a lot's per-unit wear comes down, or the
- vendor census (gvsc-lot-fault "stock" and "wear total") refuses every later save.
+ vendor census (gvsc-lot-fault "stock" and "wear total") refuses every later save. Consumption takes a good's average
+ quality and cost (ep-remove), so listed units better than the average lose value the same way ("quality total", "cost total").
   bb-tool-lot : GvWorld, Integer, Integer, Boolean, Integer -> Integer
   bb-tool-lot (v) (actor) (item) (worn) (i) = if i >= v.lot-count then -1
     else let l = list-at v.lots i
@@ -240,9 +241,25 @@ Chapter: BritainShops
     in if held >= 0 & gv-represented v actor item 0 0 > ep-at p.stock item then bb-drop-unit v actor item held
     else let excess = gv-represented v actor item 2 0 - ep-at p.wear item
     in let at = bb-tool-lot v actor item True 0
-    in if excess <= 0 | at < 0 then Ok 0
+    in if excess <= 0 | at < 0 then bb-value-lots v actor item
     else let lot = list-at v.lots at
     in let worn = __record-set lot "wear" (lot.wear - min lot.wear ((excess + lot.quantity - 1) / lot.quantity)) in bb-wear-lots v actor item
+  bb-value-lot : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-value-lot (v) (actor) (item) (field) (i) = if i >= v.lot-count then -1
+    else let l = list-at v.lots i
+    in if l.actor == actor & l.item == item & (if field == 1 then l.quality > 0 else l.basis > 0) then i else bb-value-lot v actor item field (i + 1)
+  bb-value-lots : GvWorld, Integer, Integer -> Result Integer Text
+  bb-value-lots (v) (actor) (item) = let p = ep-actor v.currency.world actor
+    in let excess = gv-represented v actor item 1 0 - ep-at p.quality item
+    in let at = bb-value-lot v actor item 1 0
+    in if excess > 0 & at >= 0 then
+      let lot = list-at v.lots at
+      in let lowered = __record-set lot "quality" (lot.quality - min lot.quality ((excess + lot.quantity - 1) / lot.quantity)) in bb-value-lots v actor item
+    else let over = gv-represented v actor item 3 0 - ep-at p.cost item
+    in let bt = bb-value-lot v actor item 3 0
+    in if over <= 0 | bt < 0 then Ok 0
+    else let lot = list-at v.lots bt
+    in let lowered = __record-set lot "basis" (lot.basis - min lot.basis over) in bb-value-lots v actor item
   bb-sync-actor : GvWorld, Integer, Integer -> Result Integer Text
   bb-sync-actor (v) (actor) (i) = if i >= v.lot-count then Ok 0
     else let l = list-at v.lots i
@@ -250,11 +267,6 @@ Chapter: BritainShops
     else when bb-wear-lots v actor l.item
       is Err (e) -> Err e
       is Ok (_) -> bb-sync-actor v actor (i + 1)
-  bb-sync-goods : GvWorld, Integer, List BbGoods, Integer -> Result Integer Text
-  bb-sync-goods (v) (actor) (goods) (i) = if i == list-length goods then Ok 0
-    else when bb-wear-lots v actor (list-at goods i).item
-      is Err (e) -> Err e
-      is Ok (_) -> bb-sync-goods v actor goods (i + 1)
   bb-restock-ready : GvWorld, Integer -> Boolean
   bb-restock-ready (v) (index) = bb-missing v (list-at v.vendors index).actor (bb-goods index) 0
   bb-restock-shop : GvWorld, GsiState, Integer -> Result Integer Text
@@ -265,7 +277,7 @@ Chapter: BritainShops
       is Err (_) -> Ok 0
       is Ok (_) -> when bb-back v p merchant.stock (bb-goods index) 0
         is Err (e) -> Err e
-        is Ok (_) -> when bb-sync-goods v merchant.actor (bb-goods index) 0
+        is Ok (_) -> when bb-sync-actor v merchant.actor 0
         is Err (e) -> Err e
         is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
         in let touched = world-touch v.game.world in Ok 1

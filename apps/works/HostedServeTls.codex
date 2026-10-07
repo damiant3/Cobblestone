@@ -5,6 +5,7 @@ Chapter: HostedServeTls
   cites Encode chapter TlsEndpoint
   cites Foreword chapter Ed25519
   cites Foreword chapter EcdsaP256Sign
+  cites Foreword chapter Random
 
  We say:
 
@@ -31,10 +32,15 @@ Section: Configuration
 
 Section: Entropy
 
-  hst-random-bytes : Integer, List Integer -> List Integer
-  hst-random-bytes (words) (acc) =
-    if words <= 0 then acc
-    else hst-random-bytes (words - 1) (hst-word-bytes hardware-random acc 0)
+  hst-random-bytes : Integer -> Maybe (List Integer)
+  hst-random-bytes (words) = when hardware-random-words words
+    is None -> None
+    is Just (ws) -> Just (hst-words-bytes ws 0 [])
+
+  hst-words-bytes : List Integer, Integer, List Integer -> List Integer
+  hst-words-bytes (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else hst-words-bytes ws (i + 1) (hst-word-bytes (list-at ws i) acc 0)
 
   hst-word-bytes : Integer, List Integer, Integer -> List Integer
   hst-word-bytes (w) (acc) (i) =
@@ -158,15 +164,34 @@ Section: Serving One Connection
     end
   end
 
-  hst-new-ep : HostedTls -> TlsEp
-  hst-new-ep (tls) =
-    tls-ep-server-new (hst-random-bytes 4 []) (hst-random-bytes 4 []) (tls.ht-chain) (tls.ht-sign-priv) (tls.ht-sign-pub)
+  hst-new-ep : HostedTls -> Maybe TlsEp
+  hst-new-ep (tls) = when hst-random-bytes 8
+    is None -> None
+    is Just (r) -> Just (tls-ep-server-new (hst-take r 0 32 []) (hst-take r 32 64 []) (tls.ht-chain) (tls.ht-sign-priv) (tls.ht-sign-pub))
+
+  hst-take : List Integer, Integer, Integer, List Integer -> List Integer
+  hst-take (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else hst-take bs (i + 1) stop (list-push acc (list-at bs i))
 
   hst-serve-one : (HttpRequest -> HttpResponse), HostedTls, WebState, Integer, Integer -> [Network.Write] HostedServed
   hst-serve-one (route) (tls) (st) (cfd) (buf) =
     let mark = __heap-save
-    in act
-      served <- hst-conn route st cfd buf (hst-new-ep tls) [] hst-recv-limit
+    in when hst-new-ep tls
+      is None -> hst-refuse cfd st mark
+      is Just (ep) -> hst-serve-ep route st cfd buf ep mark
+
+  hst-refuse : Integer, WebState, Integer -> [Network.Write] HostedServed
+  hst-refuse (cfd) (st) (mark) = act
+    served <- hst-close cfd st False
+    let restored = __heap-restore mark
+    in HostedServed { state = WebState { request-count = st.request-count }, ok = False }
+  end
+
+  hst-serve-ep : (HttpRequest -> HttpResponse), WebState, Integer, Integer, TlsEp, Integer -> [Network.Write] HostedServed
+  hst-serve-ep (route) (st) (cfd) (buf) (ep) (mark) =
+    act
+      served <- hst-conn route st cfd buf ep [] hst-recv-limit
       let count = (served.state).request-count
       in let ok = served.ok
       in let restored = __heap-restore mark

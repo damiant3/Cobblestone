@@ -334,6 +334,79 @@ Chapter: MageryReplay
           end
       a + b
     end
+ UOAIX-81: Invisibility hides its target for Magery x 120 ms and unhides it at expiry; Reveal uncovers a hidden player
+ within 1 + Magery/20 tiles and leaves a hidden creature hidden. The hooks stand in for ActiveSkills' concealed bytes.
+  mr-hide : Integer, WorldTable, Integer, Boolean -> Integer
+  mr-hide (bytes) (world) (serial) (hidden) = let slot = world-slot world serial
+    in if slot < 0 then 0 else poke-byte bytes slot (if hidden then 1 else 0)
+  mr-hidden : Integer, WorldTable, Integer -> Boolean
+  mr-hidden (bytes) (world) (serial) = let slot = world-slot world serial in slot >= 0 & peek-byte bytes slot == 1
+  mr-self-flag : List (List Integer), Integer -> Integer
+  mr-self-flag (packets) (i) = if i == list-length packets then -1
+    else let p = list-at packets i
+    in if list-length p > 10 & list-at p 0 == #20 then bit-and (list-at p 10) 128 else mr-self-flag packets (i + 1)
+  mr-hooked : MrEnv -> Integer
+  mr-hooked (env) = let bytes = alloc-bytes env.game.world.capacity
+    in let cleared = mgs-zero bytes 0 ((env.game.world.capacity + 7) / 8)
+    in let a = __record-set env.magic "hide-hook" (mr-hide bytes env.game.world)
+    in let b = __record-set env.magic "hidden-hook" (mr-hidden bytes env.game.world) in 0
+  mr-invisibility : Integer -> [Console, Device.Block] Integer
+  mr-invisibility (unused) = when mr-env 0
+    is Err (e) -> mr-check ("invisibility fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-shl 1 43) (bit-shl 1 47)))
+      hooked <- mr-hooked env
+      reply <- mr-cast env 44 1 1000
+      until <- env.actor.invisible
+      a <- mr-check ("UOAIX-81: spell 44 (An Lor Xen) hides the caster for 120 s at GM Magery, draws its own body hidden, and costs its reagents and 20 mana (until tick " & show until & ")") (env.magic.hidden-hook 1 & until > env.magic.tick & until - env.magic.tick <= mgd-ticks 120000 & until - env.magic.tick > mgd-ticks 119000 & mr-self-flag reply.packets 0 == 128 & env.actor.mana == 20 - 20 & mr-costs env 44 0)
+      early <- mg-pulse env.magic env.game env.input env.map 2593 (until - 1)
+      b <- mr-check "UOAIX-81: Invisibility still holds one tick before it runs out" (is-ok early & env.magic.hidden-hook 1 & env.actor.invisible == until)
+      expired <- mg-pulse env.magic env.game env.input env.map 2593 until
+      shown <- when expired is Err (_) -> -1 is Ok (m) -> when m is None -> -1 is Just (r) -> mr-self-flag r.packets 0
+      c <- mr-check ("UOAIX-81: at expiry Invisibility unhides its holder and redraws the body unhidden (flag " & show shown & ")") (not (env.magic.hidden-hook 1) & env.actor.invisible == 0 & shown == 0)
+      d <- mr-check "UOAIX-81: Invisibility is beneficial, not harmful, so it takes no resist roll; Reveal is a ground spell; words 'An Lor Xen' and 'Wis Quas'" (mgd-beneficial 44 & not (mgd-harmful 44) & mgd-ground 48 & not (mgd-harmful 48) & mgd-supported 44 & mgd-supported 48 & mgd-words 44 == "An Lor Xen" & mgd-words 48 == "Wis Quas")
+      e <- when mr-env 0
+        is Err (x) -> mr-check ("reveal fixture " & x) False
+        is Ok (other) -> act
+          gm2 <- gs-skill-set other.game 1 25 1000
+          book2 <- list-at other.magic.definitions (world-slot other.game.world #40000003)
+          learned2 <- __record-set book2 "spells" (bit-or book2.spells (bit-shl 1 47))
+          hooked2 <- mr-hooked other
+          player <- other.magic.hide-hook 1 True
+          creature <- other.magic.hide-hook 12 True
+          revealed <- mr-cast other 48 0 1000
+          mr-check ("UOAIX-81: spell 48 (Wis Quas) reveals the hidden player within 6 tiles of its point, leaves the hidden creature hidden, and costs its reagents and 20 mana") (not (other.magic.hidden-hook 1) & other.magic.hidden-hook 12 & other.actor.mana == 20 - 20 & mr-costs other 48 0 & list-length revealed.packets > 0)
+        end
+      a + b + c + d + e
+    end
+ UOAIX-81: Dispel Field removes the one field tile it targets at the next pulse and leaves the rest of the field.
+  mr-first-wall : MrEnv, Integer -> Integer
+  mr-first-wall (env) (i) = if i == 32 then 0 else let w = list-at env.magic.walls i
+    in if w.serial /= 0 then w.serial else mr-first-wall env (i + 1)
+  mr-costs2 : MrEnv, Integer, Integer, Integer -> Boolean
+  mr-costs2 (env) (first) (second) (i) = if i == 8 then True
+    else let used = (if bit-and (mgd-reagents first) (bit-shl 1 i) /= 0 then 1 else 0) + (if bit-and (mgd-reagents second) (bit-shl 1 i) /= 0 then 1 else 0)
+    in if mr-amount env i /= 5 - used then False else mr-costs2 env first second (i + 1)
+  mr-dispel-field : Integer -> [Console, Device.Block] Integer
+  mr-dispel-field (unused) = when mr-env 0
+    is Err (e) -> mr-check ("dispel field fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-shl 1 27) (bit-shl 1 33)))
+      wise <- __record-set env.actor "intelligence" 100
+      full <- __record-set env.actor "mana" 100
+      field <- mr-cast env 28 0 1000
+      raised <- world-count env.game.world
+      tile <- mr-first-wall env 0
+      start <- 1000 + mgd-delay 28 + mgd-ticks 750 + 2
+      dispel <- mr-cast env 34 tile start
+      pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (start + mgd-delay 34 + 2)
+      gone <- is-err (world-get env.game.world tile)
+      mr-check ("UOAIX-81: spell 34 (An Grav) removes the targeted field tile at the next pulse and leaves the other four (" & show raised & " objects, then " & show (world-count env.game.world) & "), and costs its reagents and 14 mana") (tile /= 0 & gone & world-count env.game.world == raised - 1 & is-ok pulsed & mr-costs2 env 28 34 0 & env.actor.mana <= 100 - 11 - 14 + 2 & env.actor.mana >= 100 - 11 - 14 & list-length dispel.packets > 0)
+    end
   mr-damage-paths : Integer, Integer -> [Console, Device.Block] Integer
   mr-damage-paths (path) (failures) = if path == 5 then act failures end
     else act
@@ -423,7 +496,7 @@ Chapter: MageryReplay
     full <- mgs-book env.magic #40000003 (0 - 1)
     shown <- mg-book-open env.magic env.game env.input #40000003
     rows <- list-at shown.packets 2
-    mr-check "a spellbook holding every spell lists exactly the 48 working spells (UOAIX-81), 1 through 32, then 35 and on to 57" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 48 & list-length rows == 917 & gp-u16 rows 12 == 1 & gp-u16 rows 601 == 32 & gp-u16 rows 620 == 35 & gp-u16 rows 639 == 36 & gp-u16 rows 905 == 57)
+    mr-check "a spellbook holding every spell lists exactly the 51 working spells (UOAIX-81), 1 through 32, then 34 and on to 57" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 51 & list-length rows == 974 & gp-u16 rows 12 == 1 & gp-u16 rows 601 == 32 & gp-u16 rows 620 == 34 & gp-u16 rows 639 == 35 & gp-u16 rows 962 == 57)
   end
   mr-quiver : MrEnv -> [Console, Device.Block] Integer
   mr-quiver (env) = act
@@ -631,7 +704,7 @@ Chapter: MageryReplay
           killed <- mr-damage-paths 1 0
           scrolls <- mr-scroll-case 0
           paralysed <- mr-paralyze 0
-          cursed <- mr-slice2 27 + mr-slice2 31 + mr-slice2 46 + mr-slice2 53 + mr-slice2 30 + mr-slice2 37 + mr-slice2 42 + mr-slice2 51 + mr-explosion 0 + mr-slice4 29 + mr-slice4 25 + mr-slice4 26 + mr-slice4 49 + mr-slice4 55 + mr-slice4 57 + mr-slice4 50 + mr-slice4 28 + mr-slice4 39 + mr-slice4 47 + mr-reflect 0
+          cursed <- mr-slice2 27 + mr-slice2 31 + mr-slice2 46 + mr-slice2 53 + mr-slice2 30 + mr-slice2 37 + mr-slice2 42 + mr-slice2 51 + mr-explosion 0 + mr-slice4 29 + mr-slice4 25 + mr-slice4 26 + mr-slice4 49 + mr-slice4 55 + mr-slice4 57 + mr-slice4 50 + mr-slice4 28 + mr-slice4 39 + mr-slice4 47 + mr-reflect 0 + mr-invisibility 0 + mr-dispel-field 0
           print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions + killed + scrolls + paralysed + cursed))
           failures + effects + regressions + killed + scrolls + paralysed + cursed
         end

@@ -14,6 +14,7 @@ Chapter: DiagB3
   cites Net chapter NetworkStack
   cites Net chapter TcpTransport
   cites Net chapter NetIO
+  cites Net chapter NetCompact
   cites Net chapter Dhcp
   cites Net chapter DhcpIO
   cites Diag chapter DiagStage
@@ -137,8 +138,12 @@ Section: Knobs
  accumulator on a bump allocator with no GC, which is CostModel 3.6's
  quadratic shape and a wedge of our own making inside a stage whose entire
  purpose is to not wedge. Each repeat is a fresh send of the same small
- buffer and allocates nothing extra, while filling one queue slot apiece,
- which is the quantity the state is actually about.
+ buffer, filling one queue slot apiece.
+
+ A REPEAT IS NOT FREE: its frames and transport copies cost about 16 KB, and
+ a peer that ACKs as fast as we send leaves the drain's own compaction unrun,
+ so 8192 repeats reach 128 MB and the stack. Each repeat compacts past the
+ mark taken before the first, which holds the loop to one arena.
 
  The cap is `net-rexmit-capacity`-shaped rather than a round number: enough
  repeats to overfill the queue and stop, and few enough that a cfg typo
@@ -158,13 +163,13 @@ Section: Knobs
  has spent its budget with the queue full, every further repeat would spend it
  again for nothing.
 
-  db3-send-times : TcpTransportState, List Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
-  db3-send-times (ts) (payload) (left) (acc) =
+  db3-send-times : TcpTransportState, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  db3-send-times (ts) (payload) (left) (acc) (mark) =
    if left <= 0 then NetSendResult { ns-transport = ts, ns-sent = acc, ns-complete = True }
    else act
     r <- net-io-send-raw-checked ts payload
     if r.ns-complete == False then NetSendResult { ns-transport = r.ns-transport, ns-sent = acc + r.ns-sent, ns-complete = False }
-    else db3-send-times (r.ns-transport) payload (left - 1) (acc + r.ns-sent)
+    else db3-send-times (transport-compact-past (r.ns-transport) mark) payload (left - 1) (acc + r.ns-sent) mark
    end
 
  The first send carries the token and the banked record (DiagRecord); the
@@ -175,7 +180,9 @@ Section: Knobs
   db3-send-rest (first) (payload) (left) =
    if first.ns-complete == False then first
    else if left <= 0 then first
-   else db3-send-times (first.ns-transport) payload left (first.ns-sent)
+   else let ta = transport-arenas (first.ns-transport)
+   in let m = __heap-save
+   in db3-send-times ta payload left (first.ns-sent) m
 
  THE DHCP BUDGET IS THE ARP BUDGET'S SHAPE, for the same reason: one DISCOVER
  per round, so the fuel per round IS the request rate. `dhcp-io-await` spends

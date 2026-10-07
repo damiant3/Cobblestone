@@ -71,11 +71,19 @@ Paralyze Field (47) use the same five-tile placement but stay passable and may b
 whoever stands in one is burnt for 2 once a second, poisoned at the caster's level, or frozen as by Paralyze
 (`mgt-fields`), each through the resist roll and the landed share. A field's kind is read from its art
 (`mga-field-kind`), so a restored world keeps it passable; its caster (`MgWall.caster`) is volatile, and a restored
-field acts as from a caster with no skill. A paralyze field re-freezes whoever is still standing in it once they thaw.
+field acts as from a caster with no skill. A paralyze field re-freezes whoever is still standing in it once they thaw. Dispel Field (34) removes the one field or wall tile it targets (ServUO Fifth/DispelField): it expires that tile and the next pulse's wall pass removes it.
 
 Magic Reflection (36) stores 8 circles of reflection, 15 when Magery plus Inscription reach 200.0; a harmful spell
 aimed at its holder spends circle + 1 and returns to its caster while the store stays at 0 or above (`mga-reflects`,
 ServUO SpellHelper.CheckReflect). The store is volatile.
+
+Invisibility (44) hides its target for Magery x 120 ms (ServUO pre-AOS 1.2 x Magery.Fixed / 10 s) by the same concealed
+byte Hiding sets, so acting or being struck reveals it, and the caster's own body is drawn hidden; at expiry the holder
+is unhidden (a player's in its own pulse). Reveal (48) uncovers every hidden player within 1 + Magery/20 tiles of its
+point (pre-AOS always succeeds; a player caster reveals players only). Magery reaches the concealed byte through
+`hide-hook` and `hidden-hook`, which the composite binds to ActiveSkills (`as-set-hidden`, `as-concealed-hidden`). The
+Invisibility timer is volatile. A revealed player other than the caster is redrawn for others at once and for itself
+on its next self update.
 
 ## Composite integration
 

@@ -689,13 +689,20 @@ Section: Register Allocation
     if list-length (st.func-local-regs) > 0 then st.func-local-regs
     else local-regs
 
+ next-temp is read only modulo the temp pool's length (1 to 6 registers) and is bounded to 65535, so it wraps at
+ 65520, the largest count below the bound that every pool length divides: the rotation phase is unchanged and a
+ function needing more temps (one list literal of 66,304 elements, COMPILER-128) no longer traps the bound.
+
+  temp-step : Integer between 0 and 65535 -> Integer between 0 and 65519
+  temp-step (n) = int-mod (n + 1) 65520
+
   alloc-temp : CodegenState -> EmitResult
   alloc-temp (st) =
     let pool = active-temp-regs st
     in let idx = int-mod (st.next-temp) (list-length pool)
     in let reg = list-at pool idx
     in EmitResult {
-    state = fc-evict-reg (__record-set st "next-temp" (st.next-temp + 1)) reg,
+    state = fc-evict-reg (__record-set st "next-temp" (temp-step (st.next-temp))) reg,
     reg = __narrow reg
   }
 
@@ -711,7 +718,7 @@ Section: Register Allocation
     let pool = active-temp-regs st
     in let idx = int-mod (st.next-temp) (list-length pool)
     in if list-at pool idx == avoid
-       then alloc-temp (__record-set st "next-temp" (st.next-temp + 1))
+       then alloc-temp (__record-set st "next-temp" (temp-step (st.next-temp)))
     else alloc-temp st
 
   alloc-local : CodegenState -> EmitResult

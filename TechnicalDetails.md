@@ -242,14 +242,14 @@ for 149 checks (2026-09-28).
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,875,467 bytes, 2026-10-07, serial ring at 0xF00000 and heap at 0x1000000; Ed25519 refuses small-order A and R) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,878,742 bytes, 2026-10-07, Update 68 arc: Fat16 refuses . and .., hardware random refuses 0 and all-ones, COMPILER-128 temp wrap) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `A716B8E82EAEFD0B` |
-| SHA-256 | `279DF926B5F6811D37BF245AD7E93676DDB060FF7276D5510FC9B5E46F5F893F` |
-| MD5 | `7DB1807FB359E0BB88FEA7A3300133BA` |
+| Content hash prefix | `B2E02EC8DB7D001A` |
+| SHA-256 | `E29C439BEB721E790A95127846604386D09B2C2FA2D92762977952674E92103F` |
+| MD5 | `0470759392488EB7A486EAF771BDFC52` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -270,7 +270,7 @@ font selection and notices are documented in [fonts/README.md](fonts/README.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `EE86DDBD6D5F5B178CFD9D4C75CC824D701A7331EB592A958500C0D967325B2C` |
+| SHA-256 | `CF50A434BC0B33990D17832DB04B5081FC33011AFCD5A62F859E7C333D7E2F8A` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -300,8 +300,8 @@ All 59 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-10-02,
 using a 180-second minimum VM-arm allowance. The shipping check confirmed
 the checked-in default configuration. The diagnostic image is unchanged
 since that rehearsal. `seed/Codex.img` is built from the release seed
-(main 38368), and all 6,463 rows of `seed/Codex.map` match the seed's
-embedded MAP1 (checked 2026-10-07).
+(main 38465), and all 6,468 rows of `seed/Codex.map` match the seed's
+embedded MAP1 (checked 2026-10-07, seed E29C439B).
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and

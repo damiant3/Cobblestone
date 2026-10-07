@@ -424,11 +424,9 @@ Chapter: CompositeGameRules
  walk window the caller loaded: one spawn pass, then one round of combat swings;
  the packets have no recipient.
   cg-world-tick : CompositeGame, GameShard, WalkMap, Integer, Integer -> Result Integer Text
-  cg-world-tick (owner) (game) (map) (watcher) (tick) = when cg-town-headless owner tick
+  cg-world-tick (owner) (game) (map) (watcher) (tick) = when cg-npc-economy owner tick
     is Err (e) -> Err e
-    is Ok (_) -> when cg-gather owner
-    is Err (e) -> Err e
-    is Ok (_) -> when cg-errand-arm owner tick
+    is Ok (_) -> when (if cg-seeded owner then cg-errand-arm owner tick else Ok 0)
     is Err (e) -> Err e
     is Ok (_) -> when cg-british-arm owner tick
     is Err (e) -> Err e
@@ -445,13 +443,26 @@ Chapter: CompositeGameRules
   cg-tick-watcher (owner) = when owner.gatherer is None -> 0 is Just (c) -> c.serial
   cg-tick : CompositeGame, GameShard, WalkMap, Integer, Integer -> Result Integer Text
   cg-tick (owner) (game) (map) (watcher) (tick) = if watcher /= 0 then cg-world-tick owner game map watcher tick
+    else when cg-npc-economy owner tick
+      is Err (e) -> Err e
+      is Ok (_) -> when cg-british-arm owner tick
+        is Err (e) -> Err e
+        is Ok (_) -> cg-drain owner game tick
+ UOAIX-86 (3): no NPC trades, works, earns or buys until Lord British's errand has struck the gold he mined (cbe-bank
+ ends the errand, and the errand is saved); founding strikes one gold ingot, so the mint count cannot say this.
+  cg-seeded : CompositeGame -> Boolean
+  cg-seeded (owner) = when owner.british is None -> False is Just (c) -> cbe-finished c
+  cg-seed-gold : CompositeGame -> Integer
+  cg-seed-gold (owner) = when owner.british
+    is Just (c) -> let done = __record-set c "leg" cbe-done in 1
+    is None -> let c = cbe-new 0 (BbSpot { x = 0, y = 0, z = 0 })
+      in let done = __record-set c "leg" cbe-done
+      in let bound = __record-set owner "british" (Just c) in 1
+  cg-npc-economy : CompositeGame, Integer -> Result Integer Text
+  cg-npc-economy (owner) (tick) = if not (cg-seeded owner) then Ok 0
     else when cg-town-headless owner tick
       is Err (e) -> Err e
-      is Ok (_) -> when cg-gather owner
-        is Err (e) -> Err e
-        is Ok (_) -> when cg-british-arm owner tick
-          is Err (e) -> Err e
-          is Ok (_) -> cg-drain owner game tick
+      is Ok (_) -> cg-gather owner
  Every death passes the composite's NPCs: a dead gatherer or fighter is settled at the blow (cgg-fall, cgf-death), and a kill by
  the fighter loots the victim.
   cg-deaths : CompositeGame, GameWorldSpawn, Integer, Integer -> Integer
@@ -533,6 +544,7 @@ Chapter: CompositeGameRules
     else cg-arm-miners owner (i + 1)
   cg-miner : CompositeGame, Integer, Integer -> Result Integer Text
   cg-miner (owner) (key) (tick) = if key < 0 | key >= list-length owner.miners then Ok 0
+    else if not (cg-seeded owner) then (if wtm-add owner.timers (tick + cgf-step-ticks) cgm-kind key < 0 then Err "miner timer pool full" else Ok 0)
     else when owner.town
       is None -> Err "miner requires townsfolk"
       is Just (town) -> when owner.town-map
@@ -1445,10 +1457,10 @@ Chapter: CompositeGameRules
     is Just (town) -> if input.mode /= 2 | input.session.phase /= 2 then Ok None
       else when owner.town-map
         is None -> Err "townsfolk map unbound"
-        is Just (britain) -> when cg-labor owner tick
+        is Just (britain) -> when (if cg-seeded owner then cg-labor owner tick else Ok 0)
          is Err (e) -> Err e
          is Ok (_) -> let s8 = cg-stage owner 8 in let seconds = cg-town-clock owner tick
-          in when cg-town-move owner town britain seconds
+          in when (if cg-seeded owner then cg-town-move owner town britain seconds else Ok (gs-reply [] "town:unseeded"))
             is Err (e) -> Err e
             is Ok (moved) -> let s9 = cg-stage owner 9 in when tl-pulse town game input britain port tick
               is Err (e) -> Err e

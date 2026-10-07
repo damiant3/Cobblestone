@@ -1,0 +1,50 @@
+Chapter: ShopLotValueProof
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter GameVendorCodec
+
+  slv-check : Text, Boolean -> [Console] Integer
+  slv-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  slv-fault : GvWorld -> Text
+  slv-fault (v) = gvsc-lot-fault v 0
+  slv-shop : GvWorld -> Integer
+  slv-shop (v) = (list-at v.lots 0).actor
+  slv-sync : GvWorld -> Text
+  slv-sync (v) = when bb-wear-lots v (slv-shop v) 31
+    is Err (e) -> "sync " & e
+    is Ok (_) -> gvsc-lot-fault v 0
+  slv-lot : GvWorld -> Integer
+  slv-lot (v) = when world-create v.game.world (__record-set (gs-item 0 #1BF2 0) "amount" 2)
+    is Err (_) -> -1
+    is Ok (serial) -> gv-add-lot v serial (slv-shop v) 31 1000 32 0
+  slv-cheap : EpWorld, Integer -> Integer
+  slv-cheap (w) (shop) = let p = ep-actor w shop
+    in let a = ep-add p.stock 31 4
+    in let b = ep-add p.quality 31 400
+    in ep-add p.wear 31 128
+  slv-run : GvWorld -> [Console] Integer
+  slv-run (v) = act
+    found <- ep-find v.currency.world (slv-shop v) 31 2
+    lot <- slv-lot v
+    cheap <- slv-cheap v.currency.world (slv-shop v)
+    a <- slv-check "two ingots at quality 1000 list as one lot beside four unlisted at 100" (found >= 0 & lot >= 0 & slv-fault v == "none")
+    used <- ep-remove (ep-actor v.currency.world (slv-shop v)) 31 3
+    before <- slv-fault v
+    print-line-uni ("census after the shop uses three ingots: " & before)
+    b <- slv-check "using unlisted ingots at the average quality leaves the lot claiming more than is held" (text-contains before "quality total")
+    after <- slv-sync v
+    print-line-uni ("census after the lots are synced: " & after)
+    c <- slv-check "syncing the shop's lots brings the census back to none" (after == "none")
+    d <- slv-check "the lot still lists both ingots" (gv-represented v (slv-shop v) 31 0 0 == 2)
+    a + b + c + d
+  end
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> slv-check ("shard " & e) False
+    is Ok (shard) -> when gvd-economy 0
+      is Err (e) -> slv-check ("economy " & e) False
+      is Ok (currency) -> when gvd-world shard currency 0
+        is Err (e) -> slv-check ("vendor " & e) False
+        is Ok (v) -> slv-run v

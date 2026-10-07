@@ -3134,14 +3134,34 @@ Section: Device Seed
     in let st1 = emit-rdrand-store st0 0
     in let st2 = emit-rdrand-store st1 8
     in let st3 = emit-rdrand-store st2 16
-    in emit-rdrand-store st3 24
+    in let st4 = emit-rdrand-store st3 24
+    in let z0 = emit-seed-word-zero st4 0
+    in let z1 = emit-seed-word-zero (z0.state) 8
+    in let z2 = emit-seed-word-zero (z1.state) 16
+    in let z3 = emit-seed-word-zero (z2.state) 24
+    in let drawn = z3.state
+    in let present = drawn.code-len
+    in let st5 = st-append-code drawn (jmp 0)
+    in let absent = st5.code-len
+    in let st6 = emit-serial-string st5 [110, 111, 32, 101, 110, 116, 114, 111, 112, 121, 10]
+    in let done = st6.code-len
+    in let p0 = patch-jcc-at st6 (z0.deny-offset) absent
+    in let p1 = patch-jcc-at p0 (z1.deny-offset) absent
+    in let p2 = patch-jcc-at p1 (z2.deny-offset) absent
+    in let p3 = patch-jcc-at p2 (z3.deny-offset) absent
+    in patch-jmp-at p3 present done
 
   emit-rdrand-store : CodegenState, Integer -> CodegenState
   emit-rdrand-store (st) (offset) =
-    let retry = st.code-len
-    in let st1 = st-append-code st [72, 15, 199, 240]
-    in let st2 = st-append-code st1 (jcc cc-ae (retry - (st1.code-len + 6)))
-    in st-append-code st2 (mov-store reg-rdi reg-rax offset)
+    st-append-code (emit-rdrand-bounded st) (mov-store reg-rdi reg-rax offset)
+
+  emit-seed-word-zero : CodegenState, Integer -> CheckExpiryResult
+  emit-seed-word-zero (st) (offset) =
+    let st1 = st-append-code st (mov-load reg-rax reg-rdi offset)
+    in let st2 = st-append-code st1 (test-rr reg-rax reg-rax)
+    in let at = st2.code-len
+    in let st3 = st-append-code st2 (jcc cc-e 0)
+    in CheckExpiryResult { state = st3, deny-offset = at }
 
 Section: Capabilities
 

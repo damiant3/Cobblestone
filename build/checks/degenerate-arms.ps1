@@ -19,6 +19,7 @@ $files = @(Get-ChildItem (Join-Path $Repo 'codex'), (Join-Path $Repo 'apps') -Re
     Where-Object { $_.FullName -notmatch '[\\/](build-output|old)[\\/]' })
 $text = @{}
 foreach ($f in $files) { $text[$f.FullName] = [IO.File]::ReadAllText($f.FullName) }
+$files = @($files | Where-Object { [regex]::Matches($text[$_.FullName], '(?m)^Chapter:').Count -le 1 })
 
 $roots = @($reg.roots)
 $rootRx = ($roots | ForEach-Object { [regex]::Escape($_) }) -join '|'

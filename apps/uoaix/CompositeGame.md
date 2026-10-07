@@ -253,6 +253,15 @@ at boot; nothing binds the fighter's (`cgf-route`), so the fighter stays home. T
 `CompositeLabor`) are not persisted; the first tick or pulse after a boot
 schedules each resident's next hour (`cg-labor`).
 
+**The NPC economy waits for the king's gold (UOAIX-86).** Until Lord British's
+errand has struck the gold he mined (`cg-seeded`: the saved errand is at
+`cbe-done`, which only `cbe-bank` sets), the tick skips `cg-town-headless`,
+`cg-gather` and `cg-errand-arm`, the pulse skips `cg-labor` and the town move,
+and a miner's timer re-arms without stepping. Lord British's own errand always
+runs. Founding strikes one gold ingot (`gvd-economy`, `bb-economy`), so
+`mint-ingots` is not the signal. A world with no Lord British character never
+opens. Proofs of the NPC economy open it with `cg-seed-gold`.
+
 A fresh Britain world adds one economic gatherer (`cgg-new`, after the
 residents): a world mobile lodged on a free Sweet Dreams Inn tile that is no
 resident's bed, an economy actor with a pickaxe and a backpack it made,

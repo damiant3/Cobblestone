@@ -22,6 +22,7 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp);
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <intrin.h>
 
 #pragma comment(lib, "WinHvPlatform.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -14747,6 +14748,12 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
        (27), the last mirroring this processor's CR4.OSXSAVE (bit 18). */
     else if (leaf == 1) {
         unsigned long long ecx = 0x80000000ULL;
+        /* RDRAND (bit 30) executes natively under WHP whatever CPUID says, so
+           the bit is the host's: a guest that checks it before RDRAND must
+           see the generator it is actually given. */
+        int host[4];
+        __cpuid(host, 1);
+        if (host[2] & (1 << 30)) ecx |= (1ULL << 30);
         if (vm_avx) {
             ecx |= (1ULL << 26) | (1ULL << 28);
             if (state[0].Reg64 & (1ULL << 18)) ecx |= (1ULL << 27);
