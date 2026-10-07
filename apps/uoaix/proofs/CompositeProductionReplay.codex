@@ -5,6 +5,7 @@ Chapter: CompositeProductionReplay
   cites Uoaix chapter CompositeMinter
   cites Uoaix chapter GameHarvestCodec
   cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter BritainCatalog
   cpp-check : Text, Boolean -> [Console] Nothing
   cpp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
   cpp-mine : EpWorld, Integer, Integer, Integer -> Integer
@@ -52,6 +53,14 @@ Chapter: CompositeProductionReplay
   cpp-fill (map) (i) = if i == map.width * map.height then 0
     else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
     in cpp-fill map (i + 1)
+ The Royal Test Farm lies outside the proof's map, so its timber bed is chopped on a 20x20 map of open land around it.
+  cpp-chop-bed : CprState, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> Integer
+  cpp-chop-bed (s) (shard) (input) (farm) (axe) (k) (now) = let filled = cpp-fill farm 0
+    in let solid = cpl-collide s.harvest s.harvest.items.tiles farm 0
+    in let begin = cpr-handler-at s shard input farm 2593 (gp-put32 [6] axe) now
+    in let aimed = cpl-target-packet s.harvest (cpp-aim (list-at s.harvest.requests 0).target (cpl-serial-base + k * 2 + 1))
+    in let felled = cpr-handler-at s shard input farm 2593 aimed (now + 1)
+    in solid
   cpp-poke32 : Integer, Integer, Integer -> Integer
   cpp-poke32 (buf) (at) (value) = let a = poke-byte buf at (bit-and value 255)
     in let b = poke-byte buf (at + 1) (bit-and (bit-shru value 8) 255)
@@ -313,11 +322,19 @@ Chapter: CompositeProductionReplay
     cotton-bed <- gh-site-find s.harvest 10 1222 1587 0 0
     farm-bales <- ep-at p.stock 10
     roll8 <- __record-set p "attempts" 0
+    farm-far <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + cotton-bed * 2 + 1)) 30000
+    cpp-check "a crown bed out of reach is refused, as UOX3 393, and yields nothing" (cpp-note farm-far "That is too far away." & ep-at p.stock 10 == farm-bales)
+    stand <- (when world-get shard.world input.session.serial is Err (_) -> gs-mobile input.session.serial 0 0 0 400 0 is Ok (m) -> m)
+    stand-x <- stand.x
+    stand-y <- stand.y
+    stand-z <- stand.z
+    at-cotton <- world-update shard.world (gs-mobile input.session.serial 1222 1589 0 400 0)
     farm-reaped <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + cotton-bed * 2 + 1)) 30000
     ready <- __record-set w "hour" (cpl-node s.harvest cotton-bed).ready
     regrown <- eh-grow w 0
     cpp-check "any player reaps a crown bed, and the crown's bed regrows untended" (cotton-bed >= 0 & ep-at p.stock 10 > farm-bales & (cpl-node s.harvest cotton-bed).owner == crown & (cpl-node s.harvest cotton-bed).stage == 2)
     ginseng-bed <- gh-site-find s.harvest 17 1230 1587 0 0
+    at-ginseng <- world-update shard.world (gs-mobile input.session.serial 1230 1589 0 400 0)
     roots <- ep-at p.stock 17
     bare-roll <- __record-set p "attempts" 0
     bare-reap <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + ginseng-bed * 2 + 1)) 30000
@@ -326,6 +343,7 @@ Chapter: CompositeProductionReplay
     scorp-roll <- __record-set p "attempts" 0
     herb-reap <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + ginseng-bed * 2 + 1)) 30000
     cpp-check "a herb bed takes a scorp (tool 28): with none it yields nothing, with one it yields ginseng" (ginseng-bed >= 0 & roots-bare == roots & scorp > 0 & ep-at p.stock 17 > roots)
+    back <- world-update shard.world (gs-mobile input.session.serial stand-x stand-y stand-z 400 0)
     pan <- cpp-stuff v s.harvest.items pack 42 #097F 1
     asked-pan <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pan) 30000
     menu <- cpr-handler-at s shard input map 2593 (cpp-target (list-at s.harvest.requests slot).target 1418 1699 0 #0461) 30001
@@ -355,6 +373,7 @@ Chapter: CompositeProductionReplay
     cpp-check "a skillet aimed at a lit campfire (0DE3) opens the Cooking menu, and at a fire gone out (0DEA) is refused (UOAIX-87)" (flame > 0 & cold > 0
       & cpp-opcode lit-pan #6C 0 & cpp-opcode on-fire #7C 0 & cpp-opcode cold-pan #6C 0 & cpp-note on-ash "You cannot cook your food on that.")
     flax-bed <- gh-site-find s.harvest 11 1224 1587 0 0
+    at-flax <- world-update shard.world (gs-mobile input.session.serial 1224 1589 0 400 0)
     flax-name <- cpl-label s.harvest flax-bed
     named <- cpl-handler pl s.harvest None shard input map (gp-put32 [9] (cpl-serial-base + flax-bed * 2 + 1)) 40000
     flax-held <- ep-at p.stock 11
@@ -363,9 +382,16 @@ Chapter: CompositeProductionReplay
     dug <- cpl-handler pl s.harvest None shard input map (cpp-aim (list-at s.harvest.requests 0).target (cpl-serial-base + flax-bed * 2 + 1)) 40002
     cpp-check "a click names a mature crop and how to reap it, and a shovel aimed at it reaps it (F44, F46)" (flax-bed >= 0 & flax-name == "flax (reap it with a shovel)" & cpp-note named "planting:name" & ep-at p.stock 11 > flax-held & (cpl-node s.harvest flax-bed).stage == 0)
     fruit-bed <- gh-site-find s.harvest 16 1230 1590 0 0
-    chop <- cpr-handler-at s shard input map 2593 (gp-put32 [6] axe) 50000
+    at-fruit <- world-update shard.world (gs-mobile input.session.serial 1230 1592 0 400 0)
+    chop <-cpr-handler-at s shard input map 2593 (gp-put32 [6] axe) 50000
     fruit-chop <- cpl-handler pl s.harvest None shard input map (cpp-aim (list-at s.harvest.requests 0).target (cpl-serial-base + fruit-bed * 2 + 1)) 50001
     cpp-check "a hatchet aimed at an apple tree says to pick it by hand, once (F45)" (fruit-bed >= 0 & cpp-note fruit-chop "Pick its fruit by hand." & (list-at s.harvest.requests 0).target == 0)
+    timber-bed <- gh-site-find s.harvest 15 1224 1590 0 0
+    at-timber <- world-update shard.world (gs-mobile input.session.serial 1224 1592 0 400 0)
+    timber-logs <- ep-at p.stock 15
+    roll10 <- __record-set p "attempts" 0
+    timber-solid <- (when walk-map-sized 1214 1580 20 20 8 is Err (_) -> 0 - 1 is Ok (farm) -> cpp-chop-bed s shard input farm axe (max 0 timber-bed) 60000)
+    cpp-check "a hatchet chops the Royal Test Farm's crown timber bed for logs, as any player may (UOAIX-58)" (timber-bed >= 0 & timber-solid >= 1 & ep-at p.stock 15 > timber-logs & (cpl-node s.harvest timber-bed).stage == 0)
     old-mark <- world-create s.harvest.items.world (WorldObject { serial = 0, kind = 2, x = 5361, y = 74, z = 40, graphic = gh-vein-art, hue = gh-vein-hue, container = 0, amount = 1, health = 0 })
     royal <- cpr-royal-install s
     royal-again <- cpr-royal-install s
@@ -404,6 +430,18 @@ Chapter: CompositeProductionReplay
     treasury-before <- (em-purse v.currency.copper 1).coin
     struck <- cmr-handler s.harvest shard input (cpp-drop ingots minter)
     cpp-check "beside the minter the stack is struck: 3 copper ingots pay 2700 copper and the Crown keeps 300 (UOAIX-75)" (cpp-note struck "minter struck" & (em-purse v.currency.copper p.purse).coin == copper-before + 2700 & (em-purse v.currency.copper 1).coin == treasury-before + 300 & gv-lot v ingots 0 < 0 & ep-at p.stock 65 == 0 & p.place == home & ep-census w 1)
+    britain <- __record-set w "catalog" (bb-catalog 0)
+    vines <- cpl-farm-install s.harvest
+    grape-bed <- gh-site-find s.harvest 27 1238 1587 0 0
+    vine-view <- cpl-view pl s.harvest 9 1229 1588
+    grapes <- ep-at p.stock 78
+    at-grapes <- world-update shard.world (gs-mobile input.session.serial 1238 1589 0 400 0)
+    grape-roll <- __record-set p "attempts" 0
+    grape-reap <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + grape-bed * 2 + 1)) 40000
+    grape-saved <- ghc-encode s.harvest 70000 (alloc-bytes (ghc-size 256)) (ghc-size 256)
+    cpp-check "on the Britain catalog the Royal Test Farm adds a crown grapevine bed (resource 27) at 1238,1587, drawn as grapevines 0D1D with the movable flag, reaped by hand for grapes (09D1) and a grape cutting, and saved by the harvest codec (UOAIX-58)" (vines == 1 & grape-bed >= 0
+      & cpp-drawn vine-view (cpl-serial-base + grape-bed * 2 + 1) 0 == #0D1D & cpp-flag vine-view (cpl-serial-base + grape-bed * 2 + 1) 0 == #20
+      & ep-at p.stock 78 > grapes & ep-at p.stock 79 == 1 & cpp-art grape-reap #09D1 0 & cpp-art grape-reap #0C68 0 & is-ok grape-saved)
   end
   cpp-drop : Integer, Integer -> List Integer
   cpp-drop (item) (target) = gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] item) #FFFF) #FFFF) 0) target

@@ -1,8 +1,8 @@
-# Stage-1 game checkpoint envelope
+# Game checkpoint envelope
 
 `GameCheckpoint` wraps the combined TownState checkpoint and all 800 bytes
 of GameShard character slots. The stage-D owner uses the envelope while the
-database backend is pending. Reek owns later gameplay format changes; the
+database backend is pending; the
 database may replace the envelope only after equivalent restart acceptance.
 
 `gc-encode town game buffer capacity` requires the game and town to share

@@ -30,6 +30,35 @@ Chapter: BritishCharacterProof
   bcp-costumed (owner) (serial) = let robe = gmb-layer owner.items serial cst-british-layer 0
     in robe > 0 & (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.graphic == 400)
       & (when world-get owner.checkpoint.game.world robe is Err (_) -> False is Ok (o) -> o.graphic == #2042)
+  bcp-costume-in : CompositeGame, Integer -> Integer
+  bcp-costume-in (owner) (child) = if child == 0 then 0
+    else let rest = bcp-costume-in owner (world-next-sibling owner.checkpoint.game.world child)
+    in when world-get owner.checkpoint.game.world child is Err (_) -> rest is Ok (o) -> if o.graphic == #2042 then rest + 1 else rest
+  bcp-die : CompositeGame, Integer -> Integer
+  bcp-die (owner) (serial) = let game = owner.checkpoint.game
+    in let input = gn-input-with (when cg-specs 0 is Err (_) -> [] is Ok (specs) -> specs) 4
+    in when cb-ensure owner.combat game serial
+      is Err (_) -> 0
+      is Ok (a) -> when world-get game.world serial
+        is Err (_) -> 0
+        is Ok (m) -> when cb-die owner.combat game input 0 a m
+          is Err (_) -> 0
+          is Ok (_) -> when gr-robe owner.resurrection serial is Err (_) -> 0 is Ok (_) -> a.corpse
+  bcp-raise : CompositeGame, Integer -> Boolean
+  bcp-raise (owner) (serial) = let game = owner.checkpoint.game
+    in let bound = ga-bind game.accounts game.characters (ga-british game.accounts)
+    in when world-get game.world serial
+      is Err (_) -> False
+      is Ok (ghost) -> is-ok (gr-raise-world owner.resurrection game ghost (cb-slot game serial 0))
+  bcp-revive : CompositeGame, Integer -> [Console] Integer
+  bcp-revive (owner) (serial) = let costume = gmb-layer owner.items serial cst-british-layer 0
+    in let corpse = bcp-die owner serial
+    in let shrouded = (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.health == 0)
+      & bcp-costume-in owner (world-first-child owner.checkpoint.game.world corpse) == 1
+    in let raised = bcp-raise owner serial
+    in bcp-check "a resurrected British takes his own costume back from his corpse and sheds the death robe" (corpse > 0 & shrouded & raised
+      & bcp-costumed owner serial & gmb-layer owner.items serial cst-british-layer 0 == costume
+      & bcp-costume-in owner (world-first-child owner.checkpoint.game.world corpse) == 0)
   bcp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   bcp-first (store) (map) = let owner = store.state in act
     before <- world-count owner.checkpoint.game.world
@@ -45,10 +74,11 @@ Chapter: BritishCharacterProof
     b <- bcp-check "a second call finds the character and creates nothing" ((when again is Err (_) -> False is Ok (n) -> n == 0) & world-count owner.checkpoint.game.world == count & count > before)
     e <- bcp-check "British is body 400 wearing his costume 0x2042 on layer 22, and a body from 400 up swings and is hit as a human" (bcp-costumed owner serial
       & cb-swing-action 990 1 == 9 & cb-hurt-action 990 == 20)
+    f <- bcp-revive owner serial
     committed <- cs-commit store True
     c <- bcp-check "the world commits" (is-ok committed)
     d <- bcp-state owner "first"
-    a + b + e + c + d
+    a + b + e + f + c + d
   end
   bcp-later : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   bcp-later (store) (map) = let owner = store.state in act

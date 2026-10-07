@@ -8,12 +8,6 @@ left.**
 
 ## Standing hazards
 
-### EVIDENCE-JSON -- preserve SBOM string values
-
-| Source | Gap |
-|---|---|
-| `evidence/EvidencePackage.codex:498` | `ev-json-str` deletes quotation marks and omits backslash/control escaping. CycloneDX product/file text can be altered or produce invalid JSON. Use complete string serialization and test decoded-value preservation. Source census 2026-10-01, main 33668. |
-
 ### HTML-NOISE-BANK -- exact words and job-local worker ownership
 
 Main 33680 adds `gpu-noise-bank-then`, which runs the packaged `sdxl-noise`
@@ -222,25 +216,6 @@ records.
 ## Open
 
 Rows keep their original identifiers.
-
-**WGSL-BOOL-HELPER -- OPEN (unowned): Boolean helper parameters become i32.**
-`WgslEmitter.codex`'s `wgsl-ty-text` maps non-real helper types to `i32`, but a
-direct Boolean conditional emits that integer as `select`'s condition. The
-shader is invalid. MusicGen uses an Integer flag compared with 1. Evidence:
-red `build-output/musicgen-stage3/lm-norm.wgsl` and refused `medium-norm` run;
-`lm-norm2.wgsl` with the comparison runs. The consumer constraint is also in
-`docs/Designs/Active/Apps/InBrowserDiffusion.md`.
-
-**WGSL-HELPER-BUFFERS -- OPEN (unowned): repeated helper calls lose distinct buffer bindings.**
-Calling one Device dot helper with `a/b` and then `c/d` in one kernel emits
-both calls against a helper reading `a/b`. The metadata still names `c/d`,
-and WebGPU rejects binding 3 because the active layout omits the unused
-buffers. Evidence: red `build-output/browser-lycoris/lora-helper-binding-bad.wgsl`
-and `layout.err` (2026-10-01, compiler `CC3FC5222D726096`). Hada and sum2
-consumer kernels use a distinct right-dot helper as a workaround. The plug
-must specialize helpers for each buffer mapping or issue a named refusal;
-silently reusing the first mapping is incorrect. The LoRA grader now runs
-every emitted kernel's layout with zero elements before image generation.
 
 **Takeable now, no ruling or toolchain needed:** 1.73 (nothing left to run),
 2.17, 2.38, 2.53.

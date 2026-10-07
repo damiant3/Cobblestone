@@ -14,21 +14,14 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { instantiateGame } from '../landing/web/games/arcade.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wasmPath = process.argv[2] ||
   join(here, '..', 'landing', 'web', 'games', 'tictactoe.wasm');
 
-// The emitter imports WASI for print paths this game never reaches. Refusing
-// loudly rather than returning 0 keeps a silent write out of a passing run.
-const imports = {
-  wasi_snapshot_preview1: {
-    fd_write: () => { throw new Error('fd_write: the game module must not write'); },
-    fd_read:  () => { throw new Error('fd_read: the game module must not read'); },
-  },
-};
 
-const mod = await WebAssembly.instantiate(readFileSync(wasmPath), imports);
+const mod = await instantiateGame(readFileSync(wasmPath));
 const x = mod.instance.exports;
 
 // No GC: the module bump-allocates and never frees, so the heap is reset

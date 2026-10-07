@@ -144,10 +144,8 @@ stock, but is not a per-object provenance tree or an untrusted-state validator.
 The runtime preallocates 128 actors, 256 stations (`ep-station-limit`), 1024 resource/plot nodes (`ep-node-limit`) and
 4096 lifetime purchases. Actor records are 9 fields (72 bytes), stations 4
 (32 bytes), nodes and purchase rows 9 (72 bytes each), and the world 20
-(160 bytes), plus lists and fixed inventory/counter arrays. The production
-state, standard catalog and Result wrapper retained 1024728 bytes under seed
-`4228CD5103DC4523` on 2026-10-05, excluding the separately allocated money state.
-Ordinary actions and ticks allocate no heap. Records refuse past capacity.
+(160 bytes), plus lists and fixed inventory/counter arrays. Ordinary actions
+and ticks allocate no heap. Records refuse past capacity.
 
 Harvest, crafting, pricing and purchases are O(1) with indexed records. Actor
 admission scans at most 128 purse bindings. A tick costs O(nodes + actors +
@@ -162,10 +160,7 @@ prices, planted crop care/failure, the mill-to-bread chain, eating, tree
 regrowth, purchase logs, capacity refusal and both censuses. Normal and poisoned
 builds must match `proofs/EconomyProductionProof.expected` exactly.
 
-The runtime is not connected to `TfWorld` jobs/needs, the game server or the
-combined checkpoint yet. It provides in-process refusal atomicity, not crash
-atomicity. [EconomyClock.md](EconomyClock.md) owns the 30-day scheduling/census
-acceptance. Production mint terms, persistence/restart and world bindings
-remain open. The database path replaces
-the current codecs only after equivalent restart acceptance, per
-[Database.md](Database.md).
+The runtime provides in-process refusal atomicity, not crash atomicity; the
+composite's commit owns durability. [EconomyClock.md](EconomyClock.md) owns the
+30-day scheduling/census acceptance. The database path replaces the current
+codecs only after equivalent restart acceptance, per [Database.md](Database.md).

@@ -524,12 +524,26 @@ Chapter: CompositeBritainWorld
   cbw-lineup-nearest (owner) = when world-get owner.checkpoint.game.world (list-at owner.vendor.vendors bb-shop-count).serial
     is Err (_) -> bb-shop-count
     is Ok (m) -> gv-nearest owner.vendor m (0 - 1)
+  cbw-shops-styled : CompositeGame, Integer -> Boolean
+  cbw-shops-styled (owner) (i) = if i == bb-shop-count then True
+    else let serial = (list-at owner.vendor.vendors i).serial
+    in cst-styled owner.items serial (if bb-role owner.vendor serial == 1 then cst-smith else cst-shopkeeper) & cbw-shops-styled owner (i + 1)
+  cbw-residents-styled : CompositeGame, TownLive, Integer -> Boolean
+  cbw-residents-styled (owner) (town) (i) = if i == town.count then True
+    else let serial = (tf-person town.people (list-at town.residents i).person).world-serial
+    in let look = tl-look i serial
+    in (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.graphic == look.body & m.hue == look.skin)
+      & cst-wears owner.items serial look.rows 0 & cbw-residents-styled owner town (i + 1)
   cbw-later : CompositeOwner, WdState -> [Console, Device.Block] Integer
   cbw-later (store) (decoration) = let owner = store.state in act
     print-line-uni ("BRITAIN objects=" & show (world-count owner.checkpoint.game.world) & " residents=" & show (cbw-signature owner))
     print-line-uni ("BRITAIN clock=" & show owner.town-seconds & " where=" & show (cbw-where owner 0 7) & " " & cbw-net owner)
     restored <- cbw-check "restart restores the residents without populating again" (cbw-town owner == 3 & (owner.vendor.vendor-count == bb-shop-count | owner.vendor.vendor-count == 2 * bb-shop-count))
+    looks <- cbw-check "after a restart every shopkeeper wears its role's look and every resident its own, by serial (CharacterStylist step 5)" (cbw-shops-styled owner 0
+      & (when owner.town is None -> False is Just (town) -> cbw-residents-styled owner town 0))
     field <- cbw-check "restart keeps the field's wheat nodes and installs no more" (cbw-wheat owner.production.harvest.vendor.currency.world 0 0 == cpr-field-nodes)
+    grape-bed <- gh-site-find owner.production.harvest 27 1238 1587 0 0
+    vines <- cbw-check "restart keeps the Royal Test Farm's crown grapevine bed (resource 27, UOAIX-58) through UHC1" (grape-bed >= 0 & cpl-planted owner.production.harvest grape-bed & eh-common owner.vendor.currency.world (cpl-node owner.production.harvest grape-bed))
     lined <- cgl-arrange owner True
     listeners <- cg-speech-bind owner
     player <- list-at owner.vendor.players 0
@@ -541,7 +555,7 @@ Chapter: CompositeBritainWorld
     quiet <- cg-speech-bind owner
     nearest <- cbw-lineup-nearest owner
     dev <- cbw-check "in DEV the bank lineup stays registered but inert: no body drawn, no vendor answers at the lineup, no listener (UOAIX-51)" (is-ok inert & is-ok quiet & owner.vendor.vendor-count == 2 * bb-shop-count & gvsc-valid owner.vendor & cbw-concealed owner bb-shop-count & nearest < bb-shop-count & (when owner.speech is None -> False is Just (s) -> s.count == bb-shop-count + owner.banks.count + 3))
-    restored + field + kept + door + refused + dev
+    restored + looks + field + vines + kept + door + refused + dev
   end
 
   opening : [Console, Device.Block] Integer = when cg-specs 0

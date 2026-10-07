@@ -2505,7 +2505,7 @@ Section: Constant Folding
   fold-constants-in-chapter : IRChapter -> IRChapter
   fold-constants-in-chapter (ch) =
     let defined = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
-    in let folded-defs = for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body) defined) in deck-record folded
+    in let folded-defs = for d in (ch.defs) -> let fd = __record-set d "body" (fold-expr (d.body) defined) in deck-record fd
     in __record-set ch "defs" folded-defs
 
   fold-expr : IRExpr, SkipListText -> IRExpr
@@ -2955,9 +2955,15 @@ Section: Leaf Inlining
        alt-group = b.alt-group
      })) ty sp)
      is IrAct (ss) (ty) (sp) -> deck-record (IrAct (inline-act-stmts ss cands bound 0 []) ty sp)
-     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))) ty sp)
+     is IrRecord (n) (fs) (ty) (sp) -> deck-record (
+       let ie-fs = for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))
+       in IrRecord n ie-fs ty sp
+     )
      is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (inline-expr r cands bound) f ty sp)
-     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (inline-expr r cands bound) f (inline-expr v cands bound) ty sp)
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (
+       let ie-r = inline-expr r cands bound
+       in IrFieldStore ie-r f (inline-expr v cands bound) ty sp
+     )
      is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> inline-expr x cands bound) ty sp)
      is otherwise -> e
 
@@ -2966,7 +2972,15 @@ Section: Leaf Inlining
     let cands = collect-leaf-defs (ch.defs) 0 []
     in if list-length cands == 0 then ch
     else
-      __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (inline-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
+      __record-set ch "defs" (for d in (ch.defs) -> inline-leaf-def cands d)
+
+  inline-leaf-def : List InlineLeaf, IRDef -> IRDef
+  inline-leaf-def (cands) (d) =
+    if has-leaf-call (d.body) cands then deck-record (
+      let names = push-param-names [] (d.params) 0
+      in __record-set d "body" (inline-expr (d.body) cands names)
+    )
+    else d
 
 Section: Single-Caller Inlining
 
@@ -3126,16 +3140,34 @@ Section: Single-Caller Inlining
       else if list-length ptys == 0 then e
       else deck-record (IrName n (once-retype ty ptys atys 0) sp)
      is IrNegate (x) (t) (sp) -> deck-record (IrNegate (subst-once x params args ptys atys) (once-retype t ptys atys 0) sp)
-     is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-once l params args ptys atys) (subst-once r params args ptys atys) (once-retype ty ptys atys 0) sp)
+     is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (
+       let so-l = subst-once l params args ptys atys
+       in let so-r = subst-once r params args ptys atys
+       in IrBinary op so-l so-r (once-retype ty ptys atys 0) sp
+     )
      is IrIf (c) (t) (el) (ty) (sp) -> deck-record (
        let so-c = subst-once c params args ptys atys
        in let so-t = subst-once t params args ptys atys
        in IrIf so-c so-t (subst-once el params args ptys atys) (once-retype ty ptys atys 0) sp
      )
-     is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-once f params args ptys atys) (subst-once a params args ptys atys) (once-retype ty ptys atys 0) sp)
-     is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (subst-once r params args ptys atys) f (once-retype ty ptys atys 0) sp)
-     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (subst-once r params args ptys atys) f (subst-once v params args ptys atys) (once-retype ty ptys atys 0) sp)
-     is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> subst-once x params args ptys atys) (once-retype ty ptys atys 0) sp)
+     is IrApply (f) (a) (ty) (sp) -> deck-record (
+       let so-f = subst-once f params args ptys atys
+       in let so-a = subst-once a params args ptys atys
+       in IrApply so-f so-a (once-retype ty ptys atys 0) sp
+     )
+     is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (
+       let so-r = subst-once r params args ptys atys
+       in IrFieldAccess so-r f (once-retype ty ptys atys 0) sp
+     )
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (
+       let so-r = subst-once r params args ptys atys
+       in let so-v = subst-once v params args ptys atys
+       in IrFieldStore so-r f so-v (once-retype ty ptys atys 0) sp
+     )
+     is IrList (es) (ty) (sp) -> deck-record (
+       let so-es = for x in es -> subst-once x params args ptys atys
+       in IrList so-es (once-retype ty ptys atys 0) sp
+     )
      is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (IRFieldVal {
        name = fv.name,
        value = subst-once (fv.value) params args ptys atys,
@@ -3178,7 +3210,8 @@ Section: Single-Caller Inlining
      is IrWithTimeout (ms) (a) (b) (body) (ty) (sp) -> count-refs-expr body cands counts
      is IrFork (x) (ty) (sp) -> count-refs-expr x cands counts
      is IrAwait (x) (ty) (sp) -> count-refs-expr x cands counts
-     is IrTry (i) (a) (b) (c) (ty) (sp) -> count-refs-stmts c cands (count-refs-stmts b cands (count-refs-stmts a cands counts 0) 0) 0
+     is IrTry (i) (a) (b) (c) (ty) (sp) ->
+       count-refs-stmts c cands (count-refs-stmts b cands (count-refs-stmts a cands counts 0) 0) 0
      is otherwise -> counts
 
   count-refs-list : List IRExpr, List InlineLeaf, List Integer, Integer -> List Integer
@@ -3265,7 +3298,9 @@ Section: Single-Caller Inlining
     else if once-signature-generic cand == False then
       subst-once (cand.il-body) (cand.il-params) args [] []
     else
-      subst-once (cand.il-body) (cand.il-params) args (list-push (for p in (cand.il-ptys) -> p) (cand.il-rty)) (list-push (for a in args -> ir-expr-type a) (ir-expr-type e))
+      let so-ptys = list-push (for p in (cand.il-ptys) -> p) (cand.il-rty)
+      in let so-atys = list-push (for a in args -> ir-expr-type a) (ir-expr-type e)
+      in subst-once (cand.il-body) (cand.il-params) args so-ptys so-atys
 
   once-signature-generic : InlineLeaf -> Boolean
   once-signature-generic (cand) =
@@ -3292,8 +3327,15 @@ Section: Single-Caller Inlining
       in let na = once-expr a cands bound
       in once-apply-site (deck-record (IrApply nf na ty sp)) cands bound
      is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (once-expr l cands bound) (once-expr r cands bound) ty sp)
-     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (once-expr c cands bound) (once-expr t cands bound) (once-expr el cands bound) ty sp)
-     is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (once-expr v cands bound) (once-expr b cands (list-push bound n)) sp)
+     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (
+       let oe-c = once-expr c cands bound
+       in let oe-t = once-expr t cands bound
+       in IrIf oe-c oe-t (once-expr el cands bound) ty sp
+     )
+     is IrLet (n) (ty) (v) (b) (sp) -> deck-record (
+       let oe-v = once-expr v cands bound
+       in IrLet n ty oe-v (once-expr b cands (list-push bound n)) sp
+     )
      is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (once-expr b cands (push-param-names bound ps 0)) ty sp)
      is IrNegate (x) (t) (sp) -> deck-record (IrNegate (once-expr x cands bound) t sp)
      is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (once-expr sc cands bound) (for b in bs -> deck-record (IRBranch {
@@ -3304,9 +3346,15 @@ Section: Single-Caller Inlining
        alt-group = b.alt-group
      })) ty sp)
      is IrAct (ss) (ty) (sp) -> deck-record (IrAct (once-act-stmts ss cands bound 0 []) ty sp)
-     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (once-expr (fv.value) cands bound))) ty sp)
+     is IrRecord (n) (fs) (ty) (sp) -> deck-record (
+       let oe-fs = for fv in fs -> deck-record (__record-set fv "value" (once-expr (fv.value) cands bound))
+       in IrRecord n oe-fs ty sp
+     )
      is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (once-expr r cands bound) f ty sp)
-     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (once-expr r cands bound) f (once-expr v cands bound) ty sp)
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (
+       let oe-r = once-expr r cands bound
+       in IrFieldStore oe-r f (once-expr v cands bound) ty sp
+     )
      is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> once-expr x cands bound) ty sp)
      is otherwise -> e
 
@@ -3315,8 +3363,13 @@ Section: Single-Caller Inlining
     if i >= list-length ss then acc
     else let s = list-at ss i
     in when s
-     is IrDoBind (n) (sty) (v) (ssp) -> once-act-stmts ss cands (list-push bound n) (i + 1) (list-push acc (deck-record (IrDoBind n sty (once-expr v cands bound) ssp)))
-     is IrDoExec (ev) (esp) -> once-act-stmts ss cands bound (i + 1) (list-push acc (deck-record (IrDoExec (once-expr ev cands bound) esp)))
+     is IrDoBind (n) (sty) (v) (ssp) ->
+       let os-nb = list-push bound n
+       in let os-st = deck-record (IrDoBind n sty (once-expr v cands bound) ssp)
+       in once-act-stmts ss cands os-nb (i + 1) (list-push acc os-st)
+     is IrDoExec (ev) (esp) ->
+       let os-st = deck-record (IrDoExec (once-expr ev cands bound) esp)
+       in once-act-stmts ss cands bound (i + 1) (list-push acc os-st)
 
   inline-single-caller-in-chapter : IRChapter -> IRChapter
   inline-single-caller-in-chapter (ch) =
@@ -3326,7 +3379,15 @@ Section: Single-Caller Inlining
     in let cands = keep-single-caller local counts 0 []
     in if list-length cands == 0 then ch
     else
-      __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (once-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
+      __record-set ch "defs" (for d in (ch.defs) -> once-def cands d)
+
+  once-def : List InlineLeaf, IRDef -> IRDef
+  once-def (cands) (d) =
+    if has-leaf-call (d.body) cands then deck-record (
+      let names = push-param-names [] (d.params) 0
+      in __record-set d "body" (once-expr (d.body) cands names)
+    )
+    else d
 
 Section: Cost-Based Inlining
 
@@ -3449,6 +3510,6 @@ Section: Cost-Based Inlining
     in let cands = keep-multi-caller local counts 0 []
     in if list-length cands == 0 then ch
     else
-      __record-set ch "defs" (for d in (ch.defs) -> if has-leaf-call (d.body) cands then deck-record (__record-set d "body" (once-expr (d.body) cands (push-param-names [] (d.params) 0))) else d)
+      __record-set ch "defs" (for d in (ch.defs) -> once-def cands d)
 
 Page 1 of 2

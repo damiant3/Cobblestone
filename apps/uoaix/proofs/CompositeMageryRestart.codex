@@ -51,20 +51,20 @@ Chapter: CompositeMageryRestart
     else when world-get world serial
       is Err (_) -> cmr-find world (world-next-sibling world serial) graphic
       is Ok (item) -> if item.graphic == graphic then serial else cmr-find world (world-next-sibling world serial) graphic
-  cmr-own-book : Magery, WorldTable, Integer -> Integer
-  cmr-own-book (magic) (world) (serial) = if serial == 0 then 0
+  cmr-own-book : Magery, WorldTable, Integer, Integer -> Integer
+  cmr-own-book (magic) (world) (serial) (mask) = if serial == 0 then 0
     else let meta = list-at magic.definitions (world-slot world serial)
-    in if meta.serial == serial & meta.spells == #3F then serial
-    else cmr-own-book magic world (world-next-sibling world serial)
-  cmr-state : Magery, CompositeGame, Integer -> Boolean
-  cmr-state (magic) (owner) (mana) = let player = list-at owner.vendor.players 0
+    in if meta.serial == serial & meta.spells == mask then serial
+    else cmr-own-book magic world (world-next-sibling world serial) mask
+ The testing entry in boot1 fills every carried spellbook with every working spell (cg-books), so the restored book
+ holds mgs-working rather than the #3F it was registered with.
+  cmr-state : Magery, CompositeGame, Integer, Integer -> Boolean
+  cmr-state (magic) (owner) (mana) (mask) = let player = list-at owner.vendor.players 0
     in let game = owner.checkpoint.game
     in let actor = list-at magic.actors (world-slot game.world player.serial)
-    in let book = cmr-own-book magic game.world (world-first-child game.world player.pack)
+    in let book = cmr-own-book magic game.world (world-first-child game.world player.pack) mask
     in let rune = cmr-marked magic game.world (world-first-child game.world player.pack)
-    in let book-meta = list-at magic.definitions (world-slot game.world book)
     in book > 0 & rune > 0 & actor.serial == player.serial & actor.mana == mana
-      & book-meta.serial == book & book-meta.spells == #3F
   cmr-marked : Magery, WorldTable, Integer -> Integer
   cmr-marked (magic) (world) (serial) = if serial == 0 then 0
     else let meta = list-at magic.definitions (world-slot world serial)
@@ -137,7 +137,7 @@ Chapter: CompositeMageryRestart
       is Ok (a) -> let spent = __record-set a "mana" 7
         in let touched = mgs-touch magic in Ok a.mana
     committed <- cs-commit store True
-    a <- cmr-check "boot1 entry, spellbook, marked rune and spent mana commit" (is-ok entry & is-ok marked & is-ok drained & is-ok committed & cmr-state magic owner 7)
+    a <- cmr-check "boot1 entry, spellbook, marked rune and spent mana commit" (is-ok entry & is-ok marked & is-ok drained & is-ok committed & cmr-state magic owner 7 #3F)
     unmarked <- not (cmr-kit magic owner)
     away <- when world-get game.world player.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" 1440) "y" 1712)
     blank <- cmr-blank owner player.pack
@@ -177,10 +177,10 @@ Chapter: CompositeMageryRestart
     early <- cs-commit store True
     when cmr-attach store decoration map
       is Err (e) -> cmr-check ("restore " & e) False
-      is Ok (magic) -> if cmr-state magic store.state 9 then
+      is Ok (magic) -> if cmr-state magic store.state 9 mgs-working then
           cmr-check "boot3 a commit before attach kept MGM1 and the later mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & store.state.magic-held == 0 & cmr-kit magic store.state)
         else act
-          restored <- cmr-check "boot2 restart restores spellbook mask, rune destination and mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & cmr-state magic store.state 7 & cmr-kit magic store.state)
+          restored <- cmr-check "boot2 restart restores spellbook mask, rune destination and mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & cmr-state magic store.state 7 mgs-working & cmr-kit magic store.state)
           player <- list-at store.state.vendor.players 0
           actor <- list-at magic.actors (world-slot store.state.checkpoint.game.world player.serial)
           kept <- cmr-check "boot2 restart mid-spell keeps the Incognito look, its timer and its name" (cmr-disguised magic store.state.checkpoint.game player.serial)

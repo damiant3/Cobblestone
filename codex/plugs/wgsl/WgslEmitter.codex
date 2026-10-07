@@ -1228,6 +1228,27 @@ Section: Buffer Name Binding
       br-to = dest
     }))
 
+  wgsl-resolve-all-in : List BufBind, Text, Text, Text, Integer, List Text -> List Text
+  wgsl-resolve-all-in (bs) (callee) (param) (k) (fuel) (acc) =
+    wgsl-resolve-all-in-loop bs callee param k fuel acc 0
+
+  wgsl-resolve-all-in-loop : List BufBind, Text, Text, Text, Integer, List Text, Integer -> List Text
+  wgsl-resolve-all-in-loop (bs) (callee) (param) (k) (fuel) (acc) (i) =
+    if fuel <= 0 then acc
+    else if i >= list-length bs then acc
+    else let b = list-at bs i
+    in let hit = if b.bb-callee == callee then b.bb-param == param else False
+    in let acc1 = if hit == False then acc
+    else if b.bb-kernel then (if b.bb-caller == k then wgsl-add-name (b.bb-arg) acc else acc)
+    else wgsl-resolve-all-in bs (b.bb-caller) (b.bb-arg) k (fuel - 1) acc
+    in wgsl-resolve-all-in-loop bs callee param k fuel acc1 (i + 1)
+
+  wgsl-buf-conflict : List BufBind, Text, List Text, Text, Integer -> Boolean
+  wgsl-buf-conflict (bs) (callee) (bufs) (k) (i) =
+    if i >= list-length bufs then False
+    else if list-length (wgsl-resolve-all-in bs callee (list-at bufs i) k 8 []) > 1 then True
+    else wgsl-buf-conflict bs callee bufs k (i + 1)
+
   wgsl-multi : List IRDef, List BufEntry, List BufBind, Integer, List Text -> List Text
   wgsl-multi (defs) (m) (bs) (i) (acc) =
     if i >= list-length defs then acc
@@ -1326,13 +1347,24 @@ Section: Helper Function Emission
     let hbufs = wgsl-bufs-of bmap (d.name)
     in if wgsl-contains (ctx.multi) (d.name) then
       wgsl-emit-per-kernel ctx hbufs d (wgsl-kernels-of (ctx.bbinds) (d.name) (list-at hbufs 0) 8 []) 0
-    else wgsl-emit-helper-in (wgsl-helper-ctx ctx (d.name) hbufs) hbufs d
+    else let hctx = wgsl-helper-ctx ctx (d.name) hbufs
+    in let ks = if list-length hbufs == 0 then [] else wgsl-kernels-of (ctx.bbinds) (d.name) (list-at hbufs 0) 8 []
+    in if list-length ks == 0 then wgsl-emit-helper-in hctx hbufs d
+    else if wgsl-buf-conflict (ctx.bbinds) (d.name) hbufs (list-at ks 0) 0 then wgsl-emit-helper-refused hctx hbufs d
+    else wgsl-emit-helper-in hctx hbufs d
 
   wgsl-emit-per-kernel : WgslCtx, List Text, IRDef, List Text, Integer -> Text
   wgsl-emit-per-kernel (ctx) (hbufs) (d) (ks) (i) =
     if i >= list-length ks then ""
-    else
-      wgsl-emit-helper-in (wgsl-helper-ctx-in ctx (d.name) hbufs (list-at ks i)) hbufs d & wgsl-emit-per-kernel ctx hbufs d ks (i + 1)
+    else let k = list-at ks i
+    in let hctx = wgsl-helper-ctx-in ctx (d.name) hbufs k
+    in (if wgsl-buf-conflict (ctx.bbinds) (d.name) hbufs k 0 then wgsl-emit-helper-refused hctx hbufs d else wgsl-emit-helper-in hctx hbufs d)
+      & wgsl-emit-per-kernel ctx hbufs d ks (i + 1)
+
+  wgsl-emit-helper-refused : WgslCtx, List Text, IRDef -> Text
+  wgsl-emit-helper-refused (hctx) (hbufs) (d) =
+    "fn " & wgsl-fn-name hctx (d.name) & "(" & wgsl-emit-params (wgsl-drop-buf-params (d.params) hbufs 0 []) 0 & ") -> " & wgsl-ty-text (d.type-val)
+      & " {\n  return " & wgsl-refuse "helper_called_with_two_buffer_mappings" & ";\n}\n\n"
 
   wgsl-emit-helper-in : WgslCtx, List Text, IRDef -> Text
   wgsl-emit-helper-in (hctx) (hbufs) (d) =

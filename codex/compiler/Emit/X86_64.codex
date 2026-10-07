@@ -1606,13 +1606,92 @@ Section: Expression Emission
       else let r = emit-expr (st-set-tail-pos st False) e
       in emit-act-stmts (st-set-tail-pos (r.state) saved-tail) stmts (i + 1) len
 
-  emit-try-check-flag : CodegenState, Integer -> CodegenState
-  emit-try-check-flag (st) (body-failed-pos) =
-    let st1 = st-append-code st (li reg-rdi (st-cell st try-fail-flag-addr) & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
-    in st-append-code st1 (jcc cc-ne (body-failed-pos - (st1.code-len + 6)))
+ A `try` frame, 112 bytes on the stack of the function holding the `try`:
+ 0 previous head, 8 RSP, 16 RBP, 24 RBX, 32 R12, 40 R13, 48 R14, 56 R15,
+ 64 R10, 72 deck-bound counter, 80 deck ceiling, 88 handler address,
+ 96 message, 104 padding that keeps RSP 16-aligned. The callee-saved
+ registers are in it because an unwind skips every epilogue between the
+ `fail` and the `try`, and the `try` function's locals live in them.
 
-  emit-try-body-stmts : CodegenState, List IRActStmt, Integer, Integer, Integer -> EmitResult
-  emit-try-body-stmts (st) (stmts) (i) (len) (body-failed-pos) =
+  try-frame-bytes : Integer = 112
+
+  TryTail = record {
+   state : CodegenState,
+   has-jmp : Boolean,
+   jmp-pos : Integer
+  }
+
+  emit-try-head-addr : CodegenState -> CodegenState
+  emit-try-head-addr (st) =
+    if st-hosted st then st-append-code st (li reg-rsi (st-cell st (proc-table-base + try-frame-head-offset)))
+    else let st1 = emit-load-current-proc st reg-rsi
+    in st-append-code st1 (li reg-r11 proc-entry-size & imul-rr reg-rsi reg-r11 & li reg-r11 (proc-table-base + try-frame-head-offset) & add-rr reg-rsi reg-r11)
+
+  emit-try-push-frame : CodegenState -> CodegenState
+  emit-try-push-frame (st) =
+    let st1 = st-append-code st (lea-rip-rel reg-rax 0 & emit-sub-rsp-imm32 try-frame-bytes & mov-store reg-rsp reg-rax 88)
+    in let regs = mov-store reg-rsp reg-rbp 16 & mov-store reg-rsp reg-rbx 24 & mov-store reg-rsp reg-r12 32 & mov-store reg-rsp reg-r13 40
+    in let st2 = st-append-code st1 (regs & mov-store reg-rsp reg-r14 48 & mov-store reg-rsp reg-r15 56 & mov-store reg-rsp reg-r10 64)
+    in let st3 = st-append-code st2 (mov-rr reg-rax reg-rsp & mov-store reg-rsp reg-rax 8)
+    in let deck = li reg-r11 (st-cell st3 deck-bound-counter-addr) & mov-load reg-rax reg-r11 0 & mov-store reg-rsp reg-rax 72
+    in let ceiling = li reg-r11 (st-cell st3 deck-ceiling-addr) & mov-load reg-rax reg-r11 0 & mov-store reg-rsp reg-rax 80
+    in let st4 = st-append-code st3 (deck & ceiling & li reg-rax 0 & mov-store reg-rsp reg-rax 96)
+    in let st5 = emit-try-head-addr st4
+    in st-append-code st5 (mov-load reg-rax reg-rsi 0 & mov-store reg-rsp reg-rax 0 & mov-store reg-rsi reg-rsp 0)
+
+  patch-lea-at : CodegenState, Integer, Integer -> CodegenState
+  patch-lea-at (st) (lea-pos) (target-pos) =
+    st-add-deferred-patch (fc-flush st) (make-i32-patch (lea-pos + 3) (target-pos - (lea-pos + 7)))
+
+ Pops the frame RSP points at. RAX is preserved: it carries the `try`'s value.
+
+  emit-try-pop-frame : CodegenState -> CodegenState
+  emit-try-pop-frame (st) =
+    let st1 = emit-try-head-addr st
+    in st-append-code st1 (mov-load reg-r11 reg-rsp 0 & mov-store reg-rsi reg-r11 0 & add-ri reg-rsp try-frame-bytes)
+
+  emit-try-take-message : CodegenState, Integer -> CodegenState
+  emit-try-take-message (st) (msg-loc) =
+    let st1 = st-append-code (fc-flush st) (mov-load reg-rax reg-rsp 96)
+    in store-local (emit-try-pop-frame st1) msg-loc reg-rax
+
+ With no frame the message is printed and the program stops. With one, the
+ deck is put back first: when the frame was built outside every deck and the
+ unwind leaves from inside one, R10 is the deck cursor, so it is written back
+ to the deck before R10 returns to the bivy.
+
+  emit-fail-raise : CodegenState, Integer -> CodegenState
+  emit-fail-raise (st) (msg-reg) =
+    let st1 = emit-try-head-addr (st-append-code (fc-flush st) (mov-rr reg-rdi msg-reg))
+    in let st2 = st-append-code st1 (mov-load reg-rax reg-rsi 0 & test-rr reg-rax reg-rax)
+    in let have-pos = st2.code-len
+    in let st2j = st-append-code st2 (jcc cc-ne 0)
+    in let st3 = when st.exit-mode
+     is ExitUefi -> emit-uefi-print-text st2j reg-rdi
+     is otherwise -> emit-print-text st2j reg-rdi
+    in let st4 = st-append-code st3 [15, 11]
+    in let st5 = patch-jcc-at st4 have-pos (st4.code-len)
+    in let regs = mov-load reg-rbp reg-rax 16 & mov-load reg-rbx reg-rax 24 & mov-load reg-r12 reg-rax 32 & mov-load reg-r13 reg-rax 40
+    in let st6 = st-append-code st5 (mov-store reg-rax reg-rdi 96 & regs & mov-load reg-r14 reg-rax 48 & mov-load reg-r15 reg-rax 56)
+    in let cmp = li reg-r11 (st-cell st6 deck-bound-counter-addr) & mov-load reg-rdx reg-r11 0 & mov-load reg-rcx reg-rax 72 & cmp-rr reg-rdx reg-rcx
+    in let st7 = st-append-code st6 cmp
+    in let skip1-pos = st7.code-len
+    in let st8 = st-append-code st7 (jcc cc-le 0 & test-rr reg-rcx reg-rcx)
+    in let skip2-pos = st8.code-len
+    in let st9 = st-append-code st8 (jcc cc-ne 0 & li reg-r11 (st-cell st8 deck-pos-addr) & mov-store reg-r11 reg-r10 0)
+    in let skip-pos = st9.code-len
+    in let st10 = patch-jcc-at (patch-jcc-at st9 skip1-pos skip-pos) skip2-pos skip-pos
+    in let restore = li reg-r11 (st-cell st10 deck-bound-counter-addr) & mov-store reg-r11 reg-rcx 0 & mov-load reg-rcx reg-rax 80
+    in let st11 = st-append-code st10 (restore & li reg-r11 (st-cell st10 deck-ceiling-addr) & mov-store reg-r11 reg-rcx 0)
+    in st-append-code st11 (mov-load reg-r10 reg-rax 64 & mov-load reg-rsp reg-rax 8 & mov-load reg-rax reg-rax 88 & jmp-r reg-rax)
+
+  emit-try-refail : CodegenState, Integer -> CodegenState
+  emit-try-refail (st) (msg-loc) =
+    let ld = load-local st msg-loc
+    in emit-fail-raise (ld.state) (ld.reg)
+
+  emit-try-body-stmts : CodegenState, List IRActStmt, Integer, Integer -> EmitResult
+  emit-try-body-stmts (st) (stmts) (i) (len) =
     if i == len then EmitResult { state = st, reg = reg-rax }
     else let s = list-at stmts i
     in when s
@@ -1620,14 +1699,11 @@ Section: Expression Emission
       let val-result = emit-expr (st-set-tail-pos st False) val
       in let loc = alloc-local (val-result.state)
       in let st1 = store-local (loc.state) (loc.reg) (val-result.reg)
-      in let st2 = add-local st1 name (loc.reg)
-      in let st3 = emit-try-check-flag st2 body-failed-pos
-      in emit-try-body-stmts st3 stmts (i + 1) len body-failed-pos
+      in emit-try-body-stmts (add-local st1 name (loc.reg)) stmts (i + 1) len
      is IrDoExec (e) (sp) ->
       let r = emit-expr (st-set-tail-pos st False) e
-      in let st1 = emit-try-check-flag (r.state) body-failed-pos
-      in if i == len - 1 then EmitResult { state = st1, reg = r.reg }
-      else emit-try-body-stmts st1 stmts (i + 1) len body-failed-pos
+      in if i == len - 1 then r
+      else emit-try-body-stmts (r.state) stmts (i + 1) len
 
  The body is the sharp one. It re-runs from `retry-pos` on every attempt,
  so its slot holds whichever attempt failed last -- there is no single
@@ -1641,13 +1717,17 @@ Section: Expression Emission
     in let heap-loc = alloc-local st2
     in let st3 = st-append-code (heap-loc.state) (mov-rr reg-rax reg-r10)
     in let st4 = store-local st3 (heap-loc.reg) reg-rax
-    in let retry-pos = st4.code-len
-    in let st5 = st-append-code st4 (li reg-rdi (st-cell st4 try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
+    in let msg-loc = alloc-local st4
+    in let st5 = store-local (msg-loc.state) (msg-loc.reg) reg-rax
+    in let retry-pos = st5.code-len
     in let ld-heap = load-local st5 (heap-loc.reg)
     in let st6 = st-append-code (ld-heap.state) (mov-rr reg-r10 (ld-heap.reg))
-    in let jmp-over-pos = st6.code-len
-    in let st7 = st-append-code st6 (jmp 0)
-    in let body-failed-pos = st7.code-len
+    in let body-lea-pos = st6.code-len
+    in let st6f = emit-try-push-frame st6
+    in let jmp-over-pos = st6f.code-len
+    in let st7m = st-append-code st6f (jmp 0)
+    in let body-failed-pos = st7m.code-len
+    in let st7 = emit-try-take-message st7m (msg-loc.reg)
     in let ld-ctr = load-local st7 (counter-loc.reg)
     in let st8 = st-append-code (ld-ctr.state) (add-ri (ld-ctr.reg) 1)
     in let st9 = store-local st8 (counter-loc.reg) (ld-ctr.reg)
@@ -1658,41 +1738,33 @@ Section: Expression Emission
     in let jmp-exhaust-pos = st11.code-len
     in let st12 = st-append-code st11 (jmp 0)
     in let body-start-pos = st12.code-len
-    in let st13 = patch-jmp-at st12 jmp-over-pos body-start-pos
+    in let st13 = patch-lea-at (patch-jmp-at st12 jmp-over-pos body-start-pos) body-lea-pos body-failed-pos
     in let try-locals = st13.locals
-    in let body-result = emit-try-body-stmts st13 body 0 (list-length body) body-failed-pos
-    in let jmp-success-pos = (body-result.state).code-len
-    in let st14 = st-append-code (restore-locals (body-result.state) try-locals) (jmp 0)
+    in let body-result = emit-try-body-stmts st13 body 0 (list-length body)
+    in let st13b = st-append-code (body-result.state) (mov-rr reg-rax (body-result.reg))
+    in let st13c = emit-try-pop-frame st13b
+    in let jmp-success-pos = st13c.code-len
+    in let st14 = st-append-code (restore-locals st13c try-locals) (jmp 0)
     in let exhaust-pos = st14.code-len
     in let st15 = patch-jmp-at st14 jmp-exhaust-pos exhaust-pos
-    in let st-fb = if list-length fb > 0 then
-      let fb-clear-code = li reg-rdi (st-cell st15 try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0
-      in let fb-clear = st-append-code st15 fb-clear-code
-      in let fb-result = emit-act-stmts (st-set-tail-pos fb-clear False) fb 0 (list-length fb)
-      in let fb-restored = restore-locals (fb-result.state) try-locals
-      in let fb-flag-load = li reg-rdi (st-cell (fb-result.state) try-fail-flag-addr) & mov-load reg-rsi reg-rdi 0
-      in let fb-flag-code = fb-flag-load & cmp-ri reg-rsi 0
-      in let fb-flag = st-append-code fb-restored fb-flag-code
-      in let jne-fail-pos = fb-flag.code-len
-      in let fb-done = st-append-code fb-flag (jcc cc-ne 0)
-      in EmitResult { state = fb-done, reg = fb-result.reg }
-    else EmitResult { state = st15, reg = reg-rax }
-    in let jmp-end-fb-pos = (st-fb.state).code-len
-    in let st16 = st-append-code (st-fb.state) (jmp 0)
-    in let st-fail = if list-length fail > 0
-      then let fail-pos = st16.code-len
-      in let st-pfb = if list-length fb > 0 then
-        patch-jcc-at st16 (jmp-end-fb-pos - 6) fail-pos
-      else st16
-      in let fail-clear-code = li reg-rdi (st-cell st-pfb try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0
-      in let fail-clear = st-append-code st-pfb fail-clear-code
-      in let fail-result = emit-act-stmts (st-set-tail-pos fail-clear False) fail 0 (list-length fail)
-      in EmitResult { state = restore-locals (fail-result.state) try-locals, reg = fail-result.reg }
-    else st-fb
-    in let end-pos = (st-fail.state).code-len
-    in let st17 = patch-jmp-at (st-fail.state) jmp-success-pos end-pos
-    in let st18 = patch-jmp-at st17 jmp-end-fb-pos end-pos
-    in EmitResult { state = st18, reg = st-fail.reg }
+    in let tail = if list-length fb > 0 then
+      let fb-lea-pos = st15.code-len
+      in let s1 = emit-try-push-frame st15
+      in let fb-result = emit-act-stmts (st-set-tail-pos s1 False) fb 0 (list-length fb)
+      in let s2 = emit-try-pop-frame (st-append-code (fb-result.state) (mov-rr reg-rax (fb-result.reg)))
+      in let fb-jmp-pos = s2.code-len
+      in let s3 = st-append-code (restore-locals s2 try-locals) (jmp 0)
+      in let s4 = emit-try-take-message (patch-lea-at s3 fb-lea-pos (s3.code-len)) (msg-loc.reg)
+      in if list-length fail > 0 then
+        let fail-result = emit-act-stmts (st-set-tail-pos s4 False) fail 0 (list-length fail)
+        in let s5 = st-append-code (fail-result.state) (mov-rr reg-rax (fail-result.reg))
+        in TryTail { state = restore-locals s5 try-locals, has-jmp = True, jmp-pos = fb-jmp-pos }
+      else TryTail { state = emit-try-refail s4 (msg-loc.reg), has-jmp = True, jmp-pos = fb-jmp-pos }
+    else TryTail { state = emit-try-refail st15 (msg-loc.reg), has-jmp = False, jmp-pos = 0 }
+    in let end-pos = (tail.state).code-len
+    in let st17 = patch-jmp-at (tail.state) jmp-success-pos end-pos
+    in let st18 = if tail.has-jmp then patch-jmp-at st17 (tail.jmp-pos) end-pos else st17
+    in EmitResult { state = st18, reg = reg-rax }
 
  The RAX eviction below is load-bearing and must not be dropped as redundant.
  This writes RAX with a hardcoded mov-ri64 BEFORE it calls alloc-temp, and

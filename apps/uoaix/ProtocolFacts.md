@@ -31,13 +31,10 @@ ServUO `2D43377DB8346A421FA236925ECB7B0599A3F63DFD6D4FAF093F8F1066DCFA55`;
 Sphere table `BEBA9FBBA706FCD7DD21502B003859D3430083086E34C87DF38D2670A226A72D`;
 UOX3 outgoing `8E4AC304AA868C8B50B960833C7276668D0F98F5E36B4CF8BCD5B5BAC6A7812C`.
 
-The real game capture in `game-trace35144-v2/server.log` has a clear
-12345678 seed matching the pending relay key and 65 encrypted bytes. The
-first encrypted byte 43 becomes 91 under rolling XOR, but 47 under the
-discarded Blowfish hypothesis. XOR decodes the entire packet into the relay
-key, test account and password-minus-13 with zero padding. Raw capture
-SHA-256 is `551777E4BC9E6166FC9D5A34CBF1EAADDD7E90DBE8AA155F56D8124F38F81F24`;
-decoded packet SHA-256 is `26B0EBFF8DCB249C71DA19E5FEDCC83EA3AD7F2A9B155DB5DBCDE0130A313C7C`.
+The captured real game login has a clear seed matching the pending relay key
+and 65 encrypted bytes; the first encrypted byte 43 decodes to 91 under rolling
+XOR (47 under Blowfish), and XOR decodes the whole packet into the relay key,
+account and password-minus-13 with zero padding.
 
 ## Streams and order
 
@@ -98,29 +95,17 @@ with the diagnostic below.
 | S 21 walk denied | 8 | sequence8, x16, y16, direction8, Z8 |
 | C 01 logout | 5 | legacy marker32; connection closes, world character remains |
 
-The A9 profile retains count5 and its zero32 trailer. The earlier reconnect
-failure reports were retracted: root's second shard click landed on Create
-Character after Character Select appeared. Unchanged35318 with a
-client-created character showed Character Select on relogin after three
-seconds when driven with one shard selection. No server-side reconnect fix
-was required. The synthetic populated A9 capture remains valid byte evidence
-(`live-character-list35318.bin`, `.huffman`, `.reference.json`); its exact
-RunUO compression match was independent of our decoder. It was not a capture
-of the failed GUI interaction.
 Speech 03/1C is specified in GameServer.md and is separate from entry.
-The real 35195 client rendered its character in Britain, then sent A7.
+The real client sends A7 after rendering its character in the world.
 RunUO's `RequestScrollWindow` reads the fixed fields without a response;
 UOX3's `CPITips` corroborates the four-byte layout. This optional request
 has known framing and is ignored safely. Unknown-length opcodes still
 close only their connection after the bounded diagnostic.
 
-The real `server35168/server.log` connection 1 capture establishes a
-100-byte creation followed by two `7300` pings. Waiting for 104 consumed
+A real capture establishes a 100-byte creation followed by two `7300` pings. Waiting for 104 consumed
 those pings as clothing hues. The [older creation handler](https://github.com/draxinar/ouo/blob/main/packet_handler.c)
 and [version-specific lengths](https://github.com/draxinar/ouo/blob/main/version.c)
 corroborate the distinction: the two trailing hue words belong to 1.26+.
-The captured creation alone has SHA-256
-`423BA38675AE43797E5830316EE3F640DD3ED51667D9BA51F8CBA24212A8ABF6`.
 Stored character metadata retains its 104-byte normalized representation:
 the 100 wire bytes followed by two server-owned clothing hues, initially zero.
 
@@ -141,78 +126,25 @@ named packet events. A mid-packet EOF logs the incomplete form.
 
 ## Legacy A9 and login comparison
 
-The same-guest baseline selected the character, invalidating the proposed
-count, trailer and A8-flag fixes. Root subsequently identified the GUI
-second-click error and confirmed the unchanged production profile after
-client creation and a three-second relogin. The count patch was discarded.
-City-id1 still caused a distinct client crash and remains excluded.
-The archived [UOX writer](https://github.com/UOX3DevTeam/UOX3/blob/d416aadc56a22c6e0b7bf30b1872e2fc3c9784e4/source/packets.cpp)
-uses occupied count, always emits five physical slots, and omits a trailer
-(`CPISecondLogin::Handle`, `CPCharAndStartLoc`). This is a 2003 retained
-legacy writer, not evidence that the entire server targets 1.25.32.
-[Sphere 0.52 login](https://github.com/Sphereserver/Source-Archive/blob/main/0.52/GraySvr/CClientLog.cpp)
-has an explicit pre-1.26 server-index branch; its
-[character-list writer](https://github.com/Sphereserver/Source-Archive/blob/main/0.52/GraySvr/CClientMsg.cpp)
-and [wire definitions](https://github.com/Sphereserver/Source-Archive/blob/main/0.52/Common/grayproto.h)
-use count 5, five entries, one-based city IDs and no trailer.
-[POL login](https://github.com/polserver/polserver/blob/master/pol-core/pol/login.cpp)
-corroborates the old 30/30 and 31/31 widths but is modern: its unconditional
-feature prelude, one-based server index and expansion flags are not evidence
-of a required pre-1.26 sequence. No pre-1.26-specific POL source was found
-within this comparison; that version-coverage gap is explicit.
-
-| Field/order | Production baseline | Reference difference or agreement | Controlled run |
-|---|---|---|---|
-| A9 opcode and length prefix | A9, big-endian16 | All agree | Unchanged |
-| A9 byte3 | 5 | UOX occupied count; Sphere/POL five slots | Variant1 selects and enters, but baseline also selects; no causal conclusion |
-| Physical entries | Five name30/password30 pairs | All agree | Unchanged |
-| Names/passwords/padding | Stored name, zero password and padding | Same intended fields; Sphere writes empty-string terminators | Unchanged; no arbitrary padding experiment |
-| City count and strings | One Britain/Sweet Dreams Inn entry | Server configuration, not a fixed protocol count | Variant6 advanced synthetically only; no real-client grade |
-| City record width | index8, city31, building31 | All old layouts agree | Unchanged |
-| City index | 0 | Sphere emits i+1; UOX/POL i | Variant2 id1: client APPCRASH c0000005, CLIENT.EXE+0x61186; keep0 |
-| A9 trailer | zero32, length372 | UOX/Sphere omit it; later POL/RunUO append flags | Variant3 selects; baseline also selects; no causal conclusion |
-| A8 flag | 5D | Sphere/POL FF | Variant4 selects; baseline also selects; no causal conclusion |
-| A8 server count/index | One server, index0 | Sphere pre-1.26 agrees; modern POL index1 is outside established target branch | Unchanged |
-| A8 name/fullness/timezone/IP | UOAIX,0,0,loopback; fixed field widths | Configured metadata; Sphere name30 plus zero16 equals our padded32 | Unchanged |
-| 8C endpoint | loopback,2593, big-endian port | Same wire order; endpoint configured | Unchanged |
-| 8C token | 12345678 in controlled baseline | Sphere/UOX use loopback token7F000001; POL comments name olderFFFFFFFF | Variant5 advanced synthetically only; no real-client grade; POL value untested |
-| Login/game cipher boundary | fresh seed; measured rolling XOR; game Huffman | Target capture and Sphere pre-1.26 branch agree; modern POL game Blowfish was rejected by actual bytes | Already measured, unchanged |
-| 91 to A9 order | A9 directly | Sphere/UOX listed login paths agree; modern POL B9 prelude belongs to later profile | No unsupported B9 injected into this client |
-| 81/86 character packets | Not sent on game login | Sphere uses them for switching/deletion, not Setup_ListReq | Not a login-path difference |
-
-The diagnostic guest calls the production handler and changes one selected
-field or structural section per valid login. It uses a pre-created Uoaix
-Tester and fixed baseline relay token, restores all baseline fields for
-each run, and prints complete outgoing A8/8C/A9 bytes with mode and
-connection. Retries can advance the input list: a result is usable only
-when root's run matches the emitted mode. Unknown input/EOF refuses.
-The source, input and log are under reek `build-output/uoaix/semantics/`.
-The city-count experiment also changes dependent length/records; it is a
-structural test, not a one-byte test. Client screens are root observations,
-not inferred from the guest's pre-send log.
-
-Reference file SHA256 identities in local research scratch: UOX packets
-`848A9A54E3FCCF34F20E83AC97138F033666B0F4421B41BE835DD8F11380F366`;
-Sphere character writer
-`C93FE9021FC9E117B562FA392562FD0AEA3F726D9743FD600993A18AEA29ECC6`;
-Sphere login `88EAF135AA37DE6D7B7610B1E07791ED9E79BD641D12B557BE4A7C24E5B3F824`;
-Sphere wire `9C8E22E1536372A05E5F0891B6B1CC9ABCEE2280CC8C7D24B3477C957BD5504F`;
-POL login `9039A7BED044EE5AC749A33A5869C83162C0C5B7D8126A2E2264EB4C9B2CB56F`.
-
-The earlier same-shard synthetic readback retained Uoaix Tester in slot0
-(`build-output/uoaix/live-character-list35318.bin`, `.huffman`, `.json`).
-It sent no create/select, advanced relay state, and was not real connection3.
-Unchanged pinned RunUO compression of a separately constructed packet
-matched the captured120 bytes (`.reference.json`), compressed SHA256
-`43F751F104F55406ED6F687E32C12F9C62A7FC5241EF4D4B4B990DF2C71BB447`.
-That excludes a compression discrepancy for this packet, not a target-client
-interpretation difference.
-Control receipt: reek inbox e4cdab278c874ef5fdd9526442c20d52.json.
-Diagnostic variant0/connection15 sends baseline A8/A9 and relay12345678;
-the earlier production relogin used an incremented relay token. That is
-another condition to control. The baseline A9 is byte-identical to the
-35318 synthetic readback; this does not prove the complete failed real
-connection's byte stream or UI event sequence.
+- A9 keeps count 5, five physical slots and the zero32 trailer. With one shard
+  click, the unchanged profile selects a character and reconnects after
+  creation; count, trailer and A8-flag variants also selected, so none of them
+  is a requirement.
+- The A9 city index is 0: index 1 crashes 1.25.32 (APPCRASH c0000005,
+  `CLIENT.EXE+0x61186`).
+- The references differ and none targets this client alone. The archived
+  [UOX writer](https://github.com/UOX3DevTeam/UOX3/blob/d416aadc56a22c6e0b7bf30b1872e2fc3c9784e4/source/packets.cpp)
+  (2003) uses the occupied count, five physical slots and no trailer.
+  [Sphere 0.52 login](https://github.com/Sphereserver/Source-Archive/blob/main/0.52/GraySvr/CClientLog.cpp)
+  has an explicit pre-1.26 server-index branch; its
+  [character-list writer](https://github.com/Sphereserver/Source-Archive/blob/main/0.52/GraySvr/CClientMsg.cpp)
+  and [wire definitions](https://github.com/Sphereserver/Source-Archive/blob/main/0.52/Common/grayproto.h)
+  use count 5, five entries, one-based city IDs and no trailer.
+  [POL login](https://github.com/polserver/polserver/blob/master/pol-core/pol/login.cpp)
+  corroborates the 30/30 and 31/31 widths but is modern: its feature prelude,
+  one-based server index, expansion flags and B9 prelude belong to later
+  clients, and no B9 is sent to this one.
+- 81/86 are Sphere's switching and deletion packets, not part of the login path.
 
 ## Proof and acceptance boundary
 
@@ -225,10 +157,5 @@ accepting after each malformed connection. A replay cannot establish a
 client screen: root records real-client acceptance separately for shard
 list, relay, character list, creation/selection and world entry.
 
-Current real evidence establishes login, shard display, selection, relay,
-the empty-account transition into creation, successful creation and a
-rendered character in Britain. On 35206 optional A7 handling and five real
-walks passed with no refusal. Prior reconnect failures on 35206, 35220 and
-35318 were client-driver artifacts.
-Root confirmed production reconnect after client creation; prior failure reports were retracted. Compiler heap/time behavior is unchanged
-by this fact register; implementations carry their own cost verdicts.
+The real client is accepted for login, shard list, selection, relay, creation,
+world entry in Britain, A7 handling, walking, and relogin after creation.

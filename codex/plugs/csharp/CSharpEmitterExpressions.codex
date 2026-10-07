@@ -762,7 +762,7 @@ Section: Apply Chain
    },
    BuiltinEmitter {
      name = "fail",
-     emit = \args -> \ctx -> \ty -> "((Func<object>)(() => { throw new InvalidOperationException(" & emit-expr (list-at args 0) ctx & "); }))()"
+     emit = \args -> \ctx -> \ty -> "((Func<" & cs-type ty & ">)(() => { throw new InvalidOperationException(_Cce.ToUnicode(" & emit-expr (list-at args 0) ctx & ")); }))()"
    },
    BuiltinEmitter {
      name = "set-state",
@@ -1810,7 +1810,10 @@ Section: Expression Emission
     let body-text = emit-act body ty ctx
     in let fb-text = emit-act fb ty ctx
     in let fail-text = emit-act fail-stmts ty ctx
-    in "((Func<" & cs-type ty & ">)(() => { var _try_ok = false; " & cs-type ty & " _try_result = default; for (var _try_i = 0; _try_i < " & integer-to-text max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch {} } if (_try_ok) return _try_result; try { return " & fb-text & "; } catch { return " & fail-text & "; } }))()"
+    in let tail = if list-length fb == 0 then "throw _try_err;"
+      else if list-length fail-stmts == 0 then "return " & fb-text & ";"
+      else "try { return " & fb-text & "; } catch { return " & fail-text & "; }"
+    in "((Func<" & cs-type ty & ">)(() => { var _try_ok = false; " & cs-type ty & " _try_result = default; System.Exception _try_err = null; for (var _try_i = 0; _try_i < " & integer-to-text max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (System.Exception _e) { _try_err = _e; } } if (_try_ok) return _try_result; " & tail & " }))()"
 
   emit-act : List IRActStmt, CodexType, CsCtx -> Text
   emit-act (stmts) (ty) (ctx) =

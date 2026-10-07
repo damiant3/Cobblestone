@@ -113,12 +113,10 @@ case validation scans bounded dispute history and checks duplicate source
 events. Works records scan civic history for their paid references. Receipt
 lookup uses the existing ordered money ledger. Shared economy
 and queue validation retain their existing costs. Validation scratch is
-reclaimed; no per-record wrapper is added to the returned state.
-
-Under seed `4228CD5103DC4523` on 2026-10-04, the populated currency-bound decode
-retained 244216 bytes beyond shared bindings, below the proof's 512 KiB limit.
-This measures retained memory, not maximum validation scratch or worst-case
-elapsed time.
+reclaimed; no per-record wrapper is added to the returned state. The proof
+bounds the populated currency-bound decode's retention, beyond shared
+bindings, below 512 KiB; validation scratch and elapsed time are not bounded
+by that check.
 
 `proofs/TownGovernmentCodecProof.codex` covers funded offices, payroll, raid
 damage and repair obligations, an essential-workplace order, a paid bounty,

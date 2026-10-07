@@ -57,7 +57,7 @@ retains ShardServer's30000-PIT-tick traffic bound.
 
 ## Composite work
 
-Reek owns the composite binding. Built: each connection borrows its own
+Each connection borrows its own
 `GameClientView` into `state.view` for one callback (`cs-borrow`, pool reserved
 by `cs-views` before serving, least recently used reused), graded by
 `proofs/CompositeViewsProof.codex`. Each session also lends its own account

@@ -106,11 +106,8 @@ Validation's temporary balance array and audit record are reclaimed before
 returning. The raw-field helpers require validated owned storage; callers use
 the top-level codec rather than treating those helpers as admission APIs.
 
-Under seed `4228CD5103DC4523` on 2026-10-05, decoding the populated 30-day
-fixture retained 1643258 bytes. The maximum-dimension catalog fixture retained
-1723671 bytes; all money/production record capacities are preallocated by the
-decoder in both cases. Caller-owned input/output buffers are excluded. The
-proof refuses retained decoding above 3 MiB.
+All money/production record capacities are preallocated by the decoder. The
+proof refuses retained decoding above 3 MiB, excluding caller-owned buffers.
 
 `proofs/EconomyStateProof.codex` grades the 30-day state plus taxed loans,
 partial repayment, default and changed mint policy. It checks canonical

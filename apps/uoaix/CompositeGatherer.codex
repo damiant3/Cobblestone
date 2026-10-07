@@ -101,6 +101,7 @@ Chapter: CompositeGatherer
     in let placed = if c.leg == 1 then ep-place w actor c.gatherer.place else if c.leg == 3 then ep-place w actor cgg-town-place else 0
     in let trips = if c.leg == 3 then let counted = __record-set c "trips" (c.trips + 1) in (if c.gatherer.place > cgg-place & c.gatherer.place <= cgg-place + 4 then cgg-next-vein c t else 0) else 0
     in let sold = if c.leg == 3 & placed == 0 then bb-coin t.vendors.currency actor 1 16 + bb-coin t.vendors.currency actor 2 16 else 0
+    in let traded = if c.leg == 3 & placed == 0 then bb-trade-up t.vendors.currency actor else 0
     in let crowned = __record-set c "crowned" (c.crowned + sold)
     in let visit = __record-set c "visit" 0
     in let arrived = __record-set c "leg" next
@@ -117,8 +118,23 @@ Chapter: CompositeGatherer
     in let y = r.y1 + int-mod (c.trips / width) (r.y2 - r.y1 + 1)
     in let node = cgg-vein-node t.vendors.currency.world (cpr-vein 5 x y) c.gatherer.place 0
     in if node < 1 then 0 else let set = __record-set c.gatherer "node" node in 0
+ The town entrance is only a waypoint, and the planner refuses an occupied goal (`tl-plan`), so an NPC idling on the
+ entrance stranded every walker bound through it (UOAIX-91): an occupied entrance is reached at a free walkable tile beside it.
+  cgg-goal : CgGatherer, TownLive, WorldObject, WalkMap -> BbSpot
+  cgg-goal (c) (t) (mobile) (map) = let target = cgg-target c t
+    in if c.via /= 1 | not (cgg-taken t mobile target.x target.y target.z) then target
+    else cgg-beside t mobile map target 0
+  cgg-taken : TownLive, WorldObject, Integer, Integer, Integer -> Boolean
+  cgg-taken (t) (mobile) (x) (y) (z) = let w = t.vendors.game.world in tl-occupied w (world-tile-first w x y) mobile.serial z
+  cgg-beside : TownLive, WorldObject, WalkMap, BbSpot, Integer -> BbSpot
+  cgg-beside (t) (mobile) (map) (spot) (d) = if d >= 8 then spot
+    else let x = spot.x + walk-dx d
+    in let y = spot.y + walk-dy d
+    in when walk-height map x y spot.z
+      is Err (_) -> cgg-beside t mobile map spot (d + 1)
+      is Ok (z) -> if cgg-taken t mobile x y z then cgg-beside t mobile map spot (d + 1) else BbSpot { x = x, y = y, z = z }
   cgg-move : CgGatherer, TownLive, WorldObject, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
-  cgg-move (c) (t) (mobile) (map) (doors) = let target = cgg-target c t
+  cgg-move (c) (t) (mobile) (map) (doors) = let target = cgg-goal c t mobile map
     in if tl-at mobile target then
       if c.via == 1 then let arrived = __record-set c "via" 0 in let cleared = cgg-reset c in cgg-calm c
       else cgg-arrive c t

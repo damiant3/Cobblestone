@@ -119,10 +119,8 @@ three such scans. Steps scan 128 custody rows, then use constant-time mobile
 updates without changing containment. World reads allocate bounded temporary
 records; reclaim request scratch after consuming results. No operation grows
 a retained list or history beyond the initial allocation. Compiler heap/time
-behavior is unchanged.
-On 2026-10-04, normal and poison proofs measured 26,104 retained bytes for
-law construction, excluding the bound world table. The scripted walk retained
-zero additional bytes with its per-step scratch boundary.
+behavior is unchanged. The scripted walk retains no additional bytes across
+its per-step scratch boundary.
 
 `proofs/LawProof.codex` grades unwitnessed and unwilling cases, NPC memory,
 player reports, no guard in earshot, hearing and capture boundaries, rejected

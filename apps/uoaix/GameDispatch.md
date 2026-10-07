@@ -206,7 +206,7 @@ not establish live shard durability or unmodified-client acceptance.
 `CompositeGame.md` owns the current composite integration and its separate
 save/restart grades.
 
-## Idle CPU profile (2026-10-04)
+## Idle waits (NetIdle)
 
 GameNet now opts into `NetIdle` for accept and connected receive waits. Empty
 RX parks the native x86 core with `cpu-park`; the periodic boot interrupt is
@@ -238,20 +238,6 @@ pulse. PACKET, PULSE, LISTEN and REFUSE logs retain their prefixes and append
 an HPET-derived `ms=` timestamp for correlating handler and send delays.
 SEND records report reply byte count and separate encoding/send durations.
 
-The walking workload on frozen composite `179548B4` and VM `F3578E59`
-completed 40 replies in 47.94 seconds wall time with 2.42 seconds VM CPU after
-LISTEN, including login and creation. Whole-run RIP samples include startup;
-the samples do not identify walking-only CPU percentages. Huffman encoding
-measured tens of microseconds; the live NIC flush cost about 200 milliseconds.
-The no-TCP driver control isolated that cost to the transmit-tail MMIO write.
-Identical VM/CDX runs with stderr discarded, then with routine packet tracing
-disabled, reduced the kick to tens of microseconds. TCP_NODELAY and IF-enabled
-HLT bypass controls did not remove the stalls and were not landed.
-On complete composite `58BD6C5D`, the trace-gated VM `CF9841F8` returned all
-40 movement replies in 21-79 milliseconds each with normal stderr capture.
-The VM trace switch is documented in OperatorsManual. Evidence lives under
-reek `build-output/uoaix/walk-profile`, `net-idle-resume` and `nodelay`, plus
-fester `build-output/uoaix/test-stock2/e1000-traceoff/wire`.
 Input is fed as raw bytes, even
 on the establishing ACK. Closed/stale transports and EOF retain their existing
 handling. The old `gn-connection-step` polling helper remains available to its
@@ -263,68 +249,18 @@ wait loops are self-tail recursive, with fixed retained storage and bounded
 transient compaction. Timer work is independent of missed-tick count, with at
 most one bounded retransmission-queue traversal per advancement. Existing
 NetIO polling APIs and send-drain policy are
-unchanged. Blu reviewed the clock, raw-input and heap-mark paths in shelf35504.
+unchanged.
 
 The native timer proof is `proofs/NetIdleReplay.codex`. It checks elapsed ticks,
 deadline return, legacy-drain credit, retransmission give-up and raw buffering.
-The stalled-owner regression in `build-output/uoaix/net-idle-resume/` fails
-against the prior catch-up loop: the old loop closes the connection in one
-advancement without retry response intervals. The candidate native replay returns zero
-and preserves eventual give-up after separately elapsed retry intervals.
-That deterministic control proves the timer defect; the complete-composite
-probe and unmodified-client grade establish whether the live symptom is fixed.
 The event-order checks invoke the production timed sender and receive-frame
 path with an ACK that retires one of two real queued segments, then check the
 remaining segment's rearmed interval immediately before and at its deadline.
 Final-retry controls include both a full and partial ACK already queued at the
 expiry deadline, plus no ACK, which must still close the connection.
 `proofs/GameIdleServerProof.codex` uses a synthetic terrain window to grade the
-network path without MUL startup. Its99-check encrypted socket replay passes;
-the idle listener consumed 1.50 CPU seconds over 30 seconds, and a connected
-idle character consumed 1.265625 CPU seconds over 30 seconds. This is not a new
-full-composite CPU measurement: fester must rebuild the composite and root
-grades its client behavior. Evidence is reek `build-output/uoaix/net-idle/`.
-The earlier complete-composite baseline below remains the comparison target.
+network path without MUL startup.
 
-The complete cached composite burns approximately one CPU core while idle.
-This is a measured polling cost, not evidence of expensive game simulation.
-Reek profiled a frozen fester composite artifact
-`44471C0D8BF9F11214C9B8C87419781494074F204FF0309BF4310C7E494F1745`
-with its matching symbol map and independent copies of its closed fixture disk.
-The VM was shipped `F3578E59...`, e1000-nat, 3072MB cap, one guest at a time.
-This artifact predates the later disconnect and client-view adapters; their
-incremental cost is not measured here. No production disk/client was used.
-
-| Phase | Measured interval | Host process CPU |
-|---|---|---|
-| Listening, no host connection | About 30 seconds after LISTEN | 29.578125 seconds |
-| Restored character entered by synthetic client, then no application input | About 30 seconds after ready55 | 28.953125 seconds |
-
-A separate read-only observation of root's vendor VM36732 recorded CPU
-2088.03125 to 2097.890625 seconds between 02:06:52.4016274Z and
-02:07:02.4257131Z on 2026-10-05. Its log remained in LISTEN. That corroborates
-the symptom; the controlled composite runs identify the hot paths.
-
-`CODEX_VM_PROFILE` collects guest RIPs when the host timer cancels the VP.
-Matching-map histograms contain 2886 listen samples and 2912 connected samples.
-Listen leaders are net-driver-cell 22.7%, net-driver-recv-into 22.1%,
-e1000-poll-into 9.5%, net-driver-active 9.1%, and gn-accept 5.6%.
-Connected leaders are net-driver-cell 17.0%, net-driver-recv-into 16.1%,
-e1000-poll-into 8.4%, net-driver-active 7.8%, net-io-peer-finished 7.6%, and
-net-io-recv-raw-poll 6.0%. Histograms include startup/connection setup; the CPU
-deltas exclude setup. Sampling is approximate, may underrepresent VM-exit
-handling, and does not establish a zero cost for unsampled callbacks.
-
-The baseline source explains the observation: gn-accept continuously polled
-until its fuel cap, and NetIO's connected receive wait also polled. Both
-repeat driver selection and calibrated-limit accessors. Caching those values
-could reduce work per poll, but would still spin. NetIdle replaces those shard
-waits with elapsed-time accounting. Adding a sleep to an unchanged poll-count
-clock would slow timeouts. The baseline profile alone does not grade the fix.
-
-Evidence: `D:/Projects/Cobblestone-reek/build-output/uoaix/cpu-profile/`:
-`live-observation.json`, `e1000/result.json`, `active-e1000/result.json`, both
-`raw.hprof`, `server.map`, `histogram.txt`, and complete guest logs. Launchers
-and synthetic client are retained there. All owned profile guests/helpers
-exited; only root's existing vendor VM was left untouched. This is a profile,
-not a client acceptance run. Compiler heap/time behavior is unchanged.
+Before NetIdle, `gn-accept` and NetIO's connected receive wait polled without
+parking and the idle composite burned about one CPU core. Adding a sleep to a
+poll-count clock instead would slow every timeout; the waits account elapsed time.

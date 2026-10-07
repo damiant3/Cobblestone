@@ -8,7 +8,7 @@ gvsc-encode : GvWorld, buffer, capacity -> Result Integer Text
 gvsc-decode : buffer, size, GameShard, EuCurrency -> Result GvWorld Text
 ```
 
-GVS1 occupies 119240 bytes. It binds the supplied game world and currency, which must be separately
+GVS1 occupies `gvsc-bytes`. It binds the supplied game world and currency, which must be separately
 decoded components of the same encompassing checkpoint. EUC1 owns all currency
 and material economy state. GVS1 owns copies of bindings, lots, sale history
 and price buffers; it retains no input-buffer pointers. Allocate it below the
@@ -38,19 +38,23 @@ and deadline; a pre-restart cart cannot be reused.
 ## Format
 
 All cells are little-endian 64-bit integers. The 80-byte header contains magic
-`0x31535647`, version 4, length, vendor count, player count, lot count, checksum
-at offset 48, sale count, vendor action sequence and reserved zero. FNV32 covers
-the payload except that checksum cell. Fixed tables follow in this order:
+`0x31535647`, version 6, length, vendor count, player count, lot count, checksum
+at offset 48, sale count, vendor action sequence and controlled-NPC owner
+count. FNV32 covers the payload except that checksum cell. Each version appends
+after the last, so every earlier image keeps its offsets:
 
 - 16 vendors: serial, actor, stock/extra/buys serials, then 129 price cells.
 - Players 1-5: mobile serial, actor and backpack serial.
 - Lots 1-64: seven `GvLot` fields in `GameVendorState` order.
 - 1024 sales: twelve `GvSale` fields in `GameVendorState` order.
-- 128 controlled-NPC owners: serial and actor (versions 2 to 4).
-- Lots 65-128 (`gv-lot-limit`), versions 3 and 4.
+- 128 controlled-NPC owners: serial and actor (version 2).
+- Lots 65-128 (version 3).
+- Players 6 to `gv-player-limit` (version 4).
+- Lots 129 to `gv-lot-limit` (version 5).
+- The sale base, sales sealed before this segment (version 6).
 
-Version 4 is 126288 bytes (2026-10-06), inside the composite's 131072-byte
-64 lots) and version 1 (no owner table); each is a prefix of the next.
+The decoder accepts versions 1 to 6 at their exact lengths
+(`GameVendorCodec.codex`); encoding writes version 6.
 
 Unused wire rows must be zero. Transient quotes are omitted. The vendor action
 sequence counts accepted carts; it is not the store's global input sequence
@@ -69,6 +73,4 @@ and ownership walks stop at 65 steps. Currency
 reconstruction retains its existing bounded costs. Excess counts refuse.
 `proofs/GameVendorCodecProof.codex` checks a handler purchase, bank custody,
 quote reset, corpse/ground persistence and recomputed-checksum corruptions.
-Reek approved the codec and custody review. Its exact oracle and the existing vendor replay pass on seed
-`4228CD5103DC4523`. Composite disk recovery remains the encompassing owner's
-grade; this landing establishes the metadata codec and sale-custody boundary.
+Composite disk recovery is the encompassing owner's grade.

@@ -84,7 +84,7 @@ Section: Expression Emission
      is IrTextLit (s) (sp) -> "\"" & jv-escape s & "\""
      is IrBoolLit (b) (sp) -> if b then "true" else "false"
      is IrCharLit (n) (sp) -> "(char)" & show n
-     is IrName (n) (ty) (sp) -> jv-sanitize n
+     is IrName (n) (ty) (sp) -> if lookup-arity arities n == 0 then jv-sanitize n & "()" else jv-sanitize n
      is IrBinary (op) (l) (r) (ty) (sp) -> emit-jv-binary op l r ty arities indent
      is IrNegate (x) (nty) (sp) -> "(-(long)(" & emit-jv-expr x arities indent & "))"
      is IrIf (c) (t) (el) (ty) (sp) -> "((boolean)(" & emit-jv-expr c arities indent & ") ? " & emit-jv-expr t arities indent & " : " & emit-jv-expr el arities indent & ")"
@@ -339,16 +339,18 @@ Section: Act Blocks
      is IrDoExec (e) (sp) ->
       if is-last then jv-indent indent & "return (Object)(" & emit-jv-expr e arities indent & ");\n"
       else
-        jv-indent indent & emit-jv-expr e arities indent & ";\n" & emit-jv-act-stmts stmts arities indent (i + 1)
+        jv-indent indent & "_cx_discard(" & emit-jv-expr e arities indent & ");\n" & emit-jv-act-stmts stmts arities indent (i + 1)
 
 Section: Try
 
+  jv-try-arm : List IRActStmt, List ArityEntry, Integer -> Text
+  jv-try-arm (stmts) (arities) (indent) =
+    if list-length stmts == 0 then "null"
+    else "() -> " & emit-jv-act stmts arities indent
+
   emit-jv-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry, Integer -> Text
   emit-jv-try (max) (body) (fb) (fail-stmts) (arities) (indent) =
-    let body-text = emit-jv-act body arities indent
-    in let fb-text = emit-jv-act fb arities indent
-    in let fail-text = emit-jv-act fail-stmts arities indent
-    in "((java.util.function.Supplier<Object>)(() -> { boolean _try_ok = false; Object _try_result = null; for (int _try_i = 0; _try_i < " & show max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (Exception _e) {} } if (_try_ok) return _try_result; try { return " & fb-text & "; } catch (Exception _e) { return " & fail-text & "; } })).get()"
+    "_cx_try(" & show max & "L, " & jv-try-arm body arities indent & ", " & jv-try-arm fb arities indent & ", " & jv-try-arm fail-stmts arities indent & ")"
 
 Section: Type Definitions
 
@@ -392,7 +394,7 @@ Section: Definition Emission
     if text-length (d.name) == 0 then ""
     else let sname = jv-sanitize (d.name)
     in if list-length (d.params) == 0
-       then "    static Object " & sname & " = " & emit-jv-expr (d.body) arities 0 & ";\n\n"
+       then "    static Object " & sname & "() {\n        return " & emit-jv-expr (d.body) arities 2 & ";\n    }\n\n"
     else
       "    static Object " & sname & "(" & emit-jv-method-params (d.params) 0 & ") {\n        return " & emit-jv-expr (d.body) arities 2 & ";\n    }\n\n"
 
@@ -415,7 +417,7 @@ Section: Definition Emission
 Section: Java Class Assembly
 
   jv-builtins : Text
-  jv-builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n    static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } return r; }\n\n"
+  jv-builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n    static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } return r; }\n    static void _cx_discard(Object v) { }\n    static Object fail(Object m) { throw new RuntimeException((String)m); }\n    static Object _cx_try(long max, Supplier<Object> body, Supplier<Object> fb, Supplier<Object> onFail) { RuntimeException err = null; for (long i = 0; i < max; i++) { try { return body.get(); } catch (RuntimeException e) { err = e; } } if (fb == null) throw err; if (onFail == null) return fb.get(); try { return fb.get(); } catch (RuntimeException e) { return onFail.get(); } }\n\n"
 
   emit-java-chapter : IRChapter, List ATypeDef -> Text
   emit-java-chapter (m) (type-defs) =
@@ -424,7 +426,7 @@ Section: Java Class Assembly
     in let builtins = jv-builtins
     in let types-text = emit-jv-type-defs type-defs 0
     in let defs-text = emit-jv-defs (m.defs) 0 arities
-    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(RuntimeException e) { System.out.flush(); System.err.println(e.getMessage()); System.exit(1); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
     in header & builtins & types-text & defs-text & main-method
 
   emit-java-chapter-stream-head : IRChapter, List ATypeDef -> Text
@@ -433,7 +435,7 @@ Section: Java Class Assembly
     in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
     in let builtins = jv-builtins
     in let types-text = emit-jv-type-defs type-defs 0
-    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(RuntimeException e) { System.out.flush(); System.err.println(e.getMessage()); System.exit(1); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
     in header & builtins & types-text
 
   emit-java-chapter-stream-tail : IRChapter, List ATypeDef -> Text
@@ -442,7 +444,7 @@ Section: Java Class Assembly
     in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
     in let builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n\n"
     in let types-text = emit-jv-type-defs type-defs 0
-    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(RuntimeException e) { System.out.flush(); System.err.println(e.getMessage()); System.exit(1); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
     in main-method
 
   emit-java-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
@@ -451,7 +453,7 @@ Section: Java Class Assembly
     in let header = "import java.util.*;\nimport java.util.function.*;\n\npublic class Main {\n\n"
     in let builtins = "    static Object __narrow(Object n) { return n; }\n    static Object print_line_uni(Object s) { System.out.println(s); return null; }\n    static Object show(Object n) { return String.valueOf(n); }\n    static Object text_length(Object s) { return (long)((String)s).length(); }\n    static Object text_replace(Object s, Object a, Object b) { String o = (String)a; return o.isEmpty() ? (String)s : ((String)s).replace(o, (String)b); }\n    static Object text_starts_with(Object s, Object p) { return ((String)s).startsWith((String)p); }\n    static Object text_contains(Object s, Object sub) { return ((String)s).contains((String)sub); }\n    static Object text_split(Object s, Object sep) { List<Object> r = new ArrayList<Object>(); String t = (String)s; String p = (String)sep; if (p.isEmpty()) { r.add(t); return r; } int i = 0; while (true) { int j = t.indexOf(p, i); if (j < 0) { r.add(t.substring(i)); return r; } r.add(t.substring(i, j)); i = j + p.length(); } }\n    static Object text_to_integer(Object s) { String t = (String)s; int i = 0; boolean neg = false; if (t.length() > 0 && t.charAt(0) == '-') { neg = true; i = 1; } long v = 0; while (i < t.length() && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10 + (t.charAt(i) - '0'); i++; } return neg ? -v : v; }\n    static Object text_compare(Object a, Object b) { return Long.valueOf((long)((String)a).compareTo((String)b)); }\n    static Object list_length(Object xs) { return (long)((List<?>)xs).size(); }\n    static Object list_at(Object xs, Object i) { return ((List<?>)xs).get((int)(long)i); }\n    static Object integer_to_text(Object n) { return String.valueOf(n); }\n    static Object negate(Object n) { return -(long)n; }\n    static Object list_snoc(Object xs, Object v) { List<Object> l = (List<Object>)xs; if (!l.isEmpty()) { l.add(v); return l; } List<Object> n = new ArrayList<Object>(); n.add(v); return n; }\n    static Object list_push(Object xs, Object v) { return list_snoc(xs, v); }\n\n"
     in let types-text = emit-jv-type-defs type-defs 0
-    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(Exception e) { System.err.println(e); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
+    in let main-method = "    public static void main(String[] args) {\n        Thread t = new Thread(null, () -> { try { opening(); } catch(RuntimeException e) { System.out.flush(); System.err.println(e.getMessage()); System.exit(1); } }, \"codex-main\", 512L * 1024 * 1024);\n        t.start();\n        try { t.join(); } catch(InterruptedException e) { System.err.println(e); }\n    }\n}\n"
     in arities
 
   emit-java-chapter-stream-def : IRChapter, List ArityEntry, Integer -> Text

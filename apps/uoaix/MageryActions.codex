@@ -67,7 +67,7 @@ Chapter: MageryActions
             if target.kind /= 2 | mga-wall-index magic serial 0 < 0 then Err "That cannot be dispelled."
             else Ok (MgAim { object = target, point = point, door = -1 })
           else if target.kind == 2 & (slot < 0 | not (mga-root-access magic input slot target)) then Err "That item is not accessible."
-          else if spell == 32 then
+          else if spell == 32 | spell == 52 then
             if not (mgs-known magic serial) then Err "That rune is not marked."
             else if not (list-at magic.definitions (world-slot shard.world serial)).rune then Err "That rune is not marked."
             else Ok (MgAim { object = target, point = point, door = -1 })
@@ -83,6 +83,12 @@ Chapter: MageryActions
             if target.kind /= 2 | not (gsi-known magic.items serial) then Err "Target an ordinary container."
             else if (gsi-meta magic.items serial).gump == 0 | gmb-root magic.items serial 65 /= 0 then Err "That container cannot be enchanted."
             else if (not (mgs-known magic serial) | (if mgs-known magic serial then not (list-at magic.definitions (world-slot shard.world serial)).lockable else True)) then Err "That container cannot be magically locked or trapped."
+            else Ok (MgAim { object = target, point = point, door = -1 })
+          else if spell == 59 then
+            if target.kind /= 1 | cb-slot shard target.serial 0 < 0 then Err "Target is not a being."
+            else if target.serial == source.serial then Err "Thou can not resurrect thyself."
+            else if target.health > 0 then Err "Target is not dead."
+            else if walk-abs (target.x - source.x) > 1 | walk-abs (target.y - source.y) > 1 then Err "Target is not close enough."
             else Ok (MgAim { object = target, point = point, door = -1 })
           else if target.kind /= 1 | target.health == 0 then Err "Target a living creature."
           else when cb-ensure magic.combat shard serial
@@ -191,7 +197,7 @@ Chapter: MageryActions
     in mgs-touch magic
   mga-area-wanted : Magery, WorldObject, WorldObject, Integer -> Boolean
   mga-area-wanted (magic) (source) (m) (spell) = m.kind == 1 & m.health > 0
-    & (if spell == 48 then magic.hidden-hook m.serial
+    & (if spell == 48 then magic.hidden-hook m.serial else if spell == 54 then magic.summoned-hook m.serial /= ""
       else spell == 25 | spell == 26 | (m.serial /= source.serial & magic.combat.admit-hook source.serial m.serial))
   mga-area-count : Magery, GameShard, WorldObject, WorldObject, Integer, Integer, Integer, Integer -> Integer
   mga-area-count (magic) (shard) (source) (point) (radius) (spell) (k) (n) = let side = 2 * radius + 1
@@ -227,7 +233,8 @@ Chapter: MageryActions
   mga-area-one : Magery, GameShard, GameInput, WorldObject, WorldObject, Integer, Integer -> Result (List (List Integer)) Text
   mga-area-one (magic) (shard) (input) (source) (m) (spell) (base) = when mgs-ensure magic shard m.serial
     is Err (e) -> Err e
-    is Ok (actor) -> if spell == 48 then
+    is Ok (actor) -> if spell == 54 then Ok (mga-dispel magic shard source m)
+      else if spell == 48 then
         (if cb-slot shard m.serial 0 < 0 then Ok []
         else let shown = magic.hide-hook m.serial False
         in let cleared = __record-set actor "invisible" 0
@@ -270,11 +277,42 @@ Chapter: MageryActions
     in let touched = mgs-touch magic
     in Ok ([mgp-effect target target #376A False,mgp-sound target #03C4]
       & (if target.serial == input.session.serial then [mga-self-shown magic shard input target True] else []))
+ ServUO Seventh/Polymorph (pre-AOS): the caster takes the body chosen from the form menu (GameMagery), a human body with
+ a random skin hue and any other with hue 0, for Magery seconds, at most 120; MageryTick and MageryIncognito return the
+ original. BaseArmor and BaseClothing.ValidateMobile, which unequip what the new body cannot wear, are not modelled.
+  mga-polymorph : Magery, GameShard, GameInput, MgActor, WorldObject -> Result (List (List Integer)) Text
+  mga-polymorph (magic) (shard) (input) (actor) (target) = let body = actor.poly-pick
+    in let picked = __record-set actor "poly-pick" 0
+    in if actor.poly > 0 | body == 0 then Ok [sip-message target.serial target.graphic 6 "This spell is already in effect."]
+    else let seconds = max 1 (min 120 (mgs-skill shard target.serial 25 / 10))
+    in let a = __record-set actor "poly" (magic.tick + mgd-ticks (seconds * 1000))
+    in let b = __record-set actor "poly-body" target.graphic
+    in let c = __record-set actor "poly-hue" (bit-and target.hue #7FFF)
+    in let hue = if body == #190 | body == #191 then 1002 + mgs-random magic 57 else 0
+    in let changed = WorldObject { serial = target.serial, kind = target.kind, x = target.x, y = target.y, z = target.z,
+      graphic = body, hue = hue, container = target.container, amount = target.amount, health = target.health }
+    in when world-update shard.world changed
+      is Err (e) -> Err e
+      is Ok (_) -> let tracked = mgs-track magic actor
+        in let touched = mgs-touch magic in Ok [mgp-appearance magic input changed]
+ ServUO Sixth/Dispel and Seventh/MassDispel: a summoned creature the roll beats goes (effect 0x3728, sound 0x201) through
+ the owner's dismiss-hook; one that resists shows effect 0x3779. Mass Dispel rolls for every summoned creature within 8
+ tiles of its point.
+  mga-dispel : Magery, GameShard, WorldObject, WorldObject -> List (List Integer)
+  mga-dispel (magic) (shard) (source) (m) = let key = magic.summoned-hook m.serial
+    in if mgs-random magic 1000 >= mgd-dispel-chance key (mgs-skill shard source.serial 25) then [mgp-effect m m #3779 False]
+    else if magic.dismiss-hook m.serial then [mgp-effect m m #3728 False,mgp-sound m #0201] else [mgp-effect m m #3779 False]
+ ServUO Eighth/Resurrection: a player's ghost within 1 tile is raised (effect 0x376A, sound 0x214) through the owner's
+ raise-hook, the path a bandage takes; ServUO's ResurrectGump, where the ghost accepts, is not modelled, as for the bandage.
   mga-mobile : Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> Result (List (List Integer)) Text
   mga-mobile (magic) (shard) (input) (caster) (source) (aim) (spell) = let target = aim.object
     in when mgs-ensure magic shard target.serial
       is Err (e) -> Err e
-      is Ok (actor) -> if mgd-harmful spell & target.serial /= source.serial & actor.reflect > 0 & mga-reflects magic actor spell then
+      is Ok (actor) -> if spell == 41 then
+          (if magic.summoned-hook target.serial == "" then Ok [sip-message source.serial source.graphic 6 "That cannot be dispelled."]
+          else let shown = mga-dispel magic shard source target
+          in Ok (if list-length shown == 1 then shown & [sip-message source.serial source.graphic 6 "The creature resisted the attempt to dispel it!"] else shown))
+        else if mgd-harmful spell & target.serial /= source.serial & actor.reflect > 0 & mga-reflects magic actor spell then
           mga-mobile magic shard input caster source (MgAim { object = source, point = source, door = -1 }) spell
         else if spell == 4 then mge-heal magic shard input source.serial target
         else if spell == 29 then mge-greater-heal magic shard input source.serial target
@@ -283,6 +321,10 @@ Chapter: MageryActions
           else let charged = __record-set actor "reflect" (8 + (mgs-skill shard source.serial 25 + mgs-skill shard source.serial 23) / 2000 * 7)
           in let touched = mgs-touch magic in Ok [mgp-effect target target #375A False,mgp-sound target #01ED]
         else if spell == 44 then mga-invisible magic shard input actor source target
+        else if spell == 56 then mga-polymorph magic shard input actor target
+        else if spell == 59 then
+          if not (magic.raise-hook source.serial target.serial) then Ok [sip-message source.serial source.graphic 6 "Target can not be resurrected at that location."]
+          else Ok [mgp-effect target target #376A False,mgp-sound target #0214]
         else if mgd-harmful spell & mge-resisted magic shard source.serial target.serial then
           Ok [sip-message target.serial target.graphic 6 "You feel yourself resisting magical energy."]
         else if spell == 43 then
@@ -450,7 +492,7 @@ Chapter: MageryActions
   mga-wall-last (spell) = if spell == 24 then 1 else 2
   mga-field-kind : Integer -> Integer
   mga-field-kind (graphic) = if graphic == #398C | graphic == #3996 then 28 else if graphic == #3915 | graphic == #3922 then 39
-    else if graphic == #3967 | graphic == #3979 then 47 else 0
+    else if graphic == #3967 | graphic == #3979 then 47 else if graphic == #0F6C then 52 else 0
   mga-field-art : Integer, Boolean -> Integer
   mga-field-art (spell) (east) = if spell == 24 then #0082 else if spell == 28 then (if east then #398C else #3996)
     else if spell == 39 then (if east then #3915 else #3922) else if spell == 47 then (if east then #3967 else #3979)
@@ -481,7 +523,7 @@ Chapter: MageryActions
           is Err (e) -> Err e
           is Ok (placed) -> mga-walls magic shard source target spell (i + 1) (list-push packets (sip-ground placed))
   mga-prepare : Magery, GameShard, GameInput, WorldObject, MgAim, Integer -> [Device.Block] Result (Maybe MgAim) Text
-  mga-prepare (magic) (shard) (input) (source) (aim) (spell) = if spell /= 22 & spell /= 32 then act Ok (Just aim) end
+  mga-prepare (magic) (shard) (input) (source) (aim) (spell) = if spell /= 22 & spell /= 32 & spell /= 52 then act Ok (Just aim) end
     else let point = if spell == 22 then aim.point else let rune = list-at magic.definitions (world-slot shard.world aim.object.serial)
       in mga-point rune.x rune.y rune.z
     in act
@@ -494,14 +536,14 @@ Chapter: MageryActions
           is Ok (_) -> let valid = when walk-height map point.x point.y point.z
               is Err (_) -> False
               is Ok (z) -> z == point.z & not (mga-occupied shard.world (world-tile-first shard.world point.x point.y) source.serial z shard.world.capacity)
-            in if valid then Ok (Just (MgAim { object = aim.object, point = point, door = -1 }))
+            in if valid & spell /= 52 then Ok (Just (MgAim { object = aim.object, point = point, door = -1 }))
             else act
               restored <- magic.cover source.x source.y source.z
               when restored
                 is Err (e) -> Err e
                 is Ok (_) -> when mga-overlay magic 0
                   is Err (e) -> Err e
-                  is Ok (_) -> Ok None
+                  is Ok (_) -> Ok (if valid then Just (MgAim { object = aim.object, point = point, door = -1 }) else None)
             end
   end
   mga-travel : Magery, GameShard, GameInput, WorldObject, WorldObject -> Result (List (List Integer)) Text
@@ -526,12 +568,82 @@ Chapter: MageryActions
     in let armed = mgs-wall-arm magic i
     in let touched = mgs-touch magic
     in Ok [mgp-effect target target #376A False,mgp-sound target #0201]
-  mga-apply : Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> [Device.Block] Result (List (List Integer)) Text
+ ServUO Seventh/GateTravel and Moongate (pre-AOS): a marked rune opens a gate (art 0x0F6C) on the caster's tile and
+ another at the rune's place, each leading to the other, for 30 s, with sound 0x20E. The rune's place must be standable
+ and clear, as Recall's is. A player who walks onto one arrives on the other with sound 0x1FE; one casting or dragging
+ an item is refused, and a gate whose twin is gone (dispelled) says so. A wall row's `next` holds its twin's row + 1.
+ ServUO opens the pair 1 s after the cast and travels 1 s after the step; here both happen at once, as this shard's
+ public moongates do. ServUO deletes the gates on a world load (InternalItem.Deserialize), and so does MageryCodec.
+  mga-gate-make : Magery, GameShard, WorldObject, Integer, Integer, Integer -> Result Integer Text
+  mga-gate-make (magic) (shard) (point) (slot) (twin) (caster) = when world-create shard.world (WorldObject { serial = 0, kind = 2,
+    x = point.x, y = point.y, z = point.z, graphic = #0F6C, hue = 0, container = 0, amount = 1, health = 0 })
+    is Err (e) -> Err e
+    is Ok (serial) -> let wall = list-at magic.walls slot
+      in let a = __record-set wall "serial" serial
+      in let b = __record-set wall "until" (magic.tick + mgd-ticks 30000)
+      in let c = __record-set wall "caster" caster
+      in let d = __record-set wall "next" (twin + 1)
+      in let armed = mgs-wall-arm magic slot
+      in let registered = gsi-register magic.items serial 0 0 False False
+      in Ok serial
+  mga-gate : Magery, GameShard, WorldObject, WorldObject -> Result (List (List Integer)) Text
+  mga-gate (magic) (shard) (source) (point) = let first = mga-wall-slot magic 0
+    in let second = if first < 0 then -1 else mga-wall-slot magic (first + 1)
+    in if second < 0 then Err "magic gate budget changed"
+    else when mga-gate-make magic shard source first second source.serial
+      is Err (e) -> Err e
+      is Ok (here) -> when mga-gate-make magic shard point second first source.serial
+        is Err (e) -> Err e
+        is Ok (_) -> let touched = mgs-touch magic
+          in when world-get shard.world here
+            is Err (e) -> Err e
+            is Ok (gate) -> Ok [sip-ground gate,sip-message source.serial source.graphic 6 "You open a magical gate to another location",mgp-sound source #020E]
+  mga-gate-at : Magery, WorldObject, Integer -> Integer
+  mga-gate-at (magic) (m) (i) = if i == 32 then -1 else let wall = list-at magic.walls i
+    in if wall.serial /= 0 & wall.until > magic.tick & wall.next > 0
+      & (when world-get magic.items.world wall.serial is Err (_) -> False is Ok (item) -> item.graphic == #0F6C & item.x == m.x & item.y == m.y & walk-abs (item.z - m.z) <= 3) then i
+    else mga-gate-at magic m (i + 1)
+  mga-gate-twin : Magery, Integer -> Result WorldObject Text
+  mga-gate-twin (magic) (i) = let j = (list-at magic.walls i).next - 1
+    in if j < 0 | j >= 32 then Err "The other gate no longer exists."
+    else let twin = list-at magic.walls j
+    in if twin.serial == 0 | twin.next /= i + 1 | twin.until <= magic.tick then Err "The other gate no longer exists."
+    else when world-get magic.items.world twin.serial
+      is Err (_) -> Err "The other gate no longer exists."
+      is Ok (item) -> if item.graphic /= #0F6C then Err "The other gate no longer exists." else Ok item
+ ServUO BaseCreature.Summon and SpellHelper.Summon (pre-AOS): Blade Spirits and Energy Vortex appear at the targeted
+ place, answer to nobody and last 80 to 119 s; the others appear on the first clear tile beside the caster, follow
+ the caster, and last 4 x Magery seconds (Magery 0-1000 times 400 ms). The owner's summon-hook places the creature
+ (GameWorldSpawn summon slots); a refused place answers ServUO's 501942.
+  mga-summon-spot : Magery, GameShard, WorldObject, Integer -> WorldObject
+  mga-summon-spot (magic) (shard) (near) (d) = if d == 8 then mga-point 0 0 -1000
+    else let x = near.x + walk-dx d
+    in let y = near.y + walk-dy d
+    in when walk-height magic.decoration.map x y near.z
+      is Err (_) -> mga-summon-spot magic shard near (d + 1)
+      is Ok (z) -> if walk-abs (z - near.z) > 2 | mga-occupied shard.world (world-tile-first shard.world x y) 0 z shard.world.capacity then mga-summon-spot magic shard near (d + 1)
+        else mga-point x y z
+  mga-summon-at : Magery, GameShard, WorldObject -> WorldObject
+  mga-summon-at (magic) (shard) (point) = when walk-height magic.decoration.map point.x point.y point.z
+    is Err (_) -> mga-point 0 0 -1000
+    is Ok (z) -> if mga-occupied shard.world (world-tile-first shard.world point.x point.y) 0 z shard.world.capacity then mga-point 0 0 -1000 else mga-point point.x point.y z
+  mga-summon : Magery, GameShard, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
+  mga-summon (magic) (shard) (source) (point) (spell) =
+    let ground = spell == 33 | spell == 58
+    in let spot = if ground then mga-summon-at magic shard point else mga-summon-spot magic shard source 0
+    in let ms = if ground then (80 + mgs-random magic 40) * 1000 else mgs-skill shard source.serial 25 * 400
+    in let serial = if spot.z == -1000 then 0 else magic.summon-hook source.serial (mgd-summon-key spell (mgs-random magic 18)) spot.x spot.y spot.z (not ground) ms
+    in if serial == 0 then Ok [sip-message source.serial source.graphic 6 "That location is blocked."]
+    else Ok [mgp-sound spot (mgd-summon-sound spell)]
+  mga-apply :Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> [Device.Block] Result (List (List Integer)) Text
   mga-apply (magic) (shard) (input) (caster) (source) (aim) (spell) =
     if spell == 2 then act mga-food magic shard source end
     else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then act mga-container magic shard input aim spell end
     else if spell == 24 | spell == 28 | spell == 39 | spell == 47 | spell == 50 then act mga-walls magic shard source aim.point spell (0 - mga-wall-last spell) [] end
     else if spell == 22 | spell == 32 then act mga-travel magic shard input source aim.point end
+    else if spell == 52 then act mga-gate magic shard source aim.point end
+    else if mgd-summon-cost spell > 0 then act mga-summon magic shard source aim.point spell end
+    else if spell == 54 then act mga-area magic shard input source aim.point 8 spell 0 0 [] end
     else if spell == 45 then act mga-mark magic source aim.object end
     else if spell == 34 then act mga-dispel-field magic aim.object end
     else if spell == 46 then act mga-mass-curse magic shard input source aim.point 0 [] end

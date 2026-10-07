@@ -1,6 +1,6 @@
 # Town offices and public finances
 
-`TownGovernment.codex` is stage G's first layer-1 unit: appointed mayors,
+`TownGovernment.codex` is the layer-1 civic unit: appointed mayors,
 local dues, guard employment/payroll, funding requests, and town grants/loans.
 It references an existing `TfWorld` for resident identity and an `EpWorld`
 for authoritative money. It does not create townsfolk, guards, buildings,
@@ -117,8 +117,7 @@ Budgets are four town offices, 64 lifetime guard contracts, 2048 civic events
 and one last-paid-day cell per town/purse pair (4 * 256 cells). Native offices
 have nine fields (72 bytes), guards six (48 bytes), events eight (64 bytes)
 and state thirteen (104 bytes), plus lists, the optional binding and the stamp
-array. Legacy construction retained 176800 bytes under seed `4228CD5103DC4523`
-on 2026-10-04, excluding the referenced townsfolk/economy. Currency binding adds
+array. Currency binding adds
 one retained reference and royal actor ID, not a copy of the economy. Daily
 dues and payroll retain no heap; financial routing adds constant work.
 

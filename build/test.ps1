@@ -783,6 +783,8 @@ foreach ($src in $toCompile) {
     # .vmargs holds extra codex-vm flags, for a test whose subject is the
     # machine rather than the program -- a bus topology, an absent device.
     $vmArgsFile   = Join-Path $dir "$name.vmargs"
+    # .wall holds a run budget in whole seconds above codex-vm's 60 s default.
+    $wallFile     = Join-Path $dir "$name.wall"
     $log = Join-Path $out 'build.log'
     $bin = Join-Path $out "$name.cdx"
     $exitFile = Join-Path $out '.exitcode'
@@ -882,7 +884,7 @@ foreach ($src in $toCompile) {
         $needsRun.Add(@{
             Name = $name; Bin = $bin; Expected = ''; Fatal = $true; ExpectExc = $expectExc
             Stdin = $stdinFile; Keys = $keysFile; Disk = $diskFile; Smp = 0
-            Disk2 = $disk2File; VmArgs = $vmArgsFile
+            Disk2 = $disk2File; VmArgs = $vmArgsFile; Wall = $wallFile
         })
         continue
     }
@@ -921,6 +923,7 @@ foreach ($src in $toCompile) {
         Stdin = $stdinFile; Keys = $keysFile; Disk = $diskFile; Smp = $smpCores; DiskSourceBytes = $diskSourceBytes
         Disk2 = $disk2File
         VmArgs = $vmArgsFile
+        Wall = $wallFile
     })
 }
 
@@ -1076,9 +1079,22 @@ if ($needsRun.Count -gt 0) {
         $slotLoad = New-Object 'long[]' $Jobs
         $slotCount = New-Object 'int[]' $Jobs
         $slotMembers = @{}
-        for ($s = 0; $s -lt $Jobs; $s++) { $slotMembers[$s] = [System.Collections.Generic.List[hashtable]]::new() }
+        for ($s = 0; $s -le $Jobs; $s++) { $slotMembers[$s] = [System.Collections.Generic.List[hashtable]]::new() }
         $byRun = @($needsRun | Sort-Object @{ Expression = { $runWeight[$_.Name] }; Descending = $true }, @{ Expression = { $runIndex[$_.Name] }; Descending = $false })
+        # A .wall subject (COMPILER-123) goes to the extra slot $Jobs, one guest
+        # at a time, whose supervisor gets the largest budget, as bvt.ps1 does.
+        $longWall = 0
         foreach ($t in $byRun) {
+            if (Test-Path -PathType Leaf $t.Wall) {
+                $wallSec = 0
+                $wallText = (Get-Content -TotalCount 1 $t.Wall).Trim()
+                if (-not [int]::TryParse($wallText, [ref]$wallSec) -or $wallSec -le 60 -or $wallSec -gt 600) {
+                    throw "$($t.Wall) must hold whole seconds above 60 and at most 600 on its first line, not '$wallText'"
+                }
+                $slotMembers[$Jobs].Add($t)
+                if ($wallSec -gt $longWall) { $longWall = $wallSec }
+                continue
+            }
             $k = 0
             if ($runWeight[$t.Name] -gt 0) {
                 for ($s = 1; $s -lt $Jobs; $s++) {
@@ -1104,7 +1120,7 @@ if ($needsRun.Count -gt 0) {
         $tempFiles = [System.Collections.Generic.List[string]]::new()
         $slotLists = @{}
         $slotErrs = @{}
-        for ($s = 0; $s -lt $Jobs; $s++) {
+        for ($s = 0; $s -le $Jobs; $s++) {
             $lines = [System.Collections.Generic.List[string]]::new()
             foreach ($t in $slotMembers[$s]) {
                 $out = Join-Path $OutRoot $t.Name
@@ -1149,9 +1165,11 @@ if ($needsRun.Count -gt 0) {
 
         $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
         $supervisors = @{}
-        for ($s = 0; $s -lt $Jobs; $s++) {
+        for ($s = 0; $s -le $Jobs; $s++) {
             if ($slotMembers[$s].Count -eq 0) { continue }
-            $sa = @{ FilePath = $vmBin; ArgumentList = @('-run-list', $slotLists[$s]); PassThru = $true; RedirectStandardError = $slotErrs[$s] }
+            $listArgs = @('-run-list', $slotLists[$s])
+            if ($s -eq $Jobs) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
+            $sa = @{ FilePath = $vmBin; ArgumentList = $listArgs; PassThru = $true; RedirectStandardError = $slotErrs[$s] }
             if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
             $supervisors[$s] = Start-Process @sa
         }

@@ -97,9 +97,8 @@ the restore are open design choices for the build.
    `cv-populate` has no caller on the live server, only `proofs/CivicLiveReplay`); sparring NPCs yes (`cb-fixture` gives the fighter look's body and skin before the first draw, because `gmb-rewrite` keeps a 0x78's header; `cbd-dress` adds the garments, skipping a fixture that already wears hair).
    No spawn profile has a human body. British yes: `cg-british-dress` (in `cg-british-character`, every boot)
    sets body 400 and wears 0x2042 (tiledata layer 22) only when layer 22 is empty, so a robe he puts on is
-   kept; `cb-form` treats every body from 400 up as human (anim.mul's 175-entry layout). Known gap: a dead
-   British leaves the robe in his corpse and resurrects with the body his combat actor recorded, until the next
-   boot redresses him (`proofs/BritishCharacterProof`).
+   kept; `cb-form` treats every body from 400 up as human (anim.mul's 175-entry layout). A resurrected British sheds the death robe and takes his costume back
+   from his corpse (`cg-british-unshroud`, called from `gr-raise-world` through the resurrection dress hook; `proofs/BritishCharacterProof`).
 3. Built: double-clicking a human NPC (`cb-form` 0, not a player character) opens its paperdoll (0x88,
    flags 0), named by the viewer's label for it (`cg-npc-label`: a shopkeeper, banker, resident, miner or
    the farmer by trade until asked, UOAIX-56), any other NPC unnamed (`cg-npc-paperdoll`). A vendor still opens
@@ -110,6 +109,7 @@ the restore are open design choices for the build.
    labels, paperdolls and status (`mgp-disguise`); viewers redraw through `GameClientView`'s 0x78 on a skin
    change. It ends on the caster's own pulse after expiry, and at death (hair and beard back, the ghost
    keeps its hue); MGM2 persists it, so a restart mid-spell restores the original look and name
-5. Grade: a proof that the same serial yields the same look across a restart;
-   a real-client walk past every Britain NPC and British seen by another
-   character (root's TESTPLAN).
+5. Graded: after a restart every Britain shopkeeper wears its role's look and every
+   resident its own, by serial (`proofs/CompositeBritainWorld`, restart boot). Open: a
+   real-client walk past every Britain NPC and British seen by another character
+   (root's TESTPLAN).

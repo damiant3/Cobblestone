@@ -73,21 +73,17 @@ O(inputs * hidden + hidden * outputs + actions squared); state is
 O(inputs + hidden + outputs + actions). Inference and queue draining contain
 no record, list or text constructors. Construction is separate.
 
-Measured 2026-10-04 with depot seed `4228CD5103DC4523`: each NPC state retains
-688 bytes; a preallocated list of 128 states retains 89104 bytes. The core
-budgets are 1024 bytes per state and 1024 multiply-accumulates per step;
-both are met. The shared model and feature/world storage are separate.
+The core budgets are 1024 bytes per state and 1024 multiply-accumulates per
+step. The shared model and feature/world storage are separate.
 
 `TownNetworkBench.codex` reads a decimal round count (0..65536) from stdin,
 constructs and warms 128 states, then runs that many population rounds.
 Its inputs exercise dense layers, activation saturation and positive action
 scores ordered by insertion shifts. Time the same compiled image from the
 host for zero rounds and for 8192 rounds. The zero-round arm estimates VM
-startup, construction, warmup and harness overhead. A single pair measured
-590.173 ms and 3251.649 ms, respectively: approximately 0.325 ms per population
-round after baseline subtraction. Both arms retain zero additional heap.
-This is a host-wall throughput observation under the measured load, not a
-worst-case execution bound or a server tick guarantee. It excludes feature
+startup, construction, warmup and harness overhead. Both arms retain zero
+additional heap. The result is a host-wall throughput observation, not a
+worst-case execution bound or a server tick guarantee, and excludes feature
 extraction, queue draining, action validation, world mutation and training.
 Do not substitute `get-ticks` for elapsed time: codex-vm can miss PIT periods
 when host scheduling delays interrupt delivery.

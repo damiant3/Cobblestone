@@ -149,7 +149,32 @@ Chapter: CompositeGameRules
       is Ok (m) -> if m.kind /= 1 | m.health <= 0 then Ok 0
         else when (if m.graphic == cst-british-body then Ok 0 else world-update owner.items.world (__record-set m "graphic" cst-british-body))
           is Err (e) -> Err e
-          is Ok (_) -> gmb-clothe owner.items serial cst-british-robe 0 cst-british-layer
+          is Ok (_) -> when cg-british-unshroud owner serial
+            is Err (e) -> Err e
+            is Ok (_) -> gmb-clothe owner.items serial cst-british-robe 0 cst-british-layer
+  cg-british-unshroud : CompositeGame, Integer -> Result Integer Text
+  cg-british-unshroud (owner) (serial) = let worn = gmb-layer owner.items serial cst-british-layer 0
+    in if worn == 0 then Ok 0
+    else when world-get owner.items.world worn
+      is Err (e) -> Err e
+      is Ok (robe) -> if robe.graphic /= #204E then Ok 0
+        else when world-delete owner.items.world worn
+          is Err (e) -> Err e
+          is Ok (_) -> when cb-ensure owner.combat owner.checkpoint.game serial
+            is Err (e) -> Err e
+            is Ok (a) -> cg-british-reclaim owner serial (if a.corpse == 0 then 0 else world-first-child owner.items.world a.corpse)
+  cg-british-reclaim : CompositeGame, Integer, Integer -> Result Integer Text
+  cg-british-reclaim (owner) (serial) (child) = if child == 0 then Ok 0
+    else when world-get owner.items.world child
+      is Err (e) -> Err e
+      is Ok (item) -> if item.graphic /= cst-british-robe then
+          cg-british-reclaim owner serial (world-next-sibling owner.items.world child)
+        else when world-update owner.items.world (cb-object item item.health item.graphic item.hue serial)
+          is Err (e) -> Err e
+          is Ok (_) -> let worn = gsi-register owner.items child cst-british-layer 0 False False in Ok child
+  cg-british-redress : CompositeGame, Integer -> Integer
+  cg-british-redress (owner) (serial) = if serial == 0 | serial /= cg-british-serial owner then 0
+    else when cg-british-dress owner is Err (_) -> 0 - 1 is Ok (n) -> n
   cg-install : CompositeGame, CompositeSetup -> Result Integer Text
   cg-install (owner) (setup) = when cg-install-core owner setup
     is Err (e) -> Err e
@@ -161,6 +186,7 @@ Chapter: CompositeGameRules
   cg-install-core (owner) (setup) =
     let bound = __record-set owner "decoration" setup.decoration
     in let wheeled = __record-set owner.combat "wheel" (Just owner.timers)
+    in let dressing = __record-set owner.resurrection "dress-hook" (cg-british-redress owner)
     in let offline = cg-offline owner 0
     in let bound-offline = cg-offline-slots owner owner.checkpoint.game.characters 0
     in let mine = cpr-mine-install owner.production
@@ -228,6 +254,7 @@ Chapter: CompositeGameRules
            is Ok (active) -> let grants = alloc-bytes 40
           in let zero = ts-zero grants 40 0
           in let concealed = gcv-conceal view active.concealed
+          in let ghosts = __record-set view "unseen-hook" (as-ghost-hook active checkpoint.game)
           in let shows = alloc-bytes tls-bytes
           in let cleared = ts-zero shows tls-bytes 0
           in let admits = __record-set combat "admit-hook" (cg-admit active)
@@ -405,10 +432,11 @@ Chapter: CompositeGameRules
  128 spawn slots keep wild populations a small fraction of world capacity.
   cg-spawn-slots : Integer = 128
   cg-spawn-attach : CompositeGame -> Result Integer Text
-  cg-spawn-attach (owner) = when gws-new (wsd-catalog 0) owner.combat cg-spawn-slots
+  cg-spawn-attach (owner) = when gws-new (gws-with-summons (wsd-catalog 0)) owner.combat cg-spawn-slots
     is Err (e) -> Err e
     is Ok (spawns) -> let bound = __record-set owner "spawns" (Just spawns)
       in let hooked = __record-set spawns.combat "death-hook" (cg-deaths owner spawns)
+      in let vanishing = __record-set spawns.combat "vanish-hook" (gws-summoned spawns)
       in let practised = __record-set spawns.combat "swing-hook" (cg-swings owner)
       in if owner.spawn-held == 0 then Ok 0
       else if owner.spawn-held >= 64 & peek-qword owner.spawn-hold 16 /= spawns.catalog.revision then
@@ -1074,7 +1102,7 @@ Chapter: CompositeGameRules
           when routed
             is Err (e) -> Err e
             is Ok (reply) -> let released = if doomed == 0 then 0 else cg-release owner game doomed in act
-              travelled <- cg-travel owner input map before (cg-after-magic owner game input packet reply)
+              travelled <- cg-travel owner game input map before (cg-after-magic owner game input packet reply)
               when travelled
                 is Err (e) -> Err e
                 is Ok (moved) -> let after = as-after owner.active game input packet moved
@@ -1097,15 +1125,33 @@ Chapter: CompositeGameRules
   cg-permit (serial) (destination) = True
  The walk window covers the traveller's surroundings only, so the destination gate's window is paged in
  before the arrival tiles are tested.
-  cg-travel : CompositeGame, GameInput, WalkMap, Result WorldObject Text, GameReply -> [Device.Block] Result GameReply Text
-  cg-travel (owner) (input) (map) (before) (reply) = when owner.gates
+  cg-gate-walk : CompositeGame, GameShard, GameInput, Result WorldObject Text, GameReply -> [Device.Block] Result GameReply Text
+  cg-gate-walk (owner) (game) (input) (before) (reply) = when owner.magic
     is None -> act Ok reply end
+    is Just (magic) -> mg-gate-walk magic game input before reply
+  cg-gate-party : CompositeGame, GameMoongates, WorldObject -> Integer
+  cg-gate-party (owner) (gates) (start) = when world-get gates.game.world start.serial
+    is Err (_) -> 0
+    is Ok (now) -> if gmg-at gates now 0 < 0 then 0
+      else let released = gmg-release gates start.serial 0
+      in when owner.spawns
+        is None -> 0
+        is Just (spawns) -> cg-gate-summons gates spawns start.serial 0
+  cg-gate-summons : GameMoongates, GameWorldSpawn, Integer, Integer -> Integer
+  cg-gate-summons (gates) (spawns) (leader) (i) = if i == list-length spawns.slots then 0
+    else let slot = list-at spawns.slots i
+    in let bound = if slot.serial /= 0 & slot.owner == leader then gmg-bind gates True leader slot.serial True else 0
+    in cg-gate-summons gates spawns leader (i + 1)
+  cg-travel : CompositeGame, GameShard, GameInput, WalkMap, Result WorldObject Text, GameReply -> [Device.Block] Result GameReply Text
+  cg-travel (owner) (game) (input) (map) (before) (reply) = when owner.gates
+    is None -> cg-gate-walk owner game input before reply
     is Just (gates) -> when before
       is Err (_) -> act Ok reply end
       is Ok (start) -> let seconds = owner.clock / mgd-ticks 1000
+        in let party = cg-gate-party owner gates start
         in when gmg-prepare cg-permit gates input map owner.decoration start seconds
           is Err (e) -> act Err e end
-          is Ok (None) -> act Ok reply end
+          is Ok (None) -> cg-gate-walk owner game input before reply
           is Ok (Just (plan)) -> let p = list-at gates.gates plan.destination in when owner.gate-cover
             is None -> act gmg-apply cg-permit gates input map plan reply end
             is Just (cover) -> act
@@ -1200,6 +1246,21 @@ Chapter: CompositeGameRules
         else when gr-raise-world owner.resurrection game ghost slot
           is Err (_) -> False
           is Ok (_) -> let marked = gr-mark-raised owner.resurrection.views patient 0 in True
+ Magery's summon-hook and followers-hook over the spawn controller's summon slots (UOAIX-81).
+  cg-summon : CompositeGame, Integer, Text, Integer, Integer, Integer, Boolean, Integer -> Integer
+  cg-summon (owner) (caster) (key) (x) (y) (z) (controlled) (ms) = when owner.spawns
+    is None -> 0
+    is Just (g) -> when gws-summon g owner.checkpoint.game (gws-profile-key g key 0) x y z (if controlled then caster else 0) (g.combat.tick + gm-ticks ms)
+      is Err (_) -> 0
+      is Ok (serial) -> serial
+  cg-followers : CompositeGame, Integer -> Integer
+  cg-followers (owner) (caster) = when owner.spawns is None -> 0 is Just (g) -> gws-followers g caster 0
+  cg-summon-key : CompositeGame, Integer -> Text
+  cg-summon-key (owner) (serial) = when owner.spawns is None -> "" is Just (g) -> gws-summon-key g serial
+  cg-dismiss : CompositeGame, Integer -> Boolean
+  cg-dismiss (owner) (serial) = when owner.spawns
+    is None -> False
+    is Just (g) -> if not (gws-summoned g serial) then False else is-ok (gws-dismiss g owner.checkpoint.game serial)
   cg-as-snoop : CompositeGame, Integer, Integer, Integer, Boolean -> Boolean
   cg-as-snoop (owner) (snooper) (target) (pack) (success) = False
   cg-admit : ActiveSkills, Integer, Integer -> Boolean
@@ -1446,6 +1507,7 @@ Chapter: CompositeGameRules
       else let rotated = cg-rotate n.actions.book
       in let marketed = if town.vendors.currency.world.hour / 24 > day then gla-market n.actions True else 0
       in let repaid = bb-repay-shops town.vendors 0
+      in let traded = bb-trade-up-shops town.vendors 0
       in when tnv-advance n britain doors seconds 3 8
         is Ok (r) -> Ok r
         is Err (refused) -> when tl-advance town britain doors seconds 8

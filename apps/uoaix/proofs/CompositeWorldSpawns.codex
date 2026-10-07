@@ -278,10 +278,23 @@ Chapter: CompositeWorldSpawns
             h <- cws-regen store game input map
             i <- cws-kill store game input spawns
             k <- cws-loot owner game input spawns
-            a + b + c + d + f + e + g + h + i + j + k
+            l <- cws-summons owner game input.session.serial spawns cx cy
+            a + b + c + d + f + e + g + h + i + j + k + l
           end
       end
   end
+ UOAIX-81: Magery's summon-hook and followers-hook reach the spawn controller: a summoned daemon follows its summoner
+ and takes 5 of the summoner's followers, and a blade spirit (a profile appended after the catalog) answers to nobody.
+  cws-summons : CompositeGame, GameShard, Integer, GameWorldSpawn, Integer, Integer -> [Console] Integer
+  cws-summons (owner) (game) (caster) (spawns) (cx) (cy) = let daemon = cg-summon owner caster "daemon" (cx + 2) cy 0 True 400000
+    in let blade = cg-summon owner caster "bladespirit" (cx - 2) cy 0 False 90000
+    in let d = list-at spawns.slots (max 0 (gws-slot-of spawns daemon 0))
+    in let b = list-at spawns.slots (max 0 (gws-slot-of spawns blade 0))
+    in let ok = (daemon > 0 & blade > 0 & d.owner == caster & d.summoned > spawns.combat.tick & b.owner == 0 & b.summoned > 0 & cg-followers owner caster == 5
+        & (when world-get game.world daemon is Err (_) -> False is Ok (m) -> m.graphic == (list-at spawns.catalog.profiles (gws-profile-key spawns "daemon" 0)).body))
+    in let keyed = cg-summon-key owner daemon == "daemon" & cg-summon-key owner caster == "" & not (cg-dismiss owner caster)
+    in let gone = cg-dismiss owner blade & is-err (world-get game.world blade)
+    in cws-check ("UOAIX-81: the summon-hook places a daemon that follows its summoner and costs 5 followers (" & show (cg-followers owner caster) & "), and a blade spirit that answers to nobody; the summoned-hook names only a summoned creature and the dismiss-hook removes one") (ok & keyed & gone)
   cws-live : GameWorldSpawn, Integer -> Integer
   cws-live (g) (i) = if i == list-length g.slots then 0
     else (if (list-at g.slots i).serial > 0 then 1 else 0) + cws-live g (i + 1)

@@ -1,6 +1,7 @@
 Chapter: ActiveSkillsForensics
   cites Uoaix chapter ActiveSkillsHiding
   cites Uoaix chapter GameSkillsItems
+  cites Foreword chapter Random
 
  UOX3 js/skill/forensics.js and dictionary.ENG 393, 6007-6012 and 9279-9284, GPL-2.0-or-later; ports/UOX3-LICENSE.txt.
  UOX3's CheckSkill (skill, low, high) is read as: at or above high it succeeds without a roll, otherwise it rolls at the
@@ -23,9 +24,33 @@ Chapter: ActiveSkillsForensics
   as-spirit (services) (s) (a) (player) (now) = if not (as-check-range s a 32 0 1000) then
       gs-reply [as-say "You fail your attempt at contacting the netherworld."] "skills:spirit-failed"
     else let slot = world-slot s.items.world player.serial
-    in let until = now + gh-ticks (1000 * (30 + as-level a 32 / 10 + services.intelligence player.serial))
+    in let until = now + as-spirit-window (as-level a 32) (services.intelligence player.serial)
     in let held = if slot < 0 then 0 else poke-qword s.spirit (slot * 8) until
     in gs-reply [cbp-sound #024A player, as-say "You establish a connection to the netherworld."] "skills:spirit"
+  as-spirit-window : Integer, Integer -> Integer
+  as-spirit-window (level) (intelligence) = gh-ticks (1000 * (30 + level / 10 + intelligence))
+ A ghost is drawn to a living viewer only for a window after it speaks (its own Spirit Speak window, set by `as-manifest`),
+ or to a searcher in an open Spirit Speak window who wins the contest against the ghost's Spirit Speak: chance searcher /
+ ghost, so a tie or better always wins and half the ghost's skill is even odds (Damian, 2026-10-07). The draw is seeded by
+ both serials and the window's end, so it holds for the window and a new window draws again (UOAIX-84).
+  as-manifest : ActiveSkills, Integer, Integer -> Integer
+  as-manifest (s) (serial) (until) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-qword s.manifest (slot * 8) until
+  as-contest-won : ActiveSkills, GameShard, Integer, Integer -> Boolean
+  as-contest-won (s) (game) (viewer) (ghost) = let vslot = world-slot s.items.world viewer
+    in let searcher = gs-skill game viewer 32
+    in let spirit = gs-skill game ghost 32
+    in if vslot < 0 then False else if searcher >= spirit then True
+    else rand-in-range (mix-bits (viewer * 65536 + ghost) (peek-qword s.spirit (vslot * 8))) 0 0 (spirit - 1) < searcher
+  as-ghost-unseen : ActiveSkills, GameShard, Integer, Integer, Integer -> Boolean
+  as-ghost-unseen (s) (game) (viewer) (ghost) (now) = if viewer == ghost | gsi-slot game ghost 0 < 0 then False
+    else let gslot = world-slot s.items.world ghost
+    in let vslot = world-slot s.items.world viewer
+    in if gslot < 0 | vslot < 0 then False
+    else if (world-read-slot s.items.world gslot).health /= 0 | (world-read-slot s.items.world vslot).health == 0 then False
+    else if peek-qword s.manifest (gslot * 8) > now then False
+    else not (as-spirit-hears s viewer now & as-contest-won s game viewer ghost)
+  as-ghost-hook : ActiveSkills, GameShard, Integer, Integer -> Boolean
+  as-ghost-hook (s) (game) (viewer) (ghost) = as-ghost-unseen s game viewer ghost get-ticks
   as-corpse : ActiveSkills, GameShard, WorldObject, Integer, Integer -> GameReply
   as-corpse (s) (game) (obj) (slot) (now) =
     let killer = peek-qword s.combat.slain (slot * 16)

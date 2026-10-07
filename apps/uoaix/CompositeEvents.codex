@@ -43,14 +43,18 @@ Chapter: CompositeEvents
   ce-add-ghost : CeRing, Integer, Integer, Integer, List Integer -> Integer
   ce-add-ghost (ring) (serial) (x) (y) (packet) = let added = ce-add-to ring serial 0 0 x y packet
     in if added == 0 then 0 else let marked = __record-set (list-at ring.events (int-mod (ring.next - 1) ce-limit)) "ghost" True in 1
-  ce-pending : CeRing, Integer, Boolean, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
-  ce-pending (ring) (listener) (clear) (x) (y) (heard) (i) (acc) = if i == ce-limit then acc
+ A source the listener must not perceive (`quiet`: concealed, UOAIX-84) reaches no other connection, because every
+ ring packet names its source by serial or position and the client would draw or locate it from either. `unseen` (an
+ unrevealed ghost) is asked of a ghost's own words only: a combat notice's serial is the pulsing player, not its source.
+  ce-pending : CeRing, Integer, (Integer -> Boolean), (Integer -> Boolean), Boolean, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  ce-pending (ring) (listener) (quiet) (unseen) (clear) (x) (y) (heard) (i) (acc) = if i == ce-limit then acc
     else let event = list-at ring.events (int-mod (ring.next + i) ce-limit)
     in let wanted = event.sequence > heard & (if event.only /= 0 then event.only == listener
-      else event.serial /= listener & event.also /= listener & ce-near event x y)
+      else event.serial /= listener & event.also /= listener & ce-near event x y & not (quiet event.serial)
+        & not (event.ghost & unseen event.serial))
     in let bytes = if wanted then __buf-read-bytes event.buffer 0 event.length else []
     in let heard-as = if not wanted | clear | not event.ghost then bytes else list-at (ce-ghostly [bytes] 0 []) 0
-    in ce-pending ring listener clear x y heard (i + 1) (if wanted then list-push acc heard-as else acc)
+    in ce-pending ring listener quiet unseen clear x y heard (i + 1) (if wanted then list-push acc heard-as else acc)
   ce-speech : List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
   ce-speech (packets) (speaker) (i) (acc) = if i == list-length packets then acc
     else let p = list-at packets i

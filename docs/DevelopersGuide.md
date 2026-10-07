@@ -2311,14 +2311,6 @@ written `if x /= 0 then False else recurse (i + 1)` runs flat. Write long
 walks with the recursion as the whole `else` arm (red, 2026-10-05,
 `gc-zero-range` over a UCC1 magery section; `cc-zero` is the flat form).
 
-**Inside an `act` block, a self-call in a `when` arm is not a tail call; in an
-`if` branch it is.** Measured 2026-10-06 over 10 million iterations: the
-self-call as the block's last statement, or in an `if ... else self` after a
-bind, runs flat, while `when x is Ok (_) -> self` double-faults (`!EXC=08`,
-`CallR` 0xBA000000). A serving loop written the second way leaked a frame per
-round and exhausted the 64 MiB stack after 627 s (`GameLinks` `gl-loop`). Put
-the round in its own function that answers a status, and recurse in an `if`.
-
 **Never `__heap-restore` around a send.** The receive-side pairs
 throughout `codex/os/net/NetIO.codex` are safe because a polled frame that
 misses is discarded, but a SEND retains its chunk in the retransmit queue

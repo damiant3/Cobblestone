@@ -62,15 +62,26 @@ Source NPC loot/equipment/script tags are not imported into this controller.
 
 ## Recovery
 
-`gwsc-size state` is64 +8*regionCount +40*slotCount bytes.
+`gwsc-size state` is 64 + 8*regionCount + 64*slotCount bytes.
 `gwsc-encode state world now buffer capacity` and
 `gwsc-decode state world now buffer size` return Result Integer Text.
-UWS1 version 2 stores the generated catalog revision, dimensions, scheduling
+UWS1 version 3 stores the generated catalog revision, dimensions, scheduling
 cursor, remaining region/pulse timers and each live serial's region/profile/facing,
-remaining movement timer, tamed owner and order (56-byte rows). A tamed slot
-counts against no region's population. A version 1 frame (40-byte rows) is read
-only by `gwsc-retire`. The generated revision derives from the table
+remaining movement timer, tamed owner and order (56-byte rows), then each slot's
+remaining summoning time (8 bytes, 0 for a creature not summoned). A version 2
+frame, the same without that tail, still loads with nothing summoned. A tamed or
+summoned slot counts against no region's population. A version 1 frame (40-byte
+rows) is read only by `gwsc-retire`. The generated revision derives from the table
 contents. A changed catalog refuses recovery rather than rebinding indexes.
+
+Summons (Magery, UOAIX-81): the composite attaches `gws-with-summons catalog`, which
+appends ServUO's pre-SE blade spirit, energy vortex (drawn as Body.def's body 13 at
+hue 20) and black bear after the generated profiles, so the revision and every saved
+index stay valid. `gws-summon state shard profile x y z owner until` places a creature
+with region -1, the owner it follows (0 for one that answers to nobody) and the tick
+its summoning ends; the spawn pass dismisses it then (`gws-dismiss`), and a summoned
+creature that dies leaves no corpse (`vanish-hook` on GameCombat, bound to
+`gws-summoned`).
 
 Restore WorldRecords and UCB1 first, then UWS1, before serving a connection.
 UCB1 owns names, stats and RNG and clears combat targets/deadlines. UWS1

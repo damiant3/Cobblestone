@@ -160,9 +160,8 @@ Initialization and mutation use the recorded 32-bit LCG in
 `TownNetworkHillSeed`; coordinate and direction selection use higher bits.
 The recorded run uses seed 104729, step 50 and 20000 proposals. Score rises
 from -26209708 to 9594886 with 2477 accepted proposals. The CUDA census records
-102482 kernel launches and zero live buffers at exit. The observed host run
-took 20.993 seconds including corpus construction and VM overhead; it is not
-a latency or scaling guarantee. `proofs/TownNetworkHillModelProof.codex`
+102482 kernel launches and zero live buffers at exit.
+`proofs/TownNetworkHillModelProof.codex`
 recomputes initial/final scores on CPU and compares selected measured utility.
 
 `TownNetworkHillProof` grades exact GPU/CPU integer parity, aggregate score,

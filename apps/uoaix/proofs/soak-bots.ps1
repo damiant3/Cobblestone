@@ -2,7 +2,8 @@
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$World,
     [Parameter(Mandatory)][string]$CompressionSource,[Parameter(Mandatory)][string]$OutDir,
     [ValidateRange(1,7)][int]$Bots=6,[ValidateRange(1,1440)][int]$Minutes=120,[int]$Seed=1,
-    [ValidateRange(30,900)][int]$StartupSeconds=300,[string]$Vm='',[string]$CoverLog='',[ValidateRange(1,100)][int]$ClockScale=1)
+    [ValidateRange(30,900)][int]$StartupSeconds=300,[string]$Vm='',[string]$CoverLog='',[ValidateRange(1,100)][int]$ClockScale=1,
+    [ValidateRange(0,3600)][int]$ErrandSeconds=900)
 # Scripted-player soak (UOAIX-49 part B): N bot characters on N links drive every packet family
 # against a COPY of a world disk through the real composite server, in testing mode, for -Minutes.
 # Fatal: a server FAIL/!EXC/OUT OF MEMORY/"requires restart"/"SAVE REFUSED" line or the guest exiting. Every bot
@@ -10,6 +11,8 @@ param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$Wor
 # The guest runs under the host sampling profiler; coverage is functions sampled over functions in the map.
 # -ClockScale N runs every guest timer N times faster (codex-vm -clock-scale, UOAIX-82); the soak always runs the
 # server in testing mode, which is the only mode a scaled clock is for. -Minutes stays wall-clock minutes.
+# British's own pulses pause his gold errand, and the NPC economy opens only when it banks (UOAIX-97), so bot 1 (British)
+# logs in once the server logs the errand finished; not finished within -ErrandSeconds of listen is fatal. 0 skips the wait.
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
@@ -84,14 +87,14 @@ function Target-Ground($B,[int]$X,[int]$Y,[int]$Z){$p=[byte[]]::new(19);$p[0]=0x
 function Target-Object($B,[long]$Serial,[int]$X,[int]$Y,[int]$Z,[int]$Graphic){$p=[byte[]]::new(19);$p[0]=0x6C;$p[1]=0;Put32 $p 2 $B.Cursor;Put32 $p 7 $Serial;Put16 $p 11 $X;Put16 $p 13 $Y;$p[16]=$Z-band 255;Put16 $p 17 $Graphic;return ,$p}
 $families=@('mint','walk','say','go','goto','vendor','bank','harvest','craft','carve','combat','moongate','inventory','click','magery','help','chop','skill','fighter','reap','sow',
     'camping','cartography','taste','forensics','spirit','poisoning','stealing','herding',
-    'bard','tracking','healing','alchemy','inscription','arms')
+    'bard','tracking','healing','alchemy','inscription','arms','slay','smite','pick','pet','sell')
 $fatalPattern='(?m)^.*(?:^FAIL|!EXC|OUT OF MEMORY|requires restart|SAVE REFUSED).*$'
 $tally=@{};foreach($f in $families+@('death','ghost','buy','target','menu')){$tally[$f]=0}
 $recvOps=@{};$disconnects=[Collections.Generic.List[string]]::new()
 function New-Bot([int]$Index){
     [pscustomobject]@{Index=$Index;Name=$(if($Index -eq 1){'British'}else{'soakbot'+[char](96+$Index)});Password=$(if($Index -eq 1){'Astronaut'}else{''});Flora=@{};Crops=@{};Tcp=$null;Stream=$null;Key=0L;Plain=$null;Up=$false;Serial=0L;X=0;Y=0;Z=0;
         Seq=0;Pending=-1;Pack=0L;Cursor=0L;CursorAt=[datetime]::MinValue;Dead=$false;DeathAsked=$false;Mobiles=@{};Items=@{};Corpses=@{};Places=[Collections.Generic.List[string]]::new();
-        BuyFrom=0L;Menu=$null;Blocked=@{};Held=@{};Sent=0;Received=0;NextAt=[datetime]::UtcNow;Last='login';Logins=0;Reconnect=[datetime]::UtcNow}
+        BuyFrom=0L;Shop=@{};Sale=$null;Menu=$null;Blocked=@{};Held=@{};Sent=0;Received=0;NextAt=[datetime]::UtcNow;Last='login';Logins=0;Reconnect=[datetime]::UtcNow}
 }
 function Connect-Bot($B){
     $B.Logins++;$key=Open-Relay $B.Name $B.Password
@@ -129,16 +132,18 @@ function Handle($B,[byte[]]$P){
         0x1D{$s=U32 $P 1;$B.Mobiles.Remove($s);$B.Items.Remove($s);$B.Corpses.Remove($s)}
         0x1A{$s=U32 $P 3;$g=U16 $P 7;$at=9;if($s -band 0x80000000){$at=11};$s=$s-band 0x7FFFFFFF;$x=(U16 $P $at)-band 0x7FFF;$y=(U16 $P ($at+2))-band 0x3FFF
             if($g -eq 0x2006){$B.Corpses[$s]=@($x,$y)};if($s -ge 0x7C000001 -and $s -lt 0x7D000000){$B.Flora[$s]=@($x,$y,$g)};if($s -ge 0x7D000001 -and $s -lt 0x7E000000){$B.Crops[$s]=@($x,$y,$g)}}
-        0x2E{if((U32 $P 9) -eq $B.Serial -and $P[8] -eq 0x15){$B.Pack=U32 $P 1}}
+        0x2E{if((U32 $P 9) -eq $B.Serial -and $P[8] -eq 0x15){$B.Pack=U32 $P 1};if($P[8] -eq 0x1A -or $P[8] -eq 0x1B){$B.Shop[(U32 $P 1)]=U32 $P 9}}
         0x3C{$count=U16 $P 3;for($i=0;$i -lt $count;$i++){$at=5+$i*19;if($at+19 -gt $P.Length){break};$B.Items[(U32 $P $at)]=@((U16 $P ($at+4)),(U32 $P ($at+13)))}}
         0x25{$B.Items[(U32 $P 1)]=@((U16 $P 5),(U32 $P 14))}
         0x6C{$B.Cursor=U32 $P 2;$B.CursorAt=[datetime]::UtcNow}
         0x2C{$B.Dead=$true;$B.DeathAsked=$true}
         0x74{$B.BuyFrom=U32 $P 3}
+        0x9E{$B.Sale=$P}
         0x7C{$B.Menu=$P}
         0x1C{if($P.Length -gt 44){$t=[Text.Encoding]::ASCII.GetString($P,44,$P.Length-44).Trim([char]0)
             if($t -match 'successfully steal'){Count 'stolen'}
             if($t -match 'walks where it was instructed|begins to follow you'){Count 'herded'}
+            if($t -match '^Killed\.'){Count 'killed'}
             if($t -match '^[A-Za-z ]+: (.+)$'){foreach($w in ($Matches[1] -split ' ')){if($w -and -not $B.Places.Contains($w)){$B.Places.Add($w)}}}}}
     }
 }
@@ -192,7 +197,9 @@ function Equip($B,[long]$Item,[int]$Layer){
 }
 function Act($B){
     if($B.DeathAsked){$B.DeathAsked=$false;Send-Plain $B ([byte[]]@(44,1));$tally['death']++;$B.Last='death answer';return}
-    $f=$families[$rng.Next($families.Count)];$B.Last=$f;$tally[$f]++
+    # UOAIX-82: British drives the timer-delayed save-breaker triggers on a third of its actions (a world-spawn kill,
+    # a spell death on another bot's account, an orchard pick), so a short scaled soak reaches all three.
+    $f=if($B.Index -eq 1 -and $rng.Next(3) -eq 0){@('slay','smite','pick','pet')[$rng.Next(4)]}else{$families[$rng.Next($families.Count)]};$B.Last=$f;$tally[$f]++
     if($B.Dead -and $f -ne 'walk' -and $f -ne 'say'){$tally['ghost']++}
     switch($f){
         'walk'{for($i=0;$i -lt 3;$i++){$open=@(0..7|Where-Object{-not $B.Blocked.ContainsKey("$($B.X),$($B.Y),$_")});if($open.Count -eq 0){break};Walk $B $open[$rng.Next($open.Count)];Pump-Bot $B 16}}
@@ -203,8 +210,14 @@ function Act($B){
             $humans=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $B.Mobiles[$_][0] -ge 400 -and $B.Mobiles[$_][0] -le 401 -and [Math]::Max([Math]::Abs($B.Mobiles[$_][1]-$B.X),[Math]::Abs($B.Mobiles[$_][2]-$B.Y)) -le 8});$v=if($humans.Count -gt 0){$humans[$rng.Next($humans.Count)]}else{0}
             if($v){Send-Plain $B (Serial-Packet 9 $v);Send-Plain $B (Serial-Packet 6 $v)};Send-Plain $B (Say 'vendor buy')
             $deadline=[datetime]::UtcNow.AddSeconds(2);$B.BuyFrom=0;while($B.BuyFrom -eq 0 -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
-            if($B.BuyFrom -ne 0 -and $v){$lots=@($B.Items.Keys|Where-Object{$B.Items[$_][1] -eq $B.BuyFrom});$tools=@($lots|Where-Object{@(0x0EC4,0x13F6,0x13E3,0x0E86,0x0E21) -contains $B.Items[$_][0]});$pick=@(if($tools.Count -gt 0){$tools}else{$lots});$lot=if($pick.Count -gt 0){$pick[$rng.Next($pick.Count)]}else{0}
-                if($lot){$p=[byte[]]::new(15);$p[0]=0x3B;Put16 $p 1 15;Put32 $p 3 $v;$p[7]=2;$p[8]=0x1A;Put32 $p 9 $lot;Put16 $p 13 1;Send-Plain $B $p;$tally['buy']++}}}
+            # The cart goes to the vendor whose menu opened: 0x74 names its stock container, and the menu's 0x2E ties that
+            # container (layer 1A or 1B) to the vendor. Skill items the other scenarios need are preferred over anything else.
+            $seller=if($B.Shop.ContainsKey($B.BuyFrom)){$B.Shop[$B.BuyFrom]}else{0}
+            if($seller){$lots=@($B.Items.Keys|Where-Object{$c=$B.Items[$_][1];$B.Shop.ContainsKey($c) -and $B.Shop[$c] -eq $seller})
+                $tools=@($lots|Where-Object{@(0x0EC4,0x13F6,0x13E3,0x0E86,0x0E21,0x0FBF,0x0E34,0x0E9B,0x0F0E,0x0F85,0x0F84,0x0F7A,0x0EB3,0x14EC,0x0E81,0x0F43,0x13B2,0x0F3F) -contains $B.Items[$_][0]})
+                $pick=@(if($tools.Count -gt 0){$tools}else{$lots});$lot=if($pick.Count -gt 0){$pick[$rng.Next($pick.Count)]}else{0}
+                if($lot){$p=[byte[]]::new(15);$p[0]=0x3B;Put16 $p 1 15;Put32 $p 3 $seller;$p[7]=2;$p[8]=0x1A;Put32 $p 9 $lot;Put16 $p 13 1;Send-Plain $B $p;$tally['buy']++}else{Count 'nolot-vendor'}}
+            elseif($B.BuyFrom -ne 0){Count 'noseller-vendor'}}
         'bank'{Send-Plain $B (Say '[go 1438 1695');Send-Plain $B (Say 'bank')}
         'inventory'{if($B.Pack){Send-Plain $B (Serial-Packet 6 $B.Pack);Pump-Bot $B 64;foreach($k in @($B.Items.Keys)){if($B.Items[$k][0] -eq 0x0E76 -and $B.Items[$k][1] -eq $B.Pack){Send-Plain $B (Serial-Packet 6 $k)}}}else{Send-Plain $B (Serial-Packet 6 ($B.Serial-bor 0x80000000))}}
         'harvest'{Send-Plain $B (Say '[go 1452 1529');Pump-Bot $B 64;Use-Then-Target $B (Item-Of $B 0x0E86) {Target-Ground $B 1451 1528 40} 'harvest'}
@@ -291,6 +304,26 @@ function Act($B){
             else{$w=Item-Of $B 0x0F52;if(-not $w){Count 'noitem-arms-dagger'}}
             if($w){Equip $B $w $layer;Count "equip-arms-$kind";Send-Plain $B (Say '[goto britspawn');Pump-Bot $B 64;$t=Creature $B
                 if($t){Send-Plain $B ([byte[]]@(114,1,0,50,0));Send-Plain $B (Serial-Packet 5 $t);Pump-Bot $B 64}else{Count 'notarget-arms'}}}
+        'slay'{if($B.Index -ne 1){return};Send-Plain $B (Say '[goto britspawn');Pump-Bot $B 64;$t=Creature $B;$until=[datetime]::UtcNow.AddSeconds(5);while(-not $t -and [datetime]::UtcNow -lt $until){Pump-Bot $B 8;$t=Creature $B}
+            if($t){$m=$B.Mobiles[$t];Use-Then-Target $B 0 {Target-Object $B $t $m[1] $m[2] 0 $m[0]} 'slay' -Speech '[kill'}else{Count 'notarget-slay'}}
+        'pet'{if($B.Index -ne 1){return};Send-Plain $B (Say '[skill 35 100');Send-Plain $B (Say '[goto britspawn');Pump-Bot $B 64;$t=Creature $B;$until=[datetime]::UtcNow.AddSeconds(5);while(-not $t -and [datetime]::UtcNow -lt $until){Pump-Bot $B 8;$t=Creature $B}
+            if($t){$m=$B.Mobiles[$t];Use-Then-Target $B 0 {Target-Object $B $t $m[1] $m[2] 0 $m[0]} 'pet' -Packet (Skill-Use 35);Pump-Bot $B 32;foreach($o in @('all follow me','all guard me','all stay')){Send-Plain $B (Say $o);Pump-Bot $B 8;Count "order-pet"}}else{Count 'notarget-pet'}}
+        'smite'{if($B.Index -ne 1){return};$v=@($fleet|Where-Object{$_.Index -ne 1 -and $_.Up -and -not $_.Dead -and $_.Serial})
+            if($v.Count -eq 0){Count 'notarget-smite';return};$o=$v[$rng.Next($v.Count)];Send-Plain $B (Say "[go $($o.X+1) $($o.Y)");Pump-Bot $B 64
+            Prime $B 'magery';Send-Plain $B (Say '[attr int 100');Send-Plain $B (Say '[attr mana 100')
+            $txt=[Text.Encoding]::ASCII.GetBytes('18');$p=[byte[]]::new(5+$txt.Length);$p[0]=0x12;Put16 $p 1 $p.Length;$p[3]=0x56;$txt.CopyTo($p,4)
+            for($i=0;$i -lt 6 -and -not $o.Dead;$i++){$before=$B.CursorAt;Send-Plain $B $p;$deadline=[datetime]::UtcNow.AddSeconds(4);while($B.CursorAt -eq $before -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
+                if($B.CursorAt -eq $before){Count 'nocursor-smite';break};Send-Plain $B (Target-Object $B $o.Serial $o.X $o.Y $o.Z 400);Count 'cast-smite';Pump-Bot $B 32;Pump-Bot $o 64}}
+        # Selling is how a bot other than British earns gold: 0x9E lists the pack items the vendor bids on (serial, graphic,
+        # hue, quantity, price, a 2-byte name length, the name), and the 0x9F reply sells one line (serial, quantity).
+        'sell'{$spot=@(@(1437,1695),@(1418,1547))[$rng.Next(2)];Send-Plain $B (Say "[go $($spot[0]) $($spot[1])");Pump-Bot $B 64
+            $B.Sale=$null;Send-Plain $B (Say 'vendor sell');$deadline=[datetime]::UtcNow.AddSeconds(2);while($null -eq $B.Sale -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
+            $s=$B.Sale;if($null -eq $s -or $s.Length -lt 9 -or (U16 $s 7) -lt 1){Count 'nooffer-sell';return}
+            $lines=[Collections.Generic.List[int]]::new();$at=9;for($i=0;$i -lt (U16 $s 7) -and $at+14 -le $s.Length;$i++){$lines.Add($at);$at+=14+(U16 $s ($at+12))}
+            $at=$lines[$rng.Next($lines.Count)];$quantity=U16 $s ($at+8)
+            $p=[byte[]]::new(15);$p[0]=0x9F;Put16 $p 1 15;Put32 $p 3 (U32 $s 3);Put16 $p 7 1;Put32 $p 9 (U32 $s $at);Put16 $p 13 (1+$rng.Next([Math]::Max(1,$quantity)));Send-Plain $B $p;Count 'sold-sell'}
+        'pick'{Send-Plain $B (Say '[go 1230 1591');Pump-Bot $B 64;$c=@($B.Crops.Keys|Where-Object{$B.Crops[$_][0] -eq 1230 -and $B.Crops[$_][1] -eq 1590})
+            if($c.Count -gt 0){Send-Plain $B (Serial-Packet 6 $c[0]);Count 'pick-orchard'}else{Count 'notarget-pick'}}
     }
 }
 $log=Join-Path $OutDir 'server.log';$err=Join-Path $OutDir 'guest.stderr';$option=Join-Path $OutDir 'launch.input';$prof=Join-Path $OutDir 'prof.txt'
@@ -366,10 +399,16 @@ try{
     }
     Note "SOAK server listening; logging in $Bots bots"
     $elapsed=0;$end=[datetime]::UtcNow.AddMinutes($Minutes);$nextReport=[datetime]::UtcNow.AddMinutes(1);$seen=0
+    $errandDone=($ErrandSeconds -eq 0);$errandDeadline=[datetime]::UtcNow.AddSeconds($ErrandSeconds);$errandNext=[datetime]::UtcNow
     while([datetime]::UtcNow -lt $end){
+        if(-not $errandDone -and [datetime]::UtcNow -ge $errandNext){
+            $errandNext=[datetime]::UtcNow.AddSeconds(2)
+            if((Read-Log) -match '(?m)^BRITISH errand (leg 5 |done)'){$errandDone=$true;Note "ERRAND British's errand finished, the economy is open; British logs in"}
+            elseif([datetime]::UtcNow -gt $errandDeadline){$fatal="British's errand did not finish within $ErrandSeconds s of listen";break}
+        }
         foreach($b in $fleet){
             try{
-                if(-not $b.Up){if([datetime]::UtcNow -ge $b.Reconnect){Connect-Bot $b;Note "LOGIN $($b.Name) serial=$($b.Serial) at $($b.X),$($b.Y) (login $($b.Logins))"};continue}
+                if(-not $b.Up){if($b.Index -eq 1 -and -not $errandDone){continue};if([datetime]::UtcNow -ge $b.Reconnect){Connect-Bot $b;Note "LOGIN $($b.Name) serial=$($b.Serial) at $($b.X),$($b.Y) (login $($b.Logins))"};continue}
                 Pump-Bot $b 256
                 if([datetime]::UtcNow -ge $b.NextAt){Act $b;$b.NextAt=[datetime]::UtcNow.AddMilliseconds(300+$rng.Next(1200))}
             }catch{Drop-Bot $b $_.Exception.Message}

@@ -1,10 +1,9 @@
 # Economy purses and coin ledger
 
-`EconomyMoney.codex` is the stage E money foundation. A new state has an
-empty treasury; every admitted NPC, player, town and royal-business purse
-also starts empty. The state is currently an in-memory simulation component.
-The existing townsfolk `coin` fields have not migrated, and the combined
-checkpoint does not yet carry these records. No live server uses these calls.
+`EconomyMoney.codex` is one denomination's purses and coin ledger;
+[EconomyCurrency.md](EconomyCurrency.md) coordinates three of them. A new state
+has an empty treasury; every admitted NPC, player, town and royal-business
+purse also starts empty.
 
 ## Rules and entry points
 
@@ -117,8 +116,7 @@ The ledger is trusted server data; this query is not an untrusted-file decoder.
 The state preallocates 256 purses, 128 lifetime loans and 8192 lifetime ledger
 rows. Purse records have 3 integer fields (24 bytes), loans 7 (56 bytes),
 ledger entries 7 (56 bytes), and the state 11 fields (88 bytes). Lists add
-their normal runtime storage. Construction retained 609720 bytes under depot
-kernel `EF9466BEF7CB5FDA` on 2026-10-04. Payment, loan and clock operations
+their normal runtime storage. Payment, loan and clock operations
 allocate no further heap. Coin, cumulative issuance, action IDs and hours
 are capped at 1000000000000; the tax multiply fits signed 64-bit arithmetic.
 
@@ -134,4 +132,3 @@ default and recovery, administrative refusal, decay transfer, source bounds,
 ledger/action identity, deliberate unlogged-coin detection, capacity refusal,
 and flat heap. Compile normally and poisoned with an explicit depot kernel,
 then compare the entire runtime output with `EconomyMoneyProof.expected`.
-Stage E's resource chains, prices, consumption and 30-day census remain open.

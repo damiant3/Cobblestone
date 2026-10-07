@@ -137,5 +137,5 @@ checks and a case/witness cross-check, with no full world or economy clone.
 `proofs/CivicLiveReplay.codex` covers produced outfits, bounded adjacent
 patrol movement, mayor speech, evidence-only guard calls, on-foot pursuit,
 arrest offers, CVC1/LSC1 recovery and forged unused-row refusal. The replay
-uses a synthetic clear map. Root grades visible routes, mayor and guard
-responses only in fester's complete composite.
+uses a synthetic clear map; visible routes, mayor and guard responses are
+graded only on the complete composite.

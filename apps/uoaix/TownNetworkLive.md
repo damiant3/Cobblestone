@@ -2,9 +2,8 @@
 
 One shared frozen TownNetwork drives Nell, Jorin and Mira's live destinations,
 buying/selling and affect, with bounded per-NPC work and every action through
-the layer1 validator. Val reviews and owns the final contract; the exact-lot
-and tender boundary is `gv-checkout`, with current offers and encompassing
-candidate/undo.
+the layer1 validator. The exact-lot and tender boundary is `gv-checkout`, with
+current offers and encompassing candidate/undo.
 
 ## In the composite
 
@@ -27,14 +26,13 @@ hunger= coin= overrides="); the count says whether a retrain is worth it. A
 buy that meets a work shift still answers -19 and times out at the shift's end
 (-18); the guard queues it again at the next inference.
 
-The audit book holds 1024 events. Measured 2026-10-05 in
-`proofs/CompositeBritainWorld.codex`: 18.1 events per game hour at three
-residents (1230 events in 68 game hours), so an unrotated book fills in about
-57 game hours. Past 960 events the composite keeps the newest 512
-(`cg-rotate`). The currency log (`em-rows`, 8192 rows) grew 1.3 rows per game
-hour and has no rotation; at that rate it fills in about 6200 game hours.
+The audit book holds 1024 events. Three residents write about 18 events per
+game hour (`proofs/CompositeBritainWorld.codex`), so an unrotated book fills in
+about 57 game hours; past 960 events the composite keeps the newest 512
+(`cg-rotate`). The currency log (`em-rows`, 8192 rows) grows about 1.3 rows per
+game hour, has no rotation, and fills in about 6200 game hours.
 
-## Draft choices requiring review
+## Design choices
 
 - GameLiveActions borrows TownLive and owns a fixed Ea offer/audit book plus
   captured currency-rate arrays. Merchant policy posts real stock/funded
@@ -46,8 +44,7 @@ hour and has no rotation; at that rate it fills in about 6200 game hours.
   lot unit and recombines the untouched pool. Quotes invalidate on lot changes.
 - GameVendorState gains bounded controlled-NPC owner bindings so purchased
   lots survive codec validation without pretending NPCs are player sessions
-  or vendors. GVS1 carries an owner table from version2 onward and
-  accepts version1. The composite's outer length admission must be updated too.
+  or vendors. GVS1 carries the owner table (`GameVendorCodec.md`).
 - TownLive retains a validated control target until expiry and uses its
   existing pathfinder/step budget. Targets are home/work/tavern or an approach
   to a registered vendor. Illness still refuses non-rest movement. The new

@@ -19,7 +19,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { GAMES, IMPORTS, driver, renderHtml, spCardCode } from '../landing/web/games/arcade.js';
+import { GAMES, gameInstance, driver, renderHtml, spCardCode } from '../landing/web/games/arcade.js';
 import { RULES } from '../landing/web/games/rules.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -92,7 +92,7 @@ for (const game of GAMES) {
   let exports;
   try {
     const bytes = readFileSync(join(modDir, `${game.id}.wasm`));
-    exports = new WebAssembly.Instance(new WebAssembly.Module(bytes), IMPORTS).exports;
+    exports = gameInstance(new WebAssembly.Module(bytes)).exports;
   } catch (err) {
     ok(`${game.id} loads`, false, err.message);
     console.log(`  ----  ${label} module did not load`);
@@ -210,8 +210,8 @@ for (const game of GAMES) {
 if (!only.length) {
   let exports = null;
   try {
-    exports = new WebAssembly.Instance(
-      new WebAssembly.Module(readFileSync(join(modDir, 'spider.wasm'))), IMPORTS).exports;
+    exports = gameInstance(
+      new WebAssembly.Module(readFileSync(join(modDir, 'spider.wasm')))).exports;
   } catch { /* reported above */ }
   if (exports) {
     for (const suits of [1, 2, 3, 4]) {
@@ -356,8 +356,8 @@ if (!only.length) {
     // nothing in the module can be wrong about it.
     {
       const g = GAMES.find(x => x.id === 'klondike');
-      const ex = new WebAssembly.Instance(new WebAssembly.Module(
-        readFileSync(join(modDir, 'klondike.wasm'))), IMPORTS).exports;
+      const ex = gameInstance(new WebAssembly.Module(
+        readFileSync(join(modDir, 'klondike.wasm')))).exports;
 
       // Clicking the stock turns a card. It is the one click in this game
       // that is always available and always means the same thing.
@@ -492,8 +492,8 @@ if (!only.length) {
     // cannot pass as having tested the rule.
     {
       const g = GAMES.find(x => x.id === 'liarsdice');
-      const ex = new WebAssembly.Instance(new WebAssembly.Module(
-        readFileSync(join(modDir, 'liarsdice.wasm'))), IMPORTS).exports;
+      const ex = gameInstance(new WebAssembly.Module(
+        readFileSync(join(modDir, 'liarsdice.wasm')))).exports;
       // READ THE COUNTS BACK OUT OF THE NEW STATE. Reading them from the
       // handle the call was made ON compares the position with itself and
       // finds no loser ever, which is an arm that reports the rule broken
@@ -551,8 +551,8 @@ if (!only.length) {
     // never did is visible rather than silently vacuous.
     {
       const g = GAMES.find(x => x.id === 'crazyeights');
-      const ex = new WebAssembly.Instance(new WebAssembly.Module(
-        readFileSync(join(modDir, 'crazyeights.wasm'))), IMPORTS).exports;
+      const ex = gameInstance(new WebAssembly.Module(
+        readFileSync(join(modDir, 'crazyeights.wasm')))).exports;
       let found = 0, honoured = 0, differed = 0;
       for (let seed = 1; seed <= 300 && found < 10; seed++) {
         const d = driver(g, ex);
@@ -624,8 +624,8 @@ if (!only.length) {
     // none down, and all 54 cards reach the renderer, every rank among them.
     {
       const g = GAMES.find(x => x.id === 'spider');
-      const raw = new WebAssembly.Instance(new WebAssembly.Module(
-        readFileSync(join(modDir, 'spider.wasm'))), IMPORTS).exports;
+      const raw = gameInstance(new WebAssembly.Module(
+        readFileSync(join(modDir, 'spider.wasm')))).exports;
       const ex = { ...raw, sp_card: raw.sp_peek, sp_down: () => 0 };
       const d = driver(g, ex);
       d.reset(4);
@@ -713,8 +713,8 @@ if (!only.length) {
 if (!only.length) {
   let exports = null;
   try {
-    exports = new WebAssembly.Instance(
-      new WebAssembly.Module(readFileSync(join(modDir, 'backgammon.wasm'))), IMPORTS).exports;
+    exports = gameInstance(
+      new WebAssembly.Module(readFileSync(join(modDir, 'backgammon.wasm')))).exports;
   } catch { /* reported above */ }
   if (exports) {
     const g = GAMES.find(x => x.id === 'backgammon');
@@ -755,8 +755,8 @@ if (!only.length) {
 if (!only.length) {
   let exports = null;
   try {
-    exports = new WebAssembly.Instance(
-      new WebAssembly.Module(readFileSync(join(modDir, 'backgammon.wasm'))), IMPORTS).exports;
+    exports = gameInstance(
+      new WebAssembly.Module(readFileSync(join(modDir, 'backgammon.wasm')))).exports;
   } catch { /* the module arm above already reported this */ }
   if (exports) {
     const h = exports.bg_new();
@@ -798,8 +798,8 @@ if (!only.length) {
   for (const game of GAMES) {
     let exports;
     try {
-      exports = new WebAssembly.Instance(
-        new WebAssembly.Module(readFileSync(join(modDir, `${game.id}.wasm`))), IMPORTS).exports;
+      exports = gameInstance(
+        new WebAssembly.Module(readFileSync(join(modDir, `${game.id}.wasm`)))).exports;
     } catch { continue; }
     const bad = [];
     let ended = 0;
@@ -848,8 +848,8 @@ if (!only.length) {
     if (!(game.move || game.keys)) continue;
     let exports;
     try {
-      exports = new WebAssembly.Instance(
-        new WebAssembly.Module(readFileSync(join(modDir, `${game.id}.wasm`))), IMPORTS).exports;
+      exports = gameInstance(
+        new WebAssembly.Module(readFileSync(join(modDir, `${game.id}.wasm`)))).exports;
     } catch { continue; }
 
     const d = driver(game, exports);
@@ -1009,8 +1009,8 @@ if (!only.length) {
     if (!game.step) continue;
     let exports;
     try {
-      exports = new WebAssembly.Instance(
-        new WebAssembly.Module(readFileSync(join(modDir, `${game.id}.wasm`))), IMPORTS).exports;
+      exports = gameInstance(
+        new WebAssembly.Module(readFileSync(join(modDir, `${game.id}.wasm`)))).exports;
     } catch { continue; }
     const broken = { ...game, step: (e, h) => h };
     const d = driver(broken, exports);

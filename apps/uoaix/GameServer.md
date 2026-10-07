@@ -1,4 +1,4 @@
-# Stage 1 guest shard
+# Game server
 
 ## Account creation is a runtime mode (Damian, 2026-10-05)
 
@@ -56,7 +56,7 @@ the guest logs `MODE composite PUBLIC` and refuses to start while British has
 the default. `-Hosted` refuses `-Testing` and `-Dev`.
 
 British's powers apply only after a game login as British (`ga-is-british`:
-British bound and the transient login flag set). Built: the composite marks
+British bound and the transient login flag set). The composite marks
 British's combat actor immune at entry, so combat and harmful spells refuse
 it; the paperdoll and a single click on a character show "Lord <name>"
 for British in session. A single click on any other player's character, online
@@ -127,118 +127,27 @@ sysmessage. British lists pages with `[pages` and closes one with
 `[pageack <id>`. The ring is durable: it is the composite checkpoint's UHP1 section
 (UCC1 version 18, `cc-write-pages`), so pending pages survive a restart.
 
+## Entry and ownership
+
 `GameServer.codex` boots the citable `GameNet.game-server` entry, using
-`WorldRecords`, `MulReaders` and the read-only MUL bridge. Stage 1 is graded
-by native and socket replays. The captured real game login establishes
-rolling XOR and password-minus-13 for 1.25.32. The real client created and
-rendered a character in Britain on 35195. On 35206, creation, entry, A7
-handling and walking passed. Root later confirmed reconnect on unchanged35318.
-Replay success is not client acceptance. [WireCapture.md](WireCapture.md)
-owns stage-0 capture provenance and the outstanding real-client receive.
-
-## Client acceptance and live integration
-
-Reconnect works on unchanged MAIN35318. Root's driver double-clicked the
-shard; the second click arrived after Character Select appeared and opened
-Create Character. Root retracted the earlier reconnect failures after a
-single-selection run: client create, enter, kill, and relogin after three
-seconds showed Uoaix Tester in Character Select. Receipt: reek inbox
-`0aeb090bcf8466597d349f7e551ba067.json` through `.agentgrid`.
-No A9 count, trailer or flag change was justified or landed by that diagnosis.
-ProtocolFacts.md records the controlled reference comparison.
-
-Creation, entry, A7 and walking were separately observed with the real
-client. The standalone entry admits development accounts and one active mobile. Root
-operates the unmodified client; use one shard selection and inspect the
-resulting screen before any further click.
+`WorldRecords`, `MulReaders` and the read-only MUL bridge. The captured real
+game login establishes rolling XOR and password-minus-13 for 1.25.32
+([ProtocolFacts.md](ProtocolFacts.md)); [WireCapture.md](WireCapture.md) owns
+the capture provenance. Packet framing follows the 1.25.32 length table and
+skips unknown packets; 0x83 deletes a character.
 
 `GameDispatch.md` owns opcode framing, authenticated routing and pulse
-integration. The original `game-server` entry retains the core handlers;
-`game-server-with` binds lane handlers explicitly. Fester owns the shared
-loop, action capture and durable reply boundary. Per-opcode handlers belong
-in lane-owned chapters; return unhandled without mutation and publish only
-after the enclosing commit. Deployed GM mutation still waits for the DB.
+integration. The `game-server` entry keeps the core handlers and
+`game-server-with` binds lane handlers explicitly; a per-opcode handler lives
+in its lane's chapter, returns unhandled without mutation, and publishes only
+after the enclosing commit. [GameLinks.md](GameLinks.md) owns multi-session
+integration and [GameClientView.md](GameClientView.md) presentation.
 
-## Current state
+Driving the real client: select the shard once and read the resulting screen
+before any further click (a second click lands on Create Character). A scratch
+executable with an inbound listener raises a Windows firewall prompt. Old
+`run.json` files do not authorize operating a live process.
 
-Packet framing (the 1.25.32 length table, unknown packets skipped) and
-character delete 0x83 landed on main 35663; help pages are above.
-
-## Integration contracts
-
-Native and synthetic proofs for the parked network waits, concurrent game
-sessions and indexed client view are green. Complete-composite integration
-and unmodified-client grades remain fester/root work; do not substitute a
-standalone fixture for Damian's complete build. All changes below were handed
-to fester in their landing turns. No reek-owned process or listener remains.
-
-Read the newest root/peer inbox entries through reek's `.agentgrid` before
-resuming. Follow [GameLinks.md](GameLinks.md) for multi-session integration and
-[GameClientView.md](GameClientView.md) for presentation. The native multi-user
-proof uses the existing test account with distinct characters; a new account
-service was not introduced. Do not reopen the retracted A9/reconnect diagnosis
-because delayed fleet messages report old variant results.
-
-| Main | Current contract | Proof evidence under reek build-output/uoaix |
-|---|---|---|
-| 35439 | Fixed72 framing; log/ignore before world entry without granting authentication | preworld-war/replay.out |
-| 35462 | Full-send-queue retry at exact unsent offset, finite budget, terminal diagnostics | send-wait/replay.out; controlled sender and terminal path, not live ACK timing |
-| 35470 | Optional effectful disconnect flush; legacy APIs; owner error fail-stops listener | disconnect/replay.out |
-| 35490,35555 | Status/bars, mobile visibility, light/season; tile-index discovery and previous-visible set | client-view-index/final.out;16384 slots with16000 distant items |
-| 35497 | Complete-composite CPU baseline and hot-path profile | cpu-profile/e1000 and active-e1000; about29 CPU seconds per30 seconds |
-| 35509 | Native NetIdle HPET deadlines plus cpu-park; raw bytes and timers preserved | net-idle/result.json, active-result.json, isolation.json; timer proof and socket99 pass; fixture1.50/1.265625 CPU seconds per30 seconds |
-| 35543 | GameLinks on ShardLinks: per-peer crypto, relay tickets, actor admission, pulses and disconnect | game-links/final/result.json; native checks and concurrent socket28 pass |
-
-The current proofs used depot seed SHA256
-`4228CD5103DC45232EB40C1FC9DE655BE2A805F7CAA5019E3EC76B28FF9216A8`.
-That digest was rechecked from a fresh depot print at handoff; no seed was
-changed. Full battery, poison and a fresh reader pass were NOT RUN under the
-explicit UOAIX efficiency ruling. Blu reviewed NetIdle's source and heap/time
-boundaries. Earlier103-check hook evidence remains in opcode-hook; it grades
-its older artifact, not all later integrations.
-
-GameLinks proof artifacts are native
-`2EFC0B1E06B2F62DC42E7FDC56D6C9B6BA840E85FD9B175E137D3174F72491F5`
-and server
-`CB04000858E51ABBBB3E3C0268A7222FB2CC3307EB06E965EBC6E3B0BDC903A7`.
-The indexed view proof is
-`22A35B2D2D4482B8EE3CAB5AEB10721B1ECE6E7044F51339186B9DD75D33A599`.
-NetIdle's isolated artifacts matched the tested binaries exactly. CPU figures
-for its fix are from native fixtures; a rebuilt complete composite must still
-be measured. The exact1.25.32 BC season rendering remains ungraded and is an
-explicit capability argument. New view/session state is transient, not a new
-durable codec payload.
-
-Fester must make view/decoration/family scene state per connection before the
-second composite player is graded. Preserve shared durable door state; each
-character binds its own economy actor (GameLinks.md). Map cover and
-decoration rebind must precede each player's callback. GameLinks.md owns the
-scoped legacy active/pending-key contract and storage-failure boundary.
-
-Completed reviews include combat35388, skills/items35389, vendor35394,
-vendor codec/custody35430 and mixed tender35417 (net proceeds plus tax receipt).
-Decoration35486 was approved after two blockers were fixed:
-same-pointer map rebasing and a second move stranding a pending removal.
-The latter's negative control is review-decoration35509/probe.out (33/1/1);
-blu's corrected replay reports33/1/0. GCV uses blu's landed35546 layer-table
-equipment implementation; reek's overlapping bank edits were discarded and
-never landed. New peer review requests for Britain shops35479 and vendor
-index35528 arrived during the transport work and were not independently
-reviewed by this lane before their other-lane landings. Refresh root's need
-for a post-landing review rather than treating them as approved here.
-
-The intermittent old MUL timeout cause remains unproven. Fester moved cold
-map loading to an install-time cache, so networking is off that boot path.
-The NAT RX experiment remains diagnostic only: nat-rx-control/candidate.exe
-SHA79455FE0 passed native batch/sequence controls, but the guest comparison
-failed when fester's adapter ended. No candidate improvement/regression was
-established or shipped. Earlier matched controls in nat-preload both reached
-LISTEN and do not justify reverting VM F3578E59. A scratch executable with an
-inbound listener previously raised a firewall prompt; avoid repeating it.
-
-Refresh ownership before operating any live process; old run.json files
-alone are not authorization. The Current resume state section owns pending
-work and proof gaps.
 
 ## Run
 
@@ -297,7 +206,7 @@ acceptance hypotheses. Unknown opcodes close with an explicit diagnostic.
 After world entry, the four-byte A7 tip/notice request is consumed and
 logged with its id and selector; no content is served and the connection
 continues. This follows the ignored optional request in the written facts.
-Stage 2 also admits variable-length 03 ASCII speech: normal, emote,
+The server also admits variable-length 03 ASCII speech: normal, emote,
 whisper and yell, with 1..128 printable ASCII characters, a final zero,
 hue 0..1001 and font 0..9. Framing reads the three-byte prefix, checks
 the declared length 10..137, then waits for exactly that packet before
@@ -312,10 +221,7 @@ current server still admits one active mobile. The wire layouts follow
 [ModernUO's packet definitions](https://modernuo.com/packets.html), retaining
 the existing 1.25.32 client-acceptance limitation.
 
-A9 includes the
-trailing zero dword in the reference writers. Reconnect readback proved the
-live character name was retained in the earlier reply. The unchanged
-profile selects the character when the client driver uses one shard click.
+A9 includes the trailing zero dword in the reference writers.
 
 Creation admits five slots. Names, stats, skill choices, hues, appearance,
 starting city and slot are checked on the 100-byte legacy request. The

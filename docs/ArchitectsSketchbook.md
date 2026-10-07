@@ -175,7 +175,6 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 33048 | nic-rx-len-addr | 8 | Length of that frame |
 | 33056 | nic-rx-buf-addr | 1536 | NIC receive buffer |
 | 34592 | nic-tx-buf-addr | 1536 | NIC transmit buffer |
-| 36128 | try-fail-flag-addr | 8 | Try/fail exception flag |
 | 36136 | prof-enabled-addr | 8 | Profiler on |
 | 36144 | prof-cursor-addr | 8 | Profiler write cursor into `prof-buf-addr` (393216) |
 | 36200 | **ap-dispatch-count-addr** | 8 | Processes claimed by a core whose id is not zero. Only `__idle_dispatch` writes it, and the BSP's id is always zero, so a value above zero is evidence an application processor took a process out of the table and ran it. Read by `codex/test/smp-dispatch.codex` |

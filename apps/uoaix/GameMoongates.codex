@@ -64,19 +64,6 @@ Chapter: GameMoongates
       is Ok (item) -> item.kind == 2 & item.graphic == #0F6C & item.container == 0 & item.amount == 1
         & item.x == gate.x & item.y == gate.y & item.z == gate.z
         & gsi-known g.items serial & not (gsi-meta g.items serial).movable
-  gmg-install-at : GameMoongates, Integer -> Result Integer Text
-  gmg-install-at (g) (i) = if i == 8 then Ok 8
-    else let p = list-at g.gates i
-    in when world-create g.game.world (WorldObject { serial = 0, kind = 2, x = p.x, y = p.y, z = p.z,
-      graphic = #0F6C, hue = 0, container = 0, amount = 1, health = 0 })
-      is Err (e) -> Err e
-      is Ok (serial) -> if gsi-register g.items serial 0 0 False False /= 0 then Err "moongate item registration"
-        else let bound = __record-set p "serial" serial in gmg-install-at g (i + 1)
-  gmg-empty : GameMoongates, Integer -> Boolean
-  gmg-empty (g) (i) = if i == 8 then True else (list-at g.gates i).serial == 0 & gmg-empty g (i + 1)
-  gmg-install : GameMoongates -> Result Integer Text
-  gmg-install (g) = if not (gmg-empty g 0) | g.game.world.capacity - world-count g.game.world < 8 then Err "moongate installation budget or existing binding"
-    else gmg-install-at g 0
   gmg-follower-valid : GameMoongates, Integer, Integer -> Boolean
   gmg-follower-valid (g) (leader) (serial) = if leader == serial | cb-slot g.game leader 0 < 0 | cb-slot g.game serial 0 >= 0 then False
     else when world-get g.game.world leader
@@ -102,18 +89,13 @@ Chapter: GameMoongates
     in let a = __record-set row "serial" serial
     in let b = __record-set row "leader" leader
     in let c = __record-set row "following" following
-    in let sequence = __record-set g "sequence" (g.sequence + 1)
-    in let touched = world-touch g.game.world in 0
-  gmg-tidy : GameMoongates, Integer -> Integer
-  gmg-tidy (g) (i) = if i == 32 then 0
+    in let sequence = __record-set g "sequence" (g.sequence + 1) in 0
+  gmg-release : GameMoongates, Integer, Integer -> Integer
+  gmg-release (g) (leader) (i) = if i == 32 then 0
     else let f = list-at g.followers i
-    in if f.serial == 0 | gmg-follower-valid g f.leader f.serial then gmg-tidy g (i + 1)
-    else if g.sequence >= gmg-limit then -1
-    else let a = __record-set f "serial" 0
-    in let b = __record-set f "leader" 0
-    in let c = __record-set f "following" False
-    in let sequence = __record-set g "sequence" (g.sequence + 1)
-    in let touched = world-touch g.game.world in gmg-tidy g (i + 1)
+    in let cleared = if f.serial == 0 | f.leader /= leader then 0
+      else let a = __record-set f "serial" 0 in let b = __record-set f "leader" 0 in let c = __record-set f "following" False in 0
+    in gmg-release g leader (i + 1)
   gmg-at : GameMoongates, WorldObject, Integer -> Integer
   gmg-at (g) (m) (i) = if i == 8 then -1 else let p = list-at g.gates i
     in if m.x == p.x & m.y == p.y & walk-abs (m.z - p.z) <= 3 then i else gmg-at g m (i + 1)

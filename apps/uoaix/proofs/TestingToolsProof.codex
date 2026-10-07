@@ -340,7 +340,7 @@ Chapter: TestingToolsProof
       plain <- cg-books magic owner.checkpoint.game False (world-first-child world me) 4
       left <- mgs-spells magic book
       restored <- mgs-book magic book mgs-working
-      full <- ttp-check ("a testing entry fills a carried spellbook from the old 27-spell mask to every working spell (" & show (ttp-bits filled 0 0) & " of 48 counted by hand), and a normal entry leaves it as it was") (is-ok aged & filled == mgs-working & ttp-bits filled 0 0 == 48 & left == #100480FFFFFF & is-ok restored)
+      full <- ttp-check ("a testing entry fills a carried spellbook from the old 27-spell mask to every working spell (" & show (ttp-bits filled 0 0) & " of 64 counted by hand), and a normal entry leaves it as it was") (is-ok aged & filled == mgs-working & ttp-bits filled 0 0 == 64 & left == #100480FFFFFF & is-ok restored)
       scribed <- ttp-scribe p owner world pack pick me
       clumsy <- ttp-find world (world-first-child world pack) #1F2E 2
       reading <- csp-send p (gp-put32 [6] clumsy)
@@ -583,6 +583,19 @@ Chapter: TestingToolsProof
     e <- ttp-check "the world commits" (is-ok committed)
     a + b + bound + k + g + navigating + crafts + bows + menu + cuts + shears + looks + picks + dyed + brewed + scribed + c + f + named + d + e
   end
+ The rebook arm needs an iron-ore lot in the pack, and the earlier mining step's yield is random (UOAIX-93), so the arm
+ books one of its own when mining left none: one ore of item 5 at quality 500, gathered and in stock.
+  ttp-ore-lot : CompositeGame, Integer, Integer -> Integer
+  ttp-ore-lot (owner) (actor) (pack) = let v = owner.vendor
+    in when world-create owner.checkpoint.game.world (WorldObject { serial = 0, kind = 2, x = 50, y = 60, z = 0, graphic = #19B9, hue = 0, container = pack, amount = 1, health = 0 })
+      is Err (_) -> -1
+      is Ok (serial) -> let p = ep-actor v.currency.world actor
+        in let a = ep-add p.stock 5 1
+        in let b = ep-add p.quality 5 500
+        in let c = ep-add p.cost 5 1
+        in let d = ep-add v.currency.world.gathered 5 1
+        in let registered = gsi-register owner.items serial 0 0 True True
+        in gv-add-lot v serial actor 5 500 0 1
   ttp-rebook : CompositeOwner, Integer, Integer -> [Console, Device.Block] Integer
   ttp-rebook (store) (me) (pack) = let owner = store.state in act
     at <- gv-player owner.vendor me 0
@@ -590,6 +603,7 @@ Chapter: TestingToolsProof
     v <- owner.vendor
     world <- owner.checkpoint.game.world
     spare <- ep-at (ep-actor v.currency.world actor).stock 69 - gv-represented v actor 69 0 0
+    seeded <- if gv-represented v actor 5 0 0 > 0 then 0 else ttp-ore-lot owner actor pack
     ore <- gv-represented v actor 5 0 0
     dagger <- world-create world (WorldObject { serial = 0, kind = 2, x = 40, y = 60, z = 0, graphic = #0F52, hue = 0, container = pack, amount = 1, health = 0 })
     rebooked <- cpr-kit-tools owner.production me pack

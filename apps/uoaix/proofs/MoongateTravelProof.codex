@@ -1,0 +1,96 @@
+Chapter: MoongateTravelProof
+  cites Uoaix chapter CompositeStore
+  cites Foreword chapter StringUtils
+
+  mtp-check : Text, Boolean -> [Console] Integer
+  mtp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  mtp-fill : WalkMap, Integer, Integer -> Integer
+  mtp-fill (map) (z) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) z 0
+    in let restored = __heap-restore mark in mtp-fill map z (i + 1)
+  mtp-cover : Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  mtp-cover (x) (y) (z) = act
+    made <- walk-map-new (x - 16) (y - 16) 32 32
+    when made
+      is Err (e) -> Err e
+      is Ok (map) -> let filled = mtp-fill map z 0 in Ok map
+  end
+  mtp-create : Integer -> List Integer
+  mtp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Ranger" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  mtp-near : WorldTable, Integer, Integer -> Boolean
+  mtp-near (world) (a) (b) = when world-get world a
+    is Err (_) -> False
+    is Ok (m) -> when world-get world b
+      is Err (_) -> False
+      is Ok (n) -> walk-abs (m.x - n.x) <= 1 & walk-abs (m.y - n.y) <= 1
+  mtp-at : WorldTable, Integer, Integer, Integer -> Boolean
+  mtp-at (world) (serial) (x) (y) = when world-get world serial
+    is Err (_) -> False
+    is Ok (m) -> m.x == x & m.y == y
+  mtp-note : Result GameReply Text -> Text
+  mtp-note (reply) = when reply is Err (e) -> "error " & e is Ok (r) -> r.note
+  mtp-travel : CompositeOwner, GameShard, GameInput, GameMoongates, WalkMap -> [Console, Device.Block] Integer
+  mtp-travel (store) (game) (input) (gates) (map) = let owner = store.state in act
+    caster <- input.session.serial
+    installed <- __record-set owner "gates" (Just gates)
+    covered <- __record-set owner "gate-cover" (Just mtp-cover)
+    daemon <- cg-summon owner caster "daemon" 1338 1997 5 True 400000
+    stray <- cg-summon owner caster "bladespirit" 1338 1999 5 False 90000
+    placed <- when world-get game.world caster is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" 1335) "y" 1997) "z" 5)
+    before <- world-get game.world caster
+    stepped <- when world-get game.world caster is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set m "x" 1336)
+    reply <- cg-travel owner game input map before (gs-reply [] "walk")
+    print-line-uni ("TRAVEL " & mtp-note reply)
+    moved <- not (mtp-at game.world caster 1336 1997)
+    a <- mtp-check "a player walking into the Britain moongate arrives beside another gate" (is-ok reply & moved & daemon > 0)
+    b <- mtp-check "the player's controlled daemon travels with the player and lands beside it" (daemon > 0 & not (mtp-at game.world daemon 1338 1997) & mtp-near game.world daemon caster
+      & text-contains (mtp-note reply) "travellers=2")
+    c <- mtp-check "an uncontrolled blade spirit beside the gate stays behind" (stray > 0 & mtp-at game.world stray 1338 1999)
+    a + b + c
+  end
+  mtp-run : CompositeOwner, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  mtp-run (store) (specs) = let owner = store.state in act
+    attached <- cg-spawn-attach owner
+    game <- owner.checkpoint.game
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    britain <- walk-map-new 1408 1680 64 64
+    entry <- when britain is Err (e) -> Err e is Ok (start) -> let landed = mtp-fill start 0 0 in cs-route store game input start 2593 (mtp-create 0)
+    e <- mtp-check "a fresh world attaches spawns and enters a character" (is-ok attached & is-ok entry & input.session.serial > 0)
+    when walk-map-new 1304 1965 64 64
+      is Err (err) -> mtp-check err False
+      is Ok (map) -> act
+        filled <- mtp-fill map 5 0
+        made <- gmg-new game owner.items owner.combat map
+        when made
+          is Err (err) -> mtp-check ("moongates " & err) False
+          is Ok (gates) -> act
+            bound <- cg-gates-bind gates 0
+            g <- mtp-check "the eight moongates bind" (is-ok bound)
+            t <- mtp-travel store game input gates map
+            e + g + t
+          end
+      end
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> mtp-check ("registry " & e) False
+    is Ok (specs) -> act
+      opened <- us-open 0 131072
+      when opened
+        is Err (e) -> mtp-check ("store " & e) False
+        is Ok (store) -> act
+          loaded <- cs-load store 0
+          when loaded
+            is Err (e) -> mtp-check ("recovery " & e) False
+            is Ok (owner) -> mtp-run owner specs
+          end
+      end

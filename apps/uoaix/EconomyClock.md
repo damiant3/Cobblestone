@@ -63,12 +63,7 @@ requires positive normal leather-armour shelf stock, zero shortage-arm shelf
 stock, and less total leather-armour output in the shortage arm. The reserve
 buyer's earlier purchases remain in its inventory and in the material census.
 
-Under seed `BF984339C7BA4BAE` on 2026-10-04, the normal arm used 3279 purchases
-and 4057 money rows and ended with 3 leather-armour units on sale, 31 produced.
-The shortage arm used 2970 purchases and 3748 money rows and ended with none
-on sale, 11 produced. The measured acceptance uses a bounded 4096-purchase
-store and retains all history. Production construction retained 947864 bytes, excluding
-money. No rolling-log truncation or archive deletion was introduced.
+The acceptance uses a bounded 4096-purchase store and retains all history.
 
 Compile normally and poisoned with an explicit depot kernel; compare the
 entire runtime output to `proofs/EconomyClockProof.expected`. Also rerun

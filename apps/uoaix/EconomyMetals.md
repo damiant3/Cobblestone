@@ -21,8 +21,8 @@ using metalworking practice. No stock or trained skill is granted at admission.
 All three coin edges require the royal mint and stone hammer. Their unit
 quantity proves material closure only. Generic production refuses station 12;
 this component cannot issue currency. Royal mint policy must set each actual
-yield and consume the matching ingot atomically with issuance. The ruling
-100 copper = 10 silver = 1 gold is an exchange rate, not a mint yield.
+yield and consume the matching ingot atomically with issuance. The exchange
+rate (EconomyCurrency.md, "Price scale") is not a mint yield.
 Denominated balances, tax, exchange-rate panel actions and physical coin
 graphics belong to the currency/world adapters and are not implemented here.
 

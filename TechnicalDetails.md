@@ -227,7 +227,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**75 applications, 1,856 modules** (2026-10-07), all written in Codex and compiled by
+**75 applications, 1,861 modules** (2026-10-07), all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -242,14 +242,14 @@ for 149 checks (2026-09-28).
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,878,742 bytes, 2026-10-07, Update 68 arc: Fat16 refuses . and .., hardware random refuses 0 and all-ones, COMPILER-128 temp wrap) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,883,795 bytes, 2026-10-07, COMPILER-124: every `when` branch body keeps the match's tail position) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `B2E02EC8DB7D001A` |
-| SHA-256 | `E29C439BEB721E790A95127846604386D09B2C2FA2D92762977952674E92103F` |
-| MD5 | `0470759392488EB7A486EAF771BDFC52` |
+| Content hash prefix | `5717A425F7514FB2` |
+| SHA-256 | `58D18336B15D7F270D45EDD090A4BE4482B20765570528BAE332A8DDFA21FC67` |
+| MD5 | `31382F11BBF963B7D5D7880CC9C470AE` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -270,7 +270,7 @@ font selection and notices are documented in [fonts/README.md](fonts/README.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `CF50A434BC0B33990D17832DB04B5081FC33011AFCD5A62F859E7C333D7E2F8A` |
+| SHA-256 | `18AA25DCE75B8B94A103665F41EF7A39EF28736DAA6F4D1D89D349C8FE5DB663` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -294,14 +294,13 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `368B40D327E6B16C3221285F498A43579DC8855C431CA691512B5D074D399311` |
+| SHA-256 | `2F3E8BDDB58BF81DA89F1466DC66975FFF9409AA58CE1285B6239A359C3A40C6` |
 
-All 59 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-10-02,
-using a 180-second minimum VM-arm allowance. The shipping check confirmed
-the checked-in default configuration. The diagnostic image is unchanged
-since that rehearsal. `seed/Codex.img` is built from the release seed
-(main 38465), and all 6,468 rows of `seed/Codex.map` match the seed's
-embedded MAP1 (checked 2026-10-07, seed E29C439B).
+All 60 rehearsal arms (including the fast-acknowledgment flood arm `b3-flood`)
+passed on Codex VM and QEMU/OVMF on 2026-10-07 against seed 58D18336 (Update
+69), and the shipping check confirmed the checked-in default configuration.
+`seed/Codex.img` is built from the release seed (Update 69), and all 6,480 rows
+of `seed/Codex.map` match the seed's embedded MAP1 (checked 2026-10-07).
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and
@@ -612,9 +611,9 @@ codex/
   foreword/      451 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (186 modules) (2026-10-06)
-  plugs/         59 plugs, 257 source modules -- IR-text-driven emitters (2026-10-03)
-  test/          Compiler samples + OS integration tests (2,251 files) (2026-10-07)
-apps/            75 applications, 1,856 modules (2026-10-07)
+  plugs/         59 plugs, 258 source modules -- IR-text-driven emitters (2026-10-07)
+  test/          Compiler samples + OS integration tests (2,281 files) (2026-10-07)
+apps/            75 applications, 1,861 modules (2026-10-07)
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -648,7 +647,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 2,245 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 2,281 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 68 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |

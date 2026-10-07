@@ -537,33 +537,110 @@ Section: Control Flow
 
 Section: Try-Fail
 
-  rv-try-counter-addr : Integer = rv-try-fail-flag-addr + 8
+ A `try` frame is 18 spill slots of the function holding the `try`, because
+ this lane addresses spills from SP and SP cannot move inside a function:
+ 0 previous head, 8 SP, 16 s0, 24..96 s2..s11, 104 s1 (the heap pointer),
+ 112 deck-bound counter, 120 handler address, 128 message. The callee-saved
+ registers are in it because an unwind skips every epilogue between the
+ `fail` and the `try`, and the `try` function's locals live in them. The
+ chain's head is the running process's table entry at offset 48, as on
+ x86-64. a2 holds the frame address and a3 the entry, because
+ `rv-emit-current-entry` spends t0, t1 and t2.
 
- The shape is x86-64's `emit-try`: the flag is checked after every body
- statement, a retry restores the heap pointer the attempt started from, and
- the failure statements run only when a non-empty fallback leaves the flag set.
- Every jump is a `j`, so a long body cannot push one out of B-type reach.
+  rv-try-frame-slots : Integer = 18
 
-  rv-try-clear : RvState -> RvState
-  rv-try-clear (st) =
-    let st1 = rv-emit-li st rv-t0 rv-try-fail-flag-addr
-    in rv-emit st1 (rv-sd rv-t0 rv-zero 0)
+  rv-try-head-offset : Integer = 48
 
-  rv-try-load-flag : RvState -> RvState
-  rv-try-load-flag (st) =
-    let st1 = rv-emit-li st rv-t0 rv-try-fail-flag-addr
-    in rv-emit st1 (rv-ld rv-t0 rv-t0 0)
+  rv-try-fr : Integer = 12
 
-  rv-try-check : RvState, Integer -> RvState
-  rv-try-check (st) (failed-idx) =
-    let st1 = rv-emit (rv-try-load-flag st) (rv-beq rv-t0 rv-zero 8)
-    in rv-emit st1 (rv-j ((failed-idx - st1.insn-count) * 4))
+  rv-try-en : Integer = 13
 
-  rv-emit-try-body : RvState, List IRActStmt, Integer, Integer -> RvState
-  rv-emit-try-body (st) (body) (i) (failed-idx) =
-    if i >= list-length body then st
+  rv-try-frame-alloc : RvState -> RvEmitResult
+  rv-try-frame-alloc (st) =
+    let base = st.spill-count
+    in RvEmitResult { state = __record-set st "spill-count" (base + rv-try-frame-slots), reg = rv-spill-base + base }
+
+  rv-try-frame-addr : RvState, Integer -> RvState
+  rv-try-frame-addr (st) (slot) =
+    let st1 = rv-emit-li st rv-try-fr ((slot - rv-spill-base) * 8 + 112)
+    in rv-emit st1 (rv-add rv-try-fr rv-sp rv-try-fr)
+
+  rv-try-handler-patch : RvState, Integer, Integer -> RvState
+  rv-try-handler-patch (st) (auipc-idx) (target-idx) =
+    let hl = rv-split-hi20-lo12 ((target-idx - auipc-idx) * 4)
+    in rv-patch-insn (rv-patch-insn st auipc-idx (rv-auipc rv-t1 (hl.hi))) (auipc-idx + 1) (rv-addi rv-t1 rv-t1 (hl.lo))
+
+  rv-emit-try-push-frame : RvState, Integer -> RvState
+  rv-emit-try-push-frame (st) (slot) =
+    let st1 = rv-emit (rv-emit st rv-nop) rv-nop
+    in let st2 = rv-try-frame-addr st1 slot
+    in let st3 = rv-emit (rv-emit (rv-emit st2 (rv-sd rv-try-fr rv-t1 120)) (rv-sd rv-try-fr rv-sp 8)) (rv-sd rv-try-fr 8 16)
+    in let st4 = rv-emit (rv-emit (rv-emit (rv-emit (rv-emit st3 (rv-sd rv-try-fr 18 24)) (rv-sd rv-try-fr 19 32)) (rv-sd rv-try-fr 20 40)) (rv-sd rv-try-fr 21 48)) (rv-sd rv-try-fr 22 56)
+    in let st5 = rv-emit (rv-emit (rv-emit (rv-emit (rv-emit st4 (rv-sd rv-try-fr 23 64)) (rv-sd rv-try-fr 24 72)) (rv-sd rv-try-fr 25 80)) (rv-sd rv-try-fr 26 88)) (rv-sd rv-try-fr 27 96)
+    in let st6 = rv-emit (rv-emit st5 (rv-sd rv-try-fr rv-heap-reg 104)) (rv-sd rv-try-fr rv-zero 128)
+    in let st7 = rv-emit (rv-emit-li st6 rv-t0 rv-deck-bound-counter-addr) (rv-ld rv-t0 rv-t0 0)
+    in let st8 = rv-emit-current-entry (rv-emit st7 (rv-sd rv-try-fr rv-t0 112)) rv-try-en
+    in rv-emit (rv-emit (rv-emit st8 (rv-ld rv-t0 rv-try-en rv-try-head-offset)) (rv-sd rv-try-fr rv-t0 0)) (rv-sd rv-try-en rv-try-fr rv-try-head-offset)
+
+ Pops the frame in `slot`. a0 is preserved: it carries the `try`'s value.
+
+  rv-emit-try-pop-frame : RvState, Integer -> RvState
+  rv-emit-try-pop-frame (st) (slot) =
+    let st1 = rv-emit-current-entry (rv-try-frame-addr st slot) rv-try-en
+    in rv-emit (rv-emit st1 (rv-ld rv-t0 rv-try-fr 0)) (rv-sd rv-try-en rv-t0 rv-try-head-offset)
+
+  rv-emit-try-take-message : RvState, Integer, Integer -> RvState
+  rv-emit-try-take-message (st) (slot) (msg-loc) =
+    let st1 = rv-emit (rv-try-frame-addr st slot) (rv-ld rv-a0 rv-try-fr 128)
+    in rv-store-local (rv-emit-try-pop-frame st1 slot) msg-loc rv-a0
+
+ With no frame the message is printed and the program stops. With one, the
+ deck is put back first: when the frame was built outside every deck and the
+ unwind leaves from inside one, s1 is the deck cursor, so it is written back
+ to the deck before s1 returns to the bivy.
+
+  rv-emit-fail-raise : RvState, Integer -> RvState
+  rv-emit-fail-raise (st) (msg-reg) =
+    let st1 = rv-emit-current-entry (rv-emit st (rv-mv rv-a0 msg-reg)) rv-try-en
+    in let st2 = rv-emit st1 (rv-ld rv-try-fr rv-try-en rv-try-head-offset)
+    in let have-idx = st2.insn-count
+    in let st3 = rv-emit (rv-emit-call-to (rv-emit st2 rv-nop) "print-line-uni") rv-ebreak
+    in let st4 = rv-patch-insn st3 have-idx (rv-bne rv-try-fr rv-zero ((st3.insn-count - have-idx) * 4))
+    in let st5 = rv-emit (rv-emit (rv-emit st4 (rv-sd rv-try-fr rv-a0 128)) (rv-ld 8 rv-try-fr 16)) (rv-ld 18 rv-try-fr 24)
+    in let st6 = rv-emit (rv-emit (rv-emit (rv-emit (rv-emit st5 (rv-ld 19 rv-try-fr 32)) (rv-ld 20 rv-try-fr 40)) (rv-ld 21 rv-try-fr 48)) (rv-ld 22 rv-try-fr 56)) (rv-ld 23 rv-try-fr 64)
+    in let st7 = rv-emit (rv-emit (rv-emit (rv-emit st6 (rv-ld 24 rv-try-fr 72)) (rv-ld 25 rv-try-fr 80)) (rv-ld 26 rv-try-fr 88)) (rv-ld 27 rv-try-fr 96)
+    in let st8 = rv-emit (rv-emit (rv-emit-li st7 rv-t0 rv-deck-bound-counter-addr) (rv-ld rv-t1 rv-t0 0)) (rv-ld rv-t2 rv-try-fr 112)
+    in let skip1 = st8.insn-count
+    in let st9 = rv-emit (rv-emit st8 rv-nop) rv-nop
+    in let st10 = rv-emit (rv-emit-li st9 rv-t0 rv-deck-pos-addr) (rv-sd rv-t0 rv-heap-reg 0)
+    in let skip = st10.insn-count
+    in let st11 = rv-patch-insn (rv-patch-insn st10 skip1 (rv-bge rv-t2 rv-t1 ((skip - skip1) * 4))) (skip1 + 1) (rv-bne rv-t2 rv-zero ((skip - (skip1 + 1)) * 4))
+    in let st12 = rv-emit (rv-emit-li st11 rv-t0 rv-deck-bound-counter-addr) (rv-sd rv-t0 rv-t2 0)
+    in let st13 = rv-emit (rv-emit (rv-emit st12 (rv-ld rv-heap-reg rv-try-fr 104)) (rv-ld rv-t0 rv-try-fr 120)) (rv-ld rv-sp rv-try-fr 8)
+    in rv-emit st13 (rv-jalr rv-zero rv-t0 0)
+
+  rv-emit-fail : RvState, IRExpr -> RvEmitResult
+  rv-emit-fail (st) (msg) =
+    let r = rv-emit-expr st msg
+    in RvEmitResult { state = rv-emit-fail-raise (r.state) (r.reg), reg = rv-zero }
+
+  rv-emit-try-refail : RvState, Integer -> RvState
+  rv-emit-try-refail (st) (msg-loc) =
+    let ld = rv-load-local st msg-loc
+    in rv-emit-fail-raise (ld.state) (ld.reg)
+
+  rv-emit-try-body : RvState, List IRActStmt, Integer -> RvEmitResult
+  rv-emit-try-body (st) (body) (i) =
+    if i >= list-length body then RvEmitResult { state = st, reg = rv-zero }
     else let r = rv-emit-act st [list-at body i]
-    in rv-emit-try-body (rv-try-check (r.state) failed-idx) body (i + 1) failed-idx
+    in if i == list-length body - 1 then r
+    else rv-emit-try-body (r.state) body (i + 1)
+
+  RvTryTail = record {
+   state : RvState,
+   has-jmp : Boolean,
+   jmp-idx : Integer
+  }
 
   rv-emit-try : RvState, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> RvEmitResult
   rv-emit-try (st) (max) (body) (fb) (fail) =
@@ -572,14 +649,21 @@ Section: Try-Fail
     in let st1 = rv-store-local (c.state) (c.reg) rv-zero
     in let h = rv-alloc-local st1
     in let st2 = rv-store-local (h.state) (h.reg) rv-heap-reg
-    in let retry-idx = st2.insn-count
-    in let st3 = rv-try-clear st2
+    in let m = rv-alloc-local st2
+    in let st2m = rv-store-local (m.state) (m.reg) rv-zero
+    in let body-frame = rv-try-frame-alloc st2m
+    in let fb-frame = rv-try-frame-alloc (body-frame.state)
+    in let st3 = fb-frame.state
+    in let retry-idx = st3.insn-count
     in let hl = rv-load-local st3 (h.reg)
     in let st4 = rv-emit (hl.state) (rv-mv rv-heap-reg (hl.reg))
-    in let jover-idx = st4.insn-count
-    in let st5 = rv-emit st4 rv-nop
+    in let body-auipc-idx = st4.insn-count
+    in let st4f = rv-emit-try-push-frame st4 (body-frame.reg)
+    in let jover-idx = st4f.insn-count
+    in let st5 = rv-emit st4f rv-nop
     in let failed-idx = st5.insn-count
-    in let cl = rv-load-local st5 (c.reg)
+    in let st5m = rv-emit-try-take-message st5 (body-frame.reg) (m.reg)
+    in let cl = rv-load-local st5m (c.reg)
     in let st6 = rv-emit (cl.state) (rv-addi rv-t1 (cl.reg) 1)
     in let st7 = rv-store-local st6 (c.reg) rv-t1
     in let st8 = rv-emit-li st7 rv-t0 max
@@ -588,32 +672,31 @@ Section: Try-Fail
     in let jexh-idx = st10.insn-count
     in let st11 = rv-emit st10 rv-nop
     in let body-idx = st11.insn-count
-    in let st12 = rv-patch-insn st11 jover-idx (rv-j ((body-idx - jover-idx) * 4))
-    in let st13 = __record-set (rv-emit-try-body st12 body 0 failed-idx) "locals" try-locals
+    in let st12 = rv-try-handler-patch (rv-patch-insn st11 jover-idx (rv-j ((body-idx - jover-idx) * 4))) body-auipc-idx failed-idx
+    in let br = rv-emit-try-body st12 body 0
+    in let st13 = rv-emit-try-pop-frame (rv-emit (br.state) (rv-mv rv-a0 (br.reg))) (body-frame.reg)
     in let jsucc-idx = st13.insn-count
-    in let st14 = rv-emit st13 rv-nop
+    in let st14 = rv-emit (__record-set st13 "locals" try-locals) rv-nop
     in let st15 = rv-patch-insn st14 jexh-idx (rv-j ((st14.insn-count - jexh-idx) * 4))
-    in let has-fb = list-length fb > 0
-    in let fbr = if has-fb then
-      rv-emit-act (rv-try-clear st15) fb
-    else RvEmitResult { state = st15, reg = rv-zero }
-    in let st16 = __record-set (fbr.state) "locals" try-locals
-    in let wants-fail = has-fb & list-length fail > 0
-    in let st17 = if wants-fail then
-      rv-emit (rv-try-load-flag st16) (rv-beq rv-t0 rv-zero 8)
-    else st16
-    in let jfail-idx = st17.insn-count
-    in let st18 = if wants-fail then rv-emit st17 rv-nop else st17
-    in let jend-idx = st18.insn-count
-    in let st19 = rv-emit st18 rv-nop
-    in let st20 = if wants-fail then
-      let fr = rv-emit-act (rv-try-clear (rv-patch-insn st19 jfail-idx (rv-j ((st19.insn-count - jfail-idx) * 4)))) fail
-      in __record-set (fr.state) "locals" try-locals
-    else st19
-    in let end-idx = st20.insn-count
-    in let st21 = rv-patch-insn st20 jsucc-idx (rv-j ((end-idx - jsucc-idx) * 4))
-    in let st22 = rv-patch-insn st21 jend-idx (rv-j ((end-idx - jend-idx) * 4))
-    in RvEmitResult { state = st22, reg = rv-zero }
+    in let tail = if list-length fb > 0 then
+      let fb-auipc-idx = st15.insn-count
+      in let s1 = rv-emit-try-push-frame st15 (fb-frame.reg)
+      in let fbr = rv-emit-act s1 fb
+      in let s2 = rv-emit-try-pop-frame (rv-emit (fbr.state) (rv-mv rv-a0 (fbr.reg))) (fb-frame.reg)
+      in let fb-jmp-idx = s2.insn-count
+      in let s3 = rv-emit (__record-set s2 "locals" try-locals) rv-nop
+      in let s3a = rv-try-handler-patch s3 fb-auipc-idx (s3.insn-count)
+      in let s4 = rv-emit-try-take-message s3a (fb-frame.reg) (m.reg)
+      in if list-length fail > 0 then
+        let fr = rv-emit-act s4 fail
+        in let s5 = rv-emit (fr.state) (rv-mv rv-a0 (fr.reg))
+        in RvTryTail { state = __record-set s5 "locals" try-locals, has-jmp = True, jmp-idx = fb-jmp-idx }
+      else RvTryTail { state = rv-emit-try-refail s4 (m.reg), has-jmp = True, jmp-idx = fb-jmp-idx }
+    else RvTryTail { state = rv-emit-try-refail st15 (m.reg), has-jmp = False, jmp-idx = 0 }
+    in let end-idx = (tail.state).insn-count
+    in let st21 = rv-patch-insn (tail.state) jsucc-idx (rv-j ((end-idx - jsucc-idx) * 4))
+    in let st22 = if tail.has-jmp then rv-patch-insn st21 (tail.jmp-idx) (rv-j ((end-idx - tail.jmp-idx) * 4)) else st21
+    in RvEmitResult { state = st22, reg = rv-a0 }
 
 Section: Apply
 
@@ -1002,9 +1085,7 @@ Section: Apply
       rv-emit-two-arg-binop st (list-at args 0) (list-at args 1) rv-rem
     else if name == "int-mod" & list-length args == 2 then
       rv-emit-int-mod st (list-at args 0) (list-at args 1)
-    else if name == "fail" & list-length args == 1
-     then let st1 = rv-emit-call-to st "__try_fail"
-     in RvEmitResult { state = st1, reg = rv-a0 }
+    else if name == "fail" & list-length args == 1 then rv-emit-fail st (list-at args 0)
     else if name == "force" & list-length args == 1 then rv-emit-force st (list-at args 0)
     else if name == "freeze" & list-length args == 1 then rv-emit-expr st (list-at args 0)
     else if name == "bit-not" & list-length args == 1 then rv-emit-bit-not st (list-at args 0)

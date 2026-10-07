@@ -97,8 +97,8 @@ input 114, after all three mints; the suffix has 35 inputs.
 
 The proof checks complete equality with direct execution, source isolation,
 late sequence failure, outcome mismatch, rehashed shape/Boolean corruption,
-old-format refusal and a 4096-hour batch. Under seed `4228CD5103DC4523` on
-2026-10-04, both 2- and 4096-input replay retained 7191663 bytes, below 8 MiB.
+old-format refusal and a 4096-hour batch. 2- and 4096-input replay retain
+the same heap, below 8 MiB.
 Replay does one checkpoint clone, then operation-specific work plus final
 validation; retained allocation does not grow per input. It is not the live
 per-action path. The checkpoint validator's full cost is in

@@ -33,15 +33,16 @@ Chapter: CompositePlanting
   cpl-tree : Integer -> Boolean
   cpl-tree (resource) = resource == 15 | resource == 16
  TILEDATA crop art: sprouts 0x0C68 while young; cotton 0x0C4F, flax 0x1A99, wheat 0x0C55, cabbage 0x0C7B for
- vegetables, ginseng 0x18E9, garlic 0x18E1, mandrake 0x18DF and nightshade 0x18E5 when mature. The 1.25 client does
- not pick an item whose art weighs 255 under a target cursor (Damian 2026-10-06: wheat, cotton and sprouts did not
- highlight, flax at 0, cabbage and mandrake at 1 did), so a weight-255 crop is drawn with the 0x1A movable flag 0x20.
+ vegetables, ginseng 0x18E9, garlic 0x18E1, mandrake 0x18DF, nightshade 0x18E5 and grapevines 0x0D1D (resource 27)
+ when mature. The 1.25 client does not pick an item whose art weighs 255 under a target cursor (Damian 2026-10-06:
+ wheat, cotton and sprouts did not highlight, flax at 0, cabbage and mandrake at 1 did), so a weight-255 crop is
+ drawn with the 0x1A movable flag 0x20.
   cpl-crop-art : Integer -> Integer
   cpl-crop-art (resource) = if resource == 10 then #0C4F else if resource == 11 then #1A99 else if resource == 13 then #0C55
     else if resource == 14 then #0C7B else if resource == 17 then #18E9 else if resource == 18 then #18E1
-    else if resource == 19 then #18DF else if resource == 20 then #18E5 else #0C68
+    else if resource == 19 then #18DF else if resource == 20 then #18E5 else if resource == 27 then #0D1D else #0C68
   cpl-heavy-art : Integer -> Boolean
-  cpl-heavy-art (art) = art == #0C4F | art == #0C55 | art == #0C68
+  cpl-heavy-art (art) = art == #0C4F | art == #0C55 | art == #0C68 | art == #0D1D
   cpl-viewers : Integer, List CplViewer -> List CplViewer
   cpl-viewers (left) (xs) = if left == 0 then xs
     else let sent = alloc-bytes 256
@@ -85,10 +86,17 @@ Chapter: CompositePlanting
     in let cursor = sip-target target
     in let ground = list-set-at cursor 1 1
     in Ok (Just (gs-reply [cursor, sip-message #FFFFFFFF #FFFF 6 (if cpl-tree resource then "Where do you plant the sapling?" else "Where do you sow it?")] "planting target"))
+ A bed is reaped, tended, watered or dug from within 2 tiles, the harvest reach (GameHarvest), refused as UOX3 393.
+  cpl-far : GameHarvest, GameInput, Integer -> Boolean
+  cpl-far (h) (input) (k) = let site = list-at h.sites k
+    in when world-get h.items.world input.session.serial
+      is Err (_) -> True
+      is Ok (mobile) -> walk-abs (site.x - mobile.x) > 2 | walk-abs (site.y - mobile.y) > 2
   cpl-care : GameHarvest, GameInput, Integer -> Result (Maybe GameReply) Text
   cpl-care (h) (input) (k) = let v = h.vendor
     in let player = gv-player v input.session.serial 0
     in if k < 0 | k >= h.count | not (cpl-planted h k) then Ok None
+    else if cpl-far h input k then cpl-denied "That is too far away."
     else if player >= 0 & (cpl-node h k).owner /= (list-at v.players player).actor & eh-common v.currency.world (cpl-node h k) then
       (if (cpl-node h k).stage == 2 & (list-at h.sites k).resource /= 15 then cpl-reap h (list-at v.players player) k
       else if (cpl-node h k).stage >= 2 then cpl-denied "That needs no more care."
@@ -222,6 +230,7 @@ Chapter: CompositePlanting
     in let k = (bit-and (gp-u32 packet 7) #7FFFFFFF - cpl-serial-base - 1) / 2
     in if r < 0 | player < 0 | k >= h.count then Ok None
     else if (list-at h.requests r).serial /= input.session.serial | not (cpl-planted h k) then Ok None
+    else if cpl-far h input k then cpl-denied "That is too far away."
     else let lot = gh-tool h (list-at v.players player) (list-at h.requests r).tool
     in let item = if lot < 0 then 0 else (list-at v.lots lot).item
     in let resource = (list-at h.sites k).resource
@@ -304,7 +313,7 @@ Chapter: CompositePlanting
  its south, MAP0.MUL land at z 0 with no static (1222..1228 are furrows). Each furnishing is TILEDATA art, x, y on a
  free floor tile at z 0; the fireplace stands under the house's chimney static at 1227,1568.
   cpl-farm-beds : List (List Integer) = [[10, 1222, 1587], [11, 1224, 1587], [13, 1226, 1587], [14, 1228, 1587],
-    [17, 1230, 1587], [18, 1232, 1587], [19, 1234, 1587], [20, 1236, 1587], [15, 1224, 1590], [16, 1230, 1590]]
+    [17, 1230, 1587], [18, 1232, 1587], [19, 1234, 1587], [20, 1236, 1587], [27, 1238, 1587], [15, 1224, 1590], [16, 1230, 1590]]
   cpl-farm-furniture : List (List Integer) = [[#0935, 1227, 1569], [#09ED, 1228, 1569], [#0E7F, 1230, 1568],
     [#0E77, 1231, 1568], [#1039, 1227, 1572], [#0B2F, 1225, 1576], [#0B31, 1229, 1576], [#0A55, 1225, 1582],
     [#0A55, 1227, 1582], [#0E3D, 1230, 1582], [#1015, 1233, 1568], [#1039, 1238, 1568], [#0E77, 1238, 1569],

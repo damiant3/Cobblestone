@@ -180,6 +180,68 @@ Chapter: GameWorldSpawnReplay
     released <- __record-set slot "follow" 0
     check "an enticed creature walks to its leader and stops beside it; a player is no spawn to lure" (moved & before > 5 & not player & lured & held)
   end
+ UOAIX-81 summons, stage 1: a summoned creature takes a free slot with no region and the summoner as owner, counts
+ against no population, is dismissed at its tick, dies with no corpse, and keeps its summoning across a restart; a
+ version 2 frame still loads.
+  corpses-at : WorldTable, Integer, Integer -> Integer
+  corpses-at (world) (serial) (n) = if serial == 0 then n
+    else corpses-at world (world-tile-next world serial) (when world-get world serial is Err (_) -> n is Ok (o) -> if o.kind == 2 & o.graphic == 8198 then n + 1 else n)
+  summons : GameShard, GameInput, WalkMap, GameCombat -> [Console] Nothing
+  summons (shard) (input) (map) (combat) = when gws-new (gws-with-summons (catalog 0)) combat 3
+    is Err (e) -> print-line-uni ("FAIL summon state " & e)
+    is Ok (g) -> when world-get shard.world input.session.serial
+      is Err (e) -> print-line-uni ("FAIL summoner " & e)
+      is Ok (viewer) -> act
+        spirit <- gws-profile-key g "bladespirit" 0
+        bear <- gws-profile-key g "blackbear" 0
+        vortex <- gws-profile-key g "energyvortex" 0
+        drawn <- list-at g.catalog.profiles (max 0 vortex)
+        check "summon-only profiles follow the generated catalog, the vortex drawn as body 13 at hue 20 (Body.def)" (spirit == 2 & vortex == 3 & bear == 4 & drawn.body == 13 & drawn.hue == 20 & g.catalog.revision == 1234)
+        before <- world-count shard.world
+        until <- combat.tick + gm-ticks 5000
+        summoned <- gws-summon g shard bear 1425 1700 0 viewer.serial until
+        serial <- when summoned is Err (_) -> 0 is Ok (s) -> s
+        slot <- list-at g.slots (max 0 (gws-slot-of g serial 0))
+        check "a summoned bear takes a slot with no region, follows its summoner and counts against no population" (serial > 0 & world-count shard.world == before + 1
+          & slot.region == -1 & slot.owner == viewer.serial & slot.summoned == until & gws-summoned g serial & peek-qword g.populations 0 == 0 & peek-qword g.populations 8 == 0)
+        early <- __record-set combat "tick" (until - 1)
+        kept <- gws-visit g shard map viewer (gws-slot-of g serial 0) True []
+        held <- is-ok (world-get shard.world serial)
+        late <- __record-set combat "tick" until
+        dismissed <- gws-visit g shard map viewer (gws-slot-of g serial 0) True []
+        check "the summoning holds one tick before its end, then the creature is dismissed and its slot freed" (is-ok kept & held & is-ok dismissed & is-err (world-get shard.world serial) & slot.serial == 0 & slot.summoned == 0 & world-count shard.world == before)
+        blade <- gws-summon g shard spirit 1425 1700 0 0 (combat.tick + gm-ticks 5000)
+        doomed <- when blade is Err (_) -> 0 is Ok (s) -> s
+        vanish <- __record-set combat "vanish-hook" (gws-summoned g)
+        killed <- when world-get shard.world doomed
+          is Err (e) -> Err e
+          is Ok (m) -> cb-die combat shard input viewer.serial (list-at combat.actors (world-slot shard.world doomed)) m
+        quiet <- __record-set combat "vanish-hook" cb-vanish-none
+        check "a summoned blade spirit that dies leaves no corpse" (doomed > 0 & is-ok killed & is-err (world-get shard.world doomed) & corpses-at shard.world (world-tile-first shard.world 1425 1700) 0 == 0 & world-count shard.world == before)
+        swept <- gws-visit g shard map viewer (max 0 (gws-slot-of g doomed 0)) True []
+        t0 <- combat.tick
+        lasting <- gws-summon g shard bear 1425 1700 0 viewer.serial (t0 + gm-ticks 5000)
+        keeper <- when lasting is Err (_) -> 0 is Ok (s) -> s
+        bytes <- gwsc-size g
+        buf <- alloc-bytes bytes
+        encoded <- gwsc-encode g shard.world t0 buf bytes
+        when gws-new g.catalog combat 3
+          is Err (e) -> print-line-uni ("FAIL summon restore " & e)
+          is Ok (restored) -> act
+            decoded <- gwsc-decode restored shard.world (t0 + 100) buf bytes
+            back <- list-at restored.slots (max 0 (gws-slot-of restored keeper 0))
+            check "a restart keeps the summoned bear's owner and the rest of its summoning (UWS1 version 3)" (keeper > 0 & is-ok encoded & peek-qword buf 8 == 3 & is-ok decoded
+              & back.serial == keeper & back.owner == viewer.serial & back.region == -1 & back.summoned == t0 + 100 + gm-ticks 5000)
+            truncated <- gwsc-decode restored shard.world combat.tick buf (bytes - 8)
+            gone <- gws-dismiss g shard keeper
+            cleared <- gws-visit g shard map viewer (max 0 (gws-slot-of g keeper 0)) True []
+            plain <- alloc-bytes bytes
+            written <- gwsc-encode g shard.world combat.tick plain bytes
+            old <- poke-qword plain 8 2
+            two <- gwsc-decode restored shard.world combat.tick plain (gwsc-v2-size g)
+            check "a version 3 frame cut short refuses, and a version 2 frame (no summoning tail) still loads" (is-err truncated & is-ok gone & is-ok written & is-ok two)
+          end
+      end
   run : GameShard, WalkMap -> [Console] Nothing
   run (shard) (map) = act
     combat <- cb-new shard 104729
@@ -249,6 +311,7 @@ Chapter: GameWorldSpawnReplay
             shorn g shard input map
             herded g shard input map
             indexed g shard input map
+            summons shard input map combat
           end
       end
   end

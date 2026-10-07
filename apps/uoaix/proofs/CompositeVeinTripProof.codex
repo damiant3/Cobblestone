@@ -117,16 +117,18 @@ Chapter: CompositeVeinTripProof
     else let e = list-at x.events i in ctf-faults x (i + 1) (if e.kind == 12 & e.party > 0 then n + 1 else n)
   ctf-exchanges : EuCurrency, Integer, Integer -> Integer
   ctf-exchanges (x) (i) (n) = if i >= x.count then n else ctf-exchanges x (i + 1) (if (list-at x.events i).kind == 12 then n + 1 else n)
-  ctf-vein-yield : CompositeOwner, CgGatherer, WalkMap, Integer, Integer -> [Console, Device.Block] Integer
-  ctf-vein-yield (store) (c) (map) (k) (left) = if k < 1 | left == 0 then act 0 - 1 end
+ A restored miner keeps its trip count, so the trips are counted past the miner's own count and the coin past its own
+ struck total; a trip already behind the miner runs no round and proves nothing (UOAIX-91, boot 4 at trips=49).
+  ctf-vein-yield : CompositeOwner, CgGatherer, WalkMap, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ctf-vein-yield (store) (c) (map) (k) (left) (struck) = if k < 1 | left == 0 then act 0 - 1 end
     else act
       rounds <- ctf-until-trips store c map k 80
       w <- store.state.vendor.currency.world
       held <- cgg-held c (list-at w.catalog.resources (ctf-vein k - 1)).item
       print-line-uni ("VEIN trip=" & show k & " resource=" & show (ctf-vein k) & " trips=" & show c.trips & " held=" & show held & " mining=" & show (ep-at (ep-actor w c.gatherer.producer.actor).skills 1) & " rounds-left=" & show rounds)
       if rounds < 0 then 0 - 1
-      else if held > 0 | c.crowned > 0 then k
-      else ctf-vein-yield store c map (ctf-first-vein (k + 1) 320) (left - 1)
+      else if held > 0 | c.crowned > struck then k
+      else ctf-vein-yield store c map (ctf-first-vein (k + 1) (k + 320)) (left - 1) struck
     end
   ctf-warm : CompositeOwner, CgGatherer, WalkMap -> [Console, Device.Block] Integer
   ctf-warm (store) (c) (map) = if c.trips > 0 then act 0 end
@@ -139,15 +141,23 @@ Chapter: CompositeVeinTripProof
   ctf-swords (w) (buyer) (seller) (since) (i) (n) = if i >= w.trade-count then n
     else let t = list-at w.trades i
     in ctf-swords w buyer seller since (i + 1) (if t.buyer == buyer & t.seller == seller & t.item == 70 & t.hour >= since then n + t.quantity else n)
+  ctf-purses : EmMoney, Integer -> Text
+  ctf-purses (m) (i) = if i > m.purse-count then ""
+    else let p = em-purse m i
+    in (if p.coin == 0 then "" else " " & show i & ":" & show p.kind & "/" & show p.owner & "=" & show p.coin) & ctf-purses m (i + 1)
+  ctf-census : Text, EmMoney -> Text
+  ctf-census (tag) (m) = "SILVER " & tag & " issued=" & show m.issued & ctf-purses m 1
   ctf-run : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   ctf-run (store) (map) = let owner = store.state in if list-length owner.miners == 0 then ctf-check "the Britain world founds its miners" False
     else let c = list-at owner.miners 0
       in let x = owner.vendor.currency
       in act
         hour0 <- x.world.hour
+        print-line-uni (ctf-census "start" x.silver)
         w <- ctf-warm store c map
-        k <- ctf-vein-yield store c map (ctf-first-vein 2 320) 6
-        a <- ctf-check "with no client, within six trips to copper or silver veins a miner carries vein ore home or has it struck into coin" (k > 0 & c.trips >= k)
+        trips-before <- c.trips
+        k <- ctf-vein-yield store c map (ctf-first-vein (max 2 (trips-before + 1)) (trips-before + 320)) 6 c.crowned
+        a <- ctf-check "with no client, within six trips to copper or silver veins a miner carries vein ore home or has it struck into coin" (k > trips-before & c.trips >= k)
         exchanges-before <- ctf-exchanges x 0 0
         faults-before <- ctf-faults x 0 0
         sold-before <- c.sold
@@ -159,6 +169,7 @@ Chapter: CompositeVeinTripProof
         print-line-uni ("FLOAT trips=" & show c.trips & " sales " & show sold-before & "->" & show c.sold & " struck " & show crowned-before & "->" & show c.crowned & " refusals " & show (c.refusals - refused-before) & " faults before=" & show faults-before & " during=" & show (faults-after - faults-before)
           & " exchanges=" & show (exchanges-after - exchanges-before) & " struck-total=" & show c.crowned & " treasury copper=" & show (em-purse x.copper 1).coin & " silver=" & show (em-purse x.silver 1).coin & " rounds-left=" & show rest)
         crown-purse <- (ep-actor x.world x.world.mint-owner).purse
+        print-line-uni (ctf-census "float" x.silver)
         f0 <- ctf-faults x 0 0
         e0 <- ctf-exchanges x 0 0
         swapped <- eu-exchange x crown-purse 3 3 2
@@ -181,6 +192,7 @@ Chapter: CompositeVeinTripProof
         fuel-left <- ctf-fuel-trip store c map (max 400000000 (store.state.timers.limit + 1000)) 25 0 0
         print-line-uni ("FUEL found=" & show found & " trips " & show trips0 & "->" & show c.trips & " branches=" & show (cgg-held c 2) & " copper ore=" & show (cgg-held c 63) & " struck " & show struck0 & "->" & show c.crowned & " segments-left=" & show fuel-left)
         fueled <- ctf-check "a miner with 4 copper ore, no iron ore and no fallen branches gathers its fuel at its vein and has both ingots struck when it comes home (UOAIX-80)" (found >= 0 & grown & fuel-left > 0 & cgg-held c 63 < 2 & c.crowned >= struck0 + 2)
+        print-line-uni (ctf-census "end" x.silver)
         w + a + s + b + fueled + bought
       end
   opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64

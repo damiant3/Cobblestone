@@ -421,7 +421,7 @@ sidecar deleted, and only the second answers the question the battery asks.
 | `foo.skip` | Skipped entirely (first line = reason) |
 | `foo.slow` | Skipped unless `-Slow` (first line = reason) |
 | `foo.fatal` | Skipped unless `-Fatal` (kills VM at runtime) |
-| `foo.wall` | Run budget in whole seconds above the 60 s run-list default (61..600, first line). `bvt.ps1` runs such subjects one at a time in an extra slot with that budget; `test.ps1` does not read it yet (COMPILER-123) |
+| `foo.wall` | Run budget in whole seconds above the 60 s run-list default (61..600, first line). `bvt.ps1` and `test.ps1` (not under `CODEX_VM_HOST=qemu`) run such subjects one at a time in an extra slot with that budget |
 | `foo.flags` | First line appended to the compile mode line: `prose`, `passes=+name`, `decks=N`. Read by the batch harness only. See `docs/ExaminersAssay.md` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot) passed as `-keys-file`. This is the **keyboard**; `.stdin` is the **serial ring**. A keyboard read (`uefi-read-key` / `poll-key`) reads the PS/2 key cell and no `.stdin` reaches it -- pick by what the code reads. See `docs/ExaminersAssay.md` |

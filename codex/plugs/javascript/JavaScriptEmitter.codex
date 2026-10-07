@@ -517,7 +517,10 @@ Section: Expression Emission
     let body-text = js-emit-act body ctx
     in let fb-text = js-emit-act fb ctx
     in let fail-text = js-emit-act fail-stmts ctx
-    in "(() => { let _try_ok = false; let _try_result; for (let _try_i = 0; _try_i < " & integer-to-text max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (_e) {} } if (_try_ok) return _try_result; try { return " & fb-text & "; } catch (_e) { return " & fail-text & "; } })()"
+    in let tail = if list-length fb == 0 then "throw _try_err;"
+      else if list-length fail-stmts == 0 then "return " & fb-text & ";"
+      else "try { return " & fb-text & "; } catch (_e) { return " & fail-text & "; }"
+    in "(() => { let _try_ok = false; let _try_result; let _try_err; for (let _try_i = 0; _try_i < " & integer-to-text max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (_e) { _try_err = _e; } } if (_try_ok) return _try_result; " & tail & " })()"
 
   js-emit-act : List IRActStmt , JsCtx -> Text
   js-emit-act (stmts) (ctx) =
@@ -582,6 +585,7 @@ Section: Expression Emission
     else if n == "negate" then "(-" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "print-line-uni" then "console.log(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "print-error-uni" then "console.error(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "fail" then "(() => { throw new Error(" & js-emit-expr (list-at args 0) ctx & "); })()"
     else if n == "text-length" then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".length)"
     else if n == "char-to-text" then
       "String.fromCharCode(Number(" & js-emit-expr (list-at args 0) ctx & "))"

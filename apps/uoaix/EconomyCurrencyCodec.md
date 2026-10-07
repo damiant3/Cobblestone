@@ -118,9 +118,8 @@ per-loan history scans, trade-party checks and ledger lookups, and per-item
 sales/turnover audits. All retain their existing fixed bounds. Reconstruction
 uses one set of fresh financial tables, not a per-event whole-state clone.
 
-Under seed `6BABF6B5DF531F9D` on 2026-10-06, small and maximum-history decode
-both retained 3981239 bytes, excluding caller buffers, below the proof's
-5 MiB bound. Per-event and reconstruction allocations do not accumulate.
+Small and maximum-history decode retain the same heap, excluding caller
+buffers, below the proof's 5 MiB bound. Per-event and reconstruction allocations do not accumulate.
 `proofs/EconomyCurrencyCodecProof.codex` covers all three mined mint sources,
 mixed payment/tax, repricing, default and partial repayment, canonical
 roundtrip, detached candidates, rehashed corruption, reserved slots and the

@@ -31,7 +31,9 @@ Chapter: GameCombat
     wheel : Maybe WorldTimers, regen-work : Integer, sound-hook : (Integer, Integer -> Integer), arm-hook : (Integer -> Integer),
     swing-hook : (Integer, Integer, Boolean -> Integer), ammo-hook : (Integer, Integer -> Result (List (List Integer)) Text),
     drop-hook : (Integer, Integer -> Integer), shield-hook : (Integer -> Integer), slain : Integer,
-    venom-hook : (Integer, Integer, Integer -> Boolean) }
+    venom-hook : (Integer, Integer, Integer -> Boolean), vanish-hook : (Integer -> Boolean) }
+  cb-vanish-none : Integer -> Boolean
+  cb-vanish-none (serial) = False
   cb-no-venom : Integer, Integer, Integer -> Boolean
   cb-no-venom (target) (level) (poisoner) = False
   cb-drop-none : Integer, Integer -> Integer
@@ -164,7 +166,7 @@ Chapter: GameCombat
       admit-hook = cb-admit-all, struck-hook = cb-struck-none, notice-hook = cb-notice-none, death-hook = cb-death-none,
       events = alloc-bytes (cb-event-rows * cb-event-bytes), event-count = 0, event-lost = 0, weapon-hook = cb-unarmed,
       wheel = None, regen-work = 0, sound-hook = cb-silent, arm-hook = cb-unarmed, swing-hook = cb-swing-none, ammo-hook = cb-no-ammo, drop-hook = cb-drop-none,
-      shield-hook = cb-unarmed, slain = cb-zeroed (capacity * 16), venom-hook = cb-no-venom }
+      shield-hook = cb-unarmed, slain = cb-zeroed (capacity * 16), venom-hook = cb-no-venom, vanish-hook = cb-vanish-none }
   cb-zeroed : Integer -> Integer
   cb-zeroed (bytes) = let buf = alloc-bytes bytes in let cleared = cb-zero buf 0 bytes in buf
   cb-zero : Integer, Integer, Integer -> Integer
@@ -429,9 +431,17 @@ Chapter: GameCombat
           is Err (message) -> Err message
           is Ok (_) -> cb-transfer-child shard corpse row next (placed + 1)
  UOX3 forensics.js: a corpse keeps its killer (morex) and death time (tempTimer); slain holds both by the corpse's world slot.
+ ServUO BaseCreature.OnBeforeDeath: a summoned creature (vanish-hook) leaves no corpse and is simply removed.
+  cb-vanish : GameCombat, GameShard, GameInput, CombatActor, WorldObject -> Result (List (List Integer)) Text
+  cb-vanish (c) (shard) (input) (a) (mobile) = let ended = cb-stop c a
+    in let cleared = cb-clear-target c a.serial 0
+    in when world-delete shard.world mobile.serial
+      is Err (message) -> Err message
+      is Ok (_) -> let told = cb-notice c mobile input.session.serial 0 0 [cbp-remove mobile.serial] 0
+        in Ok [cbp-remove mobile.serial, cbp-target 0]
   cb-die : GameCombat, GameShard, GameInput, Integer, CombatActor, WorldObject -> Result (List (List Integer)) Text
-  cb-die (c) (shard) (input) (killer) (a) (mobile) =
-    let corpse = WorldObject { serial = 0, kind = 2, x = mobile.x, y = mobile.y, z = mobile.z,
+  cb-die (c) (shard) (input) (killer) (a) (mobile) = if a.npc & c.vanish-hook mobile.serial then cb-vanish c shard input a mobile
+    else let corpse = WorldObject { serial = 0, kind = 2, x = mobile.x, y = mobile.y, z = mobile.z,
       graphic = 8198, hue = mobile.hue, container = 0, amount = mobile.graphic, health = 0 }
     in when world-create shard.world corpse
       is Err (message) -> Err message

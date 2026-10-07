@@ -286,8 +286,9 @@ Chapter: EconomyCurrency
  shortfall into being (Damian, 2026-10-05); the event's party cell records it.
   eu-exchange : EuCurrency, Integer, Integer, Integer, Integer -> Integer
   eu-exchange (x) (purse) (from) (amount) (to) =
-    if not (eu-room x) | not (eu-metal from) | not (eu-metal to) | to >= from | amount <= 0 | amount > em-limit
+    if not (eu-room x) | not (eu-metal from) | not (eu-metal to) | to == from | amount <= 0 | amount > em-limit
       | purse <= 1 | not (em-valid-purse x.world.money purse) then -1
+    else if to > from then eu-exchange-up x purse from amount to
     else let out = amount * eu-unit x from / eu-unit x to
     in let source = eu-money x from
     in let target = eu-money x to
@@ -299,6 +300,18 @@ Chapter: EconomyCurrency
     in let b = if shortfall > 0 then em-decree target shortfall else 0
     in let c = em-payout target purse out
     in eu-log x 12 purse shortfall from (if to == 1 then out else 0) (if to == 2 then out else 0) (if to == 3 then out else 0) amount
+ Trading smaller coin up returns it to the treasury, which pays the larger coin from its reserve and never decrees it
+ (root, 2026-10-07, UOAIX-92); only a whole amount of the larger coin is paid.
+  eu-exchange-up : EuCurrency, Integer, Integer, Integer, Integer -> Integer
+  eu-exchange-up (x) (purse) (from) (amount) (to) = let value = amount * eu-unit x from
+    in let out = value / eu-unit x to
+    in let source = eu-money x from
+    in let target = eu-money x to
+    in if out <= 0 | out * eu-unit x to /= value | not (em-can-move source purse 1 amount) | not (em-room source 1) | not (em-room target 1)
+      | (em-purse target 1).coin < out | (em-purse target purse).coin > em-limit - out then -1
+    else let a = em-reclaim source purse amount
+    in let c = em-payout target purse out
+    in eu-log x 12 purse 0 from (if to == 1 then out else 0) (if to == 2 then out else 0) (if to == 3 then out else 0) amount
   eu-sale : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   eu-sale (x) (verified-payer) (payer) (payee) (price) (copper) (silver) (gold) =
     if not verified-payer | not (eu-room x) | not (eu-amounts copper silver gold)

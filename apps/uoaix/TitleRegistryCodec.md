@@ -64,9 +64,8 @@ in scratch and reclaims it after checking the result.
 
 Wire copy/hash work is linear in the fixed payload. Reconstruction costs
 O(history * titles), with maxima 4096 and 128. It does not copy the registry
-for each row or retain decoded command objects. Under seed `4228CD5103DC4523`
-on 2026-10-04, both the 17-row and 4096-row cases retained 543080 bytes when
-decoded, excluding caller-owned buffers. The proof caps decode below 1 MiB.
+for each row or retain decoded command objects; decode retention does not grow
+with the history count, and the proof caps it below 1 MiB.
 
 `proofs/TitleRegistryProof.codex` checks canonical encode/decode equality,
 detached ownership, prepared-state refusal, exact outer metadata, truncation,

@@ -14,7 +14,7 @@ indexes, a write-ahead log with checkpoints and recovery, transactions
 with two-phase locking and MVCC, a spatial index, a time-series store, an
 audit log and change streams, all in Codex on bare metal.
 
-**It has no storage backend** (measured 2026-10-04): `Wal.codex`,
+**It has no storage backend**: `Wal.codex`,
 `BufferPool.codex` and `Page.codex` contain no disk, block or flush path,
 so pages and log records live only in memory. The shard's first database
 work is a page store and WAL backend over the shard's disk

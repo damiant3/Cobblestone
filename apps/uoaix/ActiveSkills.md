@@ -215,6 +215,33 @@ Hiding and tracking reach other viewers only through their own connections.
 A detected or revealed player whose client is elsewhere sees the change on
 that client's next view pass.
 
+## Ghosts and hidden characters
+
+Damian, 2026-10-07: "ghosts should be invisible to other players unless they
+speak, or some other player uses spirit speak and wins a skill test contest
+with the dead's spirit speak skill. in this case the tie goes to the searcher,
+and half the searcher's skill in comparison to the dead's is good enough for a
+50-50 shot." Reading, open to his correction: the searcher wins with chance
+searcher skill / ghost skill, capped at 1, a draw seeded by both serials and
+the searcher's window end. Ruled (root, 2026-10-07): a won contest or the
+ghost's own speech keeps it drawn for one Spirit Speak window (30 s plus one
+second per whole Spirit Speak point and per Intelligence point): the
+searcher's window after a won contest, the ghost's after it speaks. A living
+listener outside a window hears the dead as 4 to 32 o and O of random length,
+case and word breaks (`CompositeEvents.codex`). ServUO also shows a ghost in
+war mode, and to a viewer at Spirit Speak 100.0 with no contest
+(`ServUO/Server/Mobile.cs:9230-9232`); not built, `docs/PM/Active/DamianDecisions.md` 6.5.
+
+A hidden character (Hiding's `concealed` byte) and an unrevealed ghost reach
+no client in any packet (Damian, 2026-10-07: "that state must be properly
+server side entirely"): the event ring is quiet to other listeners
+(`ce-pending`'s per-listener predicate, `cs-heard`), the view neither draws
+nor keeps them (`as-ghost-unseen` as `GameClientView.unseen-hook`), any packet
+naming their serial is dropped (`gcv-masked`, `gcv-named-offsets`), and a 0x54
+sound at their tile is dropped (`gcv-sound-hidden` for the concealed,
+`gcv-sound-unseen` over the tile index for a ghost). `proofs/ActiveSkillsReplay`
+grades each with a revealed control.
+
 ## Open
 
 - Blu has no active-gain seam in Magery: `mgr-cast-skill` checks success only.

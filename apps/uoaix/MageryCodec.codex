@@ -43,7 +43,8 @@ Chapter: MageryCodec
     in let z = poke-qword buffer 272 (if actor.incognito == 0 then 0 else actor.inc-hair-hue)
     in let aa = poke-qword buffer 280 (if actor.incognito == 0 then 0 else actor.inc-beard)
     in let ab = poke-qword buffer 288 (if actor.incognito == 0 then 0 else actor.inc-beard-hue)
-    in let ac = poke-qword buffer 296 0
+    in let ac = poke-qword buffer 296 (if actor.poly == 0 then 0
+      else bit-or (max 1 (mgc-left actor.poly now)) (bit-or (bit-shl actor.poly-body 32) (bit-shl (bit-and actor.poly-hue #7FFF) 48)))
     in mgc-mod-write actor buffer now 0
   mgc-item-write : Magery, MgItem, Integer, Integer -> Integer
   mgc-item-write (magic) (item) (slot) (buffer) = if item.serial == 0 | world-slot magic.items.world item.serial /= slot then mgs-zero buffer 0 8
@@ -100,8 +101,12 @@ Chapter: MageryCodec
       & mgc-range buffer 80 0 75 & mgc-time buffer 88 & mgc-range buffer 96 -1 3
       & mgc-time buffer 104 & mgc-range buffer 112 0 10 & mgc-range buffer 120 0 26
       & mgc-range buffer 128 0 world-serial-mask & mgc-time buffer 136 & mgc-mod-valid buffer 0
-      & mgc-time buffer 240 & (if peek-qword buffer 240 == 0 then mgc-zero (buffer + 248) 0 7 else mgc-incognito-valid buffer)
-      & peek-qword buffer 296 == 0
+      & mgc-time buffer 240 & (if peek-qword buffer 240 == 0 then mgc-zero (buffer + 248) 0 6 else mgc-incognito-valid buffer)
+      & mgc-poly-valid (peek-qword buffer 296)
+ Byte 296 holds an active Polymorph: time left in bits 0-31, the original body in bits 32-47, its hue in bits 48-62.
+  mgc-poly-valid : Integer -> Boolean
+  mgc-poly-valid (packed) = packed == 0 | (packed > 0 & bit-and packed #FFFFFFFF > 0 & bit-and packed #FFFFFFFF <= mgd-ticks 86400000
+    & bit-and (bit-shru packed 32) #FFFF > 0)
   mgc-incognito-valid : Integer -> Boolean
   mgc-incognito-valid (buffer) = let name = peek-qword buffer 248
     in ((name >= 1 & name <= list-length nn-male) | (name >= 1000 & name < 1000 + list-length nn-female))
@@ -127,11 +132,13 @@ Chapter: MageryCodec
   mgc-wall-unique : Integer, Integer, Integer -> Boolean
   mgc-wall-unique (buffer) (serial) (left) = if left == 0 then True
     else if peek-qword buffer ((left - 1) * 16) == serial then False else mgc-wall-unique buffer serial (left - 1)
+  mgc-wall-art : Integer -> Boolean
+  mgc-wall-art (graphic) = graphic == #0082 | graphic == #3946 | graphic == #3956 | mga-field-kind graphic /= 0
   mgc-walls-valid : Magery, Integer, Integer -> Boolean
   mgc-walls-valid (magic) (buffer) (i) = if i == 32 then True else let serial = peek-qword buffer (i * 16)
     in let slot = world-slot magic.items.world serial
     in let valid = if serial == 0 then peek-qword buffer (i * 16 + 8) == 0 else if slot < 0 then False
-      else peek-qword magic.items.world.buffer (24 + slot * 80) == 2 & peek-qword magic.items.world.buffer (56 + slot * 80) == #0082
+      else peek-qword magic.items.world.buffer (24 + slot * 80) == 2 & mgc-wall-art (peek-qword magic.items.world.buffer (56 + slot * 80))
         & peek-qword magic.items.world.buffer (72 + slot * 80) == 0 & mgc-time buffer (i * 16 + 8) & mgc-wall-unique buffer serial i
     in if not valid then False else mgc-walls-valid magic buffer (i + 1)
   mgc-mod-read : MgActor, Integer, Integer, Integer -> Integer
@@ -170,6 +177,10 @@ Chapter: MageryCodec
     in let z = __record-set actor "inc-hair-hue" (peek-qword buffer 272)
     in let aa = __record-set actor "inc-beard" (peek-qword buffer 280)
     in let ab = __record-set actor "inc-beard-hue" (peek-qword buffer 288)
+    in let form = peek-qword buffer 296
+    in let ac = __record-set actor "poly" (if form == 0 then 0 else mgc-until (bit-and form #FFFFFFFF) now)
+    in let ad = __record-set actor "poly-body" (bit-and (bit-shru form 32) #FFFF)
+    in let ae = __record-set actor "poly-hue" (bit-and (bit-shru form 48) #7FFF)
     in let synced = mge-sync magic actor
     in let active = if mgt-needed actor then mgs-track magic actor else 0 in 0
   mgc-item-read : MgItem, Integer -> Integer
@@ -195,7 +206,10 @@ Chapter: MageryCodec
   mgc-read-walls (magic) (buffer) (now) (i) = if i == 32 then 0 else let wall = list-at magic.walls i
     in let serial = peek-qword buffer (i * 16)
     in let a = __record-set wall "serial" serial
-    in let b = __record-set wall "until" (if serial == 0 then 0 else mgc-until (peek-qword buffer (i * 16 + 8)) now)
+    in let gate = serial /= 0 & peek-qword magic.items.world.buffer (56 + world-slot magic.items.world serial * 80) == #0F6C
+    in let b = __record-set wall "until" (if serial == 0 then 0 else if gate then now else mgc-until (peek-qword buffer (i * 16 + 8)) now)
+    in let c = __record-set wall "caster" 0
+    in let d = __record-set wall "next" 0
     in mgc-read-walls magic buffer now (i + 1)
   mgc-read : Magery, Integer, Integer, Integer -> Result Integer Text
   mgc-read (magic) (buffer) (length) (now) = if length /= mgc-size magic | now < 0 | now > 9223372036844775807 then Err "MGM2 input extent or clock"

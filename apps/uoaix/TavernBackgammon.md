@@ -113,13 +113,8 @@ of simultaneously admitted tables before enabling a live venue. Selection
 search uses the existing engine's at-most-four-dice search, whose recursive
 board copies are reclaimed; the adapter reclaims its enclosing operation
 scratch as well. Weaker selection checks at most four dice and 25 sources.
-Settlement is constant work in the currency coordinator. Compiler heap/time
-behavior is unchanged.
-On 2026-10-04, normal and poison proofs each measured 99,096 bytes for table
-construction including input/copied patrons, excluding the existing currency.
-The 55-turn, 180-event game reached bearing off with zero retained request-heap
-growth. The whole native proof boot, including fixtures and other scenarios,
-completed within one second in those runs; this is not a live tick budget.
+Settlement is constant work in the currency coordinator. A complete game
+retains no request-heap growth.
 
 `proofs/TavernBackgammonProof.codex` plays a complete scripted-human versus
 NPC game, compares accepted moves against the cited engine, validates each

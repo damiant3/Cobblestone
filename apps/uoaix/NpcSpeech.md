@@ -105,7 +105,7 @@ nsc-bytes -> Integer
 NSC1 stores up to 40 registered NPC rows, keyed by serial and kind (a composite shopkeeper is also registered as a banker), with greeting times and player-slot
 identities in fixed-size rows. Restore the world, economy, GSI, vendor,
 banker registry and TLC1 first; call `ns-bind`, then `nsc-decode`.
-Rows match by key, not position, because the composite re-registers bankers in a different order after a restore. Banker registration is a set; a world saved after an upgrade boot that bound the bank banker twice still restores, because the codec compares distinct stored keys with distinct bound keys and a duplicated key restores to its first row. The codec refuses a missing or extra key, changed
+Rows match by key, not position, because the composite re-registers bankers in a different order after a restore. Banker registration is a set: the codec compares distinct stored keys with distinct bound keys, and a duplicated key restores to its first row. The codec refuses a missing or extra key, changed
 serial bindings, bad checksums and future saved clocks. Connection/inside
 masks reset. A new character occupying a slot clears the old character's
 cooldowns. Names and roles come from the authoritative restored registries.
@@ -123,8 +123,8 @@ commit `dd28a0ad53258adb55b548b1bd4df989065a1fe4`,
 ServUO `Scripts/Mobiles/AI/VendorAI.cs::OnSpeech`'s pre-AOS branch; that
 numeric policy is used without copying the implementation. The existing
 ServUO license is retained in `ports/ServUO-LICENSE.txt`. These references
-support the chosen classic policy; the 1.25.32 client result is graded in
-fester's complete composite by root.
+support the chosen classic policy; the 1.25.32 client result is graded on
+the complete composite.
 
 `proofs/NpcSpeechReplay.codex` covers four/five-tile boundaries, upper-case
 and name-addressed requests, whisper/emote refusal, word boundaries,
@@ -138,7 +138,7 @@ A build that ignores the outlook fails exactly the outlook arm.
 network after live rounds and after TNL1 restore.
 The existing vendor replay covers cart settlement and out-of-range refusal.
 
-Retained state is twenty-four fixed NPC rows and five viewer records, with
+Retained state is forty fixed NPC rows and five viewer records, with
 five timestamps per row. No per-message data is retained. Matching costs
 O(R*N*M) comparisons for R registered NPCs, N speech characters and M name
 characters, all bounded by these tables and the C03 packet limit. Nearest
@@ -146,9 +146,8 @@ selection and greetings scan only the registered NPC rows using indexed
 serial lookup. NSC1 work is linear in the fixed row count. Menu construction
 and TownMind keep their existing cost bounds; no economy clone is added.
 
-The library is built once per `TownLive` and retains 7064 bytes for 89 rows
-(measured 2026-10-06, kernel `753E2F25A3AFF7BD`); a pick is two linear scans
-of the rows and retained 0 bytes over 1000 picks. Topic classification calls
+The library is built once per `TownLive`; a pick is two linear scans of the
+rows and retains nothing. Topic classification calls
 `ns-has` for at most 42 keywords, and each `ns-char` goes through `to-unicode`
 (about a kilobyte), so `ns-topic` runs under a heap mark and keeps only its
 Integer.

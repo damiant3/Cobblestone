@@ -82,14 +82,11 @@ same independent .NET cryptographic and queue oracle. Default runs still use
 codex-vm and NE2000. The QEMU child and serial connection are owned by the run
 and closed in cleanup.
 
-Measured 2026-10-04 with depot kernel `EF9466BEF7CB5FDA`: queue guards,
-modern and transitional PCI-ID assertions, legacy/absent controls and the
-encrypted admin conversation passed under QEMU TCG. Evidence is in
-`build-output/uoaix/virtio-net-head/`. The e1000 binding/no-address controls,
-poll calibration/clamping, receive reuse and NE2000 admin regression passed
-under the same compiler; receipts are in `virtio-net-head-regress/`.
+The proof covers queue guards, modern and transitional PCI-ID assertions,
+legacy and absent controls and the encrypted admin conversation under QEMU TCG,
+plus the e1000 binding and no-address controls, poll calibration and clamping,
+receive reuse and the NE2000 admin regression.
 The guard measured zero retained heap over 100000 empty polls and zero
 retained scratch growth for a nonempty receive and a completed send.
-The contract and harness received an independent reader pass. Serial capture
-failure cannot skip child cleanup, and transitional admission asserts the
+Serial capture failure cannot skip child cleanup, and transitional admission asserts the
 observed PCI ID rather than relying only on a QEMU default.

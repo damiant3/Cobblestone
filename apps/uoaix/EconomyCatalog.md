@@ -89,8 +89,7 @@ catalog alone grants no harvesting or crafting authority and moves no items.
 
 Limits are 128 items, 64 resources and 128 recipes. Native item records have
 2 fields (16 bytes), resources 7 (56 bytes), recipes 11 (88 bytes), and the
-catalog 3 (24 bytes), plus list and text storage. The standard fixture retained
-6072 bytes under kernel `EF9466BEF7CB5FDA` on 2026-10-04. Closure uses a
+catalog 3 (24 bytes), plus list and text storage. Closure uses a
 129-byte scratch flag array, reclaimed before returning even when an item is
 unreachable. Malformed tables are rejected before indexing the flag array.
 

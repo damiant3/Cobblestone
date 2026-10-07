@@ -3,8 +3,7 @@
 `CompositeGameServer.codex` composes mixed vendors, decoration, bank,
 skills/items, combat, monsters, death/ankh and client-view reconciliation
 through GameNet's authenticated hook. It listens on guest2593.
-Root owns the real client and launches the image on host2593 in turn. This
-entry does not open an admin port yet (UOAIX-27).
+Root owns the real client and launches the image on host 2593.
 
 ## World disks are disposable (Damian, 2026-10-05)
 
@@ -14,61 +13,21 @@ to us. start us fresh everytime if it helps"
 A format change does not need a migration, an upgrade path or a refusal of old
 disks. Prefer a fresh world disk whenever a migration would cost work.
 
-## Resting state and next grade
-
-Implementation landed at MAIN35648 from DEV35643. Fester wrapped on root's
-order; context telemetry was unavailable in the Codex harness. The lane
-workplan is empty and no owned VM/listener remains. Shelves35378 and35450
-hold only deferred prototypes/catalog entries and cold-load diagnostics;
-their current-head gates are NOT RUN. Inspect individual shelf paths before
-resuming them, never broadly overwrite this landed composite. There is no
-remaining unshelve step for the current server.
-
-The current candidate is
-`D:/Projects/Cobblestone-fester/build-output/uoaix/landing-final/server.cdx`,
-SHA256 `6F0627368CD33F261A28BE245E531912608FA178E1089BDC7C0334A4D7FBA751`.
-Use shipped `tools/codex-vm.exe`, SHA256
-`CF9841F8B2BC635D33EC6A1953F318CB2539253308C6DBC7CA6D572F881EC5FE`.
-Kernel: `4228CD5103DC4523`. The four-boot1GiB proof is green in
-`build-output/uoaix/landing-final/result.json`. Stock count/parent/gump
-coordinates and restart repair passed in `build-output/uoaix/stairs-stock`;
-the installed dock stair control/fix is in `build-output/uoaix/stairs`.
-The current-head installed-stair pass is in
-`build-output/uoaix/landing-final/stairs/result.json`.
-Full battery and poison were NOT RUN under the UOAIX efficiency ruling.
-This candidate still needs root's real-client grade: dock stairs, visible
-testing bag/bank contents, death/ankh, and persisted characters/items/positions.
-
-For an existing installed world, reuse the same disk and run:
-
-```powershell
-pwsh apps/uoaix/start-composite-game.ps1 -Artifact D:/Projects/Cobblestone-fester/build-output/uoaix/landing-final/server.cdx -StateFile <local-world.disk> -Testing
-```
+## Install and launch
 
 For a fresh installation, run `import-decoration.ps1 -ClientRoot <client>
 -ReferenceRoot D:/Projects/uo-reference -OutFile <local-britannia.dwd>`, then
 `install-map-cache.ps1 -ClientRoot <client> -WorldDisk <local-world.disk>
--DecorationFile <local-britannia.dwd>`, then the launcher. Never commit or
-publish the client, decoded cache, DWD or world disk. Do not replace DWD on
-an existing world until WDS1 identity/door-bit migration is implemented;
-the newer35626 door dataset is not installed in the current grade disk.
+-DecorationFile <local-britannia.dwd>` ([MapCache.md](MapCache.md)), then
+`start-composite-game.ps1 -Artifact <server.cdx> -StateFile <local-world.disk>`
+(add `-Testing` for a testing world). Reuse the same disk on every restart.
+Never commit or publish the client, decoded cache, DWD or world disk.
 
-Resume by reading root's inbox and grading this frozen artifact. Transport
-and GCV35629, decoration35613, the35574 own-death/corpse fix, gump-position
-repair and Source-X stair admission are included. The earlier live trace
-fix reduced the same40-move workload from1402ms maximum reply latency to79ms;
-this does not substitute for the new client grade. NPC speech is composed:
-`cgs-ready` binds it after the lineup (`cg-speech-bind`, logging `SPEECH on:
-N listeners`), `ns-handler` precedes every other C03 handler, and `ns-pulse`
-follows `tl-pulse`; NSC1 greeting cooldowns persist as UCC1 version 13 (held at decode, applied by `cg-speech-bind`). Civic
-and world-spawn adapters are not composed here. Multi-session integration follows single-player
-acceptance. No seed was changed for this landing, and no guest is left running.
-Reek's framing35638 is unverified and must not be integrated as part of this
-grade. Magery's future kit binding needs its trusted `mgs-book`/`mgs-rune`
-registration; the current physical spellbook/rune does not claim spell effects.
-
-Run the separate [map installation](MapCache.md) step first, then launch with
-`start-composite-game.ps1 -Artifact <server.cdx> -StateFile <composite-world.disk>`.
+NPC speech is composed: `cgs-ready` binds it after the lineup (`cg-speech-bind`,
+logging `SPEECH on: N listeners`), `ns-handler` precedes every other C03
+handler, and `ns-pulse` follows `tl-pulse`; NSC1 greeting cooldowns persist as
+UCC1 version 13 (held at decode, applied by `cg-speech-bind`). Civic adapters
+are not composed here.
 
 A live shard runs under `supervise-composite-game.ps1` with the same arguments plus a
 new `-OutDir` (UOAIX-48): each guest exit, a latch included, appends the exit code,
@@ -193,8 +152,7 @@ Versions 9 and later carry
 EUC1 version 4 (found counters), so a disk written before main 35832 is
 refused; version8 carries EUC1 version 2 and versions
 1-7 EUC1 version 1; header cell
-64 records which, and every later section offset follows that length. At
-16384 objects the version9 snapshot is 13441360 bytes with UGC1 version 2 (`cc-size`, 2026-10-05). The immutable DWD1 dataset is install data, not part
+64 records which, and every later section offset follows that length. The immutable DWD1 dataset is install data, not part
 of every journal record. A world written before UGC1 version 2 (accounts) is
 refused at decode; start a fresh world disk. Capacity grows to16384 without renaming
 live serials or reusing an old stale serial; character and equipment IDs stay

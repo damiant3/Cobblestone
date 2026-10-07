@@ -407,6 +407,269 @@ Chapter: MageryReplay
       gone <- is-err (world-get env.game.world tile)
       mr-check ("UOAIX-81: spell 34 (An Grav) removes the targeted field tile at the next pulse and leaves the other four (" & show raised & " objects, then " & show (world-count env.game.world) & "), and costs its reagents and 14 mana") (tile /= 0 & gone & world-count env.game.world == raised - 1 & is-ok pulsed & mr-costs2 env 28 34 0 & env.actor.mana <= 100 - 11 - 14 + 2 & env.actor.mana >= 100 - 11 - 14 & list-length dispel.packets > 0)
     end
+ UOAIX-81: Gate Travel opens a linked pair of gates for 30 s; walking onto one arrives on the other, a caster is
+ refused, a dispelled twin is reported, and a world load deletes the pair while it keeps a live field.
+  mr-live : Magery, Integer, Integer, Integer -> Integer
+  mr-live (magic) (kind) (i) (n) = if i == 32 then n else let w = list-at magic.walls i
+    in mr-live magic kind (i + 1) (if w.serial /= 0 & w.until > magic.tick & (when world-get magic.items.world w.serial is Err (_) -> False is Ok (item) -> mga-field-kind item.graphic == kind) then n + 1 else n)
+  mr-gate-serial : MrEnv, Integer, Integer -> Integer
+  mr-gate-serial (env) (x) (i) = if i == 32 then 0 else let w = list-at env.magic.walls i
+    in if w.serial /= 0 & (when world-get env.game.world w.serial is Err (_) -> False is Ok (item) -> item.graphic == #0F6C & item.x == x) then w.serial
+    else mr-gate-serial env x (i + 1)
+  mr-at : MrEnv, Integer, Integer -> Boolean
+  mr-at (env) (x) (y) = when world-get env.game.world 1 is Err (_) -> False is Ok (m) -> m.x == x & m.y == y
+  mr-step : MrEnv, Integer, Integer -> [Device.Block] GameReply
+  mr-step (env) (x) (y) = when world-get env.game.world 1
+    is Err (e) -> act gs-reply [] ("ERROR " & e) end
+    is Ok (m) -> act
+      moved <- world-update env.game.world (ia-copy m m.serial 1 0 x y m.z)
+      walked <- mg-gate-walk env.magic env.game env.input (Ok m) (gs-reply [] "walk")
+      when walked
+        is Err (e) -> gs-reply [] ("ERROR " & e)
+        is Ok (reply) -> reply
+    end
+  mr-gate-book : MrEnv, Integer -> Integer
+  mr-gate-book (env) (bits) = let book = list-at env.magic.definitions (world-slot env.game.world #40000003)
+    in let learned = __record-set book "spells" (bit-or book.spells bits)
+    in let wise = __record-set env.actor "intelligence" 100
+    in let full = __record-set env.actor "mana" 100
+    in gs-skill-set env.game 1 25 1000
+  mr-gate-travel : Integer -> [Console, Device.Block] Integer
+  mr-gate-travel (unused) = when mr-env 0
+    is Err (e) -> mr-check ("gate travel fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-or (bit-shl 1 51) (bit-shl 1 33))
+      before <- world-count env.game.world
+      opened <- mr-cast env 52 #4000000E 1000
+      a <- mr-check ("UOAIX-81: spell 52 (Vas Rel Por) opens a gate on the caster's tile and one at the rune's place, leaves the caster where it stood, and costs its reagents and 40 mana (" & show (mr-live env.magic 52 0 0) & " gates)") (mr-live env.magic 52 0 0 == 2 & world-count env.game.world == before + 2 & mr-at env 1421 1698 & env.actor.mana == 60 & mr-costs env 52 0 & opened.note == "magery:cast spell=52")
+      counted <- __record-set env.input.session "sequence" 5
+      off <- mr-step env 1420 1698
+      on <- mr-step env 1421 1698
+      b <- mr-check "UOAIX-81: a player who walks onto the gate arrives on its twin at the rune's place, and the walk sequence goes back to 0" (mr-at env 1424 1698 & env.input.session.sequence == 0 & mr-opcode on.packets #20 0 & not (mr-opcode off.packets #20 0))
+      out <- mr-step env 1425 1698
+      back <- mr-step env 1424 1698
+      returned <- mr-at env 1421 1698
+      busy <- __record-set env.actor "stage" 1
+      aside <- mr-step env 1420 1698
+      refused <- mr-step env 1421 1698
+      idle <- __record-set env.actor "stage" 0
+      c <- mr-check "UOAIX-81: the twin leads back, and a player who is casting is refused at the gate and stays" (returned & mr-at env 1421 1698 & mr-opcode refused.packets #1C 0 & not (mr-opcode refused.packets #20 0))
+      twin <- mr-gate-serial env 1424 0
+      dispel <- mr-cast env 34 twin (1000 + mgd-delay 52 + mgd-ticks 750 + 2)
+      left <- mr-step env 1420 1698
+      lone <- mr-step env 1421 1698
+      d <- mr-check "UOAIX-81: Dispel Field on one gate leaves its twin leading nowhere: the walker is told and stays" (twin /= 0 & mr-at env 1421 1698 & mr-opcode lone.packets #1C 0 & not (mr-opcode lone.packets #20 0) & mr-costs2 env 52 34 0)
+      expired <- mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-ticks 40000)
+      e <- mr-check "UOAIX-81: the gates close after 30 s" (is-ok expired & mr-live env.magic 52 0 0 == 0 & world-count env.game.world == before)
+      a + b + c + d + e
+    end
+  mr-gate-codec : Integer -> [Console, Device.Block] Integer
+  mr-gate-codec (unused) = when mr-env 0
+    is Err (e) -> mr-check ("gate codec fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-or (bit-shl 1 51) (bit-shl 1 27))
+      field <- mr-cast env 28 0 1000
+      opened <- mr-cast env 52 #4000000E (1000 + mgd-delay 28 + mgd-ticks 750 + 2)
+      now <- env.magic.tick
+      buffer <- alloc-bytes (mgc-size env.magic)
+      encoded <- mgc-write env.magic buffer (mgc-size env.magic) now
+      fresh <- mgs-new env.magic.items env.magic.bank env.magic.combat env.magic.decoration None (mr-cover env.map)
+      decoded <- mgc-read fresh buffer (mgc-size fresh) now
+      mr-check ("UOAIX-81: a world saved with a live fire field and a gate pair loads with the field live and the gates closed (" & show (mr-live env.magic 28 0 0) & " and " & show (mr-live env.magic 52 0 0) & " saved, " & show (mr-live fresh 28 0 0) & " and " & show (mr-live fresh 52 0 0) & " live after)") (mr-live env.magic 28 0 0 == 5 & mr-live env.magic 52 0 0 == 2 & is-ok encoded & is-ok decoded & mr-live fresh 28 0 0 == 5 & mr-live fresh 52 0 0 == 0)
+    end
+ UOAIX-81: Polymorph offers its 18 forms as a 0x7C menu, casts the chosen one, refuses a second cast and Incognito
+ while it holds, survives a restart, returns the original body and hue at expiry and at death, and gives a human form a
+ skin hue.
+  mr-answer : Integer, Integer -> List Integer
+  mr-answer (dialog) (choice) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] dialog) #A020) choice) 0) 0
+  mr-body : MrEnv -> WorldObject
+  mr-body (env) = when world-get env.game.world 1 is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  mr-polymorph : Integer -> [Console, Device.Block] Integer
+  mr-polymorph (unused) = when mr-env 0
+    is Err (e) -> mr-check ("polymorph fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-shl 1 55)
+      menu <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 56) 1000)
+      shown <- if list-length menu.packets == 1 then list-at menu.packets 0 else []
+      a <- mr-check ("UOAIX-81: spell 56 (Vas Ylem Rel) first offers its 18 forms as a 0x7C menu (" & show (list-length shown) & " bytes) and begins nothing") (menu.note == "magery:polymorph-menu" & list-length shown == 253 & list-at shown 0 == #7C & gp-u16 shown 1 == 253 & gp-u32 shown 3 == 1 & gp-u16 shown 7 == #A020 & list-at shown 34 == 18 & gp-u16 shown 35 == 8401 & env.actor.stage == 0 & env.actor.mana == 100)
+      forged <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-answer #4000000E 2) 1001)
+      b <- mr-check "UOAIX-81: an answer naming an item that is no Polymorph scroll is refused and begins nothing" (forged.note == "That must be in your pack for you to use it." & env.actor.stage == 0)
+      begun <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-answer 1 2) 1002)
+      pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (1002 + mgd-delay 56)
+      dog <- mr-body env
+      c <- mr-check ("UOAIX-81: choosing Dog casts the spell: the caster takes body 0xD9 with hue 0 for 100 s at GM Magery, at its reagents and 40 mana (body " & show dog.graphic & ")") (begun.note == "magery:casting spell=56" & is-ok pulsed & dog.graphic == #D9 & dog.hue == 0 & env.actor.poly - env.magic.tick == mgd-ticks 100000 & env.actor.poly-body == 400 & env.actor.poly-hue == 1002 & env.actor.mana == 60 & mr-costs env 56 0)
+      again <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 56) (1003 + mgd-delay 56 + mgd-ticks 750))
+      disguise <- mr-cast env 35 1 (1004 + mgd-delay 56 + mgd-ticks 750)
+      d <- mr-check "UOAIX-81: while the form holds, a second Polymorph is already in effect and Incognito cannot begin" (again.note == "This spell is already in effect." & env.actor.incognito == 0 & (mr-body env).graphic == #D9)
+      buffer <- alloc-bytes (mgc-size env.magic)
+      encoded <- mgc-write env.magic buffer (mgc-size env.magic) env.magic.tick
+      fresh <- mgs-new env.magic.items env.magic.bank env.magic.combat env.magic.decoration None (mr-cover env.map)
+      decoded <- mgc-read fresh buffer (mgc-size fresh) env.magic.tick
+      kept <- list-at fresh.actors 0
+      rebound <- mge-bind env.magic
+      e <- mr-check ("UOAIX-81: a restart mid-form keeps the form's time left and the original body and hue (" & (when decoded is Err (x) -> x is Ok (_) -> "loaded") & ", body " & show kept.poly-body & ", hue " & show kept.poly-hue & ")") (is-ok encoded & is-ok decoded & kept.poly == env.actor.poly & kept.poly-body == 400 & kept.poly-hue == 1002)
+      early <- mg-pulse env.magic env.game env.input env.map 2593 (env.actor.poly - 1)
+      held <- (mr-body env).graphic
+      ended <- mg-pulse env.magic env.game env.input env.map 2593 env.actor.poly
+      back <- mr-body env
+      f <- mr-check "UOAIX-81: the form holds one tick before it runs out, then the original body 400 and hue 1002 return" (is-ok early & held == #D9 & is-ok ended & back.graphic == 400 & back.hue == 1002 & env.actor.poly == 0)
+      start <- env.magic.tick + mgd-ticks 1000
+      woman <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-answer 1 10) start
+      formed <- mg-pulse env.magic env.game env.input env.map 2593 (start + mgd-delay 56)
+      human <- mr-body env
+      hit <- env.magic.combat.damage-hook env.game env.input 12 1 50
+      dead <- mr-body env
+      g <- mr-check ("UOAIX-81: a human form gets a skin hue (" & show human.hue & "), and a lethal blow returns the original body and hue") (human.graphic == #191 & human.hue >= 1002 & human.hue <= 1058 & is-ok hit & dead.graphic == 400 & dead.hue == 1002 & env.actor.poly == 0)
+      a + b + c + d + e + f + g
+    end
+ UOAIX-81: Resurrection raises a player's ghost within 1 tile through the owner's raise-hook, and refuses a creature,
+ the caster itself and a ghost out of reach without spending anything.
+  mr-raise : WorldTable, Integer, Integer -> Boolean
+  mr-raise (world) (healer) (patient) = when world-get world patient
+    is Err (_) -> False
+    is Ok (m) -> is-ok (world-update world (__record-set m "health" 10))
+  mr-health-of : MrEnv, Integer -> Integer
+  mr-health-of (env) (serial) = when world-get env.game.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  mr-resurrection : Integer -> [Console, Device.Block] Integer
+  mr-resurrection (unused) = when mr-env 0
+    is Err (e) -> mr-check ("resurrection fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-shl 1 58)
+      hooked <- __record-set env.magic "raise-hook" (mr-raise env.game.world)
+      made <- world-create env.game.world (__record-set (gs-mobile 0 1424 1698 0 400 1002) "health" 0)
+      ghost <- when made is Err (_) -> 0 is Ok (serial) -> serial
+      seated <- poke-qword env.game.characters 160 ghost
+      step <- mgd-delay 59 + mgd-ticks 750 + 2
+      creature <- mr-cast env 59 12 1000
+      self <- mr-cast env 59 1 (1000 + step)
+      far <- mr-cast env 59 ghost (1000 + 2 * step)
+      a <- mr-check "UOAIX-81: Resurrection refuses a creature, the caster itself and a ghost 3 tiles off, and spends nothing" (creature.note == "Target is not a being." & self.note == "Thou can not resurrect thyself." & far.note == "Target is not close enough." & mr-unchanged-at env 100 & mr-health-of env ghost == 0)
+      near <- when world-get env.game.world ghost is Err (e) -> Err e is Ok (m) -> world-update env.game.world (ia-copy m m.serial 1 0 1422 1699 0)
+      raised <- mr-cast env 59 ghost (1000 + 3 * step)
+      b <- mr-check ("UOAIX-81: spell 59 (An Corp) raises the player's ghost beside the caster (hits " & show (mr-health-of env ghost) & ") with sound 0x214, at its reagents and 50 mana") (ghost > 0 & is-ok near & mr-health-of env ghost == 10 & mr-opcode raised.packets #54 0 & env.actor.mana == 50 & mr-costs env 59 0 & raised.note == "magery:cast spell=59")
+      a + b
+    end
+  mr-unchanged-at : MrEnv, Integer -> Boolean
+  mr-unchanged-at (env) (mana) = env.actor.mana == mana & mr-costs env 0 0
+ UOAIX-81 summons, stage 2: each summon spell asks the owner's summon-hook for its creature, place, master and time;
+ a caster without the followers free is refused before any cost, and a taken place answers 501942.
+  MrSummon = record { key : Text, x : Integer, y : Integer, controlled : Boolean, ms : Integer, calls : Integer, followers : Integer }
+  mr-summon-hook : MrSummon, WorldTable, Integer, Text, Integer, Integer, Integer, Boolean, Integer -> Integer
+  mr-summon-hook (log) (world) (caster) (key) (x) (y) (z) (controlled) (ms) = let a = __record-set log "key" key
+    in let b = __record-set log "x" x
+    in let c = __record-set log "y" y
+    in let d = __record-set log "controlled" controlled
+    in let e = __record-set log "ms" ms
+    in let f = __record-set log "calls" (log.calls + 1)
+    in when world-create world (gs-mobile 0 x y z 13 0) is Err (_) -> 0 is Ok (serial) -> serial
+  mr-followers-hook : MrSummon, Integer -> Integer
+  mr-followers-hook (log) (caster) = log.followers
+  mr-summon-env : MrEnv, Integer -> MrSummon
+  mr-summon-env (env) (followers) = let log = MrSummon { key = "", x = 0, y = 0, controlled = False, ms = 0, calls = 0, followers = followers }
+    in let a = __record-set env.magic "summon-hook" (mr-summon-hook log env.game.world)
+    in let b = __record-set env.magic "followers-hook" (mr-followers-hook log)
+    in let taught = mr-gate-book env (bit-or (bit-or (bit-shl 1 32) (bit-shl 1 39)) (bit-or (bit-shl 1 57) (bit-or (bit-shl 1 59) (bit-shl 1 60))))
+    in log
+  mr-animal : Text, Integer -> Boolean
+  mr-animal (key) (i) = if i == 18 then False else mgd-summon-key 40 i == key | mr-animal key (i + 1)
+  mr-summons : Integer -> [Console, Device.Block] Integer
+  mr-summons (unused) = act
+    first <- mr-env 0
+    a <- when first
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 0
+        reply <- mr-cast env 60 0 1000
+        ok <- (log.calls == 1 & log.key == "airele" & log.controlled & log.ms == 400000 & walk-abs (log.x - 1421) <= 1 & walk-abs (log.y - 1698) <= 1 & not (log.x == 1421 & log.y == 1698)
+            & mr-opcode reply.packets #54 0 & env.actor.mana == 50 & mr-costs env 60 0)
+        mr-check ("UOAIX-81: spell 60 (Kal Vas Xen Hur) summons an air elemental beside the caster that follows it for 400 s at GM Magery, with sound 0x217, at its reagents and 50 mana (" & log.key & " at " & show log.x & "," & show log.y & ")") ok
+      end
+    second <- mr-env 0
+    b <- when second
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 0
+        reply <- mr-cast env 33 0 1000
+        ok <- (mgd-delay 33 == mgd-ticks 7500 & log.calls == 1 & log.key == "bladespirit" & not log.controlled & log.ms >= 80000 & log.ms < 120000 & log.x == 1424 & log.y == 1701 & mr-costs env 33 0)
+        mr-check ("UOAIX-81: spell 33 (In Jux Hur Ylem) takes 6 s more to cast and summons, at the targeted place, a blade spirit that answers to nobody for 80 to 119 s (" & show log.ms & " ms)") ok
+      end
+    third <- mr-env 0
+    c <- when third
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 4
+        daemon <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 61) 1000)
+        air <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 60) 1001)
+        freed <- __record-set log "followers" 3
+        allowed <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 60) 1002)
+        ok <- (daemon.note == "You have too many followers to summon that creature." & air.note == daemon.note & allowed.note == "magery:casting spell=60" & log.calls == 0)
+        mr-check "UOAIX-81: with 4 of 5 followers taken, Summon Daemon (5) and Air Elemental (2) are refused before any cost; with 3 taken the air elemental begins" ok
+      end
+    fourth <- mr-env 0
+    d <- when fourth
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 0
+        reply <- mr-cast env 40 0 1000
+        started <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 58) (1000 + mgd-delay 40 + mgd-ticks 750 + 2)
+        pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-delay 40 + mgd-ticks 750 + 2 + mgd-delay 58)
+        blocked <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-target env.actor.cursor 0 1422 1698 0) (1000 + mgd-delay 40 + mgd-ticks 750 + 3 + mgd-delay 58))
+        ok <- (mr-animal log.key 0 & log.controlled & log.ms == 400000 & log.calls == 1 & mr-opcode blocked.packets #1C 0)
+        mr-check ("UOAIX-81: spell 40 (Kal Xen) summons one of ServUO's 18 creatures (" & log.key & ") that follows its caster for 400 s, and an energy vortex aimed at a creature's tile answers that the location is blocked") ok
+      end
+    a + b + c + d
+  end
+ UOAIX-81 summons, stage 3: Dispel removes a summoned creature its roll beats and calls any other undispellable; Mass
+ Dispel rolls for every summoned creature within 8 tiles and leaves the rest.
+  MrDispel = record { key : Text, extra : Integer, dismissed : Integer }
+  mr-summoned-hook : MrDispel, Integer -> Text
+  mr-summoned-hook (log) (serial) = if serial == 12 | serial == log.extra then log.key else ""
+  mr-dismiss-hook : MrDispel, WorldTable, Integer -> Boolean
+  mr-dismiss-hook (log) (world) (serial) = let a = __record-set log "dismissed" (log.dismissed + 1) in is-ok (world-delete world serial)
+  mr-dispel-env : MrEnv, Text -> MrDispel
+  mr-dispel-env (env) (key) = let log = MrDispel { key = key, extra = 0, dismissed = 0 }
+    in let a = __record-set env.magic "summoned-hook" (mr-summoned-hook log)
+    in let b = __record-set env.magic "dismiss-hook" (mr-dismiss-hook log env.game.world)
+    in let taught = mr-gate-book env (bit-or (bit-shl 1 40) (bit-shl 1 53))
+    in log
+  mr-mobile-at : MrEnv, Integer, Integer -> Integer
+  mr-mobile-at (env) (x) (y) = when world-create env.game.world (gs-mobile 0 x y 0 13 0) is Err (_) -> 0 is Ok (serial) -> serial
+  mr-dispels : Integer -> [Console, Device.Block] Integer
+  mr-dispels (unused) = act
+    first <- mr-env 0
+    a <- when first
+      is Err (e) -> mr-check ("dispel fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-dispel-env env "bladespirit"
+        reply <- mr-cast env 41 12 1000
+        ok <- (log.dismissed == 1 & is-err (world-get env.game.world 12) & mr-opcode reply.packets #54 0 & env.actor.mana == 80 & mr-costs env 41 0)
+        mr-check "UOAIX-81: spell 41 (An Ort) dispels a summoned blade spirit at GM Magery with sound 0x201, at its reagents and 20 mana" ok
+      end
+    second <- mr-env 0
+    b <- when second
+      is Err (e) -> mr-check ("dispel fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-dispel-env env ""
+        reply <- mr-cast env 41 12 1000
+        ok <- (log.dismissed == 0 & is-ok (world-get env.game.world 12) & mr-opcode reply.packets #1C 0)
+        mr-check "UOAIX-81: Dispel on a creature nobody summoned answers that it cannot be dispelled and leaves it" ok
+      end
+    table <- (mgd-dispel-chance "daemon" 1000 == 223 & mgd-dispel-chance "airele" 1000 == 306 & mgd-dispel-chance "energyvortex" 1000 == 1000 & mgd-dispel-chance "bladespirit" 0 == 500)
+    c <- mr-check ("UOAIX-81: the dispel chance follows ServUO's DispelDifficulty and DispelFocus: GM Magery against a daemon " & show (mgd-dispel-chance "daemon" 1000) & ", an elemental " & show (mgd-dispel-chance "airele" 1000) & ", a vortex " & show (mgd-dispel-chance "energyvortex" 1000) & " per thousand") table
+    fourth <- mr-env 0
+    d <- when fourth
+      is Err (e) -> mr-check ("dispel fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-dispel-env env "bladespirit"
+        other <- mr-mobile-at env 1426 1701
+        marked <- __record-set log "extra" other
+        bystander <- mr-mobile-at env 1423 1703
+        reply <- mr-cast env 54 0 1000
+        ok <- (other > 0 & bystander > 0 & log.dismissed == 2 & is-err (world-get env.game.world 12) & is-err (world-get env.game.world other) & is-ok (world-get env.game.world bystander) & env.actor.mana == 60 & mr-costs env 54 0)
+        mr-check "UOAIX-81: spell 54 (Vas An Ort) dispels both summoned blade spirits within 8 tiles and leaves the creature nobody summoned, at its reagents and 40 mana" ok
+      end
+    a + b + c + d
+  end
   mr-damage-paths : Integer, Integer -> [Console, Device.Block] Integer
   mr-damage-paths (path) (failures) = if path == 5 then act failures end
     else act
@@ -496,7 +759,7 @@ Chapter: MageryReplay
     full <- mgs-book env.magic #40000003 (0 - 1)
     shown <- mg-book-open env.magic env.game env.input #40000003
     rows <- list-at shown.packets 2
-    mr-check "a spellbook holding every spell lists exactly the 51 working spells (UOAIX-81), 1 through 32, then 34 and on to 57" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 51 & list-length rows == 974 & gp-u16 rows 12 == 1 & gp-u16 rows 601 == 32 & gp-u16 rows 620 == 34 & gp-u16 rows 639 == 35 & gp-u16 rows 962 == 57)
+    mr-check "a spellbook holding every spell lists all 64 Magery spells (UOAIX-81)" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 64 & list-length rows == 1221 & gp-u16 rows 12 == 1 & gp-u16 rows 601 == 32 & gp-u16 rows 772 == 41 & gp-u16 rows 1019 == 54 & gp-u16 rows 1209 == 64)
   end
   mr-quiver : MrEnv -> [Console, Device.Block] Integer
   mr-quiver (env) = act
@@ -704,7 +967,7 @@ Chapter: MageryReplay
           killed <- mr-damage-paths 1 0
           scrolls <- mr-scroll-case 0
           paralysed <- mr-paralyze 0
-          cursed <- mr-slice2 27 + mr-slice2 31 + mr-slice2 46 + mr-slice2 53 + mr-slice2 30 + mr-slice2 37 + mr-slice2 42 + mr-slice2 51 + mr-explosion 0 + mr-slice4 29 + mr-slice4 25 + mr-slice4 26 + mr-slice4 49 + mr-slice4 55 + mr-slice4 57 + mr-slice4 50 + mr-slice4 28 + mr-slice4 39 + mr-slice4 47 + mr-reflect 0 + mr-invisibility 0 + mr-dispel-field 0
+          cursed <- mr-slice2 27 + mr-slice2 31 + mr-slice2 46 + mr-slice2 53 + mr-slice2 30 + mr-slice2 37 + mr-slice2 42 + mr-slice2 51 + mr-explosion 0 + mr-slice4 29 + mr-slice4 25 + mr-slice4 26 + mr-slice4 49 + mr-slice4 55 + mr-slice4 57 + mr-slice4 50 + mr-slice4 28 + mr-slice4 39 + mr-slice4 47 + mr-reflect 0 + mr-invisibility 0 + mr-dispel-field 0 + mr-gate-travel 0 + mr-gate-codec 0 + mr-polymorph 0 + mr-resurrection 0 + mr-summons 0 + mr-dispels 0
           print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions + killed + scrolls + paralysed + cursed))
           failures + effects + regressions + killed + scrolls + paralysed + cursed
         end

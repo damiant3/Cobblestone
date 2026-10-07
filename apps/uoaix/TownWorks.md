@@ -117,8 +117,7 @@ Budgets are four town raid records, 64 site bindings, 128 lifetime orders,
 hour stamps. Raid records have five fields (40 bytes), sites two (16 bytes),
 orders fifteen (120 bytes), bounties eight (64 bytes), and the state nine
 (72 bytes), plus lists and buffers. `TwDamage` is a five-field caller value,
-not retained by the order. Construction retained 32264 bytes under seed
-`4228CD5103DC4523` on 2026-10-04. Actions use preallocated storage.
+not retained by the order. Actions use preallocated storage.
 
 Civic audit kinds extend the government log: site admission 13, revocation
 14, raid start 15, raid end 16, repair order 17, repair assignment 18,
@@ -148,7 +147,7 @@ no daily heap. The proof compares complete normal and poisoned output with
 
 Raid, damage, property and clearing inputs are scripted stand-ins for their
 authoritative world adapters. This is not the full stage-G combat grade:
-actual stage-M raids, movement, physical serial changes, native government
-recovery and panel integration remain open. Disputes, keeper reports and
+actual stage-M raids, movement, physical serial changes and panel integration
+remain open. Disputes, keeper reports and
 title registries are separate government units. A live action must put civic,
 economy, material and world changes in one encompassing durable transaction.

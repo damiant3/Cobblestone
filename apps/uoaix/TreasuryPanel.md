@@ -104,7 +104,7 @@ Queries scan at most 256 purses and seven chain counters. Per-chain arithmetic
 is bounded by the production counters; mutations use the money module's
 constant-work tax/grant paths. Binding adds only a retained reference and
 enable flag to the panel, not copies of the economy or balances. Query/audit
-text is bounded request scratch. Compiler heap/time behavior is unchanged.
+text is bounded request scratch.
 
 `TreasuryProof.codex` and `test-admin-panel.ps1` grade authority, conservation,
 money/panel audit exhaustion, read-only and unbound states, chain arithmetic,

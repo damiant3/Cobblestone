@@ -124,7 +124,7 @@ administrator flags.
 The game server implementing Lord British mode must bind its privileges to
 `panel.sessions` and check `panel-live panel session now` before granting those
 privileges. Logout, expiry and replacement revoke that predicate. Invulnerability,
-stats, skills and in-world powers are reek's stage A game-server work, not effects
+stats, skills and in-world powers are game-server effects, not effects
 implemented by the panel fixture.
 
 ## Integration and budgets
@@ -173,18 +173,11 @@ pwsh -NoProfile -File apps/uoaix/test-admin-panel.ps1 -Kernel seed/Codex.cdx
 The harness runs core log/session assertions and a headless Edge session against
 the real guest listener, including wrong-key refusal, authenticated reports,
 acknowledgement logging, queued actions, logout/reconnect and desktop/narrow
-screenshots. `-Poison` compiles every proof entry point with poisoned allocation.
-Every run writes a fresh evidence directory and stops its own guest and browser.
-The host needs PowerShell 7, Node with the built-in WebSocket client, and Edge
-at `C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`.
-
-The core measured 3536040 retained bytes for panel construction on 2026-10-04,
-including the empty GM stand-in, personal session storage, game clock and unbound treasury fields, excluding
-`AdminAuth`. The callback observes the recorded intent before applying;
-logout, expiry and replacement arms keep the callback count unchanged.
-Desktop, narrow-screen and hostile-report screenshots were visually inspected.
-Personal-access controls additionally check scoped direct commands, forged
-actor/power refusal, key revocation, GM/owner action visibility and local key
-cleanup after a refused close. The native exhausted-log arm closes the GM
-session even when the close audit cannot append; the browser then removes
-local state and reports that server closure was not confirmed.
+screenshots, the callback seeing the recorded intent before applying (logout,
+expiry and replacement leave the callback count unchanged), scoped GM commands,
+forged actor/power refusal, key revocation, and an exhausted log that still
+closes a GM session (the browser then clears local state and reports the
+closure unconfirmed). `-Poison` compiles every proof entry point with poisoned
+allocation. Every run writes a fresh evidence directory and stops its own guest
+and browser. The host needs PowerShell 7, Node with the built-in WebSocket
+client, and Edge at `C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe`.

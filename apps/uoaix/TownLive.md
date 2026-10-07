@@ -91,8 +91,8 @@ persisted.
 ## Movement and persistence
 
 The path search uses Chebyshev A*, a fixed heap, at most 8192 expansions and
-256 saved directions (Jorin's forge-to-Blue Boar route takes 6549 on the real
-map; a failed search costs about 100 ms of pulse; measured 2026-10-06). A step
+256 saved directions (the bound covers Jorin's forge-to-Blue Boar route, the
+longest resident route on the real map). A step
 costs 8 and a change of direction 1 more, so among equally short paths the
 walk keeps its heading (a diagonal run, then a straight run) instead of a
 staircase. Once the decoration overlay
@@ -158,11 +158,11 @@ UOX3 commit `4560ae841bac898817143d7aa95ce59f47ab98e0`,
 tavern schedules, step budgets, occupied destinations, speech suppression and
 fallback logging, door probes, clock rescaling and TLC1 recovery/refusal.
 The replay uses a synthetic walk map. Actual map reachability, visible dress,
-speech and movement are graded by root in fester's complete composite.
+speech and movement are graded on the complete composite.
 
 Retained navigation memory is 48 bytes per cached map cell plus three
 256-byte paths, fixed resident/viewer records and existing bounded Tf/Tm
-tables. Search costs O(E log C) heap work for E <= 4096 and C map cells,
+tables. Search costs O(E log C) heap work for E <= 8192 and C map cells,
 plus eight collision probes per expansion. Tile probes visit only indexed
 occupants; door lookup uses the sorted decoration x range. A door probe
 includes WorldDecoration's cell rebuild cost, which can scan the decoration

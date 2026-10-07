@@ -9,7 +9,7 @@ Chapter: GameClientView
   GcvSeen = record { object : WorldObject, maximum : Integer, flags : Integer, direction : Integer, notoriety : Integer, listed : Boolean }
   GameClientView = record { seen : List GcvSeen, connection : Integer, actor : Integer,
     radius : Integer, season : Integer, light : Integer, season-enabled : Boolean,
-    sent-season : Integer, sent-light : Integer, status : Integer, status-ready : Boolean, visible : Integer, visible-count : Integer, concealed : Integer }
+    sent-season : Integer, sent-light : Integer, status : Integer, status-ready : Boolean, visible : Integer, visible-count : Integer, concealed : Integer, unseen-hook : (Integer, Integer -> Boolean) }
   gcv-rows : Integer, List GcvSeen -> List GcvSeen
   gcv-rows (left) (rows) = if left == 0 then rows else
     gcv-rows (left - 1) (list-push rows (GcvSeen { object = gs-item 0 0 0, maximum = 0, flags = 0, direction = 4, notoriety = 3, listed = False }))
@@ -19,7 +19,7 @@ Chapter: GameClientView
     else Ok (GameClientView { seen = gcv-rows capacity (__list-with-capacity capacity), connection = -1, actor = 0,
       radius = radius, season = season, light = light, season-enabled = season-enabled,
       sent-season = -1, sent-light = -1, status = alloc-bytes 66, status-ready = False,
-      visible = alloc-bytes (capacity * 8), visible-count = 0, concealed = 0 })
+      visible = alloc-bytes (capacity * 8), visible-count = 0, concealed = 0, unseen-hook = gcv-unseen-none })
   gcv-environment : GameClientView, Integer, Integer -> Result Integer Text
   gcv-environment (view) (season) (light) = if season < 0 | season > 4 | light < 0 | light > 30 then Err "client environment invalid"
     else let a = __record-set view "season" season in let b = __record-set view "light" light in Ok 0
@@ -40,6 +40,8 @@ Chapter: GameClientView
   gcv-near (view) (viewer) (mobile) = mobile.kind == 1 & mobile.container == 0 & mobile.serial /= viewer.serial
     & mobile.x >= viewer.x - view.radius & mobile.x <= viewer.x + view.radius
     & mobile.y >= viewer.y - view.radius & mobile.y <= viewer.y + view.radius
+  gcv-unseen-none : Integer, Integer -> Boolean
+  gcv-unseen-none (viewer) (serial) = False
   gcv-conceal : GameClientView, Integer -> Integer
   gcv-conceal (view) (bytes) = let bound = __record-set view "concealed" bytes in 0
   gcv-hidden : GameClientView, Integer -> Boolean
@@ -63,19 +65,53 @@ Chapter: GameClientView
   gcv-present-mobile : GsiState, Integer -> Boolean
   gcv-present-mobile (items) (serial) = let slot = world-slot items.world serial
     in if slot < 0 then False else peek-qword items.world.buffer (24 + slot * 80) == 1 & peek-qword items.world.buffer (72 + slot * 80) == 0
+ Where a packet names a mobile by serial (UO protocol: 0x1C, 0xAE, 0x11 at 3; 0x6E, 0xAA, 0x88, 0xA1 at 1; 0x2F, 0x70,
+ 0xC0 source at 2 and target at 6; 0x2E the wearer at 9). A packet naming a mobile the viewer must not perceive is dropped.
+  gcv-named-offsets : Integer -> List Integer
+  gcv-named-offsets (op) = if op == #1C | op == #AE | op == #11 then [3]
+    else if op == #6E | op == #AA | op == #88 | op == #A1 then [1]
+    else if op == #2F | op == #70 | op == #C0 then [2, 6]
+    else if op == #2E then [9] else []
+  gcv-masked : GameClientView, GsiState, WorldObject, List Integer, List Integer, Integer -> Boolean
+  gcv-masked (view) (items) (viewer) (packet) (offsets) (i) = if i == list-length offsets then False
+    else let at = list-at offsets i
+    in let serial = if list-length packet < at + 4 then 0 else gp-u32 packet at
+    in if serial > 0 & serial /= viewer.serial & (gcv-hidden view (world-slot items.world serial) | view.unseen-hook viewer.serial serial) then True
+    else gcv-masked view items viewer packet offsets (i + 1)
+ A 0x54 sound names no serial, only the tile at 6 and 8, so one heard at a concealed mobile's tile (not the viewer's) is
+ dropped. The concealed bytes are read eight slots per qword, and only for 0x54 packets.
+  gcv-sound-hidden : GameClientView, GsiState, WorldObject, Integer, Integer, Integer -> Boolean
+  gcv-sound-hidden (view) (items) (viewer) (x) (y) (q) = if view.concealed == 0 | (viewer.x == x & viewer.y == y) then False
+    else if q * 8 >= items.world.capacity then False
+    else if peek-qword view.concealed (q * 8) /= 0 & gcv-hidden-at view items x y (q * 8) 0 then True
+    else gcv-sound-hidden view items viewer x y (q + 1)
+  gcv-hidden-at : GameClientView, GsiState, Integer, Integer, Integer, Integer -> Boolean
+  gcv-hidden-at (view) (items) (x) (y) (base) (k) = if k == 8 | base + k >= items.world.capacity then False
+    else if peek-byte view.concealed (base + k) == 0 then gcv-hidden-at view items x y base (k + 1)
+    else let o = world-read-slot items.world (base + k)
+    in if o.kind == 1 & o.x == x & o.y == y then True else gcv-hidden-at view items x y base (k + 1)
+ A sound at the tile of a mobile the viewer must not perceive (an unrevealed ghost) is dropped too; the tile index lists
+ only the objects standing there.
+  gcv-sound-unseen : GameClientView, GsiState, WorldObject, Integer, Integer, Integer -> Boolean
+  gcv-sound-unseen (view) (items) (viewer) (x) (y) (serial) = if serial == 0 | (viewer.x == x & viewer.y == y) then False
+    else if serial /= viewer.serial & view.unseen-hook viewer.serial serial then True
+    else gcv-sound-unseen view items viewer x y (world-tile-next items.world serial)
   gcv-filter : GameClientView, GameCombat, GsiState, WorldObject, List (List Integer), Integer, List (List Integer) -> List (List Integer)
   gcv-filter (view) (combat) (items) (viewer) (packets) (i) (out) = if i == list-length packets then out
     else let packet = list-at packets i
     in if list-length packet == 0 then gcv-filter view combat items viewer packets (i + 1) (list-push out packet)
     else let op = list-at packet 0
     in if op == #4F | op == #BC then gcv-filter view combat items viewer packets (i + 1) out
+    else if gcv-masked view items viewer packet (gcv-named-offsets op) 0 then gcv-filter view combat items viewer packets (i + 1) out
+    else if op == #54 & list-length packet >= 12 & (gcv-sound-hidden view items viewer (gp-u16 packet 6) (gp-u16 packet 8) 0
+      | gcv-sound-unseen view items viewer (gp-u16 packet 6) (gp-u16 packet 8) (world-tile-first items.world (gp-u16 packet 6) (gp-u16 packet 8))) then gcv-filter view combat items viewer packets (i + 1) out
     else if op == #11 & list-length packet >= 7 & gp-u32 packet 3 == viewer.serial then gcv-filter view combat items viewer packets (i + 1) out
     else if list-length packet == 9 & (op == #A1 | ((op == #A2 | op == #A3) & gp-u32 packet 1 == viewer.serial)) then gcv-filter view combat items viewer packets (i + 1) out
     else if (op == #78 & list-length packet >= 23) | (op == #77 & list-length packet == 17) then
       let serial = gp-u32 packet (if op == #78 then 3 else 1)
       in when world-get items.world serial
         is Err (_) -> gcv-filter view combat items viewer packets (i + 1) out
-        is Ok (mobile) -> if not (gcv-near view viewer mobile) | gcv-hidden view (world-slot items.world serial) then gcv-filter view combat items viewer packets (i + 1) out
+        is Ok (mobile) -> if not (gcv-near view viewer mobile) | gcv-hidden view (world-slot items.world serial) | view.unseen-hook viewer.serial serial then gcv-filter view combat items viewer packets (i + 1) out
           else let slot = world-slot items.world serial
           in let row = list-at view.seen slot
           in let fresh = row.object.serial /= serial
@@ -106,7 +142,7 @@ Chapter: GameClientView
     in let row = list-at view.seen slot
     in let old = row.object.serial
     in let current = world-slot items.world old
-    in let hidden = gcv-hidden view current
+    in let hidden = gcv-hidden view current | view.unseen-hook viewer.serial old
     in let near = if current < 0 | hidden then False else gcv-near view viewer (world-read-slot items.world current)
     in if near then let saved = poke-qword view.visible (kept * 8) slot
       in gcv-prune view items viewer (i + 1) (kept + 1) out
@@ -122,7 +158,7 @@ Chapter: GameClientView
   gcv-slot-update (view) (combat) (items) (viewer) (i) (out) = let row = list-at view.seen i
     in let current = peek-qword items.world.buffer (16 + i * 80)
     in let mobile = if current > 0 then world-read-slot items.world i else gs-item 0 0 0
-    in let near = current > 0 & gcv-near view viewer mobile & not (gcv-hidden view i)
+    in let near = current > 0 & gcv-near view viewer mobile & not (gcv-hidden view i) & not (view.unseen-hook viewer.serial current)
     in let old = row.object.serial
     in let removed = if old > 0 & old /= current then list-push out (cbp-remove old) else out
     in if not near then removed

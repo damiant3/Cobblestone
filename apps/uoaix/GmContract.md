@@ -5,13 +5,13 @@ GM authority belongs to an existing human account. NPCs, models and game-client
 flags cannot confer that authority. Every operation re-reads the current grant;
 revocation or narrowing therefore affects the next action without reconnecting.
 
-`GmMemory.codex` is the explicitly named **in-memory stand-in**, authorized by
-root on 2026-10-04 pending the [Codex DB backend](Database.md). The panel labels
+`GmMemory.codex` is the explicitly named **in-memory stand-in** until the
+[Codex DB backend](Database.md) exists. The panel labels
 the mode; successful queries and mutation receipts carry `stand_in: true`.
 Authentication/session failures remain protocol errors. The stand-in is a rules
 reference and development fixture, not durable shard state or live game powers.
-Fester and reek implement the database/game boundary to this contract. The wire
-contract and transaction rules below remain independent of storage effects.
+The database/game boundary implements this contract; the wire contract and
+transaction rules below remain independent of storage effects.
 
 ## Database contract
 
@@ -163,8 +163,7 @@ do not escape. Lookup scans at most 128 accounts; resource/quota updates are
 constant work, and text generation is linear in bounded returned text. No
 compiler heap/time behavior changes. `panel-new-with-gms` accepts a configured
 stand-in; `panel-new` creates an empty one with zero treasury for compatibility.
-The native proof measured 2,222,024 retained bytes for one stand-in on
-2026-10-04; repeated request scratch restores preserve that allocation.
+Repeated request scratch restores preserve the stand-in's allocation.
 Personal access adds 128 fixed session triples and 128 pairs of 32-byte keys
 represented as machine-word lists, plus fixed replay/enabled cells in
 `AdminAuth`. GM log paging scans at most 256 bounded rows and emits at most

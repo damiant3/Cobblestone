@@ -152,10 +152,23 @@ Chapter: ActiveSkillsReplay
       m <- when world-get shard.world npc is Err (_) -> gs-item 0 0 0 is Ok (found) -> found
       drawn <- asr-viewed (gcv-apply view combat s.items shard input status (gs-reply [cbp-mobile m 4 0 3] "family draw"))
       asr-check "a family draw of a concealed mobile is dropped" (m.serial == npc & not (asr-find drawn #78 npc 0) & not (asr-find drawn #1D npc 0))
+      swung <- asr-viewed (gcv-apply view combat s.items shard input status (gs-reply [asr-swing npc input.session.serial] "swing"))
+      muffled <- asr-viewed (gcv-apply view combat s.items shard input status (gs-reply [cbp-sound #024A m] "sound"))
       shown <- as-conceal s npc 0
       back <- asr-viewed (gcv-apply view combat s.items shard input status (gs-reply [] "idle"))
       asr-check "a revealed mobile is drawn again" (asr-find back #78 npc 0)
+      seen-swing <- asr-viewed (gcv-apply view combat s.items shard input status (gs-reply [asr-swing npc input.session.serial] "swing"))
+      heard <- asr-viewed (gcv-apply view combat s.items shard input status (gs-reply [cbp-sound #024A m] "sound"))
+      asr-check "a sound at a concealed mobile's tile is dropped, and the same sound passes once it is revealed (UOAIX-84)" (not (asr-op muffled #54 0) & asr-op heard #54 0)
+      asr-check "a swing naming a concealed mobile is dropped, and the same swing passes once it is revealed (UOAIX-84)" (not (asr-op swung #2F 0) & asr-op seen-swing #2F 0)
     end
+  asr-swing : Integer, Integer -> List Integer
+  asr-swing (attacker) (defender) = [#2F, 0] & asr-u32 attacker & asr-u32 defender
+  asr-u32 : Integer -> List Integer
+  asr-u32 (v) = [int-mod (v / 16777216) 256, int-mod (v / 65536) 256, int-mod (v / 256) 256, int-mod v 256]
+  asr-op : List (List Integer), Integer, Integer -> Boolean
+  asr-op (packets) (op) (i) = if i == list-length packets then False
+    else if list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op then True else asr-op packets op (i + 1)
   asr-hiding : ActiveSkills, GameShard, GameInput, WalkMap, GameCombat, Integer -> [Console] Nothing
   asr-hiding (s) (shard) (input) (map) (combat) (npc) = act
     a <- list-at s.actors 0
@@ -592,15 +605,62 @@ Chapter: ActiveSkillsReplay
     ring <- ce-new 0
     said <- gp-zeros [#1C] 43 & [72,105]
     added <- ce-add-ghost ring 7 1420 1698 said
-    living <- ce-pending ring input.session.serial False 1420 1698 0 0 []
-    medium-heard <- ce-pending ring input.session.serial (as-spirit-hears s input.session.serial 210000001) 1420 1698 0 0 []
+    living <- ce-pending ring input.session.serial (\q -> False) (\q -> False) False 1420 1698 0 0 []
+    medium-heard <- ce-pending ring input.session.serial (\q -> False) (\q -> False) (as-spirit-hears s input.session.serial 210000001) 1420 1698 0 0 []
+    hiders <- ce-new 0
+    whispered <- ce-add hiders 5 1420 1698 said
+    hidden <- as-conceal s 5 1
+    unheard <- ce-pending hiders input.session.serial (\q -> as-concealed-any s q) (\q -> False) False 1420 1698 0 0 []
+    shown <- as-conceal s 5 0
+    heard-again <- ce-pending hiders input.session.serial (\q -> as-concealed-any s q) (\q -> False) False 1420 1698 0 0 []
+    asr-check "a concealed mobile's speech reaches no other client, and the same speech reaches it once revealed (UOAIX-84)" (whispered == 1 & list-length unheard == 0 & list-length heard-again == 1)
     asr-check "a ghost's words reach the living as o and O, and a listener in a Spirit Speak window clear" (added == 1 & list-length living == 1
       & list-at (list-at living 0) 44 /= 72 & list-at (list-at living 0) 45 /= 105 & list-length medium-heard == 1 & list-at (list-at medium-heard 0) 44 == 72 & list-at (list-at medium-heard 0) 45 == 105)
     spoken <- asr-said 60 0 []
     long-said <- list-at (ce-ghostly [spoken] 0 []) 0
     short-said <- list-at (ce-ghostly [asr-said 1 0 []] 0 []) 0
     asr-check "ghost speech has a random length of its own: 60 letters come out as at most 32 o and O, one letter as at least 4, and the speaker's own words stay" (list-length long-said - 45 <= ce-ghost-max & list-length short-said - 45 >= ce-ghost-min & gp-u16 long-said 1 == list-length long-said & asr-oo long-said 44 & asr-oo short-said 44 & list-length spoken == 105 & list-at spoken 44 == 97 & list-at spoken 103 == 97)
+    me <- input.session.serial
+    was <- asr-hp s me
+    killed <- asr-set-health s me 0
+    unseen <- as-ghost-unseen s shard 5 me 300000000
+    ghost-muffled <- asr-ghost-sound s shard 5 me
+    manifested <- as-manifest s me 300000100
+    speaking <- not (as-ghost-unseen s shard 5 me 300000000)
+    faded <- as-manifest s me 0
+    window <- asr-window s 5 300000100
+    lost <- as-ghost-unseen s shard 5 me 300000000
+    weak <- sk-set a.skills.levels 32 0
+    won <- not (as-ghost-unseen s shard 5 me 300000000)
+    revived <- asr-set-health s me was
+    asr-check "a ghost is unseen by the living, seen while its speech window lasts, unseen to a searcher who loses the Spirit Speak contest and seen by one who wins it (UOAIX-84)" (killed == 1 & unseen & speaking & lost & won & revived == 1)
+    ghost-heard <- asr-ghost-sound s shard 5 me
+    asr-check "a sound at an unrevealed ghost's tile is dropped for the living, and the same sound passes once it lives (UOAIX-84)" (ghost-muffled == 1 & ghost-heard == 0)
   end
+  asr-hp : ActiveSkills, Integer -> Integer
+  asr-hp (s) (serial) = when world-get s.items.world serial
+    is Err (_) -> 0
+    is Ok (o) -> o.health
+ 1 when a 0x54 at the ghost's tile is dropped from the viewer's packets by the ghost hook, 0 when it passes, -1 when
+ the arm cannot be set up (no view, a missing mobile, or both on one tile, where a sound is never dropped).
+  asr-ghost-sound : ActiveSkills, GameShard, Integer, Integer -> Integer
+  asr-ghost-sound (s) (shard) (viewer) (ghost) = when gcv-new shard.world.capacity 18 False 0 0
+    is Err (_) -> 0 - 1
+    is Ok (view) -> let hooked = __record-set view "unseen-hook" (as-ghost-hook s shard)
+      in when world-get s.items.world viewer
+        is Err (_) -> 0 - 1
+        is Ok (v) -> when world-get s.items.world ghost
+          is Err (_) -> 0 - 1
+          is Ok (g) -> if g.x == v.x & g.y == v.y then 0 - 1
+            else if list-length (gcv-filter view s.combat s.items v [cbp-sound #024A g] 0 []) == 0 then 1 else 0
+  asr-set-health : ActiveSkills, Integer, Integer -> Integer
+  asr-set-health (s) (serial) (h) = when world-get s.items.world serial
+    is Err (_) -> 0
+    is Ok (o) -> let put = __record-set o "health" h in when world-update s.items.world o
+      is Err (_) -> 0
+      is Ok (_) -> 1
+  asr-window : ActiveSkills, Integer, Integer -> Integer
+  asr-window (s) (serial) (until) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-qword s.spirit (slot * 8) until
   asr-said : Integer, Integer, List Integer -> List Integer
   asr-said (n) (i) (out) = if i == 44 + n then list-push out 0 else asr-said n (i + 1) (list-push out (if i == 0 then #1C else if i < 44 then 0 else 97))
   asr-oo : List Integer, Integer -> Boolean

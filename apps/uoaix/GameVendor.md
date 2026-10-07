@@ -55,9 +55,10 @@ or refused carts do not emit the sound. The composite sends the reply only
 after the encompassing transaction commits. The packet adds constant scratch
 work and no retained state; no codec format changes.
 
-Prices, material cost and turnover remain in gold units. Checkout selects
-exact tender from the payer's purse, using gold, then silver, then copper at
-the current royal rates. It neither creates change nor exchanges coins.
+In a copper world prices, cost basis and `GvSale.gross` count copper
+(EconomyCurrency.md, "Price scale"). Checkout first breaks the payer's coin
+with the crown (`gv-change`), then selects exact tender, using gold, then
+silver, then copper at the current royal rates (`gv-tender-plan`).
 A rate edit invalidates outstanding quotes. The classic status field displays
 the total purse value rounded down to whole gold; the reply and server log
 state the actual denominations paid. Sell receipts report net proceeds and
@@ -118,30 +119,16 @@ denominations; selling it back exercises the vendor-funded return path.
 
 The provisioner stands at 1421,1698. The first world pulse equips a backpack,
 draws the provisioner and reports purse gold. Say `buy`, buy part of the
-branch stack, then say `sell` and return it. Root drives the real client.
-The native packet-family replay is `proofs/GameVendorReplay.codex`.
-The native replay passes on seed `4228CD5103DC4523`: buy/sell packet layout,
-mixed tender and per-metal tax, net sell receipts, split/full serial transfer,
-census, complete rollback, rate-change refusal and both checkpoint formats.
-The custody/codec and existing currency-codec proofs also pass. Reek approved
-the settlement, undo, codec and receipt review.
-
-Root's real-client run on 2026-10-04 accepted server hash
-`E5BDDADE0F4C98C3117C8DC0A9CFC67D0878D79DB2F9C64315CF6FA22FFCFBEB`:
-buying a branch paid 200 copper, 40 silver and 1 gold for the 7-gold quote.
-The sell menu offered the branch at 3 gold; the 9F request settled with
-`side=2 gold=3`. Root authorized landing (AgentGrid receipt
-`4d34386cdbd3139097192cd4fa703cbd`).
-
-The acceptance fixture renders the vendor naked; clothing belongs to blu.
-Marked property and encompassing durable storage remain separate integration
-work. The handler and GVS1 codec are available to fester's composite owner;
-this packet-family grade does not establish composite recovery or close stage 2.
+branch stack, then say `sell` and return it. The acceptance fixture renders
+the vendor naked. `proofs/GameVendorReplay.codex` grades buy/sell packet
+layout, mixed tender and per-metal tax, net sell receipts, split/full serial
+transfer, census, complete rollback, rate-change refusal and both checkpoint
+formats. Marked property is not admitted.
 
 ## Cost
 
-Vendor state preallocates 16 vendors, 5 player bindings with 32 quote rows
-each, 64 physical lots and 1024 serial trade rows. No cart grows retained
+Vendor state preallocates 16 vendors, `gv-player-limit` player bindings with
+32 quote rows each, `gv-lot-limit` physical lots and 1024 serial trade rows. No cart grows retained
 state beyond those budgets. Request lists, packets and undo buffers belong
 above the network loop's scratch mark. Retained callbacks and vendor state
 must be allocated before entering that loop.

@@ -144,11 +144,10 @@ are supplied by their owning records rather than duplicated here.
 Budgets are 128 lifetime titles and 4096 committed history rows. Exhaustion
 refuses before effects; it never overwrites history. Native title records have
 16 fields (128 bytes), history rows 14 (112 bytes), and registry state 8
-(64 bytes), plus lists. Construction including its Result retained 543040 bytes
-under seed `4228CD5103DC4523` on 2026-10-04. Direct mutations allocate no
-per-event storage after construction. Title lookup is O(titles), paging
-O(history) plus at most 16 copies, and a batch O(commands * titles). A
-64-command undo batch retained 15496 bytes, below the proof's 32 KiB bound.
+(64 bytes), plus lists. Direct mutations allocate no per-event storage after
+construction. Title lookup is O(titles), paging O(history) plus at most 16
+copies, and a batch O(commands * titles). The proof bounds a 64-command undo
+batch below 32 KiB.
 
 [TitleRegistryCodec.md](TitleRegistryCodec.md) owns checkpoint encoding.
 `proofs/TitleRegistryProof.codex` grades consent, stale nonces, apparent
