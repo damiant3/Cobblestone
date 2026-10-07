@@ -107,12 +107,7 @@ if(xl){
 if(dora)change('      let closed = img2img-model-free m','      blr-case bpe m "1" "lora-100.png"\n      let closed = img2img-model-free m');
 writeFileSync(join(out,'reference-root.codex'),root);evidence.generatedSourceSha256=await hash(join(out,'reference-root.codex'));
 run('build/bundle-app.ps1',['-Src',join(out,'reference-root.codex'),'-Out',join(out,'reference.codex')],'bundle');
-const bundlePath=join(out,'reference.codex'),bundle=readFileSync(bundlePath,'utf8');
-const start=bundle.indexOf('Chapter: Diffusion--DiffusionDriver\n'),end=bundle.indexOf('\nChapter:',start+1);
-if(start<0||end<0)throw new Error('Driver chapter boundary changed');
-const driver=bundle.slice(start,end);
-if([...driver.matchAll(/^  opening\b/gm)].length!==2)throw new Error('Driver entry shape changed');
-writeFileSync(bundlePath,bundle.slice(0,start)+driver.replace(/^  opening\b/gm,'  dr-resident-opening')+bundle.slice(end));
+const bundlePath=join(out,'reference.codex');
 evidence.bundleSha256=await hash(join(out,'reference.codex'));
 evidence.compileMemory=memory();run('build/compile.ps1',['-Src',join(out,'reference.codex'),'-Out',join(out,'reference.cdx'),'-Log',join(out,'compile.log'),'-Kernel',kernel],'compile');
 run('build/mint-clip-bpe-disk.ps1',['-Out',join(out,'clip.img')],'mint');

@@ -16,7 +16,7 @@ consequence of the line above it.
 
 - The width is **128 columns**, counted from column 1 (Damian, 2026-10-01).
   Keep code already formatted at 100 as it is. Hand rewrites address eligible
-  lines over 200 first; signature continuation belongs to COMPILER-114.
+  lines over 200 first; a long signature wraps after a comma or an arrow (the table below).
 - In: every `.codex` chapter written by hand.
 - Out: long string constants (a string is not broken to meet the width);
   literal tables, a list whose every element is a literal (a 41,588-column
@@ -38,6 +38,7 @@ Each of these is read from the compiler, not assumed.
 | A bound expression must START on its binding line (`let x =` then a newline is CDX1023). | `docs/DevelopersGuide.md`, "Pitfalls" |
 | A line may not start with `.` (CDX1071) or with `& ...` (a new expression, not a continuation). | same section; "No multi-line `&` chains" |
 | Inside an `act` block a newline separates statements. | `docs/DevelopersGuide.md`, the act syntax |
+| A signature's type may break after a comma or an arrow onto a line indented deeper than the signature's first line; every later line of it may sit at that depth or deeper. A break onto the signature's own column is CDX1081. | `Parser.codex`, `type-continues-below`; `codex/test/signature-continuation`, `codex/test/errors/signature-*-same-column` |
 
 `docs/DevelopersGuide.md` also says, in its syntax section, that "multi-line
 function applications work everywhere". That sentence is wrong for

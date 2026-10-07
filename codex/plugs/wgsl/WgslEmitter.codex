@@ -137,8 +137,16 @@ Section: Float Support
      is EffectfulTy (names) (texts) (inner) -> wgsl-is-real inner
      is otherwise -> False
 
+  wgsl-is-bool : CodexType -> Boolean
+  wgsl-is-bool (ty) =
+    when ty
+     is BooleanTy -> True
+     is FunTy (param) (fnrow) (ret) -> wgsl-is-bool ret
+     is EffectfulTy (names) (texts) (inner) -> wgsl-is-bool inner
+     is otherwise -> False
+
   wgsl-ty-text : CodexType -> Text
-  wgsl-ty-text (ty) = if wgsl-is-real ty then "f32" else "i32"
+  wgsl-ty-text (ty) = if wgsl-is-real ty then "f32" else if wgsl-is-bool ty then "bool" else "i32"
 
  THE UNREACHABLE RETURN AFTER A TAIL-CALL LOOP, and it is not decoration.
  Every path inside the loop returns or continues, so no `break` is emitted and
@@ -269,23 +277,20 @@ Section: Binary Op Mapping
      is IrAppendText -> "CODEX_REFUSED_text_append"
      is IrAppendList -> "CODEX_REFUSED_list_append"
      is IrConsList -> "CODEX_REFUSED_list_cons"
-     is IrApproxEq -> "CODEX_REFUSED_approximate_equality"
-     is IrApproxEqExact -> "CODEX_REFUSED_approximate_equality_exact"
+     is IrApproxEq | IrApproxEqExact -> "CODEX_REFUSED_approximate_equality_outside_wgsl_emit_approx_eq"
 
  WGSL 8.7 spells the SHORT-CIRCUITING boolean operators && and ||, and gives
  & and | a second, non-short-circuiting meaning on bool. Both validate, so
  lowering Codex's `and` to & produced a module that compiled and evaluated the
- right operand unconditionally. The five below have no WGSL spelling at all:
- there is no exponentiation operator (pow is float-only), no text and no list,
- and an approximate equality lowered to == is a different question being
- answered. Each emits a token that is a parse error where it lands rather than
+ right operand unconditionally. The four below have no WGSL spelling at all:
+ there is no exponentiation operator (pow is float-only), no text and no list.
+ Each emits a token that is a parse error where it lands rather than
  a plausible operator, so nothing can carry it into a shipped shader.
 
   wgsl-op-refused : IRBinaryOp -> Boolean
   wgsl-op-refused (op) =
     when op
      is IrPowInt | IrAppendText | IrAppendList | IrConsList -> True
-     is IrApproxEq | IrApproxEqExact -> True
      is otherwise -> False
 
   wgsl-op-logical : IRBinaryOp -> Boolean
@@ -670,11 +675,38 @@ Section: Expression Emission
 
   wgsl-emit-binary : WgslCtx, IRBinaryOp, IRExpr, IRExpr, CodexType -> Text
   wgsl-emit-binary (ctx) (op) (l) (r) (ty) =
-    if (wgsl-is-real ty | wgsl-is-real (ir-expr-type l)) | wgsl-is-real (ir-expr-type r) then
+    if wgsl-is-approx-eq op then wgsl-emit-approx-eq ctx op l r
+    else if (wgsl-is-real ty | wgsl-is-real (ir-expr-type l)) | wgsl-is-real (ir-expr-type r) then
       "(" & wgsl-fexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-fexpr ctx r & ")"
     else let folded = wgsl-const-fold-text op l r
     in if folded /= "" then folded
     else "(" & wgsl-iexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-iexpr ctx r & ")"
+
+ `~` and `~0` compare a float's ordinal, as the x86-64 backend does
+ (`float-to-ordinal-sized`): the IEEE bits read as sign and magnitude and
+ mapped to two's complement, so +0 and -0 share ordinal 0 and adjacent floats
+ differ by one. `~0` is equal ordinals; `~` is ordinals at most 4 apart. WGSL
+ has no 64-bit integer, so the distance is the unsigned difference taken in
+ the order that cannot wrap.
+
+  wgsl-is-approx-eq : IRBinaryOp -> Boolean
+  wgsl-is-approx-eq (op) =
+    when op
+     is IrApproxEq | IrApproxEqExact -> True
+     is otherwise -> False
+
+  wgsl-ordinal : Text -> Text
+  wgsl-ordinal (f) =
+    let b = "bitcast<i32>(" & f & ")"
+    in "select(-(" & b & " & 2147483647), " & b & ", " & b & " >= 0)"
+
+  wgsl-emit-approx-eq : WgslCtx, IRBinaryOp, IRExpr, IRExpr -> Text
+  wgsl-emit-approx-eq (ctx) (op) (l) (r) =
+    let a = wgsl-ordinal (wgsl-fexpr ctx l)
+    in let b = wgsl-ordinal (wgsl-fexpr ctx r)
+    in when op
+     is IrApproxEqExact -> "(" & a & " == " & b & ")"
+     is otherwise -> "(select(u32(" & b & ") - u32(" & a & "), u32(" & a & ") - u32(" & b & "), " & a & " >= " & b & ") <= 4u)"
 
   wgsl-emit-fargs : WgslCtx, List IRExpr, Integer -> Text
   wgsl-emit-fargs (ctx) (args) (depth) =

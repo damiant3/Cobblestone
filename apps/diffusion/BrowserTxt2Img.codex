@@ -121,8 +121,10 @@ Section: The Image
  refused, -3 sampling or the decode refused.
 
   browser-txt2img-then : BrowserModel, ClipBpe, Text, Text, Integer, Integer, Real, Integer, Integer, (Integer -> Integer) -> Integer
-  browser-txt2img-then (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (done) =
-    browser-conds-then m bpe prompt negative (\cc cu kc ku -> done (if cc == 0 | cu == 0 then 0 - 2 else bt-sample m cc cu (\h -> if h == cu then ku else kc) seed steps cfg (width / 8) (height / 8)))
+  browser-txt2img-then (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (done0) =
+    let mark = __heap-save
+    in let done = \r -> let back = __heap-restore mark in done0 r
+    in browser-conds-then m bpe prompt negative (\cc cu kc ku -> done (if cc == 0 | cu == 0 then 0 - 2 else bt-sample m cc cu (\h -> if h == cu then ku else kc) seed steps cfg (width / 8) (height / 8)))
 
   bt-sample : BrowserModel, Integer, Integer, (Integer -> Integer), Integer, Integer, Real, Integer, Integer -> Integer
   bt-sample (m) (cc) (cu) (cl) (seed) (steps) (cfg) (lw) (lh) =
@@ -156,8 +158,10 @@ Section: Timed
   bt-two (k) = if k < 10 then "0" & show k else show k
 
   browser-txt2img-timed : BrowserModel, ClipBpe, Text, Text, Integer, Integer, Real, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
-  browser-txt2img-timed (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (log) (done) =
-    let t0 = clock-ms 0
+  browser-txt2img-timed (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (log) (done0) =
+    let mark = __heap-save
+    in let done = \img sm -> let back = __heap-restore mark in done0 img sm
+    in let t0 = clock-ms 0
     in let a = log "text encode: start"
     in browser-conds-then m bpe prompt negative (\cc cu kc ku -> if cc == 0 | cu == 0 then done (0 - 2) "" else gpu-done-then (\r -> bt-encoded m cc cu (\h -> if h == cu then ku else kc) seed steps cfg (width / 8) (height / 8) t0 (clock-ms 0) log done))
 

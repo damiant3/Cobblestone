@@ -19,7 +19,7 @@ if(execFileSync('git',['-C',ggufPy,'status','--porcelain'],{encoding:'utf8'}).tr
 const size=statSync(model).size,fd=openSync(model,'r');
 const read=(at,n)=>{const b=Buffer.alloc(n);if(readSync(fd,b,0,n,at)!==n)throw new Error('Model read');return b;};
 const parsed=parseQwenGguf((b=>b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength))(read(0,8*1024*1024)),size);
-const formats={12:{name:'Q4_K',kernel:'q4k_matvec'},14:{name:'Q6_K',kernel:'q6k_matvec'}};
+const formats={12:{name:'Q4_K',kernel:'q4k_matvec_wg'},14:{name:'Q6_K',kernel:'q6k_matvec_wg'}};
 const subjects=['blk.0.attn_q.weight','blk.35.ffn_up.weight','blk.0.ffn_down.weight'];
 const work=mkdtempSync(join(tmpdir(),'qwen-matvec-')),cases=[];
 let seed=12345;const next=()=>{seed=(Math.imul(seed,1103515245)+12345)>>>0;return seed/4294967296*2-1;};
@@ -46,7 +46,7 @@ execFileSync(python,[join(work,'oracle.py'),join(ggufPy,'gguf-py'),work,...cases
 for(const [i,c] of cases.entries()){const b=readFileSync(join(work,i+'.y'));c.expected=new Float64Array(b.buffer,b.byteOffset,b.byteLength/8);if(c.expected.length!==c.rows)throw new Error('Oracle length differs '+c.name);}
 
 const blobs=new Map();cases.forEach((c,i)=>{blobs.set('w'+i,c.raw);blobs.set('x'+i,Buffer.from(c.x.buffer));});
-const results=await withGpuPage(readFileSync(shaderArg,'utf8'),blobs,run=>run(cases.map((c,i)=>({kernel:c.format.kernel,inputs:{wb:'w'+i,xb:'x'+i},scalars:{cols:c.cols,rows:c.rows},threads:c.rows,out:'yb',outWords:c.rows}))));
+const results=await withGpuPage(readFileSync(shaderArg,'utf8'),blobs,run=>run(cases.map((c,i)=>({kernel:c.format.kernel,inputs:{wb:'w'+i,xb:'x'+i},scalars:{cols:c.cols,rows:c.rows},threads:c.rows*256,out:'yb',outWords:c.rows}))));
 const bound=1e-6;let failed=0;
 for(const [i,c] of cases.entries()){
   const words=results[i],actual=new Float32Array(words.buffer,0,c.rows);

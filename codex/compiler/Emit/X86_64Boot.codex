@@ -713,7 +713,8 @@ Section: Size and Threshold Constants
 
   emit-spawn-pool-admit : CodegenState -> CodegenState
   emit-spawn-pool-admit (st) =
-    let s0 = st-append-code st (li reg-rdi 126976 & mov-load reg-rax reg-rdi 0 & li reg-rcx 5063257923364865091 & cmp-rr reg-rax reg-rcx)
+    let s0-lead = li reg-rdi 126976 & mov-load reg-rax reg-rdi 0
+    in let s0 = st-append-code st (s0-lead & li reg-rcx 5063257923364865091 & cmp-rr reg-rax reg-rcx)
     in let legacy1 = s0.code-len
     in let s1 = st-append-code s0 (jcc cc-ne 0 & mov-load-u32 reg-rax reg-rdi 8 & cmp-ri reg-rax 4)
     in let legacy2 = s1.code-len
@@ -727,7 +728,8 @@ Section: Size and Threshold Constants
     in let span = s5.code-len
     in let s6 = st-append-code s5 (jcc cc-ne 0 & cmp-ri reg-rdx (2147483648 - spawn-pool-span))
     in let high = s6.code-len
-    in let s7 = st-append-code s6 (jcc cc-a 0 & mov-rr reg-rax reg-rdx & add-ri reg-rax spawn-pool-span & mov-load reg-rcx reg-rdi 232 & test-rr reg-rcx reg-rcx)
+    in let s7-lead = jcc cc-a 0 & mov-rr reg-rax reg-rdx & add-ri reg-rax spawn-pool-span
+    in let s7 = st-append-code s6 (s7-lead & mov-load reg-rcx reg-rdi 232 & test-rr reg-rcx reg-rcx)
     in let empty = s7.code-len
     in let bounds = st-append-code s7 (jcc cc-e 0 & mov-load reg-r8 reg-rdi 240 & cmp-rr reg-r8 reg-rcx)
     in let reversed = bounds.code-len
@@ -1393,10 +1395,12 @@ Section: Page Fault Handler
     in let s1 = if bsp then
       st-append-code s0 (li reg-rax 0 & li reg-rdx avx-admitted-addr & mov-store reg-rdx reg-rax 0)
     else s0
-    in let s2 = st-append-code s1 (li reg-rax 1 & xor-rr reg-rcx reg-rcx & cpuid & mov-rr reg-rax reg-rcx & and-ri reg-rax avx-cpuid-bits & cmp-ri reg-rax avx-cpuid-bits)
+    in let s2-lead = li reg-rax 1 & xor-rr reg-rcx reg-rcx & cpuid & mov-rr reg-rax reg-rcx
+    in let s2 = st-append-code s1 (s2-lead & and-ri reg-rax avx-cpuid-bits & cmp-ri reg-rax avx-cpuid-bits)
     in let skip-pos = s2.code-len
     in let s3 = st-append-code s2 (jcc cc-ne 0)
-    in let s4 = st-append-code s3 (mov-rax-cr4 & or-ri reg-rax cr4-osxsave & mov-cr4-rax & xor-rr reg-rcx reg-rcx & li reg-rax 7 & xor-rr reg-rdx reg-rdx & xsetbv)
+    in let s4-lead = mov-rax-cr4 & or-ri reg-rax cr4-osxsave & mov-cr4-rax & xor-rr reg-rcx reg-rcx & li reg-rax 7
+    in let s4 = st-append-code s3 (s4-lead & xor-rr reg-rdx reg-rdx & xsetbv)
     in let s5 = if bsp then
       st-append-code s4 (li reg-rax 1 & li reg-rdx avx-admitted-addr & mov-store reg-rdx reg-rax 0)
     else s4
@@ -2757,7 +2761,9 @@ Section: SMP Initialization
  to selector 24, the 32-bit code segment, at offset 68.
 
   ap-tramp-code16 : List Integer
-  ap-tramp-code16 = [250, 49, 192, 142, 216, 15, 1, 22] & write-i16 (ap-trampoline-addr + 2) & [15, 32, 192, 102, 131, 200, 1, 15, 34, 192, 102, 234] & write-i32 (ap-trampoline-addr + 68) & write-i16 24
+  ap-tramp-code16 = let t16-0 = [250, 49, 192, 142, 216, 15, 1, 22] & write-i16 (ap-trampoline-addr + 2)
+    in let t16-1 = t16-0 & [15, 32, 192, 102, 131, 200, 1, 15, 34, 192, 102, 234]
+    in t16-1 & write-i32 (ap-trampoline-addr + 68) & write-i16 24
 
  Offsets 68..133, thirty-two-bit. Load the data selector into every
  segment register; set CR4 to PAE, OSFXSR and OSXMMEXCPT (0x620); point
@@ -2780,7 +2786,10 @@ Section: SMP Initialization
  fault.
 
   ap-tramp-code32 : List Integer
-  ap-tramp-code32 = [184] & write-i32 16 & [142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 15, 32, 224, 13] & write-i32 1568 & [15, 34, 224, 184] & write-i32 32768 & [15, 34, 216, 185] & write-i32 3221225600 & [15, 50, 13] & write-i32 2304 & [15, 48, 15, 32, 192, 13] & write-i32 2147483650 & [15, 34, 192, 234] & write-i32 (ap-trampoline-addr + 134) & write-i16 8
+  ap-tramp-code32 = let t32-0 = [184] & write-i32 16 & [142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 15, 32, 224, 13]
+    in let t32-1 = t32-0 & write-i32 1568 & [15, 34, 224, 184] & write-i32 32768 & [15, 34, 216, 185]
+    in let t32-2 = t32-1 & write-i32 3221225600 & [15, 50, 13] & write-i32 2304 & [15, 48, 15, 32, 192, 13]
+    in t32-2 & write-i32 2147483650 & [15, 34, 192, 234] & write-i32 (ap-trampoline-addr + 134) & write-i16 8
 
  Offsets 134..176, sixty-four-bit. Reload the segment registers under the
  new mode; take a core id with a locked exchange-add on ap-id-next-addr,
@@ -2789,7 +2798,9 @@ Section: SMP Initialization
  entry, whose absolute address was known when this blob was assembled.
 
   ap-tramp-code64 : Integer -> List Integer
-  ap-tramp-code64 (entry) = [184] & write-i32 16 & [142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 184] & write-i32 1 & [240, 15, 193, 4, 37] & write-i32 ap-id-next-addr & [137, 199, 72, 184] & write-i64 entry & [255, 224]
+  ap-tramp-code64 (entry) = let t64-0 = [184] & write-i32 16 & [142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 184]
+    in let t64-1 = t64-0 & write-i32 1 & [240, 15, 193, 4, 37] & write-i32 ap-id-next-addr
+    in t64-1 & [137, 199, 72, 184] & write-i64 entry & [255, 224]
 
   ap-tramp-blob : Integer -> List Integer
   ap-tramp-blob (entry) = ap-tramp-data & ap-tramp-code16 & ap-tramp-code32 & ap-tramp-code64 entry

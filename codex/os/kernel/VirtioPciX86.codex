@@ -1,0 +1,210 @@
+Chapter: VirtioPciX86
+  cites Kernel chapter Pci
+  cites Kernel chapter MmioMapX86
+  cites Foreword chapter Result
+
+ Modern VIRTIO PCI capability and split-ring layouts follow VIRTIO 1.2,
+ sections 4.1 and 2.7. Capability mappings are checked before MMIO access.
+ BAR sizing disables decode and bus mastering, then restores both BAR
+ words and the command register before returning.
+
+  VpxRegion = record { base : Integer, size : Integer }
+  VpxDevice = record {
+    pci : PciDevice, common : Integer, notify : Integer, notify-size : Integer,
+    notify-multiplier : Integer, isr : Integer, config : Integer, config-size : Integer
+  }
+  VpxFeatures = record { low : Integer, high : Integer }
+  VpxQueue = record {
+    desc : Integer, avail : Integer, used : Integer, size : Integer, notify : Integer,
+    index : Integer, avail-index : Integer, last-used : Integer, fault : Integer
+  }
+
+  vpx-config : PciDevice, Integer -> Integer
+  vpx-config (d) (offset) = bit-and (pci-read-config d.pci-bus d.pci-dev d.pci-func offset) #FFFFFFFF
+
+  vpx-config-write : PciDevice, Integer, Integer -> Integer
+  vpx-config-write (d) (offset) (value) = pci-write-config d.pci-bus d.pci-dev d.pci-func offset value
+
+  vpx-byte : PciDevice, Integer -> Integer
+  vpx-byte (d) (offset) = bit-and (bit-shru (vpx-config d (bit-and offset 252)) ((int-mod offset 4) * 8)) 255
+
+  vpx-find-cap : PciDevice, Integer, Integer, Integer -> Integer
+  vpx-find-cap (d) (kind) (at) (left) =
+    if at == 0 | left <= 0 | at < 64 | at > 252 | int-mod at 4 /= 0 then 0
+    else let next = vpx-byte d (at + 1)
+    in if vpx-byte d at == 9 & vpx-byte d (at + 3) == kind then at
+    else vpx-find-cap d kind next (left - 1)
+
+  vpx-bar : PciDevice, Integer -> Result VpxRegion Text
+  vpx-bar (d) (index) =
+    if index < 0 | index > 5 then Err "virtio BAR index invalid"
+    else let offset = 16 + index * 4
+    in let low = vpx-config d offset
+    in let wide = bit-and low 6 == 4
+    in if bit-and low 1 /= 0 | (bit-and low 6 /= 0 & not wide) | (wide & index == 5) then Err "virtio requires a memory BAR"
+    else let high = if wide then vpx-config d (offset + 4) else 0
+    in if high >= 32768 then Err "virtio BAR outside canonical MMIO"
+    else let base = bit-and low #FFFFFFF0 + high * #100000000
+    in if base < #C0000000 then Err "virtio BAR overlaps runtime RAM"
+    else let command = bit-and (vpx-config d 4) 65535
+    in let disabled = vpx-config-write d 4 (bit-and command #FFF8)
+    in let probe-low = vpx-config-write d offset #FFFFFFFF
+    in let probe-high = if wide then vpx-config-write d (offset + 4) #FFFFFFFF else 0
+    in let mask = bit-and (vpx-config d offset) #FFFFFFF0
+    in let high-mask = if wide then vpx-config d (offset + 4) else #FFFFFFFF
+    in let restore-low = vpx-config-write d offset low
+    in let restore-high = if wide then vpx-config-write d (offset + 4) high else 0
+    in let restored = vpx-config-write d 4 command
+    in let size = #100000000 - mask
+    in if mask == 0 | high-mask /= #FFFFFFFF | size > #800000000000 - base then Err "virtio BAR extent invalid"
+    else Ok (VpxRegion { base = base, size = size })
+
+  vpx-region : PciDevice, Integer, Integer -> Result VpxRegion Text
+  vpx-region (d) (cap) (minimum) =
+    if cap < 64 | cap > 240 then Err "virtio capability missing or malformed"
+    else let cap-size = vpx-byte d (cap + 2)
+    in if cap-size < 16 | cap-size > 256 - cap then Err "virtio capability length invalid"
+    else when vpx-bar d (vpx-byte d (cap + 4))
+      is Err (e) -> Err e
+      is Ok (bar) ->
+        let offset = vpx-config d (cap + 8)
+        in let length = vpx-config d (cap + 12)
+        in if length < minimum | offset > bar.size then Err "virtio capability range invalid"
+        else if length > bar.size - offset then Err "virtio capability exceeds BAR"
+        else when mx-check-window (bar.base + offset) length
+          is Err (e) -> Err e
+          is Ok (mapped) -> Ok (VpxRegion { base = mapped, size = length })
+
+  vpx-open : PciDevice -> Result VpxDevice Text
+  vpx-open (d) =
+    if d.pci-vendor /= #1AF4 then Err "not a virtio PCI device"
+    else if bit-and (vpx-config d 4) #100000 == 0 then Err "virtio PCI capability list absent"
+    else let first = vpx-byte d 52
+    in let common-cap = vpx-find-cap d 1 first 48
+    in let notify-cap = vpx-find-cap d 2 first 48
+    in let isr-cap = vpx-find-cap d 3 first 48
+    in let config-cap = vpx-find-cap d 4 first 48
+    in if notify-cap < 64 | notify-cap > 236 then Err "virtio notification capability missing"
+    else if vpx-byte d (notify-cap + 2) < 20 then Err "virtio notification multiplier absent"
+    else when vpx-region d common-cap 56
+      is Err (e) -> Err e
+      is Ok (common) -> when vpx-region d notify-cap 2
+        is Err (e) -> Err e
+        is Ok (notify) -> when vpx-region d isr-cap 1
+          is Err (e) -> Err e
+          is Ok (isr) -> when vpx-region d config-cap 1
+            is Err (e) -> Err e
+            is Ok (config) ->
+              if int-mod common.base 4 /= 0 | int-mod notify.base 2 /= 0 | int-mod config.base 4 /= 0 then Err "virtio capability alignment invalid"
+              else let enabled = vpx-config-write d 4 (bit-or (bit-and (vpx-config d 4) 65535) #406)
+              in Ok (VpxDevice { pci = d, common = common.base, notify = notify.base, notify-size = notify.size,
+                notify-multiplier = vpx-config d (notify-cap + 16), isr = isr.base, config = config.base, config-size = config.size })
+
+  vpx-wait-reset : Integer, Integer -> Boolean
+  vpx-wait-reset (common) (left) =
+    if peek-byte common 20 == 0 then True
+    else if left <= 0 then False else vpx-wait-reset common (left - 1)
+
+  vpx-feature : VpxDevice, Integer -> Integer
+  vpx-feature (d) (word) =
+    let select = poke-32 d.common 0 word
+    in let fence = memory-fence 0
+    in bit-and (peek-32 d.common 4) #FFFFFFFF
+
+  vpx-reset : VpxDevice -> Result VpxFeatures Text
+  vpx-reset (d) =
+    let reset = poke-byte d.common 20 0
+    in if not (vpx-wait-reset d.common 100000) then Err "virtio reset timed out"
+    else let ack = poke-byte d.common 20 1
+    in let driver = poke-byte d.common 20 3
+    in let no-msix = poke-16 d.common 16 65535
+    in Ok (VpxFeatures { low = vpx-feature d 0, high = vpx-feature d 1 })
+
+  vpx-accept : VpxDevice, Integer, Integer -> Result Integer Text
+  vpx-accept (d) (low) (high) =
+    if high /= 1 | bit-and low #20000000 /= 0 then Err "virtio requires VERSION_1 and plain split rings"
+    else if bit-and (vpx-feature d 0) low /= low | bit-and (vpx-feature d 1) high /= high then Err "virtio requested feature absent"
+    else let a = poke-32 d.common 8 0
+    in let b = poke-32 d.common 12 low
+    in let c = poke-32 d.common 8 1
+    in let e = poke-32 d.common 12 high
+    in let fence = memory-fence 0
+    in let accepted = poke-byte d.common 20 11
+    in if bit-and (peek-byte d.common 20) 8 == 0 then Err "virtio rejected features" else Ok 0
+
+  vpx-zero : Integer, Integer, Integer -> Integer
+  vpx-zero (buf) (size) (i) =
+    if i >= size then 0 else let w = poke-byte buf i 0 in vpx-zero buf size (i + 1)
+
+  vpx-w64 : Integer, Integer, Integer -> Integer
+  vpx-w64 (buf) (at) (value) =
+    let low = poke-32 buf at (bit-and value #FFFFFFFF)
+    in poke-32 buf (at + 4) (bit-shru value 32)
+
+  vpx-queue : VpxDevice, Integer, Integer -> Result VpxQueue Text
+  vpx-queue (d) (index) (size) =
+    if bit-and (peek-byte d.common 20) 8 == 0 then Err "virtio features not accepted"
+    else if index < 0 | index >= peek-16 d.common 18 | size < 1 | size > 256 then Err "virtio queue index or size invalid"
+    else if bit-and size (size - 1) /= 0 then Err "virtio queue size must be a power of two"
+    else let selected = poke-16 d.common 22 index
+    in if peek-16 d.common 24 < size | peek-16 d.common 28 /= 0 then Err "virtio queue unavailable or already enabled"
+    else let notify-offset = peek-16 d.common 30 * d.notify-multiplier
+    in if notify-offset > d.notify-size - 2 then Err "virtio queue notification outside capability"
+    else let used-offset = if size <= 128 then 4096 else 8192
+    in let ring-bytes = used-offset + 4096
+    in let raw = alloc-bytes (ring-bytes + 4095)
+    in let base = bit-and (raw + 4095) (0 - 4096)
+    in let zero = vpx-zero base ring-bytes 0
+    in let avail = base + size * 16
+    in let used = base + used-offset
+    in let no-irq = poke-16 avail 0 1
+    in let qsize = poke-16 d.common 24 size
+    in let no-msix = poke-16 d.common 26 65535
+    in let a = vpx-w64 d.common 32 base
+    in let b = vpx-w64 d.common 40 avail
+    in let c = vpx-w64 d.common 48 used
+    in let fence = memory-fence 0
+    in let enabled = poke-16 d.common 28 1
+    in Ok (VpxQueue { desc = base, avail = avail, used = used, size = size, notify = d.notify + notify-offset,
+      index = index, avail-index = 0, last-used = 0, fault = 0 })
+
+  vpx-ready : VpxDevice -> Integer
+  vpx-ready (d) = poke-byte d.common 20 15
+
+ Queue polling and publication allocate nothing. The caller supplies eight
+ bytes for a completion (descriptor id then used length), and owns every
+ descriptor until its completion. Invalid counts and out-of-range IDs fault
+ the queue; the device driver checks ownership and length for each ID.
+
+  vpx-publish : VpxQueue, Integer -> Integer
+  vpx-publish (q) (head) =
+    if q.fault /= 0 | head < 0 | head >= q.size then -1
+    else if bit-and (q.avail-index - q.last-used) 65535 >= q.size then -1
+    else let slot = int-mod q.avail-index q.size
+    in let entry = poke-16 q.avail (4 + slot * 2) head
+    in let next = bit-and (q.avail-index + 1) 65535
+    in let fence = memory-fence 0
+    in let published = poke-16 q.avail 2 next
+    in let stored = __record-set q "avail-index" next
+    in let fence = memory-fence 0
+    in let notified = poke-16 q.notify 0 q.index
+    in 0
+
+  vpx-take : VpxQueue, Integer -> Integer
+  vpx-take (q) (out) =
+    if q.fault /= 0 then -1
+    else let used = peek-16 q.used 2
+    in if used == q.last-used then 0
+    else let pending = bit-and (used - q.last-used) 65535
+    in let posted = bit-and (q.avail-index - q.last-used) 65535
+    in if pending > posted | pending > q.size then let fault = __record-set q "fault" 1 in -1
+    else let fence = memory-fence 0
+    in let at = 4 + int-mod q.last-used q.size * 8
+    in let id = bit-and (peek-32 q.used at) #FFFFFFFF
+    in if id >= q.size then let fault = __record-set q "fault" 1 in -1
+    else let a = poke-32 out 0 id
+    in let b = poke-32 out 4 (peek-32 q.used (at + 4))
+    in let next = __record-set q "last-used" (bit-and (q.last-used + 1) 65535)
+    in 1
+
+Page 1

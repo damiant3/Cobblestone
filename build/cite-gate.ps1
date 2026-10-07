@@ -259,5 +259,46 @@ try {
     Remove-Item -Force $subjectsFile -ErrorAction SilentlyContinue
 }
 if ($code -ne 0) { Write-Host "[cite-gate] FAIL: the cited tests did not all pass"; exit 1 }
+
+# THE CODEGEN COST PINS. A codex/test chapter with a .census sidecar is compiled
+# under the callcensus mode flag, and every CDX6014 line pinned there is a
+# ceiling: the definition must keep its emit path (lir beats minimal beats
+# standard) and must not grow in instructions, pushes, pops or stack stores. A
+# fall is reported so the gain can be re-pinned; a rise, a pinned definition
+# that is no longer emitted, or an empty side fails. A pin set by a codegen
+# change is NOT verified by any value inside it, only by the run that wrote it:
+# read the delta before re-pinning (ExaminersAssay, the LIR dump pin).
+function ConvertFrom-CensusLine([string]$line) {
+    if ($line -notmatch "\[CALLS\] '([^']+)' path=(\w+) params=\d+ bytes=\d+ insns=(\d+) push=(\d+) pop=(\d+) stack-stores=(\d+)") { return $null }
+    $rank = switch ($matches[2]) { 'lir' { 2 } 'minimal' { 1 } default { 0 } }
+    [pscustomobject]@{ Name = $matches[1]; Path = $matches[2]; Rank = $rank; Insns = [int]$matches[3]; Push = [int]$matches[4]; Pop = [int]$matches[5]; Stores = [int]$matches[6] }
+}
+if ($compilerChanged) {
+    $worse = 0
+    foreach ($pin in @(Get-ChildItem -Path (Join-Path $Repo 'codex\test') -Recurse -Filter *.census -File)) {
+        $tag = $pin.FullName.Substring($Repo.Length + 1)
+        $cOut = Join-Path $env:TEMP "cite-gate-census-$PID.cdx"
+        $cLog = Join-Path $env:TEMP "cite-gate-census-$PID.log"
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'compile.ps1') -Src ($pin.FullName -replace '\.census$', '.codex') -Out $cOut -Log $cLog -Kernel $Kernel -RawFlags callcensus *> $null
+        $now = @{}
+        if (Test-Path -PathType Leaf $cLog) { foreach ($l in [System.IO.File]::ReadAllLines($cLog)) { $c = ConvertFrom-CensusLine $l; if ($c) { $now[$c.Name] = $c } } }
+        Remove-Item -Force $cOut, $cLog -ErrorAction SilentlyContinue
+        $pinned = @([System.IO.File]::ReadAllLines($pin.FullName) | ForEach-Object { ConvertFrom-CensusLine $_ } | Where-Object { $_ })
+        if ($pinned.Count -eq 0 -or $now.Count -eq 0) { Write-Host "[cite-gate] CENSUS FAIL $tag : $($pinned.Count) pinned, $($now.Count) measured; an empty side proves nothing"; $worse++; continue }
+        $better = 0
+        foreach ($p in $pinned) {
+            $n = $now[$p.Name]
+            if (-not $n) { Write-Host "  CENSUS $tag '$($p.Name)': pinned, not emitted"; $worse++; continue }
+            $bad = @()
+            if ($n.Rank -lt $p.Rank) { $bad += "path $($p.Path) -> $($n.Path)" } elseif ($n.Rank -gt $p.Rank) { $better++ }
+            foreach ($k in 'Insns', 'Push', 'Pop', 'Stores') {
+                if ($n.$k -gt $p.$k) { $bad += "$k $($p.$k) -> $($n.$k)" } elseif ($n.$k -lt $p.$k) { $better++ }
+            }
+            if ($bad.Count -gt 0) { Write-Host "  CENSUS $tag '$($p.Name)': $($bad -join ', ')"; $worse++ }
+        }
+        Write-Host "[cite-gate] census $tag : $($pinned.Count) pinned definition(s), $better value(s) improved$(if ($better -gt 0) { '; re-pin to keep the gain' })"
+    }
+    if ($worse -gt 0) { Write-Host "[cite-gate] FAIL: $worse codegen cost regression(s) against a .census pin"; exit 1 }
+}
 Write-Host "[cite-gate] OK: $($rel.Count) cited test chapter(s), $($runnable.Count) of them against an .expected"
 exit 0

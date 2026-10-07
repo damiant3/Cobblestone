@@ -782,6 +782,15 @@ uses `at - at / 4 * 4` for nonnegative byte offsets to avoid that call.
 The plug must lower the remainder or refuse the unresolved callee before
 reporting a successful shader build.
 
+PTX has the same gap: `int-mod` in a device helper produces an unresolved
+`int_mod` call while `ptx/run.ps1` reports success. CUDA JIT then refuses the
+whole module with `Unknown symbol 'int_mod'` and a missing call prototype
+(2026-10-04, compiler `4228CD5103DC4523`, PTX plug `7D8A1742B48C4132`).
+`apps/uoaix/TownNetworkHillKernels.codex` uses division and subtraction for its
+nonnegative row/column indexes. Grade a fix with a device helper that uses
+`int-mod`: either lower and run it through CUDA, or refuse the unresolved
+callee during generation. A successful text emission is not that grade.
+
 `build/check-plug-callees.ps1` reads the source `plug-oracle-test.ps1 -KeepArtifacts`
 leaves in `build-output/plug-oracle` and fails on a name that is called, bound
 nowhere in the file, and not a global of the language's own runtime (python's

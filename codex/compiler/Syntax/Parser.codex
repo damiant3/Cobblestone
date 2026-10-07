@@ -215,8 +215,10 @@ Section: Type Parsing
   parse-type-continue (left) (st) =
     if parse-fuel-exhausted st then TypeOk left (emit-parse-fuel-error st "parse-type-continue")
     else let st-fueled = consume-parse-fuel st
-    in if is-arrow (current-kind st-fueled) then let arrow-span = token-to-span (current st-fueled)
-    in let st2 = advance st-fueled
+    in if is-arrow (current-kind st-fueled) & type-breaks-line st-fueled & type-continues-below st-fueled == False
+      then TypeOk left (signature-break-error st-fueled)
+    else if is-arrow (current-kind st-fueled) then let arrow-span = token-to-span (current st-fueled)
+    in let st2 = if type-breaks-line st-fueled then skip-newlines (advance st-fueled) else advance st-fueled
     in let right-result = parse-type st2
     in unwrap-type-ok right-result (make-fun-type-arrow left arrow-span)
     else if is-fat-arrow (current-kind st-fueled) then let st2 = advance st-fueled
@@ -231,17 +233,68 @@ Section: Type Parsing
      then let st2 = skip-newlines (advance st-fueled)
      in let right-result = parse-type st2
      in unwrap-type-ok right-result (make-fun-type left)
+    else if type-param-after st-fueled then TypeOk left (signature-break-error st-fueled)
     else TypeOk left st-fueled
     else TypeOk left st-fueled
 
   comma-starts-type-param : ParseState -> Boolean
   comma-starts-type-param (st) =
-    let next = peek-kind st 1
+    if type-breaks-line st & type-continues-below st == False then False
+    else type-param-after st
+
+  type-param-after : ParseState -> Boolean
+  type-param-after (st) =
+    let at = skip-newlines-pos (st.tokens) (st.pos + 1) (list-length (st.tokens))
+    in let next = peek-kind st (at - st.pos)
     in if is-type-ident next then True
     else if is-left-bracket next then True
     else if is-left-paren next then True
-    else if is-ident next then if is-colon (peek-kind st 2) then False else True
+    else if is-ident next then if is-colon (peek-kind st (at - st.pos + 1)) then False else True
     else False
+
+  signature-break-error : ParseState -> ParseState
+  signature-break-error (st) =
+    let msg = "a type line that ends in '" & token-text (current st) & "' continues only onto a line indented deeper than the signature's first line; indent the rest of the type, or keep it on one line"
+    in let diag = make-error cdx-signature-continuation-not-deeper msg (token-to-span (current st))
+    in advance (__record-set st "bag" (bag-add (st.bag) diag))
+
+  type-breaks-line : ParseState -> Boolean
+  type-breaks-line (st) = skip-newlines-pos (st.tokens) (st.pos + 1) (list-length (st.tokens)) /= st.pos + 1
+
+  type-continues-below : ParseState -> Boolean
+  type-continues-below (st) =
+    let len = list-length (st.tokens)
+    in let at = skip-newlines-pos (st.tokens) (st.pos + 1) len
+    in if at == st.pos + 1 | at >= len then False
+    else (list-at (st.tokens) at).column > type-first-indent (st.tokens) (st.pos)
+
+  type-first-indent : List Token, Integer -> Integer
+  type-first-indent (tokens) (p) =
+    let start = type-line-start tokens p
+    in let prev = type-prev-real tokens (start - 1)
+    in if prev >= 0 & (is-comma ((list-at tokens prev).kind) | is-arrow ((list-at tokens prev).kind))
+      then type-first-indent tokens prev
+    else (list-at tokens (type-next-real tokens start)).column
+
+  type-next-real : List Token, Integer -> Integer
+  type-next-real (tokens) (p) =
+    if p >= list-length tokens - 1 then p
+    else when (list-at tokens p).kind
+      is Newline | Indent | Dedent -> type-next-real tokens (p + 1)
+      is otherwise -> p
+
+  type-line-start : List Token, Integer -> Integer
+  type-line-start (tokens) (p) =
+    if p <= 0 then 0
+    else if (list-at tokens (p - 1)).line == (list-at tokens p).line then type-line-start tokens (p - 1)
+    else p
+
+  type-prev-real : List Token, Integer -> Integer
+  type-prev-real (tokens) (p) =
+    if p < 0 then 0 - 1
+    else when (list-at tokens p).kind
+      is Newline | Indent | Dedent -> type-prev-real tokens (p - 1)
+      is otherwise -> p
 
   make-fun-type : TypeExpr, TypeExpr, ParseState -> ParseTypeResult
   make-fun-type (left) (right) (st) =
@@ -435,14 +488,16 @@ Section: Type Parsing
       in parse-effect-names st3 acc sacc tacc
     else parse-effect-names st2 acc sacc (list-push tacc tok)
 
-  parse-effect-with-scope : ParseState, Token, List Token, List Token, List Token -> (List Token, ParseState, List Token, List Token)
+  parse-effect-with-scope : ParseState, Token, List Token, List Token, List Token ->
+    (List Token, ParseState, List Token, List Token)
   parse-effect-with-scope (st) (name-tok) (acc) (sacc) (tacc) =
     if is-text-lit (current-kind st) then
       let scope-tok = current st
       in parse-effect-names (advance st) (list-push acc name-tok) (list-push sacc scope-tok) tacc
     else parse-effect-names st (list-push acc name-tok) (list-push sacc empty-scope-tok) tacc
 
-  parse-dotted-effect : ParseState, Token, List Token, List Token, List Token -> (List Token, ParseState, List Token, List Token)
+  parse-dotted-effect : ParseState, Token, List Token, List Token, List Token ->
+    (List Token, ParseState, List Token, List Token)
   parse-dotted-effect (st) (base-tok) (acc) (sacc) (tacc) =
     let st2 = advance st
     in if is-ident (current-kind st2) | is-type-ident (current-kind st2) then
@@ -528,7 +583,8 @@ Section: Pattern Parsing
   parse-ctor-pattern-fields : Token, LinkedList Pat, ParseState -> ParsePatResult
   parse-ctor-pattern-fields (ctor) (acc) (st) =
     if parse-fuel-exhausted st then
-      PatOk (deck-record (CtorPat ctor (deck-record (__linked-list-to-list acc)))) (emit-parse-fuel-error st "parse-ctor-pattern-fields")
+      let fuel-st = emit-parse-fuel-error st "parse-ctor-pattern-fields"
+      in PatOk (deck-record (CtorPat ctor (deck-record (__linked-list-to-list acc)))) fuel-st
     else let st-fueled = consume-parse-fuel st
     in if token-text ctor == "Vector" & is-left-bracket (current-kind st-fueled) then
       parse-vec-pat-elems [] (advance st-fueled)
@@ -963,14 +1019,16 @@ Section: Type Definition Parsing
     })
     in parse-variant-ctors name-tok tparams (__linked-list-push acc ctor) st2
 
-  unwrap-ctor-field : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
+  unwrap-ctor-field : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef ->
+    ParseTypeDefResult
   unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
     when r
       is TypeOk (ty) (st) ->
        let st2 = expect RightParen st
        in parse-ctor-fields ctor-name (__linked-list-push fields ty) st2 name-tok tparams acc
 
-  unwrap-ctor-return : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef -> ParseTypeDefResult
+  unwrap-ctor-return : ParseTypeResult, Token, LinkedList TypeExpr, Token, List Token, LinkedList VariantCtorDef ->
+    ParseTypeDefResult
   unwrap-ctor-return (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
     when r
       is TypeOk (ty) (st) ->
@@ -1358,9 +1416,10 @@ Section: Chapter Pagination
       in let diag = make-error cdx-chapter-pagination msg (o.po-span)
       in check-pagination-loop occs (i + 1) len (errs & [diag])
     else if count-chapter-page-n occs (o.po-chapter) (o.po-n) 0 len 0 > 1 then
-      check-pagination-loop occs (i + 1) len (errs & [
-        make-error cdx-chapter-pagination ("Chapter '" & (o.po-chapter) & "' has two pages numbered " & show (o.po-n) & ". Each page of a chapter needs a distinct number.") (o.po-span)
-      ])
+      let dup-head = "Chapter '" & (o.po-chapter) & "' has two pages numbered " & show (o.po-n)
+      in let dup-msg = dup-head & ". Each page of a chapter needs a distinct number."
+      in let dup-diag = make-error cdx-chapter-pagination dup-msg (o.po-span)
+      in check-pagination-loop occs (i + 1) len (errs & [dup-diag])
     else check-pagination-loop occs (i + 1) len errs
 
   add-bag-diags : DiagnosticBag, List Diagnostic, Integer, Integer -> DiagnosticBag
@@ -1506,7 +1565,8 @@ Section: Chapter Pagination
     in if is-done st2 then CollectProseResult { state = st2, lines = acc, blocks = blk-acc }
     else if is-prose-token st2 then let txt = token-text (current st2)
     in let block = classify-prose-line txt ((current st2).offset)
-    in collect-prose-with-text (skip-to-next-line (advance st2)) (__linked-list-push acc (txt & "\n")) (__linked-list-push blk-acc block)
+    in let next-st = skip-to-next-line (advance st2)
+    in collect-prose-with-text next-st (__linked-list-push acc (txt & "\n")) (__linked-list-push blk-acc block)
     else if is-prose-line st2 then collect-prose-with-text (skip-to-next-line st2) acc blk-acc
     else if (current st2).column > 3 then
       collect-prose-with-text (skip-to-next-line st2) acc blk-acc
@@ -1565,7 +1625,8 @@ Section: Chapter Pagination
      parse-bag = bag
     })
 
-  parse-top-level : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  parse-top-level : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text,
+    LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
     if deck-short-of (st.deck-ceiling) demand-parse-scratch-guard-band then
       empty-parse-document (st.bag)
@@ -1599,12 +1660,14 @@ Section: Chapter Pagination
     in parse-top-level defs type-defs effect-defs imports title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
     else if is-section-header st then let title = extract-header-title st
     in let pr = collect-prose-with-text (skip-to-next-line st) prose blocks
-    in parse-top-level defs type-defs effect-defs imports ch-title (__linked-list-push sec-titles title) (pr.lines) (pr.blocks) anns (pr.state)
+    in let sec2 = __linked-list-push sec-titles title
+    in parse-top-level defs type-defs effect-defs imports ch-title sec2 (pr.lines) (pr.blocks) anns (pr.state)
     else if is-page-marker st then
       parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
     else if is-cites-keyword (current-kind st) then
       let (cite-imports, cite-st) = parse-citations st ch-title []
-      in parse-top-level defs type-defs effect-defs (deck-record (imports & cite-imports)) ch-title sec-titles prose blocks anns cite-st
+      in let imports2 = deck-record (imports & cite-imports)
+      in parse-top-level defs type-defs effect-defs imports2 ch-title sec-titles prose blocks anns cite-st
     else if is-quotes-keyword (current-kind st) then let (q, q-st) = parse-quotation st ch-title
     in parse-top-level defs type-defs effect-defs (deck-record (imports & [q])) ch-title sec-titles prose blocks anns q-st
     else if is-trusting-keyword (current-kind st) then let (t, t-st) = parse-trusting st ch-title
@@ -1635,7 +1698,8 @@ Section: Chapter Pagination
       parse-claim-arm defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
     else if is-proof-keyword (current-kind st) then
       let item = parse-top-def-item defs type-defs ch-title (advance st) __heap-save
-      in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
+      in let ti-defs = item.ti-defs
+      in parse-top-level ti-defs (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
     else if is-punctual-keyword (current-kind st) then let pst = advance st
     in if is-done pst then
       parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns pst
@@ -1648,11 +1712,15 @@ Section: Chapter Pagination
       body = budget-text
     })
     in let item = parse-top-def-item defs type-defs ch-title pst2 __heap-save
-    in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) (item.ti-state)
+    in let anns2 = __linked-list-push anns pann
+    in let ti-defs = item.ti-defs
+    in parse-top-level ti-defs (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns2 (item.ti-state)
     else let pname = token-text (current pst)
     in let pann = deck-record (AnnotationNode { kind = "hard-realtime", target = pname, body = "" })
     in let item = parse-top-def-item defs type-defs ch-title pst __heap-save
-    in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns pann) (item.ti-state)
+    in let anns2 = __linked-list-push anns pann
+    in let ti-defs = item.ti-defs
+    in parse-top-level ti-defs (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns2 (item.ti-state)
     else if is-bounded-keyword (current-kind st) then let bst = advance st
     in if is-done bst then
       parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns bst
@@ -1661,17 +1729,22 @@ Section: Chapter Pagination
     in let bname = if is-done bst2 then "" else token-text (current bst2)
     in let bann = deck-record (AnnotationNode { kind = "bounded", target = bname, body = bclass })
     in let item = parse-top-def-item defs type-defs ch-title bst2 __heap-save
-    in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns bann) (item.ti-state)
+    in let anns2 = __linked-list-push anns bann
+    in let ti-defs = item.ti-defs
+    in parse-top-level ti-defs (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns2 (item.ti-state)
     else if is-conversion-decl st then let conv-ann = parse-conversion-decl st
-    in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns conv-ann) (skip-to-next-line st)
+    in let anns2 = __linked-list-push anns conv-ann
+    in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns2 (skip-to-next-line st)
     else if is-prose-line st then let pr = collect-prose-with-text st prose blocks
     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
     else if (current st).column > 3 then
       parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
     else let item = parse-top-item defs type-defs ch-title st
-    in parse-top-level (item.ti-defs) (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
+    in let ti-defs = item.ti-defs
+    in parse-top-level ti-defs (item.ti-type-defs) effect-defs imports ch-title sec-titles prose blocks anns (item.ti-state)
 
-  parse-top-level-effect : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  parse-top-level-effect : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text,
+    LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-top-level-effect (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
     let st1 = advance st
     in let name-tok = current st1
@@ -1682,7 +1755,8 @@ Section: Chapter Pagination
          name = name-tok,
          ops = ops-list
         })
-    in parse-top-level defs type-defs (__linked-list-push effect-defs ed) imports ch-title sec-titles prose blocks anns (skip-newlines ops-st)
+    in let effs2 = __linked-list-push effect-defs ed
+    in parse-top-level defs type-defs effs2 imports ch-title sec-titles prose blocks anns (skip-newlines ops-st)
 
   parse-effect-ops : ParseState, LinkedList EffectOpDef -> (List EffectOpDef, ParseState)
   parse-effect-ops (st) (acc) =
@@ -1717,7 +1791,7 @@ Section: Chapter Pagination
      class-defs = deck-record (__linked-list-to-list cacc),
      instance-defs = deck-record (__linked-list-to-list iacc)
     }
-    else if is-class-keyword (current-kind st) & begins-line st & (is-ident (peek-kind st 1) | is-type-ident (peek-kind st 1)) then
+    else if is-class-keyword (current-kind st) & begins-line st & is-class-head st then
       let st1 = advance st
       in let name-tok = current st1
       in let st2 = advance st1
@@ -1894,14 +1968,17 @@ Section: Chapter Pagination
       is None ->
        parse-top-def-item defs type-defs ch-title st mark
 
-  parse-claim-arm : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  parse-claim-arm : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text,
+    LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-claim-arm (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
     if is-simple-claim st then
       parse-simple-claim defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
     else let claim-ann = parse-claim-annotation st
-    in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns claim-ann) (skip-to-next-line st)
+    in let anns2 = __linked-list-push anns claim-ann
+    in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns2 (skip-to-next-line st)
 
-  parse-simple-claim : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text, LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
+  parse-simple-claim : LinkedList Def, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, LinkedList Text,
+    LinkedList Text, LinkedList ProseBlock, LinkedList AnnotationNode, ParseState -> Document
   parse-simple-claim (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (prose) (blocks) (anns) (st) =
     let name-tok = current (advance st)
     in when parse-type-annotation (advance st)
@@ -1920,9 +1997,12 @@ Section: Chapter Pagination
            body = d.body,
            chapter-slug = ch-title
           })
-          in parse-top-level (__linked-list-push defs tagged) type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines (dr.state))
+          in let defs2 = __linked-list-push defs tagged
+          in let next-st = skip-newlines (dr.state)
+          in parse-top-level defs2 type-defs effect-defs imports ch-title sec-titles prose blocks anns next-st
          is None ->
-          parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-newlines (advance (dr.state)))
+          let next-st = skip-newlines (advance (dr.state))
+          in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns next-st
       is otherwise ->
        parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)
 
@@ -1980,13 +2060,15 @@ Section: Prose Anchoring
      offset = block.offset
     })
 
-  anchor-blocks-loop : List ProseBlock, List Def, List TypeDef, Integer, Integer, Integer, Integer, Integer, Integer, List ProseBlock -> List ProseBlock
+  anchor-blocks-loop : List ProseBlock, List Def, List TypeDef, Integer, Integer, Integer, Integer, Integer, Integer,
+    List ProseBlock -> List ProseBlock
   anchor-blocks-loop (blocks) (defs) (type-defs) (i) (di) (ti) (blen) (dlen) (tlen) (acc) =
     if i >= blen then acc
     else let block = list-at blocks i
     in let di2 = advance-defs-past defs di dlen (block.offset)
     in let ti2 = advance-type-defs-past type-defs ti tlen (block.offset)
-    in anchor-blocks-loop blocks defs type-defs (i + 1) di2 ti2 blen dlen tlen (list-push acc (anchor-one-block block defs type-defs di2 ti2 dlen tlen))
+    in let anchored = anchor-one-block block defs type-defs di2 ti2 dlen tlen
+    in anchor-blocks-loop blocks defs type-defs (i + 1) di2 ti2 blen dlen tlen (list-push acc anchored)
 
   anchor-prose-blocks : List ProseBlock, List Def, List TypeDef -> List ProseBlock
   anchor-prose-blocks (blocks) (defs) (type-defs) =
@@ -2004,7 +2086,8 @@ Section: Prose-Notation Consistency
   check-prose-type-name (template-name) (type-defs) (diag-code) (kind) (acc) =
     let found = find-type-def-named type-defs template-name 0
     in if found < 0 then
-      list-push acc (make-warning diag-code ("Prose declares " & kind & " '" & template-name & "' but no type definition with that name exists") synthetic-span)
+      let pd-msg = "Prose declares " & kind & " '" & template-name & "' but no type definition with that name exists"
+      in list-push acc (make-warning diag-code pd-msg synthetic-span)
     else acc
 
   parser-find-def-index : List Def, Text, Integer, Integer -> Integer
@@ -2032,7 +2115,8 @@ Section: Prose-Notation Consistency
     else if parser-find-def-index defs template-name 0 (list-length defs) >= 0 then acc
     else if effect-defs-declare effect-defs template-name 0 (list-length effect-defs) then acc
     else
-      list-push acc (make-warning cdx-prose-function-name-mismatch ("Prose declares function '" & template-name & "' but no definition of that name appears in this chapter") synthetic-span)
+      let pf-msg = "Prose declares function '" & template-name & "' but no definition of that name appears in this chapter"
+      in list-push acc (make-warning cdx-prose-function-name-mismatch pf-msg synthetic-span)
 
   extract-prose-params : Text, Integer, Integer, List Text -> List Text
   extract-prose-params (line) (i) (len) (acc) =
@@ -2079,7 +2163,8 @@ Section: Prose-Notation Consistency
       else if prose-count == def-count then
         check-prose-param-names prose-params def-params 0 def-count acc
       else
-        list-push acc (make-warning cdx-prose-parameter-mismatch ("Prose declares " & show prose-count & " parameters but '" & def-name & "' has " & show def-count) synthetic-span)
+        let pp-msg = "Prose declares " & show prose-count & " parameters but '" & def-name & "' has " & show def-count
+        in list-push acc (make-warning cdx-prose-parameter-mismatch pp-msg synthetic-span)
     else acc
 
   check-prose-param-names : List Text, List Token, Integer, Integer, List Diagnostic -> List Diagnostic
@@ -2107,15 +2192,24 @@ Section: Prose-Notation Consistency
       is PtVariantTemplate (vn) -> check-prose-type-name (block.anchor) type-defs cdx-prose-variant-ctor-mismatch "variant" acc
       is PtNoTemplate | PtConstraintTemplate | PtProofTemplate | PtProcedureTemplate | PtQuantifiedTemplate -> acc
 
+  is-class-head : ParseState -> Boolean
+  is-class-head (st) = is-ident (peek-kind st 1) | is-type-ident (peek-kind st 1)
+
+  is-trust-decl-keyword : TokenKind -> Boolean
+  is-trust-decl-keyword (k) = is-quotes-keyword k | is-trusting-keyword k | is-grounds-keyword k
+
   check-prose-consistency : Document -> List Diagnostic
   check-prose-consistency (doc) =
-    check-prose-blocks-loop (doc.prose-blocks) (doc.defs) (doc.type-defs) (doc.effect-defs) 0 (list-length (doc.prose-blocks)) []
+    let blocks = doc.prose-blocks
+    in check-prose-blocks-loop blocks (doc.defs) (doc.type-defs) (doc.effect-defs) 0 (list-length blocks) []
 
-  check-prose-blocks-loop : List ProseBlock, List Def, List TypeDef, List EffectDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-prose-blocks-loop : List ProseBlock, List Def, List TypeDef, List EffectDef, Integer, Integer, List Diagnostic ->
+    List Diagnostic
   check-prose-blocks-loop (blocks) (defs) (type-defs) (effect-defs) (i) (len) (acc) =
     if i >= len then acc
     else let block = list-at blocks i
-    in check-prose-blocks-loop blocks defs type-defs effect-defs (i + 1) len (check-prose-block-against-defs block defs type-defs effect-defs acc)
+    in let acc2 = check-prose-block-against-defs block defs type-defs effect-defs acc
+    in check-prose-blocks-loop blocks defs type-defs effect-defs (i + 1) len acc2
 
 Section: Banned Word Enforcement
 
@@ -2153,7 +2247,8 @@ Section: Banned Word Enforcement
   check-banned-word : Text, BannedWord -> Maybe Diagnostic
   check-banned-word (line) (bw) =
     if text-contains line (bw.word) then
-      Just (make-warning cdx-prose-banned-word ("Banned word '" & bw.word & "' in load-bearing prose; use " & bw.substitute) synthetic-span)
+      let bw-msg = "Banned word '" & bw.word & "' in load-bearing prose; use " & bw.substitute
+      in Just (make-warning cdx-prose-banned-word bw-msg synthetic-span)
     else None
 
   check-banned-words-in-line : Text, List BannedWord, Integer, Integer, List Diagnostic -> List Diagnostic
@@ -2186,7 +2281,8 @@ Section: Header Scanning (streaming)
     in let (imp-list, imp-st) = parse-citations st2 "" []
     in scan-top-level [] [] [] imp-list "" "" [] [] imp-st
 
-  scan-top-level : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, LinkedList Text, ParseState -> ScanResult
+  scan-top-level : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text,
+    LinkedList Text, ParseState -> ScanResult
   scan-top-level (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (chap-names) (st) =
     if is-done st then deck-record (ScanResult {
      type-defs = deck-record (__linked-list-to-list type-defs),
@@ -2200,15 +2296,20 @@ Section: Header Scanning (streaming)
      chapter-names = deck-record (__linked-list-to-list chap-names)
     })
     else if is-chapter-header st then let title = extract-header-title st
-    in scan-top-level headers type-defs effect-defs imports title title sec-titles (__linked-list-push chap-names title) (skip-prose-lines (skip-to-next-line st))
+    in let chaps2 = __linked-list-push chap-names title
+    in let next-st = skip-prose-lines (skip-to-next-line st)
+    in scan-top-level headers type-defs effect-defs imports title title sec-titles chaps2 next-st
     else if is-section-header st then let title = extract-header-title st
-    in scan-top-level headers type-defs effect-defs imports cur-chap ch-title (__linked-list-push sec-titles title) chap-names (skip-prose-lines (skip-to-next-line st))
+    in let sec2 = __linked-list-push sec-titles title
+    in let next-st = skip-prose-lines (skip-to-next-line st)
+    in scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec2 chap-names next-st
     else if is-page-marker st then
       scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-to-next-line st)
     else if is-cites-keyword (current-kind st) then
       let (cite-imports, cite-st) = parse-citations st cur-chap []
-      in scan-top-level headers type-defs effect-defs (deck-record (imports & cite-imports)) cur-chap ch-title sec-titles chap-names cite-st
-    else if is-quotes-keyword (current-kind st) | is-trusting-keyword (current-kind st) | is-grounds-keyword (current-kind st) then
+      in let imports2 = deck-record (imports & cite-imports)
+      in scan-top-level headers type-defs effect-defs imports2 cur-chap ch-title sec-titles chap-names cite-st
+    else if is-trust-decl-keyword (current-kind st) then
       scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-to-next-line st)
     else if is-effect-keyword (current-kind st) then
       scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names st
@@ -2234,9 +2335,11 @@ Section: Header Scanning (streaming)
     else if (current st).column > 3 then
       scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles chap-names (skip-to-next-line st)
     else let item = scan-top-item headers type-defs cur-chap st
-    in scan-top-level (item.si-headers) (item.si-type-defs) effect-defs imports cur-chap ch-title sec-titles chap-names (item.si-state)
+    in let si-headers = item.si-headers
+    in scan-top-level si-headers (item.si-type-defs) effect-defs imports cur-chap ch-title sec-titles chap-names (item.si-state)
 
-  scan-top-level-effect : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text, LinkedList Text, LinkedList Text, ParseState -> ScanResult
+  scan-top-level-effect : LinkedList DefHeader, LinkedList TypeDef, LinkedList EffectDef, List CitesDecl, Text, Text,
+    LinkedList Text, LinkedList Text, ParseState -> ScanResult
   scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (chap-names) (st) =
     let st1 = advance st
     in let name-tok = current st1
@@ -2247,7 +2350,8 @@ Section: Header Scanning (streaming)
          name = name-tok,
          ops = ops-list
         })
-    in scan-top-level headers type-defs (__linked-list-push effect-defs ed) imports cur-chap ch-title sec-titles chap-names (skip-newlines ops-st)
+    in let effs2 = __linked-list-push effect-defs ed
+    in scan-top-level headers type-defs effs2 imports cur-chap ch-title sec-titles chap-names (skip-newlines ops-st)
 
  One top-level item, scanned and RETURNED rather than handed onward.
  These two used to tail-call scan-top-level between them, which made the

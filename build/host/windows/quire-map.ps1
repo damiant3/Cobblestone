@@ -120,6 +120,7 @@ $QuireDirs = @{
     'Diag' = 'build\boot\diag'
 }
 $QuireDirs['Accp'] = 'apps\accp'
+$QuireDirs['Uoaix'] = 'apps\uoaix'
 
 # A QUIRE IS A DIRECTORY OR A MANIFEST. A directory quire resolves a cite to
 # <dir>\<chapter name>.codex, one file per chapter, which every quire above

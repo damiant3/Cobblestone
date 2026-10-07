@@ -451,11 +451,12 @@ function Request-Lines($A) {
 
 # The resident guest: one codex-vm for the server's life, started by the first
 # call and again after a failure. It serves request-<n>.txt from its staging
-# root in turn and answers each in done-<n>.txt under -Output; between calls
+# root in turn and answers each in done-<n>.txt in its own directory under
+# -Output, which no other server reads or clears; between calls
 # the process is suspended, so an idle server costs no CPU while the weights
 # stay on the device.
 Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class CodexImageProc { [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr h); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr h); }'
-$script:guest = $null; $script:root = $null; $script:n = 0; $script:lastUse = [DateTime]::UtcNow
+$script:guest = $null; $script:root = $null; $script:out = $null; $script:n = 0; $script:lastUse = [DateTime]::UtcNow
 
 function Stop-Guest {
     if ($script:guest) {
@@ -470,17 +471,21 @@ function Stop-Guest {
         [IO.Directory]::Delete($script:root)
     }
     $script:root = $null
+    if ($script:out -and (Test-Path $script:out)) { [IO.Directory]::Delete($script:out, $true) }
+    $script:out = $null
 }
 
 function Start-Guest {
-    $script:root = Join-Path $staging ([guid]::NewGuid().ToString('N'))
+    $gid = [guid]::NewGuid().ToString('N')
+    $script:root = Join-Path $staging $gid
     New-Item -ItemType Directory $script:root | Out-Null
     New-Item -ItemType Junction -Path (Join-Path $script:root 'models') -Target $Models | Out-Null
+    $script:out = Join-Path $Output ".guest-$gid"
+    New-Item -ItemType Directory $script:out | Out-Null
     $script:n = 0
-    foreach ($old in [IO.Directory]::GetFiles($Output, 'done-*.txt')) { [IO.File]::Delete($old) }
     $roots = @('-gpu-files', $script:root)
     foreach ($sub in 'text_encoder', 'VAE') { $d = Join-Path $Models $sub; if (Test-Path -PathType Container $d) { $roots += @('-gpu-files', $d) } }
-    $script:guest = Start-Process -FilePath $vm -ArgumentList (@('-kernel', $Driver, '-disk', $Disk) + $roots + @('-gpu-out', $Output, '-mem', '3072', '-headless', '-output', (Join-Path $script:root 'serial.txt'))) -PassThru -WindowStyle Hidden
+    $script:guest = Start-Process -FilePath $vm -ArgumentList (@('-kernel', $Driver, '-disk', $Disk) + $roots + @('-gpu-out', $script:out, '-mem', '3072', '-headless', '-output', (Join-Path $script:root 'serial.txt'))) -PassThru -WindowStyle Hidden
 }
 
 function Generate($A) {
@@ -499,7 +504,7 @@ function Generate($A) {
         [IO.File]::Move($tmp, (Join-Path $script:root "request-$n.txt"))
         $staged += Join-Path $script:root "request-$n.txt"
         [void][CodexImageProc]::NtResumeProcess($script:guest.Handle)
-        $done = Join-Path $Output "done-$n.txt"
+        $done = Join-Path $script:out "done-$n.txt"
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
         while (-not (Test-Path -PathType Leaf $done) -and -not $script:guest.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
         if (-not (Test-Path -PathType Leaf $done)) {
@@ -513,8 +518,10 @@ function Generate($A) {
         $answer = [IO.File]::ReadAllText($done).Trim()
         [IO.File]::Delete($done)
         if (-not $answer.StartsWith('ok png')) { return Refuse "the driver answered: $answer" }
+        $made = Join-Path $script:out $name
+        if (-not (Test-Path -PathType Leaf $made)) { return Refuse "the driver wrote no image ($answer)" }
         $png = Join-Path $Output $name
-        if (-not (Test-Path -PathType Leaf $png)) { return Refuse "the driver wrote no image ($answer)" }
+        [IO.File]::Move($made, $png, $true)
         $head = [byte[]]::new(8); $fs = [IO.File]::OpenRead($png); [void]$fs.Read($head, 0, 8); $fs.Dispose()
         if ([Convert]::ToHexString($head) -ne '89504E470D0A1A0A') { return Refuse "the driver wrote $name, which is not a PNG" }
         return @{ content = @(@{ type = 'text'; text = $png }); structuredContent = @{ path = $png; request = $req }; isError = $false }

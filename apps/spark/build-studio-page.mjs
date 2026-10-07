@@ -77,7 +77,7 @@ try {
   });`;
   const unpack = "for(const k of ['vocab','merges']){const t=window.__DATA[k+'-text'];if(typeof t==='string'){window.__DATA[k]=JSON.stringify(Array.from(new TextEncoder().encode(t)));delete window.__DATA[k+'-text']}}";
   const html = readFileSync(join(work, 'page.html'), 'utf8').replace('<script>', () => `<script>window.__DATA=${JSON.stringify(data).replace(/<\//g, '<\\/')};${unpack}</script><script>`)
-    .replace('</body>', `<script>window.__QWEN=${qwenPageSource().replace(/<\/script/gi, '<\\/script')};</script><script>${assistant.replace(/<\/script/gi, '<\\/script')}</script></body>`);
+    .replace('</body>', () => `<script>window.__QWEN=${qwenPageSource().replace(/<\/script/gi, '<\\/script')};</script><script>${assistant.replace(/<\/script/gi, '<\\/script')}</script></body>`);
   writeFileSync(out, html);
   console.log(`spark studio page: ${out} (${html.length} chars)`);
 } finally {

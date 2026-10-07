@@ -194,7 +194,8 @@ Section: Collect Effect Op Names
    errors : List Diagnostic
   }
 
-  collect-effect-op-names : List AEffectDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic -> EffectOpCollectResult
+  collect-effect-op-names : List AEffectDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic ->
+    EffectOpCollectResult
   collect-effect-op-names (effs) (top-names) (ctor-names) (i) (len) (op-acc) (errs) =
     if i == len then deck-record (EffectOpCollectResult { op-names = op-acc, errors = errs })
     else let eff = list-at effs i
@@ -202,7 +203,8 @@ Section: Collect Effect Op Names
     in let after = collect-ops-of-effect (eff.ops) top-names ctor-names 0 count op-acc errs
     in collect-effect-op-names effs top-names ctor-names (i + 1) len (after.op-names) (after.errors)
 
-  collect-ops-of-effect : List AEffectOpDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic -> EffectOpCollectResult
+  collect-ops-of-effect : List AEffectOpDef, SkipListText, SkipListText, Integer, Integer, SkipListText, List Diagnostic ->
+    EffectOpCollectResult
   collect-ops-of-effect (ops) (top-names) (ctor-names) (i) (len) (op-acc) (errs) =
     if i == len then deck-record (EffectOpCollectResult { op-names = op-acc, errors = errs })
     else let op = list-at ops i
@@ -250,7 +252,15 @@ Section: Resolve Expressions
     else when expr
       is ALitExpr (val) (kind) (s) -> []
       is ANameExpr (name) (s) ->
-        if scope-has sc (name.value) | is-type-name (name.value) then []
+        let resolved = rename-lookup (sc.chapter-renames) (name.value)
+        in if skip-list-text-has (sc.locals) (name.value) == False & text-starts-with resolved ambiguity-marker then
+          let amb0 = "'" & name.value & "' is defined in more than one other chapter ("
+          in let marker-len = text-length ambiguity-marker
+          in let amb1 = amb0 & substring resolved marker-len (text-length resolved - marker-len)
+          in let amb1b = amb1 & ") and in none of this chapter's; cite the one you mean by name: cites <Quire> chapter <Name> ("
+          in let amb2 = amb1b & name.value & ")"
+          in [make-error cdx-ambiguous-chapter-name amb2 s]
+        else if scope-has sc (name.value) | is-type-name (name.value) then []
         else
           let hint = if name.value == "do" then
             " (note: `do` is not Codex; use act ... end)"
@@ -469,7 +479,8 @@ Section: Resolve Act Statements
         in let next-errs = errs & errs2 & dup-errs
         in resolve-act-stmts sc2 stmts (i + 1) len next-seen next-errs
 
-  resolve-act-let : Scope, List ALetBind, AExpr, List AActStmt, Integer, Integer, SkipListText, List Diagnostic -> List Diagnostic
+  resolve-act-let : Scope, List ALetBind, AExpr, List AActStmt, Integer, Integer, SkipListText, List Diagnostic ->
+    List Diagnostic
   resolve-act-let (sc) (binds) (body) (stmts) (i) (len) (seen) (errs) =
     let bind-errs = resolve-let-binds sc binds 0 (list-length binds) skip-list-text-empty []
     in when body
@@ -495,7 +506,8 @@ Section: Resolve All Definitions
  diagnostics collected so far; compile-desugar-and-scope reads
  deck-short-of again after the walk and raises CDX9002 from there.
 
-  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer -> List Diagnostic
+  resolve-all-defs : Scope, List ADef, Integer, Integer, List Diagnostic, SkipListText, List ChapterAssignment, List ACitesDecl,
+    List Text, Text, List RenameEntry, Integer -> List Diagnostic
   resolve-all-defs (sc) (defs) (i) (n) (errs) (dups) (assigns) (refs) (slugs) (cur) (rn) (limit) =
     if i == n then errs
     else if deck-short-of limit demand-scope-guard-band then errs

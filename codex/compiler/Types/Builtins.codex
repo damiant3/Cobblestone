@@ -960,7 +960,9 @@ Section: The Table
      bs-name = "process-spawn-priority",
      bs-alloc = "none",
      bs-varies = True,
-     bs-type = Just (ForAllEff 0 (FunTy (FunTy int-ty-default (row-var 0) int-ty-default) empty-row (FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)))),
+     bs-type = let sp-worker-ty = FunTy int-ty-default (row-var 0) int-ty-default
+       in let sp-tail-ty = FunTy int-ty-default empty-row (FunTy int-ty-default (concrete-row "Concurrent") int-ty-default)
+       in Just (ForAllEff 0 (FunTy sp-worker-ty empty-row sp-tail-ty)),
      bs-emit = None
    },
    BuiltinSpec {
@@ -1419,6 +1421,20 @@ Section: The Table
      bs-emit = Just (\s a -> emit-heap-save-builtin s)
    },
    BuiltinSpec {
+     bs-name = "__stack-save",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just int-ty-default,
+     bs-emit = Just (\s a -> emit-stack-save-builtin s)
+   },
+   BuiltinSpec {
+     bs-name = "__cover-dump",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just int-ty-default,
+     bs-emit = Just (\s a -> emit-cover-dump-builtin s)
+   },
+   BuiltinSpec {
      bs-name = "address-of",
      bs-alloc = "none",
      bs-varies = True,
@@ -1730,7 +1746,10 @@ Section: The Table
      bs-name = "vec-select",
      bs-alloc = "fixed",
      bs-varies = False,
-     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (VectorMaskTy 2 (TypeVar 1)) empty-row (FunTy (VectorTy 2 (TypeVar 0)) empty-row (FunTy (VectorTy 2 (TypeVar 0)) empty-row (VectorTy 2 (TypeVar 0))))))),
+     bs-type = let vs-mask-ty = VectorMaskTy 2 (TypeVar 1)
+       in let vs-a-ty = VectorTy 2 (TypeVar 0)
+       in let vs-tail-ty = FunTy vs-a-ty empty-row (FunTy (VectorTy 2 (TypeVar 0)) empty-row (VectorTy 2 (TypeVar 0)))
+       in Just (ForAllTy 0 (ForAllTy 1 (FunTy vs-mask-ty empty-row vs-tail-ty))),
      bs-emit = Just (\s a -> emit-vec-select-builtin s a)
    },
    BuiltinSpec {
@@ -2206,7 +2225,9 @@ Section: The Table
      bs-name = "s-send",
      bs-alloc = "unknown",
      bs-varies = True,
-     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [deck-record (ConstructedTy ssend-name [TypeVar 0, TypeVar 1])])) empty-row (FunTy (TypeVar 0) empty-row (deck-record (ConstructedTy schan-name [
+     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [
+       deck-record (ConstructedTy ssend-name [TypeVar 0, TypeVar 1])
+     ])) empty-row (FunTy (TypeVar 0) empty-row (deck-record (ConstructedTy schan-name [
        TypeVar 1
      ])))))),
      bs-emit = Just (\s a -> emit-helper-call-2 s a "chan-kern-send-block")
@@ -2215,7 +2236,9 @@ Section: The Table
      bs-name = "s-recv",
      bs-alloc = "unknown",
      bs-varies = True,
-     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [deck-record (ConstructedTy srecv-name [TypeVar 0, TypeVar 1])])) empty-row (deck-record (ConstructedTy schan-name [
+     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [
+       deck-record (ConstructedTy srecv-name [TypeVar 0, TypeVar 1])
+     ])) empty-row (deck-record (ConstructedTy schan-name [
        TypeVar 1
      ]))))),
      bs-emit = Just (\s a -> emit-helper-call-1 s a "chan-kern-recv-block")
@@ -2231,7 +2254,9 @@ Section: The Table
      bs-name = "s-close",
      bs-alloc = "unknown",
      bs-varies = True,
-     bs-type = Just (FunTy (deck-record (ConstructedTy schan-name [deck-record (ConstructedTy send-name [])])) empty-row int-ty-default),
+     bs-type = Just (FunTy (deck-record (ConstructedTy schan-name [
+       deck-record (ConstructedTy send-name [])
+     ])) empty-row int-ty-default),
      bs-emit = Just (\s a -> emit-helper-call-1 s a "chan-kern-close")
    },
    BuiltinSpec {
@@ -2333,7 +2358,8 @@ Section: Constant Definitions
      is IrName (n) (t) (s) -> const-name-in names n 0
      is IrBinary (op) (l) (r) (t) (s) -> const-mentions-any l names (fuel - 1) | const-mentions-any r names (fuel - 1)
      is IrNegate (x) (t) (s) -> const-mentions-any x names (fuel - 1)
-     is IrIf (c) (th) (el) (t) (s) -> const-mentions-any c names (fuel - 1) | const-mentions-any th names (fuel - 1) | const-mentions-any el names (fuel - 1)
+     is IrIf (c) (th) (el) (t) (s) ->
+       const-mentions-any c names (fuel - 1) | const-mentions-any th names (fuel - 1) | const-mentions-any el names (fuel - 1)
      is IrLet (n) (t) (v) (b) (s) -> const-mentions-any v names (fuel - 1) | const-mentions-any b names (fuel - 1)
      is IrApply (f) (a) (t) (s) -> const-mentions-any f names (fuel - 1) | const-mentions-any a names (fuel - 1)
      is IrLambda (ps) (b) (t) (s) -> const-mentions-any b names (fuel - 1)
@@ -2371,8 +2397,11 @@ Section: Constant Definitions
      is IrName (n) (t) (s) -> const-name-invariant n pure bound
      is IrBinary (op) (l) (r) (t) (s) -> const-expr-invariant l pure bound (d - 1) & const-expr-invariant r pure bound (d - 1)
      is IrNegate (x) (t) (s) -> const-expr-invariant x pure bound (d - 1)
-     is IrIf (c) (th) (el) (t) (s) -> const-expr-invariant c pure bound (d - 1) & const-expr-invariant th pure bound (d - 1) & const-expr-invariant el pure bound (d - 1)
-     is IrLet (n) (t) (v) (b) (s) -> const-expr-invariant v pure bound (d - 1) & const-expr-invariant b pure (list-push bound n) (d - 1)
+     is IrIf (c) (th) (el) (t) (s) ->
+       let cond-inv = const-expr-invariant c pure bound (d - 1)
+       in cond-inv & const-expr-invariant th pure bound (d - 1) & const-expr-invariant el pure bound (d - 1)
+     is IrLet (n) (t) (v) (b) (s) ->
+       const-expr-invariant v pure bound (d - 1) & const-expr-invariant b pure (list-push bound n) (d - 1)
      is IrApply (f) (a) (t) (s) -> const-expr-invariant f pure bound (d - 1) & const-expr-invariant a pure bound (d - 1)
      is IrFieldAccess (r) (f) (t) (s) -> const-expr-invariant r pure bound (d - 1)
      is IrList (es) (t) (s) -> const-list-invariant es pure bound (d - 1) 0

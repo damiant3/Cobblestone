@@ -21,6 +21,22 @@ Section: Lower Context
    rename : Boolean
   }
 
+  LowerKeepCtx = record {
+   lk-types : List TypeBinding,
+   lk-ust : UnificationState,
+   lk-renames : List RenameEntry,
+   lk-colliding : SkipListText,
+   lk-assignments : List ChapterAssignment,
+   lk-citations : List ACitesDecl,
+   lk-cite-slugs : List Text,
+   lk-rt-names : List Text,
+   lk-rt-budgets : List Integer,
+   lk-ceiling : Integer,
+   lk-rename : Boolean,
+   lk-mc : MemoCtx,
+   lk-keep-ceiling : Integer
+  }
+
 Section: Expression Lowering
   lower-expr : AExpr, CodexType, LowerCtx -> IRExpr
   lower-expr (e) (ty) (ctx) = lower-expr-at e ty ctx 0
@@ -109,7 +125,10 @@ Section: Expression Lowering
      is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx s
      is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (s) ->
       let body-ir = lower-expr body ty ctx
-      in deck-record (IrWithTimeout (lit-text-to-integer timeout) (map-list name-value effs) scopes body-ir (chain-ret-or ty (ir-expr-type body-ir)) s)
+      in deck-record (
+        let wt-secs = lit-text-to-integer timeout
+        in IrWithTimeout wt-secs (map-list name-value effs) scopes body-ir (chain-ret-or ty (ir-expr-type body-ir)) s
+      )
      is ATryExpr (max) (body) (fb) (fail) (s) ->
       let body-ir = lower-act-stmts-loop body ty ctx 0 (list-length body)
       in let fb-ir = lower-act-stmts-loop fb ty ctx 0 (list-length fb)
@@ -161,8 +180,9 @@ Section: Expression Lowering
     })
     in let cell-ir = deck-record (IrRecord "__LazyCell" (list-push (list-push [] f1) f2) cty s)
     in let cell-name = deck-record (IrName cell-n cty s)
+    in let unit-binding = TypeBinding { name = unit-n, bound-type = int-ty-default }
     in let lctx = LowerCtx {
-     overlay = OverlayCons (TypeBinding { name = unit-n, bound-type = int-ty-default }) (OverlayCons (TypeBinding { name = cell-n, bound-type = cty }) (ctx.overlay)),
+     overlay = OverlayCons unit-binding (OverlayCons (TypeBinding { name = cell-n, bound-type = cty }) (ctx.overlay)),
      base = ctx.base,
      ust = ctx.ust,
      local-type-vars = ctx.local-type-vars,
@@ -274,7 +294,8 @@ Section: Expression Lowering
     else ""
     in if text-length arg-tn == 0 then dict-placeholder-fallback name ty ctx sp
     else if text-length cls-dict <= 4 then dict-placeholder-fallback name ty ctx sp
-    else let concrete = rename-lookup (ctx.chapter-renames) (substring cls-dict 0 (text-length cls-dict - 4) & "-dict-" & arg-tn)
+    else let dict-key = substring cls-dict 0 (text-length cls-dict - 4) & "-dict-" & arg-tn
+    in let concrete = rename-lookup (ctx.chapter-renames) dict-key
     in let b = lookup-type-split (ctx.overlay) (ctx.base) concrete
     in when b
      is ErrorTy | NoExpectTy -> dict-placeholder-fallback name ty ctx sp
@@ -512,19 +533,33 @@ Section: Expression Lowering
     in when probe
      is ErrorTy | NoExpectTy -> lower-compare-prim lt l-ir r-ir sp
      is otherwise -> let fty = strip-forall-ty (deep-resolve (ctx.ust) probe)
-     in deck-record (IrApply (deck-record (IrApply (deck-record (IrName ("__compare_" & tn) fty sp)) l-ir (peel-fun-return fty) sp)) r-ir int-ty-default sp)
+     in deck-record (
+       let cmp-fn = deck-record (IrName ("__compare_" & tn) fty sp)
+       in IrApply (deck-record (IrApply cmp-fn l-ir (peel-fun-return fty) sp)) r-ir int-ty-default sp
+     )
 
   lower-compare-prim : CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
   lower-compare-prim (lt) (l-ir) (r-ir) (sp) =
     when lt
-     is TextTy -> deck-record (IrApply (deck-record (IrApply (deck-record (IrName "text-compare" (FunTy TextTy empty-row (FunTy TextTy empty-row int-ty-default)) sp)) l-ir (FunTy TextTy empty-row int-ty-default) sp)) r-ir int-ty-default sp)
+     is TextTy -> deck-record (
+       let tc-name = deck-record (IrName "text-compare" (FunTy TextTy empty-row (FunTy TextTy empty-row int-ty-default)) sp)
+       in let tc-app = deck-record (IrApply tc-name l-ir (FunTy TextTy empty-row int-ty-default) sp)
+       in IrApply tc-app r-ir int-ty-default sp
+     )
      is otherwise -> gen-int-compare l-ir r-ir sp
 
   gen-int-compare : IRExpr, IRExpr, SourceSpan -> IRExpr
   gen-int-compare (l-ir) (r-ir) (sp) =
     let na = deck-record (IrName "__cmpa" int-ty-default sp)
     in let nb = deck-record (IrName "__cmpb" int-ty-default sp)
-    in deck-record (IrLet "__cmpa" int-ty-default l-ir (deck-record (IrLet "__cmpb" int-ty-default r-ir (deck-record (IrIf (deck-record (IrBinary IrLt na nb BooleanTy sp)) (deck-record (IrIntLit (0 - 1) sp)) (deck-record (IrIf (deck-record (IrBinary IrGt na nb BooleanTy sp)) (deck-record (IrIntLit 1 sp)) (deck-record (IrIntLit 0 sp)) int-ty-default sp)) int-ty-default sp)) sp)) sp)
+    in deck-record (
+      let cmp-lt = deck-record (IrBinary IrLt na nb BooleanTy sp)
+      in let cmp-neg = deck-record (IrIntLit (0 - 1) sp)
+      in let cmp-gt = deck-record (IrBinary IrGt na nb BooleanTy sp)
+      in let cmp-sign = deck-record (IrIf cmp-gt (deck-record (IrIntLit 1 sp)) (deck-record (IrIntLit 0 sp)) int-ty-default sp)
+      in let cmp-if = deck-record (IrIf cmp-lt cmp-neg cmp-sign int-ty-default sp)
+      in IrLet "__cmpa" int-ty-default l-ir (deck-record (IrLet "__cmpb" int-ty-default r-ir cmp-if sp)) sp
+    )
 
   lower-constrained-apply : AExpr, Text, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-constrained-apply (inner-f) (pname) (a) (ty) (ctx) (sp) =
@@ -543,7 +578,9 @@ Section: Expression Lowering
     in let param-name = "__" & cls-name & "-dict"
     in let pb = lookup-type-split (ctx.overlay) (ctx.base) param-name
     in when pb
-     is ErrorTy | NoExpectTy -> lower-apply-dispatch (deck-record (IrName ("__no-instance-" & cls-name & "-" & type-key-of arg-ty) ty sp)) arg-ir ty sp
+     is ErrorTy | NoExpectTy ->
+      let missing = deck-record (IrName ("__no-instance-" & cls-name & "-" & type-key-of arg-ty) ty sp)
+      in lower-apply-dispatch missing arg-ir ty sp
      is otherwise -> let dict-ir = deck-record (IrName param-name (deep-resolve (ctx.ust) pb) sp)
      in let inner-ret = peel-fun-return func-ty
      in let inner-apply = deck-record (IrApply func-ir dict-ir inner-ret sp)
@@ -586,8 +623,14 @@ Section: Expression Lowering
     else let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy
     else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
     in when probe
-     is ErrorTy | NoExpectTy -> deck-record (IrError "no Eq dictionary: the type this call binds has no structural equality" fty sp)
-     is otherwise -> deck-record (IrName (if eq-type-has-args bound then eq-helper-name-inst tn (eq-site-actuals bound) else "__eq_" & tn) fty sp)
+     is ErrorTy | NoExpectTy -> deck-record (
+       let message = "no Eq dictionary: the type this call binds has no structural equality"
+       in IrError message fty sp
+     )
+     is otherwise -> deck-record (
+       let helper = if eq-type-has-args bound then eq-helper-name-inst tn (eq-site-actuals bound) else "__eq_" & tn
+       in IrName helper fty sp
+     )
 
   eq-dict-expr : CodexType, LowerCtx, SourceSpan -> IRExpr
   eq-dict-expr (t) (ctx) (sp) =
@@ -815,13 +858,17 @@ Section: Expression Lowering
 
   lower-vec-cmp : Text, CodexType, IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
   lower-vec-cmp (name) (vty) (left-ir) (right-ir) (mty) (s) =
-    deck-record (IrApply (deck-record (IrApply (deck-record (IrName name (FunTy vty empty-row (FunTy vty empty-row mty)) s)) left-ir (FunTy vty empty-row mty) s)) right-ir mty s)
+    deck-record (
+      let cmp-fn = deck-record (IrName name (FunTy vty empty-row (FunTy vty empty-row mty)) s)
+      in IrApply (deck-record (IrApply cmp-fn left-ir (FunTy vty empty-row mty) s)) right-ir mty s
+    )
 
   lower-binary-maybe-eq : BinaryOp, CodexType, IRExpr, IRExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-binary-maybe-eq (op) (left-ty) (left-ir) (right-ir) (ty) (ctx) (s) =
     let vname = vec-cmp-builtin op (deep-resolve (ctx.ust) left-ty)
     in if text-length vname > 0 then
-      lower-vec-cmp vname (deep-resolve (ctx.ust) left-ty) left-ir right-ir (binary-result-type op (deep-resolve (ctx.ust) left-ty) ty) s
+      let vty = deep-resolve (ctx.ust) left-ty
+      in lower-vec-cmp vname vty left-ir right-ir (binary-result-type op (deep-resolve (ctx.ust) left-ty) ty) s
     else when op
      is OpEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s True
      is OpNotEq -> lower-eq-dispatch left-ty left-ir right-ir ty ctx s False
@@ -901,7 +948,10 @@ Section: Expression Lowering
     in let probe = if text-length tn == 0 | is-primitive-type-name tn then ErrorTy
     else lookup-type-split (ctx.overlay) (ctx.base) ("__eq_" & tn)
     in when probe
-     is ErrorTy | NoExpectTy -> deck-record (IrBinary (lower-bin-op (eq-op-for positive) left-ty) left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s)
+     is ErrorTy | NoExpectTy -> deck-record (
+       let eq-op = lower-bin-op (eq-op-for positive) left-ty
+       in IrBinary eq-op left-ir right-ir (binary-result-type (eq-op-for positive) left-ty ty) s
+     )
      is otherwise -> let hname = if has-args then
        eq-helper-name-inst tn (eq-site-actuals stripped)
      else "__eq_" & tn
@@ -1003,7 +1053,10 @@ Section: Let and Lambda
     in let val-ir = lower-expr-at (b.value) NoExpectTy ctx (depth + 1)
     in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
     in let ctx2 = bind-local ctx (b.name.value) val-ty
-    in deck-record (IrLet (bound-name ctx2 (b.name.value)) val-ty val-ir (lower-let-rest binds body ty ctx2 (i + 1) sp depth) sp)
+    in deck-record (
+      let let-name = bound-name ctx2 (b.name.value)
+      in IrLet let-name val-ty val-ir (lower-let-rest binds body ty ctx2 (i + 1) sp depth) sp
+    )
 
   lower-lambda : List Name, AExpr, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-lambda (params) (body) (ty) (ctx) (sp) =
@@ -1238,7 +1291,10 @@ Section: Match Lowering
 
   list-len-call : IRExpr, CodexType, SourceSpan -> IRExpr
   list-len-call (sref) (lty) (sp) =
-    deck-record (IrApply (deck-record (IrName "__list-len" (deck-record (FunTy lty empty-row int-ty-default)) sp)) sref int-ty-default sp)
+    deck-record (
+      let len-fn = deck-record (IrName "__list-len" (deck-record (FunTy lty empty-row int-ty-default)) sp)
+      in IrApply len-fn sref int-ty-default sp
+    )
 
   list-arm-ty : CodexType, IRExpr -> CodexType
   list-arm-ty (ty) (then-ir) =
@@ -1276,13 +1332,17 @@ Section: Match Lowering
       then if i == len - 1 then lower-expr (arm.body) ty ctx
       else let cond = deck-record (IrBinary IrEq (list-len-call sref lty sp) (deck-record (IrIntLit 0 sp)) BooleanTy sp)
       in let then-ir = lower-expr (arm.body) ty ctx
-      in deck-record (IrIf cond then-ir (lower-list-arms arms (i + 1) len sref elem lty ty ctx sp) (list-arm-ty ty then-ir) (arm.span))
+      in deck-record (
+        let else-ir = lower-list-arms arms (i + 1) len sref elem lty ty ctx sp
+        in IrIf cond then-ir else-ir (list-arm-ty ty then-ir) (arm.span)
+      )
       else if (cn.value) == "Cons"
       then lower-list-cons-arm arms i len sref elem lty ty ctx sp
       else lower-list-arms arms (i + 1) len sref elem lty ty ctx sp
      is otherwise -> lower-list-arms arms (i + 1) len sref elem lty ty ctx sp
 
-  lower-list-cons-arm : List AMatchArm, Integer, Integer, IRExpr, CodexType, CodexType, CodexType, LowerCtx, SourceSpan -> IRExpr
+  lower-list-cons-arm : List AMatchArm, Integer, Integer, IRExpr, CodexType, CodexType, CodexType, LowerCtx, SourceSpan ->
+    IRExpr
   lower-list-cons-arm (arms) (i) (len) (sref) (elem) (lty) (ty) (ctx) (sp) =
     let arm = list-at arms i
     in let subs = list-ctor-subpats (arm.pattern)
@@ -1296,14 +1356,27 @@ Section: Match Lowering
        is otherwise -> ctx1
     in let body-ir = lower-expr (arm.body) ty ctx2
     in let with-t = when t-pat
-       is AVarPat (tn) (ts) -> deck-record (IrLet (bound-name ctx2 (tn.value)) lty (deck-record (IrApply (deck-record (IrName "__list-tail" (deck-record (FunTy lty empty-row lty)) sp)) sref lty sp)) body-ir (arm.span))
+       is AVarPat (tn) (ts) -> deck-record (
+         let tail-var = bound-name ctx2 (tn.value)
+         in let tail-fn = deck-record (IrName "__list-tail" (deck-record (FunTy lty empty-row lty)) sp)
+         in let tail-call = deck-record (IrApply tail-fn sref lty sp)
+         in IrLet tail-var lty tail-call body-ir (arm.span)
+       )
        is otherwise -> body-ir
     in let with-h = when h-pat
-       is AVarPat (hn) (hs) -> deck-record (IrLet (bound-name ctx2 (hn.value)) elem (deck-record (IrApply (deck-record (IrName "__list-head" (deck-record (FunTy lty empty-row elem)) sp)) sref elem sp)) with-t (arm.span))
+       is AVarPat (hn) (hs) -> deck-record (
+         let head-var = bound-name ctx2 (hn.value)
+         in let head-fn = deck-record (IrName "__list-head" (deck-record (FunTy lty empty-row elem)) sp)
+         in let head-call = deck-record (IrApply head-fn sref elem sp)
+         in IrLet head-var elem head-call with-t (arm.span)
+       )
        is otherwise -> with-t
     in if i == len - 1 then with-h
     else let cond = deck-record (IrBinary IrGt (list-len-call sref lty sp) (deck-record (IrIntLit 0 sp)) BooleanTy sp)
-    in deck-record (IrIf cond with-h (lower-list-arms arms (i + 1) len sref elem lty ty ctx sp) (list-arm-ty ty with-h) (arm.span))
+    in deck-record (
+      let else-ir = lower-list-arms arms (i + 1) len sref elem lty ty ctx sp
+      in IrIf cond with-h else-ir (list-arm-ty ty with-h) (arm.span)
+    )
 
   list-ctor-subpats : APat -> List APat
   list-ctor-subpats (p) =
@@ -1326,7 +1399,8 @@ Section: Match Lowering
     else if ty-has-error (ir-expr-type ((list-at branches i).body)) then True
     else any-branch-ty-error branches (i + 1) len
 
-  repair-error-arms : List AMatchArm, List IRBranch, CodexType, CodexType, LowerCtx, Integer, Integer, List IRBranch -> List IRBranch
+  repair-error-arms : List AMatchArm, List IRBranch, CodexType, CodexType, LowerCtx, Integer, Integer, List IRBranch ->
+    List IRBranch
   repair-error-arms (arms) (branches) (result-ty) (scrut-ty) (ctx) (i) (len) (acc) =
     if i == len then acc
     else let br = list-at branches i
@@ -1401,7 +1475,10 @@ Section: Match Lowering
     else when p
      is AVarPat (name) (s) -> deck-record (IrVarPat (bound-name ctx (name.value)) scrut-ty s)
      is ALitPat (text) (kind) (s) -> deck-record (IrLitPat text scrut-ty s)
-     is ACtorPat (name) (subs) (s) -> deck-record (IrCtorPat (name.value) (lower-ctor-sub-patterns ctx subs scrut-ty (name.value) 0 (depth + 1)) scrut-ty s)
+     is ACtorPat (name) (subs) (s) -> deck-record (
+       let sub-pats = lower-ctor-sub-patterns ctx subs scrut-ty (name.value) 0 (depth + 1)
+       in IrCtorPat (name.value) sub-pats scrut-ty s
+     )
      is AVecPat (subs) (s) ->
       let elem-ty = when scrut-ty is VectorTy (n) (t) -> t is otherwise -> ErrorTy
       in deck-record (IrVecPat (lower-vec-sub-patterns ctx subs elem-ty 0 (depth + 1)) scrut-ty s)
@@ -1415,7 +1492,8 @@ Section: Match Lowering
   lower-ctor-sub-patterns-acc (ctx) (subs) (scrut-ty) (ctor-name) (i) (len) (depth) (acc) =
     if i == len then acc
     else let field-ty = ctor-field-type-in-ctx ctx scrut-ty ctor-name i
-    in lower-ctor-sub-patterns-acc ctx subs scrut-ty ctor-name (i + 1) len depth (list-push acc (lower-pattern-at ctx (list-at subs i) field-ty depth))
+    in let sub = lower-pattern-at ctx (list-at subs i) field-ty depth
+    in lower-ctor-sub-patterns-acc ctx subs scrut-ty ctor-name (i + 1) len depth (list-push acc sub)
 
   lower-vec-sub-patterns : LowerCtx, List APat, CodexType, Integer, Integer -> List IRPat
   lower-vec-sub-patterns (ctx) (subs) (elem-ty) (i) (depth) =
@@ -1425,7 +1503,8 @@ Section: Match Lowering
   lower-vec-sub-patterns-acc (ctx) (subs) (elem-ty) (i) (len) (depth) (acc) =
     if i == len then acc
     else
-      lower-vec-sub-patterns-acc ctx subs elem-ty (i + 1) len depth (list-push acc (lower-pattern-at ctx (list-at subs i) elem-ty depth))
+      let sub = lower-pattern-at ctx (list-at subs i) elem-ty depth
+      in lower-vec-sub-patterns-acc ctx subs elem-ty (i + 1) len depth (list-push acc sub)
 
  `lookup-ctor-field-type` answers ErrorTy for any scrutinee that is not
  ALREADY a resolved SumTy, and a parametric sum never is: `Box (a)`
@@ -1660,7 +1739,10 @@ Section: Collections and Act
     in when resolved
      is LinkedListTy (e) ->
       let ll-ty = deck-record (LinkedListTy e)
-      in deck-record (IrApply (deck-record (IrName "__linked-list-empty" (deck-record (FunTy int-ty-default empty-row ll-ty)) sp)) (deck-record (IrIntLit 0 sp)) ll-ty sp)
+      in deck-record (
+        let empty-fn = deck-record (IrName "__linked-list-empty" (deck-record (FunTy int-ty-default empty-row ll-ty)) sp)
+        in IrApply empty-fn (deck-record (IrIntLit 0 sp)) ll-ty sp
+      )
      is ListTy (e) -> deck-record (IrList [] e sp)
      is otherwise -> deck-record (IrList [] ErrorTy sp)
 
@@ -1761,12 +1843,15 @@ Section: Collections and Act
   lower-record-fields-typed (fields) (record-ty) (applied-ty) (ctx) (i) (len) =
     lower-record-fields-acc fields record-ty applied-ty ctx i len []
 
-  lower-record-fields-acc : List AFieldExpr, CodexType, CodexType, LowerCtx, Integer, Integer, List IRFieldVal -> List IRFieldVal
+  lower-record-fields-acc : List AFieldExpr, CodexType, CodexType, LowerCtx, Integer, Integer, List IRFieldVal ->
+    List IRFieldVal
   lower-record-fields-acc (fields) (record-ty) (applied-ty) (ctx) (i) (len) (acc) =
     if i == len then acc
     else let f = list-at fields i
     in let field-expected = when record-ty
-        is RecordTy (rname) (rargs) (rfields) -> subst-type-vars-from-arg record-ty applied-ty (lookup-record-field rfields (f.name.value))
+        is RecordTy (rname) (rargs) (rfields) ->
+         let field-ty = lookup-record-field rfields (f.name.value)
+         in subst-type-vars-from-arg record-ty applied-ty field-ty
         is otherwise -> ErrorTy
     in lower-record-fields-acc fields record-ty applied-ty ctx (i + 1) len (list-push acc (deck-record (IRFieldVal {
      name = f.name.value,
@@ -1801,13 +1886,15 @@ Section: Collections and Act
        let val-ir = lower-expr val NoExpectTy ctx
        in let val-ty = peel-effectful-ty (ir-expr-type val-ir)
        in let ctx2 = bind-local ctx (name.value) val-ty
-       in lower-act-stmts-acc stmts ty ctx2 (i + 1) len (list-push acc (deck-record (IrDoBind (bound-name ctx2 (name.value)) val-ty val-ir sp)))
+       in let do-bind = deck-record (IrDoBind (bound-name ctx2 (name.value)) val-ty val-ir sp)
+      in lower-act-stmts-acc stmts ty ctx2 (i + 1) len (list-push acc do-bind)
       is AActExprStmt (e) (sp) ->
        when e
         is ALetExpr (binds) (lbody) (ls) ->
          list-push acc (deck-record (IrDoExec (lower-act-let binds 0 lbody stmts ty ctx i len ls) sp))
         is otherwise ->
-         lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc (deck-record (IrDoExec (lower-expr e (if i == len - 1 then ty else NoExpectTy) ctx) sp)))
+         let exec = deck-record (IrDoExec (lower-expr e (if i == len - 1 then ty else NoExpectTy) ctx) sp)
+        in lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc exec)
 
  A `let` statement in an act block is do-notation: it scopes over the
  REST of the block, not merely over its own `in` body. Lowering it as a
@@ -1841,12 +1928,18 @@ Section: Collections and Act
     in let val-ir = lower-expr (b.value) NoExpectTy ctx
     in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
     in let ctx2 = bind-local ctx (b.name.value) val-ty
-    in deck-record (IrLet (bound-name ctx2 (b.name.value)) val-ty val-ir (lower-act-let binds (j + 1) body stmts ty ctx2 i len sp) sp)
+    in deck-record (
+      let let-name = bound-name ctx2 (b.name.value)
+      in IrLet let-name val-ty val-ir (lower-act-let binds (j + 1) body stmts ty ctx2 i len sp) sp
+    )
 
   lower-handle : Name, AExpr, List AHandleClause, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-handle (eff) (body) (clauses) (ty) (ctx) (sp) =
     let body-ir = lower-expr body ty ctx
-    in deck-record (IrHandle (eff.value) body-ir (lower-handle-clauses clauses ty ctx) (chain-ret-or ty (ir-expr-type body-ir)) sp)
+    in deck-record (
+      let clauses-ir = lower-handle-clauses clauses ty ctx
+      in IrHandle (eff.value) body-ir clauses-ir (chain-ret-or ty (ir-expr-type body-ir)) sp
+    )
 
   lower-handle-clauses : List AHandleClause, CodexType, LowerCtx -> List IRHandleClause
   lower-handle-clauses (clauses) (ty) (ctx) =
@@ -1937,7 +2030,8 @@ Section: Definition Lowering
      is TypeVar (id) -> if list-contains-int acc id then acc else list-push acc id
      is otherwise -> codex-type-fold-children collect-type-var-ids ty acc
 
-  build-def-ctx : List TypeBinding, UnificationState, List AParam, CodexType, List Integer, List RenameEntry, Boolean -> LowerCtx
+  build-def-ctx : List TypeBinding, UnificationState, List AParam, CodexType, List Integer, List RenameEntry, Boolean ->
+    LowerCtx
   build-def-ctx (types) (ust) (params) (ty) (local-ids) (chapter-rn) (rename) =
     let base-ctx = LowerCtx {
      overlay = OverlayNil,
@@ -2007,10 +2101,12 @@ Section: Definition Lowering
      is FunTy (p) (row) (r) -> get-return-type-n r (n - 1)
      is otherwise -> ty
 
-  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText, List ChapterAssignment, Integer, Boolean, Integer, Integer -> (IRChapter, Integer)
+  lower-chapter : AChapter, List TypeBinding, UnificationState, List Text, List RenameEntry, SkipListText,
+    List ChapterAssignment, Integer, Boolean, Integer, Integer -> (IRChapter, Integer)
   lower-chapter (m) (all-types) (ust) (ctor-names) (renames) (colliding) (assignments) (ceiling) (rename) (keep-base) (keep-ceiling) =
     let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-    in let cite-slugs = for c in (m.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
+    in let cite-slugs = (for c in (m.citations) -> let quire = c.quire.value
+      in find-slug-for-cite-name quire (c.chapter-name.value) assignments slug-cache)
     in let def-count = list-length (m.defs)
     in let exit = __deck-exit
     in let scratch-base = __deck-pos
@@ -2020,7 +2116,22 @@ Section: Definition Lowering
     in let keep0 = __deck-pos
     in let set-s0 = __deck-set scratch-base
     in let mc = lower-keep-open scratch-base keep-ceiling def-count
-    in let (defs, keep-end) = lower-defs-keep (m.defs) all-types ust 0 acc0 renames colliding assignments (m.citations) cite-slugs "" [] (m.rt-names) (m.rt-budgets) ceiling rename mc keep0 keep-ceiling
+    in let lk = LowerKeepCtx {
+     lk-types = all-types,
+     lk-ust = ust,
+     lk-renames = renames,
+     lk-colliding = colliding,
+     lk-assignments = assignments,
+     lk-citations = m.citations,
+     lk-cite-slugs = cite-slugs,
+     lk-rt-names = m.rt-names,
+     lk-rt-budgets = m.rt-budgets,
+     lk-ceiling = ceiling,
+     lk-rename = rename,
+     lk-mc = mc,
+     lk-keep-ceiling = keep-ceiling
+    }
+    in let (defs, keep-end) = lower-defs-keep (m.defs) lk 0 acc0 "" [] keep0
     in let set-k1 = __deck-set keep-end
     in let ch = deck-record (IRChapter {
      name = m.name,
@@ -2038,7 +2149,8 @@ Section: Definition Lowering
     else let e = list-at effs i
     in lower-collect-effect-op-names effs (i + 1) len (acc & (for op in (e.ops) -> op.name.value))
 
-  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean -> List IRDef
+  lower-defs : List ADef, List TypeBinding, UnificationState, Integer, List RenameEntry, SkipListText, List ChapterAssignment,
+    List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean -> List IRDef
   lower-defs (defs) (types) (ust) (i) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) =
     lower-defs-acc defs types ust i [] renames colliding assignments citations cite-slugs cur-slug cur-chapter-rn rt-names rt-budgets ceiling rename
 
@@ -2072,17 +2184,21 @@ Section: Definition Lowering
  destroy the record measuring it -- and reading R10 it stops at
  8,487,976 bytes, exactly one guard band short of the floor.
 
-  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean -> List IRDef
+  lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText,
+    List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean ->
+    List IRDef
   lower-defs-acc (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) =
     if i == list-length defs then acc
     else if deck-bound-short-of ceiling demand-lower-guard-band then acc
     else let d = list-at defs i
     in let chapter-rn = if d.chapter-slug == cur-slug then cur-chapter-rn
     else
-      apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0
+      let base-map = build-chapter-rename-map colliding assignments (d.chapter-slug)
+      in apply-cite-overrides base-map citations colliding assignments cite-slugs (d.chapter-slug) 0
     in let ir-def = lower-def d types ust renames chapter-rn rename
     in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then
-      __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names))
+      let marked = __record-set ir-def "is-punctual" True
+      in __record-set marked "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names))
     else ir-def
     in lower-defs-acc defs types ust (i + 1) (list-push acc tagged) renames colliding assignments citations cite-slugs (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename
 
@@ -2140,23 +2256,38 @@ Section: Per-Definition Reclamation
      mc-tcons-shift = memo-shift-for tcons-slots 64
     }
 
-  lower-defs-keep : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean, MemoCtx, Integer, Integer -> (List IRDef, Integer)
-  lower-defs-keep (defs) (types) (ust) (i) (acc) (renames) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-chapter-rn) (rt-names) (rt-budgets) (ceiling) (rename) (mc) (keep) (keep-ceiling) =
+  lower-defs-keep : List ADef, LowerKeepCtx, Integer, List IRDef, Text, List RenameEntry, Integer -> (List IRDef, Integer)
+  lower-defs-keep (defs) (lk) (i) (acc) (cur-slug) (cur-chapter-rn) (keep) =
     if i == list-length defs then (acc, keep)
-    else if keep + demand-lower-guard-band >= keep-ceiling then (acc, keep)
-    else if deck-short-of ceiling demand-lower-guard-band then (acc, keep)
+    else if keep + demand-lower-guard-band >= lk.lk-keep-ceiling then (acc, keep)
+    else if deck-short-of (lk.lk-ceiling) demand-lower-guard-band then (acc, keep)
     else let d = list-at defs i
+    in let types = lk.lk-types
+    in let ust = lk.lk-ust
+    in let renames = lk.lk-renames
+    in let colliding = lk.lk-colliding
+    in let assignments = lk.lk-assignments
+    in let citations = lk.lk-citations
+    in let cite-slugs = lk.lk-cite-slugs
+    in let rt-names = lk.lk-rt-names
+    in let rt-budgets = lk.lk-rt-budgets
+    in let rename = lk.lk-rename
+    in let mc = lk.lk-mc
     in let scratch-mark = __deck-pos
     in let bivy-mark = __heap-save
     in let (chapter-rn, keep1) = if d.chapter-slug == cur-slug then (cur-chapter-rn, keep)
     else let set-k = __deck-set keep
-    in let rn = deck-record (apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0)
+    in let rn = deck-record (
+      let base-map = build-chapter-rename-map colliding assignments (d.chapter-slug)
+      in apply-cite-overrides base-map citations colliding assignments cite-slugs (d.chapter-slug) 0
+    )
     in let k2 = __deck-pos
     in let set-s = __deck-set scratch-mark
     in (rn, k2)
     in let ir-def = lower-def d types ust renames chapter-rn rename
     in let tagged = if is-in-rt-names rt-names (d.name.value) 0 (list-length rt-names) then
-      __record-set (__record-set ir-def "is-punctual" True) "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names))
+      let marked = __record-set ir-def "is-punctual" True
+      in __record-set marked "wcet-budget" (find-rt-budget rt-names rt-budgets (d.name.value) 0 (list-length rt-names))
     else ir-def
     in let z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
     in let set-keep = __deck-set keep1
@@ -2164,7 +2295,7 @@ Section: Per-Definition Reclamation
     in let keep2 = __deck-pos
     in let set-scratch = __deck-set scratch-mark
     in let r = __heap-restore bivy-mark
-    in lower-defs-keep defs types ust (i + 1) (list-push acc kept) renames colliding assignments citations cite-slugs (d.chapter-slug) chapter-rn rt-names rt-budgets ceiling rename mc keep2 keep-ceiling
+    in lower-defs-keep defs lk (i + 1) (list-push acc kept) (d.chapter-slug) chapter-rn keep2
 
   lcopy-text : Text, MemoCtx -> Text
   lcopy-text (t) (mc) = mcopy-text t mc
@@ -2219,23 +2350,37 @@ Section: Per-Definition Reclamation
      is IrBoolLit (v) (s) -> IrBoolLit v (lcopy-span s mc)
      is IrCharLit (v) (s) -> IrCharLit v (lcopy-span s mc)
      is IrName (n) (t) (s) -> IrName (lcopy-text n mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrBinary (op) (l) (r) (t) (s) -> IrBinary (lcopy-op op) (lcopy-expr l mc) (lcopy-expr r mc) (lcopy-type t mc) (lcopy-span s mc)
+     is IrBinary (op) (l) (r) (t) (s) ->
+      let cop = lcopy-op op
+      in IrBinary cop (lcopy-expr l mc) (lcopy-expr r mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrNegate (x) (t) (s) -> IrNegate (lcopy-expr x mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrIf (c) (th) (el) (t) (s) -> IrIf (lcopy-expr c mc) (lcopy-expr th mc) (lcopy-expr el mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrLet (n) (t) (v) (b) (s) -> IrLet (lcopy-text n mc) (lcopy-type t mc) (lcopy-expr v mc) (lcopy-expr b mc) (lcopy-span s mc)
+     is IrIf (c) (th) (el) (t) (s) ->
+      let cc = lcopy-expr c mc
+      in IrIf cc (lcopy-expr th mc) (lcopy-expr el mc) (lcopy-type t mc) (lcopy-span s mc)
+     is IrLet (n) (t) (v) (b) (s) ->
+      let cn = lcopy-text n mc
+      in IrLet cn (lcopy-type t mc) (lcopy-expr v mc) (lcopy-expr b mc) (lcopy-span s mc)
      is IrApply (f) (a) (t) (s) -> IrApply (lcopy-expr f mc) (lcopy-expr a mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrLambda (ps) (b) (t) (s) -> IrLambda (lcopy-params ps mc) (lcopy-expr b mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrList (es) (t) (s) -> IrList (lcopy-exprs es mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrMatch (sc) (bs) (t) (s) -> IrMatch (lcopy-expr sc mc) (lcopy-branches bs mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrAct (ss) (t) (s) -> IrAct (lcopy-stmts ss mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrHandle (eff) (h) (cs) (t) (s) -> IrHandle (lcopy-text eff mc) (lcopy-expr h mc) (lcopy-clauses cs mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> IrWithTimeout secs (mcopy-texts effs mc) (mcopy-texts scopes mc) (lcopy-expr body mc) (lcopy-type t mc) (lcopy-span s mc)
+     is IrHandle (eff) (h) (cs) (t) (s) ->
+      let ce = lcopy-text eff mc
+      in IrHandle ce (lcopy-expr h mc) (lcopy-clauses cs mc) (lcopy-type t mc) (lcopy-span s mc)
+     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) ->
+      let ceffs = mcopy-texts effs mc
+      in IrWithTimeout secs ceffs (mcopy-texts scopes mc) (lcopy-expr body mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrRecord (n) (fs) (t) (s) -> IrRecord (lcopy-text n mc) (lcopy-fields fs mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrFieldAccess (r) (f) (t) (s) -> IrFieldAccess (lcopy-expr r mc) (lcopy-text f mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrFork (body) (t) (s) -> IrFork (lcopy-expr body mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrAwait (task) (t) (s) -> IrAwait (lcopy-expr task mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrTry (max) (body) (fb) (fail) (t) (s) -> IrTry max (lcopy-stmts body mc) (lcopy-stmts fb mc) (lcopy-stmts fail mc) (lcopy-type t mc) (lcopy-span s mc)
-     is IrFieldStore (r) (f) (v) (t) (s) -> IrFieldStore (lcopy-expr r mc) (lcopy-text f mc) (lcopy-expr v mc) (lcopy-type t mc) (lcopy-span s mc)
+     is IrTry (max) (body) (fb) (fail) (t) (s) ->
+      let cbody = lcopy-stmts body mc
+      in IrTry max cbody (lcopy-stmts fb mc) (lcopy-stmts fail mc) (lcopy-type t mc) (lcopy-span s mc)
+     is IrFieldStore (r) (f) (v) (t) (s) ->
+      let cr = lcopy-expr r mc
+      in IrFieldStore cr (lcopy-text f mc) (lcopy-expr v mc) (lcopy-type t mc) (lcopy-span s mc)
      is IrError (m) (t) (s) -> IrError (lcopy-text m mc) (lcopy-type t mc) (lcopy-span s mc)
 
   lcopy-branches : List IRBranch, MemoCtx -> List IRBranch
@@ -2360,7 +2505,8 @@ Section: Constant Folding
   fold-constants-in-chapter : IRChapter -> IRChapter
   fold-constants-in-chapter (ch) =
     let defined = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
-    in __record-set ch "defs" (for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body) defined) in deck-record folded)
+    in let folded-defs = for d in (ch.defs) -> let folded = __record-set d "body" (fold-expr (d.body) defined) in deck-record folded
+    in __record-set ch "defs" folded-defs
 
   fold-expr : IRExpr, SkipListText -> IRExpr
   fold-expr (e) (dn) =
@@ -2375,13 +2521,28 @@ Section: Constant Folding
       in when fx
        is IrIntLit (v) (ls) -> deck-record (IrIntLit (-v) sp)
        is otherwise -> deck-record (IrNegate fx t sp)
-     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc dn) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = fold-expr (b.body) dn, guard = fold-expr (b.guard) dn, span = b.span, alt-group = b.alt-group })) ty sp)
-     is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> when stmt is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v dn) ssp) is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev dn) esp)) ty sp)
-     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value) dn))) ty sp)
+     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (fold-expr sc dn) (for b in bs -> deck-record (IRBranch {
+       pattern = b.pattern,
+       body = fold-expr (b.body) dn,
+       guard = fold-expr (b.guard) dn,
+       span = b.span,
+       alt-group = b.alt-group
+     })) ty sp)
+     is IrAct (ss) (ty) (sp) -> deck-record (IrAct (for stmt in ss -> fold-act-stmt stmt dn) ty sp)
+     is IrRecord (n) (fs) (ty) (sp) -> deck-record (
+       let folded = for fv in fs -> deck-record (__record-set fv "value" (fold-expr (fv.value) dn))
+       in IrRecord n folded ty sp
+     )
      is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (fold-expr r dn) f ty sp)
      is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (fold-expr r dn) f (fold-expr v dn) ty sp)
      is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> fold-expr x dn) ty sp)
      is otherwise -> e
+
+  fold-act-stmt : IRActStmt, SkipListText -> IRActStmt
+  fold-act-stmt (stmt) (dn) =
+    when stmt
+     is IrDoBind (n) (sty) (v) (ssp) -> deck-record (IrDoBind n sty (fold-expr v dn) ssp)
+     is IrDoExec (ev) (esp) -> deck-record (IrDoExec (fold-expr ev dn) esp)
 
   fold-apply : IRExpr, IRExpr, CodexType, SourceSpan, SkipListText -> IRExpr
   fold-apply (f) (a) (ty) (sp) (dn) =
@@ -2756,8 +2917,13 @@ Section: Leaf Inlining
     if i == list-length ss then acc
     else let s = list-at ss i
     in when s
-     is IrDoBind (n) (sty) (v) (ssp) -> inline-act-stmts ss cands (list-push bound n) (i + 1) (list-push acc (deck-record (IrDoBind n sty (inline-expr v cands bound) ssp)))
-     is IrDoExec (ev) (esp) -> inline-act-stmts ss cands bound (i + 1) (list-push acc (deck-record (IrDoExec (inline-expr ev cands bound) esp)))
+     is IrDoBind (n) (sty) (v) (ssp) ->
+      let bound-n = list-push bound n
+      in let inlined = deck-record (IrDoBind n sty (inline-expr v cands bound) ssp)
+      in inline-act-stmts ss cands bound-n (i + 1) (list-push acc inlined)
+     is IrDoExec (ev) (esp) ->
+      let inlined = deck-record (IrDoExec (inline-expr ev cands bound) esp)
+      in inline-act-stmts ss cands bound (i + 1) (list-push acc inlined)
 
   inline-expr : IRExpr, List InlineLeaf, List Text -> IRExpr
   inline-expr (e) (cands) (bound) =
@@ -2766,12 +2932,28 @@ Section: Leaf Inlining
       let nf = inline-expr f cands bound
       in let na = inline-expr a cands bound
       in inline-apply-site (deck-record (IrApply nf na ty sp)) cands bound
-     is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (inline-expr l cands bound) (inline-expr r cands bound) ty sp)
-     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (inline-expr c cands bound) (inline-expr t cands bound) (inline-expr el cands bound) ty sp)
-     is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (inline-expr v cands bound) (inline-expr b cands (list-push bound n)) sp)
+     is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (
+       let il = inline-expr l cands bound
+       in IrBinary op il (inline-expr r cands bound) ty sp
+     )
+     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (
+       let ic = inline-expr c cands bound
+       in let ith = inline-expr t cands bound
+       in IrIf ic ith (inline-expr el cands bound) ty sp
+     )
+     is IrLet (n) (ty) (v) (b) (sp) -> deck-record (
+       let iv = inline-expr v cands bound
+       in IrLet n ty iv (inline-expr b cands (list-push bound n)) sp
+     )
      is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (inline-expr b cands (push-param-names bound ps 0)) ty sp)
      is IrNegate (x) (t) (sp) -> deck-record (IrNegate (inline-expr x cands bound) t sp)
-     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span, alt-group = b.alt-group })) ty sp)
+     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (inline-expr sc cands bound) (for b in bs -> deck-record (IRBranch {
+       pattern = b.pattern,
+       body = inline-expr (b.body) cands (push-pat-names bound (b.pattern)),
+       guard = inline-expr (b.guard) cands (push-pat-names bound (b.pattern)),
+       span = b.span,
+       alt-group = b.alt-group
+     })) ty sp)
      is IrAct (ss) (ty) (sp) -> deck-record (IrAct (inline-act-stmts ss cands bound 0 []) ty sp)
      is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (inline-expr (fv.value) cands bound))) ty sp)
      is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (inline-expr r cands bound) f ty sp)
@@ -2945,12 +3127,20 @@ Section: Single-Caller Inlining
       else deck-record (IrName n (once-retype ty ptys atys 0) sp)
      is IrNegate (x) (t) (sp) -> deck-record (IrNegate (subst-once x params args ptys atys) (once-retype t ptys atys 0) sp)
      is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-once l params args ptys atys) (subst-once r params args ptys atys) (once-retype ty ptys atys 0) sp)
-     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (IrIf (subst-once c params args ptys atys) (subst-once t params args ptys atys) (subst-once el params args ptys atys) (once-retype ty ptys atys 0) sp)
+     is IrIf (c) (t) (el) (ty) (sp) -> deck-record (
+       let so-c = subst-once c params args ptys atys
+       in let so-t = subst-once t params args ptys atys
+       in IrIf so-c so-t (subst-once el params args ptys atys) (once-retype ty ptys atys 0) sp
+     )
      is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-once f params args ptys atys) (subst-once a params args ptys atys) (once-retype ty ptys atys 0) sp)
      is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (subst-once r params args ptys atys) f (once-retype ty ptys atys 0) sp)
      is IrFieldStore (r) (f) (v) (ty) (sp) -> deck-record (IrFieldStore (subst-once r params args ptys atys) f (subst-once v params args ptys atys) (once-retype ty ptys atys 0) sp)
      is IrList (es) (ty) (sp) -> deck-record (IrList (for x in es -> subst-once x params args ptys atys) (once-retype ty ptys atys 0) sp)
-     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (IRFieldVal { name = fv.name, value = subst-once (fv.value) params args ptys atys, span = fv.span })) (once-retype ty ptys atys 0) sp)
+     is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (IRFieldVal {
+       name = fv.name,
+       value = subst-once (fv.value) params args ptys atys,
+       span = fv.span
+     })) (once-retype ty ptys atys 0) sp)
      is otherwise -> e
 
  The reference census. This walk must reach every constructor that can
@@ -3106,7 +3296,13 @@ Section: Single-Caller Inlining
      is IrLet (n) (ty) (v) (b) (sp) -> deck-record (IrLet n ty (once-expr v cands bound) (once-expr b cands (list-push bound n)) sp)
      is IrLambda (ps) (b) (ty) (sp) -> deck-record (IrLambda ps (once-expr b cands (push-param-names bound ps 0)) ty sp)
      is IrNegate (x) (t) (sp) -> deck-record (IrNegate (once-expr x cands bound) t sp)
-     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (once-expr sc cands bound) (for b in bs -> deck-record (IRBranch { pattern = b.pattern, body = once-expr (b.body) cands (push-pat-names bound (b.pattern)), guard = once-expr (b.guard) cands (push-pat-names bound (b.pattern)), span = b.span, alt-group = b.alt-group })) ty sp)
+     is IrMatch (sc) (bs) (ty) (sp) -> deck-record (IrMatch (once-expr sc cands bound) (for b in bs -> deck-record (IRBranch {
+       pattern = b.pattern,
+       body = once-expr (b.body) cands (push-pat-names bound (b.pattern)),
+       guard = once-expr (b.guard) cands (push-pat-names bound (b.pattern)),
+       span = b.span,
+       alt-group = b.alt-group
+     })) ty sp)
      is IrAct (ss) (ty) (sp) -> deck-record (IrAct (once-act-stmts ss cands bound 0 []) ty sp)
      is IrRecord (n) (fs) (ty) (sp) -> deck-record (IrRecord n (for fv in fs -> deck-record (__record-set fv "value" (once-expr (fv.value) cands bound))) ty sp)
      is IrFieldAccess (r) (f) (ty) (sp) -> deck-record (IrFieldAccess (once-expr r cands bound) f ty sp)

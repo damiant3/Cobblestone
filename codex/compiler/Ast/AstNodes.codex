@@ -251,7 +251,8 @@ Section: Implicit Type Parameters
   ast-collect-var-ctor-tparams (ctors) (i) (len) (acc) =
     if i == len then acc
     else let c = list-at ctors i
-    in ast-collect-var-ctor-tparams ctors (i + 1) len (ast-collect-atexpr-list-tparams (c.fields) 0 (list-length (c.fields)) acc)
+    in let ctor-acc = ast-collect-atexpr-list-tparams (c.fields) 0 (list-length (c.fields)) acc
+    in ast-collect-var-ctor-tparams ctors (i + 1) len ctor-acc
 
   ast-names-of-texts : List Text, Integer, Integer, List Name -> List Name
   ast-names-of-texts (xs) (i) (len) (acc) =
@@ -303,7 +304,12 @@ Section: Span Accessor
   aexpr-span : AExpr -> SourceSpan
   aexpr-span (e) =
     when e
-      is ALitExpr (t) (k) (s) | ANameExpr (n) (s) | AApplyExpr (f) (a) (s) | ABinaryExpr (l) (op) (r) (s) | AUnaryExpr (x) (s) | AIfExpr (c) (t) (el) (s) | ALetExpr (bs) (b) (s) | ALambdaExpr (ps) (b) (s) | AMatchExpr (sc) (arms) (s) | AListExpr (es) (s) | ARecordExpr (n) (fs) (s) | AFieldAccess (r) (f) (s) | AActExpr (ss) (s) | AHandleExpr (eff) (b) (cs) (s) | AWithTimeoutExpr (timeout) (effs) (scopes) (b) (s) | ATryExpr (max) (body) (fb) (fail) (s) | AFieldAssignExpr (r) (f) (v) (s) | ALazyExpr (inner) (s) | AErrorExpr (m) (s) | AInductionExpr (sc) (arms) (s) -> s
+      is ALitExpr (t) (k) (s) | ANameExpr (n) (s) | AApplyExpr (f) (a) (s) | ABinaryExpr (l) (op) (r) (s) -> s
+      is AUnaryExpr (x) (s) | AIfExpr (c) (t) (el) (s) | ALetExpr (bs) (b) (s) | ALambdaExpr (ps) (b) (s) -> s
+      is AMatchExpr (sc) (arms) (s) | AListExpr (es) (s) | ARecordExpr (n) (fs) (s) | AFieldAccess (r) (f) (s) -> s
+      is AActExpr (ss) (s) | AHandleExpr (eff) (b) (cs) (s) | AWithTimeoutExpr (timeout) (effs) (scopes) (b) (s) -> s
+      is ATryExpr (max) (body) (fb) (fail) (s) | AFieldAssignExpr (r) (f) (v) (s) | ALazyExpr (inner) (s) -> s
+      is AErrorExpr (m) (s) | AInductionExpr (sc) (arms) (s) -> s
 
 Section: Deck Copies
 
@@ -407,23 +413,40 @@ Section: Deck Copies
       is ALitExpr (t) (k) (sp) -> ALitExpr (copy-sx-text b t) (copy-as-litk k) (copy-sx-span b sp)
       is ANameExpr (n) (sp) -> ANameExpr (copy-as-name b n) (copy-sx-span b sp)
       is AApplyExpr (f) (a) (sp) -> AApplyExpr (copy-as-expr b f) (copy-as-expr b a) (copy-sx-span b sp)
-      is ABinaryExpr (l) (op) (r) (sp) -> ABinaryExpr (copy-as-expr b l) (copy-as-binop op) (copy-as-expr b r) (copy-sx-span b sp)
+      is ABinaryExpr (l) (op) (r) (sp) ->
+        let bin-l = copy-as-expr b l
+        in ABinaryExpr bin-l (copy-as-binop op) (copy-as-expr b r) (copy-sx-span b sp)
       is AUnaryExpr (x) (sp) -> AUnaryExpr (copy-as-expr b x) (copy-sx-span b sp)
       is AIfExpr (c) (t) (el) (sp) -> AIfExpr (copy-as-expr b c) (copy-as-expr b t) (copy-as-expr b el) (copy-sx-span b sp)
       is ALetExpr (bs) (body) (sp) -> ALetExpr (for lb in bs -> copy-as-letbind b lb) (copy-as-expr b body) (copy-sx-span b sp)
       is ALambdaExpr (ps) (body) (sp) -> ALambdaExpr (copy-as-names b ps) (copy-as-expr b body) (copy-sx-span b sp)
-      is AMatchExpr (sc) (arms) (sp) -> AMatchExpr (copy-as-expr b sc) (for a in arms -> copy-as-matcharm b a) (copy-sx-span b sp)
+      is AMatchExpr (sc) (arms) (sp) ->
+        let match-sc = copy-as-expr b sc
+        in AMatchExpr match-sc (for a in arms -> copy-as-matcharm b a) (copy-sx-span b sp)
       is AListExpr (es) (sp) -> AListExpr (for el in es -> copy-as-expr b el) (copy-sx-span b sp)
       is ARecordExpr (n) (fs) (sp) -> ARecordExpr (copy-as-name b n) (for f in fs -> copy-as-fieldexpr b f) (copy-sx-span b sp)
       is AFieldAccess (rec) (fld) (sp) -> AFieldAccess (copy-as-expr b rec) (copy-as-name b fld) (copy-sx-span b sp)
       is AActExpr (stmts) (sp) -> AActExpr (for s in stmts -> copy-as-actstmt b s) (copy-sx-span b sp)
-      is AHandleExpr (eff) (body) (cs) (sp) -> AHandleExpr (copy-as-name b eff) (copy-as-expr b body) (for c in cs -> copy-as-handleclause b c) (copy-sx-span b sp)
-      is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (sp) -> AWithTimeoutExpr (copy-sx-text b timeout) (copy-as-names b effs) (copy-sx-texts b scopes) (copy-as-expr b body) (copy-sx-span b sp)
-      is ATryExpr (max) (t-stmts) (c-stmts) (f-stmts) (sp) -> ATryExpr max (for ts in t-stmts -> copy-as-actstmt b ts) (for cs in c-stmts -> copy-as-actstmt b cs) (for fs in f-stmts -> copy-as-actstmt b fs) (copy-sx-span b sp)
-      is AFieldAssignExpr (rec) (fld) (val) (sp) -> AFieldAssignExpr (copy-as-expr b rec) (copy-as-name b fld) (copy-as-expr b val) (copy-sx-span b sp)
+      is AHandleExpr (eff) (body) (cs) (sp) ->
+        let hd-eff = copy-as-name b eff
+        in let hd-body = copy-as-expr b body
+        in AHandleExpr hd-eff hd-body (for c in cs -> copy-as-handleclause b c) (copy-sx-span b sp)
+      is AWithTimeoutExpr (timeout) (effs) (scopes) (body) (sp) ->
+        let wt-timeout = copy-sx-text b timeout
+        in let wt-effs = copy-as-names b effs
+        in AWithTimeoutExpr wt-timeout wt-effs (copy-sx-texts b scopes) (copy-as-expr b body) (copy-sx-span b sp)
+      is ATryExpr (max) (t-stmts) (c-stmts) (f-stmts) (sp) ->
+        let try-t = (for ts in t-stmts -> copy-as-actstmt b ts)
+        in let try-c = (for cs in c-stmts -> copy-as-actstmt b cs)
+        in ATryExpr max try-t try-c (for fs in f-stmts -> copy-as-actstmt b fs) (copy-sx-span b sp)
+      is AFieldAssignExpr (rec) (fld) (val) (sp) ->
+        let fa-rec = copy-as-expr b rec
+        in AFieldAssignExpr fa-rec (copy-as-name b fld) (copy-as-expr b val) (copy-sx-span b sp)
       is ALazyExpr (inner) (sp) -> ALazyExpr (copy-as-expr b inner) (copy-sx-span b sp)
       is AErrorExpr (m) (sp) -> AErrorExpr (copy-sx-text b m) (copy-sx-span b sp)
-      is AInductionExpr (sc) (arms) (sp) -> AInductionExpr (copy-as-expr b sc) (for a in arms -> copy-as-matcharm b a) (copy-sx-span b sp)
+      is AInductionExpr (sc) (arms) (sp) ->
+        let ind-sc = copy-as-expr b sc
+        in AInductionExpr ind-sc (for a in arms -> copy-as-matcharm b a) (copy-sx-span b sp)
 
   copy-as-typeexpr : Integer, ATypeExpr -> ATypeExpr
   copy-as-typeexpr (b) (t) =
@@ -431,12 +454,21 @@ Section: Deck Copies
       is ANamedType (n) (sp) -> ANamedType (copy-as-name b n) (copy-sx-span b sp)
       is AFunType (a) (r) (sp) -> AFunType (copy-as-typeexpr b a) (copy-as-typeexpr b r) (copy-sx-span b sp)
       is AAppType (f) (args) (sp) -> AAppType (copy-as-typeexpr b f) (for a in args -> copy-as-typeexpr b a) (copy-sx-span b sp)
-      is AEffectType (effs) (caps) (tail) (inner) (sp) -> AEffectType (copy-as-names b effs) (copy-sx-texts b caps) (copy-as-names b tail) (copy-as-typeexpr b inner) (copy-sx-span b sp)
-      is ABoundedIntType (inner) (lo) (hi) (mode) (sp) -> ABoundedIntType (copy-as-typeexpr b inner) lo hi (copy-sx-ov mode) (copy-sx-span b sp)
+      is AEffectType (effs) (caps) (tail) (inner) (sp) ->
+        let et-effs = copy-as-names b effs
+        in let et-caps = copy-sx-texts b caps
+        in AEffectType et-effs et-caps (copy-as-names b tail) (copy-as-typeexpr b inner) (copy-sx-span b sp)
+      is ABoundedIntType (inner) (lo) (hi) (mode) (sp) ->
+        let bi-inner = copy-as-typeexpr b inner
+        in ABoundedIntType bi-inner lo hi (copy-sx-ov mode) (copy-sx-span b sp)
       is APropEqType (l) (r) (sp) -> APropEqType (copy-as-typeexpr b l) (copy-as-typeexpr b r) (copy-sx-span b sp)
-      is AConstrainedType (cls) (param) (inner) (sp) -> AConstrainedType (copy-as-name b cls) (copy-as-name b param) (copy-as-typeexpr b inner) (copy-sx-span b sp)
+      is AConstrainedType (cls) (param) (inner) (sp) ->
+        let ct-cls = copy-as-name b cls
+        in AConstrainedType ct-cls (copy-as-name b param) (copy-as-typeexpr b inner) (copy-sx-span b sp)
       is ALinearType (inner) (sp) -> ALinearType (copy-as-typeexpr b inner) (copy-sx-span b sp)
-      is AForallType (v) (vt) (p) (sp) -> AForallType (copy-as-name b v) (copy-as-typeexpr b vt) (copy-as-typeexpr b p) (copy-sx-span b sp)
+      is AForallType (v) (vt) (p) (sp) ->
+        let fa-v = copy-as-name b v
+        in AForallType fa-v (copy-as-typeexpr b vt) (copy-as-typeexpr b p) (copy-sx-span b sp)
 
   copy-as-param : Integer, AParam -> AParam
   copy-as-param (b) (p) = AParam { name = copy-as-name b (p.name), span = copy-sx-span b (p.span) }
@@ -469,8 +501,14 @@ Section: Deck Copies
   copy-as-typedef : Integer, ATypeDef -> ATypeDef
   copy-as-typedef (b) (d) =
     when d
-      is ARecordTypeDef (n) (ps) (fs) (m) (sp) -> ARecordTypeDef (copy-as-name b n) (copy-as-names b ps) (for f in fs -> copy-as-recordfielddef b f) m (copy-sx-span b sp)
-      is AVariantTypeDef (n) (ps) (cs) (sp) -> AVariantTypeDef (copy-as-name b n) (copy-as-names b ps) (for c in cs -> copy-as-variantctordef b c) (copy-sx-span b sp)
+      is ARecordTypeDef (n) (ps) (fs) (m) (sp) ->
+        let rd-n = copy-as-name b n
+        in let rd-ps = copy-as-names b ps
+        in ARecordTypeDef rd-n rd-ps (for f in fs -> copy-as-recordfielddef b f) m (copy-sx-span b sp)
+      is AVariantTypeDef (n) (ps) (cs) (sp) ->
+        let vd-n = copy-as-name b n
+        in let vd-ps = copy-as-names b ps
+        in AVariantTypeDef vd-n vd-ps (for c in cs -> copy-as-variantctordef b c) (copy-sx-span b sp)
       is AUnitTypeDef (n) (base) (sp) -> AUnitTypeDef (copy-as-name b n) (copy-as-typeexpr b base) (copy-sx-span b sp)
 
   copy-as-effectopdef : Integer, AEffectOpDef -> AEffectOpDef
@@ -594,7 +632,8 @@ Section: Deck Copies
     else
       copy-as-proseblocks-guarded b ceiling ps (i + 1) len (list-push acc (copy-sx-proseblock b (list-at ps i)))
 
-  copy-as-annotations-guarded : Integer, Integer, List AnnotationNode, Integer, Integer, List AnnotationNode -> List AnnotationNode
+  copy-as-annotations-guarded : Integer, Integer, List AnnotationNode, Integer, Integer, List AnnotationNode ->
+    List AnnotationNode
   copy-as-annotations-guarded (b) (ceiling) (ns) (i) (len) (acc) =
     if i == len then acc
     else if __heap-save >= ceiling then acc

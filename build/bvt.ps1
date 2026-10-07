@@ -341,7 +341,8 @@ if (Test-Path $runDir) { Remove-Item -Recurse -Force $runDir }
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 $Jobs = (Get-VmAdmittedSlots -Slots $Jobs -What 'BVT run')
 $slotLines = @{}
-for ($s = 0; $s -lt $Jobs; $s++) { $slotLines[$s] = [System.Collections.Generic.List[string]]::new() }
+for ($s = 0; $s -le $Jobs; $s++) { $slotLines[$s] = [System.Collections.Generic.List[string]]::new() }
+$longWall = 0
 $tempDisks = [System.Collections.Generic.List[string]]::new()
 $rawOf = @{}
 $diskSourceBytes = @{}
@@ -444,13 +445,26 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
         }
     }
     $s = $i % $Jobs
+    # A .wall sidecar is a run budget in whole seconds above the supervisor's
+    # 60 s default (COMPILER-123). Those subjects share one extra slot, one
+    # guest at a time, whose supervisor gets the largest such budget.
+    $wallFile = $t -replace '\.codex$', '.wall'
+    if (Test-Path -PathType Leaf $wallFile) {
+        $wallSec = 0
+        $wallText = (Get-Content -TotalCount 1 $wallFile).Trim()
+        if (-not [int]::TryParse($wallText, [ref]$wallSec) -or $wallSec -le 60 -or $wallSec -gt 600) {
+            throw "$wallFile must hold whole seconds above 60 and at most 600 on its first line, not '$wallText'"
+        }
+        $s = $Jobs
+        if ($wallSec -gt $longWall) { $longWall = $wallSec }
+    }
     # Every token double-quoted: that is what -run-list's splitter takes.
     $slotLines[$s].Add((($tokens | ForEach-Object { '"' + $_ + '"' }) -join ' '))
     $lineKey[$base] = "$s/$($slotLines[$s].Count)"
 }
 $supervisors = @{}
 $slotErrs = @{}
-for ($s = 0; $s -lt $Jobs; $s++) {
+for ($s = 0; $s -le $Jobs; $s++) {
     if ($slotLines[$s].Count -eq 0) { continue }
     $lf = Join-Path $runDir "run-$s.txt"
     [System.IO.File]::WriteAllLines($lf, $slotLines[$s], [System.Text.UTF8Encoding]::new($false))
@@ -461,7 +475,9 @@ for ($s = 0; $s -lt $Jobs; $s++) {
     # and D: pays ~7.5 ms for each. test-run.ps1 only ever escaped this
     # because GetTempFileName() lands on C:.
     $slotErrs[$s] = [System.IO.Path]::GetTempFileName()
-    $sa = @{ FilePath = $vmExe; ArgumentList = @('-run-list', $lf); PassThru = $true; RedirectStandardError = $slotErrs[$s] }
+    $listArgs = @('-run-list', $lf)
+    if ($s -eq $Jobs) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
+    $sa = @{ FilePath = $vmExe; ArgumentList = $listArgs; PassThru = $true; RedirectStandardError = $slotErrs[$s] }
     if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
     $supervisors[$s] = Start-Process @sa
 }

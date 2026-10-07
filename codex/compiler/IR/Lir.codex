@@ -383,7 +383,8 @@ Section: Lowering
     else if tail then list-push curi (deck-record (LiRet v))
     else list-push (list-push curi (deck-record (LiMove d v))) (deck-record (LiJump join-id))
 
-  lower-lir-expr : List LirEnvEntry, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> LowerRes
+  lower-lir-expr : List LirEnvEntry, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx ->
+    LowerRes
   lower-lir-expr (env) (e) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
     if depth >= max-recursion-depth then lower-fail counter blocks cur curi bctr
     else when e
@@ -426,7 +427,8 @@ Section: Lowering
        counter = dst + 1,
        blocks = rr.blocks,
        cur = rr.cur,
-       curi = list-push (list-push (rr.curi) (deck-record (LiMove mv (rr.val)))) (deck-record (LiBin (lir-op-of op) dst (rl.val) (LvReg mv))),
+       curi = let mv-curi = list-push (rr.curi) (deck-record (LiMove mv (rr.val)))
+         in list-push mv-curi (deck-record (LiBin (lir-op-of op) dst (rl.val) (LvReg mv))),
        bctr = rr.bctr,
        ok = True,
        term = False
@@ -446,7 +448,8 @@ Section: Lowering
       let rv = lower-lir-expr env v counter blocks cur curi bctr (depth + 1) (loop-notail lc)
       in if rv.ok == False then rv
       else
-        lower-lir-expr ((deck-record (LirEnvEntry { name = n, val = rv.val })) :: env) b (rv.counter) (rv.blocks) (rv.cur) (rv.curi) (rv.bctr) (depth + 1) lc
+        let let-env = (deck-record (LirEnvEntry { name = n, val = rv.val })) :: env
+        in lower-lir-expr let-env b (rv.counter) (rv.blocks) (rv.cur) (rv.curi) (rv.bctr) (depth + 1) lc
      is IrIf (c) (th) (el) (t) (s) ->
       let cres = lower-if-cond env c counter blocks cur curi bctr (depth + 1) (loop-notail lc)
       in if cres.ok == False then
@@ -499,8 +502,7 @@ Section: Lowering
       else if lir-env-find env root 0 (list-length env) >= 0 then
         lower-fail counter blocks cur curi bctr
       else let args = lir-apply-args e []
-      in if list-length args > 6 then lower-fail counter blocks cur curi bctr
-      else if lir-backedge-fires lc root (list-length args) then
+      in if lir-backedge-fires lc root (list-length args) then
         lower-backedge env args 0 (list-length args) counter blocks cur curi bctr [] (depth + 1) lc
       else
         lower-call-args env args 0 (list-length args) root counter blocks cur curi bctr [] (depth + 1) (loop-notail lc)
@@ -537,7 +539,8 @@ Section: Lowering
      is IrApply (f) (a) (t) (s) -> lir-apply-args f ([a] & acc)
      is otherwise -> acc
 
-  lower-call-args : List LirEnvEntry, List IRExpr, Integer, Integer, Text, Integer, List LirBlock, Integer, List LirInsn, Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
+  lower-call-args : List LirEnvEntry, List IRExpr, Integer, Integer, Text, Integer, List LirBlock, Integer, List LirInsn,
+    Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
   lower-call-args (env) (args) (i) (na) (name) (counter) (blocks) (cur) (curi) (bctr) (argvals) (depth) (lc) =
     if depth >= max-recursion-depth then lower-fail counter blocks cur curi bctr
     else if i >= na
@@ -555,7 +558,8 @@ Section: Lowering
     else let ra = lower-lir-expr env (list-at args i) counter blocks cur curi bctr depth lc
     in if ra.ok == False then ra
     else
-      lower-call-args env args (i + 1) na name (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) (list-push argvals (ra.val)) depth lc
+      let argvals2 = list-push argvals (ra.val)
+      in lower-call-args env args (i + 1) na name (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) argvals2 depth lc
 
  Lowering a self-tail-call as a back-edge. The arguments are lowered first,
  as ordinary non-tail values, exactly as a call would lower them; what
@@ -677,7 +681,8 @@ Section: Lowering
     else let ix = list-at order k
     in lir-write-ord vals order (k + 1) na (list-push curi (deck-record (LiMove ix (list-at vals ix))))
 
-  lower-backedge-ord : List LirEnvEntry, List IRExpr, List Integer, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn, Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
+  lower-backedge-ord : List LirEnvEntry, List IRExpr, List Integer, Integer, Integer, Integer, List LirBlock, Integer,
+    List LirInsn, Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
   lower-backedge-ord (env) (args) (order) (k) (na) (counter) (blocks) (cur) (curi) (bctr) (vals) (depth) (lc) =
     if depth >= max-recursion-depth then lower-fail counter blocks cur curi bctr
     else if k >= na
@@ -695,16 +700,19 @@ Section: Lowering
     in let ra = lower-lir-expr env (list-at args ix) counter blocks cur curi bctr depth (loop-notail lc)
     in if ra.ok == False then ra
     else
-      lower-backedge-ord env args order (k + 1) na (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) (list-set-at vals ix (ra.val)) depth lc
+      let vals2 = list-set-at vals ix (ra.val)
+      in lower-backedge-ord env args order (k + 1) na (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) vals2 depth lc
 
-  lower-backedge : List LirEnvEntry, List IRExpr, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn, Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
+  lower-backedge : List LirEnvEntry, List IRExpr, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn, Integer,
+    List LirValue, Integer, LirLoopCtx -> LowerRes
   lower-backedge (env) (args) (i) (na) (counter) (blocks) (cur) (curi) (bctr) (argvals) (depth) (lc) =
     let order = lir-order-args env args na
     in if list-length order == na then
       lower-backedge-ord env args order 0 na counter blocks cur curi bctr (lir-vals-init 0 na []) depth lc
     else lower-backedge-stage env args i na counter blocks cur curi bctr argvals depth lc
 
-  lower-backedge-stage : List LirEnvEntry, List IRExpr, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn, Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
+  lower-backedge-stage : List LirEnvEntry, List IRExpr, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn,
+    Integer, List LirValue, Integer, LirLoopCtx -> LowerRes
   lower-backedge-stage (env) (args) (i) (na) (counter) (blocks) (cur) (curi) (bctr) (argvals) (depth) (lc) =
     if depth >= max-recursion-depth then lower-fail counter blocks cur curi bctr
     else if i >= na
@@ -723,7 +731,8 @@ Section: Lowering
     else let ra = lower-lir-expr env (list-at args i) counter blocks cur curi bctr depth (loop-notail lc)
     in if ra.ok == False then ra
     else
-      lower-backedge-stage env args (i + 1) na (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) (list-push argvals (ra.val)) depth lc
+      let argvals2 = list-push argvals (ra.val)
+      in lower-backedge-stage env args (i + 1) na (ra.counter) (ra.blocks) (ra.cur) (ra.curi) (ra.bctr) argvals2 depth lc
 
  One shape is worth recognising before that: a remainder by a power of two
  compared against zero. `math-mod n 2 == 0` is how a program asks whether a
@@ -806,7 +815,8 @@ Section: Lowering
        is otherwise -> False
      is otherwise -> False
 
-  lower-if-cond : List LirEnvEntry, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> CondRes
+  lower-if-cond : List LirEnvEntry, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx ->
+    CondRes
   lower-if-cond (env) (c) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
     when c
      is IrBinary (op) (l) (r) (t) (s) ->
@@ -829,7 +839,8 @@ Section: Lowering
       }
      is otherwise -> cond-value-path env c counter blocks cur curi bctr depth lc
 
-  lower-if-test : List LirEnvEntry, IRBinaryOp, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> CondRes
+  lower-if-test : List LirEnvEntry, IRBinaryOp, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer,
+    LirLoopCtx -> CondRes
   lower-if-test (env) (op) (l) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
     let rb = lower-lir-expr env (lir-rem-base l) counter blocks cur curi bctr (depth + 1) lc
     in if rb.ok == False then cond-fail (rb.counter) (rb.blocks) (rb.cur) (rb.curi) (rb.bctr)
@@ -843,7 +854,8 @@ Section: Lowering
      ok = True
     }
 
-  cond-value-path : List LirEnvEntry, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> CondRes
+  cond-value-path : List LirEnvEntry, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx ->
+    CondRes
   cond-value-path (env) (c) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
     let rv = lower-lir-expr env c counter blocks cur curi bctr (depth + 1) lc
     in if rv.ok == False then cond-fail (rv.counter) (rv.blocks) (rv.cur) (rv.curi) (rv.bctr)
@@ -975,7 +987,8 @@ Section: Lowering
    curi : List LirInsn
   }
 
-  lir-bind-ctor-loads : List LirEnvEntry, List IRPat, List CodexType, LirValue, Integer, Integer, Integer, List LirInsn -> PatBindRes
+  lir-bind-ctor-loads : List LirEnvEntry, List IRPat, List CodexType, LirValue, Integer, Integer, Integer, List LirInsn ->
+    PatBindRes
   lir-bind-ctor-loads (env) (subs) (tys) (sv) (i) (n) (counter) (curi) =
     if i >= n then PatBindRes { env = env, counter = counter, curi = curi }
     else when (list-at subs i)
@@ -984,7 +997,9 @@ Section: Lowering
       in let sg = if i < list-length tys then lir-field-signed (list-at tys i) else False
       in let off = if i < list-length tys then lir-field-offset tys i else (1 + i) * 8
       in let dst = counter
-      in lir-bind-ctor-loads ((deck-record (LirEnvEntry { name = nm, val = LvReg dst })) :: env) subs tys sv (i + 1) n (counter + 1) (list-push curi (deck-record (LiLoad dst sv off w sg)))
+      in let ctor-env = (deck-record (LirEnvEntry { name = nm, val = LvReg dst })) :: env
+      in let ctor-curi = list-push curi (deck-record (LiLoad dst sv off w sg))
+      in lir-bind-ctor-loads ctor-env subs tys sv (i + 1) n (counter + 1) ctor-curi
      is otherwise -> lir-bind-ctor-loads env subs tys sv (i + 1) n counter curi
 
   lir-bind-pattern : List LirEnvEntry, IRPat, LirValue, Integer, List LirInsn -> PatBindRes
@@ -1012,7 +1027,8 @@ Section: Lowering
       let tagval = when t is SumTy (sn) (sa) (cs) -> lir-ctor-tag cs nm 0 is otherwise -> 0 - 1
       in let tag-dst = counter
       in MatchTestRes {
-        curi = list-push (list-push curi (deck-record (LiLoad tag-dst sv 0 8 False))) (deck-record (LiCmp (LvReg tag-dst) (LvImm tagval))),
+        curi = let tag-curi = list-push curi (deck-record (LiLoad tag-dst sv 0 8 False))
+          in list-push tag-curi (deck-record (LiCmp (LvReg tag-dst) (LvImm tagval))),
         counter = counter + 1
       }
      is IrLitPat (v) (t) (s) -> MatchTestRes {
@@ -1050,7 +1066,8 @@ Section: Lowering
  and a Boolean spells letters; both sites read a pattern, so both had the
  same defect and both take the same cure.
 
-  lower-match-chain : List LirEnvEntry, List IRBranch, Integer, Integer, LirValue, Integer, Integer, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer, LirLoopCtx -> LowerRes
+  lower-match-chain : List LirEnvEntry, List IRBranch, Integer, Integer, LirValue, Integer, Integer, Integer, List LirBlock,
+    Integer, List LirInsn, Integer, Integer, LirLoopCtx -> LowerRes
   lower-match-chain (env) (branches) (i) (n) (sv) (d) (join-id) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
     if depth >= max-recursion-depth then lower-fail counter blocks cur curi bctr
     else let b = list-at branches i
@@ -1384,7 +1401,15 @@ Section: Move Coalescing
     in let c = lcoal-find-blocks (f.blocks) 0 (list-length (f.blocks)) uc (f.nparams)
     in if c.found == False then f
     else let nb = lcoal-blocks (f.blocks) 0 (list-length (f.blocks)) (c.d) (c.s) []
-    in lir-coalesce-func (LirFunc { name = f.name, nparams = f.nparams, blocks = nb, result = f.result, nvregs = f.nvregs, rets = f.rets }) (fuel - 1)
+    in let coalesced = LirFunc {
+     name = f.name,
+     nparams = f.nparams,
+     blocks = nb,
+     result = f.result,
+     nvregs = f.nvregs,
+     rets = f.rets
+    }
+    in lir-coalesce-func coalesced (fuel - 1)
 
 Section: Structural Verifier
 
@@ -1499,7 +1524,8 @@ Section: Structural Verifier
   lir-use-msg-list (fname) (bid) (ii) (args) (defined) (nvregs) (msgs) (i) (n) =
     if i >= n then msgs
     else
-      lir-use-msg-list fname bid ii args defined nvregs (lir-use-msg fname bid ii (list-at args i) defined nvregs msgs) (i + 1) n
+      let msgs2 = lir-use-msg fname bid ii (list-at args i) defined nvregs msgs
+      in lir-use-msg-list fname bid ii args defined nvregs msgs2 (i + 1) n
 
   lir-check-block-insns : Text, Integer, Integer, List LirInsn, Integer, Integer, List Boolean, List Text, Integer -> LirWalk
   lir-check-block-insns (fname) (bid) (nvregs) (insns) (i) (len) (defined) (msgs) (rl) =
@@ -1567,7 +1593,8 @@ Section: Structural Verifier
    last-defined : List Boolean
   }
 
-  lir-check-blocks : Text, Integer, List LirBlock, Integer, Integer, List (List Boolean), List Boolean, List Text, List Boolean, Integer -> LirCheckState
+  lir-check-blocks : Text, Integer, List LirBlock, Integer, Integer, List (List Boolean), List Boolean, List Text, List Boolean,
+    Integer -> LirCheckState
   lir-check-blocks (fname) (nvregs) (blocks) (i) (len) (entries) (seen) (msgs) (last-defined) (rl) =
     if i >= len then LirCheckState { msgs = msgs, last-defined = last-defined }
     else let b = list-at blocks i
@@ -2350,7 +2377,8 @@ Section: Allocator
     else let cand = list-at active vi
     in if (cand.fin) > (iv.fin)
        then LirScan {
-        assign = list-set-at (list-set-at (st.assign) (cand.vreg) (deck-record (LocSlot (st.nslots)))) (iv.vreg) (deck-record (LocReg (cand.reg))),
+        assign = let spilled = list-set-at (st.assign) (cand.vreg) (deck-record (LocSlot (st.nslots)))
+          in list-set-at spilled (iv.vreg) (deck-record (LocReg (cand.reg))),
         active = list-push (lir-remove-at active vi 0 (list-length active) []) (deck-record (LirActive {
           vreg = iv.vreg,
           fin = iv.fin,
@@ -2516,23 +2544,27 @@ Section: Entry Moves
  staging step built in the argument list after the rewrite would read the
  scratch back and stage a register onto itself.
 
-  lir-emv-stage : LirTarget, List Integer, List Boolean, Integer, List Location, Integer, List LirEmv, Integer, Integer -> List LirEmv
+  lir-emv-stage : LirTarget, List Integer, List Boolean, Integer, List Location, Integer, List LirEmv, Integer, Integer ->
+    List LirEmv
   lir-emv-stage (tgt) (srcs) (done) (np) (assign) (fuel) (acc) (c) (sc) =
-    lir-emv-plan tgt (list-set-at srcs c (lir-emv-scratch tgt)) done np assign fuel (list-push acc (EmvMove (lir-emv-scratch tgt) sc))
+    let srcs2 = list-set-at srcs c (lir-emv-scratch tgt)
+    in lir-emv-plan tgt srcs2 done np assign fuel (list-push acc (EmvMove (lir-emv-scratch tgt) sc))
 
   lir-emv-plan : LirTarget, List Integer, List Boolean, Integer, List Location, Integer, List LirEmv -> List LirEmv
   lir-emv-plan (tgt) (srcs) (done) (np) (assign) (fuel) (acc) =
     if fuel <= 0 then acc
     else let p = lir-emv-pick srcs done 0 np assign
     in if p >= 0 then
-      lir-emv-plan tgt srcs (list-set-at done p True) np assign (fuel - 1) (list-push acc (lir-emv-step assign p (list-at srcs p)))
+      let done2 = list-set-at done p True
+      in lir-emv-plan tgt srcs done2 np assign (fuel - 1) (list-push acc (lir-emv-step assign p (list-at srcs p)))
     else let c = lir-emv-stageable srcs done 0 np (lir-emv-scratch tgt)
     in if c < 0 then acc
     else lir-emv-stage tgt srcs done np assign (fuel - 1) acc c (list-at srcs c)
 
   lir-emv-for : LirTarget, LirFunc, List Location -> List LirEmv
   lir-emv-for (tgt) (f) (assign) =
-    lir-emv-plan tgt (lir-emv-srcs tgt 0 (f.nparams) []) (lir-make-vec 0 (f.nparams) []) (f.nparams) assign ((f.nparams) * 2 + 4) []
+    let f-np = f.nparams
+    in lir-emv-plan tgt (lir-emv-srcs tgt 0 f-np []) (lir-make-vec 0 f-np []) f-np assign (f-np * 2 + 4) []
 
  The check, and the reason it simulates rather than re-derives. A checker that
  re-ran the planner's own reasoning would agree with it however wrong it was,
@@ -2579,8 +2611,12 @@ Section: Entry Moves
   lir-emv-text (plan) (i) (n) (acc) =
     if i >= n then acc
     else when (list-at plan i)
-     is EmvMove (d) (s) -> lir-emv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-r" & integer-to-text s)
-     is EmvStore (k) (s) -> lir-emv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "s" & integer-to-text k & "<-r" & integer-to-text s)
+     is EmvMove (d) (s) ->
+       let emv-sep = if acc == "" then "" else " "
+       in lir-emv-text plan (i + 1) n (acc & emv-sep & "r" & integer-to-text d & "<-r" & integer-to-text s)
+     is EmvStore (k) (s) ->
+       let emv-sep = if acc == "" then "" else " "
+       in lir-emv-text plan (i + 1) n (acc & emv-sep & "s" & integer-to-text k & "<-r" & integer-to-text s)
 
  The precondition, and it is not decoration: it was violated on this check's
  first run. `nargregs + i` is where parameter `i` arrives only while there IS
@@ -2603,7 +2639,8 @@ Section: Entry Moves
     if (f.nparams) > lir-emv-nargregs tgt then " [entry: beyond the argument registers]"
     else let plan = lir-emv-for tgt f assign
     in let bad = lir-emv-check tgt f assign plan
-    in " [entry: " & (if list-length plan == 0 then "none" else lir-emv-text plan 0 (list-length plan) "") & (if bad < 0 then "" else " VIOLATION p" & integer-to-text bad) & "]"
+    in let plan-text = if list-length plan == 0 then "none" else lir-emv-text plan 0 (list-length plan) ""
+    in " [entry: " & plan-text & (if bad < 0 then "" else " VIOLATION p" & integer-to-text bad) & "]"
 
 Section: Argument Moves
 
@@ -2685,16 +2722,21 @@ Section: Argument Moves
        is LocReg (pr) -> AmvMove ((tgt.nargregs) + i) pr
        is LocSlot (k) -> AmvLoad ((tgt.nargregs) + i) k
 
-  lir-amv-stage : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv, Integer, Integer -> List LirAmv
+  lir-amv-stage : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv, Integer,
+    Integer -> List LirAmv
   lir-amv-stage (tgt) (argvals) (srcs) (done) (na) (assign) (fuel) (acc) (c) (sc) =
-    lir-amv-plan tgt argvals (list-set-at srcs c (lir-amv-scratch tgt)) done na assign fuel (list-push acc (AmvMove (lir-amv-scratch tgt) sc))
+    let srcs2 = list-set-at srcs c (lir-amv-scratch tgt)
+    in lir-amv-plan tgt argvals srcs2 done na assign fuel (list-push acc (AmvMove (lir-amv-scratch tgt) sc))
 
-  lir-amv-plan : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv -> List LirAmv
+  lir-amv-plan : LirTarget, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, List LirAmv ->
+    List LirAmv
   lir-amv-plan (tgt) (argvals) (srcs) (done) (na) (assign) (fuel) (acc) =
     if fuel <= 0 then acc
     else let p = lir-amv-pick tgt srcs done 0 na
     in if p >= 0 then
-      lir-amv-plan tgt argvals srcs (list-set-at done p True) na assign (fuel - 1) (list-push acc (lir-amv-step tgt argvals assign p (list-at srcs p)))
+      let done2 = list-set-at done p True
+      in let amv-step = lir-amv-step tgt argvals assign p (list-at srcs p)
+      in lir-amv-plan tgt argvals srcs done2 na assign (fuel - 1) (list-push acc amv-step)
     else let c = lir-amv-stageable srcs done 0 na (lir-amv-scratch tgt)
     in if c < 0 then acc
     else lir-amv-stage tgt argvals srcs done na assign (fuel - 1) acc c (list-at srcs c)
@@ -2754,29 +2796,39 @@ Section: Argument Moves
   lir-amv-text (plan) (i) (n) (acc) =
     if i >= n then acc
     else when (list-at plan i)
-     is AmvMove (d) (s) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-r" & integer-to-text s)
-     is AmvLoad (d) (k) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-s" & integer-to-text k)
-     is AmvImm (d) (a) -> lir-amv-text plan (i + 1) n (acc & (if acc == "" then "" else " ") & "r" & integer-to-text d & "<-imm" & integer-to-text a)
+     is AmvMove (d) (s) ->
+       let amv-sep = if acc == "" then "" else " "
+       in lir-amv-text plan (i + 1) n (acc & amv-sep & "r" & integer-to-text d & "<-r" & integer-to-text s)
+     is AmvLoad (d) (k) ->
+       let amv-sep = if acc == "" then "" else " "
+       in lir-amv-text plan (i + 1) n (acc & amv-sep & "r" & integer-to-text d & "<-s" & integer-to-text k)
+     is AmvImm (d) (a) ->
+       let amv-sep = if acc == "" then "" else " "
+       in lir-amv-text plan (i + 1) n (acc & amv-sep & "r" & integer-to-text d & "<-imm" & integer-to-text a)
 
   lir-amv-call-text : LirTarget, List LirValue, List Location -> Text
   lir-amv-call-text (tgt) (argvals) (assign) =
     if list-length argvals > lir-amv-nargregs tgt then "beyond the argument registers"
     else let plan = lir-amv-for tgt argvals assign
     in let bad = lir-amv-check tgt argvals assign plan
-    in (if list-length plan == 0 then "none" else lir-amv-text plan 0 (list-length plan) "") & (if bad < 0 then "" else " VIOLATION a" & integer-to-text bad)
+    in let plan-text = if list-length plan == 0 then "none" else lir-amv-text plan 0 (list-length plan) ""
+    in plan-text & (if bad < 0 then "" else " VIOLATION a" & integer-to-text bad)
 
   lir-amv-insns-text : LirTarget, List LirInsn, Integer, Integer, List Location, Text -> Text
   lir-amv-insns-text (tgt) (insns) (i) (n) (assign) (acc) =
     if i >= n then acc
     else when (list-at insns i)
-     is LiCall (dst) (name) (args) -> lir-amv-insns-text tgt insns (i + 1) n assign (acc & (if acc == "" then "" else " | ") & name & " " & lir-amv-call-text tgt args assign)
+     is LiCall (dst) (name) (args) ->
+       let call-sep = if acc == "" then "" else " | "
+       in lir-amv-insns-text tgt insns (i + 1) n assign (acc & call-sep & name & " " & lir-amv-call-text tgt args assign)
      is otherwise -> lir-amv-insns-text tgt insns (i + 1) n assign acc
 
   lir-amv-blocks-text : LirTarget, List LirBlock, Integer, Integer, List Location, Text -> Text
   lir-amv-blocks-text (tgt) (blocks) (i) (n) (assign) (acc) =
     if i >= n then acc
     else
-      lir-amv-blocks-text tgt blocks (i + 1) n assign (lir-amv-insns-text tgt ((list-at blocks i).insns) 0 (list-length ((list-at blocks i).insns)) assign acc)
+      let blk-insns = (list-at blocks i).insns
+      in lir-amv-blocks-text tgt blocks (i + 1) n assign (lir-amv-insns-text tgt blk-insns 0 (list-length blk-insns) assign acc)
 
  A function with no call prints nothing rather than an empty bracket, so the
  pins for call-free definitions are unchanged and the rows that move are
@@ -2906,7 +2958,8 @@ Section: Allocation Verifier
         list-push msgs ((fname) & ": alloc use of unassigned vreg " & integer-to-text r)
       else if (list-at occ fl) == r then msgs
       else
-        list-push msgs ((fname) & ": alloc vreg " & integer-to-text r & " not in " & lir-loc-text (list-at assign r) & " at block " & integer-to-text bid & " insn " & integer-to-text i)
+        let av-head = (fname) & ": alloc vreg " & integer-to-text r & " not in " & lir-loc-text (list-at assign r)
+        in list-push msgs (av-head & " at block " & integer-to-text bid & " insn " & integer-to-text i)
 
   lir-alloc-def : Integer, List Integer, List Location, Integer -> List Integer
   lir-alloc-def (dst) (occ) (assign) (budget) =
@@ -2950,18 +3003,21 @@ Section: Allocation Verifier
   lir-alloc-clobber-div (tgt) (occ) =
     lir-alloc-clobber-one (lir-alloc-clobber-one occ (tgt.diva)) (tgt.divb)
 
-  lir-alloc-use-msg-list : Text, Integer, Integer, List LirValue, List Integer, List Location, Integer, List Text, Integer, Integer -> List Text
+  lir-alloc-use-msg-list : Text, Integer, Integer, List LirValue, List Integer, List Location, Integer, List Text, Integer,
+    Integer -> List Text
   lir-alloc-use-msg-list (fname) (bid) (ii) (args) (occ) (assign) (budget) (msgs) (i) (n) =
     if i >= n then msgs
     else
-      lir-alloc-use-msg-list fname bid ii args occ assign budget (lir-alloc-use-msg fname bid ii (list-at args i) occ assign budget msgs) (i + 1) n
+      let msgs2 = lir-alloc-use-msg fname bid ii (list-at args i) occ assign budget msgs
+      in lir-alloc-use-msg-list fname bid ii args occ assign budget msgs2 (i + 1) n
 
   LirAllocWalk = record {
    occ : List Integer,
    msgs : List Text
   }
 
-  lir-alloc-check-insns : LirTarget, Text, Integer, List LirInsn, Integer, Integer, List Integer, List Location, Integer, List Text -> LirAllocWalk
+  lir-alloc-check-insns : LirTarget, Text, Integer, List LirInsn, Integer, Integer, List Integer, List Location, Integer,
+    List Text -> LirAllocWalk
   lir-alloc-check-insns (tgt) (fname) (bid) (insns) (i) (len) (occ) (assign) (budget) (msgs) =
     if i >= len then LirAllocWalk { occ = occ, msgs = msgs }
     else let ins = list-at insns i
@@ -3005,16 +3061,19 @@ Section: Allocation Verifier
     if i >= len then AllocPropRes { entries = entries, seen = seen }
     else let sid = list-at succs i
     in if (list-at seen sid) == False then
-      lir-alloc-propagate (list-set-at entries sid (lir-occ-copy exit 0 nloc [])) (list-set-at seen sid True) exit succs (i + 1) len nloc
+      let entries2 = list-set-at entries sid (lir-occ-copy exit 0 nloc [])
+      in lir-alloc-propagate entries2 (list-set-at seen sid True) exit succs (i + 1) len nloc
     else
-      lir-alloc-propagate (list-set-at entries sid (lir-occ-intersect (list-at entries sid) exit 0 nloc [])) seen exit succs (i + 1) len nloc
+      let entries2 = list-set-at entries sid (lir-occ-intersect (list-at entries sid) exit 0 nloc [])
+      in lir-alloc-propagate entries2 seen exit succs (i + 1) len nloc
 
   LirAllocState = record {
    msgs : List Text,
    last-occ : List Integer
   }
 
-  lir-alloc-check-blocks : LirTarget, Text, List LirBlock, Integer, Integer, List (List Integer), List Boolean, List Location, Integer, Integer, List Text, List Integer -> LirAllocState
+  lir-alloc-check-blocks : LirTarget, Text, List LirBlock, Integer, Integer, List (List Integer), List Boolean, List Location,
+    Integer, Integer, List Text, List Integer -> LirAllocState
   lir-alloc-check-blocks (tgt) (fname) (blocks) (i) (len) (entries) (seen) (assign) (budget) (nloc) (msgs) (last-occ) =
     if i >= len then LirAllocState { msgs = msgs, last-occ = last-occ }
     else let b = list-at blocks i
@@ -3034,7 +3093,8 @@ Section: Allocation Verifier
         list-push msgs ((fname) & ": alloc result vreg " & integer-to-text r & " unassigned")
       else if (list-at occ fl) == r then msgs
       else
-        list-push msgs ((fname) & ": alloc result vreg " & integer-to-text r & " not in " & lir-loc-text (list-at assign r) & " at exit")
+        let ar-head = (fname) & ": alloc result vreg " & integer-to-text r & " not in "
+        in list-push msgs (ar-head & lir-loc-text (list-at assign r) & " at exit")
 
  The descriptor's own invariants, checked before the walk that depends on
  them. `budget` sizes the occupant array the verifier indexes with a
@@ -3065,23 +3125,29 @@ Section: Allocation Verifier
       [fname & ": LirTarget.ncallee is negative (" & integer-to-text (tgt.ncallee) & ")"]
     else if (tgt.ncallee) > (tgt.nargregs) then
       [
-        fname & ": LirTarget.ncallee (" & integer-to-text (tgt.ncallee) & ") exceeds nargregs (" & integer-to-text (tgt.nargregs) & "); the pools must nest"
+        let nc0 = fname & ": LirTarget.ncallee (" & integer-to-text (tgt.ncallee) & ") exceeds nargregs ("
+        in nc0 & integer-to-text (tgt.nargregs) & "); the pools must nest"
       ]
     else if (tgt.nargregs) > (tgt.nregs) then
       [
-        fname & ": LirTarget.nargregs (" & integer-to-text (tgt.nargregs) & ") exceeds nregs (" & integer-to-text (tgt.nregs) & "); the pools must nest"
+        let nr0 = fname & ": LirTarget.nargregs (" & integer-to-text (tgt.nargregs) & ") exceeds nregs ("
+        in nr0 & integer-to-text (tgt.nregs) & "); the pools must nest"
       ]
     else if (tgt.budget) < (tgt.nregs) then
       [
-        fname & ": LirTarget.budget (" & integer-to-text (tgt.budget) & ") is below nregs (" & integer-to-text (tgt.nregs) & "); budget sizes the occupant array a LocReg indexes, so it must be at least nregs"
+        let bud-a = fname & ": LirTarget.budget (" & integer-to-text (tgt.budget)
+        in let bud0 = bud-a & ") is below nregs (" & integer-to-text (tgt.nregs)
+        in bud0 & "); budget sizes the occupant array a LocReg indexes, so it must be at least nregs"
       ]
     else if ((tgt.diva) >= (tgt.nregs)) | ((tgt.diva) < (0 - 1)) then
       [
-        fname & ": LirTarget.diva is " & integer-to-text (tgt.diva) & "; expected -1 (this target fixes none) or an index below nregs"
+        let da0 = fname & ": LirTarget.diva is " & integer-to-text (tgt.diva)
+        in da0 & "; expected -1 (this target fixes none) or an index below nregs"
       ]
     else if ((tgt.divb) >= (tgt.nregs)) | ((tgt.divb) < (0 - 1)) then
       [
-        fname & ": LirTarget.divb is " & integer-to-text (tgt.divb) & "; expected -1 (this target fixes none) or an index below nregs"
+        let db0 = fname & ": LirTarget.divb is " & integer-to-text (tgt.divb)
+        in db0 & "; expected -1 (this target fixes none) or an index below nregs"
       ]
     else []
 
@@ -3100,7 +3166,8 @@ Section: Allocation Verifier
     in let occ0 = lir-alloc-seed-params assign 0 (f.nparams) budget (lir-occ-make 0 nloc [])
     in let entries1 = list-set-at entries0 0 occ0
     in let seen1 = list-set-at (lir-make-vec 0 nb []) 0 True
-    in let st = lir-alloc-check-blocks tgt (f.name) (f.blocks) 0 nb entries1 seen1 assign budget nloc [] (lir-occ-make 0 nloc [])
+    in let occ-empty = lir-occ-make 0 nloc []
+    in let st = lir-alloc-check-blocks tgt (f.name) (f.blocks) 0 nb entries1 seen1 assign budget nloc [] occ-empty
     in lir-alloc-result-msg (f.name) (f.result) (st.last-occ) assign budget (st.msgs)
 
 Section: Dump and Pass
@@ -3137,9 +3204,12 @@ Section: Dump and Pass
   lir-insn-text : LirInsn -> Text
   lir-insn-text (ins) =
     when ins
-     is LiBin (op) (dst) (l) (r) -> "v" & integer-to-text dst & " = " & lir-op-text op & " " & lir-val-text l & " " & lir-val-text r
+     is LiBin (op) (dst) (l) (r) ->
+       "v" & integer-to-text dst & " = " & lir-op-text op & " " & lir-val-text l & " " & lir-val-text r
      is LiMove (dst) (src) -> "v" & integer-to-text dst & " = mov " & lir-val-text src
-     is LiLoad (dst) (base) (off) (w) (sg) -> "v" & integer-to-text dst & " = load " & lir-val-text base & " +" & integer-to-text off & " w" & integer-to-text w & (if sg then "s" else "")
+     is LiLoad (dst) (base) (off) (w) (sg) ->
+       let ld-head = "v" & integer-to-text dst & " = load " & lir-val-text base & " +" & integer-to-text off
+       in ld-head & " w" & integer-to-text w & (if sg then "s" else "")
      is LiCmp (l) (r) -> "cmp " & lir-val-text l & " " & lir-val-text r
      is LiTest (l) (r) -> "test " & lir-val-text l & " " & lir-val-text r
      is LiRet (v) -> "ret " & lir-val-text v
@@ -3155,7 +3225,8 @@ Section: Dump and Pass
 
   lir-block-text : LirBlock -> Text
   lir-block-text (b) =
-    "b" & integer-to-text (b.id) & ":" & (if list-length (b.insns) == 0 then "" else " " & lir-insns-text (b.insns) 0 (list-length (b.insns)) "")
+    let insns-text = if list-length (b.insns) == 0 then "" else " " & lir-insns-text (b.insns) 0 (list-length (b.insns)) ""
+    in "b" & integer-to-text (b.id) & ":" & insns-text
 
   lir-blocks-text : List LirBlock, Integer, Integer, Text -> Text
   lir-blocks-text (blocks) (i) (len) (acc) =
@@ -3165,19 +3236,23 @@ Section: Dump and Pass
 
   lir-dump-func : LirFunc -> Text
   lir-dump-func (f) =
-    "LIR " & (f.name) & "(" & integer-to-text (f.nparams) & ") nvregs=" & integer-to-text (f.nvregs) & ": " & lir-blocks-text (f.blocks) 0 (list-length (f.blocks)) "" & " => " & lir-val-text (f.result)
+    let ld0 = "LIR " & (f.name) & "(" & integer-to-text (f.nparams) & ") nvregs=" & integer-to-text (f.nvregs) & ": "
+    in ld0 & lir-blocks-text (f.blocks) 0 (list-length (f.blocks)) "" & " => " & lir-val-text (f.result)
 
   lir-liveset-text : List Boolean, Integer, Integer, Text -> Text
   lir-liveset-text (vec) (i) (n) (acc) =
     if i >= n then acc
     else
-      lir-liveset-text vec (i + 1) n (if list-at vec i then (acc & (if acc == "" then "" else ",") & "v" & integer-to-text i) else acc)
+      let live-acc = if list-at vec i then (acc & (if acc == "" then "" else ",") & "v" & integer-to-text i) else acc
+      in lir-liveset-text vec (i + 1) n live-acc
 
   lir-liveblocks-text : List LirBlock, List (List Boolean), Integer, Integer, Integer, Text -> Text
   lir-liveblocks-text (blocks) (livein) (i) (n) (nv) (acc) =
     if i >= n then acc
     else let b = list-at blocks i
-    in lir-liveblocks-text blocks livein (i + 1) n nv (acc & (if acc == "" then "" else " | ") & "b" & integer-to-text (b.id) & " in {" & lir-liveset-text (list-at livein (b.id)) 0 nv "" & "}")
+    in let live-sep = if acc == "" then "" else " | "
+    in let live-set = lir-liveset-text (list-at livein (b.id)) 0 nv ""
+    in lir-liveblocks-text blocks livein (i + 1) n nv (acc & live-sep & "b" & integer-to-text (b.id) & " in {" & live-set & "}")
 
   lir-liveness-text : LirFunc -> Text
   lir-liveness-text (f) =
@@ -3187,13 +3262,17 @@ Section: Dump and Pass
   lir-assign-text (assign) (i) (n) (acc) =
     if i >= n then acc
     else
-      lir-assign-text assign (i + 1) n (acc & (if acc == "" then "" else " ") & "v" & integer-to-text i & "->" & lir-loc-text (list-at assign i))
+      let as-sep = if acc == "" then "" else " "
+      in lir-assign-text assign (i + 1) n (acc & as-sep & "v" & integer-to-text i & "->" & lir-loc-text (list-at assign i))
 
   lir-alloc-dump : LirTarget, LirFunc -> Text
   lir-alloc-dump (tgt) (f) =
     let a = lir-alloc-linscan tgt f
     in let viol = lir-alloc-check tgt f (a.assign)
-    in "ALLOC " & (f.name) & ": " & lir-assign-text (a.assign) 0 (f.nvregs) "" & (if list-length viol == 0 then " [alloc-check: ok]" else " [alloc-check: " & integer-to-text (list-length viol) & " violations]") & lir-emv-dump tgt f (a.assign) & lir-amv-dump tgt f (a.assign)
+    in let al0 = "ALLOC " & (f.name) & ": " & lir-assign-text (a.assign) 0 (f.nvregs) ""
+    in let al-check = if list-length viol == 0 then " [alloc-check: ok]"
+      else " [alloc-check: " & integer-to-text (list-length viol) & " violations]"
+    in al0 & al-check & lir-emv-dump tgt f (a.assign) & lir-amv-dump tgt f (a.assign)
 
   lir-report-chapter : LirTarget, IRChapter -> List Text
   lir-report-chapter (tgt) (ch) = lir-report-defs tgt (ch.defs) 0 (list-length (ch.defs)) []
@@ -3235,7 +3314,9 @@ Section: Dump and Pass
   lir-alloc-probe-def (tgt) (tag) (d) =
     let r = lower-def-to-lir d
     in let viol = lir-check-func (r.func)
-    in tag & " " & lir-alloc-dump tgt (r.func) & (if list-length viol == 0 then " [check: ok]" else " [check: " & integer-to-text (list-length viol) & " violations]")
+    in let viol-text = if list-length viol == 0 then " [check: ok]"
+      else " [check: " & integer-to-text (list-length viol) & " violations]"
+    in tag & " " & lir-alloc-dump tgt (r.func) & viol-text
 
   lir-alloc-probe-defs : LirTarget, Text, List IRDef, Integer, Integer, List Text -> List Text
   lir-alloc-probe-defs (tgt) (tag) (defs) (i) (len) (acc) =
@@ -3259,10 +3340,13 @@ Section: Dump and Pass
     in if r.ok == False then
       lir-report-defs tgt defs (i + 1) len (list-push acc ("LIR " & (d.name) & ": (not in the LIR whitelist)"))
     else let viol = lir-check-func (r.func)
-    in let line = lir-dump-func (r.func) & (if list-length viol == 0 then " [check: ok]" else " [check: " & integer-to-text (list-length viol) & " violations]")
+    in let check-text = if list-length viol == 0 then " [check: ok]"
+      else " [check: " & integer-to-text (list-length viol) & " violations]"
+    in let line = lir-dump-func (r.func) & check-text
     in let live-line = lir-liveness-text (r.func)
     in let alloc-line = lir-alloc-dump tgt (r.func)
-    in lir-report-defs tgt defs (i + 1) len (append-violations (list-push (list-push (list-push acc line) live-line) alloc-line) viol 0 (list-length viol))
+    in let acc3 = list-push (list-push (list-push acc line) live-line) alloc-line
+    in lir-report-defs tgt defs (i + 1) len (append-violations acc3 viol 0 (list-length viol))
 
   append-violations : List Text, List Text, Integer, Integer -> List Text
   append-violations (acc) (viol) (i) (len) =

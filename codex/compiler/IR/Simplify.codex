@@ -201,7 +201,8 @@ Section: Folding
      is otherwise -> simp-fold-keep op a b ty sp
 
   simp-fold-keep : IRBinaryOp, Integer, Integer, CodexType, SourceSpan -> FoldRes
-  simp-fold-keep (op) (a) (b) (ty) (sp) = fold-none (deck-record (IrBinary op (deck-record (IrIntLit a sp)) (deck-record (IrIntLit b sp)) ty sp))
+  simp-fold-keep (op) (a) (b) (ty) (sp) =
+    fold-none (deck-record (IrBinary op (deck-record (IrIntLit a sp)) (deck-record (IrIntLit b sp)) ty sp))
 
   add-fold-fits : Integer, Integer -> Boolean
   add-fold-fits (a) (b) =
@@ -703,16 +704,19 @@ Section: List and Field Walks
    ticks : Integer
   }
 
-  simplify-fields : SkipListText, List SubstEntry, List IRFieldVal, Integer, Integer, Integer, List IRFieldVal, Integer -> SimpFieldsRes
+  simplify-fields : SkipListText, List SubstEntry, List IRFieldVal, Integer, Integer, Integer, List IRFieldVal, Integer ->
+    SimpFieldsRes
   simplify-fields (dn) (env) (fs) (depth) (i) (len) (acc) (ticks) =
     if i >= len then SimpFieldsRes { fields = acc, ticks = ticks }
     else let f = list-at fs i
     in let r = simplify-expr dn env (f.value) depth
-    in simplify-fields dn env fs depth (i + 1) len (list-push acc (deck-record (__record-set f "value" (r.expr)))) (ticks + r.ticks)
+    in let kept-field = deck-record (__record-set f "value" (r.expr))
+    in simplify-fields dn env fs depth (i + 1) len (list-push acc kept-field) (ticks + r.ticks)
 
 Section: Statement, Branch, and Clause Walks
 
-  simplify-stmts : SkipListText, List SubstEntry, List IRActStmt, Integer, Integer, Integer, List IRActStmt, Integer -> SimpStmtsRes
+  simplify-stmts : SkipListText, List SubstEntry, List IRActStmt, Integer, Integer, Integer, List IRActStmt, Integer ->
+    SimpStmtsRes
   simplify-stmts (dn) (env) (ss) (depth) (i) (len) (acc) (ticks) =
     if i >= len then SimpStmtsRes { stmts = acc, ticks = ticks }
     else let s = list-at ss i
@@ -722,21 +726,30 @@ Section: Statement, Branch, and Clause Walks
       in simplify-stmts dn env ss depth (i + 1) len (list-push acc (deck-record (IrDoExec (rv.expr) sp))) (ticks + rv.ticks)
      is IrDoBind (n) (t) (v) (sp) ->
       let rv = simplify-expr dn env v depth
-      in simplify-stmts dn (subst-remove env n) ss depth (i + 1) len (list-push acc (deck-record (IrDoBind n t (rv.expr) sp))) (ticks + rv.ticks)
+      in let env-n = subst-remove env n
+      in let kept-bind = deck-record (IrDoBind n t (rv.expr) sp)
+      in simplify-stmts dn env-n ss depth (i + 1) len (list-push acc kept-bind) (ticks + rv.ticks)
 
   SimpBranchesRes = record {
    branches : List IRBranch,
    ticks : Integer
   }
 
-  simplify-branches : SkipListText, List SubstEntry, List IRBranch, Integer, Integer, Integer, List IRBranch, Integer -> SimpBranchesRes
+  simplify-branches : SkipListText, List SubstEntry, List IRBranch, Integer, Integer, Integer, List IRBranch, Integer ->
+    SimpBranchesRes
   simplify-branches (dn) (env) (bs) (depth) (i) (len) (acc) (ticks) =
     if i >= len then SimpBranchesRes { branches = acc, ticks = ticks }
     else let b = list-at bs i
     in let benv = subst-remove-pat env (b.pattern) depth
     in let rg = simplify-expr dn benv (b.guard) depth
     in let rbody = simplify-expr dn benv (b.body) depth
-    in simplify-branches dn env bs depth (i + 1) len (list-push acc (deck-record (IRBranch { pattern = b.pattern, body = rbody.expr, guard = rg.expr, span = b.span, alt-group = b.alt-group }))) (ticks + rg.ticks + rbody.ticks)
+    in simplify-branches dn env bs depth (i + 1) len (list-push acc (deck-record (IRBranch {
+      pattern = b.pattern,
+      body = rbody.expr,
+      guard = rg.expr,
+      span = b.span,
+      alt-group = b.alt-group
+    }))) (ticks + rg.ticks + rbody.ticks)
 
   subst-remove-pat : List SubstEntry, IRPat, Integer -> List SubstEntry
   subst-remove-pat (env) (p) (depth) =
@@ -757,12 +770,14 @@ Section: Statement, Branch, and Clause Walks
    ticks : Integer
   }
 
-  simplify-clauses : SkipListText, List IRHandleClause, Integer, Integer, Integer, List IRHandleClause, Integer -> SimpClausesRes
+  simplify-clauses : SkipListText, List IRHandleClause, Integer, Integer, Integer, List IRHandleClause, Integer ->
+    SimpClausesRes
   simplify-clauses (dn) (cs) (depth) (i) (len) (acc) (ticks) =
     if i >= len then SimpClausesRes { clauses = acc, ticks = ticks }
     else let c = list-at cs i
     in let rb = simplify-expr dn [] (c.body) depth
-    in simplify-clauses dn cs depth (i + 1) len (list-push acc (deck-record (__record-set c "body" (rb.expr)))) (ticks + rb.ticks)
+    in let kept-clause = deck-record (__record-set c "body" (rb.expr))
+    in simplify-clauses dn cs depth (i + 1) len (list-push acc kept-clause) (ticks + rb.ticks)
 
 Section: Definition and Chapter
 

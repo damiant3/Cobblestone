@@ -1,10 +1,29 @@
 # Decisions for Damian
 
-Every item below waits on Damian and on no one else (measured 2026-09-29).
-Sources: `docs/PM/CurrentPlan.md` (val's row, "For Damian", and the Prism and
-OCI rows) and `apps/modbuilder/modbuilder-backlog.md`. When Damian rules on an
-item, the lane that owns the row applies the ruling there and deletes the item
-here.
+Every item below waits on Damian and on no one else (sections 0 and 6
+measured 2026-10-04; the rest 2026-09-29). Sources: `docs/PM/CurrentPlan.md`
+(val's row, "For Damian", and the Prism and OCI rows),
+`apps/modbuilder/modbuilder-backlog.md` and `apps/uoaix/UOAIX.md` section
+10. When Damian rules on an item, the lane that owns the row applies the
+ruling there and deletes the item here.
+
+## 0. Right now
+
+| # | decision | what waits |
+|---|---|---|
+| 0.1 | **Standing GO (Damian, 2026-10-04) for local development client runs** against the codex-vm server "as long as i am not typing": the driver checks physical input idle before every click and aborts otherwise. Open: nothing; this row is a standing reminder until stages 0 and 1 pass (login through character creation pass; the create packet is reek's fix in progress). | stages 0 and 1 acceptance (`apps/uoaix/GameServer.md`) |
+| 0.2 | **Publish the UOAIX page** on cobblestoneproject.com (built, with the UO art; preview `D:\Projects\Cobblestone-val\apps\landing\web\uoaix.html`). | the public page |
+| 0.3 | **Release timing:** a full release or a preview push (root's CurrentPlan row). | the next public release |
+
+## 6. UOAIX, the shard (`apps/uoaix/UOAIX.md` section 10)
+
+Each row carries root's recommendation (R) where root has one.
+
+| # | id | decision | R |
+|---|---|---|---|
+| 6.2 | R2 | The language model provider and model for NPC speech and the keeper, where the relay runs, and the monthly budget; or local Qwen3 as the relay model. | Claude for the keeper; batch-generate the canned library first and size the budget from its cost |
+| 6.4 | R6 | Host ruled: Vultr, custom ISO. Still open: region, plan size, when the shard goes public; and opening the Vultr account (yours). | the region nearest you; the smallest 1 GiB plan; public after stage 6 |
+| 6.6 | R8 | Ruled: no starting purse, Lord British mines the first gold; monsters carry only gold they acquired. Still open: the mint's terms (who sells it gold, at what price) and other sinks (repairs, guild fees). | the mint buys gold ingots from anyone at a crown price Lord British sets on the panel; no other sinks yet |
 
 ## 1. Time-bound
 
@@ -21,8 +40,6 @@ here.
 
 ## 3. Rulings on open rows
 
-| # | row | the ruling asked for |
-|---|---|---|
 Each row carries the options and root's recommendation (R). A one-word answer
 ("R", or the option letter) is enough.
 

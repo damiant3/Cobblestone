@@ -39,3 +39,5 @@ quote stripping is not a repair. Runtime reproductions remain for this fix.
 | `ServiceManager.codex:365` | Service identity and labels |
 | `Terminal.codex:366` | Input line |
 | `UsbManager.codex:229` | USB identity and labels |
+
+**Selection arms fail in `apps/cvmm/tests/TestFileExplorer.codex`.** `select-one`, `select-two` and `deselect-one` print `expected 1 got -1`, `expected 2 got -2` and `expected 1 got -1` (2026-10-03, seed 506B403C), on the depot source before and after the path fix in main 34573. The test has no `.expected` and is in no battery.

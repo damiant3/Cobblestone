@@ -175,7 +175,7 @@ The harness verifies world identity on reload, owns its PID, bounds run time
 and requires its PASS marker plus exit 0. A killed process is not a pass.
 `-Render` omits batch/headless switches, captures a unique image under test
 saves and records its `imagePath`/`imageHash` in the current run receipt. The
-controller checks the container panel during rendering.
+controller checks the container panel during rendering from `LateUpdate`: Unity does not call `OnGUI` in the hidden `-Render` window, so a check there never observes the panel (MB-12, measured 2026-10-03).
 Image existence alone is insufficient: inspect the image before claiming
 visible UI acceptance. Hidden-window runs produced black captures on this
 machine. Add `-ShowWindow` only when a visible game test is requested; that
@@ -447,8 +447,10 @@ authoritative transaction and concurrency work before enablement.
 
 ## Meadows spawn policy
 
-Natural Meadows necks retain native initial spawn timing, chance and population
-limits. The first tracked death marks the population as depleted, preventing
+Natural Meadows necks keep native spawn timing and chance, and a spawn zone
+holds at most `meadows-neck-cap` living tracked necks: a third of the spawn
+entry's native `m_maxSpawned`, which is 2 for both Meadows neck entries (6 and
+8). The first tracked death marks the population as depleted, preventing
 replacement spawns while its surviving members are still alive. Once the
 tracked population originating in a zone has been killed,
 that zone suppresses natural neck spawns for a saved random seven to fourteen
@@ -458,7 +460,7 @@ lists qualify. Event spawns and every other creature delegate unchanged.
 No SpawnData field is modified. Missing or unloaded living creatures do not
 count as kills. Existing loaded necks are adopted into the appropriate zone.
 
-`MeadowsSpawns.codex` supplies the pure delay policy. The typed Unity component
+`MeadowsSpawns.codex` supplies the pure delay and cap policies. The typed Unity component
 intercepts `SpawnSystem.Spawn` and subscribes to native character death events.
 Zone and population GUIDs persist in ZDO metadata because native network IDs
 change across world loads. The depletion flag also persists in the zone ZDO;
@@ -475,6 +477,19 @@ unchanged spawn fields and unchanged Unity random state. These controlled
 checks do not claim an elapsed fourteen-day play session. Exact delay evidence
 is `neck-policy-proof.json`, fact hash
 `2b58a23ce5942632c778470bc4aca897e73df243941ac1e95431a5628ad7b164`.
+
+The population over game time is measured by `apps/modbuilder/test-play.ps1`
+(probe `mods/valheim/PlayProbe.codex`): in a fresh headless world it finds six
+Meadows shore waypoints 160 m apart within 800 m of the spawn, teleports the
+player to each in turn, advances `ZNet` time 15 s a frame for 20 frames while
+calling every owned `SpawnSystem.UpdateSpawning`, and logs a `PRISM PLAY ROW`
+per stop (necks within 96 m, loaded, living in the world, born, killed).
+`-Kill` clears every neck within 96 m at each stop; `-Days` sets the game days
+(default 14). Measured 2026-10-03, 14 days, same seed, living necks at the end:
+no Meadows feature 20, uncapped feature 18, capped feature 6; with `-Kill`,
+births per day without the feature 3 to 31, with the capped feature 0 on most
+days and 1 to 2 when a cleared zone recovers. `-Armour` (with `-Reload -Saves`)
+and `-Food` grade the Equipment panel in the same harness.
 
 The partial-clearance regression is in `mods/valheim/WorldProbe.codex`.
 The isolated headless run at `build-output/prism-targets/prism-world-tests/683c1f3ccbce4de79bd2dce64192ab03/run.json`

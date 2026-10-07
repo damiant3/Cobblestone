@@ -80,12 +80,8 @@ the body of a helper that returns 0, which is how `bk-linear-store16` makes 16.
 A helper that reads a buffer is emitted once per kernel and bound to the first buffer a call passes it, so one helper called with two buffers reads the first for both, with no diagnostic: `bk-attn-q-at` and `bk-attn-k-at` exist for that. A buffer-reading helper shared by two kernels (`bk-sum`) is emitted once per
 kernel as `<helper>__<kernel>`.
 
-Open, unowned: `wgsl-ty-text` maps a helper's Boolean parameter to `i32`,
-but a direct conditional use emits that integer as the condition of `select`.
-WebGPU refuses the shader. MusicGen's normalization helper uses an Integer
-flag compared with 1 to avoid the gap. Evidence (2026-09-30):
-red `build-output/musicgen-stage3/lm-norm.wgsl`, `ml_stat_sum`, and the refused
-`medium-norm` run; the explicit comparison in `lm-norm2.wgsl` runs successfully.
+A helper's Boolean parameter or Boolean answer lowers to WGSL `bool`, so it
+can be a condition directly (`codex/plugs/wgsl/arms/bool-param.mjs`).
 
 **`bk-linear` and `bk-conv2d` are register-tiled**: a 64 x 64 tile of y per
 256-thread workgroup, 4 x 4 outputs a thread, so a caller launches
@@ -1146,17 +1142,17 @@ emphasis also uses that heap. GPU/worker cleanup does not establish a bounded
 page heap. The one-step branch has constant cost; failed prompt cleanup is
 linear in remaining chunks. Compiler implementation is unchanged.
 
+A model load grows the page heap by 8 bytes, the model's state cell. The
+CLIP tokenizer, about 4.7 MB of page heap, is built once per page for each
+pair of tokenizer files (`bl-bpe-then`) and reused by every later load. The
+first SDXL load commits about 18.5 GiB of host memory that later loads
+reuse; the WebGPU device holds it, and `GPUDevice.destroy()` returns 18.3 GiB
+of it (`lora.mjs --same-page`, 2026-10-03). No page destroys its device,
+therefore a page that has loaded SDXL holds that commit until the tab closes.
+
 ## Open
 
 ### Browser follow-up work
-
-The chooser, SDXL-DIMENSIONS, SDXL-DPM and SDXL-NOISE-COST are complete.
-
-| ID | Capability | Remaining work |
-|---|---|---|
-| BROWSER-LORA-RELOAD | Repeated full-size LoRA loads on one device | Two SDXL LoRA image cases passed on one device, then the third was refused by the 25 GiB commit admission rule despite zero active handles and a trimmed pool. Measure and reduce retained browser/driver commit before claiming a repeated-load memory bound. |
-| BROWSER-JOB-HEAP | Repeated generation page-heap growth | Initial `bt-noise` and prompt emphasis allocate page byte-heap storage per job without restoration. Worker-local Brownian trees are released, but the full page heap is not bounded across arbitrary repeated generations. |
-| BROWSER-DRIVER-ENTRY | Reference chapters that compile alone | `BrowserLoraReference.codex` and `Sd15SamplerReference.codex` cite `DiffusionDriver`, which declares `opening`, so neither compiles as written (CDX3001, L-UNCITABLE); their runners rename the driver's entry in the bundle. Split `DiffusionDriver` into a citable chapter and a thin entry chapter, repoint the build scripts that compile it, and remove both rows from `build/app-sweep-baseline.txt`. |
 
 - Stage 1 is plug work in `codex/plugs/wgsl` (granted to red for stage 1 by root, 2026-09-29; reek's lane otherwise) and
   kernel work in `codex/foreword/gpu`, which is foreword and therefore lands
@@ -1176,7 +1172,7 @@ The chooser, SDXL-DIMENSIONS, SDXL-DPM and SDXL-NOISE-COST are complete.
   by peek and poke (#BD700000: `CheckpointFile.codex:16`, `UNet.codex:19`,
   `Noise.codex:68`); weights upload by host path (`gpu-buf-upload`, and
   `ClipEncoder.codex:406` reads 77 token rows from the file per encode); the
-  BPE vocabulary loads from a block device (`DiffusionDriver.codex:275`). And
+  BPE vocabulary loads from a block device (`DiffusionDriverCore.codex:534`). And
   the model graph is not separable from its GPU ops: `UNet.codex`,
   `ClipEncoder.codex` and `VaeDecoder.codex` each hold their own op wrappers
   (`un-*`, `ce-*`, `vd-*`) over `gm-launch` with PTX kernel names and f64

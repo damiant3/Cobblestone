@@ -1,5 +1,6 @@
 Chapter: X86-64 Code Generator
-  cites Codex chapter CdxCodes (cdx-accum-overflow, cdx-bounds-proven, cdx-claim-recognized, cdx-ir-error, cdx-rt-wcet-exceeded, cdx-rt-wcet-opaque, cdx-rt-wcet-report, cdx-rt-wcet-unchecked)
+  cites Codex chapter CdxCodes (cdx-accum-overflow, cdx-bounds-proven, cdx-call-census, cdx-claim-recognized, cdx-cover-slot, cdx-ir-error)
+  cites Codex chapter CdxCodes (cdx-rt-wcet-exceeded, cdx-rt-wcet-opaque, cdx-rt-wcet-report, cdx-rt-wcet-unchecked)
   cites Codex chapter Codex Types (i64-max, i64-min)
   cites Codex chapter IR Chapter (ir-expr-span, ir-expr-type)
   cites Emit chapter X86-64 Boot Infrastructure (fork-free-head-addr, stack-min-rsp-addr)
@@ -23,7 +24,8 @@ Section: Function Emission
     let st1 = if st.omit-frame-pointer then
       st-append-code st (push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14)
     else
-      st-append-code st (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14)
+      let prologue = push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14
+      in st-append-code st prologue
     in let st-hwm = if st1.trace-alloc then
       let st2 = st-append-code st1 (li reg-r11 (st-cell st1 stack-min-rsp-addr))
       in let st3 = st-append-code st2 (mov-load reg-r11 reg-r11 0)
@@ -621,7 +623,9 @@ Section: Function Emission
      is IrIf (c) (t) (el) (ty) (sp) ->
       if dest == False then 0 - 1
       else
-        leaf-walk st el tail dest binders fname pnames (leaf-walk st t tail dest binders fname pnames (leaf-walk st c False False binders fname pnames lets))
+        let c-lets = leaf-walk st c False False binders fname pnames lets
+        in let t-lets = leaf-walk st t tail dest binders fname pnames c-lets
+        in leaf-walk st el tail dest binders fname pnames t-lets
      is IrLet (n) (ty) (v) (b) (sp) ->
       if leaf-name-index binders n 0 >= 0 then 0 - 1
       else let vw = leaf-walk st v False True binders fname pnames (lets + 1)
@@ -711,7 +715,8 @@ Section: Function Emission
     if lets < 0 then lets
     else if i == list-length args then lets
     else
-      leaf-walk-tail-args st args binders fname pnames (leaf-walk st (list-at args i) False False binders fname pnames lets) (i + 1)
+      let arg-lets = leaf-walk st (list-at args i) False False binders fname pnames lets
+      in leaf-walk-tail-args st args binders fname pnames arg-lets (i + 1)
 
   leaf-has-call : IRExpr, Boolean, Text -> Boolean
   leaf-has-call (e) (tail) (fname) =
@@ -924,20 +929,32 @@ Section: Function Emission
 
   emit-function : CodegenState, IRDef -> CodegenState
   emit-function (st) (def) =
-    let sel = lir-emit-try st def
-    in if sel.handled then sel.state
+    if st.cover then __record-set (emit-function-standard (reset-func-state st (def.name)) def) "emit-path" 0
+    else let sel = lir-emit-try st def
+    in if sel.handled then __record-set (sel.state) "emit-path" 2
     else let st0 = reset-func-state st (def.name)
     in let prof = leaf-profile st0 def
     in if prof.lp-ok then
       let attempt = emit-function-minimal st0 def prof
       in if attempt.ma-mispredict
-       then emit-function-standard (reset-func-scratch (repoint-func-offset (attempt.ma-state))) def
-      else attempt.ma-state
-    else emit-function-standard st0 def
+       then let std-st = emit-function-standard (reset-func-scratch (repoint-func-offset (attempt.ma-state))) def
+       in __record-set std-st "emit-path" 0
+      else __record-set (attempt.ma-state) "emit-path" 1
+    else __record-set (emit-function-standard st0 def) "emit-path" 0
+
+  emit-cover-base : CodegenState, Integer, Integer -> CodegenState
+  emit-cover-base (st) (reg) (offset) =
+    let patch = st.code-len + 2
+    in let st1 = st-append-code st (mov-ri64 reg 0)
+    in let rf-p = list-push (st1.rf-poffsets) patch
+    in let rf-r = list-push (st1.rf-roffsets) (st1.cover-base + offset)
+    in __record-set (__record-set st1 "rf-poffsets" rf-p) "rf-roffsets" rf-r
 
   emit-function-standard : CodegenState, IRDef -> CodegenState
-  emit-function-standard (st1) (def) =
-    let func-start = st1.code-len
+  emit-function-standard (st0) (def) =
+    let st1 = if st0.cover & st0.cover-slot >= 0 then st-append-code (emit-cover-base st0 reg-r11 (st0.cover-slot * 8)) [73, 255, 3]
+      else st0
+    in let func-start = st1.code-len
     in let st2 = emit-prologue st1
     in let frame-patch-pos = st2.code-len
     in let st3 = st-append-code st2 (emit-sub-rsp-imm32 0)
@@ -1126,7 +1143,7 @@ Section: Function Emission
       st-add-error st cdx-accum-overflow ("emitter accumulator full at definition '" & (list-at defs i).name & "': the emit tables are pre-allocated to accum-capacity and a push past it reallocates into scratch that this loop reclaims, corrupting the table. Raise accum-capacity in BuildSettings and rebuild the seed.") ((list-at defs i).span)
     else let def = list-at defs i
     in let h = __heap-save
-    in let func-st = emit-function st def
+    in let func-st = emit-function (if st.cover then __record-set st "cover-slot" i else st) def
     in let new-code-len = func-st.code-len
     in let new-data-len = func-st.data-len
     in let new-emit-work = func-st.emit-work
@@ -1134,21 +1151,50 @@ Section: Function Emission
     in let wcet-insns = if def.is-punctual then
       x86-count-insns (func-st.workspace.code-buffer) func-start new-code-len
     else 0
+    in let cc = if func-st.call-census then x86-census (func-st.workspace.code-buffer) func-start new-code-len
+      else x86-census-none
+    in let cc-path = func-st.emit-path
+    in let cc-insns = cc.xc-insns
+    in let cc-push = cc.xc-push
+    in let cc-pop = cc.xc-pop
+    in let cc-stores = cc.xc-stores
+    in let cc-calls = cc.xc-calls
+    in let cc-bad = cc.xc-bad
     in let new-avx = func-st.avx-used
     in let restored = __heap-restore h
     in let carried = deck-record (codegen-carry-forward st new-code-len new-data-len new-emit-work)
     in let next-st = if new-avx then st-mark-avx carried else carried
     in let wcet-st = if def.is-punctual then emit-wcet-check next-st def wcet-insns else next-st
-    in emit-all-defs wcet-st defs (i + 1)
+    in let census-st = if st.call-census
+      then emit-call-census wcet-st def (new-code-len - func-start) cc-path cc-insns cc-push cc-pop cc-stores cc-calls cc-bad
+      else wcet-st
+    in let cover-st = if st.cover then st-add-info census-st cdx-cover-slot ("[COVER] " & show i & " " & def.name) (def.span)
+      else census-st
+    in emit-all-defs cover-st defs (i + 1)
+
+  emit-call-census : CodegenState, IRDef, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> CodegenState
+  emit-call-census (st) (def) (nbytes) (path) (insns) (pushes) (pops) (stores) (calls) (bad) =
+    let cc0 = "[CALLS] '" & def.name & "' path=" & x86-path-name path & " params=" & show (list-length (def.params))
+    in let cc1 = cc0 & " bytes=" & show nbytes
+    in let cc-tail = if bad >= 0 then " undecodable at body offset " & show bad
+      else let ins0 = " insns=" & show insns & " push=" & show pushes & " pop=" & show pops
+      in ins0 & " stack-stores=" & show stores & " calls=" & show calls
+    in st-add-info st cdx-call-census (cc1 & cc-tail) (def.span)
 
   emit-wcet-check : CodegenState, IRDef, Integer -> CodegenState
   emit-wcet-check (st) (def) (insn-count) =
     if insn-count < 0 then
-      st-add-warning st cdx-rt-wcet-opaque ("[WCET] punctual '" & def.name & "': instruction count unavailable (undecodable byte at body offset " & show (-insn-count - 1) & "; extend X86_64InsnCount)") (def.span)
+      let op-a = "[WCET] punctual '" & def.name & "': instruction count unavailable"
+      in let op0 = op-a & " (undecodable byte at body offset " & show (-insn-count - 1)
+      in st-add-warning st cdx-rt-wcet-opaque (op0 & "; extend X86_64InsnCount)") (def.span)
     else let budget = if def.wcet-budget > 0 then def.wcet-budget else 256
-    in let st2 = st-add-info st cdx-rt-wcet-report ("[WCET] punctual '" & def.name & "': " & show insn-count & " instructions (" & show (insn-count * 100 / budget) & "% of budget " & show budget & ")") (def.span)
+    in let rp0 = "[WCET] punctual '" & def.name & "': " & show insn-count & " instructions (" & show (insn-count * 100 / budget)
+    in let rp1 = rp0 & "% of budget " & show budget & ")"
+    in let st2 = st-add-info st cdx-rt-wcet-report rp1 (def.span)
     in if insn-count > budget then
-      st-add-warning st2 cdx-rt-wcet-exceeded ("[WCET] punctual '" & def.name & "' exceeds budget: " & show insn-count & " / " & show budget & " instructions") (def.span)
+      let ex-head = "[WCET] punctual '" & def.name & "' exceeds budget: " & show insn-count
+      in let ex-msg = ex-head & " / " & show budget & " instructions"
+      in st-add-warning st2 cdx-rt-wcet-exceeded ex-msg (def.span)
     else st2
 
  Only an EXPLICIT budget is reported. A wcet-budget of zero means the
@@ -1168,7 +1214,9 @@ Section: Function Emission
   emit-wcet-unchecked (st) (ds) (i) =
     if i >= list-length ds then st
     else let d = list-at ds i
-    in emit-wcet-unchecked (st-add-warning st cdx-rt-wcet-unchecked ("[WCET] punctual '" & d.name & "' declares budget " & show (d.wcet-budget) & " but emits no body, so the budget is unchecked") (d.span)) ds (i + 1)
+    in let un-head = "[WCET] punctual '" & d.name & "' declares budget " & show (d.wcet-budget)
+    in let un-msg = un-head & " but emits no body, so the budget is unchecked"
+    in emit-wcet-unchecked (st-add-warning st cdx-rt-wcet-unchecked un-msg (d.span)) ds (i + 1)
 
 Section: Local Variable Management
   lookup-local : List LocalBinding, Text -> Integer
@@ -1245,7 +1293,8 @@ Section: Expression Emission
        state = restore-locals (act-r.state) act-locals,
        reg = act-r.reg
       }
-     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-fc-barrier (emit-with-timeout (fc-flush (st-refuse-hosted st "with-timeout" sp)) secs body)
+     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
+       emit-fc-barrier (emit-with-timeout (fc-flush (st-refuse-hosted st "with-timeout" sp)) secs body)
      is IrFork (body) (ty) (sp) -> emit-fc-barrier (emit-fork (fc-flush (st-refuse-hosted st "fork" sp)) body sp)
      is IrAwait (task) (ty) (sp) -> emit-fc-barrier (emit-await (fc-flush (st-refuse-hosted st "await" sp)) task)
      is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-fc-barrier (emit-handle (fc-flush st) eff body clauses ty)
@@ -1273,11 +1322,13 @@ Section: Expression Emission
       let fot = cce-byte-offset-and-type rfields field-name
       in let st-na = noalias-note (loaded.state) rec-expr "field store"
       in EmitResult {
-       state = fc-store-barrier (emit-narrow-store-proven st-na (fot.type-val) (loaded.reg) (val-result.reg) (fot.offset) val-expr) fresh-slot (ir-expr-span rec-expr),
+       state = let st-st = emit-narrow-store-proven st-na (fot.type-val) (loaded.reg) (val-result.reg) (fot.offset) val-expr
+         in fc-store-barrier st-st fresh-slot (ir-expr-span rec-expr),
        reg = loaded.reg
       }
      is otherwise ->
-      let st-err = st-add-error (loaded.state) cdx-ir-error ("field-store: unresolved type for field '" & field-name & "'") (ir-expr-span rec-expr)
+      let fs-msg = "field-store: unresolved type for field '" & field-name & "'"
+      in let st-err = st-add-error (loaded.state) cdx-ir-error fs-msg (ir-expr-span rec-expr)
       in EmitResult {
        state = st-append-code st-err [15, 11],
        reg = loaded.reg
@@ -1506,7 +1557,8 @@ Section: Expression Emission
   st-refuse-hosted : CodegenState, Text, SourceSpan -> CodegenState
   st-refuse-hosted (st) (name) (sp) =
     if st-hosted st then
-      st-add-error st cdx-emit-not-implemented (name & " is not implemented for a hosted target: a hosted process has no scheduler or tick to drive it") sp
+      let hosted-msg = name & " is not implemented for a hosted target: a hosted process has no scheduler or tick to drive it"
+      in st-add-error st cdx-emit-not-implemented hosted-msg sp
     else st
 
   emit-with-timeout : CodegenState, Integer, IRExpr -> EmitResult
@@ -1602,9 +1654,13 @@ Section: Expression Emission
     in let exhaust-pos = st14.code-len
     in let st15 = patch-jmp-at st14 jmp-exhaust-pos exhaust-pos
     in let st-fb = if list-length fb > 0 then
-      let fb-clear = st-append-code st15 (li reg-rdi (st-cell st15 try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
+      let fb-clear-code = li reg-rdi (st-cell st15 try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0
+      in let fb-clear = st-append-code st15 fb-clear-code
       in let fb-result = emit-act-stmts (st-set-tail-pos fb-clear False) fb 0 (list-length fb)
-      in let fb-flag = st-append-code (restore-locals (fb-result.state) try-locals) (li reg-rdi (st-cell (fb-result.state) try-fail-flag-addr) & mov-load reg-rsi reg-rdi 0 & cmp-ri reg-rsi 0)
+      in let fb-restored = restore-locals (fb-result.state) try-locals
+      in let fb-flag-load = li reg-rdi (st-cell (fb-result.state) try-fail-flag-addr) & mov-load reg-rsi reg-rdi 0
+      in let fb-flag-code = fb-flag-load & cmp-ri reg-rsi 0
+      in let fb-flag = st-append-code fb-restored fb-flag-code
       in let jne-fail-pos = fb-flag.code-len
       in let fb-done = st-append-code fb-flag (jcc cc-ne 0)
       in EmitResult { state = fb-done, reg = fb-result.reg }
@@ -1616,7 +1672,8 @@ Section: Expression Emission
       in let st-pfb = if list-length fb > 0 then
         patch-jcc-at st16 (jmp-end-fb-pos - 6) fail-pos
       else st16
-      in let fail-clear = st-append-code st-pfb (li reg-rdi (st-cell st-pfb try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0)
+      in let fail-clear-code = li reg-rdi (st-cell st-pfb try-fail-flag-addr) & li reg-rsi 0 & mov-store reg-rdi reg-rsi 0
+      in let fail-clear = st-append-code st-pfb fail-clear-code
       in let fail-result = emit-act-stmts (st-set-tail-pos fail-clear False) fail 0 (list-length fail)
       in EmitResult { state = restore-locals (fail-result.state) try-locals, reg = fail-result.reg }
     else st-fb
@@ -1969,7 +2026,8 @@ Section: Expression Emission
     in let zero = xor-rr (rd.reg) (rd.reg)
     in let skip-zero = jmp (list-length zero)
     in let to-nan = jcc cc-ne (list-length clamp + list-length skip-zero)
-    in let to-done = jcc cc-ne (list-length mant + list-length to-nan + list-length clamp + list-length skip-zero + list-length zero)
+    in let to-done-len = list-length mant + list-length to-nan + list-length clamp + list-length skip-zero + list-length zero
+    in let to-done = jcc cc-ne to-done-len
     in EmitResult {
     state = st-append-code (sc.state) (
      movq-to-xmm 0 l-reg
@@ -2201,8 +2259,12 @@ Section: Expression Emission
         in let st7 = patch-jcc-at st6 jcc-false-pos (st6.code-len)
         in let st8 = emit-to-local st7 else-e target in-tail
         in patch-jmp-at st8 jmp-end-pos (st8.code-len)
-       is otherwise -> emit-if-to-local-generic st (IrBinary op rem-expr (IrIntLit 0 (ir-expr-span rem-expr)) (ir-expr-type rem-expr) (ir-expr-span rem-expr)) then-e else-e target in-tail
-     is otherwise -> emit-if-to-local-generic st (IrBinary op rem-expr (IrIntLit 0 (ir-expr-span rem-expr)) (ir-expr-type rem-expr) (ir-expr-span rem-expr)) then-e else-e target in-tail
+       is otherwise ->
+         let rem-cmp = IrBinary op rem-expr (IrIntLit 0 (ir-expr-span rem-expr)) (ir-expr-type rem-expr) (ir-expr-span rem-expr)
+         in emit-if-to-local-generic st rem-cmp then-e else-e target in-tail
+     is otherwise ->
+       let rem-cmp = IrBinary op rem-expr (IrIntLit 0 (ir-expr-span rem-expr)) (ir-expr-type rem-expr) (ir-expr-span rem-expr)
+       in emit-if-to-local-generic st rem-cmp then-e else-e target in-tail
 
   if-to-local-left-reg : CodegenState, IRExpr -> Integer
   if-to-local-left-reg (st) (left) =
@@ -2231,7 +2293,8 @@ Section: Expression Emission
       in let st8 = emit-to-local st7 else-e target in-tail
       in patch-jmp-at st8 jmp-end-pos (st8.code-len)
     else
-      emit-if-to-local-generic st (IrBinary op cmp-left cmp-right (ir-expr-type cmp-left) (ir-expr-span cmp-left)) then-e else-e target in-tail
+      let cmp-expr = IrBinary op cmp-left cmp-right (ir-expr-type cmp-left) (ir-expr-span cmp-left)
+      in emit-if-to-local-generic st cmp-expr then-e else-e target in-tail
 
   emit-if-to-local-generic : CodegenState, IRExpr, IRExpr, IRExpr, Integer, Boolean -> CodegenState
   emit-if-to-local-generic (st) (cond) (then-e) (else-e) (target) (in-tail) =
@@ -2283,6 +2346,8 @@ Section: Expression Emission
   emit-name-nonlocal : CodegenState, Text, CodexType -> EmitResult
   emit-name-nonlocal (st) (name) (ty) =
     if name == "__heap-save" then emit-heap-save-builtin st
+    else if name == "__stack-save" then emit-stack-save-builtin st
+    else if name == "__cover-dump" then emit-cover-dump-builtin st
     else if name == "__self-type-defs" then emit-self-type-defs-builtin st
     else if name == "__deck-pos" then emit-deck-pos-builtin st
     else if name == "__deck-enter" then emit-deck-enter-builtin st
@@ -2609,11 +2674,13 @@ Section: Expression Emission
       in when op
        is IrAddInt ->
         let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
-        in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & add-rr (r.reg) pop-reg & int-trap-after ty)
+        in let evicted = fc-evict-reg (r.state) (r.reg)
+        in let st2 = st-append-code evicted (pop-r pop-reg & add-rr (r.reg) pop-reg & int-trap-after ty)
         in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
        is IrMulInt ->
         let pop-reg = if r.reg == reg-r8 then reg-r9 else reg-r8
-        in let st2 = st-append-code (fc-evict-reg (r.state) (r.reg)) (pop-r pop-reg & imul-rr (r.reg) pop-reg & int-trap-after ty)
+        in let evicted = fc-evict-reg (r.state) (r.reg)
+        in let st2 = st-append-code evicted (pop-r pop-reg & imul-rr (r.reg) pop-reg & int-trap-after ty)
         in EmitResult { state = __record-set st2 "next-temp" (st2.next-temp + 1), reg = r.reg }
        is otherwise ->
         let st2 = st-append-code (r.state) (mov-rr reg-r9 (r.reg))
@@ -2695,7 +2762,11 @@ Section: Expression Emission
   is-safe-for-reg-right : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-right (st) (op) (left) =
     when op
-     is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrAppendText | IrConsList | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact -> True
+     is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum -> True
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping -> True
+     is IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating -> True
+     is IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec -> True
+     is IrAppendText | IrConsList | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact -> True
      is IrEq | IrNotEq -> is-fusable-int-comparison st op left
      is otherwise -> False
 
@@ -2725,7 +2796,11 @@ Section: Expression Emission
   is-safe-for-reg-left : CodegenState, IRBinaryOp, IRExpr -> Boolean
   is-safe-for-reg-left (st) (op) (right) =
     when op
-     is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum | IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec | IrLt | IrGt | IrLtEq | IrGtEq -> True
+     is IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrRemInt | IrAddNum | IrSubNum | IrMulNum | IrDivNum -> True
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox | IrAddRealTrapping | IrSubRealTrapping -> True
+     is IrMulRealTrapping | IrDivRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating -> True
+     is IrDivRealSaturating | IrAddVec | IrSubVec | IrMulVec | IrDivVec | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec -> True
+     is IrLt | IrGt | IrLtEq | IrGtEq -> True
      is IrEq | IrNotEq -> is-fusable-int-comparison st op right
      is otherwise -> False
 
@@ -2865,7 +2940,8 @@ Section: Expression Emission
     in let result = load-local st2 (alloc.ptr-loc)
     in EmitResult { state = result.state, reg = result.reg }
 
-  emit-vec-op : CodegenState, Integer, Integer, CodexType, List Integer, List Integer, List Integer, List Integer, List Integer -> EmitResult
+  emit-vec-op : CodegenState, Integer, Integer, CodexType, List Integer, List Integer, List Integer, List Integer,
+    List Integer -> EmitResult
   emit-vec-op (st) (l-reg) (r-reg) (operand-ty) (f64-insn) (int-insn) (f32-insn) (f64x4-insn) (f32x8-insn) =
     if is-wide-vector operand-ty then
       emit-wide-vec-op st l-reg r-reg (if is-f32-vector operand-ty then f32x8-insn else f64x4-insn)
@@ -2930,14 +3006,26 @@ Section: Expression Emission
      is IrSubRealSaturating -> emit-real-saturating-arith st l-reg r-reg 92 (real-arith-is-f32 st operand-ty)
      is IrMulRealSaturating -> emit-real-saturating-arith st l-reg r-reg 89 (real-arith-is-f32 st operand-ty)
      is IrDivRealSaturating -> emit-real-saturating-arith st l-reg r-reg 94 (real-arith-is-f32 st operand-ty)
-     is IrAddVec -> emit-vec-op st l-reg r-reg operand-ty (addpd-xmm 0 1) (paddq-xmm 0 1) (addps-xmm 0 1) (vaddpd-y 0 0 1) (vaddps-y 0 0 1)
-     is IrSubVec -> emit-vec-op st l-reg r-reg operand-ty (subpd-xmm 0 1) (psubq-xmm 0 1) (subps-xmm 0 1) (vsubpd-y 0 0 1) (vsubps-y 0 0 1)
-     is IrMulVec -> emit-vec-op st l-reg r-reg operand-ty (mulpd-xmm 0 1) (mulpd-xmm 0 1) (mulps-xmm 0 1) (vmulpd-y 0 0 1) (vmulps-y 0 0 1)
-     is IrDivVec -> emit-vec-op st l-reg r-reg operand-ty (divpd-xmm 0 1) (divpd-xmm 0 1) (divps-xmm 0 1) (vdivpd-y 0 0 1) (vdivps-y 0 0 1)
-     is IrLtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 1) (cmppd-xmm 0 1 1) (cmpps-xmm 0 1 1) (vcmppd-y 0 0 1 1) (vcmpps-y 0 0 1 1)
-     is IrLtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 2) (cmppd-xmm 0 1 2) (cmpps-xmm 0 1 2) (vcmppd-y 0 0 1 2) (vcmpps-y 0 0 1 2)
-     is IrGtVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 6) (cmppd-xmm 0 1 6) (cmpps-xmm 0 1 6) (vcmppd-y 0 0 1 6) (vcmpps-y 0 0 1 6)
-     is IrGtEqVec -> emit-vec-op st l-reg r-reg operand-ty (cmppd-xmm 0 1 5) (cmppd-xmm 0 1 5) (cmpps-xmm 0 1 5) (vcmppd-y 0 0 1 5) (vcmpps-y 0 0 1 5)
+     is IrAddVec ->
+       emit-vec-op st l-reg r-reg operand-ty (addpd-xmm 0 1) (paddq-xmm 0 1) (addps-xmm 0 1) (vaddpd-y 0 0 1) (vaddps-y 0 0 1)
+     is IrSubVec ->
+       emit-vec-op st l-reg r-reg operand-ty (subpd-xmm 0 1) (psubq-xmm 0 1) (subps-xmm 0 1) (vsubpd-y 0 0 1) (vsubps-y 0 0 1)
+     is IrMulVec ->
+       emit-vec-op st l-reg r-reg operand-ty (mulpd-xmm 0 1) (mulpd-xmm 0 1) (mulps-xmm 0 1) (vmulpd-y 0 0 1) (vmulps-y 0 0 1)
+     is IrDivVec ->
+       emit-vec-op st l-reg r-reg operand-ty (divpd-xmm 0 1) (divpd-xmm 0 1) (divps-xmm 0 1) (vdivpd-y 0 0 1) (vdivps-y 0 0 1)
+     is IrLtVec ->
+       let pd-op = cmppd-xmm 0 1 1
+       in emit-vec-op st l-reg r-reg operand-ty pd-op (cmppd-xmm 0 1 1) (cmpps-xmm 0 1 1) (vcmppd-y 0 0 1 1) (vcmpps-y 0 0 1 1)
+     is IrLtEqVec ->
+       let pd-op = cmppd-xmm 0 1 2
+       in emit-vec-op st l-reg r-reg operand-ty pd-op (cmppd-xmm 0 1 2) (cmpps-xmm 0 1 2) (vcmppd-y 0 0 1 2) (vcmpps-y 0 0 1 2)
+     is IrGtVec ->
+       let pd-op = cmppd-xmm 0 1 6
+       in emit-vec-op st l-reg r-reg operand-ty pd-op (cmppd-xmm 0 1 6) (cmpps-xmm 0 1 6) (vcmppd-y 0 0 1 6) (vcmpps-y 0 0 1 6)
+     is IrGtEqVec ->
+       let pd-op = cmppd-xmm 0 1 5
+       in emit-vec-op st l-reg r-reg operand-ty pd-op (cmppd-xmm 0 1 5) (cmpps-xmm 0 1 5) (vcmppd-y 0 0 1 5) (vcmpps-y 0 0 1 5)
      is IrApproxEq -> emit-approx-eq st l-reg r-reg (real-arith-is-f32 st operand-ty)
      is IrApproxEqExact -> emit-approx-eq-exact st l-reg r-reg (real-arith-is-f32 st operand-ty)
      is IrEq -> emit-eq-op st l-reg r-reg operand-ty
@@ -3231,7 +3319,8 @@ Section: Expression Emission
     in let st5 = st-append-code st4 (jcc cc-ne 0)
     in let tag-loc = alloc-local st5
     in let st6 = store-local (tag-loc.state) (tag-loc.reg) (l-tag.reg)
-    in let dispatch = emit-sum-ctor-eq-dispatch st6 ctors formals type-args (l-loc.reg) (r-loc.reg) (tag-loc.reg) 0 (list-length ctors) [] []
+    in let nctors = list-length ctors
+    in let dispatch = emit-sum-ctor-eq-dispatch st6 ctors formals type-args (l-loc.reg) (r-loc.reg) (tag-loc.reg) 0 nctors [] []
     in let rd = alloc-temp (dispatch.state)
     in let st7 = patch-eq-jumps (rd.state) (dispatch.eq-jumps) 0
     in let st8 = st-append-code st7 (li (rd.reg) 1)
@@ -3243,7 +3332,8 @@ Section: Expression Emission
     in let st13 = patch-jmp-at st12 done-jmp-pos (st12.code-len)
     in EmitResult { state = st13, reg = rd.reg }
 
-  emit-sum-ctor-eq-dispatch : CodegenState, List SumCtor, List CodexType, List CodexType, Integer, Integer, Integer, Integer, Integer, List Integer, List Integer -> SumEqAccum
+  emit-sum-ctor-eq-dispatch : CodegenState, List SumCtor, List CodexType, List CodexType, Integer, Integer, Integer, Integer,
+    Integer, List Integer, List Integer -> SumEqAccum
   emit-sum-ctor-eq-dispatch (st) (ctors) (formals) (type-args) (l-loc) (r-loc) (tag-loc) (i) (len) (ne-acc) (eq-acc) =
     if i == len then SumEqAccum { state = st, ne-jumps = ne-acc, eq-jumps = eq-acc }
     else let c = list-at ctors i
@@ -3258,9 +3348,11 @@ Section: Expression Emission
     in let eq-jmp-pos = (field-result.state).code-len
     in let st3 = st-append-code (field-result.state) (jmp 0)
     in let st4 = patch-jcc-at st3 skip-pos (st3.code-len)
-    in emit-sum-ctor-eq-dispatch st4 ctors formals type-args l-loc r-loc tag-loc (i + 1) len (field-result.ne-jumps) (list-push eq-acc eq-jmp-pos)
+    in let eq-acc2 = list-push eq-acc eq-jmp-pos
+    in emit-sum-ctor-eq-dispatch st4 ctors formals type-args l-loc r-loc tag-loc (i + 1) len (field-result.ne-jumps) eq-acc2
 
-  emit-sum-fields-eq : CodegenState, List CodexType, List CodexType, List CodexType, Integer, Integer, Integer, Integer, List Integer -> SumEqAccum
+  emit-sum-fields-eq : CodegenState, List CodexType, List CodexType, List CodexType, Integer, Integer, Integer, Integer,
+    List Integer -> SumEqAccum
   emit-sum-fields-eq (st) (fields) (formals) (type-args) (l-loc) (r-loc) (i) (len) (ne-acc) =
     if i == len then SumEqAccum { state = st, ne-jumps = ne-acc, eq-jumps = [] }
     else let decl-ty = list-at fields i
@@ -3323,7 +3415,8 @@ Section: Recursive Structural Equality Helpers
  how both compare their field, which compares an Integer with __str_eq.
 
   eq-req-name : EqHelperReq -> Text
-  eq-req-name (req) = if eq-req-is-dict req then eqd-helper-name (req.eq-sum-name) else eq-helper-name-inst (req.eq-sum-name) (req.eq-sum-actuals)
+  eq-req-name (req) =
+    if eq-req-is-dict req then eqd-helper-name (req.eq-sum-name) else eq-helper-name-inst (req.eq-sum-name) (req.eq-sum-actuals)
 
   eq-req-has : List EqHelperReq, Text, Integer -> Boolean
   eq-req-has (xs) (n) (i) =
@@ -3388,11 +3481,13 @@ Section: Recursive Structural Equality Helpers
         }))
      is otherwise -> acc
 
-  eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer, List CodexType, List CodexType -> List EqHelperReq
+  eq-site-ctors : CodegenState, List SumCtor, Integer, List EqHelperReq, Integer, List CodexType, List CodexType ->
+    List EqHelperReq
   eq-site-ctors (st) (cs) (i) (acc) (fuel) (formals) (actuals) =
     if i >= list-length cs then acc
     else
-      eq-site-ctors st cs (i + 1) (eq-site-fields st (eq-subst-fields ((list-at cs i).fields) formals actuals) 0 acc fuel) fuel formals actuals
+      let ctor-reqs = eq-site-fields st (eq-subst-fields ((list-at cs i).fields) formals actuals) 0 acc fuel
+      in eq-site-ctors st cs (i + 1) ctor-reqs fuel formals actuals
 
   eq-site-fields : CodegenState, List CodexType, Integer, List EqHelperReq, Integer -> List EqHelperReq
   eq-site-fields (st) (fs) (i) (acc) (fuel) =
@@ -3442,7 +3537,9 @@ Section: Recursive Structural Equality Helpers
      is IrRecord (n) (fs) (ty) (sp) -> eq-collect-fields st fs 0 acc
      is IrFieldAccess (r) (f) (ty) (sp) -> eq-collect-expr st r acc
      is IrFieldStore (r) (f) (v) (ty) (sp) -> eq-collect-expr st v (eq-collect-expr st r acc)
-     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> eq-collect-stmts st fail 0 (eq-collect-stmts st fb 0 (eq-collect-stmts st body 0 acc))
+     is IrTry (max) (body) (fb) (fail) (ty) (sp) ->
+       let tr-acc = eq-collect-stmts st fb 0 (eq-collect-stmts st body 0 acc)
+       in eq-collect-stmts st fail 0 tr-acc
      is IrFork (b) (ty) (sp) -> eq-collect-expr st b acc
      is IrAwait (t) (ty) (sp) -> eq-collect-expr st t acc
 
@@ -3488,7 +3585,9 @@ Section: Recursive Structural Equality Helpers
     if i >= list-length reqs then reqs
     else let r = list-at reqs i
     in let grown = when r.eq-sum-ty
-      is RecordTy (rn) (formals) (fs) -> eq-site-fields st (eq-subst-fields (eq-record-field-types fs) formals (r.eq-sum-actuals)) 0 reqs eq-rec-fuel
+      is RecordTy (rn) (formals) (fs) ->
+        let rec-fields = eq-subst-fields (eq-record-field-types fs) formals (r.eq-sum-actuals)
+        in eq-site-fields st rec-fields 0 reqs eq-rec-fuel
       is otherwise -> eq-site-ctors st (r.eq-sum-ctors) 0 reqs eq-rec-fuel (eq-req-formals r) (r.eq-sum-actuals)
     in eq-close-reqs st grown (i + 1)
 
@@ -3502,7 +3601,8 @@ Section: Recursive Structural Equality Helpers
   eq-helper-field-pats (fs) (prefix) (i) (n) (acc) =
     if i >= n then acc
     else
-      eq-helper-field-pats fs prefix (i + 1) n (list-push acc (deck-record (IrVarPat (eq-helper-var prefix i) (list-at fs i) synthetic-span)))
+      let field-pat = deck-record (IrVarPat (eq-helper-var prefix i) (list-at fs i) synthetic-span)
+      in eq-helper-field-pats fs prefix (i + 1) n (list-push acc field-pat)
 
   eq-helper-true : IRExpr
   eq-helper-true = deck-record (IrBoolLit True synthetic-span)
@@ -3609,7 +3709,10 @@ Section: Recursive Structural Equality Helpers
       else eq-helper-name (rn.value)
       is otherwise -> ""
     in if text-length nm == 0 then
-      deck-record (IrError "no equality for a type argument of a dictionary-taking equality helper" (eqd-dict-ty t) synthetic-span)
+      deck-record (
+        let no-eq-msg = "no equality for a type argument of a dictionary-taking equality helper"
+        in IrError no-eq-msg (eqd-dict-ty t) synthetic-span
+      )
     else eq-ir-name nm (eqd-dict-ty t)
 
   eqd-arg-dict : CodegenState, CodexType -> IRExpr
@@ -3659,7 +3762,10 @@ Section: Recursive Structural Equality Helpers
     in let tn = eqd-type-name st fty
     in let dict = if i >= 0 then eqd-arg-dict st fty
     else if text-length tn == 0 then
-      deck-record (IrError "a dictionary-taking equality helper met a field type it cannot compare" (eqd-dict-ty fty) synthetic-span)
+      deck-record (
+        let no-cmp-msg = "a dictionary-taking equality helper met a field type it cannot compare"
+        in IrError no-cmp-msg (eqd-dict-ty fty) synthetic-span
+      )
     else eqd-helper-ref tn (for a in eqd-type-args fty -> eqd-arg-dict st a) fty
     in let inner = deck-record (IrApply dict lhs (deck-record (FunTy fty empty-row BooleanTy)) synthetic-span)
     in deck-record (IrApply inner rhs BooleanTy synthetic-span)
@@ -3734,20 +3840,29 @@ Section: Recursive Structural Equality Helpers
      is ListTy (e) ->
       let hname = eq-helper-name-inst "List" [e]
       in let hty = deck-record (FunTy resolved empty-row (deck-record (FunTy resolved empty-row BooleanTy)))
-      in let inner = deck-record (IrApply (deck-record (IrName hname hty synthetic-span)) lhs (peel-fun-return hty) synthetic-span)
+      in let inner = deck-record (
+        let hfn = deck-record (IrName hname hty synthetic-span)
+        in IrApply hfn lhs (peel-fun-return hty) synthetic-span
+      )
       in deck-record (IrApply inner rhs BooleanTy synthetic-span)
      is SumTy (sn) (args) (cs) ->
       if eq-needs-inst-helper st (sn.value) cs (eq-site-actuals fty)
       then let hname = eq-helper-name-inst (sn.value) (eq-site-actuals fty)
       in let hty = deck-record (FunTy fty empty-row (deck-record (FunTy fty empty-row BooleanTy)))
-      in let inner = deck-record (IrApply (deck-record (IrName hname hty synthetic-span)) lhs (peel-fun-return hty) synthetic-span)
+      in let inner = deck-record (
+        let hfn = deck-record (IrName hname hty synthetic-span)
+        in IrApply hfn lhs (peel-fun-return hty) synthetic-span
+      )
       in deck-record (IrApply inner rhs BooleanTy synthetic-span)
       else plain
      is RecordTy (rn) (ra) (rfs) ->
       if list-length (eq-site-actuals fty) > 0
       then let hname = eq-helper-name-inst (rn.value) (eq-site-actuals fty)
       in let hty = deck-record (FunTy fty empty-row (deck-record (FunTy fty empty-row BooleanTy)))
-      in let inner = deck-record (IrApply (deck-record (IrName hname hty synthetic-span)) lhs (peel-fun-return hty) synthetic-span)
+      in let inner = deck-record (
+        let hfn = deck-record (IrName hname hty synthetic-span)
+        in IrApply hfn lhs (peel-fun-return hty) synthetic-span
+      )
       in deck-record (IrApply inner rhs BooleanTy synthetic-span)
       else plain
      is otherwise -> plain
@@ -3925,7 +4040,10 @@ Section: Recursive Structural Equality Helpers
        deck-record (IRParam { name = "__eqb", type-val = sty, span = synthetic-span })
       ],
      type-val = BooleanTy,
-     body = deck-record (IrMatch (deck-record (IrName "__eqa" sty synthetic-span)) (eq-helper-outer-branches st cs sty 0 (list-length cs) []) BooleanTy synthetic-span),
+     body = deck-record (
+       let eqa-name = deck-record (IrName "__eqa" sty synthetic-span)
+       in IrMatch eqa-name (eq-helper-outer-branches st cs sty 0 (list-length cs) []) BooleanTy synthetic-span
+     ),
      chapter-slug = "",
      is-punctual = False,
      wcet-budget = 0,
@@ -3969,8 +4087,14 @@ Section: Recursive Structural Equality Helpers
     if i >= n then eq-helper-true
     else let f = list-at fs i
     in let fty = f.type-val
-    in let lhs = deck-record (IrFieldAccess (deck-record (IrName "__eqa" rty synthetic-span)) ((f.name).value) fty synthetic-span)
-    in let rhs = deck-record (IrFieldAccess (deck-record (IrName "__eqb" rty synthetic-span)) ((f.name).value) fty synthetic-span)
+    in let lhs = deck-record (
+      let eqa-name = deck-record (IrName "__eqa" rty synthetic-span)
+      in IrFieldAccess eqa-name ((f.name).value) fty synthetic-span
+    )
+    in let rhs = deck-record (
+      let eqb-name = deck-record (IrName "__eqb" rty synthetic-span)
+      in IrFieldAccess eqb-name ((f.name).value) fty synthetic-span
+    )
     in let one = eq-helper-field-eq st fty lhs rhs
     in if i + 1 >= n then one
     else

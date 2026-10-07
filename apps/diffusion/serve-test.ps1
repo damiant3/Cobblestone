@@ -146,6 +146,7 @@ Check 'staging is empty afterwards' (@(Get-ChildItem -LiteralPath $staging -Forc
 Check 'the models folder is unchanged' ((Get-ChildItem -LiteralPath $models -Recurse -File | Measure-Object -Property Length -Sum).Sum -eq $modelsBefore)
 Check 'the inputs folder is unchanged' (@(Get-ChildItem -LiteralPath $inputs -File).Count -eq 4)
 Check 'no image was written' (@(Get-ChildItem -LiteralPath $out -File -ErrorAction SilentlyContinue).Count -eq 0)
+Check 'no guest output directory is left' (@(Get-ChildItem -LiteralPath $out -Directory -Force -ErrorAction SilentlyContinue).Count -eq 0)
 
 $bare = Join-Path $repo 'build-output\serve-test-models'
 New-Item -ItemType Directory -Force $bare | Out-Null

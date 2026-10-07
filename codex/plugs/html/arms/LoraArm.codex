@@ -15,9 +15,11 @@ Chapter: LoraArm
     else state-set "done" 1
 
   la-loaded : BrowserModel -> Integer
-  la-loaded (m) =
-    let bpe = bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))
-    in browser-txt2img-timed m bpe (page-data "prompt") "" 7 6 7.0 512 512 (\r -> let phase = state-set-text "phase" r in 0) (\h log ->
+  la-loaded (m) = bl-bpe-then "" "" la-fail (\bpe -> la-sd15-run m bpe)
+
+  la-sd15-run : BrowserModel, ClipBpe -> Integer
+  la-sd15-run (m) (bpe) =
+    browser-txt2img-timed m bpe (page-data "prompt") "" 7 6 7.0 512 512 (\r -> let phase = state-set-text "phase" r in 0) (\h log ->
       let saved = state-set-text "summary" log
       in if h <= 0 then (let f = bl-free-weights (bl-list ("[" & state-get-text "bl-weights" & "]")) 0 in la-fail "Image generation failed")
       else gpu-buf-show-then h 512 512 "#out" (\r -> la-image h r))
@@ -30,9 +32,11 @@ Chapter: LoraArm
     else state-set "done" 1
 
   la-xl-loaded : BrowserSdxlModel -> Integer
-  la-xl-loaded (m) =
-    let bpe = bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))
-    in let settings = BrowserSdxlSettings { bs-width = 1024, bs-height = 1024, bs-steps = 6, bs-seed = 7201, bs-cfg = 2.0 }
+  la-xl-loaded (m) = bl-bpe-then "" "" la-fail (\bpe -> la-xl-run m bpe)
+
+  la-xl-run : BrowserSdxlModel, ClipBpe -> Integer
+  la-xl-run (m) (bpe) =
+    let settings = BrowserSdxlSettings { bs-width = 1024, bs-height = 1024, bs-steps = 6, bs-seed = 7201, bs-cfg = 2.0 }
     in browser-sdxl-euler-then m bpe (page-data "prompt") "" settings (\phase current total -> let p = state-set-text "phase" (phase & ":" & show current) in 0) (\h -> gpu-buf-show-then h 1024 1024 "#out" (\r -> la-xl-image m h r)) (\why -> let c = browser-sdxl-close m in la-fail why)
 
   la-xl-load : Text, Integer -> Integer

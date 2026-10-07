@@ -122,7 +122,14 @@ try {
           await evaluate('document.getElementById("td0")?.scrollIntoView({block:"center"})');
           await sleep(200);
           const card = await evaluate('(()=>{const c=document.getElementById("td0");if(!c)return null;const r=c.getBoundingClientRect();return {text:c.innerText,links:[...c.querySelectorAll("a")].map(a=>a.getAttribute("href")),left:r.left,right:r.right,overflow:document.documentElement.scrollWidth>innerWidth,cards:document.querySelectorAll("#today-grid>.card").length};})()');
-          if (!card?.text.includes('Valheim') || !card.links.includes('modbuilder/index.html') || !card.links.includes('compile/prism.html') || card.cards !== 5 || card.left < 0 || card.right > width || card.overflow) throw new Error('Grouped tool cards are missing or do not fit at ' + width + ': ' + JSON.stringify(card));
+          if (!card?.text.includes('Valheim') || !card.links.includes('modbuilder/index.html') || !card.links.includes('compile/prism.html') || card.cards !== 6 || card.left < 0 || card.right > width || card.overflow) throw new Error('Grouped tool cards are missing or do not fit at ' + width + ': ' + JSON.stringify(card));
+          const uoaix = await evaluate('(()=>{const c=document.getElementById("td-uo");return c&&{text:c.innerText,href:c.querySelector("a")?.getAttribute("href"),art:getComputedStyle(c).backgroundImage};})()');
+          if (uoaix?.href !== 'uoaix.html' || !uoaix.text.includes('no public play') || !uoaix.art.includes('uoaix-isometric-village.jpg')) throw new Error('UOAIX card/link/status/art missing');
+          await evaluate('document.getElementById("td-uo").scrollIntoView({block:"center"})');
+          await sleep(200);
+          const uoaixCardShot = await send('Page.captureScreenshot', {format:'png'});
+          writeFileSync(join(out, 'uoaix-card-' + width + '.png'), Buffer.from(uoaixCardShot.data, 'base64'));
+          await evaluate('document.getElementById("td0").scrollIntoView({block:"center"})');
           current.actions.push({ card: 'Valheim', width, ...card });
           const shot = await send('Page.captureScreenshot', { format: 'png' });
           writeFileSync(join(out, 'valheim-' + width + '.png'), Buffer.from(shot.data, 'base64'));
@@ -135,6 +142,38 @@ try {
           current.actions.push({ screenshot: 'desktop-clock-menu.png', viewport: width, ...desktopImage });
         }
         await send('Emulation.clearDeviceMetricsOverride');
+      }
+      if (name === 'uoaix.html') {
+        for (const width of [1280, 390]) {
+          await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+          await evaluate('scrollTo(0,0)');
+          await sleep(200);
+          const content = await evaluate('({text:document.body.innerText,overflow:document.documentElement.scrollWidth>innerWidth,anchors:[...document.querySelectorAll("a[href^=\\"#\\"]")].every(a=>!!document.getElementById(a.getAttribute("href").slice(1)))})');
+          for (const word of ['Public play is not available', 'Jaegermeister', 'GreyWorld', 'Wolfpack', 'prepared by Damian', 'KEEPER PLANNED']) if (!content.text.includes(word)) throw new Error('UOAIX content missing: ' + word);
+          if (content.overflow || !content.anchors) throw new Error('UOAIX layout or anchor failure at ' + width);
+          const art = await evaluate('Promise.all(["uoaix-hero-castle-town.jpg","uoaix-forge.jpg","uoaix-isometric-village.jpg","uoaix-keeper.jpg"].map(name=>new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve({name,width:i.naturalWidth});i.onerror=()=>reject(new Error("UOAIX art did not load: "+name));i.src="uoaix-art/"+name;})))');
+          if (art.some(image => !image.width)) throw new Error('UOAIX illustration is empty');
+          const applied = await evaluate('[getComputedStyle(document.getElementById("ux-art")).backgroundImage,...["ux-sim","ux-minds","ux-keeper"].map(id=>getComputedStyle(document.getElementById(id),"::before").backgroundImage)]');
+          for (let i=0;i<art.length;i++) if (!applied[i].includes(art[i].name)) throw new Error('UOAIX themed image is not applied: '+art[i].name);
+          current.actions.push({width,art,anchors:content.anchors,overflow:content.overflow});
+          const shot = await send('Page.captureScreenshot', {format:'png'});
+          writeFileSync(join(out, 'uoaix-' + width + '.png'), Buffer.from(shot.data, 'base64'));
+          if (width === 1280) {
+            const layout = await send('Page.getLayoutMetrics');
+            const full = await send('Page.captureScreenshot', {format:'png',captureBeyondViewport:true,clip:{x:0,y:0,width,height:layout.cssContentSize.height,scale:1}});
+            writeFileSync(join(out, 'uoaix-full.png'), Buffer.from(full.data, 'base64'));
+          }
+        }
+        await send('Emulation.clearDeviceMetricsOverride');
+        await evaluate('document.getElementById("ux-nav-history").click()');
+        if (!await evaluate('location.hash==="#lineage"')) throw new Error('UOAIX lineage navigation failed');
+        await evaluate('document.getElementById("ux-home").click()');
+        for (let i = 0; i < 100; i++) { if (await evaluate('location.pathname.endsWith("/landing.html")&&!!document.getElementById("td-uo-a")')) break; await sleep(50); }
+        if (!await evaluate('!!document.getElementById("td-uo-a")')) throw new Error('UOAIX home link failed');
+        await evaluate('document.getElementById("td-uo-a").click()');
+        for (let i = 0; i < 100; i++) { if (await evaluate('location.pathname.endsWith("/uoaix.html")&&!!document.getElementById("ux-title")')) break; await sleep(50); }
+        if (!await evaluate('!!document.getElementById("ux-title")')) throw new Error('Landing UOAIX card navigation failed');
+        current.actions.push({navigation:'lineage, home, landing card',pass:true});
       }
       if (name === 'games/index.html') {
         const cats = await evaluate('[...document.querySelectorAll("[data-cat]")].map(e=>e.dataset.cat)');

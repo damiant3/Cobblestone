@@ -18,6 +18,8 @@ export function installStudioLlm(document, providers, hooks) {
     el('llm-key-clear').disabled = busy;
     el('llm-provider').disabled = busy;
     el('open').disabled = busy;
+    const local = el('llm-provider').querySelector('option[value="local"]');
+    if (local) { local.disabled = !providers.local || !!providers.local.unavailableReason; if (local.disabled) el('llm-local-reason').textContent = 'Local generation is unavailable: ' + (providers.local?.unavailableReason || 'no local provider in this build.'); }
   };
   const setBusy = value => { busy = value; hooks.setBusy(value); refresh(); };
   const fail = error => status(error?.name === 'AbortError' ? 'Request cancelled. No text applied.' : 'Refused: ' + (error?.message || String(error)));

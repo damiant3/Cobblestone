@@ -36,9 +36,11 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.failing` | Compile must fail with the listed CDX error codes |
 | `foo.message` | With `foo.failing`: each non-empty line must appear verbatim in the refusal's diagnostic output, so a note that carries a contract cannot be reworded away or dropped while the codes stay green. Graded by `check-errors` (codex/test/errors) and `test.ps1` |
 | `foo.diag` | Compile must succeed and emit each listed CDX code at any severity (warning/info/error). One code per line (bare number or `CDX`-prefixed). Combine with `foo.expected` to also check runtime output. This is how warnings and infos are regression-tested. |
+| `foo.census` | Codegen cost ceilings: CDX6014 lines (`[CALLS] 'name' path=... insns=... push=... pop=... stack-stores=...`) from a compile under the `callcensus` mode flag. `build/cite-gate.ps1` grades every `.census` on any `codex/compiler` change: a pinned definition must keep its emit path (lir, then minimal, then standard) and must not grow in instructions, pushes, pops or stack stores; a fall is reported for re-pinning, a rise or a missing definition fails. Re-pin from a compile of the subject with `-RawFlags callcensus`, reading the delta first. `codex/test/ops/call-arity-twelve` is the first |
 | `foo.skip` | Skipped entirely; first line is the reason |
 | `foo.slow` | Skipped unless `-Slow`; first line is the reason |
 | `foo.fatal` | Skipped unless `-Fatal`; kills the VM at runtime |
+| `foo.wall` | Run budget in whole seconds above the 60 s `-run-list` default, 61..600 on the first line; any other first line is refused. `bvt.ps1` (and so the cite-gate) runs every such subject one at a time in an extra slot whose supervisor gets the largest budget. `test.ps1` does not read it yet (COMPILER-123). `codex/test/apps/t5-encoder-step` is the first |
 | `foo.renode` | The cross subject needs a Renode board model QEMU `virt` lacks (first line names it); `build/test-cross-batch.ps1` skips it unless `-Renode` |
 | `foo.cross-fatal` | With `foo.fatal`: `build/test-cross-batch.ps1` runs the test anyway and passes it only when the guest reports a fault (`!EXC=` on riscv, `!A64FAULT` on arm64); a run that ends without one fails. Needs no `.expected` |
 | `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs (`codex/test/apps/foreword-all-compile` cites all 416 foreword chapters and carries `decks=200`, re-measured 2026-09-02 off the file and not carried forward; without it the compile is `CDX9002: Deck overflow in LOWER`, run both ways 2026-07-22). Read by `build/test-compile-batch.ps1` and, since 2026-09-02, by `build/bvt.ps1`, so it applies to the battery and the BVT but **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches. **Until then the BVT could not have run a `.flags` subject at all**: it compiled every subject with bare switches, so a chapter needing `decks=200` failed COMPILE there while compiling fine in the battery, and the runner was measuring its own invocation rather than the test (L-SIDECAR). Nothing had noticed because no BVT subject carried a `.flags`; it surfaced the moment the gate's cited-test run phase pointed the same runner at `foreword-all-compile` |
@@ -433,8 +435,8 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **245** expected-failure tests (measured
-2026-09-30).
+`codex/test/errors/` holds **248** expected-failure tests (measured
+2026-10-03).
 
 ## What the standing gate does not cover
 
@@ -821,6 +823,10 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
   persist to the input file. To chain two boots, copy that temp file back
   as the next run's input. `-Keys` takes Set-1 make codes (`88` is F12);
   `-KeyDelayMs 4000` survives TCG-speed keygen.
+- **`build/test-run.ps1 -DiskFile` also boots a temp copy and deletes it**, so a
+  multi-boot proof run through it restarts from an empty disk every boot and
+  never reaches its restore arms. Boot `tools/codex-vm.exe -kernel X -disk D
+  -output O -mem 3072 -headless` directly, once per boot, on one disk.
 - **A pane F12 shot takes roughly 16 to 110 s in the bed**, because
   `med-selected` is unset under DeskVm so every sector op pays the AHCI
   and NVMe probes before falling through to IDE. **A capture deadline
@@ -5740,8 +5746,8 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-245 tests in `codex/test/errors/` verify that the compiler rejects
-invalid programs with the correct diagnostic codes (counted 2026-09-28). Each has a
+248 tests in `codex/test/errors/` verify that the compiler rejects
+invalid programs with the correct diagnostic codes (counted 2026-10-03). Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
 `infinite-type` (CDX2010), `linear-twice` (CDX2061).

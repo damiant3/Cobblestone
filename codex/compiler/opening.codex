@@ -13,14 +13,23 @@ Chapter: Opening
   cites Foreword chapter FactDisk
 
   cites Emit chapter Codex Emitter (codex-emit-text-chapter, codex-emit-type-defs, codex-emit-def, codex-emit-grounds-line)
-  cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs, ir-trace-def-sizes, ir-trace-dce-cost, ir-prune-unreachable, ir-prune-unreachable-roots, ir-roots-with-declared, ir-dropped-budgeted-punctuals)
+  cites Emit chapter IR Text Emitter (emit-ir-chapter, emit-ir-chapter-prefix, ir-defs-wire-size, ir-print-defs)
+  cites Emit chapter IR Text Emitter (ir-trace-def-sizes, ir-trace-dce-cost, ir-prune-unreachable, ir-prune-unreachable-roots)
+  cites Emit chapter IR Text Emitter (ir-roots-with-declared, ir-dropped-budgeted-punctuals)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs, keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count, pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached, lir-target-x86)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, ir-chapter-with-proofs)
+  cites Emit chapter X86-64 Code Generator (keep-proof-defs, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode)
+  cites Emit chapter X86-64 Code Generator (WatchdogProgress, WatchdogPet, pmap-self-test, pmap-escape-count)
+  cites Emit chapter X86-64 Code Generator (pmap-escape-count-quiet, pmap-escape-list-quiet, pmap-escape-reached)
+  cites Emit chapter X86-64 Code Generator (lir-target-x86)
   cites Semantics chapter Name Resolution (resolve-chapter, count-typecheck-units)
   cites Semantics chapter Chapter Scoper (check-entry-point-duplicate, check-duplicate-cites, check-cites-resolve)
   cites Codex chapter LirTargets (lir-target-a64-shape, lir-target-narrow-shape)
   cites Codex chapter UTF-8 To CCE (utf8-to-cce)
-  cites Codex chapter BootPaint (disk-rung, disk-mark, disk-stop, bp-pass, bp-truth, bp-paint, bp-progress, bp-progress-height, bp-hold-band-if-armed, bp-rtc-seconds, bp-rtc-date-text, bp-hms-text, bp-poke64, bp-log-count-cell, bp-log-start-cell, bp-log-rows, bp-cyan, bp-yellow, bp-magenta, bp-orange, bp-blue, bp-white, bp-red)
+  cites Codex chapter BootPaint (disk-rung, disk-mark, disk-stop, bp-pass, bp-truth, bp-paint, bp-progress, bp-progress-height)
+  cites Codex chapter BootPaint (bp-hold-band-if-armed, bp-rtc-seconds, bp-rtc-date-text, bp-hms-text, bp-poke64)
+  cites Codex chapter BootPaint (bp-log-count-cell, bp-log-start-cell, bp-log-rows, bp-cyan, bp-yellow, bp-magenta, bp-orange)
+  cites Codex chapter BootPaint (bp-blue, bp-white, bp-red)
   cites Foreword chapter CCE (to-unicode, from-unicode, cce-to-unicode-table)
 
 Section: Compile Flags
@@ -168,7 +177,7 @@ Section: Compile Flags
   pipeline-of : Text -> List Text
   pipeline-of (mode) =
     let v = mode-flag-text mode "passes="
-    in if v == "" then default-ir-pipeline
+    in if v == "" then (if has-mode-flag mode "cover" then ["fold-constants"] else default-ir-pipeline)
     else if v == "none" then []
     else if v == "text-plug" then text-plug-ir-pipeline
     else if text-starts-with v "+" then
@@ -857,7 +866,9 @@ Section: Frontend
     in let tail-memo-z = __memset (mc.mc-table) 0 (mc.mc-slots * 8)
     in let tail-bag = if flags.phase-trace then
       deck-record (bag-from-list [
-        make-warning cdx-escape-violation ("CHECK-TAIL binds=" & show (list-length sorted-all) & " et=" & show (list-length sorted-et) & " keep-used=" & show (kc-et - check-result.keep-end)) synthetic-span
+        let ct0 = "CHECK-TAIL binds=" & show (list-length sorted-all) & " et=" & show (list-length sorted-et)
+        in let ct1 = ct0 & " keep-used=" & show (kc-et - check-result.keep-end)
+        in make-warning cdx-escape-violation ct1 synthetic-span
       ])
     else no-overflow-bag
     in let kept-subs = deck-record (mcopy-types (check-result.state.substitutions) 0 mc)
@@ -879,12 +890,27 @@ Section: Frontend
     else no-overflow-bag
     in let keep-metrics-bag = if flags.phase-trace then
       deck-record (bag-from-list [
-        make-warning cdx-escape-violation ("CHECK-KEEP-METRICS origin=" & show (keep-metrics.deck-origin) & " end=" & show (keep-metrics.deck-end) & " height=" & show keep-height & " ceiling=" & show (mc.mc-ceiling) & " keep-base=" & show keep-base & " walk-keep-end=" & show (check-result.keep-end) & " ov=" & show keep-ov & " walk-overflow=" & (if check-result.keep-overflow then "1" else "0")) synthetic-span
+        let km0 = "CHECK-KEEP-METRICS origin=" & show (keep-metrics.deck-origin) & " end=" & show (keep-metrics.deck-end)
+        in let km1 = km0 & " height=" & show keep-height & " ceiling=" & show (mc.mc-ceiling) & " keep-base=" & show keep-base
+        in let km2 = km1 & " walk-keep-end=" & show (check-result.keep-end) & " ov=" & show keep-ov
+        in let km3 = km2 & " walk-overflow=" & (if check-result.keep-overflow then "1" else "0")
+        in make-warning cdx-escape-violation km3 synthetic-span
       ])
     else no-overflow-bag
     in let keep-stat-bag = if flags.escape-check then
       deck-record (bag-from-list [
-        make-warning cdx-escape-violation ("KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty)) & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name)) & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist)) & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0) & " fieldlists=" & show (list-length (mc.mc-fieldlist)) & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0) & " ctorlists=" & show (list-length (mc.mc-ctorlist)) & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0) & " labellists=" & show (list-length (mc.mc-labellist)) & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0) & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)) synthetic-span
+        let ks0 = "KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty))
+        in let ks1 = ks0 & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name))
+        in let ks2 = ks1 & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist))
+        in let ks3 = ks2 & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0)
+        in let ks4 = ks3 & " fieldlists=" & show (list-length (mc.mc-fieldlist))
+        in let ks5 = ks4 & "/" & show (sum-fieldlist-lens (mc.mc-fieldlist) 0 (list-length (mc.mc-fieldlist)) 0)
+        in let ks6 = ks5 & " ctorlists=" & show (list-length (mc.mc-ctorlist))
+        in let ks7 = ks6 & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0)
+        in let ks8 = ks7 & " labellists=" & show (list-length (mc.mc-labellist))
+        in let ks9 = ks8 & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0)
+        in let ks10 = ks9 & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)
+        in make-warning cdx-escape-violation ks10 synthetic-span
       ])
     else bag-from-list []
     in let final-bag = deck-record (bag-merge-all [
@@ -984,9 +1010,17 @@ Section: Frontend
     in let lower-origin = __deck-pos
     in let lower-phase = phase-start
     in let set-ls = __deck-set lower-base
-    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling run-passes lower-keep-base (lower-keep-base + lower-keep-height))
+    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter
+      (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names)
+      (checked.renames) (checked.colliding) (checked.assignments)
+      lower-ceiling run-passes lower-keep-base (lower-keep-base + lower-keep-height))
     in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
-    in let lower-keep-bag = deck-record (if flags.phase-trace then bag-from-list [make-warning cdx-escape-violation ("LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height) synthetic-span] else no-overflow-bag)
+    in let lower-keep-bag = deck-record (
+      if flags.phase-trace then
+        let lk-msg = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height
+        in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
+      else no-overflow-bag
+    )
     in let passed = if run-passes then
       deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
     else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
@@ -1061,9 +1095,17 @@ Section: Frontend
     in let lower-origin = __deck-pos
     in let lower-phase = phase-start
     in let set-ls = __deck-set lower-base
-    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names) (checked.renames) (checked.colliding) (checked.assignments) lower-ceiling True lower-keep-base (lower-keep-base + lower-keep-height))
+    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter
+      (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names)
+      (checked.renames) (checked.colliding) (checked.assignments)
+      lower-ceiling True lower-keep-base (lower-keep-base + lower-keep-height))
     in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
-    in let lower-keep-bag = deck-record (if flags.phase-trace then bag-from-list [make-warning cdx-escape-violation ("LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height) synthetic-span] else no-overflow-bag)
+    in let lower-keep-bag = deck-record (
+      if flags.phase-trace then
+        let lk-msg = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height
+        in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
+      else no-overflow-bag
+    )
     in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
     in let ir = passed.chapter
     in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
@@ -1602,7 +1644,7 @@ Section: Text Compilation
 Section: Binary Compilation
 
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False False False
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1628,8 +1670,9 @@ Section: Binary Compilation
   ir-emit-roots : List Text
   ir-emit-roots = ["opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto", "fat16-servicer-read", "fat16-servicer-write"]
 
-  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode, Integer between 0 and 2, Boolean -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) =
+  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode,
+    Integer between 0 and 2, Boolean, Boolean, Boolean -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) (census) (cover) =
     if bag-has-errors (fe.bag) then
       EmitChapterResult {
         header-bytes = [],
@@ -1647,7 +1690,7 @@ Section: Binary Compilation
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
     in let emit-input = ir-chapter-with-proofs pruned proofs
     in let emit-result = if list-length (fe.method-inputs.classes) == 0 then
-      x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local
+      x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover
     else let scan-copy = IRChapter {
       name = emit-input.name,
       defs = emit-input.defs,
@@ -1666,7 +1709,7 @@ Section: Binary Compilation
         symbol-map = []
       }
     else
-      x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local
+      x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1699,7 +1742,9 @@ Section: Measurement
     in let name = if i < list-length names then list-at names i else "?"
     in let deck-usage = m.deck-end - m.deck-origin
     in let bivy-usage = m.bivy-hwm - m.bivy-origin
-    in let line = "WD:PM-" & name & ":deck-origin=" & integer-to-text (m.deck-origin) & ",deck-end=" & integer-to-text (m.deck-end) & ",deck-usage=" & integer-to-text deck-usage & ",bivy-hwm=" & integer-to-text (m.bivy-hwm) & ",bivy-usage=" & integer-to-text bivy-usage & "\n"
+    in let line0 = "WD:PM-" & name & ":deck-origin=" & integer-to-text (m.deck-origin) & ",deck-end=" & integer-to-text (m.deck-end)
+    in let line1 = line0 & ",deck-usage=" & integer-to-text deck-usage & ",bivy-hwm=" & integer-to-text (m.bivy-hwm)
+    in let line = line1 & ",bivy-usage=" & integer-to-text bivy-usage & "\n"
     in format-phase-metrics-loop metrics names (i + 1) len (acc & line)
 
   format-heap-marks : List Integer -> Text
@@ -1742,7 +1787,8 @@ Section: Expr-Type Pre-Resolution
     })
     in resolve-all-bindings st bindings (i + 1) len (list-push acc resolved)
 
-  tail-resolve-bindings : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding, MemoCtx, Integer, Integer, Integer -> (List TypeBinding, Integer)
+  tail-resolve-bindings : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding, MemoCtx, Integer, Integer,
+    Integer -> (List TypeBinding, Integer)
   tail-resolve-bindings (st) (bs) (i) (len) (acc) (mc) (scratch-base) (bivy-base) (kc) =
     if i >= len then let set-k = __deck-set kc in (acc, kc)
     else let set-s = __deck-set scratch-base
@@ -1755,7 +1801,8 @@ Section: Expr-Type Pre-Resolution
     in let r = __heap-restore bivy-base
     in tail-resolve-bindings st bs (i + n) len acc2 mc scratch-base bivy-base kc2
 
-  tail-resolve-binding-chunk : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding, Integer, Integer, Integer -> Integer
+  tail-resolve-binding-chunk : UnificationState, List TypeBinding, Integer, Integer, List TypeBinding, Integer, Integer,
+    Integer -> Integer
   tail-resolve-binding-chunk (st) (bs) (i) (len) (chunk) (scratch-base) (bivy-base) (n) =
     if i >= len then n
     else if n > 0 & (__deck-pos - scratch-base) + (__heap-save - bivy-base) >= demand-check-batch-budget then
@@ -1778,7 +1825,8 @@ Section: Expr-Type Pre-Resolution
     })
     in tail-copy-binding-chunk chunk (j + 1) n (list-push acc kept) mc
 
-  tail-resolve-expr-types : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, MemoCtx, Integer, Integer, Integer -> (List ExprTypeEntry, Integer)
+  tail-resolve-expr-types : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, MemoCtx, Integer,
+    Integer, Integer -> (List ExprTypeEntry, Integer)
   tail-resolve-expr-types (st) (es) (i) (len) (acc) (mc) (scratch-base) (bivy-base) (kc) =
     if i >= len then let set-k = __deck-set kc in (acc, kc)
     else let set-s = __deck-set scratch-base
@@ -1791,7 +1839,8 @@ Section: Expr-Type Pre-Resolution
     in let r = __heap-restore bivy-base
     in tail-resolve-expr-types st es (i + n) len acc2 mc scratch-base bivy-base kc2
 
-  tail-resolve-expr-type-chunk : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, Integer, Integer, Integer -> Integer
+  tail-resolve-expr-type-chunk : UnificationState, List ExprTypeEntry, Integer, Integer, List ExprTypeEntry, Integer, Integer,
+    Integer -> Integer
   tail-resolve-expr-type-chunk (st) (es) (i) (len) (chunk) (scratch-base) (bivy-base) (n) =
     if i >= len then n
     else if n > 0 & (__deck-pos - scratch-base) + (__heap-save - bivy-base) >= demand-check-batch-budget then
@@ -1919,7 +1968,7 @@ Section: Entry Point
        dbg-print-def-names (fe.cdx-ir.defs) 0 (list-length (fe.cdx-ir.defs))
       end
       else print-line-uni ""
-      let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target (has-mode-flag mode "avx-local")
+      let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target (has-mode-flag mode "avx-local") (has-mode-flag mode "callcensus") (has-mode-flag mode "cover")
       in act
        if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
        else print-line-uni ""
@@ -2017,7 +2066,11 @@ Section: Entry Point
   disk-print-phases (i) (n) =
     if i >= n then print-text ""
     else act
-     print-line-uni ("PHASE " & disk-unpack8 (peek-qword (bp-log-rows + i * 24) 0) 0 "" & " " & integer-to-text (peek-qword (bp-log-rows + i * 24) 8) & "s heap " & integer-to-text (peek-qword (bp-log-rows + i * 24) 16) & "MB")
+     print-line-uni (
+       let ph0 = "PHASE " & disk-unpack8 (peek-qword (bp-log-rows + i * 24) 0) 0 ""
+       in let ph1 = ph0 & " " & integer-to-text (peek-qword (bp-log-rows + i * 24) 8)
+       in ph1 & "s heap " & integer-to-text (peek-qword (bp-log-rows + i * 24) 16) & "MB"
+     )
      disk-print-phases (i + 1) n
     end
 
@@ -2040,7 +2093,10 @@ Section: Entry Point
     if bp-armed 0 == False then print-text ""
     else act
      p <- disk-print-phases 0 (peek-qword bp-log-count-cell 0)
-     print-line-uni ("BUILD " & (if landed == 1 then "YAY" else "NAY") & " " & bp-hms-text (bp-rtc-seconds 0) & " total " & integer-to-text (phase-took (peek-qword bp-log-start-cell 0) (bp-rtc-seconds 0)) & "s")
+     print-line-uni (
+       let bd0 = "BUILD " & (if landed == 1 then "YAY" else "NAY") & " " & bp-hms-text (bp-rtc-seconds 0)
+       in bd0 & " total " & integer-to-text (phase-took (peek-qword bp-log-start-cell 0) (bp-rtc-seconds 0)) & "s"
+     )
     end
 
   emit-binary-tail-with-map : EmitChapterResult, Boolean -> [Console, FileSystem, Device.Block] Nothing
@@ -2216,14 +2272,21 @@ Section: Entry Point
      if bag-has-errors (fe.bag) then
        print-codegen-error-header (bag-errors (fe.bag))
      else print-text ""
-     print-line-uni ((format-heap-marks (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "PHASE-") & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) "" & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n")
+     print-line-uni (
+       let mk0 = (format-heap-marks (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "PHASE-")
+       in let mk1 = mk0 & format-phase-decks (fe.phase-metrics) 0 (list-length (fe.phase-metrics)) ""
+       in mk1 & "EMIT-BYTES:" & integer-to-text (text-length text) & "\n"
+     )
     end
 
   format-phase-decks : List PhaseMetrics, Integer, Integer, Text -> Text
   format-phase-decks (ms) (i) (len) (acc) =
     if i == len then acc
     else let m = list-at ms i
-    in format-phase-decks ms (i + 1) len (acc & "DECK-" & integer-to-text i & ":phase=" & (m.label) & " origin=" & integer-to-text (m.deck-origin) & " end=" & integer-to-text (m.deck-end) & " used=" & integer-to-text (m.deck-end - m.deck-origin) & " bivy-origin=" & integer-to-text (m.bivy-origin) & " bivy-hwm=" & integer-to-text (m.bivy-hwm) & " bivy-used=" & integer-to-text (m.bivy-hwm - m.bivy-origin) & "\n")
+    in let dk0 = acc & "DECK-" & integer-to-text i & ":phase=" & (m.label) & " origin=" & integer-to-text (m.deck-origin)
+    in let dk1 = dk0 & " end=" & integer-to-text (m.deck-end) & " used=" & integer-to-text (m.deck-end - m.deck-origin)
+    in let dk2 = dk1 & " bivy-origin=" & integer-to-text (m.bivy-origin) & " bivy-hwm=" & integer-to-text (m.bivy-hwm)
+    in format-phase-decks ms (i + 1) len (dk2 & " bivy-used=" & integer-to-text (m.bivy-hwm - m.bivy-origin) & "\n")
 
   parse-mode-cmd : Text -> Text
   parse-mode-cmd (mode) =
@@ -2355,7 +2418,8 @@ Section: Entry Point
     if since < disk-read-report-every then 0
     else bp-progress n total 0 bp-white
 
-  disk-read-chain : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] List Integer
+  disk-read-chain : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer ->
+    [Device.Block] List Integer
   disk-read-chain (vol) (cluster) (remaining) (sector-off) (acc) (n) (since) (total) =
     if remaining <= 0 then acc
     else if fat16-is-end cluster then acc
@@ -2365,7 +2429,8 @@ Section: Entry Point
      disk-read-step vol cluster remaining sector-off acc buf n (if since < disk-read-report-every then since + 1 else 0) total
     end
 
-  disk-read-step : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer -> [Device.Block] List Integer
+  disk-read-step : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer ->
+    [Device.Block] List Integer
   disk-read-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) (n) (since) (total) =
     let bytes-this = if remaining < (vol.vol-bytes-per-sector) then
       remaining
@@ -2565,7 +2630,10 @@ Section: Entry Point
 
   disk-source-read : Fat16Volume, Fat16DirEntry -> [Console, Device.Block] Maybe Text
   disk-source-read (vol) (entry) = act
-   print-line-uni ("DISK-SOURCE found cluster " & integer-to-text (entry.de-cluster) & " size " & integer-to-text (entry.de-size) & " sectors " & integer-to-text (disk-sector-total vol (entry.de-size)))
+   print-line-uni (
+     let ds0 = "DISK-SOURCE found cluster " & integer-to-text (entry.de-cluster) & " size " & integer-to-text (entry.de-size)
+     in ds0 & " sectors " & integer-to-text (disk-sector-total vol (entry.de-size))
+   )
    disk-source-bytes vol entry
   end
 
@@ -2613,7 +2681,10 @@ Section: Entry Point
   disk-no-source : Text -> [Console] Nothing
   disk-no-source (why) = act
    print-line-uni why
-   print-line-uni ("DIAG heap " & integer-to-text __heap-save & " hand base " & integer-to-text (peek-qword 126976 16) & " wh " & integer-to-text (peek-qword 126976 24) & " stride " & integer-to-text (peek-qword 126976 32))
+   print-line-uni (
+     let dg0 = "DIAG heap " & integer-to-text __heap-save & " hand base " & integer-to-text (peek-qword 126976 16)
+     in dg0 & " wh " & integer-to-text (peek-qword 126976 24) & " stride " & integer-to-text (peek-qword 126976 32)
+   )
    h <- bp-hold-band-if-armed bp-magenta
    print-line-uni "DISK-LADDER stopped at source"
   end

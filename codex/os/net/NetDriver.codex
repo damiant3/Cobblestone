@@ -3,7 +3,9 @@ Chapter: NetDriver
   cites Kernel chapter E1000e
   cites Kernel chapter Pci
   cites Kernel chapter Hpet
+  cites Kernel chapter VirtioNetX86
   cites Foreword chapter Maybe
+  cites Foreword chapter Result
 
 Section: The Bound Card
 
@@ -14,9 +16,10 @@ Section: The Bound Card
  every reference, which on a path polled tens of millions of times per
  accept is the leak the control block exists to avoid.
 
- Every value here fits in 32 bits. The heap arena ends at 3 GB and a
- device BAR is refused unless it lands between 3 and 4 GB, so no address
- the seam stores can exceed the low word.
+ Every value in this block fits in 32 bits. The heap arena ends at 3 GB;
+ the e1000 BAR is admitted only between 3 and 4 GB. Card 2 stores a heap
+ control-block address at +8, and that block keeps its MMIO pointers as
+ 64-bit values.
 
   net-driver-cb : Integer = 36264
 
@@ -30,6 +33,8 @@ Section: The Bound Card
 
   net-card-ne2k : Integer = 0
   net-card-e1000 : Integer = 1
+  net-card-virtio : Integer = 2
+  net-card-none : Integer = 3
 
   net-driver-cell : Integer -> Integer
   net-driver-cell (off) = bit-and (peek-32 (net-driver-cb + off) 0) #FFFFFFFF
@@ -54,13 +59,30 @@ Section: Bind
 
 Section: Bring-up
 
+  net-driver-bind-virtio : Integer -> Integer
+  net-driver-bind-virtio (base) =
+    let state = poke-32 (net-driver-cb + net-driver-off-mmio) 0 base
+    in let selected = poke-32 net-driver-cb 0 net-card-virtio
+    in net-card-virtio
+
+  net-driver-bind-none : Integer -> Integer
+  net-driver-bind-none (unused) =
+    let cleared = poke-32 (net-driver-cb + net-driver-off-mmio) 0 0
+    in let selected = poke-32 net-driver-cb 0 net-card-none
+    in net-card-none
+
   net-driver-bring-up : [Network.Read] Integer
   net-driver-bring-up =
-    let card = when e1000-find pci-scan-all
-      is Just (d) -> net-driver-bind-e1000 (e1000-init d)
-      is None -> net-card-ne2k
+    let scan = pci-scan-all
+    in let card = when vnx-find scan
+      is Just (d) -> when vnx-init d
+        is Ok (base) -> net-driver-bind-virtio base
+        is Err (reason) -> net-driver-bind-none 0
+      is None -> when e1000-find scan
+        is Just (d) -> net-driver-bind-e1000 (e1000-init d)
+        is None -> net-card-ne2k
     in act
-     p <- net-driver-calibrate
+     p <- if card == net-card-none then net-driver-poll-fallback else net-driver-calibrate
      let w = poke-32 net-driver-poll-cell 0 p
      in card
     end
@@ -146,19 +168,20 @@ Section: The Poll Clock
     else v
 
   net-driver-card-name : Integer -> Text
-  net-driver-card-name (c) = if c == net-card-e1000 then "e1000" else "ne2000"
+  net-driver-card-name (c) = if c == net-card-e1000 then "e1000" else if c == net-card-virtio then "virtio-net" else if c == net-card-none then "unavailable" else "ne2000"
 
 Section: Station Address
 
- It is read live off RAL/RAH rather than cached in the control block. A
- cached copy would be one more thing that can disagree with the hardware,
- and the two register reads cost less than the six-byte list they answer.
+ e1000 reads RAL/RAH live. Virtio uses the MAC sampled under the device
+ configuration generation during initialization.
 
   net-driver-ne2k-mac : List Integer = [82, 84, 0, 18, 52, 86]
 
   net-driver-mac : List Integer
   net-driver-mac =
-    if net-driver-active == net-card-e1000
+    if net-driver-active == net-card-virtio then vnx-mac (net-driver-cell net-driver-off-mmio)
+    else if net-driver-active == net-card-none then []
+    else if net-driver-active == net-card-e1000
     then e1000-read-mac (net-driver-cell net-driver-off-mmio)
     else net-driver-ne2k-mac
 
@@ -186,7 +209,9 @@ Section: Send
 
   net-driver-send-frame : List Integer -> [Network.Write] Integer
   net-driver-send-frame (frame) =
-    if net-driver-active == net-card-e1000
+    if net-driver-active == net-card-virtio then vnx-send (net-driver-cell net-driver-off-mmio) frame
+    else if net-driver-active == net-card-none then 0
+    else if net-driver-active == net-card-e1000
     then e1000-send-frame net-driver-e1000-device frame
     else ne2k-send-frame frame
 
@@ -207,7 +232,9 @@ Section: Receive
 
   net-driver-recv-into : List Integer -> [Network.Read] Integer
   net-driver-recv-into (dst) =
-    if net-driver-active == net-card-e1000
+    if net-driver-active == net-card-virtio then vnx-recv-into (net-driver-cell net-driver-off-mmio) dst
+    else if net-driver-active == net-card-none then 0
+    else if net-driver-active == net-card-e1000
     then (e1000-poll-into
            (net-driver-cell net-driver-off-mmio)
            (net-driver-cell net-driver-off-rx-ring)
@@ -218,7 +245,9 @@ Section: Receive
 
   net-driver-recv-frame : [Network.Read] List Integer
   net-driver-recv-frame =
-    if net-driver-active == net-card-e1000
+    if net-driver-active == net-card-virtio then vnx-recv-frame (net-driver-cell net-driver-off-mmio)
+    else if net-driver-active == net-card-none then []
+    else if net-driver-active == net-card-e1000
     then (e1000-poll-raw
            (net-driver-cell net-driver-off-mmio)
            (net-driver-cell net-driver-off-rx-ring)

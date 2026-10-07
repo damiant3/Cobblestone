@@ -104,7 +104,8 @@ Section: Literal Range
    if is-hex-literal-text val then False
    else let len = text-length val
    in let start = int-lit-first-sig val 0 len
-   in int-lit-sig-digits val start len 0 == 19 & int-lit-exceeds val start len "9223372036854775807" 0 & int-lit-exceeds val start len "9223372036854775808" 0 == False
+   in if int-lit-sig-digits val start len 0 /= 19 then False
+   else int-lit-exceeds val start len "9223372036854775807" 0 & int-lit-exceeds val start len "9223372036854775808" 0 == False
 
   is-int-min-literal : AExpr -> Boolean
   is-int-min-literal (e) =
@@ -120,7 +121,8 @@ Section: Literal Range
    when kind
     is IntLit ->
      if int-lit-out-of-range val
-     then __record-set st "bag" (bag-add (st.bag) (make-error cdx-int-literal-overflow ("Integer literal '" & val & "' exceeds 64 bits (decimal max 9223372036854775807, hash form max 16 hex digits) and would be silently truncated") span))
+     then let lit-msg = "Integer literal '" & val & "' exceeds 64 bits (decimal max 9223372036854775807, hash form max 16 hex digits) and would be silently truncated"
+       in __record-set st "bag" (bag-add (st.bag) (make-error cdx-int-literal-overflow lit-msg span))
      else st
     is otherwise -> st
 
@@ -164,9 +166,12 @@ Section: Infer Name
      let raw = env-lookup env resolved
      in let (inst-ty0, inst-st) = instantiate-type st raw
      in let (inst-ty, opened-st0) = open-spine-rows inst-st inst-ty0
-     in let opened-st = if span-length span == 0 & name == "__dderiv-Eq" then record-eq-site opened-st0 span (peel-fun-param inst-ty) else opened-st0
+     in let opened-st = if span-length span == 0 & name == "__dderiv-Eq"
+       then record-eq-site opened-st0 span (peel-fun-param inst-ty)
+       else opened-st0
      in let warned-st = if name == "assume"
-      then __record-set opened-st "bag" (bag-add (opened-st.bag) (make-warning cdx-axiom-assumed "Proof uses 'assume': this equality is asserted as an unproven axiom, not checked. It is part of the trust trail." span))
+      then let ax-msg = "Proof uses 'assume': this equality is asserted as an unproven axiom, not checked. It is part of the trust trail."
+        in __record-set opened-st "bag" (bag-add (opened-st.bag) (make-warning cdx-axiom-assumed ax-msg span))
       else opened-st
      in when inst-ty
         is EffectfulTy (effs) (sc) (inner) -> CheckResult {
@@ -338,8 +343,13 @@ Section: Infer Binary
   vec-eq-error : UnificationState, CodexType, SourceSpan -> UnificationState
   vec-eq-error (st) (ty) (span) =
    when strip-unit-ty ty
-    is VectorTy (n) (t) -> if is-real-type (deep-resolve st t) then add-unify-error st cdx-real-equality-banned vec-eq-refusal span else add-unify-error st cdx-structural-eq-withheld vec-eq-refusal span
+    is VectorTy (n) (t) ->
+      if is-real-type (deep-resolve st t) then add-unify-error st cdx-real-equality-banned vec-eq-refusal span
+      else add-unify-error st cdx-structural-eq-withheld vec-eq-refusal span
     is otherwise -> add-unify-error st cdx-structural-eq-withheld vec-eq-refusal span
+
+  arith-numeric-msg : Text
+  arith-numeric-msg = "Arithmetic operator requires Integer or Real"
 
   vec-eq-refusal : Text
   vec-eq-refusal = "This packed Vector comparison has no lane-wise form: == and /= are lane-wise on Vector 2 Integer, and ~ and ~0 on Vector 2 Real and Vector 4 (Real approximate). Real lanes compare with ~ or ~0, never ==; a 256-bit vector has none of the four yet."
@@ -350,7 +360,8 @@ Section: Infer Binary
     is OpAdd | OpSub | OpMul | OpDiv | OpPow -> infer-arithmetic st lt rt span
     is OpEq | OpNotEq ->
      let result = infer-comparison (record-eq-site st span lt) lt rt span
-     in if is-vector-ty (deep-resolve (result.state) lt) & text-length (vec-cmp-builtin op (deep-resolve (result.state) lt)) == 0
+     in let lt-res = deep-resolve (result.state) lt
+     in if is-vector-ty lt-res & text-length (vec-cmp-builtin op lt-res) == 0
       then CheckResult {
        inferred-type = result.inferred-type,
        effect-row = empty-row,
@@ -380,7 +391,8 @@ Section: Infer Binary
       else result
     is OpApproxEq | OpApproxEqExact ->
      let result = infer-comparison st lt rt span
-     in if is-vector-ty (deep-resolve (result.state) lt) & text-length (vec-cmp-builtin op (deep-resolve (result.state) lt)) == 0
+     in let lt-res = deep-resolve (result.state) lt
+     in if is-vector-ty lt-res & text-length (vec-cmp-builtin op lt-res) == 0
       then CheckResult {
        inferred-type = result.inferred-type,
        effect-row = empty-row,
@@ -421,7 +433,7 @@ Section: Infer Binary
       is UnitTy (rn) (ri) ->
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
-                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric arith-numeric-msg span
        in CheckResult { inferred-type = lt, effect-row = empty-row, state = st2 }
       is otherwise ->
        let (_, u-st) = unify st li rt span
@@ -434,7 +446,7 @@ Section: Infer Binary
       is otherwise ->
        let (_, u-st) = unify st lt rt span
        in let st2 = if is-arithmetic-type lt & is-arithmetic-type rt then u-st
-                    else add-unify-error u-st cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Real" span
+                    else add-unify-error u-st cdx-arithmetic-requires-numeric arith-numeric-msg span
        in CheckResult { inferred-type = arith-result-ty lt rt, effect-row = empty-row, state = st2 }
 
   is-arithmetic-type : CodexType -> Boolean
@@ -555,7 +567,8 @@ Section: Infer Let
    if i >= len then st
    else warn-unused-partials (warn-one-partial st env bindings body i len False) env bindings body (i + 1) len
 
-  warn-unused-partials-act : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, Integer, Integer -> UnificationState
+  warn-unused-partials-act : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, Integer,
+    Integer -> UnificationState
   warn-unused-partials-act (st) (env) (bindings) (body) (stmts) (si) (slen) (i) (len) =
    if i >= len then st
    else let used-after = uses-name-in-stmts stmts si slen ((list-at bindings i).name.value)
@@ -574,7 +587,9 @@ Section: Infer Let
    else if is-fun-ty (env-lookup env nm) then
     if uses-name-in-binds bindings (i + 1) len nm then st
     else if aexpr-uses-name body nm then st
-    else __record-set st "bag" (bag-add (st.bag) (make-warning cdx-partial-application-unused ("'" & nm & "' is bound to a partial application of '" & head & "' and nothing reads '" & nm & "', so the call is never completed and its effects never happen. Supply the missing arguments, or drop the binding.") (b.span)))
+    else let pa0 = "'" & nm & "' is bound to a partial application of '" & head & "' and nothing reads '" & nm
+    in let pa1 = pa0 & "', so the call is never completed and its effects never happen. Supply the missing arguments, or drop the binding."
+    in __record-set st "bag" (bag-add (st.bag) (make-warning cdx-partial-application-unused pa1 (b.span)))
    else st
 
   is-fun-ty : CodexType -> Boolean
@@ -644,7 +659,8 @@ Section: Infer Let
    if st.effect-exempt then st
    else let r = resolve-row st row
    in if list-length (r.labels) == 0 then st
-   else add-unify-error st cdx-let-binds-effectful-value ("let-binding '" & name & "' to an effectful value is not allowed outside an act-bind. Use '" & name & " <- ...' inside an act block.") span
+   else let eff-head = "let-binding '" & name & "' to an effectful value is not allowed outside an act-bind. Use '"
+   in add-unify-error st cdx-let-binds-effectful-value (eff-head & name & " <- ...' inside an act block.") span
 
 Section: Infer Lambda
 
@@ -734,7 +750,8 @@ Section: Class Instance Check
      add-unify-error st cdx-no-class-instance ("No " & cls & " instance for a function value. A call given fewer arguments than the definition declares is a partial application, not a result, so this is usually a missing argument at the call rather than a missing instance on a type") span
     is otherwise ->
      if class-op-ok env cls rty then st
-     else add-unify-error st cdx-no-class-instance ("No " & cls & " instance for type '" & nominal-type-name rty & "'; derive " & cls & " on the type or convert manually") span
+     else let ni-head = "No " & cls & " instance for type '" & nominal-type-name rty
+     in add-unify-error st cdx-no-class-instance (ni-head & "'; derive " & cls & " on the type or convert manually") span
 
   check-class-op-app : UnificationState, TypeEnv, AExpr, CodexType, SourceSpan -> UnificationState
   check-class-op-app (st) (env) (func) (arg-ty) (span) =
@@ -756,7 +773,8 @@ Section: Infer Application
    in let (ret-ty, ret-st) = fresh-and-advance (ar.state)
    in let (call-row-id, row-st) = fresh-row-id ret-st
    in let passed-ty = widen-arg-to-param row-st (fr.inferred-type) (ar.inferred-type)
-   in let (ok, r-st) = unify row-st (fr.inferred-type) (deck-record (FunTy passed-ty (deck-record (row-var call-row-id)) ret-ty)) span
+   in let call-ty = deck-record (FunTy passed-ty (deck-record (row-var call-row-id)) ret-ty)
+   in let (ok, r-st) = unify row-st (fr.inferred-type) call-ty span
    in let st-cls = check-class-op-app r-st env func (ar.inferred-type) span
    in let st-arg = lint-arg-narrowing st-cls env func (fr.inferred-type) arg (ar.inferred-type) span
    in let st-rs = lint-record-set st-arg env func arg (ar.inferred-type) ret-ty span
@@ -789,7 +807,10 @@ Section: Infer Application
      in if list-length (pr.labels) == 0 then arg-ty
         else if list-length (arr.labels) == 0 then arg-ty
         else if labels-need-widening (pr.labels) (arr.labels) 0 (list-length (arr.labels)) == False then arg-ty
-        else deck-record (FunTy ap (make-row (widen-labels (pr.labels) (arr.labels) 0 (list-length (arr.labels)) []) (arr.tail-name) (arr.tail-id)) aret)
+        else deck-record (
+          let wide-labels = widen-labels (pr.labels) (arr.labels) 0 (list-length (arr.labels)) []
+          in FunTy ap (make-row wide-labels (arr.tail-name) (arr.tail-id)) aret
+        )
     is otherwise -> arg-ty
 
   labels-need-widening : List EffectLabel, List EffectLabel, Integer, Integer -> Boolean
@@ -1161,6 +1182,7 @@ Section: Lint value-expression range analysis
    else if name == "text-length" then (0, 4294967295)
    else if name == "__deck-pos" then (0, 4294967295)
    else if name == "__heap-save" then (0, 4294967295)
+   else if name == "__stack-save" then (0, 4294967295)
    else if name == "__buf-write-bytes" then (0, 4294967295)
    else (i64-min, i64-max)
 
@@ -1327,13 +1349,16 @@ Section: Lint value-expression range analysis
    then aexpr-proven-range (arm-refined-env env rf (rf.else-iv) el) el
    else if text-length (rf.target) > 0 & iv-is-empty (rf.else-iv)
    then aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t
-   else proven-range-union (aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t) (aexpr-proven-range (arm-refined-env env rf (rf.else-iv) el) el)
+   else let then-range = aexpr-proven-range (arm-refined-env env rf (rf.then-iv) t) t
+   in proven-range-union then-range (aexpr-proven-range (arm-refined-env env rf (rf.else-iv) el) el)
 
   lint-narrowing-check : UnificationState, TypeEnv, AExpr, CodexType, CodexType, SourceSpan, Text -> UnificationState
   lint-narrowing-check (st) (env) (value-arg) (value-ty) (field-ty) (span) (descriptor) =
    if is-narrow-call value-arg then st
    else when field-ty
-    is UnitTy (u-name) (u-inner) -> lint-narrowing-check st env (unit-ctor-arg env value-arg (u-name.value)) (strip-unit-ty (deep-resolve st value-ty)) u-inner span descriptor
+    is UnitTy (u-name) (u-inner) ->
+      let unit-arg = unit-ctor-arg env value-arg (u-name.value)
+      in lint-narrowing-check st env unit-arg (strip-unit-ty (deep-resolve st value-ty)) u-inner span descriptor
     is IntegerTy (f-lo) (f-hi) (f-mode) ->
      when f-mode
       is OvError ->
@@ -1343,7 +1368,10 @@ Section: Lint value-expression range analysis
           is IntLit ->
            let n = lit-text-to-integer val-text
            in if n >= f-lo & n <= f-hi then st
-           else __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set-literal (descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " but assigned literal " & integer-to-text n & " is out of range") span))
+           else let nr-bound = descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi
+           in let nr0 = nr-bound & " but assigned literal " & integer-to-text n
+           in let nr1 = nr0 & " is out of range"
+           in __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set-literal nr1 span))
           is otherwise -> st
         is otherwise ->
          let resolved-vty = deep-resolve st value-ty
@@ -1364,13 +1392,19 @@ Section: Lint value-expression range analysis
       is otherwise -> e
     is otherwise -> e
 
-  lint-narrowing-prove : UnificationState, TypeEnv, AExpr, Integer, Integer, Integer, Integer, SourceSpan, Text -> UnificationState
+  lint-narrowing-prove : UnificationState, TypeEnv, AExpr, Integer, Integer, Integer, Integer, SourceSpan, Text ->
+    UnificationState
   lint-narrowing-prove (st) (env) (value-arg) (f-lo) (f-hi) (v-lo) (v-hi) (span) (descriptor) =
    let (p-lo, p-hi) = aexpr-proven-range env value-arg
    in if p-lo >= f-lo & p-hi <= f-hi
    then if p-lo == p-hi then st
-    else __record-set st "bag" (bag-add (st.bag) (make-info cdx-narrowing-proven (descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " and the value expression is proven within " & integer-to-text p-lo & ".." & integer-to-text p-hi & "; bounds check elided") span))
-   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set (descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi & " but the value's proven range is " & integer-to-text p-lo & ".." & integer-to-text p-hi & "; prove the value's range or assert it with __narrow, which traps at runtime if violated") span))
+    else let np0 = descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi
+    in let np1 = np0 & " and the value expression is proven within " & integer-to-text p-lo & ".." & integer-to-text p-hi
+    in __record-set st "bag" (bag-add (st.bag) (make-info cdx-narrowing-proven (np1 & "; bounds check elided") span))
+   else let nf0 = descriptor & " has bound " & integer-to-text f-lo & ".." & integer-to-text f-hi
+   in let nf1 = nf0 & " but the value's proven range is " & integer-to-text p-lo & ".." & integer-to-text p-hi
+   in let nf2 = nf1 & "; prove the value's range or assert it with __narrow, which traps at runtime if violated"
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set nf2 span))
   infer-int-lit-arg : UnificationState, CodexType, Text, LiteralKind -> CheckResult
   infer-int-lit-arg (st) (func-ty) (val) (kind) =
    when kind
@@ -1395,7 +1429,10 @@ Section: Infer List
   infer-list : UnificationState, TypeEnv, List AExpr, SourceSpan, Integer -> CheckResult
   infer-list (st0) (env) (elems) (span) (depth) =
    let st = if list-length elems > max-list-literal-elems
-      then __record-set st0 "bag" (bag-add (st0.bag) (make-error cdx-list-literal-too-large ("List literal has " & integer-to-text (list-length elems) & " elements; at most " & integer-to-text max-list-literal-elems & " are accepted. Split it across several definitions and join them.") span))
+      then let ll-count = "List literal has " & integer-to-text (list-length elems)
+      in let ll0 = ll-count & " elements; at most " & integer-to-text max-list-literal-elems
+        in let ll1 = ll0 & " are accepted. Split it across several definitions and join them."
+        in __record-set st0 "bag" (bag-add (st0.bag) (make-error cdx-list-literal-too-large ll1 span))
       else st0
    in if list-length elems == 0
     then
@@ -1406,14 +1443,16 @@ Section: Infer List
       state = record-empty-list (record-expr-type fr-st span fr-ty) span fr-ty
      }
     else let first = infer-expr-at st env (list-at elems 0) (depth + 1)
-    in let (elems-row, st2) = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems) (first.effect-row) depth
+    in let first-ty = first.inferred-type
+    in let (elems-row, st2) = unify-list-elems (first.state) env elems first-ty 1 (list-length elems) (first.effect-row) depth
     in CheckResult {
       inferred-type = deck-record (ListTy (first.inferred-type)),
       effect-row = elems-row,
       state = st2
      }
 
-  unify-list-elems : UnificationState, TypeEnv, List AExpr, CodexType, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  unify-list-elems : UnificationState, TypeEnv, List AExpr, CodexType, Integer, Integer, EffectRow, Integer ->
+    (EffectRow, UnificationState)
   unify-list-elems (st) (env) (elems) (elem-ty) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let e = list-at elems i
@@ -1441,7 +1480,8 @@ Section: Infer Match
    let sr = infer-expr-at st env scrutinee (depth + 1)
    in let (fr-ty, fr-st) = fresh-and-advance (sr.state)
    in let gadt = is-gadt-type fr-st (sr.inferred-type)
-   in let (arms-row, st2) = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 (list-length arms) gadt (sr.effect-row) depth
+   in let arm-count = list-length arms
+   in let (arms-row, st2) = infer-match-arms fr-st env (sr.inferred-type) fr-ty arms 0 arm-count gadt (sr.effect-row) depth
    in let st3 = check-match-exhaustiveness st2 (sr.inferred-type) arms (aexpr-span scrutinee)
    in CheckResult {
     inferred-type = fr-ty,
@@ -1449,11 +1489,13 @@ Section: Infer Match
     state = st3
    }
 
-  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer, Boolean, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-match-arms : UnificationState, TypeEnv, CodexType, CodexType, List AMatchArm, Integer, Integer, Boolean, EffectRow,
+    Integer -> (EffectRow, UnificationState)
   infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) (is-gadt) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let arm = list-at arms i
-   in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len acc-row depth else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt acc-row depth
+   in if is-gadt then infer-gadt-arm st env scrut-ty result-ty arm arms (i + 1) len acc-row depth
+   else infer-plain-arm st env scrut-ty result-ty arm arms (i + 1) len is-gadt acc-row depth
 
   is-trivial-guard : AExpr -> Boolean
   is-trivial-guard (g) =
@@ -1475,7 +1517,8 @@ Section: Infer Match
       is otherwise -> st)
     is otherwise -> st
 
-  infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-plain-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, Boolean,
+    EffectRow, Integer -> (EffectRow, UnificationState)
   infer-plain-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (is-gadt) (acc-row) (depth) =
    let st-g = check-list-arm-guard st scrut-ty arm
    in let pr = bind-pattern st-g env (arm.pattern) scrut-ty
@@ -1487,7 +1530,8 @@ Section: Infer Match
    in let (acc3, acc-st2) = row-union acc-st acc2 (br.effect-row)
    in infer-match-arms acc-st2 env scrut-ty result-ty arms next len is-gadt acc3 depth
 
-  infer-gadt-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-gadt-arm : UnificationState, TypeEnv, CodexType, CodexType, AMatchArm, List AMatchArm, Integer, Integer, EffectRow,
+    Integer -> (EffectRow, UnificationState)
   infer-gadt-arm (st) (env) (scrut-ty) (result-ty) (arm) (arms) (next) (len) (acc-row) (depth) =
    let saved = snapshot-substitutions st
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
@@ -1520,7 +1564,9 @@ Section: Infer Match
    in let ci = first-unguarded-catchall arms 0 len
    in if ci < 0 then st
    else if ci + 1 >= len then st
-   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-unreachable-match-arm "This arm cannot be reached: an earlier arm matches every remaining value." ((list-at arms (ci + 1)).span)))
+   else let unreach-msg = "This arm cannot be reached: an earlier arm matches every remaining value."
+   in let unreach-span = (list-at arms (ci + 1)).span
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-unreachable-match-arm unreach-msg unreach-span))
 
   check-match-ctor-coverage : UnificationState, CodexType, List AMatchArm, SourceSpan -> UnificationState
   check-match-ctor-coverage (st) (scrut-ty) (arms) (span) =
@@ -1534,7 +1580,9 @@ Section: Infer Match
      else let covered = collect-covered-ctors arms 0 (list-length arms) []
       in let missing = find-missing-ctors ctors covered 0 (list-length ctors) []
       in if list-length missing == 0 then st
-         else __record-set st "bag" (bag-add (st.bag) (make-error cdx-non-exhaustive-match ("Non-exhaustive match on '" & name.value & "': missing " & format-missing-ctors missing 0 (list-length missing) "") span))
+         else let nx-missing = format-missing-ctors missing 0 (list-length missing) ""
+         in let nx-msg = "Non-exhaustive match on '" & name.value & "': missing " & nx-missing
+         in __record-set st "bag" (bag-add (st.bag) (make-error cdx-non-exhaustive-match nx-msg span))
     is IntegerTy (lo) (hi) (om) -> check-literal-coverage st arms span "Integer" lo hi
     is TextTy -> check-literal-coverage st arms span "Text" 1 0
     is CharTy -> check-literal-coverage st arms span "Char" 1 0
@@ -1552,7 +1600,8 @@ Section: Infer Match
    in if match-has-catchall arms 0 len then st
    else if tyname == "Boolean" & lit-arm-has arms "True" 0 len & lit-arm-has arms "False" 0 len then st
    else if tyname == "Integer" & int-lits-cover arms lo hi then st
-   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-non-exhaustive-match ("Non-exhaustive match on '" & tyname & "': a literal match needs a catch-all arm") span))
+   else let lit-nx-msg = "Non-exhaustive match on '" & tyname & "': a literal match needs a catch-all arm"
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-non-exhaustive-match lit-nx-msg span))
 
   int-lits-cover : List AMatchArm, Integer, Integer -> Boolean
   int-lits-cover (arms) (lo) (hi) =
@@ -1642,7 +1691,9 @@ Section: Infer Match
   bind-ctor-pattern-generic : UnificationState, TypeEnv, Name, List APat, CodexType, SourceSpan -> PatBindResult
   bind-ctor-pattern-generic (st) (env) (ctor-name) (sub-pats) (ty) (s) =
    if env-has env (ctor-name.value) == False
-   then let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor ("Pattern constructor '" & ctor-name.value & "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type.") s))
+   then let pc-tail = "' is not in scope; this arm could never match. Check the constructor names of the scrutinee's type."
+   in let pc-msg = "Pattern constructor '" & ctor-name.value & pc-tail
+   in let err-st = __record-set st "bag" (bag-add (st.bag) (make-error cdx-unknown-pattern-ctor pc-msg s))
     in bind-ctor-sub-patterns err-st env sub-pats ErrorTy 0 (list-length sub-pats)
    else
     let (ctor-ty, ctor-st) = instantiate-type st (env-lookup env (ctor-name.value))
@@ -1670,11 +1721,13 @@ Section: Infer Match
    then if list-length sub-pats == 0 then PatBindResult { state = st, env = env }
     else PatBindResult { state = list-pattern-shape-error st "Nil takes no fields" s, env = env }
    else if list-length sub-pats /= 2
-    then PatBindResult { state = list-pattern-shape-error st "Cons over the builtin List takes exactly two fields, the head and the tail" s, env = env }
+    then let cons-msg = "Cons over the builtin List takes exactly two fields, the head and the tail"
+    in PatBindResult { state = list-pattern-shape-error st cons-msg s, env = env }
    else if list-subpat-simple (list-at sub-pats 0) & list-subpat-simple (list-at sub-pats 1)
     then let pr0 = bind-pattern st env (list-at sub-pats 0) elem
      in bind-pattern (pr0.state) (pr0.env) (list-at sub-pats 1) (deck-record (ListTy elem))
-    else PatBindResult { state = list-pattern-shape-error st "a Cons field over the builtin List must be a name or _; bind the tail and match it in a nested when" s, env = env }
+    else let cf-msg = "a Cons field over the builtin List must be a name or _; bind the tail and match it in a nested when"
+    in PatBindResult { state = list-pattern-shape-error st cf-msg s, env = env }
 
   bind-ctor-sub-patterns : UnificationState, TypeEnv, List APat, CodexType, Integer, Integer -> PatBindResult
   bind-ctor-sub-patterns (st) (env) (sub-pats) (ctor-ty) (i) (len) =
@@ -1728,7 +1781,8 @@ Section: Infer Act
    in let env2 = env-bind-local env (name.value) (deep-resolve acc-st (er.inferred-type))
    in infer-act-loop acc-st env2 stmts (i + 1) len (er.inferred-type) acc2 depth
 
-  infer-act-let : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, EffectRow, Integer -> CheckResult
+  infer-act-let : UnificationState, TypeEnv, List ALetBind, AExpr, List AActStmt, Integer, Integer, EffectRow, Integer ->
+    CheckResult
   infer-act-let (st) (env) (binds) (body) (stmts) (i) (len) (acc-row) (depth) =
    let lr = infer-let-bindings st env binds 0 (list-length binds) empty-row depth
    in let (acc2, acc-st) = row-union (lr.state) acc-row (lr.binds-row)
@@ -1776,11 +1830,14 @@ Section: Infer Expression (dispatch)
 
   infer-expr-at : UnificationState, TypeEnv, AExpr, Integer -> CheckResult
   infer-expr-at (st) (env) (expr) (depth) =
-   if depth >= max-recursion-depth then CheckResult {
-    inferred-type = ErrorTy,
-    effect-row = empty-row,
-    state = add-unify-error st cdx-resource-exhausted ("compiler resource exhausted in type-checker.infer-expr (budget " & integer-to-text max-recursion-depth & ")") (aexpr-span expr)
-   }
+   if depth >= max-recursion-depth then
+     let fuel-head = "compiler resource exhausted in type-checker.infer-expr (budget "
+     in let fuel-msg = fuel-head & integer-to-text max-recursion-depth & ")"
+     in CheckResult {
+      inferred-type = ErrorTy,
+      effect-row = empty-row,
+      state = add-unify-error st cdx-resource-exhausted fuel-msg (aexpr-span expr)
+     }
    else let r = when expr
          is ALitExpr (val) (kind) (s) -> infer-literal (check-lit-range st val kind s) kind
          is ANameExpr (name) (s) -> infer-name st env (name.value) s
@@ -1823,7 +1880,8 @@ Section: Infer Expression (dispatch)
            is RecordTy (rname) (rargs) (rfields) ->
             let ftype = lookup-record-field rfields (field.value)
           in let st2 = when ftype
-               is ErrorTy -> add-unify-error (r.state) cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
+               is ErrorTy ->
+                add-unify-error (r.state) cdx-unknown-record-field ("Record type has no field '" & field.value & "'") s
                is otherwise -> r.state
           in CheckResult {
              inferred-type = ftype,
@@ -1841,7 +1899,9 @@ Section: Infer Expression (dispatch)
                       in (mf-ty, record-field-access-type mf-st s mf-ty)
                  else (subst-ftype, r.state)
           in let st2 = when raw-ftype
-                 is ErrorTy -> add-unify-error fl-st cdx-unknown-record-field ("Record type '" & cname.value & "' has no field '" & field.value & "'") s
+                 is ErrorTy ->
+                  let nf-msg = "Record type '" & cname.value & "' has no field '" & field.value & "'"
+                  in add-unify-error fl-st cdx-unknown-record-field nf-msg s
                  is otherwise -> fl-st
           in CheckResult {
                inferred-type = ftype,
@@ -1873,7 +1933,8 @@ Section: Infer Expression (dispatch)
           let ctor-raw = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
           in let (inst-ty, inst-st) = instantiate-type st ctor-raw
           in let result-type = strip-fun-args inst-ty
-          in let (fields-row, st2) = infer-and-unify-record-fields inst-st env fields result-type 0 (list-length fields) empty-row depth
+          in let nfields = list-length fields
+          in let (fields-row, st2) = infer-and-unify-record-fields inst-st env fields result-type 0 nfields empty-row depth
           in let st3 = check-mutation-in-ctor-fields (record-expr-type st2 s result-type) fields 0 (list-length fields)
           in let st4 = check-record-complete st3 fields result-type s
           in let st5 = if is-synthetic-span s == False & method-local-dict-p env (name.value)
@@ -1894,7 +1955,9 @@ Section: Infer Expression (dispatch)
                   in let ext = make-row [deck-record (EffectLabel { name = Name { value = eff.value }, scope = "" })] "" tp
                   in let (_, u-st) = unify-row tp-st (body-r.effect-row) ext s
                   in (deck-record (row-var tp), u-st)
-             else (body-r.effect-row, __record-set (body-r.state) "bag" (bag-add ((body-r.state).bag) (make-warning cdx-handler-unused ("handler for '" & eff.value & "' encloses a body whose type performs no " & eff.value) s)))
+             else let hu-msg = "handler for '" & eff.value & "' encloses a body whose type performs no " & eff.value
+             in let hu-bag = bag-add ((body-r.state).bag) (make-warning cdx-handler-unused hu-msg s)
+             in (body-r.effect-row, __record-set (body-r.state) "bag" hu-bag)
           in let (handle-row, cl-st) = infer-handle-clauses after-st env clauses 0 (list-length clauses) after-row depth
           in CheckResult {
            inferred-type = body-r.inferred-type,
@@ -1928,9 +1991,14 @@ Section: Infer Expression (dispatch)
           in let marker-name = "__mutable-" & type-name
           in let mut-ok = env-has env marker-name
           in let st-mut = if unit-recv | mut-ok then st-unit
-           else add-unify-error st-unit cdx-field-assign-immutable ("Field assignment requires a mutable record; '" & type-name & "' is immutable") s
+           else let fai-msg = "Field assignment requires a mutable record; '" & type-name & "' is immutable"
+           in add-unify-error st-unit cdx-field-assign-immutable fai-msg s
           in let st-obs = if unit-recv | field-assign-observable env rec then st-mut
-           else add-unify-error st-mut cdx-field-assign-unobservable ("Field assignment to '" & (field-assign-receiver-name rec) & "' cannot be observed: it names a definition, not a binding, so each mention builds a new '" & type-name & "' and this write is discarded. Bind the record with a let and thread it, or make the definition take the record as a parameter") s
+           else let fa0 = "Field assignment to '" & (field-assign-receiver-name rec)
+           in let fa1a = fa0 & "' cannot be observed: it names a definition, not a binding, so each mention builds a new '"
+           in let fa1 = fa1a & type-name
+           in let fa2 = fa1 & "' and this write is discarded. Bind the record with a let and thread it, or make the definition take the record as a parameter"
+           in add-unify-error st-mut cdx-field-assign-unobservable fa2 s
           in let field-ty = when resolved
            is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (field.value)
            is ConstructedTy (cname) (cargs) ->
@@ -1967,7 +2035,10 @@ Section: Infer Expression (dispatch)
          is AInductionExpr (scrut) (arms) (s) -> CheckResult {
           inferred-type = ProofTy,
           effect-row = empty-row,
-          state = __record-set st "bag" (bag-add (st.bag) (make-warning cdx-induction-unverified "induction proof accepted as an unproven axiom; structural subgoal checking did not apply (proof-system Stage 5)" s))
+          state = (
+            let iu-msg = "induction proof accepted as an unproven axiom; structural subgoal checking did not apply (proof-system Stage 5)"
+            in __record-set st "bag" (bag-add (st.bag) (make-warning cdx-induction-unverified iu-msg s))
+          )
          }
    in if r.state.fidelity then record-fid-check r expr else r
 
@@ -2063,7 +2134,8 @@ Section: Infer Expression (dispatch)
     is AApplyExpr (f) (a) (s) -> aexpr-mentions-record-set f | aexpr-mentions-record-set a
     is ABinaryExpr (l) (op) (r) (s) -> aexpr-mentions-record-set l | aexpr-mentions-record-set r
     is AIfExpr (c) (t) (el) (s) -> aexpr-mentions-record-set c | aexpr-mentions-record-set t | aexpr-mentions-record-set el
-    is ALetExpr (binds) (body) (s) -> aexpr-mentions-record-set body | aexpr-list-mentions-record-set-binds binds 0 (list-length binds)
+    is ALetExpr (binds) (body) (s) ->
+      aexpr-mentions-record-set body | aexpr-list-mentions-record-set-binds binds 0 (list-length binds)
     is AMatchExpr (scrut) (arms) (s) -> aexpr-mentions-record-set scrut
     is AFieldAccess (obj) (f) (s) -> aexpr-mentions-record-set obj
     is otherwise -> False
@@ -2096,7 +2168,8 @@ Section: Infer Expression (dispatch)
    in if effect-covered-by [Name { value = name }] ((l.name).value) then row-keep-uncovered ls name (i + 1) len acc
       else row-keep-uncovered ls name (i + 1) len (list-push acc l)
 
-  infer-handle-clauses : UnificationState, TypeEnv, List AHandleClause, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-handle-clauses : UnificationState, TypeEnv, List AHandleClause, Integer, Integer, EffectRow, Integer ->
+    (EffectRow, UnificationState)
   infer-handle-clauses (st) (env) (clauses) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let c = list-at clauses i
@@ -2180,7 +2253,8 @@ Section: Infer Expression (dispatch)
   record-field-unknown : UnificationState, CodexType, Text, SourceSpan -> UnificationState
   record-field-unknown (st) (record-ty) (fname) (s) =
    when record-ty
-    is RecordTy (rname) (rargs) (rfields) -> add-unify-error st cdx-unknown-record-field ("Record '" & rname.value & "' has no field '" & fname & "'") s
+    is RecordTy (rname) (rargs) (rfields) ->
+      add-unify-error st cdx-unknown-record-field ("Record '" & rname.value & "' has no field '" & fname & "'") s
     is otherwise -> st
 
   check-record-complete : UnificationState, List AFieldExpr, CodexType, SourceSpan -> UnificationState
@@ -2189,12 +2263,15 @@ Section: Infer Expression (dispatch)
     is RecordTy (rname) (rargs) (rfields) -> check-record-missing st (rname.value) rfields given 0 (list-length rfields) s
     is otherwise -> st
 
-  check-record-missing : UnificationState, Text, List RecordField, List AFieldExpr, Integer, Integer, SourceSpan -> UnificationState
+  check-record-missing : UnificationState, Text, List RecordField, List AFieldExpr, Integer, Integer, SourceSpan ->
+    UnificationState
   check-record-missing (st) (tname) (rfields) (given) (i) (len) (s) =
    if i == len then st
    else let rf = list-at rfields i
    in let st2 = if given-names-field given (rf.name.value) 0 (list-length given) then st
-      else add-unify-error st cdx-missing-record-field ("Record '" & tname & "' is built without a value for field '" & (rf.name.value) & "'. A field left out of a literal is not left alone -- it is zero.") s
+      else let mf0 = "Record '" & tname & "' is built without a value for field '" & (rf.name.value)
+      in let mf1 = mf0 & "'. A field left out of a literal is not left alone -- it is zero."
+      in add-unify-error st cdx-missing-record-field mf1 s
    in check-record-missing st2 tname rfields given (i + 1) len s
 
   given-names-field : List AFieldExpr, Text, Integer, Integer -> Boolean
@@ -2203,7 +2280,8 @@ Section: Infer Expression (dispatch)
    else if ((list-at given i).name).value == n then True
    else given-names-field given n (i + 1) len
 
-  infer-and-unify-record-fields : UnificationState, TypeEnv, List AFieldExpr, CodexType, Integer, Integer, EffectRow, Integer -> (EffectRow, UnificationState)
+  infer-and-unify-record-fields : UnificationState, TypeEnv, List AFieldExpr, CodexType, Integer, Integer, EffectRow, Integer ->
+    (EffectRow, UnificationState)
   infer-and-unify-record-fields (st) (env) (fields) (record-ty) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let f = list-at fields i
@@ -2214,7 +2292,8 @@ Section: Infer Expression (dispatch)
    in let st2 = when expected
        is ErrorTy -> record-field-unknown (r.state) record-ty (f.name.value) (aexpr-span (f.value))
        is otherwise -> let (_, u-st) = unify (r.state) (r.inferred-type) expected (aexpr-span (f.value)) in u-st
-   in let st3 = lint-narrowing-check st2 env (f.value) (r.inferred-type) expected (aexpr-span (f.value)) ("field '" & (f.name.value) & "'")
+   in let field-desc = "field '" & (f.name.value) & "'"
+   in let st3 = lint-narrowing-check st2 env (f.value) (r.inferred-type) expected (aexpr-span (f.value)) field-desc
    in let (acc2, acc-st) = row-union st3 acc-row (r.effect-row)
    in infer-and-unify-record-fields acc-st env fields record-ty (i + 1) len acc2 depth
 

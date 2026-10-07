@@ -6674,7 +6674,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             iface = UEFI_TABLE_PAGE + 0x880;
         else if (memcmp(guid, GUID_DEVICE_PATH, 16) == 0)
             iface = UEFI_TABLE_PAGE + 0x900;
-        else if (memcmp(guid, GUID_GOP, 16) == 0)
+        else if (memcmp(guid, GUID_GOP, 16) == 0 && GOP_FB_ADDR + GOP_FB_SIZE <= guest_mem_size)
             iface = UEFI_TABLE_PAGE + 0x700;
         if (iface && r8 > 0 && r8 + 8 <= guest_mem_size)
             memcpy((unsigned char *)guest_mem + r8, &iface, 8);
@@ -6698,7 +6698,8 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         } else if (memcmp(guid, GUID_SFS, 16) == 0) {
             /* Simple File System -- not yet implemented */
         } else if (memcmp(guid, GUID_GOP, 16) == 0) {
-            iface = UEFI_TABLE_PAGE + 0x700;
+            if (GOP_FB_ADDR + GOP_FB_SIZE <= guest_mem_size)
+                iface = UEFI_TABLE_PAGE + 0x700;
         } else if (memcmp(guid, GUID_LOADED_IMAGE, 16) == 0) {
             iface = UEFI_TABLE_PAGE + 0x880;
         } else if (memcmp(guid, GUID_INPUT_EX, 16) == 0) {
@@ -7714,7 +7715,7 @@ typedef struct {
        round, so an inbound connection's data frames carried a sequence
        number drawn from the guest's own space. It worked only because
        the guest's stack does not validate the receive window. */
-    unsigned long seq_offset;  /* guest sequence space */
+    unsigned long seq_offset;  /* last contiguous guest byte/SYN/FIN accepted */
     unsigned long ack_offset;  /* our sequence space */
     int state;  /* 0=unused, 1=connecting, 2=established, 3=guest sent FIN, 4=host sent FIN */
     int forwarded; /* 1 = inbound port-forwarded connection */
@@ -7779,6 +7780,7 @@ typedef struct {
 #define NAT_MAX_RTX 240
 
 static NatConn nat_conns[NAT_MAX_CONN];
+static int nat_packet_trace = 0;
 static void portfwd_handle_synack(NatConn *c, unsigned long seq, unsigned long ack);
 
 static NatConn *nat_find(unsigned short guest_port, unsigned short dst_port, unsigned char *dst_ip) {
@@ -7893,20 +7895,35 @@ static void nat_rtx_ack(NatConn *c, unsigned long ack) {
 }
 
 /* Queue bytes the host socket could not take yet. */
-static void nat_tx_queue(NatConn *c, const unsigned char *p, int n) {
-    if (n <= 0) return;
+static int nat_tx_queue(NatConn *c, const unsigned char *p, int n) {
+    if (n <= 0) return 1;
     if (c->txlen + n > c->txcap) {
         int cap = c->txcap ? c->txcap : 4096;
         unsigned char *nb;
         while (cap < c->txlen + n) cap *= 2;
         nb = (unsigned char *)realloc(c->txbuf, (size_t)cap);
-        if (!nb) { nat_queue_oom += (unsigned long long)n; return; }  /* drop, do not corrupt */
+        if (!nb) { nat_queue_oom += (unsigned long long)n; return 0; }
         c->txbuf = nb;
         c->txcap = cap;
     }
     memcpy(c->txbuf + c->txlen, p, (size_t)n);
     c->txlen += n;
     nat_queued += (unsigned long long)n;
+    return 1;
+}
+
+/* TCP sequence arithmetic is modulo 2^32; the admitted window is below
+   half that space. Gaps remain unacknowledged for sender retransmission.
+   Commit the cumulative ACK only after the host-side queue owns the bytes. */
+static void nat_tx_admit(NatConn *c, unsigned long seq, const unsigned char *p, int n) {
+    unsigned long next = c->seq_offset + 1;
+    unsigned long skip;
+    if (n <= 0 || (long)(seq - next) > 0) return;
+    skip = next - seq;
+    if (skip >= (unsigned long)n) return;
+    p += skip;
+    n -= (int)skip;
+    if (nat_tx_queue(c, p, n)) c->seq_offset += (unsigned long)n;
 }
 
 /* Push as much of the pending buffer as the socket will take. A partial
@@ -7956,7 +7973,7 @@ static void rx_enqueue(unsigned char *data, int len) {
     memcpy(rx_queue[idx].data, data, len);
     rx_queue[idx].len = len;
     rx_queue_count++;
-    fprintf(stderr, "rx_enqueue: q=%d len=%d\n", rx_queue_count, len);
+    if (nat_packet_trace) fprintf(stderr, "rx_enqueue: q=%d len=%d\n", rx_queue_count, len);
 }
 
 /* IP checksum helper */
@@ -8463,10 +8480,12 @@ static void nat_handle_dhcp(unsigned char *req_frame, unsigned char *msg, int le
 static void nat_handle_tx(unsigned char *frame, int len) {
     if (len < 14) return;
     unsigned short ethertype = (frame[12] << 8) | frame[13];
-    fprintf(stderr, "NAT TX: len=%d ethertype=0x%04x dst=%02x:%02x:%02x:%02x:%02x:%02x hex=",
-        len, ethertype, frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]);
-    for (int j = 0; j < (len < 20 ? len : 20); j++) fprintf(stderr, "%02x ", frame[j]);
-    fprintf(stderr, "\n");
+    if (nat_packet_trace) {
+        fprintf(stderr, "NAT TX: len=%d ethertype=0x%04x dst=%02x:%02x:%02x:%02x:%02x:%02x hex=",
+            len, ethertype, frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]);
+        for (int j = 0; j < (len < 20 ? len : 20); j++) fprintf(stderr, "%02x ", frame[j]);
+        fprintf(stderr, "\n");
+    }
 
     if (ethertype == 0x0806) {
         /* ARP */
@@ -8598,9 +8617,19 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                connection tears down. Full cleanup at VM exit. */
             NatConn *c = nat_find(sport, dport, dst_ip);
             if (c) {
+                if (c->forwarded && (flags & 0x10)) nat_rtx_ack(c, ack);
+                if (c->state == 1 || c->state == 2 || c->state == 4)
+                    nat_tx_admit(c, seq, payload, payload_len);
+                if (c->state == 3 || seq + (unsigned long)payload_len != c->seq_offset + 1) {
+                    nat_build_tcp_frame(nat_guest_mac(), dst_ip, guest_ip,
+                                        dport, sport, ack, c->seq_offset + 1,
+                                        0x10, NULL, 0);
+                    return;
+                }
+                c->seq_offset++;
                 nat_build_tcp_frame(nat_guest_mac(), dst_ip, guest_ip,
                                     dport, sport,
-                                    ack, seq + 1,
+                                    ack, c->seq_offset + 1,
                                     0x11, /* FIN+ACK */
                                     NULL, 0);
                 /* Anything still queued belongs to the peer before the
@@ -8648,7 +8677,7 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                        Data that arrives while the connect is still in flight
                        (state 1) is held rather than sent into a socket that
                        is not connected yet. */
-                    nat_tx_queue(c, payload, payload_len);
+                    nat_tx_admit(c, seq, payload, payload_len);
                     if (c->state != 1) nat_tx_flush(c);
                     /* A half-closed connection the guest is still writing to
                        is not idle, and the reaper must not cut it off
@@ -8658,7 +8687,7 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                     /* ACK the data: we have taken responsibility for it. */
                     nat_build_tcp_frame(nat_guest_mac(), dst_ip, guest_ip,
                                         dport, sport,
-                                        ack, seq + payload_len,
+                                        ack, c->seq_offset + 1,
                                         0x10, /* ACK */
                                         NULL, 0);
                 }
@@ -8780,7 +8809,7 @@ static void nat_poll_rx(void) {
            question, so say plainly what recv answered on them rather than
            leaving it to be inferred from which frames appeared. Bounded so
            a busy run does not drown in it. */
-        if (c->forwarded) {
+        if (c->forwarded && nat_packet_trace) {
             static int fwd_rx_dbg = 0;
             if (fwd_rx_dbg++ < 40)
                 fprintf(stderr, "PORTFWD recv: n=%d err=%d state=%d gport=%d dport=%d\n",
@@ -16623,6 +16652,8 @@ int main(int argc, char **argv) {
     hprof_file = getenv("CODEX_VM_PROFILE");
     if (hprof_file && !hprof_file[0]) hprof_file = NULL;
 
+    const char *packet_trace_env = getenv("CODEX_VM_NET_TRACE");
+    nat_packet_trace = packet_trace_env && !strcmp(packet_trace_env, "1");
     WSADATA wsa; WSAStartup(MAKEWORD(2,2), &wsa);
     if (portfwd_count > 0) portfwd_init();
 

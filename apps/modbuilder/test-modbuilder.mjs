@@ -129,6 +129,16 @@ try {
   await open('#bridge=handtok2&profile=' + encodeURIComponent(JSON.stringify(Object.assign({}, handed, { id: 'same', installPath: 'D:/Game' }))));
   const refused = await cdp.eval(`({ status: document.getElementById('status').textContent, id: document.getElementById('p-id').value })`);
   ok('control: a handed profile installing into the original game is refused', /never the original game/.test(refused.status) && refused.id !== 'same', JSON.stringify(refused));
+  // Page text is CCE, so the name, token and path checks compare CCE codes (MB-21).
+  const handOff = async (tok, change) => { await open('#bridge=' + encodeURIComponent(tok) + '&profile=' + encodeURIComponent(JSON.stringify(Object.assign({}, handed, change)))); return await cdp.eval(`({ status: document.getElementById('status').textContent, id: document.getElementById('p-id').value })`); };
+  const badName = await handOff('tok3', { id: 'bad id!' });
+  ok('control: a profile name with a space or "!" is refused', /Profile name must use/.test(badName.status) && badName.id !== 'bad id!', JSON.stringify(badName));
+  const badToken = await handOff('bad tok!', { id: 'tokencheck' });
+  ok('control: a launcher token with a space or "!" is refused', /launcher token was refused/.test(badToken.status) && badToken.id !== 'tokencheck', JSON.stringify(badToken));
+  const mixed = await handOff('tok4', { id: 'Handed_2.v-1' });
+  ok('a profile name of upper and lower case, digits, ".", "_" and "-" is accepted', mixed.id === 'Handed_2.v-1', JSON.stringify(mixed));
+  const folded = await handOff('tok5', { id: 'folded', installPath: 'd:/game/' });
+  ok('control: the original game is refused whatever its case or trailing slash', /never the original game/.test(folded.status) && folded.id !== 'folded', JSON.stringify(folded));
   ok('no uncaught page errors', cdp.errors.length === 0, cdp.errors.join(' | '));
 } catch (e) {
   ok('ran to the end', false, String(e && e.message || e));

@@ -25,7 +25,8 @@ const caseIndex=process.argv.indexOf('--case'),single=caseIndex<0?'':process.arg
 if(onlyFault&&(single!=='controls'||!['ancillary',...faultNames].includes(onlyFault)))throw new Error('Unknown isolated fault');
 
 if(caseIndex>=0&&![...evidence.images.map(r=>String(r.weight100)),'plain','controls'].includes(single))throw new Error('Unknown isolated case');
-if(xl&&!single){
+const samePage=process.argv.includes('--same-page'),freeCommit=()=>JSON.parse(execFileSync('pwsh',['-NoProfile','-Command','Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,FreeVirtualMemory | ConvertTo-Json -Compress'],{encoding:'utf8',windowsHide:true}));let floorHit=null;
+if(xl&&!single&&!samePage){
   const records=[];
   const cases=[...evidence.images.map(r=>({key:String(r.weight100),fault:''})),{key:'plain',fault:''},...['ancillary',...faultNames].map(fault=>({key:'controls',fault}))];
   for(const {key,fault} of cases){
@@ -77,6 +78,7 @@ const load=(checkpointExpr,fileExpr,sizeExpr,success,failure)=>xl?
   `browser_sdxl_lora_open(${checkpointExpr},${checkpointSize}n,page_data('bk'),page_data('clip-xl'),${fileExpr},${sizeExpr},0.6,page_data('lora-code'),${success},${failure})`:
   `browser_sd15_lora_load_then(${checkpointExpr},${fileExpr},${sizeExpr},0.75,page_data('lora-code'),()=>0n,${failure},${success})`;
 const work=mkdtempSync(join(tmpdir(),'lora-arm-')),pause=ms=>new Promise(r=>setTimeout(r,ms));
+const reap=()=>execFileSync('pwsh',['-NoProfile','-Command',`function Owned {@(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'"|Where-Object {$_.CommandLine -like '*${join(work,'profile').replace(/'/g,"''")}*'})};foreach($p in (Owned)){Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue};for($i=0;$i -lt 20;$i++){if(@(Owned).Count -eq 0){exit 0};Start-Sleep -Milliseconds 100};throw 'Owned Edge cleanup failed'`],{stdio:'inherit'});
 let edge,server,socket;const rows=[],faults=[];
 try{
   server=http.createServer((q,r)=>{r.writeHead(200,{'Content-Type':'text/html'});r.end(html.replace('<script>',()=>`<script>window.__DATA=${JSON.stringify(data)};</script><script>`));});
@@ -132,12 +134,16 @@ try{
   for(const row of imageCases){
     const native=readFileSync(join(nativeDir,row.file));if(hash(native)!==row.sha256)throw new Error('Native image changed');
     const memory=JSON.parse(execFileSync('pwsh',['-NoProfile','-Command','Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,FreeVirtualMemory | ConvertTo-Json -Compress'],{encoding:'utf8',windowsHide:true}));if(memory.FreePhysicalMemory<=1572864||memory.FreeVirtualMemory<=26214400)throw new Error('RAM/commit admission refused');
+    if(samePage){console.log('SAMEPAGE before '+(row.plain?'plain':row.weight100)+' '+JSON.stringify(memory));if(memory.FreeVirtualMemory<=26214400)throw new Error('Commit floor (25 GiB free) reached before case '+(row.plain?'plain':row.weight100));}
     await evaluate(`window.__DATA.weight100=${JSON.stringify(String(row.weight100))};window.__DATA.plain=${JSON.stringify(row.plain?'1':'0')};_st.done=0n;_st.error='';__merges.length=0;`);
     const started=performance.now();
     if(pick===0){for(const type of ['mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:5,y:5,button:'left',clickCount:1});await wait('Number(_st.picked)===1');for(const type of ['mousePressed','mouseReleased'])await send('Input.dispatchMouseEvent',{type,x:5,y:5,button:'left',clickCount:1});}
     else await evaluate(`la_lora(JSON.stringify({name:String(_st.lora),size:${loraSize}}))`);
-    await wait('Number(_st.done)===1');
+    const watch=samePage?setInterval(()=>{const m=freeCommit();if(m.FreeVirtualMemory<=26214400&&!floorHit){floorHit=m;console.log('SAMEPAGE floor during case '+JSON.stringify(m));if(edge&&edge.exitCode===null)edge.kill();}},5000):null;
+    try{await wait('Number(_st.done)===1');}finally{if(watch)clearInterval(watch);}
+    if(floorHit)throw new Error('Commit floor (25 GiB free) reached during a case');
     const state=await evaluate(`({active:_gb.filter(Boolean).length,error:_gerr,merges:__merges.slice(),heap:_hp,summary:String(_st.summary)})`);
+    if(samePage)console.log('SAMEPAGE after '+(row.plain?'plain':row.weight100)+' heap '+state.heap+' active '+state.active+' '+JSON.stringify(freeCommit()));
     const count=row.plain?0:(evidence.browserTargets||3);
     if(state.active||state.error||state.merges.length!==count||new Set(state.merges).size!==count)throw new Error('Merge/cleanup contract differs '+JSON.stringify(state));
     const png=Buffer.from(await evaluate("document.querySelector('#out').toDataURL('image/png').split(',')[1]"),'base64');writeFileSync(join(outDir,'browser-'+(row.plain?'plain':row.weight100)+'.png'),png);
@@ -206,9 +212,14 @@ try{
     console.log('PASS incompatible '+evidence.variant+' shape refuses exactly once without live handles');
   }
   }
+  if(samePage){
+    await evaluate('(()=>{_gd.destroy();return 0})()');await pause(5000);console.log('SAMEPAGE after device destroy '+JSON.stringify(freeCommit()));
+    await send('Page.navigate',{url:'about:blank'});await pause(5000);console.log('SAMEPAGE after page teardown '+JSON.stringify(freeCommit()));
+    socket.close();socket=null;edge.kill();reap();await pause(5000);console.log('SAMEPAGE after Edge exit '+JSON.stringify(freeCommit()));
+  }
   writeFileSync(join(outDir,recordName(single,onlyFault)),JSON.stringify({family,variant:evidence.variant||'',nativeEvidenceSha256,pageSha256:hash(html),shaderSha256:hash(code),baseShaderSha256:hash(data.bk),clipShaderSha256:xl?hash(data['clip-xl']):null,rows,faults},null,2)+'\n');console.log('PASS '+family+' LoRA '+(single||'images, picked files, native parity and cleanup'));
 }finally{
   if(socket)socket.close();if(edge&&edge.exitCode===null)edge.kill();
-  execFileSync('pwsh',['-NoProfile','-Command',`function Owned {@(Get-CimInstance Win32_Process -Filter "Name='msedge.exe'"|Where-Object {$_.CommandLine -like '*${join(work,'profile').replace(/'/g,"''")}*'})};foreach($p in (Owned)){Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue};for($i=0;$i -lt 20;$i++){if(@(Owned).Count -eq 0){exit 0};Start-Sleep -Milliseconds 100};throw 'Owned Edge cleanup failed'`],{stdio:'inherit'});
+  reap();
   if(server)server.close();
 }

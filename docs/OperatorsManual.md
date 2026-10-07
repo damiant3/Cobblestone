@@ -421,6 +421,7 @@ sidecar deleted, and only the second answers the question the battery asks.
 | `foo.skip` | Skipped entirely (first line = reason) |
 | `foo.slow` | Skipped unless `-Slow` (first line = reason) |
 | `foo.fatal` | Skipped unless `-Fatal` (kills VM at runtime) |
+| `foo.wall` | Run budget in whole seconds above the 60 s run-list default (61..600, first line). `bvt.ps1` runs such subjects one at a time in an extra slot with that budget; `test.ps1` does not read it yet (COMPILER-123) |
 | `foo.flags` | First line appended to the compile mode line: `prose`, `passes=+name`, `decks=N`. Read by the batch harness only. See `docs/ExaminersAssay.md` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot) passed as `-keys-file`. This is the **keyboard**; `.stdin` is the **serial ring**. A keyboard read (`uefi-read-key` / `poll-key`) reads the PS/2 key cell and no `.stdin` reaches it -- pick by what the code reads. See `docs/ExaminersAssay.md` |
@@ -608,7 +609,7 @@ codex-vm -kernel file.cdx [options]
 | `-gop-max-mode <N>` | -- | Cap the GOP mode table's `MaxMode`. The UEFI GOP enumerates modes 0..2 (640x480, 800x600, 1024x768) plus, as mode 3, the `-gop-width x -gop-height` you set when it matches none of them, so a bed at 1600x900 is a firmware whose largest mode is what the display supports; `Mode->Mode` names the current one. `-gop-max-mode 1` is a firmware with nothing to enumerate, the fallback arm for a stub that picks the largest mode (`build/gop-mode-arm.ps1`). `QueryMode` answers into a scratch info block, not the current mode's; a mode past `MaxMode` is `EFI_INVALID_PARAMETER`; `SetMode` commits the framebuffer before it clears it (a runtime mode set from a headless boot faulted the HOST until it did). |
 | `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. At exit it prints `IO BY VP: vp=N port-exits=N io-lock-wait-ms=N` per processor; quote that for port-I/O contention, not the global `exits` count, which does not count an AP's work. |
 | `-no-avx` | off | A machine without XSAVE or AVX: CPUID leaf 0 stops at 1, leaf 1 ECX carries neither bit, and the partition's XSAVE property stays at WHP's default. Without it, on a host with both, the partition takes the host's XSAVE features and CPUID reports XSAVE, AVX and leaf 0Dh for XCR0 = 7 (`codex/test/cpuid-avx`, `cpuid-no-avx`). |
-| `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683` |
+| `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683`. Routine packet traces are disabled; set `CODEX_VM_NET_TRACE=1` to enable NAT TX hex, successful RX enqueue and forwarded-receive traces. Errors and final byte accounting remain enabled. Unbuffered packet tracing can dominate send latency when stderr is captured; keep tracing off for timing grades. |
 | `-natmap <guestdest:hostport>` | -- | Remap an OUTBOUND destination port (repeatable, max 16, TCP only). The opposite direction to `-portfwd`: when the guest dials `guestdest`, the NAT connects to the host on `hostport` instead of the port the guest asked for. Exists because a plug's port is compiled into it from `build/plug-ports.ps1`, so N copies of one plug all needed the same host listener and could not run at once. With this, each worker owns a private host port while running the same unmodified plug binary -- which is what lets `codex/plugs/recheck/sweep-all.ps1` go N-wide. Unmapped ports are untouched, so every existing invocation means what it always did. Example: `-natmap 9134:9250` |
 | `-debug` | off | Interactive debugger shell on breakpoints and single-step |
 | `-break <name>` | -- | Patch INT3 at named function entry (implies `-debug`, repeatable) |
@@ -1049,6 +1050,12 @@ NAT stack with IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3. Handles
 ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, TCP
 forwarding, and UDP forwarding (see below). Port forwarding via
 `-portfwd` for host-to-guest TCP connections.
+
+**x86 virtio-net runs under QEMU, not codex-vm.** The modern PCI NIC driver,
+NetDriver selection, DMA lifetime rules and focused encrypted-port proof are
+documented in [VirtioNetX86.md](../apps/uoaix/VirtioNetX86.md).
+Run `apps/uoaix/proofs/test-virtio-net.ps1 -Kernel seed/Codex.cdx` for that
+device path; a NE2000 or ARM64 run does not grade the x86 virtio driver.
 
 **DHCP is answered.** The server answers DISCOVER with an OFFER and REQUEST
 with an ACK carrying mask, router, DNS and a 3600-second lease.
@@ -2412,7 +2419,7 @@ parent's key and kind (the `IrIf` that `/=` lowers to). A defect inside an
 inserted node is invisible to the property.
 
 ```powershell
-build\ir-fidelity\ir-fidelity.ps1 -Property -Kernel <candidate>     # all of codex/test, one compile guest, 6 minutes (2026-09-25)
+build\ir-fidelity\ir-fidelity.ps1 -Property -Kernel <candidate>     # all of codex/test (813 programs), one compile guest, 21 minutes (2026-10-03)
 build\ir-fidelity\ir-fidelity.ps1 -Property -Programs recursive-eq,unit-smoke
 build\ir-fidelity\ir-fidelity.ps1 -Property -Expect 0               # refuses on any finding
 ```
@@ -3760,6 +3767,7 @@ guest path needs the `cli`.
 | `-Poison` | 0xCD fill in `__alloc` (catches uninitialized fields) |
 | `-Repl` | REPL loop (for batch compilation) |
 | `-Decks <N>` | Scale every phase deck floor to N% of the `BuildSettings` defaults (100 = defaults). Sends `decks=N` on the mode line. |
+| `-RawFlags cover` | Function coverage, bare-metal x86-64 only. Every reachable definition gets a 64-bit entry counter (standard emit path forced; inline passes off unless `passes=` says otherwise), and the compile log carries one `CDX6015: [COVER] <slot> <name>` line per definition with its span. The program prints `COVER-BEGIN:<n>`, then `COVER:<slot>:<count>` for every entered slot, then `COVER-END` on COM1 when `opening` returns and at every `__cover-dump` call (counts are cumulative; the builtin returns the slot count, and 0 in a build without `cover`, where it prints nothing). A server that never returns from `opening` must call `__cover-dump` itself. `build/coverage-report.ps1 -Log <compile log> -Output <run output(s)> [-Filter apps\uoaix] [-Markdown <file>]` joins the two into per-chapter hit/total and the never-run list. Definitions pruned as unreachable are not in the denominator. |
 
 ### Running a compile from a second workspace: set `[Environment]::CurrentDirectory`
 

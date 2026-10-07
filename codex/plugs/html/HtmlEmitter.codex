@@ -199,7 +199,8 @@ Section: JavaScript Expression Emission
      is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
      is IrBoolLit (b) (sp) -> if b then "true" else "false"
      is IrCharLit (n) (sp) -> "String.fromCodePoint(" & show (to-unicode n) & ")"
-     is IrName (n) (ty) (sp) -> if lookup-arity arities n == 0 then
+     is IrName (n) (ty) (sp) -> if n == "__heap-save" then "BigInt(_hp)"
+     else if lookup-arity arities n == 0 then
        html-sanitize n & "()"
      else html-sanitize n
      is IrBinary (op) (l) (r) (ty) (sp) -> emit-js-binary op l r ty arities indent
@@ -996,7 +997,7 @@ Section: Chapter Emission
     else html-uses-gpu-bridge defs (i + 1)
 
   html-uses-byte-heap : Text -> Boolean
-  html-uses-byte-heap (js) = text-contains js "alloc_bytes(" | text-contains js "peek_byte(" | text-contains js "poke_byte(" | text-contains js "peek_32(" | text-contains js "poke_32(" | text-contains js "__memset(" | text-contains js "file_save_bytes_then("
+  html-uses-byte-heap (js) = text-contains js "alloc_bytes(" | text-contains js "peek_byte(" | text-contains js "poke_byte(" | text-contains js "peek_32(" | text-contains js "poke_32(" | text-contains js "__memset(" | text-contains js "file_save_bytes_then(" | text-contains js "BigInt(_hp)" | text-contains js "__heap_restore("
 
  The byte heap behind alloc-bytes, peek and poke: one growable ArrayBuffer, an
  address being a byte offset into it from 16 (0 stays null); peek-32
@@ -1013,6 +1014,7 @@ Section: Chapter Emission
     & "function peek_32(b,o){return BigInt(_hv.getUint32(Number(b)+Number(o),true))}\n"
     & "function poke_32(b,o,v){_hv.setUint32(Number(b)+Number(o),Number(BigInt.asUintN(32,BigInt(v))),true);return 0n}\n"
     & "function __memset(b,v,n){_hu.fill(Number(BigInt.asUintN(8,BigInt(v))),Number(b),Number(b)+Number(n));return b}\n"
+    & "function __heap_restore(m){_hp=Number(m);return 0n}\n"
 
   emit-dom-noise-bank : Text
   emit-dom-noise-bank =

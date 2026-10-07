@@ -296,7 +296,8 @@ Section: Add Error
 
   add-fuel-error : UnificationState, Text, SourceSpan -> UnificationState
   add-fuel-error (st) (op) (span) =
-    add-unify-error st cdx-resource-exhausted ("compiler resource exhausted in unifier." & op & " (budget " & integer-to-text max-recursion-depth & ")") span
+    let fuel-msg = "compiler resource exhausted in unifier." & op & " (budget " & integer-to-text max-recursion-depth & ")"
+    in add-unify-error st cdx-resource-exhausted fuel-msg span
 
 Section: Occurs Check
   occurs-in : UnificationState, Integer, CodexType, Integer -> Boolean
@@ -358,7 +359,8 @@ Section: Effect Row Substitution
   labels-minus (xs) (ys) =
     labels-minus-merge xs ys 0 0 (list-length xs) (list-length ys) []
 
-  labels-minus-merge : List EffectLabel, List EffectLabel, Integer, Integer, Integer, Integer, List EffectLabel -> List EffectLabel
+  labels-minus-merge : List EffectLabel, List EffectLabel, Integer, Integer, Integer, Integer, List EffectLabel ->
+    List EffectLabel
   labels-minus-merge (xs) (ys) (i) (j) (xlen) (ylen) (acc) =
     if i == xlen then acc
     else if j == ylen then
@@ -460,12 +462,14 @@ Section: Row Unification
     else if a.tail-id == b.tail-id then unify-row-both-closed st a b only1 only2 span
     else unify-row-open-open st a b only1 only2 span
 
-  unify-row-both-closed : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
+  unify-row-both-closed : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan ->
+    (Boolean, UnificationState)
   unify-row-both-closed (st) (a) (b) (only1) (only2) (span) =
     if list-length only1 == 0 & list-length only2 == 0 then (True, st)
     else (False, add-unify-error st cdx-row-mismatch (row-mismatch-msg a b) span)
 
-  unify-row-open-closed : UnificationState, EffectRow, List EffectLabel, List EffectLabel, EffectRow, SourceSpan -> (Boolean, UnificationState)
+  unify-row-open-closed : UnificationState, EffectRow, List EffectLabel, List EffectLabel, EffectRow, SourceSpan ->
+    (Boolean, UnificationState)
   unify-row-open-closed (st) (open-r) (open-only) (closed-only) (closed-r) (span) =
     if list-length open-only /= 0 then
       (False, add-unify-error st cdx-row-mismatch (row-mismatch-msg open-r closed-r) span)
@@ -495,7 +499,8 @@ Section: Row Unification
     else let st2 = add-row-subst st (a.tail-id) (deck-record (row-var (b.tail-id)))
     in (make-row merged (b.tail-name) (b.tail-id), st2)
 
-  unify-row-open-open : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan -> (Boolean, UnificationState)
+  unify-row-open-open : UnificationState, EffectRow, EffectRow, List EffectLabel, List EffectLabel, SourceSpan ->
+    (Boolean, UnificationState)
   unify-row-open-open (st) (a) (b) (only1) (only2) (span) =
     let (t3, st2) = fresh-row-id st
     in let bind-a = make-row only2 "" t3
@@ -708,16 +713,20 @@ Section: Unify
       is otherwise -> unify-mismatch st a b span
      is ListTy (ea) -> when b
       is ListTy (eb) | LinkedListTy (eb) -> unify-at st ea eb span (depth + 1) True
-      is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "List" }))) fb span (depth + 1) inv in if ok1 then
-        unify-at st1 ea ab span (depth + 1) True
-      else (ok1, st1)
+      is TypeApply (fb) (ab) ->
+        let list-con = deck-record (TypeCon (Name { value = "List" }))
+        in let (ok1, st1) = unify-at st list-con fb span (depth + 1) inv
+        in if ok1 then unify-at st1 ea ab span (depth + 1) True
+        else (ok1, st1)
       is ErrorTy -> (True, st)
       is otherwise -> unify-mismatch st a b span
      is LinkedListTy (ea) -> when b
       is LinkedListTy (eb) | ListTy (eb) -> unify-at st ea eb span (depth + 1) True
-      is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st (deck-record (TypeCon (Name { value = "LinkedList" }))) fb span (depth + 1) inv in if ok1 then
-        unify-at st1 ea ab span (depth + 1) True
-      else (ok1, st1)
+      is TypeApply (fb) (ab) ->
+        let llist-con = deck-record (TypeCon (Name { value = "LinkedList" }))
+        in let (ok1, st1) = unify-at st llist-con fb span (depth + 1) inv
+        in if ok1 then unify-at st1 ea ab span (depth + 1) True
+        else (ok1, st1)
       is ErrorTy -> (True, st)
       is otherwise -> unify-mismatch st a b span
      is ConstructedTy (na) (args-a) -> when b
@@ -804,12 +813,16 @@ Section: Unify
       is TypeApply (fb) (ab) -> let (ok1, st1) = unify-at st fa fb span (depth + 1) inv in if ok1 then
         unify-at st1 aa ab span (depth + 1) True
       else (ok1, st1)
-      is ListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "List" }))) span (depth + 1) inv in if ok1 then
-        unify-at st1 aa eb span (depth + 1) True
-      else (ok1, st1)
-      is LinkedListTy (eb) -> let (ok1, st1) = unify-at st fa (deck-record (TypeCon (Name { value = "LinkedList" }))) span (depth + 1) inv in if ok1 then
-        unify-at st1 aa eb span (depth + 1) True
-      else (ok1, st1)
+      is ListTy (eb) ->
+        let list-con = deck-record (TypeCon (Name { value = "List" }))
+        in let (ok1, st1) = unify-at st fa list-con span (depth + 1) inv
+        in if ok1 then unify-at st1 aa eb span (depth + 1) True
+        else (ok1, st1)
+      is LinkedListTy (eb) ->
+        let llist-con = deck-record (TypeCon (Name { value = "LinkedList" }))
+        in let (ok1, st1) = unify-at st fa llist-con span (depth + 1) inv
+        in if ok1 then unify-at st1 aa eb span (depth + 1) True
+        else (ok1, st1)
       is ConstructedTy (nb) (args-b) -> if list-length args-b >= 1 then
         unify-ctor-apply-peel st nb args-b fa aa span depth inv
       else unify-mismatch st a b span
@@ -835,20 +848,23 @@ Section: Unify
  every pair they compare is a type argument by construction, so they pass
  True unconditionally.
 
-  unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
+  unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer ->
+    (Boolean, UnificationState)
   unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) (depth) =
     if len /= list-length args-b then
       (False, add-unify-error st cdx-type-mismatch "Type mismatch: type constructor applied at different arities" span)
     else unify-cargs-loop st args-a args-b i len span depth
 
-  unify-cargs-loop : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer -> (Boolean, UnificationState)
+  unify-cargs-loop : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer ->
+    (Boolean, UnificationState)
   unify-cargs-loop (st) (args-a) (args-b) (i) (len) (span) (depth) =
     if i == len then (True, st)
     else let (ok, st1) = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1) True
     in if ok then unify-cargs-loop st1 args-a args-b (i + 1) len span depth
     else (ok, st1)
 
-  unify-ctor-apply-peel : UnificationState, Name, List CodexType, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-ctor-apply-peel : UnificationState, Name, List CodexType, CodexType, CodexType, SourceSpan, Integer, Boolean ->
+    (Boolean, UnificationState)
   unify-ctor-apply-peel (st) (name) (args) (fb) (ab) (span) (depth) (inv) =
     let n = list-length args
     in if n == 1
@@ -863,7 +879,8 @@ Section: Unify
     if i == k then acc
     else ctype-list-take xs (i + 1) k (list-push acc (list-at xs i))
 
-  unify-fun : UnificationState, CodexType, EffectRow, CodexType, CodexType, EffectRow, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
+  unify-fun : UnificationState, CodexType, EffectRow, CodexType, CodexType, EffectRow, CodexType, SourceSpan, Integer,
+    Boolean -> (Boolean, UnificationState)
   unify-fun (st) (pa) (rwa) (ra) (pb) (rwb) (rb) (span) (depth) (inv) =
     let (ok1, st1) = unify-at st pa pb span (depth + 1) inv
     in if ok1 then
@@ -885,7 +902,8 @@ Section: Unify
   unify-mismatch : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify-mismatch (st) (a) (b) (span) =
     let base = "Type mismatch: " & type-desc a & " vs " & type-desc b
-    in (False, add-unify-error st cdx-type-mismatch (base & (ctor-as-type-hint a & ctor-as-type-hint b) & vec-family-hint a b) span)
+    in let mismatch-msg = base & (ctor-as-type-hint a & ctor-as-type-hint b) & vec-family-hint a b
+    in (False, add-unify-error st cdx-type-mismatch mismatch-msg span)
 
   vec-family-hint : CodexType, CodexType -> Text
   vec-family-hint (a) (b) =
@@ -1435,7 +1453,8 @@ Section: Deep Type Copy
   mkey-labels-loop (ls) (i) (len) (mc) (acc) =
     if i == len then acc
     else let l = list-at ls i
-    in mkey-labels-loop ls (i + 1) len mc (cons-mix (cons-mix acc (address-of (mcopy-name (l.name) mc))) (address-of (mcopy-text (l.scope) mc)))
+    in let lab-key = cons-mix acc (address-of (mcopy-name (l.name) mc))
+    in mkey-labels-loop ls (i + 1) len mc (cons-mix lab-key (address-of (mcopy-text (l.scope) mc)))
 
   mcopy-rows : List EffectRow, MemoCtx -> List EffectRow
   mcopy-rows (rs) (mc) =
@@ -1542,7 +1561,8 @@ Section: Deep Type Copy
   mkey-fields-loop (fs) (i) (len) (depth) (mc) (acc) =
     if i == len then acc
     else let f = list-at fs i
-    in mkey-fields-loop fs (i + 1) len depth mc (cons-mix (cons-mix acc (address-of (mcopy-name (f.name) mc))) (address-of (mcopy-type (f.type-val) depth mc)))
+    in let fld-key = cons-mix acc (address-of (mcopy-name (f.name) mc))
+    in mkey-fields-loop fs (i + 1) len depth mc (cons-mix fld-key (address-of (mcopy-type (f.type-val) depth mc)))
 
   mcopy-ctors : List SumCtor, Integer, MemoCtx -> List SumCtor
   mcopy-ctors (cs) (depth) (mc) =
@@ -1584,7 +1604,9 @@ Section: Deep Type Copy
   mkey-ctors-loop (cs) (i) (len) (depth) (mc) (acc) =
     if i == len then acc
     else let c = list-at cs i
-    in mkey-ctors-loop cs (i + 1) len depth mc (cons-mix (cons-mix (cons-mix acc (address-of (mcopy-name (c.name) mc))) (address-of (mcopy-types (c.fields) depth mc))) (address-of (mcopy-types (c.return-type) depth mc)))
+    in let mk-name = cons-mix acc (address-of (mcopy-name (c.name) mc))
+    in let mk-fields = cons-mix mk-name (address-of (mcopy-types (c.fields) depth mc))
+    in mkey-ctors-loop cs (i + 1) len depth mc (cons-mix mk-fields (address-of (mcopy-types (c.return-type) depth mc)))
 
  THE BOX CHECK READS A TAG, so it asks for one. `peek-qword a 0` is that tag
  only where a variant's first word IS its tag, which is bare metal; it is a
@@ -1661,23 +1683,43 @@ Section: Deep Type Copy
      is NothingTy -> 10
      is ErrorTy -> 11
      is NoExpectTy -> 30
-     is FunTy (p) (row) (r) -> cons-mix (cons-mix (cons-mix 12 (address-of (mcopy-type p (depth + 1) mc))) (address-of (mcopy-row row mc))) (address-of (mcopy-type r (depth + 1) mc))
+     is FunTy (p) (row) (r) ->
+       let fk0 = cons-mix 12 (address-of (mcopy-type p (depth + 1) mc))
+       in let fk1 = cons-mix fk0 (address-of (mcopy-row row mc))
+       in cons-mix fk1 (address-of (mcopy-type r (depth + 1) mc))
      is ListTy (e) -> cons-mix 13 (address-of (mcopy-type e (depth + 1) mc))
      is LinkedListTy (e) -> cons-mix 14 (address-of (mcopy-type e (depth + 1) mc))
      is TypeVar (i) -> cons-mix 15 i
      is ForAllTy (i) (b) -> cons-mix (cons-mix 16 i) (address-of (mcopy-type b (depth + 1) mc))
-     is SumTy (n) (a) (ctors) -> cons-mix (cons-mix (cons-mix 17 (address-of (mcopy-name n mc))) (address-of (mcopy-types a (depth + 1) mc))) (address-of (mcopy-ctors ctors (depth + 1) mc))
-     is RecordTy (n) (a) (fields) -> cons-mix (cons-mix (cons-mix 18 (address-of (mcopy-name n mc))) (address-of (mcopy-types a (depth + 1) mc))) (address-of (mcopy-fields fields (depth + 1) mc))
-     is ConstructedTy (n) (a) -> cons-mix (cons-mix 19 (address-of (mcopy-name n mc))) (address-of (mcopy-types a (depth + 1) mc))
-     is EffectfulTy (effs) (sc) (r) -> cons-mix (cons-mix (cons-mix 20 (address-of (mcopy-names effs mc))) (address-of (mcopy-texts sc mc))) (address-of (mcopy-type r (depth + 1) mc))
+     is SumTy (n) (a) (ctors) ->
+       let sk0 = cons-mix 17 (address-of (mcopy-name n mc))
+       in let sk1 = cons-mix sk0 (address-of (mcopy-types a (depth + 1) mc))
+       in cons-mix sk1 (address-of (mcopy-ctors ctors (depth + 1) mc))
+     is RecordTy (n) (a) (fields) ->
+       let rk0 = cons-mix 18 (address-of (mcopy-name n mc))
+       in let rk1 = cons-mix rk0 (address-of (mcopy-types a (depth + 1) mc))
+       in cons-mix rk1 (address-of (mcopy-fields fields (depth + 1) mc))
+     is ConstructedTy (n) (a) ->
+       let ck0 = cons-mix 19 (address-of (mcopy-name n mc))
+       in cons-mix ck0 (address-of (mcopy-types a (depth + 1) mc))
+     is EffectfulTy (effs) (sc) (r) ->
+       let ek0 = cons-mix 20 (address-of (mcopy-names effs mc))
+       in let ek1 = cons-mix ek0 (address-of (mcopy-texts sc mc))
+       in cons-mix ek1 (address-of (mcopy-type r (depth + 1) mc))
      is ProofTy -> 21
-     is PropEqTy (pa) (pb) -> cons-mix (cons-mix 22 (address-of (mcopy-type pa (depth + 1) mc))) (address-of (mcopy-type pb (depth + 1) mc))
-     is UnitTy (n) (inner) -> cons-mix (cons-mix 23 (address-of (mcopy-name n mc))) (address-of (mcopy-type inner (depth + 1) mc))
+     is PropEqTy (pa) (pb) ->
+       let pk0 = cons-mix 22 (address-of (mcopy-type pa (depth + 1) mc))
+       in cons-mix pk0 (address-of (mcopy-type pb (depth + 1) mc))
+     is UnitTy (n) (inner) ->
+       let uk0 = cons-mix 23 (address-of (mcopy-name n mc))
+       in cons-mix uk0 (address-of (mcopy-type inner (depth + 1) mc))
      is VectorTy (vn) (vt) -> cons-mix (cons-mix 24 vn) (address-of (mcopy-type vt (depth + 1) mc))
      is VectorMaskTy (mn) (me) -> cons-mix (cons-mix 25 mn) (address-of (mcopy-type me (depth + 1) mc))
      is SizedVecTy (vn) (vt) -> cons-mix (cons-mix 30 vn) (address-of (mcopy-type vt (depth + 1) mc))
      is TypeCon (n) -> cons-mix 26 (address-of (mcopy-name n mc))
-     is TypeApply (tf) (ta) -> cons-mix (cons-mix 27 (address-of (mcopy-type tf (depth + 1) mc))) (address-of (mcopy-type ta (depth + 1) mc))
+     is TypeApply (tf) (ta) ->
+       let tk0 = cons-mix 27 (address-of (mcopy-type tf (depth + 1) mc))
+       in cons-mix tk0 (address-of (mcopy-type ta (depth + 1) mc))
      is ForAllEff (i) (b) -> cons-mix (cons-mix 28 i) (address-of (mcopy-type b (depth + 1) mc))
      is LinearTy (inner) -> cons-mix 29 (address-of (mcopy-type inner (depth + 1) mc))
 
@@ -1699,7 +1741,10 @@ Section: Deep Type Copy
      is TypeVar (i) -> TypeVar i
      is ForAllTy (i) (b) -> ForAllTy i (mcopy-type b (depth + 1) mc)
      is SumTy (n) (a) (ctors) -> SumTy (mcopy-name n mc) (mcopy-types a (depth + 1) mc) (mcopy-ctors ctors (depth + 1) mc)
-     is RecordTy (n) (a) (fields) -> RecordTy (mcopy-name n mc) (mcopy-types a (depth + 1) mc) (mcopy-fields fields (depth + 1) mc)
+     is RecordTy (n) (a) (fields) ->
+       let rn = mcopy-name n mc
+       in let ra = mcopy-types a (depth + 1) mc
+       in RecordTy rn ra (mcopy-fields fields (depth + 1) mc)
      is ConstructedTy (n) (a) -> ConstructedTy (mcopy-name n mc) (mcopy-types a (depth + 1) mc)
      is EffectfulTy (effs) (sc) (r) -> EffectfulTy (mcopy-names effs mc) (mcopy-texts sc mc) (mcopy-type r (depth + 1) mc)
      is ProofTy -> ProofTy

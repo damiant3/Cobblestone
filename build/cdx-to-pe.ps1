@@ -1028,12 +1028,12 @@ if ($HeapAt -ne 0) {
     # aperture, so the condition the guard tests cannot arise.
     #
     # With no framebuffer (r12 = 0) there is no aperture to collide with and
-    # AnyPages is right, which is also the codex-vm -headless case.
+    # AnyPages is right, including codex-vm guests below its GOP RAM range.
     #
     # NOT applied to the A5 path, deliberately and by construction: an
-    # -EntryStart payload without -Ebs still takes AnyPages below, so the
-    # flown A5 stub emits byte-identical bytes. Verified by hash, not by
-    # reading. It was first limited to -Ebs alone (main 15102), which left
+    # -EntryStart payload without -Ebs still takes AnyPages below. The
+    # corrected no-GOP guard skip applies to both startup paths; whole-stub
+    # byte identity is not claimed. The ceiling was first limited to -Ebs, which left
     # every PLAIN option-a image (the desk, the probes, sinkladder) halting
     # 'V' in the bed from main 15041 on: measured 2026-08-15 with
     # CODEX_VM_ALLOC_TRACE, the depot sinkladder.img (old stub, MaxAddress
@@ -1055,12 +1055,12 @@ if ($HeapAt -ne 0) {
     # 0xBF000000, heap ending exactly AT the aperture, and 'V' still raised.
     #
     # So the request is backed off far enough to satisfy the WINDOW rather
-    # than the heap, which leaves the guard untouched and therefore leaves the
-    # A5 path untouched. One extra megabyte so the arena end lands strictly
+    # than the heap, preserving the guard's 256 MiB overlap policy.
+    # One extra megabyte makes the arena end land strictly
     # below the aperture instead of exactly on it.
     $ebsBackoff = [Math]::Max([long]0, [long]0x10000000 - ([long]$HeapPages * 4096)) + 0x100000
     $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
-    $bw.Write([byte[]]@(0x74, 0x16))                                # jz +22 -> AnyPages
+    $bw.Write([byte[]]@(0x74, 0x17))                                # jz +23 -> AnyPages
     $bw.Write([byte[]]@(0x4C, 0x89, 0xE0))                          # mov rax, r12 (fb base)
     $bw.Write([byte[]]@(0x48, 0x2D))                                # sub rax, ebsBackoff
     $bw.Write([BitConverter]::GetBytes([int]$ebsBackoff))
@@ -1082,8 +1082,8 @@ $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
 $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))              # lea r9, [rsp+0x38]
 $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
 $bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
-# DARK RED only on the paths that already differ from the flown A5 stub, so the
-# -EntryStart-without-Ebs bytes stay byte-identical to what has flown.
+# Paint allocation failure only for ExitBootServices or opening startup;
+# EntryStart without ExitBootServices uses the unpainted refusal.
 if ($ExitBootServices -or -not $EntryStart) {
     AssertAllocOkPainted 'H' $GopDarkRed                        # H = heap allocation status
 } else {
@@ -1170,7 +1170,7 @@ $ms.Position = $heapPoolDone
 # whole-range test would refuse every codex-vm boot. r12/r13 are GopAcquire's
 # base and pixel count, callee-saved and untouched since; rax is the heap base.
 $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
-$bw.Write([byte[]]@(0x74, 0x2E))                                # jz +46 (no fb -> skip)
+$bw.Write([byte[]]@(0x74, 0x31))                                # jz +49 (no fb -> skip)
 $bw.Write([byte[]]@(0x4C, 0x89, 0xE9))                          # mov rcx, r13
 $bw.Write([byte[]]@(0x48, 0xC1, 0xE1, 0x02))                    # shl rcx, 2
 $bw.Write([byte[]]@(0x4C, 0x01, 0xE1))                          # add rcx, r12  (fb end)

@@ -13,10 +13,7 @@ const run=(script,args,label)=>{const r=spawnSync('pwsh',['-NoProfile','-File',j
 const source=join(repo,'apps/diffusion/Sd15SamplerReference.codex'),kernel=join(repo,'seed/Codex.cdx'),checkpoint=join(repo,'build-output/diffusion-models/realisticVisionV60B1_v20Novae.safetensors');
 const evidence={sourceSha256:await hash(source),kernelSha256:await hash(kernel),checkpointSha256:await hash(checkpoint),prompt:'a photo of a cat',negative:'',seed:7,steps:6,cfg:7,width:512,height:512};
 run('build/bundle-app.ps1',['-Src',source,'-Out',join(out,'reference.codex')],'bundle');
-const path=join(out,'reference.codex'),bundle=readFileSync(path,'utf8'),start=bundle.indexOf('Chapter: Diffusion--DiffusionDriver\n'),end=bundle.indexOf('\nChapter:',start+1);
-if(start<0||end<0)throw new Error('Driver chapter boundary changed');
-const driver=bundle.slice(start,end);if([...driver.matchAll(/^  opening\b/gm)].length!==2)throw new Error('Driver entry shape changed');
-writeFileSync(path,bundle.slice(0,start)+driver.replace(/^  opening\b/gm,'  dr-resident-opening')+bundle.slice(end));
+const path=join(out,'reference.codex');
 evidence.bundleSha256=await hash(path);evidence.compileMemory=memory();
 run('build/compile.ps1',['-Src',path,'-Out',join(out,'reference.cdx'),'-Log',join(out,'compile.log'),'-Kernel',kernel],'compile');
 run('build/mint-clip-bpe-disk.ps1',['-Out',join(out,'clip.img')],'mint');

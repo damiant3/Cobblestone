@@ -87,7 +87,11 @@ Section: Type Resolution
      is UnitTy (n) (inner) -> deck-record (UnitTy n (resolve-ty-deep scope inner))
      is VectorTy (vn) (vt) -> deck-record (VectorTy vn (resolve-ty-deep scope vt))
      is VectorMaskTy (n) (me) -> deck-record (VectorMaskTy n (resolve-ty-deep scope me))
-     is TypeApply (tf) (ta) -> let rf = resolve-ty-deep scope tf in let ra = resolve-ty-deep scope ta in when rf is TypeCon (rn) -> if rn.value == "List" then deck-record (ListTy ra) else deck-record (ConstructedTy rn [ra]) is otherwise -> deck-record (TypeApply rf ra)
+     is TypeApply (tf) (ta) -> let rf = resolve-ty-deep scope tf
+       in let ra = resolve-ty-deep scope ta
+       in when rf
+         is TypeCon (rn) -> if rn.value == "List" then deck-record (ListTy ra) else deck-record (ConstructedTy rn [ra])
+         is otherwise -> deck-record (TypeApply rf ra)
      is TypeCon (n) -> ty
      is LinearTy (linner) -> resolve-ty-deep scope linner
      is otherwise -> ty
@@ -121,32 +125,83 @@ Section: IR Rewrite
     when p
      is IrVarPat (name) (t) (s) -> deck-record (IrVarPat name (resolve-ty-deep scope t) s)
      is IrLitPat (v) (t) (s) -> deck-record (IrLitPat v (resolve-ty-deep scope t) s)
-     is IrCtorPat (name) (subs) (t) (s) -> deck-record (IrCtorPat name (for p2 in subs -> rewrite-ir-pat scope p2) (resolve-ty-deep scope t) s)
+     is IrCtorPat (name) (subs) (t) (s) -> deck-record (
+       let cp-subs = for p2 in subs -> rewrite-ir-pat scope p2
+       in IrCtorPat name cp-subs (resolve-ty-deep scope t) s
+     )
      is IrWildPat (s) -> p
-     is IrVecPat (subs) (t) (s) -> deck-record (IrVecPat (for p2 in subs -> rewrite-ir-pat scope p2) (resolve-ty-deep scope t) s)
+     is IrVecPat (subs) (t) (s) -> deck-record (
+       let vp-subs = for p2 in subs -> rewrite-ir-pat scope p2
+       in IrVecPat vp-subs (resolve-ty-deep scope t) s
+     )
 
   rewrite-ir-expr : ResolveScope, IRExpr -> IRExpr
   rewrite-ir-expr (scope) (e) =
     when e
      is IrIntLit (v) (s) | IrNumLit (v) (s) | IrTextLit (v) (s) | IrBoolLit (v) (s) | IrCharLit (v) (s) -> e
      is IrName (n) (t) (s) -> let rt = resolve-ty-deep scope t in deck-record (IrName (eq-inst-rename n rt) rt s)
-     is IrBinary (op) (l) (r) (t) (s) -> deck-record (IrBinary op (rewrite-ir-expr scope l) (rewrite-ir-expr scope r) (resolve-ty-deep scope t) s)
+     is IrBinary (op) (l) (r) (t) (s) -> deck-record (
+       let bi-l = rewrite-ir-expr scope l
+       in IrBinary op bi-l (rewrite-ir-expr scope r) (resolve-ty-deep scope t) s
+     )
      is IrNegate (x) (t) (s) -> deck-record (IrNegate (rewrite-ir-expr scope x) (resolve-ty-deep scope t) s)
-     is IrIf (c) (th) (el) (t) (s) -> deck-record (IrIf (rewrite-ir-expr scope c) (rewrite-ir-expr scope th) (rewrite-ir-expr scope el) (resolve-ty-deep scope t) s)
-     is IrLet (n) (t) (v) (b) (s) -> deck-record (IrLet n (resolve-ty-deep scope t) (rewrite-ir-expr scope v) (rewrite-ir-expr scope b) s)
-     is IrApply (f) (a) (t) (s) -> deck-record (IrApply (rewrite-ir-expr scope f) (rewrite-ir-expr scope a) (resolve-ty-deep scope t) s)
-     is IrLambda (ps) (b) (t) (s) -> deck-record (IrLambda (for p in ps -> deck-record (IRParam { name = p.name, type-val = resolve-ty-deep scope (p.type-val), span = p.span })) (rewrite-ir-expr scope b) (resolve-ty-deep scope t) s)
+     is IrIf (c) (th) (el) (t) (s) -> deck-record (
+       let if-c = rewrite-ir-expr scope c
+       in let if-th = rewrite-ir-expr scope th
+       in IrIf if-c if-th (rewrite-ir-expr scope el) (resolve-ty-deep scope t) s
+     )
+     is IrLet (n) (t) (v) (b) (s) -> deck-record (
+       let lt-t = resolve-ty-deep scope t
+       in IrLet n lt-t (rewrite-ir-expr scope v) (rewrite-ir-expr scope b) s
+     )
+     is IrApply (f) (a) (t) (s) -> deck-record (
+       let ap-f = rewrite-ir-expr scope f
+       in IrApply ap-f (rewrite-ir-expr scope a) (resolve-ty-deep scope t) s
+     )
+     is IrLambda (ps) (b) (t) (s) -> deck-record (IrLambda (for p in ps -> deck-record (IRParam {
+       name = p.name,
+       type-val = resolve-ty-deep scope (p.type-val),
+       span = p.span
+     })) (rewrite-ir-expr scope b) (resolve-ty-deep scope t) s)
      is IrList (es) (t) (s) -> deck-record (IrList (for x in es -> rewrite-ir-expr scope x) (resolve-ty-deep scope t) s)
-     is IrMatch (sc) (bs) (t) (s) -> deck-record (IrMatch (rewrite-ir-expr scope sc) (for b in bs -> deck-record (IRBranch { pattern = rewrite-ir-pat scope (b.pattern), body = rewrite-ir-expr scope (b.body), guard = rewrite-ir-expr scope (b.guard), span = b.span, alt-group = b.alt-group })) (resolve-ty-deep scope t) s)
+     is IrMatch (sc) (bs) (t) (s) -> deck-record (IrMatch (rewrite-ir-expr scope sc) (for b in bs -> deck-record (IRBranch {
+       pattern = rewrite-ir-pat scope (b.pattern),
+       body = rewrite-ir-expr scope (b.body),
+       guard = rewrite-ir-expr scope (b.guard),
+       span = b.span,
+       alt-group = b.alt-group
+     })) (resolve-ty-deep scope t) s)
      is IrAct (ss) (t) (s) -> deck-record (IrAct (rewrite-ir-act-stmts scope ss) (resolve-ty-deep scope t) s)
-     is IrHandle (eff) (h) (cs) (t) (s) -> deck-record (IrHandle eff (rewrite-ir-expr scope h) (for c in cs -> deck-record (IRHandleClause { op-name = c.op-name, params = c.params, resume-name = c.resume-name, body = rewrite-ir-expr scope (c.body), span = c.span })) (resolve-ty-deep scope t) s)
-     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> deck-record (IrWithTimeout secs effs scopes (rewrite-ir-expr scope body) (resolve-ty-deep scope t) s)
-     is IrRecord (n) (fs) (t) (s) -> deck-record (IrRecord n (for f in fs -> deck-record (IRFieldVal { name = f.name, value = rewrite-ir-expr scope (f.value), span = f.span })) (resolve-ty-deep scope t) s)
+     is IrHandle (eff) (h) (cs) (t) (s) -> deck-record (
+       let hd-h = rewrite-ir-expr scope h
+       in IrHandle eff hd-h (for c in cs -> deck-record (IRHandleClause {
+       op-name = c.op-name,
+       params = c.params,
+       resume-name = c.resume-name,
+       body = rewrite-ir-expr scope (c.body),
+       span = c.span
+     })) (resolve-ty-deep scope t) s)
+     is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> deck-record (
+       let wt-body = rewrite-ir-expr scope body
+       in IrWithTimeout secs effs scopes wt-body (resolve-ty-deep scope t) s
+     )
+     is IrRecord (n) (fs) (t) (s) -> deck-record (IrRecord n (for f in fs -> deck-record (IRFieldVal {
+       name = f.name,
+       value = rewrite-ir-expr scope (f.value),
+       span = f.span
+     })) (resolve-ty-deep scope t) s)
      is IrFieldAccess (r) (f) (t) (s) -> deck-record (IrFieldAccess (rewrite-ir-expr scope r) f (resolve-ty-deep scope t) s)
-     is IrFieldStore (r) (f) (v) (t) (s) -> deck-record (IrFieldStore (rewrite-ir-expr scope r) f (rewrite-ir-expr scope v) (resolve-ty-deep scope t) s)
+     is IrFieldStore (r) (f) (v) (t) (s) -> deck-record (
+       let fs-r = rewrite-ir-expr scope r
+       in IrFieldStore fs-r f (rewrite-ir-expr scope v) (resolve-ty-deep scope t) s
+     )
      is IrFork (body) (t) (s) -> deck-record (IrFork (rewrite-ir-expr scope body) (resolve-ty-deep scope t) s)
      is IrAwait (task) (t) (s) -> deck-record (IrAwait (rewrite-ir-expr scope task) (resolve-ty-deep scope t) s)
-     is IrTry (max) (body) (fb) (fail) (t) (s) -> deck-record (IrTry max (rewrite-ir-act-stmts scope body) (rewrite-ir-act-stmts scope fb) (rewrite-ir-act-stmts scope fail) (resolve-ty-deep scope t) s)
+     is IrTry (max) (body) (fb) (fail) (t) (s) -> deck-record (
+       let tr-body = rewrite-ir-act-stmts scope body
+       in let tr-fb = rewrite-ir-act-stmts scope fb
+       in IrTry max tr-body tr-fb (rewrite-ir-act-stmts scope fail) (resolve-ty-deep scope t) s
+     )
      is IrError (m) (t) (s) -> deck-record (IrError m (resolve-ty-deep scope t) s)
 
   rewrite-ir-act-stmts : ResolveScope, List IRActStmt -> List IRActStmt

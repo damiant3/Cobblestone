@@ -78,6 +78,7 @@ try {
   ok(`seed ${req.seed}'s noise is torch's (4 x 64 x 64, draw 0, within 1e-5)`, req.seed !== '0' || nzBad === 0, req.seed === '0' ? `${nzBad} of 16384 outside` : 'not graded: the fixture is seed 0');
   console.log(`  info  ${st.summary || 'no timing'} (not graded)`);
   ok('the image is made and shown with no WebGPU error', st.image > 0 && st['err-run'] === '' && st.err === '' && /"ok":true/.test(st.shown || ''), `image ${st.image}, error '${st['err-run'] || st.err}', shown ${st.shown}, ${secs} s from the click`);
+  ok('the job gives its byte heap back (the page heap pointer before the job equals the one its done sees)', st['heap-before'] > 0 && st['heap-after'] === st['heap-before'], `before ${st['heap-before']}, after ${st['heap-after']}`);
   const px = parse(st.pixels);
   const f = px ? px.map(asF) : [];
   const nan = f.filter(v => !Number.isFinite(v)).length, mean = f.reduce((a, v) => a + v, 0) / (f.length || 1), sd = Math.sqrt(f.reduce((a, v) => a + (v - mean) ** 2, 0) / (f.length || 1));

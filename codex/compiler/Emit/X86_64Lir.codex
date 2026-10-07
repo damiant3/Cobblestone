@@ -94,7 +94,9 @@ Section: LIR Register File (x86-64)
   lir-nused-callee (assign) (i) (n) (acc) =
     if i >= n then acc
     else when (list-at assign i)
-     is LocReg (r) -> lir-nused-callee assign (i + 1) n (if (r < (lir-target-x86.ncallee)) & ((r + 1) > acc) then r + 1 else acc)
+     is LocReg (r) ->
+       let callee-n = if (r < (lir-target-x86.ncallee)) & ((r + 1) > acc) then r + 1 else acc
+       in lir-nused-callee assign (i + 1) n callee-n
      is LocSlot (s) -> lir-nused-callee assign (i + 1) n acc
 
   lir-nslots : List Location, Integer, Integer, Integer -> Integer
@@ -270,7 +272,8 @@ Section: LIR Instruction Selection (x86-64)
     else when (list-at assign dst)
      is LocReg (pr) -> lir-sel-pow2 st op (list-at lir-phys pr) l (lir-imm-val r) assign
      is LocSlot (ks) ->
-      st-append-code (lir-sel-pow2 st op lir-scratch-reg l (lir-imm-val r) assign) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
+      let pow2-st = lir-sel-pow2 st op lir-scratch-reg l (lir-imm-val r) assign
+      in st-append-code pow2-st (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
 
  A multiply by a constant is one instruction. x86 has a three-operand `imul`
  that reads a register and an immediate and writes a third register, so
@@ -323,7 +326,9 @@ Section: LIR Instruction Selection (x86-64)
   lir-sel-mov (st) (dst) (src) (assign) =
     when (list-at assign dst)
      is LocReg (pr) -> lir-load-into st (list-at lir-phys pr) src assign
-     is LocSlot (ks) -> st-append-code (lir-load-into st lir-scratch-reg src assign) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
+     is LocSlot (ks) ->
+       let mv-st = lir-load-into st lir-scratch-reg src assign
+       in st-append-code mv-st (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
 
  A memory load reads `width` bytes from `[base + off]` into a destination
  register, sign- or zero-extending a narrow field to 64 bits. A full 8-byte
@@ -345,7 +350,9 @@ Section: LIR Instruction Selection (x86-64)
     let bb = lir-load-oper st base lir-scratch2 assign
     in when (list-at assign dst)
      is LocReg (pr) -> lir-emit-load-w (bb.state) (list-at lir-phys pr) (bb.reg) off w sg
-     is LocSlot (ks) -> st-append-code (lir-emit-load-w (bb.state) lir-scratch-reg (bb.reg) off w sg) (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
+     is LocSlot (ks) ->
+       let ld-st = lir-emit-load-w (bb.state) lir-scratch-reg (bb.reg) off w sg
+       in st-append-code ld-st (mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
 
  Placing a call's arguments. Each moves into the register its position
  requires, and while the allocator kept every value out of the argument
@@ -398,35 +405,58 @@ Section: LIR Instruction Selection (x86-64)
     else if (list-at srcs i) == lir-scratch-reg then lir-argmv-stageable srcs done (i + 1) na
     else i
 
-  lir-place-one : CodegenState, Integer, Integer, LirValue, List Location -> CodegenState
-  lir-place-one (st) (dst) (srcreg) (val) (assign) =
+  lir-place-one : CodegenState, Integer, Integer, LirValue, List Location, Integer -> CodegenState
+  lir-place-one (st) (dst) (srcreg) (val) (assign) (shift) =
     if srcreg == lir-scratch-reg then st-append-code st (mov-rr dst lir-scratch-reg)
     else when val
      is LvImm (k) -> st-append-code st (li dst k)
      is LvReg (r) ->
       when (list-at assign r)
        is LocReg (pr) -> st-append-code st (mov-rr dst (list-at lir-phys pr))
-       is LocSlot (ks) -> st-append-code st (mov-load dst reg-rsp (lir-slot-off ks))
+       is LocSlot (ks) -> st-append-code st (mov-load dst reg-rsp (lir-slot-off ks + shift))
 
-  lir-place-loop : CodegenState, List LirValue, List Integer, List Boolean, Integer, List Location, Integer -> CodegenState
-  lir-place-loop (st) (argvals) (srcs) (done) (na) (assign) (fuel) =
+  lir-place-loop : CodegenState, List LirValue, List Integer, List Boolean, Integer, List Location, Integer, Integer ->
+    CodegenState
+  lir-place-loop (st) (argvals) (srcs) (done) (na) (assign) (fuel) (shift) =
     if fuel <= 0 then st
     else let p = lir-argmv-pick srcs done 0 na
     in if p >= 0 then
-      lir-place-loop (lir-place-one st (list-at arg-regs p) (list-at srcs p) (list-at argvals p) assign) argvals srcs (list-set-at done p True) na assign (fuel - 1)
+      let placed = lir-place-one st (list-at arg-regs p) (list-at srcs p) (list-at argvals p) assign shift
+      in lir-place-loop placed argvals srcs (list-set-at done p True) na assign (fuel - 1) shift
     else let c = lir-argmv-stageable srcs done 0 na
     in if c < 0 then st
     else
-      lir-place-loop (st-append-code st (mov-rr lir-scratch-reg (list-at srcs c))) argvals (list-set-at srcs c lir-scratch-reg) done na assign (fuel - 1)
+      let staged = st-append-code st (mov-rr lir-scratch-reg (list-at srcs c))
+      in lir-place-loop staged argvals (list-set-at srcs c lir-scratch-reg) done na assign (fuel - 1) shift
 
-  lir-place-args : CodegenState, List LirValue, Integer, Integer, List Location -> CodegenState
-  lir-place-args (st) (argvals) (i) (na) (assign) =
-    lir-place-loop st argvals (lir-argsrcs argvals 0 na assign []) (lir-make-vec 0 na []) na assign (na * 2 + 4)
+  lir-place-args : CodegenState, List LirValue, Integer, Integer, List Location, Integer -> CodegenState
+  lir-place-args (st) (argvals) (i) (na) (assign) (shift) =
+    lir-place-loop st argvals (lir-argsrcs argvals 0 na assign []) (lir-make-vec 0 na []) na assign (na * 2 + 4) shift
+
+  lir-push-arg : CodegenState, LirValue, List Location, Integer -> CodegenState
+  lir-push-arg (st) (v) (assign) (shift) =
+    when v
+     is LvImm (k) -> st-append-code (st-append-code st (li lir-scratch-reg k)) (push-r lir-scratch-reg)
+     is LvReg (r) ->
+      when (list-at assign r)
+       is LocReg (pr) -> st-append-code st (push-r (list-at lir-phys pr))
+       is LocSlot (ks) ->
+         let ld-st = st-append-code st (mov-load lir-scratch-reg reg-rsp (lir-slot-off ks + shift))
+         in st-append-code ld-st (push-r lir-scratch-reg)
+
+  lir-push-stack-args : CodegenState, List LirValue, Integer, Integer, List Location -> CodegenState
+  lir-push-stack-args (st) (argvals) (i) (pushed) (assign) =
+    if i < 6 then st
+    else lir-push-stack-args (lir-push-arg st (list-at argvals i) assign (pushed * 8)) argvals (i - 1) (pushed + 1) assign
 
   lir-sel-call : CodegenState, Integer, Text, List LirValue, List Location -> CodegenState
   lir-sel-call (st) (dst) (name) (argvals) (assign) =
-    let st1 = lir-place-args st argvals 0 (list-length argvals) assign
-    in let st2 = emit-call-to st1 name
+    let na = list-length argvals
+    in let nstack = if na > 6 then na - 6 else 0
+    in let st0 = lir-push-stack-args st argvals (na - 1) 0 assign
+    in let st1 = lir-place-args st0 argvals 0 (na - nstack) assign (nstack * 8)
+    in let st1c = emit-call-to st1 name
+    in let st2 = if nstack > 0 then st-append-code st1c (add-ri reg-rsp (nstack * 8)) else st1c
     in when (list-at assign dst)
      is LocReg (pr) -> st-append-code st2 (mov-rr (list-at lir-phys pr) reg-rax)
      is LocSlot (ks) -> st-append-code st2 (mov-store reg-rsp reg-rax (lir-slot-off ks))
@@ -888,8 +918,7 @@ Section: LIR Function Emission (x86-64)
 
  Move each parameter from the register it arrives in (`arg-regs[i]`) to the
  location the allocator gave its vreg -- a register, or a store into its spill
- slot. At most six parameters; the dispatch predicate refuses a seventh, which
- would arrive on the caller's stack.
+ slot. The first six only; the rest are loads (`lir-pmv-stack-loads`).
 
  So: emit a parameter's move only when no parameter still to be moved reads
  the register it writes. When every remaining move is blocked, the moves form
@@ -942,6 +971,8 @@ Section: LIR Function Emission (x86-64)
   PmvStep =
     | PmvReg (Integer) (Integer)
     | PmvStore (Integer) (Integer)
+    | PmvLoadReg (Integer) (Integer)
+    | PmvLoadSlot (Integer) (Integer)
 
   lir-pmv-step : List Location, Integer, Integer -> PmvStep
   lir-pmv-step (assign) (i) (srcreg) =
@@ -968,13 +999,32 @@ Section: LIR Function Emission (x86-64)
     in if c < 0 then acc
     else lir-pmv-stage srcs done np assign (fuel - 1) acc c (list-at srcs c)
 
-  lir-pmv-emit : CodegenState, List PmvStep, Integer, Integer -> CodegenState
-  lir-pmv-emit (st) (plan) (i) (n) =
+  lir-pmv-emit : CodegenState, List PmvStep, Integer, Integer, Integer -> CodegenState
+  lir-pmv-emit (st) (plan) (i) (n) (stack-base) =
     if i >= n then st
     else let step = list-at plan i
     in when step
-     is PmvReg (d) (s) -> lir-pmv-emit (lir-move-param-reg st d s) plan (i + 1) n
-     is PmvStore (k) (s) -> lir-pmv-emit (st-append-code st (mov-store reg-rsp s (lir-slot-off k))) plan (i + 1) n
+     is PmvReg (d) (s) -> lir-pmv-emit (lir-move-param-reg st d s) plan (i + 1) n stack-base
+     is PmvStore (k) (s) -> lir-pmv-emit (st-append-code st (mov-store reg-rsp s (lir-slot-off k))) plan (i + 1) n stack-base
+     is PmvLoadReg (d) (j) ->
+       let ld-st = st-append-code st (mov-load d reg-rsp (stack-base + j * 8))
+       in lir-pmv-emit ld-st plan (i + 1) n stack-base
+     is PmvLoadSlot (k) (j) ->
+      let st1 = st-append-code st (mov-load lir-scratch-reg reg-rsp (stack-base + j * 8))
+      in lir-pmv-emit (st-append-code st1 (mov-store reg-rsp lir-scratch-reg (lir-slot-off k))) plan (i + 1) n stack-base
+
+ Parameters past the sixth arrive on the caller's stack, the seventh at
+ [rsp+8] on entry. They are loaded after every register move, when no
+ incoming register is still to be read, so a load can clobber nothing and
+ R11 is free to stage a load into a spill slot.
+
+  lir-pmv-stack-loads : List Location, Integer, Integer, List PmvStep -> List PmvStep
+  lir-pmv-stack-loads (assign) (i) (np) (acc) =
+    if i >= np then acc
+    else let step = when (list-at assign i)
+     is LocReg (pr) -> PmvLoadReg (list-at lir-phys pr) (i - 6)
+     is LocSlot (ks) -> PmvLoadSlot ks (i - 6)
+    in lir-pmv-stack-loads assign (i + 1) np (list-push acc step)
 
  The prologue check. The allocation verifier in `IR/Lir.codex` walks the LIR
  and asserts that every use reads its vreg from the location the assignment
@@ -1012,6 +1062,8 @@ Section: LIR Function Emission (x86-64)
     in when step
      is PmvReg (d) (s) -> pmv-apply (list-set-at file d (list-at file s)) plan (i + 1) n
      is PmvStore (k) (s) -> pmv-apply (list-set-at file (pmv-nphys + k) (list-at file s)) plan (i + 1) n
+     is PmvLoadReg (d) (j) -> pmv-apply (list-set-at file d (6 + j)) plan (i + 1) n
+     is PmvLoadSlot (k) (j) -> pmv-apply (list-set-at file (pmv-nphys + k) (6 + j)) plan (i + 1) n
 
   pmv-viol : List Integer, List Location, Integer, Integer -> Integer
   pmv-viol (file) (assign) (i) (np) =
@@ -1020,13 +1072,15 @@ Section: LIR Function Emission (x86-64)
       pmv-viol file assign (i + 1) np
     else i
 
-  lir-move-params : CodegenState, Text, Integer, List Location -> CodegenState
-  lir-move-params (st) (fname) (np) (assign) =
-    let plan = lir-pmv-plan (lir-pmv-srcs 0 np []) (lir-make-vec 0 np []) np assign (np * 2 + 4) []
+  lir-move-params : CodegenState, Text, Integer, List Location, Integer -> CodegenState
+  lir-move-params (st) (fname) (np) (assign) (stack-base) =
+    let nreg = if np < 6 then np else 6
+    in let reg-plan = lir-pmv-plan (lir-pmv-srcs 0 nreg []) (lir-make-vec 0 nreg []) nreg assign (nreg * 2 + 4) []
+    in let plan = lir-pmv-stack-loads assign 6 np reg-plan
     in let nsim = pmv-nphys + lir-assign-max-slot assign 0 (list-length assign) 0
-    in let file = pmv-apply (pmv-seed (lir-int-vec 0 nsim (0 - 1) []) 0 np) plan 0 (list-length plan)
+    in let file = pmv-apply (pmv-seed (lir-int-vec 0 nsim (0 - 1) []) 0 nreg) plan 0 (list-length plan)
     in let bad = pmv-viol file assign 0 np
-    in if bad < 0 then lir-pmv-emit st plan 0 (list-length plan)
+    in if bad < 0 then lir-pmv-emit st plan 0 (list-length plan) stack-base
     else
       st-add-error st cdx-lir-prologue-violation ("The entry moves for '" & fname & "' do not place parameter " & show bad & " in " & lir-loc-text (list-at assign bad) & ", the location its vreg was allocated. Simulating the planned moves from the argument registers leaves some other parameter's value there, so this function would run with parameter " & show bad & " holding a value that is not its own. The fault is in the selector's parallel move, not in the program being compiled: a move was emitted that overwrote a register a later move still had to read.") synthetic-span
 
@@ -1066,7 +1120,7 @@ Section: LIR Function Emission (x86-64)
     in let st1 = lir-push-saved st0 0 nused
     in let stg = if has-call & (st0.stack-guard) then lir-stack-guard st1 else st1
     in let st1b = if frame > 0 then st-append-code stg (emit-sub-rsp-imm32 frame) else stg
-    in let st2 = lir-move-params st1b (f.name) (f.nparams) assign
+    in let st2 = lir-move-params st1b (f.name) (f.nparams) assign (frame + nused * 8 + 8)
     in let nb = list-length (f.blocks)
     in let nrets = lir-count-rets (f.blocks) 0 nb 0
     in let cx0 = LirCtx {
@@ -1098,13 +1152,11 @@ Section: LIR Function Emission (x86-64)
     in if f.rets == False
        then lir-ctx-st cx1 (lir-emit-return (cx1.state) (f.result) assign nused frame)
     else if cx.share then
-      lir-ctx-st cx1 (st-append-code (lir-pop-saved (if frame > 0 then st-append-code (cx1.state) (add-ri reg-rsp frame) else (cx1.state)) (nused - 1)) x86-ret)
+      let unframed = if frame > 0 then st-append-code (cx1.state) (add-ri reg-rsp frame) else (cx1.state)
+      in lir-ctx-st cx1 (st-append-code (lir-pop-saved unframed (nused - 1)) x86-ret)
     else cx1
 
 Section: LIR Dispatch
-
- The six-parameter bound is the ABI's: a seventh parameter arrives on the
- caller's stack, not in a register.
 
   lir-ty-needs-guard : CodexType -> Boolean
   lir-ty-needs-guard (ty) =
@@ -1193,12 +1245,14 @@ Section: LIR Dispatch
 
   lir-verifier-halt : CodegenState, Integer between 0 and 65535, Text, Text, List Text -> CodegenState
   lir-verifier-halt (st) (code) (which) (fname) (viol) =
-    st-add-error st code ("The " & which & " verifier rejected '" & fname & "' on the emission path: " & (list-at viol 0) & (if list-length viol > 1 then " (and " & show (list-length viol - 1) & " more)" else "") & ". The selector's output would not compute the program; the build halts rather than write it.") synthetic-span
+    let vh0 = "The " & which & " verifier rejected '" & fname & "' on the emission path: " & (list-at viol 0)
+    in let vh1 = vh0 & (if list-length viol > 1 then " (and " & show (list-length viol - 1) & " more)" else "")
+    in let vh2 = vh1 & ". The selector's output would not compute the program; the build halts rather than write it."
+    in st-add-error st code vh2 synthetic-span
 
   lir-emit-try : CodegenState, IRDef -> LirEmitTry
   lir-emit-try (st) (def) =
     if def.is-punctual then lir-not-handled st
-    else if list-length (def.params) > 6 then lir-not-handled st
     else if lir-params-plain (def.params) 0 (list-length (def.params)) == False then
       lir-not-handled st
     else if lir-ty-needs-guard (return-bound-of (def.type-val) (list-length (def.params))) then

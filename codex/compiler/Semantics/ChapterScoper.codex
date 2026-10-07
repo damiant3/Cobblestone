@@ -124,7 +124,8 @@ Section: Colliding Across Chapters
     else colliding-other-chapter assignments name own-slug (i + 1) len
     else colliding-other-chapter assignments name own-slug (i + 1) len
 
-  check-cross-chapter-collisions : List DefHeader, SkipListText, List ChapterAssignment, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-cross-chapter-collisions : List DefHeader, SkipListText, List ChapterAssignment, Integer, Integer, List Diagnostic ->
+    List Diagnostic
   check-cross-chapter-collisions (headers) (colliding) (assignments) (i) (len) (acc) =
     if i >= len then acc
     else let h = list-at headers i
@@ -132,7 +133,7 @@ Section: Colliding Across Chapters
     in if skip-list-text-has colliding n then
       let other = colliding-other-chapter assignments n (h.chapter-slug) 0 (list-length assignments)
       in let prefix = "Definition '" & n & "' is also defined in chapter '" & other
-      in let suffix = "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and in a chapter that defines neither it depends on the order the build globs files. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice."
+      in let suffix = "'. Both are kept and each chapter sees its own, so this compiles and runs -- but which definition a mention gets depends on the chapter the mention sits in, and a mention in a chapter that defines neither is refused (CDX3027) unless that chapter cites the one it means. Move this body to the other chapter and it silently means the other thing. Give one of them a chapter-specific prefix, or cite the one you mean instead of defining it twice."
       in let msg = prefix & suffix
       in let diag = make-warning cdx-collides-across-chapters msg (token-span (h.name))
       in let next = list-push acc diag
@@ -238,7 +239,8 @@ Section: IR Expression Renaming
   rename-ir-expr : List RenameEntry, IRExpr -> IRExpr
   rename-ir-expr (rn) (e) =
     when e
-      is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrTextLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) | IrError (msg) (ty) (sp) -> e
+      is IrIntLit (v) (sp) | IrNumLit (v) (sp) | IrTextLit (v) (sp) | IrBoolLit (v) (sp) | IrCharLit (v) (sp) -> e
+      is IrError (msg) (ty) (sp) -> e
       is IrFork (x) (ty) (sp) -> IrFork (rename-ir-expr rn x) ty sp
       is IrAwait (x) (ty) (sp) -> IrAwait (rename-ir-expr rn x) ty sp
       is IrNegate (x) (t) (sp) -> IrNegate (rename-ir-expr rn x) t sp
@@ -251,11 +253,18 @@ Section: IR Expression Renaming
       is IrLambda (params) (body) (ty) (sp) -> rename-ir-lambda rn params body ty sp
       is IrMatch (scrut) (branches) (ty) (sp) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty sp
       is IrList (elems) (ty) (sp) -> IrList (for e in elems -> rename-ir-expr rn e) ty sp
-      is IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (for f in fields -> IRFieldVal { name = f.name, value = rename-ir-expr rn (f.value), span = f.span }) ty sp
+      is IrRecord (nm) (fields) (ty) (sp) ->
+        let rec-fields = for f in fields -> IRFieldVal { name = f.name, value = rename-ir-expr rn (f.value), span = f.span }
+        in IrRecord nm rec-fields ty sp
       is IrAct (stmts) (ty) (sp) -> IrAct (rename-ir-act-stmts rn stmts 0 []) ty sp
-      is IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
+      is IrHandle (eff) (body) (clauses) (ty) (sp) ->
+        let hd-body = rename-ir-expr rn body
+        in IrHandle eff hd-body (rename-ir-handle-clauses rn clauses 0 []) ty sp
       is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> IrWithTimeout secs effs scopes (rename-ir-expr rn body) ty sp
-      is IrTry (max) (body) (fb) (fail) (ty) (sp) -> IrTry max (rename-ir-act-stmts rn body 0 []) (rename-ir-act-stmts rn fb 0 []) (rename-ir-act-stmts rn fail 0 []) ty sp
+      is IrTry (max) (body) (fb) (fail) (ty) (sp) ->
+        let tr-body = rename-ir-act-stmts rn body 0 []
+        in let tr-fb = rename-ir-act-stmts rn fb 0 []
+        in IrTry max tr-body tr-fb (rename-ir-act-stmts rn fail 0 []) ty sp
       is otherwise -> e
 
   rename-ir-let : List RenameEntry, Text, CodexType, IRExpr, IRExpr, SourceSpan -> IRExpr
@@ -335,6 +344,8 @@ Section: Chapter Scoping Pipeline
   build-chapter-rename-map (colliding) (assignments) (cur-chap) =
     build-mod-renames colliding assignments cur-chap 0 (list-length assignments) []
 
+  ambiguity-marker : Text = "~ambiguous:"
+
   build-mod-renames : SkipListText, List ChapterAssignment, Text, Integer, Integer, List RenameEntry -> List RenameEntry
   build-mod-renames (colliding) (assignments) (cur-chap) (i) (len) (acc) =
     if i == len then acc
@@ -349,10 +360,17 @@ Section: Chapter Scoping Pipeline
         in let next = sorted-rename-insert cleaned entry
         in build-mod-renames colliding assignments cur-chap (i + 1) len next
       else if has-rename acc (a.def-name) then
-        build-mod-renames colliding assignments cur-chap (i + 1) len acc
+        let prior = rename-lookup acc (a.def-name)
+        in if text-starts-with prior ambiguity-marker then
+          let pruned = remove-rename acc (a.def-name)
+          in build-mod-renames colliding assignments cur-chap (i + 1) len (sorted-rename-insert pruned (RenameEntry {
+            original = a.def-name,
+            mangled = prior & ", " & a.chapter-slug
+          }))
+        else build-mod-renames colliding assignments cur-chap (i + 1) len acc
       else let entry = RenameEntry {
         original = a.def-name,
-        mangled = mangle-name (a.chapter-slug) (a.def-name)
+        mangled = ambiguity-marker & a.chapter-slug
       }
       in let next = sorted-rename-insert acc entry
       in build-mod-renames colliding assignments cur-chap (i + 1) len next
@@ -361,44 +379,30 @@ Section: Chapter Scoping Pipeline
   build-global-rename-table : List ChapterAssignment, SkipListText -> List RenameEntry
   build-global-rename-table (assignments) (colliding) =
     let count = list-length assignments
-    in let first = count - 1
     in let entries = __list-with-capacity count
-    in let pushed = build-global-renames assignments colliding first entries
-    in dedupe-renames (sort-by pushed compare-rename-originals)
+    in let pushed = build-global-renames assignments colliding 0 count skip-list-text-empty entries
+    in sort-by pushed compare-rename-originals
 
- Preallocated reverse pushes avoid per-entry sorted-insertion copies
- retained on the scope deck. sort-by uses in-place quicksort: average
- O(n log n), worst-case O(n squared) comparison work. Equal-key order is
- not stable, so retaining the first sorted duplicate does not guarantee
- the last assignment wins. The duplicate-selection gap is COMPILER-115.
+ The first assignment of a colliding name wins, as in build-mod-renames for a
+ chapter that does not define it: the walk skips a name already pushed, so sort-by, an unstable in-place
+ quicksort (average O(n log n), worst-case O(n squared) comparisons), never
+ sees two equal keys.
 
   compare-rename-originals : RenameEntry, RenameEntry -> Integer
   compare-rename-originals (a) (b) = text-compare (a.original) (b.original)
 
-  build-global-renames : List ChapterAssignment, SkipListText, Integer, List RenameEntry -> List RenameEntry
-  build-global-renames (assignments) (colliding) (i) (acc) =
-    if i < 0 then acc
+  build-global-renames : List ChapterAssignment, SkipListText, Integer, Integer, SkipListText, List RenameEntry ->
+    List RenameEntry
+  build-global-renames (assignments) (colliding) (i) (len) (seen) (acc) =
+    if i >= len then acc
     else let a = list-at assignments i
-    in if is-colliding colliding (a.def-name)
-       then build-global-renames assignments colliding (i - 1) (list-push acc (RenameEntry {
+    in if is-colliding colliding (a.def-name) & skip-list-text-has seen (a.def-name) == False
+       then let seen2 = skip-list-text-insert seen (a.def-name)
+       in build-global-renames assignments colliding (i + 1) len seen2 (list-push acc (RenameEntry {
              original = a.def-name,
              mangled = mangle-name (a.chapter-slug) (a.def-name)
             }))
-    else build-global-renames assignments colliding (i - 1) acc
-
-  dedupe-renames : List RenameEntry -> List RenameEntry
-  dedupe-renames (entries) =
-    dedupe-renames-loop entries 0 (list-length entries) (__list-with-capacity (list-length entries))
-
-  dedupe-renames-loop : List RenameEntry, Integer, Integer, List RenameEntry -> List RenameEntry
-  dedupe-renames-loop (entries) (i) (len) (acc) =
-    if i == len then acc
-    else let e = list-at entries i
-    in if i > 0
-       then if (list-at entries (i - 1)).original == e.original
-            then dedupe-renames-loop entries (i + 1) len acc
-       else dedupe-renames-loop entries (i + 1) len (list-push acc e)
-    else dedupe-renames-loop entries (i + 1) len (list-push acc e)
+    else build-global-renames assignments colliding (i + 1) len seen acc
 
   resolve-def-name : List RenameEntry, Text, Text -> Text
   resolve-def-name (renames) (name) (chapter-slug) =
@@ -500,7 +504,9 @@ Section: Duplicate Cite Detection
 
   add-missing-cite-error : DiagnosticBag, ACitesDecl -> DiagnosticBag
   add-missing-cite-error (bag) (cite) =
-    bag-add bag (make-error cdx-cite-not-in-unit ("Cited chapter '" & (cite.chapter-name.value) & "' of quire '" & (cite.quire.value) & "' is not present in this compilation unit") (cite.span))
+    let cite-head = "Cited chapter '" & (cite.chapter-name.value) & "' of quire '" & (cite.quire.value)
+    in let cite-msg = cite-head & "' is not present in this compilation unit"
+    in bag-add bag (make-error cdx-cite-not-in-unit cite-msg (cite.span))
 
   bare-name-present : List Text, Text, Integer, Integer -> Boolean
   bare-name-present (bare-cache) (target) (i) (len) =
@@ -526,7 +532,7 @@ Section: AST-Level Chapter Scoping
   scope-achapter : AChapter, SkipListText, List ChapterAssignment, Integer -> AChapter
   scope-achapter (ast) (colliding) (assignments) (ceiling) =
     let slug-cache = for a in assignments -> cite-key (a.chapter-slug)
-    in let cite-slugs = for c in (ast.citations) -> find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
+    in let cite-slugs = for c in (ast.citations) -> cite-slug-for c assignments slug-cache
     in let raw-defs = scope-adefs-ll (ast.defs) colliding assignments (ast.citations) cite-slugs "" [] 0 [] ceiling
     in deck-record (AChapter {
      name = ast.name,
@@ -548,23 +554,27 @@ Section: AST-Level Chapter Scoping
      span = ast.span
     })
 
-  scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer, LinkedList ADef, Integer -> LinkedList ADef
+  scope-adefs-ll : List ADef, SkipListText, List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, Integer,
+    LinkedList ADef, Integer -> LinkedList ADef
   scope-adefs-ll (defs) (colliding) (assignments) (citations) (cite-slugs) (cur-slug) (cur-rn) (i) (acc) (ceiling) =
     if i == list-length defs then acc
     else if deck-short-of ceiling demand-scope-guard-band then acc
     else let d = list-at defs i
     in let rn = if d.chapter-slug == cur-slug then cur-rn
     else
-      apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments cite-slugs (d.chapter-slug) 0
+      let base-rn = build-chapter-rename-map colliding assignments (d.chapter-slug)
+      in apply-cite-overrides base-rn citations colliding assignments cite-slugs (d.chapter-slug) 0
     in let new-name = deck-record (Name { value = rename-lookup rn (d.name.value) })
-    in scope-adefs-ll defs colliding assignments citations cite-slugs (d.chapter-slug) rn (i + 1) (__linked-list-push acc (deck-record (ADef {
+    in let scoped = deck-record (ADef {
      name = new-name,
      params = d.params,
      declared-type = d.declared-type,
      body = d.body,
      chapter-slug = d.chapter-slug,
      span = d.span
-    }))) ceiling
+    })
+    in let acc2 = __linked-list-push acc scoped
+    in scope-adefs-ll defs colliding assignments citations cite-slugs (d.chapter-slug) rn (i + 1) acc2 ceiling
 
  EVERY CITATION IS RESOLVED ONCE PER UNIT, not once per slug transition.
  `find-slug-for-cite-name` depends on the quire, the cite name, the assignments
@@ -595,11 +605,13 @@ Section: AST-Level Chapter Scoping
  definitions, against an arm that shares no code with the one that produced
  it.
 
-  apply-cite-overrides : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
+  apply-cite-overrides : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer ->
+    List RenameEntry
   apply-cite-overrides (rn) (citations) (colliding) (assignments) (cite-slugs) (cur-slug) (i) =
     apply-cite-overrides-loop rn citations colliding assignments cite-slugs cur-slug i
 
-  apply-cite-overrides-loop : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text, Integer -> List RenameEntry
+  apply-cite-overrides-loop : List RenameEntry, List ACitesDecl, SkipListText, List ChapterAssignment, List Text, Text,
+    Integer -> List RenameEntry
   apply-cite-overrides-loop (rn) (citations) (colliding) (assignments) (cite-slugs) (cur-slug) (i) =
     if i == list-length citations then rn
     else let cite = list-at citations i
@@ -670,9 +682,14 @@ Section: AST-Level Chapter Scoping
        then find-slug-bare-loop bare suf assignments slug-cache 0 (list-length assignments)
     else ""
 
+  cite-slug-for : ACitesDecl, List ChapterAssignment, List Text -> Text
+  cite-slug-for (c) (assignments) (slug-cache) =
+    find-slug-for-cite-name (c.quire.value) (c.chapter-name.value) assignments slug-cache
+
   find-slug-for-cite-name : Text, Text, List ChapterAssignment, List Text -> Text
   find-slug-for-cite-name (quire) (cite-name) (assignments) (slug-cache) =
-    let exact = find-slug-for-cite-name-loop (cite-key (quire & "--" & cite-name)) assignments slug-cache 0 (list-length assignments)
+    let exact-key = cite-key (quire & "--" & cite-name)
+    in let exact = find-slug-for-cite-name-loop exact-key assignments slug-cache 0 (list-length assignments)
     in if exact == "" then find-slug-by-bare-name (cite-key cite-name) assignments slug-cache
     else exact
 
@@ -682,7 +699,8 @@ Section: AST-Level Chapter Scoping
     else if list-at slug-cache i == slug-cite then (list-at assignments i).chapter-slug
     else find-slug-for-cite-name-loop slug-cite assignments slug-cache (i + 1) len
 
-  apply-cite-selected : List RenameEntry, List Name, Text, SkipListText, List ChapterAssignment, Text, Integer -> List RenameEntry
+  apply-cite-selected : List RenameEntry, List Name, Text, SkipListText, List ChapterAssignment, Text, Integer ->
+    List RenameEntry
   apply-cite-selected (rn) (names) (cite-slug) (colliding) (assignments) (cur-slug) (i) =
     if i == list-length names then rn
     else let n = (list-at names i).value

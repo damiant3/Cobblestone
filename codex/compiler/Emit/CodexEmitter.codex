@@ -16,7 +16,8 @@ Section: Type Definition Emission
     when td
      is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
       let mut-prefix = if is-mut then "mutable " else ""
-      in mut-prefix & name.value & codex-emit-tparams tparams 0 & " = record {" & codex-emit-record-field-defs fields 0 & "\n}\n"
+      in let rec-head = mut-prefix & name.value & codex-emit-tparams tparams 0 & " = record {"
+      in rec-head & codex-emit-record-field-defs fields 0 & "\n}\n"
      is AVariantTypeDef (name) (tparams) (ctors) (s) ->
       name.value & codex-emit-tparams tparams 0 & " =\n" & codex-emit-variant-ctors ctors 0
      is AUnitTypeDef (name) (base) (s) ->
@@ -35,7 +36,8 @@ Section: Type Definition Emission
     if i == len then acc
     else let f = list-at fields i
     in let comma = if i > 0 then "," else ""
-    in codex-emit-record-field-defs-acc fields (i + 1) len (list-push acc (comma & "\n  " & f.name.value & " : " & codex-emit-type-expr (f.type-expr)))
+    in let field-text = comma & "\n  " & f.name.value & " : " & codex-emit-type-expr (f.type-expr)
+    in codex-emit-record-field-defs-acc fields (i + 1) len (list-push acc field-text)
 
   codex-emit-variant-ctors : List AVariantCtorDef, Integer -> Text
   codex-emit-variant-ctors (ctors) (i) =
@@ -45,7 +47,8 @@ Section: Type Definition Emission
   codex-emit-variant-ctors-acc (ctors) (i) (len) (acc) =
     if i == len then acc
     else let c = list-at ctors i
-    in codex-emit-variant-ctors-acc ctors (i + 1) len (list-push acc ("  | " & c.name.value & codex-emit-ctor-fields (c.fields) 0 & "\n"))
+    in let ctor-text = "  | " & c.name.value & codex-emit-ctor-fields (c.fields) 0 & "\n"
+    in codex-emit-variant-ctors-acc ctors (i + 1) len (list-push acc ctor-text)
 
   codex-emit-ctor-fields : List ATypeExpr, Integer -> Text
   codex-emit-ctor-fields (fields) (i) =
@@ -64,7 +67,9 @@ Section: Type Definition Emission
         "[" & (list-at tail 0).value & "] " & codex-emit-type-expr ret
       else
         "[" & codex-emit-effect-names effs 0 & ", " & (list-at tail 0).value & "] " & codex-emit-type-expr ret
-     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> codex-emit-type-expr b & " between " & integer-to-text lo & " and " & integer-to-text hi & codex-emit-overflow-mode mode
+     is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+       let range-text = codex-emit-type-expr b & " between " & integer-to-text lo & " and " & integer-to-text hi
+       in range-text & codex-emit-overflow-mode mode
      is ALinearType (inner) (s) -> "linear " & codex-emit-type-expr inner
      is otherwise -> "Unknown"
 
@@ -325,7 +330,9 @@ Section: Expression Emission
      is IrAct (stmts) (ty) (sp) -> codex-emit-act stmts ctors indent
      is IrRecord (name) (fields) (ty) (sp) -> codex-emit-record name fields ctors indent
      is IrFieldAccess (rec) (field) (ty) (sp) -> codex-emit-field-access rec field ctors indent
-     is IrFieldStore (rec) (field) (val) (ty) (sp) -> codex-emit-field-access rec field ctors indent & " = " & codex-emit-expr val ctors indent
+     is IrFieldStore (rec) (field) (val) (ty) (sp) ->
+       let store-lhs = codex-emit-field-access rec field ctors indent
+       in store-lhs & " = " & codex-emit-expr val ctors indent
      is IrFork (body) (ty) (sp) -> "fork (" & codex-emit-expr-at body ctors indent (depth + 1) & ")"
      is IrAwait (task) (ty) (sp) -> "await (" & codex-emit-expr-at task ctors indent (depth + 1) & ")"
      is IrHandle (eff) (body) (clauses) (ty) (sp) -> codex-emit-handle eff body clauses ctors indent
@@ -392,7 +399,9 @@ Section: Binary Operators
   is-associative-op : IRBinaryOp -> Boolean
   is-associative-op (op) =
     when op
-     is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating | IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating | IrAddVec | IrMulVec | IrAppendText | IrAppendList | IrConsList | IrAnd | IrOr -> True
+     is IrAddInt | IrAddNum | IrAddRealApprox | IrAddRealTrapping | IrAddRealSaturating | IrAddVec -> True
+     is IrMulInt | IrMulNum | IrMulRealApprox | IrMulRealTrapping | IrMulRealSaturating | IrMulVec -> True
+     is IrAppendText | IrAppendList | IrConsList | IrAnd | IrOr -> True
      is otherwise -> False
 
   bin-op-prec : IRBinaryOp -> Integer
@@ -400,11 +409,14 @@ Section: Binary Operators
     when op
      is IrOr -> 2
      is IrAnd -> 3
-     is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact | IrLtVec | IrGtVec | IrLtEqVec | IrGtEqVec -> 4
+     is IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq | IrApproxEq | IrApproxEqExact | IrLtVec | IrGtVec | IrLtEqVec -> 4
+     is IrGtEqVec -> 4
      is IrAppendText | IrAppendList -> 3
      is IrConsList -> 5
-     is IrAddInt | IrSubInt | IrAddNum | IrSubNum | IrAddRealApprox | IrSubRealApprox | IrAddRealTrapping | IrSubRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrAddVec | IrSubVec -> 6
-     is IrMulInt | IrDivInt | IrMulNum | IrDivNum | IrMulRealApprox | IrDivRealApprox | IrMulRealTrapping | IrDivRealTrapping | IrMulRealSaturating | IrDivRealSaturating | IrMulVec | IrDivVec -> 7
+     is IrAddInt | IrSubInt | IrAddNum | IrSubNum | IrAddRealApprox | IrSubRealApprox | IrAddRealTrapping -> 6
+     is IrSubRealTrapping | IrAddRealSaturating | IrSubRealSaturating | IrAddVec | IrSubVec -> 6
+     is IrMulInt | IrDivInt | IrMulNum | IrDivNum | IrMulRealApprox | IrDivRealApprox | IrMulRealTrapping -> 7
+     is IrDivRealTrapping | IrMulRealSaturating | IrDivRealSaturating | IrMulVec | IrDivVec -> 7
      is IrPowInt -> 8
      is otherwise -> 0
 
@@ -467,7 +479,8 @@ Section: If/Then/Else
       if is-negated-eq-call c2 t2 el2 then
         list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else " & codex-emit-noteq c2 ctors indent)
       else
-        codex-emit-if-chain c2 t2 el2 ctors indent else-offset (list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else "))
+        let else-text = "\n" & make-indent indent & pad-spaces else-offset & "else "
+        in codex-emit-if-chain c2 t2 el2 ctors indent else-offset (list-push acc2 else-text)
      is otherwise ->
       list-push acc2 ("\n" & make-indent indent & pad-spaces else-offset & "else " & codex-emit-expr el ctors indent)
 
@@ -567,7 +580,8 @@ Section: Apply
     when (list-at args 0)
      is IrLambda (ps) (body) (ty) (sp) ->
       let param-name = (list-at ps 0).name
-      in "for " & param-name & " in " & codex-emit-expr (list-at args 1) ctors indent & " -> " & codex-emit-expr body ctors (indent + 1)
+      in let for-head = "for " & param-name & " in " & codex-emit-expr (list-at args 1) ctors indent
+      in for-head & " -> " & codex-emit-expr body ctors (indent + 1)
      is otherwise -> "for _ in [] -> 0"
 
   is-tuple-ctor : IRExpr, Integer -> Boolean
@@ -604,7 +618,10 @@ Section: Apply
   needs-parens : IRExpr, Boolean -> Boolean
   needs-parens (e) (is-ctor) =
     when e
-     is IrApply (f) (a) (ty) (sp) | IrBinary (op) (l) (r) (ty) (sp) | IrIf (c) (t) (el) (ty) (sp) | IrLet (name) (ty) (val) (body) (sp) | IrMatch (scrut) (branches) (ty) (sp) | IrNegate (operand) (nty) (sp) | IrLambda (params) (body) (ty) (sp) | IrFieldAccess (rec) (field) (ty) (sp) | IrFieldStore (rec) (field) (val) (ty) (sp) | IrRecord (name) (fields) (ty) (sp) -> True
+     is IrApply (f) (a) (ty) (sp) | IrBinary (op) (l) (r) (ty) (sp) | IrIf (c) (t) (el) (ty) (sp) -> True
+     is IrLet (name) (ty) (val) (body) (sp) | IrMatch (scrut) (branches) (ty) (sp) | IrNegate (operand) (nty) (sp) -> True
+     is IrLambda (params) (body) (ty) (sp) | IrFieldAccess (rec) (field) (ty) (sp) -> True
+     is IrFieldStore (rec) (field) (val) (ty) (sp) | IrRecord (name) (fields) (ty) (sp) -> True
      is IrIntLit (n) (sp) -> n < 0
      is otherwise -> False
 
@@ -633,7 +650,8 @@ Section: List
   codex-emit-list-elems-acc (elems) (ctors) (indent) (i) (len) (acc) =
     if i == len then acc
     else let sep = if i > 0 then ", " else ""
-    in codex-emit-list-elems-acc elems ctors indent (i + 1) len (list-push acc (sep & codex-emit-expr (list-at elems i) ctors indent))
+    in let elem-text = sep & codex-emit-expr (list-at elems i) ctors indent
+    in codex-emit-list-elems-acc elems ctors indent (i + 1) len (list-push acc elem-text)
 
 Section: Match
   codex-emit-match : IRExpr, List IRBranch, List Text, Integer -> Text
@@ -694,7 +712,8 @@ Section: Match
     in let guard-text = codex-emit-guard-suffix (b.guard) ctors (indent + 1)
     in let group-end = find-group-end branches ctors indent body-text guard-text (b.alt-group) (i + 1) len
     in let pat-text = codex-emit-group-pats-tail branches (i + 1) group-end (codex-emit-pattern (b.pattern))
-    in codex-emit-branches-acc branches ctors indent group-end len (list-push acc ("\n" & make-indent (indent + 1) & "is " & pat-text & guard-text & " -> " & body-text))
+    in let branch-text = "\n" & make-indent (indent + 1) & "is " & pat-text & guard-text & " -> " & body-text
+    in codex-emit-branches-acc branches ctors indent group-end len (list-push acc branch-text)
 
   codex-emit-guard-suffix : IRExpr, List Text, Integer -> Text
   codex-emit-guard-suffix (guard) (ctors) (indent) =
@@ -752,7 +771,8 @@ Section: Act Blocks
   codex-emit-act-stmts-acc (stmts) (ctors) (indent) (i) (len) (acc) =
     if i == len then acc
     else let s = list-at stmts i
-    in codex-emit-act-stmts-acc stmts ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & codex-emit-act-stmt s ctors (indent + 1)))
+    in let stmt-text = "\n" & make-indent (indent + 1) & codex-emit-act-stmt s ctors (indent + 1)
+    in codex-emit-act-stmts-acc stmts ctors indent (i + 1) len (list-push acc stmt-text)
 
   codex-emit-act-stmt : IRActStmt, List Text, Integer -> Text
   codex-emit-act-stmt (s) (ctors) (indent) =
@@ -777,7 +797,8 @@ Section: Records
     if i == len then acc
     else let f = list-at fields i
     in let sep = if i > 0 then "," else ""
-    in codex-emit-record-fields-inline-acc fields ctors indent (i + 1) len (list-push acc (sep & " " & f.name & " = " & codex-emit-expr (f.value) ctors indent))
+    in let field-text = sep & " " & f.name & " = " & codex-emit-expr (f.value) ctors indent
+    in codex-emit-record-fields-inline-acc fields ctors indent (i + 1) len (list-push acc field-text)
 
   codex-emit-record-fields-multi : List IRFieldVal, List Text, Integer, Integer -> Text
   codex-emit-record-fields-multi (fields) (ctors) (indent) (i) =
@@ -788,7 +809,8 @@ Section: Records
     if i == len then acc
     else let f = list-at fields i
     in let comma = if i < len - 1 then "," else ""
-    in codex-emit-record-fields-multi-acc fields ctors indent (i + 1) len (list-push acc (make-indent (indent + 1) & f.name & " = " & codex-emit-expr (f.value) ctors (indent + 1) & comma & "\n"))
+    in let field-text = make-indent (indent + 1) & f.name & " = " & codex-emit-expr (f.value) ctors (indent + 1) & comma & "\n"
+    in codex-emit-record-fields-multi-acc fields ctors indent (i + 1) len (list-push acc field-text)
 
 Section: Field Access
   codex-emit-field-access : IRExpr, Text, List Text, Integer -> Text
@@ -813,7 +835,9 @@ Section: Handle
     else let c = list-at clauses i
     in let param-text = codex-emit-clause-params (c.params) 0 (list-length (c.params))
     in let body-to-emit = unwrap-clause-lambda (c.body) (list-length (c.params))
-    in codex-emit-handle-clauses-acc clauses ctors indent (i + 1) len (list-push acc ("\n" & make-indent (indent + 1) & c.op-name & param-text & " (" & c.resume-name & ") -> " & codex-emit-expr body-to-emit ctors (indent + 1)))
+    in let hc0 = "\n" & make-indent (indent + 1) & c.op-name & param-text & " (" & c.resume-name & ") -> "
+    in let hc1 = hc0 & codex-emit-expr body-to-emit ctors (indent + 1)
+    in codex-emit-handle-clauses-acc clauses ctors indent (i + 1) len (list-push acc hc1)
 
   codex-emit-clause-params : List Text, Integer, Integer -> Text
   codex-emit-clause-params (ps) (i) (len) =

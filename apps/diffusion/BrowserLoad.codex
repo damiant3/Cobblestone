@@ -174,11 +174,36 @@ Section: The Tokenizer
   bl-bpe-of : List Integer, List Integer -> ClipBpe
   bl-bpe-of (vb) (mb) = clip-bpe-load (bl-heap vb) (list-length vb) (bl-heap mb) (list-length mb)
 
+ A tokenizer over CLIP's files is about 4.7 MB of page heap, which nothing
+ reclaims, so a page builds one per pair of tokenizer files and every model
+ load reuses it.
+
+  bl-bpe-kept : Integer -> ClipBpe
+  bl-bpe-kept (z) = ClipBpe { cb-status = 0, cb-vocab-count = state-get "bpe-vocab-count", cb-merge-count = state-get "bpe-merge-count", cb-arena = state-get "bpe-arena", cb-dir = state-get "bpe-dir", cb-str-slots = state-get "bpe-str-slots", cb-pair-slots = state-get "bpe-pair-slots", cb-byte-ids = state-get "bpe-byte-ids", cb-u2b = state-get "bpe-u2b", cb-cell = state-get "bpe-cell", cb-scratch = state-get "bpe-scratch" }
+
+  bl-bpe-keep : Text, ClipBpe -> ClipBpe
+  bl-bpe-keep (key) (t) =
+    if t.cb-status /= 0 then t
+    else let a = state-set "bpe-vocab-count" (t.cb-vocab-count)
+    in let b = state-set "bpe-merge-count" (t.cb-merge-count)
+    in let c = state-set "bpe-arena" (t.cb-arena)
+    in let d = state-set "bpe-dir" (t.cb-dir)
+    in let e = state-set "bpe-str-slots" (t.cb-str-slots)
+    in let f = state-set "bpe-pair-slots" (t.cb-pair-slots)
+    in let g = state-set "bpe-byte-ids" (t.cb-byte-ids)
+    in let h = state-set "bpe-u2b" (t.cb-u2b)
+    in let i = state-set "bpe-cell" (t.cb-cell)
+    in let j = state-set "bpe-scratch" (t.cb-scratch)
+    in let kept = state-set-text "bpe-key" key
+    in t
+
   bl-bpe-then : Text, Text, (Text -> Integer), (ClipBpe -> Integer) -> Integer
   bl-bpe-then (vocab-file) (merges-file) (refuse) (k) =
-    if text-length (page-data "vocab") > 2 then k (bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges")))
+    let key = if text-length (page-data "vocab") > 2 then "page-data" else vocab-file & " " & merges-file
+    in if state-get-text "bpe-key" == key then k (bl-bpe-kept 0)
+    else if text-length (page-data "vocab") > 2 then k (bl-bpe-keep key (bl-bpe-of (bl-list (page-data "vocab")) (bl-list (page-data "merges"))))
     else if vocab-file == "" | merges-file == "" then refuse "No CLIP tokenizer in the models folder: put vocab.json and merges.txt in tokenizers/clip (the setup page's step 5)."
-    else file-read-then vocab-file 0 100000000 (\v -> file-read-then merges-file 0 100000000 (\mg -> k (bl-bpe-of (bl-list v) (bl-list mg))))
+    else file-read-then vocab-file 0 100000000 (\v -> file-read-then merges-file 0 100000000 (\mg -> k (bl-bpe-keep key (bl-bpe-of (bl-list v) (bl-list mg)))))
 
 Section: Generating
 

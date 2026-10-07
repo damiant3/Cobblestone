@@ -120,7 +120,13 @@ Section: Record Types
    hosted-target : Integer between 0 and 2,
    shared-consts : List CsIndex,
    avx-used : Boolean,
-   avx-local : Boolean
+   avx-local : Boolean,
+   call-census : Boolean,
+   emit-path : Integer between 0 and 2,
+   cover : Boolean,
+   cover-base : Integer,
+   cover-count : Integer,
+   cover-slot : Integer
   }
 
   EffectOpAddr = record {
@@ -392,7 +398,13 @@ Section: State Helpers
     hosted-target = 0,
     shared-consts = [],
     avx-used = False,
-    avx-local = False
+    avx-local = False,
+    call-census = False,
+    emit-path = 0,
+    cover = False,
+    cover-base = 0,
+    cover-count = 0,
+    cover-slot = 0 - 1
   }
 
   fc-flush : CodegenState -> CodegenState
@@ -489,7 +501,8 @@ Section: State Helpers
 
   emit-fuel-error : CodegenState -> CodegenState
   emit-fuel-error (st) =
-    st-add-error st cdx-resource-exhausted ("compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")") synthetic-span
+    let fuel-msg = "compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")"
+    in st-add-error st cdx-resource-exhausted fuel-msg synthetic-span
 
  __buf-write-bytes takes a buffer and an offset and no capacity, so it
  cannot bounds-check, and a function that outgrew the code buffer wrote
@@ -539,7 +552,8 @@ Section: State Helpers
   fresh-empty-locals : Integer -> List LocalBinding
   fresh-empty-locals (x) = []
 
-  codegen-carry-forward : CodegenState, Integer between 0 and 4294967295, Integer between 0 and 4294967295, Integer between 0 and 4294967295 -> CodegenState
+  codegen-carry-forward : CodegenState, Integer between 0 and 4294967295, Integer between 0 and 4294967295,
+    Integer between 0 and 4294967295 -> CodegenState
   codegen-carry-forward (st) (new-code-len) (new-data-len) (new-emit-work) =
     CodegenState {
      workspace = st.workspace,
@@ -594,7 +608,13 @@ Section: State Helpers
      hosted-target = st.hosted-target,
      shared-consts = st.shared-consts,
      avx-used = st.avx-used,
-     avx-local = st.avx-local
+     avx-local = st.avx-local,
+     call-census = st.call-census,
+     emit-path = 0,
+     cover = st.cover,
+     cover-base = st.cover-base,
+     cover-count = st.cover-count,
+     cover-slot = 0 - 1
     }
 
   reset-func-scratch : CodegenState -> CodegenState
@@ -702,8 +722,9 @@ Section: Register Allocation
    in let sc = st.spill-count + 1
    in let st1 = __record-set st-pk "next-local" nl
    in let st2 = __record-set st1 "spill-count" sc
+   in let st3 = __record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill)
    in EmitResult {
-   state = fs-remove (fc-evict-slot (__record-set st2 "peak-spill" (if sc > st2.peak-spill then sc else st2.peak-spill)) slot) slot,
+   state = fs-remove (fc-evict-slot st3 slot) slot,
    reg = __narrow slot
   }
 
@@ -843,9 +864,11 @@ Section: Byte Patching
     in let off = offset-table-lookup fm target
     in let trap = offset-table-lookup fm "__unresolved_trap"
     in if off == -1 & text-starts-with target "__no-instance-" then
-      check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("No type-class instance for '" & substring target 14 (text-length target - 14) & "'") synthetic-span) fm (i + 1)
+      let ni-msg = "No type-class instance for '" & substring target 14 (text-length target - 14) & "'"
+      in check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ni-msg synthetic-span) fm (i + 1)
     else if off == -1 then
-      check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" & target & "' (redirected to __unresolved_trap)") synthetic-span) fm (i + 1)
+      let uc-msg = "Unresolved call to '" & target & "' (redirected to __unresolved_trap)"
+      in check-call-patch-targets (st-add-error st cdx-unresolved-func-offset uc-msg synthetic-span) fm (i + 1)
     else check-call-patch-targets st fm (i + 1)
 
   check-func-addr-targets : CodegenState, OffsetTable, Integer -> CodegenState
@@ -854,7 +877,8 @@ Section: Byte Patching
     else let target = list-at (st.fa-targets) i
     in let off = offset-table-lookup fm target
     in if off == -1 then
-      check-func-addr-targets (st-add-error st cdx-unresolved-func-offset (func-addr-error-msg st target) synthetic-span) fm (i + 1)
+      let fa-msg = func-addr-error-msg st target
+      in check-func-addr-targets (st-add-error st cdx-unresolved-func-offset fa-msg synthetic-span) fm (i + 1)
     else check-func-addr-targets st fm (i + 1)
 
   func-addr-error-msg : CodegenState, Text -> Text
@@ -909,7 +933,9 @@ Section: Byte Patching
     in if eo-name-seen (st.eo-handled) name 0 (list-length (st.eo-handled))
      then check-effect-op-reads st (i + 1)
     else
-      check-effect-op-reads (st-add-error st cdx-unhandled-effect-op ("Effect operation '" & name & "' is read, but no handler in this chapter ever gives it a value; the read would yield zero") synthetic-span) (i + 1)
+      let eo-tail = "' is read, but no handler in this chapter ever gives it a value; the read would yield zero"
+      in let eo-msg = "Effect operation '" & name & eo-tail
+      in check-effect-op-reads (st-add-error st cdx-unhandled-effect-op eo-msg synthetic-span) (i + 1)
 
   align-16 : Integer -> Integer
   align-16 (n) =

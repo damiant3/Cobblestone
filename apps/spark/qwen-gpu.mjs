@@ -38,7 +38,7 @@ async function pageRun(jobs){
       const pipeline=pipelines.get(job.kernel),group=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries});
       const rb=device.createBuffer({size:(job.outWords+64)*4,usage:GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST});owned.push(rb);
       device.pushErrorScope('validation');
-      const enc=device.createCommandEncoder(),pass=enc.beginComputePass(),groups=Math.ceil((job.threads+64)/64),gx=Math.min(groups,65535);
+      const enc=device.createCommandEncoder(),pass=enc.beginComputePass(),wg=Number(m.wg??64),groups=Math.ceil((job.threads+wg)/wg),gx=Math.min(groups,65535);
       pass.setPipeline(pipeline);pass.setBindGroup(0,group);pass.dispatchWorkgroups(gx,Math.ceil(groups/gx));pass.end();
       enc.copyBufferToBuffer(target,0,rb,0,(job.outWords+64)*4);device.queue.submit([enc.finish()]);
       const error=await device.popErrorScope();if(error)throw new Error(error.message);
@@ -59,7 +59,7 @@ export async function withGpuPage(code,blobs,body,route=()=>false){
     r.writeHead(200,{'Content-Type':'text/html'});r.end('<!doctype html><title>qwen gpu</title>');
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
-  const edge=spawn('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',['--headless=new','--remote-debugging-port=0',`--user-data-dir=${join(work,'profile')}`,'--enable-unsafe-webgpu','--no-first-run','about:blank'],{stdio:'ignore'});
+  const edge=spawn('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',['--headless=new','--remote-debugging-port=0',`--user-data-dir=${join(work,'profile')}`,'--enable-unsafe-webgpu','--enable-webgpu-developer-features','--no-first-run','about:blank'],{stdio:'ignore'});
   let socket;
   try{
     let target;

@@ -56,21 +56,9 @@ ranked/casual selector. Requiring Master in ranked play needs that mode contract
 and wiring; the current skill-level ranking unit does not invent one
 (root ruling 2026-10-01).
 
-| Source | Open JSON gap outside the string-escaping repair |
-|---|---|
-| `GameServer.codex:439` | The classic-games `respond-error` quotes arbitrary message text raw, bypassing the normal `Encode/Json` response construction. Source-inspected 2026-10-01 at main 33668. |
-| `codexmagic/PlaneServer.codex:642` | RPG status emits `hp` as an unquoted `current/max` fragment, which is not a JSON number. Choose a typed representation and grade the response separately from escaping. |
-
-**Crafting's dormant compilation unit has a Material name collision.**
-`codexmagic/Crafting.codex` declares a `Material` record and cites
-`RPGEngine.codex`, whose `ItemType` has a `Material` variant. A Crafting-only
-citer on unchanged depot source fails at `RPGEngine.codex:253` with
-`CDX2001: Rec:Material vs Sum:ItemType` (2026-09-30, seed
-`AF9057E86BDB4FD2`). Disambiguate the names before integrating Crafting.
-No source in `apps` or `codex/test` cites Crafting at that measurement;
-Crafting's own GameState citation is unused. A synthetic citer that also
-adds the card-game Engine introduces a separate `advance-turn` collision
-with RPGEngine and does not represent a live application unit.
+**Crafting cannot share a unit with the card-game Engine.** A citer of
+`codexmagic/Crafting.codex` that also adds the card-game Engine collides on
+`advance-turn` with RPGEngine; no live application unit does this.
 
 ## Where game defects hide
 

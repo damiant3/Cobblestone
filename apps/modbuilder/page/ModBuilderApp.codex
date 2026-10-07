@@ -135,27 +135,34 @@ Section: Text Helpers
   mba-tag : Text, Text, Text -> Text
   mba-tag (tag) (cls) (body) = "<" & tag & " class='" & cls & "'>" & body & "</" & tag & ">"
 
-  mba-lower : Text -> Text
-  mba-lower (s) = mba-lower-loop s 0 ""
+ Text here is CCE, so these compare CCE codes: 3..12 are the digits, 13..38 the
+ ASCII lowercase and 39..64 the ASCII uppercase in the same order, 65 is ".",
+ 73 "-", 81 "/", 85 "_" and 86 "\". 0 is NUL and 1 the line feed, the only
+ control characters CCE text can carry.
 
-  mba-lower-loop : Text, Integer, Text -> Text
-  mba-lower-loop (s) (i) (acc) =
-    if i >= text-length s then acc
-    else let c = char-code-at s i
-    in let ch = if c >= 65 & c <= 90 then substring "abcdefghijklmnopqrstuvwxyz" (c - 65) 1 else substring s i 1
-    in mba-lower-loop s (i + 1) (acc & ch)
+  mba-fold : Integer -> Integer
+  mba-fold (c) = if c >= 39 & c <= 64 then c - 26 else c
+
+  mba-same-loop : Text, Text, Integer -> Boolean
+  mba-same-loop (a) (b) (i) =
+    if i >= text-length a then True
+    else if mba-fold (char-code-at a i) == mba-fold (char-code-at b i) then mba-same-loop a b (i + 1)
+    else False
 
   mba-trim-slash : Text -> Text
   mba-trim-slash (s) =
     if text-length s == 0 then s
     else let c = char-code-at s (text-length s - 1)
-    in if c == 47 | c == 92 then mba-trim-slash (substring s 0 (text-length s - 1)) else s
+    in if c == 81 | c == 86 then mba-trim-slash (substring s 0 (text-length s - 1)) else s
 
   mba-same-path : Text, Text -> Boolean
-  mba-same-path (a) (b) = mba-lower (mba-trim-slash a) == mba-lower (mba-trim-slash b)
+  mba-same-path (a) (b) =
+    let x = mba-trim-slash a
+    in let y = mba-trim-slash b
+    in text-length x == text-length y & mba-same-loop x y 0
 
   mba-id-char : Integer -> Boolean
-  mba-id-char (c) = (c >= 48 & c <= 57) | (c >= 65 & c <= 90) | (c >= 97 & c <= 122) | c == 46 | c == 95 | c == 45
+  mba-id-char (c) = (c >= 3 & c <= 64) | c == 65 | c == 85 | c == 73
 
   mba-id-ok-loop : Text, Integer -> Boolean
   mba-id-ok-loop (s) (i) =
@@ -167,12 +174,12 @@ Section: Text Helpers
   mba-id-ok (s) =
     if text-length s < 1 | text-length s > 64 then False
     else let c = char-code-at s 0
-    in if c == 46 | c == 95 | c == 45 then False else mba-id-ok-loop s 0
+    in if c == 65 | c == 85 | c == 73 then False else mba-id-ok-loop s 0
 
   mba-plain-loop : Text, Integer -> Boolean
   mba-plain-loop (s) (i) =
     if i >= text-length s then True
-    else if char-code-at s i < 32 then False
+    else if char-code-at s i <= 1 then False
     else mba-plain-loop s (i + 1)
 
   mba-plain : Text -> Boolean
@@ -636,6 +643,7 @@ Section: The Forge
     else if list-length (mba-sel-ids 0) == 0 then mba-say "Choose at least one power first." "err"
     else let why = mba-form-refusal 0
     in if text-length why > 0 then mba-say why "err"
+    else if (job == "emit") == False & text-length (mba-token 0) == 0 then mba-no-helper 0
     else let a = state-set "busy" 1
     in let b = state-set-text "job" job
     in let c = mba-reset-track 0
@@ -643,6 +651,11 @@ Section: The Forge
     in let e = dom-add-class (dom-get "a-forge") "busy"
     in let f = if job == "forge" | job == "build" then mba-step-run "package" else 0
     in mba-emit 0
+
+  mba-no-helper : Integer -> Integer
+  mba-no-helper (x) =
+    let a = dom-set-text (dom-get "mbw-helper-status") "Helper not connected. Compile the helper source, save the EXE, then open the saved file."
+    in mba-say "Helper not connected. Connect the local helper before building." "err"
 
   mba-step-run : Text -> Integer
   mba-step-run (step) =

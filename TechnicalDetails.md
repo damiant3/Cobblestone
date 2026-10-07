@@ -166,7 +166,7 @@ Measured 2026-08-03, except where an item gives its own date.
               an accumulator is copied by & inside a self call, here or in
               something it calls
    ```
-6. **632 library modules across 22 quires** (451 foreword + 181 OS) (2026-10-01): data
+6. **637 library modules across 22 quires** (451 foreword + 186 OS) (2026-10-06): data
    structures, crypto, a full TCP/IP stack with TLS 1.3 and X.509 peer
    verification, 3D and game engines, AI inference, encoding, math,
    compression, a themeable UI toolkit, and hard real-time primitives.
@@ -227,7 +227,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**74 applications, 1,412 modules** (2026-10-02), all written in Codex and compiled by
+**74 applications, 1,414 modules** (2026-10-03), all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -242,14 +242,14 @@ for 149 checks (2026-09-28).
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,823,306 bytes, 2026-10-01, COMPILER-109 diagnostic and CHECK-call layout batch on WORKS-81) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,850,758 bytes, 2026-10-06, UOAIX-49: cover mode and __stack-save) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `49334877423678E4` |
-| SHA-256 | `267B6C8360E7D2B4564DBD261209F1E734EFE1D576991F918043E7A3F42A6E5A` |
-| MD5 | `07018B478577200AE0D15E3E18717C1A` |
+| Content hash prefix | `2E0343A67ED83856` |
+| SHA-256 | `753E2F25A3AFF7BD30454A9BC560D93766238CAB5C9B2C64DE7A3F3DDFB3B9DD` |
+| MD5 | `05C08A23C045AE5E2486548CE6DE24DE` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -566,7 +566,7 @@ is preserved regardless of Tier 1 and 2 support.
 ## Library Quires
 
 Code outside the compiler is organized into **22 quires** (library
-namespaces) holding **632 modules** (451 foreword, 181 OS) (2026-10-01). Quires cite
+namespaces) holding **637 modules** (451 foreword, 186 OS) (2026-10-06). Quires cite
 each other as `cites Game chapter AStar`; the quire name is the last
 segment of the directory name, capitalized. Full catalog:
 [docs/DevelopersRulebook.md](docs/DevelopersRulebook.md).
@@ -597,13 +597,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (69 files, 70,695 lines)
+  compiler/      Self-hosted compiler (69 files, 72,695 lines) (2026-10-06)
   foreword/      451 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
-  os/            Kernel, net, trust, verify, sched, dev, observe (181 modules) (2026-10-01)
-  plugs/         59 plugs, 255 source modules -- IR-text-driven emitters (2026-10-01)
-  test/          Compiler samples + OS integration tests (2,240 files) (2026-10-02)
-apps/            74 applications, 1,412 modules (2026-10-02)
+  os/            Kernel, net, trust, verify, sched, dev, observe (186 modules) (2026-10-06)
+  plugs/         59 plugs, 257 source modules -- IR-text-driven emitters (2026-10-03)
+  test/          Compiler samples + OS integration tests (2,250 files) (2026-10-03)
+apps/            74 applications, 1,414 modules (2026-10-03)
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -637,7 +637,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 2,240 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 2,245 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 68 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |

@@ -62,7 +62,9 @@ Section: Expression Parsing
     else let nxt = current st
     in if nxt.kind /= Plus | nxt.offset /= op.offset + 1 then st
     else
-      advance (__record-set st "bag" (bag-add (st.bag) (make-error cdx-not-codex-operator "`++` is not Codex; text concatenation is `&`" (span-at (op.line) (op.column) (op.offset) 2 (op.file-id)))))
+      let pp-span = span-at (op.line) (op.column) (op.offset) 2 (op.file-id)
+      in let pp-err = make-error cdx-not-codex-operator "`++` is not Codex; text concatenation is `&`" pp-span
+      in advance (__record-set st "bag" (bag-add (st.bag) pp-err))
 
   binary-previous-token : List Token, Integer -> Integer
   binary-previous-token (tokens) (pos) =
@@ -466,7 +468,8 @@ Section: Compound Expression Parsing
     else if is-in-keyword (current-kind st) then let st2 = skip-newlines (advance st)
     in let body = parse-let-body st2
     in unwrap-expr-ok body (finish-let acc)
-    else let st-err = __record-set st "bag" (bag-add (st.bag) (make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st))))
+    else let no-in = make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st))
+    in let st-err = __record-set st "bag" (bag-add (st.bag) no-in)
     in let body = parse-let-body st-err
     in unwrap-expr-ok body (finish-let acc)
 
@@ -583,7 +586,8 @@ Section: Compound Expression Parsing
        then let st2 = skip-newlines (advance st1)
        in let body-r = parse-let-body st2
        in unwrap-expr-ok body-r (finish-let-pattern acc pat val)
-    else let st-err = __record-set st1 "bag" (bag-add (st1.bag) (make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st1))))
+    else let no-in = make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st1))
+    in let st-err = __record-set st1 "bag" (bag-add (st1.bag) no-in)
     in let body-r = parse-let-body st-err
     in unwrap-expr-ok body-r (finish-let-pattern acc pat val)
 
@@ -846,7 +850,9 @@ Section: Compound Expression Parsing
     in let st2 = skip-newlines (advance st1)
     in let st3 = if is-ident-text st2 "times" then skip-newlines (advance st2)
     else
-      __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-empty-act "Expected 'times' after attempt count in trying expression" (token-to-span (current st2))))
+      let times-span = token-to-span (current st2)
+      in let times-err = make-error cdx-empty-act "Expected 'times' after attempt count in trying expression" times-span
+      in __record-set st2 "bag" (bag-add (st2.bag) times-err)
     in parse-try-body count-tok [] st3
     else ExprOk (deck-record (ErrExpr (current st1))) (advance st1)
 
@@ -857,10 +863,12 @@ Section: Compound Expression Parsing
     else if is-ident-text st "falling" then let st2 = skip-newlines (advance st)
     in let st3 = if is-ident-text st2 "back" then skip-newlines (advance st2)
     else
-      __record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-empty-act "Expected 'back to' after 'falling'" (token-to-span (current st2))))
+      let back-err = make-error cdx-empty-act "Expected 'back to' after 'falling'" (token-to-span (current st2))
+      in __record-set st2 "bag" (bag-add (st2.bag) back-err)
     in let st4 = if is-ident-text st3 "to" then skip-newlines (advance st3)
     else
-      __record-set st3 "bag" (bag-add (st3.bag) (make-error cdx-empty-act "Expected 'to' after 'falling back'" (token-to-span (current st3))))
+      let to-err = make-error cdx-empty-act "Expected 'to' after 'falling back'" (token-to-span (current st3))
+      in __record-set st3 "bag" (bag-add (st3.bag) to-err)
     in parse-try-fallback count-tok acc [] st4
     else if is-ident-text st "on" then let peek-st = advance st
     in if is-ident-text peek-st "failure" then let st2 = skip-newlines (advance peek-st)
@@ -929,7 +937,8 @@ Section: Compound Expression Parsing
     else let expr-result = parse-expr st
     in unwrap-expr-ok expr-result (finish-try-fail-expr count-tok body-acc fb-acc fail-acc)
 
-  finish-try-fail-bind : Token, LinkedList ActStmt, LinkedList ActStmt, LinkedList ActStmt, Token, Expr, ParseState -> ParseExprResult
+  finish-try-fail-bind : Token, LinkedList ActStmt, LinkedList ActStmt, LinkedList ActStmt, Token, Expr, ParseState ->
+    ParseExprResult
   finish-try-fail-bind (count-tok) (body-acc) (fb-acc) (fail-acc) (name-tok) (v) (st) =
     let st2 = skip-newlines st
     in parse-try-failure count-tok body-acc fb-acc (__linked-list-push fail-acc (deck-record (ActBindStmt name-tok v))) st2

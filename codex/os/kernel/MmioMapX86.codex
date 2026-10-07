@@ -1,0 +1,98 @@
+Chapter: MmioMapX86
+  cites Foreword chapter Result
+
+ x86 four-level paging and PAT/MTRR memory types follow Intel SDM volume 3.
+ Inspect existing identity mappings without changing permissions or cache
+ state. OVMF can map a high PCI window with a WB PTE and an overriding UC
+ MTRR; checking PCD alone rejects that safe mapping. RAM tables are required
+ below 3 GiB, as in the supported runtime/OVMF envelope.
+
+  mx-address-mask : Integer = #000FFFFFFFFFF000
+
+  mx-table : Integer, Integer -> Integer
+  mx-table (parent) (index) =
+    let entry = peek-qword parent (index * 8)
+    in if bit-and entry 131 /= 3 then -1
+    else let table = bit-and entry mx-address-mask
+    in if table < 4096 | table >= #C0000000 then -1 else table
+
+  mx-mtrr-loop : Integer, Integer, Integer, Integer, Boolean -> Boolean
+  mx-mtrr-loop (address) (i) (count) (default-type) (matched) =
+    if i >= count then not matched & default-type == 0
+    else let mask = rdmsr (513 + i * 2)
+    in if bit-and mask 2048 == 0 then mx-mtrr-loop address (i + 1) count default-type matched
+    else let base = rdmsr (512 + i * 2)
+    in let physical-mask = bit-and mask mx-address-mask
+    in if bit-and address physical-mask /= bit-and base physical-mask then mx-mtrr-loop address (i + 1) count default-type matched
+    else if bit-and base 255 == 0 then True
+    else mx-mtrr-loop address (i + 1) count default-type True
+
+  mx-mtrr-uc : Integer -> Boolean
+  mx-mtrr-uc (address) =
+    if bit-and (cpu-cpuid-edx 1) 4096 == 0 then False
+    else let control = rdmsr 767
+    in if bit-and control 2048 == 0 then True
+    else let count = bit-and (rdmsr 254) 255
+    in if count > 32 then False
+    else mx-mtrr-loop address 0 count (bit-and control 255) False
+
+  mx-pat-type : Integer, Integer -> Integer
+  mx-pat-type (entry) (mask) =
+    let pat-bit = if mask == mx-address-mask then 7 else 12
+    in let index = bit-and (bit-shru entry 3) 3 + bit-and (bit-shru entry pat-bit) 1 * 4
+    in bit-and (bit-shru (rdmsr 631) (index * 8)) 255
+
+  mx-identity : Integer, Integer, Integer -> Boolean
+  mx-identity (entry) (address) (mask) =
+    bit-and entry 3 == 3 & bit-and entry mask == bit-and address mask
+
+  mx-cache-uc : Integer, Boolean -> Boolean
+  mx-cache-uc (kind) (mtrr-uc) =
+    kind == 0 | ((kind == 1 | kind == 4 | kind == 5 | kind == 6 | kind == 7) & mtrr-uc)
+
+  mx-existing : Integer, Integer, Integer -> Boolean
+  mx-existing (entry) (address) (mask) =
+    if not (mx-identity entry address mask) then False
+    else let kind = mx-pat-type entry mask
+    in if kind == 0 then True
+    else mx-cache-uc kind (mx-mtrr-uc address)
+
+  mx-page : Integer, Integer -> Boolean
+  mx-page (root) (address) =
+    let pdpt = mx-table root (bit-and (bit-shru address 39) 511)
+    in if pdpt < 0 then False
+    else let pi = bit-and (bit-shru address 30) 511
+    in let pe = peek-qword pdpt (pi * 8)
+    in if bit-and pe 129 == 129 then mx-existing pe address #000FFFFFC0000000
+    else let pd = mx-table pdpt pi
+    in if pd < 0 then False
+    else let di = bit-and (bit-shru address 21) 511
+    in let de = peek-qword pd (di * 8)
+    in if bit-and de 129 == 129 then mx-existing de address #000FFFFFFFE00000
+    else let pt = mx-table pd di
+    in if pt < 0 then False
+    else mx-existing (peek-qword pt (bit-and (bit-shru address 12) 511 * 8)) address mx-address-mask
+
+  mx-pages : Integer, Integer, Integer -> Boolean
+  mx-pages (root) (page) (stop) =
+    if page >= stop then True
+    else if not (mx-page root page) then False
+    else mx-pages root (page + 4096) stop
+
+  mx-check-window : Integer, Integer -> Result Integer Text
+  mx-check-window (base) (size) =
+    if base < #C0000000 | size <= 0 | size > 1048576 then Err "MMIO window range invalid"
+    else if cpu-cpuid-eax #80000000 < #80000008 then Err "MMIO physical width unavailable"
+    else let bits = bit-and (cpu-cpuid-eax #80000008) 255
+    in if bits < 32 | bits > 52 then Err "MMIO physical width invalid"
+    else let limit = min (bit-shl 1 bits) #800000000000
+    in if base >= limit then Err "MMIO base outside physical/canonical range"
+    else if size > limit - base then Err "MMIO extent outside physical/canonical range"
+    else if bit-and (cpu-cpuid-edx 1) 65536 == 0 then Err "MMIO requires PAT"
+    else let root = bit-and cpu-read-cr3 mx-address-mask
+    in if root < 4096 | root >= #C0000000 then Err "MMIO page-table root outside identity RAM"
+    else let first = bit-and base (0 - 4096)
+    in let stop = bit-and (base + size + 4095) (0 - 4096)
+    in if mx-pages root first stop then Ok base else Err "MMIO window is not writable identity-mapped uncacheable memory"
+
+Page 1

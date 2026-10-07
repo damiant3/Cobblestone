@@ -1,0 +1,592 @@
+Chapter: DiffusionDriverCore
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter DynThresh
+  cites Diffusion chapter Img2Img
+  cites Diffusion chapter SoftInpaint
+  cites Diffusion chapter MatchedNoise
+  cites Diffusion chapter Variation
+  cites Diffusion chapter ImageOut
+  cites Diffusion chapter FluxTxt2Img
+  cites Diffusion chapter CheckpointFile
+  cites Diffusion chapter UNet
+  cites Diffusion chapter Lora
+  cites Diffusion chapter LoraResident
+  cites AI chapter ClipBpe
+  cites AI chapter T5Tokenizer
+  cites AI chapter SafeTensors
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+  cites Foreword chapter CCE
+  cites Foreword chapter Parse
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Console
+
+ The resident CDX apps/diffusion/serve.ps1 boots once (Diffusion.md, stage 7):
+ request-<n>.txt under the -gpu-files root holds key=value lines (prompt,
+ negative, model, lora, sampler, steps, cfg, seed, width, height, path, and
+ for img2img, inpaint and hires fix image, mask, denoise, mask_blur,
+ inpainting_fill, inpaint_full_res, inpaint_full_res_padding, hr_scale, hr_denoise, hr_steps, hr_cfg); image and mask name files the
+ server staged beside the request, width x height RGBA bytes. The PNG goes
+ to path under -gpu-out. The disk is build/mint-clip-bpe-disk.ps1's, with
+ FLUX.1's T5 tokenizer.json as its first extra when Flux is to be served.
+ The bridge has no length query, therefore the request's length is found by
+ halving: an upload past the end of a file is refused. The answer is "ok ..."
+ or the reason for a refusal.
+
+ We say:
+
+Section: Request File
+
+  dr-cap : Integer = 65536
+
+  dr-fits : Integer, Text, Integer -> Boolean
+  dr-fits (h) (name) (n) = if n <= 0 then True else gpu-buf-upload h 0 name 0 n gpu-dt-u8 gpu-dt-u8 == n
+
+  dr-length : Integer, Text, Integer, Integer -> Integer
+  dr-length (h) (name) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if dr-fits h name mid then dr-length h name mid hi else dr-length h name lo (mid - 1)
+
+  dr-bytes : Integer, Integer, List Integer -> List Integer
+  dr-bytes (i) (n) (acc) = if i >= n then acc else dr-bytes (i + 1) n (list-push acc (peek-byte ti-scratch i))
+
+  dr-read : Text -> Text
+  dr-read (name) =
+    let h = gpu-buf-alloc dr-cap
+    in let n = if h == 0 then 0 else dr-length h name 0 dr-cap
+    in let ok = if n > 0 then gpu-buf-upload h 0 name 0 n gpu-dt-u8 gpu-dt-u8 == n & gpu-buf-read h 0 n ti-scratch else False
+    in let f = if h == 0 then True else gpu-buf-free h
+    in if ok then utf8-bytes-to-text (dr-bytes 0 n (__list-with-capacity (n + 1))) else ""
+
+ A request file is present when its first byte uploads. Between polls the
+ guest waits for the 10 ms tick; the server suspends the whole process while
+ no request is pending, therefore the wait costs nothing then.
+
+  dr-present : Integer, Text -> Boolean
+  dr-present (h) (name) = gpu-buf-upload h 0 name 0 1 gpu-dt-u8 gpu-dt-u8 == 1
+
+  dr-tick-wait : Integer, Integer -> Integer
+  dr-tick-wait (t0) (fuel) =
+    if fuel <= 0 then 0
+    else if get-ticks /= t0 then 1
+    else let y = process-yield
+    in dr-tick-wait t0 (fuel - 1)
+
+  dr-await : Integer, Text -> Integer
+  dr-await (h) (name) = if dr-present h name then 0 else let w = dr-tick-wait get-ticks 5000000 in dr-await h name
+
+Section: Fields
+
+  dr-clean : Text -> Text
+  dr-clean (s) = text-trim s
+
+  dr-get : List Text, Text, Integer, Text -> Text
+  dr-get (lines) (key) (i) (dflt) =
+    if i >= list-length lines then dflt
+    else let l = list-at lines i
+    in let e = text-index-of l "="
+    in if e > 0 & dr-clean (substring l 0 e) == key then dr-clean (substring l (e + 1) (text-length l - e - 1))
+    else dr-get lines key (i + 1) dflt
+
+  dr-has : List Text, Text, Integer -> Boolean
+  dr-has (lines) (key) (i) =
+    if i >= list-length lines then False
+    else let l = list-at lines i
+    in let e = text-index-of l "="
+    in if e > 0 & dr-clean (substring l 0 e) == key then True else dr-has lines key (i + 1)
+
+ A decimal like 2, 2.5 or 0.75 as a Real.
+
+  dr-frac : Text, Integer, Real, Real -> Real
+  dr-frac (s) (i) (acc) (scale) =
+    if i >= text-length s then acc
+    else let c = char-code-at s i - char-code-at "0" 0
+    in if c < 0 | c > 9 then acc else dr-frac s (i + 1) (acc + real-from-int c * scale) (scale / 10.0)
+
+  dr-real : Text -> Real
+  dr-real (s) =
+    let d = text-index-of s "."
+    in if d < 0 then real-from-int (text-to-int s)
+    else real-from-int (text-to-int (substring s 0 d)) + dr-frac s (d + 1) 0.0 0.1
+
+ A value compared exactly against Forge's arithmetic comes as its IEEE bits,
+ because dr-real's digit sum is not correctly rounded.
+
+  dr-bits : List Text, Text, Real -> Real
+  dr-bits (ls) (k) (d) = if dr-has ls k 0 then bits-to-real (text-to-int (dr-get ls k 0 "")) else d
+
+  dr-lora-lines : List Text, Integer, List Text -> List Text
+  dr-lora-lines (ls) (i) (acc) =
+    if i >= list-length ls then acc
+    else let l = list-at ls i
+    in let e = text-index-of l "="
+    in dr-lora-lines ls (i + 1) (if e > 0 & dr-clean (substring l 0 e) == "lora" then list-push acc (dr-clean (substring l (e + 1) (text-length l - e - 1))) else acc)
+
+  dr-signed : Text -> Real
+  dr-signed (s) = if text-starts-with s "-" then 0.0 - dr-real (substring s 1 (text-length s - 1)) else dr-real s
+
+  dr-lora-path : Text -> Text
+  dr-lora-path (v) = let c = text-index-of v ":" in if c < 0 then v else substring v 0 c
+
+  dr-lora-weight : Text -> Real
+  dr-lora-weight (v) = let c = text-index-of v ":" in if c < 0 then 1.0 else dr-signed (substring v (c + 1) (text-length v - c - 1))
+
+  dr-loras : List Text, Integer, List LoraFile -> List LoraFile
+  dr-loras (vs) (i) (acc) = if i >= list-length vs then acc else dr-loras vs (i + 1) (list-push acc (lora-open (dr-lora-path (list-at vs i)) (dr-lora-weight (list-at vs i))))
+
+  dr-loras-bad : List LoraFile, Integer -> Text
+  dr-loras-bad (fs) (i) =
+    if i >= list-length fs then ""
+    else let f = list-at fs i
+    in if (f.lf-file).st-valid == False then f.lf-path
+    else dr-loras-bad fs (i + 1)
+
+  dr-lora-name : Text -> Text
+  dr-lora-name (p) =
+    let parts = text-split p "/"
+    in let b = list-at parts (list-length parts - 1)
+    in if text-ends-with b ".safetensors" then substring b 0 (text-length b - 12) else b
+
+  dr-lora-tags : List Text, Integer, Text -> Text
+  dr-lora-tags (vs) (i) (acc) =
+    if i >= list-length vs then acc
+    else let v = list-at vs i
+    in let c = text-index-of v ":"
+    in dr-lora-tags vs (i + 1) (acc & " <lora:" & dr-lora-name (dr-lora-path v) & ":" & (if c < 0 then "1" else substring v (c + 1) (text-length v - c - 1)) & ">")
+
+  dr-key-of : Text -> Text
+  dr-key-of (req) = let ls = text-split req "\n" in dr-get ls "model" 0 "" & "\n" & text-join "\n" (dr-lora-lines ls 0 [])
+
+  dr-params : List Text -> Text
+  dr-params (ls) =
+    dr-get ls "prompt" 0 "" & dr-lora-tags (dr-lora-lines ls 0 []) 0 "" & "\nNegative prompt: " & dr-get ls "negative" 0 "" & "\nSteps: " & dr-get ls "steps" 0 "6" & ", Sampler: " & dr-get ls "sampler" 0 "DPM++ SDE" & dr-schedule-label ls & ", CFG scale: " & dr-get ls "cfg" 0 "2" & ", Seed: " & dr-get ls "seed" 0 "0" & ", Size: " & dr-get ls "width" 0 "1024" & "x" & dr-get ls "height" 0 "1024" & ", Model: " & dr-get ls "model" 0 "" & dr-params-variation ls & dr-params-i2i ls & dr-params-extras ls
+
+ Forge writes the variation keys after the model (processing.py:758-760): the
+ seed and strength only when the strength is not 0, the resize as W x H only
+ when both are positive; the server sends the keys only in those cases.
+
+ Forge's extensions write their keys last, in script order (dynamic
+ thresholding 11, FreeU 12, SAG 12.5, PAG 13); SAG writes nothing where it skipped itself for guidance at
+ or below 1 on every pass.
+
+  dr-params-extras : List Text -> Text
+  dr-params-extras (ls) =
+    (if dr-has ls "dynthres_mimic_scale" 0 then ", dynthres_enabled: True, dynthres_mimic_scale: " & dr-get ls "dynthres_mimic_scale" 0 "" & ", dynthres_threshold_percentile: " & dr-get ls "dynthres_threshold_percentile" 0 "" & ", dynthres_mimic_mode: " & dr-get ls "dynthres_mimic_mode" 0 "" & ", dynthres_mimic_scale_min: " & dr-get ls "dynthres_mimic_scale_min" 0 "" & dr-params-dt ls else "")
+    & (if dr-has ls "freeu_b1" 0 then ", freeu_enabled: True, freeu_b1: " & dr-get ls "freeu_b1" 0 "" & ", freeu_b2: " & dr-get ls "freeu_b2" 0 "" & ", freeu_s1: " & dr-get ls "freeu_s1" 0 "" & ", freeu_s2: " & dr-get ls "freeu_s2" 0 "" & ", freeu_start: " & dr-get ls "freeu_start" 0 "0.0" & ", freeu_end: " & dr-get ls "freeu_end" 0 "1.0" else "")
+    & (if dr-has ls "sag_scale" 0 & (dr-real (dr-get ls "cfg" 0 "2") > 1.0 | (dr-has ls "hr_scale" 0 & dr-real (dr-get ls "hr_cfg" 0 "2") > 1.0)) then ", sag_enabled: True, sag_scale: " & dr-get ls "sag_scale" 0 "" & ", sag_blur_sigma: " & dr-get ls "sag_blur_sigma" 0 "" & ", sag_threshold: " & dr-get ls "sag_threshold" 0 "" else "")
+    & (if dr-has ls "pag_scale" 0 then ", PerturbedAttentionGuidance_enabled: True, PerturbedAttentionGuidance_scale: " & dr-get ls "pag_scale" 0 "" else "")
+
+  dr-params-dt : List Text -> Text
+  dr-params-dt (ls) = ", dynthres_cfg_mode: " & dr-get ls "dynthres_cfg_mode" 0 "" & ", dynthres_cfg_scale_min: " & dr-get ls "dynthres_cfg_scale_min" 0 "" & ", dynthres_sched_val: " & dr-get ls "dynthres_sched_val" 0 "" & ", dynthres_separate_feature_channels: " & dr-get ls "dynthres_separate_feature_channels" 0 "" & ", dynthres_scaling_startpoint: " & dr-get ls "dynthres_scaling_startpoint" 0 "" & ", dynthres_variability_measure: " & dr-get ls "dynthres_variability_measure" 0 "" & ", dynthres_interpolate_phi: " & dr-get ls "dynthres_interpolate_phi" 0 ""
+
+  dr-dt : List Text -> List DtSet
+  dr-dt (ls) = if dr-has ls "dynthres_mimic_scale" 0 == False then [] else [DtSet { dt-mimic = dr-real (dr-get ls "dynthres_mimic_scale" 0 "7"), dt-pct = dr-real (dr-get ls "dynthres_threshold_percentile" 0 "1"), dt-mimic-mode = ti-name-index dt-modes (dr-get ls "dynthres_mimic_mode" 0 "Constant") 0, dt-mimic-min = dr-real (dr-get ls "dynthres_mimic_scale_min" 0 "0"), dt-cfg-mode = ti-name-index dt-modes (dr-get ls "dynthres_cfg_mode" 0 "Constant") 0, dt-cfg-min = dr-real (dr-get ls "dynthres_cfg_scale_min" 0 "0"), dt-sched = dr-real (dr-get ls "dynthres_sched_val" 0 "1"), dt-sep = dr-get ls "dynthres_separate_feature_channels" 0 "enable" == "enable", dt-zero = dr-get ls "dynthres_scaling_startpoint" 0 "MEAN" == "ZERO", dt-std = dr-get ls "dynthres_variability_measure" 0 "AD" == "STD", dt-phi = dr-real (dr-get ls "dynthres_interpolate_phi" 0 "1") }]
+
+  dr-extras : List Text -> TiExtras
+  dr-extras (ls) = TiExtras { tx-freeu = (if dr-has ls "freeu_b1" 0 then [dr-real (dr-get ls "freeu_b1" 0 ""), dr-real (dr-get ls "freeu_b2" 0 ""), dr-real (dr-get ls "freeu_s1" 0 ""), dr-real (dr-get ls "freeu_s2" 0 ""), dr-bits ls "freeu_start_bits" 0.0, dr-bits ls "freeu_end_bits" 1.0] else []), tx-pag = dr-real (dr-get ls "pag_scale" 0 "0"), tx-sag = (if dr-has ls "sag_scale" 0 then [dr-real (dr-get ls "sag_scale" 0 ""), dr-real (dr-get ls "sag_blur_sigma" 0 ""), dr-real (dr-get ls "sag_threshold" 0 "")] else []), tx-dt = dr-dt ls, tx-step = (if dr-has ls "freeu_b1" 0 then [0, 0, 0, 1] else []) }
+
+  dr-params-variation : List Text -> Text
+  dr-params-variation (ls) =
+    (if dr-has ls "subseed_strength" 0 then ", Variation seed: " & dr-get ls "subseed" 0 "0" & ", Variation seed strength: " & dr-get ls "subseed_strength" 0 "0" else "")
+    & (if dr-has ls "seed_resize_from_w" 0 then ", Seed resize from: " & dr-get ls "seed_resize_from_w" 0 "0" & "x" & dr-get ls "seed_resize_from_h" 0 "0" else "")
+
+  dr-soft-cfg : List Text -> SoftCfg
+  dr-soft-cfg (ls) = SoftCfg { sc-power = dr-real (dr-get ls "soft_power" 0 "1"), sc-scale = dr-real (dr-get ls "soft_scale" 0 "0.5"), sc-detail = dr-real (dr-get ls "soft_detail" 0 "4"), sc-infl = dr-real (dr-get ls "soft_influence" 0 "0"), sc-thresh = dr-real (dr-get ls "soft_threshold" 0 "0.5"), sc-contrast = dr-real (dr-get ls "soft_contrast" 0 "2") }
+
+  dr-variation : List Text -> Variation
+  dr-variation (ls) = Variation { va-subseed = text-to-int (dr-get ls "subseed" 0 "0"), va-strength = dr-real (dr-get ls "subseed_strength" 0 "0"), va-from-w = text-to-int (dr-get ls "seed_resize_from_w" 0 "0"), va-from-h = text-to-int (dr-get ls "seed_resize_from_h" 0 "0") }
+
+ The schedule as Forge's get_sigmas labels it: Automatic resolved to the
+ sampler's own, and nothing where that is the predictor's (Uniform) or the
+ sampler takes no schedule.
+
+  dr-schedule-label : List Text -> Text
+  dr-schedule-label (ls) =
+    let l = dr-schedule-name (dr-get ls "sampler" 0 "DPM++ SDE") (dr-get ls "scheduler" 0 "Automatic")
+    in if l == "" then "" else ", Schedule type: " & l
+
+  dr-schedule-name : Text, Text -> Text
+  dr-schedule-name (sampler) (sched) =
+    let s = ti-name-index ti-sampler-names sampler 0
+    in let k0 = ti-name-index ti-scheduler-names sched 0
+    in let k = if k0 == 0 then ti-auto-schedule s else k0
+    in if k < 0 | ti-timestep-sampler s | (s == ti-lcm & k0 == 0) | (k0 == 0 & k == 1) then "" else list-at ti-scheduler-names k
+
+ The hires pass's schedule is written where it has a label other than the
+ first pass's Schedule type (sd_samplers_kdiffusion.py:105-108).
+
+  dr-hires-schedule : List Text -> Text
+  dr-hires-schedule (ls) =
+    let s = dr-get ls "sampler" 0 "DPM++ SDE"
+    in let k = dr-get ls "scheduler" 0 "Automatic"
+    in let h = dr-schedule-name (dr-get ls "hr_sampler" 0 s) (dr-get ls "hr_scheduler" 0 k)
+    in if h == "" | h == dr-schedule-name s k then "" else ", Hires schedule type: " & h
+
+ Forge's infotext_utils.quote: a value holding a comma, a colon or a newline
+ is written as JSON.
+
+  dr-quote : Text -> Text
+  dr-quote (s) = if text-contains s "," | text-contains s ":" then "\"" & text-replace (text-replace s "\\" "\\\\") "\"" "\\\"" & "\"" else s
+
+ Forge's infotext keys for the same settings (processing.py:1310, 1685,
+ 1716).
+
+  dr-params-i2i : List Text -> Text
+  dr-params-i2i (ls) =
+    if dr-has ls "image" 0 then ", Denoising strength: " & dr-get ls "denoise" 0 "0.75" & dr-clip-key ls & dr-params-soft ls & (if dr-has ls "mask" 0 then ", Mask blur: " & dr-get ls "mask_blur" 0 "4" & (if dr-get ls "inpaint_full_res" 0 "0" == "1" then ", Inpaint area: Only masked, Masked area padding: " & dr-get ls "inpaint_full_res_padding" 0 "32" else "") & dr-params-fill (dr-get ls "inpainting_fill" 0 "1") else if dr-has ls "outpaint_pixels" 0 then dr-params-outpaint ls else "")
+    else if dr-has ls "hr_scale" 0 then dr-params-hires ls & dr-params-hires-size ls
+    else dr-clip-key ls
+
+ Forge writes Clip skip after Denoising strength and before the extra
+ parameters, only above 1 (processing.py:761-763).
+
+  dr-clip-key : List Text -> Text
+  dr-clip-key (ls) = if text-to-int (dr-get ls "clip_skip" 0 "1") <= 1 then "" else ", Clip skip: " & dr-get ls "clip_skip" 0 "1"
+
+ Forge's hires keys in its order (processing.py:1247-1340): the sampler only
+ where it differs from the first pass's, the prompts only where they differ
+ from the first pass's, the steps only where they are not 0.
+
+  dr-params-hires : List Text -> Text
+  dr-params-hires (ls) =
+    let s = dr-get ls "sampler" 0 "DPM++ SDE"
+    in let hs = dr-get ls "hr_sampler" 0 s
+    in let p = dr-get ls "prompt" 0 ""
+    in let hp = dr-get ls "hr_prompt" 0 p
+    in let ng = dr-get ls "negative" 0 ""
+    in let hn = dr-get ls "hr_negative" 0 ng
+    in let ck = if dr-has ls "hr_checkpoint" 0 then ", Hires checkpoint: " & dr-get ls "hr_checkpoint" 0 "" else ""
+    in let sm = if hs /= s then ", Hires sampler: " & hs else ""
+    in let pr = if hp /= p then ", Hires prompt: " & dr-quote hp else ""
+    in let nr = if hn /= ng then ", Hires negative prompt: " & dr-quote hn else ""
+    in let mo = if dr-has ls "hr_modules" 0 then dr-module-keys (text-split (dr-get ls "hr_modules" 0 "") "|") 0 "" else ""
+    in ", Denoising strength: " & dr-get ls "hr_denoise" 0 "0.7" & dr-clip-key ls & ck & mo & sm & pr & nr
+
+ Forge's "Hires Module N" keys, the file names without their extension
+ (processing.py:1287-1294).
+
+  dr-module-keys : List Text, Integer, Text -> Text
+  dr-module-keys (ns) (i) (acc) =
+    if i >= list-length ns then acc
+    else dr-module-keys ns (i + 1) (acc & ", Hires Module " & show (i + 1) & ": " & list-at ns i)
+
+  dr-params-hires-size : List Text -> Text
+  dr-params-hires-size (ls) =
+    let st = dr-get ls "hr_steps" 0 "0"
+    in ", Hires CFG Scale: " & dr-get ls "hr_cfg" 0 (dr-get ls "cfg" 0 "2") & dr-hires-schedule ls & ", Hires upscale: " & dr-get ls "hr_scale" 0 "" & (if st == "0" then "" else ", Hires steps: " & st) & ", Hires upscaler: " & dr-get ls "hr_upscaler_name" 0 "Latent"
+
+ soft_inpainting.py:24-31, written in process() before the mask's keys.
+
+  dr-params-soft : List Text -> Text
+  dr-params-soft (ls) =
+    if dr-get ls "soft_inpainting" 0 "0" /= "1" then ""
+    else ", Soft inpainting enabled: True, Soft inpainting schedule bias: " & dr-get ls "soft_power" 0 "1" & ", Soft inpainting preservation strength: " & dr-get ls "soft_scale" 0 "0.5" & ", Soft inpainting transition contrast boost: " & dr-get ls "soft_detail" 0 "4" & dr-params-soft2 ls
+
+  dr-params-soft2 : List Text -> Text
+  dr-params-soft2 (ls) = ", Soft inpainting mask influence: " & dr-get ls "soft_influence" 0 "0" & ", Soft inpainting difference threshold: " & dr-get ls "soft_threshold" 0 "0.5" & ", Soft inpainting difference contrast: " & dr-get ls "soft_contrast" 0 "2"
+
+  dr-params-outpaint : List Text -> Text
+  dr-params-outpaint (ls) =
+    let b = text-to-int (dr-get ls "outpaint_mask_blur" 0 "4")
+    in let d = text-to-int (dr-get ls "outpaint_dirs" 0 "15")
+    in if dr-get ls "outpaint_mode" 0 "poor" == "mk2" then (if bit-and d 3 /= 0 & bit-and d 12 /= 0 & b > 0 then ", Mask blur: " & show (4 * b) else "")
+    else ", Mask blur: " & show (2 * b) & dr-params-fill (dr-get ls "inpainting_fill" 0 "0")
+
+  dr-params-fill : Text -> Text
+  dr-params-fill (f) = if f == "0" then ", Masked content: fill" else if f == "2" then ", Masked content: latent noise" else if f == "3" then ", Masked content: latent nothing" else ""
+
+  dr-request : List Text -> Txt2Img
+  dr-request (ls) =
+    let sampler = dr-get ls "sampler" 0 "DPM++ SDE"
+    in Txt2Img { ti-ckpt = dr-get ls "model" 0 "", ti-prompt = dr-get ls "prompt" 0 "", ti-negative = dr-get ls "negative" 0 "", ti-sampler = ti-name-index ti-sampler-names sampler 0, ti-scheduler = ti-name-index ti-scheduler-names (dr-get ls "scheduler" 0 "Automatic") 0, ti-steps = text-to-int (dr-get ls "steps" 0 "6"), ti-cfg = dr-real (dr-get ls "cfg" 0 "2"), ti-seed = text-to-int (dr-get ls "seed" 0 "0"), ti-width = text-to-int (dr-get ls "width" 0 "1024"), ti-height = text-to-int (dr-get ls "height" 0 "1024"), ti-out = dr-get ls "path" 0 "", ti-params = dr-params ls, ti-clip-skip = text-to-int (dr-get ls "clip_skip" 0 "1"), ti-extras = dr-extras ls }
+
+  dr-i2i : List Text -> I2i
+  dr-i2i (ls) =
+    let r = dr-request ls
+    in I2i { i2-base = r, i2-image = dr-get ls "image" 0 "", i2-mask = dr-get ls "mask" 0 "", i2-denoise = dr-real (dr-get ls "denoise" 0 "0.75"), i2-blur = text-to-int (dr-get ls "mask_blur" 0 "4"), i2-hr-scale = dr-real (dr-get ls "hr_scale" 0 "0"), i2-hr-denoise = dr-real (dr-get ls "hr_denoise" 0 "0.7"), i2-hr-steps = text-to-int (dr-get ls "hr_steps" 0 "0"), i2-hr-cfg = dr-real (dr-get ls "hr_cfg" 0 (dr-get ls "cfg" 0 "2")), i2-hr-upscaler = dr-get ls "hr_upscaler" 0 "", i2-var = dr-variation ls, i2-src-w = text-to-int (dr-get ls "image_w" 0 "0"), i2-src-h = text-to-int (dr-get ls "image_h" 0 "0"), i2-resize = text-to-int (dr-get ls "resize_mode" 0 "0"), i2-fill = text-to-int (dr-get ls "inpainting_fill" 0 "1"), i2-refiner = dr-get ls "refiner" 0 "", i2-switch = dr-real (dr-get ls "refiner_switch_at" 0 "0.8"), i2-hr-sampler = (if dr-has ls "hr_sampler" 0 then ti-name-index ti-sampler-names (dr-get ls "hr_sampler" 0 "") 0 else 0 - 1), i2-hr-scheduler = (if dr-has ls "hr_scheduler" 0 then ti-name-index ti-scheduler-names (dr-get ls "hr_scheduler" 0 "") 0 else 0 - 1), i2-hr-prompt = dr-get ls "hr_prompt" 0 "", i2-hr-negative = dr-get ls "hr_negative" 0 "", i2-area = text-to-int (dr-get ls "inpaint_full_res" 0 "0"), i2-padding = text-to-int (dr-get ls "inpaint_full_res_padding" 0 "32"), i2-hr-ckpt = dr-get ls "hr_checkpoint" 0 (if dr-has ls "hr_vae" 0 then dr-get ls "model" 0 "" else ""), i2-hr-vae = dr-get ls "hr_vae" 0 "", i2-soft = (if dr-get ls "soft_inpainting" 0 "0" == "1" then 1 else 0), i2-sc = dr-soft-cfg ls, i2-out-px = text-to-int (dr-get ls "outpaint_pixels" 0 "0"), i2-out-blur = text-to-int (dr-get ls "outpaint_mask_blur" 0 "4"), i2-out-dirs = text-to-int (dr-get ls "outpaint_dirs" 0 "15"), i2-post = 0 - 1, i2-out-mk2 = (if dr-get ls "outpaint_mode" 0 "poor" == "mk2" then 1 else 0), i2-out-q = dr-real (dr-get ls "outpaint_noise_q" 0 "1"), i2-out-cv = dr-real (dr-get ls "outpaint_color_variation" 0 "0.05") }
+
+  dr-i2i-wanted : I2i -> Boolean
+  dr-i2i-wanted (q) = q.i2-image /= "" | q.i2-hr-scale > 0.0
+
+ A size the UNet takes: multiples of 8, at most 1024 x 1024 pixels.
+
+  dr-size-ok : Integer, Integer -> Boolean
+  dr-size-ok (w) (h) = w >= 64 & h >= 64 & int-mod w 8 == 0 & int-mod h 8 == 0 & w * h <= 1048576
+
+  dr-i2i-refusal : I2i -> Text
+  dr-i2i-refusal (q) =
+    let r = q.i2-base
+    in let hw = real-to-int (real-from-int (r.ti-width) * q.i2-hr-scale)
+    in let hh = real-to-int (real-from-int (r.ti-height) * q.i2-hr-scale)
+    in if q.i2-mask /= "" & q.i2-image == "" then "refused: a mask needs an image"
+    else if q.i2-image /= "" & q.i2-hr-scale > 0.0 then "refused: hires fix is for text to image, not with an image"
+    else if q.i2-hr-scale > 0.0 & q.i2-hr-sampler >= 0 & ti-timestep-sampler (q.i2-hr-sampler) then "refused: " & list-at ti-sampler-names (q.i2-hr-sampler) & " cannot run the hires pass here (a timestep sampler)"
+    else if ti-timestep-sampler (r.ti-sampler) & (q.i2-image /= "" | q.i2-hr-scale > 0.0) then "refused: " & list-at ti-sampler-names (r.ti-sampler) & " is text to image only here (a timestep sampler)"
+    else if q.i2-image /= "" & (q.i2-denoise <= 0.0 | q.i2-denoise > 1.0) then "refused: denoise must be above 0 and at most 1"
+    else if q.i2-blur < 0 | q.i2-blur > 64 then "refused: mask_blur must be within 0 and 64"
+    else if q.i2-resize == 3 & q.i2-src-w > 0 & q.i2-mask /= "" & q.i2-area /= 1 then "refused: latent upscale with a mask and a new size; Forge pastes its overlay at the picture's size, into the corner"
+    else if q.i2-resize == 3 & q.i2-src-w > 0 & (int-mod (q.i2-src-w) 8 /= 0 | int-mod (q.i2-src-h) 8 /= 0 | q.i2-src-w * q.i2-src-h > 1048576) then "refused: latent upscale encodes the picture at its own size, which must be multiples of 8 and at most 1024x1024 pixels"
+    else if q.i2-area < 0 | q.i2-area > 1 then "refused: inpaint_full_res must be 0 (whole picture) or 1 (only masked)"
+    else if q.i2-padding < 0 | q.i2-padding > 256 then "refused: inpaint_full_res_padding must be within 0 and 256"
+    else if q.i2-out-px > 0 & (q.i2-image == "" | q.i2-mask /= "" | q.i2-hr-scale > 0.0 | q.i2-soft == 1 | q.i2-area == 1 | q.i2-resize /= 0 | q.i2-refiner /= "") then "refused: outpainting takes an image alone, with no mask, hires fix, refiner, soft inpainting, inpaint area or resize mode"
+    else if q.i2-out-px > 0 & (q.i2-out-px < 8 | q.i2-out-px > 256 | q.i2-out-px >= r.ti-width | q.i2-out-px >= r.ti-height | q.i2-out-dirs < 1 | q.i2-out-dirs > 15 | q.i2-out-blur < 0 | q.i2-out-blur > 64) then "refused: outpaint_pixels within 8 and 256 and below the tile size, outpaint_dirs within 1 and 15, outpaint_mask_blur within 0 and 64"
+    else if q.i2-out-mk2 == 1 & (int-mod (q.i2-out-px) 64 /= 0 | int-mod (if q.i2-src-w > 0 then q.i2-src-w else r.ti-width) 64 /= 0 | int-mod (if q.i2-src-h > 0 then q.i2-src-h else r.ti-height) 64 /= 0) then "refused: outpainting mk2 is built for pictures and outpaint_pixels in multiples of 64"
+    else if q.i2-soft == 1 & q.i2-mask == "" then "refused: soft inpainting needs a mask"
+    else if q.i2-fill < 0 | q.i2-fill > 3 then "refused: inpainting_fill must be 0 (fill), 1 (original), 2 (latent noise) or 3 (latent nothing)"
+    else if q.i2-hr-scale > 0.0 & (q.i2-hr-scale < 1.0 | q.i2-hr-scale > 4.0) then "refused: hr_scale must be within 1 and 4"
+    else if q.i2-hr-scale > 0.0 & (q.i2-hr-denoise <= 0.0 | q.i2-hr-denoise > 1.0) then "refused: hr_denoise must be above 0 and at most 1"
+    else if q.i2-hr-scale > 0.0 & (q.i2-hr-steps < 0 | q.i2-hr-steps > 150) then "refused: hr_steps must be within 0 and 150"
+    else if q.i2-hr-scale > 0.0 & dr-size-ok hw hh == False then "refused: hires size " & show hw & "x" & show hh & " (multiples of 8, at most 1024x1024 pixels)"
+    else ""
+
+  dr-refusal : List Text -> Text
+  dr-refusal (ls) =
+    let r = dr-request ls
+    in let sampler = dr-get ls "sampler" 0 "DPM++ SDE"
+    in if r.ti-ckpt == "" then "refused: no model"
+    else if r.ti-out == "" then "refused: no path"
+    else if r.ti-sampler < 0 then "refused: sampler " & sampler & " (one of Forge's labels: " & text-join ", " ti-sampler-names & ")"
+    else if r.ti-scheduler < 0 then "refused: scheduler " & dr-get ls "scheduler" 0 "" & " (one of Forge's labels: " & text-join ", " ti-scheduler-names & ")"
+    else if r.ti-sampler == ti-lcm & r.ti-scheduler /= 0 then "refused: LCM takes its own schedule, Automatic"
+    else if r.ti-steps < 1 | r.ti-steps > 150 then "refused: steps " & show (r.ti-steps)
+    else if dr-size-ok (r.ti-width) (r.ti-height) == False then "refused: size " & show (r.ti-width) & "x" & show (r.ti-height) & " (multiples of 8, at most 1024x1024 pixels)"
+    else if r.ti-clip-skip < 1 | r.ti-clip-skip > 12 then "refused: clip_skip must be within 1 and 12"
+    else ""
+
+Section: Flux
+
+  dr-flux-model : Text -> Boolean
+  dr-flux-model (ckpt) =
+    let file = ckpt-open ckpt
+    in if file.st-valid == False then False
+    else when st-find-tensor file "double_blocks.0.img_attn.qkv.weight"
+     is None -> False
+     is Just (t) -> True
+
+  dr-no-t5 : T5Tok
+  dr-no-t5 = T5Tok { tk-count = 0, tk-scores = 0, tk-offs = 0, tk-lens = 0, tk-slots = 0, tk-trie = 0, tk-pool = 0, tk-unk = 0.0 }
+
+  dr-t5 : Integer, Integer, Integer -> T5Tok
+  dr-t5 (j) (n) (extras) =
+    if extras < 1 | j == 0 then dr-no-t5
+    else let tt = t5-json-tables j n
+    in if tt.tt-why /= "" then dr-no-t5 else t5-tok-load (tt.tt-vocab) (tt.tt-charsmap)
+
+  dr-flux-refusal : List Text, T5Tok -> Text
+  dr-flux-refusal (ls) (tok) =
+    let r = dr-request ls
+    in let sched = dr-get ls "scheduler" 0 "Automatic"
+    in if tok.tk-count == 0 then "refused: Flux needs FLUX.1's T5 tokenizer on the driver's disk"
+    else if r.ti-out == "" then "refused: no path"
+    else if dr-has ls "image" 0 | dr-has ls "mask" 0 | dr-has ls "hr_scale" 0 then "refused: Flux is text to image only here"
+    else if dr-get ls "sampler" 0 "Euler" /= "Euler" then "refused: Flux schnell samples with Euler only here"
+    else if sched /= "Automatic" & sched /= "Simple" then "refused: Flux schnell takes the Simple schedule (Automatic is Simple)"
+    else if (r.ti-cfg ~0 1.0) == False then "refused: Flux schnell is guidance-distilled; cfg must be 1"
+    else if dr-get ls "negative" 0 "" /= "" then "refused: Flux at cfg 1 uses no negative prompt"
+    else if dr-has ls "subseed_strength" 0 | dr-has ls "seed_resize_from_w" 0 then "refused: variation seed and seed resize are SDXL and SD1.5 only here"
+    else if dr-has ls "clip_skip" 0 then "refused: clip skip changes nothing on Flux, whose CLIP-L gives only its pooled output"
+    else if r.ti-steps < 1 | r.ti-steps > 150 then "refused: steps " & show (r.ti-steps)
+    else if dr-size-ok (r.ti-width) (r.ti-height) == False | int-mod (r.ti-width) 64 /= 0 | int-mod (r.ti-height) 64 /= 0 then "refused: size " & show (r.ti-width) & "x" & show (r.ti-height) & " (Flux: multiples of 64, at most 1024x1024 pixels)"
+    else ""
+
+  dr-flux-params : List Text -> Text
+  dr-flux-params (ls) =
+    dr-get ls "prompt" 0 "" & dr-lora-tags (dr-lora-lines ls 0 []) 0 "" & "\nSteps: " & dr-get ls "steps" 0 "4" & ", Sampler: Euler, Schedule type: Simple, CFG scale: 1, Seed: " & dr-get ls "seed" 0 "0" & ", Size: " & dr-get ls "width" 0 "1024" & "x" & dr-get ls "height" 0 "1024" & ", Model: " & dr-get ls "model" 0 ""
+
+  dr-flux-run : ClipBpe, T5Tok, Text -> Text
+  dr-flux-run (bpe) (tok) (req) =
+    let ls = text-split req "\n"
+    in if req == "" then "refused: the request could not be read"
+    else let why = dr-flux-refusal ls tok
+    in if why /= "" then why
+    else let q = dr-request ls
+    in let r = Txt2Img { ti-ckpt = q.ti-ckpt, ti-prompt = q.ti-prompt, ti-negative = "", ti-sampler = ti-euler, ti-scheduler = ti-name-index ti-scheduler-names "Simple" 0, ti-steps = q.ti-steps, ti-cfg = 1.0, ti-seed = q.ti-seed, ti-width = q.ti-width, ti-height = q.ti-height, ti-out = q.ti-out, ti-params = dr-flux-params ls, ti-clip-skip = q.ti-clip-skip, ti-extras = ti-no-extras }
+    in let fs = dr-loras (dr-lora-lines ls 0 []) 0 []
+    in let bad = dr-loras-bad fs 0
+    in let res = if bad /= "" then "refused: " & bad & " is not a readable LoRA" else flux-txt2img bpe tok r fs
+    in if text-starts-with res "png " then "ok " & res else res
+
+Section: Entry
+
+  dr-load : Integer, Integer -> [Device.Block] Integer
+  dr-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+  dr-run : ClipBpe, I2Model, Text -> Text
+  dr-run (bpe) (m) (req) =
+    let ls = text-split req "\n"
+    in if req == "" then "refused: the request could not be read"
+    else let why = dr-refusal ls
+    in if why /= "" then why
+    else let q = dr-i2i ls
+    in let why2 = dr-i2i-refusal q
+    in if why2 /= "" then why2
+    else let res = img2img-with bpe m q
+    in if text-starts-with res "png " then "ok " & res else res
+
+  dr-name : Integer -> Text
+  dr-name (n) = "request-" & show n & ".txt"
+
+  dr-model-of : Text -> Text
+  dr-model-of (req) = dr-get (text-split req "\n") "model" 0 ""
+
+ Requests 1, 2, 3 ... in turn, the answer to each written as below. The weights stay loaded while requests name the same
+ checkpoint. A request's own allocations are reclaimed by restoring the heap
+ to mk, the mark taken after the LoRAs were merged; on a change of LoRA set
+ every tensor the old set patched is put back from the file, the heap returns
+ to mm, the mark between the checkpoint and its LoRAs, and the request is read
+ again there. On a change of checkpoint the heap returns to base, below the
+ old model, so the new model's names and handles lie below the new mark.
+
+  dr-serve : ClipBpe, T5Tok, I2Model, I2Model, List LoraFile, Text, Integer, Integer, Integer, Integer, Integer -> [Console] Nothing
+  dr-serve (bpe) (tok) (m0) (m) (fs) (key) (base) (mm) (mk) (h1) (n) =
+    let w = dr-await h1 (dr-name n)
+    in let req = dr-read (dr-name n)
+    in if dr-key-of req == key & dr-refined req == False then dr-answer bpe tok m0 m fs key base mm mk h1 n req
+    else if dr-refined req == False & dr-lora-change m0 fs req then
+      (let back = __heap-restore mm
+       in dr-loras-on bpe tok m0 base mm h1 n (dr-read (dr-name n)))
+    else let f = img2img-model-free m
+    in let temps = un-pool-drain 0
+    in let pooled = gpu-buf-pool-drain 0
+    in let back = __heap-restore base
+    in dr-dispatch bpe tok base h1 n (dr-read (dr-name n))
+
+  dr-lora-change : I2Model, List LoraFile, Text -> Boolean
+  dr-lora-change (m0) (fs) (req) =
+    if m0.im-why /= "" then False
+    else if dr-model-of req /= m0.im-ckpt then False
+    else lora-resident-restore (m0.im-unet) (m0.im-wl) (m0.im-wg) fs >= 0
+
+  dr-serve-none : ClipBpe, T5Tok, Integer, Integer, Integer -> [Console] Nothing
+  dr-serve-none (bpe) (tok) (base) (h1) (n) =
+    let w = dr-await h1 (dr-name n)
+    in dr-dispatch bpe tok base h1 n (dr-read (dr-name n))
+
+  dr-dispatch : ClipBpe, T5Tok, Integer, Integer, Integer, Text -> [Console] Nothing
+  dr-dispatch (bpe) (tok) (base) (h1) (n) (req) =
+    if dr-flux-model (dr-model-of req) then dr-flux-answer bpe tok base h1 n req
+    else if dr-refined req then dr-refiner-answer bpe tok base h1 n req
+    else dr-switch bpe tok base h1 n req
+
+  dr-switch : ClipBpe, T5Tok, Integer, Integer, Integer, Text -> [Console] Nothing
+  dr-switch (bpe) (tok) (base) (h1) (n) (req) =
+    let m0 = img2img-model (dr-model-of req)
+    in dr-loras-on bpe tok m0 base __heap-save h1 n req
+
+  dr-loras-on : ClipBpe, T5Tok, I2Model, Integer, Integer, Integer, Integer, Text -> [Console] Nothing
+  dr-loras-on (bpe) (tok) (m0) (base) (mm) (h1) (n) (req) =
+    let fs = dr-loras (dr-lora-lines (text-split req "\n") 0 []) 0 []
+    in let bad = dr-loras-bad fs 0
+    in let applied = if m0.im-why /= "" | bad /= "" then 0 else lora-resident-apply (m0.im-unet) (m0.im-wl) (m0.im-wg) fs
+    in let why = if m0.im-why /= "" then m0.im-why else if bad /= "" then "refused: " & bad & " is not a readable LoRA" else if applied < 0 then "refused: a LoRA could not be merged" else ""
+    in let m = I2Model { im-ckpt = m0.im-ckpt, im-why = why, im-sd15 = m0.im-sd15, im-wl = m0.im-wl, im-wg = m0.im-wg, im-unet = m0.im-unet, im-tab = m0.im-tab, im-vd = m0.im-vd, im-ve = m0.im-ve }
+    in dr-answer bpe tok m0 m fs (dr-key-of req) base mm __heap-save h1 n req
+
+ A request's pooled buffers go back to the host before the answer, so the
+ device holds only the checkpoint between requests. codex-vm keeps the console
+ until the guest exits, therefore the answer to
+ request n is also written to done-<n>.txt under -gpu-out, where the server
+ reads it.
+
+  dr-save-text : Text, Text -> Integer
+  dr-save-text (name) (s) =
+    let len = io-text ti-scratch s 0 - ti-scratch
+    in let h = gpu-buf-alloc (if len > 0 then len else 1)
+    in let ok = h /= 0 & gpu-buf-write h 0 len ti-scratch
+    in let saved = if ok then gpu-buf-save h 0 len name else 0 - 1
+    in let f = if h == 0 then True else gpu-buf-free h
+    in saved
+
+  dr-answer : ClipBpe, T5Tok, I2Model, I2Model, List LoraFile, Text, Integer, Integer, Integer, Integer, Integer, Text -> [Console] Nothing
+  dr-answer (bpe) (tok) (m0) (m) (fs) (key) (base) (mm) (mk) (h1) (n) (req) =
+    let res = dr-run bpe (i2-skip m (text-to-int (dr-get (text-split req "\n") "clip_skip" 0 "1"))) req
+    in let drained = gpu-buf-pool-drain 0
+    in let s = dr-save-text ("done-" & show n & ".txt") res
+    in act
+      print-line-uni ("done " & show n & ": " & res)
+      let back = __heap-restore mk
+      in dr-serve bpe tok m0 m fs key base mm mk h1 (n + 1)
+    end
+
+  dr-flux-answer : ClipBpe, T5Tok, Integer, Integer, Integer, Text -> [Console] Nothing
+  dr-flux-answer (bpe) (tok) (base) (h1) (n) (req) =
+    let res = dr-flux-run bpe tok req
+    in let temps = un-pool-drain 0
+    in let drained = gpu-buf-pool-drain 0
+    in let s = dr-save-text ("done-" & show n & ".txt") res
+    in act
+      print-line-uni ("done " & show n & ": " & res)
+      let back = __heap-restore base
+      in dr-serve-none bpe tok base h1 (n + 1)
+    end
+
+  dr-go : Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Nothing
+  dr-go (vlen) (mlen) (extras) (jstart) (jlen) =
+    act
+      vbuf <- dr-load 1 vlen
+      mbuf <- dr-load (1 + (vlen + 511) / 512) mlen
+      jbuf <- if extras > 0 then dr-load jstart jlen else 0
+      let bpe = clip-bpe-load vbuf vlen mbuf mlen
+      in let tok = dr-t5 jbuf jlen extras
+      in let h1 = gpu-buf-alloc 1
+      in let base = __heap-save
+      in let w = dr-await h1 (dr-name 1)
+      in dr-dispatch bpe tok base h1 1 (dr-read (dr-name 1))
+    end
+
+ A request naming a refiner, or a hires checkpoint other than its model, loads
+ both checkpoints itself, therefore it runs with no model resident, as Flux
+ does.
+
+  dr-refined : Text -> Boolean
+  dr-refined (req) = let ls = text-split req "\n" in dr-get ls "refiner" 0 "" /= "" | dr-hr-swap ls
+
+  dr-hr-swap : List Text -> Boolean
+  dr-hr-swap (ls) = dr-has ls "hr_vae" 0 | (dr-get ls "hr_checkpoint" 0 "" /= "" & dr-get ls "hr_checkpoint" 0 "" /= dr-get ls "model" 0 "")
+
+  dr-refiner-run : ClipBpe, Text -> Text
+  dr-refiner-run (bpe) (req) =
+    let ls = text-split req "\n"
+    in let why = dr-refusal ls
+    in if why /= "" then why
+    else let q = dr-i2i ls
+    in let why2 = dr-i2i-refusal q
+    in if why2 /= "" then why2
+    else if dr-hr-swap ls then dr-hr-swap-run bpe ls q
+    else if q.i2-switch <= 0.0 | q.i2-switch > 1.0 then "refused: refiner_switch_at must be above 0 and at most 1"
+    else let fs = dr-loras (dr-lora-lines ls 0 []) 0 []
+    in let bad = dr-loras-bad fs 0
+    in if bad /= "" then "refused: " & bad & " is not a readable LoRA"
+    else let keys = ", Refiner: " & dr-get ls "refiner" 0 "" & ", Refiner switch at: " & dr-get ls "refiner_switch_at" 0 "0.8"
+    in let res = img2img-refined bpe q (\m -> lora-resident-apply (m.im-unet) (m.im-wl) (m.im-wg) fs) keys
+    in if text-starts-with res "png " then "ok " & res else res
+
+  dr-hr-swap-run : ClipBpe, List Text, I2i -> Text
+  dr-hr-swap-run (bpe) (ls) (q) =
+    if q.i2-hr-scale <= 0.0 then "refused: hr_checkpoint and hr_modules are for hires fix"
+    else let fs = dr-loras (dr-lora-lines ls 0 []) 0 []
+    in let bad = dr-loras-bad fs 0
+    in if bad /= "" then "refused: " & bad & " is not a readable LoRA"
+    else if q.i2-refiner /= "" & (q.i2-switch <= 0.0 | q.i2-switch > 1.0) then "refused: refiner_switch_at must be above 0 and at most 1"
+    else let res = img2img-hr-swapped bpe q (\m -> lora-resident-apply (m.im-unet) (m.im-wl) (m.im-wg) fs) (", Refiner: " & dr-get ls "refiner" 0 "" & ", Refiner switch at: " & dr-get ls "refiner_switch_at" 0 "0.8")
+    in if text-starts-with res "png " then "ok " & res else res
+
+  dr-refiner-answer : ClipBpe, T5Tok, Integer, Integer, Integer, Text -> [Console] Nothing
+  dr-refiner-answer (bpe) (tok) (base) (h1) (n) (req) =
+    let res = dr-refiner-run bpe req
+    in let temps = un-pool-drain 0
+    in let drained = gpu-buf-pool-drain 0
+    in let s = dr-save-text ("done-" & show n & ".txt") res
+    in act
+      print-line-uni ("done " & show n & ": " & res)
+      let back = __heap-restore base
+      in dr-serve-none bpe tok base h1 (n + 1)
+    end

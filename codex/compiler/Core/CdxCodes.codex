@@ -92,6 +92,8 @@ Section: Parser
 
   cdx-ctor-return-annotation-unsupported : Integer = 1080
 
+  cdx-signature-continuation-not-deeper : Integer = 1081
+
   cdx-prose-function-name-mismatch : Integer = 1101
   cdx-prose-parameter-mismatch : Integer = 1102
   cdx-prose-record-field-mismatch : Integer = 1103
@@ -255,6 +257,8 @@ Section: The quotation gate
 
   cdx-quotation-no-floor : Integer = 3026
 
+  cdx-ambiguous-chapter-name : Integer = 3027
+
 Section: Capability checker
   cdx-capability-not-granted : Integer = 4001
 
@@ -303,6 +307,10 @@ Section: Hard Realtime
 
   cdx-rt-wcet-unchecked : Integer = 6013
 
+  cdx-call-census : Integer = 6014
+
+  cdx-cover-slot : Integer = 6015
+
 Section: Registry entry constructor
   mk-cdx : Integer between 0 and 65535, Text, Integer between 0 and 3, Integer between 0 and 15, Text -> CdxCodeInfo
   mk-cdx (code) (name) (sev) (phase) (summary) =
@@ -340,8 +348,9 @@ Section: Registry
     mk-cdx cdx-duplicate-definition "DuplicateDefinition" sev-error phase-name-resolver "The same name is introduced twice at chapter scope.",
     mk-cdx cdx-undefined-name "UndefinedName" sev-error phase-name-resolver "A name was referenced but is not in any visible scope.",
     mk-cdx cdx-duplicate-cite "DuplicateCite" sev-error phase-name-resolver "Two cite declarations in the same chapter select the same name; the later cite would silently shadow the earlier.",
+    mk-cdx cdx-ambiguous-chapter-name "AmbiguousChapterName" sev-error phase-name-resolver "A reference names a definition that two or more other chapters make and its own chapter does not; a selective cite must choose one.",
     mk-cdx cdx-shadows-builtin "ShadowsBuiltin" sev-warning phase-name-resolver "A definition has the same name as a builtin. Which one a call site gets is not uniform: where the builtin reaches the emit-builtin dispatch the definition displaces it silently for the whole compilation unit, and where the builtin is lowered to its own IR node the definition is bypassed instead. Measured: shadowing abs or int-mod substitutes the definition, shadowing text-length does not. Nothing in the source says which. A shadow with different COST is as dangerous as one with different semantics: Hamt once defined list-insert-at, in-place and amortised O(1) as a builtin, with a pure O(n) body, and citing Hamt into the compiler sent four modules quadratic until the heap walked into the stack.",
-    mk-cdx cdx-collides-across-chapters "CollidesAcrossChapters" sev-warning phase-name-resolver "A definition has the same name as one in another chapter of the same compilation unit. ChapterScoper mangles both, so which one a mention resolves to depends on the chapter the mention sits in, and for a chapter that defines neither it depends on concat order -- a property of the build's glob, written nowhere in the source. Moving a body between the two chapters silently rebinds every such name in it. That happened in CL 8955 and was caught only because the two signatures were incompatible enough to raise CDX2001; a compatible pair would have compiled and emitted wrong code. Give one of them a chapter-specific prefix, or cite the definition you mean rather than copying it.",
+    mk-cdx cdx-collides-across-chapters "CollidesAcrossChapters" sev-warning phase-name-resolver "A definition has the same name as one in another chapter of the same compilation unit. ChapterScoper mangles both, so which one a mention resolves to depends on the chapter the mention sits in, and a chapter that defines neither must cite the one it means (CDX3027). Moving a body between the two chapters silently rebinds every such name in it. That happened in CL 8955 and was caught only because the two signatures were incompatible enough to raise CDX2001; a compatible pair would have compiled and emitted wrong code. Give one of them a chapter-specific prefix, or cite the definition you mean rather than copying it.",
     mk-cdx cdx-chapter-pagination "ChapterPagination" sev-error phase-parser "A chapter spans several files but its 'Page N of M' markers do not agree: a page is missing its marker, M does not equal the number of files, or two pages claim the same N. A chapter may legitimately span files, so a repeated chapter name is not itself an error -- but without coherent pagination an ACCIDENTAL duplicate name is indistinguishable from a deliberate page, and the two chapters merge silently under one slug.",
     mk-cdx cdx-missing-cite "MissingCite" sev-error phase-name-resolver "A cited foreword chapter could not be found on disk; the chapter file is missing or the name is misspelled.",
     mk-cdx cdx-class-shadows-derived "ClassShadowsDerived" sev-error phase-name-resolver "A class declaration uses the name of a derived class (Eq, Show or Ord). A constraint naming one of these is always compiled as the derived class, so the user class and its instances would never be consulted. Rename the class.",
@@ -385,6 +394,7 @@ Section: Registry
     mk-cdx cdx-not-codex-operator "NotCodexOperator" sev-error phase-parser "An operator from another language: `++` is not Codex, and text concatenation is `&`.",
     mk-cdx cdx-ctor-field-comma "CtorFieldComma" sev-error phase-parser "A constructor field written (A, B) with no arrow; fields are separate parentheses, (A) (B), and a tuple field is ((A, B)).",
     mk-cdx cdx-ctor-return-annotation-unsupported "CtorReturnAnnotationUnsupported" sev-error phase-parser "Explicit constructor return annotations are not supported and are rejected before type checking.",
+    mk-cdx cdx-signature-continuation-not-deeper "SignatureContinuationNotDeeper" sev-error phase-parser "A type line ending in a comma or an arrow continues only onto a line indented deeper than the signature's first line.",
     mk-cdx cdx-top-level-token-dropped "TopLevelTokenDropped" sev-error phase-parser "A token at column 3 begins no definition, so top-level recovery would drop it. A continuation belongs to the definition above only when it is indented past column 3.",
     mk-cdx cdx-body-tokens-left "BodyTokensLeft" sev-error phase-parser "A definition's expression ended and tokens remain inside its body; they are not part of the definition. Prose belongs at column 2.",
     mk-cdx cdx-discarded-literal-statement "DiscardedLiteralStatement" sev-error phase-parser "A bare literal is a statement of an act block other than the last, so its value is discarded and the line does nothing.",
@@ -428,6 +438,8 @@ Section: Registry
     mk-cdx cdx-rt-wcet-exceeded "RtWcetExceeded" sev-warning phase-codegen "A punctual function exceeds its WCET instruction budget.",
     mk-cdx cdx-rt-wcet-opaque "RtWcetOpaque" sev-warning phase-codegen "A punctual function's instruction count is unavailable: the emitted bytes contain an encoding outside the WCET decode vocabulary.",
     mk-cdx cdx-rt-wcet-unchecked "RtWcetUnchecked" sev-warning phase-codegen "A punctual function declares an explicit WCET budget but emits no body, so no instruction count is taken and the budget is unchecked.",
+    mk-cdx cdx-call-census "CallCensus" sev-info phase-codegen "Under the callcensus mode flag, one line per emitted definition: the emit path (lir, minimal or standard), the parameter count, and the instructions, pushes, pops, stack stores and calls decoded from its emitted bytes.",
+    mk-cdx cdx-cover-slot "CoverSlot" sev-info phase-codegen "Under the cover mode flag, one line per instrumented definition: its counter slot and name. The program prints COVER:<slot>:<count> for every entered slot at exit; build/coverage-report.ps1 joins the two.",
     mk-cdx cdx-mutation-in-constructor "MutationInConstructor" sev-warning phase-type-checker "A record constructor field calls __record-set, which mutates in place. Other fields reading the same record see the mutated value. Bind the mutation result to a let before the constructor.",
     mk-cdx cdx-bounded-exceeded "BoundedExceeded" sev-error phase-type-checker "A function declares a 'bounded' allocation ceiling that its inferred class exceeds, directly or through a callee. Cost Model 3.3: the lattice is none < fixed < budgeted < linear < growing and the refusal is transitive, so one callee inferred 'growing' breaks a 'bounded linear' promise at the declaration site.",
     mk-cdx cdx-bounded-unknown-class "BoundedUnknownClass" sev-error phase-type-checker "A 'bounded' declaration names a class that is not one of none, fixed, budgeted, linear or growing.",

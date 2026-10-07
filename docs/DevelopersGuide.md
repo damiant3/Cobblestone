@@ -65,6 +65,23 @@ Chapter: ReplayVerifier
   cites Foreword chapter Sha256     -- foreword library
 ```
 
+### A name two chapters define
+
+When two or more chapters of a unit define the same name, a chapter that
+defines it itself sees its own definition (CDX3006 warns at each
+definition). A chapter that defines none of them and mentions the name is
+refused with CDX3027, which lists every defining chapter. The chapter names
+the one it means with a selective cite:
+
+```
+Chapter: GopWake
+  cites Verify chapter CdxBinary
+  cites Verify chapter CdxBinary (bytes-equal)
+```
+
+A whole-chapter cite does not choose: the selective cite is required even
+when the chapter already cites the defining chapter whole.
+
 ## Identifiers
 
 - Values: `kebab-case` (e.g., `compute-balance`, `list-push`)
@@ -2214,6 +2231,8 @@ record's, so the record type has to come from the receiver expression.
 
 ## Pitfalls
 
+**A device store inside a bound `if` is not lowered by the WGSL plug.** `w <- (if c then device-store-f32 b i v else 0)` becomes WGSL `select(0, device_store_f32(...), c)`, which evaluates both arms and leaves an unresolved call, so the shader fails to compile (red, 2026-10-02, `apps/spark/QwenKernels.codex`). Put the conditional store at a function's top level (`qw-store-when`: `if on == 0 then 0 else device-store-f32 ...`) or as the last statement of an `act` block.
+
 **Lines cannot start with `.`** A `.field` continuation on its own line
 is rejected with CDX1071. Keep field access on the
 receiver's line (`r.field`), or bind the receiver with a `let`.
@@ -2274,9 +2293,8 @@ more often than anything reaches for `above`.
 **`peek-32` zero-extends, so -1 is not a usable sentinel.** A diagnostic
 cell read back through `peek-32` can never answer negative, and code
 testing `< 0` on it is dead. Pick a sentinel above the field's real
-range instead. Note also that **`poke-qword` does not exist** although
-`peek-qword` does; use `poke-32` / `peek-32` for a heap pointer, which is
-safe because the arena is below 4 GB. **`peek-16` / `poke-16` are builtins
+range instead. `peek-qword` and `poke-qword` are both builtins
+(`Types/Builtins.codex`). **`peek-16` / `poke-16` are builtins
 since 2026-08-16 (root) and are real 16-bit accesses on every lane**
 (`movzx`/`mov word` on x86-64, `ldrh`/`strh` on ARM64, `lhu`/`sh` on
 RISC-V), at any offset, even or odd. Before that the only definitions were
@@ -2285,6 +2303,21 @@ RISC-V), at any offset, even or odd. Before that the only definitions were
 virtio registers and which put an odd-offset store two bytes early
 (`codex/test/poke16-width` is the arm; its `odd-bytes` line is what the
 old definition got wrong).
+
+**A recursive call that is an operand of `&` is not a tail call, and the stack
+grows one frame per step.** `x == 0 & recurse (i + 1)` over a 5 MB buffer
+double-faulted (`!EXC=08`, CR2 just under the stack top) where the same walk
+written `if x /= 0 then False else recurse (i + 1)` runs flat. Write long
+walks with the recursion as the whole `else` arm (red, 2026-10-05,
+`gc-zero-range` over a UCC1 magery section; `cc-zero` is the flat form).
+
+**Inside an `act` block, a self-call in a `when` arm is not a tail call; in an
+`if` branch it is.** Measured 2026-10-06 over 10 million iterations: the
+self-call as the block's last statement, or in an `if ... else self` after a
+bind, runs flat, while `when x is Ok (_) -> self` double-faults (`!EXC=08`,
+`CallR` 0xBA000000). A serving loop written the second way leaked a frame per
+round and exhausted the 64 MiB stack after 627 s (`GameLinks` `gl-loop`). Put
+the round in its own function that answers a status, and recurse in an `if`.
 
 **Never `__heap-restore` around a send.** The receive-side pairs
 throughout `codex/os/net/NetIO.codex` are safe because a polled frame that

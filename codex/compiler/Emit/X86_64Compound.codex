@@ -137,6 +137,59 @@ Section: Function Application
     if i < 0 then st
     else pop-to-arg-regs (st-append-code st (pop-r (list-at arg-regs i))) (i - 1)
 
+  complex-arg-indices : CodegenState, List IRExpr, Integer, Integer, List Integer -> List Integer
+  complex-arg-indices (st) (args) (i) (n) (acc) =
+    if i == n then acc
+    else if is-simple-arg st (list-at args i) then complex-arg-indices st args (i + 1) n acc
+    else complex-arg-indices st args (i + 1) n (list-push acc i)
+
+  push-complex-args : CodegenState, List IRExpr, List Integer, Integer, Integer -> CodegenState
+  push-complex-args (st) (args) (cx) (j) (n) =
+    if j >= n then st
+    else let r = emit-expr st (list-at args (list-at cx j))
+    in push-complex-args (st-append-code (r.state) (push-r (r.reg))) args cx (j + 1) n
+
+  pop-complex-args : CodegenState, List Integer, Integer -> CodegenState
+  pop-complex-args (st) (cx) (j) =
+    if j < 0 then st
+    else pop-complex-args (st-append-code st (pop-r (list-at arg-regs (list-at cx j)))) cx (j - 1)
+
+  emit-simple-args-skipping : CodegenState, List IRExpr, Integer, Integer -> CodegenState
+  emit-simple-args-skipping (st) (args) (i) (n) =
+    if i == n then st
+    else if is-simple-arg st (list-at args i) then
+      emit-simple-args-skipping (emit-to-local st (list-at args i) (list-at arg-regs i) False) args (i + 1) n
+    else emit-simple-args-skipping st args (i + 1) n
+
+  emit-mixed-args : CodegenState, List IRExpr, Integer -> CodegenState
+  emit-mixed-args (st) (args) (n) =
+    let cx = complex-arg-indices st args 0 n []
+    in let nc = list-length cx
+    in let st1 = push-complex-args st args cx 0 (nc - 1)
+    in let last-i = list-at cx (nc - 1)
+    in let last = emit-expr st1 (list-at args last-i)
+    in let dst = list-at arg-regs last-i
+    in let st2 = if last.reg == dst then last.state else st-append-code (last.state) (mov-rr dst (last.reg))
+    in let st3 = pop-complex-args st2 cx (nc - 2)
+    in emit-simple-args-skipping st3 args 0 n
+
+  locals-clear-of-arg-regs : List Integer, Integer, Integer -> Boolean
+  locals-clear-of-arg-regs (arg-locals) (i) (count) =
+    if i == count then True
+    else let l = list-at arg-locals i
+    in if l < spill-base & tco-list-contains arg-regs l 0 then False
+    else locals-clear-of-arg-regs arg-locals (i + 1) count
+
+  place-reg-args-loop : CodegenState, List Integer, Integer, Integer -> CodegenState
+  place-reg-args-loop (st) (arg-locals) (i) (count) =
+    if i == count then st
+    else place-reg-args-loop (load-local-to st (list-at arg-locals i) (list-at arg-regs i)) arg-locals (i + 1) count
+
+  place-reg-args : CodegenState, List Integer, Integer -> CodegenState
+  place-reg-args (st) (arg-locals) (count) =
+    if locals-clear-of-arg-regs arg-locals 0 count then place-reg-args-loop st arg-locals 0 count
+    else pop-to-arg-regs (push-reg-args st arg-locals 0 count) (count - 1)
+
   push-stack-args : CodegenState, List Integer, Integer -> CodegenState
   push-stack-args (st) (arg-locals) (i) =
     if i < 6 then st
@@ -177,7 +230,8 @@ Section: Function Application
       else if user-arity > 0 & list-length (flat.args) == user-arity then
         emit-call-or-effect-op st flat user-arity
       else
-        emit-partial-application st (flat.func-name) (flat.args) (if user-arity > 0 then user-arity else list-length (flat.args) + 1 + fun-type-arity rt)
+        let pa-arity = if user-arity > 0 then user-arity else list-length (flat.args) + 1 + fun-type-arity rt
+        in emit-partial-application st (flat.func-name) (flat.args) pa-arity
      is otherwise ->
       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
       in if is-local then emit-indirect-call st flat
@@ -196,14 +250,14 @@ Section: Function Application
       emit-simple-args-to-regs (st-set-tail-pos st False) (flat.args) 0 arg-count
     else if arg-count <= 4 & all-args-reg-locals (st.locals) (flat.args) 0 then
       emit-args-to-regs st (flat.args) 0 arg-count
+    else if arg-count <= 6 & list-length (st.func-local-regs) == 0 then
+      emit-mixed-args (st-set-tail-pos st False) (flat.args) arg-count
     else if arg-count <= 6 then
       let st1 = emit-and-push-args (st-set-tail-pos st False) (flat.args) 0
       in pop-to-arg-regs st1 (arg-count - 1)
     else let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
     in let st1 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
-    in let reg-count = if arg-count < 6 then arg-count else 6
-    in let st2 = push-reg-args st1 (saved.locals) 0 reg-count
-    in pop-to-arg-regs st2 (reg-count - 1)
+    in place-reg-args st1 (saved.locals) 6
     in let st4 = emit-call-to st3 (flat.func-name)
     in let stack-arg-count = arg-count - 6
     in let st5 = if stack-arg-count > 0 then
@@ -220,10 +274,9 @@ Section: Function Application
     in let arg-count = list-length (flat.args)
     in let reg-count = if arg-count < 6 then arg-count else 6
     in let st0 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
-    in let st1 = push-reg-args st0 (saved.locals) 0 reg-count
-    in let closure-load = load-local st1 (lookup-local (st1.locals) (flat.func-name))
+    in let closure-load = load-local st0 (lookup-local (st0.locals) (flat.func-name))
     in let st2 = st-append-code (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
-    in let st3 = pop-to-arg-regs st2 (reg-count - 1)
+    in let st3 = place-reg-args st2 (saved.locals) reg-count
     in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
     in let st4a = st-append-code st4 (push-i32 arg-count)
     in let st5 = drop-closure-stack-args (st-append-code st4a [255, 208]) arg-count
@@ -249,8 +302,7 @@ Section: Function Application
     in let arg-count = list-length args
     in let reg-count = if arg-count < 6 then arg-count else 6
     in let st0 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
-    in let st1 = push-reg-args st0 (saved.locals) 0 reg-count
-    in let st2 = pop-to-arg-regs st1 (reg-count - 1)
+    in let st2 = place-reg-args st0 (saved.locals) reg-count
     in let st3 = st-append-code st2 (li reg-r11 addr)
     in let st4 = st-append-code st3 (mov-load reg-r11 reg-r11 0)
     in let st5 = st-append-code st4 (mov-load reg-rax reg-r11 0)
@@ -303,10 +355,9 @@ Section: Function Application
     in let arg-count = list-length args
     in let reg-count = if arg-count < 6 then arg-count else 6
     in let st0 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
-    in let st1 = push-reg-args st0 (saved.locals) 0 reg-count
-    in let closure-reload = load-local st1 (closure-local.reg)
+    in let closure-reload = load-local st0 (closure-local.reg)
     in let st2 = st-append-code (closure-reload.state) (mov-rr reg-r11 (closure-reload.reg))
-    in let st3 = pop-to-arg-regs st2 (reg-count - 1)
+    in let st3 = place-reg-args st2 (saved.locals) reg-count
     in let st4 = st-append-code st3 (mov-load reg-rax reg-r11 0)
     in let st4a = st-append-code st4 (push-i32 arg-count)
     in let st5 = drop-closure-stack-args (st-append-code st4a [255, 208]) arg-count
@@ -711,7 +762,8 @@ Section: Function Application
     if i == list-length field-locals then st
     else let val = load-local st (list-at field-locals i)
     in let ptr = load-local (val.state) ptr-loc
-    in let st1 = st-append-code (ptr.state) (emit-narrow-store (field-byte-width (list-at tys i)) (ptr.reg) (val.reg) (sum-ctor-field-offset tys i))
+    in let store-code = emit-narrow-store (field-byte-width (list-at tys i)) (ptr.reg) (val.reg) (sum-ctor-field-offset tys i)
+    in let st1 = st-append-code (ptr.state) store-code
     in emit-store-ctor-fields st1 field-locals tys ptr-loc (i + 1)
 
 Section: Closures and Partial Application
@@ -752,7 +804,8 @@ Section: Closures and Partial Application
   emit-trampoline-shift-args (st) (i) (num-captures) =
     if i < 0 then st
     else if i + num-captures < 6 then
-      emit-trampoline-shift-args (st-append-code st (mov-rr (list-at arg-regs (i + num-captures)) (list-at arg-regs i))) (i - 1) num-captures
+      let shifted = st-append-code st (mov-rr (list-at arg-regs (i + num-captures)) (list-at arg-regs i))
+      in emit-trampoline-shift-args shifted (i - 1) num-captures
     else emit-trampoline-shift-args st (i - 1) num-captures
 
   emit-trampoline-load-captures : CodegenState, Integer, Integer -> CodegenState
@@ -857,17 +910,20 @@ Section: Closures and Partial Application
     in let st8 = if n > 6 then st-append-code st7 (add-ri reg-rsp ((n - 6) * 8)) else st7
     in let st9 = st-append-code st8 (li reg-r11 r & push-r reg-r11)
     in let st10 = emit-trampoline-general-surplus st9 (0 - 24)
-    in st-append-code st10 (mov-rr reg-rsp reg-rbp & pop-r reg-rbp & mov-load reg-r11 reg-rsp 0 & mov-store reg-rsp reg-r11 8 & add-ri reg-rsp 8 & x86-ret)
+    in let unwind = mov-rr reg-rsp reg-rbp & pop-r reg-rbp & mov-load reg-r11 reg-rsp 0 & mov-store reg-rsp reg-r11 8
+    in st-append-code st10 (unwind & add-ri reg-rsp 8 & x86-ret)
 
   emit-clo-over-big : CodegenState -> CodegenState
   emit-clo-over-big (st) =
     let st0 = record-func-offset st "__clo_over_big"
     in let st1 = st-append-code st0 (push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-r11 & push-r reg-rax)
     in let st2 = emit-trampoline-spill-args st1 0
-    in let st3 = st-append-code st2 (mov-load reg-rax reg-rbp 8 & push-r reg-rax & mov-load reg-r11 reg-rbp (0 - 8) & mov-load reg-rax reg-r11 0 & [255, 208])
+    in let callee-load = mov-load reg-rax reg-rbp 8 & push-r reg-rax & mov-load reg-r11 reg-rbp (0 - 8)
+    in let st3 = st-append-code st2 (callee-load & mov-load reg-rax reg-r11 0 & [255, 208])
     in let st4 = st-append-code st3 (mov-load reg-r11 reg-rbp 8 & push-r reg-r11)
     in let st5 = emit-trampoline-general-surplus st4 (0 - 16)
-    in st-append-code st5 (mov-rr reg-rsp reg-rbp & pop-r reg-rbp & mov-load reg-r11 reg-rsp 8 & mov-store reg-rsp reg-r11 16 & add-ri reg-rsp 16 & x86-ret)
+    in let unwind = mov-rr reg-rsp reg-rbp & pop-r reg-rbp & mov-load reg-r11 reg-rsp 8 & mov-store reg-rsp reg-r11 16
+    in st-append-code st5 (unwind & add-ri reg-rsp 16 & x86-ret)
 
   emit-trampoline-spill-args : CodegenState, Integer -> CodegenState
   emit-trampoline-spill-args (st) (i) =
@@ -896,17 +952,20 @@ Section: Closures and Partial Application
   emit-trampoline-general-surplus : CodegenState, Integer -> CodegenState
   emit-trampoline-general-surplus (st) (high-bias) =
     let top = st.code-len
-    in let st1 = st-append-code st (mov-load reg-r11 reg-rbp (0 - 72) & mov-load reg-rdi reg-rbp (0 - 16) & cmp-rr reg-r11 reg-rdi)
+    in let count-cmp = mov-load reg-r11 reg-rbp (0 - 72) & mov-load reg-rdi reg-rbp (0 - 16) & cmp-rr reg-r11 reg-rdi
+    in let st1 = st-append-code st count-cmp
     in let done-pos = st1.code-len
     in let st2 = st-append-code st1 (jcc cc-ge 0)
     in let st3 = st-append-code st2 (cmp-ri reg-r11 6)
     in let high-pos = st3.code-len
     in let st4 = st-append-code st3 (jcc cc-ge 0)
-    in let st5 = st-append-code st4 (mov-rr reg-rdi reg-r11 & shl-ri reg-rdi 3 & mov-rr reg-rsi reg-rbp & sub-rr reg-rsi reg-rdi & mov-load reg-rdi reg-rsi (0 - 24))
+    in let low-addr = mov-rr reg-rdi reg-r11 & shl-ri reg-rdi 3 & mov-rr reg-rsi reg-rbp & sub-rr reg-rsi reg-rdi
+    in let st5 = st-append-code st4 (low-addr & mov-load reg-rdi reg-rsi (0 - 24))
     in let got-pos = st5.code-len
     in let st6 = st-append-code st5 (jmp 0)
     in let st7 = patch-jcc-at st6 high-pos (st6.code-len)
-    in let st8 = st-append-code st7 (mov-rr reg-rdi reg-r11 & shl-ri reg-rdi 3 & add-rr reg-rdi reg-rbp & mov-load reg-rdi reg-rdi high-bias)
+    in let high-load = mov-rr reg-rdi reg-r11 & shl-ri reg-rdi 3 & add-rr reg-rdi reg-rbp & mov-load reg-rdi reg-rdi high-bias
+    in let st8 = st-append-code st7 high-load
     in let st9 = patch-jmp-at st8 got-pos (st8.code-len)
     in let st10 = st-append-code st9 (add-ri reg-r11 1 & mov-store reg-rbp reg-r11 (0 - 72))
     in let st11 = st-append-code st10 (mov-rr reg-r11 reg-rax & mov-load reg-rax reg-r11 0 & push-i32 1 & [255, 208])
@@ -1227,7 +1286,9 @@ Section: Narrow-store with overflow-mode dispatch
      is IrBinary (op) (left) (right) (ty) (sp) -> proven-binary-range env op left right ty
      is IrNegate (x) (t) (s) -> proven-negate-range env x
      is IrIf (cond) (then-e) (else-e) (ty) (sp) -> proven-if-range env then-e else-e
-     is IrLet (name) (lty) (value) (body) (sp) -> ir-expr-proven-range (range-env-bind env name (ir-expr-proven-range env value)) body
+     is IrLet (name) (lty) (value) (body) (sp) ->
+       let let-env = range-env-bind env name (ir-expr-proven-range env value)
+       in ir-expr-proven-range let-env body
      is otherwise -> int-ty-default
 
  `sar` rounds toward negative infinity and `and` answers the non-negative
@@ -1463,7 +1524,8 @@ Section: Narrow-store with overflow-mode dispatch
     in if f.name.value == target then f.type-val
     else find-target-type fields target (i + 1)
 
-  accumulate-offset-width-sort : List RecordField, Text, Integer, Integer, Integer between 0 and 65535 -> Integer between 0 and 65535
+  accumulate-offset-width-sort : List RecordField, Text, Integer, Integer, Integer between 0 and 65535 ->
+    Integer between 0 and 65535
   accumulate-offset-width-sort (fields) (target-name) (target-w) (i) (acc) =
     if i == list-length fields then acc
     else let f = list-at fields i
@@ -1532,7 +1594,8 @@ Section: Pointer-Map Walk
      is ConstructedTy (cn) (ca) -> pmap-walk ptr (lookup-type-binding defs (cn.value)) defs lo hi (fuel - 1) q loc
      is otherwise -> 0
 
-  pmap-walk-record : Integer, List RecordField, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-record : Integer, List RecordField, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Text -> Integer
   pmap-walk-record (ptr) (fields) (defs) (i) (len) (lo) (hi) (fuel) (acc) (q) (loc) =
     if i == len then acc
     else let f = list-at fields i
@@ -1552,7 +1615,8 @@ Section: Pointer-Map Walk
     else let c = list-at ctors tag
     in pmap-walk-ctor (c.fields) ptr defs 0 (list-length (c.fields)) lo hi fuel 0 q (c.name.value)
 
-  pmap-walk-ctor : List CodexType, Integer, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-ctor : List CodexType, Integer, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Text -> Integer
   pmap-walk-ctor (tys) (ptr) (defs) (i) (len) (lo) (hi) (fuel) (acc) (q) (loc) =
     if i == len then acc
     else let ety = list-at tys i
@@ -1569,7 +1633,8 @@ Section: Pointer-Map Walk
     then pmap-walk-list-elems ptr elem defs 0 (peek-qword ptr 0) lo hi fuel 0 q loc
     else 0
 
-  pmap-walk-list-elems : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
+  pmap-walk-list-elems : Integer, CodexType, List TypeBinding, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Text -> Integer
   pmap-walk-list-elems (ptr) (elem) (defs) (j) (count) (lo) (hi) (fuel) (acc) (q) (loc) =
     if j == count then acc
     else if fuel <= 0 then acc
@@ -1770,34 +1835,47 @@ Section: Self-Type-Table Emission
      is ErrorTy -> const-box buf len (live-type-tag ty) []
      is NoExpectTy -> const-box buf len (live-type-tag ty) []
      is FunTy (p) (row) (r) -> const-box buf len (live-type-tag ty) [0, 0, 0]
-     is ListTy (elem) -> let c = emit-const-codextype buf len vaddr elem (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [
-       vaddr + c.off
-     ]
+     is ListTy (elem) ->
+       let c = emit-const-codextype buf len vaddr elem (fuel - 1)
+       in const-box buf (c.len) (live-type-tag ty) [
+         vaddr + c.off
+       ]
      is LinkedListTy (elem) -> const-box buf len (live-type-tag ty) [0]
      is TypeVar (i) -> const-box buf len (live-type-tag ty) [0]
-     is ForAllTy (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [
-       vaddr + c.off,
-       0
-     ]
-     is ForAllEff (i) (b) -> let c = emit-const-codextype buf len vaddr b (fuel - 1) in const-box buf (c.len) (live-type-tag (ForAllTy 0 b)) [
-       vaddr + c.off,
-       0
-     ]
-     is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) -> let nm = emit-const-name buf len vaddr n in const-box buf (nm.len) (live-name-ref-tag n) [
-       vaddr + nm.off,
-       0
-     ]
-     is EffectfulTy (e) (s) (r) -> let c = emit-const-codextype buf len vaddr r (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [
-       0,
-       0,
-       vaddr + c.off
-     ]
+     is ForAllTy (i) (b) ->
+       let c = emit-const-codextype buf len vaddr b (fuel - 1)
+       in const-box buf (c.len) (live-type-tag ty) [
+         vaddr + c.off,
+         0
+       ]
+     is ForAllEff (i) (b) ->
+       let c = emit-const-codextype buf len vaddr b (fuel - 1)
+       in const-box buf (c.len) (live-type-tag (ForAllTy 0 b)) [
+         vaddr + c.off,
+         0
+       ]
+     is SumTy (n) (a) (ctors) | RecordTy (n) (a) (fields) | ConstructedTy (n) (a) ->
+       let nm = emit-const-name buf len vaddr n
+       in const-box buf (nm.len) (live-name-ref-tag n) [
+         vaddr + nm.off,
+         0
+       ]
+     is EffectfulTy (e) (s) (r) ->
+       let c = emit-const-codextype buf len vaddr r (fuel - 1)
+       in const-box buf (c.len) (live-type-tag ty) [
+         0,
+         0,
+         vaddr + c.off
+       ]
      is ProofTy -> const-box buf len (live-type-tag ty) []
      is PropEqTy (a) (b) -> const-box buf len (live-type-tag ty) [0, 0]
-     is UnitTy (n) (inner) -> let nm = emit-const-name buf len vaddr n in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1) in const-box buf (c.len) (live-type-tag ty) [
-       vaddr + nm.off,
-       vaddr + c.off
-     ]
+     is UnitTy (n) (inner) ->
+       let nm = emit-const-name buf len vaddr n
+       in let c = emit-const-codextype buf (nm.len) vaddr inner (fuel - 1)
+       in const-box buf (c.len) (live-type-tag ty) [
+         vaddr + nm.off,
+         vaddr + c.off
+       ]
      is VectorTy (vn) (vt) -> const-box buf len (live-type-tag ty) [vn, 0]
      is VectorMaskTy (n) (me) -> const-box buf len (live-type-tag ty) [n, 0]
      is SizedVecTy (sn) (st) -> const-box buf len (live-type-tag ty) [sn, 0]
@@ -1811,16 +1889,22 @@ Section: Self-Type-Table Emission
   emit-const-codextype-top : Integer, Integer, Integer, CodexType -> ConstEmit
   emit-const-codextype-top (buf) (len) (vaddr) (ty) =
     when ty
-     is SumTy (n) (a) (ctors) -> let nm = emit-const-name buf len vaddr n in let cs = emit-const-ctorlist buf (nm.len) vaddr ctors 12 in const-box buf (cs.len) (live-type-tag ty) [
-       vaddr + nm.off,
-       0,
-       vaddr + cs.off
-     ]
-     is RecordTy (n) (a) (fields) -> let nm = emit-const-name buf len vaddr n in let fs = emit-const-fieldlist buf (nm.len) vaddr fields 12 in const-box buf (fs.len) (live-type-tag ty) [
-       vaddr + nm.off,
-       0,
-       vaddr + fs.off
-     ]
+     is SumTy (n) (a) (ctors) ->
+       let nm = emit-const-name buf len vaddr n
+       in let cs = emit-const-ctorlist buf (nm.len) vaddr ctors 12
+       in const-box buf (cs.len) (live-type-tag ty) [
+         vaddr + nm.off,
+         0,
+         vaddr + cs.off
+       ]
+     is RecordTy (n) (a) (fields) ->
+       let nm = emit-const-name buf len vaddr n
+       in let fs = emit-const-fieldlist buf (nm.len) vaddr fields 12
+       in const-box buf (fs.len) (live-type-tag ty) [
+         vaddr + nm.off,
+         0,
+         vaddr + fs.off
+       ]
      is otherwise -> emit-const-codextype buf len vaddr ty 12
 
   emit-const-recordfield : Integer, Integer, Integer, RecordField, Integer -> ConstEmit
@@ -2056,7 +2140,8 @@ Section: Self-Type-Table Emission
     in if fl.name == name then fl.value-expr
     else find-field-local-expr fls name (i + 1)
 
-  emit-store-record-fields-by-type : CodegenState, List RecordField, List FieldLocal, SkipListText, List Integer, Integer, Integer -> CodegenState
+  emit-store-record-fields-by-type : CodegenState, List RecordField, List FieldLocal, SkipListText, List Integer, Integer,
+    Integer -> CodegenState
   emit-store-record-fields-by-type (st) (type-fields) (field-locals) (sorted) (offsets) (ptr-loc) (i) =
     if i == list-length type-fields then st
     else let tf = list-at type-fields i
@@ -2079,11 +2164,15 @@ Section: Self-Type-Table Emission
       let sorted = skip-list-text-from-list (record-field-sort-keys type-fields 0 [])
       in let layout = build-cce-byte-offsets type-fields sorted (list-length type-fields)
       in let alloc = emit-bivy-alloc (evaled.state) (round-up-to-8 (layout.byte-size))
-      in let st4 = emit-store-record-fields-by-type (alloc.state) type-fields (evaled.field-locals) sorted (layout.offsets) (alloc.ptr-loc) 0
+      in let field-locals = evaled.field-locals
+      in let offsets = layout.offsets
+      in let st4 = emit-store-record-fields-by-type (alloc.state) type-fields field-locals sorted offsets (alloc.ptr-loc) 0
       in load-local st4 (alloc.ptr-loc)
      is otherwise ->
       let sp = if list-length fields > 0 then (list-at fields 0).span else synthetic-span
-      in let st-err = st-add-error (evaled.state) cdx-ir-error ("emit-record: unresolved type for record literal, " & show (list-length fields) & " fields, tag=" & show (peek-qword (address-of resolved-ty) 0)) sp
+      in let rec-err0 = "emit-record: unresolved type for record literal, " & show (list-length fields) & " fields, tag="
+      in let rec-err = rec-err0 & show (peek-qword (address-of resolved-ty) 0)
+      in let st-err = st-add-error (evaled.state) cdx-ir-error rec-err sp
       in let rd = alloc-temp st-err
       in EmitResult {
        state = st-append-code (rd.state) [15, 11],
@@ -2140,7 +2229,8 @@ Section: Self-Type-Table Emission
   fc-store-barrier : CodegenState, Integer, SourceSpan -> CodegenState
   fc-store-barrier (st) (fresh-slot) (sp) =
     if fresh-slot >= 0 then
-      fc-evict-slot (st-add-info st cdx-noalias-proven "no-alias proven: store through fresh allocation preserves cache" sp) fresh-slot
+      let na-st = st-add-info st cdx-noalias-proven "no-alias proven: store through fresh allocation preserves cache" sp
+      in fc-evict-slot na-st fresh-slot
     else fc-flush st
 
   field-access-base-slot : CodegenState, IRExpr -> Integer
@@ -2176,7 +2266,9 @@ Section: Self-Type-Table Emission
       }
      is otherwise ->
       let rec-result = emit-expr (st-set-tail-pos st False) rec-expr
-      in let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" & field-name & "' addr=" & show (address-of rec-ty) & " tag=" & show (peek-qword (address-of rec-ty) 0)) (ir-expr-span rec-expr)
+      in let fa-err0 = "emit-field-access: unresolved type for field '" & field-name & "' addr=" & show (address-of rec-ty)
+      in let fa-err = fa-err0 & " tag=" & show (peek-qword (address-of rec-ty) 0)
+      in let st-err = st-add-error (rec-result.state) cdx-ir-error fa-err (ir-expr-span rec-expr)
       in let rd = alloc-temp st-err
       in EmitResult {
        state = st-append-code (rd.state) [15, 11],
@@ -2339,7 +2431,9 @@ Section: Pattern Matching
      is SumTy (sname) (args) (ctors) ->
       if tag >= 0 then st
       else
-        st-add-error st cdx-unknown-pattern-ctor ("Pattern constructor '" & name & "' is not a constructor of '" & sname.value & "'; the emitter has no tag for it and this arm could never match.") sp
+        let upc-head = "Pattern constructor '" & name & "' is not a constructor of '" & sname.value
+        in let upc-msg = upc-head & "'; the emitter has no tag for it and this arm could never match."
+        in st-add-error st cdx-unknown-pattern-ctor upc-msg sp
      is otherwise ->
       st-add-error st cdx-ir-error ("The emitter cannot resolve the scrutinee of pattern '" & name & "' to a sum type, so it has no tag to compare against. Emitting one would silently match the first constructor. The pattern's type did not resolve; this is typically a generic field whose type variable was never refined.") sp
 
