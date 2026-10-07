@@ -1,0 +1,143 @@
+Chapter: GameTransaction
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter Result
+
+ Capture cells 0..64 hold relay/session metadata, 72..80 the world header,
+ 88..887 the five character slots, then up to five (index, 80-byte slot)
+ entries. Creation touches one mobile and at most four equipment records.
+
+  GameUndo = record { game : GameShard, input : GameInput, bytes : Integer,
+    count : Integer, state : Integer }
+  GamePrepared = record { undo : GameUndo, reply : GameReply }
+  gt-max-slots : Integer = 5
+  gt-slot-at : Integer = 888
+  gt-entry-bytes : Integer = 88
+  gt-bytes : Integer = gt-slot-at + gt-max-slots * gt-entry-bytes
+
+  gt-equal : Integer, Integer, Integer, Integer -> Boolean
+  gt-equal (a) (b) (size) (i) = if i >= size then True
+    else peek-byte a i == peek-byte b i & gt-equal a b size (i + 1)
+
+  gt-shape : GameInput, List Integer -> Boolean
+  gt-shape (input) (packet) =
+    if list-length packet == 0 | list-length packet > 256 then False
+    else if not (gs-byte-range packet 0) then False
+    else let opcode = list-at packet 0
+    in if input.mode == 1 & opcode == 128 then list-length packet == 62
+    else if input.mode == 1 & opcode == 160 then list-length packet == 3
+    else if input.mode /= 1 & input.mode /= 2 then False
+    else (opcode == 0 | opcode == 1 | opcode == 2 | opcode == 3 | opcode == 52
+      | opcode == 93 | opcode == 115 | opcode == 145 | opcode == 164 | opcode == 167)
+      & gp-packet-length-valid packet
+
+  gt-has-slot : GameUndo, Integer, Integer -> Boolean
+  gt-has-slot (undo) (slot) (i) = if i >= undo.count then False
+    else peek-qword undo.bytes (gt-slot-at + i * gt-entry-bytes) == slot | gt-has-slot undo slot (i + 1)
+
+  gt-capture-slot : GameUndo, Integer -> Result Integer Text
+  gt-capture-slot (undo) (slot) =
+    if slot < 0 | slot >= undo.game.world.capacity then Err "game transaction slot outside world"
+    else if undo.count >= gt-max-slots | gt-has-slot undo slot 0 then Err "game transaction duplicate slot or budget"
+    else let at = gt-slot-at + undo.count * gt-entry-bytes
+    in let index = poke-qword undo.bytes at slot
+    in let copied = ws-copy (undo.game.world.buffer + 16 + slot * 80) (undo.bytes + at + 8) 80 0
+    in let counted = __record-set undo "count" (undo.count + 1)
+    in Ok slot
+
+  gt-capture-free : GameUndo, Integer, Integer -> Result Integer Text
+  gt-capture-free (undo) (slot) (left) = if slot == -1 then Ok undo.count
+    else if slot < 0 | slot >= undo.game.world.capacity then Err "game transaction free chain outside world"
+    else if peek-qword undo.game.world.buffer (16 + slot * 80) > 0 then Err "game transaction free chain contains live object"
+    else if gt-has-slot undo slot 0 then Err "game transaction free chain cycles"
+    else if left == 0 then Ok undo.count
+    else let next = peek-qword undo.game.world.buffer (24 + slot * 80)
+    in when gt-capture-slot undo slot
+      is Err (e) -> Err e
+      is Ok (n) -> gt-capture-free undo next (left - 1)
+
+  gt-capture : GameShard, GameInput, List Integer -> Result GameUndo Text
+  gt-capture (game) (input) (packet) =
+    if not (gt-shape input packet) then Err "game transaction packet profile unsupported"
+    else if game.world.capacity < 1 | game.world.capacity > world-max-objects then Err "game transaction world capacity invalid"
+    else if world-count game.world < 0 | world-count game.world > game.world.capacity | game.next-key < 0 | game.next-key > #FFFFFFFF then Err "game transaction owner metadata invalid"
+    else let bytes = alloc-bytes gt-bytes
+    in let a = poke-qword bytes 0 game.next-key
+    in let b = poke-qword bytes 8 game.pending-key
+    in let c = poke-qword bytes 16 game.active
+    in let d = poke-qword bytes 24 (if input.listed then 1 else 0)
+    in let e = poke-qword bytes 32 input.session.phase
+    in let f = poke-qword bytes 40 input.session.serial
+    in let g = poke-qword bytes 48 input.session.direction
+    in let h = poke-qword bytes 56 input.session.sequence
+    in let j = poke-qword bytes 64 input.session.key
+    in let header = ws-copy game.world.buffer (bytes + 72) 16 0
+    in let characters = ws-copy game.characters (bytes + 88) 800 0
+    in let undo = GameUndo { game = game, input = input, bytes = bytes, count = 0, state = 0 }
+    in let opcode = list-at packet 0
+    in let captured = if input.mode == 2 & opcode == 0 then gt-capture-free undo (peek-qword game.world.buffer 8) gt-max-slots
+      else if input.mode == 2 & opcode == 2 then
+        let slot = world-slot game.world input.session.serial
+        in if slot < 0 then Ok 0 else gt-capture-slot undo slot
+      else Ok 0
+    in when captured is Err (error) -> Err error is Ok (n) -> Ok undo
+
+  gt-restore-slots : GameUndo, Integer -> Integer
+  gt-restore-slots (undo) (i) = if i >= undo.count then 0
+    else let at = gt-slot-at + i * gt-entry-bytes
+    in let slot = peek-qword undo.bytes at
+    in let copied = ws-copy (undo.bytes + at + 8) (undo.game.world.buffer + 16 + slot * 80) 80 0
+    in gt-restore-slots undo (i + 1)
+
+  gt-restore-persistent : GameUndo -> Integer
+  gt-restore-persistent (undo) =
+    let slots = gt-restore-slots undo 0
+    in let header = ws-copy (undo.bytes + 72) undo.game.world.buffer 16 0
+    in let characters = ws-copy (undo.bytes + 88) undo.game.characters 800 0
+    in let key = __record-set undo.game "next-key" (peek-qword undo.bytes 0)
+    in if world-reindex undo.game.world then 0 else 1
+
+  gt-rollback : GameUndo -> Boolean
+  gt-rollback (undo) = if undo.state /= 0 then False
+    else let persistent = gt-restore-persistent undo
+    in if persistent /= 0 then False else let a = __record-set undo.game "pending-key" (peek-qword undo.bytes 8)
+    in let b = __record-set undo.game "active" (peek-qword undo.bytes 16)
+    in let c = __record-set undo.input "listed" (peek-qword undo.bytes 24 == 1)
+    in let d = __record-set undo.input.session "phase" (peek-qword undo.bytes 32)
+    in let e = __record-set undo.input.session "serial" (peek-qword undo.bytes 40)
+    in let f = __record-set undo.input.session "direction" (peek-qword undo.bytes 48)
+    in let g = __record-set undo.input.session "sequence" (peek-qword undo.bytes 56)
+    in let h = __record-set undo.input.session "key" (peek-qword undo.bytes 64)
+    in let closed = __record-set undo "state" 2 in True
+
+  gt-accept : GameUndo -> Boolean
+  gt-accept (undo) = if undo.state /= 0 then False
+    else let closed = __record-set undo "state" 1 in True
+
+  gt-slots-equal : GameUndo, Integer -> Boolean
+  gt-slots-equal (undo) (i) = if i >= undo.count then True
+    else let at = gt-slot-at + i * gt-entry-bytes
+    in let slot = peek-qword undo.bytes at
+    in gt-equal (undo.bytes + at + 8) (undo.game.world.buffer + 16 + slot * 80) 80 0 & gt-slots-equal undo (i + 1)
+
+  gt-changed : GameUndo -> Boolean
+  gt-changed (undo) = undo.game.next-key /= peek-qword undo.bytes 0
+    | not (gt-equal (undo.bytes + 72) undo.game.world.buffer 16 0)
+    | not (gt-equal (undo.bytes + 88) undo.game.characters 800 0)
+    | not (gt-slots-equal undo 0)
+
+  gt-prepare : GameShard, GameInput, WalkMap, Integer, List Integer -> Result GamePrepared Text
+  gt-prepare (game) (input) (map) (port) (packet) = when gt-capture game input packet
+    is Err (e) -> Err e
+    is Ok (undo) -> when gn-default-handler game input map port packet
+      is Err (e) ->
+        let persistent = gt-restore-persistent undo
+        in let closed = __record-set undo "state" 2
+        in if persistent == 0 then Err e else Err "game rollback index rebuild failed"
+      is Ok (reply) -> Ok (GamePrepared { undo = undo, reply = reply })
+
+Page 1

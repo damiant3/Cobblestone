@@ -1,0 +1,104 @@
+Chapter: BootVolume
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Gpt
+  cites Foreword chapter Result
+
+ UEFI GPT fields and CRC32 follow UEFI 2.10 chapter 5. The store occupies
+ the unique Codex-facts type partition emitted by build-img.ps1. A damaged
+ primary table is refused; this reader never repairs or reformats a disk.
+
+  UvRegion = record { start : Integer, sectors : Integer }
+
+  uv-crc : Integer, Integer, Integer, Integer, Integer -> Integer
+  uv-crc (buf) (size) (skip) (i) (crc) =
+    if i >= size then bit-xor crc #FFFFFFFF
+    else let byte = if i >= skip & i < skip + 4 then 0 else peek-byte buf i
+    in uv-crc buf size skip (i + 1) (gpt-rt-crc32-entry (bit-xor crc byte) 0)
+
+  uv-header-valid : Integer, Integer -> Boolean
+  uv-header-valid (buf) (capacity) =
+    if not (gpt-check-signature buf) | gpt-read-u32 buf 8 /= 65536 then False
+    else let size = gpt-read-u32 buf 12
+    in if size < 92 | size > 512 | gpt-read-u32 buf 20 /= 0 then False
+    else if gpt-read-u32 buf 16 /= uv-crc buf size 16 0 #FFFFFFFF then False
+    else if gpt-read-u64 buf 24 /= 1 then False
+    else let backup = gpt-read-u64 buf 32
+    in let first = gpt-read-u64 buf 40
+    in let last = gpt-read-u64 buf 48
+    in let array = gpt-read-u64 buf 72
+    in let count = gpt-read-u32 buf 80
+    in let stride = gpt-read-u32 buf 84
+    in if backup < 34 | backup >= capacity | first < 34 | first > last | last >= backup then False
+    else if array < 2 | array >= first | count < 1 | count > 1024 then False
+    else if stride /= 128 & stride /= 256 & stride /= 512 then False
+    else if count * stride < 16384 then False
+    else let sectors = (count * stride + 511) / 512
+    in sectors <= first - array & sectors <= backup - last - 1
+
+  uv-find : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  uv-find (buf) (count) (stride) (i) (found) =
+    if i >= count then if found < 0 then Err "UOAIX data partition absent" else Ok found
+    else let at = i * stride
+    in if peek-qword buf at == #4C0DFAC7C0DE1A11 & peek-qword buf (at + 8) == #ED5EDEC0DEC0759E then
+      if found >= 0 then Err "UOAIX data partition is not unique"
+      else uv-find buf count stride (i + 1) i
+    else uv-find buf count stride (i + 1) found
+
+  uv-extents : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  uv-extents (buf) (count) (stride) (i) (target) (start) (finish) (first) (last) =
+    if i >= count then True
+    else let at = i * stride
+    in if peek-qword buf at == 0 & peek-qword buf (at + 8) == 0 then uv-extents buf count stride (i + 1) target start finish first last
+    else let a = peek-qword buf (at + 32)
+    in let b = peek-qword buf (at + 40)
+    in if a < first | b > last | b < a then False
+    else if i /= target & a <= finish & b >= start then False
+    else uv-extents buf count stride (i + 1) target start finish first last
+
+  uv-region : Integer, Integer -> Result UvRegion Text
+  uv-region (header) (entries) =
+    let count = gpt-read-u32 header 80
+    in let stride = gpt-read-u32 header 84
+    in if uv-crc entries (count * stride) (-8) 0 #FFFFFFFF /= gpt-read-u32 header 88 then Err "GPT entry checksum invalid"
+    else when uv-find entries count stride 0 (-1)
+      is Err (e) -> Err e
+      is Ok (index) ->
+        let start = peek-qword entries (index * stride + 32)
+        in let finish = peek-qword entries (index * stride + 40)
+        in let first = gpt-read-u64 header 40
+        in let last = gpt-read-u64 header 48
+        in if start < first | finish > last | finish < start then Err "UOAIX data partition bounds invalid"
+        else if finish - start + 1 < 2 | finish - start + 1 > us-max-sectors then Err "UOAIX data partition exceeds store budget"
+        else if bit-and (peek-qword entries (index * stride + 48)) #1000000000000000 /= 0 then Err "UOAIX data partition is read-only"
+        else if not (uv-extents entries count stride 0 index start finish first last) then Err "GPT partition overlaps UOAIX data or is out of bounds"
+        else Ok (UvRegion { start = start, sectors = finish - start + 1 })
+
+  uv-open-region : UoDevice -> [Device.Block] Result UvRegion Text
+  uv-open-region (device) = act
+    capacity <- us-device-count device
+    if capacity < 68 then Err "Disk too small for GPT"
+    else act
+      read <- us-device-read device 0
+      when read
+        is Err (e) -> Err e
+        is Ok (mbr) -> if not (gpt-check-mbr mbr) | peek-byte mbr 450 /= 238 then Err "Protective MBR absent"
+          else act
+            read <- us-device-read device 1
+            when read
+              is Err (e) -> Err e
+              is Ok (header) -> if not (uv-header-valid header capacity) then Err "GPT primary header invalid"
+                else let bytes = gpt-read-u32 header 80 * gpt-read-u32 header 84
+                in let entries = alloc-bytes bytes
+                in act
+                  loaded <- us-read-payload device (gpt-read-u64 header 72) entries bytes 0
+                  when loaded
+                    is Err (e) -> Err e
+                    is Ok (n) -> uv-region header entries
+                end
+          end
+    end
+  end
+
+Page 1

@@ -1,0 +1,68 @@
+Chapter: GoldFindTaxProof
+  cites Uoaix chapter GameVendorDemo
+  gft-check : Text, Boolean -> [Console] Nothing
+  gft-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  gft-mine : EpWorld, Integer, Integer, Integer -> Integer
+  gft-mine (w) (actor) (left) (found) = if left == 0 then found
+    else let node = eh-source w 6 100
+    in let got = eh-harvest w actor node
+    in gft-mine w actor (left - 1) (found + (if got > 0 then got else 0))
+  gft-dig : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  gft-dig (w) (actor) (resource) (left) (found) = if left == 0 then found
+    else let node = eh-source w resource 100
+    in let got = eh-harvest w actor node
+    in gft-dig w actor resource (left - 1) (found + (if got > 0 then got else 0))
+  gft-equip : EpWorld, Integer -> Integer
+  gft-equip (w) (actor) = let p = ep-actor w actor
+    in let a = ep-set p.stock 25 1
+    in let b = ep-set p.quality 25 500
+    in let c = ep-set p.wear 25 32000
+    in let d = ep-set p.cost 25 1
+    in ep-set p.skills 2 1000
+  gft-run : EuCurrency -> [Console] Nothing
+  gft-run (x) = act
+    w <- x.world
+    p2 <- ep-actor w 2
+    crown <- ep-actor w w.mint-owner
+    equipped <- gft-equip w 2
+    royal <- gft-equip w 1
+    gft-check "the demo economy taxes 10% and mints as actor 1" (w.money.tax == 1000 & w.mint-owner == 1)
+    unwarranted <- gft-mine w 2 10 0
+    gft-check "a miner without the King's appointment finds no gold ore" (unwarranted == 0 & not (eh-appointed w 2 100))
+    refused <- eh-appoint w False 2 100
+    appointed <- eh-appoint w True 2 100
+    gft-check "only the King's verified word appoints a gold miner" (refused == -1 & appointed > 0 & eh-appointed w 2 100 & not (eh-appointed w 2 200))
+    gathered <- ep-at w.gathered 6
+    held2 <- ep-at p2.stock 6
+    held1 <- ep-at crown.stock 6
+    found <- gft-mine w 2 40 0
+    taken <- ep-at crown.stock 6 - held1
+    kept <- ep-at p2.stock 6 - held2
+    print-line-uni ("GOLD-FIND found=" & show found & " crown=" & show taken & " miner=" & show kept)
+    gft-check "every gold ore found is held by the miner or the crown" (found > 0 & taken + kept == found & ep-at w.gathered 6 - gathered == found)
+    gft-check "the crown takes a share near the tax rate" (taken > 0 & taken * 100 <= found * 25)
+    gft-check "quality moves with the taxed units" (ep-at crown.quality 6 >= taken * 100 & ep-at p2.quality 6 >= kept * 100)
+    before <- ep-at crown.stock 6
+    own <- gft-mine w 1 10 0
+    gft-check "the mint's own finds are never taxed" (own > 0 & ep-at crown.stock 6 - before == own)
+    skilled <- ep-set p2.skills 1 1000
+    copper-held <- ep-at p2.stock 63
+    copper-crown <- ep-at crown.stock 63
+    copper <- gft-dig w 2 25 40 0
+    copper-taken <- ep-at crown.stock 63 - copper-crown
+    gft-check "an unappointed miner finds copper ore and the crown takes its share in kind" (copper > 0 & copper-taken > 0 & copper-taken + ep-at p2.stock 63 - copper-held == copper)
+    silver-held <- ep-at p2.stock 64
+    silver-crown <- ep-at crown.stock 64
+    silver <- gft-dig w 2 26 40 0
+    silver-taken <- ep-at crown.stock 64 - silver-crown
+    gft-check "an unappointed miner finds silver ore and the crown takes its share in kind" (silver > 0 & silver-taken > 0 & silver-taken + ep-at p2.stock 64 - silver-held == silver)
+    rate <- __record-set w.money "tax" 0
+    again <- ep-at crown.stock 6
+    untaxed <- gft-mine w 2 10 0
+    gft-check "a zero rate takes nothing" (untaxed > 0 & ep-at crown.stock 6 == again)
+  end
+  opening : [Console] Nothing = act
+    when gvd-economy 0
+      is Err (e) -> print-line-uni ("FAIL economy " & e)
+      is Ok (x) -> gft-run x
+  end

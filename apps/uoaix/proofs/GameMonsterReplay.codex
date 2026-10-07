@@ -1,0 +1,100 @@
+Chapter: GameMonsterReplay
+  cites Uoaix chapter GameMonster
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  gmr-run : GameShard, WalkMap -> [Console] Nothing
+  gmr-run (shard) (map) = act
+    combat <- cb-new shard 42
+    input <- gn-input-with (cb-specs 0) 1
+    when gm-new combat 1 1424 1698 0 5
+      is Err (e) -> print-line-uni ("FAIL home " & e)
+      is Ok (g) -> act
+        denied <- gm-pulse g shard input map 2593 0
+        cbr-check "unauthenticated pulse creates no monsters" (world-count shard.world == 0 & is-ok denied)
+        when gs-relay-key shard
+          is Err (e) -> print-line-uni ("FAIL relay " & e)
+          is Ok (key) -> act
+            keyed <- __record-set input.session "key" key
+            login <- gs-handle shard input.session map (cbr-login key)
+            created <- gs-handle shard input.session map (cbr-create 0)
+            mode <- __record-set input "mode" 2
+            intro <- gm-pulse g shard input map 2593 0
+            slot <- list-at g.slots 0
+            serial <- slot.serial
+            cbr-check "live home creates bounded world mobile and appearance" (is-ok login & is-ok created & serial > 0 & world-count shard.world == 4 & cbr-opcode intro 120 0)
+            cbr-check "monster spawn creates no gold or equipment" (world-count shard.world == 4 & cbr-hits shard serial == 30)
+            early <- gm-pulse g shard input map 2593 99
+            cbr-check "movement waits for raw PIT deadline" (not (cbr-opcode early 119 0) & gm-ticks 1000 == 100)
+            movement <- gm-pulse g shard input map 2593 100
+            when world-get shard.world serial
+              is Err (e) -> print-line-uni ("FAIL mobile " & e)
+              is Ok (m) -> act
+                cbr-check "monster pursues on foot and emits mobile update" (m.x == 1423 & m.y == 1698 & cbr-opcode movement 119 0)
+                cbr-check "monster attacks through combat selection" ((list-at combat.actors (world-slot shard.world serial)).target == input.session.serial)
+                wall <- walk-set-land map 1422 1698 0 64
+                blocked <- gm-step g shard map slot m 6
+                cbr-check "impassable terrain refuses movement" (not blocked)
+                cleared <- walk-set-land map 1422 1698 0 0
+                boundary <- __record-set g "radius" 1
+                outside <- gm-step g shard map slot m 6
+                cbr-check "home territory refuses escape" (not outside)
+                radius <- __record-set g "radius" 5
+                cbr-check "movement refusals preserve world position" (when world-get shard.world serial is Err (_) -> False is Ok (after) -> after.x == m.x & after.y == m.y)
+              end
+            removed <- world-delete shard.world serial
+            noticed <- gm-pulse g shard input map 2593 101
+            cbr-check "dead serial clears and waits before replacement" (is-ok removed & slot.serial == 0 & cbr-opcode noticed 29 0 & world-count shard.world == 3)
+            waiting <- gm-pulse g shard input map 2593 6100
+            cbr-check "replacement cannot precede minute deadline" (slot.serial == 0 & world-count shard.world == 3)
+            replaced <- gm-pulse g shard input map 2593 6101
+            cbr-check "replacement has fresh serial and bounded population" (slot.serial > 0 & slot.serial /= serial & world-count shard.world == 4 & cbr-opcode replaced 120 0)
+            cbr-check "invalid home capacity refuses" (is-err (gm-new combat 9 1424 1698 0 5))
+          end
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 16 16
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        filled <- cbr-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> gmr-run shard map
+      end
+  end
+
+Page 1

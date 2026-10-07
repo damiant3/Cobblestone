@@ -1,0 +1,86 @@
+Chapter: TownInputCodec
+  cites Uoaix chapter TownInput
+  cites Uoaix chapter TownStateFields
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+ TSI1 is 1280 little-endian bytes. Header: magic, version, length, operation,
+ tick, sequence, FNV32, expected result. Then eight args, optional UWJ1,
+ six proposal cells, CCE text capacities 512/128/256 and 56 reserved zeros.
+ FNV32 skips its own cell at 48; the embedded UWJ1 keeps its own checksum.
+
+  ti-frame-bytes : Integer = 1280
+
+  ti-encode : TownInput, Integer, Integer -> Result Integer Text
+  ti-encode (entry) (buf) (capacity) =
+    if capacity < ti-frame-bytes then Err "town input destination too short"
+    else if not (ti-shape-valid entry) then Err "town input shape invalid"
+    else if entry.operation == 1 & (entry.world-event.sequence /= entry.sequence | entry.world-event.tick /= entry.tick) then Err "town input world metadata mismatch"
+    else let clear = ts-zero buf ti-frame-bytes 0
+    in let nested = if entry.operation == 1 then wj-encode entry.world-event (buf + 128) 128 else Ok 0
+    in when nested
+      is Err (e) -> Err e
+      is Ok (n) ->
+        let a = poke-qword buf 0 #31495354
+        in let b = poke-qword buf 8 1
+        in let c = poke-qword buf 16 ti-frame-bytes
+        in let d = poke-qword buf 24 entry.operation
+        in let e = poke-qword buf 32 entry.tick
+        in let f = poke-qword buf 40 entry.sequence
+        in let g = poke-qword buf 56 entry.expected
+        in let args = ts-write-list buf 64 entry.args 0
+        in let p0 = poke-qword buf 256 entry.proposal.actor
+        in let p1 = poke-qword buf 264 entry.proposal.kind
+        in let p2 = poke-qword buf 272 entry.proposal.target
+        in let p3 = poke-qword buf 280 entry.proposal.item
+        in let p4 = poke-qword buf 288 entry.proposal.quantity
+        in let p5 = poke-qword buf 296 entry.proposal.destination
+        in let text = ts-write-text buf 304 512 entry.text
+        in let extra = ts-write-text buf 824 128 entry.extra
+        in let speech = ts-write-text buf 960 256 entry.proposal.speech
+        in let hash = poke-qword buf 48 (ws-hash buf ti-frame-bytes 0 2166136261)
+        in Ok ti-frame-bytes
+
+  ti-read-frame : Integer -> TownInput
+  ti-read-frame (buf) =
+    let entry = ti-new (peek-qword buf 40) (peek-qword buf 32) (peek-qword buf 24) (peek-qword buf 56)
+    in let args = ts-read-list buf 64 entry.args 0
+    in let text = __record-set entry "text" (ts-read-text buf 304)
+    in let extra = __record-set entry "extra" (ts-read-text buf 824)
+    in let p = entry.proposal
+    in let a = __record-set p "actor" (peek-qword buf 256)
+    in let b = __record-set p "kind" (peek-qword buf 264)
+    in let c = __record-set p "target" (peek-qword buf 272)
+    in let d = __record-set p "item" (peek-qword buf 280)
+    in let e = __record-set p "quantity" (peek-qword buf 288)
+    in let f = __record-set p "destination" (peek-qword buf 296)
+    in let g = __record-set p "speech" (ts-read-text buf 960)
+    in entry
+
+  ti-decoded : TownInput -> Result TownInput Text
+  ti-decoded (entry) = if ti-shape-valid entry then Ok entry else Err "town input decoded shape invalid"
+
+  ti-decode : Integer, Integer -> Result TownInput Text
+  ti-decode (buf) (size) =
+    if size /= ti-frame-bytes then Err "town input frame length invalid"
+    else if peek-qword buf 0 /= #31495354 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= ti-frame-bytes then Err "town input format unsupported"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "town input checksum invalid"
+    else if not (ts-padding-valid buf 1224 0 56) then Err "town input reserved bytes invalid"
+    else if not (ts-text-valid buf 304 512 & ts-text-valid buf 824 128 & ts-text-valid buf 960 256) then Err "town input text invalid"
+    else if peek-qword buf 24 /= 1 & not (ts-padding-valid buf 128 0 128) then Err "unexpected embedded world event"
+    else let entry = ti-read-frame buf
+    in if entry.operation /= 1 then ti-decoded entry
+    else when wj-decode (buf + 128)
+      is Err (e) -> Err e
+      is Ok (event) ->
+        if event.sequence /= entry.sequence | event.tick /= entry.tick then Err "town input world metadata mismatch"
+        else let bound = __record-set entry "world-event" event
+        in ti-decoded bound
+
+  ti-decode-record : Integer, Integer, Integer, Integer -> Result TownInput Text
+  ti-decode-record (buf) (size) (tick) (sequence) =
+    if size /= ti-frame-bytes then Err "town input record length invalid"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "town input disagrees with record metadata"
+    else ti-decode buf size

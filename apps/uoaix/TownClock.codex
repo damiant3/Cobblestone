@@ -1,0 +1,246 @@
+Chapter: TownClock
+  cites Uoaix chapter Townsfolk
+  cites Foreword chapter Console
+
+Section: Fixture
+
+  tc-person : TfWorld, Integer, Integer, Text, Integer -> Integer
+  tc-person (w) (town) (job) (name) (age) =
+    let id = tf-add-person w name town (town * 100 + job) (if job == 4 then town * 100 + 90 else town * 100 + 20 + job) job age
+    in let p = tf-person w id
+    in let a = __record-set p "coin" 1000
+    in let b = __record-set p "bread" 100
+    in id
+
+  tc-town : TfWorld, Text -> Integer
+  tc-town (w) (name) =
+    let id = w.town-count + 1
+    in let a = tf-add-town w name (id * 100 + 90) (id * 100 + 91) (id * 100 + 92)
+    in let t = tf-town w id
+    in let b = __record-set t "grain" 40
+    in let c = __record-set t "bread" 120
+    in let d = __record-set t "ingots" 240
+    in let e = __record-set t "crop" 64
+    in let farmer = tc-person w id 1 "Farmer" 9125
+    in let baker = tc-person w id 2 "Baker" 9125
+    in let smith = tc-person w id 3 "Smith" 10950
+    in let vendor = tc-person w id 4 "Vendor" 10950
+    in let elder = tc-person w id 0 "Elder" 29190
+    in let child = tc-person w id 0 "Child" 3650
+    in let f = tf-marry w farmer baker
+    in let g = tf-expect-birth w farmer 5
+    in let h = __record-set (tf-person w child) "parent-a" farmer
+    in let j = __record-set (tf-person w child) "parent-b" baker
+    in id
+
+  tc-fixture : Integer -> TfWorld
+  tc-fixture (unused) =
+    let w = tf-new 0
+    in let a = tc-town w "Britain"
+    in let b = tc-town w "Minoc"
+    in let c = tf-ack-events w
+    in w
+
+Section: Independent Census
+
+  tc-plan : Integer, Integer -> Integer
+  tc-plan (job) (h) =
+    if h <= 5 | h == 23 then 0
+    else if h == 6 | h == 12 | h == 19 then 2
+    else if h == 11 | h == 18 then 3
+    else if h == 20 then (if job == 0 then 6 else 4)
+    else if h == 21 then (if job == 0 then 5 else 6)
+    else if h == 22 then (if job == 0 then 0 else 5)
+    else (if job == 0 then 7 else 1)
+
+  tc-observe : TfWorld, Integer, Integer, Integer -> Integer
+  tc-observe (w) (i) (h) (bad) =
+    if i == w.used then bad
+    else let p = list-at w.people i
+    in let t = tf-town w p.town
+    in let action = tc-plan p.job h
+    in let place = if action == 1 then p.workplace else if action == 3 then t.market else if action == 4 then t.tavern else if action == 5 then t.temple else p.home
+    in let born-now = p.age == 0 & h == 23
+    in let wrong = p.alive == 1 & not born-now & (p.activity /= action | p.place /= place | p.hunger < 0 | p.hunger > 100 | p.fatigue < 0 | p.fatigue > 100 | p.mood < 0 | p.mood > 100)
+    in tc-observe w (i + 1) h (bad + (if wrong then 1 else 0))
+
+  tc-money : TfWorld, Integer, Integer -> Integer
+  tc-money (w) (i) (total) =
+    if i == w.used then total else tc-money w (i + 1) (total + (list-at w.people i).coin)
+
+  tc-population : TfWorld, Integer, Integer, Integer -> Integer
+  tc-population (w) (town) (i) (total) =
+    if i == w.used then total
+    else let p = list-at w.people i
+    in tc-population w town (i + 1) (total + (if p.town == town & p.alive == 1 then 1 else 0))
+
+  tc-bread : TfWorld, Integer, Integer, Integer -> Integer
+  tc-bread (w) (town) (i) (total) =
+    if i == w.used then total
+    else let p = list-at w.people i
+    in tc-bread w town (i + 1) (total + (if p.town == town then p.bread else 0))
+
+  tc-families : TfWorld, Integer -> Boolean
+  tc-families (w) (i) =
+    if i == w.used then True
+    else let p = list-at w.people i
+    in let parents = if p.age == 0 | p.name == "Newborn" then p.parent-a > 0 & p.parent-b > 0 else True
+    in let married = if p.spouse > 0 then (tf-person w p.spouse).spouse == p.serial else True
+    in parents & married & tc-families w (i + 1)
+
+  tc-check-town : TfWorld, Integer, Integer -> Boolean
+  tc-check-town (w) (town) (day) =
+    let t = tf-town w town
+    in let population = 6 + (if day >= 5 then 1 else 0) - (if day >= 10 then 1 else 0)
+    in let forge = if day * 9 > 240 then 240 else day * 9
+    in let observed = 144 * day + (if day > 5 then (day - 5) * 24 else 0) - (if day > 10 then (day - 10) * 24 else 0)
+    in let meals = 18 * day + (if day > 5 then (day - 5) * 3 else 0) - (if day > 10 then (day - 10) * 3 else 0)
+    in t.population == population & tc-population w town 0 0 == population
+      & t.births == (if day >= 5 then 1 else 0) & t.deaths == (if day >= 10 then 1 else 0)
+      & t.harvested == day * 18 & t.baked == day * 36 & t.forged == forge
+      & t.grain == 40 & t.ingots + t.forged == 240 & t.goods == t.forged
+      & t.observations == observed & t.adhered == observed & t.illnesses == 0
+      & t.eaten == meals & tc-bread w town 0 t.bread + t.eaten == 720 + t.baked
+      & t.sold > 0 & tc-families w 0 & tc-money w 0 0 == 12000
+
+  tc-hours : TfWorld, Integer, Integer -> Integer
+  tc-hours (w) (left) (bad) =
+    if left == 0 then bad
+    else let old = w.hour
+    in let step = tf-step w
+    in let observed = tc-observe w 0 (int-mod old 24) 0
+    in let a = tf-ack-events w
+    in tc-hours w (left - 1) (bad + observed + (if step == 0 & w.hour == old + 1 then 0 else 1))
+
+  tc-day-line : TfWorld, Integer, Integer -> Text
+  tc-day-line (w) (town) (day) =
+    let t = tf-town w town
+    in "DAY " & show day & " " & t.name & " population=" & show t.population & " births=" & show t.births & " deaths=" & show t.deaths & " harvest=" & show t.harvested & " baked=" & show t.baked & " forged=" & show t.forged & " sold=" & show t.sold & " adherence=" & show t.adhered & "/" & show t.observations
+
+  tc-days : TfWorld, Integer, Integer -> [Console] Integer
+  tc-days (w) (day) (bad) = act
+    if day > 30 then bad
+    else act
+      h0 <- __heap-save
+      failed <- tc-hours w 24 0
+      h1 <- __heap-save
+      ok <- tc-check-town w 1 day & tc-check-town w 2 day & failed == 0
+      print-line-uni (tc-day-line w 1 day)
+      print-line-uni (tc-day-line w 2 day)
+      print-line-uni ("CLOCK " & show day & " heap=" & show (h1 - h0) & " ok=" & show (if ok then 1 else 0))
+      tc-days w (day + 1) (bad + (if ok then 0 else 1))
+    end
+  end
+
+Section: Refusals and Boundary Cases
+
+  tc-assert : Text, Boolean -> [Console] Integer
+  tc-assert (name) (ok) = act
+    print-line-uni ("CHECK " & name & " " & (if ok then "PASS" else "FAIL"))
+    if ok then 0 else 1
+  end
+
+  tc-fill : TfWorld -> Integer
+  tc-fill (w) =
+    if w.used == 128 then 0
+    else let a = tf-add-person w "Resident" 1 1 2 0 7000
+    in tc-fill w
+
+  tc-unobserved : TfWorld, Integer -> Integer
+  tc-unobserved (w) (left) =
+    if left == 0 then 0
+    else let a = tf-step w
+    in let b = tf-ack-events w
+    in if a /= 0 then a else tc-unobserved w (left - 1)
+
+  tc-memories : TfWorld, TfPerson, Integer -> Integer
+  tc-memories (w) (p) (left) =
+    if left == 0 then 0
+    else let a = tf-event w 7 p 0
+    in tc-memories w p (left - 1)
+
+  tc-sickness : [Console] Integer = act
+    w <- tf-new 0
+    t <- tf-add-town w "Hunger" 1 2 3
+    id <- tf-add-person w "Resident" t 4 4 0 7000
+    p <- tf-person w id
+    a <- tc-unobserved w 48
+    b <- tc-assert "illness-from-needs" (a == 0 & p.illness == 1 & (tf-town w t).illnesses == 1 & p.alive == 1)
+    provision <- __record-set p "bread" 30
+    c <- tc-unobserved w 48
+    d <- tc-assert "recovery-with-food" (c == 0 & p.illness == 0 & p.alive == 1 & p.hunger < 90)
+    remove-food <- __record-set p "bread" 0
+    e <- tc-unobserved w 168
+    f <- tc-assert "starvation-from-clock" (e == 0 & p.alive == 0 & (tf-town w t).deaths == 1 & (tf-town w t).population == 0)
+    b + d + f
+  end
+
+  tc-arms : [Console] Integer = act
+    w <- tc-fixture 0
+    a <- tc-assert "invalid-admission" (tf-add-person w "" 1 1 2 1 7000 == -1 & tf-add-person w "Child-worker" 1 1 2 1 20 == -1 & w.used == 12)
+    b <- tc-assert "family-refusal" (tf-marry w 1 1 == -1 & tf-marry w 1 3 == -1 & tf-marry w 6 3 == -1 & tf-expect-birth w 1 0 == -1)
+    buyer <- tf-person w 1
+    vendor <- tf-person w 4
+    t <- tf-town w 1
+    s1 <- __record-set buyer "place" vendor.workplace
+    s2 <- __record-set vendor "place" vendor.workplace
+    s2a <- __record-set vendor "activity" 1
+    coins <- buyer.coin
+    breads <- buyer.bread
+    stock <- t.bread
+    c <- tc-assert "real-stock-sale" (tf-buy w 1 4 1 2 == 0 & buyer.coin == coins - 2 & buyer.bread == breads + 2 & t.bread == stock - 2 & tc-money w 0 0 == 12000)
+    c0 <- buyer.coin
+    b0 <- buyer.bread
+    d <- tc-assert "sale-refusal-atomic" (tf-buy w 1 4 1 1000 == -4 & tf-buy w 1 4 9 1 == -1 & tf-buy w 1 10 1 1 == -1 & buyer.coin == c0 & buyer.bread == b0)
+    s3 <- __record-set buyer "coin" 0
+    e <- tc-assert "coin-refusal" (tf-buy w 1 4 1 1 == -5)
+    s4 <- __record-set t "grain" 0
+    baked <- t.baked
+    s5 <- tf-work (tf-person w 2) t
+    f <- tc-assert "no-free-bread" (t.baked == baked & t.grain == 0 & t.shortages > 0)
+    s6 <- tf-event w 7 buyer 0
+    hour <- w.hour
+    g <- tc-assert "events-must-be-consumed" (tf-step w == -3 & w.hour == hour)
+    s7 <- tf-ack-events w
+    s8 <- tc-fill w
+    h <- tc-assert "population-budget" (tf-add-person w "Overflow" 1 1 2 0 7000 == -2 & w.used == 128)
+    s9 <- __record-set w "hour" 119
+    s10 <- tf-step w
+    j <- tc-assert "birth-budget-reported" (w.used == 128 & w.event-count >= 2 & (tf-person w 1).due == 5 & (tf-town w 1).births == 0)
+    s11 <- tf-ack-events w
+    s12 <- __record-set buyer "hunger" 100
+    s13 <- __record-set buyer "illness" 3
+    s14 <- tf-day-person w buyer 6
+    k <- tc-assert "illness-death-widow" (buyer.alive == 0 & (tf-person w 2).spouse == 0 & (tf-town w 1).deaths == 1)
+    s15 <- tf-ack-events w
+    remembered <- __record-set vendor "memory-next" 0
+    sequence <- w.sequence
+    memory-events <- tc-memories w vendor 17
+    m <- tc-assert "memory-ring" (vendor.memory-count == 16 & vendor.memory-next == 1 & list-at vendor.memories 0 == sequence + 17 & list-at vendor.memories 1 == sequence + 2)
+    pending <- __record-set w "event-count" 1024
+    sequence-full <- w.sequence
+    n <- tc-assert "event-budget" (tf-event w 7 vendor 0 == -3 & w.sequence == sequence-full & w.event-count == 1024)
+    clear <- tf-ack-events w
+    s16 <- __record-set w "hour" 8760000
+    l <- tc-assert "clock-budget" (tf-step w == -2 & w.hour == 8760000)
+    a + b + c + d + e + f + g + h + j + k + l + m + n
+  end
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    arms <- tc-arms
+    sick <- tc-sickness
+    p0 <- __heap-save
+    person <- tf-empty-person 0
+    p1 <- __heap-save
+    town <- tf-empty-town 0
+    p2 <- __heap-save
+    print-line-uni ("PERSON-BYTES " & show (p1 - p0) & " TOWN-BYTES " & show (p2 - p1))
+    h0 <- __heap-save
+    w <- tc-fixture 0
+    h1 <- __heap-save
+    print-line-uni ("WORLD-BYTES " & show (h1 - h0))
+    bad <- tc-days w 1 (arms + sick)
+    print-line-uni ("UOAIX CLOCK " & (if bad == 0 then "PASS" else "FAIL") & " failures=" & show bad & " hours=" & show w.hour)
+  end

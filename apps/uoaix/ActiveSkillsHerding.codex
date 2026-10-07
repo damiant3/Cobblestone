@@ -1,0 +1,39 @@
+Chapter: ActiveSkillsHerding
+  cites Uoaix chapter ActiveSkillsHiding
+
+ UOX3 data/js/skill/herding.js, GPL-2.0-or-later; ports/UOX3-LICENSE.txt. A shepherd's crook (0x0E81, 0x0E82) or
+ crook (0x13F4, 0x13F5) in the pack asks for an untamed creature with a TOTAME within 7 tiles, then for a place or the
+ herder. Herding (20) below the creature's TOTAME cannot persuade it; otherwise a roll of 20 against TOTAME sends it
+ walking to the place, 20 steps at most, or following the herder.
+
+  as-crook : Integer -> Boolean
+  as-crook (art) = art == #0E81 | art == #0E82 | art == #13F4 | art == #13F5
+  as-herd-use : ActiveSkills, AsActor, WorldObject, Integer, Integer -> GameReply
+  as-herd-use (s) (a) (player) (tool) (now) =
+    if not (gv-owned s.items.world tool player.serial 65) then gsi-denied "This must be in your backpack or equipped before it can be used."
+    else let cleared = __record-set a "herd" 0
+    in let cursor = as-target s a 20 now
+    in gs-reply ([as-say "Target the animal you wish to herd."] & cursor.packets) cursor.note
+  as-herd-animal : AsServices, ActiveSkills, AsActor, WorldObject, WorldObject, Integer -> GameReply
+  as-herd-animal (services) (s) (a) (player) (creature) (now) =
+    if creature.kind /= 1 | services.master creature.serial /= 0 | services.taming creature.serial <= 0 then gsi-denied "That is not a herdable animal."
+    else if not (as-near player creature 7) then gsi-denied "That is out of range."
+    else let bound = __record-set a "herd" creature.serial
+    in let cursor = as-target s a 20 now
+    in let ground = list-set-at (list-at cursor.packets 0) 1 1
+    in gs-reply ([as-say "Click where you wish the animal to go."] & cursor.packets) cursor.note
+  as-herd-place : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, List Integer -> GameReply
+  as-herd-place (services) (s) (a) (game) (player) (packet) = let creature = a.herd
+    in let cleared = __record-set a "herd" 0
+    in let target = gp-u32 packet 7
+    in let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in when world-get game.world creature
+      is Err (_) -> gsi-denied "You don't seem able to persuade that to move."
+      is Ok (c) -> let taming = services.taming creature
+        in if taming <= 0 | as-level a 20 < taming | (target /= player.serial & x == c.x & y == c.y) then gsi-denied "You don't seem able to persuade that to move."
+        else if not (as-roll s a 20 taming) then gs-reply [] "skills:herd-failed"
+        else if target == player.serial then (if services.herd creature 0 0 player.serial then gs-reply [as-say "The animal begins to follow you."] "skills:herd-follow"
+          else gsi-denied "You don't seem able to persuade that to move.")
+        else if services.herd creature x y 0 then gs-reply [as-say "The animal walks where it was instructed to."] "skills:herd-walk"
+        else gsi-denied "You don't seem able to persuade that to move."

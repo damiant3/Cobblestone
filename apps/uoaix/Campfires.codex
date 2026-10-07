@@ -1,0 +1,158 @@
+Chapter: Campfires
+  cites Uoaix chapter ActiveSkillsHandler
+  cites Uoaix chapter WorldTimers
+  cites Uoaix chapter GameMonster
+
+ ServUO Scripts/Items/Consumables/Kindling.cs and Items/Functional/Campfire.cs, GPL-2.0; ports/ServUO-LICENSE.txt.
+ Kindling (0x0DE1) in the backpack rolls Camping (10) at an even chance per skill point and, on success, spends one
+ and lights a non-movable campfire (0x0DE3) on a free tile north, west, south or east of the camper, never in a
+ dungeon (x 5120 and east on the 6144-wide map). The fire smoulders (0x0DE9) at 60 s, goes out (0x0DEA) at 90 s and
+ is removed at 100 s. A player within 7 tiles of a lit fire for 30 s has a secure camp and logs out at once.
+ ServUO also lights kindling lying on the ground; here it must be carried. Fires are not saved: a restart removes them.
+ The table holds 16 fires (serial) and 16 campers (player, fire, start tick, secure), then a purged flag.
+  cf-limit : Integer = 16
+  cf-kind : Integer = 9
+  cf-kindling : Integer = #0DE1
+  cf-burning : Integer = #0DE3
+  cf-smoulder : Integer = #0DE9
+  cf-out : Integer = #0DEA
+  cf-range : Integer = 7
+  cf-entry : Integer, Integer -> Integer
+  cf-entry (camps) (i) = camps + cf-limit * 8 + i * 32
+  cf-purged : Integer -> Integer
+  cf-purged (camps) = camps + cf-limit * 8 + cf-limit * 32
+  cf-zero : Integer, Integer, Integer -> Integer
+  cf-zero (buf) (i) (n) = if i == n then 0 else let z = poke-qword buf (i * 8) 0 in cf-zero buf (i + 1) n
+  cf-new : Integer -> Integer
+  cf-new (unused) = let camps = alloc-bytes (cf-limit * 8 + cf-limit * 32 + 8) in let cleared = cf-zero camps 0 (cf-limit * 5 + 1) in camps
+  cf-fire : WorldObject -> Boolean
+  cf-fire (o) = o.kind == 2 & o.container == 0 & (o.graphic == cf-burning | o.graphic == cf-smoulder | o.graphic == cf-out)
+  cf-row : Integer, Integer, Integer -> Integer
+  cf-row (camps) (serial) (i) = if i == cf-limit then -1 else if peek-qword camps (i * 8) == serial then i else cf-row camps serial (i + 1)
+  cf-spot : GameShard, WalkMap, WorldObject, Integer, Integer -> Integer
+  cf-spot (game) (map) (mobile) (start) (k) = if k == 4 then -1
+    else let direction = list-at [0, 6, 4, 2] (int-mod (start + k) 4)
+    in when walk-step map mobile.x mobile.y mobile.z direction
+      is Err (_) -> cf-spot game map mobile start (k + 1)
+      is Ok (z) -> if gm-occupied game (mobile.x + walk-dx direction) (mobile.y + walk-dy direction) 0 then cf-spot game map mobile start (k + 1)
+        else direction
+ One kindling is spent as a bandage is (ActiveSkillsHealing): an economy lot, when the stack has one, debits one unit's
+ stock, quality, wear and basis and counts it consumed; kindling with no lot is just an item.
+  cf-lot-ready : ActiveSkills, Integer, Integer -> Boolean
+  cf-lot-ready (s) (owner) (serial) = let at = gv-lot s.vendor serial 0
+    in if at < 0 then True
+    else let player = gv-player s.vendor owner 0
+    in let row = list-at s.vendor.lots at
+    in player >= 0 & row.actor == (list-at s.vendor.players (max 0 player)).actor & row.quantity >= 1
+      & ep-at (ep-actor s.vendor.currency.world row.actor).stock row.item >= 1
+  cf-debit : ActiveSkills, Integer -> Integer
+  cf-debit (s) (serial) = let at = gv-lot s.vendor serial 0
+    in if at < 0 then 0
+    else let lot = list-at s.vendor.lots at
+    in let actor = ep-actor s.vendor.currency.world lot.actor
+    in let basis = lot.basis / lot.quantity
+    in let remaining = lot.quantity - 1
+    in let a = ep-add actor.stock lot.item -1
+    in let b = ep-add actor.quality lot.item (0 - lot.quality)
+    in let c = ep-add actor.wear lot.item (0 - lot.wear)
+    in let d = ep-add actor.cost lot.item (0 - basis)
+    in let e = ep-add s.vendor.currency.world.consumed lot.item 1
+    in let f = __record-set lot "basis" (lot.basis - basis)
+    in let g = __record-set lot "quantity" remaining
+    in let retired = if remaining == 0 then gh-retire-lot s.vendor at else 0
+    in gh-invalidate-quotes s.vendor 0
+  cf-take : ActiveSkills, Integer -> Result (List Integer) Text
+  cf-take (s) (serial) = when world-get s.items.world serial
+    is Err (e) -> Err e
+    is Ok (item) -> let debited = cf-debit s serial
+      in if item.amount == 1 then (when world-delete s.items.world serial is Err (e) -> Err e is Ok (_) -> Ok (sip-remove serial))
+      else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
+      in when world-update s.items.world reduced
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (sip-item reduced)
+  cf-carried : ActiveSkills, Integer, Integer -> Boolean
+  cf-carried (s) (owner) (serial) = let pack = gsi-pack-find s.items.world owner 0 in pack /= 0 & gv-under s.items.world serial pack 65
+  cf-light : Integer, ActiveSkills, WorldTimers, GameShard, GameInput, WalkMap, WorldObject, Integer, Integer -> Result (Maybe GameReply) Text
+  cf-light (camps) (s) (timers) (game) (input) (map) (mobile) (kindling) (tick) =
+    let slot = gsi-slot game mobile.serial 0
+    in if slot < 0 then Err "camping player binding"
+    else if not (cf-carried s mobile.serial kindling) then Ok (Just (gsi-denied "That must be in your backpack to use it."))
+    else let a = as-session s game input mobile slot
+    in let direction = if mobile.x >= 5120 then -1 else cf-spot game map mobile (skc-random a.skills 4) 0
+    in let free = cf-row camps 0 0
+    in if direction < 0 | free < 0 then Ok (Just (gsi-denied "There is not a spot nearby to place your campfire."))
+    else if not (as-roll s a 10 (skc-random a.skills 1000)) then Ok (Just (gs-reply [as-say "You fail to ignite the campfire.", as-skills a] "camping:failed"))
+    else if not (cf-lot-ready s mobile.serial kindling) then Ok (Just (gsi-denied "That kindling cannot be used."))
+    else when cf-take s kindling
+        is Err (e) -> Err e
+        is Ok (spent) -> when walk-step map mobile.x mobile.y mobile.z direction
+          is Err (e) -> Err e
+          is Ok (z) -> let fire = WorldObject { serial = 0, kind = 2, x = mobile.x + walk-dx direction, y = mobile.y + walk-dy direction, z = z,
+              graphic = cf-burning, hue = 0, container = 0, amount = 1, health = 0 }
+            in when world-create game.world fire
+              is Err (e) -> Err e
+              is Ok (serial) -> if gsi-register s.items serial 0 0 False False /= 0 then Err "campfire registration refused"
+                else if wtm-add timers (tick + gm-ticks 60000) cf-kind serial < 0 then Err "campfire timer pool full"
+                else let row = poke-qword camps (free * 8) serial
+                in when world-get game.world serial
+                  is Err (e) -> Err e
+                  is Ok (lit) -> Ok (Just (gs-reply [spent, sip-item lit, as-skills a] "camping:lit"))
+  cf-forget : Integer, Integer, Integer -> Integer
+  cf-forget (camps) (fire) (i) = if i == cf-limit then 0
+    else let at = cf-entry camps i
+    in let cleared = if fire == 0 | peek-qword at 8 == fire then cf-zero at 0 4 else 0 in cf-forget camps fire (i + 1)
+  cf-tick : Integer, WorldTimers, WorldTable, Integer, Integer -> Result (List (List Integer)) Text
+  cf-tick (camps) (timers) (world) (serial) (tick) = when world-get world serial
+    is Err (_) -> let row = cf-row camps serial 0 in let freed = if row < 0 then 0 else poke-qword camps (row * 8) 0 in Ok []
+    is Ok (fire) -> if not (cf-fire fire) then Ok []
+      else if fire.graphic == cf-out then
+        let row = cf-row camps serial 0
+        in let freed = if row < 0 then 0 else poke-qword camps (row * 8) 0
+        in when world-delete world serial
+          is Err (e) -> Err e
+          is Ok (_) -> Ok [sip-remove serial]
+      else let next = if fire.graphic == cf-burning then cf-smoulder else cf-out
+      in let later = if next == cf-smoulder then 30000 else 10000
+      in let cold = if next == cf-out then cf-forget camps serial 0 else 0
+      in when world-update world (__record-set fire "graphic" next)
+        is Err (e) -> Err e
+        is Ok (_) -> if wtm-add timers (tick + gm-ticks later) cf-kind serial < 0 then Err "campfire timer pool full"
+          else when world-get world serial
+            is Err (e) -> Err e
+            is Ok (changed) -> Ok [sip-item changed]
+  cf-near : Integer, WorldTable, WorldObject, Integer -> Integer
+  cf-near (camps) (world) (player) (i) = if i == cf-limit then 0
+    else let serial = peek-qword camps (i * 8)
+    in let lit = if serial == 0 then False else when world-get world serial
+      is Err (_) -> False
+      is Ok (fire) -> fire.graphic /= cf-out & cf-fire fire & gm-near fire.x fire.y player.x player.y cf-range
+    in if lit then serial else cf-near camps world player (i + 1)
+  cf-camper : Integer, Integer, Integer -> Integer
+  cf-camper (camps) (player) (i) = if i == cf-limit then -1 else if peek-qword (cf-entry camps i) 0 == player then i else cf-camper camps player (i + 1)
+ Every world object is visited once per boot, so a fire saved by an earlier run, and in no row of this run, is removed
+ before any camp is judged.
+  cf-sweep : Integer, WorldTable, Integer -> Integer
+  cf-sweep (camps) (world) (slot) = if slot >= world.capacity then 0
+    else let removed = when world-at world slot
+      is Err (_) -> 0
+      is Ok (o) -> if cf-fire o & cf-row camps o.serial 0 < 0 then (when world-delete world o.serial is Err (_) -> 0 is Ok (_) -> 1) else 0
+    in removed + cf-sweep camps world (slot + 1)
+  cf-camp : Integer, WorldTable, WorldObject, Integer -> List (List Integer)
+  cf-camp (camps) (world) (player) (tick) =
+    let swept = if peek-qword (cf-purged camps) 0 /= 0 then 0 else let flag = poke-qword (cf-purged camps) 0 1 in cf-sweep camps world 0
+    in let fire = if player.kind /= 1 | player.health <= 0 then 0 else cf-near camps world player 0
+    in let at = cf-camper camps player.serial 0
+    in if fire == 0 then (if at < 0 then [] else let gone = cf-zero (cf-entry camps at) 0 4 in [])
+    else if at < 0 then
+      (let free = cf-camper camps 0 0
+      in if free < 0 then [] else let e = cf-entry camps free
+      in let p = poke-qword e 0 player.serial in let f = poke-qword e 8 fire in let t = poke-qword e 16 tick in let q = poke-qword e 24 0
+      in [as-say "You feel it would take a few moments to secure your camp."])
+    else let e = cf-entry camps at
+    in let moved = if peek-qword e 8 /= fire then (let f = poke-qword e 8 fire in let t = poke-qword e 16 tick in poke-qword e 24 0) else 0
+    in if peek-qword e 24 == 0 & tick - peek-qword e 16 >= gm-ticks 30000 then let q = poke-qword e 24 1 in [as-say "The camp is now secure."]
+    else []
+  cf-secure : Integer, Integer -> Boolean
+  cf-secure (camps) (player) = let at = cf-camper camps player 0 in at >= 0 & peek-qword (cf-entry camps at) 24 == 1
+
+Page 1

@@ -1,0 +1,126 @@
+Chapter: ProtocolProof
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter LoginWire
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  pf-check : Text, Boolean -> [Console] Nothing
+  pf-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  pf-nibble : Char -> Integer
+  pf-nibble (c) =
+    let n = to-unicode (char-code c)
+    in if n <= 57 then n - 48 else n - 55
+
+  pf-bytes : Text, Integer, List Integer -> List Integer
+  pf-bytes (text) (i) (out) =
+    if i >= text-length text then out
+    else pf-bytes text (i + 2) (list-push out (pf-nibble (char-at text i) * 16 + pf-nibble (char-at text (i + 1))))
+
+  pf-hex : List Integer, Integer, List Text -> Text
+  pf-hex (bytes) (i) (out) =
+    if i >= list-length bytes then text-concat-list out
+    else let digits = "0123456789ABCDEF"
+    in let byte = list-at bytes i
+    in pf-hex bytes (i + 1) (list-push out (char-to-text (char-at digits (byte / 16)) & char-to-text (char-at digits (int-mod byte 16))))
+
+  pf-feed : GameShard, GameInput, List Integer, Integer -> Boolean
+  pf-feed (game) (state) (bytes) (i) =
+    if i >= list-length bytes then True
+    else when gn-byte game state (list-at bytes i)
+      is Err (e) -> False
+      is Ok (complete) -> complete == (i == list-length bytes - 1) & pf-feed game state bytes (i + 1)
+
+  pf-ring : GameInput, Integer -> Integer
+  pf-ring (state) (i) = if i >= 300 then 0
+    else let stored = gn-remember state (int-mod i 256) in pf-ring state (i + 1)
+
+  pf-creation-feed : GameShard, GameInput, List Integer, Integer, Integer -> Boolean
+  pf-creation-feed (game) (state) (bytes) (i) (count) =
+    if i >= list-length bytes then count == 9 & state.used == 0
+    else when gn-byte game state (list-at bytes i)
+      is Err (e) -> False
+      is Ok (complete) ->
+        if not complete then pf-creation-feed game state bytes (i + 1) count
+        else let packet = __buf-read-bytes state.buffer 0 state.used
+        in let valid = if count == 0 then state.opcode == 145 & state.used == 65
+          else if count == 6 then state.opcode == 0 & state.used == 100 & gs-create-valid packet
+            & pf-hex packet 0 [] == "00EDEDEDEDFFFFFFFF00556F6169782054657374657268000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000181415042105211B2203EA203B044E0000044E000000000000C0A8044E"
+          else state.opcode == 115 & state.used == 2 & list-at packet 1 == 0
+        in let reset = __record-set state "used" 0
+        in valid & pf-creation-feed game state bytes (i + 1) (count + 1)
+
+  pf-creation : GameShard -> [Console] Nothing
+  pf-creation (game) =
+    let bytes = pf-bytes "1234567843BDA55839139ADD71B257321E04FEB91ACB2357EDB09E09C2A715CCA0960D4066757C10986F87C0F457270175FC385A6BF33F59EA33DFA9124FE1B61DC822D72D236E82BEEA0A30E746DCA87F62ECAB1ACB2357121A0E975420CA673A1A86DAEBE2838705C424546CF0BE998A03C7A5940CC0A615CC2056EDB01E49E237DD28D2AF910E4166F5BC18CA23576D70FEB91ACB3B43F8B4BF0CE3BC37CF4AB6364428757C7CB43BDBAB930F41A6DDF876296B803F" 0 []
+    in let key = gs-relay-key game
+    in pf-check "captured creation leaves following pings intact" (is-ok key & pf-creation-feed game (gn-input 12) bytes 0 0)
+
+  pf-capture : GameShard -> [Console] Nothing
+  pf-capture (game) =
+    let capture = pf-bytes "1234567843BDA55839139ADD71B257321E04FEB91ACB2357EDB09E09C2A715CCA0960D4066757C10986F87C0F457270175FC385A6BF33F59EA33DFA9124FE1B61DC822D72D" 0 []
+    in let state = gn-input 7
+    in let key = gs-relay-key game
+    in let decoded = pf-feed game state capture 0
+    in let packet = __buf-read-bytes state.buffer 0 state.used
+    in act
+      pf-check "captured game XOR framing" (is-ok key & decoded & state.mode == 2 & state.used == 65 & state.opcode == 145)
+      print-line-uni ("GAME91 " & pf-hex packet 0 [])
+      pf-check "captured game credentials accepted" (is-ok (gs-login game state.session packet) & state.session.phase == 1)
+      pf-check "captured raw bytes retained" (text-concat-list (gn-raw-pieces state 0 []) == pf-hex capture 0 [])
+      let ring = gn-input 8
+      in let filled = pf-ring ring 0
+      in let text = text-concat-list (gn-raw-pieces ring 0 [])
+      in pf-check "raw diagnostic ring bounded and ordered" (ring.raw-count == 256 & ring.raw-next == 44 & text-length text == 512 & char-at text 0 == '2' & char-at text 1 == 'C' & char-at text 510 == '2' & char-at text 511 == 'B')
+    end
+
+  pf-packets : GameShard -> [Console] Nothing
+  pf-packets (game) =
+    let name = gp-ascii [] "Avatar" 0 30
+    in let stored = gs-store-create game.characters 0 (gp-zeros (gp-zeros [] 10 & name) 64) 0
+    in let serial = poke-qword game.characters 0 1
+    in let male = poke-byte game.characters 78 0
+    in let strength = poke-byte game.characters 79 30
+    in let dexterity = poke-byte game.characters 80 20
+    in let intelligence = poke-byte game.characters 81 15
+    in let mobile = gs-mobile 1 1420 1698 (-5) 400 1002
+    in let item = WorldObject { serial = 1073741826, kind = 2, x = 0, y = 0, z = 0, graphic = 5399, hue = 55, container = 1, amount = 1, health = 0 }
+    in act
+      print-line-uni ("A8 " & pf-hex (gn-shards 0) 0 [])
+      print-line-uni ("A9 " & pf-hex (gp-character-list game.characters) 0 [])
+      print-line-uni ("1B " & pf-hex (gp-enter mobile 2) 0 [])
+      print-line-uni ("20 " & pf-hex (gp-player mobile 2) 0 [])
+      print-line-uni ("2E " & pf-hex (gp-equip item 5) 0 [])
+      print-line-uni ("11 " & pf-hex (gp-status mobile game.characters 0) 0 [])
+      print-line-uni ("21 " & pf-hex (gp-move-denied mobile 2 9) 0 [])
+      print-line-uni ("22 " & pf-hex (gp-move-accepted 9) 0 [])
+      let input = gn-input 9
+      in let listed = __record-set input "listed" True
+      in when gn-login game input 2593 [160, 0, 0]
+        is Err (e) -> print-line-uni ("FAIL relay " & e)
+        is Ok (reply) -> print-line-uni ("8C " & pf-hex (list-at reply.packets 0) 0 [])
+      let created = world-create game.world (gs-mobile 0 1420 1698 (-5) 400 1002)
+      in when gs-enter game (gs-session 0) 0
+        is Err (e) -> print-line-uni ("FAIL entry " & e)
+        is Ok (reply) -> act
+          print-line-uni ("4F " & pf-hex (list-at reply.packets 2) 0 [])
+          print-line-uni ("55 " & pf-hex (list-at reply.packets 3) 0 [])
+        end
+      when gn-login game (gn-input 10) 2593 (gp-zeros [128] 61)
+        is Err (e) -> print-line-uni ("FAIL rejection reply " & e)
+        is Ok (reply) -> print-line-uni ("82 " & pf-hex (list-at reply.packets 0) 0 [])
+    end
+
+  opening : [Console] Nothing = when gs-new 0
+    is Err (e) -> print-line-uni ("FAIL setup " & e)
+    is Ok (game) -> act
+      pf-capture game
+      when gs-new 0
+        is Err (e) -> print-line-uni "FAIL creation capture setup"
+        is Ok (fresh) -> pf-creation fresh
+      pf-packets game
+    end
+
+Page 1

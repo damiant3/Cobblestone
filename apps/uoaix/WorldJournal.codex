@@ -1,0 +1,93 @@
+Chapter: WorldJournal
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+ UWJ1 frames are 128 bytes: magic, sequence, tick, operation, ten object
+ cells, FNV32 and reserved zero. Operation 1 creates, 2 replaces, 3 deletes.
+ A create carries the allocated serial, never a serial-zero template.
+
+  WorldEvent = record { sequence : Integer, tick : Integer, operation : Integer, object : WorldObject }
+  WorldReplay = record { checkpoint : WorldCheckpoint, applied : Integer, tail-bytes : Integer }
+  wj-max-events : Integer = 16384
+
+  wj-hash : Integer, Integer, Integer -> Integer
+  wj-hash (buf) (i) (hash) =
+    if i >= 128 then hash
+    else if i == 112 then wj-hash buf 120 hash
+    else wj-hash buf (i + 1) (bit-and ((bit-xor hash (peek-byte buf i)) * 16777619) 4294967295)
+
+  wj-encode : WorldEvent, Integer, Integer -> Result Integer Text
+  wj-encode (event) (buf) (capacity) =
+    if capacity < 128 then Err "journal destination too short"
+    else if event.sequence <= 0 | event.tick < 0 | event.operation < 1 | event.operation > 3 then Err "journal metadata invalid"
+    else if event.object.serial <= 0 | event.object.serial > 2147483647 then Err "journal serial invalid"
+    else let a = poke-qword buf 0 #314A5755
+    in let b = poke-qword buf 8 event.sequence
+    in let c = poke-qword buf 16 event.tick
+    in let d = poke-qword buf 24 event.operation
+    in let view = WorldTable { buffer = buf + 16, capacity = 1, index = 0 }
+    in let obj = world-write-slot view 0 event.object.serial event.object
+    in let e = poke-qword buf 112 0
+    in let f = poke-qword buf 120 0
+    in let checksum = poke-qword buf 112 (wj-hash buf 0 2166136261)
+    in Ok 128
+
+  wj-decode : Integer -> Result WorldEvent Text
+  wj-decode (buf) =
+    if peek-qword buf 0 /= #314A5755 | peek-qword buf 120 /= 0 then Err "journal format invalid"
+    else if peek-qword buf 112 /= wj-hash buf 0 2166136261 then Err "journal checksum invalid"
+    else let seq = peek-qword buf 8
+    in let tick = peek-qword buf 16
+    in let op = peek-qword buf 24
+    in if seq <= 0 | tick < 0 | op < 1 | op > 3 then Err "journal metadata invalid"
+    else Ok (WorldEvent { sequence = seq, tick = tick, operation = op,
+      object = world-read-slot (WorldTable { buffer = buf + 16, capacity = 1, index = 0 }) 0 })
+
+  wj-create : WorldTable, WorldObject -> Result Integer Text
+  wj-create (world) (obj) =
+    let slot = peek-qword world.buffer 8
+    in if slot < 0 then Err "journal create exceeds object budget"
+    else let old = peek-qword world.buffer (16 + slot * 80)
+    in let low = if old == 0 then slot + 1 else bit-and (0 - old) world-serial-mask + world.capacity
+    in let serial = low + (if obj.kind == 2 then world-item-bit else 0)
+    in if obj.serial /= serial then Err "journal create serial disagrees with allocator"
+    else world-create world (WorldObject { serial = 0, kind = obj.kind, x = obj.x, y = obj.y, z = obj.z,
+      graphic = obj.graphic, hue = obj.hue, container = obj.container, amount = obj.amount, health = obj.health })
+
+  wj-apply : WorldTable, WorldEvent -> Result Integer Text
+  wj-apply (world) (event) =
+    if event.operation == 1 then wj-create world event.object
+    else if event.operation == 2 then world-update world event.object
+    else world-delete world event.object.serial
+
+  wj-loop : WorldTable, Integer, Integer, Integer, Integer, Integer -> Result WorldCheckpoint Text
+  wj-loop (world) (buf) (count) (i) (tick) (seq) =
+    if i >= count then Ok (WorldCheckpoint { world = world, tick = tick, sequence = seq })
+    else let mark = __heap-save
+    in when wj-decode (buf + i * 128)
+      is Err (e) -> let restored = __heap-restore mark in Err e
+      is Ok (event) ->
+        if seq == 9223372036854775807 then let restored = __heap-restore mark in Err "journal sequence exhausted"
+        else if event.sequence /= seq + 1 | event.tick < tick then let restored = __heap-restore mark in Err "journal sequence gap or clock reversal"
+        else let next-tick = event.tick
+        in let next-seq = event.sequence
+        in when wj-apply world event
+          is Err (e) -> let restored = __heap-restore mark in Err e
+          is Ok (serial) -> let restored = __heap-restore mark in wj-loop world buf count (i + 1) next-tick next-seq
+
+  wj-replay : WorldCheckpoint, Integer, Integer -> Result WorldReplay Text
+  wj-replay (checkpoint) (buf) (size) =
+    if size < 0 | size > wj-max-events * 128 then Err "journal replay budget exceeded"
+    else if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects then Err "journal world capacity invalid"
+    else if checkpoint.tick < 0 | checkpoint.sequence < 0 then Err "journal checkpoint metadata invalid"
+    else let bytes = 16 + checkpoint.world.capacity * 80
+    in let memory = alloc-bytes bytes
+    in let copied = ws-copy checkpoint.world.buffer memory bytes 0
+    in let world = WorldTable { buffer = memory, capacity = checkpoint.world.capacity, index = 0 }
+    in if not (world-reindex world) then Err "journal index rebuild failed"
+    else when wj-loop world buf (size / 128) 0 checkpoint.tick checkpoint.sequence
+      is Err (e) -> Err e
+      is Ok (next) -> Ok (WorldReplay { checkpoint = next, applied = size / 128, tail-bytes = int-mod size 128 })
+
+Page 1

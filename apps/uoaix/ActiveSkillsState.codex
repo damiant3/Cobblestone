@@ -1,0 +1,106 @@
+Chapter: ActiveSkillsState
+  cites Uoaix chapter ClassicSkills
+  cites Uoaix chapter GameHarvestState
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameCombat
+
+  AsServices = record { light : Integer -> Boolean, animal : Integer -> Boolean, item-name : Integer -> Text,
+    intelligence : Integer -> Integer, poison : Integer -> Integer,
+    cure : Integer -> Boolean, resurrect : Integer, Integer -> Boolean,
+    snoop : Integer, Integer, Integer, Boolean -> Boolean, provoke : Integer -> Integer, lure : Integer, Integer -> Boolean,
+    taming : Integer -> Integer, master : Integer -> Integer, tame : Integer, Integer -> Boolean, pet-name : Integer -> Text,
+    herd : Integer, Integer, Integer, Integer -> Boolean,
+    envenom : Integer, Integer, Integer -> Boolean }
+  AsActor = record { serial : Integer, connection : Integer, skills : SkClassic,
+    hidden : Boolean,
+    next : Integer, cursor : Integer, skill : Integer, expires : Integer, bandage : Integer,
+    patient : Integer, due : Integer, tracking : Integer, track-next : Integer, track-until : Integer,
+    menu : Integer, category : Integer, choices : List Integer, choice-count : Integer, provoked : Integer,
+    tame : Integer, tame-step : Integer, tame-due : Integer, herd : Integer }
+  ActiveSkills = record { vendor : GvWorld, items : GsiState, banks : GmbState, combat : GameCombat,
+    actors : List AsActor, next-target : Integer, concealed : Integer, calm : Integer, picks : Integer, spirit : Integer }
+  as-actors : Integer, List AsActor -> List AsActor
+  as-actors (i) (xs) = if i == 5 then xs else as-actors (i + 1) (list-push xs
+    (AsActor { serial = 0, connection = -1, skills = skc-new (42 + i) 100,
+      hidden = False,
+      next = 0, cursor = 0, skill = -1, expires = 0, bandage = 0, patient = 0, due = 0,
+      tracking = 0, track-next = 0, track-until = 0, menu = 0, category = 0,
+      choices = gp-zeros (__list-with-capacity 32) 32, choice-count = 0, provoked = 0, tame = 0, tame-step = 0, tame-due = 0, herd = 0 }))
+  as-new : GvWorld, GmbState, GameCombat -> Result ActiveSkills Text
+  as-new (vendor) (banks) (combat) = if vendor.game.world.buffer /= banks.items.world.buffer
+    | list-length combat.actors /= banks.items.world.capacity then Err "active skill shared bindings"
+    else Ok (ActiveSkills { vendor = vendor, items = banks.items, banks = banks, combat = combat,
+      actors = as-actors 0 (__list-with-capacity 5), next-target = 1, concealed = sk-buffer ((banks.items.world.capacity + 7) / 8), calm = sk-buffer banks.items.world.capacity,
+      picks = sk-buffer (banks.items.world.capacity * 2), spirit = sk-buffer banks.items.world.capacity })
+ A session's ClassicSkills levels are the character's row in the shard's skill table, so every use and gain lands there.
+  as-session : ActiveSkills, GameShard, GameInput, WorldObject, Integer -> AsActor
+  as-session (s) (game) (input) (mobile) (slot) = let a = list-at s.actors slot
+    in let row = gs-skill-row game mobile.serial
+    in let fresh = a.serial /= mobile.serial
+    in let bound = if row /= 0 then (if a.skills.levels /= row then __record-set a.skills "levels" row else a.skills)
+      else if fresh then __record-set a.skills "levels" (sk-buffer 46) else a.skills
+    in let clear = if not fresh then 0 else let attempts = __record-set a.skills "attempts" 0
+      in let hidden = as-reveal s a
+      in let serial = __record-set a "serial" mobile.serial
+      in let next = __record-set a "next" 0 in 0
+    in let connection = if not fresh & a.connection == input.connection then 0 else
+      let bind = __record-set a "connection" input.connection
+      in let cursor = __record-set a "cursor" 0 in let menu = __record-set a "menu" 0 in let provoked = __record-set a "provoked" 0
+      in let due = __record-set a "due" 0 in let patient = __record-set a "patient" 0
+      in let bandage = __record-set a "bandage" 0 in let tracking = __record-set a "tracking" 0
+      in let taming = __record-set a "tame" 0 in let tame-due = __record-set a "tame-due" 0 in 0
+    in a
+  as-profile : ActiveSkills, Integer, Integer -> Integer
+  as-profile (s) (serial) (i) = if i == 5 then -1
+    else if (list-at s.actors i).serial == serial then i else as-profile s serial (i + 1)
+  as-hidden : ActiveSkills, Integer -> Boolean
+  as-hidden (s) (serial) = let i = as-profile s serial 0 in if i < 0 then False else (list-at s.actors i).hidden
+  as-visible : ActiveSkills, Integer, Integer -> Boolean
+  as-visible (s) (viewer) (serial) = viewer == serial | not (as-hidden s serial)
+ UOX3 lockpicking.js lockPickedBy and lockPickedSkill: the last picker of a lock and their Lockpicking, by the item's
+ world slot: serial * 2048 + level, then the item's serial.
+  as-picked : ActiveSkills, Integer, Integer, Integer -> Integer
+  as-picked (s) (item) (picker) (level) = let slot = world-slot s.items.world item
+    in if slot < 0 then 0 else let who = poke-qword s.picks (slot * 16) (picker * 2048 + level) in poke-qword s.picks (slot * 16 + 8) item
+ UOX3 spiritspeak.js SOCK_SPIRITSPEAK: the tick until which a character understands ghosts, by its world slot.
+  as-spirit-hears : ActiveSkills, Integer, Integer -> Boolean
+  as-spirit-hears (s) (serial) (now) = let slot = world-slot s.items.world serial in slot >= 0 & peek-qword s.spirit (slot * 8) > now
+  as-level : AsActor, Integer -> Integer
+  as-level (a) (skill) = sk-at a.skills.levels skill
+  as-roll : ActiveSkills, AsActor, Integer, Integer -> Boolean
+  as-roll (s) (a) (skill) (difficulty) = let result = skc-use a.skills skill difficulty True
+    in let touched = world-touch s.items.world in result == 1
+  as-skill-rows : AsActor, Integer, List Integer -> List Integer
+  as-skill-rows (a) (i) (out) = if i == 46 then gp-put16 out 0
+    else as-skill-rows a (i + 1) (gp-put16 (gp-put16 out (i + 1)) (as-level a i))
+  as-skills : AsActor -> List Integer
+  as-skills (a) = as-skill-rows a 0 [#3A,0,190,0]
+  as-distance : WorldObject, WorldObject -> Integer
+  as-distance (a) (b) = max (walk-abs (a.x - b.x)) (walk-abs (a.y - b.y))
+  as-near : WorldObject, WorldObject, Integer -> Boolean
+  as-near (a) (b) (distance) = as-distance a b <= distance & walk-abs (a.z - b.z) <= 16
+  as-fighting : ActiveSkills, Integer, Integer -> Boolean
+  as-fighting (s) (serial) (i) = if i == s.combat.count then False
+    else let actor = list-at s.combat.actors (peek-qword s.combat.active (i * 8))
+    in actor.serial == serial | actor.target == serial | as-fighting s serial (i + 1)
+  as-light : ActiveSkills, AsServices, Integer, Integer -> Boolean
+  as-light (s) (services) (serial) (layer) = if layer == 26 then False
+    else let item = world-layer-serial s.items.world serial layer
+    in if item == 0 then as-light s services serial (layer + 1)
+      else when world-get s.items.world item
+        is Err (_) -> as-light s services serial (layer + 1)
+        is Ok (obj) -> services.light obj.graphic | as-light s services serial (layer + 1)
+  as-reveal : ActiveSkills, AsActor -> Integer
+  as-reveal (s) (a) = if not a.hidden then 0 else let clear = __record-set a "hidden" False
+    in let shown = as-conceal s a.serial 0
+    in world-touch s.items.world
+  as-conceal : ActiveSkills, Integer, Integer -> Integer
+  as-conceal (s) (serial) (flag) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-byte s.concealed slot flag
+  as-target : ActiveSkills, AsActor, Integer, Integer -> GameReply
+  as-target (s) (a) (skill) (now) = if s.next-target > 65535 then gsi-denied "Skill target contexts exhausted."
+    else let cursor = #41530000 + s.next-target
+    in let next = __record-set s "next-target" (s.next-target + 1)
+    in let saved = __record-set a "cursor" cursor
+    in let chosen = __record-set a "skill" skill
+    in let expires = __record-set a "expires" (now + gh-ticks 30000)
+    in gs-reply [sip-target cursor] "skills:active-target"

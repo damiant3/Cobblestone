@@ -1,0 +1,62 @@
+Chapter: ActiveSkillsHiding
+  cites Uoaix chapter ActiveSkillsState
+
+ Source-X CCharSkill.cpp Skill_Hiding/Skill_DetectHidden and CChar::Reveal, Apache-2.0;
+ Sphere-LICENSE.txt. Flag 0x80 on the 1.25 client's 0x20 draws its own body hidden.
+
+  as-say : Text -> List Integer
+  as-say (text) = sip-message #FFFFFFFF #FFFF 6 text
+  as-self : WorldObject, Integer, Boolean -> List Integer
+  as-self (mobile) (direction) (hidden) = cbp-player mobile direction (if hidden then 128 else 0)
+  as-unhide : ActiveSkills, AsActor, WorldObject, Integer -> List (List Integer)
+  as-unhide (s) (a) (mobile) (direction) = if not a.hidden then [] else let shown = as-reveal s a
+    in [as-self mobile direction False, as-say "You have been revealed!"]
+  as-reveal-serial : ActiveSkills, Integer -> Integer
+  as-reveal-serial (s) (serial) = let i = as-profile s serial 0
+    in if i < 0 then 0 else as-reveal s (list-at s.actors i)
+  as-hide : AsServices, ActiveSkills, AsActor, WorldObject, Integer, Integer -> GameReply
+  as-hide (services) (s) (a) (mobile) (direction) (now) =
+    if as-fighting s mobile.serial 0 then gsi-denied "You are preoccupied with thoughts of battle."
+    else if as-light s services mobile.serial 1 then gsi-denied "You cannot hide while carrying a light."
+    else let paced = __record-set a "next" (now + gh-ticks 10000)
+    in if not (as-roll s a 21 (skc-random a.skills 700)) then gs-reply [as-say "You can't seem to hide here."] "skills:hide-failed"
+    else let hidden = __record-set a "hidden" True
+    in let concealed = as-conceal s mobile.serial 1
+    in let touched = world-touch s.items.world
+    in gs-reply [as-say "You have hidden yourself well.", as-self mobile direction True] "skills:hidden"
+  as-detect-each : ActiveSkills, AsActor, Integer, Integer, Integer, Integer, Integer -> Integer
+  as-detect-each (s) (a) (x) (y) (radius) (i) (found) = if i == 5 then found
+    else let other = list-at s.actors i
+    in if other.serial == a.serial | other.serial == 0 | not other.hidden then as-detect-each s a x y radius (i + 1) found
+    else when world-get s.items.world other.serial
+      is Err (_) -> as-detect-each s a x y radius (i + 1) found
+      is Ok (m) -> if max (walk-abs (m.x - x)) (walk-abs (m.y - y)) > radius then as-detect-each s a x y radius (i + 1) found
+        else if skc-random a.skills 1000 + as-level a 14 < as-level other 21 then as-detect-each s a x y radius (i + 1) found
+        else let shown = as-reveal s other in as-detect-each s a x y radius (i + 1) (found + 1)
+  as-detect : ActiveSkills, AsActor, WorldObject, List Integer -> GameReply
+  as-detect (s) (a) (player) (packet) = let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in if max (walk-abs (x - player.x)) (walk-abs (y - player.y)) > 12 then gsi-denied "That location is too far away."
+    else if not (as-roll s a 14 (skc-random a.skills 700)) then gs-reply [as-say "You can see nothing hidden there."] "skills:detect-failed"
+    else let found = as-detect-each s a x y (max 1 (as-level a 14 / 100)) 0 0
+    in gs-reply [as-say (if found == 0 then "You can see nothing hidden there." else "You reveal what was hidden.")] "skills:detect"
+  as-reply-has : GameReply, Integer, Integer -> Boolean
+  as-reply-has (reply) (op) (i) = if i == list-length reply.packets then False
+    else let p = list-at reply.packets i
+    in if list-length p > 0 & list-at p 0 == op then True else as-reply-has reply op (i + 1)
+  as-reveals-on : List Integer, GameReply -> Boolean
+  as-reveals-on (packet) (reply) = if list-length packet == 0 then False
+    else let op = list-at packet 0
+    in if op == 2 then as-reply-has reply #22 0
+    else if op == 5 then as-reply-has reply #AA 0
+    else if op == 7 then as-reply-has reply #1D 0 & not (as-reply-has reply #27 0)
+    else False
+  as-after : ActiveSkills, GameShard, GameInput, List Integer, GameReply -> GameReply
+  as-after (s) (game) (input) (packet) (reply) =
+    if input.mode /= 2 | input.session.phase /= 2 | reply.close | not (as-reveals-on packet reply) then reply
+    else let slot = gsi-slot game input.session.serial 0
+    in if slot < 0 then reply else let a = list-at s.actors slot
+    in if a.serial /= input.session.serial | not a.hidden then reply
+    else when world-get game.world a.serial
+      is Err (_) -> reply
+      is Ok (mobile) -> gs-reply (reply.packets & as-unhide s a mobile input.session.direction) (reply.note & "; skills:revealed")

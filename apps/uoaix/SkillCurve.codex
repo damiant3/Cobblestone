@@ -1,0 +1,31 @@
+Chapter: SkillCurve
+
+ Gain (Damian, 2026-10-06, ActiveSkills.md "Gain curve"): skill is the log of
+ uses, so the uses per 0.1 grow exponentially, 10 * 80^(level/1000): 10 at 0.0
+ and 800 at 100.0, for every character alike. skc-root is 80^(1/1000) at the
+ 2^20 fixed point, rounded. Below 50.0 a failure gains a normal gain; from
+ 50.0 a failure gains a tenth of one, and a success gains fully on a
+ difficulty within 10.0 of the level or above, falling to nothing 20.0 below
+ (Skill_Experience's gain radius). Success bonus (Damian, 2026-10-06): a success
+ gains skc-bonus tenths of that: 10x below 50.0, tapering linearly to 1x at
+ 100.0, which takes one fisher from 0.0 to 50.0 in 4,215 uses, inside the
+ 4,800 a 3 s cooldown allows in 4 hours.
+
+  skc-root : Integer = 1053181
+  skc-bonus : Integer -> Integer
+  skc-bonus (level) = if level < 500 then 100 else 100 - 90 * (min 1000 level - 500) / 500
+  skc-pow : Integer, Integer, Integer -> Integer
+  skc-pow (base) (n) (acc) = if n == 0 then acc
+    else skc-pow (base * base / 1048576) (n / 2) (if int-mod n 2 == 1 then acc * base / 1048576 else acc)
+  skc-uses : Integer -> Integer
+  skc-uses (level) = (10 * skc-pow skc-root (max 0 (min 1000 level)) 1048576 + 524288) / 1048576
+  skc-gain-at : Integer, Integer, Integer, Boolean -> Integer
+  skc-gain-at (rate) (level) (difficulty) (success) = let base = min 1000 (rate * 10 / skc-uses level)
+    in let full = if success then min 1000 (base * skc-bonus level / 10) else base
+    in if difficulty + 200 < level then 0
+    else if level < 500 then full
+    else if not success then base / 10
+    else if difficulty + 100 >= level then full
+    else full * (difficulty + 200 - level) / 100
+
+Page 1

@@ -1,0 +1,154 @@
+Chapter: CompositeTestStock
+  cites Uoaix chapter GameMobileBank
+
+ Tool art IDs follow the corresponding ServUO item constructors. Reagent
+ art IDs match MageryData. These are explicit local testing grants, not
+ vendor purchases or production lots.
+
+  cts-tools : List Integer = [#0E86,#0F39,#0F43,#0EC4,#0F52,#13E3,#1034,#1EB8,#0F9D,#0F9F,#0E9B,#0FBF,#1022,#0DC0,#1043,#097F,#0FA9,#0FAB,#14FC,#0EB2,#1057,#14F5]
+  cts-late-tools : List Integer = [#1057,#14F5,#0F0E,#0E43,#0E41,#100F]
+  cts-reagents : List Integer = [#0F7A,#0F7B,#0F84,#0F85,#0F86,#0F88,#0F8D,#0F8C,#0F0E]
+  cts-materials : List Integer = [#1BF2,#1BDD,#1BD7,#1766,#1081,#0DF9,#1BD1]
+ Positions fit the legacy3C/3D/4A container rectangles in ServUO's
+ Data/containers.cfg (3C 44-186 x 65-159, 3D 29-137 x 34-128, 4A 18-162 x
+ 105-178); zero coordinates lie outside those gumps. Five columns span each
+ rectangle so 20-40 pixel art overlaps only at its edges.
+  cts-x : GsiState, Integer, Integer -> Integer
+  cts-x (items) (parent) (i) = let gump = (gsi-meta items parent).gump
+    in if gump == #003D then 32 + int-mod i 5 * 20 else if gump == #004A then 22 + int-mod i 5 * 26 else 50 + int-mod i 5 * 26
+  cts-y : GsiState, Integer, Integer -> Integer
+  cts-y (items) (parent) (i) = let gump = (gsi-meta items parent).gump
+    in let row = int-mod (i / 5) 5
+    in if gump == #003D then 40 + row * 20 else if gump == #004A then 110 + row * 14 else 70 + row * 20
+  cts-item : GsiState, Integer, Integer, Integer, Integer -> Result Integer Text
+  cts-item (items) (parent) (graphic) (amount) (gump) =
+    let item = gs-item parent graphic 0
+    in let count = __record-set item "amount" amount
+    in let index = world-child-count items.world parent
+    in let x = __record-set item "x" (cts-x items parent index)
+    in let y = __record-set item "y" (cts-y items parent index)
+    in when world-create items.world item
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register items serial 0 gump True (amount > 1) /= 0 then Err "testing item metadata refused" else Ok serial
+  cts-list : GsiState, Integer, List Integer, Integer, Integer -> Result Integer Text
+  cts-list (items) (parent) (graphics) (amount) (i) = if i == list-length graphics then Ok i
+    else when cts-item items parent (list-at graphics i) amount 0
+      is Err (e) -> Err e
+      is Ok (_) -> cts-list items parent graphics amount (i + 1)
+  cts-bank : GmbState, Integer -> Result Integer Text
+  cts-bank (bank) (owner) = let found = gmb-bank-find bank.items owner 0
+    in when (if found > 0 then Ok found else world-create bank.items.world (gs-item owner #09B2 0))
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register bank.items serial 29 bank.gump False False /= 0 then Err "testing bank metadata refused" else Ok serial
+  CtsStock = record { reply : GameReply, rune : Integer }
+  cts-fill : GsiState, Integer, Integer, Integer -> Result Integer Text
+  cts-fill (items) (tools) (reagents) (bank) = when cts-list items tools cts-tools 1 0
+    is Err (e) -> Err e
+    is Ok (_) -> when cts-item items reagents #0EF3 100 0
+      is Err (e) -> Err e
+      is Ok (_) -> when cts-list items reagents cts-reagents 100 0
+        is Err (e) -> Err e
+        is Ok (_) -> when cts-list items bank cts-materials 1000 0
+          is Err (e) -> Err e
+          is Ok (_) -> cts-item items bank #0EED 10000 0
+  cts-placed : GsiState, List Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  cts-placed (items) (serials) (i) (out) = if i == list-length serials then Ok out
+    else when world-get items.world (list-at serials i)
+      is Err (e) -> Err e
+      is Ok (item) -> cts-placed items serials (i + 1) (list-push out (gsi-placement items item))
+  cts-layout : GsiState, Integer, Integer, Integer, Integer -> Result Integer Text
+  cts-layout (items) (parent) (serial) (i) (depth) = if serial == 0 then Ok 0
+    else if depth == 0 then Err "testing container depth"
+    else let next = world-next-sibling items.world serial
+    in when world-get items.world serial
+      is Err (e) -> Err e
+      is Ok (item) -> when (if item.x == 0 & item.y == 0 then world-update items.world (__record-set (__record-set item "x" (cts-x items parent i)) "y" (cts-y items parent i)) else Ok 0)
+        is Err (e) -> Err e
+        is Ok (_) -> when (if gsi-known items serial & (gsi-meta items serial).gump > 0 then cts-layout items serial (world-first-child items.world serial) 0 (depth - 1) else Ok 0)
+          is Err (e) -> Err e
+          is Ok (_) -> cts-layout items parent next (i + 1) depth
+  cts-holds : WorldTable, Integer, Integer, Integer -> Integer
+  cts-holds (world) (serial) (graphic) (depth) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.graphic == graphic then serial
+        else let inner = if depth > 0 & world-child-count world serial > 0 then cts-holds world (world-first-child world serial) graphic (depth - 1) else 0
+        in if inner > 0 then inner else cts-holds world (world-next-sibling world serial) graphic depth
+  cts-tool-bag : WorldTable, Integer -> Integer
+  cts-tool-bag (world) (serial) = if serial == 0 then 0
+    else if cts-holds world (world-first-child world serial) #13E3 0 > 0 then serial
+    else cts-tool-bag world (world-next-sibling world serial)
+  cts-top-up : GsiState, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  cts-top-up (items) (pack) (i) (out) = if i == list-length cts-late-tools then Ok out
+    else let bag = cts-tool-bag items.world (world-first-child items.world pack)
+    in if bag == 0 | cts-holds items.world (world-first-child items.world pack) (list-at cts-late-tools i) 2 > 0 then cts-top-up items pack (i + 1) out
+    else if world-count items.world >= items.world.capacity then Err "testing stock capacity"
+    else when cts-item items bag (list-at cts-late-tools i) (if list-at cts-late-tools i == #0F0E then 100 else 1) (if list-at cts-late-tools i == #0E43 | list-at cts-late-tools i == #0E41 then #0049 else 0)
+      is Err (e) -> Err e
+      is Ok (serial) -> when world-get items.world serial
+        is Err (e) -> Err e
+        is Ok (made) -> cts-top-up items pack (i + 1) (list-push out (gsi-placement items made))
+ A heater shield for Parrying rides in the backpack, because the tools bag's 25 positions are taken; a kit granted
+ earlier gets one at login when its character holds none, worn or packed.
+  cts-shield : Integer = #1B76
+  cts-crook : Integer = #0E81
+  cts-guard : GsiState, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  cts-guard (items) (pack) (art) (out) = when world-get items.world pack
+    is Err (e) -> Err e
+    is Ok (bag) -> if cts-holds items.world (world-first-child items.world bag.container) art 3 > 0 then Ok out
+      else if world-count items.world >= items.world.capacity then Err "testing stock capacity"
+      else when cts-item items pack art 1 0
+        is Err (e) -> Err e
+        is Ok (serial) -> when world-get items.world serial
+          is Err (e) -> Err e
+          is Ok (made) -> Ok (list-push out (gsi-placement items made))
+  cts-repair : GmbState, Integer, Integer, GameReply -> Result GameReply Text
+  cts-repair (bank) (serial) (pack) (reply) = when cts-layout bank.items pack (world-first-child bank.items.world pack) 0 64
+    is Err (e) -> Err e
+    is Ok (_) -> let box = gmb-bank-find bank.items serial 0
+      in when (if box == 0 then Ok 0 else cts-layout bank.items box (world-first-child bank.items.world box) 0 64)
+        is Err (e) -> Err e
+        is Ok (_) -> when (when cts-top-up bank.items pack 0 [] is Err (e) -> Err e is Ok (tools) -> when cts-guard bank.items pack cts-shield tools is Err (e) -> Err e is Ok (shielded) -> cts-guard bank.items pack cts-crook shielded)
+          is Err (e) -> Err e
+          is Ok (added) -> if list-length added == 0 then Ok reply
+            else let touched = world-item-touch bank.items.world
+            in Ok (GameReply { packets = reply.packets & added, close = reply.close, note = reply.note })
+  cts-stock : Boolean, Integer, GmbState, GameShard, GameInput, GameReply -> Result CtsStock Text
+  cts-stock (enabled) (grants) (bank) (game) (input) (reply) = if not enabled then Ok (CtsStock { reply = reply, rune = 0 })
+    else let slot = gsi-slot game input.session.serial 0
+    in if slot < 0 then Err "testing character slot missing"
+    else let pack = gsi-pack-find game.world input.session.serial 0
+    in let flag = game.characters + slot * 160 + 144
+    in if peek-byte flag 0 == 1 | peek-qword grants (slot * 8) == input.session.serial then
+      (let marked = poke-byte flag 0 1 in when cts-repair bank input.session.serial pack reply is Err (e) -> Err e is Ok (repaired) -> Ok (CtsStock { reply = repaired, rune = 0 }))
+    else
+    let need = list-length cts-tools + list-length cts-reagents + list-length cts-materials + 10
+    in if pack == 0 then Err "testing backpack missing"
+    else if game.world.capacity - world-count game.world < need then Err "testing stock capacity"
+    else when cts-bank bank input.session.serial
+      is Err (e) -> Err e
+      is Ok (box) -> when cts-item bank.items pack #0E76 1 #003D
+        is Err (e) -> Err e
+        is Ok (tools) -> when cts-item bank.items pack #0E76 1 #003D
+         is Err (e) -> Err e
+         is Ok (reagents) -> when cts-item bank.items pack #0EFA 1 0
+          is Err (e) -> Err e
+          is Ok (book) -> when cts-item bank.items pack #1F14 1 0
+           is Err (e) -> Err e
+           is Ok (rune) -> when cts-fill bank.items tools reagents box
+            is Err (e) -> Err e
+            is Ok (_) -> when cts-item bank.items tools #0E43 1 #0049
+             is Err (e) -> Err e
+             is Ok (_) -> when cts-item bank.items tools #0E41 1 #0049
+             is Err (e) -> Err e
+             is Ok (_) -> when cts-item bank.items tools #100F 1 0
+             is Err (e) -> Err e
+             is Ok (_) -> when cts-item bank.items pack cts-shield 1 0
+             is Err (e) -> Err e
+             is Ok (shield) -> when cts-item bank.items pack cts-crook 1 0
+             is Err (e) -> Err e
+             is Ok (crook) -> let granted = poke-byte flag 0 1
+              in let touched = world-item-touch game.world
+              in when cts-placed bank.items [tools, reagents, book, rune, shield, crook] 0 []
+                is Err (e) -> Err e
+                is Ok (placed) -> Ok (CtsStock { reply = GameReply { packets = reply.packets & placed, close = reply.close, note = reply.note & "; testing supplies granted" }, rune = rune })

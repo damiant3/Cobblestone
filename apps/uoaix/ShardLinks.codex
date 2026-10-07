@@ -1,0 +1,191 @@
+Chapter: ShardLinks
+  cites Uoaix chapter ShardTx
+  cites Net chapter NetIO
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter WebServer
+  cites Foreword chapter Result
+
+  ShardLink = record { port : Integer, epoch : Integer, occupied : Boolean,
+    failed : Boolean, transport : TcpTransportState, tx : ShardTx }
+  ShardLinks = record { slots : List ShardLink, mac : List Integer,
+    ip : List Integer, gateway : List Integer, mask : List Integer, mark : Integer }
+ Eight game slots plus three admin-panel slots: a browser holds a speculative second connection open,
+ and one panel slot stalled every page load until the 30 s idle close.
+  sl-max-links : Integer = 11
+  sl-recv-bytes : Integer = 8192
+
+  sl-ports-valid : List Integer, Integer -> Boolean
+  sl-ports-valid (ports) (i) = if i >= list-length ports then True
+    else (list-at ports i == 2593 | list-at ports i == 2594) & sl-ports-valid ports (i + 1)
+
+  sl-slots : List Integer, List Integer, List Integer, List Integer, Integer, List ShardLink -> Result (List ShardLink) Text
+  sl-slots (ports) (mac) (ip) (gateway) (i) (slots) =
+    if i >= list-length ports then Ok slots
+    else when stx-new stx-max-bytes
+      is Err (e) -> Err e
+      is Ok (tx) ->
+        let session = net-session-new mac ip gateway (list-at ports i) 0 gateway 1000
+        in let transport = transport-arenas (transport-new-with-cap session sl-recv-bytes)
+        in let slot = ShardLink { port = list-at ports i, epoch = 0, occupied = False,
+          failed = False, transport = transport, tx = tx }
+        in sl-slots ports mac ip gateway (i + 1) (list-push slots slot)
+
+  sl-new : List Integer, List Integer, List Integer, List Integer, List Integer -> Result ShardLinks Text
+  sl-new (ports) (mac) (ip) (gateway) (mask) =
+    if list-length ports < 1 | list-length ports > sl-max-links | not (sl-ports-valid ports 0) then Err "shard listener slots invalid"
+    else if list-length mac /= 6 | list-length ip /= 4 | list-length gateway /= 4 | list-length mask /= 4 then Err "shard address lengths invalid"
+    else if not (stx-bytes-valid mac 0 & stx-bytes-valid ip 0 & stx-bytes-valid gateway 0 & stx-bytes-valid mask 0) then Err "shard address bytes invalid"
+    else let m = nc-ints mac
+    in let address = nc-ints ip
+    in let route = nc-ints gateway
+    in let subnet = nc-ints mask
+    in when sl-slots ports m address route 0 (__list-with-capacity (list-length ports))
+      is Err (e) -> Err e
+      is Ok (slots) ->
+        let owner = ShardLinks { slots = slots, mac = m, ip = address, gateway = route, mask = subnet, mark = 0 }
+        in let mark = __heap-save
+        in let saved = __record-set owner "mark" mark
+        in Ok owner
+
+  sl-owner : ShardLinks, TcpSegment, List Integer, Integer -> Integer
+  sl-owner (owner) (segment) (peer) (i) = if i >= list-length owner.slots then -1
+    else let slot = list-at owner.slots i
+    in if slot.occupied & net-session-owns-segment slot.transport.session segment
+      & ip-equal slot.transport.session.conn.remote-ip peer then i
+    else sl-owner owner segment peer (i + 1)
+
+  sl-free : ShardLinks, Integer, Integer -> Integer
+  sl-free (owner) (port) (i) = if i >= list-length owner.slots then -1
+    else let slot = list-at owner.slots i
+    in if not slot.occupied & slot.port == port & slot.epoch < 9223372036854775807 then i else sl-free owner port (i + 1)
+
+  sl-admit : ShardLinks, Integer, List Integer -> Integer
+  sl-admit (owner) (index) (frame) =
+    let slot = list-at owner.slots index
+    in let peer = ip-src-at frame eth-header-size
+    in let hop = if ip-equal owner.mask [0,0,0,0] then owner.gateway
+      else if web-same-subnet owner.ip peer owner.mask 0 then peer else owner.gateway
+    in let session = net-session-new owner.mac owner.ip hop slot.port 0 peer 1000
+    in let arp = arp-cache-add session.arp hop (eth-src-mac frame)
+    in let transport = net-io-listen (transport-drop-recv (transport-set-session slot.transport (set-arp session arp)))
+    in let set = __record-set slot "transport" transport
+    in let epoch = __record-set slot "epoch" (slot.epoch + 1)
+    in let occupied = __record-set slot "occupied" True
+    in let reset = __record-set slot "failed" False
+    in let used = __record-set slot.tx "used" 0
+    in let offset = __record-set slot.tx "offset" 0
+    in index
+
+  sl-feed-slot : ShardLinks, Integer, List Integer, Integer -> Integer
+  sl-feed-slot (owner) (index) (frame) (stop) =
+    let slot = list-at owner.slots index
+    in if net-outbox-count slot.transport.session /= 0 then
+      let failed = __record-set slot "failed" True in index
+    else let result = net-process-frame-within slot.transport.session frame stop
+    in let count = result.data-stop - result.data-off
+    in if slot.failed then
+      let transport = __record-set slot "transport" (transport-set-session slot.transport result.session) in index
+    else if count < 0 | count > slot.transport.recv-cap - slot.transport.recv-len then
+      let transport = __record-set slot "transport" (transport-set-session slot.transport result.session)
+      in let failed = __record-set slot "failed" True in index
+    else let transport = transport-feed-range slot.transport result.session result.data result.data-off result.data-stop
+    in let saved = __record-set slot "transport" transport in index
+
+  sl-feed : ShardLinks, List Integer, Integer -> Integer
+  sl-feed (owner) (frame) (stop) =
+    if stop < 0 | stop > list-length frame then -1
+    else if eth-ethertype-within frame stop == eth-type-arp then sl-feed-slot owner 0 frame stop
+    else if not (web-frame-valid frame stop) then -1
+    else if not (ip-equal (ip-dst-at frame eth-header-size) owner.ip) then -1
+    else let segment = frame-seg-within frame stop
+    in let peer = ip-src-at frame eth-header-size
+    in let existing = sl-owner owner segment peer 0
+    in let index = if existing >= 0 then existing
+      else if tcp-has-flag segment tcp-flag-syn & not (tcp-has-flag segment tcp-flag-ack)
+        then sl-free owner segment.dst-port 0 else -1
+    in if index < 0 then -1
+    else let admitted = if existing < 0 then sl-admit owner index frame else index
+    in sl-feed-slot owner admitted frame stop
+
+  sl-flush : ShardLinks, Integer -> [Network.Write] Integer
+  sl-flush (owner) (i) = if i >= list-length owner.slots then 0
+    else let slot = list-at owner.slots i
+    in if net-outbox-count slot.transport.session == 0 then sl-flush owner (i + 1)
+    else act
+      transport <- flush-transport-outbox slot.transport
+      let saved = __record-set slot "transport" transport
+      in sl-flush owner (i + 1)
+    end
+
+  sl-send : ShardLinks, Integer -> Result Integer Text
+  sl-send (owner) (i) = if i < 0 | i >= list-length owner.slots then Err "shard link index invalid"
+    else let slot = list-at owner.slots i
+    in if not slot.occupied | slot.failed then Err "shard link unavailable"
+    else when stx-step slot.tx slot.transport
+      is Err (e) -> Err e
+      is Ok (step) -> let saved = __record-set slot "transport" step.transport in Ok step.sent
+
+  sl-tick : ShardLinks, Integer -> Result Integer Text
+  sl-tick (owner) (i) = if i >= list-length owner.slots then Ok 0
+    else let slot = list-at owner.slots i
+    in if net-outbox-count slot.transport.session /= 0 then Err "shard timer outbox requires flush"
+    else let transport = if slot.occupied then transport-tick slot.transport else slot.transport
+    in let saved = __record-set slot "transport" transport
+    in sl-tick owner (i + 1)
+
+  sl-release : ShardLinks, Integer -> Result Integer Text
+  sl-release (owner) (i) = if i < 0 | i >= list-length owner.slots then Err "shard link index invalid"
+    else let slot = list-at owner.slots i
+    in if not (net-io-conn-closed slot.transport) | net-outbox-count slot.transport.session /= 0 then Err "shard link is not terminal"
+    else let occupied = __record-set slot "occupied" False
+    in let failed = __record-set slot "failed" False
+    in let used = __record-set slot.tx "used" 0
+    in let offset = __record-set slot.tx "offset" 0
+    in Ok i
+
+  sl-close : ShardLinks, Integer, Boolean -> Result Boolean Text
+  sl-close (owner) (i) (abort) = if i < 0 | i >= list-length owner.slots then Err "shard link index invalid"
+    else let slot = list-at owner.slots i
+    in if net-outbox-count slot.transport.session /= 0 then Err "shard close outbox requires flush"
+    else if slot.failed & not abort then Err "failed shard link requires abort"
+    else let discarded = if abort then
+      let used = __record-set slot.tx "used" 0
+      in let offset = __record-set slot.tx "offset" 0
+      in let failed = __record-set slot "failed" True
+      in let received = __record-set slot "transport" (transport-drop-recv slot.transport) in 0
+      else 0
+    in let closing = when slot.transport.session.conn.state
+      is TcpClosed -> True
+      is TcpFinWait1 -> True
+      is TcpFinWait2 -> True
+      is TcpLastAck -> True
+      is TcpTimeWait -> True
+      is otherwise -> False
+    in if closing then Ok True
+    else if slot.tx.offset /= slot.tx.used | net-rexmit-full slot.transport.session then Ok False
+    else let transport = transport-close slot.transport
+    in let saved = __record-set slot "transport" transport in Ok True
+
+  sl-compact-slots : ShardLinks, Integer -> Result Integer Text
+  sl-compact-slots (owner) (i) = if i >= list-length owner.slots then Ok 0
+    else let slot = list-at owner.slots i
+    in if slot.transport.arena-base == 0 | transport-stale slot.transport then Err "shard link arena invalid"
+    else let before = __heap-save
+    in let probe = nc-transport slot.transport
+    in let size = __heap-save - before
+    in let reset = __heap-restore before
+    in if size > net-arena-bytes then Err "shard link exceeds compaction arena"
+    else let copy = transport-compact slot.transport before
+    in let saved = __record-set slot "transport" copy
+    in sl-compact-slots owner (i + 1)
+
+  sl-compact : ShardLinks -> Result Integer Text
+  sl-compact (owner) = when sl-compact-slots owner 0
+    is Err (e) -> Err e
+    is Ok (n) -> let reclaimed = __heap-restore owner.mark in Ok 0
+
+Page 1

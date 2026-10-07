@@ -1,0 +1,564 @@
+Chapter: CompositeBritainWorld
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositeLineup
+
+  cbw-check : Text, Boolean -> [Console] Integer
+  cbw-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cbw-fill : WalkMap, Integer -> Integer
+  cbw-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cbw-fill map (i + 1)
+  cbw-create : Integer -> List Integer
+  cbw-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Citizen" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cbw-data : Integer -> Integer
+  cbw-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  cbw-find : List (List Integer), Integer, Integer -> List Integer
+  cbw-find (packets) (op) (i) = if i == list-length packets then []
+    else let packet = list-at packets i
+    in if list-length packet > 0 & list-at packet 0 == op then packet else cbw-find packets op (i + 1)
+  cbw-wheat : EpWorld, Integer, Integer -> Integer
+  cbw-wheat (w) (i) (n) = if i == w.node-count then n
+    else let node = list-at w.nodes i
+    in cbw-wheat w (i + 1) (if node.resource == cpr-wheat & node.place == cpr-farm-place then n + 1 else n)
+  cbw-first-stock : GameShard, GvPlayer, Integer, Integer -> Integer
+  cbw-first-stock (game) (p) (stock) (i) = if i == p.count then 0
+    else let q = list-at p.offers i
+    in when world-get game.world q.serial
+      is Err (_) -> cbw-first-stock game p stock (i + 1)
+      is Ok (item) -> if item.container == stock then q.serial else cbw-first-stock game p stock (i + 1)
+  cbw-label : Result GameReply Text, Text -> Boolean
+  cbw-label (reply) (name) = when reply
+    is Err (_) -> False
+    is Ok (r) -> let packet = cbw-find r.packets #1C 0
+      in list-length packet >= 44 & list-at packet 9 == 6
+        & utf8-bytes-to-text (list-take (list-drop packet 14) (text-length name)) == name
+        & utf8-bytes-to-text (list-take (list-drop packet 44) (text-length name)) == name
+  cbw-shop : CompositeOwner, WalkMap, GameInput, Integer, Integer -> [Console, Device.Block] Integer
+  cbw-shop (store) (map) (input) (i) (stop) = if i == stop then act 0 end
+    else let owner = store.state
+    in let v = owner.vendor
+    in let game = owner.checkpoint.game
+    in let shop = list-at v.vendors i
+    in let player = list-at v.players 0
+    in when world-get game.world shop.serial
+      is Err (e) -> cbw-check ("shop npc " & e) False
+      is Ok (npc) -> act
+        near <- when world-get game.world player.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" npc.x) "y" (npc.y + 1)) "z" npc.z)
+        named <- cs-route store game input map 2593 (gp-put32 [9] npc.serial)
+        menu <- cs-route store game input map 2593 (gp-put32 [6] npc.serial)
+        packets <- when menu is Err (_) -> [] is Ok (r) -> r.packets
+        contents <- cbw-find packets #3C 0
+        count <- if list-length contents < 5 then 0 else gp-u16 contents 3
+        first <- cbw-first-stock game player shop.stock 0
+        if bb-participant i then act
+          ok <- cbw-check ("composite shop " & (list-at bb-shops i).title & " names itself and starts with nothing to sell") (is-ok near & cbw-label named ("the " & list-at gvb-role-words i) & count == 0 & first == 0)
+          rest <- cbw-shop store map input (i + 1) stop
+          ok + rest
+        end
+        else act
+        ordered <- count > 0 & gp-u16 contents 14 == count & gp-u32 contents (5 + (count - 1) * 19) == first & gp-u16 contents (5 + (count - 1) * 19 + 9) == 1
+        before <- v.sale-count
+        bought <- cs-route store game input map 2593 (gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] npc.serial) 2) 26) first) 1)
+        delivered <- if v.sale-count == before + 1 then (list-at v.sales before).delivered else 0
+        selling <- cs-route store game input map 2593 (gp-ascii [3,0,13,0,3,178,0,3] "sell" 0 5)
+        sold <- cs-route store game input map 2593 (gp-put16 (gp-put32 (gp-put16 (gp-put32 [159,0,15] npc.serial) 1) delivered) 1)
+        print-line-uni ("BRITAIN shop " & (list-at bb-shops (int-mod i bb-shop-count)).title & " at " & show npc.x & "," & show npc.y & " rows=" & show count & " sales=" & show v.sale-count)
+        ok <- cbw-check ("composite shop " & (list-at bb-shops (int-mod i bb-shop-count)).title & " names, orders its buy menu, buys and sells") (is-ok near & cbw-label named ("the " & list-at gvb-role-words (int-mod i bb-shop-count)) & ordered & is-ok bought & delivered > 0 & is-ok sold & v.sale-count == before + 2 & euv-valid v.currency)
+        rest <- cbw-shop store map input (i + 1) stop
+        ok + rest
+        end
+      end
+  cbw-spoke : List (List Integer), Integer, Integer -> Boolean
+  cbw-spoke (packets) (serial) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p > 7 & list-at p 0 == #1C & gp-u32 p 3 == serial) | cbw-spoke packets serial (i + 1)
+  cbw-fixtures : GameCombat, Integer, Integer -> Integer
+  cbw-fixtures (c) (i) (n) = if i == list-length c.actors then n
+    else cbw-fixtures c (i + 1) (if cgl-fixture (list-at c.actors i) then n + 1 else n)
+  cbw-in-row : GvWorld, WorldTable, Integer -> Boolean
+  cbw-in-row (v) (world) (k) = if k == bb-shop-count then True
+    else when world-get world (list-at v.vendors (bb-shop-count + k)).serial
+      is Err (_) -> False
+      is Ok (npc) -> npc.x == cgl-x + k & (npc.y == cgl-y | npc.y == cgl-y + 1) & cbw-in-row v world (k + 1)
+  cbw-lineup : CompositeOwner, WalkMap, GameInput -> [Console, Device.Block] Integer
+  cbw-lineup (store) (map) (input) = let owner = store.state in act
+    game <- owner.checkpoint.game
+    player <- list-at owner.vendor.players 0
+    spar <- __record-set owner.combat "scene" 1
+    moved <- when world-get game.world player.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" 1430) "y" 1700)
+    spawned <- cb-fixture owner.combat game input map 0 0
+    before <- cbw-fixtures owner.combat 0 0
+    lined <- cgl-arrange owner True
+    listeners <- cg-speech-bind owner
+    after <- cbw-fixtures owner.combat 0 0
+    print-line-uni ("BRITAIN lineup fixtures " & show before & " -> " & show after & " vendors=" & show owner.vendor.vendor-count & " bankers=" & show owner.banks.count & " arrange=" & (when lined is Err (e) -> e is Ok (_) -> "ok") & " stations=" & show owner.vendor.currency.world.station-count & " nodes=" & show owner.vendor.currency.world.node-count & " lots=" & show owner.vendor.lot-count & " actors=" & show owner.vendor.currency.world.actor-count & " treasury=" & show (em-purse owner.vendor.currency.world.money 1).coin)
+    removed <- cbw-check "a testing boot removes the sparring partner and veteran opponent and stops their scene" (before == 2 & after == 0 & owner.combat.scene == 2 & is-ok lined)
+    placed <- cbw-check "eight trading shopkeeper copies stand in the bank row" (owner.vendor.vendor-count == 2 * bb-shop-count & cbw-in-row owner.vendor game.world 0 & gvsc-valid owner.vendor)
+    shops <- cbw-shop store map input bb-shop-count (2 * bb-shop-count)
+    l <- when owner.lineup is None -> CglLineup { resident = 0, banker = 0, person = 0, inside = 0, speaker = 0, last = 0 } is Just (x) -> x
+    teller <- when world-get game.world l.banker
+      is Err (e) -> Err e
+      is Ok (npc) -> when world-get game.world player.serial
+        is Err (e) -> Err e
+        is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" (npc.x - 1)) "y" npc.y) "z" npc.z)
+    bank <- cs-route store game input map 2593 (gp-ascii [3,0,13,0,3,178,0,3] "bank" 0 5)
+    teller-name <- cs-route store game input map 2593 (gp-put32 [9] l.banker)
+    banked <- cbw-check "the banker copy names itself and opens the bank" (l.banker /= 0 & is-ok teller & (when bank is Err (_) -> False is Ok (r) -> r.note == "bank:open")
+      & cbw-label teller-name "the banker")
+    resident <- when world-get game.world l.resident
+      is Err (e) -> Err e
+      is Ok (npc) -> when world-get game.world player.serial
+        is Err (e) -> Err e
+        is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" npc.x) "y" (npc.y + 1)) "z" npc.z)
+    named <- cs-route store game input map 2593 (gp-put32 [9] l.resident)
+    greeted <- cs-pulse store game input map 2593 2102000
+    greeting <- cbw-check "the resident copy answers its name and greets on approach" (l.resident /= 0 & is-ok resident
+      & (when owner.town is None -> False is Just (t) -> cbw-label named (tf-person t.people l.person).name)
+      & (when greeted is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> cbw-spoke r.packets l.resident 0))
+    healer <- (list-at owner.vendor.vendors (bb-shop-count + cg-healer-shop)).serial
+    raised <- cbw-healer store map input healer
+    baker <- cbw-greets store map input (list-at owner.vendor.vendors 3).serial 2105000
+    smith <- cbw-greets store map input (list-at owner.vendor.vendors 1).serial 2106000
+    asked-name <- cbw-naming store map input (list-at owner.vendor.vendors 3).serial "baker" cst-shopkeeper
+    asked-banker <- cbw-naming store map input l.banker "banker" cst-banker
+    removed + placed + shops + banked + greeting + raised + baker + smith + asked-name + asked-banker
+  end
+ UOAIX-56: a shopkeeper's click shows its profession until the character asks its name; then it says its name and the
+ character's client is relabelled at once, and every later click shows the name.
+  cbw-naming : CompositeOwner, WalkMap, GameInput, Integer, Text, Integer -> [Console, Device.Block] Integer
+  cbw-naming (store) (map) (input) (npc) (word) (style) = let owner = store.state in act
+    game <- owner.checkpoint.game
+    placed <- cbw-ghost-at owner npc 2 50
+    before <- cs-route store game input map 2593 (gp-put32 [9] npc)
+    bar-before <- cs-route store game input map 2593 (gp-put32 (gp-put32 [#34] #EDEDEDED & [4]) npc)
+    asked <- cs-route store game input map 2593 (cbw-say "what is your name")
+    after <- cs-route store game input map 2593 (gp-put32 [9] npc)
+    bar-after <- cs-route store game input map 2593 (gp-put32 (gp-put32 [#34] #EDEDEDED & [4]) npc)
+    full <- nn-name style npc & " the " & word
+    print-line-uni ("NAMED " & word & " " & show npc & " as " & full)
+    cbw-check ("the " & word & " shows 'the " & word & "' until asked, answers its name and relabels at once, and is named on every later click") (is-ok placed
+      & cbw-label before ("the " & word)
+      & (when asked is Err (_) -> False is Ok (r) -> cbw-says r.packets npc ("I am " & full) 0 & cbw-says r.packets npc full 0)
+      & cbw-label after full & (cbw-bar bar-before == ("the " & word)) & (cbw-bar bar-after == full))
+  end
+  cbw-bar : Result GameReply Text -> Text
+  cbw-bar (r) = when r is Err (e) -> "err" is Ok (reply) -> let p = cbw-find reply.packets #11 0 in if list-length p /= 43 then "none" else cbw-text p 7 []
+ F31: a shopkeeper at its own shop greets with its shop line, never the bank's.
+  cbw-text : List Integer, Integer, List Integer -> Text
+  cbw-text (p) (i) (out) = if i >= list-length p | list-at p i == 0 then utf8-bytes-to-text out else cbw-text p (i + 1) (list-push out (list-at p i))
+  cbw-says : List (List Integer), Integer, Text, Integer -> Boolean
+  cbw-says (packets) (serial) (word) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p > 44 & list-at p 0 == #1C & gp-u32 p 3 == serial & text-contains (cbw-text p 44 []) word) | cbw-says packets serial word (i + 1)
+  cbw-greets : CompositeOwner, WalkMap, GameInput, Integer, Integer -> [Console, Device.Block] Integer
+  cbw-greets (store) (map) (input) (npc) (tick) = let owner = store.state in act
+    game <- owner.checkpoint.game
+    cleared <- when owner.speech is None -> 0 is Just (s) -> ns-clear-player s (gv-slot game input.session.serial 0) 0
+    placed <- cbw-ghost-at owner npc 2 50
+    greeted <- cs-pulse store game input map 2593 tick
+    cbw-check ("a shopkeeper at its own shop greets with its shop line and not the bank's (serial " & show npc & ")") (is-ok placed
+      & (when greeted is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> cbw-says r.packets npc "vendor buy" 0 & not (cbw-says r.packets npc "bank" 0)))
+  end
+ A ghost 10 tiles from the healer copy stays dead on a pulse; 3 tiles from it, the next pulse raises it with the healer's words.
+  cbw-ghost-at : CompositeGame, Integer, Integer, Integer -> Result Integer Text
+  cbw-ghost-at (owner) (healer) (dx) (health) = let game = owner.checkpoint.game
+    in let player = list-at owner.vendor.players 0
+    in when world-get game.world healer
+      is Err (e) -> Err e
+      is Ok (h) -> when world-get game.world player.serial
+        is Err (e) -> Err e
+        is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set (__record-set (__record-set m "x" (h.x + dx)) "y" h.y) "z" h.z) "health" health) "graphic" (if health == 0 then 402 else 400))
+  cbw-health : CompositeGame -> Integer
+  cbw-health (owner) = when world-get owner.checkpoint.game.world (list-at owner.vendor.players 0).serial is Err (_) -> -1 is Ok (m) -> m.health
+  cbw-healer : CompositeOwner, WalkMap, GameInput, Integer -> [Console, Device.Block] Integer
+  cbw-healer (store) (map) (input) (healer) = let owner = store.state in act
+    game <- owner.checkpoint.game
+    far <- cbw-ghost-at owner healer 10 0
+    unhealed <- cs-pulse store game input map 2593 2103000
+    still <- cbw-health owner
+    near <- cbw-ghost-at owner healer 3 0
+    healed <- cs-pulse store game input map 2593 2104000
+    alive <- cbw-health owner
+    restored <- cbw-ghost-at owner healer 3 50
+    cbw-check "a ghost 10 tiles from a town healer stays dead, and one 3 tiles away is raised with the healer's words" (is-ok far & is-ok near & is-ok restored
+      & is-ok unhealed & still == 0 & alive > 0
+      & (when healed is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> cbw-spoke r.packets healer 0 & r.note /= ""))
+  end
+  cbw-inn-clear : CompositeGame -> Boolean
+  cbw-inn-clear (owner) = when owner.town
+    is None -> False
+    is Just (t) -> when world-get owner.checkpoint.game.world (list-at owner.vendor.vendors 5).serial
+      is Err (_) -> False
+      is Ok (inn) -> inn.x >= 1493 & inn.x <= 1498 & inn.y >= 1610 & inn.y <= 1617
+        & cbw-homes-clear t inn 0
+  cbw-homes-clear : TownLive, WorldObject, Integer -> Boolean
+  cbw-homes-clear (t) (inn) (i) = if i == t.count then True
+    else let home = (list-at t.residents i).home
+    in not (home.x == inn.x & home.y == inn.y) & cbw-homes-clear t inn (i + 1)
+  cbw-name-at : List Integer, List Integer, Integer -> Boolean
+  cbw-name-at (packet) (name) (i) = if i == 60 then True
+    else list-at packet (5 + i) == (if i < list-length name then list-at name i else 0) & cbw-name-at packet name (i + 1)
+  cbw-doll-in : List (List Integer), Integer, List Integer, Integer -> Boolean
+  cbw-doll-in (packets) (serial) (name) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p == 66 & list-at p 0 == #88 & gp-u32 p 1 == serial & cbw-name-at p name 0 & list-at p 65 == 0)
+      | cbw-doll-in packets serial name (i + 1)
+  cbw-doll : Result GameReply Text, Integer, List Integer -> Boolean
+  cbw-doll (reply) (serial) (name) = when reply
+    is Err (_) -> False
+    is Ok (r) -> cbw-doll-in r.packets serial name 0
+  cbw-door-open : WalkMap -> Boolean
+  cbw-door-open (map) = is-ok (walk-height map 1419 1690 0)
+  cbw-doors : CompositeOwner, WalkMap, GameInput, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cbw-doors (store) (map) (input) (specs) = let owner = store.state in when owner.town-doors
+    is None -> cbw-check "townsfolk doors bound" False
+    is Just (doors) -> when owner.town-map
+      is None -> cbw-check "townsfolk map bound" False
+      is Just (britain) -> act
+        game <- owner.checkpoint.game
+        closed-both <- not (cbw-door-open britain) & not (cbw-door-open map)
+        armed-before <- owner.timers.used
+        toggled <- wd-toggle doors game 0
+        packets <- when toggled is Err (_) -> [] is Ok (r) -> r.packets
+        synced <- cg-door-sync owner packets 0
+        print-line-uni ("BRITAIN door closed-both=" & (if closed-both then "1" else "0") & " toggled=" & (when toggled is Err (e) -> e is Ok (r) -> r.note) & " packets=" & show (list-length packets) & " britain-open=" & (if cbw-door-open britain then "1" else "0") & " map-open=" & (if cbw-door-open map then "1" else "0") & " timers=" & show armed-before & "->" & show owner.timers.used & " bit=" & show (peek-byte doors.opened 0))
+        a <- cbw-check "a resident opening a door updates the player's map and arms autoclose" (closed-both & is-ok toggled & cbw-door-open britain & cbw-door-open map & owner.timers.used == armed-before + 1)
+        player <- list-at owner.vendor.players 0
+        near <- when world-get game.world player.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" 1421) "y" 1691)
+        shut <- cs-route store game input map 2593 [6,#7E,0,0,1]
+        b <- cbw-check "the player closing that door updates the residents' map and clears autoclose" (is-ok near & is-ok shut & not (cbw-door-open britain) & not (cbw-door-open map) & owner.timers.used == armed-before)
+        nell <- when owner.town is None -> 0 is Just (t) -> (tf-person t.people (list-at t.residents 0).person).world-serial
+        fighter <- when owner.fighter is None -> 0 is Just (f) -> f.serial
+        named <- cs-route store game input map 2593 (gp-put32 [6] nell)
+        plain <- cs-route store game input map 2593 (gp-put32 [6] fighter)
+        c <- cbw-check "double-clicking a resident opens her paperdoll named Nell, and the fighter's opens unnamed" (nell > 0 & fighter > 0
+          & cbw-doll named nell [78,101,108,108] & cbw-doll plain fighter [])
+        a + b + c
+      end
+ Later arms pulse a minute past the door arm, so its autoclose fires; the door
+ is reopened with no pulse between it and the save.
+  cbw-reopen : CompositeGame, WalkMap -> [Console] Integer
+  cbw-reopen (owner) (map) = when owner.town-doors
+    is None -> cbw-check "townsfolk doors bound" False
+    is Just (doors) -> when owner.town-map
+      is None -> cbw-check "townsfolk map bound" False
+      is Just (britain) -> act
+        reopened <- wd-toggle doors owner.checkpoint.game 0
+        synced <- cg-door-sync owner (when reopened is Err (_) -> [] is Ok (r) -> r.packets) 0
+        cbw-check "the door is open on both maps at the save" (is-ok reopened & cbw-door-open britain & cbw-door-open map)
+      end
+  cbw-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  cbw-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  cbw-actors : TownLive, Integer, Integer -> Integer
+  cbw-actors (town) (i) (sum) = if i == town.count then sum else cbw-actors town (i + 1) (sum * 131 + (list-at town.residents i).actor)
+  cbw-town : CompositeGame -> Integer
+  cbw-town (owner) = when owner.town is None -> -1 is Just (town) -> town.count
+  cbw-signature : CompositeGame -> Integer
+  cbw-signature (owner) = when owner.town is None -> -1 is Just (town) -> cbw-actors town 0 7
+
+  cbw-npc : CompositeGame, Integer -> WorldObject
+  cbw-npc (owner) (i) = when owner.town
+    is None -> gs-item 0 0 0
+    is Just (town) -> when world-get owner.checkpoint.game.world (tf-person town.people (list-at town.residents i).person).world-serial
+      is Err (_) -> gs-item 0 0 0
+      is Ok (m) -> m
+  cbw-where : CompositeGame, Integer, Integer -> Integer
+  cbw-where (owner) (i) (sum) = if i == 3 then sum else let m = cbw-npc owner i in cbw-where owner (i + 1) (sum * 8191 + m.x * 4096 + m.y)
+  cbw-pulses : CompositeOwner, GameInput, WalkMap, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  cbw-pulses (store) (input) (map) (tick) (left) (moves) = if left == 0 then act moves end
+    else act
+      pulsed <- cs-pulse store store.state.checkpoint.game input map 2593 tick
+      count <- when pulsed is Err (_) -> -100000 is Ok (None) -> 0 is Ok (Just (r)) -> list-length r.packets
+      cbw-pulses store input map (tick + 100) (left - 1) (if count < 0 then -100000 else moves + count)
+    end
+  cbw-net : CompositeGame -> Text
+  cbw-net (owner) = when owner.network
+    is None -> "network=none"
+    is Just (n) -> "sequence=" & show n.actions.book.sequence & " events=" & show n.actions.book.event-count
+      & " thoughts=" & show ((list-at n.agents 0).thoughts + (list-at n.agents 1).thoughts + (list-at n.agents 2).thoughts)
+      & " currency-rows=" & show n.actions.town.vendors.currency.count & " economy-hour=" & show n.actions.book.world.hour
+  cbw-sequence : CompositeGame -> Integer
+  cbw-sequence (owner) = when owner.network is None -> -1 is Just (n) -> n.actions.book.sequence
+  cbw-events : CompositeGame -> Integer
+  cbw-events (owner) = when owner.network is None -> 2000 is Just (n) -> n.actions.book.event-count
+  cbw-stamp : EaWorld, Integer -> Integer
+  cbw-stamp (e) (i) = if i == 1000 then 0 else let row = __record-set (list-at e.events i) "sequence" (5000 + i) in cbw-stamp e (i + 1)
+  cbw-ordered : EaWorld, Integer -> Integer
+  cbw-ordered (e) (i) = if i == 512 then 512 else if (list-at e.events i).sequence /= 5488 + i then i else cbw-ordered e (i + 1)
+  cbw-rotation : CompositeGame -> Text
+  cbw-rotation (owner) = when owner.network
+    is None -> "no network"
+    is Just (n) -> let e = n.actions.book
+      in let stamped = cbw-stamp e 0
+      in let full = __record-set e "event-count" 1000
+      in let dropped = cg-rotate e
+      in let again = cg-rotate e
+      in "dropped=" & show dropped & " again=" & show again & " count=" & show e.event-count & " newest-in-order=" & show (cbw-ordered e 0)
+  cbw-has : List (List Integer), Integer, Integer -> Boolean
+  cbw-has (packets) (op) (i) = if i == list-length packets then False
+    else (list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op) | cbw-has packets op (i + 1)
+  cbw-from : List (List Integer), Integer, Integer, Integer, Integer -> Integer
+  cbw-from (packets) (op) (at) (serial) (i) = if i == list-length packets then 0
+    else let p = list-at packets i
+    in (if list-length p >= at + 4 & list-at p 0 == op & gp-u32 p at == serial then 1 else 0) + cbw-from packets op at serial (i + 1)
+  cbw-trade : TownLive, EaWorld, Integer -> Integer
+  cbw-trade (t) (e) (row) = if row < 0 then -1 else let ev = list-at e.events row
+    in if tls-told ev & tls-resident t ev.actor 0 >= 0 then row else cbw-trade t e (row - 1)
+  cbw-npc-at : TownLive, Integer -> WorldObject
+  cbw-npc-at (t) (i) = when tls-npc t i is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  cbw-beside : GameShard, Integer, Integer, Integer, Integer -> Result Integer Text
+  cbw-beside (game) (serial) (x) (y) (z) = when world-get game.world serial
+    is Err (e) -> Err e
+    is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" x) "y" y) "z" z)
+  cbw-ops : List (List Integer), Integer, Integer -> Integer
+  cbw-ops (packets) (op) (i) = if i == list-length packets then 0
+    else (if list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op then 1 else 0) + cbw-ops packets op (i + 1)
+  cbw-say : Text -> List Integer
+  cbw-say (text) = let length = 9 + text-length text in gp-ascii [3,0,length,0,3,178,0,3] text 0 (text-length text + 1)
+  cbw-speech : CompositeOwner, WalkMap, GameInput -> [Console, Device.Block] Integer
+  cbw-speech (store) (map) (input) = let owner = store.state in when owner.speech
+    is None -> cbw-check "NPC speech bound" False
+    is Just (speech) -> when owner.town
+      is None -> cbw-check "townsfolk bound for speech" False
+      is Just (t) -> act
+        game <- owner.checkpoint.game
+        player <- list-at owner.vendor.players 0
+        bound <- cbw-check "NPC speech binds every shopkeeper, banker and resident" (speech.count == owner.vendor.vendor-count + owner.banks.count + 3)
+        banked <- owner.banks.count
+        twice <- gmb-add-banker owner.banks (list-at owner.banks.bankers 0)
+        single <- owner.banks.count == banked
+        legacy <- list-set-at owner.banks.bankers banked (list-at owner.banks.bankers 0)
+        widened <- __record-set owner.banks "count" (banked + 1)
+        rebound <- cg-speech-bind owner
+        scratch <- alloc-bytes nsc-bytes
+        doubled <- when owner.speech is None -> Err "speech unbound" is Just (s) -> nsc-encode s scratch nsc-bytes
+        undone <- __record-set owner.banks "count" banked
+        restored-bind <- cg-speech-bind owner
+        reread <- when owner.speech is None -> Err "speech unbound" is Just (s) -> nsc-decode s scratch nsc-bytes
+        duplicate <- cbw-check "registering a banker twice keeps one, and NSC1 saved with a duplicated banker restores against the deduplicated rows" (twice == 0 & single & is-ok rebound & is-ok doubled & is-ok restored-bind & is-ok reread)
+        vendor <- when world-get game.world (list-at owner.vendor.vendors 0).serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+        by-vendor <- cbw-beside game player.serial vendor.x (vendor.y + 1) vendor.z
+        slot <- gv-slot game player.serial 0
+        hailed-by <- cs-pulse store game input map 2593 2200000
+        cooled <- cbw-check "approaching a shopkeeper records its greeting cooldown" (is-ok hailed-by & (when owner.speech is None -> False is Just (now-bound) -> list-at (list-at now-bound.rows 0).last slot > -600))
+        asked <- cs-route store game input map 2593 (cbw-say "vendor buy")
+        menu <- cbw-check "saying vendor buy beside a shopkeeper opens its buy menu" (is-ok by-vendor
+          & (when asked is Err (_) -> False is Ok (r) -> cbw-has r.packets #74 0))
+        nell <- cbw-npc-at t 0
+        by-nell <- cbw-beside game player.serial nell.x (nell.y + 1) nell.z
+        hailed <- cs-route store game input map 2593 (cbw-say "Nell, how is the bread today?")
+        answer <- cbw-check "naming a resident draws that resident's reply" (is-ok by-nell
+          & (when hailed is Err (_) -> False is Ok (r) -> cbw-from r.packets #1C 3 nell.serial 0 >= 1))
+        alone <- cbw-beside game player.serial 1460 1700 0
+        chat <- cs-route store game input map 2593 (cbw-say "lovely weather")
+        echo <- cbw-check "ordinary chat with no NPC near returns only the player's echo" (is-ok alone
+          & (when chat is Err (_) -> False is Ok (r) -> cbw-ops r.packets #1C 0 == 1 & cbw-from r.packets #1C 3 player.serial 0 == 1))
+        old-world <- cbw-legacy owner t
+        baker <- when world-get game.world (list-at owner.vendor.vendors 3).serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+        by-baker <- cbw-beside game player.serial baker.x (baker.y + 1) baker.z
+        banking <- cs-route store game input map 2593 (cbw-say "bank")
+        nobank <- cbw-check "saying bank beside a shopkeeper opens no bank: only bankers answer bank" (is-ok by-baker & owner.banks.count > 0 & not (gmb-is-banker owner.banks baker.serial 0)
+          & (when banking is Err (_) -> False is Ok (r) -> r.note /= "bank:open"))
+        bound + cooled + menu + answer + echo + duplicate + old-world + nobank
+      end
+ A world saved while every shopkeeper was also a banker: NSC1 encoded from that registry restores against the banker-only one.
+  cbw-legacy-banks : GmbState, GvWorld, GmbState, Integer -> Integer
+  cbw-legacy-banks (legacy) (v) (banks) (i) = if i < v.vendor-count then let a = gmb-add-banker legacy (list-at v.vendors i).serial in cbw-legacy-banks legacy v banks (i + 1)
+    else if i - v.vendor-count < banks.count then let b = gmb-add-banker legacy (list-at banks.bankers (i - v.vendor-count)) in cbw-legacy-banks legacy v banks (i + 1)
+    else legacy.count
+  cbw-legacy : CompositeGame, TownLive -> [Console] Integer
+  cbw-legacy (owner) (t) = when owner.shops
+    is None -> cbw-check "shops bound for the legacy NSC1 arm" False
+    is Just (shops) -> let legacy = gmb-new owner.items #004A
+      in let counted = cbw-legacy-banks legacy owner.vendor owner.banks 0
+      in let scratch = alloc-bytes nsc-bytes
+      in let saved = when ns-bind t shops legacy is Err (e) -> Err e is Ok (old) -> nsc-encode old scratch nsc-bytes
+      in let restored = when ns-bind t shops owner.banks is Err (e) -> Err e is Ok (fresh) -> nsc-decode fresh scratch nsc-bytes
+      in cbw-check "NSC1 saved while every shopkeeper was also a banker restores against the banker-only registry" (counted > owner.banks.count & is-ok saved & is-ok restored)
+  cbw-show : CompositeOwner, WalkMap, GameInput -> [Console, Device.Block] Integer
+  cbw-show (store) (map) (input) = let owner = store.state in when owner.town
+    is None -> cbw-check "townsfolk bound for show" False
+    is Just (t) -> when owner.network
+      is None -> cbw-check "town network bound for show" False
+      is Just (n) -> act
+        game <- owner.checkpoint.game
+        player <- list-at owner.vendor.players 0
+        at <- owner.shows + gv-slot game player.serial 0 * 32
+        nell <- cbw-npc-at t 0
+        by-nell <- cbw-beside game player.serial nell.x (nell.y + 1) nell.z
+        click <- cs-route store game input map 2593 (gp-put32 [9] nell.serial)
+        status <- cbw-check "a resident click answers name, hello and what the resident is doing" (is-ok by-nell
+          & (when click is Err (_) -> False is Ok (x) -> cbw-from x.packets #1C 3 nell.serial 0 == 3))
+        e <- n.actions.book
+        bought <- ea-log e 1 2 (EaProposal { actor = (list-at t.residents 0).actor, kind = 2, target = 0, item = 5, quantity = 2,
+          offer = 0, limit = 0, recipe = 0, station = 0, node = 0 }) 0 0
+        row <- cbw-trade t e (e.event-count - 1)
+        ev <- list-at e.events (max 0 row)
+        who <- if row < 0 then -1 else tls-resident t ev.actor 0
+        trader <- cbw-npc-at t (max 0 who)
+        by-trader <- cbw-beside game player.serial trader.x (trader.y + 1) trader.z
+        a <- poke-qword owner.shows at player.serial
+        b <- poke-qword owner.shows (at + 8) input.connection
+        c <- poke-qword owner.shows (at + 16) (ev.sequence - 1)
+        d <- poke-qword owner.shows (at + 24) (t.now + 1000000)
+        told <- cg-town-show owner t game input
+        goods <- cbw-check "a resident's audit-book purchase is said overhead to a player nearby" (who == 0 & ev.item == 5 & is-ok by-trader
+          & (when told is None -> False is Just (x) -> cbw-from x.packets #1C 3 trader.serial 0 >= 1))
+        r <- list-at t.residents 1
+        smith <- cbw-npc-at t 1
+        sx <- smith.x
+        sy <- smith.y
+        sz <- smith.z
+        placed <- cbw-beside game smith.serial r.work.x r.work.y r.work.z
+        working <- __record-set r "goal" 1
+        by-smith <- cbw-beside game player.serial r.work.x (r.work.y + 1) r.work.z
+        due <- poke-qword owner.shows (at + 24) 0
+        shown <- cg-town-show owner t game input
+        again <- cg-town-show owner t game input
+        work <- cbw-check "the smith at his anvil swings and sounds once, then waits a game minute" (is-ok placed & is-ok by-smith
+          & (when shown is None -> False is Just (x) -> cbw-from x.packets #6E 1 smith.serial 0 == 1 & cbw-has x.packets #54 0)
+          & (when again is None -> True is Just (x) -> cbw-from x.packets #6E 1 smith.serial 0 == 0))
+        back <- cbw-beside game smith.serial sx sy sz
+        status + goods + work
+      end
+  cbw-at : WalkMap, Integer, Integer, Integer -> WorldObject
+  cbw-at (map) (serial) (x) (y) = WorldObject { serial = serial, kind = 1, x = x, y = y, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+  cbw-workshop : CompositeGame, WalkMap, Integer -> Boolean
+  cbw-workshop (owner) (map) (serial) = let c = owner.vendor.currency.world.catalog
+    in let tools = bb-recipe c 42 0
+    in let dagger = bb-recipe c 69 0
+    in let guild = cbw-at map serial 1425 1655
+    in let smithy = cbw-at map serial 1418 1546
+    in tools > 0 & dagger > 0 & (list-at c.recipes (tools - 1)).station == 9 & (list-at c.recipes (dagger - 1)).station == 9
+      & cpr-craft-lookup owner.vendor 0 map guild tools 4 > 0 & cpr-craft-lookup owner.vendor 0 map smithy tools 4 == 0
+      & cpr-craft-lookup owner.vendor 0 map smithy dagger 1 > 0 & cpr-craft-lookup owner.vendor 0 map guild dagger 1 == 0
+  cbw-first : CompositeOwner, WdState, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cbw-first (store) (decoration) (map) (specs) = let owner = store.state in act
+    founded <- cbw-check "fresh Britain world populates eight shops and three residents" (owner.vendor.vendor-count == bb-shop-count & cbw-town owner == 3)
+    field <- cbw-check "fresh Britain world installs its field, cpr-field-nodes wheat nodes at the farm, place 300" (cbw-wheat owner.production.harvest.vendor.currency.world 0 0 == cpr-field-nodes)
+    magic <- mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (cbw-cover map)
+    hooked <- mge-bind magic
+    attached <- __record-set owner "magic" (Just magic)
+    enabled <- __record-set owner "testing" True
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (cbw-create 0)
+    game <- owner.checkpoint.game
+    player <- list-at owner.vendor.players 0
+    pack <- gsi-pack-find game.world player.serial 0
+    bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+    book <- gsi-child-art game.world (world-first-child game.world pack) #0EFA 0
+    stocked <- cbw-check "Britain world entry keeps the testing kit, magery and decoration" (is-ok entry & bag > 0 & book > 0 & mgs-known magic book & is-ok (wd-solid decoration 0))
+    placed <- cbw-where owner 0 7
+    moves <- cbw-pulses store input map 1000 400 0
+    walked <- cbw-where owner 0 7
+    print-line-uni ("BRITAIN seconds=" & show owner.town-seconds & " pulse-packets=" & show moves)
+    clocked <- cbw-check "pulses advance the town clock at twelve game seconds per real second and residents walk" (moves >= 0 & owner.town-seconds >= 4600 & owner.town-seconds <= 4800 & walked /= placed)
+    nell <- cbw-npc owner 0
+    near <- when world-get game.world player.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" nell.x) "y" (nell.y + 1))
+    named <- cs-route store game input map 2593 (gp-put32 [9] nell.serial)
+    greeted <- cs-pulse store game input map 2593 41000
+    talk <- cbw-check "the 09 handler names a resident and approach brings a greeting" (is-ok near & (when named is Err (_) -> False is Ok (r) -> cbw-has r.packets #1C 0)
+      & (when greeted is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> cbw-has r.packets #1C 0))
+    first-hours <- cbw-sequence owner
+    print-line-uni ("BRITAIN early " & cbw-net owner)
+    long <- cbw-pulses store input map 42000 20000 0
+    print-line-uni ("BRITAIN played " & cbw-net owner & " clock=" & show owner.town-seconds)
+    driven <- cbw-check "the frozen network drives residents off-shift for 66 game hours and the audit book stays within bounds" (long >= 0 & first-hours >= 0 & cbw-sequence owner > 600 & cbw-events owner <= 960)
+    forged-save <- cs-commit store True
+    hammered <- cbw-check "after the crown mints with its for-sale stone hammer (item 62), the hammer lots follow the worn economy stock and the world saves" (ep-at (ep-actor owner.vendor.currency.world owner.vendor.currency.world.mint-owner).wear 62 < 32 * ep-at (ep-actor owner.vendor.currency.world owner.vendor.currency.world.mint-owner).stock 62 & gvsc-valid owner.vendor & is-ok forged-save)
+    shown <- cbw-show store map input
+    doored <- cbw-doors store map input specs
+    shopped <- cbw-shop store map input 0 bb-shop-count
+    workshop <- cbw-check "tinkering works in the Tinkers Guild and not at the smithy, and smithing the reverse" (cbw-workshop owner map player.serial)
+    inn <- cbw-check "the innkeeper stands in the Sweet Dreams Inn off every resident's bed" (cbw-inn-clear owner)
+    lineup <- cbw-lineup store map input
+    speeched <- cbw-speech store map input
+    resident-label <- cbw-check "a resident single-click returns a name label" (when owner.town is None -> False is Just (t) -> cbw-label named (tf-person t.people (list-at t.residents 0).person).name)
+    reopened <- cbw-reopen owner map
+    committed <- cs-commit store True
+    print-line-uni ("BRITAIN objects=" & show (world-count game.world) & " residents=" & show (cbw-signature owner))
+    print-line-uni ("BRITAIN clock=" & show owner.town-seconds & " where=" & show (cbw-where owner 0 7) & " " & cbw-net owner)
+    saved <- cbw-check "Britain world commits its townsfolk section" (is-ok committed)
+    rotation <- cbw-rotation owner
+    print-line-uni ("BRITAIN rotate " & rotation)
+    rotated <- cbw-check "a full audit book rotates to its newest 512 events" (rotation == "dropped=488 again=0 count=512 newest-in-order=512")
+    founded + field + stocked + clocked + talk + driven + hammered + shown + doored + shopped + workshop + inn + lineup + speeched + resident-label + reopened + saved + rotated
+  end
+  cbw-concealed : CompositeGame, Integer -> Boolean
+  cbw-concealed (owner) (i) = if i == owner.vendor.vendor-count then True
+    else let slot = world-slot owner.items.world (list-at owner.vendor.vendors i).serial
+    in slot >= 0 & peek-byte owner.active.concealed slot == 3 & cbw-concealed owner (i + 1)
+  cbw-lineup-nearest : CompositeGame -> Integer
+  cbw-lineup-nearest (owner) = when world-get owner.checkpoint.game.world (list-at owner.vendor.vendors bb-shop-count).serial
+    is Err (_) -> bb-shop-count
+    is Ok (m) -> gv-nearest owner.vendor m (0 - 1)
+  cbw-later : CompositeOwner, WdState -> [Console, Device.Block] Integer
+  cbw-later (store) (decoration) = let owner = store.state in act
+    print-line-uni ("BRITAIN objects=" & show (world-count owner.checkpoint.game.world) & " residents=" & show (cbw-signature owner))
+    print-line-uni ("BRITAIN clock=" & show owner.town-seconds & " where=" & show (cbw-where owner 0 7) & " " & cbw-net owner)
+    restored <- cbw-check "restart restores the residents without populating again" (cbw-town owner == 3 & (owner.vendor.vendor-count == bb-shop-count | owner.vendor.vendor-count == 2 * bb-shop-count))
+    field <- cbw-check "restart keeps the field's wheat nodes and installs no more" (cbw-wheat owner.production.harvest.vendor.currency.world 0 0 == cpr-field-nodes)
+    lined <- cgl-arrange owner True
+    listeners <- cg-speech-bind owner
+    player <- list-at owner.vendor.players 0
+    kept <- cbw-check "restart keeps the shopkeeper greeting cooldown (NSC1)" (is-ok lined & is-ok listeners & (when owner.speech is None -> False is Just (s) -> list-at (list-at s.rows 0).last (gv-slot owner.checkpoint.game player.serial 0) > -600))
+    door <- cbw-check "restart rebuilds the residents' map with the saved open door" (when owner.town-map is None -> False is Just (britain) -> cbw-door-open britain)
+    blind <- cs-load-config store.store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+    refused <- cbw-check "a townsfolk world loaded without the Britain map refuses" (is-err blind)
+    inert <- cgl-arrange owner False
+    quiet <- cg-speech-bind owner
+    nearest <- cbw-lineup-nearest owner
+    dev <- cbw-check "in DEV the bank lineup stays registered but inert: no body drawn, no vendor answers at the lineup, no listener (UOAIX-51)" (is-ok inert & is-ok quiet & owner.vendor.vendor-count == 2 * bb-shop-count & gvsc-valid owner.vendor & cbw-concealed owner bb-shop-count & nearest < bb-shop-count & (when owner.speech is None -> False is Just (s) -> s.count == bb-shop-count + owner.banks.count + 3))
+    restored + field + kept + door + refused + dev
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cbw-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cbw-check e False
+     is Ok (map) -> when walk-map-new 1408 1536 96 160
+      is Err (e) -> cbw-check e False
+      is Ok (britain) -> let filled = cbw-fill map 0
+       in let town-filled = cbw-fill britain 0
+       in let data = cbw-data 0
+       in when wd-read data 240 map map.stride
+        is Err (e) -> cbw-check e False
+        is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cbw-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+       when loaded
+        is Err (e) -> cbw-check ("recovery " & e) False
+        is Ok (owner) -> when cg-town-doors owner.state data 240
+         is Err (e) -> cbw-check ("town doors " & e) False
+         is Ok (_) -> if fresh then cbw-first owner decoration map specs else cbw-later owner decoration
+      end
+    end

@@ -1,0 +1,116 @@
+Chapter: GameLiveActionsProof
+  cites Uoaix chapter GameLiveActions
+  cites Uoaix chapter TownLiveCodec
+
+  glp-check : Text, Boolean -> [Console] Nothing
+  glp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  glp-fill : WalkMap, Integer -> Boolean
+  glp-fill (map) (i) = if i == map.width * map.height then True
+    else let mark = __heap-save
+    in let ok = is-ok (walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0)
+    in let restored = __heap-restore mark in ok & glp-fill map (i + 1)
+  glp-food : GameLiveActions, Integer -> Integer
+  glp-food (g) (i) = if i == g.town.vendors.lot-count then -1
+    else let l = list-at g.town.vendors.lots i
+    in let at = gla-vendor-actor g.town.vendors l.actor 0
+    in if l.item == 34 & at >= 0 then i else glp-food g (i + 1)
+  glp-drain : TownLive, WalkMap, Integer, Integer -> Boolean
+  glp-drain (t) (map) (seconds) (fuel) = if fuel == 0 then False
+    else if tl-ready t seconds 0 -1 tl-max-seconds < 0 then True
+    else let mark = __heap-save
+    in let ok = is-ok (tl-advance t map None seconds 64)
+    in let restored = __heap-restore mark in ok & glp-drain t map seconds (fuel - 1)
+  glp-trade : GameLiveActions, WalkMap, Integer -> [Console] Nothing
+  glp-trade (g) (map) (lot-id) = act
+    t <- g.town
+    v <- t.vendors
+    w <- v.currency.world
+    r <- list-at t.residents 1
+    actor <- ep-actor w r.actor
+    source <- list-at v.lots lot-id
+    source-serial <- source.serial
+    quantity <- source.quantity
+    quality <- source.quality
+    wear <- source.wear
+    merchant <- list-at v.vendors (gla-vendor-actor v source.actor 0)
+    funded <- eu-pay v.currency True 2 actor.purse 100 20 60
+    policy <- gla-market g True
+    offer <- gla-offer g merchant.actor 3 34 r.actor 0
+    ask <- ep-price w merchant.actor 34
+    p <- ea-request r.actor 2
+    target <- __record-set p "target" merchant.actor
+    item <- __record-set p "item" 34
+    amount <- __record-set p "quantity" 2
+    consent <- __record-set p "offer" offer
+    price <- __record-set p "limit" ask
+    glp-check "merchant posts consent against real produced stock" (funded == 0 & policy == 0 & offer > 0 & ask > 0 & g.book.offer-count > 0)
+    before <- source.quantity
+    forged <- gla-submit g map None 1 2 p source-serial
+    glp-check "resident binding refuses another actor proposal" (forged == -10 & source.quantity == before)
+    cancelled <- ea-cancel g.book merchant.actor offer
+    refused <- gla-submit g map None r.person 2 p source-serial
+    glp-check "revoked merchant consent refuses without stock mutation" (cancelled == 0 & refused == -12 & source.quantity == before)
+    renewed <- gla-post g True merchant.serial 3 0 34 before ask ep-limit
+    rebound <- __record-set p "offer" renewed
+    travel <- gla-submit g map None r.person 2 p source-serial
+    events <- g.book.event-count
+    deferred <- gla-submit g map None r.person 2 p source-serial
+    glp-check "validated merchant goal persists without repeated admission" (travel == 1 & deferred == -19 & g.book.event-count == events & r.control.vendor == merchant.serial)
+    walked <- glp-drain t map 1800 100
+    bought <- gla-submit g map None r.person 2 p source-serial
+    glp-check "controlled resident reaches merchant and buys through currency checkout" (walked & bought == 0 & v.sale-count == 1 & ep-at actor.stock 34 == 2)
+    delivered <- (list-at v.sales (v.sale-count - 1)).delivered
+    received <- list-at v.lots (gv-lot v delivered 0)
+    glp-check "selected lot quality wear and unselected quantity survive" (received.actor == r.actor & received.quantity == 2 & received.quality == quality & received.wear == wear & (if quantity > 2 then source.quantity == quantity - 2 else True))
+    glp-check "currency and material census remain valid" (euv-valid v.currency & ep-census w 1 & gvsc-valid v)
+    checkpoint <- alloc-bytes gvsc-bytes
+    encoded <- gvsc-encode v checkpoint gvsc-bytes
+    when gvsc-decode checkpoint gvsc-bytes v.game v.currency
+      is Err (e) -> print-line-uni ("FAIL live owner restore " & e)
+      is Ok (restored) -> glp-check "vendor codec restores controlled owner and purchased lot" (is-ok encoded & restored.owner-count == 3 & gvsc-valid restored & gv-owner restored (tf-person t.people r.person).world-serial 0 >= 0)
+    buyers <- gla-market g True
+    bid <- gla-offer g merchant.actor 2 34 r.actor 0
+    sale <- ea-request r.actor 3
+    buyer <- __record-set sale "target" merchant.actor
+    goods <- __record-set sale "item" 34
+    single <- __record-set sale "quantity" 1
+    allowed <- __record-set sale "offer" bid
+    minimum <- __record-set sale "limit" 1
+    sold <- gla-submit g map None r.person 3 sale delivered
+    glp-check "resident sale uses funded merchant consent and preserves remaining lot" (buyers == 0 & bid > 0 & sold == 0 & ep-at actor.stock 34 == 1 & received.quantity == 1 & v.sale-count == 2 & euv-valid v.currency & gvsc-valid v)
+    hungry <- __record-set actor "hunger" 70
+    eat <- ea-request r.actor 4
+    meal <- __record-set eat "item" 34
+    one <- __record-set eat "quantity" 1
+    eaten <- gla-submit g map None r.person 4 eat delivered
+    glp-check "eating retires exact physical lot and updates hunger once" (eaten == 0 & actor.hunger == 40 & gv-lot v delivered 0 < 0 & ep-at actor.stock 34 == 0 & ep-census w 1 & gvsc-valid v)
+    repeated <- gla-submit g map None r.person 4 eat delivered
+    glp-check "repeated meal cannot consume absent inventory" (repeated == -1 & actor.hunger == 40)
+    invalid <- tl-direct t map None 1 r.actor 0 0 (t.now + 100)
+    glp-check "movement override refuses forged resident identity" (invalid == -10)
+    emotion <- gla-affect g r.person r.actor 830 200
+    glp-check "admitted happiness updates resident mood" (emotion == 0 & (tf-person t.people r.person).mood == 83)
+  end
+  glp-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  glp-run (game) (map) (currency) = let v = gv-new game currency
+    in let items = gsi-new game.world
+    in when bb-populate v items map
+      is Err (e) -> act print-line-uni ("FAIL shops " & e) end
+      is Ok (_) -> when tl-populate v items map None 0 3
+        is Err (e) -> act print-line-uni ("FAIL residents " & e) end
+        is Ok (t) -> when gla-new t
+          is Err (e) -> act print-line-uni ("FAIL live proposals " & e) end
+          is Ok (g) -> let food = glp-food g 0
+            in if food < 0 then act print-line-uni "FAIL produced bread stock" end else glp-trade g map food
+  opening : [Console] Nothing = when bb-economy 0
+    is Err (e) -> act print-line-uni ("FAIL economy " & e) end
+    is Ok (currency) -> when world-new 128
+      is Err (e) -> act print-line-uni ("FAIL world " & e) end
+      is Ok (world) -> let chars = alloc-bytes 800
+        in let cleared = gs-zero chars 0
+        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+        in when walk-map-new 1408 1536 128 192
+          is Err (e) -> act print-line-uni ("FAIL map " & e) end
+          is Ok (map) -> if glp-fill map 0 then glp-run game map currency else act print-line-uni "FAIL map fill" end
+
+Page 1

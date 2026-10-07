@@ -1,0 +1,72 @@
+Chapter: GameDispatchProof
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WalkMap
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Foreword chapter Result
+
+  gdp-check : Text, Boolean -> [Console] Nothing
+  gdp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gdp-input : Integer -> GameInput
+  gdp-input (number) =
+    let state = gn-input number
+    in let mode = __record-set state "mode" 1
+    in let seeded = __record-set state.wire "seed-count" 4
+    in state
+
+  gdp-commit : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Device.Block] Result GameReply Text
+  gdp-commit (calls) (shard) (state) (map) (port) (packet) = act
+    buf <- block-read-sector 0
+    if buf <= 0 then Err "fixture disk missing"
+    else if peek-byte buf 0 /= 17 | list-length packet /= 2 | list-at packet 0 /= 115 | list-at packet 1 /= 1 then Err "fixture input mismatch"
+    else let changed = poke-byte buf 0 42
+    in act
+      written <- block-write-sector 0 buf
+      if written /= 0 then Err "fixture write failed"
+      else let counted = list-set-at calls 0 (list-at calls 0 + 1)
+      in act
+        print-line-uni "CALLBACK COMPLETE"
+        Ok (gs-reply [] "fixture committed")
+      end
+    end
+  end
+
+  gdp-refuse : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Device.Block] Result GameReply Text
+  gdp-refuse (calls) (shard) (state) (map) (port) (packet) = act
+    buf <- block-read-sector 0
+    let counted = list-set-at calls 0 (list-at calls 0 + 1)
+    in act
+      print-line-uni "CALLBACK REFUSE"
+      if buf > 0 & peek-byte buf 0 == 42 then Err "fixture commit refused" else Err "fixture readback failed"
+    end
+  end
+
+  gdp-run : GameShard, WalkMap -> [Console, Network.Read, Network.Write, Device.Block] Nothing
+  gdp-run (shard) (map) =
+    let session = net-session-new [2,0,0,0,0,1] [10,0,2,15] [10,0,2,2] 2593 10000 [10,0,2,2] 1000
+    in let transport = transport-new-with-cap session 4096
+    in let state = gdp-input 0
+    in let calls = [0]
+    in let handler = gdp-commit calls
+    in act
+      partial <- gn-chunk-with handler transport shard state map 0 2593 [115] 0
+      gdp-check "partial frame does not dispatch" (not partial.close & list-at calls 0 == 0 & state.used == 1)
+      complete <- gn-chunk-with handler partial.transport shard state map 0 2593 [199] 0
+      read <- block-read-sector 0
+      gdp-check "complete frame runs disk callback once" (not complete.close & list-at calls 0 == 1 & state.used == 0 & peek-byte read 0 == 42)
+      before <- complete.transport.messages-sent
+      refused <- gn-chunk-with (gdp-refuse calls) complete.transport shard (gdp-input 1) map 0 2593 [115,199] 0
+      gdp-check "callback refusal closes without reply" (refused.close & list-at calls 0 == 2 & refused.transport.messages-sent == before)
+      pure <- gn-chunk transport shard (gdp-input 2) map 0 2593 [115,199] 0
+      gdp-check "pure adapter keeps admission refusal" pure.close
+    end
+
+  opening : [Console, Network.Read, Network.Write, Device.Block] Nothing = when gs-new 0
+    is Err (e) -> print-line-uni ("FAIL shard " & e)
+    is Ok (shard) -> when walk-map-new 0 0 4 4
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> gdp-run shard map
+
+Page 1

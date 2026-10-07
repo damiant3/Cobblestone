@@ -1,0 +1,110 @@
+Chapter: TownRoutes
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter GameCombatPackets
+
+ Saved-path stepping follows TownLive's port of Source-X CCharNPCAct.cpp NPC_WalkToPoint, Apache-2.0;
+ Sphere-LICENSE.txt.
+
+  RteWalk = record { route : Integer, generation : Integer, step : Integer, x : Integer, y : Integer,
+    stalls : Integer, fails : Integer, rest : Integer, blocked : Integer, facing : Integer, moves : Integer }
+  rte-walk : Integer -> RteWalk
+  rte-walk (unused) = RteWalk { route = 0 - 1, generation = 0, step = 0, x = 0, y = 0, stalls = 0, fails = 0, rest = 0, blocked = 0, facing = 4, moves = 0 }
+ Eight blocked attempts at one step abandon the shared route and plan from where the walker stands.
+  rte-stall-limit : Integer = 8
+  rte-key : TlPath, Integer, Integer -> Integer
+  rte-key (p) (id) (field) = peek-qword p.route-keys (id * tl-route-key-bytes + field * 8)
+  rte-find : TlPath, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  rte-find (p) (m) (tx) (ty) (tz) (i) = if i == p.route-count then 0 - 1
+    else if rte-key p i 6 > 0 & rte-key p i 0 == m.x & rte-key p i 1 == m.y & rte-key p i 2 == m.z
+      & rte-key p i 3 == tx & rte-key p i 4 == ty & rte-key p i 5 == tz then i
+    else rte-find p m tx ty tz (i + 1)
+  rte-plan : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer -> Integer
+  rte-plan (p) (world) (map) (doors) (m) (tx) (ty) (tz) = let found = rte-find p m tx ty tz 0
+    in if found >= 0 then found
+    else let full = p.route-count == tl-route-limit
+    in let id = if full then p.route-cursor else p.route-count
+    in let at = id * tl-route-key-bytes
+    in let generation = (if full then peek-qword p.route-keys (at + 56) else 0) + 1
+    in let count = tl-plan p world map doors m tx ty tz (p.route-steps + id * 256)
+    in let a = poke-qword p.route-keys at m.x
+    in let b = poke-qword p.route-keys (at + 8) m.y
+    in let c = poke-qword p.route-keys (at + 16) m.z
+    in let d = poke-qword p.route-keys (at + 24) tx
+    in let e = poke-qword p.route-keys (at + 32) ty
+    in let f = poke-qword p.route-keys (at + 40) tz
+    in let g = poke-qword p.route-keys (at + 48) (max 0 count)
+    in let h = poke-qword p.route-keys (at + 56) generation
+    in if count <= 0 then 0 - 1 else let taken = rte-take p full id in id
+  rte-take : TlPath, Boolean, Integer -> Integer
+  rte-take (p) (full) (id) = if full then let a = __record-set p "route-cursor" (int-mod (id + 1) tl-route-limit) in 0
+    else let b = __record-set p "route-count" (id + 1) in 0
+  rte-drop : RteWalk -> Integer
+  rte-drop (w) = let a = __record-set w "route" (0 - 1) in let b = __record-set w "stalls" 0 in 0
+ A failed plan waits 2, 4 .. 64 steps before the next (F30).
+  rte-pace : RteWalk, Integer -> Integer
+  rte-pace (w) (id) = if id >= 0 then let a = __record-set w "fails" 0 in let b = __record-set w "rest" 0 in 0
+    else let next = min 6 (w.fails + 1)
+    in let failed = __record-set w "fails" next
+    in let waiting = __record-set w "rest" (bit-shl 1 next) in 0
+  rte-bound : TlPath, RteWalk, WorldObject, Integer, Integer, Integer -> Boolean
+  rte-bound (p) (w) (m) (tx) (ty) (tz) = if w.route < 0 | m.x /= w.x | m.y /= w.y then False
+    else rte-key p w.route 7 == w.generation & w.step < rte-key p w.route 6
+      & rte-key p w.route 3 == tx & rte-key p w.route 4 == ty & rte-key p w.route 5 == tz
+  rte-stall : RteWalk -> List (List Integer)
+  rte-stall (w) = let stalls = w.stalls + 1
+    in let a = __record-set w "blocked" (w.blocked + 1)
+    in let b = __record-set w "stalls" stalls
+    in let c = if stalls >= rte-stall-limit then rte-drop w else 0 in []
+  rte-any : Integer, Integer -> Boolean
+  rte-any (x) (y) = True
+  rte-step : TlPath, WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject -> Result (List (List Integer)) Text
+  rte-step (p) (world) (game) (map) (doors) (admit) (w) (m) = rte-try-in world game map doors admit w m (peek-byte p.route-steps (w.route * 256 + w.step))
+  rte-try : GameShard, WalkMap, Maybe WdState, RteWalk, WorldObject, Integer -> Result (List (List Integer)) Text
+  rte-try (game) (map) (doors) (w) (m) (direction) = rte-try-in game.world (Just game) map doors rte-any w m direction
+  rte-try-in : WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject, Integer -> Result (List (List Integer)) Text
+  rte-try-in (world) (game) (map) (doors) (admit) (w) (m) (direction) =
+    let x = m.x + walk-dx direction
+    in let y = m.y + walk-dy direction
+    in if tl-probe world map doors m.serial m.x m.y m.z direction < -128 then Ok (rte-stall w)
+    else let row = tl-door doors x y m.z
+    in let opened = if row < 0 then Ok (gs-reply [] "") else when doors
+      is None -> Ok (gs-reply [] "")
+      is Just (state) -> (when game is None -> Ok (gs-reply [] "") is Just (g) -> wd-toggle state g row)
+    in when opened
+      is Err (e) -> Err e
+      is Ok (door-reply) -> when walk-step map m.x m.y m.z direction
+        is Err (_) -> let stalled = rte-stall w in Ok door-reply.packets
+        is Ok (z) -> if tl-occupied world (world-tile-first world x y) m.serial z then
+          let stalled = rte-stall w in Ok door-reply.packets
+        else if not (admit x y) then Err "route step refused"
+        else rte-moved world w m x y z direction door-reply.packets
+  rte-moved : WorldTable, RteWalk, WorldObject, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  rte-moved (world) (w) (m) (x) (y) (z) (direction) (packets) =
+    let moved = WorldObject { serial = m.serial, kind = 1, x = x, y = y, z = z,
+      graphic = m.graphic, hue = m.hue, container = 0, amount = 1, health = m.health }
+    in when world-update world moved
+      is Err (e) -> Err e
+      is Ok (_) -> let a = __record-set w "step" (w.step + 1)
+        in let b = __record-set w "x" x
+        in let c = __record-set w "y" y
+        in let d = __record-set w "stalls" 0
+        in let f = __record-set w "facing" direction
+        in let n = __record-set w "moves" (w.moves + 1)
+        in let touched = world-touch world
+        in Ok (list-push packets (cbp-move moved direction 0 1))
+  rte-toward : TlPath, GameShard, WalkMap, Maybe WdState, RteWalk, WorldObject, Integer, Integer, Integer -> Result (List (List Integer)) Text
+  rte-toward (p) (game) (map) (doors) (w) (m) (tx) (ty) (tz) = rte-toward-in p game.world (Just game) map doors rte-any w m tx ty tz
+  rte-toward-in : TlPath, WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject, Integer, Integer, Integer -> Result (List (List Integer)) Text
+  rte-toward-in (p) (world) (game) (map) (doors) (admit) (w) (m) (tx) (ty) (tz) =
+    if rte-bound p w m tx ty tz then rte-step p world game map doors admit w m
+    else let dropped = rte-drop w
+    in if w.rest > 0 then let waited = __record-set w "rest" (w.rest - 1) in Ok []
+    else let id = rte-plan p world map doors m tx ty tz
+    in let paced = rte-pace w id
+    in if id < 0 then Ok []
+    else let a = __record-set w "route" id
+    in let b = __record-set w "generation" (rte-key p id 7)
+    in let c = __record-set w "step" 0
+    in let d = __record-set w "x" m.x
+    in let e = __record-set w "y" m.y
+    in rte-step p world game map doors admit w m

@@ -1,0 +1,94 @@
+Chapter: CivicLiveReplay
+  cites Uoaix chapter CivicLiveCodec
+
+  cvr-check : Text, Boolean -> [Console] Nothing
+  cvr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cvr-fill : WalkMap, Integer -> Boolean
+  cvr-fill (map) (i) = if i == map.width * map.height then True else let mark = __heap-save
+    in let filled = is-ok (walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0)
+    in let restored = __heap-restore mark in filled & cvr-fill map (i + 1)
+  cvr-say : Text -> List Integer
+  cvr-say (text) = gp-ascii [3,0,text-length text + 9,0,3,178,0,3] text 0 (text-length text + 1)
+  cvr-note : Result (Maybe GameReply) Text, Text -> Boolean
+  cvr-note (result) (note) = when result is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> r.note == note
+  cvr-codec : CivicLive, WalkMap -> [Console] Nothing
+  cvr-codec (s) (map) = let buf = alloc-bytes cvc-bytes
+    in when cvc-encode s map buf cvc-bytes
+      is Err (e) -> print-line-uni ("FAIL civic encode " & e)
+      is Ok (_) -> when cvc-decode buf cvc-bytes s.town map
+        is Err (e) -> print-line-uni ("FAIL civic decode " & e)
+        is Ok (copy) -> act
+          cvr-check "CVC1 LSC1 restore guard assignments testimony and routes" (cvc-valid copy map & copy.law.count == 1 & copy.law.witness-count == 2 & (lw-case copy.law 1).status == 1 & (list-at copy.guards 0).next-step == (list-at s.guards 0).next-step & lw-remembers copy.law copy.mayor (lw-case copy.law 1).offender 0)
+          let spare = poke-qword buf (cvc-law-at + lsc-cases-at + 88 + 48) 1
+          in let inner = poke-qword buf (cvc-law-at + 48) (ws-hash (buf + cvc-law-at) lsc-bytes 0 2166136261)
+          in let outer = poke-qword buf 48 (ws-hash buf cvc-bytes 0 2166136261)
+          in cvr-check "checkpoint rejects forged unused crime rows" (not (is-ok (cvc-decode buf cvc-bytes s.town map)))
+        end
+  cvr-crime : CivicLive, WalkMap, GameInput, Integer -> [Console] Nothing
+  cvr-crime (s) (map) (input) (offender) = let game = s.town.vendors.game
+    in let npc = (list-at s.guards 0).serial
+    in when world-get game.world npc
+      is Err (e) -> print-line-uni ("FAIL guard " & e)
+      is Ok (guard) -> let x = guard.x in let y = guard.y
+        in let empty = cv-handler s game input map 2593 (cvr-say "guards")
+        in let refused = lw-deed s.law False 10 offender 2 1
+        in let deed = lw-deed s.law True 11 offender 2 1
+        in let memory = lw-observe s.law True deed s.mayor True True
+        in let witness = lw-observe s.law True deed input.session.serial False True
+        in let replay = lw-deed s.law True 11 offender 2 1
+        in let call = cv-handler s game input map 2593 (cvr-say "GUARDS!")
+        in act
+          cvr-check "guard calls require admitted evidence and never teleport" (cvr-note empty "civic guard call" & refused == -1 & deed == 1 & memory == 1 & witness == 2 & replay == -1 & cvr-note call "civic guard call" & (lw-case s.law 1).known & (lw-case s.law 1).guard == 1 & (when world-get game.world npc is Err (_) -> False is Ok (m) -> m.x == x & m.y == y))
+          let clock = tl-advance s.town map None 240 1
+          in let walked = cv-advance s map None 240 32
+          in cvr-check "assigned guard approaches on foot and offers arrest" (is-ok clock & is-ok walked & (lw-case s.law 1).status == 1 & lw-distance s.law npc offender <= 9 & lsc-valid s.law)
+          cvr-codec s map
+        end
+  cvr-client : CivicLive, WalkMap -> [Console] Nothing
+  cvr-client (s) (map) = let game = s.town.vendors.game
+    in when world-create game.world (gs-mobile 0 1420 1695 0 400 1002)
+      is Err (e) -> print-line-uni ("FAIL caller " & e)
+      is Ok (caller) -> when world-create game.world (gs-mobile 0 1434 1695 0 400 1002)
+        is Err (e) -> print-line-uni ("FAIL offender " & e)
+        is Ok (offender) -> let slot = poke-qword game.characters 0 caller
+          in let active = __record-set game "active" caller
+          in let input = gn-input-with bb-specs 93
+          in let mode = __record-set input "mode" 2
+          in let phase = __record-set input.session "phase" 2
+          in let serial = __record-set input.session "serial" caller
+          in let reply = cv-handler s game input map 2593 (cvr-say "Mayor, hello")
+          in act
+            cvr-check "mayor is named and answers nearby citizens" (cvr-note reply "civic NPC reply")
+            cvr-crime s map input offender
+          end
+  cvr-run : TownLive, WalkMap -> [Console] Nothing
+  cvr-run (town) (map) = when cv-populate town (lw-new town.vendors.game.world) map 1
+    is Err (e) -> print-line-uni ("FAIL civic population " & e)
+    is Ok (s) -> when world-get s.law.world (list-at s.guards 0).serial
+      is Err (e) -> print-line-uni ("FAIL patrol " & e)
+      is Ok (before) -> let x = before.x in let y = before.y
+        in let first = cv-advance s map None 0 1
+        in act
+          cvr-check "mayor and two guards wear real production-backed equipment" (s.law.guard-count == 2 & s.cloth-count == 11 & cvc-valid s map & euv-valid town.vendors.currency & gmb-layer town.items s.mayor 5 0 > 0 & gmb-layer town.items (list-at s.guards 0).serial 1 0 > 0)
+          cvr-check "the mayor wears the mayor's look and both guards the guard's, over their production lots" (cst-styled town.items s.mayor cst-mayor & cst-styled town.items (list-at s.guards 0).serial cst-guard & cst-styled town.items (list-at s.guards 1).serial cst-guard & cvc-valid s map)
+          cvr-check "bounded patrol uses indexed adjacent movement" (is-ok first & (when world-get s.law.world before.serial is Err (_) -> False is Ok (after) -> walk-abs (after.x - x) <= 1 & walk-abs (after.y - y) <= 1 & (after.x /= x | after.y /= y)))
+          cvr-client s map
+        end
+  cvr-populate : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  cvr-populate (game) (map) (currency) = let v = gv-new game currency
+    in let items = gsi-new game.world
+    in when bb-populate v items map
+      is Err (e) -> print-line-uni ("FAIL shops " & e)
+      is Ok (_) -> when tl-populate v items map None 0 3
+        is Err (e) -> print-line-uni ("FAIL town " & e)
+        is Ok (town) -> cvr-run town map
+  opening : [Console] Nothing = when bb-economy 0
+    is Err (e) -> print-line-uni ("FAIL economy " & e)
+    is Ok (currency) -> when world-new 128
+      is Err (e) -> print-line-uni ("FAIL world " & e)
+      is Ok (world) -> let chars = alloc-bytes 800
+        in let zero = gs-zero chars 0
+        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+        in when walk-map-new 1408 1536 128 192
+          is Err (e) -> print-line-uni ("FAIL map " & e)
+          is Ok (map) -> let filled = cvr-fill map 0 in if filled then cvr-populate game map currency else print-line-uni "FAIL terrain"

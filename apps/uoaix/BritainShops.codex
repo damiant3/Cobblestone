@@ -1,0 +1,330 @@
+Chapter: BritainShops
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter GameVendor
+  cites Uoaix chapter GameVendorCodec
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameHarvestProduction
+  cites Foreword chapter Maybe
+  cites Uoaix chapter NpcNames
+
+  BbSpot = record { x : Integer, y : Integer, z : Integer }
+  BbView = record { serial : Integer, connection : Integer, visible : Integer }
+  BbTown = record { vendors : GvWorld, items : GsiState, views : List BbView, known : NnKnown }
+  bb-views : Integer, List BbView -> List BbView
+  bb-views (i) (xs) = if i == bb-view-limit then xs else bb-views (i + 1) (list-push xs (BbView { serial = 0, connection = -1, visible = 0 }))
+ GameLinks serves at most eight links.
+  bb-view-limit : Integer = 8
+  bb-view-at : List BbView, Integer, Integer, Integer -> Integer
+  bb-view-at (views) (connection) (i) (best) = if i == list-length views then best
+    else if (list-at views i).connection == connection then i
+    else bb-view-at views connection (i + 1) (if (list-at views i).connection < (list-at views best).connection then i else best)
+  bb-bind : GvWorld, GsiState -> Result BbTown Text
+  bb-bind (v) (items) = if (v.vendor-count /= bb-shop-count & v.vendor-count /= 2 * bb-shop-count) | list-length v.currency.world.catalog.items < 76
+    | (list-at v.currency.world.catalog.items 68).name /= "dagger"
+    | (list-at v.currency.world.catalog.items 75).name /= "pizza"
+    | items.world.buffer /= v.game.world.buffer | list-length items.items /= items.world.capacity then Err "Britain shop binding invalid"
+    else Ok (BbTown { vendors = v, items = items, views = bb-views 0 (__list-with-capacity bb-view-limit), known = nn-new 0 })
+  bb-floor : WalkMap, Integer, Integer, Integer, Integer -> Result Integer Text
+  bb-floor (map) (x) (y) (ground) (step) = if step > 24 | ground + step > 127 then Err "Britain floor unavailable"
+    else when walk-height map x y (ground + step)
+      is Ok (z) -> Ok z
+      is Err (_) -> bb-floor map x y ground (step + 2)
+  bb-occupied : WorldTable, Integer -> Boolean
+  bb-occupied (w) (serial) = if serial == 0 then False
+    else when world-get w serial
+      is Err (_) -> False
+      is Ok (obj) -> obj.kind == 1 | bb-occupied w (world-tile-next w serial)
+  bb-placement : WorldTable, WalkMap, BbShop, Integer -> Result BbSpot Text
+  bb-placement (w) (map) (shop) (i) =
+    let width = shop.x2 - shop.x1 + 1
+    in if i >= width * (shop.y2 - shop.y1 + 1) then Err ("Britain shop has no clear tile: " & shop.title)
+    else let x = shop.x1 + int-mod i width
+    in let y = shop.y1 + i / width
+    in let mark = __heap-save
+    in let occupied = bb-occupied w (world-tile-first w x y)
+    in let restored = __heap-restore mark
+    in if occupied then bb-placement w map shop (i + 1)
+    else when walk-ground map x y
+      is Err (e) -> Err ("Britain cache missing shop region: " & shop.title)
+      is Ok (ground) -> when bb-floor map x y ground 0
+        is Err (_) -> bb-placement w map shop (i + 1)
+        is Ok (z) -> Ok (BbSpot { x = x, y = y, z = z })
+  bb-materialise : GvWorld, GsiState, BbProducer, Integer, Integer, Integer, Integer, Integer, Boolean -> Result Integer Text
+  bb-materialise (v) (items) (p) (parent) (graphic) (hue) (layer) (gump) (lot) =
+    let obj = WorldObject { serial = 0, kind = 2, x = 20, y = 20, z = 0,
+      graphic = graphic, hue = hue, container = parent, amount = p.quantity, health = 0 }
+    in when world-create v.game.world obj
+      is Err (e) -> Err e
+      is Ok (serial) -> let movable = layer < 26 & p.item /= 46
+        in if gsi-register items serial layer gump movable (layer == 0 & gump == 0 & p.quantity > 1) /= 0 then Err "Britain item registration refused"
+        else if not lot then Ok serial
+        else if gv-add-lot v serial p.actor p.item p.quality p.wear p.basis < 0 then Err "Britain produced lot admission refused"
+        else Ok serial
+  bb-container : GvWorld, GsiState, BbProducer, Integer, Integer -> Result Integer Text
+  bb-container (v) (items) (p) (npc) (layer) = when bb-produce p 45
+    is Err (e) -> Err e
+    is Ok (_) -> bb-materialise v items p npc #0E75 0 layer 0 False
+  bb-outfit : GvWorld, GsiState, BbProducer, Integer, Integer -> Result Integer Text
+  bb-outfit (v) (items) (p) (npc) (i) = if i == 3 then Ok 0
+    else when bb-produce p 46
+      is Err (e) -> Err e
+      is Ok (_) -> when bb-materialise v items p npc (if i == 0 then #1517 else if i == 1 then #152E else #170F) (if i == 0 then #035F else 0) (if i == 0 then 5 else if i == 1 then 4 else 3) 0 True
+        is Err (e) -> Err e
+        is Ok (_) -> bb-outfit v items p npc (i + 1)
+  bb-layer : Integer -> Integer
+  bb-layer (item) = if item == 69 | item == 70 then 1 else if item == 71 then 10
+    else if item == 72 then 5 else if item == 73 then 4 else 0
+  bb-stock : GvWorld, GsiState, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-stock (v) (items) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
+    else let good = list-at goods i
+    in when bb-produce p good.item
+      is Err (e) -> Err e
+      is Ok (_) -> when bb-materialise v items p container good.graphic 0 (bb-layer good.item) (if good.item == 45 then #003D else 0) True
+        is Err (e) -> Err e
+        is Ok (_) -> bb-stock v items p container goods (i + 1)
+  bb-has-lot : GvWorld, Integer, Integer, Integer -> Boolean
+  bb-has-lot (v) (actor) (item) (i) = if i == v.lot-count then False
+    else let lot = list-at v.lots i
+    in (lot.actor == actor & lot.item == item & lot.quantity > 0) | bb-has-lot v actor item (i + 1)
+  bb-restock : GvWorld, GsiState, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-restock (v) (items) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
+    else let good = list-at goods i
+    in when (if bb-has-lot v p.actor good.item 0 then Ok 0 else bb-stock v items p container [good] 0)
+      is Err (e) -> Err e
+      is Ok (_) -> bb-restock v items p container goods (i + 1)
+  bb-placeholder-loan-gold : Integer = 1
+  bb-placeholder-loan-interest : Integer = 0
+  bb-placeholder-loan-hours : Integer = 48
+  bb-populate-one : GvWorld, GsiState, WalkMap, Integer -> Result Integer Text
+  bb-populate-one (v) (items) (map) (i) = if i == bb-shop-count then Ok 0
+    else when bb-placement v.game.world map (list-at bb-shops i) 0
+      is Err (e) -> Err e
+      is Ok (spot) -> when bb-populate-at v items i i spot
+        is Err (e) -> Err e
+        is Ok (_) -> bb-populate-one v items map (i + 1)
+  bb-populate-at : GvWorld, GsiState, Integer, Integer, BbSpot -> Result Integer Text
+  bb-populate-at (v) (items) (index) (role) (spot) =
+        let purse = eu-open v.currency 2 (1000 + index)
+        in let actor = if purse < 1 then -1 else ep-admit v.currency.world purse 100
+        in if actor < 1 then Err "Britain vendor actor budget"
+        else if eu-lend v.currency True 1 purse 3 bb-placeholder-loan-gold bb-placeholder-loan-interest (v.currency.world.hour + bb-placeholder-loan-hours) < 1 then Err "Britain vendor loan refused"
+        else let p = bb-producer v.currency actor
+        in when world-create v.game.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
+          is Err (e) -> Err e
+          is Ok (npc) -> when bb-container v items p npc 26
+            is Err (e) -> Err e
+            is Ok (stock) -> when bb-container v items p npc 27
+              is Err (e) -> Err e
+              is Ok (extra) -> when bb-container v items p npc 28
+                is Err (e) -> Err e
+                is Ok (buys) -> if gv-add-vendor v npc actor stock extra buys /= index then Err "Britain vendor registry order"
+                  else when bb-outfit v items p npc 0
+                    is Err (e) -> Err e
+                    is Ok (_) -> when (if bb-participant index then Ok 0 else bb-stock v items p stock (bb-goods role) 0)
+                      is Err (e) -> Err e
+                      is Ok (_) -> Ok npc
+ Index 1 is the actual blacksmith (bb-shops order); bank-row lineup copies are indexes bb-shop-count and up. The baker
+ bakes from bought flour but keeps its founding bread until the farm chain feeds the town (CompositeLaborProof day 3).
+  bb-participant : Integer -> Boolean
+  bb-participant (index) = index == 1
+ Recipe 70 makes one longsword (item 70) from 2 iron ingots (item 31) and a board; #0F60 is its bb-goods art.
+ Recipe 34 makes bread (item 34) from 2 flour (item 33), water and fallen branches; #103C is its bb-goods art.
+  bb-input-lot : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-input-lot (v) (actor) (extra) (item) (i) = if i == v.lot-count then -1
+    else let l = list-at v.lots i
+    in if l.actor == actor & l.item == item & l.quantity > 0 & gv-under v.game.world l.serial extra 65 then i
+    else bb-input-lot v actor extra item (i + 1)
+  bb-input-units : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-input-units (v) (actor) (extra) (item) (i) = if i == v.lot-count then 0
+    else let l = list-at v.lots i
+    in (if l.actor == actor & l.item == item & gv-under v.game.world l.serial extra 65 then l.quantity else 0) + bb-input-units v actor extra item (i + 1)
+  bb-ingot-units : GvWorld, Integer, Integer, Integer -> Integer
+  bb-ingot-units (v) (actor) (extra) (i) = bb-input-units v actor extra 31 i
+  bb-take : GvWorld, Integer, Integer, Integer, Integer -> Result Integer Text
+  bb-take (v) (actor) (extra) (item) (left) = if left == 0 then Ok 0
+    else let at = bb-input-lot v actor extra item 0
+    in if at < 0 then Err "shop input lot absent"
+    else let lot = list-at v.lots at
+    in when world-get v.game.world lot.serial
+      is Err (e) -> Err e
+      is Ok (obj) -> if lot.quantity == 1 then
+          when world-delete v.game.world lot.serial
+            is Err (e) -> Err e
+            is Ok (_) -> let retired = gh-retire-lot v at in bb-take v actor extra item (left - 1)
+        else let per = lot.basis / lot.quantity
+        in when world-update v.game.world (__record-set obj "amount" (obj.amount - 1))
+          is Err (e) -> Err e
+          is Ok (_) -> let n = __record-set lot "quantity" (lot.quantity - 1)
+            in let value = __record-set lot "basis" (lot.basis - per)
+            in bb-take v actor extra item (left - 1)
+  bb-craft-ready : GvWorld, Integer, Integer, Integer -> Boolean
+  bb-craft-ready (v) (index) (input) (count) = let merchant = list-at v.vendors index
+    in ep-at (ep-actor v.currency.world merchant.actor).stock input >= count & bb-input-units v merchant.actor merchant.extra input 0 >= count
+  bb-craft-from : GvWorld, GsiState, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  bb-craft-from (v) (items) (index) (input) (count) (product) (art) = let merchant = list-at v.vendors index
+    in let p = bb-producer v.currency merchant.actor
+    in if not (bb-craft-ready v index input count) then Ok 0
+    else when bb-produce p product
+      is Err (_) -> Ok 0
+      is Ok (_) -> when bb-take v merchant.actor merchant.extra input count
+        is Err (e) -> Err e
+        is Ok (_) -> when bb-materialise v items p merchant.stock art 0 (bb-layer product) 0 True
+          is Err (e) -> Err e
+          is Ok (_) -> when bb-sync-goods v merchant.actor (bb-goods index) 0
+          is Err (e) -> Err e
+          is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+            in let touched = world-touch v.game.world in Ok 1
+  bb-missing : GvWorld, Integer, List BbGoods, Integer -> Boolean
+  bb-missing (v) (actor) (goods) (i) = if i == list-length goods then False
+    else if not (bb-has-lot v actor (list-at goods i).item 0) then True else bb-missing v actor goods (i + 1)
+ Making a restocked good can consume another good the shop already lists (a shirt eats listed cloth), so every listed
+ good is made back up to its lots' quantity.
+  bb-back : GvWorld, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-back (v) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
+    else let item = (list-at goods i).item
+    in let need = bb-input-units v p.actor container item 0
+    in when (if ep-at (ep-actor p.currency.world p.actor).stock item >= need then Ok 0 else bb-require p item need)
+      is Err (e) -> Err e
+      is Ok (_) -> bb-back v p container goods (i + 1)
+ A recipe's tool wears in the shop's economy stock (ep-wear); when the shop also sells that tool (the smith's stone hammer,
+ item 62), its lots follow in the same step: a worn-out unit leaves a lot and a lot's per-unit wear comes down, or the
+ vendor census (gvsc-lot-fault "stock" and "wear total") refuses every later save.
+  bb-tool-lot : GvWorld, Integer, Integer, Boolean, Integer -> Integer
+  bb-tool-lot (v) (actor) (item) (worn) (i) = if i >= v.lot-count then -1
+    else let l = list-at v.lots i
+    in if l.actor == actor & l.item == item & (not worn | l.wear > 0) then i else bb-tool-lot v actor item worn (i + 1)
+  bb-drop-unit : GvWorld, Integer, Integer, Integer -> Result Integer Text
+  bb-drop-unit (v) (actor) (item) (at) = let lot = list-at v.lots at
+    in when world-get v.game.world lot.serial
+      is Err (e) -> Err e
+      is Ok (obj) -> if lot.quantity == 1 then
+          when world-delete v.game.world lot.serial
+            is Err (e) -> Err e
+            is Ok (_) -> let retired = gh-retire-lot v at in bb-wear-lots v actor item
+        else let per = lot.basis / lot.quantity
+        in when world-update v.game.world (__record-set obj "amount" (obj.amount - 1))
+          is Err (e) -> Err e
+          is Ok (_) -> let n = __record-set lot "quantity" (lot.quantity - 1)
+            in let b = __record-set lot "basis" (lot.basis - per) in bb-wear-lots v actor item
+  bb-wear-lots : GvWorld, Integer, Integer -> Result Integer Text
+  bb-wear-lots (v) (actor) (item) = let p = ep-actor v.currency.world actor
+    in let held = bb-tool-lot v actor item False 0
+    in if held >= 0 & gv-represented v actor item 0 0 > ep-at p.stock item then bb-drop-unit v actor item held
+    else let excess = gv-represented v actor item 2 0 - ep-at p.wear item
+    in let at = bb-tool-lot v actor item True 0
+    in if excess <= 0 | at < 0 then Ok 0
+    else let lot = list-at v.lots at
+    in let worn = __record-set lot "wear" (lot.wear - min lot.wear ((excess + lot.quantity - 1) / lot.quantity)) in bb-wear-lots v actor item
+  bb-sync-actor : GvWorld, Integer, Integer -> Result Integer Text
+  bb-sync-actor (v) (actor) (i) = if i >= v.lot-count then Ok 0
+    else let l = list-at v.lots i
+    in if l.actor /= actor then bb-sync-actor v actor (i + 1)
+    else when bb-wear-lots v actor l.item
+      is Err (e) -> Err e
+      is Ok (_) -> bb-sync-actor v actor (i + 1)
+  bb-sync-goods : GvWorld, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-sync-goods (v) (actor) (goods) (i) = if i == list-length goods then Ok 0
+    else when bb-wear-lots v actor (list-at goods i).item
+      is Err (e) -> Err e
+      is Ok (_) -> bb-sync-goods v actor goods (i + 1)
+  bb-restock-ready : GvWorld, Integer -> Boolean
+  bb-restock-ready (v) (index) = bb-missing v (list-at v.vendors index).actor (bb-goods index) 0
+  bb-restock-shop : GvWorld, GsiState, Integer -> Result Integer Text
+  bb-restock-shop (v) (items) (index) = let merchant = list-at v.vendors index
+    in if not (bb-restock-ready v index) then Ok 0
+    else let p = bb-producer v.currency merchant.actor
+    in when bb-restock v items p merchant.stock (bb-goods index) 0
+      is Err (_) -> Ok 0
+      is Ok (_) -> when bb-back v p merchant.stock (bb-goods index) 0
+        is Err (e) -> Err e
+        is Ok (_) -> when bb-sync-goods v merchant.actor (bb-goods index) 0
+        is Err (e) -> Err e
+        is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+        in let touched = world-touch v.game.world in Ok 1
+  bb-forge : GvWorld, GsiState -> Result Integer Text
+  bb-forge (v) (items) = bb-craft-from v items 1 31 2 70 #0F60
+  bb-populate : GvWorld, GsiState, WalkMap -> Result BbTown Text
+  bb-populate (v) (items) (map) =
+    if v.vendor-count /= 0 | v.lot-count /= 0 | v.sale-count /= 0 | v.currency.world.actor-count /= 1 then Err "Britain initialization requires fresh vendor economy"
+    else if not (world-indexed v.game.world) | v.game.world.capacity < 128 | v.game.world.capacity - world-count v.game.world < 49
+      | items.world.buffer /= v.game.world.buffer | list-length items.items /= items.world.capacity then Err "Britain world or item budget"
+    else if map.x > 1417 | map.y > 1544 | map.x + map.width <= 1478 | map.y + map.height <= 1690 then Err "Britain shop cache coverage"
+    else when bb-populate-one v items map 0
+      is Err (e) -> Err e
+      is Ok (_) -> if not (gvsc-valid v) then Err ("Britain stock provenance or currency census refused: " & gvsc-invalid-part v) else bb-bind v items
+
+  bb-specs : List GameOpcodeSpec = gv-specs & [GameOpcodeSpec { opcode = 9, size = 5, minimum = 5, maximum = 5 }]
+  bb-role : GvWorld, Integer -> Integer
+  bb-role (v) (serial) = let i = gv-vendor v serial 0 in if i >= 0 & i < 2 * bb-shop-count then int-mod i bb-shop-count else -1
+ The stylist dresses the blacksmith as a smith (cst-smith) and every other shopkeeper as a shopkeeper (cst-shopkeeper).
+  bb-style-role : Integer -> Integer
+  bb-style-role (role) = if role == 1 then cst-smith else cst-shopkeeper
+  bb-label : BbTown, Integer, Integer, Integer -> Text
+  bb-label (t) (character) (role) (npc) = nn-label t.known character (bb-style-role role) npc (list-at gvb-role-words role)
+  bb-name-bytes : List Integer, Text, Integer -> List Integer
+  bb-name-bytes (packet) (name) (i) = if i == 30 then packet
+    else let value = if i < text-length name & i < 29 then to-unicode (char-code (char-at name i)) else 0
+    in let set = list-set-at packet (14 + i) value in bb-name-bytes packet name (i + 1)
+  bb-rewrite : BbTown, List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  bb-rewrite (t) (packets) (i) (out) = if i == list-length packets then out
+    else let packet = list-at packets i
+    in let role = if list-length packet >= 44 & list-at packet 0 == 28 then bb-role t.vendors (gp-u32 packet 3) else -1
+    in let named = if role < 0 then packet else bb-name-bytes packet (list-at bb-shops role).title 0
+    in bb-rewrite t packets (i + 1) (list-push out named)
+  bb-register-lots : BbTown, Integer -> Boolean
+  bb-register-lots (t) (i) = if i == t.vendors.lot-count then True
+    else let l = list-at t.vendors.lots i
+    in let registered = if gsi-known t.items l.serial then 0
+      else gsi-register t.items l.serial (bb-layer l.item) (if l.item == 45 then #003D else 0) (l.item /= 46) (l.item == 34 | l.item == 37 | l.item == 75 | l.item == 76)
+    in registered == 0 & bb-register-lots t (i + 1)
+  bb-reply : BbTown, GameReply -> GameReply
+  bb-reply (t) (r) = gmb-reply t.items (GameReply { packets = bb-rewrite t r.packets 0 [], close = r.close, note = r.note })
+  bb-handler : BbTown, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  bb-handler (t) (game) (input) (map) (port) (packet) =
+    if input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else if game.world.buffer /= t.vendors.game.world.buffer | game.active /= input.session.serial then Err "Britain session binding"
+    else if list-length packet == 5 & list-at packet 0 == 9 then
+      if not (gs-byte-range packet 0) then Err "Britain non-byte name request"
+      else let role = bb-role t.vendors (gp-u32 packet 1)
+      in if role < 0 then Ok None
+      else when world-get game.world input.session.serial
+        is Err (e) -> Err e
+        is Ok (player) -> when world-get game.world (gp-u32 packet 1)
+          is Err (e) -> Err e
+          is Ok (npc) -> if walk-abs (player.x - npc.x) > 18 | walk-abs (player.y - npc.y) > 18 then Ok None
+            else Ok (Just (gs-reply (gvp-hello npc (bb-label t input.session.serial role npc.serial)) "Britain shop name"))
+    else when gv-handler t.vendors game input map port packet
+      is Err (e) -> Err e
+      is Ok (None) -> Ok None
+      is Ok (Just (reply)) -> if not (bb-register-lots t 0) then Err "Britain delivered item registration refused"
+        else Ok (Just (bb-reply t reply))
+  bb-visible : BbTown, WorldObject, Integer -> Boolean
+  bb-visible (t) (player) (i) = when world-get t.vendors.game.world (list-at t.vendors.vendors i).serial
+    is Err (_) -> False
+    is Ok (npc) -> npc.kind == 1 & npc.health > 0 & walk-abs (player.x - npc.x) <= 18 & walk-abs (player.y - npc.y) <= 18
+  bb-view-packets : BbTown, BbView, WorldObject, Integer, List (List Integer) -> List (List Integer)
+  bb-view-packets (t) (view) (player) (i) (packets) = if i == t.vendors.vendor-count then packets
+    else let mask = bit-shl 1 i
+    in let was = bit-and view.visible mask /= 0
+    in let now = bb-visible t player i
+    in if was == now then bb-view-packets t view player (i + 1) packets
+    else let changed = __record-set view "visible" (bit-xor view.visible mask)
+    in let serial = (list-at t.vendors.vendors i).serial
+    in if not now then bb-view-packets t view player (i + 1) (list-push packets (gvp-remove serial))
+    else when world-get t.vendors.game.world serial
+      is Err (_) -> bb-view-packets t view player (i + 1) packets
+      is Ok (npc) -> bb-view-packets t view player (i + 1) (list-push packets (gmb-mobile t.items npc))
+  bb-pulse : BbTown, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  bb-pulse (t) (game) (input) (map) (port) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else if game.world.buffer /= t.vendors.game.world.buffer | game.active /= input.session.serial then Err "Britain pulse binding"
+    else if gv-slot game input.session.serial 0 < 0 then Err "Britain viewer metadata absent"
+    else let view = list-at t.views (bb-view-at t.views input.connection 0 0)
+    in let reset = if view.serial /= input.session.serial | view.connection /= input.connection then
+      let a = __record-set view "serial" input.session.serial
+      in let b = __record-set view "connection" input.connection
+      in let c = __record-set view "visible" 0 in 0 else 0
+    in when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (player) -> let packets = bb-view-packets t view player 0 []
+        in if list-length packets == 0 then Ok None else Ok (Just (gs-reply packets "Britain shop visibility"))

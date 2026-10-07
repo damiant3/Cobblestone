@@ -1,0 +1,57 @@
+Chapter: TownLiveControl
+  cites Uoaix chapter TownLive
+
+  tl-controlled : TownLive, Integer, Integer -> Boolean
+  tl-controlled (t) (person) (actor) = if person < 1 | person > t.count | t.count > 3 then False
+    else let r = list-at t.residents (person - 1)
+    in if r.person /= person | r.actor /= actor | not (ep-valid-actor t.vendors.currency.world actor) then False
+    else let p = tf-person t.people person
+    in let purse = em-purse t.vendors.currency.world.money (ep-actor t.vendors.currency.world actor).purse
+    in if p.alive == 0 | purse.kind /= 2 | purse.owner /= 1999 + person
+      | gv-slot t.vendors.game p.world-serial 0 >= 0 | gv-vendor t.vendors p.world-serial 0 >= 0 then False
+    else when world-get t.vendors.game.world p.world-serial
+      is Err (_) -> False
+      is Ok (m) -> m.kind == 1 & m.health > 0
+  tl-vendor-spot : TownLive, WalkMap, Maybe WdState, Integer, WorldObject, Integer -> Result BbSpot Text
+  tl-vendor-spot (t) (map) (doors) (serial) (vendor) (direction) = if direction == 8 then Err "vendor has no free approach tile"
+    else let z = tl-probe t.vendors.game.world map doors serial vendor.x vendor.y vendor.z direction
+    in if z < -128 then tl-vendor-spot t map doors serial vendor (direction + 1)
+    else Ok (BbSpot { x = vendor.x + walk-dx direction, y = vendor.y + walk-dy direction, z = z })
+  tl-control-set : TownLive, TlResident, Integer, Integer, Integer, Integer, Integer, BbSpot -> Integer
+  tl-control-set (t) (r) (action) (goal) (place) (vendor) (expires) (target) =
+    let c = r.control
+    in if c.expires > t.now & c.action == action & c.vendor == vendor then 0
+    else let a = __record-set c "action" action
+    in let b = __record-set c "goal" goal
+    in let d = __record-set c "place" place
+    in let e = __record-set c "vendor" vendor
+    in let f = __record-set c "expires" expires
+    in let copied = tl-copy-spot c.target target
+    in let reset = tl-reset-path r
+    in let ready = __record-set r "next-step" t.now
+    in let touched = world-touch t.vendors.game.world in 0
+  tl-direct : TownLive, WalkMap, Maybe WdState, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-direct (t) (map) (doors) (person) (actor) (action) (vendor) (expires) =
+    if not (tl-controlled t person actor) then -10
+    else if (action /= 0 & action /= 1 & action /= 3 & action /= 4)
+      | expires <= t.now | expires > t.now + 3600 | expires > tl-max-seconds then -16
+    else if (action == 3 & vendor <= 0) | (action /= 3 & vendor /= 0) then -16
+    else let r = list-at t.residents (person - 1)
+    in let p = tf-person t.people person
+    in let town = tf-town t.people p.town
+    in if p.illness > 0 & action /= 0 then -1
+    else if action /= 3 then
+      let target = if action == 0 then r.home else if action == 1 then r.work else r.tavern
+      in if walk-cell map target.x target.y < 0 then -1
+      else tl-control-set t r action (if action == 0 then 0 else if action == 1 then 1 else 2) (tf-place p town action) 0 expires target
+    else let index = gv-vendor t.vendors vendor 0
+    in if index < 0 then -12
+    else let supplier = list-at t.vendors.vendors index
+    in when world-get t.vendors.game.world vendor
+      is Err (_) -> -12
+      is Ok (mobile) -> if mobile.kind /= 1 | mobile.health <= 0 then -12
+        else when tl-vendor-spot t map doors p.world-serial mobile 0
+          is Err (_) -> -1
+          is Ok (target) -> tl-control-set t r action 1 (ep-actor t.vendors.currency.world supplier.actor).place vendor expires target
+
+Page 1

@@ -1,0 +1,83 @@
+Chapter: ItemTable
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter GamePackets
+
+ Legacy TILEDATA item section: 512 groups, each a 4-byte header and 32
+ entries of 37 bytes; weight at 4, name at 17 (20 bytes). Weight 255 marks
+ immovable art. Names carry %plural/singular% markup, e.g. "bread loa%ves/f%".
+ Gold coins weigh 0.02 stones each (ServUO Gold), not their TILEDATA 0.
+ Other weightless generic (stackable, flag 0x800) art weighs 0.1 each, the
+ ServUO resource weight (reagents, ingots, cloth); each pile rounds up.
+
+  it-group-bytes : Integer = 1188
+  it-entry : Integer, Integer -> Integer
+  it-entry (tiles) (graphic) = graphic / 32 * it-group-bytes + 4 + int-mod graphic 32 * 37
+  it-present : Integer, Integer -> Boolean
+  it-present (tiles) (graphic) = tiles /= 0 & graphic >= 0 & graphic < 16384
+  it-weight : Integer, Integer -> Integer
+  it-weight (tiles) (graphic) = if not (it-present tiles graphic) then 0
+    else let w = peek-byte tiles (it-entry tiles graphic + 4) in if w == 255 then 0 else w
+  it-generic : Integer, Integer -> Boolean
+  it-generic (tiles) (graphic) = it-present tiles graphic & bit-and (peek-byte tiles (it-entry tiles graphic + 1)) 8 /= 0
+  it-name : Integer, Integer, Integer -> Text
+  it-name (tiles) (graphic) (amount) = if not (it-present tiles graphic) then ""
+    else utf8-bytes-to-text (it-name-bytes tiles (it-entry tiles graphic + 17) 0 (amount > 1) 0 [])
+  it-name-bytes : Integer, Integer, Integer, Boolean, Integer, List Integer -> List Integer
+  it-name-bytes (tiles) (at) (i) (plural) (mode) (out) =
+    if i >= 20 then out
+    else let c = peek-byte tiles (at + i)
+    in if c == 0 then out
+    else if c == 37 then it-name-bytes tiles at (i + 1) plural (if mode == 0 then 1 else 0) out
+    else if c == 47 & mode == 1 then it-name-bytes tiles at (i + 1) plural 2 out
+    else let keep = c >= 32 & c < 127 & (mode == 0 | (mode == 1 & plural) | (mode == 2 & not plural))
+    in it-name-bytes tiles at (i + 1) plural mode (if keep then list-push out c else out)
+
+  it-load : WorldTable, Integer, Integer, Integer, Integer, Boolean, Integer -> Integer
+  it-load (world) (tiles) (serial) (skip) (depth) (gold) (acc) =
+    if serial == 0 | depth == 0 then acc
+    else let next = world-next-sibling world serial
+    in if serial == skip then it-load world tiles next skip depth gold acc
+    else let own = when world-get world serial
+      is Err (_) -> 0
+      is Ok (item) -> if item.kind /= 2 then 0
+        else let here = if gold then (if item.graphic == #0EED then item.amount else 0)
+          else it-pile tiles item.graphic item.amount
+        in here + it-load world tiles (world-first-child world serial) skip (depth - 1) gold 0
+    in it-load world tiles next skip depth gold (acc + own)
+  it-pile : Integer, Integer, Integer -> Integer
+  it-pile (tiles) (graphic) (amount) = if graphic == #0EED then (amount + 49) / 50
+    else if it-weight tiles graphic == 0 & it-generic tiles graphic then (amount + 9) / 10
+    else it-weight tiles graphic * amount
+  it-counted : WorldTable, Integer, Integer, Integer, Integer -> Boolean
+  it-counted (world) (serial) (mobile) (bank) (left) = if serial == mobile then True
+    else if serial == 0 | serial == bank | left == 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (item) -> it-counted world item.container mobile bank (left - 1)
+ A held item stays at its source until dropped; it weighs on the holder unless
+ that source is already inside the carried tree.
+  it-held : WorldTable, Integer, Integer, Integer, Integer -> Integer
+  it-held (world) (tiles) (mobile) (held) (amount) = if held == 0 | amount <= 0 then 0
+    else if it-counted world held mobile (world-layer-serial world mobile 29) 16 then 0
+    else when world-get world held
+      is Err (_) -> 0
+      is Ok (item) -> it-pile tiles item.graphic amount
+  it-carried : WorldTable, Integer, Integer, Boolean -> Integer
+  it-carried (world) (tiles) (mobile) (gold) =
+    it-load world tiles (world-first-child world mobile) (world-layer-serial world mobile 29) 16 gold 0
+
+ 0x11 status, 66-byte form: gold u32 at 58, armor u16 at 62, weight u16 at 64, big-endian.
+  it-status : WorldTable, Integer, Integer, Integer, Integer, List Integer -> Integer
+  it-status (world) (tiles) (serial) (held) (amount) (packet) =
+    if list-length packet /= 66 | list-at packet 0 /= #11 | gp-u32 packet 3 /= serial then 0
+    else let gold = min #7FFFFFFF (it-carried world tiles serial True)
+    in let weight = min 65535 (it-carried world tiles serial False + it-held world tiles serial held amount)
+    in let a = list-set-at packet 58 (bit-and (bit-shru gold 24) 255)
+    in let b = list-set-at packet 59 (bit-and (bit-shru gold 16) 255)
+    in let c = list-set-at packet 60 (bit-and (bit-shru gold 8) 255)
+    in let d = list-set-at packet 61 (bit-and gold 255)
+    in let e = list-set-at packet 64 (bit-and (bit-shru weight 8) 255)
+    in let f = list-set-at packet 65 (bit-and weight 255) in 0
+  it-statuses : WorldTable, Integer, Integer, Integer, Integer, List (List Integer), Integer -> Integer
+  it-statuses (world) (tiles) (serial) (held) (amount) (packets) (i) = if i >= list-length packets then 0
+    else let done = it-status world tiles serial held amount (list-at packets i) in it-statuses world tiles serial held amount packets (i + 1)

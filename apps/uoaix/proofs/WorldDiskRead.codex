@@ -1,0 +1,69 @@
+Chapter: WorldDiskRead
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  udr-check : Text, Boolean -> [Console] Nothing
+  udr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  udr-restore : UoDiskRecord, UoDiskRecord, Integer, Integer, Boolean -> [Console] Nothing
+  udr-restore (saved) (input) (snapshot) (frames) (mismatch) =
+    when ws-decode snapshot saved.length
+      is Err (e) -> print-line-uni ("FAIL snapshot decode " & e)
+      is Ok (checkpoint) ->
+        if checkpoint.sequence /= saved.sequence | checkpoint.tick /= saved.tick then
+          udr-check "payload metadata mismatch refused" mismatch
+        else if mismatch then print-line-uni "FAIL metadata control did not differ"
+        else when wj-decode frames
+          is Err (e) -> print-line-uni ("FAIL event decode " & e)
+          is Ok (event) ->
+            if event.sequence /= input.sequence | event.tick /= input.tick then print-line-uni "FAIL event metadata mismatch"
+            else act
+              udr-check "record metadata restored" (saved.kind == 1 & saved.sequence == 2 & saved.tick == 200 & saved.length == 320 & saved.next == 8 & input.kind == 2 & input.next == 10)
+              when wj-replay checkpoint frames input.length
+                is Err (e) -> print-line-uni ("FAIL replay " & e)
+                is Ok (r) -> act
+                  udr-check "reboot object count" (world-count r.checkpoint.world == 2 & r.checkpoint.tick == 201 & r.checkpoint.sequence == 3)
+                  udr-check "reboot object fields" (when world-get r.checkpoint.world 1073741826 is Err (e) -> False is Ok (obj) -> obj.kind == 2 & obj.x == 1420 & obj.y == 1690 & obj.z == -5 & obj.graphic == 400 & obj.hue == 17 & obj.container == 1 & obj.amount == 9 & obj.health == 50)
+                end
+            end
+
+  udr-read : UoStore, Integer, Boolean -> [Console, Device.Block] Nothing
+  udr-read (store) (tail) (mismatch) =
+    let snapshot = alloc-bytes 320
+    in let frames = alloc-bytes 128
+    in act
+      udr-check "committed prefix recovered" (store.head == 10 & store.sequence == 3 & store.tick == 201 & store.snapshot == 6 & store.tail == tail)
+      saved <- us-read store store.snapshot snapshot 320
+      when saved
+        is Err (e) -> print-line-uni ("FAIL snapshot read " & e)
+        is Ok (entry) -> if entry.length /= 320 then print-line-uni "FAIL snapshot length"
+          else act
+            one <- us-read store entry.next frames 128
+            when one
+              is Err (e) -> print-line-uni ("FAIL event read " & e)
+              is Ok (input) -> if input.length /= 128 then print-line-uni "FAIL event length"
+                else udr-restore entry input snapshot frames mismatch
+          end
+    end
+
+  opening : [Console, Device.Block] Nothing = act
+    input <- read-line
+    let mode = when input is Just (line) -> line is None -> "missing"
+    in act
+    opened <- us-open 0 32
+    if mode == "corrupt" then
+      udr-check "committed corruption refused" (when opened is Ok (s) -> False is Err (e) -> e == "store payload checksum invalid")
+    else if mode == "foreign" then
+      udr-check "unrecognized initial store refused" (when opened is Ok (s) -> False is Err (e) -> e == "store initial header unrecognized or corrupt")
+    else if mode /= "clean" & mode /= "tail" & mode /= "metadata" then print-line-uni "FAIL invalid proof mode"
+    else when opened
+      is Err (e) -> print-line-uni ("FAIL reopen " & e)
+      is Ok (store) -> udr-read store (if mode == "tail" then 1 else 0) (mode == "metadata")
+    end
+  end
+
+Page 1

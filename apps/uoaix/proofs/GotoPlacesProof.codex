@@ -1,0 +1,53 @@
+Chapter: GotoPlacesProof
+  cites Uoaix chapter CompositePaging
+
+  gpp-check : Text, Boolean -> [Console] Nothing
+  gpp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  gpp-say : Text -> List Integer
+  gpp-say (text) = let length = 9 + text-length text in gp-ascii [3,0,length,0,3,178,0,3] text 0 (text-length text + 1)
+  gpp-at : List CpPlace, Text -> Integer
+  gpp-at (places) (text) = cp-goto-place places (gpp-say text) 0
+  gpp-prefix : List CpPlace, Text -> List CpPlace
+  gpp-prefix (places) (text) = let packet = gpp-say text in cp-goto-matches places packet (cp-typed-end packet 14) 0 []
+  gpp-named : List CpPlace, Text, Integer, Integer -> Boolean
+  gpp-named (places) (name) (x) (y) = let at = gpp-at places ("[goto " & name)
+    in at >= 0 & (list-at places at).x == x & (list-at places at).y == y
+  gpp-lower-bytes : List Integer, Integer -> Boolean
+  gpp-lower-bytes (bytes) (i) = if i == list-length bytes then i > 0
+    else let c = list-at bytes i
+    in if not ((c >= 97 & c <= 122) | (c >= 48 & c <= 57)) then False
+    else gpp-lower-bytes bytes (i + 1)
+  gpp-lower : Text, Integer -> Boolean
+  gpp-lower (name) (unused) = gpp-lower-bytes (gp-ascii [] name 0 (text-length name)) 0
+  gpp-valid : List CpPlace, Integer -> Integer
+  gpp-valid (places) (i) = if i == list-length places then 0
+    else let p = list-at places i
+    in (if gpp-lower p.name 0 & gpp-at places ("[goto " & p.name) == i & p.x >= 0 & p.x < 6144 & p.y >= 0 & p.y < 4096 then 0 else 1) + gpp-valid places (i + 1)
+  gpp-town-count : List CpPlace, Text, Integer -> Integer
+  gpp-town-count (places) (town) (i) = if i == list-length places then 0
+    else (if (list-at places i).town == town then 1 else 0) + gpp-town-count places town (i + 1)
+
+  opening : [Console] Nothing = act
+    let places = gpd-places 0
+    in act
+      gpp-check "[goto alone and [goto with a name are goto requests, [go x y is not" (cp-goto-request (gpp-say "[goto") & cp-goto-request (gpp-say "[goto britbank") & not (cp-goto-request (gpp-say "[go 1 2")) & not (cp-goto-request (gpp-say "[gotox")))
+      gpp-check "britbank is the west bank and britbank2 the east bank" (gpp-at places "[goto britbank" == 0 & gpp-at places "[goto britbank2" == 1 & gpp-named places "britbank" 1436 1693 & gpp-named places "britbank2" 1656 1614)
+      gpp-check "names match without case and only whole" (gpp-at places "[goto BRITMOON" == 2 & gpp-at places "[goto britban" < 0 & gpp-at places "[goto britbank22" < 0 & gpp-at places "[goto trinbank3" < 0)
+      gpp-check "Trinsic's first bank is unnumbered and its second is trinbank2, from location.dfn 137 and 138" (gpp-named places "trinbank" 1819 2825 & gpp-named places "TrinBank2" 1904 2686)
+      gpp-check "every classic moongate town names its gate" (gpp-named places "britmoon" 1336 1997 & gpp-named places "moonglowmoon" 4467 1283 & gpp-named places "jhelommoon" 1499 3771 & gpp-named places "yewmoon" 771 752 & gpp-named places "minocmoon" 2701 692 & gpp-named places "trinmoon" 1828 2948 & gpp-named places "skaramoon" 643 2067 & gpp-named places "maginciamoon" 3563 2139)
+      gpp-check "every name is lowercase, unique, resolves to its own row and lies on the map" (gpp-valid places 0 == 0)
+      let lines = cp-place-lines places 0 "" "" []
+      in act
+        print-line-uni ("places=" & show (list-length places) & " towns=" & show (list-length lines))
+        gpp-check "[goto alone answers one line per town, Britain first with its nine places" (list-length lines == 17 & list-at lines 0 == "Britain: britbank britbank2 britmoon britlineup brithealer britsmith britinn britfarm britspawn" & gpp-named places "britfarm" 1229 1575)
+        gpp-check "[goto Brit lists every place starting with brit, without case, as the one Britain line" (list-length (cp-place-lines (gpp-prefix places "[goto Brit") 0 "" "" []) == 1 & list-at (cp-place-lines (gpp-prefix places "[goto Brit") 0 "" "" []) 0 == list-at lines 0 & list-length (gpp-prefix places "[goto brit") == 9 & list-length (gpp-prefix places "[goto britbank") == 2)
+        gpp-check "a prefix nothing starts with lists nothing, and a name longer than every place matches none" (list-length (gpp-prefix places "[goto zzz") == 0 & list-length (gpp-prefix places "[goto britbank22") == 0)
+        gpp-check "a town with a spawn region names it, and the islands without one do not" (gpp-at places "[goto trinspawn" >= 0 & gpp-at places "[goto nujelmspawn" < 0 & gpp-at places "[goto maginciaspawn" < 0 & gpp-town-count places "Nujel'm" 0 == 5)
+        gpp-check "both curtained alcoves behind the throne teleport, the throne, the hall and the passage behind the throne do not, and neither destination is a trigger (UOAIX-60)" (cpr-alcove 1322 1618 & cpr-alcove 1323 1620 & cpr-alcove 1322 1632 & cpr-alcove 1323 1628
+          & not (cpr-alcove 1323 1624) & not (cpr-alcove 1322 1624) & not (cpr-alcove 1324 1619) & not (cpr-alcove 1323 1633) & not (cpr-alcove 1321 1619)
+          & not (cpr-alcove cpr-throne-x cpr-throne-y) & not (cpr-alcove cpr-royal-x cpr-royal-y) & (cpr-royal-x /= cpr-royal-gate-x | cpr-royal-y /= cpr-royal-gate-y))
+      end
+    end
+  end
+
+Page 1

@@ -1,0 +1,98 @@
+Chapter: ServerLog
+  cites Foreword chapter Result
+
+ A log is slg-subsystems + 1 bytes: byte 0 is the threshold for every
+ subsystem, byte 1 + s is subsystem s's override, and 255 means no override.
+ Levels rise with severity; threshold 5 writes nothing. Log 0 is no buffer
+ and writes every line, for inputs built inside a fixed construction arena.
+
+  slg-trace : Integer = 0
+  slg-debug : Integer = 1
+  slg-info : Integer = 2
+  slg-warn : Integer = 3
+  slg-error : Integer = 4
+  slg-off : Integer = 5
+  slg-inherit : Integer = 255
+
+  slg-server : Integer = 0
+  slg-network : Integer = 1
+  slg-accounts : Integer = 2
+  slg-world : Integer = 3
+  slg-store : Integer = 4
+  slg-combat : Integer = 5
+  slg-magery : Integer = 6
+  slg-spawns : Integer = 7
+  slg-speech : Integer = 8
+  slg-economy : Integer = 9
+  slg-items : Integer = 10
+  slg-vendors : Integer = 11
+  slg-town : Integer = 12
+  slg-admin : Integer = 13
+  slg-help : Integer = 14
+  slg-subsystems : Integer = 15
+
+  slg-new : Integer -> Integer
+  slg-new (level) = let log = alloc-bytes (slg-subsystems + 1)
+    in let global = poke-byte log 0 (if level < 0 | level > slg-off then slg-trace else level)
+    in slg-clear log 1
+  slg-clear : Integer, Integer -> Integer
+  slg-clear (log) (i) = if i > slg-subsystems then log
+    else let cleared = poke-byte log i slg-inherit in slg-clear log (i + 1)
+
+  slg-override : Integer, Integer -> Integer
+  slg-override (log) (subsystem) = if log == 0 | subsystem < 0 | subsystem >= slg-subsystems then slg-inherit
+    else peek-byte log (subsystem + 1)
+  slg-threshold : Integer, Integer -> Integer
+  slg-threshold (log) (subsystem) = let own = slg-override log subsystem
+    in if own /= slg-inherit then own else if log == 0 then slg-trace else peek-byte log 0
+  slg-on : Integer, Integer, Integer -> Boolean
+  slg-on (log) (subsystem) (level) = level < slg-off & level >= slg-threshold log subsystem
+
+  slg-set-all : Integer, Integer -> Result Integer Text
+  slg-set-all (log) (level) = if log == 0 then Err "no log buffer"
+    else if level < 0 | level > slg-off then Err "log level outside trace through off"
+    else let stored = poke-byte log 0 level in Ok level
+  slg-set : Integer, Integer, Integer -> Result Integer Text
+  slg-set (log) (subsystem) (level) = if log == 0 then Err "no log buffer"
+    else if subsystem < 0 | subsystem >= slg-subsystems then Err "unknown log subsystem"
+    else if level /= slg-inherit & (level < 0 | level > slg-off) then Err "log level outside trace through off"
+    else let stored = poke-byte log (subsystem + 1) level in Ok level
+
+  slg-level-name : Integer -> Text
+  slg-level-name (level) = if level == 0 then "trace" else if level == 1 then "debug"
+    else if level == 2 then "info" else if level == 3 then "warn" else if level == 4 then "error"
+    else if level == 5 then "off" else "inherit"
+  slg-level-of : Text -> Integer
+  slg-level-of (name) = if name == "trace" then 0 else if name == "debug" then 1
+    else if name == "info" then 2 else if name == "warn" then 3 else if name == "error" then 4
+    else if name == "off" then 5 else if name == "inherit" then slg-inherit else -1
+  slg-subsystem-name : Integer -> Text
+  slg-subsystem-name (s) = if s == 0 then "server" else if s == 1 then "network" else if s == 2 then "accounts"
+    else if s == 3 then "world" else if s == 4 then "world-store" else if s == 5 then "combat"
+    else if s == 6 then "magery" else if s == 7 then "spawns" else if s == 8 then "speech"
+    else if s == 9 then "economy" else if s == 10 then "items" else if s == 11 then "vendors"
+    else if s == 12 then "town" else if s == 13 then "admin" else if s == 14 then "help" else "unknown"
+  slg-subsystem-of : Text -> Integer
+  slg-subsystem-of (name) = slg-find name 0
+  slg-find : Text, Integer -> Integer
+  slg-find (name) (s) = if s >= slg-subsystems then -1
+    else if slg-subsystem-name s == name then s else slg-find name (s + 1)
+
+  slg-json : Integer -> Text
+  slg-json (log) = if log == 0 then "{\"bound\":false}"
+    else "{\"bound\":true,\"all\":\"" & slg-level-name (peek-byte log 0) & "\",\"subsystems\":[" & slg-json-rows log 0 [] & "]}"
+  slg-json-rows : Integer, Integer, List Text -> Text
+  slg-json-rows (log) (s) (parts) = if s >= slg-subsystems then text-concat-list parts
+    else let row = (if s == 0 then "" else ",") & "{\"name\":\"" & slg-subsystem-name s & "\",\"level\":\"" & slg-level-name (slg-override log s) & "\"}"
+    in slg-json-rows log (s + 1) (list-push parts row)
+
+  slg-tags : Integer, Integer -> Text
+  slg-tags (subsystem) (level) = " level=" & slg-level-name level & " sys=" & slg-subsystem-name subsystem
+  slg-line : Integer, Integer, Integer, Text -> [Console] Integer
+  slg-line (log) (subsystem) (level) (message) = if not (slg-on log subsystem level) then act 0 end
+    else act
+      print-line-uni (message & slg-tags subsystem level)
+      1
+    end
+
+Page 1

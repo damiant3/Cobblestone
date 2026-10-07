@@ -1,0 +1,45 @@
+Chapter: ClassicSkills
+  cites Uoaix chapter Skills
+  cites Uoaix chapter SkillCurve
+
+ Source-X CExpression.cpp Calc_GetBellCurve/Calc_GetSCurve and CCharSkill.cpp
+ Skill_CheckSuccess/Skill_Experience, Apache-2.0; Sphere-LICENSE.txt.
+ Classic active skills extend K's admitted fixed-point practice storage.
+ Gain follows SkillCurve (skc-gain-at), scaled by gain-rate percent. At the 7000 total a gain lowers a
+ random other skill by 0.1 instead, as the 1998 shard did (the 1.25 client has
+ no lock arrows); with no other skill above 0 there is no gain.
+
+  SkClassic = record { levels : Integer, seed : Integer, attempts : Integer, gain-rate : Integer }
+  skc-new : Integer, Integer -> SkClassic
+  skc-new (seed) (gain) = SkClassic { levels = sk-buffer 46, seed = bit-and seed #FFFFFFFF, attempts = 0, gain-rate = max 0 (min 100000 gain) }
+  skc-random : SkClassic, Integer -> Integer
+  skc-random (p) (bound) = let seed = int-mod (p.seed * 1664525 + 1013904223) 4294967296
+    in let saved = __record-set p "seed" seed
+    in if bound <= 1 then 0 else int-mod (bit-shru seed 8) bound
+  skc-bell : Integer, Integer -> Integer
+  skc-bell (difference) (chance) = if difference > 100 & chance > 0 then skc-bell (difference - 100) (chance / 2)
+    else chance - (chance / 2) * difference / 100
+  skc-chance : Integer, Integer -> Integer
+  skc-chance (level) (difficulty) = let diff = level - difficulty
+    in let chance = skc-bell (if diff < 0 then 0 - diff else diff) 500
+    in if diff > 0 then 1000 - chance else chance
+  skc-gain-chance : SkClassic, Integer, Integer, Boolean -> Integer
+  skc-gain-chance (p) (level) (difficulty) (success) = skc-gain-at p.gain-rate level difficulty success
+  skc-total : SkClassic, Integer -> Integer
+  skc-total (p) (i) = if i == 46 then 0 else sk-at p.levels i + skc-total p (i + 1)
+  skc-decay : SkClassic, Integer, Integer, Integer -> Integer
+  skc-decay (p) (skill) (at) (left) = if left == 0 then 0
+    else let i = int-mod at 46
+    in if i /= skill & sk-at p.levels i > 0 then let lowered = sk-set p.levels i (sk-at p.levels i - 1) in 1
+    else skc-decay p skill (at + 1) (left - 1)
+  skc-use : SkClassic, Integer, Integer, Boolean -> Integer
+  skc-use (p) (skill) (difficulty) (admitted) = if not admitted | skill < 0 | skill >= 46 | difficulty < 0 | difficulty > 1000 | p.attempts >= 1000000000 then -1
+    else let level = sk-at p.levels skill
+    in if level < 0 | level > 1000 then -1
+    else let success = skc-random p 1000 <= skc-chance level difficulty
+    in let gain = skc-random p 1000
+    in let count = __record-set p "attempts" (p.attempts + 1)
+    in let practiced = if level >= 1000 | gain >= skc-gain-chance p level difficulty success then 0
+      else if skc-total p 0 < 7000 then sk-set p.levels skill (level + 1)
+      else if skc-decay p skill (skc-random p 46) 46 == 1 then sk-set p.levels skill (level + 1) else 0
+    in if success then 1 else 0

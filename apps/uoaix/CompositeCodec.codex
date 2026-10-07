@@ -1,0 +1,529 @@
+Chapter: CompositeCodec
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameVendorCodec
+  cites Uoaix chapter GameCombatCodec
+  cites Uoaix chapter GsiCodec
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter GameMonsterCodec
+  cites Uoaix chapter MageryCodec
+  cites Uoaix chapter ActiveSkillsCodec
+  cites Uoaix chapter GameHarvestCodec
+  cites Uoaix chapter GameCraftCodec
+  cites Uoaix chapter CompositeHelp
+
+ UCC1 fixes section offsets by world capacity. The reserved vendor section
+ is zero-padded; its used extent is recorded separately. All sections share
+ the enclosing checksum and game/currency sequence and tick.
+
+  cc-vendor-budget : Integer = 180224
+  cc-base-size : Integer -> Integer
+  cc-base-size (capacity) = 128 + gc-size capacity + euc-bytes + cc-vendor-budget + cbc-size capacity + 16 + capacity * 40
+  cc-v2-size : Integer -> Integer
+  cc-v2-size (capacity) = cc-base-size capacity + 256 + 32 + 65560
+  cc-v3-size : Integer -> Integer
+  cc-v3-size (capacity) = cc-v2-size capacity + 48
+  cc-magic-bytes : Integer -> Integer
+  cc-magic-bytes (capacity) = 576 + capacity * 368
+  cc-v4-size : Integer -> Integer
+  cc-v4-size (capacity) = cc-v3-size capacity + 8 + cc-magic-bytes capacity
+  cc-v5-size : Integer -> Integer
+  cc-v5-size (capacity) = cc-v4-size capacity + 8 + tlc-bytes
+  cc-v6-size : Integer -> Integer
+  cc-v6-size (capacity) = cc-v4-size capacity + 16 + tlc-bytes
+  cc-network-budget : Integer = tnlc-offers-at + 256 * 72 + 1024 * tnlc-event-bytes
+  cc-v9-size : Integer -> Integer
+  cc-v9-size (capacity) = cc-v6-size capacity + 8 + cc-network-budget
+  cc-v10-size : Integer -> Integer
+  cc-v10-size (capacity) = cc-v9-size capacity + 8 + asc-size
+  cc-production-budget : Integer = ghc-size 256 + 8 + 112
+  cc-v11-size : Integer -> Integer
+  cc-v11-size (capacity) = cc-v10-size capacity + 8 + cc-production-budget
+ The UWS1 reserve was sized for 40-byte rows; at 56 bytes it holds 1024 regions and 182 slots, the composite binds 128,
+ and the encode refuses a controller that outgrows it. The used length is recorded.
+  cc-spawn-budget : Integer = 64 + 1024 * 8 + 256 * 40
+  cc-v12-size : Integer -> Integer
+  cc-v12-size (capacity) = cc-v11-size capacity + 8 + cc-spawn-budget
+  cc-v13-size : Integer -> Integer
+  cc-v13-size (capacity) = cc-v12-size capacity + 8 + nsc-bytes
+  cc-v14a-size : Integer -> Integer
+  cc-v14a-size (capacity) = cc-v13-size capacity + 8 + cgg-v1-bytes
+  cc-v14-size : Integer -> Integer
+  cc-v14-size (capacity) = cc-v13-size capacity + 8 + cgg-bytes
+  cc-size : Integer -> Integer
+  cc-size (capacity) = cc-v22-size capacity + 8 + chs-bytes
+  cc-v22-size : Integer -> Integer
+  cc-v22-size (capacity) = cc-v21-size capacity + 8 + cgg-bytes
+  cc-v21-size : Integer -> Integer
+  cc-v21-size (capacity) = cc-v18-size capacity + 8 + nn-bytes
+  cc-v18-size : Integer -> Integer
+  cc-v18-size (capacity) = cc-v17-size capacity + 8 + hp-bytes
+  cc-v17-size : Integer -> Integer
+  cc-v17-size (capacity) = cc-v16-size capacity + 8 + cgm-limit * cgg-bytes
+  cc-v15-size : Integer -> Integer
+  cc-v15-size (capacity) = cc-v14-size capacity + 8 + cgf-bytes
+  cc-v16-size : Integer -> Integer
+  cc-v16-size (capacity) = cc-v15-size capacity + 8 + cbe-bytes
+  cc-rebase : Integer, Integer -> Integer
+  cc-rebase (buf) (at) = at - euc-bytes + peek-qword buf 64
+  cc-encode : CompositeGame, Integer, Integer, Integer, Integer -> Result Integer Text
+  cc-encode (owner) (sequence) (tick) (buf) (capacity) =
+    let game = owner.checkpoint.game
+    in let count = game.world.capacity
+    in let size = cc-size count
+    in if count < 64 | count > world-max-objects | capacity < size | size > 16777216 | sequence < 0 | tick < 0 then Err "composite checkpoint budget invalid"
+    else if owner.vendor.game.world.buffer /= game.world.buffer | owner.items.world.buffer /= game.world.buffer then Err "composite canonical world differs"
+    else let clock = __record-set owner.checkpoint.state.checkpoint "tick" tick
+    in let serial = __record-set owner.checkpoint.state.checkpoint "sequence" sequence
+    in let game-at = 128
+    in let currency-at = game-at + gc-size count
+    in let vendor-at = currency-at + euc-bytes
+    in let combat-at = vendor-at + cc-vendor-budget
+    in let items-at = combat-at + cbc-size count
+    in let clear = ts-zero buf 128 0
+    in let padding = ts-zero (buf + vendor-at) cc-vendor-budget 0
+    in let extra = ts-zero (buf + cc-base-size count) (256 + 32 + 65560 + 48) 0
+    in when gc-encode owner.checkpoint.state game (buf + game-at) (gc-size count)
+      is Err (e) -> Err e
+      is Ok (_) -> when euc-encode (CurrencyCheckpoint { currency = owner.vendor.currency, sequence = sequence, tick = tick }) (buf + currency-at) euc-bytes
+        is Err (e) -> Err e
+        is Ok (_) -> when gvsc-encode owner.vendor (buf + vendor-at) cc-vendor-budget
+          is Err (e) -> Err e
+          is Ok (vendor-size) -> when cbc-encode owner.combat (buf + combat-at) (cbc-size count)
+            is Err (e) -> Err e
+            is Ok (_) -> when gic-write owner.items (buf + items-at) (gic-size owner.items)
+             is Err (e) -> Err e
+             is Ok (_) -> when cc-write-extra owner buf
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-magic owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-town owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-network owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-skills owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-production owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-spawns owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-speech owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-gatherer owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-fighter owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-british owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-miners owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-pages owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-known owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-farmer owner buf count
+              is Err (e) -> Err e
+              is Ok (_) -> when cc-write-table owner buf count
+              is Err (e) -> Err e
+              is Ok (_) ->
+              let a = poke-qword buf 0 #31434355
+              in let b = poke-qword buf 8 24
+              in let c = poke-qword buf 16 size
+              in let d = poke-qword buf 24 count
+              in let e = poke-qword buf 32 sequence
+              in let f = poke-qword buf 40 tick
+              in let g = poke-qword buf 56 (gc-size count)
+              in let h = poke-qword buf 64 euc-bytes
+              in let j = poke-qword buf 72 vendor-size
+              in let k = poke-qword buf 80 (cbc-size count)
+              in let m = poke-qword buf 88 (gic-size owner.items)
+              in let grant-size = poke-qword buf 120 48
+              in let grant-header = poke-qword buf (cc-v2-size count) #31544743
+              in let grants = ws-copy owner.test-grants (buf + cc-v2-size count + 8) 40 0
+              in let digest = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+              in Ok size
+  cc-write-magic : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-magic (owner) (buf) (count) = let at = cc-v3-size count
+    in when owner.magic
+      is Just (magic) -> if mgc-size magic /= cc-magic-bytes count then Err "composite magery extent"
+        else when mgc-write magic (buf + at + 8) (cc-magic-bytes count) (max get-ticks magic.tick)
+          is Err (e) -> Err e
+          is Ok (_) -> let length = poke-qword buf at (cc-magic-bytes count) in Ok 0
+      is None -> if owner.magic-held == cc-magic-bytes count then
+          let copied = ws-copy owner.magic-hold (buf + at + 8) owner.magic-held 0
+          in let length = poke-qword buf at owner.magic-held in Ok 0
+        else let length = poke-qword buf at 0
+        in let cleared = ts-zero (buf + at + 8) (cc-magic-bytes count) 0 in Ok 0
+  cc-write-town : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-town (owner) (buf) (count) = let at = cc-v4-size count
+    in when owner.town
+      is None -> let length = poke-qword buf at 0 in let clock = poke-qword buf (at + 8) 0 in let cleared = ts-zero (buf + at + 16) tlc-bytes 0 in Ok 0
+      is Just (town) -> when owner.town-map
+        is None -> Err "townsfolk map unbound"
+        is Just (map) -> when tlc-encode town map (buf + at + 16) tlc-bytes
+          is Err (e) -> Err e
+          is Ok (_) -> let length = poke-qword buf at tlc-bytes in let clock = poke-qword buf (at + 8) owner.town-seconds in Ok 0
+  cc-read-town : CompositeGame, Integer, Maybe WalkMap -> Result CompositeGame Text
+  cc-read-town (owner) (buf) (britain) = if peek-qword buf 8 < 5 then Ok owner
+    else let at = cc-rebase buf (cc-v4-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in let body = if peek-qword buf 8 == 5 then at + 8 else at + 16
+    in let seconds = if peek-qword buf 8 == 5 then 0 else peek-qword buf (at + 8)
+    in if length == 0 then (if seconds == 0 & cc-zero (buf + body) 0 (tlc-bytes / 8 * 8) then Ok owner else Err "composite townsfolk padding")
+    else if length /= tlc-bytes | seconds < 0 | seconds > tl-max-seconds - 86400 then Err "composite townsfolk extent or clock"
+    else when britain
+      is None -> Err "townsfolk world requires the Britain map"
+      is Just (map) -> when tlc-decode (buf + body) length owner.vendor owner.items map seconds
+        is Err (e) -> Err e
+        is Ok (town) -> when (if owner.vendor.vendor-count == bb-shop-count - 1 then bb-populate-one owner.vendor owner.items map (bb-shop-count - 1) else Ok 0)
+         is Err (e) -> Err e
+         is Ok (_) -> when bb-bind owner.vendor owner.items
+          is Err (e) -> Err e
+          is Ok (shops) -> let a = __record-set owner "town" (Just town)
+            in let b = __record-set owner "town-map" (Just map)
+            in let c = __record-set owner "town-seconds" seconds
+            in let d = __record-set owner "shops" (Just shops)
+            in let e = __record-set shops "known" owner.known in Ok owner
+  cc-write-network : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-network (owner) (buf) (count) = let at = cc-v6-size count
+    in let cleared = ts-zero (buf + at) (8 + cc-network-budget) 0
+    in when owner.network
+      is None -> Ok 0
+      is Just (n) -> when owner.town-map
+        is None -> Err "town network map unbound"
+        is Just (map) -> when tnlc-encode n map (buf + at + 8) cc-network-budget
+          is Err (e) -> Err e
+          is Ok (size) -> let length = poke-qword buf at size in Ok 0
+  cc-network-fresh : CompositeGame -> Result CompositeGame Text
+  cc-network-fresh (owner) = when owner.town
+    is None -> Ok owner
+    is Just (town) -> when tnv-new town
+      is Err (e) -> Err e
+      is Ok (n) -> if gla-market n.actions True < 0 then Err "town network market policy"
+        else let bound = __record-set owner "network" (Just n) in Ok owner
+  cc-read-network : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-network (owner) (buf) = if peek-qword buf 8 < 7 then cc-network-fresh owner
+    else let at = cc-rebase buf (cc-v6-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 (cc-network-budget / 8 * 8) then Ok owner else Err "composite town network padding")
+    else if length < 0 | length > cc-network-budget | not (cc-zero (buf + at + 8 + length) 0 ((cc-network-budget - length) / 8 * 8)) then Err "composite town network extent"
+    else when owner.town
+      is None -> Err "town network requires townsfolk"
+      is Just (town) -> when owner.town-map
+        is None -> Err "town network requires the Britain map"
+        is Just (map) -> when tnlc-decode (buf + at + 8) length town map
+          is Err (e) -> Err e
+          is Ok (n) -> let bound = __record-set owner "network" (Just n) in Ok owner
+  cc-write-skills : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-skills (owner) (buf) (count) = let at = cc-v9-size count
+    in when asc-encode owner.active get-ticks (buf + at + 8) asc-size
+      is Err (e) -> Err e
+      is Ok (size) -> let length = poke-qword buf at size in Ok 0
+  cc-read-skills : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-skills (owner) (buf) = if peek-qword buf 8 < 10 then Ok owner
+    else let at = cc-rebase buf (cc-v9-size owner.checkpoint.game.world.capacity)
+    in when asc-decode owner.active get-ticks (buf + at + 8) (peek-qword buf at)
+      is Err (e) -> Err e
+      is Ok (_) -> Ok owner
+  cc-write-production : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-production (owner) (buf) (count) = let at = cc-v10-size count
+    in let cleared = ts-zero (buf + at) (8 + cc-production-budget) 0
+    in when ghc-encode owner.production.harvest get-ticks (buf + at + 8) (ghc-size 256)
+      is Err (e) -> Err e
+      is Ok (size) -> let harvest = poke-qword buf at size
+        in let craft-at = at + 8 + ghc-size 256
+        in when gcrc-encode owner.production.craft get-ticks (buf + craft-at + 8) 112
+          is Err (e) -> Err e
+          is Ok (made) -> let craft = poke-qword buf craft-at made in Ok 0
+  cc-write-spawns : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-spawns (owner) (buf) (count) = let at = cc-v11-size count
+    in let cleared = ts-zero (buf + at) (8 + cc-spawn-budget) 0
+    in when owner.spawns
+      is Just (spawns) -> if gwsc-size spawns > cc-spawn-budget then Err "composite spawn extent"
+        else when gwsc-encode spawns owner.checkpoint.game.world get-ticks (buf + at + 8) cc-spawn-budget
+          is Err (e) -> Err e
+          is Ok (size) -> let length = poke-qword buf at size in Ok 0
+      is None -> if owner.spawn-held == 0 then Ok 0
+        else let copied = ws-copy owner.spawn-hold (buf + at + 8) owner.spawn-held 0
+        in let length = poke-qword buf at owner.spawn-held in Ok 0
+  cc-read-spawns : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-spawns (owner) (buf) = if peek-qword buf 8 < 12 then Ok owner
+    else let at = cc-rebase buf (cc-v11-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 cc-spawn-budget then Ok owner else Err "composite spawn padding")
+    else if length < 64 | length > cc-spawn-budget | not (cc-zero (buf + at + 8 + length) 0 ((cc-spawn-budget - length) / 8 * 8)) then Err "composite spawn extent"
+    else let hold = alloc-bytes length
+    in let copied = ws-copy (buf + at + 8) hold length 0
+    in let a = __record-set owner "spawn-hold" hold
+    in let b = __record-set owner "spawn-held" length in Ok owner
+  cc-read-production : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-production (owner) (buf) = if peek-qword buf 8 < 11 then Ok owner
+    else let at = cc-rebase buf (cc-v10-size owner.checkpoint.game.world.capacity)
+    in let size = peek-qword buf at
+    in let craft-at = at + 8 + ghc-size 256
+    in if size < 112 | size > ghc-size 256 | not (cc-zero (buf + at + 8 + size) 0 (ghc-size 256 - size)) then Err "composite harvest extent"
+    else when ghc-decode owner.production.harvest get-ticks (buf + at + 8) size
+      is Err (e) -> Err e
+      is Ok (_) -> when gcrc-decode owner.production.craft get-ticks (buf + craft-at + 8) (peek-qword buf craft-at)
+        is Err (e) -> Err e
+        is Ok (_) -> Ok owner
+ NSC1 is held at decode and applied by cg-speech-bind once speech is bound at startup.
+  cc-write-speech : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-speech (owner) (buf) (count) = let at = cc-v12-size count
+    in let cleared = ts-zero (buf + at) (8 + nsc-bytes) 0
+    in when owner.speech
+      is Just (speech) -> when nsc-encode speech (buf + at + 8) nsc-bytes
+        is Err (e) -> Err e
+        is Ok (size) -> let length = poke-qword buf at size in Ok 0
+      is None -> if owner.speech-held == 0 then Ok 0
+        else let copied = ws-copy owner.speech-hold (buf + at + 8) owner.speech-held 0
+        in let length = poke-qword buf at owner.speech-held in Ok 0
+  cc-read-speech : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-speech (owner) (buf) = if peek-qword buf 8 < 13 then Ok owner
+    else let at = cc-rebase buf (cc-v12-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 nsc-bytes then Ok owner else Err "composite speech padding")
+    else if length /= nsc-bytes then Err "composite speech extent"
+    else let hold = alloc-bytes length
+    in let copied = ws-copy (buf + at + 8) hold length 0
+    in let a = __record-set owner "speech-hold" hold
+    in let b = __record-set owner "speech-held" length in Ok owner
+  cc-write-gatherer : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-gatherer (owner) (buf) (count) = let at = cc-v13-size count
+    in let cleared = ts-zero (buf + at) (8 + cgg-bytes) 0
+    in when owner.gatherer
+      is None -> Ok 0
+      is Just (c) -> let length = poke-qword buf at (cgg-encode c owner.checkpoint.game.world (buf + at + 8)) in Ok 0
+  cc-read-gatherer : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-gatherer (owner) (buf) = if peek-qword buf 8 < 14 then Ok owner
+    else let capacity = owner.checkpoint.game.world.capacity
+    in let at = cc-rebase buf (cc-v13-size capacity)
+    in let extent = if peek-qword buf 8 == 14 & peek-qword buf 16 == cc-rebase buf (cc-v14a-size capacity) then cgg-v1-bytes else cgg-bytes
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 extent then Ok owner else Err "composite gatherer padding")
+    else if length /= extent then Err "composite gatherer extent"
+    else when owner.town
+      is None -> Err "gatherer requires townsfolk"
+      is Just (_) -> when cgg-load owner.vendor owner.items (buf + at + 8) extent
+        is Err (e) -> Err e
+        is Ok (c) -> let bound = __record-set owner "gatherer" (Just c) in Ok owner
+  cc-write-fighter : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-fighter (owner) (buf) (count) = let at = cc-v14-size count
+    in let cleared = ts-zero (buf + at) (8 + cgf-bytes) 0
+    in when owner.fighter
+      is None -> Ok 0
+      is Just (c) -> let length = poke-qword buf at (cgf-encode c owner.checkpoint.game.world (buf + at + 8)) in Ok 0
+  cc-read-fighter : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-fighter (owner) (buf) = if peek-qword buf 8 < 15 then Ok owner
+    else let at = cc-rebase buf (cc-v14-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 cgf-bytes then Ok owner else Err "composite fighter padding")
+    else if length /= cgf-bytes then Err "composite fighter extent"
+    else when cgf-decode owner.vendor.currency owner.checkpoint.game.world (buf + at + 8)
+      is Err (e) -> Err e
+      is Ok (c) -> let bound = __record-set owner "fighter" (Just c) in Ok owner
+  cc-write-british : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-british (owner) (buf) (count) = let at = cc-v15-size count
+    in let cleared = ts-zero (buf + at) (8 + cbe-bytes) 0
+    in when owner.british
+      is None -> Ok 0
+      is Just (c) -> let length = poke-qword buf at (cbe-encode c owner.checkpoint.game.world (buf + at + 8)) in Ok 0
+  cc-read-british : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-british (owner) (buf) = if peek-qword buf 8 < 16 then Ok owner
+    else let at = cc-rebase buf (cc-v15-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 cbe-bytes then Ok owner else Err "composite British errand padding")
+    else if length /= cbe-bytes then Err "composite British errand extent"
+    else when cbe-decode owner.checkpoint.game.world (buf + at + 8)
+      is Err (e) -> Err e
+      is Ok (c) -> let bound = __record-set owner "british" (Just c) in Ok owner
+  cc-write-miner : CompositeGame, Integer, Integer -> Integer
+  cc-write-miner (owner) (at) (i) = if i >= list-length owner.miners | i >= cgm-limit then 0
+    else let written = cgg-encode (list-at owner.miners i) owner.checkpoint.game.world (at + i * cgg-bytes) in cc-write-miner owner at (i + 1)
+  cc-write-miners : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-miners (owner) (buf) (count) = let at = cc-v16-size count
+    in let cleared = ts-zero (buf + at) (8 + cgm-limit * cgg-bytes) 0
+    in let n = poke-qword buf at (min cgm-limit (list-length owner.miners))
+    in let written = cc-write-miner owner (buf + at + 8) 0 in Ok 0
+  cc-read-miner : CompositeGame, Integer, Integer, Integer -> Result CompositeGame Text
+  cc-read-miner (owner) (at) (i) (n) = if i == n then Ok owner
+    else when cgg-load owner.vendor owner.items (at + i * cgg-bytes) cgg-bytes
+      is Err (e) -> Err e
+      is Ok (c) -> let kept = __record-set owner "miners" (owner.miners & [c]) in cc-read-miner owner at (i + 1) n
+  cc-read-miners : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-miners (owner) (buf) = if peek-qword buf 8 < 17 then Ok owner
+    else let at = cc-rebase buf (cc-v16-size owner.checkpoint.game.world.capacity)
+    in let n = peek-qword buf at
+    in if n < 0 | n > cgm-limit then Err "composite miners extent"
+    else if n == 0 then Ok owner
+    else when owner.town
+      is None -> Err "miners require townsfolk"
+      is Just (_) -> cc-read-miner owner (buf + at + 8) 0 n
+  cc-write-pages : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-pages (owner) (buf) (count) = let at = cc-v17-size count
+    in let n = poke-qword buf at hp-bytes
+    in let written = hp-encode owner.pages (buf + at + 8) in Ok 0
+  cc-read-pages : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-pages (owner) (buf) = if peek-qword buf 8 < 18 then Ok owner
+    else let at = cc-rebase buf (cc-v17-size owner.checkpoint.game.world.capacity)
+    in if peek-qword buf at /= hp-bytes then Err "composite help pages extent"
+    else when hp-decode owner.pages (buf + at + 8)
+      is Err (e) -> Err e
+      is Ok (_) -> Ok owner
+  cc-write-known : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-known (owner) (buf) (count) = let at = cc-v18-size count
+    in let n = poke-qword buf at nn-bytes
+    in let written = nn-encode owner.known (buf + at + 8) in Ok 0
+  cc-read-known : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-known (owner) (buf) = if peek-qword buf 8 < 19 then Ok owner
+    else let at = cc-rebase buf (cc-v18-size owner.checkpoint.game.world.capacity)
+    in if peek-qword buf at /= nn-bytes then Err "composite known names extent"
+    else when nn-decode owner.known (buf + at + 8)
+      is Err (e) -> Err e
+      is Ok (_) -> Ok owner
+  cc-write-farmer : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-farmer (owner) (buf) (count) = let at = cc-v21-size count
+    in let cleared = ts-zero (buf + at) (8 + cgg-bytes) 0
+    in when owner.farmer
+      is None -> Ok 0
+      is Just (c) -> let length = poke-qword buf at (cgg-encode c owner.checkpoint.game.world (buf + at + 8)) in Ok 0
+  cc-read-farmer : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-farmer (owner) (buf) = if peek-qword buf 8 < 22 then Ok owner
+    else let at = cc-rebase buf (cc-v21-size owner.checkpoint.game.world.capacity)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 cgg-bytes then Ok owner else Err "composite farmer padding")
+    else if length /= cgg-bytes then Err "composite farmer extent"
+    else when owner.town
+      is None -> Err "farmer requires townsfolk"
+      is Just (_) -> when cgg-load owner.vendor owner.items (buf + at + 8) cgg-bytes
+        is Err (e) -> Err e
+        is Ok (c) -> let bound = __record-set owner "farmer" (Just c) in Ok owner
+  cc-write-table : CompositeGame, Integer, Integer -> Result Integer Text
+  cc-write-table (owner) (buf) (count) = let at = cc-v22-size count
+    in let n = poke-qword buf at chs-bytes
+    in let copied = ws-copy owner.checkpoint.game.skills (buf + at + 8) chs-bytes 0 in Ok 0
+  cc-read-table : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-table (owner) (buf) = if peek-qword buf 8 < 23 then Ok owner
+    else let at = cc-rebase buf (cc-v22-size owner.checkpoint.game.world.capacity)
+    in if peek-qword buf at /= chs-bytes | not (chs-valid (buf + at + 8) 0) then Err "composite skill table extent or level"
+    else let copied = ws-copy (buf + at + 8) owner.checkpoint.game.skills chs-bytes 0 in Ok owner
+  cc-zero :Integer, Integer, Integer -> Boolean
+  cc-zero (buf) (at) (stop) = if at >= stop then True else if peek-qword buf at /= 0 then False else cc-zero buf (at + 8) stop
+  cc-read-magic : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-magic (owner) (buf) = if peek-qword buf 8 < 4 then Ok owner
+    else let count = owner.checkpoint.game.world.capacity
+    in let at = cc-rebase buf (cc-v3-size count)
+    in let length = peek-qword buf at
+    in if length == 0 then (if cc-zero (buf + at + 8) 0 (cc-magic-bytes count) then Ok owner else Err "composite magery padding")
+    else if length /= cc-magic-bytes count | peek-qword buf (at + 8) /= #324D474D then Err "composite magery extent"
+    else let hold = alloc-bytes length
+    in let copied = ws-copy (buf + at + 8) hold length 0
+    in let a = __record-set owner "magic-hold" hold
+    in let b = __record-set owner "magic-held" length in Ok owner
+  cc-magic-restore : CompositeGame, Magery -> Result Integer Text
+  cc-magic-restore (owner) (magic) = if owner.magic-held == 0 then Ok 0
+    else when mgc-read magic owner.magic-hold owner.magic-held get-ticks
+      is Err (e) -> Err e
+      is Ok (_) -> let released = __record-set owner "magic-held" 0 in Ok 1
+  cc-write-extra : CompositeGame, Integer -> Result Integer Text
+  cc-write-extra (owner) (buf) = let at = cc-base-size owner.checkpoint.game.world.capacity
+    in when gmc-encode owner.monsters owner.checkpoint.game.world owner.combat.tick (buf + at) 256
+      is Err (e) -> Err e
+      is Ok (size) -> let monster-size = poke-qword buf 96 size
+        in when gr-encode owner.resurrection (buf + at + 256) 32
+          is Err (e) -> Err e
+          is Ok (_) -> let shrine-size = poke-qword buf 104 32
+            in when owner.decoration
+              is None -> Ok 0
+              is Just (state) -> when wdc-write state (buf + at + 288) (wdc-size state)
+                is Err (e) -> Err e
+                is Ok (size) -> let door-size = poke-qword buf 112 size in Ok 0
+  cc-decode : Integer, Integer, Integer, Integer -> Result CompositeGame Text
+  cc-decode (buf) (size) (sequence) (tick) = cc-decode-with buf size sequence tick None
+  cc-decode-with : Integer, Integer, Integer, Integer, Maybe WdState -> Result CompositeGame Text
+  cc-decode-with (buf) (size) (sequence) (tick) (decoration) = cc-decode-town buf size sequence tick decoration None
+  cc-decode-town : Integer, Integer, Integer, Integer, Maybe WdState, Maybe WalkMap -> Result CompositeGame Text
+  cc-decode-town (buf) (size) (sequence) (tick) (decoration) (britain) =
+    if size < 128 then Err "composite checkpoint length invalid"
+    else let capacity = peek-qword buf 24
+    in let version = peek-qword buf 8
+    in let currency = if version >= 24 then euc-bytes else if version >= 9 then euc-v4-bytes else if version == 8 then euc-v2-bytes else euc-v1-bytes
+    in if version /= 23 & version /= 24 then Err "composite world predates format 23 (one skill store per character); start a fresh world"
+    else if capacity < 64 | capacity > world-max-objects
+      | size /= (if version == 1 then cc-base-size capacity else if version == 2 then cc-v2-size capacity else if version == 3 then cc-v3-size capacity else if version == 4 then cc-v4-size capacity else if version == 5 then cc-v5-size capacity else if version == 6 then cc-v6-size capacity else if version <= 9 then cc-v9-size capacity else if version == 10 then cc-v10-size capacity else if version == 11 then cc-v11-size capacity else if version == 12 then cc-v12-size capacity else if version == 13 then cc-v13-size capacity else if version == 14 then (if size == cc-v14a-size capacity - euc-bytes + currency then cc-v14a-size capacity else cc-v14-size capacity) else if version == 15 then cc-v15-size capacity else if version == 16 then cc-v16-size capacity else if version == 17 then cc-v17-size capacity else if version == 18 then cc-v18-size capacity else if version == 21 then cc-v21-size capacity else cc-size capacity) - euc-bytes + currency then Err "composite checkpoint capacity invalid"
+    else if peek-qword buf 0 /= #31434355 | peek-qword buf 16 /= size
+      | peek-qword buf 32 /= sequence | peek-qword buf 40 /= tick | sequence < 0 | tick < 0 then Err "composite checkpoint metadata mismatch"
+    else let vendor-size = peek-qword buf 72
+    in let currency-at = 128 + gc-size capacity
+    in let vendor-at = currency-at + currency
+    in let combat-at = vendor-at + cc-vendor-budget
+    in let items-at = combat-at + cbc-size capacity
+    in if peek-qword buf 56 /= gc-size capacity | peek-qword buf 64 /= currency | peek-qword buf 80 /= cbc-size capacity
+      | peek-qword buf 88 /= 16 + capacity * 40 | vendor-size < 1 | vendor-size > cc-vendor-budget then Err "composite section lengths invalid"
+    else if not ((if version >= 3 then peek-qword buf 120 == 48 else gc-zero-range buf (if version == 1 then 96 else 120) 128) & gc-zero-range buf (vendor-at + vendor-size) combat-at) then Err "composite reserved bytes invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "composite checksum invalid"
+    else when gc-decode-record (buf + 128) (gc-size capacity) tick sequence
+      is Err (e) -> Err e
+      is Ok (game) -> when euc-decode-record (buf + currency-at) currency tick sequence
+        is Err (e) -> Err e
+        is Ok (currency) -> when gvsc-decode (buf + vendor-at) vendor-size game.game currency.currency
+          is Err (e) -> Err e
+          is Ok (vendor) ->
+            let combat = cb-new game.game 0
+            in when cbc-decode combat (buf + combat-at) (cbc-size capacity)
+              is Err (e) -> Err e
+              is Ok (_) -> when gic-read game.game.world (buf + items-at) (16 + capacity * 40)
+                is Err (e) -> Err e
+                is Ok (items) -> when cg-context game vendor items combat
+                  is Err (e) -> Err e
+                  is Ok (owner) -> let bound = __record-set owner "decoration" decoration
+                    in when (if version == 1 then Ok owner else cc-read-extra owner buf)
+                      is Err (e) -> Err e
+                      is Ok (restored) -> when cc-read-grants restored buf
+                        is Err (e) -> Err e
+                        is Ok (granted) -> when cc-read-magic granted buf
+                          is Err (e) -> Err e
+                          is Ok (magical) -> when cc-read-town magical buf britain
+                            is Err (e) -> Err e
+                            is Ok (towned) -> when cc-read-network towned buf
+                              is Err (e) -> Err e
+                              is Ok (networked) -> when cc-read-skills networked buf
+                                is Err (e) -> Err e
+                                is Ok (skilled) -> when cc-read-production skilled buf
+                                  is Err (e) -> Err e
+                                  is Ok (produced) -> when cc-read-spawns produced buf
+                                    is Err (e) -> Err e
+                                    is Ok (spawned) -> when cc-read-speech spawned buf
+                                      is Err (e) -> Err e
+                                      is Ok (spoken) -> when cc-read-gatherer spoken buf
+                                        is Err (e) -> Err e
+                                        is Ok (gathered) -> when cc-read-fighter gathered buf
+                                          is Err (e) -> Err e
+                                          is Ok (fought) -> when cc-read-british fought buf is Err (e) -> Err e is Ok (errand) -> when cc-read-miners errand buf is Err (e) -> Err e is Ok (mined) -> when cc-read-pages mined buf is Err (e) -> Err e is Ok (paged) -> when cc-read-known paged buf is Err (e) -> Err e is Ok (known) -> when cc-read-farmer known buf is Err (e) -> Err e is Ok (farmed) -> cc-read-table farmed buf
+  cc-grants-valid : Integer, Integer -> Boolean
+  cc-grants-valid (buf) (i) = if i == 5 then True
+    else peek-qword buf (i * 8) >= 0 & peek-qword buf (i * 8) <= world-serial-mask & cc-grants-valid buf (i + 1)
+  cc-read-grants : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-grants (owner) (buf) = if peek-qword buf 8 < 3 then Ok owner
+    else let at = cc-rebase buf (cc-v2-size owner.checkpoint.game.world.capacity)
+    in if peek-qword buf at /= #31544743 | not (cc-grants-valid (buf + at + 8) 0) then Err "testing grant records invalid"
+    else let copied = ws-copy (buf + at + 8) owner.test-grants 40 0 in Ok owner
+  cc-read-extra : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-extra (owner) (buf) = let at = cc-rebase buf (cc-base-size owner.checkpoint.game.world.capacity)
+    in let size = peek-qword buf 96
+    in let count = peek-qword buf (at + 16)
+    in if count < 1 | count > 8 | size /= gmc-size count | peek-qword buf 104 /= 32
+      | not (gc-zero-range buf (at + size) (at + 256)) then Err "composite monster or shrine extent invalid"
+    else when gm-new owner.combat count 0 0 0 1
+     is Err (e) -> Err e
+     is Ok (monsters) -> let bound = __record-set owner "monsters" monsters
+      in when gmc-decode owner.monsters owner.checkpoint.game.world get-ticks (buf + at) size
+      is Err (e) -> Err e
+      is Ok (_) -> when gr-decode owner.resurrection (buf + at + 256) 32
+        is Err (e) -> Err e
+        is Ok (_) -> let bytes = peek-qword buf 112
+          in if bytes < 0 | bytes > 65560 | not (gc-zero-range buf (at + 288 + bytes) (at + 288 + 65560)) then Err "composite decoration extent invalid"
+          else when owner.decoration
+            is None -> if bytes == 0 then Ok owner else Err "installed decoration required by checkpoint"
+            is Just (state) -> if bytes == 0 then Ok owner else when wdc-read state (buf + at + 288) bytes
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner

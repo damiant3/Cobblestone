@@ -1,0 +1,57 @@
+Chapter: TownNetworkHillModelProof
+  cites Uoaix chapter TownNetwork
+  cites Uoaix chapter TownNetworkWeights
+  cites Uoaix chapter TownNetworkHillSeed
+  cites Uoaix chapter TownNetworkOutcomes
+  cites Foreword chapter Result
+
+  TnhmSummary = record { score : Integer, utility : Integer, negative : Integer }
+  tnhm-inputs : TnState, TnoData, Integer, Integer -> Integer
+  tnhm-inputs (s) (d) (row) (i) = if i == 30 then 0
+    else let a = tn-input s i (list-at d.inputs (row * 32 + i))
+    in tnhm-inputs s d row (i + 1)
+  tnhm-error : TnState, TnoData, Integer, Integer, Integer -> Integer
+  tnhm-error (s) (d) (row) (i) (sum) = if i == 14 then sum
+    else let diff = list-at s.outputs i - list-at d.outcomes (row * 14 + i)
+    in tnhm-error s d row (i + 1) (sum + diff * diff / 16)
+  tnhm-rows : TnModel, TnoData, TnState, TnhmSummary, Integer -> Integer
+  tnhm-rows (m) (d) (s) (summary) (row) = if row == d.count then 0
+    else let copied = tnhm-inputs s d row 0
+    in let h = list-set-at s.outputs 10 (list-at d.inputs (row * 32 + 30))
+    in let a = list-set-at s.outputs 11 (list-at d.inputs (row * 32 + 31))
+    in let ran = tn-step m s
+    in let selected = tn-pop s
+    in let utility = if selected == 0 then 0 else list-at d.outcomes (row * 14 + selected - 1)
+    in let error = tnhm-error s d row 0 0
+    in let total = __record-set summary "score" (summary.score + utility * 1000 - error)
+    in let gained = __record-set summary "utility" (summary.utility + utility)
+    in let bad = if utility < 0 then __record-set summary "negative" (summary.negative + 1) else summary
+    in tnhm-rows m d s summary (row + 1)
+  tnhm-summary : TnModel, TnoData -> TnhmSummary
+  tnhm-summary (m) (d) =
+    let summary = TnhmSummary { score = 0, utility = 0, negative = 0 }
+    in let run = tnhm-rows m d (tn-new 0) summary 0
+    in summary
+  tnhm-check : Text, Boolean -> [Console] Nothing
+  tnhm-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tnhm-models : TnoData -> [Console] Nothing
+  tnhm-models (d) = act
+    when tnh-seed-model 104729
+      is Err (message) -> print-line-uni ("FAIL initial model " & message)
+      is Ok (initial) -> when tn-trained-model 0
+        is Err (message) -> print-line-uni ("FAIL trained model " & message)
+        is Ok (trained) -> act
+          before <- tnhm-summary initial d
+          after <- tnhm-summary trained d
+          tnhm-check "CPU reproduces initial GPU score" (before.score == -26209708)
+          tnhm-check "CPU reproduces retained GPU score" (after.score == 9594886)
+          tnhm-check "hill model improves measured simulation utility" (after.utility > before.utility & after.negative < before.negative)
+          print-line-uni ("UTILITY " & show before.utility & " " & show after.utility)
+          print-line-uni ("NEGATIVE-CHOICES " & show before.negative & " " & show after.negative)
+        end
+  end
+  opening : [Console] Nothing = act
+    when tno-build 0
+      is Err (message) -> print-line-uni ("FAIL " & message)
+      is Ok (d) -> tnhm-models d
+  end

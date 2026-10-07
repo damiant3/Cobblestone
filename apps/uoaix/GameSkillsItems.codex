@@ -1,0 +1,411 @@
+Chapter: GameSkillsItems
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameOpcode
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter ItemActions
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WeaponData
+  cites Uoaix chapter ShieldData
+  cites Uoaix chapter ItemTable
+  cites Uoaix chapter ItemNames
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+ Codex port/adaptation of SphereServer Source-X receive.cpp and CClientEvent.cpp,
+ Apache-2.0. Attribution and changes: SkillsItems.md; license in Sphere-LICENSE.txt.
+
+  GsiItem = record { serial : Integer, layer : Integer, gump : Integer, movable : Boolean, stackable : Boolean }
+  GsiActor = record { serial : Integer, connection : Integer, holding : Integer, amount : Integer,
+    origin : WorldObject, pack : Integer, target : Integer, skill : Integer, next-lift : Integer }
+  GsiState = record { world : WorldTable, items : List GsiItem, actors : List GsiActor, next-target : Integer, tiles : Integer,
+    looted : Integer }
+  gsi-pickup-delay : Integer = (333 * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
+  gsi-spec : Integer, Integer, Integer, Integer -> GameOpcodeSpec
+  gsi-spec (opcode) (size) (min) (max) = GameOpcodeSpec { opcode = opcode, size = size, minimum = min, maximum = max }
+  gsi-specs : Integer -> List GameOpcodeSpec
+  gsi-specs (unused) = [gsi-spec #06 5 5 5, gsi-spec #07 7 7 7, gsi-spec #08 14 14 14,
+    gsi-spec #09 5 5 5, gsi-spec #12 0 5 256, gsi-spec #13 10 10 10, gsi-spec #34 10 10 10, gsi-spec #6C 19 19 19]
+  gsi-items : Integer, List GsiItem -> List GsiItem
+  gsi-items (left) (xs) = if left == 0 then xs else gsi-items (left - 1) (list-push xs (GsiItem { serial = 0, layer = 0, gump = 0, movable = False, stackable = False }))
+  gsi-actors : Integer, List GsiActor -> List GsiActor
+  gsi-actors (left) (xs) = if left == 0 then xs else gsi-actors (left - 1) (list-push xs (GsiActor {
+    serial = 0, connection = -1, holding = 0, amount = 0, origin = gs-item 0 0 0,
+    pack = 0, target = 0, skill = -1, next-lift = 0 }))
+  gsi-new : WorldTable -> GsiState
+  gsi-new (world) = GsiState { world = world, items = gsi-items world.capacity [], actors = gsi-actors 5 [], next-target = 1, tiles = 0,
+    looted = gsi-zeroed (world.capacity * 16) }
+  gsi-zeroed : Integer -> Integer
+  gsi-zeroed (bytes) = let buf = alloc-bytes bytes in let cleared = gsi-zero buf 0 bytes in buf
+  gsi-zero : Integer, Integer, Integer -> Integer
+  gsi-zero (buf) (at) (stop) = if at >= stop then 0 else let a = poke-qword buf at 0 in gsi-zero buf (at + 8) stop
+ UOX3 forensics.js lootedBy: the last character to lift an item out of a corpse (art 0x2006) and the corpse's serial, by its world slot.
+  gsi-loot : GsiState, Integer, Integer -> Integer
+  gsi-loot (state) (looter) (parent) = when world-get state.world parent
+    is Err (_) -> 0
+    is Ok (p) -> let slot = world-slot state.world parent in if p.graphic /= #2006 | slot < 0 then 0 else let who = poke-qword state.looted (slot * 16) looter in poke-qword state.looted (slot * 16 + 8) parent
+  gsi-slot : GameShard, Integer, Integer -> Integer
+  gsi-slot (shard) (serial) (i) = if i == 5 then -1 else if peek-qword shard.characters (i * 160) == serial then i else gsi-slot shard serial (i + 1)
+  gsi-register : GsiState, Integer, Integer, Integer, Boolean, Boolean -> Integer
+  gsi-register (state) (serial) (layer) (gump) (movable) (stackable) = let at = world-slot state.world serial
+    in if at < 0 | layer < 0 | layer > 29 | gump < 0 | gump > 65535 | (stackable & (layer /= 0 | gump /= 0)) then -1
+    else if peek-qword state.world.buffer (24 + at * 80) /= 2 then -1
+    else let registered = world-set-layer state.world serial layer
+    in if registered < 0 then -1 else let item = list-at state.items at
+    in if item.serial == serial & item.layer == layer & item.gump == gump & item.movable == movable & item.stackable == stackable then 0
+    else let a = __record-set item "serial" serial
+    in let b = __record-set item "layer" layer
+    in let c = __record-set item "gump" gump
+    in let d = __record-set item "movable" movable
+    in let e = __record-set item "stackable" stackable
+    in let touched = world-touch state.world in 0
+  gsi-known : GsiState, Integer -> Boolean
+  gsi-known (state) (serial) = let at = world-slot state.world serial
+    in if at < 0 then False else (list-at state.items at).serial == serial
+  gsi-meta : GsiState, Integer -> GsiItem
+  gsi-meta (state) (serial) = list-at state.items (world-slot state.world serial)
+  gsi-equipment : GsiState, GameShard, Integer, Integer -> Integer
+  gsi-equipment (state) (shard) (slot) (i) = if i == 4 then 0
+    else let serial = peek-qword shard.characters (slot * 160 + 112 + i * 8)
+    in let added = if serial == 0 | gsi-known state serial then 0 else gsi-register state serial (if i == 0 then 5 else if i == 1 then 4 else if i == 2 then 11 else 16) 0 (i < 2) False
+    in gsi-equipment state shard slot (i + 1)
+  gsi-session : GsiState, GameShard, GameInput, Integer -> GsiActor
+  gsi-session (state) (shard) (input) (slot) = let a = list-at state.actors slot
+    in let reset = if a.serial /= input.session.serial | a.connection /= input.connection then
+      let s = __record-set a "serial" input.session.serial
+      in let c = __record-set a "connection" input.connection
+      in let h = __record-set a "holding" 0
+      in let t = __record-set a "target" 0
+      in let d = __record-set a "next-lift" 0 in 0 else 0
+    in let equipped = gsi-equipment state shard slot 0 in a
+  gsi-pack-find : WorldTable, Integer, Integer -> Integer
+  gsi-pack-find (world) (owner) (i) = let equipped = world-layer-serial world owner 21
+    in let slot = world-slot world equipped
+    in if slot >= 0 & (if slot < 0 then False else peek-qword world.buffer (56 + slot * 80) == #0E75) then equipped
+    else gsi-child-art world (world-first-child world owner) #0E75 0
+  gsi-child-art : WorldTable, Integer, Integer, Integer -> Integer
+  gsi-child-art (world) (serial) (graphic) (best) = if serial == 0 then best
+    else let slot = world-slot world serial
+    in if slot < 0 then best else let at = 16 + slot * 80
+    in let matches = peek-qword world.buffer (at + 8) == 2 & peek-qword world.buffer (at + 40) == graphic
+    in let next = if matches & (best == 0 | slot < world-slot world best) then serial else best
+    in gsi-child-art world (world-next-sibling world serial) graphic next
+  gsi-pack : GsiState, GsiActor -> Result WorldObject Text
+  gsi-pack (state) (actor) = let found = gsi-pack-find state.world actor.serial 0
+    in when (if found == 0 then world-create state.world (gs-item actor.serial #0E75 0) else Ok found)
+      is Err (e) -> Err e
+      is Ok (serial) -> let saved = __record-set actor "pack" serial
+        in let registered = gsi-register state serial 21 #003C False False
+        in world-get state.world serial
+  gsi-name : GsiState, WorldObject -> Text
+  gsi-name (state) (item) = let g = item.graphic
+    in if g == #0F0C | g == #0F07 then (if item.health <= 1 then "lesser " else if item.health == 2 then "" else "greater ") & (if g == #0F0C then "heal potion" else "cure potion")
+    else if g == #0F0A then (if item.health <= 1 then "lesser " else if item.health == 2 then "" else if item.health == 3 then "greater " else "deadly ") & "poison potion"
+    else let named = if g == #09B2 then "" else it-name state.tiles g item.amount
+    in if named /= "" then named
+    else let art = item-art-name g in if art == "" then "item" else art
+  gsi-denied : Text -> GameReply
+  gsi-denied (note) = gs-reply [sip-message #FFFFFFFF #FFFF 6 note] note
+  gsi-placement : GsiState, WorldObject -> List Integer
+  gsi-placement (state) (item) = if item.container == 0 then sip-ground item
+    else if gsi-known state item.serial & (gsi-meta state item.serial).layer > 0
+      & bit-and item.container world-item-bit == 0 then gp-equip item (gsi-meta state item.serial).layer
+    else sip-item item
+  gsi-bounce : GsiState, GsiActor, Integer -> GameReply
+  gsi-bounce (state) (actor) (reason) = let serial = actor.holding
+    in let clear = __record-set actor "holding" 0
+    in when world-get state.world serial
+      is Err (e) -> gs-reply [sip-bounce reason] "items:bounce"
+      is Ok (item) -> gs-reply [sip-bounce reason,gsi-placement state item] "items:bounce"
+  gsi-copy-object : WorldObject, WorldObject -> Integer
+  gsi-copy-object (src) (dst) = let a = __record-set dst "serial" src.serial
+    in let b = __record-set dst "kind" src.kind
+    in let c = __record-set dst "x" src.x
+    in let d = __record-set dst "y" src.y
+    in let e = __record-set dst "z" src.z
+    in let f = __record-set dst "graphic" src.graphic
+    in let g = __record-set dst "hue" src.hue
+    in let h = __record-set dst "container" src.container
+    in let j = __record-set dst "amount" src.amount
+    in let k = __record-set dst "health" src.health in 0
+  gsi-same : WorldObject, WorldObject -> Boolean
+  gsi-same (a) (b) = a.serial == b.serial & a.kind == b.kind & a.x == b.x & a.y == b.y & a.z == b.z
+    & a.graphic == b.graphic & a.hue == b.hue & a.container == b.container & a.amount == b.amount & a.health == b.health
+  gsi-access : GsiState, GsiActor, WorldObject -> Boolean
+  gsi-access (state) (actor) (item) = when world-get state.world actor.serial
+    is Err (e) -> False
+    is Ok (mobile) -> ia-access state.world mobile item 65
+  gsi-lift : GsiState, GsiActor, Integer, Integer, Integer -> GameReply
+ The 1.25 client sends amount 0 when it drags a single item off the paperdoll.
+  gsi-lift (state) (actor) (serial) (asked) (now) =
+    if actor.holding /= 0 then gs-reply [sip-bounce 4] "items:already-holding"
+    else if now < actor.next-lift | not (gsi-known state serial) then gs-reply [sip-bounce 0] "items:lift-refused"
+    else when world-get state.world serial
+      is Err (e) -> gs-reply [sip-remove serial,sip-bounce 0] "items:absent"
+      is Ok (item) -> let meta = gsi-meta state serial
+        in let amount = if asked == 0 then item.amount else asked
+        in if not meta.movable | amount < 1 | amount > item.amount | (amount /= item.amount & not meta.stackable) then gs-reply [sip-bounce 0] ("items:amount-or-type serial=" & show serial & " graphic=" & show item.graphic
+          & " movable=" & (if meta.movable then "1" else "0") & " stackable=" & (if meta.stackable then "1" else "0")
+          & " asked=" & show amount & " have=" & show item.amount & " layer=" & show meta.layer)
+        else if not (gsi-access state actor item) then gs-reply [sip-bounce 1] "items:out-of-reach"
+        else let copied = gsi-copy-object item actor.origin
+        in let held = __record-set actor "holding" serial
+        in let untargeted = __record-set actor "target" 0
+        in let count = __record-set actor "amount" amount
+        in let timer = __record-set actor "next-lift" (now + gsi-pickup-delay)
+        in let marked = gsi-loot state actor.serial item.container
+        in gs-reply ([sip-remove serial] & gsi-sound-at state actor.serial #57) "items:lift"
+  gsi-sound-at : GsiState, Integer, Integer -> List (List Integer)
+  gsi-sound-at (state) (serial) (sound) = when world-get state.world serial
+    is Err (_) -> []
+    is Ok (m) -> [gp-put16 (gp-put16 (gp-put16 [#54,1,bit-and (bit-shr sound 8) 255,bit-and sound 255,0,0] m.x) m.y) (bit-and m.z #FFFF)]
+  gsi-drop-sound : WorldObject -> Integer
+  gsi-drop-sound (item) = if item.graphic >= #0EEA & item.graphic <= #0EF2 then
+      (if item.amount == 1 then #35 else if item.amount == 2 then #32 else if item.amount <= 4 then #36 else #37)
+    else if item.container == 0 & item.graphic >= #1BE3 & item.graphic <= #1BFA then #33
+    else if item.container == 0 then #42 else #57
+  gsi-unwear : GameShard, Integer, Integer, Integer -> Integer
+  gsi-unwear (shard) (slot) (serial) (i) = if i == 4 then 0 else let at = slot * 160 + 112 + i * 8
+    in let cleared = if peek-qword shard.characters at == serial then poke-qword shard.characters at 0 else 0
+    in gsi-unwear shard slot serial (i + 1)
+  gsi-apply : WorldTable, Integer, WorldAction -> Result Integer Text
+  gsi-apply (world) (now) (action) = when wa-prepare (WorldCheckpoint { world = world, sequence = 0, tick = now }) action
+    is Err (e) -> Err e
+    is Ok (undo) -> let accepted = wa-accept undo in Ok 0
+  gsi-updates : GsiState, List WorldEvent, Integer, List (List Integer) -> List (List Integer)
+  gsi-updates (state) (events) (i) (packets) = if i == list-length events then packets else let event = list-at events i
+    in let packet = if event.operation == 3 then sip-remove event.object.serial else gsi-placement state event.object
+    in gsi-updates state events (i + 1) (list-push packets packet)
+  gsi-drop-to : GsiState, GameShard, GsiActor, Integer, ItemDestination, Integer -> GameReply
+  gsi-drop-to (state) (shard) (actor) (slot) (destination) (now) = when world-get state.world actor.holding
+    is Err (e) -> gsi-bounce state actor 5
+    is Ok (item) -> if not (gsi-same item actor.origin) | not (gsi-known state item.serial) then gsi-bounce state actor 5
+      else let meta = gsi-meta state item.serial
+      in let request = ItemMove { actor = actor.serial, item = item.serial, amount = actor.amount, destination = destination }
+      in let admission = ItemAdmission { movable = meta.movable, stackable = meta.stackable, destination = True }
+      in when ia-plan (WorldCheckpoint { world = state.world, sequence = 0, tick = now }) now request admission
+        is Err (e) -> gsi-bounce state actor 5
+        is Ok (action) -> when gsi-apply state.world now action
+          is Err (e) -> gsi-bounce state actor 5
+          is Ok (done) -> let full = actor.amount == item.amount
+            in let cleared = if full then gsi-unwear shard slot item.serial 0 else 0
+            in let last = list-at action.events (list-length action.events - 1)
+            in let registered = if last.operation == 1 then gsi-register state last.object.serial meta.layer meta.gump meta.movable meta.stackable else 0
+            in let released = __record-set actor "holding" 0
+            in gs-reply (gsi-updates state action.events 0 [] & gsi-sound-at state actor.serial (gsi-drop-sound last.object)) "items:drop"
+  gsi-drop : GsiState, GameShard, GsiActor, Integer, WalkMap, List Integer, Integer -> GameReply
+  gsi-drop (state) (shard) (actor) (slot) (map) (packet) (now) =
+    if actor.holding == 0 | gp-u32 packet 1 /= actor.holding then gsi-bounce state actor 5
+    else let target = gp-u32 packet 10
+    in let x = gp-u16 packet 5
+    in let y = gp-u16 packet 7
+    in let z = if list-at packet 9 >= 128 then list-at packet 9 - 256 else list-at packet 9
+    in if target == #FFFFFFFF | target == 0 then when walk-height map x y z
+      is Err (e) -> gsi-bounce state actor 1
+      is Ok (ground) -> if ground /= z then gsi-bounce state actor 1 else gsi-drop-to state shard actor slot (ItemGround x y z) now
+    else if target == actor.serial then when gsi-pack state actor
+      is Err (e) -> gsi-bounce state actor 5
+      is Ok (pack) -> gsi-drop-to state shard actor slot (ItemContainer pack.serial 20 20) now
+    else if not (gsi-known state target) then gsi-bounce state actor 5
+    else let dest = gsi-meta state target
+    in if dest.gump > 0 then gsi-drop-to state shard actor slot (ItemContainer target (if x == 65535 then 20 else x) (if y == 65535 then 20 else y)) now
+    else if dest.stackable then gsi-drop-to state shard actor slot (ItemStack target) now else gsi-bounce state actor 5
+  gsi-equip : GsiState, GameShard, GsiActor, Integer, List Integer, Integer -> GameReply
+  gsi-equip (state) (shard) (actor) (slot) (packet) (now) =
+    if actor.holding == 0 | gp-u32 packet 1 /= actor.holding | gp-u32 packet 6 /= actor.serial | not (gsi-known state actor.holding) then gsi-bounce state actor 5
+    else let meta = gsi-meta state actor.holding
+    in let index = if meta.layer == 5 then 0 else if meta.layer == 4 then 1 else -1
+    in if index < 0 then gsi-equip-other state shard actor slot meta now
+    else if actor.amount /= 1 then gsi-bounce state actor 5
+    else let at = slot * 160 + 112 + index * 8
+    in let occupied = peek-qword shard.characters at
+    in if occupied /= 0 & occupied /= actor.holding then gsi-bounce state actor 5
+    else when world-get state.world actor.holding
+      is Err (e) -> gsi-bounce state actor 5
+      is Ok (item) -> if not (gsi-same item actor.origin) | not (gsi-access state actor item) then gsi-bounce state actor 5
+        else let placed = ia-copy item item.serial 1 actor.serial 0 0 0
+        in let action = WorldAction { sequence = 1, tick = now, actor = actor.serial, kind = 4, target = item.serial, events = [ia-event 1 now 2 placed] }
+        in when gsi-apply state.world now action
+          is Err (e) -> gsi-bounce state actor 5
+          is Ok (done) -> let cleared = gsi-unwear shard slot item.serial 0
+            in let equipped = poke-qword shard.characters at item.serial
+            in let released = __record-set actor "holding" 0
+            in gs-reply [gp-equip placed meta.layer] "items:equip"
+ Hand layers follow ServUO item definitions: BaseAxe and FishingPole are
+ two-handed (2); Pickaxe, SmithHammer, Shovel, Spellbook and knives one-handed (1). A shield is worn in the left hand (2)
+ beside a one-handed weapon (UOX3 IL_LEFTHAND), and refused beside a two-handed one.
+  gsi-tool-layer : Integer -> Integer
+  gsi-tool-layer (g) = if g == #0F43 | g == #0DC0 | shd-ar g > 0 then 2
+    else if g == #0E86 | g == #13E3 | g == #0F39 | g == #0EFA | g == #0F52 | g == #0EC4 then 1 else 0
+  gsi-worn-clash : GsiState, Integer, Integer, Boolean -> Boolean
+  gsi-worn-clash (state) (serial) (layer) (shield) = if serial == 0 then False
+    else let next = world-next-sibling state.world serial
+    in let worn = if gsi-known state serial then (gsi-meta state serial).layer else 0
+    in let guard = worn == 2 & (when world-get state.world serial is Err (_) -> False is Ok (o) -> shd-ar o.graphic > 0)
+    in let hands = layer >= 1 & layer <= 2 & worn >= 1 & worn <= 2 & ((layer == 2 & not shield) | (worn == 2 & not guard))
+    in (worn > 0 & (worn == layer | hands)) | gsi-worn-clash state next layer shield
+ UOX3 cPlayerAction.cpp: a weapon whose strength requirement (weapons_t2a str) exceeds the wearer's strength (gp-stat)
+ is refused and bounced with dictionary.ENG 1188.
+  gsi-equip-other : GsiState, GameShard, GsiActor, Integer, GsiItem, Integer -> GameReply
+  gsi-equip-other (state) (shard) (actor) (slot) (meta) (now) = when world-get state.world actor.holding
+    is Err (e) -> gsi-bounce state actor 5
+    is Ok (item) -> let layer = if meta.layer > 0 then meta.layer else gsi-tool-layer item.graphic
+      in if layer <= 0 | layer > 25 | actor.amount /= 1 | item.amount /= 1 then gsi-bounce state actor 5
+      else if slot >= 0 & wpn-strength (wpn-stats item.graphic) > gp-stat (shard.characters + slot * 160) 0 then
+        (let bounced = gsi-bounce state actor 5
+        in gs-reply (bounced.packets & [sip-message #FFFFFFFF #FFFF 6 "You are not strong enough to use that."]) "items:too-weak")
+      else if not (gsi-same item actor.origin) | not (gsi-access state actor item) then gsi-bounce state actor 5
+      else if gsi-worn-clash state (world-first-child state.world actor.serial) layer (shd-ar item.graphic > 0) then gsi-bounce state actor 5
+      else let placed = ia-copy item item.serial 1 actor.serial 0 0 0
+      in let action = WorldAction { sequence = 1, tick = now, actor = actor.serial, kind = 4, target = item.serial, events = [ia-event 1 now 2 placed] }
+      in when gsi-apply state.world now action
+        is Err (e) -> gsi-bounce state actor 5
+        is Ok (done) -> let registered = gsi-register state item.serial layer meta.gump meta.movable meta.stackable
+          in let released = __record-set actor "holding" 0
+          in gs-reply [gp-equip placed layer] "items:equip"
+  gsi-contents : GsiState, Integer, Integer, List Integer, Integer -> List Integer
+  gsi-contents (state) (parent) (i) (out) (count) = gsi-contents-child state (world-first-child state.world parent) out count
+  gsi-contents-child : GsiState, Integer, List Integer, Integer -> List Integer
+  gsi-contents-child (state) (serial) (out) (count) = if serial == 0 then
+      let a = list-set-at out 3 (bit-and (bit-shru count 8) 255)
+      in let b = list-set-at out 4 (bit-and count 255) in sip-length out
+    else let slot = world-slot state.world serial
+    in let next = world-next-sibling state.world serial
+    in if slot < 0 then gsi-contents-child state next out count
+    else if peek-qword state.world.buffer (24 + slot * 80) /= 2 then gsi-contents-child state next out count
+    else gsi-contents-child state next (sip-contained out (world-read-slot state.world slot)) (count + 1)
+  gsi-use : GsiState, GameShard, GsiActor, Integer, Integer -> GameReply
+  gsi-use (state) (shard) (actor) (slot) (raw) = let serial = bit-and raw #7FFFFFFF
+    in if serial == actor.serial then when gsi-pack state actor
+      is Err (e) -> gsi-denied "Your backpack is unavailable."
+      is Ok (pack) -> gs-reply [gp-equip pack 21,sip-paperdoll-titled shard.characters slot actor.serial (ga-is-british shard.accounts)] "items:paperdoll"
+    else if not (gsi-known state serial) then gsi-denied "You cannot use that item."
+    else when world-get state.world serial
+      is Err (e) -> gsi-denied "That item is gone."
+      is Ok (item) -> if not (gsi-access state actor item) then gsi-denied "That is out of reach."
+        else let meta = gsi-meta state serial
+        in if meta.gump == 0 then gsi-denied "That item has no use action."
+        else gs-reply [sip-open serial meta.gump,gsi-contents state serial 0 [#3C,0,0,0,0] 0] "items:container"
+  gsi-skill-number : List Integer, Integer, Integer -> Integer
+  gsi-skill-number (packet) (i) (n) = if i >= list-length packet then -1 else let c = list-at packet i
+    in if c == 0 | c == 32 then if i == 4 then -1 else n
+    else if c < 48 | c > 57 | n > 4 then -1 else gsi-skill-number packet (i + 1) (n * 10 + c - 48)
+  gsi-skill : GsiState, GsiActor, List Integer -> GameReply
+  gsi-skill (state) (actor) (packet) = if actor.holding /= 0 then gsi-bounce state actor 5
+    else let skill = gsi-skill-number packet 4 0
+    in if skill < 0 | skill > 45 | list-at packet (list-length packet - 1) /= 0 then gsi-denied "Invalid skill request."
+    else if skill /= 1 & skill /= 2 & skill /= 3 & skill /= 4 & skill /= 16 & skill /= 19 & skill /= 36 then gsi-denied "That skill effect is not available yet."
+    else if state.next-target > 65535 then gsi-denied "Target context exhausted."
+    else let target = #47530000 + state.next-target
+    in let next = __record-set state "next-target" (state.next-target + 1)
+    in let selected = __record-set actor "skill" skill
+    in let pending = __record-set actor "target" target
+    in gs-reply [sip-message #FFFFFFFF #FFFF 6 "Select an object to examine.",sip-target target] "skills:target"
+  gsi-target : GsiState, GsiActor, List Integer -> GameReply
+  gsi-target (state) (actor) (packet) = if actor.target == 0 | gp-u32 packet 2 /= actor.target then gsi-denied "That target is no longer active."
+    else let cleared = __record-set actor "target" 0
+    in let serial = gp-u32 packet 7
+    in if serial == 0 then gs-reply [] "skills:target-cancelled"
+    else when world-get state.world serial
+      is Err (e) -> gsi-denied "That object is gone."
+      is Ok (obj) -> if obj.kind == 2 & (actor.skill == 3 | actor.skill == 4 | actor.skill == 19 | actor.skill == 36) & gsi-known state serial & gsi-access state actor obj then
+          gs-reply [sip-message serial obj.graphic 6 (gsi-name state obj & ": amount " & show obj.amount & ", hue " & show obj.hue & ".")] "skills:examined-item"
+        else if obj.kind == 1 & (actor.skill == 1 | actor.skill == 2 | actor.skill == 16) & obj.serial == actor.serial then gs-reply [sip-message serial obj.graphic 6 ("Health: " & show obj.health & ".")] "skills:examined-mobile"
+        else gsi-denied "You cannot examine that object."
+  gsi-look-mobile : GameShard, WorldObject -> GameReply
+  gsi-look-mobile (shard) (mobile) = let slot = gsi-slot shard mobile.serial 0
+    in if slot >= 0 then gs-reply [sip-name-label mobile (sip-titled-name shard.characters slot (ga-is-british shard.accounts))] "items:look character"
+    else let at = gsi-account-character shard.accounts mobile.serial 0
+    in if at < 0 then gs-reply [] "items:look mobile"
+    else gs-reply [sip-name-label mobile (sip-titled-name (ga-slots shard.accounts (at / 8)) (int-mod at 8) False)] "items:look character"
+ The bound account's slots are shard.characters; every other account's characters live in its own record,
+ so a click names another player's character, online or logged out, from there (UOAIX-31).
+  gsi-account-slot : Integer, Integer, Integer -> Integer
+  gsi-account-slot (base) (serial) (s) = if s == 5 then -1 else if peek-qword base (s * 160) == serial then s else gsi-account-slot base serial (s + 1)
+  gsi-account-character : Integer, Integer, Integer -> Integer
+  gsi-account-character (table) (serial) (i) = if table == 0 | serial == 0 | i >= ga-count table then -1
+    else let s = gsi-account-slot (ga-slots table i) serial 0
+    in if s >= 0 then i * 8 + s else gsi-account-character table serial (i + 1)
+  gsi-handle-at : GsiState, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
+  gsi-handle-at (state) (shard) (input) (map) (host-port) (packet) (now) =
+    if list-length packet == 0 then Ok None else let op = list-at packet 0
+    in let size = if op == #06 | op == #09 then 5 else if op == #07 then 7 else if op == #08 then 14 else if op == #13 | op == #34 then 10 else if op == #6C then 19 else if op == #12 then 0 else -1
+    in if size < 0 then Ok None
+    else if (size > 0 & list-length packet /= size) | (size == 0 & (list-length packet < 5 | list-length packet > 256)) then Err "skills/items packet length"
+    else if size == 0 & gp-u16 packet 1 /= list-length packet then Err "skills/items variable length"
+    else if op == #12 & list-at packet 3 /= #24 then Ok None
+    else if op == #12 & list-length packet > 64 then Err "skill command length"
+    else if op == #34 & list-at packet 5 /= 5 then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #47530000 then Ok None
+    else if state.world.buffer /= shard.world.buffer | state.world.capacity /= shard.world.capacity then Err "skills/items world binding"
+    else if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= shard.active then Err "skills/items requires active game session"
+    else let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 then Err "skills/items character slot absent"
+    else when world-get state.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> if mobile.kind /= 1 | (mobile.health <= 0 & not (op == #06 & bit-and (gp-u32 packet 1) #7FFFFFFF == mobile.serial)) then Ok (Just (gsi-denied "You cannot act now."))
+        else let actor = gsi-session state shard input slot
+        in let reply = if op == #34 then
+            if gp-u32 packet 6 == actor.serial then gs-reply [gs-skills shard actor.serial] "skills:list" else gsi-denied "You may query only your own skills."
+          else if op == #12 then gsi-skill state actor packet
+          else if op == #6C then gsi-target state actor packet
+          else if op == #06 then gsi-use state shard actor slot (gp-u32 packet 1)
+          else if op == #07 then gsi-lift state actor (gp-u32 packet 1) (gp-u16 packet 5) now
+          else if op == #08 then gsi-drop state shard actor slot map packet now
+          else if op == #13 then gsi-equip state shard actor slot packet now
+          else when world-get state.world (gp-u32 packet 1)
+            is Err (e) -> gsi-denied "That object is gone."
+            is Ok (item) -> if item.kind == 1 then gsi-look-mobile shard item else if item.kind == 2 & gsi-known state item.serial & gsi-access state actor item then gs-reply [sip-message item.serial item.graphic 6 ((if item.amount > 1 & item.graphic /= #2006 then show item.amount & " " else "") & gsi-name state item)] "items:look" else gsi-denied "That is out of reach."
+        in Ok (Just reply)
+  gsi-handle : GsiState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  gsi-handle (state) (shard) (input) (map) (host-port) (packet) = gsi-handle-at state shard input map host-port packet get-ticks
+
+  gsi-ground-view : GsiState, GsiActor, Integer, List (List Integer) -> List (List Integer)
+  gsi-ground-view (state) (actor) (i) (packets) = when world-get state.world actor.serial
+    is Err (_) -> packets
+    is Ok (mobile) -> gsi-ground-tiles state mobile 0 packets
+  gsi-ground-tiles : GsiState, WorldObject, Integer, List (List Integer) -> List (List Integer)
+  gsi-ground-tiles (state) (mobile) (i) (packets) = if i == 25 then packets
+    else let x = mobile.x + int-mod i 5 - 2
+    in let y = mobile.y + i / 5 - 2
+    in let found = gsi-ground-tile state mobile (world-tile-first state.world x y) packets
+    in gsi-ground-tiles state mobile (i + 1) found
+  gsi-ground-tile : GsiState, WorldObject, Integer, List (List Integer) -> List (List Integer)
+  gsi-ground-tile (state) (mobile) (serial) (packets) = if serial == 0 then packets
+    else let slot = world-slot state.world serial
+    in let next = world-tile-next state.world serial
+    in if slot < 0 | not (gsi-known state serial) then gsi-ground-tile state mobile next packets
+    else let at = 16 + slot * 80
+    in let z = peek-qword state.world.buffer (at + 32)
+    in if peek-qword state.world.buffer (at + 8) /= 2 | z < mobile.z - 16 | z > mobile.z + 16 then gsi-ground-tile state mobile next packets
+    else gsi-ground-tile state mobile next (list-push packets (sip-ground (world-read-slot state.world slot)))
+  gsi-after-entry : GsiState, GameShard, GameInput, GameReply -> Result GameReply Text
+  gsi-after-entry (state) (shard) (input) (reply) =
+    if input.mode /= 2 | input.session.phase /= 2 | reply.close then Ok reply
+    else let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 | shard.active /= input.session.serial | state.world.buffer /= shard.world.buffer then Err "inventory entry binding"
+    else let actor = gsi-session state shard input slot
+    in when gsi-pack state actor
+      is Err (e) -> Err e
+      is Ok (pack) -> Ok (GameReply { packets = gsi-ground-view state actor 0 (gsi-worn state (world-first-child state.world actor.serial) reply.packets), close = False, note = reply.note })
+ Layer 29 is the bank box, which the client receives only when it is opened.
+  gsi-worn : GsiState, Integer, List (List Integer) -> List (List Integer)
+  gsi-worn (state) (serial) (packets) = if serial == 0 then packets
+    else let next = world-next-sibling state.world serial
+    in let layer = if gsi-known state serial then (gsi-meta state serial).layer else 0
+    in if layer <= 0 | layer == 29 then gsi-worn state next packets
+    else when world-get state.world serial
+      is Err (_) -> gsi-worn state next packets
+      is Ok (item) -> gsi-worn state next (list-push packets (gp-equip item layer))
+
+  gsi-route : GsiState, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console] Result GameReply Text
+  gsi-route (state) (shard) (input) (map) (host-port) (packet) =
+    let entering = if list-length packet == 0 then False else input.mode == 2 & input.session.phase == 1
+      & (list-at packet 0 == 0 | list-at packet 0 == #5D)
+    in act
+      routed <- gn-route (gsi-handle state) shard input map host-port packet
+      when routed
+        is Err (e) -> Err e
+        is Ok (reply) -> if entering & input.session.phase == 2 then gsi-after-entry state shard input reply else Ok reply
+    end

@@ -1,0 +1,70 @@
+Chapter: ActiveSkillsCodec
+  cites Uoaix chapter ActiveSkillsState
+
+ ASC1 version 2 holds magic/version/next-context/actor-count, then for each of five actors
+ serial/seed/attempts/cooldown. Levels live in the shard's skill table. The owner supplies integrity.
+
+  asc-size : Integer = 192
+  asc-actor-valid : ActiveSkills, Integer, Integer -> Boolean
+  asc-actor-valid (s) (buf) (i) = let at = 32 + i * 32
+    in let serial = peek-qword buf at
+    in let seed = peek-qword buf (at + 8)
+    in let attempts = peek-qword buf (at + 16)
+    in let remaining = peek-qword buf (at + 24)
+    in if seed < 0 | seed > #FFFFFFFF | attempts < 0 | attempts > 1000000000 | remaining < 0 | remaining > gh-ticks 1000 then False
+    else if serial == 0 then remaining == 0 & attempts == 0
+    else asc-bound s serial i
+  asc-bound : ActiveSkills, Integer, Integer -> Boolean
+  asc-bound (s) (serial) (i) = if gsi-slot s.vendor.game serial 0 == i then True
+    else let at = gsi-account-character s.vendor.game.accounts serial 0
+    in at >= 0 & int-mod at 8 == i
+  asc-actors-valid : ActiveSkills, Integer, Integer -> Boolean
+  asc-actors-valid (s) (buf) (i) = if i == 5 then True
+    else if not (asc-actor-valid s buf i) then False else asc-actors-valid s buf (i + 1)
+  asc-write-actors : ActiveSkills, Integer, Integer, Integer -> Integer
+  asc-write-actors (s) (now) (buf) (i) = if i == 5 then 0
+    else let a = list-at s.actors i
+    in let at = 32 + i * 32
+    in let b = poke-qword buf at a.serial
+    in let c = poke-qword buf (at + 8) a.skills.seed
+    in let d = poke-qword buf (at + 16) a.skills.attempts
+    in let e = poke-qword buf (at + 24) (if a.serial == 0 then 0 else max 0 (min (gh-ticks 1000) (a.next - now)))
+    in asc-write-actors s now buf (i + 1)
+  asc-encode : ActiveSkills, Integer, Integer, Integer -> Result Integer Text
+  asc-encode (s) (now) (buf) (capacity) =
+    if s.next-target < 1 | s.next-target > 65536 | now < 0 | now > 9223372036854775807 - gh-ticks 30000 then Err "active skills codec state"
+    else if capacity < asc-size then Err "active skills codec destination"
+    else let a = poke-qword buf 0 #31435341
+    in let b = poke-qword buf 8 2
+    in let c = poke-qword buf 16 s.next-target
+    in let d = poke-qword buf 24 5
+    in let actors = asc-write-actors s now buf 0
+    in if not (asc-actors-valid s buf 0) then Err "active skills codec bindings" else Ok asc-size
+  asc-read-actors : ActiveSkills, Integer, Integer, Integer -> Integer
+  asc-read-actors (s) (now) (buf) (i) = if i == 5 then 0
+    else let a = list-at s.actors i
+    in let at = 32 + i * 32
+    in let shown = as-reveal s a
+    in let b = __record-set a "serial" (peek-qword buf at)
+    in let c = __record-set a.skills "seed" (peek-qword buf (at + 8))
+    in let d = __record-set a.skills "attempts" (peek-qword buf (at + 16))
+    in let e = __record-set a "next" (now + peek-qword buf (at + 24))
+    in let f = __record-set a "connection" -1
+    in let g = __record-set a "cursor" 0
+    in let h = __record-set a "skill" -1
+    in let m = __record-set a "due" 0
+    in let n = __record-set a "patient" 0
+    in let o = __record-set a "bandage" 0
+    in let q = __record-set a "menu" 0
+    in let r = __record-set a "tracking" 0
+    in let u = __record-set a "category" 0
+    in let v = __record-set a "choice-count" 0
+    in asc-read-actors s now buf (i + 1)
+  asc-decode : ActiveSkills, Integer, Integer, Integer -> Result Integer Text
+  asc-decode (s) (now) (buf) (size) =
+    if now < 0 | now > 9223372036854775807 - gh-ticks 30000 | size /= asc-size then Err "active skills codec extent"
+    else let next = peek-qword buf 16
+    in if peek-qword buf 0 /= #31435341 | peek-qword buf 8 /= 2 | next < 1 | next > 65536 | peek-qword buf 24 /= 5 then Err "active skills codec format"
+    else if not (asc-actors-valid s buf 0) then Err "active skills codec bindings"
+    else let actors = asc-read-actors s now buf 0
+    in let saved = __record-set s "next-target" next in Ok size

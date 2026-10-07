@@ -1,0 +1,68 @@
+Chapter: CompositeEvents
+  cites Uoaix chapter GamePackets
+
+ A bounded ring of recent speech and combat packets that every other connection's pulse delivers once,
+ in range, or to one listener alone. Packet bytes are copied into buffers allocated with the ring, because
+ a callback's own allocations lie above the serving loop's scratch mark. Volatile: a restart empties it.
+ 256 rows hold a pulse's swings, health and deaths for eight links between one connection's pulses.
+  CeEvent = record { sequence : Integer, serial : Integer, also : Integer, only : Integer, x : Integer, y : Integer,
+    buffer : Integer, length : Integer, ghost : Boolean }
+  CeRing = record { events : List CeEvent, next : Integer }
+  ce-limit : Integer = 256
+  ce-range : Integer = 18
+  ce-bytes : Integer = 512
+  ce-rows : Integer, List CeEvent -> List CeEvent
+  ce-rows (i) (xs) = if i == ce-limit then xs
+    else ce-rows (i + 1) (list-push xs (CeEvent { sequence = 0, serial = 0, also = 0, only = 0, x = 0, y = 0,
+      buffer = alloc-bytes ce-bytes, length = 0, ghost = False }))
+  ce-new : Integer -> CeRing
+  ce-new (unused) = CeRing { events = ce-rows 0 (__list-with-capacity ce-limit), next = 1 }
+  ce-copy : Integer, List Integer, Integer -> Integer
+  ce-copy (buffer) (packet) (i) = if i == list-length packet then 0
+    else let put = poke-byte buffer i (list-at packet i) in ce-copy buffer packet (i + 1)
+  ce-add : CeRing, Integer, Integer, Integer, List Integer -> Integer
+  ce-add (ring) (serial) (x) (y) (packet) = ce-add-to ring serial 0 0 x y packet
+  ce-add-to : CeRing, Integer, Integer, Integer, Integer, Integer, List Integer -> Integer
+  ce-add-to (ring) (serial) (also) (only) (x) (y) (packet) = if list-length packet > ce-bytes then 0
+    else let row = list-at ring.events (int-mod ring.next ce-limit)
+    in let copied = ce-copy row.buffer packet 0
+    in let a = __record-set row "sequence" ring.next
+    in let b = __record-set row "serial" serial
+    in let g = __record-set row "also" also
+    in let h = __record-set row "only" only
+    in let k = __record-set row "ghost" False
+    in let c = __record-set row "x" x
+    in let d = __record-set row "y" y
+    in let e = __record-set row "length" (list-length packet)
+    in let f = __record-set ring "next" (ring.next + 1) in 1
+  ce-near : CeEvent, Integer, Integer -> Boolean
+  ce-near (event) (x) (y) = event.x >= x - ce-range & event.x <= x + ce-range & event.y >= y - ce-range & event.y <= y + ce-range
+ A ghost's words enter the ring clear and marked; a listener who is not dead and holds no Spirit Speak (UOX3 spiritspeak.js
+ SOCK_SPIRITSPEAK) hears them in ghost speech.
+  ce-add-ghost : CeRing, Integer, Integer, Integer, List Integer -> Integer
+  ce-add-ghost (ring) (serial) (x) (y) (packet) = let added = ce-add-to ring serial 0 0 x y packet
+    in if added == 0 then 0 else let marked = __record-set (list-at ring.events (int-mod (ring.next - 1) ce-limit)) "ghost" True in 1
+  ce-pending : CeRing, Integer, Boolean, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  ce-pending (ring) (listener) (clear) (x) (y) (heard) (i) (acc) = if i == ce-limit then acc
+    else let event = list-at ring.events (int-mod (ring.next + i) ce-limit)
+    in let wanted = event.sequence > heard & (if event.only /= 0 then event.only == listener
+      else event.serial /= listener & event.also /= listener & ce-near event x y)
+    in let bytes = if wanted then __buf-read-bytes event.buffer 0 event.length else []
+    in let heard-as = if not wanted | clear | not event.ghost then bytes else list-at (ce-ghostly [bytes] 0 []) 0
+    in ce-pending ring listener clear x y heard (i + 1) (if wanted then list-push acc heard-as else acc)
+  ce-speech : List (List Integer), Integer, Integer, List (List Integer) -> List (List Integer)
+  ce-speech (packets) (speaker) (i) (acc) = if i == list-length packets then acc
+    else let p = list-at packets i
+    in let spoken = list-length p > 7 & (list-at p 0 == #1C | list-at p 0 == #AE) & gp-u32 p 3 == speaker
+    in ce-speech packets speaker (i + 1) (if spoken then list-push acc p else acc)
+ Others hear a ghost in UO's ghost speech: every letter of the text (from byte 44 of 0x1C, 48 of 0xAE) becomes o or O.
+ The copies are new lists, so the speaker's own reply keeps its words.
+  ce-ghostly : List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  ce-ghostly (packets) (i) (out) = if i == list-length packets then out
+    else let p = list-at packets i
+    in ce-ghostly packets (i + 1) (list-push out (ce-ghost-text p (if list-at p 0 == #1C then 44 else 48) 0 (__list-with-capacity (list-length p))))
+  ce-ghost-text : List Integer, Integer, Integer, List Integer -> List Integer
+  ce-ghost-text (p) (start) (i) (out) = if i == list-length p then out
+    else let b = list-at p i
+    in let letter = i >= start & ((b >= 65 & b <= 90) | (b >= 97 & b <= 122))
+    in ce-ghost-text p start (i + 1) (list-push out (if not letter then b else if int-mod (i * 7 + b) 3 == 0 then 79 else 111))

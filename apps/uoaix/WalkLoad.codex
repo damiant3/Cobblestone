@@ -1,0 +1,130 @@
+Chapter: WalkLoad
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter MulClient
+  cites Uoaix chapter MulReaders
+  cites Foreword chapter Result
+
+ Tiledata is 1036288 bytes for the admitted legacy client. Columns keep
+ map/index transfers bounded; statics are streamed in seven-byte records.
+ All source bytes stay in guest scratch memory and are reclaimed on success.
+
+  WalkLoader = record { map : WalkMap, client : MulClient, tiledata : Integer,
+    column : Integer, index : Integer, statics : Integer, static-size : Integer }
+
+  wl-land-cells : WalkLoader, Integer, Integer, Integer -> Result Integer Text
+  wl-land-cells (loader) (x) (block-y) (cell) =
+    if cell >= 64 then Ok 0
+    else let mark = __heap-save
+    in let at-x = x + int-mod cell 8
+    in let at-y = block-y + cell / 8
+    in when walk-decode-land loader.map at-x at-y loader.column 196 loader.tiledata 1036288
+      is Err (e) -> Err e
+      is Ok (done) -> let restored = __heap-restore mark in wl-land-cells loader x block-y (cell + 1)
+
+  wl-static-cells : WalkLoader, Integer, Integer, Integer, Integer -> Result Integer Text
+  wl-static-cells (loader) (x) (y) (size) (i) =
+    if i >= size / 7 then Ok 0
+    else let mark = __heap-save
+    in when walk-decode-static loader.map x y loader.statics size i loader.tiledata 1036288
+      is Err (e) -> Err e
+      is Ok (done) -> let restored = __heap-restore mark in wl-static-cells loader x y size (i + 1)
+
+  wl-statics : WalkLoader, Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] Result Integer Text
+  wl-statics (loader) (x) (y) (offset) (left) =
+    if left <= 0 then Ok 0
+    else let count = if left > 65534 then 65534 else left
+    in let mark = __heap-save
+    in act
+      read <- mc-range loader.client 2 offset count loader.statics
+      when read
+        is Err (e) -> Err e
+        is Ok (size) -> when wl-static-cells loader x y size 0
+          is Err (e) -> Err e
+          is Ok (done) -> let restored = __heap-restore mark
+            in wl-statics loader x y (offset + count) (left - count)
+    end
+
+  wl-block : WalkLoader, Integer, Integer -> [Network.Read, Network.Write] Result Integer Text
+  wl-block (loader) (x) (y) = when mul-map-range x y
+    is Err (e) -> Err e
+    is Ok (range) -> act
+      read <- mc-range loader.client 0 range.offset range.length loader.column
+      when read
+        is Err (e) -> Err e
+        is Ok (size) -> when wl-land-cells loader x y 0
+          is Err (e) -> Err e
+          is Ok (done) -> when mul-staidx-range x y
+            is Err (e) -> Err e
+            is Ok (index-range) -> act
+              read-index <- mc-range loader.client 1 index-range.offset index-range.length loader.index
+              when read-index
+                is Err (e) -> Err e
+                is Ok (index-size) -> when mul-index loader.index index-size loader.static-size 7
+                  is Err (e) -> Err e
+                  is Ok (static-range) -> wl-statics loader x y static-range.offset static-range.length
+            end
+    end
+
+  wl-blocks : WalkLoader, Integer -> [Console, Network.Read, Network.Write] Result Integer Text
+  wl-blocks (loader) (i) =
+    let map = loader.map
+    in let columns = map.width / 8
+    in if i >= columns * (map.height / 8) then Ok i
+    else let x = map.x + int-mod i columns * 8
+    in let y = map.y + i / columns * 8
+    in let mark = __heap-save
+    in act
+      loaded <- wl-block loader x y
+      when loaded
+        is Err (e) -> Err e
+        is Ok (done) -> act
+          if int-mod i 16 == 0 then print-line-uni ("MAP blocks " & show i) else print-line-uni ""
+          let restored = __heap-restore mark
+          in wl-blocks loader (i + 1)
+        end
+    end
+
+  wl-tiledata : WalkLoader, Integer -> [Network.Read, Network.Write] Result Integer Text
+  wl-tiledata (loader) (offset) =
+    if offset >= 1036288 then Ok offset
+    else let count = if 1036288 - offset > 65536 then 65536 else 1036288 - offset
+    in let mark = __heap-save
+    in act
+      read <- mc-range loader.client 3 offset count (loader.tiledata + offset)
+      when read
+        is Err (e) -> Err e
+        is Ok (size) -> let restored = __heap-restore mark in wl-tiledata loader (offset + count)
+    end
+
+  wl-fill : WalkLoader -> [Console, Network.Read, Network.Write] Result Integer Text
+  wl-fill (loader) = act
+    sized <- mc-fetch loader.client "/size/2" 8 loader.index
+    when sized
+      is Err (e) -> Err e
+      is Ok (size) ->
+        if mul-u32 loader.index 4 /= 0 then Err "statics file exceeds admitted legacy extent"
+        else let set-size = __record-set loader "static-size" (mul-u32 loader.index 0)
+        in act
+          tiles <- wl-tiledata loader 0
+          when tiles
+            is Err (e) -> Err e
+            is Ok (done) -> wl-blocks loader 0
+        end
+  end
+
+  wl-load : Integer, Integer, Integer, Integer -> [Console, Network.Read, Network.Write] Result WalkMap Text
+  wl-load (x) (y) (width) (height) =
+    if int-mod x 8 /= 0 | int-mod y 8 /= 0 | int-mod width 8 /= 0 | int-mod height 8 /= 0 then Err "walk window block alignment"
+    else when walk-map-new x y width height
+      is Err (e) -> Err e
+      is Ok (map) ->
+        let mark = __heap-save
+        in let loader = WalkLoader { map = map, client = MulClient { port = 40000 },
+          tiledata = alloc-bytes 1036288, column = alloc-bytes 196, index = alloc-bytes 12,
+          statics = alloc-bytes 65536, static-size = 0 }
+        in act
+          filled <- wl-fill loader
+          when filled
+            is Err (e) -> Err e
+            is Ok (done) -> let restored = __heap-restore mark in Ok map
+        end

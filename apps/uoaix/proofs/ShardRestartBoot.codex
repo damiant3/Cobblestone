@@ -1,0 +1,97 @@
+Chapter: ShardRestartBoot
+  cites Uoaix chapter ShardStore
+  cites Uoaix chapter ShardCheckpoint
+  cites Uoaix chapter ShardFixture
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter BootVolume
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter EconomyMoney
+  cites Kernel chapter VirtioBlkX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Result
+
+  shb-check : Text, Boolean -> [Console] Nothing
+  shb-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  shb-hold : Integer -> Integer
+  shb-hold (unused) = let yielded = process-yield in shb-hold 0
+
+  shb-verify : ShardCheckpoint, Integer -> [Console] Nothing
+  shb-verify (state) (now) = act
+    shb-check "committed shard metadata restored" (state.game.state.checkpoint.tick == 0 & state.game.state.checkpoint.sequence == 0 & state.economy.tick == 0 & state.economy.sequence == 0)
+    when world-get state.game.game.world 1
+      is Err (e) -> print-line-uni ("FAIL mobile " & e)
+      is Ok (obj) -> shb-check "committed nonempty world restored" (world-count state.game.game.world == 1 & obj.x == 1420 & obj.y == 1698 & obj.z == -5 & obj.hue == 1002)
+    shb-check "committed economy restored" (state.economy.world.hour == 0 & state.economy.world.money.purse-count == 1 & em-total state.economy.world.money 1 == 0 & list-length state.economy.world.catalog.items > 60)
+    shb-check "committed report and job restored" (state.panel.world.report-count == 1 & state.panel.world.job-state == 1 & text-contains (admin-report-peek state.panel.world) "é λ" & text-contains (admin-job-peek state.panel.world) "fixture job")
+    shb-check "committed audit retained and authority cleared" (state.panel.log-count == 2 & state.panel.active == 0 & state.panel.pending-state == 0 & list-at state.panel.log 2046 == -2 & state.panel.actor == "After boot")
+    shb-check "committed clock rebased" (state.panel.clock.last-tick == now & state.panel.clock.day-seconds == 3600 & state.panel.clock.phase == 17 & state.panel.clock.due == 2)
+  end
+
+  shb-store : UoStore -> [Console, Device.Block] Nothing
+  shb-store (store) = if store.head == 0 then
+    when shf-new 4
+      is Err (e) -> print-line-uni ("FAIL fixture " & e)
+      is Ok (state) ->
+        let s0 = __record-set state.game.state.checkpoint "sequence" 0
+        in let s1 = __record-set state.economy "sequence" 0
+        in act
+          mismatch <- shard-store-save store state
+          shb-check "owner mismatch refuses before disk mutation" (is-err mismatch & store.head == 0 & store.fault == 0)
+          absent <- shard-store-restore store 7 "After boot" state.panel.gms
+          shb-check "blank composite recovery refused" (is-err absent & store.head == 0)
+          t0 <- __record-set state.game.state.checkpoint "tick" 0
+          t1 <- __record-set state.economy "tick" 0
+          saved <- shard-store-save store state
+          when saved
+            is Err (e) -> print-line-uni ("FAIL save " & e)
+            is Ok (at) -> act
+              print-line-uni "SHARD STORE SAVED"
+              print-line-uni ("FAIL hold returned " & show (shb-hold 0))
+            end
+        end
+    else let now = get-ticks
+    in let gms = gm-memory-new 0
+    in act
+      restored <- shard-store-restore store now "After boot" gms
+      when restored
+        is Err (e) -> if e == "shard suffix requires an encompassing input replay path" then print-line-uni "PASS unsupported committed suffix refused"
+          else print-line-uni ("FAIL restore " & e)
+        is Ok (state) -> shb-verify state now
+    end
+
+  shb-device : UoDevice -> [Console, Device.Block] Nothing
+  shb-device (device) = act
+    region <- uv-open-region device
+    when region
+      is Err (e) -> print-line-uni ("FAIL GPT " & e)
+      is Ok (part) -> act
+        opened <- us-open-on device part.start part.sectors
+        when opened
+          is Err (e) -> print-line-uni ("FAIL store " & e)
+          is Ok (store) -> shb-store store
+      end
+  end
+
+  opening : [Console, Device.Port, Device.Block] Integer = act
+    initialized <- runtime-init 0
+    print-line-uni "SHARD STORE START"
+    when vbx-find pci-scan-all
+      is Ok (state) -> act
+        print-line-uni "SHARD STORE DEVICE virtio"
+        shb-device (UoVirtio state)
+      end
+      is Err (e) -> if e == "virtio block device absent" then act
+        print-line-uni "SHARD STORE DEVICE ide"
+        selected <- block-select 0
+        shb-device UoIde
+      end
+      else print-line-uni ("FAIL device " & e)
+    print-line-uni "SHARD STORE END"
+    port-out-32 244 0
+  end
+
+Page 1

@@ -1,0 +1,210 @@
+Chapter: GameCarveReplay
+  cites Uoaix chapter GameCarve
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter GameVendorCodec
+  cites Uoaix chapter CreatureCarveData
+  gcp-check : Text, Boolean -> [Console] Nothing
+  gcp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  gcp-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  gcp-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  gcp-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  gcp-opcode (result) (opcode) (i) =
+    let packets = gcp-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | gcp-opcode result opcode (i + 1)
+  gcp-count : Result (Maybe GameReply) Text, Integer, Integer, Integer -> Integer
+  gcp-count (result) (opcode) (i) (n) =
+    let packets = gcp-packets result
+    in if i == list-length packets then n
+    else gcp-count result opcode (i + 1) (if list-at (list-at packets i) 0 == opcode then n + 1 else n)
+  gcp-said : Result (Maybe GameReply) Text, Text -> Boolean
+  gcp-said (result) (text) = when result
+    is Err (_) -> False
+    is Ok (reply) -> when reply is None -> False is Just (r) -> gcp-text r.packets text 0
+  gcp-text : List (List Integer), Text, Integer -> Boolean
+  gcp-text (packets) (text) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in if list-at p 0 == #1C & list-length p >= 44 + text-length text & gcp-bytes p text 0 then True
+    else gcp-text packets text (i + 1)
+  gcp-bytes : List Integer, Text, Integer -> Boolean
+  gcp-bytes (packet) (text) (i) = if i == text-length text then True
+    else if list-at packet (44 + i) /= to-unicode (char-code (char-at text i)) then False
+    else gcp-bytes packet text (i + 1)
+  gcp-fill : WalkMap, Integer -> Integer
+  gcp-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in gcp-fill map (i + 1)
+  gcp-login : Integer -> List Integer
+  gcp-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  gcp-create : Integer -> List Integer
+  gcp-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Carver" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  gcp-tools : EpWorld -> Boolean
+  gcp-tools (w) = let stone1 = eh-source w 1 100
+    in let stone2 = eh-source w 1 100
+    in let branch = eh-source w 2 100
+    in let a = eh-harvest w 1 stone1
+    in let b = eh-harvest w 1 stone2
+    in let c = eh-harvest w 1 branch
+    in let axe = ep-craft w 1 2 1
+    in let knife = ep-craft w 1 3 1
+    in let stone3 = eh-source w 1 100
+    in let stone4 = eh-source w 1 100
+    in let branch2 = eh-source w 2 100
+    in let d = eh-harvest w 1 stone3
+    in let e = eh-harvest w 1 stone4
+    in let f = eh-harvest w 1 branch2
+    in let hatchet = ep-craft w 1 2 1
+    in let butcher = ep-craft w 1 3 1
+    in axe == 1 & knife == 1 & hatchet == 1 & butcher == 1
+  gcp-tool : GvWorld, GsiState, Integer, Integer, Integer -> Integer
+  gcp-tool (v) (items) (pack) (item) (graphic) =
+    when world-create v.game.world (gs-item pack graphic 0)
+      is Err (_) -> 0
+      is Ok (serial) ->
+        let p = ep-actor v.currency.world 1
+        in let quality = ep-at p.quality item / ep-at p.stock item
+        in let lot = gv-add-lot v serial 1 item quality 32 0
+        in let known = gsi-register items serial 0 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  gcp-fish : GvWorld, GsiState, Integer, Integer -> Integer
+  gcp-fish (v) (items) (pack) (n) = if ep-find v.currency.world 1 9 n < 0 then 0
+    else when world-create v.game.world (__record-set (gs-item pack #09CC 0) "amount" n)
+      is Err (_) -> 0
+      is Ok (serial) ->
+        let lot = gv-add-lot v serial 1 9 700 32 0
+        in let known = gsi-register items serial 0 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  gcp-amount : WorldTable, Integer, Integer -> Integer
+  gcp-amount (world) (serial) (graphic) = when world-get world serial is Err (_) -> -1 is Ok (o) -> if o.graphic == graphic then o.amount else -1
+  gcp-corpse : GvWorld, Integer, Integer, Integer -> Integer
+  gcp-corpse (v) (x) (y) (body) =
+    when world-create v.game.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = 8198, hue = 0, container = 0, amount = body, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> serial
+  gcp-target : Integer, Integer, Integer, Integer -> List Integer
+  gcp-target (context) (serial) (x) (y) =
+    let a = gp-put32 (list-push (gp-put32 [#6C,0] context) 0) serial
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,0]) 8198
+  gcp-lookup : WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  gcp-lookup (map) (mobile) (x) (y) (z) (graphic) = 0
+  gcp-handle : GameCarve, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
+  gcp-handle (c) (shard) (input) (map) (packet) (now) = when gca-handler-at c shard input packet now
+    is Err (e) -> Err e
+    is Ok (Just (reply)) -> Ok (Just reply)
+    is Ok (None) -> gh-handler-at gcp-lookup gh-produce c.harvest shard input map 2593 packet now
+  gcp-use : GameCarve, GameShard, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  gcp-use (c) (shard) (input) (map) (tool) (corpse) (x) (y) (now) =
+    let begin = gcp-handle c shard input map (gp-put32 [6] tool) now
+    in let context = (list-at c.harvest.requests 0).target
+    in gcp-handle c shard input map (gcp-target context corpse x y) (now + 1)
+  gcp-parts : WorldTable, Integer, Integer, Integer -> Integer
+  gcp-parts (world) (serial) (graphic) (n) = if serial == 0 then n
+    else let found = when world-get world serial is Err (_) -> 0 is Ok (o) -> if o.graphic == graphic then o.amount else 0
+    in gcp-parts world (world-next-sibling world serial) graphic (n + found)
+  gcp-health : WorldTable, Integer -> Integer
+  gcp-health (world) (serial) = when world-get world serial is Err (_) -> -1 is Ok (o) -> o.health
+  gcp-live : GameCarve, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
+  gcp-live (c) (shard) (input) (map) (pack) = act
+    v <- c.harvest.vendor
+    w <- v.currency.world
+    p <- ep-actor w 1
+    gcp-check "the goat's carve table is two meat and eight hides; a human's is empty" (cvd-carve (cvd-table 0) 209 0 == 2 & cvd-carve (cvd-table 0) 209 1 == 8 & cvd-carve (cvd-table 0) 400 1 == 0)
+    gcp-check "a shorn sheep (0xDF) carves as a wooly one (0xCF), three meat" (cvd-carve (cvd-table 0) #00DF 0 == 3 & cvd-carve (cvd-table 0) #00CF 0 == 3)
+    knife <- gcp-tool v c.harvest.items pack 27 #0EC4
+    axe <- gcp-tool v c.harvest.items pack 26 #0F43
+    lumber-axe <- gcp-tool v c.harvest.items pack 26 #0F49
+    butcher <- gcp-tool v c.harvest.items pack 27 #13F6
+    when world-get shard.world input.session.serial
+      is Err (e) -> print-line-uni ("FAIL player " & e)
+      is Ok (me) -> act
+        goat <- gcp-corpse v (me.x + 1) me.y 209
+        begun <- gcp-handle c shard input map (gp-put32 [6] knife) 100
+        gcp-check "a knife opens a target cursor" (knife > 0 & gcp-opcode begun #6C 0 & gcp-said begun "What do you want to use this on?")
+        meat <- ep-at p.stock 8
+        hides <- ep-at p.stock 7
+        carved <- gcp-handle c shard input map (gcp-target (list-at c.harvest.requests 0).target goat (me.x + 1) me.y) 101
+        gcp-check "carving a goat corpse puts two meat and eight hides into the corpse and bows" (gcp-opcode carved #6E 0 & gcp-count carved #25 0 0 == 2 & gcp-parts shard.world (world-first-child shard.world goat) #09F1 0 == 2 & gcp-parts shard.world (world-first-child shard.world goat) #1078 0 == 8 & gcp-said carved "You skin it, and the hides are now in the corpse.")
+        gcp-check "the carved parts are gathered into the economy with lots and the census holds" (ep-at p.stock 8 == meat + 2 & ep-at p.stock 7 == hides + 8 & ep-census w 1 & gvsc-valid v & gcp-health shard.world goat == 1)
+        again <- gcp-use c shard input map knife goat (me.x + 1) me.y 2000
+        gcp-check "a carved corpse yields nothing more" (gcp-said again "You see nothing useful to carve from the corpse." & ep-at p.stock 7 == hides + 8)
+        second <- gcp-corpse v me.x (me.y + 1) 209
+        chopped <- gcp-use c shard input map axe second me.x (me.y + 1) 4000
+        gcp-check "a hatchet carves through the harvest cursor" (gcp-said chopped "You carve away some meat." & ep-at p.stock 7 == hides + 16 & gvsc-valid v)
+        third <- gcp-corpse v (me.x + 1) (me.y + 1) 209
+        swung <- gcp-use c shard input map lumber-axe third (me.x + 1) (me.y + 1) 4500
+        gcp-check "a lumber axe does not carve a corpse" (lumber-axe > 0 & not (gcp-said swung "You carve away some meat.") & gcp-health shard.world third == 0 & ep-at p.stock 7 == hides + 16)
+        butchered <- gcp-use c shard input map butcher third (me.x + 1) (me.y + 1) 5000
+        gcp-check "a butcher knife carves" (butcher > 0 & gcp-said butchered "You skin it, and the hides are now in the corpse." & ep-at p.stock 7 == hides + 24 & gcp-health shard.world third == 1)
+        human <- gcp-corpse v (me.x - 1) me.y 400
+        empty <- gcp-use c shard input map knife human (me.x - 1) me.y 6000
+        gcp-check "a human corpse yields nothing and is marked" (gcp-said empty "You see nothing useful to carve from the corpse." & gcp-health shard.world human == 1)
+        far <- gcp-corpse v (me.x + 3) me.y 209
+        distant <- gcp-use c shard input map knife far (me.x + 3) me.y 8000
+        gcp-check "a corpse three tiles away is out of reach" (gcp-said distant "That is too far away." & gcp-health shard.world far == 0)
+        notcorpse <- gcp-use c shard input map knife axe me.x me.y 10000
+        gcp-check "a knife on anything but a corpse is refused" (gcp-said notcorpse "You cannot carve that.")
+        sword <- when world-create shard.world (gs-item pack #0F5E 0) is Err (_) -> 0 is Ok (s) -> s
+        known <- gsi-register c.harvest.items sword 0 0 True False
+        swing <- gcp-handle c shard input map (gp-put32 [6] sword) 12000
+        gcp-check "a sword opens no carving cursor" (sword > 0 & not (gcp-opcode swing #6C 0))
+        fish <- gcp-fish v c.harvest.items pack 2
+        caught <- ep-at p.stock 9
+        made <- ep-at w.crafted 9
+        sliced <- gcp-use c shard input map knife fish me.x me.y 14000
+        steaks <- gv-lot v fish 0
+        gcp-check "a knife slices two backpack fish into eight raw fish steaks (0x097A), as UOX3 9338, and the census holds" (fish > 0 & gcp-said sliced "You slice your fish into raw fish steaks."
+          & gcp-amount shard.world fish #097A == 8 & steaks >= 0 & (list-at v.lots (max 0 steaks)).quantity == 8 & ep-at p.stock 9 == caught + 6 & ep-at w.crafted 9 == made + 6
+          & ep-census w 1 & gvsc-valid v)
+        loose <- when world-create shard.world (WorldObject { serial = 0, kind = 2, x = me.x + 1, y = me.y, z = 0, graphic = #09CD, hue = 0, container = 0, amount = 1, health = 0 }) is Err (_) -> 0 is Ok (s) -> s
+        ground <- gcp-use c shard input map knife loose (me.x + 1) me.y 16000
+        gcp-check "a fish on the ground answers UOX3 775 and stays a fish" (loose > 0 & gcp-said ground "You can't use material outside your backpack." & gcp-amount shard.world loose #09CD == 1)
+        found <- ep-find w 1 9 1
+        player <- list-at v.players 0
+        landed <- gh-place c.harvest player 9 1 700 0 18000
+        gcp-check "a fish caught at the steaks' grade starts its own stack rather than joining the steaks" (found == 0 & is-ok landed & gcp-amount shard.world fish #097A == 8 & (list-at v.lots (max 0 steaks)).quantity == 8 & gvsc-valid v)
+        trout <- gcp-fish v c.harvest.items pack 1
+        hacked <- gcp-use c shard input map axe trout me.x me.y 20000
+        gcp-check "a hatchet's cursor on a backpack fish slices it, not the harvest path" (trout > 0 & gcp-said hacked "You slice your fish into raw fish steaks." & gcp-amount shard.world trout #097A == 4 & gvsc-valid v)
+      end
+  end
+  gcp-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  gcp-run (shard) (map) (currency) = act
+    gcp-check "the economy crafts two axes and two knives" (gcp-tools currency.world)
+    input <- gn-input-with (gsi-specs 0) 1
+    when gs-relay-key shard
+      is Err (e) -> print-line-uni ("FAIL relay " & e)
+      is Ok (key) -> act
+        keyed <- __record-set input.session "key" key
+        login <- gs-handle shard input.session map (gcp-login key)
+        created <- gs-handle shard input.session map (gcp-create 0)
+        mode <- __record-set input "mode" 2
+        v <- gv-new shard currency
+        items <- gsi-new shard.world
+        actor <- gsi-session items shard input 0
+        when gsi-pack items actor
+          is Err (e) -> print-line-uni ("FAIL pack " & e)
+          is Ok (pack) -> act
+            bound <- gv-add-player v input.session.serial 1 pack.serial
+            c <- gca-new (gh-state v items) (cvd-carve (cvd-table 0))
+            gcp-live c shard input map pack.serial
+          end
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 8 8
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- gcp-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> when gvd-economy 0
+            is Err (e) -> print-line-uni ("FAIL economy " & e)
+            is Ok (currency) -> gcp-run shard map currency
+      end
+  end

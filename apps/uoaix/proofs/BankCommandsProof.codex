@@ -1,0 +1,63 @@
+Chapter: BankCommandsProof
+  cites Uoaix chapter BankCommands
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Foreword chapter Result
+
+  bcp-check : Text, Boolean -> [Console] Integer
+  bcp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  bcp-make : GsiState, Integer, Integer, Integer, Integer, Boolean -> Integer
+  bcp-make (items) (owner) (graphic) (amount) (gump) (stackable) =
+    let item = __record-set (gs-item owner graphic 0) "amount" amount
+    in when world-create items.world item
+      is Err (_) -> 0
+      is Ok (serial) -> let meta = gsi-register items serial 0 gump True stackable in serial
+  bcp-amount : GsiState, Integer, Integer, Integer -> Integer
+  bcp-amount (items) (serial) (graphic) (total) = if serial == 0 then total
+    else let next = world-next-sibling items.world serial
+    in let here = when world-get items.world serial is Err (_) -> 0 is Ok (item) -> if item.graphic == graphic then item.amount else 0
+    in bcp-amount items next graphic (total + here)
+  bcp-speech : List Integer -> List Integer
+  bcp-speech (text) = ([3, 0, 0, 0, 3, 178, 0, 3] & text) & [0]
+
+  opening : [Console] Integer = act
+    when gs-new 0
+      is Err (e) -> act
+        print-line-uni ("FAIL shard " & e)
+        1
+      end
+      is Ok (shard) -> act
+        let items = gsi-new shard.world
+        in when world-create shard.world (gs-mobile 0 10 10 0 400 0)
+          is Err (e) -> act
+            print-line-uni ("FAIL mobile " & e)
+            1
+          end
+          is Ok (mobile) ->
+            let pack = bcp-make items mobile #0E75 1 #003C False
+            in let box = bcp-make items mobile #09B2 1 #004A False
+            in let gold = bcp-make items box #0EED 100 0 True
+            in let book = bcp-make items pack #0EFA 1 0 False
+            in let none = BcDone { moved = 0, packets = [] }
+            in let withdrawn = bc-transfer items 1000 mobile (world-first-child shard.world box) [103,111,108,100] pack 30 none
+            in let split = withdrawn.moved == 30 & bcp-amount items (world-first-child shard.world box) #0EED 0 == 70 & list-length withdrawn.packets > 0
+            in let refused = bc-transfer items 1000 mobile (world-first-child shard.world box) [99,104,101,101,115,101] pack 5 none
+            in let deposited = bc-transfer items 1000 mobile (world-first-child shard.world pack) [] box 1000000000 none
+            in let parsed = bc-request (bcp-speech [100,101,112,111,115,105,116,32,97,108,108]) & bc-request (bcp-speech [87,105,116,104,100,114,97,119,32,51,48,32,103,111,108,100]) & not (bc-request (bcp-speech [104,101,108,108,111,32,116,104,101,114,101])) & not (bc-request (bcp-speech [98,97,110,107]))
+            in let numbers = bc-number [51,48] 0 0 == 30 & bc-number [51,120] 0 0 == -1 & bc-number [] 0 0 == -1
+            in let unmatched = refused.moved == 0 & list-length refused.packets == 0
+            in let emptied = deposited.moved == 31 & world-first-child shard.world pack == 0 & bcp-amount items (world-first-child shard.world box) #0EED 0 == 100
+            in act
+              a <- bcp-check "speech parses deposit all, withdraw and refuses other speech" parsed
+              b <- bcp-check "amounts parse digits only" numbers
+              c <- bcp-check "withdraw 30 gold splits the bank stack" split
+              d <- bcp-check "an unmatched type moves nothing" unmatched
+              e <- bcp-check "deposit all empties the pack into the box" emptied
+              print-line-uni ("BANK COMMANDS PROOF failures=" & show (a + b + c + d + e))
+              a + b + c + d + e
+            end
+      end
+  end

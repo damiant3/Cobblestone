@@ -1,0 +1,111 @@
+Chapter: ItemActions
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  ItemDestination = | ItemGround (Integer) (Integer) (Integer)
+    | ItemContainer (Integer) (Integer) (Integer) | ItemStack (Integer)
+  ItemMove = record { actor : Integer, item : Integer, amount : Integer, destination : ItemDestination }
+  ItemAdmission = record { movable : Boolean, stackable : Boolean, destination : Boolean }
+
+  ia-near : WorldObject, WorldObject -> Boolean
+  ia-near (actor) (obj) =
+    obj.x >= actor.x - 2 & obj.x <= actor.x + 2 & obj.y >= actor.y - 2 & obj.y <= actor.y + 2
+      & obj.z >= actor.z - 16 & obj.z <= actor.z + 16
+
+  ia-access : WorldTable, WorldObject, WorldObject, Integer -> Boolean
+  ia-access (world) (actor) (obj) (left) =
+    if left <= 0 then False
+    else if obj.kind == 1 then obj.serial == actor.serial
+    else if obj.container == 0 then ia-near actor obj
+    else when world-get world obj.container
+      is Err (e) -> False
+      is Ok (parent) -> ia-access world actor parent (left - 1)
+
+  ia-copy : WorldObject, Integer, Integer, Integer, Integer, Integer, Integer -> WorldObject
+  ia-copy (obj) (serial) (amount) (parent) (x) (y) (z) = WorldObject {
+    serial = serial, kind = obj.kind, x = x, y = y, z = z, graphic = obj.graphic,
+    hue = obj.hue, container = parent, amount = amount, health = obj.health }
+
+  ia-event : Integer, Integer, Integer, WorldObject -> WorldEvent
+  ia-event (seq) (tick) (op) (obj) = WorldEvent { sequence = seq, tick = tick, operation = op, object = obj }
+
+  ia-next-item : WorldTable -> Result Integer Text
+  ia-next-item (world) =
+    let slot = peek-qword world.buffer 8
+    in if slot < 0 then Err "item split exceeds world capacity"
+    else let old = peek-qword world.buffer (16 + slot * 80)
+    in let low = if old == 0 then slot + 1 else bit-and (0 - old) world-serial-mask + world.capacity
+    in if low > world-serial-mask then Err "item split serial generation exhausted"
+    else Ok (world-item-bit + low)
+
+  ia-relocate : WorldCheckpoint, Integer, ItemMove, WorldObject, WorldObject -> Result WorldAction Text
+  ia-relocate (checkpoint) (tick) (request) (source) (placed) =
+    let seq = checkpoint.sequence + 1
+    in if request.amount == source.amount then
+      Ok (WorldAction { sequence = seq, tick = tick, actor = request.actor, kind = 1, target = source.serial,
+        events = [ia-event seq tick 2 placed] })
+    else if world-has-child checkpoint.world source.serial 0 then Err "cannot split an occupied container"
+    else when ia-next-item checkpoint.world
+      is Err (e) -> Err e
+      is Ok (serial) ->
+        let remainder = ia-copy source source.serial (source.amount - request.amount) source.container source.x source.y source.z
+        in let split = ia-copy placed serial request.amount placed.container placed.x placed.y placed.z
+        in Ok (WorldAction { sequence = seq, tick = tick, actor = request.actor, kind = 2, target = source.serial,
+          events = [ia-event seq tick 2 remainder, ia-event seq tick 1 split] })
+
+  ia-stack : WorldCheckpoint, Integer, ItemMove, WorldObject, WorldObject, WorldObject -> Result WorldAction Text
+  ia-stack (checkpoint) (tick) (request) (actor) (source) (target) =
+    if target.kind /= 2 | target.serial == source.serial then Err "item stack target invalid"
+    else if not (ia-access checkpoint.world actor target 65) then Err "item stack target out of reach"
+    else if source.graphic /= target.graphic | source.hue /= target.hue | source.health /= target.health then Err "item stacks differ"
+    else if target.amount > 65535 - request.amount then Err "item stack amount overflow"
+    else if world-has-child checkpoint.world source.serial 0 | world-has-child checkpoint.world target.serial 0 then Err "occupied containers cannot stack"
+    else let seq = checkpoint.sequence + 1
+    in let merged = ia-copy target target.serial (target.amount + request.amount) target.container target.x target.y target.z
+    in let remainder = ia-copy source source.serial (source.amount - request.amount) source.container source.x source.y source.z
+    in let consumed = ia-event seq tick (if request.amount == source.amount then 3 else 2) (if request.amount == source.amount then source else remainder)
+    in Ok (WorldAction { sequence = seq, tick = tick, actor = request.actor, kind = 3, target = target.serial,
+      events = [ia-event seq tick 2 merged, consumed] })
+
+  ia-destination : WorldCheckpoint, Integer, ItemMove, ItemAdmission, WorldObject, WorldObject -> Result WorldAction Text
+  ia-destination (checkpoint) (tick) (request) (admission) (actor) (source) = when request.destination
+    is ItemGround (x) (y) (z) ->
+      let placed = ia-copy source source.serial request.amount 0 x y z
+      in if not (world-fields-valid placed) | not (ia-near actor placed) then Err "item ground destination out of reach"
+      else ia-relocate checkpoint tick request source placed
+    is ItemContainer (serial) (x) (y) ->
+      if serial == source.serial | x < 0 | x > 255 | y < 0 | y > 255 then Err "item container destination invalid"
+      else when world-get checkpoint.world serial
+        is Err (e) -> Err e
+        is Ok (target) ->
+          if target.kind /= 2 | not (ia-access checkpoint.world actor target 65) then Err "item container target out of reach"
+          else if not (world-parent-valid checkpoint.world source.serial serial 64) then Err "item containment cycle or depth"
+          else ia-relocate checkpoint tick request source (ia-copy source source.serial request.amount serial x y 0)
+    is ItemStack (serial) ->
+      if not admission.stackable then Err "item type cannot stack"
+      else when world-get checkpoint.world serial
+        is Err (e) -> Err e
+        is Ok (target) -> ia-stack checkpoint tick request actor source target
+
+  ia-plan : WorldCheckpoint, Integer, ItemMove, ItemAdmission -> Result WorldAction Text
+  ia-plan (checkpoint) (tick) (request) (admission) =
+    if checkpoint.sequence < 0 | checkpoint.sequence == 9223372036854775807 | checkpoint.tick < 0 | tick < checkpoint.tick then Err "item action clock or sequence invalid"
+    else if not admission.movable then Err "item movement not admitted"
+    else if not admission.destination then Err "item destination not admitted"
+    else if request.amount < 1 | request.amount > 65535 then Err "item amount invalid"
+    else when world-get checkpoint.world request.actor
+      is Err (e) -> Err e
+      is Ok (actor) ->
+        if actor.kind /= 1 | actor.health == 0 then Err "item actor cannot act"
+        else when world-get checkpoint.world request.item
+          is Err (e) -> Err e
+          is Ok (source) ->
+            if source.kind /= 2 | request.amount > source.amount then Err "item source or amount invalid"
+            else if not (ia-access checkpoint.world actor source 65) then Err "item source out of reach"
+            else if request.amount /= source.amount & not admission.stackable then Err "item type cannot split"
+            else ia-destination checkpoint tick request admission actor source
+
+Page 1

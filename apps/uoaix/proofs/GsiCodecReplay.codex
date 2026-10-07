@@ -1,0 +1,53 @@
+Chapter: GsiCodecReplay
+  cites Uoaix chapter GsiCodec
+
+  gcr-check : Text, Boolean -> [Console] Integer
+  gcr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  opening : [Console] Integer = when world-new 16
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (world) -> act
+      mobile <- world-create world (gs-mobile 0 1421 1698 0 400 1002)
+      pack <- world-create world (gs-item 1 #0E75 0)
+      shirt <- world-create world (gs-item #40000002 #1517 0)
+      state <- gsi-new world
+      pack-meta <- gsi-register state #40000002 21 #3C False False
+      shirt-meta <- gsi-register state #40000003 5 0 True False
+      actor <- list-at state.actors 0
+      serial <- __record-set actor "serial" 1
+      connection <- __record-set actor "connection" 7
+      holding <- __record-set actor "holding" #40000003
+      target <- __record-set actor "target" #47530001
+      size <- gic-size state
+      buffer <- alloc-bytes size
+      saved <- gic-write state buffer size
+      restored <- gic-read world buffer size
+      valid <- when restored
+        is Err (e) -> False
+        is Ok (copy) -> (gsi-meta copy #40000002).gump == #3C & not (gsi-meta copy #40000002).movable & (gsi-meta copy #40000003).layer == 5 & (gsi-meta copy #40000003).movable & (list-at copy.actors 0).holding == 0 & (list-at copy.actors 0).target == 0 & (list-at copy.actors 0).connection == -1
+      a <- gcr-check "GSI1 roundtrip preserves definitions and clears volatile authority" (is-ok saved & valid & peek-qword buffer 0 == #31495347 & peek-qword buffer 8 == 16)
+      raw <- WorldTable { buffer = world.buffer, capacity = world.capacity, index = 0 }
+      raw-result <- gic-read raw buffer size
+      indexed <- gcr-check "GSI1 requires rebuilt index and restores layer bindings" (is-err raw-result & world-layer-serial world 1 21 == #40000002)
+      short <- gic-read world buffer (size - 1)
+      b <- gcr-check "GSI1 refuses truncated extent" (is-err short)
+      invalid <- poke-qword buffer (16 + 2 * 40 + 8) 30
+      bad-layer <- gic-read world buffer size
+      c <- gcr-check "GSI1 refuses invalid layer" (is-err bad-layer)
+      restored-layer <- poke-qword buffer (16 + 2 * 40 + 8) 5
+      forged <- poke-qword buffer (16 + 2 * 40) #40000013
+      bad-serial <- gic-read world buffer size
+      d <- gcr-check "GSI1 refuses stale serial generation" (is-err bad-serial)
+      packed-again <- gic-write state buffer size
+      invalid-stack <- poke-qword buffer (16 + 2 * 40 + 32) 1
+      bad-stack <- gic-read world buffer size
+      e <- gcr-check "GSI1 refuses stackable equipment" (is-err bad-stack)
+      failures <- a+indexed+b+c+d+e
+      print-line-uni ("GSI CODEC REPLAY failures=" & show failures)
+      failures
+    end

@@ -1,0 +1,167 @@
+Chapter: GameDelta
+  cites Uoaix chapter GameTransaction
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+ UGD1 header: magic, version, bytes, world capacity, sequence, tick, FNV32,
+ slot count. Two 824-byte metadata images hold next key, world header and
+ character bytes. Each 168-byte entry holds index and two 80-byte slot images.
+
+  gd-before-at : Integer = 64
+  gd-after-at : Integer = 888
+  gd-entries : Integer = 1712
+  gd-entry-bytes : Integer = 168
+  gd-max-bytes : Integer = gd-entries + gt-max-slots * gd-entry-bytes
+
+  gd-overlaps : Integer, Integer, Integer, Integer -> Boolean
+  gd-overlaps (a) (an) (b) (bn) = a < b + bn & b < a + an
+
+  gd-disjoint : GameShard, Integer, Integer -> Boolean
+  gd-disjoint (game) (buf) (size) =
+    not (gd-overlaps buf size game.characters 800)
+      & not (gd-overlaps buf size game.world.buffer (16 + game.world.capacity * 80))
+
+  gd-index-seen : Integer, Integer, Integer, Integer -> Boolean
+  gd-index-seen (buf) (index) (stop) (i) = if i >= stop then False
+    else peek-qword buf (gd-entries + i * gd-entry-bytes) == index | gd-index-seen buf index stop (i + 1)
+
+  gd-indices : Integer, Integer, Integer, Integer -> Boolean
+  gd-indices (buf) (count) (capacity) (i) = if i >= count then True
+    else let index = peek-qword buf (gd-entries + i * gd-entry-bytes)
+    in index >= 0 & index < capacity & not (gd-index-seen buf index i 0) & gd-indices buf count capacity (i + 1)
+
+  gd-slot-difference : Integer, Integer, Integer -> Boolean
+  gd-slot-difference (buf) (count) (i) = if i >= count then False
+    else let at = gd-entries + i * gd-entry-bytes + 8
+    in not (gt-equal (buf + at) (buf + at + 80) 80 0) | gd-slot-difference buf count (i + 1)
+
+  gd-different : Integer, Integer -> Boolean
+  gd-different (buf) (count) = not (gt-equal (buf + gd-before-at) (buf + gd-after-at) 824 0)
+    | gd-slot-difference buf count 0
+
+  gd-slot-transition : GameShard, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gd-slot-transition (game) (buf) (count) (i) (head) (created) =
+    if i >= count then peek-qword buf 896 == peek-qword buf 72 + created & peek-qword buf 904 == head
+    else let at = gd-entries + i * gd-entry-bytes
+    in let index = peek-qword buf at
+    in let old = buf + at + 8
+    in let after = old + 80
+    in if gt-equal old after 80 0 then gd-slot-transition game buf count (i + 1) head created
+    else let serial = peek-qword old 0
+    in if not (ws-slot-valid game.world index) then False
+    else if serial > 0 then
+      peek-qword after 0 == serial & peek-qword after 8 == peek-qword old 8
+      & peek-qword after 56 == peek-qword old 56
+      & gd-slot-transition game buf count (i + 1) head created
+    else if serial < -2147483647 | index /= head then False
+    else let low = if serial == 0 then index + 1 else bit-and (0 - serial) world-serial-mask + game.world.capacity
+    in let expected = low + (if peek-qword after 8 == 2 then world-item-bit else 0)
+    in low > 0 & low <= world-serial-mask & peek-qword after 0 == expected
+      & gd-slot-transition game buf count (i + 1) (peek-qword old 8) (created + 1)
+
+  gd-post-valid : GameShard, Integer, Integer -> Boolean
+  gd-post-valid (game) (buf) (count) =
+    let old-key = peek-qword buf 64
+    in let key = peek-qword buf 888
+    in let live = peek-qword buf 896
+    in let head = peek-qword buf 904
+    in if old-key < 0 | key < old-key | key > #FFFFFFFF | key - old-key > 1 then False
+    else if live < 0 | live > game.world.capacity | head < -1 | head >= game.world.capacity then False
+    else gd-slot-transition game buf count 0 (peek-qword buf 80) 0 & gc-slots game.world game.characters 0
+
+  gd-write-entries : GameUndo, Integer, Integer -> Integer
+  gd-write-entries (undo) (buf) (i) = if i >= undo.count then 0
+    else let source = gt-slot-at + i * gt-entry-bytes
+    in let index = peek-qword undo.bytes source
+    in let at = gd-entries + i * gd-entry-bytes
+    in let key = poke-qword buf at index
+    in let before = ws-copy (undo.bytes + source + 8) (buf + at + 8) 80 0
+    in let after = ws-copy (undo.game.world.buffer + 16 + index * 80) (buf + at + 88) 80 0
+    in gd-write-entries undo buf (i + 1)
+
+  gd-undo-indices : GameUndo, Integer -> Boolean
+  gd-undo-indices (undo) (i) = if i >= undo.count then True
+    else let index = peek-qword undo.bytes (gt-slot-at + i * gt-entry-bytes)
+    in index >= 0 & index < undo.game.world.capacity & gd-undo-indices undo (i + 1)
+
+  gd-encode : GameUndo, Integer, Integer, Integer, Integer -> Result Integer Text
+  gd-encode (undo) (sequence) (tick) (buf) (capacity) =
+    if undo.state /= 0 | undo.count < 0 | undo.count > gt-max-slots then Err "game delta requires pending bounded undo"
+    else if undo.game.world.capacity < 1 | undo.game.world.capacity > world-max-objects | not (gd-undo-indices undo 0) then Err "game delta capture indices invalid"
+    else if sequence <= 0 | tick < 0 then Err "game delta commit metadata invalid"
+    else let size = gd-entries + undo.count * gd-entry-bytes
+    in if capacity < size then Err "game delta destination too short"
+    else if not (gd-disjoint undo.game buf size) | gd-overlaps buf size undo.bytes gt-bytes then Err "game delta destination overlaps source"
+    else if not (gt-changed undo) then Err "game delta has no persistent change"
+    else let h0 = poke-qword buf 0 #31444755
+    in let h1 = poke-qword buf 8 1
+    in let h2 = poke-qword buf 16 size
+    in let h3 = poke-qword buf 24 undo.game.world.capacity
+    in let h4 = poke-qword buf 32 sequence
+    in let h5 = poke-qword buf 40 tick
+    in let h7 = poke-qword buf 56 undo.count
+    in let old-key = poke-qword buf 64 (peek-qword undo.bytes 0)
+    in let old-header = ws-copy (undo.bytes + 72) (buf + 72) 16 0
+    in let old-chars = ws-copy (undo.bytes + 88) (buf + 88) 800 0
+    in let key = poke-qword buf 888 undo.game.next-key
+    in let header = ws-copy undo.game.world.buffer (buf + 896) 16 0
+    in let chars = ws-copy undo.game.characters (buf + 912) 800 0
+    in let entries = gd-write-entries undo buf 0
+    in if not (gd-indices buf undo.count undo.game.world.capacity 0 & gd-post-valid undo.game buf undo.count) then Err "game delta prepared state invalid"
+    else let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+    in Ok size
+
+  gd-before-slots : GameShard, Integer, Integer, Integer -> Boolean
+  gd-before-slots (game) (buf) (count) (i) = if i >= count then True
+    else let at = gd-entries + i * gd-entry-bytes
+    in let index = peek-qword buf at
+    in gt-equal (buf + at + 8) (game.world.buffer + 16 + index * 80) 80 0 & gd-before-slots game buf count (i + 1)
+
+  gd-copy-image : GameShard, Integer, Integer, Boolean, Integer -> Integer
+  gd-copy-image (game) (buf) (count) (after) (i) = if i >= count then
+      let at = if after then gd-after-at else gd-before-at
+      in let key = __record-set game "next-key" (peek-qword buf at)
+      in let header = ws-copy (buf + at + 8) game.world.buffer 16 0
+      in let chars = ws-copy (buf + at + 24) game.characters 800 0 in 0
+    else let at = gd-entries + i * gd-entry-bytes
+    in let index = peek-qword buf at
+    in let copied = ws-copy (buf + at + (if after then 88 else 8)) (game.world.buffer + 16 + index * 80) 80 0
+    in gd-copy-image game buf count after (i + 1)
+
+  gd-apply : WorldCheckpoint, GameShard, Integer, Integer -> Result Integer Text
+  gd-apply (checkpoint) (game) (buf) (size) =
+    if size < gd-entries | size > gd-max-bytes then Err "game delta size invalid"
+    else if checkpoint.world.buffer /= game.world.buffer | checkpoint.world.capacity /= game.world.capacity then Err "game delta world ownership differs"
+    else if game.world.capacity < 1 | game.world.capacity > world-max-objects | not (gd-disjoint game buf size) then Err "game delta world or input ownership invalid"
+    else if peek-qword buf 0 /= #31444755 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size | peek-qword buf 24 /= game.world.capacity then Err "game delta format invalid"
+    else let count = peek-qword buf 56
+    in if count < 0 | count > gt-max-slots | size /= gd-entries + count * gd-entry-bytes then Err "game delta slot extent invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "game delta checksum invalid"
+    else let sequence = peek-qword buf 32
+    in let tick = peek-qword buf 40
+    in if checkpoint.sequence < 0 | checkpoint.sequence == 9223372036854775807 | checkpoint.tick < 0 then Err "game delta checkpoint metadata invalid"
+    else if sequence /= checkpoint.sequence + 1 | tick < checkpoint.tick then Err "game delta sequence gap or clock reversal"
+    else if not (gd-indices buf count game.world.capacity 0 & gd-different buf count) then Err "game delta slot indices or change invalid"
+    else if game.next-key /= peek-qword buf 64 | not (gt-equal (buf + 72) game.world.buffer 16 0)
+      | not (gt-equal (buf + 88) game.characters 800 0) | not (gd-before-slots game buf count 0) then Err "game delta before-image disagrees with owner"
+    else let copied = gd-copy-image game buf count True 0
+    in if not (gd-post-valid game buf count) then
+      let restored = gd-copy-image game buf count False 0 in Err "game delta post-state invalid"
+    else if not (world-reindex game.world) then
+      let restored = gd-copy-image game buf count False 0
+      in let indexed = world-reindex game.world
+      in Err "game delta index rebuild failed"
+    else let seq = __record-set checkpoint "sequence" sequence
+    in let time = __record-set checkpoint "tick" tick
+    in Ok sequence
+
+  gd-apply-record : WorldCheckpoint, GameShard, Integer, Integer, Integer, Integer -> Result Integer Text
+  gd-apply-record (checkpoint) (game) (buf) (size) (sequence) (tick) =
+    if size < gd-entries then Err "game delta record truncated"
+    else if peek-qword buf 32 /= sequence | peek-qword buf 40 /= tick then Err "game delta disagrees with record metadata"
+    else gd-apply checkpoint game buf size
+
+Page 1

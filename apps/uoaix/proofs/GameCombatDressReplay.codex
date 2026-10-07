@@ -1,0 +1,114 @@
+Chapter: GameCombatDressReplay
+  cites Uoaix chapter GameCombatDress
+  cbr-check : Text, Boolean -> [Console] Nothing
+  cbr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cbr-equal-at : List Integer, List Integer, Integer -> Boolean
+  cbr-equal-at (a) (b) (i) = if i == list-length a then True
+    else list-at a i == list-at b i & cbr-equal-at a b (i + 1)
+  cbr-equal : List Integer, List Integer -> Boolean
+  cbr-equal (a) (b) = list-length a == list-length b & cbr-equal-at a b 0
+  cbr-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cbr-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
+  cbr-packet (result) (i) = let packets = cbr-packets result
+    in if i < list-length packets then list-at packets i else []
+  cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cbr-opcode (result) (opcode) (i) =
+    let packets = cbr-packets result
+    in if i == list-length packets then False
+    else list-at (list-at packets i) 0 == opcode | cbr-opcode result opcode (i + 1)
+  cbr-fill : WalkMap, Integer -> Integer
+  cbr-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cbr-fill map (i + 1)
+  cbr-login : Integer -> List Integer
+  cbr-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cbr-create : Integer -> List Integer
+  cbr-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-row-bytes : List CstRow, Integer -> Integer
+  cbr-row-bytes (rows) (i) = if i == list-length rows then 4
+    else (if (list-at rows i).hue == 0 then 7 else 9) + cbr-row-bytes rows (i + 1)
+  cbr-drawn : GsiState, List Integer -> Boolean
+  cbr-drawn (items) (packet) = list-length packet > 19 & (let look = cst-look cst-fighter (gp-u32 packet 3)
+    in gp-u16 packet 7 == look.body & gp-u16 packet 15 == look.skin & list-length packet == 19 + cbr-row-bytes look.rows 0
+      & cst-styled items (gp-u32 packet 3) cst-fighter)
+  cbr-worn : List Integer -> Integer
+  cbr-worn (packet) = if list-length packet < 7 then 0 else list-length (cst-look cst-fighter (gp-u32 packet 3)).rows
+  cbr-hits : GameShard, Integer -> Integer
+  cbr-hits (shard) (serial) = when world-get shard.world serial
+    is Err (_) -> -1 is Ok (m) -> m.health
+  cdr-run : GameShard, WalkMap -> [Console] Nothing
+  cdr-run (shard) (map) = act
+    c <- cb-new shard 42
+    scene <- __record-set c "scene" 1
+    items <- gsi-new shard.world
+    input <- gn-input-with (cb-specs 0) 1
+    when gs-relay-key shard
+      is Err (e) -> print-line-uni ("FAIL relay " & e)
+      is Ok (key) -> act
+        keyed <- __record-set input.session "key" key
+        login <- gs-handle shard input.session map (cbr-login key)
+        create <- gs-handle shard input.session map (cbr-create 0)
+        mode <- __record-set input "mode" 2
+        intro <- cbd-pulse c items shard input map 2593 0
+        first <- cbr-packet intro 0
+        second <- cbr-packet intro 1
+        cbr-check "both fixtures draw the fighter look's body, skin and every garment on their first draw" (is-ok intro & cbr-drawn items first & cbr-drawn items second)
+        shirt <- gmb-layer items 4 5 0
+        pants <- gmb-layer items 4 4 0
+        shoes <- gmb-layer items 4 3 0
+        cbr-check "garments are registered world children" (shirt > 0 & pants > 0 & shoes > 0 & world-count shard.world == 5 + cbr-worn first + cbr-worn second & gp-u32 first 19 == shirt & list-at first 25 == 5)
+        again <- cbd-pulse c items shard input map 2593 1
+        cbr-check "repeated pulse does not create duplicate garments" (is-ok again & world-count shard.world == 5 + cbr-worn first + cbr-worn second)
+        war <- cbd-handler c items shard input map 2593 [114,1,0,50,0]
+        cbr-check "war mode does not repeat the scene draw" (list-length (cbr-packets war) == 1 & cbr-opcode war 114 0)
+        when cb-ensure c shard 4
+          is Err (e) -> print-line-uni ("FAIL actor " & e)
+          is Ok (actor) -> when world-get shard.world 4
+            is Err (e) -> print-line-uni ("FAIL opponent " & e)
+            is Ok (mobile) -> act
+              dead <- cb-die c shard input 0 actor mobile
+              cbr-check "dressed opponent still dies with corpse" (is-ok dead & is-err (world-get shard.world 4))
+              cbr-check "clothing follows corpse custody" (when world-get shard.world shirt is Err (_) -> False is Ok (item) -> item.container == actor.corpse & item.container /= 0)
+            end
+        bank-context <- gmb-new items #004A
+        banker <- gmb-add-banker bank-context 5
+        opened <- gmb-open bank-context input 0
+        bank <- gmb-bank-find items input.session.serial 0
+        when world-create shard.world (gs-item bank #0E76 0)
+          is Err (e) -> print-line-uni ("FAIL bank contents " & e)
+          is Ok (contents) -> when cb-ensure c shard input.session.serial
+            is Err (e) -> print-line-uni ("FAIL player " & e)
+            is Ok (own) -> when cb-ensure c shard 5
+              is Err (e) -> print-line-uni ("FAIL veteran " & e)
+              is Ok (veteran) -> act
+                weak <- (if own.npc then __record-set own "skill" 0 else let w = gs-skill-set shard own.serial 43 0 in own)
+                strong <- cb-profile c shard 5 "Veteran opponent" 100 100 100 1000
+                selected <- cb-select c shard veteran own
+                killed <- cbd-pulse c items shard input map 2593 veteran.due
+                cbr-check "composite pulse kills player and preserves bank parent" (selected & is-ok killed & cbr-hits shard own.serial == 0 & (when world-get shard.world bank is Err (_) -> False is Ok (box) -> box.container == own.serial))
+                cbr-check "nested bank contents stay in original bank" (when world-get shard.world contents is Err (_) -> False is Ok (item) -> item.container == bank)
+                before <- world-count shard.world
+                reopened <- gmb-open bank-context input 0
+                cbr-check "bank reopen reuses original serial after death" (gmb-bank-find items own.serial 0 == bank & world-count shard.world == before)
+              end
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1696 8 8
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- cbr-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> cdr-run shard map
+      end
+  end
+
+Page 1

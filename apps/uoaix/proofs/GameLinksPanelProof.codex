@@ -1,0 +1,101 @@
+Chapter: GameLinksPanelProof
+  cites Uoaix chapter GameLinks
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminProtocol
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Foreword chapter Result
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+  cites Net chapter NetDriver
+
+  glpp-line : [Console] Text = act
+    line <- read-line
+    when line
+      is Just (text) -> text
+      is None -> ""
+  end
+  glpp-land : WalkMap, Integer -> Integer
+  glpp-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let written = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in glpp-land map (i + 1)
+  glpp-pulse : GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  glpp-pulse (game) (input) (map) (port) (tick) = Ok None
+  glpp-tick : GameShard, WalkMap, Integer -> Result Integer Text
+  glpp-tick (game) (map) (tick) = Ok 0
+  glpp-disconnect : GameShard, GameInput -> [Console] Result Integer Text
+  glpp-disconnect (game) (input) = act
+    print-line-uni ("DISCONNECT game " & show input.connection)
+    Ok 0
+  end
+  glpp-panel : Integer -> AdminPanel
+  glpp-panel (log) = let world = tf-new 0
+    in let town = tf-add-town world "Britain" 1 2 3
+    in let npc = tf-add-person world "Mara" town 4 5 2 9000
+    in let a = admin-world-new world (tm-new 0)
+    in let gms = gm-memory-new 1000
+    in let ga = gm-memory-register gms 101 "MaraTester" True
+    in let gb = gm-memory-register gms 102 "IoloTester" True
+    in let gn = gm-memory-register gms 9001 "NPC baker" False
+    in let grant-text = "{\"account\":102,\"powers\":512,\"coin_each\":10,\"coin_day\":20,\"item_each\":0,\"item_day\":0,\"title_day\":0,\"plot_day\":0}"
+    in let granted = gm-memory-edit gms "Shard owner" "gm-dub" ((json-parse-value grant-text 0 (text-length grant-text)).value) 0
+    in let favor = gm-memory-act gms 102 1 "favor-coins" 101 0 5 0 "seeded stand-in favor"
+    in let p = panel-new-with-gms a "Shard owner" gms
+    in let levels = panel-bind-log p log
+    in let economy-bound = when efi-source 0
+      is Err (e) -> -1
+      is Ok (state) -> let scenario = efi-build state
+        in if scenario.failed /= 0 | not (efi-valid state) then -1 else panel-bind-currency p state.currency 1 True
+    in let c = panel-connect p 1 "uoaixtest" "Iolo" "127.0.0.1" "2026-10-04T07:00:00Z"
+    in let report-text = "{\"account\":\"uoaixtest\",\"happened\":\"Player requests help near the bakery\",\"location\":\"Britain\",\"wall_time\":\"2026-10-04T07:01:00Z\",\"game_hour\":0,\"evidence\":\"log 17: <img src=x onerror=window.__panelInjected=1> Please help with my lost bag.\"}"
+    in let queued = admin-report a ((json-parse-value report-text 0 (text-length report-text)).value)
+    in let npc-report = "{\"subject_kind\":\"npc\",\"subject_id\":1,\"happened\":\"NPC dispute at the bakery\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":0,\"evidence\":\"NPC log 21\"}"
+    in let npc-queued = admin-report a ((json-parse-value npc-report 0 (text-length npc-report)).value)
+    in let world-report = "{\"subject_kind\":\"world\",\"subject_id\":0,\"happened\":\"Town well needs repair\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":0,\"evidence\":\"World log 22\"}"
+    in let world-queued = admin-report a ((json-parse-value world-report 0 (text-length world-report)).value)
+    in p
+
+  opening : [Console, Network.Read, Network.Write] Integer = act
+    health <- glpp-line
+    mind-key <- glpp-line
+    keeper <- glpp-line
+    human <- glpp-line
+    epoch <- glpp-line
+    card <- net-driver-bring-up
+    arena <- nc-set-acquire (nc-pool-cell process-get-pid)
+    released <- nc-set-release arena
+    huffman <- gh-new 0
+    when gs-new 0
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (game) -> let logged = __record-set game "log" (slg-new slg-trace) in when walk-map-new 1408 1680 32 32
+        is Err (e) -> act
+          print-line-uni e
+          1
+        end
+        is Ok (map) -> let land = glpp-land map 0
+          in when gl-new [] game map huffman 2593 [2593,2593,2594,2594,2594] net-driver-mac [10,0,2,15] [10,0,2,2] [255,255,255,0]
+            is Err (e) -> act
+              print-line-uni e
+              1
+            end
+            is Ok (links) -> when admin-auth-new [health,mind-key,keeper,human] epoch
+              is None -> act
+                print-line-uni "PANEL CONFIG REFUSED"
+                1
+              end
+              is Just (auth) -> let panel = glpp-panel game.log
+                in let bound = gl-bind-web links (\request -> Ok (panel-route auth panel request))
+                in act
+                  print-line-uni "PANEL READY 2594 GAME 2593"
+                  gl-serve gn-default-handler glpp-pulse glpp-disconnect glpp-tick links
+                end
+  end
+
+Page 1

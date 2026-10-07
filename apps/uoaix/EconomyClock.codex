@@ -1,0 +1,192 @@
+Chapter: EconomyClock
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMint
+  cites Foreword chapter Result
+
+  EcJob = record { actor : Integer, resource : Integer, recipe : Integer,
+    station : Integer, plot : Integer, enabled : Integer, produced : Integer,
+    shortages : Integer }
+  EcClock = record { world : EpWorld, jobs : List EcJob, consumer : Integer,
+    checks : Integer, bad-census : Integer, exhausted : Integer }
+
+  ec-jobs : Integer, List EcJob -> List EcJob
+  ec-jobs (i) (xs) = if i == 55 then xs else
+    ec-jobs (i + 1) (list-push xs (EcJob { actor = i + 1, resource = 0,
+      recipe = 0, station = 0, plot = 0, enabled = 1, produced = 0, shortages = 0 }))
+  ec-skill : EpActor, Integer -> Integer
+  ec-skill (p) (i) = if i == 11 then 0 else let a = ep-set p.skills i 1000 in ec-skill p (i + 1)
+  ec-nodes : EpWorld, Integer, Integer -> Integer
+  ec-nodes (w) (resource) (count) = if count == 0 then 0
+    else let id = eh-source w resource 100
+    in if id < 0 then -1 else ec-nodes w resource (count - 1)
+  ec-admit : EcClock, Integer -> Integer
+  ec-admit (clock) (i) = if i == 55 then 0
+    else let w = clock.world
+    in let purse = em-open w.money (if i == 54 then 5 else 2) (i + 1)
+    in let actor = ep-admit w purse 100
+    in if actor /= i + 1 then -1
+    else let p = ep-actor w actor
+    in let skill = ec-skill p 1
+    in let job = list-at clock.jobs i
+    in let configured = if i < 24 then
+      let resource = i + 1
+      in let r = list-at w.catalog.resources i
+      in let a = __record-set job "resource" resource
+      in let nodes = ec-nodes w resource (if resource == 8 | resource == 9 | resource == 13 | resource == 14 then 8 else 4)
+      in if nodes < 0 then -1
+      else if r.seed > 0 then let plot = eh-ground w actor 100 r.ground
+        in let b = __record-set job "plot" plot in if plot < 0 then -1 else 0
+      else 0
+      else if i < 54 then
+        let recipe = i - 23
+        in let actual = if recipe >= 30 then recipe + 1 else recipe
+        in let r = list-at w.catalog.recipes (actual - 1)
+        in let station = ep-station w actor r.station 100
+        in let a = __record-set job "recipe" actual
+        in let b = __record-set job "station" station
+        in if station < 0 then -1 else 0
+      else let a = __record-set job "enabled" 0 in 0
+    in if configured < 0 then -1 else ec-admit clock (i + 1)
+  ec-fixture : Integer -> Result EcClock Text
+  ec-fixture (unused) =
+    let money = em-new 0
+    in when ep-new (eg-standard 0) money
+      is Err (e) -> Err e
+      is Ok (world) ->
+        let clock = EcClock { world = world, jobs = ec-jobs 0 [], consumer = 55,
+          checks = 0, bad-census = 0, exhausted = 0 }
+        in if ec-admit clock 0 /= 0 | ec-warrant clock 0 /= 0 | ec-bootstrap clock /= 0 | ec-fund clock 0 /= 0 then Err "economy fixture admission refused"
+        else Ok clock
+
+  ec-warrant : EcClock, Integer -> Integer
+  ec-warrant (clock) (i) = if i == 54 then 0
+    else let job = list-at clock.jobs i
+    in if job.enabled == 0 | job.resource <= 0 then ec-warrant clock (i + 1)
+    else if (list-at clock.world.catalog.resources (job.resource - 1)).item /= 6 then ec-warrant clock (i + 1)
+    else if eh-appoint clock.world True job.actor (ep-actor clock.world job.actor).place < 0 then -1
+    else ec-warrant clock (i + 1)
+
+  ec-bootstrap : EcClock -> Integer
+  ec-bootstrap (clock) =
+    let w = clock.world
+    in let lord = clock.consumer
+    in let hand = ep-station w lord 1 100
+    in let smelter = ep-station w lord 3 100
+    in let mint = ep-station w lord 12 100
+    in if em-total w.money 1 /= 0 then -1
+    else if eh-harvest w lord (ec-node w lord 1 0) /= 4 then -1
+    else if eh-harvest w lord (ec-node w lord 2 0) /= 4 then -1
+    else if ep-craft w lord 1 hand /= 1 | ep-craft w lord 31 hand /= 1 then -1
+    else if eh-harvest w lord (ec-node w lord 6 0) /= 2 then -1
+    else if ep-craft w lord 8 smelter /= 1 then -1
+    else if emi-configure w True lord 6000000 /= 0 then -1
+    else emi-strike w True lord mint 1
+  ec-fund : EcClock, Integer -> Integer
+  ec-fund (clock) (i) = if i == clock.world.actor-count then 0
+    else let p = list-at clock.world.actors i
+    in if em-lend clock.world.money 1 p.purse 100000 0 1000 < 0 then -1
+    else ec-fund clock (i + 1)
+
+  ec-seller : EcClock, Integer, Integer, Integer, Integer -> Integer
+  ec-seller (clock) (buyer) (item) (i) (best) =
+    if i == 54 then best
+    else let w = clock.world
+    in let id = i + 1
+    in let p = ep-actor w id
+    in let pick = if id == buyer | ep-at p.stock item == 0 then best
+      else if best == 0 then id
+      else if ep-price w id item < ep-price w best item then id else best
+    in ec-seller clock buyer item (i + 1) pick
+  ec-get : EcClock, Integer, Integer, Integer -> Boolean
+  ec-get (clock) (actor) (item) (quantity) =
+    if item == 0 then True
+    else let w = clock.world
+    in let p = ep-actor w actor
+    in let missing = quantity - ep-at p.stock item
+    in if missing <= 0 then True
+    else let seller = ec-seller clock actor item 0 0
+    in if seller == 0 then False
+    else let available = ep-at (ep-actor w seller).stock item
+    in let buy = if available < missing then available else missing
+    in let result = ep-buy w actor seller item buy
+    in let exhausted = if w.trade-count == ep-trade-limit | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
+    in result == 0 & ep-at p.stock item >= quantity
+  ec-node : EpWorld, Integer, Integer, Integer -> Integer
+  ec-node (w) (actor) (resource) (i) = if i == w.node-count then 0
+    else let n = list-at w.nodes i
+    in if n.resource == resource & n.stage == 2 & (n.owner == 0 | n.owner == actor) then i + 1
+    else ec-node w actor resource (i + 1)
+  ec-farm : EcClock, EcJob -> Integer
+  ec-farm (clock) (job) = if job.plot <= 0 then 0
+    else let w = clock.world
+    in let n = list-at w.nodes (job.plot - 1)
+    in let p = ep-actor w job.actor
+    in let r = list-at w.catalog.resources (job.resource - 1)
+    in let planted = if (n.resource == 0 | n.stage == 3) & ep-at p.stock r.seed > 0 then eh-plant w job.actor job.plot job.resource else 0
+    in if n.planted == 1 & n.stage < 2 then
+      let water = if n.water == 0 & ec-get clock job.actor 4 1 then eh-care w job.actor job.plot True else 0
+      in if n.tended == 0 then eh-care w job.actor job.plot False else 0
+    else 0
+  ec-work : EcClock, Integer -> Integer
+  ec-work (clock) (i) = if i == 54 then 0
+    else let job = list-at clock.jobs i
+    in let w = clock.world
+    in let p = ep-actor w job.actor
+    in let result = if job.enabled == 0 then 0
+      else if job.resource > 0 then
+        let r = list-at w.catalog.resources (job.resource - 1)
+        in let care = ec-farm clock job
+        in if ep-at p.stock r.item >= 16 then 0
+        else let node = ec-node w job.actor job.resource 0
+        in if node == 0 then 0
+        else if not (ec-get clock job.actor r.tool 1) then -1
+        else eh-harvest w job.actor node
+      else let r = list-at w.catalog.recipes (job.recipe - 1)
+        in if ep-at p.stock r.item >= 4 then 0
+        else if not (ec-get clock job.actor r.tool 1) then -1
+        else if not (ec-get clock job.actor r.one r.one-count) then -1
+        else if not (ec-get clock job.actor r.two r.two-count) then -1
+        else if not (ec-get clock job.actor r.three r.three-count) then -1
+        else ep-craft w job.actor job.recipe job.station
+    in let recorded = if result > 0 then __record-set job "produced" (job.produced + result)
+      else if result < 0 then __record-set job "shortages" (job.shortages + 1) else job
+    in ec-work clock (i + 1)
+  ec-meals : EcClock, Integer -> Integer
+  ec-meals (clock) (actor) = if actor > clock.world.actor-count then 0
+    else let w = clock.world
+    in let item = if ec-get clock actor 34 1 then 34 else if ec-get clock actor 50 1 then 50 else if ec-get clock actor 14 1 then 14 else if ec-get clock actor 16 1 then 16 else 0
+    in let ate = if item > 0 then ep-eat w actor item else -1
+    in ec-meals clock (actor + 1)
+  ec-consume-market : EcClock, Integer -> Integer
+  ec-consume-market (clock) (item) = if item == 50 then 0
+    else let w = clock.world
+    in let buyer = clock.consumer
+    in let seller = ec-seller clock buyer item 0 0
+    in let bought = if seller == 0 then -1 else ep-buy w buyer seller item 1
+    in let exhausted = if w.trade-count == ep-trade-limit | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
+    in ec-consume-market clock (item + 1)
+  ec-check : EcClock -> Integer
+  ec-check (clock) =
+    let w = clock.world
+    in let valid = ep-census w 1 & em-balanced w.money 1
+    in let a = __record-set clock "checks" (clock.checks + 1)
+    in let b = if valid then 0 else let c = __record-set clock "bad-census" (clock.bad-census + 1) in 0
+    in if valid then 0 else -1
+  ec-hour : EcClock, Boolean -> Integer
+  ec-hour (clock) (remove-hunters) =
+    let w = clock.world
+    in if eh-step w /= 0 then let a = __record-set clock "exhausted" 1 in -1
+    else let h = int-mod w.hour 24
+    in let removed = if remove-hunters & w.hour >= 240 then __record-set (list-at clock.jobs 6) "enabled" 0 else list-at clock.jobs 6
+    in let removed-meat = if remove-hunters & w.hour >= 240 then __record-set (list-at clock.jobs 7) "enabled" 0 else list-at clock.jobs 7
+    in let worked = if h >= 8 & h <= 17 then ec-work clock 0 else 0
+    in let meals = if h == 18 then ec-meals clock 1 else 0
+    in let purchases = if h == 19 then ec-consume-market clock 39 else 0
+    in if h == 0 then ec-check clock else 0
+  ec-run : EcClock, Integer, Boolean -> Integer
+  ec-run (clock) (hours) (remove-hunters) = if hours == 0 then 0
+    else if ec-hour clock remove-hunters /= 0 | clock.exhausted /= 0 then -1
+    else ec-run clock (hours - 1) remove-hunters

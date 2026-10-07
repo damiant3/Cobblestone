@@ -1,0 +1,77 @@
+Chapter: WorldTimers
+
+ Entry fields by qword index: 0 deadline, 1 kind (0 when free), 2 key, 3 next, 4 prev.
+
+  WorldTimers = record { pool : Integer, heads : Integer, capacity : Integer, slots : Integer,
+    free : Integer, used : Integer, now : Integer, limit : Integer, kind : Integer, key : Integer, fired : Integer }
+  wtm-get : WorldTimers, Integer, Integer -> Integer
+  wtm-get (w) (e) (field) = peek-qword w.pool (e * 40 + field * 8)
+  wtm-put : WorldTimers, Integer, Integer, Integer -> Integer
+  wtm-put (w) (e) (field) (value) = poke-qword w.pool (e * 40 + field * 8) value
+  wtm-slot : WorldTimers, Integer -> Integer
+  wtm-slot (w) (tick) = int-mod tick w.slots
+  wtm-init : WorldTimers, Integer -> Integer
+  wtm-init (w) (e) = if e == w.capacity then 0
+    else let a = wtm-put w e 1 0
+    in let b = wtm-put w e 3 (if e + 1 == w.capacity then -1 else e + 1)
+    in wtm-init w (e + 1)
+  wtm-empty : Integer, Integer, Integer -> Integer
+  wtm-empty (heads) (i) (n) = if i == n then 0 else let h = poke-qword heads (i * 8) -1 in wtm-empty heads (i + 1) n
+  wtm-new : Integer, Integer, Integer -> Result WorldTimers Text
+  wtm-new (capacity) (slots) (now) = if capacity < 1 | capacity > 65536 | slots < 1 | slots > 4096 | now < 0 then Err "world timer bounds"
+    else let w = WorldTimers { pool = alloc-bytes (capacity * 40), heads = alloc-bytes (slots * 8), capacity = capacity, slots = slots,
+      free = 0, used = 0, now = now, limit = now, kind = 0, key = 0, fired = 0 }
+    in let entries = wtm-init w 0
+    in let buckets = wtm-empty w.heads 0 slots
+    in Ok w
+
+  wtm-link : WorldTimers, Integer, Integer -> Integer
+  wtm-link (w) (e) (slot) = let head = peek-qword w.heads (slot * 8)
+    in let a = wtm-put w e 3 head
+    in let b = wtm-put w e 4 -1
+    in let c = if head < 0 then 0 else wtm-put w head 4 e
+    in poke-qword w.heads (slot * 8) e
+  wtm-unlink : WorldTimers, Integer -> Integer
+  wtm-unlink (w) (e) = let next = wtm-get w e 3
+    in let prev = wtm-get w e 4
+    in let a = if next < 0 then 0 else wtm-put w next 4 prev
+    in let b = if prev < 0 then poke-qword w.heads (wtm-slot w (wtm-get w e 0) * 8) next else wtm-put w prev 3 next
+    in let c = wtm-put w e 1 0
+    in let d = wtm-put w e 3 w.free
+    in let f = __record-set w "free" e
+    in let g = __record-set w "used" (w.used - 1) in 0
+  wtm-add : WorldTimers, Integer, Integer, Integer -> Integer
+  wtm-add (w) (deadline) (kind) (key) = if kind < 1 | w.free < 0 then -1
+    else let e = w.free
+    in let due = max deadline (w.limit + 1)
+    in let taken = __record-set w "free" (wtm-get w e 3)
+    in let a = wtm-put w e 0 due
+    in let b = wtm-put w e 1 kind
+    in let c = wtm-put w e 2 key
+    in let d = wtm-link w e (wtm-slot w due)
+    in let u = __record-set w "used" (w.used + 1) in e
+  wtm-find : WorldTimers, Integer, Integer, Integer -> Integer
+  wtm-find (w) (kind) (key) (e) = if e == w.capacity then -1
+    else if wtm-get w e 1 == kind & wtm-get w e 2 == key then e
+    else wtm-find w kind key (e + 1)
+  wtm-clear : WorldTimers, Integer, Integer -> Integer
+  wtm-clear (w) (kind) (key) = if kind < 1 then 0
+    else let e = wtm-find w kind key 0
+    in if e < 0 then 0 else let removed = wtm-unlink w e in 1
+  wtm-set : WorldTimers, Integer, Integer, Integer -> Integer
+  wtm-set (w) (deadline) (kind) (key) = let cleared = wtm-clear w kind key in wtm-add w deadline kind key
+
+  wtm-due : WorldTimers, Integer, Integer -> Integer
+  wtm-due (w) (e) (tick) = if e < 0 then -1 else if wtm-get w e 0 <= tick then e else wtm-due w (wtm-get w e 3) tick
+  wtm-scan : WorldTimers -> Integer
+  wtm-scan (w) = if w.now >= w.limit then -1
+    else if w.limit - w.now > w.slots then let skipped = __record-set w "now" (w.limit - w.slots) in wtm-scan w
+    else let t = w.now + 1
+    in let found = wtm-due w (peek-qword w.heads (wtm-slot w t * 8)) w.limit
+    in if found < 0 then let moved = __record-set w "now" t in wtm-scan w
+    else let k = __record-set w "kind" (wtm-get w found 1)
+    in let y = __record-set w "key" (wtm-get w found 2)
+    in let removed = wtm-unlink w found
+    in let counted = __record-set w "fired" (w.fired + 1) in found
+  wtm-next : WorldTimers, Integer -> Integer
+  wtm-next (w) (tick) = let raised = if tick > w.limit then __record-set w "limit" tick else w in wtm-scan w

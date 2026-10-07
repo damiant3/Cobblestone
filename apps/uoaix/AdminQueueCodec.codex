@@ -1,0 +1,155 @@
+Chapter: AdminQueueCodec
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Encode chapter Json
+  cites Foreword chapter Result
+
+ UAC1 contains a 64-byte header, sixteen scalar cells and 34 text slots.
+ Each slot has an eight-byte length, 2047 CCE bytes and a reserved zero byte.
+ Slot tails are normalized to zero; native unused text cells are not state.
+
+  ac-size : Integer = 192 + 34 * 2056
+
+  ac-scalars : AdminWorld -> List Integer
+  ac-scalars (a) = [a.report-head, a.report-count, a.report-sequence, a.job-id, a.job-state,
+    a.npc, a.event, a.request, a.gold-in, a.gold-out, a.spawns, a.errors, a.price-bread, a.price-goods, a.online]
+
+  ac-nonnegative : List Integer, Integer -> Boolean
+  ac-nonnegative (values) (i) = if i >= list-length values then True
+    else list-at values i >= 0 & ac-nonnegative values (i + 1)
+
+  ac-text-valid : List Integer, Integer, Integer, Integer -> Boolean
+  ac-text-valid (values) (at) (length) (i) = if i >= length then True
+    else let byte = list-at values (at + 1 + i)
+    in byte >= 0 & byte <= 255 & ac-text-valid values at length (i + 1)
+
+  ac-slots-valid : List Integer, Integer, Integer -> Boolean
+  ac-slots-valid (values) (slots) (i) =
+    if i >= slots then True
+    else let length = list-at values (i * 2048)
+    in if length < 0 | length > 2047 then False
+    else ac-text-valid values (i * 2048) length 0 & ac-slots-valid values slots (i + 1)
+
+  ac-json-id : Text, Integer -> Boolean
+  ac-json-id (body) (id) =
+    if not (admin-json-safe body 0 0 False False 0) then False
+    else let parsed = json-parse-value body 0 (text-length body)
+    in if not parsed.ok then False
+    else skip-ws body parsed.next (text-length body) == text-length body & admin-int parsed.value "id" == id
+
+  ac-reports-valid : AdminWorld, Integer -> Boolean
+  ac-reports-valid (a) (i) = if i >= a.report-count then True
+    else let mark = __heap-save
+    in let body = admin-load a.reports (int-mod (a.report-head + i) 32 * 2048)
+    in let valid = ac-json-id body (a.report-sequence - a.report-count + i + 1)
+    in let restored = __heap-restore mark
+    in valid & ac-reports-valid a (i + 1)
+
+  ac-state-valid : AdminWorld -> Boolean
+  ac-state-valid (a) =
+    if list-length a.reports /= 65536 | list-length a.job /= 4096 then False
+    else if not (ac-nonnegative (ac-scalars a) 0) then False
+    else if a.report-head >= 32 | a.report-count > 32 | a.report-sequence > 999999999 | a.report-count > a.report-sequence then False
+    else if a.job-id > 999999999 | a.job-state > 2 | a.online > 1 then False
+    else if not (ac-slots-valid a.reports 32 0 & ac-slots-valid a.job 2 0 & ac-reports-valid a 0) then False
+    else if a.job-state == 0 then True
+    else if a.job-id == 0 | a.event < 1 | a.event > 4 | a.request < 1 | a.request > 999999999 | list-at a.job 0 > 512 then False
+    else if not (tf-valid-person a.world a.npc) then False
+    else if (list-at a.mind.personas (a.npc - 1)).npc /= a.npc then False
+    else if a.job-state == 2 then ac-json-id (admin-load a.job 2048) a.job-id else True
+
+  ac-write-scalars : Integer, List Integer, Integer -> Integer
+  ac-write-scalars (buf) (values) (i) = if i >= 15 then poke-qword buf 184 0
+    else let saved = poke-qword buf (64 + i * 8) (list-at values i)
+    in ac-write-scalars buf values (i + 1)
+
+  ac-write-text : Integer, List Integer, Integer, Integer, Integer -> Integer
+  ac-write-text (buf) (values) (at) (length) (i) =
+    if i >= 2048 then 0
+    else let saved = poke-byte buf (8 + i) (if i < length then list-at values (at + 1 + i) else 0)
+    in ac-write-text buf values at length (i + 1)
+
+  ac-write-slots : Integer, List Integer, Integer, Integer -> Integer
+  ac-write-slots (buf) (values) (slots) (i) = if i >= slots then 0
+    else let length = list-at values (i * 2048)
+    in let saved = poke-qword buf (i * 2056) length
+    in let text = ac-write-text (buf + i * 2056) values (i * 2048) length 0
+    in ac-write-slots buf values slots (i + 1)
+
+  ac-encode : AdminWorld, Integer, Integer, Integer, Integer -> Result Integer Text
+  ac-encode (a) (tick) (sequence) (buf) (capacity) =
+    if tick < 0 | sequence < 0 | capacity < ac-size then Err "admin checkpoint extent or metadata invalid"
+    else if not (ac-state-valid a) then Err "admin queue state invalid"
+    else let magic = poke-qword buf 0 #31434155
+    in let version = poke-qword buf 8 1
+    in let size = poke-qword buf 16 ac-size
+    in let reserved = poke-qword buf 24 0
+    in let t = poke-qword buf 32 tick
+    in let s = poke-qword buf 40 sequence
+    in let reserved2 = poke-qword buf 56 0
+    in let scalars = ac-write-scalars buf (ac-scalars a) 0
+    in let reports = ac-write-slots (buf + 192) a.reports 32 0
+    in let job = ac-write-slots (buf + 65984) a.job 2 0
+    in let hash = poke-qword buf 48 (ws-hash buf ac-size 0 2166136261)
+    in Ok ac-size
+
+  ac-padding : Integer, Integer -> Boolean
+  ac-padding (buf) (i) = if i >= 2048 then True
+    else peek-byte buf (8 + i) == 0 & ac-padding buf (i + 1)
+
+  ac-wire-slots : Integer, Integer -> Boolean
+  ac-wire-slots (buf) (i) = if i >= 34 then True
+    else let slot = buf + 192 + i * 2056
+    in let length = peek-qword slot 0
+    in if length < 0 | length > 2047 then False
+    else ac-padding slot length & ac-wire-slots buf (i + 1)
+
+  ac-read-text : Integer, List Integer, Integer, Integer, Integer -> Integer
+  ac-read-text (buf) (values) (at) (length) (i) = if i >= length then 0
+    else let saved = list-set-at values (at + 1 + i) (peek-byte buf (8 + i))
+    in ac-read-text buf values at length (i + 1)
+
+  ac-read-slots : Integer, List Integer, Integer, Integer -> Integer
+  ac-read-slots (buf) (values) (slots) (i) = if i >= slots then 0
+    else let length = peek-qword buf (i * 2056)
+    in let saved = list-set-at values (i * 2048) length
+    in let text = ac-read-text (buf + i * 2056) values (i * 2048) length 0
+    in ac-read-slots buf values slots (i + 1)
+
+  ac-decode : Integer, Integer, TfWorld, TmMind -> Result AdminWorld Text
+  ac-decode (buf) (size) (world) (mind) =
+    if size /= ac-size then Err "admin checkpoint length invalid"
+    else if peek-qword buf 0 /= #31434155 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size then Err "admin checkpoint format unsupported"
+    else if peek-qword buf 24 /= 0 | peek-qword buf 56 /= 0 | peek-qword buf 184 /= 0 then Err "admin checkpoint reserved data"
+    else if peek-qword buf 32 < 0 | peek-qword buf 40 < 0 then Err "admin checkpoint metadata invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "admin checkpoint checksum invalid"
+    else if not (ac-wire-slots buf 0) then Err "admin checkpoint text bounds or padding invalid"
+    else let a = admin-world-new world mind
+    in let v0 = __record-set a "report-head" (peek-qword buf 64)
+    in let v1 = __record-set a "report-count" (peek-qword buf 72)
+    in let v2 = __record-set a "report-sequence" (peek-qword buf 80)
+    in let v3 = __record-set a "job-id" (peek-qword buf 88)
+    in let v4 = __record-set a "job-state" (peek-qword buf 96)
+    in let v5 = __record-set a "npc" (peek-qword buf 104)
+    in let v6 = __record-set a "event" (peek-qword buf 112)
+    in let v7 = __record-set a "request" (peek-qword buf 120)
+    in let v8 = __record-set a "gold-in" (peek-qword buf 128)
+    in let v9 = __record-set a "gold-out" (peek-qword buf 136)
+    in let v10 = __record-set a "spawns" (peek-qword buf 144)
+    in let v11 = __record-set a "errors" (peek-qword buf 152)
+    in let v12 = __record-set a "price-bread" (peek-qword buf 160)
+    in let v13 = __record-set a "price-goods" (peek-qword buf 168)
+    in let v14 = __record-set a "online" (peek-qword buf 176)
+    in let reports = ac-read-slots (buf + 192) a.reports 32 0
+    in let job = ac-read-slots (buf + 65984) a.job 2 0
+    in if ac-state-valid a then Ok a else Err "admin checkpoint state invalid"
+
+  ac-decode-record : Integer, Integer, Integer, Integer, TfWorld, TmMind -> Result AdminWorld Text
+  ac-decode-record (buf) (size) (tick) (sequence) (world) (mind) =
+    if size < 64 then Err "admin checkpoint record truncated"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "admin checkpoint disagrees with record metadata"
+    else ac-decode buf size world mind
+
+Page 1

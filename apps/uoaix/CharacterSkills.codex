@@ -1,0 +1,69 @@
+Chapter: CharacterSkills
+  cites Uoaix chapter GameAccounts
+
+ One row per character serial: the serial, then 46 levels in tenths in the 0x3A skill order. 320 rows hold
+ every character of 64 accounts with five slots each. A character record is 160 bytes, serial first, its three
+ creation skill pairs (id, whole points) at 82.
+
+  chs-rows : Integer = 320
+  chs-cells : Integer = 46
+  chs-row-bytes : Integer = 376
+  chs-bytes : Integer = 120320
+  chs-zero : Integer, Integer, Integer -> Integer
+  chs-zero (buf) (at) (stop) = if at >= stop then 0 else let a = poke-qword buf at 0 in chs-zero buf (at + 8) stop
+  chs-new : Integer -> Integer
+  chs-new (unused) = let table = alloc-bytes chs-bytes in let cleared = chs-zero table 0 chs-bytes in table
+  chs-find : Integer, Integer, Integer -> Integer
+  chs-find (table) (serial) (i) = if i == chs-rows then -1
+    else if peek-qword table (i * chs-row-bytes) == serial then i else chs-find table serial (i + 1)
+  chs-slot-record : Integer, Integer, Integer -> Integer
+  chs-slot-record (slots) (serial) (i) = if i == 5 then 0
+    else if peek-qword slots (i * 160) == serial then slots + i * 160 else chs-slot-record slots serial (i + 1)
+  chs-account-record : Integer, Integer, Integer -> Integer
+  chs-account-record (accounts) (serial) (a) = if a >= ga-count accounts then 0
+    else let found = chs-slot-record (ga-slots accounts a) serial 0
+    in if found /= 0 then found else chs-account-record accounts serial (a + 1)
+ The character record of a serial: the bound slots first, then every account's slots; 0 when it is no character.
+  chs-record : Integer, Integer, Integer -> Integer
+  chs-record (characters) (accounts) (serial) = if serial <= 0 then 0
+    else let bound = chs-slot-record characters serial 0
+    in if bound /= 0 | accounts == 0 then bound else chs-account-record accounts serial 0
+  chs-creation : Integer, Integer, Integer -> Integer
+  chs-creation (card) (skill) (i) = if i == 3 then 0
+    else if peek-byte card (82 + i * 2) == skill then peek-byte card (83 + i * 2) * 10
+    else chs-creation card skill (i + 1)
+  chs-seed : Integer, Integer, Integer -> Integer
+  chs-seed (cells) (card) (skill) = if skill == chs-cells then 0
+    else let a = poke-qword cells (skill * 8) (chs-creation card skill 0) in chs-seed cells card (skill + 1)
+  chs-free : Integer, Integer, Integer, Integer -> Integer
+  chs-free (table) (characters) (accounts) (i) = if i == chs-rows then -1
+    else let serial = peek-qword table (i * chs-row-bytes)
+    in if serial == 0 | chs-record characters accounts serial == 0 then i else chs-free table characters accounts (i + 1)
+ A character's row cells, claimed and seeded from its creation skills on first use; 0 for a serial that is no character.
+  chs-row : Integer, Integer, Integer, Integer -> Integer
+  chs-row (table) (characters) (accounts) (serial) = if table == 0 | serial <= 0 then 0
+    else let i = chs-find table serial 0
+    in if i >= 0 then table + i * chs-row-bytes + 8
+    else let card = chs-record characters accounts serial
+    in if card == 0 then 0
+    else let j = chs-free table characters accounts 0
+    in if j < 0 then 0
+    else let at = table + j * chs-row-bytes
+    in let named = poke-qword at 0 serial
+    in let seeded = chs-seed (at + 8) card 0 in at + 8
+  chs-level : Integer, Integer, Integer, Integer, Integer -> Integer
+  chs-level (table) (characters) (accounts) (serial) (skill) = if skill < 0 | skill >= chs-cells | serial <= 0 then 0
+    else let i = if table == 0 then -1 else chs-find table serial 0
+    in if i >= 0 then peek-qword table (i * chs-row-bytes + 8 + skill * 8)
+    else let card = chs-record characters accounts serial
+    in if card == 0 then 0 else chs-creation card skill 0
+  chs-set : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  chs-set (table) (characters) (accounts) (serial) (skill) (value) = if skill < 0 | skill >= chs-cells | value < 0 | value > 1000 then -1
+    else let cells = chs-row table characters accounts serial
+    in if cells == 0 then -1 else let a = poke-qword cells (skill * 8) value in 0
+  chs-valid : Integer, Integer -> Boolean
+  chs-valid (table) (at) = if at >= chs-bytes then True
+    else if int-mod at chs-row-bytes /= 0 & (peek-qword table at < 0 | peek-qword table at > 1000) then False
+    else chs-valid table (at + 8)
+
+Page 1

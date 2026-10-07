@@ -1,0 +1,154 @@
+Chapter: AdminProtocol
+  cites Foreword chapter AesGcm
+  cites Foreword chapter Hmac
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Encode chapter Hex
+  cites Works chapter Http
+
+Section: State
+
+  AdminAuth = record {
+    epoch : Text, incoming : List (List Integer), outgoing : List (List Integer),
+    sequences : List Integer, issued : List Integer, enabled : List Integer, accepted : Integer, refused : Integer
+  }
+
+  admin-keys-valid : List Text, Integer -> Boolean
+  admin-keys-valid (keys) (i) =
+    if i == 4 then True
+    else let key = list-at keys i
+    in if text-length key /= 64 | not (hex-well-formed key) then False
+    else admin-keys-valid keys (i + 1)
+
+  admin-derive : List Text, Text, Text, Integer, List (List Integer) -> List (List Integer)
+  admin-derive (keys) (epoch) (direction) (i) (acc) =
+    if i == 4 then acc
+    else let label = "UOAIX1/" & direction & "/" & show (i + 1) & "/" & epoch
+    in admin-derive keys epoch direction (i + 1) (list-push acc (hash-words-to-bytes (hmac-sha256 (hex-decode (list-at keys i)) (text-to-utf8-bytes label))))
+
+  admin-zeroes : Integer, List Integer -> List Integer
+  admin-zeroes (n) (acc) = if n == 0 then acc else admin-zeroes (n - 1) (list-push acc 0)
+
+  admin-key-slots : Integer, List (List Integer) -> List (List Integer)
+  admin-key-slots (n) (acc) = if n == 0 then acc else admin-key-slots (n - 1) (list-push acc (admin-zeroes 32 (__list-with-capacity 32)))
+
+  admin-copy-key : List Integer, List Integer, Integer -> Integer
+  admin-copy-key (source) (target) (i) =
+    if i == 32 then 0
+    else let saved = list-set-at target i (list-at source i) in admin-copy-key source target (i + 1)
+
+  admin-key-set : AdminAuth, Integer, Text -> Integer
+  admin-key-set (auth) (role) (key) =
+    if role < 5 | role > 132 | text-length key /= 64 | not (hex-well-formed key) then -1
+    else let raw = hex-decode key
+    in let incoming = hash-words-to-bytes (hmac-sha256 raw (admin-utf8 ("UOAIX1/request/" & show role & "/" & auth.epoch)))
+    in let outgoing = hash-words-to-bytes (hmac-sha256 raw (admin-utf8 ("UOAIX1/response/" & show role & "/" & auth.epoch)))
+    in let copied-in = admin-copy-key incoming (list-at auth.incoming (role - 1)) 0
+    in let copied-out = admin-copy-key outgoing (list-at auth.outgoing (role - 1)) 0
+    in let enabled = list-set-at auth.enabled (role - 1) 1 in 0
+
+  admin-auth-new : List Text, Text -> Maybe AdminAuth
+  admin-auth-new (keys) (epoch) =
+    if list-length keys /= 4 then None
+    else if not (admin-keys-valid keys 0) | text-length epoch /= 64 | not (hex-well-formed epoch) then None
+    else Just (AdminAuth {
+      epoch = epoch, incoming = admin-key-slots 128 (admin-derive keys epoch "request" 0 []),
+      outgoing = admin-key-slots 128 (admin-derive keys epoch "response" 0 []),
+      sequences = admin-zeroes 132 (__list-with-capacity 132),
+      issued = admin-zeroes 132 (__list-with-capacity 132),
+      enabled = admin-zeroes 128 [1,1,1,1], accepted = 0, refused = 0
+    })
+
+Section: Envelope
+
+  admin-utf8-into : List Integer, Integer, List Integer -> List Integer
+  admin-utf8-into (points) (i) (acc) =
+    if i == list-length points then acc
+    else let bytes = utf8-encode-cp (list-at points i)
+    in admin-utf8-into points (i + 1) (cce-push-encoded acc bytes 0 (list-length bytes))
+
+  admin-utf8 : Text -> List Integer
+  admin-utf8 (text) = admin-utf8-into (text-to-unicode-bytes text) 0 []
+
+  admin-decimal : Text, Integer, Integer -> Integer
+  admin-decimal (s) (i) (value) =
+    if text-length s == 0 | text-length s > 9 then -1
+    else if i == text-length s then value
+    else let digit = char-code-at s i - char-code-at "0" 0
+    in if digit < 0 | digit > 9 then -1
+    else admin-decimal s (i + 1) (value * 10 + digit)
+
+  admin-nonce : Integer -> List Integer
+  admin-nonce (n) = [0,0,0,0,bit-and n 255,bit-and (bit-shru n 8) 255,bit-and (bit-shru n 16) 255,bit-and (bit-shru n 24) 255,0,0,0,0]
+
+  admin-denied : AdminAuth -> HttpResponse
+  admin-denied (auth) =
+    let n = __record-set auth "refused" (auth.refused + 1)
+    in HttpResponse { status = "401 Unauthorized", content-type = "text/plain", body = "" }
+
+  admin-reply : AdminAuth, Integer, Integer, Text -> HttpResponse
+  admin-reply (auth) (role) (sequence) (body) =
+    let aad = text-to-utf8-bytes ("UOAIX1/response/" & show role & "/" & show sequence)
+    in let sealed = aesgcm-encrypt (list-at auth.outgoing (role - 1)) (admin-nonce sequence) (admin-utf8 body) aad
+    in HttpResponse { status = "200 OK", content-type = "text/plain", body = hex-encode sealed.ciphertext & "\n" & hex-encode sealed.tag }
+
+  admin-open : AdminAuth, (Integer, Text -> Text), List Text -> HttpResponse
+  admin-open (auth) (dispatch) (parts) =
+    let role = admin-decimal (list-at parts 0) 0 0
+    in let sequence = admin-decimal (list-at parts 1) 0 0
+    in let cipher = list-at parts 2
+    in let tag = list-at parts 3
+    in if role < 1 | role > 132 | sequence < 1 then admin-denied auth
+    else if list-at auth.enabled (role - 1) /= 1 then admin-denied auth
+    else if sequence <= list-at auth.sequences (role - 1) then admin-denied auth
+    else if sequence > list-at auth.issued (role - 1) then admin-denied auth
+    else if text-length cipher > 4096 | text-length tag /= 32 | not (hex-well-formed cipher) | not (hex-well-formed tag) then admin-denied auth
+    else let aad = text-to-utf8-bytes ("UOAIX1/request/" & show role & "/" & show sequence)
+    in when aesgcm-decrypt (list-at auth.incoming (role - 1)) (admin-nonce sequence) (hex-decode cipher) aad (hex-decode tag)
+      is None -> admin-denied auth
+      is Just (plain) ->
+        let consumed = list-set-at auth.sequences (role - 1) sequence
+        in let n = __record-set auth "accepted" (auth.accepted + 1)
+        in admin-reply auth role sequence (dispatch role (raw-bytes-to-text (utf8-to-text-loop plain 0 (list-length plain) [])))
+
+  admin-route : AdminAuth, (Integer, Text -> Text), HttpRequest -> HttpResponse
+  admin-route (auth) (dispatch) (request) =
+    if request.valid & request.method == "GET" & request.path == "/handshake" & request.body == "" then
+      HttpResponse { status = "200 OK", content-type = "text/plain", body = "UOAIX1\n" & auth.epoch }
+    else if request.valid & request.method == "POST" & request.path == "/handshake" & text-length request.body <= 143 then
+      admin-sequence auth (text-split request.body "\n")
+    else if not request.valid | request.method /= "POST" | request.path /= "/admin" | text-length request.body > 4160 then admin-denied auth
+    else let parts = text-split request.body "\n"
+    in if list-length parts /= 4 then admin-denied auth
+    else admin-open auth dispatch parts
+
+  admin-sequence : AdminAuth, List Text -> HttpResponse
+  admin-sequence (auth) (parts) =
+    if list-length parts == 4 then admin-reserve auth parts
+    else if list-length parts /= 3 then admin-denied auth
+    else let role = admin-decimal (list-at parts 0) 0 0
+    in let nonce = list-at parts 1
+    in let tag = list-at parts 2
+    in if role < 1 | role > 132 | text-length nonce /= 64 | not (hex-well-formed nonce) | text-length tag /= 64 | not (hex-well-formed tag) then admin-denied auth
+    else if list-at auth.enabled (role - 1) /= 1 then admin-denied auth
+    else let message = admin-utf8 ("UOAIX1/sequence/" & show role & "/" & nonce)
+    in let expected = hash-words-to-bytes (hmac-sha256 (list-at auth.incoming (role - 1)) message)
+    in if not (gcm-tags-equal expected (hex-decode tag)) then admin-denied auth
+    else let sequence = show (list-at auth.issued (role - 1))
+    in let signed = hmac-sha256-hex (list-at auth.outgoing (role - 1)) (admin-utf8 ("UOAIX1/sequence/" & show role & "/" & nonce & "/" & sequence))
+    in HttpResponse { status = "200 OK", content-type = "text/plain", body = sequence & "\n" & signed }
+
+  admin-reserve : AdminAuth, List Text -> HttpResponse
+  admin-reserve (auth) (parts) =
+    let role = admin-decimal (list-at parts 0) 0 0
+    in let nonce = list-at parts 1
+    in let floor = admin-decimal (list-at parts 2) 0 0
+    in let tag = list-at parts 3
+    in if role < 1 | role > 132 | floor < 0 | floor > 999999999 - 1024 | text-length nonce /= 64 | not (hex-well-formed nonce) | text-length tag /= 64 | not (hex-well-formed tag) then admin-denied auth
+    else if list-at auth.enabled (role - 1) /= 1 | list-at auth.issued (role - 1) /= floor then admin-denied auth
+    else let label = "UOAIX1/reserve/" & show role & "/" & nonce & "/" & show floor
+    in let expected = hash-words-to-bytes (hmac-sha256 (list-at auth.incoming (role - 1)) (admin-utf8 label))
+    in if not (gcm-tags-equal expected (hex-decode tag)) then admin-denied auth
+    else let reserved = list-set-at auth.issued (role - 1) (floor + 1024)
+    in let signed = hmac-sha256-hex (list-at auth.outgoing (role - 1)) (admin-utf8 label)
+    in HttpResponse { status = "200 OK", content-type = "text/plain", body = show floor & "\n" & signed }

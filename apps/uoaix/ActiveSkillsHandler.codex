@@ -1,0 +1,135 @@
+Chapter: ActiveSkillsHandler
+  cites Uoaix chapter ActiveSkillsLore
+  cites Uoaix chapter ActiveSkillsHiding
+  cites Uoaix chapter ActiveSkillsHealing
+  cites Uoaix chapter ActiveSkillsTown
+  cites Uoaix chapter ActiveSkillsTracking
+  cites Uoaix chapter ActiveSkillsTaming
+  cites Uoaix chapter ActiveSkillsForensics
+  cites Uoaix chapter ActiveSkillsPoisoning
+  cites Uoaix chapter ActiveSkillsStealing
+  cites Uoaix chapter ActiveSkillsTaste
+  cites Uoaix chapter ActiveSkillsHerding
+
+ Source-X CClientEvent.cpp Event_Skill_Use and CClientTarg.cpp OnTarg_Skill,
+ Apache-2.0; Sphere-LICENSE.txt.
+
+  as-active-skill : Integer -> Boolean
+  as-active-skill (skill) = skill == 1 | skill == 2 | skill == 3 | skill == 4 | skill == 9 | skill == 14 | skill == 15 | skill == 16 | skill == 19 | skill == 21
+    | skill == 22 | skill == 28 | skill == 30 | skill == 32 | skill == 33 | skill == 35 | skill == 36 | skill == 38
+  as-prompt : Integer -> Text
+  as-prompt (skill) = if skill == 14 then "Where do you wish to search?" else if skill == 22 then "Whom do you wish to incite?"
+    else if skill == 15 then "Whom do you wish to entice?" else if skill == 19 then "Select what you want to examine."
+    else if skill == 30 then "What poison do you want to apply?" else if skill == 33 then "Which item will you attempt to steal?"
+    else if skill == 35 then "Tame which animal?" else if skill == 36 then "What would you like to taste?"
+    else if skill == 9 then "Whom do you wish to calm?" else if skill == 28 then "Whose belongings do you wish to peek into?" else "What do you wish to examine?"
+  as-denied : Text -> Result (Maybe GameReply) Text
+  as-denied (text) = Ok (Just (gsi-denied text))
+  as-use : AsServices, ActiveSkills, AsActor, WorldObject, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  as-use (services) (s) (a) (mobile) (direction) (skill) (now) = if now < a.next then as-denied "You must wait to perform another action."
+    else if skill == 21 then Ok (Just (as-hide services s a mobile direction now))
+    else if skill == 32 then (let before = as-level a 32 in let attempts = a.skills.attempts
+      in let reply = as-spirit services s a mobile now
+      in let paced = if a.skills.attempts == attempts then a else __record-set a "next" (max a.next (now + gh-ticks 1000))
+      in Ok (Just (as-practiced a 32 before reply)))
+    else let revealed = if skill == 14 then [] else as-unhide s a mobile direction
+    in if skill == 38 then let menu = as-track-begin s a mobile in Ok (Just (gs-reply (revealed & menu.packets) menu.note))
+    else let fresh = __record-set a "provoked" 0
+    in let cursor = as-target s a skill now
+    in let ground = if skill == 14 then list-set-at (list-at cursor.packets 0) 1 1 else []
+    in let prompt = as-say (as-prompt skill)
+    in Ok (Just (gs-reply (revealed & [prompt] & cursor.packets) cursor.note))
+  as-practiced : AsActor, Integer, Integer, GameReply -> GameReply
+  as-practiced (a) (skill) (before) (reply) = if as-level a skill == before then reply
+    else gs-reply (list-push reply.packets (as-skills a)) (reply.note & "; skills:gain")
+  as-cancelled : AsActor, List Integer -> Boolean
+  as-cancelled (a) (packet) = if a.skill == 14 | (a.skill == 20 & a.herd /= 0) then gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 else gp-u32 packet 7 == 0
+  as-effect : AsServices, ActiveSkills, AsActor, GameShard, GameInput, WorldObject, Integer, List Integer, Integer -> GameReply
+  as-effect (services) (s) (a) (game) (input) (player) (slot) (packet) (now) = if a.skill == 14 then as-detect s a player packet
+    else if a.skill == 20 & a.herd /= 0 then as-herd-place services s a game player packet
+    else when world-get s.items.world (gp-u32 packet 7)
+      is Err (_) -> gsi-denied "That object is gone."
+      is Ok (obj) -> if a.skill == 17 then as-heal-begin services s a game player obj now
+        else if a.skill == 22 then (if a.provoked == 0 then as-incite-first services s a game player obj now else as-incite services s a game player obj)
+        else if a.skill == 19 then as-forensics s a game player obj now
+        else if a.skill == 33 then as-steal s a game player obj now
+        else if a.skill == 30 then (if a.provoked == 0 then as-poison-first s a player obj now else as-poison-apply services s a player obj)
+        else if a.skill == 15 then (if a.provoked == 0 then as-entice-first services s a game player obj now else as-entice services s a game player obj)
+        else if a.skill == 20 then as-herd-animal services s a player obj now
+        else if a.skill == 35 then as-tame-begin services s a player obj now
+        else if a.skill == 36 then as-taste services s a player obj
+        else if a.skill == 9 then as-peace s a player obj now else if a.skill == 28 then as-snoop services s a player obj else as-lore s services a game input player obj slot
+  as-complete : AsServices, ActiveSkills, AsActor, GameShard, GameInput, WorldObject, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
+  as-complete (services) (s) (a) (game) (input) (player) (slot) (packet) (now) =
+    if a.cursor == 0 | gp-u32 packet 2 /= a.cursor then as-denied "That skill target is no longer active."
+    else let cleared = __record-set a "cursor" 0
+    in if as-cancelled a packet then Ok (Just (gs-reply [] "skills:active-cancelled"))
+    else if now > a.expires then as-denied "That skill target expired."
+    else if (list-at s.items.actors slot).holding /= 0 then as-denied "Finish moving that item first."
+    else let skill = a.skill
+    in let before = as-level a skill
+    in let attempts = a.skills.attempts
+    in let reply = as-effect services s a game input player slot packet now
+    in let paced = if a.skills.attempts == attempts then a else __record-set a "next" (max a.next (now + gh-ticks 1000))
+    in Ok (Just (as-practiced a skill before reply))
+  as-specs : Integer -> List GameOpcodeSpec
+  as-specs (unused) = [gsi-spec #7D 13 13 13]
+  as-claims-skill : List Integer -> Boolean
+  as-claims-skill (packet) = if list-length packet < 5 | list-length packet > 64 | gp-u16 packet 1 /= list-length packet then False
+    else list-at packet 3 == #24 & list-at packet (list-length packet - 1) == 0 & as-active-skill (gsi-skill-number packet 4 0)
+  as-claims : List Integer -> Boolean
+  as-claims (packet) = let op = list-at packet 0
+    in if op == #12 then as-claims-skill packet
+    else if op == #6C then list-length packet == 19 & bit-and (gp-u32 packet 2) #FFFF0000 == #41530000
+    else if op == #7D then list-length packet == 13 & gp-u16 packet 5 >= #9000 & gp-u16 packet 5 < #A000
+    else op == #34 & list-length packet == 10 & list-at packet 5 == 5
+  as-claims-bandage : ActiveSkills, List Integer -> Boolean
+  as-claims-bandage (s) (packet) = if list-length packet /= 5 | list-at packet 0 /= 6 then False
+    else let at = gv-lot s.vendor (bit-and (gp-u32 packet 1) #7FFFFFFF) 0
+    in if at < 0 then False else (list-at s.vendor.lots at).item == 75
+  as-claims-crook : ActiveSkills, List Integer -> Boolean
+  as-claims-crook (s) (packet) = if list-length packet /= 5 | list-at packet 0 /= 6 then False
+    else when world-get s.items.world (bit-and (gp-u32 packet 1) #7FFFFFFF) is Err (_) -> False is Ok (o) -> o.kind == 2 & as-crook o.graphic
+  as-handler-at : AsServices, ActiveSkills, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
+  as-handler-at (services) (s) (shard) (input) (map) (port) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else if not (as-claims packet) & not (as-claims-bandage s packet) & not (as-claims-crook s packet) then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
+      | s.items.world.buffer /= shard.world.buffer | s.vendor.game.world.buffer /= shard.world.buffer then Err "active skills world binding"
+    else let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 30000 then Err "active skills player binding"
+    else when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> if mobile.health <= 0 then as-denied "You cannot use skills while dead."
+        else let a = as-session s shard input mobile slot
+        in let op = list-at packet 0
+        in if op == #12 then as-use services s a mobile input.session.direction (gsi-skill-number packet 4 0) now
+        else if op == 6 & as-claims-crook s packet then Ok (Just (as-herd-use s a mobile (bit-and (gp-u32 packet 1) #7FFFFFFF) now))
+        else if op == 6 then as-bandage-use s a mobile input.session.direction (bit-and (gp-u32 packet 1) #7FFFFFFF) now
+        else if op == #6C then as-complete services s a shard input mobile slot packet now
+        else if op == #7D then let before = as-level a 38 in Ok (Just (as-practiced a 38 before (as-track-answer services s a shard mobile packet now)))
+        else if gp-u32 packet 6 /= mobile.serial then as-denied "You may query only your own skills."
+        else Ok (Just (gs-reply [as-skills a] "skills:list"))
+  as-handler : AsServices, ActiveSkills, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  as-handler (services) (s) (shard) (input) (map) (port) (packet) =
+    as-handler-at services s shard input map port packet get-ticks
+  as-merge : Maybe GameReply, Maybe GameReply -> Maybe GameReply
+  as-merge (first) (second) = when first
+    is None -> second
+    is Just (r) -> when second is None -> first is Just (t) -> Just (gs-reply (r.packets & t.packets) (r.note & "; " & t.note))
+  as-pulse-at : AsServices, ActiveSkills, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  as-pulse-at (services) (s) (game) (input) (now) = when as-heal-pulse services s game input now
+    is Err (e) -> Err e
+    is Ok (bandaged) -> when as-tame-pulse services s game input now
+     is Err (e) -> Err e
+     is Ok (tamed) -> let healed = as-merge bandaged tamed in if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | s.items.world.buffer /= game.world.buffer then Ok healed
+      else let slot = gsi-slot game input.session.serial 0
+      in if slot < 0 then Ok healed else let a = list-at s.actors slot
+      in if a.serial /= input.session.serial | a.tracking == 0 then Ok healed
+      else when world-get game.world a.serial
+        is Err (_) -> Ok healed
+        is Ok (player) -> let arrow = as-track-pulse s a player now
+          in if list-length arrow == 0 then Ok healed
+          else Ok (Just (when healed is None -> gs-reply arrow "skills:track-arrow" is Just (r) -> gs-reply (r.packets & arrow) (r.note & "; skills:track-arrow")))
+  as-pulse : AsServices, ActiveSkills, GameShard, GameInput -> Result (Maybe GameReply) Text
+  as-pulse (services) (s) (game) (input) = as-pulse-at services s game input get-ticks

@@ -1,0 +1,72 @@
+Chapter: NpcSpeechCodec
+  cites Uoaix chapter GameNpcSpeech
+
+  nsc-bytes : Integer = 64 + 40 + 40 * 48
+  nsc-rows : NpcSpeech, Integer, Boolean, Integer -> Integer
+  nsc-rows (s) (buf) (read) (i) = if i == 40 then 0
+    else let r = list-at s.rows i
+    in let at = 104 + i * 48
+    in let serial = if read then 0 else poke-qword buf at (nsc-key r)
+    in let k = if read then nsc-row-of s (peek-qword buf at) 0 else i
+    in let times = if not read then ts-write-list buf (at + 8) r.last 0 else if peek-qword buf at == 0 | k < 0 then 0 else ts-read-list buf (at + 8) (list-at s.rows k).last 0
+    in nsc-rows s buf read (i + 1)
+  nsc-viewers : NpcSpeech, Integer, Boolean, Integer -> Integer
+  nsc-viewers (s) (buf) (read) (i) = if i == 5 then 0
+    else let view = list-at s.viewers i
+    in let serial = if read then let a = __record-set view "serial" (peek-qword buf (64 + i * 8))
+      in let b = __record-set view "connection" -1 in let c = __record-set view "inside" 0 in 0
+      else poke-qword buf (64 + i * 8) view.serial
+    in nsc-viewers s buf read (i + 1)
+  nsc-times-valid : Integer, Integer, Integer, Integer -> Boolean
+  nsc-times-valid (buf) (at) (now) (i) = if i == 5 then True
+    else let value = peek-qword buf (at + 8 + i * 8)
+    in value >= -600 & value <= now & nsc-times-valid buf at now (i + 1)
+ Rows are matched by serial and kind (a shopkeeper is also registered as a
+ banker, so a serial alone is ambiguous): the composite re-registers bankers in a different
+ order after a restore. A world saved after an upgrade boot holds the bank banker
+ twice (banker registration was not a set before), so distinct keys are counted
+ on both sides.
+  nsc-key : NsRow -> Integer
+  nsc-key (r) = r.serial + r.kind * 1099511627776
+  nsc-row-of : NpcSpeech, Integer, Integer -> Integer
+  nsc-row-of (s) (key) (i) = if i == s.count then -1 else if nsc-key (list-at s.rows i) == key then i else nsc-row-of s key (i + 1)
+  nsc-stored : Integer, Integer, Integer -> Integer
+  nsc-stored (buf) (i) (n) = if i == 40 then n else nsc-stored buf (i + 1) (if peek-qword buf (104 + i * 48) == 0 then n else n + 1)
+  nsc-seen : Integer, Integer, Integer -> Boolean
+  nsc-seen (buf) (key) (i) = if i == 0 then False else peek-qword buf (104 + (i - 1) * 48) == key | nsc-seen buf key (i - 1)
+  nsc-distinct : Integer, Integer, Integer -> Integer
+  nsc-distinct (buf) (i) (n) = if i == 40 then n
+    else let key = peek-qword buf (104 + i * 48)
+    in nsc-distinct buf (i + 1) (if key == 0 | nsc-seen buf key i then n else n + 1)
+  nsc-bound : NpcSpeech, Integer, Integer -> Integer
+  nsc-bound (s) (i) (n) = if i == s.count then n else nsc-bound s (i + 1) (if nsc-row-of s (nsc-key (list-at s.rows i)) 0 < i then n else n + 1)
+ A world saved while every shopkeeper was also a banker holds banker rows for shopkeeper serials; decoding drops a
+ stored row whose key the registry no longer has, and encoding still requires every stored key to be bound.
+  nsc-valid-rows : NpcSpeech, Integer, Boolean, Integer -> Boolean
+  nsc-valid-rows (s) (buf) (reading) (i) = if i == 40 then reading | nsc-distinct buf 0 0 == nsc-bound s 0 0
+    else let serial = peek-qword buf (104 + i * 48)
+    in (serial == 0 | reading | nsc-row-of s serial 0 >= 0)
+      & nsc-times-valid buf (104 + i * 48) s.town.now 0 & nsc-valid-rows s buf reading (i + 1)
+  nsc-valid-viewers : Integer, Integer -> Boolean
+  nsc-valid-viewers (buf) (i) = if i == 5 then True
+    else peek-qword buf (64 + i * 8) >= 0 & peek-qword buf (64 + i * 8) <= 1073741823 & nsc-valid-viewers buf (i + 1)
+  nsc-encode : NpcSpeech, Integer, Integer -> Result Integer Text
+  nsc-encode (s) (buf) (capacity) = if capacity < nsc-bytes | s.count < 8 | s.count > 40 then Err "NPC speech codec extent"
+    else let zero = wd-zero buf 0 nsc-bytes
+    in let a = poke-qword buf 0 #3143534E
+    in let b = poke-qword buf 8 1
+    in let c = poke-qword buf 16 nsc-bytes
+    in let d = poke-qword buf 24 s.count
+    in let e = poke-qword buf 32 s.town.now
+    in let rows = nsc-rows s buf False 0
+    in let viewers = nsc-viewers s buf False 0
+    in if not (nsc-valid-rows s buf False 0 & nsc-valid-viewers buf 0) then Err "NPC speech codec state"
+    else let hash = poke-qword buf 48 (ws-hash buf nsc-bytes 0 2166136261) in Ok nsc-bytes
+  nsc-decode : NpcSpeech, Integer, Integer -> Result Integer Text
+  nsc-decode (s) (buf) (size) = if size /= nsc-bytes then Err "NPC speech codec extent"
+    else if peek-qword buf 0 /= #3143534E | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size | peek-qword buf 24 /= nsc-stored buf 0 0
+      | peek-qword buf 32 < 0 | peek-qword buf 32 > s.town.now | peek-qword buf 40 /= 0 | peek-qword buf 56 /= 0 then Err "NPC speech codec header"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 | not (nsc-valid-rows s buf True 0 & nsc-valid-viewers buf 0) then Err "NPC speech codec bindings or checksum"
+    else let rows = nsc-rows s buf True 0
+    in let viewers = nsc-viewers s buf True 0
+    in let rooms = ns-rooms-clear s.rooms 0 in Ok size

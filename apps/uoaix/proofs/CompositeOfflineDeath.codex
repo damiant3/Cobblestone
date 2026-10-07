@@ -1,0 +1,96 @@
+Chapter: CompositeOfflineDeath
+  cites Uoaix chapter CompositeStore
+
+ A player whose account is not the bound one dies (a spell resolving on another link's turn), then the world saves.
+  cod-check : Text, Boolean -> [Console] Integer
+  cod-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cod-fill : WalkMap, Integer -> Integer
+  cod-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cod-fill map (i + 1)
+  cod-create : Integer -> List Integer
+  cod-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Mage" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,25,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cod-decoration : WalkMap -> Result WdState Text
+  cod-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+ How many of a record's four equipment serials its character wears; -1 when one is gone or held elsewhere.
+  cod-worn : WorldTable, Integer, Integer, Integer, Integer -> Integer
+  cod-worn (world) (row) (mobile) (i) (n) = if i == 4 then n
+    else let serial = peek-qword row (112 + i * 8)
+    in if serial == 0 then cod-worn world row mobile (i + 1) n
+    else when world-get world serial
+      is Err (_) -> -1
+      is Ok (item) -> if item.container /= mobile then -1 else cod-worn world row mobile (i + 1) (n + 1)
+  cod-die : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cod-die (store) (map) (specs) = let owner = store.state in act
+    enabled <- __record-set owner "testing" True
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (cod-create 0)
+    game <- owner.checkpoint.game
+    player <- list-at owner.vendor.players 0
+    bank <- gmb-bank-find owner.items player.serial 0
+    worn <- cod-worn game.world (game.characters + gsi-slot game player.serial 0 * 160) player.serial 0 0
+    fighter <- cb-ensure owner.combat game player.serial
+    home <- ga-bound game.accounts
+    index <- ga-count game.accounts
+    made <- ga-create game.accounts [111,116,104,101,114] [111,116,104,101,114,112,119]
+    switched <- ga-bind game.accounts game.characters index
+    row <- chs-record game.characters game.accounts player.serial
+    a <- cod-check "the caster's account is not bound, its record is in the account table, and it wears its starting equipment and has a bank box" (is-ok entry & is-ok made & switched & gsi-slot game player.serial 0 < 0 & row /= 0 & worn > 0 & bank > 0 & (when fighter is Err (_) -> False is Ok (f) -> not f.npc))
+    when fighter
+      is Err (e) -> cod-check ("fighter " & e) False
+      is Ok (f) -> when world-get game.world player.serial
+        is Err (e) -> cod-check ("mobile " & e) False
+        is Ok (mobile) -> act
+          frail <- world-update game.world (__record-set mobile "health" 0)
+          died <- cb-die owner.combat game input 0 f mobile
+          pack <- gsi-pack-find game.world player.serial 0
+          b <- cod-check "its death keeps the starting equipment, the backpack and the bank box on the ghost" (is-ok died & cod-worn game.world row player.serial 0 0 == worn & pack > 0 & gmb-bank-find owner.items player.serial 0 == bank)
+          committed <- cs-commit store True
+          c <- cod-check "the world saves after it: every account slot still names equipment its character wears" (is-ok committed)
+          back <- ga-bind game.accounts game.characters home
+          a + b + c
+        end
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cod-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cod-check e False
+     is Ok (map) -> let filled = cod-fill map 0
+      in when cod-decoration map
+       is Err (e) -> cod-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cod-check ("store " & e) False
+      is Ok (store) -> act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> cod-check ("recovery " & e) False
+        is Ok (owner) -> cod-die owner map specs
+      end
+    end

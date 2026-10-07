@@ -1,0 +1,60 @@
+Chapter: SkillsItemsPackets
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+
+ Codex port/adaptation of SphereServer Source-X network/send.cpp,
+ Apache-2.0. Attribution and modifications: SkillsItems.md; license in Sphere-LICENSE.txt.
+
+  sip-length : List Integer -> List Integer
+  sip-length (packet) = let n = list-length packet
+    in let a = list-set-at packet 1 (bit-and (bit-shru n 8) 255)
+    in list-set-at packet 2 (bit-and n 255)
+  sip-remove : Integer -> List Integer
+  sip-remove (serial) = gp-put32 (gp-start #1D) serial
+  sip-bounce : Integer -> List Integer
+  sip-bounce (reason) = [#27,reason]
+  sip-contained : List Integer, WorldObject -> List Integer
+  sip-contained (out) (item) = let a = list-push (gp-put16 (gp-put32 out item.serial) item.graphic) 0
+    in let b = gp-put16 (gp-put16 (gp-put16 a item.amount) item.x) item.y
+    in gp-put16 (gp-put32 b item.container) item.hue
+  sip-item : WorldObject -> List Integer
+  sip-item (item) = sip-contained (gp-start #25) item
+  sip-open : Integer, Integer -> List Integer
+  sip-open (serial) (gump) = gp-put16 (gp-put32 (gp-start #24) serial) gump
+  sip-ground : WorldObject -> List Integer
+  sip-ground (item) = let a = gp-put16 (gp-put32 ((gp-start #1A) & [0,0]) (item.serial + (if item.amount > 1 then #80000000 else 0))) item.graphic
+    in let b = if item.amount > 1 then gp-put16 a item.amount else a
+    in let c = gp-put16 (gp-put16 b item.x) (item.y + (if item.hue > 0 then #8000 else 0))
+    in let d = list-push c (bit-and item.z 255)
+    in sip-length (if item.hue > 0 then gp-put16 d item.hue else d)
+  sip-paperdoll : Integer, Integer, Integer -> List Integer
+  sip-paperdoll (characters) (slot) (serial) =
+    let a = gp-buffer (gp-put32 (gp-start #88) serial) characters (slot * 160 + 18) 30
+    in list-push (gp-zeros a 30) 2
+ British's characters carry the Lord notoriety title ahead of the typed name
+ (Damian, 2026-10-05); the 1.25 client refuses "Lord British" as a name.
+  sip-lord : List Integer = [76, 111, 114, 100, 32]
+  sip-slot-name : Integer, Integer, Integer, List Integer -> List Integer
+  sip-slot-name (characters) (slot) (i) (out) = if i >= 30 | peek-byte characters (slot * 160 + 18 + i) == 0 then out
+    else sip-slot-name characters slot (i + 1) (list-push out (peek-byte characters (slot * 160 + 18 + i)))
+  sip-titled-name : Integer, Integer, Boolean -> List Integer
+  sip-titled-name (characters) (slot) (lord) = let name = sip-slot-name characters slot 0 (__list-with-capacity 30)
+    in if lord then sip-lord & name else name
+  sip-field : List Integer, List Integer, Integer, Integer -> List Integer
+  sip-field (out) (bytes) (width) (i) = if i >= width then out
+    else sip-field (list-push out (if i < list-length bytes then list-at bytes i else 0)) bytes width (i + 1)
+  sip-paperdoll-titled : Integer, Integer, Integer, Boolean -> List Integer
+  sip-paperdoll-titled (characters) (slot) (serial) (lord) =
+    list-push (sip-field (gp-put32 (gp-start #88) serial) (sip-titled-name characters slot lord) 60 0) 2
+  sip-name-label : WorldObject, List Integer -> List Integer
+  sip-name-label (mobile) (name) = let header = gp-put16 (gp-start 28) (45 + list-length name)
+    in let a = list-push (gp-put16 (gp-put32 header mobile.serial) mobile.graphic) 6
+    in let b = gp-put16 (gp-put16 a 946) 3
+    in list-push (sip-field b name 30 0 & name) 0
+  sip-target : Integer -> List Integer
+  sip-target (context) = gp-zeros (list-push (gp-put32 [#6C,0] context) 0) 12
+  sip-message : Integer, Integer, Integer, Text -> List Integer
+  sip-message (serial) (graphic) (kind) (text) =
+    let a = list-push (gp-put16 (gp-put32 ((gp-start #1C) & [0,0]) serial) graphic) kind
+    in let b = gp-ascii (gp-put16 (gp-put16 a #03B2) 3) "System" 0 30
+    in sip-length (gp-ascii b text 0 (text-length text + 1))

@@ -1,0 +1,174 @@
+Chapter: TreasuryProof
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter PanelAuditCodec
+  cites Uoaix chapter TreasuryPanel
+  cites Uoaix chapter EconomyClock
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Encode chapter Json
+  cites Foreword chapter Result
+  cites Foreword chapter Console
+
+  tp-json : Text -> JsonValue
+  tp-json (text) = (json-parse-value text 0 (text-length text)).value
+  tp-check : Text, Boolean -> [Console] Integer
+  tp-check (name) (ok) = act
+    print-line-uni (name & (if ok then " PASS" else " FAIL"))
+    if ok then 0 else 1
+  end
+
+  tp-recovery : AdminPanel -> Boolean
+  tp-recovery (p) =
+    let buf = alloc-bytes pac-size
+    in when pac-encode p 70 11 buf pac-size
+      is Err (e) -> False
+      is Ok (size) -> when pac-decode-record buf size 70 11 p.world p.actor p.gms p.clock
+        is Err (e) -> False
+        is Ok (restored) -> not restored.treasury-enabled & text-contains (panel-treasury-view restored) "\"available\":false"
+
+  tp-currency-run : EuCurrency -> Boolean
+  tp-currency-run (x) =
+    let w = x.world
+    in let crown = eu-open x 5 1
+    in let business = eu-open x 5 2
+    in let actor = ep-admit w crown 1
+    in let person = ep-actor w actor
+    in let hand = ep-station w actor 1 1
+    in let smelter = ep-station w actor 3 1
+    in let mint = ep-station w actor 12 1
+    in let stone = eh-source w 1 1
+    in let branch = eh-source w 2 1
+    in let fuel = eh-source w 2 1
+    in let copper = eh-source w 25 1
+    in let s = eh-harvest w actor stone
+    in let b = eh-harvest w actor branch
+    in let f = eh-harvest w actor fuel
+    in let pick = ep-craft w actor 1 hand
+    in let hammer = ep-craft w actor 31 hand
+    in let skill1 = ep-set person.skills 1 1000
+    in let skill2 = ep-set person.skills 2 1000
+    in let skill8 = ep-set person.skills 8 1000
+    in let mined = eh-harvest w actor copper
+    in let smelted = ep-craft w actor 32 smelter
+    in let policy = eu-mint-policy x True actor 1 1000
+    in let struck = eu-strike x True actor mint 1 1
+    in let p = panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+    in let bypass = panel-bind-treasury p w True
+    in let bound = panel-bind-currency p x actor True
+    in let opened = panel-open p 100
+    in let tax = panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":500,\"actor\":999}") 101
+    in let grant = panel-human p (tp-json ("{\"command\":\"treasury-grant\",\"session\":1,\"purse\":" & show business & ",\"metal\":1,\"amount\":125}")) 102
+    in let event = list-at x.events (x.count - 1)
+    in let before = x.count
+    in let rows = x.silver.entry-count
+    in let full = __record-set x.silver "entry-count" em-rows
+    in let refused = panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 103
+    in let restored = __record-set x.silver "entry-count" rows
+    in struck == 0 & bypass == -1 & bound == 0 & text-contains tax "\"ok\":1" & text-contains grant "\"ok\":1"
+      & x.copper.tax == 500 & x.silver.tax == 500 & w.money.tax == 500
+      & (em-purse x.copper 1).coin == 875 & (em-purse x.copper business).coin == 125
+      & event.kind == 5 & event.actor == actor & event.party == business & event.copper == 125 & event.gold == 0
+      & text-contains refused "treasury-refused" & x.count == before & eu-census x
+
+  tp-rates : EuCurrency -> Integer
+  tp-rates (x) =
+    let p = panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+    in let bound = panel-bind-currency p x 1 True
+    in let opened = panel-open p 100
+    in let before = x.count
+    in let copper = (em-purse x.copper 1).coin
+    in let silver = (em-purse x.silver 1).coin
+    in let gold = (em-purse x.world.money 1).coin
+    in let request = "{\"command\":\"treasury-rates\",\"session\":1,\"copper_per_gold\":300,\"silver_per_gold\":30,\"actor\":999,\"verifiedLord\":1}"
+    in let denied = panel-dispatch p 3 request
+    in let stale = panel-human p (tp-json "{\"command\":\"treasury-rates\",\"session\":9,\"copper_per_gold\":300,\"silver_per_gold\":30}") 101
+    in let invalid = panel-human p (tp-json "{\"command\":\"treasury-rates\",\"session\":1,\"copper_per_gold\":101,\"silver_per_gold\":10}") 102
+    in let changed = panel-human p (tp-json request) 103
+    in let event = list-at x.events before
+    in let logged = admin-load p.log 1024
+    in let full = __record-set p "log-count" 127
+    in let stopped = panel-human p (tp-json "{\"command\":\"treasury-rates\",\"session\":1,\"copper_per_gold\":400,\"silver_per_gold\":40}") 104
+    in let restored = __record-set p "log-count" 2
+    in let event-full = __record-set x "count" em-rows
+    in let refused = panel-human p (tp-json request) 105
+    in let event-restored = __record-set x "count" (before + 1)
+    in let disabled = __record-set p "treasury-enabled" False
+    in let readonly = panel-human p (tp-json request) 106
+    in let authority = bound == 0 & text-contains denied "role" & text-contains stale "session" & text-contains invalid "rate-ratio"
+    in let policy = text-contains changed "\"ok\":1" & x.count == before + 1 & x.copper-rate == 300 & x.silver-rate == 30
+      & event.kind == 2 & event.actor == 1 & event.copper-rate == 300 & event.silver-rate == 30
+    in let audit = text-contains logged "\"old_copper_per_gold\":100" & text-contains logged "\"old_silver_per_gold\":10"
+      & text-contains logged "\"copper_per_gold\":300" & text-contains logged "\"economy_actor\":1"
+    in let refusal = text-contains stopped "action-log-full" & text-contains refused "treasury-refused" & list-at p.log (2 * 1024 + 1022) == -1
+      & text-contains readonly "treasury-read-only"
+    in let conserved = (em-purse x.copper 1).coin == copper & (em-purse x.silver 1).coin == silver & (em-purse x.world.money 1).coin == gold & eu-census x
+    in (if authority then 0 else 1) + (if policy then 0 else 2) + (if audit then 0 else 4) + (if refusal then 0 else 8) + (if conserved then 0 else 16)
+
+  tp-currency : Integer -> Integer
+  tp-currency (unused) = when ep-new (ex-catalog 0) (em-new 0)
+    is Err (e) -> 64
+    is Ok (world) -> when eu-new world
+      is Err (e) -> 64
+      is Ok (currency) -> let treasury = tp-currency-run currency
+        in (if treasury then 0 else 32) + tp-rates currency
+
+  tp-run : EcClock -> [Console] Nothing
+  tp-run (clock) = act
+    w <- clock.world
+    p <- panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+    unbound <- panel-treasury-view p
+    bound <- panel-bind-treasury p w True
+    business <- (ep-actor w clock.consumer).purse
+    balance <- (em-purse w.money 1).coin
+    recipient <- (em-purse w.money business).coin
+    total <- em-total w.money 1
+    issued <- w.money.issued
+    login <- panel-open p 100
+    before <- w.money.sequence
+    forbidden <- panel-dispatch p 3 "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":10000}"
+    stale <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":99,\"basis_points\":10000}") 101
+    c1 <- tp-check "unbound view and unauthorized sessions cannot change treasury" (text-contains unbound "\"available\":false" & text-contains forbidden "role" & text-contains stale "session" & w.money.sequence == before)
+    tax <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":750,\"authorized\":false}") 102
+    tax-log <- admin-load p.log 1024
+    tax-entry <- list-at w.money.ledger (w.money.entry-count - 1)
+    c2 <- tp-check "owner tax is audited and linked to authoritative ledger" (text-contains tax "\"ok\":1" & w.money.tax == 750 & tax-entry.kind == 3 & tax-entry.reference == 750 & text-contains tax-log "treasury-tax" & text-contains tax-log "old_tax_basis_points\":0" & text-contains tax-log ("expected_economy_action\":" & show tax-entry.action) & list-at p.log 2046 == 1)
+    grant <- panel-human p (tp-json ("{\"command\":\"treasury-grant\",\"session\":1,\"purse\":" & show business & ",\"amount\":123}")) 103
+    c3 <- tp-check "grant conserves coin and never issues a starting purse" (text-contains grant "\"ok\":1" & (em-purse w.money 1).coin == balance - 123 & (em-purse w.money business).coin == recipient + 123 & em-total w.money 1 == total & w.money.issued == issued)
+    npc <- panel-human p (tp-json "{\"command\":\"treasury-grant\",\"session\":1,\"purse\":2,\"amount\":1}") 104
+    c4 <- tp-check "nonroyal recipient is refused and audited" (text-contains npc "treasury-refused" & list-at p.log (3 * 1024 + 1022) == -1 & (em-purse w.money 1).coin == balance - 123)
+    saved <- p.log-count
+    full <- __record-set p "log-count" 127
+    blocked <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 105
+    c5 <- tp-check "full panel audit refuses before economy effect" (text-contains blocked "action-log-full" & w.money.tax == 750)
+    restored <- __record-set p "log-count" saved
+    entries <- w.money.entry-count
+    exhausted <- __record-set w.money "entry-count" em-rows
+    refused <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 106
+    c6 <- tp-check "full money ledger leaves tax unchanged with refusal audit" (text-contains refused "treasury-refused" & w.money.tax == 750 & list-at p.log (saved * 1024 + 1022) == -1)
+    money-restored <- __record-set w.money "entry-count" entries
+    readonly <- panel-bind-treasury p w False
+    locked <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 107
+    c7 <- tp-check "read-only binding exposes balance without enabling changes" (text-contains locked "treasury-read-only" & text-contains (panel-treasury-view p) "\"writable\":false" & w.money.tax == 750)
+    turnover <- ep-set w.turnover 1 400
+    crown <- ep-set w.crown-turnover 1 100
+    shares <- tr-chains w 1 []
+    c8 <- tp-check "crown shares use recorded turnover and distinguish no turnover" (text-contains shares "\"share_basis_points\":2500" & text-contains shares "\"share_basis_points\":null")
+    enabled <- panel-bind-treasury p w True
+    c9 <- tp-check "recovery clears treasury binding and mutation permission" (tp-recovery p)
+    rate-failures <- tp-currency 0
+    print-line-uni ("CURRENCY CHECK MASK authority=1 policy=2 audit=4 refusal=8 conservation=16 base=32 setup=64: " & show rate-failures)
+    c10 <- tp-check "currency binding preserves three ledgers and coordinator authority" (rate-failures == 0)
+    print-line-uni ("UOAIX TREASURY failures=" & show (c1+c2+c3+c4+c5+c6+c7+c8+c9+c10))
+  end
+
+  opening : [Console] Nothing = act
+    when ec-fixture 0
+      is Err (e) -> print-line-uni ("FAIL treasury economy fixture " & e)
+      is Ok (clock) -> tp-run clock
+  end

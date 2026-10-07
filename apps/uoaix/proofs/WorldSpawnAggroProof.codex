@@ -1,0 +1,121 @@
+Chapter: WorldSpawnAggroProof
+  cites Uoaix chapter GameWorldSpawnCodec
+  cites Uoaix chapter CreatureSoundData
+
+  wsa-check : Text, Boolean -> [Console] Nothing
+  wsa-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  wsa-catalog : Integer -> WsCatalog
+  wsa-catalog (unused) = WsCatalog { revision = 21,
+    profiles = [WsProfile { key = "orc", name = "an orc", body = 17, hue = 0, hue-high = 0, water = False,
+      strength-low = 30, strength-high = 30, dex-low = 40, dex-high = 40,
+      hits-low = 30, hits-high = 30, damage-low = 2, damage-high = 5,
+      skill-low = 300, skill-high = 300, tactics-low = 300, tactics-high = 300, ai = 2, gold-low = 0, gold-high = 0, taming = 0 }],
+    groups = [WsGroup { key = "hostile", choices = [WsChoice { key = "orc", profile = 0, group = -1, weight = 1 }] }],
+    regions = [WsRegion { id = 1, name = "camp", area = WsRect { x1 = 1421, y1 = 1698, x2 = 1423, y2 = 1701 },
+      maximum = 1, batch = 1, minimum-minutes = 60, maximum-minutes = 60, group = 0,
+      preferred-height = 18, fixed-height = -129, outside = False, exclusions = [] }] }
+  wsa-fill : WalkMap, Integer -> Integer
+  wsa-fill (map) (i) = if i == map.width * map.height then 0
+    else let done = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in wsa-fill map (i + 1)
+  wsa-login : Integer -> List Integer
+  wsa-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  wsa-create : Integer -> List Integer
+  wsa-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Aggro proof" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,43,50,27,50,1,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  wsa-put : GameShard, Integer, Integer, Integer -> Boolean
+  wsa-put (shard) (serial) (x) (y) = when world-get shard.world serial
+    is Err (_) -> False
+    is Ok (p) -> is-ok (world-update shard.world (__record-set (__record-set p "x" x) "y" y))
+  wsa-x : GameShard, Integer -> Integer
+  wsa-x (shard) (serial) = when world-get shard.world serial is Err (_) -> 0 - 1 is Ok (m) -> m.x
+  wsa-y : GameShard, Integer -> Integer
+  wsa-y (shard) (serial) = when world-get shard.world serial is Err (_) -> 0 - 1 is Ok (m) -> m.y
+  wsa-count : List (List Integer), Integer, Integer, Integer -> Integer
+  wsa-count (packets) (sound) (i) (n) = if i == list-length packets then n
+    else let p = list-at packets i
+    in wsa-count packets sound (i + 1) (if list-length p > 3 & list-at p 0 == #54 & list-at p 2 * 256 + list-at p 3 == sound then n + 1 else n)
+  wsa-sounds : Result (Maybe GameReply) Text, Integer -> Integer
+  wsa-sounds (reply) (sound) = when reply
+    is Err (_) -> 0 - 1
+    is Ok (maybe) -> when maybe is None -> 0 is Just (r) -> wsa-count r.packets sound 0 0
+  wsa-pulses : GameWorldSpawn, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> Integer
+  wsa-pulses (g) (shard) (input) (map) (tick) (step) (left) = if left == 0 then tick
+    else let r = gws-after gws-ground g shard input map tick (Ok None)
+    in if is-err r then 0 - 1 else wsa-pulses g shard input map (tick + step) step (left - 1)
+  wsa-hunt : GameWorldSpawn, GameShard, GameInput, WalkMap, Integer, Integer -> [Console] Nothing
+  wsa-hunt (g) (shard) (input) (map) (me) (orc) = act
+    a <- list-at g.combat.actors (world-slot shard.world orc)
+    ox <- wsa-x shard orc
+    oy <- wsa-y shard orc
+    far <- gws-after gws-ground g shard input map 2 (Ok None)
+    wsa-check "an orc 39 tiles off does not aggro" (orc > 0 & is-ok far & a.target == 0)
+    hidden <- __record-set g "unseen" me
+    near <- wsa-put shard me (ox + 8) oy
+    drawn <- gws-after gws-ground g shard input map 3 (Ok None)
+    blind <- gws-after gws-ground g shard input map 4 (Ok None)
+    wsa-check "a hidden British 8 tiles off, drawn the orc, is not hunted" (near & is-ok drawn & is-ok blind
+      & gws-slot-seen g (list-at g.slots 0) & a.target == 0 & not a.war)
+    shown <- __record-set g "unseen" 0
+    when cb-ensure g.combat shard me
+      is Err (e) -> print-line-uni ("FAIL player binding " & e)
+      is Ok (own) -> act
+        immune <- __record-set own "immune" True
+        noticed <- gws-after gws-ground g shard input map 5 (Ok None)
+        wsa-check "a visible British 8 tiles off is hunted at once, before the wander timer" (is-ok noticed & a.target == me & a.war)
+        wsa-check "pulling aggro plays the orc's start-attack sound 0x1B0 once" (wsa-sounds noticed #01B0 == 1)
+        again <- gws-after gws-ground g shard input map 6 (Ok None)
+        wsa-check "the start-attack sound does not repeat while the fight lasts" (wsa-sounds again #01B0 == 0)
+        start <- wsa-x shard orc
+        chased <- wsa-pulses g shard input map (6 + gm-ticks 300) (gm-ticks 300) 6
+        mid <- wsa-x shard orc
+        wsa-check "the orc closes at 0.3 s a step and leaves its spawn region" (chased > 0 & mid >= start + 5 & mid > 1423)
+        fled <- wsa-put shard me (mid + 7) oy
+        followed <- wsa-pulses g shard input map chased (gm-ticks 300) 5
+        late <- wsa-x shard orc
+        wsa-check "after the player walks off, the orc pursues" (fled & followed > 0 & a.target == me & late >= mid + 5)
+        gone <- wsa-put shard me 1462 oy
+        dropped <- wsa-pulses g shard input map followed (gm-ticks 1000) 1
+        wsa-check "a player past 18 tiles is dropped" (gone & dropped > 0 & a.target == 0 & not a.war)
+        homeward <- wsa-pulses g shard input map dropped (gm-ticks 5000) 8
+        back <- wsa-x shard orc
+        wsa-check "an orc outside its region walks back toward it" (homeward > 0 & back < late - 2)
+      end
+  end
+  wsa-run : GameShard, WalkMap -> [Console] Nothing
+  wsa-run (shard) (map) = act
+    combat <- cb-new shard 104729
+    voiced <- __record-set combat "sound-hook" (csd-sound (csd-table 0))
+    input <- gn-input-with (cb-specs 0) 1
+    when gws-new (wsa-catalog 0) combat 3
+      is Err (e) -> print-line-uni ("FAIL state " & e)
+      is Ok (g) -> when gs-relay-key shard
+        is Err (e) -> print-line-uni ("FAIL relay " & e)
+        is Ok (key) -> act
+          bound <- __record-set input.session "key" key
+          logged <- gs-handle shard input.session map (wsa-login key)
+          created <- gs-handle shard input.session map (wsa-create 0)
+          mode <- __record-set input "mode" 2
+          me <- input.session.serial
+          away <- wsa-put shard me 1462 1700
+          intro <- gws-after gws-ground g shard input map 1 (Ok None)
+          orc <- (list-at g.slots 0).serial
+          wsa-check "the camp spawns one orc with the player away" (is-ok logged & is-ok created & away & is-ok intro & orc > 0)
+          wsa-hunt g shard input map me orc
+        end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-new 1418 1692 48 16
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        filled <- wsa-fill map 0
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> wsa-run shard map
+      end
+  end
+
+Page 1

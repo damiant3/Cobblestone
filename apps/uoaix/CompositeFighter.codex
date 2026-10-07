@@ -1,0 +1,469 @@
+Chapter: CompositeFighter
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter EconomyFighter
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter WorldTimers
+  cites Uoaix chapter ClassicSkills
+
+ Saved-path stepping follows TownLive's port of Source-X CCharNPCAct.cpp
+ NPC_WalkToPoint, Apache-2.0; Sphere-LICENSE.txt.
+
+  CgFighter = record { fighter : EfFighter, serial : Integer, kills : Integer, gold : Integer, home : BbSpot,
+    leg : Integer, took : Integer, visit : Integer, blocked : Integer, hunt : BbSpot, trail : BbSpot, shop : BbSpot,
+    walk : RteWalk, route : Maybe WalkMap, nav : Maybe TlPath, timed : Boolean,
+    skill : Integer, seed : Integer }
+ Owner 3002 and place 200 sit beside the gatherer's 3001 at the same place (EconomyFighterProof).
+  cgf-owner : Integer = 3002
+  cgf-place : Integer = 200
+  cgf-bytes : Integer = 96
+ The hunting ground is the south-east corner of UOX3's "Britain Cemetary" spawn region 5506 (1368-1389 by 1444-1491),
+ whose undead all carry gold; the trailhead is the north-west corner of the Britain walk window, where the route window takes over.
+  cgf-ground : BbShop = BbShop { title = "Hunting ground", premises = "Britain Cemetary", x1 = 1382, y1 = 1484, x2 = 1389, y2 = 1491 }
+  cgf-trail : BbShop = BbShop { title = "Trailhead", premises = "West of Britain", x1 = 1408, y1 = 1536, x2 = 1415, y2 = 1551 }
+ Wheel kind 4 is the fighter's errand; its key is 0 (WorldTimers.md).
+  cgf-kind : Integer = 4
+ An NPC walks a tile in 400 ms (Sphere's NPC walk delay); at home the fighter looks for an errand every game hour (300 real seconds).
+  cgf-step-ticks : Integer = gm-ticks 400
+  cgf-idle-ticks : Integer = 300 * pit-input-hz / pit-count
+ A hunt lasts at most 128 steps and chases prey within 12 tiles.
+  cgf-hunt-limit : Integer = 128
+  cgf-sight : Integer = 12
+ A new character's Warrior template (ServUO Scripts/Misc/CharacterCreation.cs, client profession 1): strength 45, dexterity 35,
+ intelligence 10; Anatomy, Healing, Swordsmanship and Tactics 30 (300 in tenths). Pre-AOS hit points equal strength.
+  cgf-strength : Integer = 45
+  cgf-dexterity : Integer = 35
+  cgf-skill : Integer = 300
+ The fighter keeps the combat skill it has gained (c.skill) across a new mobile.
+  cgf-warrior : CgFighter, GameCombat, GameShard -> Integer
+  cgf-warrior (c) (combat) (game) = when cb-ensure combat game c.serial
+    is Err (_) -> -1
+    is Ok (a) -> if a.skill >= c.skill & a.maximum == cgf-strength then 0
+      else let s = __record-set a "strength" cgf-strength
+      in let d = __record-set a "dexterity" cgf-dexterity
+      in let k = __record-set a "skill" (max a.skill c.skill)
+      in let t = __record-set a "tactics" cgf-skill
+      in let n = __record-set a "anatomy" cgf-skill
+      in let m = __record-set a "maximum" cgf-strength
+      in when world-get game.world c.serial
+        is Err (_) -> -1
+        is Ok (mob) -> if mob.health <= cgf-strength then 0
+          else when world-update game.world (__record-set mob "health" cgf-strength) is Err (_) -> -1 is Ok (_) -> 0
+ Vendor 1 is the Britain blacksmith and item 70 the longsword it forges (BritainShops.md); Britain's shops and residents are at place 100.
+  cgf-smith : Integer = 1
+  cgf-sword : Integer = 70
+  cgf-town-place : Integer = 100
+  cgf-new : EfFighter, Integer, BbSpot -> CgFighter
+  cgf-new (f) (serial) (home) =
+    CgFighter { fighter = f, serial = serial, kills = 0, gold = 0, home = home,
+      leg = 0, took = 0, visit = 0, blocked = 0, hunt = BbSpot { x = 0, y = 0, z = 0 }, trail = BbSpot { x = 0, y = 0, z = 0 }, shop = BbSpot { x = 0, y = 0, z = 0 },
+      walk = rte-walk 0, route = None, nav = None, timed = False,
+      skill = cgf-skill, seed = bit-and serial #FFFFFFFF }
+ The fighter's death settles at the blow like the gatherer's (cgg-drop-lots, cgg-unregister), and it is recorded dead.
+
+  cgf-fall : CgFighter, GvWorld -> Integer
+  cgf-fall (c) (v) = let actor = c.fighter.producer.actor
+    in let dropped = cgg-drop-lots v actor 0
+    in let gone = cgg-unregister v actor 0
+    in let dead = __record-set c "serial" 0
+    in let home = __record-set c "leg" 0
+    in let vv = __record-set c "visit" 0
+    in let k = __record-set c "took" 0
+    in cgf-reset c
+  cgf-death : CgFighter, GameWorldSpawn, GvWorld, Integer, Integer -> Integer
+  cgf-death (c) (spawns) (v) (source) (victim) = if c.serial /= 0 & victim == c.serial then let fell = cgf-fall c v in 0
+    else if c.serial == 0 | source /= c.serial then 0
+    else let gold = gws-loot spawns victim
+    in if gold < 0 then 0
+    else let counted = __record-set c "kills" (c.kills + 1)
+    in let hunted = if c.leg == 4 then let took = __record-set c "took" 1 in 0 else 0
+    in if gold == 0 then 0
+    else let kept = ef-loot c.fighter gold
+    in if kept < 0 then 0 else let added = __record-set c "gold" (c.gold + gold) in gold
+  cgf-bind : CgFighter, GameWorldSpawn, GvWorld -> Integer
+  cgf-bind (c) (spawns) (v) = let bound = __record-set spawns.combat "death-hook" (cgf-death c spawns v) in 0
+ The fighter lodges at the first free home spot after the gatherer's.
+  cgf-spawn : TownLive, WalkMap, BbSpot -> Result CgFighter Text
+  cgf-spawn (t) (map) (after) = let world = t.vendors.game.world
+    in if world.capacity - world-count world < 1 + cst-most-rows then Err "fighter world budget"
+    else when cgg-home t map ((after.y - tl-home-region.y1) * (tl-home-region.x2 - tl-home-region.x1 + 1) + after.x - tl-home-region.x1 + 1)
+      is Err (e) -> Err e
+      is Ok (home) -> when ef-new t.vendors.currency cgf-owner cgf-place
+        is Err (e) -> Err e
+        is Ok (f) -> when world-create world (gs-mobile 0 home.x home.y home.z 400 1002)
+          is Err (e) -> Err e
+          is Ok (serial) -> when cst-style t.items serial cst-fighter
+            is Err (e) -> Err e
+            is Ok (_) -> Ok (cgf-new f serial home)
+
+ The route window covers the trailhead and the hunting ground with 8 tiles to spare, on 8-tile blocks.
+  cgf-window : BbShop = BbShop { title = "Fighter route", premises = "West of Britain",
+    x1 = (min cgf-trail.x1 cgf-ground.x1 - 8) / 8 * 8, y1 = (min cgf-trail.y1 cgf-ground.y1 - 8) / 8 * 8,
+    x2 = (max cgf-trail.x2 cgf-ground.x2 + 16) / 8 * 8 - 1, y2 = (max cgf-trail.y2 cgf-ground.y2 + 16) / 8 * 8 - 1 }
+  cgf-covers : WalkMap, BbShop -> Boolean
+  cgf-covers (map) (w) = map.x <= w.x1 & map.y <= w.y1 & map.x + map.width > w.x2 & map.y + map.height > w.y2
+ The caller loads the route window (cg-world-tick's contract); binding it allocates the fighter's planner.
+  cgf-route : CgFighter, WalkMap -> Result Integer Text
+  cgf-route (c) (map) = if not (cgf-covers map cgf-window) then Err "fighter route window does not cover the errand"
+    else let bound = __record-set c "route" (Just map)
+    in let planner = __record-set c "nav" (Just (tl-path-new map)) in Ok 0
+
+  cgf-reset : CgFighter -> Integer
+  cgf-reset (c) = rte-drop c.walk
+  cgf-blocked : CgFighter -> Result (List (List Integer)) Text
+  cgf-blocked (c) = let cleared = cgf-reset c
+    in let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+ Legs: 0 home, 1 to the lodging entrance, 2 to the trailhead, 3 out to the hunting ground, 4 hunting, 5 back to the trailhead,
+ 6 to the entrance, 7 home, 8 to the blacksmith, 9 buying, 10 to the blacksmith with loot, 11 selling. Legs 1, 2 and 6 to 11
+ walk the Britain window with its doors; legs 3 to 5 walk the route window. At the entrance an unarmed fighter goes to the
+ blacksmith while it offers a longsword, and a returning fighter carrying loot goes there to sell it.
+ The actor is at the hunting ground's place 200 from its arrival there and at Britain's place 100 from its return to town.
+  cgf-arrive : CgFighter, TownLive -> Result (List (List Integer)) Text
+  cgf-arrive (c) (t) = let cleared = cgf-reset c
+    in let fresh = if c.leg == 3 | c.leg == 7 then let v = __record-set c "visit" 0 in let k = __record-set c "took" 0 in 0 else 0
+    in let selling = c.leg == 6 & cgf-loot c t > 0
+    in let placed = if c.leg == 3 then ep-place t.vendors.currency.world c.fighter.producer.actor cgf-place
+      else if c.leg == 7 | selling then ep-place t.vendors.currency.world c.fighter.producer.actor cgf-town-place else 0
+    in let next = if c.leg == 7 then 0 else if c.leg == 1 & cgf-shopping c t then 8 else if selling then 10
+      else if c.leg == 8 then 9 else if c.leg == 10 then 11 else c.leg + 1
+    in let arrived = __record-set c "leg" next
+    in let touched = world-touch t.vendors.game.world in if placed /= 0 then Err "fighter economic place" else Ok []
+  cgf-armed : TownLive, Integer -> Boolean
+  cgf-armed (t) (serial) = gmb-layer t.items serial 1 0 > 0 | gmb-layer t.items serial 2 0 > 0
+ The first longsword lot in the blacksmith's stock, or -1.
+  cgf-offer : GvWorld, GvVendor, Integer -> Integer
+  cgf-offer (v) (merchant) (i) = if i == v.lot-count then -1
+    else let l = list-at v.lots i
+    in if l.item == cgf-sword & l.actor == merchant.actor & l.quantity >= 1 & gv-under v.game.world l.serial merchant.stock 65 then i
+    else cgf-offer v merchant (i + 1)
+ The fighter's open gold loan, or 0.
+  cgf-debt : EmMoney, Integer, Integer -> Integer
+  cgf-debt (m) (purse) (i) = if i == m.loan-count then 0
+    else let loan = list-at m.loans i
+    in if loan.borrower == purse & loan.status /= 2 then i + 1 else cgf-debt m purse (i + 1)
+  cgf-value : EuCurrency, Integer -> Integer
+  cgf-value (x) (purse) = eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+  cgf-shopping : CgFighter, TownLive -> Boolean
+  cgf-shopping (c) (t) = let v = t.vendors
+    in let x = v.currency
+    in let merchant = list-at v.vendors cgf-smith
+    in let purse = (ep-actor x.world c.fighter.producer.actor).purse
+    in let price = ep-price x.world merchant.actor cgf-sword
+    in not (cgf-armed t c.serial) & cgf-offer v merchant 0 >= 0 & price >= 1
+      & (cgf-value x purse >= price | cgf-debt x.world.money purse 0 == 0)
+ A free tile within two of the blacksmith keeps the purchase inside the vendor's four-tile reach.
+  cgf-shop-spot : CgFighter, TownLive, WalkMap -> Result Integer Text
+  cgf-shop-spot (c) (t) (britain) = let v = t.vendors
+    in when world-get v.game.world (list-at v.vendors cgf-smith).serial
+      is Err (e) -> Err e
+      is Ok (smith) -> when bb-placement v.game.world britain (BbShop { title = "Smith", premises = "Hammer and Anvil", x1 = smith.x - 2, y1 = smith.y - 2, x2 = smith.x + 2, y2 = smith.y + 2 }) 0
+        is Err (e) -> Err e
+        is Ok (spot) -> let set = __record-set c "shop" spot in Ok 0
+ The owner row follows the fighter's actor, so a fighter raised after a death keeps its row under its new serial.
+  cgf-register : GvWorld, Integer, Integer, Integer -> Integer
+  cgf-register (v) (serial) (actor) (i) = if i == v.owner-count then gv-add-owner v serial actor
+    else let row = list-at v.owners i
+    in if row.actor == actor then let moved = __record-set row "serial" serial in 0 else cgf-register v serial actor (i + 1)
+ The crown (actor 1) lends what the fighter lacks, in gold rounded up, at no interest, due at the ledger's last hour:
+ a loan is repaid as soon as the borrower can afford it, with no default (Damian, main 36121).
+  cgf-borrow : EuCurrency, Integer, Integer -> Integer
+  cgf-borrow (x) (purse) (price) = let held = cgf-value x purse
+    in if held >= price then 0
+    else if eu-lend x True 1 purse 3 ((price - held + x.copper-rate - 1) / x.copper-rate) 0 em-limit < 1 then -1 else 0
+ The bought longsword lot on the fighter, or 0.
+  cgf-bought : GvWorld, Integer, Integer, Integer -> Integer
+  cgf-bought (v) (actor) (holder) (i) = if i == v.lot-count then 0
+    else let l = list-at v.lots i
+    in if l.item == cgf-sword & l.actor == actor & gv-under v.game.world l.serial holder 65 then l.serial else cgf-bought v actor holder (i + 1)
+ Checkout delivers the longsword onto the fighter, which carries no backpack. Longswords are one-handed, worn on layer 1 (cg-weapon).
+
+  cgf-wield : CgFighter, TownLive -> Result Integer Text
+  cgf-wield (c) (t) = let sword = cgf-bought t.vendors c.fighter.producer.actor c.serial 0
+    in if sword == 0 then Err "fighter bought no longsword"
+    else when world-get t.vendors.game.world sword
+      is Err (e) -> Err e
+      is Ok (item) -> when world-update t.vendors.game.world (cb-object item item.health item.graphic item.hue c.serial)
+        is Err (e) -> Err e
+        is Ok (_) -> if gsi-register t.items sword 1 0 True False < 0 then Err "fighter longsword layer" else Ok sword
+  cgf-buy : CgFighter, TownLive, WorldObject -> Result (List (List Integer)) Text
+  cgf-buy (c) (t) (mobile) = let v = t.vendors
+    in let x = v.currency
+    in let merchant = list-at v.vendors cgf-smith
+    in let actor = c.fighter.producer.actor
+    in let purse = (ep-actor x.world actor).purse
+    in let at = cgf-offer v merchant 0
+    in let price = ep-price x.world merchant.actor cgf-sword
+    in let home = __record-set c "leg" 6
+    in let cleared = cgf-reset c
+    in when world-get v.game.world merchant.serial
+      is Err (e) -> Err e
+      is Ok (smith) -> if at < 0 | price < 1 | not (gv-near mobile smith) | cgf-register v c.serial actor 0 < 0 then cgf-blocked c
+        else if cgf-borrow x purse price < 0 then cgf-blocked c
+        else let line = GvLine { lot = at, quantity = 1, price = price, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+        in when gv-checkout v [line] actor merchant.actor merchant.serial c.serial c.serial
+          is Err (_) -> cgf-blocked c
+          is Ok (_) -> when cgf-wield c t
+            is Err (e) -> Err e
+            is Ok (_) -> let hunting = __record-set c "leg" 2 in let touched = world-touch v.game.world in Ok []
+ The fighter's loot is found gold ore (ef-loot), which the blacksmith buys to smelt (gvb-material). It sells all of it as one
+ lot at the smith's bid, repays what it can of the crown's loan, and walks home whether or not the smith could pay.
+  cgf-ore : Integer = 6
+  cgf-loot : CgFighter, TownLive -> Integer
+  cgf-loot (c) (t) = ep-at (ep-actor t.vendors.currency.world c.fighter.producer.actor).stock cgf-ore
+  cgf-ore-at : GvWorld, Integer, Integer -> Integer
+  cgf-ore-at (v) (actor) (i) = if i == v.lot-count then -1
+    else let l = list-at v.lots i in if l.item == cgf-ore & l.actor == actor then i else cgf-ore-at v actor (i + 1)
+  cgf-ore-lot : CgFighter, TownLive, Integer -> Result Integer Text
+  cgf-ore-lot (c) (t) (amount) = let v = t.vendors
+    in when world-create v.game.world (WorldObject { serial = 0, kind = 2, x = 20, y = 20, z = 0,
+      graphic = gh-output-graphic cgf-ore, hue = 0, container = c.serial, amount = amount, health = 0 })
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register t.items serial 0 0 True True /= 0 then Err "fighter loot registration"
+        else if gv-add-lot v serial c.fighter.producer.actor cgf-ore 1000 32 0 < 0 then Err "fighter loot lot refused"
+        else Ok (cgf-ore-at v c.fighter.producer.actor 0)
+ The crown's loan is repaid as soon as the fighter can afford it (Damian, main 36121), at value in any coin (root's ruling
+ 2026-10-06, eu-repay-value): as many whole gold units as its coin covers, paid gold first, then silver, then copper.
+  cgf-repay : CgFighter, TownLive -> Integer
+  cgf-repay (c) (t) = let x = t.vendors.currency
+    in let purse = (ep-actor x.world c.fighter.producer.actor).purse
+    in let id = cgf-debt x.world.money purse 0
+    in if id == 0 then 0
+    else let loan = list-at x.world.money.loans (id - 1)
+    in let gold = (em-purse x.world.money purse).coin
+    in let silver = (em-purse x.silver purse).coin
+    in let copper = (em-purse x.copper purse).coin
+    in let units = min (loan.principal + loan.interest - loan.paid) (cgf-value x purse / eu-unit x 3)
+    in let g = min gold units
+    in let rest = (units - g) * eu-unit x 3
+    in let s = min silver (rest / eu-unit x 2)
+    in let k = rest - s * eu-unit x 2
+    in if units < 1 | k > copper then 0
+    else if eu-repay-value x True purse 3 id k s g < 0 then -1 else units
+  cgf-sell : CgFighter, TownLive, WorldObject -> Result (List (List Integer)) Text
+  cgf-sell (c) (t) (mobile) = let v = t.vendors
+    in let x = v.currency
+    in let merchant = list-at v.vendors cgf-smith
+    in let actor = c.fighter.producer.actor
+    in let price = gvb-bid x.world (gvb-role cgf-smith) cgf-ore
+    in let held = cgf-loot c t - gv-represented v actor cgf-ore 0 0
+    in let home = __record-set c "leg" 7
+    in let cleared = cgf-reset c
+    in when world-get v.game.world merchant.serial
+      is Err (e) -> Err e
+      is Ok (smith) -> if price < 1 | not (gv-near mobile smith) | cgf-register v c.serial actor 0 < 0 then cgf-blocked c
+        else when (if held > 0 then cgf-ore-lot c t held else Ok (cgf-ore-at v actor 0))
+          is Err (e) -> Err e
+          is Ok (at) -> if at < 0 then cgf-blocked c
+            else let line = GvLine { lot = at, quantity = (list-at v.lots at).quantity, price = price, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+            in when gv-checkout v [line] merchant.actor actor c.serial merchant.extra c.serial
+              is Err (_) -> cgf-blocked c
+              is Ok (_) -> let repaid = cgf-repay c t in let touched = world-touch v.game.world in Ok []
+  cgf-move : CgFighter, TownLive, WalkMap, TlPath, Maybe WdState, WorldObject, BbSpot -> Result (List (List Integer)) Text
+  cgf-move (c) (t) (map) (nav) (doors) (mobile) (target) = if tl-at mobile target then cgf-arrive c t
+    else let moves = c.walk.moves
+    in when rte-toward nav t.vendors.game map doors c.walk mobile target.x target.y target.z
+      is Err (e) -> Err e
+      is Ok (packets) -> if c.walk.moves /= moves then Ok packets
+        else let count = __record-set c "blocked" (c.blocked + 1) in Ok packets
+  cgf-aim : CgFighter, TownLive, WalkMap, WalkMap -> Result Integer Text
+  cgf-aim (c) (t) (britain) (route) = when bb-placement t.vendors.game.world route cgf-ground 0
+    is Err (e) -> Err e
+    is Ok (spot) -> when bb-placement t.vendors.game.world britain cgf-trail 0
+      is Err (e) -> Err e
+      is Ok (trail) -> let aimed = __record-set c "hunt" spot in let headed = __record-set c "trail" trail in Ok 0
+  cgf-depart : CgFighter, TownLive, WalkMap, WalkMap, Maybe GameWorldSpawn -> Result (List (List Integer)) Text
+  cgf-depart (c) (t) (britain) (route) (spawns) = when spawns
+    is None -> Ok []
+    is Just (_) -> if not (cgf-covers route cgf-window) then cgf-blocked c
+      else when cgf-aim c t britain route
+        is Err (_) -> cgf-blocked c
+        is Ok (_) -> if ep-place t.vendors.currency.world c.fighter.producer.actor cgf-town-place /= 0 then Err "fighter economic place"
+          else let out = __record-set c "leg" 1
+          in let cleared = cgf-reset c
+          in let touched = world-touch t.vendors.game.world in Ok []
+  cgf-alive : WorldTable, Integer -> Boolean
+  cgf-alive (world) (serial) = when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 1 & o.health > 0
+ A novice warrior takes its prey one at a time (root's ruling 2026-10-06): the weakest live spawned mobile carrying gold (its
+ profile's GOLD range) within cgf-sight tiles with no other live spawn within cgf-alone tiles of it, the nearest on a tie, or 0.
+  cgf-alone : Integer = 8
+  cgf-apart : WorldObject, WorldObject -> Integer
+  cgf-apart (a) (b) = max (walk-abs (a.x - b.x)) (walk-abs (a.y - b.y))
+  cgf-lone : GameWorldSpawn, WorldTable, WorldObject, Integer -> Boolean
+  cgf-lone (g) (world) (o) (i) = if i == list-length g.slots then True
+    else let serial = (list-at g.slots i).serial
+    in let crowded = if serial == 0 | serial == o.serial then False else when world-get world serial
+      is Err (_) -> False
+      is Ok (other) -> other.health > 0 & cgf-apart other o <= cgf-alone
+    in if crowded then False else cgf-lone g world o (i + 1)
+  cgf-prey : GameWorldSpawn, WorldTable, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  cgf-prey (g) (world) (m) (i) (best) (health) (distance) = if i == list-length g.slots then best
+    else let serial = (list-at g.slots i).serial
+    in let o = if serial == 0 | (list-at g.catalog.profiles (list-at g.slots i).profile).gold-high <= 0 then gs-item 0 0 0
+      else when world-get world serial is Err (_) -> gs-item 0 0 0 is Ok (found) -> found
+    in let d = cgf-apart o m
+    in let better = o.serial /= 0 & o.health > 0 & d <= cgf-sight & (o.health < health | (o.health == health & d < distance))
+    in if better & cgf-lone g world o 0 then cgf-prey g world m (i + 1) serial o.health d
+    else cgf-prey g world m (i + 1) best health distance
+ Each melee swing practises the fighter's combat skill by ClassicSkills' rule (skc-gain-at, gain rate 100), the hit
+ as the success and the defender's skill as the difficulty. The draw is the fighter's own, so combat's rolls do not move.
+  cgf-swing : CgFighter, GameCombat, GameShard, Integer, Integer, Boolean -> Integer
+  cgf-swing (c) (combat) (game) (attacker) (defender) (hit) = if c.serial == 0 | attacker /= c.serial then 0
+    else when cb-ensure combat game attacker
+      is Err (_) -> 0
+      is Ok (a) -> when cb-ensure combat game defender
+        is Err (_) -> 0
+        is Ok (p) -> let seed = int-mod (c.seed * 1664525 + 1013904223) 4294967296
+          in let drawn = __record-set c "seed" seed
+          in let chance = if a.skill >= 1000 then 0 else skc-gain-at 100 a.skill (cb-level game p 43 p.skill) hit
+          in if int-mod (bit-shru seed 8) 1000 >= chance then 0
+          else let raised = __record-set a "skill" (a.skill + 1)
+          in let kept = __record-set c "skill" a.skill in 1
+ At home the fighter regains Source-X's one hit point per 40 seconds (cb-regen-ms) over each idle wait, and sets out only at full health.
+  cgf-rest : CgFighter, TownLive, WorldObject -> Result (List (List Integer)) Text
+  cgf-rest (c) (t) (mobile) = let world = t.vendors.game.world
+    in when world-update world (__record-set mobile "health" (min cgf-strength (mobile.health + cgf-idle-ticks / cb-regen-ticks 0)))
+      is Err (e) -> Err e
+      is Ok (_) -> let touched = world-touch world in Ok []
+ Live spawns whose combat target is the fighter: the first one's serial, and how many.
+  cgf-attacker : GameWorldSpawn, GameCombat, WorldTable, Integer, Integer -> Integer
+  cgf-attacker (g) (combat) (world) (serial) (i) = if i == list-length g.slots then 0
+    else let s = (list-at g.slots i).serial
+    in let slot = if s == 0 then -1 else world-slot world s
+    in if slot >= 0 & slot < list-length combat.actors & (list-at combat.actors slot).target == serial & cgf-alive world s then s
+    else cgf-attacker g combat world serial (i + 1)
+  cgf-attackers : GameWorldSpawn, GameCombat, WorldTable, Integer, Integer -> Integer
+  cgf-attackers (g) (combat) (world) (serial) (i) = if i == list-length g.slots then 0
+    else let s = (list-at g.slots i).serial
+    in let slot = if s == 0 then -1 else world-slot world s
+    in (if slot >= 0 & slot < list-length combat.actors & (list-at combat.actors slot).target == serial & cgf-alive world s then 1 else 0)
+      + cgf-attackers g combat world serial (i + 1)
+  cgf-outnumbered : Maybe GameWorldSpawn, GameCombat, WorldTable, Integer -> Boolean
+  cgf-outnumbered (spawns) (combat) (world) (serial) = when spawns is None -> False is Just (g) -> cgf-attackers g combat world serial 0 >= 2
+ Walking out, the fighter turns back below half health or when outnumbered, and starts hunting where it stands as soon as
+ a sole attacker or a lone prey is in sight, rather than walking into a pack (measured: ten undead converged on the hunt spot).
+  cgf-out : CgFighter, TownLive, WalkMap, TlPath, GameCombat, Maybe GameWorldSpawn, GameShard, WorldObject -> Result (List (List Integer)) Text
+  cgf-out (c) (t) (route) (nav) (combat) (spawns) (game) (mobile) = when spawns
+    is None -> cgf-move c t route nav None mobile c.hunt
+    is Just (g) -> if mobile.health * 2 < cgf-strength | cgf-attackers g combat game.world c.serial 0 >= 2 then
+        let back = __record-set c "leg" 5 in let cleared = cgf-reset c in let touched = world-touch t.vendors.game.world in Ok []
+      else if cgf-attacker g combat game.world c.serial 0 /= 0 | cgf-prey g game.world mobile 0 0 4611686018427387903 (cgf-sight + 1) /= 0 then cgf-arrive c t
+      else cgf-move c t route nav None mobile c.hunt
+ A hunt ends at the first kill, after cgf-hunt-limit steps, below half health, or when two or more spawns are on the fighter
+ (a novice warrior fights one at a time). Until then it fights back a sole attacker, else keeps its live target or takes the
+ weakest lone prey, and closes on it.
+  cgf-hunt : CgFighter, TownLive, WalkMap, GameCombat, Maybe GameWorldSpawn, GameShard, WorldObject -> Result (List (List Integer)) Text
+  cgf-hunt (c) (t) (route) (combat) (spawns) (game) (mobile) = when cb-ensure combat game c.serial
+    is Err (e) -> Err e
+    is Ok (a) -> if c.took == 1 | c.visit >= cgf-hunt-limit | mobile.health * 2 < a.maximum | cgf-outnumbered spawns combat game.world c.serial then
+        let stopped = cb-stop combat a
+        in let peace = __record-set a "war" False
+        in let out = __record-set c "leg" 5
+        in let cleared = cgf-reset c
+        in let touched = world-touch t.vendors.game.world in Ok []
+      else let tried = __record-set c "visit" (c.visit + 1)
+      in let prey = if a.target > 0 & cgf-alive game.world a.target then a.target
+        else when spawns is None -> 0 is Just (g) -> let sole = cgf-attacker g combat game.world c.serial 0
+          in if sole /= 0 then sole else cgf-prey g game.world mobile 0 0 4611686018427387903 (cgf-sight + 1)
+      in if prey == 0 then Ok []
+      else when world-get game.world prey
+        is Err (_) -> Ok []
+        is Ok (o) -> when cb-ensure combat game prey
+          is Err (_) -> Ok []
+          is Ok (p) -> if not (cb-select combat game a p) | cb-reach route mobile o then Ok []
+            else rte-try t.vendors.game route None c.walk mobile (cb-direction (o.x - mobile.x) (o.y - mobile.y))
+ An NPC's death deletes its mobile (cb-die). The step that finds the fighter's mobile gone records it dead (serial 0, at home,
+ no errand); the next step, an idle hour later, raises a new mobile at home for the same economy actor.
+  cgf-dead : CgFighter, TownLive -> Result (List (List Integer)) Text
+  cgf-dead (c) (t) = let gone = __record-set c "serial" 0
+    in let home = __record-set c "leg" 0
+    in let v = __record-set c "visit" 0
+    in let k = __record-set c "took" 0
+    in let cleared = cgf-reset c
+    in let touched = world-touch t.vendors.game.world in Ok []
+  cgf-revive : CgFighter, TownLive -> Result (List (List Integer)) Text
+  cgf-revive (c) (t) = let world = t.vendors.game.world
+    in if world.capacity - world-count world < 1 + cst-most-rows then Ok []
+    else when world-create world (gs-mobile 0 c.home.x c.home.y c.home.z 400 1002)
+      is Err (e) -> Err e
+      is Ok (serial) -> when cst-style t.items serial cst-fighter
+        is Err (e) -> Err e
+        is Ok (_) -> let born = __record-set c "serial" serial
+          in let touched = world-touch world in Ok []
+ One errand step; the caller re-adds the wheel entry cgf-delay ticks out.
+  cgf-step : CgFighter, TownLive, WalkMap, Maybe WdState, GameCombat, Maybe GameWorldSpawn, GameShard -> Result (List (List Integer)) Text
+  cgf-step (c) (t) (britain) (doors) (combat) (spawns) (game) = if c.serial == 0 then cgf-revive c t
+    else when world-get game.world c.serial
+    is Err (_) -> cgf-dead c t
+    is Ok (mobile) -> if mobile.health <= 0 then cgf-dead c t
+      else if cgf-warrior c combat game < 0 then Err "fighter warrior template"
+      else when c.route
+        is None -> Ok []
+        is Just (route) -> when c.nav
+          is None -> Ok []
+          is Just (nav) -> if c.leg == 0 & mobile.health < cgf-strength then cgf-rest c t mobile
+            else if c.leg == 0 then cgf-depart c t britain route spawns
+            else if c.hunt.x == 0 then (when cgf-aim c t britain route is Err (_) -> cgf-blocked c is Ok (_) -> Ok [])
+            else if (c.leg == 8 | c.leg == 10) & c.shop.x == 0 then (when cgf-shop-spot c t britain
+              is Err (_) -> let home = __record-set c "leg" (if c.leg == 10 then 7 else 6) in cgf-blocked c
+              is Ok (_) -> Ok [])
+            else if c.leg == 8 | c.leg == 10 then cgf-move c t britain t.nav doors mobile c.shop
+            else if c.leg == 9 then cgf-buy c t mobile
+            else if c.leg == 11 then cgf-sell c t mobile
+            else if c.leg == 1 | c.leg == 6 then cgf-move c t britain t.nav doors mobile t.entrance
+            else if c.leg == 2 then cgf-move c t britain t.nav doors mobile c.trail
+            else if c.leg == 7 then cgf-move c t britain t.nav doors mobile c.home
+            else if c.leg == 4 then cgf-hunt c t route combat spawns game mobile
+            else if c.leg == 3 then cgf-out c t route nav combat spawns game mobile
+            else cgf-move c t route nav None mobile c.trail
+  cgf-delay : CgFighter -> Integer
+  cgf-delay (c) = if c.leg == 0 then cgf-idle-ticks else cgf-step-ticks
+
+ Qword 88 is the errand: leg, plus 16 when the hunt has killed, plus 32 per hunt step, plus 65536 per tenth of gained combat
+ skill. A low 16 bits of zero is a fighter at home with no errand; a skill of zero (every disk written before the gain) is the
+ template's. A fighter whose mobile is gone is written dead: serial 0 and no errand, keeping its skill.
+  cgf-errand-unit : Integer = 65536
+  cgf-errand : CgFighter -> Integer
+  cgf-errand (c) = c.leg + c.took * 16 + c.visit * 32
+  cgf-encode : CgFighter, WorldTable, Integer -> Integer
+  cgf-encode (c) (world) (buf) = let f = c.fighter
+    in let alive = c.serial /= 0 & cgf-alive world c.serial
+    in let a = poke-qword buf 0 #31464743
+    in let b = poke-qword buf 8 1
+    in let d = poke-qword buf 16 (if alive then c.serial else 0)
+    in let e = poke-qword buf 24 f.producer.actor
+    in let g = poke-qword buf 32 f.looted
+    in let h = poke-qword buf 40 f.taxed
+    in let i = poke-qword buf 48 c.kills
+    in let j = poke-qword buf 56 c.gold
+    in let k = poke-qword buf 64 c.home.x
+    in let l = poke-qword buf 72 c.home.y
+    in let m = poke-qword buf 80 c.home.z
+    in let n = poke-qword buf 88 ((if alive then cgf-errand c else 0) + c.skill * cgf-errand-unit)
+    in cgf-bytes
+  cgf-decode : EuCurrency, WorldTable, Integer -> Result CgFighter Text
+  cgf-decode (x) (world) (buf) =
+    let serial = peek-qword buf 16
+    in let actor = peek-qword buf 24
+    in let looted = peek-qword buf 32
+    in let taxed = peek-qword buf 40
+    in let kills = peek-qword buf 48
+    in let gold = peek-qword buf 56
+    in let word = peek-qword buf 88
+    in let errand = if word < 0 then -1 else int-mod word cgf-errand-unit
+    in let skill = if word < 0 then -1 else word / cgf-errand-unit
+    in if peek-qword buf 0 /= #31464743 | peek-qword buf 8 /= 1 then Err "fighter format"
+    else if errand < 0 | int-mod errand 16 > 11 | errand / 32 > cgf-hunt-limit | (serial == 0 & errand /= 0) | skill > 1000 then Err "fighter errand invalid"
+    else if not (ep-valid-actor x.world actor) then Err "fighter economy binding"
+    else if ((ep-actor x.world actor).place /= cgf-place & (ep-actor x.world actor).place /= cgf-town-place) | looted < 0 | taxed < 0 | kills < 0 | gold /= looted + taxed then Err "fighter state invalid"
+    else when (if serial == 0 then Ok (gs-mobile 0 0 0 0 400 1002) else world-get world serial)
+      is Err (e) -> Err e
+      is Ok (m) -> if m.kind /= 1 then Err "fighter mobile binding"
+        else let home = BbSpot { x = peek-qword buf 64, y = peek-qword buf 72, z = peek-qword buf 80 }
+        in let f = EfFighter { producer = bb-producer x actor, place = cgf-place, looted = looted, taxed = taxed }
+        in let c = cgf-new f serial home
+        in let k = __record-set c "kills" kills
+        in let g = __record-set c "gold" gold
+        in let l = __record-set c "leg" (int-mod errand 16)
+        in let t = __record-set c "took" (int-mod (errand / 16) 2)
+        in let v = __record-set c "visit" (errand / 32)
+        in let s = __record-set c "skill" (if skill == 0 then cgf-skill else skill) in Ok c

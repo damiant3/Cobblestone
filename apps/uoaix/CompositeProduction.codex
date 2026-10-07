@@ -1,0 +1,281 @@
+Chapter: CompositeProduction
+  cites Uoaix chapter GameCraft
+  cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter MiningTiles
+  cites Uoaix chapter GameCarve
+  cites Uoaix chapter GameScissors
+  cites Uoaix chapter GameLockpick
+  cites Uoaix chapter GameCooking
+  cites Uoaix chapter GameDye
+  cites Uoaix chapter CreatureCarveData
+  cites Uoaix chapter WorkStations
+
+ Tree statics are ServUO Scripts/Services/Harvest/Lumberjacking.cs m_TreeTiles and
+ cave rock statics 0x053B..0x054F are Mining.cs m_MountainAndCaveTiles, GPL-2.0;
+ ports/ServUO-LICENSE.txt. RunUO/ServUO read a 0x6C response with graphic 0 as a
+ land target. The installed item tiledata table is 512 groups of a 4-byte header
+ and 32 entries of 37 bytes, with flags at entry byte 0 and height at byte 16.
+ Tiledata flag 0x40 is impassable and 0x80 is wet.
+
+  CprState = record { harvest : GameHarvest, craft : GameCraft, carve : GameCarve, heat : Integer }
+  cpr-new : GvWorld, GsiState -> CprState
+  cpr-new (vendor) (items) = let h = gh-state vendor items
+    in CprState { harvest = h, craft = gcr-state h, carve = gca-new h (cvd-carve (cvd-table 0)), heat = cpr-zeroed (alloc-bytes (list-length h.requests * 16)) 0 (list-length h.requests * 2) }
+  cpr-zeroed : Integer, Integer, Integer -> Integer
+  cpr-zeroed (buf) (i) (n) = if i == n then buf else let z = poke-qword buf (i * 8) 0 in cpr-zeroed buf (i + 1) n
+ Britain's mine is the MAP0.MUL rock land tile 1451,1528 at z 40, the rock
+ nearest the bank with a standable grass tile beside it (1452,1529, z 35).
+  cpr-mine-x : Integer = 1451
+  cpr-mine-y : Integer = 1528
+  cpr-mine-z : Integer = 40
+ Place 300 is Britain's farm, beside the gatherer's place 200; resource 13 is wheat (EconomyCatalog).
+  cpr-farm-place : Integer = 300
+  cpr-wheat : Integer = 13
+  cpr-has-node : EpWorld, Integer, Integer, Integer -> Boolean
+  cpr-has-node (w) (resource) (place) (i) = if i == w.node-count then False
+    else let n = list-at w.nodes i
+    in (n.resource == resource & n.place == place) | cpr-has-node w resource place (i + 1)
+ The field holds nine wild wheat nodes: three residents eat about 6 bread a day, 2 wheat mill to 2 flour and 2 flour bake
+ to 4 bread, and a node yields 1 wheat every 72 hours at farming 0 (EconomyCatalog resource 13), so nine feed the town.
+  cpr-field-nodes : Integer = 9
+  cpr-count-nodes : EpWorld, Integer, Integer, Integer -> Integer
+  cpr-count-nodes (w) (resource) (place) (i) = if i == w.node-count then 0
+    else let n = list-at w.nodes i in (if n.resource == resource & n.place == place then 1 else 0) + cpr-count-nodes w resource place (i + 1)
+  cpr-field-fill : EpWorld, Integer -> Integer
+  cpr-field-fill (w) (left) = if left <= 0 then 0
+    else let made = eh-source w cpr-wheat cpr-farm-place in if made < 0 then made else cpr-field-fill w (left - 1)
+  cpr-field-install : CprState -> Integer
+  cpr-field-install (s) = let world = s.harvest.vendor.currency.world
+    in cpr-field-fill world (cpr-field-nodes - cpr-count-nodes world cpr-wheat cpr-farm-place 0)
+ The Royal Mine (UOAIX-60) is beside ServUO's Wind Bank (Data/Common.map, 5346,74,0): its gold veins are MAP0.MUL
+ mountain land (MiningTiles) at x, y, z within two tiles of the arrival 5360,76,37, and the red moongate art 0x0DDA
+ marks the return gate at 5360,79,36.
+  cpr-royal-veins : List (List Integer) = [[5361, 74, 40], [5362, 75, 40], [5362, 76, 37], [5362, 77, 36]]
+  cpr-royal-x : Integer = 5360
+  cpr-royal-y : Integer = 76
+  cpr-royal-z : Integer = 37
+  cpr-royal-gate-x : Integer = 5360
+  cpr-royal-gate-y : Integer = 79
+  cpr-royal-gate-z : Integer = 36
+  cpr-royal-gate-art : Integer = #0DDA
+ Castle British's curtained alcoves behind the throne (MAP0.MUL statics: curtains at x 1323, z 50, beside the throne
+ at 1323,1624): the passable curtain ends at y 1618, 1620, 1628 and 1632 open on the tiles behind (UOAIX-60).
+  cpr-alcove : Integer, Integer -> Boolean
+  cpr-alcove (x) (y) = (x == 1322 | x == 1323) & ((y >= 1618 & y <= 1620) | (y >= 1628 & y <= 1632))
+  cpr-throne-x : Integer = 1326
+  cpr-throne-y : Integer = 1624
+ Lord British starts on the throne's seat (root, F48).
+  cpr-seat-x : Integer = 1323
+  cpr-seat-y : Integer = 1624
+  cpr-seat-z : Integer = 55
+  cpr-royal-vein : CprState, List (List Integer), Integer -> Integer
+  cpr-royal-vein (s) (veins) (i) = if i == list-length veins then 0
+    else let v = list-at veins i
+    in let h = s.harvest
+    in let world = h.vendor.currency.world
+    in if world.mint-owner <= 0 | h.count >= 256 | gh-site-find h 5 (list-at v 0) (list-at v 1) (list-at v 2) 0 >= 0 then cpr-royal-vein s veins (i + 1)
+    else let node = eh-source world 6 (ep-actor world world.mint-owner).place
+    in if node < 1 then cpr-royal-vein s veins (i + 1)
+    else let site = list-at h.sites h.count
+    in let a = __record-set site "x" (list-at v 0)
+    in let b = __record-set site "y" (list-at v 1)
+    in let c = __record-set site "z" (list-at v 2)
+    in let d = __record-set site "resource" 5
+    in let e = __record-set site "node" node
+    in let counted = __record-set h "count" (h.count + 1)
+    in 1 + cpr-royal-vein s veins (i + 1)
+  cpr-gate-at : WorldTable, Integer -> Boolean
+  cpr-gate-at (world) (serial) = cpr-art-at world serial cpr-royal-gate-art
+  cpr-art-at : WorldTable, Integer, Integer -> Boolean
+  cpr-art-at (world) (serial) (art) = if serial == 0 then False
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == art & o.container == 0) then True
+    else cpr-art-at world (world-tile-next world serial) art
+  cpr-mill-install : GsiState, Integer -> Integer
+  cpr-mill-install (items) (i) = if i == 3 then 0
+    else let x = wks-mill.x - 1 + i
+    in let art = list-at wks-mill-art i
+    in if cpr-art-at items.world (world-tile-first items.world x wks-mill.y) art | world-count items.world >= items.world.capacity then cpr-mill-install items (i + 1)
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = wks-mill.y, z = wks-mill.z, graphic = art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> cpr-mill-install items (i + 1)
+      is Ok (serial) -> let fixed = gsi-register items serial 0 0 False False
+        in let touched = world-touch items.world in 1 + cpr-mill-install items (i + 1)
+  cpr-royal-install : CprState -> Integer
+  cpr-royal-install (s) = let items = s.harvest.items
+    in let veins = cpr-royal-vein s cpr-royal-veins 0
+    in let gate = cpr-royal-gate items
+    in let marks = cpr-vein-marks items cpr-royal-veins 0
+    in let touched = if veins + gate + marks > 0 then world-touch items.world else 0
+    in veins + gate + marks
+  cpr-vein-marked : WorldTable, Integer -> Boolean
+  cpr-vein-marked (world) (serial) = if serial == 0 then False
+    else if gh-vein-marker world serial then True
+    else cpr-vein-marked world (world-tile-next world serial)
+  cpr-vein-marks : GsiState, List (List Integer), Integer -> Integer
+  cpr-vein-marks (items) (veins) (i) = if i == list-length veins then 0
+    else let v = list-at veins i
+    in if cpr-vein-marked items.world (world-tile-first items.world (list-at v 0) (list-at v 1)) | world-count items.world >= items.world.capacity then cpr-vein-marks items veins (i + 1)
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = list-at v 0, y = list-at v 1, z = list-at v 2, graphic = gh-vein-art, hue = gh-vein-hue, container = 0, amount = 1, health = 0 })
+      is Err (_) -> cpr-vein-marks items veins (i + 1)
+      is Ok (serial) -> let fixed = gsi-register items serial 0 0 False False in 1 + cpr-vein-marks items veins (i + 1)
+  cpr-royal-gate : GsiState -> Integer
+  cpr-royal-gate (items) = if cpr-gate-at items.world (world-tile-first items.world cpr-royal-gate-x cpr-royal-gate-y) | world-count items.world >= items.world.capacity then 0
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = cpr-royal-gate-x, y = cpr-royal-gate-y, z = cpr-royal-gate-z, graphic = cpr-royal-gate-art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> let fixed = gsi-register items serial 0 0 False False in 1
+  cpr-mine-install : CprState -> Integer
+  cpr-mine-install (s) = let h = s.harvest
+    in let world = h.vendor.currency.world
+    in if world.mint-owner <= 0 | h.count == 256 | gh-site-find h 5 cpr-mine-x cpr-mine-y cpr-mine-z 0 >= 0 then 0
+    else let node = eh-source world 6 (ep-actor world world.mint-owner).place
+    in if node < 1 then 0
+    else let site = list-at h.sites h.count
+    in let a = __record-set site "x" cpr-mine-x
+    in let b = __record-set site "y" cpr-mine-y
+    in let c = __record-set site "z" cpr-mine-z
+    in let d = __record-set site "resource" 5
+    in let e = __record-set site "node" node
+    in let counted = __record-set h "count" (h.count + 1)
+    in node
+ A new pickaxe site on a mountain tile draws its vein from the tile: copper ore at ServUO Mining.cs's
+ copper vein chance (8.4%), silver ore at 11.2% (raised from 2.8% so four miners float change, root 2026-10-06; UO has no silver ore, Damian ruled it
+ mineable, root 2026-10-06), iron ore otherwise. Resources 25 and 26 are copper and silver ore.
+  cpr-vein : Integer, Integer, Integer -> Integer
+  cpr-vein (resource) (x) (y) = if resource /= 5 then resource
+    else let roll = int-mod (bit-and (mix-bits 1451 (x * 4096 + y)) #7FFFFFFF) 1000
+    in if roll < 84 then 25 else if roll < 196 then 26 else 5
+  cpr-kit-item : Integer -> Integer
+  cpr-kit-item (g) = if g == #0E85 | g == #0E86 | g == #0F39 | g == #0F3A then 25
+    else if g == #0F43 | g == #0F44 | g == #0F49 | g == #0F4A then 26
+    else if g == #0DBF | g == #0DC0 then 29
+    else if g == #0EC4 | g == #0EC5 | g == #13F6 | g == #13F7 then 27
+    else if g == #0F51 | g == #0F52 then 69
+    else if g == #13E3 | g == #13E4 then 62
+    else if g == #0F9D | g == #1034 | g == #1035 | g == #1EB8 | g == #1EB9 | g == #097F | g == #1043 | g == #1022 | g == #1023 | g == #0FBB | g == #0FBC | (g >= #10E4 & g <= #10E7) | (g >= #1028 & g <= #1033) then 42
+    else if g == #0F9E | g == #0F9F then 74 else cpr-kit-material g
+  cpr-kit-material : Integer -> Integer
+  cpr-kit-material (g) = if g == #1BF2 then 31 else if g == #1BDD then 15 else if g == #1BD7 then 38
+    else if g == #1766 then 37 else if g == #1081 then 35 else if g == #0DF9 then 10 else 0
+  cpr-kit-each : GvWorld, Integer, Integer, Integer -> Result Integer Text
+  cpr-kit-each (v) (actor) (serial) (depth) = if serial == 0 then Ok 0
+    else let next = world-next-sibling v.game.world serial
+    in when world-get v.game.world serial
+      is Err (e) -> Err e
+      is Ok (obj) -> let item = cpr-kit-item obj.graphic
+        in let material = cpr-kit-material obj.graphic /= 0
+        in when (if item == 0 | obj.amount < 1 | (obj.amount /= 1 & not material) | gv-lot v serial 0 >= 0 then Ok 0
+            else if ep-find v.currency.world actor item obj.amount /= 0 then Ok 0
+            else Ok (if gv-add-lot v serial actor item 1000 32 0 < 0 then 0 else 1))
+          is Err (e) -> Err e
+          is Ok (_) -> when (if depth > 0 & world-child-count v.game.world serial > 0 then cpr-kit-each v actor (world-first-child v.game.world serial) (depth - 1) else Ok 0)
+            is Err (e) -> Err e
+            is Ok (_) -> cpr-kit-each v actor next depth
+  cpr-kit-tools : CprState, Integer, Integer -> Result Integer Text
+  cpr-kit-tools (s) (serial) (pack) = let v = s.harvest.vendor
+    in let at = gv-player v serial 0
+    in if at < 0 | pack == 0 then Ok 0
+    else cpr-kit-each v (list-at v.players at).actor (world-first-child v.game.world pack) 2
+  cpr-tree : Integer -> Boolean
+  cpr-tree (g) = (g >= #0CCA & g <= #0CE8) | (g >= #0CF8 & g <= #0D03) | (g >= #0D41 & g <= #0D53) | (g >= #0D57 & g <= #0D69)
+    | (g >= #0D6E & g <= #0D7F) | (g >= #0D84 & g <= #0D90) | (g >= #0D95 & g <= #0D97) | (g >= #0D99 & g <= #0D9B)
+    | (g >= #0D9D & g <= #0D9F) | (g >= #0DA1 & g <= #0DA3) | (g >= #0DA5 & g <= #0DA7) | (g >= #0DA9 & g <= #0DAB) | (g >= #12B5 & g <= #12C7)
+ Flora a player or NPC can fell, harvest or plant (root 2026-10-06): timber and fruit trees with their leaves,
+ saplings, stumps, field crops, grapevines, flax and mandrake. Decorative grass, flowers, ferns and reeds stay statics.
+  cpr-flora : Integer -> Boolean
+  cpr-flora (g) = cpr-tree g | (g >= #0C55 & g <= #0C56) | (g >= #0C5C & g <= #0C5D) | (g >= #0C62 & g <= #0C67) | (g >= #0C69 & g <= #0C74)
+    | (g >= #0C76 & g <= #0C78) | (g >= #0C7A & g <= #0C7C) | (g >= #0C95 & g <= #0C96) | g == #0CA8 | (g >= #0CAA & g <= #0CAB) | (g >= #0CE9 & g <= #0CEA)
+    | (g >= #0D1B & g <= #0D20) | (g >= #0D22 & g <= #0D24) | (g >= #0D94 & g <= #0DAB) | (g >= #0E56 & g <= #0E59) | g == #18DF | (g >= #1A99 & g <= #1A9B)
+    | (g >= #324C & g <= #324D)
+ Jungle-tree vines: 1,296 of 1,297 (0x0D56) and 1,431 of 1,479 (0x0D80) of these statics stand in a cell holding tree
+ art, so a vine in a tree cell is part of that tree; one elsewhere stays scenery.
+  cpr-tree-vine : Integer -> Boolean
+  cpr-tree-vine (g) = (g >= #0D55 & g <= #0D56) | (g >= #0D6A & g <= #0D6D) | (g >= #0D80 & g <= #0D82) | (g >= #0D91 & g <= #0D93)
+  cpr-rock : Integer -> Boolean
+  cpr-rock (g) = g >= #053B & g <= #054F
+  cpr-tile-at : Integer -> Integer
+  cpr-tile-at (graphic) = (graphic / 32) * 1188 + 4 + int-mod graphic 32 * 37
+  cpr-collider : WalkMap, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cpr-collider (map) (cell) (z) (flags) (height) (i) = if i == peek-qword map.solids (cell * map.stride) then False
+    else let at = cell * map.stride + 8 + i * 24
+    in if peek-qword map.solids at == z & peek-qword map.solids (at + 8) == height & peek-qword map.solids (at + 16) == flags then True
+    else cpr-collider map cell z flags height (i + 1)
+  cpr-static : Integer, WalkMap, Integer, Integer, Integer -> Boolean
+  cpr-static (tiles) (map) (cell) (z) (graphic) = if tiles == 0 | graphic < 1 | graphic >= 16384 then False
+    else let at = cpr-tile-at graphic
+    in cpr-collider map cell z (mul-u32 tiles at) (peek-byte tiles (at + 16)) 0
+  cpr-wet-static : Integer, Integer -> Boolean
+  cpr-wet-static (tiles) (graphic) = if tiles == 0 | graphic < 1 | graphic >= 16384 then False
+    else bit-and (mul-u32 tiles (cpr-tile-at graphic)) 128 /= 0
+  cpr-lookup : Integer, WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  cpr-lookup (tiles) (map) (mobile) (x) (y) (z) (graphic) = let cell = walk-cell map x y
+    in if cell < 0 | not (walk-ready map x y) then 0
+    else if graphic == 0 then cpr-land map cell x y z
+    else if not (cpr-static tiles map cell z graphic) then 0
+    else if cpr-tree graphic then 15 else if cpr-rock graphic then 5 else if cpr-wet-static tiles graphic then 9 else 0
+  cpr-heat : GsiState, WalkMap, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cpr-heat (items) (map) (x) (y) (z) (graphic) (serial) = if serial /= 0 then
+      (when world-get items.world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.container == 0 & o.graphic == graphic & o.x == x & o.y == y)
+    else let cell = walk-cell map x y
+    in cell >= 0 & walk-ready map x y & cpr-static items.tiles map cell z graphic
+  cpr-wet-cell : WalkMap, Integer, Integer -> Boolean
+  cpr-wet-cell (map) (cell) (i) = if i == peek-qword map.solids (cell * map.stride) then False
+    else if bit-and (peek-qword map.solids (cell * map.stride + 8 + i * 24 + 16)) 128 /= 0 then True
+    else cpr-wet-cell map cell (i + 1)
+ UOX3 fishing.js accepts a target cell holding a static with the TF_WET flag (CheckStaticFlag 7); the 1.25 client
+ aims a land target at static water over dry land, as at Britain's moat.
+  cpr-land : WalkMap, Integer, Integer, Integer, Integer -> Integer
+  cpr-land (map) (cell) (x) (y) (z) = let flags = peek-qword map.land (cell * 24 + 16)
+    in if bit-and flags 128 /= 0 | cpr-wet-cell map cell 0 then 9
+    else if bit-and flags mt-mountain-flag /= 0 then 5 else 0
+
+  cpr-inside : BbShop, WorldObject -> Boolean
+  cpr-inside (shop) (m) = m.x >= shop.x1 - 1 & m.x <= shop.x2 + 1 & m.y >= shop.y1 - 1 & m.y <= shop.y2 + 1
+ UOX3 spawn_felucca_town_britain.dfn REGIONSPAWN 15, The Saw Horse (NPC=carpenter): Britain's carpentry workshop.
+  cpr-saw-horse : BbShop = BbShop { title = "Carpenter", premises = "The Saw Horse", x1 = 1429, y1 = 1593, x2 = 1432, y2 = 1598 }
+  cpr-workshop : Integer -> Integer
+  cpr-workshop (kind) = if kind == 3 | kind == 9 then 1 else if kind == 4 | kind == 5 | kind == 11 then 2 else -1
+  cpr-craft-lookup : GvWorld, Integer, WalkMap, WorldObject, Integer, Integer -> Integer
+  cpr-craft-lookup (vendor) (heat) (map) (mobile) (recipe) (category) = let w = vendor.currency.world
+    in let player = gv-player vendor mobile.serial 0
+    in if recipe < 1 | recipe > list-length w.catalog.recipes | player < 0 then 0
+    else let kind = (list-at w.catalog.recipes (recipe - 1)).station
+    in let slot = gsi-slot vendor.game mobile.serial 0
+    in if category == 5 then (if slot < 0 | peek-qword heat (slot * 16) == 0 | walk-abs (mobile.x - peek-qword heat (slot * 16)) > 3
+      | walk-abs (mobile.y - peek-qword heat (slot * 16 + 8)) > 3 then 0 else bb-station w (list-at vendor.players player).actor kind 0)
+    else let shop = if category == 4 then 6 else cpr-workshop kind
+    in if kind == 1 then bb-station w (list-at vendor.players player).actor kind 0
+    else if kind == 8 then (if cpr-inside cpr-saw-horse mobile then bb-station w (list-at vendor.players player).actor kind 0 else 0)
+    else if shop < 0 then 0
+    else if not (cpr-inside (list-at bb-shops shop) mobile) then 0
+    else bb-station w (list-at vendor.players player).actor kind 0
+
+  cpr-specs : Integer -> List GameOpcodeSpec
+  cpr-specs (unused) = [gcr-spec, gdy-spec]
+  cpr-handler-at : CprState, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
+  cpr-handler-at (s) (shard) (input) (map) (port) (packet) (now) = when gca-handler-at s.carve shard input packet now
+    is Err (e) -> Err e
+    is Ok (Just (carved)) -> Ok (Just carved)
+    is Ok (None) -> when gsc-handler-at s.harvest shard input packet now
+     is Err (e) -> Err e
+     is Ok (Just (cut)) -> Ok (Just cut)
+     is Ok (None) -> when glp-handler-at s.harvest shard input packet now
+      is Err (e) -> Err e
+      is Ok (Just (picked)) -> Ok (Just picked)
+      is Ok (None) -> when gdy-handler-at s.harvest shard input packet now
+       is Err (e) -> Err e
+       is Ok (Just (dyed)) -> Ok (Just dyed)
+       is Ok (None) -> when gco-handler-at (cpr-heat s.harvest.items map) s.harvest shard input packet now
+        is Err (e) -> Err e
+        is Ok (Just (cooked)) -> if cooked.note == "cooking heat" then cpr-cook-menu s shard input map port packet now else Ok (Just cooked)
+        is Ok (None) -> when gh-handler-at (cpr-lookup s.harvest.items.tiles) gh-produce s.harvest shard input map port packet now
+         is Err (e) -> Err e
+         is Ok (Just (reply)) -> Ok (Just reply)
+         is Ok (None) -> gcr-handler-at (cpr-craft-lookup s.harvest.vendor s.heat) s.craft shard input map port packet now
+  cpr-cook-menu : CprState, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
+  cpr-cook-menu (s) (shard) (input) (map) (port) (packet) (now) = let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 then Ok None
+    else let x = poke-qword s.heat (slot * 16) (gp-u16 packet 11)
+    in let y = poke-qword s.heat (slot * 16 + 8) (gp-u16 packet 13)
+    in gcr-handler-at (cpr-craft-lookup s.harvest.vendor s.heat) s.craft shard input map port (gp-put32 [6] (list-at s.harvest.requests slot).tool) now
+  cpr-handler : CprState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cpr-handler (s) (shard) (input) (map) (port) (packet) = cpr-handler-at s shard input map port packet get-ticks

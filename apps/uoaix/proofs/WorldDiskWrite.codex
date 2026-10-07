@@ -1,0 +1,101 @@
+Chapter: WorldDiskWrite
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  udw-object : Integer, Integer, Integer, Integer -> WorldObject
+  udw-object (serial) (kind) (parent) (amount) = WorldObject { serial = serial, kind = kind,
+    x = 1420, y = 1690, z = -5, graphic = 400, hue = 17, container = parent, amount = amount, health = 50 }
+
+  udw-check : Text, Boolean -> [Console] Nothing
+  udw-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  udw-write : UoStore, WorldTable -> [Console, Device.Block] Nothing
+  udw-write (store) (world) =
+    let created = world-create world (udw-object 0 1 0 1)
+    in let checkpoint = WorldCheckpoint { world = world, tick = 100, sequence = 0 }
+    in let snapshot = alloc-bytes 320
+    in let encoded = ws-encode checkpoint snapshot 320
+    in let frame = alloc-bytes 128
+    in let event = WorldEvent { sequence = 1, tick = 101, operation = 1, object = udw-object 1073741826 2 1 1 }
+    in let e = wj-encode event frame 128
+    in act
+      early <- us-append store 2 1 101 frame 128
+      udw-check "event requires checkpoint" (is-err early & store.head == 0)
+      saved <- us-append store 1 0 100 snapshot 320
+      udw-check "checkpoint committed" (is-ok saved & store.snapshot == 0 & store.head == 2)
+      logged <- us-append store 2 1 101 frame 128
+      udw-check "create logged" (is-ok logged & store.head == 4 & store.sequence == 1)
+      let applied = wj-apply world event
+      in act
+      let next = WorldEvent { sequence = 2, tick = 102, operation = 2, object = udw-object 1073741826 2 1 7 }
+      in let wrote = wj-encode next frame 128
+      in act
+        logged <- us-append store 2 2 102 frame 128
+        udw-check "update logged" (is-ok logged & store.head == 6 & store.sequence == 2)
+        let applied = wj-apply world next in 0
+      end
+      wrong <- us-append store 2 4 103 frame 128
+      udw-check "sequence gap leaves head" (is-err wrong & store.head == 6)
+      short <- us-read store 0 snapshot 319
+      udw-check "read capacity refusal" (is-err short)
+      let daily = WorldCheckpoint { world = world, tick = 200, sequence = 2 }
+      in let encoded = ws-encode daily snapshot 320
+      in act
+        saved <- us-append store 1 2 200 snapshot 320
+        udw-check "newest checkpoint committed" (is-ok saved & store.head == 8 & store.snapshot == 6)
+      end
+      let later = WorldEvent { sequence = 3, tick = 201, operation = 2, object = udw-object 1073741826 2 1 9 }
+      in let encoded = wj-encode later frame 128
+      in act
+        logged <- us-append store 2 3 201 frame 128
+        udw-check "post-checkpoint event logged" (is-ok logged & store.head == 10 & store.sequence == 3)
+      end
+      let uncommitted = alloc-bytes 512
+      in let zero = us-zero uncommitted 0
+      in let data = poke-byte uncommitted 0 99
+      in act
+        ignored <- us-device-write store.device 11 uncommitted
+        udw-check "uncommitted payload prepared" (store.head == 10)
+      end
+      fresh <- us-open-on store.device 40 20
+      when fresh
+        is Err (err) -> print-line-uni ("FAIL fresh open " & err)
+        is Ok (later) -> act
+          first <- us-append later 1 5 300 snapshot 320
+          next <- us-append later 2 6 301 frame 128
+          stale <- us-append later 1 9 302 snapshot 320
+          udw-check "a fresh journal may begin with a snapshot at any sequence, and later records keep the order" (is-ok first & is-ok next & is-err stale & later.sequence == 6 & later.snapshot == 0)
+          reopened <- us-open-on store.device 40 20
+          udw-check "a journal beginning at sequence 5 reopens at its last sequence" (when reopened is Err (_) -> False is Ok (r) -> r.sequence == 6 & r.snapshot == 0 & r.head == later.head)
+        end
+      tiny <- us-open-on store.device 32 2
+      when tiny
+        is Err (err) -> print-line-uni ("FAIL tiny open " & err)
+        is Ok (small) -> let encoded = ws-encode (WorldCheckpoint { world = world, tick = 200, sequence = 0 }) snapshot 320
+        in act
+          saved <- us-append small 1 0 200 snapshot 320
+          full <- us-append small 2 1 201 frame 128
+          udw-check "disk budget refusal" (is-ok saved & is-err full & small.head == 2)
+        end
+      end
+    end
+
+  udw-boot : UoDevice -> [Console, Device.Block] Nothing
+  udw-boot (device) = act
+    invalid <- us-open-on device 0 1000
+    udw-check "disk region refusal" (is-err invalid)
+    opened <- us-open-on device 0 32
+    when opened
+      is Err (e) -> print-line-uni ("FAIL open " & e)
+      is Ok (store) -> when world-new 3
+        is Err (e) -> print-line-uni "FAIL world setup"
+        is Ok (world) -> udw-write store world
+  end
+
+  opening : [Console, Device.Block] Nothing = udw-boot UoIde
+
+Page 1

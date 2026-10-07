@@ -1,0 +1,426 @@
+Chapter: CompositeGatherer
+  cites Uoaix chapter EconomyGatherer
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter GameVendorBuys
+  cites Uoaix chapter GameVendorUndo
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter CharacterStylist
+  cites Uoaix chapter CompositeStation
+  cites Uoaix chapter TownRoutes
+
+ Saved-path stepping follows TownLive's port of Source-X CCharNPCAct.cpp
+ NPC_WalkToPoint, Apache-2.0; Sphere-LICENSE.txt.
+
+  CgGatherer = record { gatherer : EgGatherer, serial : Integer, home : BbSpot, node : BbSpot, shop : BbSpot,
+    leg : Integer, via : Integer, visit : Integer, trips : Integer, blocked : Integer,
+    pack : Integer, lot : Integer, made : Integer, sold : Integer, refused : Integer, funds : Integer, refusals : Integer, crowned : Integer,
+    walk : RteWalk, smelt-x : Integer, smelt-y : Integer, trade : CgTrade }
+  CgTrade = record { raw : Integer, product : Integer, buyer : Integer, tool : Integer, art : Integer,
+    station : BbSpot, region : BbShop, look : Integer }
+ The ore node is a strip on the west edge of the Britain walk window, outside the town.
+  cgg-node-region : BbShop = BbShop { title = "Iron ore", premises = "West of Britain", x1 = 1408, y1 = 1620, x2 = 1415, y2 = 1659 }
+ Owner 3001 and place 200 are the economy-side gatherer's (EconomyGathererProof); Britain's shops and residents are at place 100.
+  cgg-owner : Integer = 3001
+  cgg-place : Integer = 200
+  cgg-town-place : Integer = 100
+ A visit tries at most 64 times; at mining 0 a try succeeds one time in ten (ep-practice).
+  cgg-visit-limit : Integer = 64
+ Vendor 1 is the Britain blacksmith (gvb-role-words); recipe 31 smelts 2 iron ore into 1 iron ingot (item 31).
+  cgg-smith : Integer = 1
+  cgg-ingot : Integer = 31
+  cgg-ore : Integer = 5
+  cgg-bytes : Integer = 192
+ Place 300 is Britain's wheat field (cpr-farm-place): its farmer harvests wheat (13), mills 2 wheat into 2 flour (33,
+ recipe 33) at the bakery's mill and sells the flour sack (art 0x1039) to the baker (vendor 3). The field is the open
+ strip inside Britain's west wall, x 1410..1415, y 1660..1670 (MAP0 land, no blocking statics).
+  cgg-farm-place : Integer = 300
+  cgg-farm-owner : Integer = 3201
+  cgg-field-region : BbShop = BbShop { title = "Wheat", premises = "West of Britain", x1 = 1410, y1 = 1660, x2 = 1415, y2 = 1670 }
+  cgg-trade-of : Integer -> CgTrade
+  cgg-trade-of (place) = if place == cgg-farm-place then CgTrade { raw = 13, product = 33, buyer = 3, tool = 0, art = #1039,
+      station = wks-mill, region = cgg-field-region, look = cst-townsfolk }
+    else CgTrade { raw = cgg-ore, product = cgg-ingot, buyer = cgg-smith, tool = 25, art = #1BEF,
+      station = wks-forge, region = cgg-node-region, look = cst-miner }
+
+  cgg-make : EgGatherer, Integer, BbSpot, BbSpot, Integer, Integer, Integer, Integer -> CgGatherer
+  cgg-make (g) (serial) (home) (node) (leg) (via) (visit) (trips) =
+    CgGatherer { trade = cgg-trade-of g.place, gatherer = g, serial = serial, home = home, node = node, shop = BbSpot { x = 0, y = 0, z = 0 },
+      leg = leg, via = via, visit = visit, trips = trips, blocked = 0, pack = 0, lot = 0, made = 0, sold = 0, refused = 0, funds = 0, refusals = 0, crowned = 0,
+      walk = rte-walk 0, smelt-x = 0, smelt-y = 0 }
+  cgg-bed : TownLive, BbSpot, Integer -> Boolean
+  cgg-bed (t) (spot) (i) = if i == t.count then False
+    else let home = (list-at t.residents i).home
+    in if home.x == spot.x & home.y == spot.y then True else cgg-bed t spot (i + 1)
+  cgg-home : TownLive, WalkMap, Integer -> Result BbSpot Text
+  cgg-home (t) (map) (offset) = when bb-placement t.vendors.game.world map tl-home-region offset
+    is Err (e) -> Err e
+    is Ok (spot) -> if not (cgg-bed t spot 0) then Ok spot
+      else cgg-home t map ((spot.y - tl-home-region.y1) * (tl-home-region.x2 - tl-home-region.x1 + 1) + spot.x - tl-home-region.x1 + 1)
+  cgg-new : TownLive, WalkMap -> Result CgGatherer Text
+  cgg-new (t) (map) = cgg-new-at t map cgg-owner 0 cgg-place
+  cgg-new-at : TownLive, WalkMap, Integer, Integer, Integer -> Result CgGatherer Text
+  cgg-new-at (t) (map) (owner) (offset) (place) = let world = t.vendors.game.world
+    in let trade = cgg-trade-of place
+    in if world.capacity - world-count world < 2 + cst-most-rows then Err "gatherer world budget"
+    else when cgg-home t map offset
+      is Err (e) -> Err e
+      is Ok (home) -> when bb-placement world map trade.region offset
+        is Err (e) -> Err e
+        is Ok (node) -> when egg-new-for t.vendors.currency owner place trade.raw trade.tool
+          is Err (e) -> Err e
+          is Ok (g) -> when world-create world (gs-mobile 0 home.x home.y home.z 400 1002)
+            is Err (e) -> Err e
+            is Ok (serial) -> when cst-style t.items serial trade.look
+              is Err (e) -> Err e
+              is Ok (_) -> let homed = ep-place t.vendors.currency.world g.producer.actor cgg-town-place
+                in if homed /= 0 | gv-add-owner t.vendors serial g.producer.actor < 0 then Err "gatherer owner registration"
+                else when bb-container t.vendors t.items g.producer serial 21
+                  is Err (e) -> Err e
+                  is Ok (pack) -> let c = cgg-make g serial home node 0 0 0 0
+                    in let bound = __record-set c "pack" pack in Ok c
+
+  cgg-reset : CgGatherer -> Integer
+  cgg-reset (c) = rte-drop c.walk
+  cgg-blocked : CgGatherer -> Result (List (List Integer)) Text
+  cgg-blocked (c) = let cleared = cgg-reset c
+    in let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+  cgg-target : CgGatherer, TownLive -> BbSpot
+  cgg-target (c) (t) = if c.via == 1 then t.entrance else if c.leg == 1 then c.node else if c.leg == 4 | c.leg == 6 then c.shop else c.home
+  cgg-ready : CgGatherer -> Boolean
+  cgg-ready (c) = let w = c.gatherer.producer.currency.world
+    in if not (eh-valid-node w c.gatherer.node) then False
+    else (list-at w.nodes (c.gatherer.node - 1)).stage == 2
+  cgg-held : CgGatherer, Integer -> Integer
+  cgg-held (c) (item) = let x = c.gatherer.producer.currency in ep-at (ep-actor x.world c.gatherer.producer.actor).stock item
+ Arrival: at the node the actor is at the node's place; back home it is in Britain.
+  cgg-arrive : CgGatherer, TownLive -> Result (List (List Integer)) Text
+  cgg-arrive (c) (t) = let w = t.vendors.currency.world
+    in let actor = c.gatherer.producer.actor
+    in let cleared = cgg-reset c
+    in let next = if c.leg == 1 then 2 else if c.leg == 4 then 5 else if c.leg == 6 then 7 else 0
+    in let placed = if c.leg == 1 then ep-place w actor c.gatherer.place else if c.leg == 3 then ep-place w actor cgg-town-place else 0
+    in let trips = if c.leg == 3 then let counted = __record-set c "trips" (c.trips + 1) in (if c.gatherer.place > cgg-place & c.gatherer.place <= cgg-place + 4 then cgg-next-vein c t else 0) else 0
+    in let sold = if c.leg == 3 & placed == 0 then cgg-crown-sell t.vendors.currency actor 63 + cgg-crown-sell t.vendors.currency actor 64 else 0
+    in let crowned = __record-set c "crowned" (c.crowned + sold)
+    in let visit = __record-set c "visit" 0
+    in let arrived = __record-set c "leg" next
+    in let touched = world-touch t.vendors.game.world
+    in if placed /= 0 then Err "gatherer economic place" else Ok []
+ The crown's mint buys copper (63) and silver (64) ore in pairs at the market price, paid in gold, and
+ mints it before each commit (root 2026-10-06, UOAIX-30); both stand in Britain (place 100).
+ The posted price is 1 gold per pair, below the 1000 copper or 100 silver a pair mints (1.43 gold at 700
+ copper and 70 silver to the gold), paid through eu-sale so the currency history records it.
+  cgg-crown-sell : EuCurrency, Integer, Integer -> Integer
+  cgg-crown-sell (x) (seller) (ore) = let w = x.world
+    in let crown = w.mint-owner
+    in let pairs = if ep-valid-actor w seller then ep-at (ep-actor w seller).stock ore / 2 else 0
+    in if crown <= 0 | crown == seller | pairs == 0 | not (ep-valid-actor w crown) | w.trade-count == ep-trade-limit then 0
+    else let b = ep-actor w crown
+    in let s = ep-actor w seller
+    in let quantity = pairs * 2
+    in let gross = pairs * x.copper-rate
+    in let chain = (list-at w.catalog.items (ore - 1)).chain
+    in if not (ep-room b ore quantity) | ep-at b.cost ore > ep-limit - pairs | ep-at w.turnover chain > ep-limit - gross then 0
+    else let quality = ep-at s.quality ore * quantity / ep-at s.stock ore
+    in let durability = ep-at s.wear ore * quantity / ep-at s.stock ore
+    in if eu-sale x True b.purse s.purse gross 0 0 pairs /= 0 then 0
+    else let c = ep-remove s ore quantity
+    in let d = ep-add b.stock ore quantity
+    in let e = ep-add b.quality ore quality
+    in let f = ep-add b.cost ore pairs
+    in let g = ep-add b.wear ore durability
+    in let h = ep-add w.sales ore quantity
+    in let k = ep-add w.turnover chain gross
+    in let crowned = ep-add w.crown-turnover chain gross
+    in let trade = list-at w.trades w.trade-count
+    in let t0 = __record-set trade "action" w.money.sequence
+    in let t1 = __record-set trade "hour" w.hour
+    in let t2 = __record-set trade "buyer" b.purse
+    in let t3 = __record-set trade "seller" s.purse
+    in let t4 = __record-set trade "item" ore
+    in let t5 = __record-set trade "quantity" quantity
+    in let t6 = __record-set trade "gross" gross
+    in let t7 = __record-set trade "quality" quality
+    in let t8 = __record-set trade "durability" durability
+    in let recorded = __record-set w "trade-count" (w.trade-count + 1) in pairs
+  cgg-vein-node : EpWorld, Integer, Integer, Integer -> Integer
+  cgg-vein-node (w) (resource) (place) (i) = if i == w.node-count then eh-source w resource place
+    else let n = list-at w.nodes i
+    in if n.resource == resource & n.place == place & n.owner == 0 & n.stage == 2 then i + 1 else cgg-vein-node w resource place (i + 1)
+  cgg-next-vein : CgGatherer, TownLive -> Integer
+  cgg-next-vein (c) (t) = let r = cgg-node-region
+    in let width = r.x2 - r.x1 + 1
+    in let x = r.x1 + int-mod c.trips width
+    in let y = r.y1 + int-mod (c.trips / width) (r.y2 - r.y1 + 1)
+    in let node = cgg-vein-node t.vendors.currency.world (cpr-vein 5 x y) c.gatherer.place 0
+    in if node < 1 then 0 else let set = __record-set c.gatherer "node" node in 0
+  cgg-move : CgGatherer, TownLive, WorldObject, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
+  cgg-move (c) (t) (mobile) (map) (doors) = let target = cgg-target c t
+    in if tl-at mobile target then
+      if c.via == 1 then let arrived = __record-set c "via" 0 in let cleared = cgg-reset c in cgg-calm c
+      else cgg-arrive c t
+    else when rte-toward t.nav t.vendors.game map doors c.walk mobile target.x target.y target.z
+      is Err (e) -> Err e
+      is Ok (packets) -> if c.walk.route < 0 then cgg-sidestep c t mobile map doors else Ok packets
+ A failed plan exhausts the planner's search, about 28 ms on Britain (F30), so consecutive failures sidestep 2, 4 .. 64
+ times before the next plan (rte-pace).
+  cgg-calm : CgGatherer -> Result (List (List Integer)) Text
+  cgg-calm (c) = let a = __record-set c.walk "fails" 0
+    in let b = __record-set c.walk "rest" 0 in Ok []
+  cgg-sidestep : CgGatherer, TownLive, WorldObject, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
+  cgg-sidestep (c) (t) (mobile) (map) (doors) = let respot = if c.leg == 4 then (when cgg-shop-spot c t map is Err (_) -> 0 is Ok (_) -> 1) else if c.leg == 6 then (when cgg-forge-spot c t map is Err (_) -> 0 is Ok (_) -> 1) else 0
+    in let direction = int-mod (c.blocked + mobile.serial) 8
+    in let counted = __record-set c "blocked" (c.blocked + 1)
+    in rte-try t.vendors.game map doors c.walk mobile direction
+  cgg-depart : CgGatherer, TownLive, Integer -> Result (List (List Integer)) Text
+  cgg-depart (c) (t) (leg) = let out = __record-set c "leg" leg
+    in let via = __record-set c "via" 1
+    in let cleared = cgg-reset c
+    in let calmed = cgg-calm c
+    in let touched = world-touch t.vendors.game.world in Ok []
+ A free tile within two of the blacksmith keeps the sale inside the vendor's four-tile reach.
+  cgg-shop-spot : CgGatherer, TownLive, WalkMap -> Result Integer Text
+  cgg-shop-spot (c) (t) (map) = let v = t.vendors
+    in when world-get v.game.world (list-at v.vendors c.trade.buyer).serial
+      is Err (e) -> Err e
+      is Ok (smith) -> when bb-placement v.game.world map (BbShop { title = "Smith", premises = "Hammer and Anvil", x1 = smith.x - 2, y1 = smith.y - 2, x2 = smith.x + 2, y2 = smith.y + 2 }) 0
+        is Err (e) -> Err e
+        is Ok (spot) -> let a = __record-set c.shop "x" spot.x
+          in let b = __record-set c.shop "y" spot.y
+          in let d = __record-set c.shop "z" spot.z in Ok 0
+  cgg-forge-spot : CgGatherer, TownLive, WalkMap -> Result Integer Text
+  cgg-forge-spot (c) (t) (map) = when wks-spot t.vendors.game.world map c.trade.station c.trade.station 0
+    is Err (e) -> Err e
+    is Ok (spot) -> let a = __record-set c.shop "x" spot.x
+      in let b = __record-set c.shop "y" spot.y
+      in let d = __record-set c.shop "z" spot.z in Ok 0
+  cgg-to-forge : CgGatherer, TownLive, WalkMap -> Result (List (List Integer)) Text
+  cgg-to-forge (c) (t) (map) = when cgg-forge-spot c t map
+    is Err (_) -> let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+    is Ok (_) -> cgg-depart c t 6
+  cgg-forge-work : CgGatherer, TownLive, WalkMap, WorldObject -> Result (List (List Integer)) Text
+  cgg-forge-work (c) (t) (map) (mobile) = if not (wks-near mobile c.trade.station) then let again = __record-set c "leg" 6 in Ok []
+    else let made = c.made
+    in when cgg-smelt c t mobile
+      is Err (e) -> Err e
+      is Ok (_) -> if c.made == made | c.lot == 0 then cgg-depart c t 3
+        else when cgg-shop-spot c t map
+          is Err (_) -> cgg-depart c t 3
+          is Ok (_) -> let cleared = cgg-reset c
+            in let calmed = cgg-calm c
+            in let out = __record-set c "leg" 4 in Ok []
+  cgg-smelt : CgGatherer, TownLive, WorldObject -> Result (List (List Integer)) Text
+  cgg-smelt (c) (t) (mobile) = let p = c.gatherer.producer
+    in when bb-produce p c.trade.product
+      is Err (e) -> let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+      is Ok (_) -> when bb-materialise t.vendors t.items p c.pack c.trade.art 0 0 0 True
+        is Err (e) -> Err e
+        is Ok (serial) -> let lot = __record-set c "lot" serial
+          in let made = __record-set c "made" (c.made + 1)
+          in let x = __record-set c "smelt-x" mobile.x
+          in let y = __record-set c "smelt-y" mobile.y
+          in let touched = world-touch t.vendors.game.world in Ok []
+  cgg-sell : CgGatherer, TownLive, WorldObject -> Result (List (List Integer)) Text
+  cgg-sell (c) (t) (mobile) = let v = t.vendors
+    in let merchant = list-at v.vendors c.trade.buyer
+    in let at = gv-lot v c.lot 0
+    in let price = gvb-bid v.currency.world (gvb-role c.trade.buyer) c.trade.product
+    in let home = cgg-depart c t 3
+    in when world-get v.game.world merchant.serial
+      is Err (e) -> Err e
+      is Ok (smith) -> if at < 0 then let gone = __record-set c "lot" 0 in Ok []
+        else if price < 1 then cgg-refuse c t
+        else if not (gv-near mobile smith) then let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+        else let line = GvLine { lot = at, quantity = (list-at v.lots at).quantity, price = price, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+        in when gv-checkout v [line] merchant.actor c.gatherer.producer.actor c.serial merchant.extra c.serial
+          is Err (_) -> cgg-refuse c t
+          is Ok (_) -> let sold = __record-set c "sold" (c.sold + 1)
+            in let lot = __record-set c "lot" 0
+            in let cleared = __record-set c "refused" 0 in Ok []
+ An NPC's death settles at the blow, before cb-die makes the corpse: its lots leave the vendor ledger as consumed goods and go into
+ the corpse as plain items, and its owner row goes, because gvsc-valid binds every row and lot to a live mobile.
+  cgg-drop-lots : GvWorld, Integer, Integer -> Integer
+  cgg-drop-lots (v) (actor) (i) = if i >= v.lot-count then 0
+    else let l = list-at v.lots i
+    in if l.actor /= actor then cgg-drop-lots v actor (i + 1)
+    else let w = v.currency.world
+    in let lost = ep-consume w (ep-actor w actor) l.item l.quantity
+    in let retired = gh-retire-lot v i in cgg-drop-lots v actor i
+  cgg-unregister : GvWorld, Integer, Integer -> Integer
+  cgg-unregister (v) (actor) (i) = if i >= v.owner-count then 0
+    else let row = list-at v.owners i
+    in if row.actor /= actor then cgg-unregister v actor (i + 1)
+    else let last = v.owner-count - 1
+    in let moved = list-at v.owners last
+    in let a = list-set-at v.owners i moved
+    in let b = list-set-at v.owners last row
+    in let d = __record-set v "owner-count" last in 0
+ A refused sale backs off (root 2026-10-06): no buyer leg until a game day (24 economy hours) passes or the buyer's coin
+ count rises. Copper, silver and gold coins are summed as counts, so any rise retries.
+  cgg-funds : CgGatherer, TownLive -> Integer
+  cgg-funds (c) (t) = let x = t.vendors.currency
+    in let p = (ep-actor x.world (list-at t.vendors.vendors c.trade.buyer).actor).purse
+    in (em-purse x.copper p).coin + (em-purse x.silver p).coin + (em-purse x.world.money p).coin
+  cgg-waiting : CgGatherer, TownLive -> Boolean
+  cgg-waiting (c) (t) = c.refused > 0 & t.vendors.currency.world.hour < c.refused + 24 & cgg-funds c t <= c.funds
+  cgg-refuse : CgGatherer, TownLive -> Result (List (List Integer)) Text
+  cgg-refuse (c) (t) = let a = __record-set c "refused" (max 1 t.vendors.currency.world.hour)
+    in let b = __record-set c "funds" (cgg-funds c t)
+    in let n = __record-set c "refusals" (c.refusals + 1) in Ok []
+ While an unsold lot waits, the gatherer carries at most two of its raw material (one more smelt or mill) and leaves a
+ node of that material at the cap.
+  cgg-raw-cap : Integer = 2
+  cgg-capped : CgGatherer -> Boolean
+  cgg-capped (c) = let w = c.gatherer.producer.currency.world
+    in if c.lot == 0 | cgg-held c c.trade.raw < cgg-raw-cap | not (eh-valid-node w c.gatherer.node) then False
+    else let n = list-at w.nodes (c.gatherer.node - 1)
+    in n.resource > 0 & n.resource <= list-length w.catalog.resources & (list-at w.catalog.resources (n.resource - 1)).item == c.trade.raw
+ A farmer whose node is not ready takes another ready node of its field (cpr-field-nodes).
+  cgg-field-node : EpWorld, Integer, Integer, Integer -> Integer
+  cgg-field-node (w) (resource) (place) (i) = if i == w.node-count then 0
+    else let n = list-at w.nodes i
+    in if n.resource == resource & n.place == place & n.stage == 2 & n.owner == 0 then i + 1 else cgg-field-node w resource place (i + 1)
+  cgg-retarget : CgGatherer -> Result (List (List Integer)) Text
+  cgg-retarget (c) = let w = c.gatherer.producer.currency.world
+    in if c.gatherer.place /= cgg-farm-place | not (eh-valid-node w c.gatherer.node) then Ok []
+    else let node = cgg-field-node w (list-at w.nodes (c.gatherer.node - 1)).resource c.gatherer.place 0
+    in let set = if node > 0 then __record-set c.gatherer "node" node else c.gatherer in Ok []
+ A dead gatherer is serial 0 at home with no pack and no lot; the next step raises a new mobile at home for the same economy actor.
+  cgg-fall : CgGatherer, GvWorld -> Integer
+  cgg-fall (c) (v) = let actor = c.gatherer.producer.actor
+    in let dropped = cgg-drop-lots v actor 0
+    in let gone = cgg-unregister v actor 0
+    in let dead = __record-set c "serial" 0
+    in let a = __record-set c "pack" 0
+    in let b = __record-set c "lot" 0
+    in let d = __record-set c "leg" 0
+    in let e = __record-set c "via" 0
+    in let f = __record-set c "visit" 0
+    in cgg-reset c
+  cgg-revive : CgGatherer, TownLive -> Result (List (List Integer)) Text
+  cgg-revive (c) (t) = let world = t.vendors.game.world
+    in if world.capacity - world-count world < 2 + cst-most-rows then Ok []
+    else when world-create world (gs-mobile 0 c.home.x c.home.y c.home.z 400 1002)
+      is Err (e) -> Err e
+      is Ok (serial) -> when cst-style t.items serial c.trade.look
+        is Err (e) -> Err e
+        is Ok (_) -> let actor = c.gatherer.producer.actor
+          in let homed = ep-place t.vendors.currency.world actor cgg-town-place
+          in if homed /= 0 | gv-add-owner t.vendors serial actor < 0 then Err "gatherer owner registration"
+          else when bb-container t.vendors t.items c.gatherer.producer serial 21
+            is Err (e) -> Err e
+            is Ok (pack) -> let born = __record-set c "serial" serial
+              in let bound = __record-set c "pack" pack
+              in let touched = world-touch world in Ok []
+ Legs: 0 home, 1 out to the node, 2 mining, 3 back home, 4 to the blacksmith, 5 selling, 6 to the forge, 7 smelting.
+ Every departure from and return to home passes the lodging entrance.
+  cgg-step : CgGatherer, TownLive, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
+  cgg-step (c) (t) (map) (doors) = if c.serial == 0 then cgg-revive c t
+    else when world-get t.vendors.game.world c.serial
+    is Err (_) -> let fell = cgg-fall c t.vendors in Ok []
+    is Ok (mobile) -> if mobile.health <= 0 then let fell = cgg-fall c t.vendors in Ok []
+      else if c.leg == 0 then
+        if c.lot /= 0 & not (cgg-waiting c t) then when cgg-shop-spot c t map
+          is Err (_) -> let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+          is Ok (_) -> cgg-depart c t 4
+        else if c.lot == 0 & cgg-held c c.trade.raw >= 2 then cgg-to-forge c t map
+        else if not (cgg-ready c) then cgg-retarget c
+        else when (if c.trade.tool == 0 then Ok 0 else bb-require c.gatherer.producer c.trade.tool 1)
+          is Err (_) -> let count = __record-set c "blocked" (c.blocked + 1) in Ok []
+          is Ok (_) -> cgg-depart c t 1
+      else if c.leg == 2 & cgg-capped c then cgg-depart c t 3
+      else if c.leg == 2 then
+        let got = egg-hour c.gatherer
+        in let visits = c.visit + 1
+        in let tried = __record-set c "visit" visits
+        in let touched = world-touch t.vendors.game.world
+        in if got <= 0 & visits < cgg-visit-limit then Ok [] else cgg-depart c t 3
+      else if c.leg == 5 then cgg-sell c t mobile
+      else if c.leg == 7 then cgg-forge-work c t map mobile
+      else cgg-move c t mobile map doors
+
+ A gatherer whose mobile is gone is written dead: serial 0, leg 0, no pack and no lot.
+  cgg-encode : CgGatherer, WorldTable, Integer -> Integer
+  cgg-encode (c) (world) (buf) = let g = c.gatherer
+    in let alive = c.serial /= 0 & (when world-get world c.serial is Err (_) -> False is Ok (m) -> m.kind == 1 & m.health > 0)
+    in let a = poke-qword buf 0 #31474743
+    in let b = poke-qword buf 8 1
+    in let d = poke-qword buf 16 (if alive then c.serial else 0)
+    in let e = poke-qword buf 24 g.producer.actor
+    in let f = poke-qword buf 32 g.node
+    in let h = poke-qword buf 40 g.place
+    in let i = poke-qword buf 48 g.gathered
+    in let j = poke-qword buf 56 c.home.x
+    in let k = poke-qword buf 64 c.home.y
+    in let l = poke-qword buf 72 c.home.z
+    in let m = poke-qword buf 80 c.node.x
+    in let n = poke-qword buf 88 c.node.y
+    in let o = poke-qword buf 96 c.node.z
+    in let p = poke-qword buf 104 (if alive then c.leg else 0)
+    in let q = poke-qword buf 112 (if alive then c.via else 0)
+    in let r = poke-qword buf 120 (if alive then c.visit else 0)
+    in let s = poke-qword buf 128 c.trips
+    in let u = poke-qword buf 136 (if alive then c.pack else 0)
+    in let v = poke-qword buf 144 (if alive then c.lot else 0)
+    in let w = poke-qword buf 152 c.shop.x
+    in let x = poke-qword buf 160 c.shop.y
+    in let y = poke-qword buf 168 c.shop.z
+    in let z = poke-qword buf 176 c.made
+    in let zz = poke-qword buf 184 c.sold
+    in cgg-bytes
+ 136 bytes is CGG1 as UCC1 version 14 wrote it before main 36250 (through trips).
+  cgg-v1-bytes : Integer = 136
+  cgg-upgrade : GvWorld, GsiState, CgGatherer -> Result CgGatherer Text
+  cgg-upgrade (v) (items) (c) = let actor = c.gatherer.producer.actor
+    in let homed = if c.leg == 0 | c.leg == 3 then ep-place v.currency.world actor cgg-town-place else 0
+    in if homed /= 0 | (gv-owner v c.serial 0 < 0 & gv-add-owner v c.serial actor < 0) then Err "gatherer owner registration"
+    else when bb-container v items c.gatherer.producer c.serial 21
+      is Err (e) -> Err e
+      is Ok (pack) -> let bound = __record-set c "pack" pack in Ok c
+  cgg-load : GvWorld, GsiState, Integer, Integer -> Result CgGatherer Text
+  cgg-load (v) (items) (buf) (bytes) = if bytes /= cgg-v1-bytes then cgg-decode v buf bytes
+    else when cgg-decode v buf bytes
+      is Err (e) -> Err e
+      is Ok (c) -> cgg-upgrade v items c
+  cgg-field : Integer, Integer, Integer -> Integer
+  cgg-field (buf) (bytes) (at) = if at >= bytes then 0 else peek-qword buf at
+  cgg-decode : GvWorld, Integer, Integer -> Result CgGatherer Text
+  cgg-decode (v) (buf) (bytes) =
+    let x = v.currency
+    in let world = v.game.world
+    in let serial = peek-qword buf 16
+    in let actor = peek-qword buf 24
+    in let node = peek-qword buf 32
+    in let place = peek-qword buf 40
+    in let gathered = peek-qword buf 48
+    in let leg = peek-qword buf 104
+    in let via = peek-qword buf 112
+    in let visit = peek-qword buf 120
+    in let trips = peek-qword buf 128
+    in let pack = cgg-field buf bytes 136
+    in let lot = cgg-field buf bytes 144
+    in let made = cgg-field buf bytes 176
+    in let sold = cgg-field buf bytes 184
+    in if bytes /= cgg-bytes & bytes /= cgg-v1-bytes then Err "gatherer extent"
+    else if peek-qword buf 0 /= #31474743 | peek-qword buf 8 /= 1 then Err "gatherer format"
+    else if (place < cgg-place | place > cgg-place + 4) & place /= cgg-farm-place | not (ep-valid-actor x.world actor) | not (eh-valid-node x.world node) then Err "gatherer economy binding"
+    else if ((ep-actor x.world actor).place /= place & (ep-actor x.world actor).place /= cgg-town-place) | (list-at x.world.nodes (node - 1)).place /= place
+      | leg < 0 | leg > 7 | via < 0 | via > 1 | visit < 0 | visit > cgg-visit-limit | trips < 0 | gathered < 0
+      | made < 0 | sold < 0 | sold > made | (lot /= 0 & gv-lot v lot 0 < 0) then Err "gatherer state invalid"
+    else if serial == 0 & (leg /= 0 | via /= 0 | pack /= 0 | lot /= 0) then Err "gatherer state invalid"
+    else if serial /= 0 & bytes == cgg-bytes & (gv-owner v serial 0 < 0 | not (gv-owned world pack serial 2)) then Err "gatherer owner or pack binding"
+    else when (if serial == 0 then Ok (gs-mobile 0 0 0 0 400 1002) else world-get world serial)
+      is Err (e) -> Err e
+      is Ok (m) -> if m.kind /= 1 then Err "gatherer mobile binding"
+        else let home = BbSpot { x = peek-qword buf 56, y = peek-qword buf 64, z = peek-qword buf 72 }
+        in let spot = BbSpot { x = peek-qword buf 80, y = peek-qword buf 88, z = peek-qword buf 96 }
+        in let g = EgGatherer { producer = bb-producer x actor, node = node, place = place, gathered = gathered }
+        in let c = cgg-make g serial home spot leg via visit trips
+        in let a = __record-set c.shop "x" (cgg-field buf bytes 152)
+        in let b = __record-set c.shop "y" (cgg-field buf bytes 160)
+        in let d = __record-set c.shop "z" (cgg-field buf bytes 168)
+        in let e = __record-set c "pack" pack
+        in let f = __record-set c "lot" lot
+        in let h = __record-set c "made" made
+        in let i = __record-set c "sold" sold
+        in Ok c

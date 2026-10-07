@@ -1,0 +1,157 @@
+Chapter: MageryEffects
+  cites Uoaix chapter MageryResources
+
+ GPL-2.0 adaptation of ServUO classic SpellHelper, MagerySpell, Poison and
+ BaseMeleeWeapon. Damage delegates corpse creation to the shared combat owner.
+
+  mge-sync : Magery, MgActor -> Integer
+  mge-sync (magic) (actor) = let slot = world-slot magic.items.world actor.serial
+    in if slot < 0 then 0 else let combat = list-at magic.combat.actors slot
+    in if combat.serial /= actor.serial then 0
+    else let a = __record-set combat "strength" (mgs-stat actor 0)
+    in let b = __record-set combat "dexterity" (min 1000 (mgs-stat actor 1))
+    in let c = __record-set combat "maximum" (min 65535 (max 1 (actor.maximum + mgs-stat actor 0 - actor.strength)))
+    in let d = __record-set actor "mana" (min actor.mana (mgs-stat actor 2)) in 0
+  mge-clear : Magery, MgActor -> Integer
+  mge-clear (magic) (actor) = let a = mgs-reset-cast actor
+    in let disguise = mgi-end magic actor False
+    in let b = mgs-zero actor.mods 0 12
+    in let c = __record-set actor "night" 0
+    in let d = __record-set actor "light" 0
+    in let e = __record-set actor "absorb" 0
+    in let f = __record-set actor "protection" 0
+    in let g = __record-set actor "protected-until" 0
+    in let h = __record-set actor "poison" -1
+    in let i = __record-set actor "poison-left" 0
+    in let j = mge-sync magic actor
+    in let untracked = mgs-untrack magic actor
+    in let touched = mgs-touch magic in 0
+  mge-fizzle : Magery, GameShard, MgActor -> List (List Integer)
+  mge-fizzle (magic) (shard) (actor) = let cursor = actor.cursor
+    in let stage = actor.stage
+    in let duration = if stage == 1 then mgd-delay actor.spell else 1
+    in let elapsed = if stage == 1 then max 0 (duration - max 0 (actor.due - magic.tick)) else 1
+    in let clear = mgs-reset-cast actor
+    in let delay = __record-set actor "recovery" (magic.tick + mgd-disturb elapsed duration)
+    in let cancel = if stage /= 2 then [] else let packet = sip-target cursor
+      in let flags = list-set-at packet 6 3 in [packet]
+    in when world-get shard.world actor.serial
+      is Err (_) -> cancel
+      is Ok (mobile) -> cancel & mgp-fizzle mobile
+  mge-interrupt : Magery, GameShard, Integer, Integer -> List (List Integer)
+  mge-interrupt (magic) (shard) (serial) (damage) = let slot = world-slot shard.world serial
+    in if slot < 0 | damage <= 0 then [] else let actor = list-at magic.actors slot
+    in if actor.serial /= serial | actor.stage /= 1 then []
+    else if actor.protected-until > magic.tick & mgs-random magic 100 < actor.protection then []
+    else mge-fizzle magic shard actor
+  mge-harm : Magery, GameShard, GameInput, Integer, Integer, Integer, Integer -> Result (List (List Integer)) Text
+  mge-harm (magic) (shard) (input) (source) (target) (damage) (cause) = when cb-ensure magic.combat shard target
+    is Err (e) -> Err e
+    is Ok (defender) -> when world-get shard.world target
+      is Err (e) -> Err e
+      is Ok (mobile) -> if defender.immune | mobile.health == 0 | damage <= 0 then Ok []
+        else let revealed = magic.combat.struck-hook target
+        in let interrupted = mge-interrupt magic shard target damage
+        in let remaining = max 0 (mobile.health - damage)
+        in if remaining == 0 & peek-qword shard.world.buffer 8 < 0 then Err "spell corpse capacity"
+        else let cleared = if remaining /= 0 then 0 else
+          let actor = list-at magic.actors (world-slot shard.world target)
+          in if actor.serial == target then mge-clear magic actor else 0
+        in let packet = cbp-health target remaining defender.maximum (target == input.session.serial)
+        in let logged = let slot = world-slot shard.world source
+          in let named = if slot < 0 then 0 else let a = list-at magic.combat.actors slot in if a.serial == source then a.name else 0
+          in when world-get shard.world source
+            is Err (_) -> cb-event magic.combat (WorldObject { serial = source, kind = 0, x = 0, y = 0, z = 0,
+              graphic = 0, hue = 0, container = 0, amount = 0, health = 0 }) named cause mobile damage (not defender.npc)
+            is Ok (from) -> cb-event magic.combat from named cause mobile damage (not defender.npc)
+        in let looted = if remaining == 0 then magic.combat.death-hook source target else 0
+        in if remaining == 0 then when cb-die magic.combat shard input source defender mobile
+          is Err (e) -> Err e
+          is Ok (death) -> Ok (interrupted & [packet] & death)
+        else when world-update shard.world (cb-object mobile remaining mobile.graphic mobile.hue mobile.container)
+          is Err (e) -> Err e
+          is Ok (_) -> let retaliation = if not defender.npc | defender.target /= 0 | source == target then False
+            else when cb-ensure magic.combat shard source
+              is Err (_) -> False
+              is Ok (attacker) -> cb-select magic.combat shard defender attacker
+            in Ok (interrupted & [packet,cbp-animation target 18])
+  mge-impact : Magery, GameShard, GameInput, Integer, Integer, Integer -> Result CombatImpact Text
+  mge-impact (magic) (shard) (input) (source) (target) (damage) = if damage <= 0 then Ok (CombatImpact { damage = 0, packets = [] })
+    else let tick = __record-set magic "tick" (max magic.tick magic.combat.tick)
+    in when mgs-ensure magic shard target
+      is Err (e) -> Err e
+      is Ok (actor) -> if actor.absorb > damage then
+        let reduced = __record-set actor "absorb" (actor.absorb - damage)
+        in let touched = mgs-touch magic
+        in when mge-harm magic shard input target source (max 1 (damage / 5)) cb-cause-reflect
+          is Err (e) -> Err e
+          is Ok (packets) -> Ok (CombatImpact { damage = 0, packets = packets })
+      else let cleared = if actor.absorb == 0 then 0 else let zero = __record-set actor "absorb" 0 in mgs-touch magic
+      in let interrupted = mge-interrupt magic shard target damage
+      in let death = when world-get shard.world target
+        is Err (_) -> 0
+        is Ok (mobile) -> if damage >= mobile.health then mge-clear magic actor else 0
+      in Ok (CombatImpact { damage = damage, packets = interrupted })
+  mge-bind : Magery -> Integer
+  mge-bind (magic) = let bound = __record-set magic.combat "damage-hook" (mge-impact magic) in 0
+  mge-resisted : Magery, GameShard, Integer, Integer, Integer -> Boolean
+  mge-resisted (magic) (shard) (caster) (target) (spell) = let resist = mgs-skill shard target 26
+    in let skill = mgs-skill shard caster 25
+    in let chance = max (resist / 5) (resist - ((skill - 200) / 5 + (mgd-circle spell + 1) * 50)) / 2
+    in mgs-random magic 1000 < max 0 chance
+  mge-spell-damage : Magery, GameShard, WorldObject, WorldObject, Integer -> Integer
+  mge-spell-damage (magic) (shard) (source) (target) (spell) =
+    let base = if spell == 5 then 4 + mgs-random magic 4 else if spell == 12 then 1 + mgs-random magic 15 else 10 + mgs-random magic 7
+    in let resist = if mge-resisted magic shard source.serial target.serial spell then 750 else 1000
+    in let evaluation = mgs-skill shard source.serial 16
+    in let resistance = mgs-skill shard target.serial 26
+    in let scalar = 1000 + (evaluation - resistance) / (if evaluation > resistance then 5 else 2) + (mgs-skill shard source.serial 25 - 1000) / 4
+    in let creature = if cb-slot shard target.serial 0 < 0 & target.graphic /= 400 & target.graphic /= 401 then 2 else 1
+    in let range = max (walk-abs (source.x - target.x)) (walk-abs (source.y - target.y))
+    in let distance = if spell /= 12 | range <= 1 then 1000 else if range == 2 then 500 else 250
+    in max 0 (base * resist * max 0 scalar * creature * distance / 1000000000)
+  mge-mod : Magery, MgActor, Integer, Integer, Integer -> Integer
+  mge-mod (magic) (actor) (stat) (value) (until) = let at = stat * 32 + (if value >= 0 then 0 else 16)
+    in let old = peek-qword actor.mods at
+    in let merged = if value >= 0 then max old value else min old value
+    in let a = poke-qword actor.mods at merged
+    in let b = poke-qword actor.mods (at + 8) until
+    in let synced = mge-sync magic actor
+    in let tracked = mgs-track magic actor
+    in let touched = mgs-touch magic in 0
+  mge-health-limit : Magery, GameShard, GameInput, MgActor -> Result (List (List Integer)) Text
+  mge-health-limit (magic) (shard) (input) (actor) = when world-get shard.world actor.serial
+    is Err (e) -> Err e
+    is Ok (mobile) -> let combat = list-at magic.combat.actors (world-slot shard.world actor.serial)
+      in let hp = min mobile.health combat.maximum
+      in when world-update shard.world (cb-object mobile hp mobile.graphic mobile.hue mobile.container)
+        is Err (e) -> Err e
+        is Ok (_) -> Ok [cbp-health actor.serial hp combat.maximum (actor.serial == input.session.serial)]
+  mge-stats : Magery, GameShard, GameInput, MgActor -> Result (List (List Integer)) Text
+  mge-stats (magic) (shard) (input) (actor) = when mge-health-limit magic shard input actor
+    is Err (e) -> Err e
+    is Ok (packets) -> if actor.serial /= input.session.serial then Ok packets
+      else when world-get shard.world actor.serial
+        is Err (e) -> Err e
+        is Ok (mobile) -> let slot = cb-slot shard actor.serial 0
+          in if slot < 0 then Ok packets else Ok (packets & [mgp-status actor (gp-status mobile shard.characters slot),mgp-mana actor])
+  mge-heal : Magery, GameShard, GameInput, Integer, WorldObject -> Result (List (List Integer)) Text
+  mge-heal (magic) (shard) (input) (source) (target) = when cb-ensure magic.combat shard target.serial
+    is Err (e) -> Err e
+    is Ok (actor) -> let healed = min actor.maximum (target.health + mgs-skill shard source 25 / 100 + 1 + mgs-random magic 5)
+      in when world-update shard.world (cb-object target healed target.graphic target.hue target.container)
+        is Err (e) -> Err e
+        is Ok (_) -> Ok [cbp-health target.serial healed actor.maximum (target.serial == input.session.serial),
+          mgp-effect target target #376A False,mgp-sound target #01F2]
+  mge-expire-mods : Magery, MgActor, Integer -> Boolean
+  mge-expire-mods (magic) (actor) (i) = if i == 6 then False else let at = i * 16
+    in let until = peek-qword actor.mods (at + 8)
+    in let expired = until > 0 & until <= magic.tick
+    in let cleared = if not expired then 0 else let a = poke-qword actor.mods at 0
+      in let b = poke-qword actor.mods (at + 8) 0 in mgs-touch magic
+    in let tail = mge-expire-mods magic actor (i + 1) in expired | tail
+  mge-poison-damage : Magery, MgActor, Integer -> Integer
+  mge-poison-damage (magic) (actor) (health) = if actor.poison-last > 0 & mgs-random magic 2 == 0 then actor.poison-last
+    else let divisor = if actor.poison == 0 then 40 else if actor.poison == 1 then 32 else if actor.poison == 2 then 16 else 8
+    in let damage = max (4 + actor.poison) (min 26 (1 + health / divisor))
+    in let saved = __record-set actor "poison-last" damage in damage

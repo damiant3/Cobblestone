@@ -1,0 +1,369 @@
+Chapter: CompositeProductionReplay
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter CompositePlanting
+  cites Uoaix chapter GameHarvestCodec
+  cpp-check : Text, Boolean -> [Console] Nothing
+  cpp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cpp-packets : Result (Maybe GameReply) Text -> List (List Integer)
+  cpp-packets (result) = when result
+    is Err (_) -> []
+    is Ok (reply) -> when reply is None -> [] is Just (r) -> r.packets
+  cpp-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cpp-opcode (result) (opcode) (i) = let packets = cpp-packets result
+    in if i == list-length packets then False
+    else if list-at (list-at packets i) 0 == opcode then True else cpp-opcode result opcode (i + 1)
+  cpp-art : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cpp-art (result) (art) (i) = let packets = cpp-packets result
+    in if i == list-length packets then False
+    else let p = list-at packets i
+    in if list-at p 0 == #25 & list-length p > 6 & list-at p 5 * 256 + list-at p 6 == art then True else cpp-art result art (i + 1)
+  cpp-drawn : List (List Integer), Integer, Integer -> Integer
+  cpp-drawn (packets) (serial) (i) = if i >= list-length packets then -1
+    else let p = list-at packets i
+    in if list-at p 0 == #1A & gp-u32 p 3 == serial then gp-u16 p 7 else cpp-drawn packets serial (i + 1)
+  cpp-flag : List (List Integer), Integer, Integer -> Integer
+  cpp-flag (packets) (serial) (i) = if i >= list-length packets then -1
+    else let p = list-at packets i
+    in if list-at p 0 == #1A & gp-u32 p 3 == serial then (if bit-and (gp-u16 p 11) #4000 == 0 then 0 else list-at p (list-length p - 1))
+    else cpp-flag packets serial (i + 1)
+  cpp-aim : Integer, Integer -> List Integer
+  cpp-aim (context) (serial) = gp-put16 ((gp-put16 (gp-put16 (gp-put32 (list-push (gp-put32 [#6C,1] context) 0) serial) 0) 0) & [0, 0]) 0
+  cpp-lot : GvWorld, Integer, Integer -> Integer
+  cpp-lot (v) (item) (i) = if i >= v.lot-count then 0 else if (list-at v.lots i).item == item then (list-at v.lots i).serial else cpp-lot v item (i + 1)
+  cpp-fill : WalkMap, Integer -> Integer
+  cpp-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in cpp-fill map (i + 1)
+  cpp-poke32 : Integer, Integer, Integer -> Integer
+  cpp-poke32 (buf) (at) (value) = let a = poke-byte buf at (bit-and value 255)
+    in let b = poke-byte buf (at + 1) (bit-and (bit-shru value 8) 255)
+    in let c = poke-byte buf (at + 2) (bit-and (bit-shru value 16) 255)
+    in poke-byte buf (at + 3) (bit-and (bit-shru value 24) 255)
+  cpp-tile : Integer, Integer, Integer, Integer -> Integer
+  cpp-tile (tiles) (graphic) (flags) (height) = let at = cpr-tile-at graphic
+    in let a = cpp-poke32 tiles at flags
+    in poke-byte tiles (at + 16) height
+  cpp-login : Integer -> List Integer
+  cpp-login (key) = gp-zeros ((gp-ascii (gp-put32 (gp-start 145) key) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21
+  cpp-create : Integer -> List Integer
+  cpp-create (unused) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Producer" 0 30) "" 0 30
+    in let stats = name & [0,45,10,10,45,50,44,50,18,0]
+    in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cpp-tools : EpWorld -> Boolean
+  cpp-tools (w) = let stone1 = eh-source w 1 100
+    in let stone2 = eh-source w 1 100
+    in let branch = eh-source w 2 100
+    in let a = eh-harvest w 1 stone1
+    in let b = eh-harvest w 1 stone2
+    in let c = eh-harvest w 1 branch
+    in let pick = ep-craft w 1 1 1
+    in let axe = ep-craft w 1 2 1
+    in pick == 1 & axe == 1
+  cpp-tool : GvWorld, GsiState, Integer, Integer, Integer -> Integer
+  cpp-tool (v) (items) (pack) (item) (graphic) = when world-create v.game.world (gs-item pack graphic 0)
+    is Err (_) -> 0
+    is Ok (serial) -> let p = ep-actor v.currency.world 1
+      in let lot = gv-add-lot v serial 1 item (ep-at p.quality item / ep-at p.stock item) (ep-at p.wear item / ep-at p.stock item) 0
+      in let known = gsi-register items serial 0 0 True False
+      in if lot < 0 | known /= 0 then 0 else serial
+  cpp-backed : GvWorld, Integer -> Boolean
+  cpp-backed (v) (item) = let p = ep-actor v.currency.world 1
+    in gv-represented v 1 item 0 0 <= ep-at p.stock item & gv-represented v 1 item 1 0 <= ep-at p.quality item
+      & gv-represented v 1 item 2 0 <= ep-at p.wear item & gv-represented v 1 item 3 0 <= ep-at p.cost item
+  cpp-stuff : GvWorld, GsiState, Integer, Integer, Integer, Integer -> Integer
+  cpp-stuff (v) (items) (pack) (item) (graphic) (n) = if ep-find v.currency.world 1 item n < 0 then 0
+    else when world-create v.game.world (__record-set (gs-item pack graphic 0) "amount" n)
+      is Err (_) -> 0
+      is Ok (serial) -> let lot = gv-add-lot v serial 1 item 1000 32 0
+        in let known = gsi-register items serial 0 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  cpp-choice : Integer, Integer, Integer -> List Integer
+  cpp-choice (tool) (context) (choice) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] tool) context) choice) 0) 0
+  cpp-steaks : GvWorld, GsiState, Integer, Integer -> Integer
+  cpp-steaks (v) (items) (pack) (n) = if ep-find v.currency.world 1 9 n < 0 then 0
+    else when world-create v.game.world (__record-set (gs-item pack #097A 0) "amount" n)
+      is Err (_) -> 0
+      is Ok (serial) -> let lot = gv-add-lot v serial 1 9 700 32 0
+        in let known = gsi-register items serial 0 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  cpp-target : Integer, Integer, Integer, Integer, Integer -> List Integer
+  cpp-target (context) (x) (y) (z) (graphic) = let a = gp-put32 (list-push (gp-put32 [#6C,1] context) 0) 0
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0, bit-and z 255]) graphic
+  cpp-use : CprState, GameShard, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  cpp-use (s) (shard) (input) (map) (tool) (x) (y) (graphic) (tick) =
+    let begin = cpr-handler-at s shard input map 2593 (gp-put32 [6] tool) tick
+    in cpr-handler-at s shard input map 2593 (cpp-target (list-at s.harvest.requests 0).target x y 0 graphic) (tick + 1)
+  cpp-recipe : EpWorld, Integer, Integer -> Integer
+  cpp-recipe (w) (kind) (i) = if i == list-length w.catalog.recipes then 0
+    else if (list-at w.catalog.recipes i).station == kind then i + 1 else cpp-recipe w kind (i + 1)
+  cpp-veins : Integer, Integer, Integer, Integer, Integer -> Integer
+  cpp-veins (x) (y) (copper) (silver) (other) = if y == 1500 then (if copper >= 740 & copper <= 940 & silver >= 1040 & silver <= 1200 & copper + silver + other == 10000 then 1 else 0)
+    else if x == 1500 then cpp-veins 1400 (y + 1) copper silver other
+    else let v = cpr-vein 5 x y
+    in cpp-veins (x + 1) y (if v == 25 then copper + 1 else copper) (if v == 26 then silver + 1 else silver) (if v == 5 then other + 1 else other)
+  cpp-lookups : WalkMap, Integer -> [Console] Nothing
+  cpp-lookups (map) (tiles) = act
+    m <- gs-mobile 1 1420 1698 0 400 0
+    cpp-check "a pickaxe vein draws copper near 8.4% and silver near 11.2% of 10000 tiles, iron otherwise, and leaves other tools alone" (cpp-veins 1400 1400 0 0 0 == 1 & cpr-vein 15 1400 1400 == 15)
+    cpp-check "mountain land tile 220 is mineable" (cpr-lookup tiles map m 1419 1698 0 0 == 5)
+    cpp-check "walkable mountainside tile 243 with no flags is mineable" (cpr-lookup tiles map m 1417 1698 0 0 == 5)
+    cpp-check "impassable land tile 100 outside the mountain list answers nothing" (cpr-lookup tiles map m 1416 1698 0 0 == 0)
+    cpp-check "wet land is fishable" (cpr-lookup tiles map m 1420 1701 0 0 == 9)
+    cpp-check "ordinary land answers nothing" (cpr-lookup tiles map m 1418 1698 0 0 == 0)
+    cpp-check "a mountain land target reported at another height is still mineable" (cpr-lookup tiles map m 1419 1698 19 0 == 5)
+    cpp-check "a tree static backed by its collider is choppable" (cpr-lookup tiles map m 1421 1699 0 #0CCA == 15)
+    cpp-check "a tree graphic claimed on a wall collider answers nothing" (cpr-lookup tiles map m 1422 1699 0 #0CCA == 0)
+    cpp-check "a cave rock static backed by its collider is mineable" (cpr-lookup tiles map m 1423 1699 0 #053B == 5)
+    cpp-check "a wet static backed by its collider is fishable" (cpr-lookup tiles map m 1424 1699 0 #1797 == 9)
+    cpp-check "a tree graphic with no collider answers nothing" (cpr-lookup tiles map m 1425 1699 0 #0CCA == 0)
+    cpp-check "without the tiledata table no static answers" (cpr-lookup 0 map m 1421 1699 0 #0CCA == 0)
+    cpp-check "a land target on dry land under static water is fishable, as at Britain's moat (F42)" (cpr-lookup tiles map m 1426 1699 7 0 == 9 & cpr-lookup tiles map m 1427 1699 7 0 == 0)
+    cpp-check "a target outside the map answers nothing" (cpr-lookup tiles map m 1300 1698 0 0 == 0)
+  end
+  cpp-workshops : GvWorld, WalkMap, Integer -> [Console] Nothing
+  cpp-workshops (v) (map) (serial) = act
+    w <- v.currency.world
+    smith <- cpp-recipe w 9 0
+    tailor <- cpp-recipe w 11 0
+    carpenter <- cpp-recipe w 8 0
+    field <- cpp-recipe w 1 0
+    inside <- gs-mobile serial 1418 1546 0 400 0
+    outside <- gs-mobile serial 1430 1546 0 400 0
+    clothier <- gs-mobile serial 1468 1686 0 400 0
+    stations <- w.station-count
+    forge <- cpr-craft-lookup v 0 map inside smith 1
+    cpp-check "smithing inside the Blacksmith premises binds a station" (smith > 0 & forge > 0 & (list-at w.stations (forge - 1)).kind == 9)
+    again <- cpr-craft-lookup v 0 map inside smith 1
+    cpp-check "the same player reuses that station" (again == forge & w.station-count == stations + 1)
+    cpp-check "smithing outside the premises refuses" (cpr-craft-lookup v 0 map outside smith 1 == 0)
+    cpp-check "tailoring inside the Tailor premises binds a station" (tailor > 0 & cpr-craft-lookup v 0 map clothier tailor 2 > 0)
+    sawyer <- gs-mobile serial 1430 1595 0 400 0
+    cpp-check "carpentry binds a station inside The Saw Horse and not in the smithy" (carpenter > 0 & cpr-craft-lookup v 0 map sawyer carpenter 3 > 0 & cpr-craft-lookup v 0 map inside carpenter 3 == 0)
+    cpp-check "field recipes need no premises" (field > 0 & cpr-craft-lookup v 0 map outside field 4 > 0)
+  end
+  cpp-note : Result (Maybe GameReply) Text, Text -> Boolean
+  cpp-note (r) (note) = when r is Ok (Just (reply)) -> reply.note == note is otherwise -> False
+  cpp-live : CprState, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
+  cpp-live (s) (shard) (input) (map) (pack) = act
+    v <- s.harvest.vendor
+    p <- ep-actor v.currency.world 1
+    pick <- cpp-tool v s.harvest.items pack 25 #0E86
+    axe <- cpp-tool v s.harvest.items pack 26 #0F49
+    cpp-check "economy-produced pick and axe are physical lots" (pick > 0 & axe > 0)
+    ore <- ep-at p.stock 5
+    roll <- __record-set p "attempts" 0
+    mined <- cpp-use s shard input map pick 1419 1698 0 100
+    cpp-check "mining dry impassable land produces ore in the backpack" (cpp-opcode mined #25 0 & ep-at p.stock 5 > ore)
+    logs <- ep-at p.stock 15
+    tries <- p.attempts
+    forged <- cpp-use s shard input map axe 1422 1699 #0CCA 1000
+    cpp-check "a tree graphic on a wall grants nothing" (not (cpp-opcode forged #25 0) & p.attempts == tries & ep-at p.stock 15 == logs)
+    roll2 <- __record-set p "attempts" 0
+    chopped <- cpp-use s shard input map axe 1421 1699 #0CCA 2000
+    cpp-check "chopping a real tree produces logs" (cpp-opcode chopped #25 0 & ep-at p.stock 15 > logs)
+    cpp-check "the felled tree also gives one timber sapling (item 56, art 0CE9) in the backpack" (ep-at p.stock 56 == 1 & cpp-art chopped #0CE9 0 & cpp-art chopped #1BDD 0)
+    pl <- cpl-new 0
+    sapling <- cpp-lot s.harvest.vendor cpl-sapling 0
+    asked <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] sapling) 4000
+    cpp-check "double-clicking the sapling asks for a ground target" (sapling > 0 & cpp-opcode asked #6C 0)
+    sites <- s.harvest.count
+    slot <- gsi-slot shard input.session.serial 0
+    planted <- cpl-handler pl s.harvest None shard input map (cpp-target (list-at pl.requests slot).target 1421 1697 0 0) 4001
+    cpp-check "planting on free ground within reach takes the sapling and makes a planted timber site" (ep-at p.stock 56 == 0 & s.harvest.count == sites + 1 & cpl-planted s.harvest sites & cpp-opcode planted #1D 0)
+    view <- cpl-view pl s.harvest 7 1420 1698
+    cpp-check "the planted sapling draws as a 0CE9 world item at 1421,1697" (list-length view == 1 & gp-u16 (list-at view 0) 7 == #0CE9 & gp-u16 (list-at view 0) 9 == 1421 & gp-u16 (list-at view 0) 11 == 1697)
+    tended <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + sites * 2 + 1)) 4002
+    cpp-check "double-clicking one's planted sapling tends it" ((cpl-node s.harvest sites).tended == 1)
+    clicked <- cpl-handler pl s.harvest None shard input map (gp-put32 [9] (cpl-serial-base + sites * 2 + 1)) 4002
+    lifted <- cpl-handler pl s.harvest None shard input map (gp-put16 (gp-put32 [7] (cpl-serial-base + sites * 2 + 1)) 1) 4002
+    cpp-check "a single click or a lift on the planted sapling is answered by planting, not the item lookup (F34)" (cpp-note clicked "planting:name" & cpp-note lifted "planting:immovable")
+    saved <- ghc-encode s.harvest 4003 (alloc-bytes (ghc-size 256)) (ghc-size 256)
+    cpp-check "the harvest codec saves a planted, owned site" (is-ok saved)
+    grown <- __record-set (cpl-node s.harvest sites) "stage" 2
+    solid <- cpl-collide s.harvest s.harvest.items.tiles map 0
+    cpp-check "a mature planted tree gets its trunk's collider" (solid == 1 & peek-qword map.solids (walk-cell map 1421 1697 * map.stride) == 1)
+    tree-view <- cpl-view pl s.harvest 7 1420 1698
+    cpp-check "a mature planted tree redraws as trunk 0CDA and leaves 0CDB" (list-length tree-view == 2 & gp-u16 (list-at tree-view 0) 7 == #0CDA & gp-u16 (list-at tree-view 1) 7 == #0CDB)
+    roll3 <- __record-set p "attempts" 0
+    planted-logs <- ep-at p.stock 15
+    begin <- cpr-handler-at s shard input map 2593 (gp-put32 [6] axe) 5000
+    aimed <- cpl-target-packet s.harvest (cpp-aim (list-at s.harvest.requests 0).target (cpl-serial-base + sites * 2 + 1))
+    felled <- cpr-handler-at s shard input map 2593 aimed 5001
+    cpp-check "a hatchet aimed at the planted tree's item chops it: logs, and the planted node is felled" (ep-at p.stock 15 > planted-logs & (cpl-node s.harvest sites).stage == 0)
+    cleared <- cpl-collide s.harvest s.harvest.items.tiles map 0
+    cpp-check "the felled planted tree's collider leaves the map" (cleared == 1 & peek-qword map.solids (walk-cell map 1421 1697 * map.stride) == 0)
+    seeded <- eh-add-yield s.harvest.vendor.currency.world p 54 1 1000
+    cotton <- cpp-tool v s.harvest.items pack 54 #0F7A
+    farmer <- gs-skill-set shard input.session.serial 6 1000
+    sow <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] cotton) 6000
+    crops <- s.harvest.count
+    sown <- cpl-handler pl s.harvest None shard input map (cpp-target (list-at pl.requests slot).target 1422 1697 0 0) 6001
+    cpp-check "a cotton seed sows cotton (resource 10) on its own plot" (cotton > 0 & s.harvest.count == crops + 1 & (list-at s.harvest.sites crops).resource == 10 & cpl-planted s.harvest crops & ep-at p.stock 54 == 0)
+    sprouts <- cpl-view pl s.harvest 7 1420 1698
+    ripe <- __record-set (cpl-node s.harvest crops) "stage" 2
+    field <- cpl-view pl s.harvest 7 1420 1698
+    cpp-check "sown cotton draws sprouts 0C68, then cotton 0C4F when mature, with no collider" (cpp-drawn sprouts (cpl-serial-base + crops * 2 + 1) 0 == #0C68 & cpp-drawn field (cpl-serial-base + crops * 2 + 1) 0 == #0C4F & cpl-collide s.harvest s.harvest.items.tiles map 0 == 0)
+    cpp-check "weight-255 crop art (sprouts, cotton) draws with the 0x1A movable flag so the client picks it, and herb beds draw their own weight-1 plants (F56)" (cpp-flag sprouts (cpl-serial-base + crops * 2 + 1) 0 == #20 & cpp-flag field (cpl-serial-base + crops * 2 + 1) 0 == #20 & cpl-crop-art 17 == #18E9 & cpl-crop-art 18 == #18E1 & cpl-crop-art 20 == #18E5 & not (cpl-heavy-art (cpl-crop-art 11)) & not (cpl-heavy-art (cpl-crop-art 17)))
+    crop-saved <- ghc-encode s.harvest 6002 (alloc-bytes (ghc-size 256)) (ghc-size 256)
+    cpp-check "the harvest codec saves a planted crop site" (is-ok crop-saved)
+    bales <- ep-at p.stock 10
+    roll4 <- __record-set p "attempts" 0
+    reaped <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + crops * 2 + 1)) 7000
+    cut <- eh-add-yield s.harvest.vendor.currency.world p 57 1 1000
+    cutting <- cpp-tool v s.harvest.items pack 57 #0C68
+    ask-fruit <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] cutting) 8000
+    orchard <- s.harvest.count
+    set-fruit <- cpl-handler pl s.harvest None shard input map (cpp-target (list-at pl.requests slot).target 1420 1696 0 0) 8001
+    fruited <- __record-set (cpl-node s.harvest orchard) "stage" 2
+    fruit-due <- __record-set (cpl-node s.harvest orchard) "ready" 0
+    fruit-view <- cpl-view pl s.harvest 7 1420 1698
+    roll5 <- __record-set p "attempts" 0
+    apples <- ep-at p.stock 16
+    picked <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + orchard * 2 + 1)) 8002
+    cpp-check "a fruit cutting grows an apple tree (0D94 and 0D95) that is picked by hand for apples (09D0)" (s.harvest.count == orchard + 1 & cpp-drawn fruit-view (cpl-serial-base + orchard * 2 + 1) 0 == #0D94 & cpp-drawn fruit-view (cpl-serial-base + orchard * 2 + 2) 0 == #0D95 & ep-at p.stock 16 > apples & cpp-art picked #09D0 0)
+    after-pick <- cpl-view pl s.harvest 7 1420 1698
+    picked-apples <- ep-at p.stock 16
+    roll5b <- __record-set p "attempts" 0
+    bare-tree <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + orchard * 2 + 1)) 8003
+    cpp-check "a picked apple tree stays a grown tree and bears no fruit again until it regrows (F58)" ((cpl-node s.harvest orchard).stage == 2 & cpp-drawn after-pick (cpl-serial-base + orchard * 2 + 1) 0 /= #0CE9 & ep-at p.stock 16 == picked-apples)
+    cpp-check "a picked apple tree leaves the economy valid, so the next save is accepted (F65)" (euv-valid s.harvest.vendor.currency)
+    cpp-check "double-clicking mature cotton reaps it: cotton bales (0DF9) and a cotton seed (0C68) in the backpack, and it starts again" (ep-at p.stock 10 > bales & ep-at p.stock 54 == 1 & cpp-art reaped #0DF9 0 & cpp-art reaped #0C68 0 & (cpl-node s.harvest crops).stage == 0)
+    w <- v.currency.world
+    steaks <-cpp-steaks v s.harvest.items pack 2
+    raw <- ep-at p.stock 9
+    meals <- ep-at p.stock 50
+    roll6 <- __record-set p "attempts" 0
+    cooked <- cpp-use s shard input map steaks 1418 1699 #0461 9000
+    cpp-check "raw fish steaks on an oven cook into a fish steak (097B), as UOX3 6063, and the census holds" (steaks > 0 & cpp-art cooked #097B 0 & ep-at p.stock 9 == raw - 1
+      & ep-at p.stock 50 == meals + 1 & ep-census w 1 & cpp-backed v 9 & cpp-backed v 50)
+    hurried <- cpp-use s shard input map steaks 1418 1699 #0461 9002
+    cpp-check "a second steak inside the five seconds answers UOX3 6094" (cpp-note hurried "You are already cooking something.")
+    roll7 <- __record-set p "attempts" 1
+    burnt <- cpp-use s shard input map steaks 1418 1699 #0461 (9002 + gh-ticks 5000)
+    cpp-check "a failed Cooking roll burns the last steak, as UOX3 6093, and the census holds" (cpp-note burnt "cooking burnt"
+      & ep-at p.stock 9 == raw - 2 & ep-at p.stock 50 == meals + 1 & gv-lot v steaks 0 < 0 & ep-census w 1 & cpp-backed v 9 & cpp-backed v 50)
+    more <- cpp-steaks v s.harvest.items pack 3
+    on-tree <- cpp-use s shard input map more 1421 1699 #0CCA 20000
+    bare <- cpp-use s shard input map more 1419 1700 #0461 21000
+    far <- cpp-use s shard input map more 1430 1699 #0461 22000
+    cpp-check "a tree, an oven art with no oven there, and an oven out of reach answer UOX3 6095, 6095 and 393" (cpp-note on-tree "You cannot cook your raw fish steak on that."
+      & cpp-note bare "You cannot cook your raw fish steak on that." & cpp-note far "That is too far away." & ep-at p.stock 9 == raw + 1)
+    crown <-if w.actor-count >= 2 then w.actor-count else 0
+    crowned <- __record-set w "mint-owner" crown
+    farmed <- cpl-farm-install s.harvest
+    again <- cpl-farm-install s.harvest
+    farm-view <- cpl-view pl s.harvest 9 1229 1588
+    cpp-check "the Royal Test Farm plants a mature crown bed of each of the 10 seeded resources and 22 fixed furnishings, once" (crown > 1 & farmed == 32 & again == 0 & list-length farm-view == 12 & cpl-farm-at s.harvest.items.world (world-tile-first s.harvest.items.world 1227 1569) #0935)
+    cotton-bed <- gh-site-find s.harvest 10 1222 1587 0 0
+    farm-bales <- ep-at p.stock 10
+    roll8 <- __record-set p "attempts" 0
+    farm-reaped <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + cotton-bed * 2 + 1)) 30000
+    ready <- __record-set w "hour" (cpl-node s.harvest cotton-bed).ready
+    regrown <- eh-grow w 0
+    cpp-check "any player reaps a crown bed, and the crown's bed regrows untended" (cotton-bed >= 0 & ep-at p.stock 10 > farm-bales & (cpl-node s.harvest cotton-bed).owner == crown & (cpl-node s.harvest cotton-bed).stage == 2)
+    pan <- cpp-stuff v s.harvest.items pack 42 #097F 1
+    asked-pan <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pan) 30000
+    menu <- cpr-handler-at s shard input map 2593 (cpp-target (list-at s.harvest.requests slot).target 1418 1699 0 #0461) 30001
+    cpp-check "a skillet aimed at an oven opens the Cooking menu" (pan > 0 & cpp-opcode asked-pan #6C 0 & cpp-opcode menu #7C 0)
+    catch <- cpp-stuff v s.harvest.items pack 9 #09CC 1
+    short <- cpr-handler-at s shard input map 2593 (cpp-choice pan (list-at s.craft.requests slot).menu 3) 30002
+    cpp-check "cooking fish with no water names the shortfall (F41)" (catch > 0 & cpp-note short "You need 1 water in your backpack and have 0.")
+    water <- cpp-stuff v s.harvest.items pack 4 #0FF8 1
+    sticks <- cpp-stuff v s.harvest.items pack 2 #0DE1 1
+    dinners <- ep-at p.stock 50
+    roll-pan <- __record-set p "attempts" 0
+    reopened <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pan) (30003 + gh-ticks 3000)
+    remenu <- cpr-handler-at s shard input map 2593 (cpp-target (list-at s.harvest.requests slot).target 1418 1699 0 #0461) (30004 + gh-ticks 3000)
+    supper <- cpr-handler-at s shard input map 2593 (cpp-choice pan (list-at s.craft.requests slot).menu 3) (30005 + gh-ticks 3000)
+    cpp-check "the Cooking menu cooks fish, water and branches into two cooked fish steaks (097B)" (water > 0 & sticks > 0 & cpp-opcode remenu #7C 0
+      & cpp-art supper #097B 0 & ep-at p.stock 50 == dinners + 2 & ep-census w 1)
+    cook <- (when world-get shard.world input.session.serial is Err (_) -> 0 is Ok (m) -> if cpr-craft-lookup v s.heat map (__record-set m "x" (m.x + 5)) 29 5 == 0 then 1 else 0)
+    cpp-check "a cook five tiles from the chosen heat gets no Cooking station" (cook == 1)
+    flax-bed <- gh-site-find s.harvest 11 1224 1587 0 0
+    flax-name <- cpl-label s.harvest flax-bed
+    named <- cpl-handler pl s.harvest None shard input map (gp-put32 [9] (cpl-serial-base + flax-bed * 2 + 1)) 40000
+    flax-held <- ep-at p.stock 11
+    roll9 <- __record-set p "attempts" 0
+    dig <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pick) 40001
+    dug <- cpl-handler pl s.harvest None shard input map (cpp-aim (list-at s.harvest.requests 0).target (cpl-serial-base + flax-bed * 2 + 1)) 40002
+    cpp-check "a click names a mature crop and how to reap it, and a shovel aimed at it reaps it (F44, F46)" (flax-bed >= 0 & flax-name == "flax (reap it with a shovel)" & cpp-note named "planting:name" & ep-at p.stock 11 > flax-held & (cpl-node s.harvest flax-bed).stage == 0)
+    fruit-bed <- gh-site-find s.harvest 16 1230 1590 0 0
+    chop <- cpr-handler-at s shard input map 2593 (gp-put32 [6] axe) 50000
+    fruit-chop <- cpl-handler pl s.harvest None shard input map (cpp-aim (list-at s.harvest.requests 0).target (cpl-serial-base + fruit-bed * 2 + 1)) 50001
+    cpp-check "a hatchet aimed at an apple tree says to pick it by hand, once (F45)" (fruit-bed >= 0 & cpp-note fruit-chop "Pick its fruit by hand." & (list-at s.harvest.requests 0).target == 0)
+    royal <- cpr-royal-install s
+    royal-again <- cpr-royal-install s
+    vein <- gh-site-find s.harvest 5 5361 74 40 0
+    vein-node <- if vein < 0 then 0 else (list-at s.harvest.sites vein).node
+    marked <- cpr-vein-marked s.harvest.items.world (world-tile-first s.harvest.items.world 5361 74) & cpr-vein-marked s.harvest.items.world (world-tile-first s.harvest.items.world 5362 77)
+    cpp-check "each gold vein carries a gold ore pile (0x19B9, hue 0x08A5) and is found by its column from any z (F61)" (marked & gh-site-column s.harvest 5 5361 74 0 == vein & gh-site-column s.harvest 5 5362 77 0 >= 0)
+    cpp-check "the Royal Mine installs four gold veins on Wind's rock and a fixed return gate, once (UOAIX-60)" (royal == 9 & royal-again == 0 & vein >= 0 & vein-node > 0
+      & (list-at w.nodes (max 0 (vein-node - 1))).resource == 6 & cpr-gate-at s.harvest.items.world (world-tile-first s.harvest.items.world cpr-royal-gate-x cpr-royal-gate-y))
+    mill <- cpr-mill-install s.harvest.items 0
+    mill-again <- cpr-mill-install s.harvest.items 0
+    mw <- s.harvest.items.world
+    cpp-check "the bakery mill installs ServUO's three flour-mill pieces in Good Eats, once (UOAIX-55)" (mill == 3 & mill-again == 0
+      & cpr-art-at mw (world-tile-first mw 1449 1617) #1920 & cpr-art-at mw (world-tile-first mw 1450 1617) #1922 & cpr-art-at mw (world-tile-first mw 1451 1617) #1924)
+    foreign <- cpr-handler-at s shard input map 2593 [#09,0,0,0,9] 3000
+    cpp-check "unrelated packets fall through" (when foreign is Ok (None) -> True is otherwise -> False)
+  end
+  cpp-run : GameShard, WalkMap, EuCurrency, Integer -> [Console] Nothing
+  cpp-run (shard) (map) (currency) (tiles) = act
+    tools <- cpp-tools currency.world
+    cpp-check "tool bootstrap uses gathering and recipes" tools
+    input <- gn-input-with (gsi-specs 0) 1
+    when gs-relay-key shard
+      is Err (e) -> print-line-uni ("FAIL relay " & e)
+      is Ok (key) -> act
+        keyed <- __record-set input.session "key" key
+        login <- gs-handle shard input.session map (cpp-login key)
+        created <- gs-handle shard input.session map (cpp-create 0)
+        mode <- __record-set input "mode" 2
+        v <- gv-new shard currency
+        items <- gsi-new shard.world
+        actor <- gsi-session items shard input 0
+        when gsi-pack items actor
+          is Err (e) -> print-line-uni ("FAIL pack " & e)
+          is Ok (pack) -> act
+            bound <- gv-add-player v input.session.serial 1 pack.serial
+            tiled <- __record-set items "tiles" tiles
+            s <- cpr-new v items
+            cpp-workshops v map input.session.serial
+            cpp-live s shard input map pack.serial
+          end
+      end
+  end
+  opening : [Console] Nothing = act
+    when walk-map-sized 1412 1690 20 20 8
+      is Err (e) -> print-line-uni ("FAIL map " & e)
+      is Ok (map) -> act
+        fill <- cpp-fill map 0
+        mountain <- walk-set-land map 1419 1698 0 (mt-mark 220 64)
+        mountainside <- walk-set-land map 1417 1698 0 (mt-mark 243 0)
+        impassable <- walk-set-land map 1416 1698 0 (mt-mark 100 64)
+        water <- walk-set-land map 1420 1701 0 128
+        tree <- walk-add-solid map 1421 1699 0 20 64
+        wall <- walk-add-solid map 1422 1699 0 20 80
+        rock <- walk-add-solid map 1423 1699 0 10 64
+        pool <- walk-add-solid map 1424 1699 0 0 192
+        moat <- walk-add-solid map 1426 1699 (0 - 5) 0 193
+        oven <- walk-add-solid map 1418 1699 0 20 64
+        far-oven <- walk-add-solid map 1430 1699 0 20 64
+        tiles <- ep-buffer 76032
+        a <- cpp-tile tiles #0CCA 64 20
+        b <- cpp-tile tiles #053B 64 10
+        c <- cpp-tile tiles #1797 192 0
+        d <- cpp-tile tiles #0CDA 64 20
+        apple <- cpp-tile tiles #0D94 64 20
+        baking <- cpp-tile tiles #0461 64 20
+        cpp-lookups map tiles
+        when gs-new 0
+          is Err (e) -> print-line-uni ("FAIL shard " & e)
+          is Ok (shard) -> when gvd-economy 0
+            is Err (e) -> print-line-uni ("FAIL economy " & e)
+            is Ok (currency) -> cpp-run shard map currency tiles
+      end
+  end

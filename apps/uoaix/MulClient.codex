@@ -1,0 +1,99 @@
+Chapter: MulClient
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter NetDriver
+  cites Net chapter NetCompact
+  cites Net chapter Ethernet
+  cites Uoaix chapter GamePackets
+  cites Foreword chapter Result
+
+ The local serve-mul adapter emits this exact HTTP/1.0 response header.
+ Validate header bytes and body extent without converting binary MUL data
+ to Text. The caller owns a destination with room for the requested count.
+
+  MulClient = record { port : Integer }
+  MulTransfer = record { header : List Integer, destination : Integer, count : Integer,
+    received : Integer, failed : Boolean }
+
+  mc-line : List Integer, Text -> List Integer
+  mc-line (bytes) (line) = list-push (list-push (gp-ascii bytes line 0 (text-length line)) 13) 10
+
+  mc-header : Integer -> List Integer
+  mc-header (count) =
+    let a = mc-line (__list-with-capacity 160) "HTTP/1.0 200 OK"
+    in let b = mc-line a "Content-Type: application/octet-stream"
+    in let c = mc-line b ("Content-Length: " & show count)
+    in mc-line (mc-line c "Connection: close") ""
+
+  mc-consume : MulTransfer, List Integer, Integer -> MulTransfer
+  mc-consume (state) (bytes) (i) =
+    if i >= list-length bytes | state.failed then state
+    else let at = state.received
+    in let header-size = list-length state.header
+    in let byte = list-at bytes i
+    in if at >= header-size + state.count then __record-set state "failed" True
+    else if at < header-size then
+      if byte /= list-at state.header at then __record-set state "failed" True
+      else let next = __record-set state "received" (at + 1)
+      in mc-consume next bytes (i + 1)
+    else let wrote = poke-byte state.destination (at - header-size) byte
+    in let next = __record-set state "received" (at + 1)
+    in mc-consume next bytes (i + 1)
+
+  mc-recv : TcpTransportState -> [Network.Read, Network.Write] RawRecvResult
+  mc-recv (transport) =
+    if transport.recv-len == 0 then net-io-recv-raw transport 0
+    else RawRecvResult { transport = transport-drop-recv transport,
+      data = __buf-read-bytes transport.recv-base 0 transport.recv-len, has-data = True }
+
+  mc-read : TcpTransportState, MulTransfer -> [Network.Read, Network.Write] Result Integer Text
+  mc-read (transport) (state) =
+    if state.failed then act
+      closed <- net-io-close transport
+      Err "MUL HTTP header or body extent refused"
+    end
+    else if state.received == list-length state.header + state.count then act
+      closed <- net-io-close transport
+      Ok state.count
+    end
+    else act
+      recv <- mc-recv transport
+      if not recv.has-data then act
+        closed <- net-io-close recv.transport
+        Err "MUL HTTP response truncated or timed out"
+      end
+      else mc-read recv.transport (mc-consume state recv.data 0)
+    end
+
+  mc-fetch : MulClient, Text, Integer, Integer -> [Network.Read, Network.Write] Result Integer Text
+  mc-fetch (client) (path) (count) (destination) =
+    if count < 0 | count > 65536 then Err "MUL request budget"
+    else let port = client.port
+    in let next = __record-set client "port" (if port >= 59999 then 40000 else port + 1)
+    in let session = net-session-new net-driver-mac [10, 0, 2, 15] [10, 0, 2, 2] port 2595 [10, 0, 2, 2] 1000
+    in let arp = arp-cache-add session.arp [10, 0, 2, 2] [82, 85, 10, 0, 2, 2]
+    in let transport = transport-new-with-cap (set-arp session arp) 4096
+    in let request = mc-line (mc-line (__list-with-capacity 100) ("GET " & path & " HTTP/1.0")) ""
+    in let state = MulTransfer { header = mc-header count, destination = destination,
+      count = count, received = 0, failed = False }
+    in act
+      connected <- net-io-connect transport
+      if net-io-conn-closed connected then act
+        closed <- net-io-close connected
+        Err "MUL adapter unavailable"
+      end
+      else act
+        sent <- net-io-send-raw-checked connected request
+        if not sent.ns-complete then act
+          closed <- net-io-close sent.ns-transport
+          Err "MUL request send incomplete"
+        end
+        else mc-read sent.ns-transport state
+      end
+    end
+
+  mc-range : MulClient, Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] Result Integer Text
+  mc-range (client) (file) (offset) (count) (destination) =
+    if file < 0 | file > 5 | offset < 0 then Err "MUL range arguments"
+    else mc-fetch client ("/mul/" & show file & "/" & show offset & "/" & show count) count destination

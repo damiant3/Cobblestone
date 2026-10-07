@@ -1,0 +1,103 @@
+Chapter: WorldActionProof
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldJournal
+  cites Foreword chapter Result
+
+  wap-object : Integer, Integer, Integer -> WorldObject
+  wap-object (serial) (parent) (amount) = WorldObject { serial = serial, kind = 2,
+    x = 1420, y = 1698, z = 0, graphic = 400, hue = 0, container = parent, amount = amount, health = 0 }
+
+  wap-event : Integer, Integer, Integer, Integer -> WorldEvent
+  wap-event (op) (serial) (parent) (amount) = WorldEvent { sequence = 1, tick = 10,
+    operation = op, object = wap-object serial parent amount }
+
+  wap-action : List WorldEvent -> WorldAction
+  wap-action (events) = WorldAction { sequence = 1, tick = 10, actor = 0, kind = 1, target = 0, events = events }
+
+  wap-check : Text, Boolean -> [Console] Nothing
+  wap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  wap-same : Integer, Integer, Integer -> Boolean
+  wap-same (a) (b) (left) =
+    if left == 0 then True
+    else peek-byte a (left - 1) == peek-byte b (left - 1) & wap-same a b (left - 1)
+
+  wap-many : Integer, Integer -> List WorldEvent
+  wap-many (n) (seq) =
+    if n == 0 then []
+    else let event = wap-event 2 1073741825 0 n
+    in let sequence = __record-set event "sequence" seq
+    in list-push (wap-many (n - 1) seq) event
+
+  wap-run : WorldTable -> [Console] Nothing
+  wap-run (world) =
+    let checkpoint = WorldCheckpoint { world = world, sequence = 0, tick = 0 }
+    in let size = 16 + world.capacity * 80
+    in let original = alloc-bytes size
+    in let saved = ws-copy world.buffer original size 0
+    in let frame = alloc-bytes wa-max-bytes
+    in let create = wap-action [wap-event 1 1073741825 0 1, wap-event 1 1073741826 1073741825 2]
+    in act
+      when wa-prepare checkpoint create
+        is Err (e) -> print-line-uni ("FAIL prepare " & e)
+        is Ok (undo) -> act
+          wap-check "private create and containment" (world-count world == 2 & undo.count == 2)
+          wap-check "rollback restores full allocator bytes" (wa-rollback undo & wap-same world.buffer original size)
+          wap-check "closed undo refuses reuse" (not (wa-rollback undo) & not (wa-accept undo))
+        end
+      let invalid = wap-action [wap-event 1 1073741825 0 1, wap-event 1 1073741826 1073741825 2, wap-event 3 1073741825 0 1]
+      in wap-check "later nonempty delete rolls back prefix" (is-err (wa-prepare checkpoint invalid) & wap-same world.buffer original size)
+      let reuse = wap-action [wap-event 1 1073741825 0 1, wap-event 3 1073741825 0 1, wap-event 1 (1073741825 + world.capacity) 0 4, wap-event 2 42 0 1]
+      in wap-check "repeated slot and generation rollback" (is-err (wa-prepare checkpoint reuse) & wap-same world.buffer original size)
+      wap-check "empty action refused" (is-err (wa-prepare checkpoint (wap-action [])))
+      wap-check "oversized action refused" (is-err (wa-prepare checkpoint (wap-action (wap-many 65 1))))
+      wap-check "short output refused" (is-err (wa-encode create frame 319))
+      wap-check "action encoded" (when wa-encode create frame wa-max-bytes is Err (e) -> False is Ok (n) -> n == 320)
+      wap-check "partial action refused without prefix" (is-err (wa-replay checkpoint frame 319) & wap-same world.buffer original size)
+      let damaged = poke-byte frame 200 255
+      in wap-check "corruption refused without prefix" (is-err (wa-replay checkpoint frame 320) & wap-same world.buffer original size)
+      let encoded = wa-encode create frame wa-max-bytes
+      in let changed = poke-qword frame 200 2
+      in let inner = poke-qword frame 304 (wj-hash (frame + 192) 0 2166136261)
+      in let outer = poke-qword frame 48 (ws-hash frame 320 0 2166136261)
+      in wap-check "rehashed nested sequence mismatch refused" (is-err (wa-replay checkpoint frame 320) & wap-same world.buffer original size)
+      let failed = wap-action [wap-event 1 1073741825 0 1, wap-event 2 42 0 1]
+      in let encoded = wa-encode failed frame wa-max-bytes
+      in wap-check "valid frame late failure restores prefix" (is-err (wa-replay checkpoint frame 320) & wap-same world.buffer original size)
+      let encoded = wa-encode create frame wa-max-bytes
+      in wap-check "clock reversal refused" (is-err (wa-prepare (WorldCheckpoint { world = world, sequence = 0, tick = 11 }) create) & wap-same world.buffer original size)
+      let encoded = wa-encode create frame wa-max-bytes
+      in when wa-replay checkpoint frame 320
+        is Err (e) -> print-line-uni ("FAIL replay " & e)
+        is Ok (next) -> act
+          wap-check "whole action advances sequence once" (next.sequence == 1 & next.tick == 10 & world-count world == 2)
+          wap-check "duplicate sequence refused" (is-err (wa-replay next frame 320) & world-count world == 2)
+        end
+      let before = __heap-save
+      in let batch = wap-action (wap-many 64 2)
+      in let sequence = __record-set batch "sequence" 2
+      in let current = WorldCheckpoint { world = world, sequence = 1, tick = 10 }
+      in let result = wa-prepare current batch
+      in let after = __heap-save
+      in when result
+        is Err (e) -> print-line-uni ("FAIL bounded prepare " & e)
+        is Ok (undo) -> act
+          wap-check "maximum batch accepted" (undo.count == 64)
+          wap-check "maximum frame round trip" (when wa-encode batch frame wa-max-bytes is Err (e) -> False is Ok (n) -> n == wa-max-bytes & is-ok (wa-decode frame n))
+          wap-check "batch heap independent of world capacity" (after - before < 40000)
+          wap-check "maximum batch rollback" (wa-rollback undo & (when world-get world 1073741825 is Err (e) -> False is Ok (obj) -> obj.amount == 1))
+        end
+    end
+
+  opening : [Console] Nothing = act
+    when world-new 4
+      is Err (e) -> print-line-uni "FAIL small setup"
+      is Ok (world) -> wap-run world
+    when world-new 16384
+      is Err (e) -> print-line-uni "FAIL large setup"
+      is Ok (world) -> wap-run world
+  end
+
+Page 1

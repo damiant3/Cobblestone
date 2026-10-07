@@ -1,0 +1,90 @@
+Chapter: RegenWheelProof
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter WorldTimers
+  cites Foreword chapter Result
+
+  RwpRun = record { trace : List Integer, fired : Integer, failed : Integer }
+  rwp-check : Text, Boolean -> [Console] Nothing
+  rwp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  rwp-hp : GameShard, Integer -> Integer
+  rwp-hp (shard) (serial) = when world-get shard.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  rwp-set : GameShard, Integer, Integer -> Integer
+  rwp-set (shard) (serial) (hp) = when world-get shard.world serial
+    is Err (_) -> -1
+    is Ok (m) -> when world-update shard.world (__record-set m "health" hp) is Err (_) -> -1 is Ok (_) -> hp
+  rwp-event : GameShard, Integer, Integer -> Integer
+  rwp-event (shard) (serial) (t) = if t == 12000 then rwp-set shard serial 2
+    else if t == 15000 then rwp-set shard serial 0
+    else if t == 17000 then rwp-set shard serial 1
+    else if t == 33000 then rwp-set shard serial 3
+    else 0
+  rwp-active : Integer -> Boolean
+  rwp-active (t) = not (t >= 25000 & t < 29000)
+  rwp-drain : GameCombat, GameShard, WorldTimers, Integer, Integer -> Integer
+  rwp-drain (c) (shard) (w) (t) (n) = let e = wtm-next w t
+    in if e < 0 then n
+    else if w.kind /= cb-regen-timer then 0 - 1000000
+    else when cb-regen-fire c shard w.key
+      is Err (_) -> 0 - 1000000
+      is Ok (k) -> rwp-drain c shard w t (n + k)
+  rwp-pulse : GameCombat, GameShard, Integer, Integer -> Integer
+  rwp-pulse (c) (shard) (serial) (t) = let clock = __record-set c "tick" (max c.tick t)
+    in when cb-regen-arm c shard (list-at c.actors (world-slot shard.world serial))
+      is Err (_) -> 0 - 1000000
+      is Ok (k) -> k
+  rwp-run : GameCombat, GameShard, Integer, Integer, Integer, Integer, RwpRun -> RwpRun
+  rwp-run (c) (shard) (serial) (t) (limit) (step) (run) = if t > limit then run
+    else let event = rwp-event shard serial t
+    in let active = __record-set shard "active" (if rwp-active t then serial else 0)
+    in let shared = __record-set c "tick" (max c.tick t)
+    in let pulsed = if rwp-active t then rwp-pulse c shard serial t else 0
+    in let drained = when c.wheel is None -> 0 is Just (w) -> rwp-drain c shard w t 0
+    in let total = pulsed + drained
+    in let traced = __record-set run "trace" (list-push run.trace (rwp-hp shard serial))
+    in let counted = __record-set run "fired" (run.fired + max 0 total)
+    in let bad = __record-set run "failed" (run.failed + (if total < 0 then 1 else 0))
+    in rwp-run c shard serial (t + step) limit step run
+  rwp-same : List Integer, List Integer, Integer -> Integer
+  rwp-same (a) (b) (i) = if i == list-length a then 0 - 1
+    else if list-at a i /= list-at b i then i else rwp-same a b (i + 1)
+  rwp-fixture : Integer -> Result GameShard Text
+  rwp-fixture (hp) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (shard) -> when world-create shard.world (__record-set (gs-mobile 0 1421 1698 0 400 0) "health" hp)
+      is Err (e) -> Err e
+      is Ok (_) -> Ok shard
+
+  opening : [Console] Nothing = when rwp-fixture 5
+    is Err (e) -> print-line-uni ("FAIL fixture " & e)
+    is Ok (old-shard) -> when rwp-fixture 5
+      is Err (e) -> print-line-uni ("FAIL fixture " & e)
+      is Ok (new-shard) -> let serial = 1
+        in let old-c = cb-new old-shard 42
+        in let new-c = cb-new new-shard 42
+        in when wtm-new 256 256 0
+          is Err (e) -> print-line-uni ("FAIL wheel " & e)
+          is Ok (w) -> let wheeled = __record-set new-c "wheel" (Just w)
+            in when cb-ensure old-c old-shard serial
+              is Err (e) -> print-line-uni ("FAIL old actor " & e)
+              is Ok (oa) -> when cb-ensure new-c new-shard serial
+                is Err (e) -> print-line-uni ("FAIL new actor " & e)
+                is Ok (na) -> let om = __record-set oa "maximum" 20
+                  in let nm = __record-set na "maximum" 20
+                  in let old-run = rwp-run old-c old-shard serial 0 44000 10 (RwpRun { trace = [], fired = 0, failed = 0 })
+                  in let new-run = rwp-run new-c new-shard serial 0 44000 10 (RwpRun { trace = [], fired = 0, failed = 0 })
+                  in let differs = rwp-same old-run.trace new-run.trace 0
+                  in act
+                    print-line-uni ("regen-ticks=" & show (cb-regen-ticks 0) & " pulses=" & show (list-length old-run.trace) & " old-fired=" & show old-run.fired & " wheel-fired=" & show new-run.fired & " first-difference=" & show differs & " final-hp=" & show (rwp-hp old-shard serial) & "," & show (rwp-hp new-shard serial))
+                    rwp-check "both runs complete without a refused regen or an unknown timer kind" (old-run.failed == 0 & new-run.failed == 0)
+                    rwp-check "the wheel fires exactly as many regenerations as the per-pulse scan" (old-run.fired == new-run.fired & old-run.fired > 0)
+                    rwp-check "the hit-point trace is identical at every pulse through wounds, death, resurrection and an inactive gap" (differs < 0 & list-length new-run.trace == list-length old-run.trace)
+                    rwp-check "the wheel holds exactly one regen entry for the player" (w.used == 1 & na.armed)
+                    let work = new-c.regen-work
+                    in let due = na.regen
+                    in let quiet = rwp-run new-c new-shard serial 44010 (due - 10) 10 (RwpRun { trace = [], fired = 0, failed = 0 })
+                    in rwp-check "pulses with nothing due do no regen work and fire nothing, and the counter is live" (work > 0 & new-c.regen-work == work & quiet.fired == 0 & quiet.failed == 0 & list-length quiet.trace == (due - 10 - 44010) / 10 + 1 & w.used == 1)
+                    let woke = rwp-run new-c new-shard serial due due 10 (RwpRun { trace = [], fired = 0, failed = 0 })
+                    in rwp-check "the pulse at the due tick does the work" (new-c.regen-work == work + 1 & woke.failed == 0 & w.used == 1)
+                  end
+
+Page 1

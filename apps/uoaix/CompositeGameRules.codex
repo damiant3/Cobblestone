@@ -1,0 +1,1490 @@
+Chapter: CompositeGameRules
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter GameCombatDress
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameMonster
+  cites Uoaix chapter GameResurrection
+  cites Uoaix chapter GameClientView
+  cites Uoaix chapter GameArmor
+  cites Uoaix chapter ShieldData
+  cites Uoaix chapter ProvokeData
+  cites Uoaix chapter DecorationCodec
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter CompositeTestStock
+  cites Uoaix chapter GameMagery
+  cites Uoaix chapter MageryTick
+  cites Uoaix chapter MageryState
+  cites Uoaix chapter MageryEffects
+  cites Uoaix chapter MageryData
+  cites Uoaix chapter GameMoongates
+  cites Uoaix chapter GameNavigation
+  cites Uoaix chapter GameAlchemy
+  cites Uoaix chapter GameInscription
+  cites Uoaix chapter GameLocks
+  cites Uoaix chapter WorldTimers
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter TownLiveCodec
+  cites Uoaix chapter TownNetworkLiveCodec
+  cites Uoaix chapter CompositeLineupState
+  cites Uoaix chapter ActiveSkillsHandler
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter TownLiveShow
+  cites Uoaix chapter GameNpcSpeech
+  cites Uoaix chapter NpcSpeechCodec
+  cites Uoaix chapter GameWorldSpawnCodec
+  cites Uoaix chapter WorldFlora
+  cites Uoaix chapter CompositePlanting
+  cites Uoaix chapter WorldSpawnData
+  cites Uoaix chapter CreatureSoundData
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter CompositeStation
+  cites Uoaix chapter CompositeFighter
+  cites Uoaix chapter CompositeBritishErrand
+  cites Uoaix chapter CompositeLabor
+  cites Uoaix chapter CompositeHelp
+  cites Uoaix chapter CharacterStylist
+  cites Uoaix chapter Campfires
+  cites Uoaix chapter Cartography
+
+  CompositeGame = record { checkpoint : GameCheckpoint, vendor : GvWorld,
+    items : GsiState, combat : GameCombat, banks : GmbState, monsters : GameMonster,
+    resurrection : GameResurrection, view : GameClientView, decoration : Maybe WdState, flora : Maybe WfState, planting : CplState, testing : Boolean, test-grants : Integer,
+    magic : Maybe Magery, gates : Maybe GameMoongates, clock : Integer, timers : WorldTimers,
+    magic-hold : Integer, magic-held : Integer, town : Maybe TownLive, town-map : Maybe WalkMap,
+    town-seconds : Integer, town-ms : Integer, town-tick : Integer, network : Maybe TownNetworkLive,
+    town-doors : Maybe WdState, shops : Maybe BbTown, lineup : Maybe CglLineup, rebinds : Integer, hidden : Integer, moving : Integer,
+    active : ActiveSkills, shows : Integer, speech : Maybe NpcSpeech, production : CprState,
+    spawns : Maybe GameWorldSpawn, spawn-hold : Integer, spawn-held : Integer,
+    speech-hold : Integer, speech-held : Integer, gatherer : Maybe CgGatherer, fighter : Maybe CgFighter, british : Maybe CbErrand, miners : List CgGatherer, farmer : Maybe CgGatherer, smith : CsnSmith, baker : CsnSmith, tailor : CsnSmith, tinker : CsnSmith, carpenter : CsnSmith, camps : Integer, labor : Boolean, pages : HelpPages, known : NnKnown,
+    gate-cover : Maybe (Integer, Integer, Integer -> [Device.Block] Result WalkMap Text), stages : Integer }
+ cg-pulse stamps HPET ticks at its stage boundaries so a slow WORLD PULSE names its stage (F30). Stamps: 0 start,
+ 5 vendors, 6 monsters, 7 decoration and flora (1 the base done), 8 labor, 9 town moves, 10 town live, 11 lineup,
+ 12 NPC speech (2 the town done), 3 magic, 4 active skills.
+  cg-stage-count : Integer = 13
+  cg-stage : CompositeGame, Integer -> Integer
+  cg-stage (owner) (at) = poke-qword owner.stages (at * 8) hpet-ticks
+  cg-stage-reset : CompositeGame, Integer, Integer -> Integer
+  cg-stage-reset (owner) (now) (i) = if i == cg-stage-count then 0 else let a = poke-qword owner.stages (i * 8) now in cg-stage-reset owner now (i + 1)
+  CompositeSetup = record { vendor-z : Integer, shrine-z : Integer, home-z : Integer, decoration : Maybe WdState }
+  cg-home-x : Integer = 1440
+  cg-home-y : Integer = 1720
+  cg-relocate-slot : CompositeGame, WalkMap, MonsterSlot, WorldObject, Integer, Integer -> Result Integer Text
+  cg-relocate-slot (owner) (map) (slot) (mobile) (z) (attempt) =
+    if attempt == 8 then Err "monster relocation has no free walkable tile"
+    else let x = cg-home-x + walk-dx attempt
+    in let y = cg-home-y + walk-dy attempt
+    in if gm-occupied owner.checkpoint.game x y 0 then cg-relocate-slot owner map slot mobile z (attempt + 1)
+    else when walk-step map cg-home-x cg-home-y z attempt
+      is Err (_) -> cg-relocate-slot owner map slot mobile z (attempt + 1)
+      is Ok (height) -> when world-update owner.checkpoint.game.world (__record-set (__record-set (__record-set mobile "x" x) "y" y) "z" height)
+        is Err (e) -> Err e
+        is Ok (_) -> let actor = list-at owner.combat.actors (world-slot owner.checkpoint.game.world mobile.serial)
+          in let stopped = cb-stop owner.combat actor
+          in let peaceful = __record-set actor "war" False
+          in let hidden = __record-set slot "seen" 0 in Ok 0
+  cg-relocate-slots : CompositeGame, CompositeSetup, Integer -> Result Integer Text
+  cg-relocate-slots (owner) (setup) (i) = if i == list-length owner.monsters.slots then
+      let x = __record-set owner.monsters "x" cg-home-x
+      in let y = __record-set owner.monsters "y" cg-home-y
+      in let z = __record-set owner.monsters "z" setup.home-z in Ok 0
+    else let slot = list-at owner.monsters.slots i
+    in when world-get owner.checkpoint.game.world slot.serial
+      is Err (_) -> cg-relocate-slots owner setup (i + 1)
+      is Ok (mobile) -> if mobile.health == 0 then cg-relocate-slots owner setup (i + 1)
+        else when setup.decoration
+          is None -> Err "monster relocation requires installed terrain"
+          is Just (decoration) -> when cg-relocate-slot owner decoration.map slot mobile setup.home-z 0
+            is Err (e) -> Err e
+            is Ok (_) -> cg-relocate-slots owner setup (i + 1)
+  cg-british-create : Integer -> List Integer
+  cg-british-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let named = gp-ascii (gp-ascii header "British" 0 30) "" 0 30
+    in let stats = named & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cg-british-named : Integer, Integer -> Boolean
+  cg-british-named (row) (i) = if i == list-length ga-british-name then peek-byte row (18 + i) == 0
+    else peek-byte row (18 + i) == list-at ga-british-name i & cg-british-named row (i + 1)
+  cg-british-held : Integer, Integer -> Boolean
+  cg-british-held (characters) (slot) = if slot == 5 then False
+    else let row = characters + slot * 160
+    in (peek-qword row 0 /= 0 & cg-british-named row 0) | cg-british-held characters (slot + 1)
+  cg-british-character : CompositeGame, WalkMap -> Result Integer Text
+  cg-british-character (owner) (map) = let game = owner.checkpoint.game
+    in let table = game.accounts
+    in let index = ga-british table
+    in if index < 0 | game.active /= 0 then Ok 0
+    else let prev = ga-bound table
+    in let bound = ga-bind table game.characters index
+    in let result = if cg-british-held game.characters 0 then Ok 0
+      else when gs-create-at game map (cg-british-create 0)
+        is Err (e) -> Err e
+        is Ok (slot) -> Ok (slot + 1)
+    in let synced = ga-sync table game.characters
+    in let restored = if prev /= index & prev >= 0 & prev < ga-count table then ga-bind table game.characters prev else False
+    in when result
+      is Err (e) -> Err e
+      is Ok (n) -> when cg-british-dress owner
+        is Err (e) -> Err e
+        is Ok (_) -> if n == 0 then Ok 0 else when cg-british-seat owner
+          is Err (e) -> Err e
+          is Ok (_) -> Ok n
+  cg-british-seat : CompositeGame -> Result Integer Text
+  cg-british-seat (owner) = let world = owner.checkpoint.game.world
+    in when world-get world (cg-british-serial owner)
+      is Err (e) -> Err e
+      is Ok (m) -> let a = __record-set m "x" cpr-seat-x
+        in let b = __record-set m "y" cpr-seat-y
+        in let c = __record-set m "z" cpr-seat-z
+        in world-update world m
+  cg-british-dress : CompositeGame -> Result Integer Text
+  cg-british-dress (owner) = let serial = cg-british-serial owner
+    in if serial == 0 then Ok 0
+    else when world-get owner.items.world serial
+      is Err (_) -> Ok 0
+      is Ok (m) -> if m.kind /= 1 | m.health <= 0 then Ok 0
+        else when (if m.graphic == cst-british-body then Ok 0 else world-update owner.items.world (__record-set m "graphic" cst-british-body))
+          is Err (e) -> Err e
+          is Ok (_) -> gmb-clothe owner.items serial cst-british-robe 0 cst-british-layer
+  cg-install : CompositeGame, CompositeSetup -> Result Integer Text
+  cg-install (owner) (setup) = when cg-install-core owner setup
+    is Err (e) -> Err e
+    is Ok (n) -> let farm = cpl-farm-install owner.production.harvest
+      in let royal = cpr-royal-install owner.production
+      in let mill = cpr-mill-install owner.production.harvest.items 0 in Ok n
+  cg-install-core : CompositeGame, CompositeSetup -> Result Integer Text
+  cg-install-core (owner) (setup) =
+    let bound = __record-set owner "decoration" setup.decoration
+    in let wheeled = __record-set owner.combat "wheel" (Just owner.timers)
+    in let offline = cg-offline owner 0
+    in let bound-offline = cg-offline-slots owner owner.checkpoint.game.characters 0
+    in let mine = cpr-mine-install owner.production
+    in let field = cpr-field-install owner.production
+    in when cg-found-miners owner 0
+     is Err (e) -> Err e
+     is Ok (_) -> when cg-arm-miners owner 0
+     is Err (e) -> Err e
+     is Ok (_) -> when cg-found-farmer owner
+     is Err (e) -> Err e
+     is Ok (_) -> when cg-worker-dress owner 0
+     is Err (e) -> Err e
+     is Ok (_) -> when (if owner.monsters.x == 1426 & owner.monsters.y == 1700 then cg-relocate-slots owner setup 0 else Ok 0)
+      is Err (e) -> Err e
+      is Ok (_) -> when cg-vendor-dress owner 0
+        is Err (e) -> Err e
+        is Ok (_) -> let registered = cg-items owner 0
+          in when cg-bank owner setup
+            is Err (e) -> Err e
+            is Ok (_) -> when cg-bank-rescue owner 0
+             is Err (e) -> Err e
+             is Ok (_) -> if owner.resurrection.shrine /= 0 then Ok 0
+              else let home = __record-set owner.monsters "z" setup.home-z
+              in gr-install owner.resurrection 1418 1700 setup.shrine-z
+  cg-bank-rescue : CompositeGame, Integer -> Result Integer Text
+  cg-bank-rescue (owner) (i) = if i == 5 then Ok 0
+    else let game = owner.checkpoint.game
+    in let serial = peek-qword game.characters (i * 160)
+    in let slot = if serial == 0 then -1 else world-slot game.world serial
+    in if slot < 0 | gmb-bank-find owner.items serial 0 > 0 then cg-bank-rescue owner (i + 1)
+    else let actor = list-at owner.combat.actors slot
+    in let box = if actor.serial /= serial | actor.corpse <= 0 then 0 else gsi-child-art game.world (world-first-child game.world actor.corpse) #09B2 0
+    in if box == 0 then cg-bank-rescue owner (i + 1)
+    else when world-get game.world box
+      is Err (e) -> Err e
+      is Ok (item) -> when world-update game.world (cb-object item item.health item.graphic item.hue serial)
+        is Err (e) -> Err e
+        is Ok (_) -> cg-bank-rescue owner (i + 1)
+  cg-bank : CompositeGame, CompositeSetup -> Result Integer Text
+  cg-bank (owner) (setup) =
+    let z = when setup.decoration
+      is None -> 0
+      is Just (state) -> when walk-ground state.map gmb-bank-x gmb-bank-y
+        is Err (_) -> 0
+        is Ok (ground) -> when walk-height state.map gmb-bank-x gmb-bank-y ground is Err (_) -> ground is Ok (top) -> top
+    in when gmb-ensure-banker owner.banks z
+      is Err (e) -> Err e
+      is Ok (serial) -> when cb-ensure owner.combat owner.checkpoint.game serial
+        is Err (e) -> Err e
+        is Ok (actor) -> let immune = __record-set actor "immune" True in when cst-style owner.items serial cst-banker
+          is Err (e) -> Err e
+          is Ok (_) -> Ok serial
+
+ Only bankers answer "bank", as in 1998 (root, 2026-10-06); shopkeepers are not registered as bankers.
+  cg-context : GameCheckpoint, GvWorld, GsiState, GameCombat -> Result CompositeGame Text
+  cg-context (checkpoint) (vendor) (items) (combat) = let banks = gmb-new items #004A
+    in when gm-new combat 3 cg-home-x cg-home-y 0 6
+      is Err (e) -> Err e
+      is Ok (monsters) -> when gcv-new checkpoint.game.world.capacity 18 False 0 0
+        is Err (e) -> Err e
+        is Ok (view) -> when wtm-new 256 256 0
+          is Err (e) -> Err e
+          is Ok (timers) -> when as-new vendor banks combat
+           is Err (e) -> Err e
+           is Ok (active) -> let grants = alloc-bytes 40
+          in let zero = ts-zero grants 40 0
+          in let concealed = gcv-conceal view active.concealed
+          in let shows = alloc-bytes tls-bytes
+          in let cleared = ts-zero shows tls-bytes 0
+          in let admits = __record-set combat "admit-hook" (cg-admit active)
+          in let armed = __record-set combat "weapon-hook" (cg-weapon items)
+          in let wielded = __record-set combat "arm-hook" (cg-arm items)
+          in let guarded = __record-set combat "shield-hook" (cg-shield items)
+          in let dropping = __record-set combat "drop-hook" (cg-drop-ammo items)
+          in let voiced = __record-set combat "sound-hook" (csd-sound (csd-table 0))
+          in let strikes = __record-set combat "struck-hook" (as-reveal-serial active)
+          in let made = CompositeGame { checkpoint = checkpoint, vendor = vendor, items = items,
+          combat = combat, banks = banks, monsters = monsters, resurrection = gr-new combat items,
+          view = view, decoration = None, flora = None, planting = cpl-new 0, testing = False, test-grants = grants,
+          magic = None, gates = None, clock = 0, timers = timers, magic-hold = 0, magic-held = 0, town = None, town-map = None,
+          town-seconds = 0, town-ms = 0, town-tick = 0, network = None, town-doors = None, shops = None, lineup = None, rebinds = 0, hidden = 0, moving = 0, active = active, shows = shows, speech = None, production = cpr-new vendor items,
+          spawns = None, spawn-hold = 0, spawn-held = 0 , speech-hold = 0, speech-held = 0, gatherer = None, fighter = None, british = None, miners = [], farmer = None, smith = csn-smith 0, baker = csn-baker 0, tailor = csn-tailor 0, tinker = csn-tinker 0, carpenter = csn-carpenter 0, camps = cf-new 0, labor = False, pages = hp-new 0, known = nn-new 0,
+          gate-cover = None, stages = alloc-bytes (cg-stage-count * 8) }
+          in let venomous = __record-set combat "venom-hook" (cg-as-envenom made) in Ok made
+ Equipment layer 1 holds a one-handed weapon; layer 2 holds a two-handed weapon, or a shield beside layer 1.
+ The graphic in hand: layer 1, else layer 2 (a two-handed weapon, or a shield, which WeaponData answers 0 for).
+  cg-drop-ammo : GsiState, Integer, Integer -> Integer
+  cg-drop-ammo (items) (target) (graphic) = if world-count items.world >= items.world.capacity then 0
+    else when world-get items.world target
+      is Err (_) -> 0
+      is Ok (m) -> when world-create items.world (WorldObject { serial = 0, kind = 2, x = m.x, y = m.y, z = m.z, graphic = graphic, hue = 0, container = 0, amount = 1, health = 0 })
+        is Err (_) -> 0
+        is Ok (serial) -> let known = gsi-register items serial 0 0 True True in 1
+  cg-arm : GsiState, Integer -> Integer
+  cg-arm (items) (serial) = let one = gmb-layer items serial 1 0
+    in let held = if one > 0 then one else gmb-layer items serial 2 0
+    in if held == 0 then 0 else when world-get items.world held is Err (_) -> 0 is Ok (o) -> o.graphic
+  cg-weapon : GsiState, Integer -> Integer
+  cg-weapon (items) (serial) = if gmb-layer items serial 1 0 > 0 then 1 else if cg-shield items serial == 0 & gmb-layer items serial 2 0 > 0 then 2 else 0
+ The art of a shield in the left hand (layer 2), else 0.
+  cg-shield : GsiState, Integer -> Integer
+  cg-shield (items) (serial) = let held = gmb-layer items serial 2 0
+    in if held == 0 then 0 else when world-get items.world held is Err (_) -> 0 is Ok (o) -> if shd-ar o.graphic > 0 then o.graphic else 0
+  cg-vendor-dress : CompositeGame, Integer -> Result Integer Text
+  cg-vendor-dress (owner) (i) = if i == owner.vendor.vendor-count then cbd-dress owner.combat owner.items 0
+    else let serial = (list-at owner.vendor.vendors i).serial
+    in when cst-style owner.items serial (if bb-role owner.vendor serial == 1 then cst-smith else cst-shopkeeper)
+      is Err (e) -> Err e
+      is Ok (_) -> cg-vendor-dress owner (i + 1)
+  cg-worker-style : CompositeGame, Integer, Integer -> Result Integer Text
+  cg-worker-style (owner) (serial) (role) = if serial == 0 then Ok 0
+    else when world-get owner.items.world serial
+      is Err (_) -> Ok 0
+      is Ok (m) -> if m.kind /= 1 | m.health <= 0 then Ok 0 else cst-style owner.items serial role
+  cg-worker-lead : CompositeGame -> Result Integer Text
+  cg-worker-lead (owner) = when cg-worker-style owner (when owner.gatherer is None -> 0 is Just (g) -> g.serial) cst-miner
+    is Err (e) -> Err e
+    is Ok (_) -> when cg-worker-style owner (when owner.fighter is None -> 0 is Just (f) -> f.serial) cst-fighter
+      is Err (e) -> Err e
+      is Ok (_) -> when cg-worker-style owner (when owner.farmer is None -> 0 is Just (f) -> f.serial) cst-townsfolk
+      is Err (e) -> Err e
+      is Ok (_) -> when owner.town
+        is None -> Ok 0
+        is Just (t) -> cg-resident-dress t 0
+  cg-resident-dress : TownLive, Integer -> Result Integer Text
+  cg-resident-dress (t) (i) = if i == t.count then Ok 0
+    else let serial = (tf-person t.people (list-at t.residents i).person).world-serial
+    in when world-get t.vendors.game.world serial
+      is Err (_) -> cg-resident-dress t (i + 1)
+      is Ok (m) -> if m.kind /= 1 then cg-resident-dress t (i + 1)
+        else when cst-apply t.items serial (tl-look i serial)
+          is Err (e) -> Err e
+          is Ok (_) -> cg-resident-dress t (i + 1)
+  cg-worker-dress : CompositeGame, Integer -> Result Integer Text
+  cg-worker-dress (owner) (i) = if i == list-length owner.miners then cg-worker-lead owner
+    else when cg-worker-style owner (list-at owner.miners i).serial cst-miner
+      is Err (e) -> Err e
+      is Ok (_) -> cg-worker-dress owner (i + 1)
+
+  cg-spec-add : List GameOpcodeSpec, GameOpcodeSpec, Integer -> Result (List GameOpcodeSpec) Text
+  cg-spec-add (specs) (spec) (i) = if i == list-length specs then Ok (list-push specs spec)
+    else let old = list-at specs i
+    in if old.opcode /= spec.opcode then cg-spec-add specs spec (i + 1)
+    else if old.size == spec.size & old.minimum == spec.minimum & old.maximum == spec.maximum then Ok specs
+    else Err "composite opcode bounds disagree"
+  cg-spec-merge : List GameOpcodeSpec, List GameOpcodeSpec, Integer -> Result (List GameOpcodeSpec) Text
+  cg-spec-merge (specs) (more) (i) = if i == list-length more then Ok specs
+    else when cg-spec-add specs (list-at more i) 0
+      is Err (e) -> Err e
+      is Ok (next) -> cg-spec-merge next more (i + 1)
+  cg-specs : Integer -> Result (List GameOpcodeSpec) Text
+  cg-specs (unused) = when cg-spec-merge gv-specs (gsi-specs 0) 0
+    is Err (e) -> Err e
+    is Ok (items) -> when cg-spec-merge items (cb-specs 0) 0
+      is Err (e) -> Err e
+      is Ok (combat) -> when cg-spec-merge combat (as-specs 0) 0
+        is Err (e) -> Err e
+        is Ok (skills) -> cg-spec-merge skills (cpr-specs 0) 0
+
+  cg-game : Integer -> Result GameShard Text
+  cg-game (capacity) = when world-new capacity
+    is Err (e) -> Err e
+    is Ok (world) -> let characters = alloc-bytes 800
+      in let zeroed = gs-zero characters 0
+      in Ok (GameShard { world = world, characters = characters, accounts = ga-new ga-public, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 })
+  cg-new : Integer -> Result CompositeGame Text
+  cg-new (z) = when cg-game world-max-objects
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> cg-founded game vendor (gsi-new game.world)
+  cg-founded : GameShard, GvWorld, GsiState -> Result CompositeGame Text
+  cg-founded (game) (vendor) (items) =
+          let people = tf-new 0
+          in let mind = tm-new 0
+          in let combat = cb-new game 42
+          in let merchant = cb-ensure combat game (list-at vendor.vendors 0).serial
+          in let protected = when merchant is Err (_) -> 0 is Ok (actor) -> let immune = __record-set actor "immune" True in 0
+          in let checkpoint = GameCheckpoint { game = game,
+            state = TownState { checkpoint = WorldCheckpoint { world = game.world, tick = 0, sequence = 0 }, townsfolk = people, mind = mind } }
+          in when cg-context checkpoint vendor items combat
+            is Err (e) -> Err e
+            is Ok (owner) -> when cg-vendor-dress owner 0
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner
+  cg-britain : WalkMap -> Result CompositeGame Text
+  cg-britain (map) = when cg-game world-max-objects
+    is Err (e) -> Err e
+    is Ok (game) -> when bb-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when bb-founding-stock currency
+       is Err (e) -> Err e
+       is Ok (_) -> let vendor = gv-new game currency
+        in let items = gsi-new game.world
+        in when bb-populate vendor items map
+          is Err (e) -> Err e
+          is Ok (shops) -> when tl-populate vendor items map None 0 3
+            is Err (e) -> Err e
+            is Ok (town) -> when tnv-new town
+             is Err (e) -> Err e
+             is Ok (network) -> if gla-market network.actions True < 0 then Err "town network market policy"
+              else when cgg-new town map
+              is Err (e) -> Err e
+              is Ok (gatherer) -> when cgf-spawn town map gatherer.home
+              is Err (e) -> Err e
+              is Ok (fighter) -> when cg-founded game vendor items
+              is Err (e) -> Err e
+              is Ok (owner) -> let a = __record-set owner "town" (Just town)
+                in let b = __record-set owner "town-map" (Just map)
+                in let c = __record-set owner "network" (Just network)
+                in let d = __record-set owner "shops" (Just shops)
+                in let e = __record-set shops "known" owner.known
+                in let f = __record-set owner "gatherer" (Just gatherer)
+                in let g = __record-set owner "fighter" (Just fighter) in Ok owner
+
+  cg-town-status : CompositeGame, List Integer, GameReply -> GameReply
+  cg-town-status (owner) (packet) (reply) = when owner.town
+    is None -> reply
+    is Just (town) -> if list-length packet /= 5 | list-at packet 0 /= 9 then reply
+      else let said = tls-status town (gp-u32 packet 1)
+      in if list-length said == 0 then reply else gs-reply (reply.packets & said) reply.note
+  cg-town-show : CompositeGame, TownLive, GameShard, GameInput -> Maybe GameReply
+  cg-town-show (owner) (town) (game) (input) = when world-get game.world input.session.serial
+    is Err (_) -> None
+    is Ok (viewer) -> let book = when owner.network is None -> None is Just (n) -> Just n.actions.book
+      in let packets = tls-show town book owner.shows (gv-slot game input.session.serial 0) viewer input.connection
+      in if list-length packets == 0 then None else Just (gs-reply packets "townsfolk show")
+  cg-speech-bind : CompositeGame -> Result Integer Text
+  cg-speech-bind (owner) = when owner.town
+    is None -> Ok 0
+    is Just (town) -> when owner.shops
+      is None -> Ok 0
+      is Just (shops) -> when ns-bind town shops owner.banks
+        is Err (e) -> Err e
+        is Ok (speech) -> let bound = __record-set owner "speech" (Just speech)
+          in if owner.speech-held == 0 then Ok speech.count
+          else when nsc-decode speech owner.speech-hold owner.speech-held
+            is Err (e) -> Err e
+            is Ok (_) -> let released = __record-set owner "speech-held" 0 in Ok speech.count
+ 128 spawn slots keep wild populations a small fraction of world capacity.
+  cg-spawn-slots : Integer = 128
+  cg-spawn-attach : CompositeGame -> Result Integer Text
+  cg-spawn-attach (owner) = when gws-new (wsd-catalog 0) owner.combat cg-spawn-slots
+    is Err (e) -> Err e
+    is Ok (spawns) -> let bound = __record-set owner "spawns" (Just spawns)
+      in let hooked = __record-set spawns.combat "death-hook" (cg-deaths owner spawns)
+      in let practised = __record-set spawns.combat "swing-hook" (cg-swings owner)
+      in if owner.spawn-held == 0 then Ok 0
+      else if owner.spawn-held >= 64 & peek-qword owner.spawn-hold 16 /= spawns.catalog.revision then
+        when gwsc-retire spawns owner.checkpoint.game.world owner.spawn-hold owner.spawn-held
+          is Err (e) -> Err e
+          is Ok (removed) -> let released = __record-set owner "spawn-held" 0 in Ok (2 + removed)
+      else when gwsc-decode spawns owner.checkpoint.game.world get-ticks owner.spawn-hold owner.spawn-held
+        is Err (e) -> Err e
+        is Ok (_) -> let released = __record-set owner "spawn-held" 0 in Ok 1
+ UOX3 ONLYOUTSIDE: a tile is outside when no collider starts at or above head
+ height (16 units, the walk headroom) over the standing point.
+ With no client connected, the world advances around an NPC `watcher` over a
+ walk window the caller loaded: one spawn pass, then one round of combat swings;
+ the packets have no recipient.
+  cg-world-tick : CompositeGame, GameShard, WalkMap, Integer, Integer -> Result Integer Text
+  cg-world-tick (owner) (game) (map) (watcher) (tick) = when cg-town-headless owner tick
+    is Err (e) -> Err e
+    is Ok (_) -> when cg-gather owner
+    is Err (e) -> Err e
+    is Ok (_) -> when cg-errand-arm owner tick
+    is Err (e) -> Err e
+    is Ok (_) -> when cg-british-arm owner tick
+    is Err (e) -> Err e
+    is Ok (_) -> when cg-drain owner game tick
+    is Err (e) -> Err e
+    is Ok (_) -> when owner.spawns
+      is None -> Ok 0
+      is Just (spawns) -> when gws-world cg-spawn-terrain spawns game watcher map tick []
+        is Err (e) -> Err e
+        is Ok (_) -> when cb-swings owner.combat game (gn-input 0) map 0 []
+          is Err (e) -> Err e
+          is Ok (struck) -> let corpses = gr-corpse-packets owner.items struck 0 in Ok 1
+  cg-tick-watcher : CompositeGame -> Integer
+  cg-tick-watcher (owner) = when owner.gatherer is None -> 0 is Just (c) -> c.serial
+  cg-tick : CompositeGame, GameShard, WalkMap, Integer, Integer -> Result Integer Text
+  cg-tick (owner) (game) (map) (watcher) (tick) = if watcher /= 0 then cg-world-tick owner game map watcher tick
+    else when cg-town-headless owner tick
+      is Err (e) -> Err e
+      is Ok (_) -> when cg-gather owner
+        is Err (e) -> Err e
+        is Ok (_) -> when cg-british-arm owner tick
+          is Err (e) -> Err e
+          is Ok (_) -> cg-drain owner game tick
+ Every death passes the composite's NPCs: a dead gatherer or fighter is settled at the blow (cgg-fall, cgf-death), and a kill by
+ the fighter loots the victim.
+  cg-deaths : CompositeGame, GameWorldSpawn, Integer, Integer -> Integer
+  cg-deaths (owner) (spawns) (source) (victim) =
+    let gathered = when owner.gatherer is None -> 0 is Just (g) -> if g.serial /= 0 & victim == g.serial then cgg-fall g owner.vendor else 0
+    in let farmed = when owner.farmer is None -> 0 is Just (g) -> if g.serial /= 0 & victim == g.serial then cgg-fall g owner.vendor else 0
+    in when owner.fighter is None -> 0 is Just (c) -> cgf-death c spawns owner.vendor source victim
+  cg-swings : CompositeGame, Integer, Integer, Boolean -> Integer
+  cg-swings (owner) (attacker) (defender) (hit) = when owner.fighter
+    is None -> 0
+    is Just (c) -> cgf-swing c owner.combat owner.checkpoint.game attacker defender hit
+ The gatherer walks the residents' Britain map; a door it opens is synced to the player map.
+  cg-gather : CompositeGame -> Result Integer Text
+  cg-gather (owner) = when owner.gatherer
+    is None -> Ok 0
+    is Just (c) -> when owner.town
+      is None -> Err "gatherer requires townsfolk"
+      is Just (town) -> when owner.town-map
+        is None -> Err "gatherer requires the Britain map"
+        is Just (britain) -> when cgg-step c town britain owner.town-doors
+          is Err (e) -> Err e
+          is Ok (packets) -> let synced = cg-door-sync owner packets 0
+            in when csn-smith-step owner.smith town britain owner.town-doors
+              is Err (e) -> Err e
+              is Ok (worked) -> let opened = cg-door-sync owner worked 0
+                in when csn-smith-step owner.baker town britain owner.town-doors
+                  is Err (e) -> Err e
+                  is Ok (baked) -> let shut = cg-door-sync owner baked 0
+                    in when csn-smith-step owner.tailor town britain owner.town-doors
+                      is Err (e) -> Err e
+                      is Ok (sewn) -> let closed = cg-door-sync owner sewn 0
+                        in when csn-smith-step owner.tinker town britain owner.town-doors
+                          is Err (e) -> Err e
+                          is Ok (tinkered) -> let latched = cg-door-sync owner tinkered 0
+                            in when csn-smith-step owner.carpenter town britain owner.town-doors
+                              is Err (e) -> Err e
+                              is Ok (sawn) -> let barred = cg-door-sync owner sawn 0 in cg-farm owner town britain
+  cg-farm : CompositeGame, TownLive, WalkMap -> Result Integer Text
+  cg-farm (owner) (town) (britain) = when owner.farmer
+    is None -> Ok 0
+    is Just (f) -> when cgg-step f town britain owner.town-doors
+      is Err (e) -> Err e
+      is Ok (packets) -> let synced = cg-door-sync owner packets 0 in Ok 0
+ Home offset 35 keeps the farmer's bed apart from the gatherer's (0) and the miners' (7 .. 28).
+  cg-found-farmer : CompositeGame -> Result Integer Text
+  cg-found-farmer (owner) = when owner.farmer
+    is Just (_) -> Ok 0
+    is None -> when owner.town
+      is None -> Ok 0
+      is Just (town) -> when owner.town-map
+        is None -> Ok 0
+        is Just (britain) -> when cgg-new-at town britain cgg-farm-owner 35 cgg-farm-place
+          is Err (e) -> Err e
+          is Ok (c) -> let kept = __record-set owner "farmer" (Just c) in Ok 1
+ The fighter's errand timer is not persisted: the first tick after a boot schedules its next step.
+  cg-errand-arm : CompositeGame, Integer -> Result Integer Text
+  cg-errand-arm (owner) (tick) = when owner.fighter
+    is None -> Ok 0
+    is Just (c) -> if c.timed then Ok 0
+      else if wtm-add owner.timers (tick + 1) cgf-kind 0 < 0 then Err "fighter timer pool full"
+      else let armed = __record-set c "timed" True in Ok 1
+ Four gatherer-miners work Britain's veins beside the gatherer, each stepping on its own wheel errand (root
+ 2026-10-06, UOAIX-30). Owners 3101 to 3104, home offsets 7, 14, 21, 28 and places 201 to 204 (each its own nodes) keep them apart.
+  cgm-limit : Integer = 4
+  cgm-kind : Integer = 8
+  cgm-owner : Integer = 3101
+  cg-found-miners : CompositeGame, Integer -> Result Integer Text
+  cg-found-miners (owner) (i) = if i >= cgm-limit | list-length owner.miners >= cgm-limit then Ok 0
+    else when owner.town
+      is None -> Ok 0
+      is Just (town) -> when owner.town-map
+        is None -> Ok 0
+        is Just (britain) -> when cgg-new-at town britain (cgm-owner + i) (7 * (i + 1)) (cgg-place + 1 + i)
+          is Err (e) -> Err e
+          is Ok (c) -> let kept = __record-set owner "miners" (owner.miners & [c]) in cg-found-miners owner (i + 1)
+  cg-arm-miners : CompositeGame, Integer -> Result Integer Text
+  cg-arm-miners (owner) (i) = if i >= list-length owner.miners then Ok 0
+    else if wtm-set owner.timers (owner.timers.limit + 1) cgm-kind i < 0 then Err "miner timer pool full"
+    else cg-arm-miners owner (i + 1)
+  cg-miner : CompositeGame, Integer, Integer -> Result Integer Text
+  cg-miner (owner) (key) (tick) = if key < 0 | key >= list-length owner.miners then Ok 0
+    else when owner.town
+      is None -> Err "miner requires townsfolk"
+      is Just (town) -> when owner.town-map
+        is None -> Err "miner requires the Britain map"
+        is Just (britain) -> when cgg-step (list-at owner.miners key) town britain owner.town-doors
+          is Err (e) -> Err e
+          is Ok (packets) -> let synced = cg-door-sync owner packets 0
+            in if wtm-add owner.timers (tick + cgf-step-ticks) cgm-kind key < 0 then Err "miner timer pool full" else Ok 1
+  cg-errand : CompositeGame, GameShard, Integer -> Result Integer Text
+  cg-errand (owner) (game) (tick) = when owner.fighter
+    is None -> Ok 0
+    is Just (c) -> when owner.town
+      is None -> Err "fighter requires townsfolk"
+      is Just (town) -> when owner.town-map
+        is None -> Err "fighter requires the Britain map"
+        is Just (britain) -> when cgf-step c town britain owner.town-doors owner.combat owner.spawns game
+          is Err (e) -> Err e
+          is Ok (packets) -> let synced = cg-door-sync owner packets 0
+            in if wtm-add owner.timers (tick + cgf-delay c) cgf-kind 0 < 0 then Err "fighter timer pool full" else Ok 1
+  cg-british-in : Integer, Integer -> Integer
+  cg-british-in (characters) (slot) = if slot == 5 then 0
+    else let row = characters + slot * 160
+    in if peek-qword row 0 /= 0 & cg-british-named row 0 then peek-qword row 0 else cg-british-in characters (slot + 1)
+  cg-british-serial : CompositeGame -> Integer
+  cg-british-serial (owner) = let accounts = owner.checkpoint.game.accounts
+    in let index = ga-british accounts
+    in if index < 0 then 0
+    else cg-british-in (if ga-bound accounts == index then owner.checkpoint.game.characters else ga-slots accounts index) 0
+  cg-british-found : CompositeGame -> Result Integer Text
+  cg-british-found (owner) = let serial = cg-british-serial owner
+    in if serial == 0 then Ok 0
+    else when owner.british
+      is Just (c) -> if c.serial == serial then Ok 0
+        else let rebound = __record-set c "serial" serial
+        in let restarted = if cbe-finished c then 0 else let home = __record-set c "leg" 0 in cbe-reset c in Ok 1
+      is None -> when world-get owner.checkpoint.game.world serial
+        is Err (e) -> Err e
+        is Ok (m) -> let bound = __record-set owner "british" (Just (cbe-new serial (BbSpot { x = m.x, y = m.y, z = m.z }))) in Ok 1
+  cg-british-arm : CompositeGame, Integer -> Result Integer Text
+  cg-british-arm (owner) (tick) = when owner.british
+    is None -> Ok 0
+    is Just (c) -> if c.timed | cbe-finished c | c.serial == 0 then Ok 0
+      else if wtm-add owner.timers (tick + 1) cbe-kind 0 < 0 then Err "British errand timer pool full"
+      else let armed = __record-set c "timed" True in Ok 1
+  cg-british : CompositeGame, GameShard, Integer -> Result Integer Text
+  cg-british (owner) (game) (tick) = when owner.british
+    is None -> Ok 0
+    is Just (c) -> when cbe-step c owner.production game.world tick
+      is Err (e) -> Err e
+      is Ok (_) -> if cbe-finished c | c.serial == 0 then let stopped = __record-set c "timed" False in Ok 0
+        else if wtm-add owner.timers (tick + cbe-delay c) cbe-kind 0 < 0 then Err "British errand timer pool full" else Ok 1
+ The shift timers are not persisted: the first tick or pulse after a boot schedules each resident's next hour.
+  cg-labor : CompositeGame, Integer -> Result Integer Text
+  cg-labor (owner) (tick) = if owner.labor then Ok 0
+    else when owner.town
+      is None -> Ok 0
+      is Just (town) -> if clb-attach town owner.timers tick 0 < 0 then Err "shift timer pool full"
+        else let attached = __record-set owner "labor" True in Ok 1
+  cg-town-headless : CompositeGame, Integer -> Result Integer Text
+  cg-town-headless (owner) (tick) = when owner.town
+    is None -> Ok 0
+    is Just (town) -> when owner.town-map
+      is None -> Err "townsfolk map unbound"
+      is Just (britain) -> when cg-labor owner tick
+        is Err (e) -> Err e
+        is Ok (_) -> when cg-town-move owner town britain (cg-town-clock owner tick)
+          is Err (e) -> Err e
+          is Ok (_) -> Ok 1
+  cg-drain : CompositeGame, GameShard, Integer -> Result Integer Text
+  cg-drain (owner) (game) (tick) = when owner.decoration
+    is None -> Ok 0
+    is Just (state) -> if not (wd-bound state) then Ok 0
+      else when cg-timers owner state game tick []
+        is Err (e) -> Err e
+        is Ok (_) -> Ok 1
+  cg-spawn-terrain : WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text
+  cg-spawn-terrain (map) (r) (p) (x) (y) = when walk-ground map x y
+    is Err (e) -> Err e
+    is Ok (land) ->
+      let from = if r.fixed-height >= -128 then r.fixed-height - 2 else land + r.preferred-height - 2
+      in when walk-height map x y from
+        is Err (e) -> Err e
+        is Ok (z) -> if r.fixed-height >= -128 & z /= r.fixed-height then Err "fixed spawn height"
+          else if r.outside & cg-covered map (walk-cell map x y) z 0 then Err "covered spawn tile"
+          else Ok z
+  cg-covered : WalkMap, Integer, Integer, Integer -> Boolean
+  cg-covered (map) (cell) (z) (i) = if cell < 0 then True
+    else if i >= peek-qword map.solids (cell * map.stride) then False
+    else peek-qword map.solids (cell * map.stride + 8 + i * 24) >= z + 16 | cg-covered map cell z (i + 1)
+  cg-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-family (owner) (game) (input) (map) (port) (packet) = let ordered = cg-pet-orders owner game input packet in when owner.speech
+    is None -> cg-family-town owner game input map port packet
+    is Just (speech) -> when ns-handler speech game input map port packet
+      is Err (e) -> Err e
+      is Ok (Just (reply)) -> Ok (Just reply)
+      is Ok (None) -> cg-family-town owner game input map port packet
+  cg-family-town : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-family-town (owner) (game) (input) (map) (port) (packet) = when (when owner.town is None -> Ok None is Just (town) -> when owner.lineup is None -> tl-handler town game input map port packet is Just (l) -> when cgl-handler l town game input packet is Err (e) -> Err e is Ok (Just (named)) -> Ok (Just named) is Ok (None) -> tl-handler town game input map port packet)
+    is Err (e) -> Err e
+    is Ok (Just (reply)) -> Ok (Just (cg-town-status owner packet reply))
+    is Ok (None) -> when (when owner.shops is None -> Ok None is Just (shops) -> bb-handler shops game input map port packet)
+      is Err (e) -> Err e
+      is Ok (Just (reply)) -> Ok (Just reply)
+      is Ok (None) -> cg-family-base owner game input map port packet
+  cg-family-base : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-family-base (owner) (game) (input) (map) (port) (packet) = when (when owner.flora is None -> Ok None is Just (s) -> wf-handler s game.world packet)
+    is Err (e) -> Err e
+    is Ok (Just (reply)) -> Ok (Just reply)
+    is Ok (None) -> when cg-decoration owner game input map port packet
+     is Err (e) -> Err e
+     is Ok (Just (reply)) -> Ok (Just reply)
+     is Ok (None) -> when gr-handler owner.resurrection game input map port packet
+      is Err (e) -> Err e
+      is Ok (Just (reply)) -> Ok (Just reply)
+      is Ok (None) -> cg-bank-family owner game input map port packet
+  cg-decoration : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-decoration (owner) (game) (input) (map) (port) (packet) = when owner.decoration
+    is None -> Ok None
+    is Just (state) -> let index = if list-length packet < 5 then -1 else bit-and (gp-u32 packet 1) #7FFFFFFF - wd-serial-base - 1
+      in let before = if index < 0 | index >= state.count then -1 else peek-byte state.opened index
+      in when wd-handler state game input map port packet
+        is Err (e) -> Err e
+        is Ok (reply) -> let changed = if before < 0 then 0 else if peek-byte state.opened index == before then 0 else world-item-touch game.world
+          in let timed = wd-track state owner.timers index before get-ticks
+          in let synced = if before < 0 then 0 else if peek-byte state.opened index == before then 0 else cg-door-cells owner.town-doors index
+          in Ok reply
+ UOAIX-56: in a world with Britain's shops, a banker's click shows "the banker" until the character knows its name.
+  cg-named-town : CompositeGame -> Boolean
+  cg-named-town (owner) = when owner.shops is None -> False is Just (_) -> True
+  cg-banker-label : CompositeGame, Integer, Integer -> Text
+  cg-banker-label (owner) (character) (npc) = when owner.shops is None -> "Banker" is Just (s) -> nn-label s.known character cst-banker npc "banker"
+  cg-bank-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-bank-family (owner) (game) (input) (map) (port) (packet) =
+    if list-length packet == 5 & (list-at packet 0 == 6 | list-at packet 0 == 9) & gv-vendor owner.vendor (bit-and (gp-u32 packet 1) #7FFFFFFF) 0 >= 0 then cg-vendor-family owner game input map port packet
+    else if list-length packet == 5 & list-at packet 0 == 9 & gmb-is-banker owner.banks (gp-u32 packet 1) 0 & cg-named-town owner then
+      when world-get game.world (gp-u32 packet 1)
+        is Err (_) -> Ok None
+        is Ok (npc) -> Ok (Just (gs-reply (gvp-hello npc (cg-banker-label owner input.session.serial npc.serial)) "bank:name"))
+    else when gmb-handle owner.banks game input map port packet
+    is Err (e) -> Err e
+    is Ok (answer) -> when answer
+      is Just (reply) -> Ok (Just reply)
+      is None -> cg-vendor-family owner game input map port packet
+  cg-vendor-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-vendor-family (owner) (game) (input) (map) (port) (packet) = when cg-kindling owner game input map packet
+    is Err (e) -> Err e
+    is Ok (Just (lit)) -> Ok (Just lit)
+    is Ok (None) -> when (when owner.magic is None -> Ok None is Just (magic) -> cart-handler-at owner.production.harvest owner.active magic game input packet get-ticks)
+      is Err (e) -> Err e
+      is Ok (Just (drawn)) -> Ok (Just drawn)
+      is Ok (None) -> cg-skills-family owner game input map port packet
+  cg-skills-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-skills-family (owner) (game) (input) (map) (port) (packet) = when as-handler (cg-as-services owner) owner.active game input map port packet
+    is Err (e) -> Err e
+    is Ok (Just (skilled)) -> Ok (Just skilled)
+    is Ok (None) -> when gnv-handler-at owner.items game input packet (owner.clock / mgd-ticks 1000)
+     is Err (e) -> Err e
+     is Ok (Just (looked)) -> Ok (Just looked)
+     is Ok (None) -> when gal-handler-at owner.production.harvest owner.active (cg-as-services owner) game input packet get-ticks
+      is Err (e) -> Err e
+      is Ok (Just (brewed)) -> Ok (Just brewed)
+      is Ok (None) -> cg-scribe-family owner game input map port packet
+  cg-scribe-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-scribe-family (owner) (game) (input) (map) (port) (packet) = when (when owner.decoration is None -> Ok None is Just (doors) -> glk-door-at owner.production.harvest owner.active doors game input packet get-ticks)
+    is Err (e) -> Err e
+    is Ok (Just (unlatched)) -> Ok (Just unlatched)
+    is Ok (None) -> cg-lock-family owner game input map port packet
+  cg-lock-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-lock-family (owner) (game) (input) (map) (port) (packet) = when (when owner.magic is None -> Ok None is Just (magic) -> glk-pick-at owner.production.harvest owner.active magic game input packet get-ticks)
+    is Err (e) -> Err e
+    is Ok (Just (picked)) -> Ok (Just picked)
+    is Ok (None) -> when (when owner.magic is None -> Ok None is Just (magic) -> glk-key-at owner.production.harvest magic game input packet get-ticks)
+     is Err (e) -> Err e
+     is Ok (Just (keyed)) -> Ok (Just keyed)
+     is Ok (None) -> cg-inscribe-family owner game input map port packet
+  cg-inscribe-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-inscribe-family (owner) (game) (input) (map) (port) (packet) = when (when owner.magic is None -> Ok None is Just (magic) -> ins-handler-at owner.production.harvest owner.active magic game input packet get-ticks)
+    is Err (e) -> Err e
+    is Ok (Just (scribed)) -> Ok (Just scribed)
+    is Ok (None) -> when cpl-handler owner.planting owner.production.harvest owner.flora game input map packet get-ticks
+     is Err (e) -> Err e
+     is Ok (Just (planted)) -> Ok (Just planted)
+     is Ok (None) -> when cpr-handler owner.production game input map port (cg-flora-target owner packet)
+      is Err (e) -> Err e
+      is Ok (Just (made)) -> Ok (Just made)
+      is Ok (None) -> cg-vendor-base owner game input map port packet
+  cg-vendor-base : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-vendor-base (owner) (game) (input) (map) (port) (packet) = when gv-handler owner.vendor game input map port packet
+    is Err (e) -> Err e
+    is Ok (answer) -> when answer
+      is Just (reply) -> Ok (Just (gmb-reply owner.items reply))
+      is None -> when cbd-handler owner.combat owner.items game input map port packet
+        is Err (e) -> Err e
+        is Ok (answer) -> when answer
+          is Just (reply) -> Ok (Just (cg-status-names owner game input.session.serial reply))
+          is None -> when cg-corpse-label owner game packet
+            is Just (named) -> Ok (Just named)
+            is None -> when cg-stranger-label owner game input.session.serial packet
+              is Just (stranger) -> Ok (Just stranger)
+              is None -> when cg-npc-paperdoll owner game input.session.serial packet
+                is Just (doll) -> Ok (Just doll)
+                is None -> gsi-handle owner.items game input map port packet
+ Source-X send.cpp PacketPaperdoll: a pre-ML client's flags carry only war mode (0x40), so an NPC at peace sends 0.
+  cg-npc-paperdoll : CompositeGame, GameShard, Integer, List Integer -> Maybe GameReply
+  cg-npc-paperdoll (owner) (game) (viewer) (packet) = if list-length packet /= 5 | list-at packet 0 /= 6 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in if serial == viewer | gsi-slot game serial 0 >= 0 | gsi-account-character game.accounts serial 0 >= 0 then None
+    else when world-get game.world serial
+      is Err (_) -> None
+      is Ok (m) -> if m.kind /= 1 | cb-form m.graphic /= 0 then None
+        else Just (gs-reply [list-push (sip-field (gp-put32 (gp-start #88) serial) (text-to-utf8-bytes (cg-npc-name owner serial)) 60 0) 0] "items:npc paperdoll")
+  cg-npc-name : CompositeGame, Integer -> Text
+  cg-npc-name (owner) (serial) = when owner.town
+    is None -> ""
+    is Just (t) -> let person = tl-person-for t serial 0
+      in if person > 0 then (tf-person t.people person).name
+      else when owner.lineup
+        is None -> ""
+        is Just (l) -> if l.resident == serial then (tf-person t.people l.person).name else ""
+  cg-stranger-label : CompositeGame, GameShard, Integer, List Integer -> Maybe GameReply
+  cg-stranger-label (owner) (game) (viewer) (packet) = if list-length packet /= 5 | list-at packet 0 /= 9 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let title = cg-stranger-title owner game viewer serial
+    in if title == "" then None
+    else when world-get game.world serial
+      is Err (_) -> None
+      is Ok (mobile) -> Just (gs-reply [sip-name-label mobile (text-to-utf8-bytes title)] "items:look stranger")
+  cg-stranger-title : CompositeGame, GameShard, Integer, Integer -> Text
+  cg-stranger-title (owner) (game) (viewer) (serial) = let slot = gsi-slot game serial 0
+    in let at = if slot >= 0 then -1 else gsi-account-character game.accounts serial 0
+    in let account = if slot >= 0 then ga-bound game.accounts else at / 8
+    in let british = if slot >= 0 then ga-is-british game.accounts else account == ga-british game.accounts
+    in if serial == viewer | (slot < 0 & at < 0) | british | nn-knows owner.known viewer serial then ""
+    else let characters = if slot >= 0 then game.characters else ga-slots game.accounts account
+    in nn-profession (cg-best-skill owner characters (if slot >= 0 then slot else int-mod at 8) serial 0 -1 0)
+  cg-character-name : GameShard, Integer -> Text
+  cg-character-name (game) (serial) = let slot = gsi-slot game serial 0
+    in let at = if slot >= 0 then -1 else gsi-account-character game.accounts serial 0
+    in if slot >= 0 then utf8-bytes-to-text (sip-slot-name game.characters slot 0 [])
+    else if at >= 0 then utf8-bytes-to-text (sip-slot-name (ga-slots game.accounts (at / 8)) (int-mod at 8) 0 []) else ""
+  cg-shown-name : CompositeGame, GameShard, Integer, Integer -> Text
+  cg-shown-name (owner) (game) (viewer) (serial) =
+    let role = when owner.shops is None -> -1 is Just (s) -> bb-role s.vendors serial
+    in if role >= 0 then (when owner.shops is None -> "" is Just (s) -> bb-label s viewer role serial)
+    else if gmb-is-banker owner.banks serial 0 & cg-named-town owner then cg-banker-label owner viewer serial
+    else let title = cg-stranger-title owner game viewer serial
+    in if title /= "" then title
+    else let real = cg-character-name game serial
+    in if real /= "" then real else cg-npc-name owner serial
+  cg-status-names : CompositeGame, GameShard, Integer, GameReply -> GameReply
+  cg-status-names (owner) (game) (viewer) (reply) = GameReply { packets = cg-renamed owner game viewer reply.packets 0 [], close = reply.close, note = reply.note }
+  cg-renamed : CompositeGame, GameShard, Integer, List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  cg-renamed (owner) (game) (viewer) (packets) (i) (out) = if i == list-length packets then out
+    else let p = list-at packets i
+    in let name = if list-length p == 43 & list-at p 0 == #11 & gp-u32 p 3 /= viewer then cg-shown-name owner game viewer (gp-u32 p 3) else ""
+    in cg-renamed owner game viewer packets (i + 1) (list-push out (if name == "" then p else cg-put-name p name 0))
+  cg-put-name : List Integer, Text, Integer -> List Integer
+  cg-put-name (p) (name) (i) = if i == 30 then p
+    else let set = list-set-at p (7 + i) (if i < text-length name & i < 29 then to-unicode (char-code (char-at name i)) else 0)
+    in cg-put-name p name (i + 1)
+  cg-skill-at : CompositeGame, Integer, Integer, Integer, Integer -> Integer
+  cg-skill-at (owner) (characters) (row) (serial) (skill) = gs-skill owner.checkpoint.game serial skill
+  cg-best-skill : CompositeGame, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cg-best-skill (owner) (characters) (row) (serial) (skill) (best) (value) = if skill == 46 then best
+    else let v = cg-skill-at owner characters row serial skill
+    in if v > value then cg-best-skill owner characters row serial (skill + 1) skill v
+    else cg-best-skill owner characters row serial (skill + 1) best value
+ Source-X labels a corpse "corpse of <name>"; the corpse amount holds the body id.
+  cg-corpse-label : CompositeGame, GameShard, List Integer -> Maybe GameReply
+  cg-corpse-label (owner) (game) (packet) = if list-length packet /= 5 | list-at packet 0 /= 9 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in when world-get game.world serial
+      is Err (_) -> None
+      is Ok (item) -> if item.kind /= 2 | item.graphic /= #2006 then None
+        else let at = cg-corpse-owner owner.combat serial 0
+        in let name = if at < 0 then "" else utf8-bytes-to-text (cg-name-bytes (list-at owner.combat.actors at).name 0 [])
+        in Just (gs-reply [sip-message serial item.graphic 6 (if name == "" then "a corpse" else "corpse of " & name)] "items:corpse")
+  cg-corpse-owner : GameCombat, Integer, Integer -> Integer
+  cg-corpse-owner (c) (corpse) (i) = if i == list-length c.actors then -1
+    else if (list-at c.actors i).corpse == corpse & (list-at c.actors i).serial /= 0 then i
+    else cg-corpse-owner c corpse (i + 1)
+  cg-name-bytes : Integer, Integer, List Integer -> List Integer
+  cg-name-bytes (buf) (i) (out) = if i == 30 | peek-byte buf i == 0 then out else cg-name-bytes buf (i + 1) (list-push out (peek-byte buf i))
+
+  cg-bind : CompositeGame, GameInput -> Result Integer Text
+  cg-bind (owner) (input) = let player = gv-player owner.vendor input.session.serial 0
+    in let pack = gsi-pack-find owner.checkpoint.game.world input.session.serial 0
+    in if pack == 0 then Err "composite backpack absent"
+    else if player >= 0 then let p = list-at owner.vendor.players player
+      in let changed = if p.pack == pack then 0 else
+        let bound = __record-set p "pack" pack
+        in let quote = __record-set p "side" 0
+        in let count = __record-set p "count" 0
+        in world-item-touch owner.checkpoint.game.world
+      in Ok player
+    else if not (cg-bind-room owner) then Err "composite player capacity full"
+    else let x = owner.vendor.currency
+    in let actor = if owner.vendor.player-count == 0 then 1
+      else let purse = eu-open x 3 input.session.serial in if purse < 1 then -1 else ep-admit x.world purse 100
+    in if actor < 1 then Err "composite player economy admission refused"
+    else let added = gv-add-player owner.vendor input.session.serial actor pack
+    in if added < 0 then Err "composite vendor player binding failed" else Ok added
+
+ The first player keeps installation actor 1; each later character gets its own kind-3 purse and actor.
+  cg-bind-room : CompositeGame -> Boolean
+  cg-bind-room (owner) = let x = owner.vendor.currency
+    in owner.vendor.player-count == 0 | (owner.vendor.player-count < gv-player-limit & x.world.actor-count < 128 & eu-room x
+      & x.world.money.purse-count < 256 & x.copper.purse-count < 256 & x.silver.purse-count < 256)
+
+ A deleted character releases its player row and its actor's lots. Rows rotate to the end rather
+ than being copied, so no two list positions share one record.
+  cg-shift-lots : GvWorld, Integer -> Integer
+  cg-shift-lots (v) (i) = if i + 1 >= v.lot-count then 0
+    else let moved = list-set-at v.lots i (list-at v.lots (i + 1)) in cg-shift-lots v (i + 1)
+  cg-drop-lots : GvWorld, Integer, Integer -> Integer
+  cg-drop-lots (v) (actor) (i) = if i >= v.lot-count then 0
+    else let l = list-at v.lots i
+    in if l.actor /= actor then cg-drop-lots v actor (i + 1)
+    else let shifted = cg-shift-lots v i
+    in let last = list-set-at v.lots (v.lot-count - 1) l
+    in let a = __record-set l "serial" 0
+    in let b = __record-set l "actor" 0
+    in let c = __record-set l "item" 0
+    in let d = __record-set l "quantity" 0
+    in let e = __record-set l "quality" 0
+    in let f = __record-set l "wear" 0
+    in let g = __record-set l "basis" 0
+    in let n = __record-set v "lot-count" (v.lot-count - 1)
+    in cg-drop-lots v actor i
+  cg-shift-players : GvWorld, Integer -> Integer
+  cg-shift-players (v) (i) = if i + 1 >= v.player-count then 0
+    else let moved = list-set-at v.players i (list-at v.players (i + 1)) in cg-shift-players v (i + 1)
+  cg-quiet-quotes : GvWorld, Integer -> Integer
+  cg-quiet-quotes (v) (i) = if i == v.player-count then 0
+    else let p = list-at v.players i
+    in let a = __record-set p "vendor" 0
+    in let b = __record-set p "side" 0
+    in let c = __record-set p "count" 0 in cg-quiet-quotes v (i + 1)
+  cg-release : CompositeGame, GameShard, Integer -> Integer
+  cg-release (owner) (game) (serial) = when world-get game.world serial
+    is Ok (_) -> 0
+    is Err (_) -> let v = owner.vendor
+      in let at = gv-player v serial 0
+      in if at < 0 then 0
+      else let p = list-at v.players at
+      in let lots = cg-drop-lots v p.actor 0
+      in let shifted = cg-shift-players v at
+      in let last = list-set-at v.players (v.player-count - 1) p
+      in let a = __record-set p "serial" 0
+      in let b = __record-set p "actor" 0
+      in let c = __record-set p "pack" 0
+      in let d = __record-set p "connection" (0 - 1)
+      in let e = __record-set p "expires" 0
+      in let n = __record-set v "player-count" (v.player-count - 1)
+      in let quiet = cg-quiet-quotes v 0
+      in world-item-touch game.world
+
+  cg-items : CompositeGame, Integer -> Integer
+  cg-items (owner) (i) = if i == owner.vendor.lot-count then 0
+    else let serial = (list-at owner.vendor.lots i).serial
+    in let registered = if gsi-known owner.items serial then 0 else gsi-register owner.items serial 0 0 True False
+    in cg-items owner (i + 1)
+
+ A ghost walks, speaks, clicks, asks its status, toggles war mode, answers the death menu, opens its own paperdoll and uses
+ the ankh; it cannot attack, lift, drop, equip, use skills or spells (0x12), answer a target or menu, buy, sell, or
+ double-click anything else, doors and NPCs among them (UO classic; Source-X CChar::IsDead checks).
+  cg-ghost-may : CompositeGame, GameInput, List Integer -> Boolean
+  cg-ghost-may (owner) (input) (packet) = let op = list-at packet 0
+    in if op == 5 | op == 7 | op == 8 | op == #12 | op == #13 | op == #6C | op == 59 | op == 159 | op == #7D then False
+    else if op /= 6 then True
+    else if list-length packet /= 5 then False
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in serial == input.session.serial | (serial /= 0 & (serial == owner.resurrection.shrine | serial == owner.resurrection.other))
+  cg-ghost-denied : GameInput -> GameReply
+  cg-ghost-denied (input) = GameReply { packets = (gsi-denied "You cannot do that while dead.").packets, close = False, note = "ghost:denied" }
+ A ghost's speech reaches no NPC: only the default handler echoes it.
+  cg-ghost-family : GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cg-ghost-family (game) (input) (map) (port) (packet) = Ok None
+ The death answer's full re-entry (0x1B, 0x20, 0x55) wipes the 1.25 client's
+ objects. A fresh negative connection id, which no accept produces, makes
+ every per-connection view forget and resend, as a reconnect does.
+  cg-rebind : CompositeGame, GameInput -> Integer
+  cg-rebind (owner) (input) = let next = owner.rebinds + 1
+    in let counted = __record-set owner "rebinds" next
+    in let fresh = __record-set input "connection" (0 - next)
+    in 0
+
+  cg-route : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Device.Block] Result GameReply Text
+  cg-route (owner) (game) (input) (map) (port) (packet) =
+    if list-length packet > 0 & input.mode == 2 & input.session.phase == 1 & list-at packet 0 == 0 & not (cg-bind-room owner)
+    then act Err "composite player capacity full: creation refused" end
+    else let entering = list-length packet > 0 & input.mode == 2 & input.session.phase == 1
+      & (list-at packet 0 == 0 | list-at packet 0 == #5D)
+    in let was-dead = if input.session.phase /= 2 then False else when world-get game.world input.session.serial is Err (_) -> False is Ok (mobile) -> mobile.health == 0
+    in let ghosting = was-dead & list-length packet == 2 & list-at packet 0 == 44 & list-at packet 1 /= 0
+    in if was-dead & list-length packet > 0 & not (cg-ghost-may owner input packet) then act Ok (cg-ghost-denied input) end
+    else let rebound = if ghosting then cg-rebind owner input else 0
+    in let walking = list-length packet > 0 & list-at packet 0 == 2 & input.mode == 2 & input.session.phase == 2
+    in let before = if walking then world-get game.world input.session.serial else Err "not walking"
+    in let doomed = if list-length packet == 39 & list-at packet 0 == #83 & input.mode == 2 & input.session.phase == 1
+      then (let slot = gp-u32 packet 31 in if slot < 0 | slot >= 5 then 0 else peek-qword game.characters (slot * 160)) else 0
+    in act
+      magical <- if was-dead then act Ok None end else cg-magic owner game input map port packet
+      when magical
+        is Err (e) -> Err e
+        is Ok (Just (reply)) -> let corpses = gr-corpse-packets owner.items reply.packets 0
+          in Ok (as-after owner.active game input packet (cg-after-magic owner game input packet reply))
+        is Ok (None) -> act
+          routed <- gn-route (if was-dead & list-at packet 0 == 3 then cg-ghost-family else cg-family owner) game input map port packet
+          when routed
+            is Err (e) -> Err e
+            is Ok (reply) -> let released = if doomed == 0 then 0 else cg-release owner game doomed in act
+              travelled <- cg-travel owner input map before (cg-after-magic owner game input packet reply)
+              when travelled
+                is Err (e) -> Err e
+                is Ok (moved) -> let after = as-after owner.active game input packet moved
+                  in if (not entering & not was-dead) | input.session.phase /= 2 then Ok after
+                  else cg-entry owner game input map (if entering then cg-peace owner game input after else after)
+            end
+          end
+    end
+  cg-magic : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> [Device.Block] Result (Maybe GameReply) Text
+  cg-magic (owner) (game) (input) (map) (port) (packet) = when owner.magic
+    is None -> act Ok None end
+    is Just (magic) -> if input.mode /= 2 | input.session.phase /= 2 then act Ok None end
+      else mg-handler magic game input map port packet
+  cg-after-magic : CompositeGame, GameShard, GameInput, List Integer, GameReply -> GameReply
+  cg-after-magic (owner) (game) (input) (packet) (reply) = when owner.magic
+    is None -> reply
+    is Just (magic) -> if input.mode /= 2 | input.session.phase /= 2 | reply.close then reply
+      else mg-after-command magic game input packet reply
+  cg-permit : Integer, Integer -> Boolean
+  cg-permit (serial) (destination) = True
+ The walk window covers the traveller's surroundings only, so the destination gate's window is paged in
+ before the arrival tiles are tested.
+  cg-travel : CompositeGame, GameInput, WalkMap, Result WorldObject Text, GameReply -> [Device.Block] Result GameReply Text
+  cg-travel (owner) (input) (map) (before) (reply) = when owner.gates
+    is None -> act Ok reply end
+    is Just (gates) -> when before
+      is Err (_) -> act Ok reply end
+      is Ok (start) -> let seconds = owner.clock / mgd-ticks 1000
+        in when gmg-prepare cg-permit gates input map owner.decoration start seconds
+          is Err (e) -> act Err e end
+          is Ok (None) -> act Ok reply end
+          is Ok (Just (plan)) -> let p = list-at gates.gates plan.destination in when owner.gate-cover
+            is None -> act gmg-apply cg-permit gates input map plan reply end
+            is Just (cover) -> act
+              covered <- cover p.x p.y p.z
+              when covered
+                is Err (e) -> Err e
+                is Ok (arrival) -> gmg-apply cg-permit gates input arrival plan reply
+            end
+  cg-gate-find : GameMoongates, Integer, Integer, Integer -> Integer
+  cg-gate-find (gates) (x) (y) (serial) = if serial == 0 then 0
+    else when world-get gates.game.world serial
+      is Err (_) -> cg-gate-find gates x y (world-tile-next gates.game.world serial)
+      is Ok (item) -> if item.kind == 2 & item.graphic == #0F6C & item.container == 0 & item.x == x & item.y == y then serial
+        else cg-gate-find gates x y (world-tile-next gates.game.world serial)
+  cg-gates-bind : GameMoongates, Integer -> Result Integer Text
+  cg-gates-bind (gates) (i) = if i == 8 then Ok 8
+    else let p = list-at gates.gates i
+    in let found = cg-gate-find gates p.x p.y (world-tile-first gates.game.world p.x p.y)
+    in when (if found > 0 then Ok found else world-create gates.game.world (WorldObject { serial = 0, kind = 2, x = p.x, y = p.y, z = p.z,
+      graphic = #0F6C, hue = 0, container = 0, amount = 1, health = 0 }))
+      is Err (e) -> Err e
+      is Ok (serial) -> let registered = if gsi-known gates.items serial then 0 else gsi-register gates.items serial 0 0 False False
+        in if registered /= 0 then Err "moongate item registration"
+        else let bound = __record-set p "serial" serial in cg-gates-bind gates (i + 1)
+  cg-books : Magery, GameShard, Integer, Integer -> Integer
+  cg-books (magic) (game) (serial) (depth) = if serial == 0 | depth == 0 then 0
+    else let next = world-next-sibling game.world serial
+    in let here = when world-get game.world serial
+      is Err (_) -> 0
+      is Ok (item) -> if item.graphic == #0EFA & not (mgs-known magic serial) then (when mgs-book magic serial mgs-working is Err (_) -> 0 is Ok (_) -> 0)
+        else if item.graphic == #0EFA & bit-and (mgs-spells magic serial) mgs-working /= mgs-spells magic serial then
+          (when mgs-book magic serial (bit-and (mgs-spells magic serial) mgs-working) is Err (_) -> 0 is Ok (_) -> 0)
+        else cg-books magic game (world-first-child game.world serial) (depth - 1)
+    in cg-books magic game next depth
+ The testing kit rune is marked once, when granted, at the new-character
+ entry tile 1420,1698 inside Britain (Damian, 2026-10-04: runes target safe
+ zones only). Any other rune stays blank. Outside the loaded map the kit
+ rune also stays blank rather than carry a guessed height.
+  cg-kit-rune : Magery, WalkMap, Integer -> Result Integer Text
+  cg-kit-rune (magic) (map) (rune) = if rune == 0 then Ok 0
+    else when walk-ground map 1420 1698
+      is Err (_) -> Ok 0
+      is Ok (ground) -> when walk-height map 1420 1698 ground
+        is Err (_) -> Ok 0
+        is Ok (z) -> mgs-rune magic rune 1420 1698 z
+
+ British cannot be damaged or killed (Damian, 2026-10-05); combat and harmful spells refuse an immune target.
+ TILEDATA item flag 0x00800000 is LightSource. Animal bodies follow Source-X
+ CChar::GetNPCBrainAuto: 0x05, 0x06, 0x1D, 0x34, 0x51, 0x97 and 0xC8-0x18F.
+  cg-as-light : CompositeGame, Integer -> Boolean
+  cg-as-light (owner) (graphic) = let tiles = owner.items.tiles
+    in it-present tiles graphic & bit-and (peek-byte tiles (it-entry tiles graphic + 2)) #80 /= 0
+  cg-as-animal : CompositeGame, Integer -> Boolean
+  cg-as-animal (owner) (serial) = let game = owner.checkpoint.game in when world-get game.world serial
+    is Err (_) -> False
+    is Ok (m) -> let b = m.graphic
+      in m.kind == 1 & cb-slot game serial 0 < 0
+        & (b == #05 | b == #06 | b == #1D | b == #34 | b == #51 | b == #97 | (b >= #C8 & b < #190))
+  cg-as-item-name : CompositeGame, Integer -> Text
+  cg-as-item-name (owner) (serial) = when world-get owner.items.world serial
+    is Err (_) -> "item"
+    is Ok (item) -> gsi-name owner.items item
+  cg-as-intelligence : CompositeGame, Integer -> Integer
+  cg-as-intelligence (owner) (serial) = let game = owner.checkpoint.game
+    in let slot = cb-slot game serial 0
+    in if slot < 0 then -1 else gp-stat (game.characters + slot * 160) 2
+  cg-as-poison : CompositeGame, Integer -> Integer
+  cg-as-poison (owner) (serial) = when owner.magic
+    is None -> -1
+    is Just (magic) -> let slot = world-slot owner.items.world serial
+      in if slot < 0 then -1 else let actor = list-at magic.actors slot
+      in if actor.serial == serial then actor.poison else -1
+  cg-as-cure : CompositeGame, Integer -> Boolean
+  cg-as-cure (owner) (serial) = when owner.magic
+    is None -> False
+    is Just (magic) -> let slot = world-slot owner.items.world serial
+      in if slot < 0 then False else let actor = list-at magic.actors slot
+      in if actor.serial /= serial | actor.poison < 0 then False
+      else let a = __record-set actor "poison" -1
+      in let b = __record-set actor "poison-left" 0
+      in let touched = mgs-touch magic in True
+  cg-as-resurrect : CompositeGame, Integer, Integer -> Boolean
+  cg-as-resurrect (owner) (healer) (patient) = let game = owner.checkpoint.game
+    in when world-get game.world patient
+      is Err (_) -> False
+      is Ok (ghost) -> let slot = cb-slot game patient 0
+        in if ghost.kind /= 1 | ghost.health > 0 | slot < 0 then False
+        else when gr-raise-world owner.resurrection game ghost slot
+          is Err (_) -> False
+          is Ok (_) -> let marked = gr-mark-raised owner.resurrection.views patient 0 in True
+  cg-as-snoop : CompositeGame, Integer, Integer, Integer, Boolean -> Boolean
+  cg-as-snoop (owner) (snooper) (target) (pack) (success) = False
+  cg-admit : ActiveSkills, Integer, Integer -> Boolean
+  cg-admit (active) (attacker) (target) = let now = get-ticks
+    in as-visible active attacker target & not (as-calmed active target now) & not (as-calmed active attacker now)
+ A spawned creature's TOPROV by its spawn profile key; -1 for any other mobile.
+  cg-as-provoke : CompositeGame, Integer -> Integer
+  cg-as-provoke (owner) (serial) = when owner.spawns
+    is None -> -1
+    is Just (g) -> let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+      in if i < 0 then -1 else pvd-difficulty (list-at g.catalog.profiles (list-at g.slots i).profile).key
+  cg-as-taming : CompositeGame, Integer -> Integer
+  cg-as-taming (owner) (serial) = when owner.spawns is None -> 0 is Just (g) -> gws-taming g serial
+  cg-as-master : CompositeGame, Integer -> Integer
+  cg-as-master (owner) (serial) = when owner.spawns is None -> -1 is Just (g) -> gws-owner-of g serial
+  cg-as-tame : CompositeGame, Integer, Integer -> Boolean
+  cg-as-tame (owner) (serial) (master) = when owner.spawns is None -> False is Just (g) -> gws-tame g owner.checkpoint.game serial master
+  cg-as-pet-name : CompositeGame, Integer -> Text
+  cg-as-pet-name (owner) (serial) = when owner.spawns is None -> "creature" is Just (g) -> gws-name g serial
+  cg-as-services : CompositeGame -> AsServices
+  cg-as-services (owner) = AsServices { light = cg-as-light owner, animal = cg-as-animal owner, item-name = cg-as-item-name owner,
+    intelligence = cg-as-intelligence owner, poison = cg-as-poison owner, cure = cg-as-cure owner,
+    resurrect = cg-as-resurrect owner, snoop = cg-as-snoop owner, provoke = cg-as-provoke owner, lure = cg-as-lure owner,
+    taming = cg-as-taming owner, master = cg-as-master owner, tame = cg-as-tame owner, pet-name = cg-as-pet-name owner,
+    herd = cg-as-herd owner,
+    envenom = cg-as-envenom owner }
+  cg-as-herd : CompositeGame, Integer, Integer, Integer, Integer -> Boolean
+  cg-as-herd (owner) (creature) (x) (y) (leader) = when owner.spawns
+    is None -> False
+    is Just (g) -> if leader > 0 then gws-lure g creature leader else gws-herd g creature x y
+ Poison a character at Magery level 0 to 3 as the Poison spell does (10 ticks from 3.5 s), refusing one already
+ poisoned at that level or higher.
+  cg-as-envenom : CompositeGame, Integer, Integer, Integer -> Boolean
+  cg-as-envenom (owner) (serial) (level) (poisoner) = when owner.magic
+    is None -> False
+    is Just (magic) -> when mgs-ensure magic owner.checkpoint.game serial
+      is Err (_) -> False
+      is Ok (actor) -> if actor.poison >= level then False
+        else let a = __record-set actor "poison" level
+        in let b = __record-set actor "poison-due" (magic.tick + mgd-ticks 3500)
+        in let c = __record-set actor "poison-left" 10
+        in let d = __record-set actor "poison-last" 0
+        in let e = __record-set actor "poisoner" poisoner
+        in let tracked = mgs-track magic actor
+        in let touched = mgs-touch magic in True
+  cg-as-lure : CompositeGame, Integer, Integer -> Boolean
+  cg-as-lure (owner) (follower) (leader) = when owner.spawns is None -> False is Just (g) -> gws-lure g follower leader
+ UOX3 pet commands: an owner saying "all follow", "all guard" or "all stay" (or "all stop") orders every pet it owns.
+  cg-pet-order : Text -> Integer
+  cg-pet-order (text) = if not (ns-has text "all") then -1 else if ns-has text "follow" then gws-order-follow
+    else if ns-has text "guard" then gws-order-guard else if ns-has text "stay" | ns-has text "stop" then gws-order-stay else -1
+  cg-pet-orders : CompositeGame, GameShard, GameInput, List Integer -> Integer
+  cg-pet-orders (owner) (game) (input) (packet) =
+    if list-length packet < 9 | list-length packet > 256 | list-at packet 0 /= 3 | input.mode /= 2 | input.session.phase /= 2
+      | game.active /= input.session.serial | not (gp-speech-valid packet) then 0
+    else let order = cg-pet-order (gp-speech-text packet)
+    in if order < 0 then 0 else when owner.spawns is None -> 0 is Just (g) -> gws-order g input.session.serial order 0
+  cg-kindling : CompositeGame, GameShard, GameInput, WalkMap, List Integer -> Result (Maybe GameReply) Text
+  cg-kindling (owner) (game) (input) (map) (packet) =
+    if list-length packet /= 5 | list-at packet 0 /= 6 | input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial then Ok None
+    else when world-get game.world (bit-and (gp-u32 packet 1) #7FFFFFFF)
+      is Err (_) -> Ok None
+      is Ok (item) -> if item.kind /= 2 | item.graphic /= cf-kindling then Ok None
+        else when world-get game.world input.session.serial
+            is Err (e) -> Err e
+            is Ok (mobile) -> if mobile.health <= 0 then Ok (Just (gsi-denied "You cannot do that while dead."))
+              else cf-light owner.camps owner.active owner.timers game input map mobile item.serial owner.clock
+  cg-camp : CompositeGame, GameShard, GameInput, Integer -> Maybe GameReply
+  cg-camp (owner) (game) (input) (tick) = if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial then None
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (player) -> let said = cf-camp owner.camps game.world player tick
+        in if list-length said == 0 then None else Just (gs-reply said "camping:camp")
+  cg-immune : CompositeGame, GameShard, Integer -> Integer
+  cg-immune (owner) (game) (serial) = when cb-ensure owner.combat game serial
+    is Err (_) -> 0
+    is Ok (actor) -> let immune = __record-set actor "immune" True in 0
+ Source-X ClientLinger: a logged-out character stays in the world 300 s (its shipped sphere.ini), then
+ leaves every view. Concealed byte 2 marks a departed body; the hiding skill uses 1.
+  cg-linger-ms : Integer = 300000
+  cg-linger-kind : Integer = 7
+  cg-depart : CompositeGame, Integer -> Integer
+  cg-depart (owner) (serial) = if serial <= 0 then 0
+    else if cf-secure owner.camps serial then let cleared = wtm-clear owner.timers cg-linger-kind serial in cg-departed owner serial
+    else wtm-set owner.timers (owner.timers.limit + gm-ticks cg-linger-ms) cg-linger-kind serial
+  cg-departed : CompositeGame, Integer -> Integer
+  cg-departed (owner) (serial) = let slot = world-slot owner.items.world serial in if slot < 0 then 0 else poke-byte owner.active.concealed slot 2
+  cg-return : CompositeGame, Integer -> Integer
+  cg-return (owner) (serial) = let cleared = wtm-clear owner.timers cg-linger-kind serial
+    in let slot = world-slot owner.items.world serial
+    in if slot < 0 then 0 else if peek-byte owner.active.concealed slot == 2 then poke-byte owner.active.concealed slot 0 else 0
+  cg-offline-slots : CompositeGame, Integer, Integer -> Integer
+  cg-offline-slots (owner) (base) (s) = if s == 5 then 0
+    else let serial = peek-qword base (s * 160)
+    in let hidden = if serial <= 0 then 0 else cg-departed owner serial in cg-offline-slots owner base (s + 1)
+  cg-offline : CompositeGame, Integer -> Integer
+  cg-offline (owner) (i) = let table = owner.checkpoint.game.accounts
+    in if table == 0 | i >= ga-count table then 0
+    else let hidden = cg-offline-slots owner (ga-slots table i) 0 in cg-offline owner (i + 1)
+ Source-X addPlayerStart sends the player's war mode (0x72) on every login, and the 1.25 client keeps its own
+ war flag across a relogin until told; a login starts in peace.
+  cg-peace : CompositeGame, GameShard, GameInput, GameReply -> GameReply
+  cg-peace (owner) (game) (input) (reply) = let slot = world-slot game.world input.session.serial
+    in let cleared = if slot < 0 then 0 else let a = list-at owner.combat.actors slot
+      in if a.serial /= input.session.serial then 0 else let stopped = cb-stop owner.combat a in let peace = __record-set a "war" False in 0
+    in gs-reply (list-push reply.packets (cbp-war False)) reply.note
+  cg-entry : CompositeGame, GameShard, GameInput, WalkMap, GameReply -> Result GameReply Text
+  cg-entry (owner) (game) (input) (map) (reply) = when world-get game.world input.session.serial
+    is Err (e) -> Err e
+    is Ok (mobile) -> let returned = cg-return owner input.session.serial in if mobile.health == 0 then Ok reply
+      else when gsi-after-entry owner.items game input reply
+        is Err (e) -> Err e
+        is Ok (entered) -> when cg-bind owner input
+          is Err (e) -> Err e
+          is Ok (_) -> let lordly = if ga-is-british game.accounts then cg-immune owner game input.session.serial else 0
+          in when cts-stock owner.testing owner.test-grants owner.banks game input entered
+            is Err (e) -> Err e
+            is Ok (stock) -> when (if owner.testing then cpr-kit-tools owner.production input.session.serial (gsi-pack-find game.world input.session.serial 0) else Ok 0)
+             is Err (e) -> Err e
+             is Ok (_) -> when (if owner.testing then cpr-kit-tools owner.production input.session.serial (gmb-bank-find owner.banks.items input.session.serial 0) else Ok 0)
+             is Err (e) -> Err e
+             is Ok (_) -> when owner.magic
+              is None -> Ok stock.reply
+              is Just (magic) -> let books = cg-books magic game (world-first-child game.world input.session.serial) 4
+                in let chests = glk-register magic (gsi-pack-find game.world input.session.serial 0) (world-first-child game.world (gsi-pack-find game.world input.session.serial 0)) 3
+                in when cg-kit-rune magic map stock.rune
+                  is Err (e) -> Err e
+                  is Ok (_) -> mg-entry magic game input stock.reply
+
+  cg-pulse : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer -> [Device.Block] Result (Maybe GameReply) Text
+  cg-pulse (owner) (game) (input) (map) (port) (tick) =
+    let stamped = __record-set owner "clock" tick
+    in let driven = (when owner.british is None -> 0 is Just (c) -> if input.mode == 2 & input.session.phase == 2 then cbe-drive c input.session.serial tick else 0)
+    in let s0 = cg-stage-reset owner hpet-ticks 0
+    in when cg-pulse-base owner game input map port tick
+      is Err (e) -> act Err e end
+      is Ok (prior) -> let s1 = cg-stage owner 1 in when cg-town owner game input map port tick
+       is Err (e) -> act Err e end
+       is Ok (town) -> let s2 = cg-stage owner 2 in act
+        spelled <- cg-pulse-magic owner game input map port tick (cg-combine prior town)
+        when spelled
+          is Err (e) -> Err e
+          is Ok (base) -> let s3 = cg-stage owner 3 in when as-pulse (cg-as-services owner) owner.active game input
+            is Err (e) -> Err e
+            is Ok (more) -> let s4 = cg-stage owner 4 in Ok (cg-combine (cg-combine base more) (cg-camp owner game input tick))
+       end
+  cg-pulse-magic : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer, Maybe GameReply -> [Device.Block] Result (Maybe GameReply) Text
+  cg-pulse-magic (owner) (game) (input) (map) (port) (tick) (base) = when owner.magic
+    is None -> act Ok base end
+    is Just (magic) -> if input.mode /= 2 | input.session.phase /= 2 then act Ok base end else act
+      spelled <- mg-pulse magic game input map port tick
+      when spelled
+        is Err (e) -> Err e
+        is Ok (more) -> let corpses = when more is None -> 0 is Just (r) -> gr-corpse-packets owner.items r.packets 0
+          in Ok (cg-combine base more)
+    end
+ Twelve game seconds per real second is GameClock's default 7200-second day.
+  cg-town-rate : Integer = 12
+  cg-town-clock : CompositeGame, Integer -> Integer
+  cg-town-clock (owner) (tick) = let elapsed = if owner.town-tick <= 0 | tick < owner.town-tick then 0 else tick - owner.town-tick
+    in let real-ms = elapsed * pit-count * 1000 / pit-input-hz
+    in let game-ms = owner.town-ms + real-ms * cg-town-rate
+    in let seconds = __record-set owner "town-seconds" (owner.town-seconds + game-ms / 1000)
+    in let carried = __record-set owner "town-ms" (int-mod game-ms 1000)
+    in let stamped = __record-set owner "town-tick" tick in owner.town-seconds
+  cg-economy-hours : EuCurrency, Integer, Integer -> Boolean
+  cg-economy-hours (x) (target) (budget) = if x.world.hour >= target then x.world.hour == target
+    else if budget == 0 then False
+    else if eu-hour x < 0 then False
+    else cg-economy-hours x target (budget - 1)
+ The audit book holds 1024 events; past 960 the newest 512 move to the front.
+  cg-rotate-rows : EaWorld, Integer, Integer, Integer -> Integer
+  cg-rotate-rows (e) (drop) (i) (keep) = if i == keep then 0
+    else let older = list-at e.events i
+    in let newer = list-at e.events (drop + i)
+    in let a = list-set-at e.events i newer
+    in let b = list-set-at e.events (drop + i) older in cg-rotate-rows e drop (i + 1) keep
+  cg-rotate : EaWorld -> Integer
+  cg-rotate (e) = if e.event-count <= 960 then 0
+    else let drop = e.event-count - 512
+    in let moved = cg-rotate-rows e drop 0 512
+    in let kept = __record-set e "event-count" 512 in drop
+  cg-town-move : CompositeGame, TownLive, WalkMap, Integer -> Result GameReply Text
+  cg-town-move (owner) (town) (britain) (seconds) = when cg-town-step owner town britain seconds
+    is Err (e) -> Err e
+    is Ok (r) -> let synced = cg-door-sync owner r.packets 0 in Ok r
+ The merchants' market (gla-market) posts again as each economy day begins, so stock made since (the baker's bread) is offered.
+  cg-town-step : CompositeGame, TownLive, WalkMap, Integer -> Result GameReply Text
+  cg-town-step (owner) (town) (britain) (seconds) = let doors = owner.town-doors in when owner.network
+    is None -> tl-advance town britain doors seconds 8
+    is Just (n) -> let day = town.vendors.currency.world.hour / 24
+      in if not (cg-economy-hours town.vendors.currency (seconds / 3600) 24) then
+        when tl-advance town britain doors seconds 8
+          is Err (e) -> Err e
+          is Ok (r) -> Ok (__record-set r "note" "town network paused: economy hour behind")
+      else let rotated = cg-rotate n.actions.book
+      in let marketed = if town.vendors.currency.world.hour / 24 > day then gla-market n.actions True else 0
+      in when tnv-advance n britain doors seconds 3 8
+        is Ok (r) -> Ok r
+        is Err (refused) -> when tl-advance town britain doors seconds 8
+          is Err (e) -> Err e
+          is Ok (r) -> Ok (__record-set r "note" ("town network refused: " & refused))
+  cg-town : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  cg-town (owner) (game) (input) (map) (port) (tick) = when owner.town
+    is None -> Ok None
+    is Just (town) -> if input.mode /= 2 | input.session.phase /= 2 then Ok None
+      else when owner.town-map
+        is None -> Err "townsfolk map unbound"
+        is Just (britain) -> when cg-labor owner tick
+         is Err (e) -> Err e
+         is Ok (_) -> let s8 = cg-stage owner 8 in let seconds = cg-town-clock owner tick
+          in when cg-town-move owner town britain seconds
+            is Err (e) -> Err e
+            is Ok (moved) -> let s9 = cg-stage owner 9 in when tl-pulse town game input map port tick
+              is Err (e) -> Err e
+              is Ok (spoken) -> let s10 = cg-stage owner 10 in when (when owner.lineup is None -> Ok None is Just (l) -> cgl-pulse l town game input)
+                is Err (e) -> Err e
+                is Ok (greeted) -> let s11 = cg-stage owner 11 in when (when owner.speech is None -> Ok None is Just (speech) -> ns-pulse speech game input map port tick)
+                  is Err (e) -> Err e
+                  is Ok (hailed) -> let s12 = cg-stage owner 12 in Ok (cg-combine (cg-combine (cg-combine (cg-combine (if list-length moved.packets == 0 then None else Just moved) spoken) greeted) hailed) (cg-town-show owner town game input))
+  cg-pulse-base : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  cg-pulse-base (owner) (game) (input) (map) (port) (tick) =
+    let alive = when world-get game.world input.session.serial is Err (_) -> False is Ok (mobile) -> mobile.health > 0
+    in when (if alive then gvd-pulse owner.vendor game input map port tick else Ok None)
+    is Err (e) -> Err e
+    is Ok (vendor) -> let s5 = cg-stage owner 5 in when cg-monsters owner game input map port tick
+      is Err (e) -> Err e
+      is Ok (combat) -> let s6 = cg-stage owner 6 in let registered = cg-items owner 0
+        in let combined = cg-combine (when vendor is None -> None is Just (reply) -> Just (gmb-reply owner.items reply)) combat
+        in when owner.decoration
+          is None -> Ok (cg-combine combined (cg-flora-view owner game input map))
+          is Just (state) -> when wd-pulse state game input map port tick
+            is Err (e) -> Err e
+            is Ok (decoration) -> let s7 = cg-stage owner 7 in when (if input.mode /= 2 | input.session.phase /= 2 | not (wd-bound state) then Ok [] else cg-timers owner state game tick [])
+              is Err (e) -> Err e
+              is Ok (closed) -> let both = cg-combine (cg-combine combined decoration) (cg-flora-view owner game input map)
+                in Ok (if list-length closed == 0 then both else cg-combine both (Just (gs-reply closed "decoration:autoclose")))
+  cg-flora-view : CompositeGame, GameShard, GameInput, WalkMap -> Maybe GameReply
+  cg-flora-view (owner) (game) (input) (map) = if input.mode /= 2 | input.session.phase /= 2 then None
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (mobile) -> let flora = when owner.flora
+          is None -> []
+          is Just (s) -> let synced = cg-flora-sync owner.production.harvest s owner.items.tiles map owner.town-map 0
+            in wf-view s input.connection mobile.x mobile.y
+        in let grounded = cpl-collide owner.production.harvest owner.items.tiles map 0 + (when owner.town-map is None -> 0 is Just (britain) -> cpl-collide owner.production.harvest owner.items.tiles britain 0)
+        in let packets = flora & cpl-view owner.planting owner.production.harvest input.connection mobile.x mobile.y
+        in if list-length packets == 0 then None else Just (gs-reply packets "flora:view")
+  cg-flora-sync : GameHarvest, WfState, Integer, WalkMap, Maybe WalkMap, Integer -> Integer
+  cg-flora-sync (h) (s) (tiles) (map) (town) (i) = if i >= h.count then 0
+    else let site = list-at h.sites i
+    in let w = h.vendor.currency.world
+    in let synced = if site.resource /= 15 | not (eh-valid-node w site.node) then 0
+      else let stage = (list-at w.nodes (site.node - 1)).stage
+      in let changed = wf-site-sync s i site.x site.y stage
+      in if stage /= 2 | changed > 0 then
+        let here = wf-ground s tiles map site.x site.y (stage == 2)
+        in when town is None -> here is Just (britain) -> here + wf-ground s tiles britain site.x site.y (stage == 2)
+      else 0
+    in cg-flora-sync h s tiles map town (i + 1)
+  cg-flora-target : CompositeGame, List Integer -> List Integer
+  cg-flora-target (owner) (packet) = let planted = cpl-target-packet owner.production.harvest packet
+    in when owner.flora is None -> planted is Just (s) -> wf-target-packet s planted
+  cg-timers : CompositeGame, WdState, GameShard, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  cg-timers (owner) (state) (game) (tick) (packets) = let e = wtm-next owner.timers tick
+    in if e < 0 then Ok packets
+    else if owner.timers.kind == cb-regen-timer then when cb-regen-fire owner.combat game owner.timers.key
+      is Err (e) -> Err e
+      is Ok (_) -> cg-timers owner state game tick packets
+    else if owner.timers.kind == clb-kind then (when owner.town
+      is None -> Err "shift timer without townsfolk"
+      is Just (town) -> if (when owner.town-map is None -> -1 is Just (britain) -> clb-fire town owner.timers britain owner.town-doors owner.timers.key tick) == -2 then Err "shift timer pool full"
+        else cg-timers owner state game tick packets)
+    else if owner.timers.kind == cgm-kind then (when cg-miner owner owner.timers.key tick
+      is Err (e) -> Err e
+      is Ok (_) -> cg-timers owner state game tick packets)
+    else if owner.timers.kind == cg-linger-kind then let gone = cg-departed owner owner.timers.key in cg-timers owner state game tick packets
+    else if owner.timers.kind == cf-kind then (when cf-tick owner.camps owner.timers game.world owner.timers.key tick
+      is Err (e) -> Err e
+      is Ok (fire) -> cg-timers owner state game tick (packets & fire))
+    else if owner.timers.kind == mgs-kind then (when owner.magic
+      is None -> Err "magery timer without magery"
+      is Just (magic) -> let pushed = mgs-fired magic owner.timers.key in cg-timers owner state game tick packets)
+    else if owner.timers.kind == cgf-kind then (when cg-errand owner game tick
+      is Err (e) -> Err e
+      is Ok (_) -> cg-timers owner state game tick packets)
+    else if owner.timers.kind == cbe-kind then (when cg-british owner game tick
+      is Err (e) -> Err e
+      is Ok (_) -> cg-timers owner state game tick packets)
+    else if owner.timers.kind /= wd-door-timer then Err "world timer kind"
+    else let row = owner.timers.key
+    in let closed = wd-autoclose state owner.timers game row tick
+    in let synced = if list-length closed == 0 then 0 else cg-door-cells owner.town-doors row
+    in cg-timers owner state game tick (packets & closed)
+  cg-town-doors : CompositeGame, Integer, Integer -> Result Integer Text
+  cg-town-doors (owner) (data) (size) = when owner.town
+    is None -> Ok 0
+    is Just (_) -> when owner.town-map
+      is None -> Ok 0
+      is Just (britain) -> when owner.decoration
+        is None -> Ok 0
+        is Just (shown) -> when wd-read data size britain britain.stride
+          is Err (e) -> Err e
+          is Ok (doors) -> let shared = __record-set doors "opened" shown.opened
+            in let clean = wd-copy doors.base britain.solids 0 (britain.width * britain.height * britain.stride / 8)
+            in when wd-rebind doors britain britain.stride
+              is Err (e) -> Err e
+              is Ok (_) -> let bound = __record-set owner "town-doors" (Just doors)
+                in when owner.town
+                  is None -> Ok 1
+                  is Just (town) -> when tl-resettle town britain 0
+                    is Err (e) -> Err e
+                    is Ok (_) -> let reached = cg-miner-nodes owner town britain (Just doors) 0 in Ok 1
+  cg-miner-nodes : CompositeGame, TownLive, WalkMap, Maybe WdState, Integer -> Integer
+  cg-miner-nodes (owner) (t) (map) (doors) (i) = if i >= list-length owner.miners then 0
+    else let fixed = cg-node-reach owner.miners t map doors (list-at owner.miners i) 0
+    in cg-miner-nodes owner t map doors (i + 1)
+  cg-node-taken : List CgGatherer, CgGatherer, Integer -> Boolean
+  cg-node-taken (miners) (c) (i) = if i >= list-length miners then False
+    else let o = list-at miners i in (o.serial /= c.serial & o.node.x == c.node.x & o.node.y == c.node.y) | cg-node-taken miners c (i + 1)
+  cg-node-reach : List CgGatherer, TownLive, WalkMap, Maybe WdState, CgGatherer, Integer -> Integer
+  cg-node-reach (miners) (t) (map) (doors) (c) (tries) = if tries == 8 then -1
+    else let from = WorldObject { serial = c.serial, kind = 1, x = t.entrance.x, y = t.entrance.y, z = t.entrance.z,
+      graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+    in if not (cg-node-taken miners c 0) & rte-plan t.nav t.vendors.game.world map doors from c.node.x c.node.y c.node.z >= 0 then let reset = cgg-reset c in tries
+    else let r = cgg-node-region
+    in when bb-placement t.vendors.game.world map r ((c.node.y - r.y1) * (r.x2 - r.x1 + 1) + c.node.x - r.x1 + 1)
+      is Err (_) -> -1
+      is Ok (spot) -> let moved = tl-copy-spot c.node spot in cg-node-reach miners t map doors c (tries + 1)
+  cg-door-cells : Maybe WdState, Integer -> Integer
+  cg-door-cells (other) (row) = when other
+    is None -> 0
+    is Just (s) -> if row < 0 | row >= s.count | not (wd-bound s) then 0
+      else let x = wd-field s row 0
+      in let y = wd-field s row 1
+      in let a = when wd-rebuild-cell s x y is Err (_) -> 0 is Ok (_) -> 0
+      in let b = when wd-rebuild-cell s (x + wd-field s row 9) (y + wd-field s row 10) is Err (_) -> 0 is Ok (_) -> 0 in 0
+  cg-door-sync : CompositeGame, List (List Integer), Integer -> Integer
+  cg-door-sync (owner) (packets) (i) = if i == list-length packets then 0
+    else let packet = list-at packets i
+    in let row = if list-length packet == 5 & list-at packet 0 == #1D then bit-and (gp-u32 packet 1) #7FFFFFFF - wd-serial-base - 1 else -1
+    in let synced = when owner.decoration
+      is None -> 0
+      is Just (state) -> if row < 0 | row >= state.count | not (wd-is-door state row) then 0
+        else let cells = cg-door-cells owner.decoration row
+        in if bit-and (peek-byte state.opened row) 1 /= 0 then wtm-set owner.timers (get-ticks + wd-close-ticks) wd-door-timer row
+        else wtm-clear owner.timers wd-door-timer row
+    in cg-door-sync owner packets (i + 1)
+  cg-combine : Maybe GameReply, Maybe GameReply -> Maybe GameReply
+  cg-combine (one) (two) = when one
+    is None -> two
+    is Just (a) -> when two
+      is None -> Just a
+      is Just (b) -> Just (GameReply { packets = a.packets & b.packets, close = a.close | b.close, note = a.note & "; " & b.note })
+  cg-monsters : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  cg-monsters (owner) (game) (input) (map) (port) (tick) = let fought = cg-monsters-base owner game input map port tick
+    in when owner.spawns is None -> fought is Just (spawns) -> gws-after cg-spawn-terrain spawns game input map tick fought
+  cg-monsters-base : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  cg-monsters-base (owner) (game) (input) (map) (port) (tick) = when gm-pulse owner.monsters game input map port tick
+    is Err (e) -> Err e
+    is Ok (reply) -> when cbd-dress owner.combat owner.items 0
+      is Err (e) -> Err e
+      is Ok (_) -> when gr-after owner.resurrection game input (cbd-reply owner.items (Ok reply))
+        is Err (e) -> Err e
+        is Ok (fought) -> when cg-healed owner game input
+          is Err (e) -> Err e
+          is Ok (healed) -> Ok (cg-combine fought healed)
+ ServUO BaseHealer.OnMovement and OfferResurrection, pre-AOS: a town healer raises a ghost that comes within 4 tiles,
+ saying "Thou art dead, but 'tis within my power to resurrect thee.  Live!" with sound 0x1F2. Shop 4 of bb-shops is the
+ Healer Of Britain; only a world with Britain's shops bound has one.
+  cg-healer-shop : Integer = 4
+  cg-healer-range : Integer = 4
+  cg-healer-near : CompositeGame, GameShard, WorldObject, Integer -> Integer
+  cg-healer-near (owner) (game) (ghost) (i) = if i >= owner.vendor.vendor-count then 0
+    else let serial = (list-at owner.vendor.vendors i).serial
+    in let near = bb-role owner.vendor serial == cg-healer-shop & (when world-get game.world serial
+      is Err (_) -> False
+      is Ok (h) -> h.kind == 1 & h.health > 0 & max (walk-abs (h.x - ghost.x)) (walk-abs (h.y - ghost.y)) <= cg-healer-range)
+    in if near then serial else cg-healer-near owner game ghost (i + 1)
+  cg-healed : CompositeGame, GameShard, GameInput -> Result (Maybe GameReply) Text
+  cg-healed (owner) (game) (input) = if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial then Ok None
+    else when owner.shops
+      is None -> Ok None
+      is Just (_) -> when world-get game.world input.session.serial
+        is Err (_) -> Ok None
+        is Ok (m) -> let healer = if m.health > 0 then 0 else cg-healer-near owner game m 0
+          in let slot = cb-slot game m.serial 0
+          in if healer == 0 | slot < 0 then Ok None
+          else when world-get game.world healer
+            is Err (e) -> Err e
+            is Ok (h) -> when gr-raise owner.resurrection game input m slot
+              is Err (e) -> Err e
+              is Ok (raised) -> Ok (cg-combine (Just (gs-reply [gvp-speech h "Healer" "Thou art dead, but 'tis within my power to resurrect thee.  Live!",
+                cbp-sound #1F2 m] "healer:resurrect")) raised)
+  cg-status : CompositeGame, List Integer -> List Integer
+  cg-status (owner) (status) = when owner.magic
+    is None -> gar-status owner.items status
+    is Just (magic) -> gar-status owner.items (mgp-rewrite magic status)
+  cg-view : CompositeGame, GameShard, GameInput, GameReply -> Result GameReply Text
+  cg-view (owner) (game) (input) (reply) = if input.mode /= 2 | input.session.phase /= 2 | reply.close then Ok reply
+    else let player = gv-player owner.vendor input.session.serial 0
+    in if player < 0 then Err "client view vendor binding absent"
+    else when gcv-apply owner.view owner.combat owner.items game input (cg-status owner (gv-status-packet owner.vendor (list-at owner.vendor.players player))) reply
+      is Err (e) -> Err e
+      is Ok (viewed) -> when owner.gates
+        is None -> Ok (cg-hide owner viewed)
+        is Just (gates) -> when gmg-view gates input viewed
+          is Err (e) -> Err e
+          is Ok (gated) -> Ok (cg-hide owner gated)
+ 0x20 byte 10 is the status flags; 0x80 draws the player hidden (translucent).
+  cg-hide : CompositeGame, GameReply -> GameReply
+  cg-hide (owner) (reply) = let shown = if owner.hidden == 0 then 0 else cg-hide-packets owner.hidden reply.packets 0 in reply
+  cg-hide-packets : Integer, List (List Integer), Integer -> Integer
+  cg-hide-packets (serial) (packets) (i) = if i >= list-length packets then 0
+    else let p = list-at packets i
+    in let marked = if list-length p == 19 & list-at p 0 == #20 & gp-u32 p 1 == serial & bit-and (list-at p 10) #80 == 0
+      then list-set-at p 10 (list-at p 10 + #80) else p
+    in cg-hide-packets serial packets (i + 1)
+  cg-invisible : CompositeGame, Integer -> Boolean
+  cg-invisible (owner) (serial) = let on = owner.hidden /= serial
+    in let hidden = __record-set owner "hidden" (if on then serial else 0)
+    in let unseen = __record-set owner.monsters "unseen" owner.hidden
+    in let unspawned = when owner.spawns is None -> 0 is Just (s) -> let blind = __record-set s "unseen" owner.hidden in 0
+    in on

@@ -1,0 +1,106 @@
+Chapter: WorldSnapshotProof
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  wsp-object : Integer, Integer -> WorldObject
+  wsp-object (kind) (parent) = WorldObject { serial = 0, kind = kind,
+    x = 1420, y = 1690, z = -5, graphic = 400, hue = 17,
+    container = parent, amount = 1, health = 50 }
+
+  wsp-check : Text, Boolean -> [Console] Nothing
+  wsp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  wsp-equal : Integer, Integer, Integer, Integer -> Boolean
+  wsp-equal (a) (b) (size) (i) =
+    if i >= size then True
+    else if peek-byte a i /= peek-byte b i then False
+    else wsp-equal a b size (i + 1)
+
+  wsp-rehash : Integer, Integer -> Integer
+  wsp-rehash (buf) (size) = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+
+  wsp-roundtrip : WorldCheckpoint, Integer, Integer -> [Console] Nothing
+  wsp-roundtrip (source) (buf) (size) = when ws-decode buf size
+    is Err (e) -> print-line-uni ("FAIL decode " & e)
+    is Ok (restored) -> act
+      wsp-check "clock and sequence" (restored.tick == 720 & restored.sequence == 109)
+      wsp-check "all stored fields" (wsp-equal source.world.buffer restored.world.buffer (size - 64) 0)
+      wsp-check "generation restored" (when world-create restored.world (wsp-object 2 1) is Err (e) -> False is Ok (serial) -> serial == 1073741829)
+      wsp-check "decoded table detached" (world-count source.world == 1 & world-count restored.world == 2)
+    end
+
+  wsp-corrupt : WorldCheckpoint, Integer, Integer -> [Console] Nothing
+  wsp-corrupt (source) (buf) (size) = act
+    let changed = poke-byte buf (size - 1) 1
+    in wsp-check "payload corruption" (is-err (ws-decode buf size))
+    let reset = ws-encode source buf size
+    in let changed = poke-qword buf 64 999
+    in let hash = wsp-rehash buf size
+    in wsp-check "forged count refused" (is-err (ws-decode buf size))
+    let reset = ws-encode source buf size
+    in let changed = poke-qword buf 168 1
+    in let hash = wsp-rehash buf size
+    in wsp-check "free-list cycle refused" (is-err (ws-decode buf size))
+    let reset = ws-encode source buf size
+    in let changed = poke-qword buf 88 2
+    in let hash = wsp-rehash buf size
+    in wsp-check "namespace mismatch refused" (is-err (ws-decode buf size))
+    let reset = ws-encode source buf size
+    in let changed = poke-qword buf 80 2
+    in let hash = wsp-rehash buf size
+    in wsp-check "slot identity refused" (is-err (ws-decode buf size))
+    let reset = ws-encode source buf size
+    in let changed = poke-qword buf 24 (-1)
+    in let hash = wsp-rehash buf size
+    in wsp-check "negative clock refused" (is-err (ws-decode buf size))
+    let reset = ws-encode source buf size
+    in let changed = poke-qword buf 16 16385
+    in wsp-check "oversized capacity refused" (is-err (ws-decode buf size))
+  end
+
+  wsp-small : WorldTable -> [Console] Nothing
+  wsp-small (world) =
+    let mobile = world-create world (wsp-object 1 0)
+    in let item = world-create world (wsp-object 2 1)
+    in let deleted = world-delete world 1073741826
+    in let checkpoint = WorldCheckpoint { world = world, tick = 720, sequence = 109 }
+    in let size = ws-size world.capacity
+    in let buf = alloc-bytes size
+    in act
+      wsp-check "destination capacity" (is-err (ws-encode checkpoint buf (size - 1)))
+      wsp-check "encode exact size" (when ws-encode checkpoint buf size is Err (e) -> False is Ok (n) -> n == 320)
+      wsp-check "truncated checkpoint" (is-err (ws-decode buf 63) & is-err (ws-decode buf (size - 1)))
+      wsp-roundtrip checkpoint buf size
+      wsp-corrupt checkpoint buf size
+    end
+
+  wsp-fill : WorldTable, WorldObject, Integer -> Boolean
+  wsp-fill (world) (obj) (left) =
+    if left <= 0 then True
+    else let mark = __heap-save
+    in let ok = is-ok (world-create world obj)
+    in let restored = __heap-restore mark
+    in if not ok then False else wsp-fill world obj (left - 1)
+
+  wsp-large : WorldTable -> [Console] Nothing
+  wsp-large (world) =
+    let filled = wsp-fill world (wsp-object 2 0) 8192
+    in let checkpoint = WorldCheckpoint { world = world, tick = 720, sequence = 8192 }
+    in let size = ws-size world.capacity
+    in let buf = alloc-bytes size
+    in let encoded = ws-encode checkpoint buf size
+    in when ws-decode buf size
+      is Err (e) -> print-line-uni ("FAIL populated decode " & e)
+      is Ok (restored) -> wsp-check "8192 object checkpoint" (filled & is-ok encoded & world-count restored.world == 8192 & wsp-equal world.buffer restored.world.buffer (size - 64) 0)
+
+  opening : [Console] Nothing = act
+    when world-new 3
+      is Err (e) -> print-line-uni "FAIL small setup"
+      is Ok (world) -> wsp-small world
+    when world-new 8192
+      is Err (e) -> print-line-uni "FAIL large setup"
+      is Ok (world) -> wsp-large world
+  end
+
+Page 1

@@ -1,0 +1,137 @@
+Chapter: MulReaders
+  cites Foreword chapter Result
+
+ Legacy UO records are little-endian. Map blocks are column-major 8 by 8
+ blocks; cells inside a block are row-major. Buffers remain caller-owned.
+ Every decoder receives the actual byte count, never the buffer capacity.
+
+  MulRange = record { offset : Integer, length : Integer }
+  MulLand = record { graphic : Integer, z : Integer }
+  MulStatic = record { graphic : Integer, x : Integer, y : Integer, z : Integer, hue : Integer }
+  MulLandData = record { flags : Integer, texture : Integer }
+  MulItemData = record { flags : Integer, weight : Integer, layer : Integer, animation : Integer, height : Integer }
+  MulComponent = record { graphic : Integer, x : Integer, y : Integer, z : Integer, flags : Integer }
+
+  mul-map-width : Integer = 6144
+  mul-map-height : Integer = 4096
+
+  mul-fits : Integer, Integer, Integer -> Boolean
+  mul-fits (size) (offset) (count) =
+    if size < 0 | offset < 0 | count < 0 then False
+    else if offset > size then False
+    else count <= size - offset
+
+  mul-u16 : Integer, Integer -> Integer
+  mul-u16 (buf) (at) = peek-byte buf at + 256 * peek-byte buf (at + 1)
+
+  mul-u32 : Integer, Integer -> Integer
+  mul-u32 (buf) (at) = mul-u16 buf at + 65536 * mul-u16 buf (at + 2)
+
+  mul-s8 : Integer -> Integer
+  mul-s8 (n) = if n >= 128 then n - 256 else n
+
+  mul-s16 : Integer -> Integer
+  mul-s16 (n) = if n >= 32768 then n - 65536 else n
+
+  mul-block : Integer, Integer -> Result Integer Text
+  mul-block (x) (y) =
+    if x < 0 | x >= mul-map-width | y < 0 | y >= mul-map-height then Err "MUL coordinate outside 6144x4096 map"
+    else Ok ((x / 8) * 512 + y / 8)
+
+  mul-map-range : Integer, Integer -> Result MulRange Text
+  mul-map-range (x) (y) = when mul-block x y
+    is Err (e) -> Err e
+    is Ok (block) -> Ok (MulRange { offset = block * 196, length = 196 })
+
+  mul-staidx-range : Integer, Integer -> Result MulRange Text
+  mul-staidx-range (x) (y) = when mul-block x y
+    is Err (e) -> Err e
+    is Ok (block) -> Ok (MulRange { offset = block * 12, length = 12 })
+
+  mul-land : Integer, Integer, Integer, Integer -> Result MulLand Text
+  mul-land (buf) (size) (x) (y) =
+    if size /= 196 then Err "MUL map block must contain 196 bytes"
+    else when mul-block x y
+      is Err (e) -> Err e
+      is Ok (block) ->
+        let at = 4 + ((int-mod y 8) * 8 + int-mod x 8) * 3
+        in let graphic = mul-u16 buf at
+        in if graphic >= 16384 then Err "MUL land graphic outside tiledata"
+        else Ok (MulLand { graphic = graphic, z = mul-s8 (peek-byte buf (at + 2)) })
+
+ Indexed records use FFFFFFFF for absence; an empty entry is distinct from
+ a corrupt offset. The caller supplies the length of the data file.
+
+  mul-index : Integer, Integer, Integer, Integer -> Result MulRange Text
+  mul-index (buf) (size) (data-size) (stride) =
+    if size /= 12 then Err "MUL index entry must contain 12 bytes"
+    else if data-size < 0 | (stride /= 7 & stride /= 12) then Err "MUL invalid index parameters"
+    else let offset = mul-u32 buf 0
+    in let count = mul-u32 buf 4
+    in if offset == 4294967295 then Ok (MulRange { offset = 0, length = 0 })
+    else if count == 4294967295 | int-mod count stride /= 0 then Err "MUL invalid indexed length"
+    else if not (mul-fits data-size offset count) then Err "MUL index outside data file"
+    else Ok (MulRange { offset = offset, length = count })
+
+  mul-static : Integer, Integer, Integer -> Result MulStatic Text
+  mul-static (buf) (size) (index) =
+    if size < 0 | int-mod size 7 /= 0 then Err "MUL statics length is not a multiple of 7"
+    else if index < 0 | index >= size / 7 then Err "MUL static index outside buffer"
+    else let at = index * 7
+    in let x = peek-byte buf (at + 2)
+    in let y = peek-byte buf (at + 3)
+    in let graphic = mul-u16 buf at
+    in if x >= 8 | y >= 8 | graphic >= 16384 then Err "MUL invalid static tile"
+    else Ok (MulStatic { graphic = graphic, x = x, y = y,
+      z = mul-s8 (peek-byte buf (at + 4)), hue = mul-u16 buf (at + 5) })
+
+ Legacy tiledata has 512 land groups (4 + 32*26 bytes), followed by item
+ groups (4 + 32*37 bytes). High Seas 64-bit flags are not accepted here.
+
+  mul-land-data-range : Integer -> Result MulRange Text
+  mul-land-data-range (graphic) =
+    if graphic < 0 | graphic >= 16384 then Err "MUL land graphic outside tiledata"
+    else Ok (MulRange { offset = (graphic / 32) * 836 + 4 + (int-mod graphic 32) * 26, length = 26 })
+
+  mul-item-data-range : Integer -> Result MulRange Text
+  mul-item-data-range (graphic) =
+    if graphic < 0 | graphic >= 16384 then Err "MUL item graphic outside legacy tiledata"
+    else Ok (MulRange { offset = 428032 + (graphic / 32) * 1188 + 4 + (int-mod graphic 32) * 37, length = 37 })
+
+  mul-land-data : Integer, Integer -> Result MulLandData Text
+  mul-land-data (buf) (size) =
+    if size /= 26 then Err "MUL land tiledata must contain 26 bytes"
+    else Ok (MulLandData { flags = mul-u32 buf 0, texture = mul-u16 buf 4 })
+
+  mul-item-data : Integer, Integer -> Result MulItemData Text
+  mul-item-data (buf) (size) =
+    if size /= 37 then Err "MUL item tiledata must contain 37 bytes"
+    else Ok (MulItemData { flags = mul-u32 buf 0, weight = peek-byte buf 4,
+      layer = peek-byte buf 5, animation = mul-u16 buf 10, height = peek-byte buf 16 })
+
+  mul-multi-index-range : Integer -> Result MulRange Text
+  mul-multi-index-range (multi) =
+    if multi < 0 | multi >= 4096 then Err "MUL multi outside legacy index"
+    else Ok (MulRange { offset = multi * 12, length = 12 })
+
+  mul-component : Integer, Integer, Integer -> Result MulComponent Text
+  mul-component (buf) (size) (index) =
+    if size < 0 | int-mod size 12 /= 0 then Err "MUL multi length is not a multiple of 12"
+    else if index < 0 | index >= size / 12 then Err "MUL component index outside buffer"
+    else let at = index * 12
+    in let graphic = mul-u16 buf at
+    in if graphic >= 16384 then Err "MUL component graphic outside legacy tiledata"
+    else Ok (MulComponent { graphic = graphic, x = mul-s16 (mul-u16 buf (at + 2)),
+      y = mul-s16 (mul-u16 buf (at + 4)), z = mul-s16 (mul-u16 buf (at + 6)), flags = mul-u32 buf (at + 8) })
+
+  mul-land-passable : MulLandData -> Boolean
+  mul-land-passable (tile) = bit-and tile.flags 192 == 0
+
+  mul-item-surface : MulItemData -> Boolean
+  mul-item-surface (tile) = bit-and tile.flags 512 /= 0 & bit-and tile.flags 192 == 0
+
+  mul-item-standing-z : MulItemData, Integer -> Integer
+  mul-item-standing-z (tile) (z) =
+    z + (if bit-and tile.flags 1024 /= 0 then tile.height / 2 else tile.height)
+
+Page 1

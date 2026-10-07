@@ -1,0 +1,58 @@
+Chapter: LoginWireProof
+  cites Uoaix chapter LoginWire
+
+ Independent host recurrence, seed 01020304: empty 80 login with trailer 5D,
+ A4 plus 148 zero bytes, A0 selecting shard zero. No client data is embedded.
+
+  fixture : List Integer = [
+    1, 2, 3, 4, 46, 17, 206, 161, 22, 205, 160, 22, 77, 224, 54, 221,
+    168, 146, 15, 65, 102, 117, 124, 248, 186, 27, 203, 163, 151, 141, 128, 6,
+    197, 36, 212, 44, 80, 238, 177, 30, 201, 162, 151, 141, 128, 6, 197, 164,
+    20, 76, 224, 54, 93, 104, 242, 63, 217, 170, 147, 143, 1, 70, 229, 52,
+    220, 117, 118, 47, 81, 238, 49, 94, 233, 50, 95, 233, 178, 31, 201, 34,
+    87, 109, 240, 190, 153, 138, 131, 7, 69, 228, 52, 92, 104, 114, 127, 249,
+    58, 219, 43, 211, 175, 17, 78, 225, 54, 93, 104, 114, 127, 249, 58, 91,
+    235, 179, 31, 201, 162, 151, 13, 192, 38, 85, 108, 112, 254, 185, 26, 203,
+    35, 215, 45, 208, 174, 17, 206, 161, 22, 205, 160, 22, 77, 224, 54, 221,
+    168, 146, 15, 65, 102, 117, 124, 248, 186, 27, 203, 163, 151, 141, 128, 6,
+    197, 36, 212, 44, 80, 238, 177, 30, 201, 162, 151, 141, 128, 6, 197, 164,
+    20, 76, 224, 54, 93, 104, 242, 63, 217, 170, 147, 143, 1, 70, 229, 52,
+    220, 40, 210, 47, 81, 238, 49, 94, 233, 50, 95, 233, 178, 31, 201, 34,
+    87, 109, 240, 190, 153, 138, 131, 167, 69, 228
+  ]
+
+  feed-range : UoLoginWire, List Integer, Integer, Integer -> UoLoginWire
+  feed-range (st) (bytes) (i) (stop) =
+    if i >= stop then st
+    else feed-range (uo-wire-byte st (list-at bytes i)) bytes (i + 1) stop
+
+  split-grade : List Integer, Integer -> Boolean
+  split-grade (bytes) (split) =
+    if split > list-length bytes then True
+    else let mark = __heap-save
+    in let first = feed-range (uo-wire-new 0) bytes 0 split
+    in let last = feed-range first bytes split (list-length bytes)
+    in let ok = last.logins == 1 & last.hardware == 1 & last.selections == 1 & last.failure == 0 & last.remaining == 0
+    in let restored = __heap-restore mark
+    in if ok then split-grade bytes (split + 1) else False
+
+  opening : [Console] Integer
+  opening =
+    let bytes = fixture
+    in let partial = feed-range (uo-wire-new 0) bytes 0 65
+    in let header = feed-range (uo-wire-new 0) bytes 0 66
+    in let hardware = feed-range (uo-wire-new 0) bytes 0 215
+    in let select-partial = feed-range (uo-wire-new 0) bytes 0 217
+    in let bad = uo-wire-byte select-partial (bit-xor (list-at bytes 217) 1)
+    in let unknown = uo-wire-byte (feed-range (uo-wire-new 0) bytes 0 66) (bit-xor (list-at bytes 66) 91)
+    in let game = uo-wire-feed (uo-wire-new 0) [18, 52, 86, 120, 255, 0] 0
+    in act
+      print-line-uni ("login waits: " & show (partial.logins == 0 & partial.remaining == 1))
+      print-line-uni ("login complete: " & show (header.logins == 1 & header.remaining == 0))
+      print-line-uni ("hardware not selection: " & show (hardware.hardware == 1 & hardware.selections == 0))
+      print-line-uni ("shard refused: " & show (bad.failure == 257 & bad.selections == 0))
+      print-line-uni ("unknown refused: " & show (unknown.failure == 256))
+      print-line-uni ("game capture only: " & show (game.game & game.logins == 0 & game.failure == 0))
+      print-line-uni ("every split: " & show (split-grade bytes 0))
+      0
+    end

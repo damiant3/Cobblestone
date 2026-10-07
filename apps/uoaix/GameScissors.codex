@@ -1,0 +1,113 @@
+Chapter: GameScissors
+  cites Uoaix chapter GameCarve
+  cites Uoaix chapter GameCombat
+
+ UOX3 js/skill/tailoring/scissors.js and dictionary.ENG 6029, 6030, 6034, 6035, 6036: scissors cut hides in
+ the backpack into cut leather (0x1081) and cloth into clean bandages (0x0E21) one for one, with sound 0x248
+ and no skill check.
+
+  gsc-into : Integer -> Integer
+  gsc-into (item) = if item == 7 then 35 else if item == 37 then 75 else 0
+  gsc-tool : GameHarvest, GvPlayer, Integer -> Integer
+  gsc-tool (state) (player) (serial) =
+    let at = gv-lot state.vendor serial 0
+    in if at < 0 then -1
+    else let lot = list-at state.vendor.lots at
+    in if lot.actor /= player.actor | lot.item /= 74 | lot.quantity /= 1 | not (gsi-known state.items serial)
+      | not (gv-owned state.items.world serial player.serial 65) then -1
+    else when world-get state.items.world serial
+      is Err (_) -> -1
+      is Ok (tool) -> if not (gh-carried state player tool) then -1 else at
+  gsc-begin : GameHarvest, GvPlayer, GhRequest, Integer, Integer -> Result (Maybe GameReply) Text
+  gsc-begin (state) (player) (request) (tool) (now) =
+    if state.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+    else let target = #48410000 + state.nonce
+    in let nonce = __record-set state "nonce" (state.nonce + 1)
+    in let context = __record-set request "target" target
+    in let selected = __record-set request "tool" tool
+    in let expires = __record-set request "expires" (now + gh-ticks 10000)
+    in Ok (Just (gs-reply [sip-target target, sip-message #FFFFFFFF #FFFF 6 "What do you want to use these scissors on?"] "scissors target"))
+ UOX3 js/server/resource/sheepshearing.js and dictionary.ENG 461, 1773, 1774: scissors within 3 tiles of a wooly
+ sheep (body 0xCF) turn it to 0xDF, play 0x248 and give 2 wool (0x0DF8), with no skill check; the wool is found
+ goods, so it carries no cost basis.
+  gsc-mobile : WorldTable, Integer -> Boolean
+  gsc-mobile (world) (serial) = when world-get world serial is Err (_) -> False is Ok (m) -> m.kind == 1 & m.health > 0
+  gsc-shear : GameHarvest, GvPlayer, Integer, Integer -> Result (Maybe GameReply) Text
+  gsc-shear (state) (player) (serial) (now) =
+    when world-get state.items.world serial
+      is Err (e) -> Err e
+      is Ok (sheep) -> if sheep.graphic /= #00CF & sheep.graphic /= #00DF then gh-denied "You can't use the scissors on that."
+        else when world-get state.items.world player.serial
+          is Err (e) -> Err e
+          is Ok (me) -> if walk-abs (sheep.x - me.x) > 3 | walk-abs (sheep.y - me.y) > 3 then gh-denied "You are too far away."
+            else if sheep.graphic == #00DF then gh-denied "This sheep is not yet ready to be shorn."
+            else let v = state.vendor
+            in if v.lot-count == gv-lot-limit | world-count state.items.world >= state.items.world.capacity then gh-denied "You cannot hold the wool."
+            else if ep-find v.currency.world player.actor 12 2 < 0 then gh-denied "You cannot hold the wool."
+            else let shorn = __record-set sheep "graphic" #00DF
+            in when world-update state.items.world shorn
+              is Err (e) -> Err e
+              is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+                in when gh-place state player 12 2 1000 0 now
+                  is Err (e) -> Err e
+                  is Ok (wool) -> Ok (Just (gs-reply ([cbp-move shorn (cb-direction (me.x - sheep.x) (me.y - sheep.y)) 0 3, wool]
+                    & gsi-sound-at state.items serial #0248 & [sip-message #FFFFFFFF #FFFF 6 "You shear some wool from the sheep."]) "scissors shear"))
+  gsc-cut : GameHarvest, GvPlayer, Integer, Integer -> Result (Maybe GameReply) Text
+  gsc-cut (state) (player) (serial) (now) =
+    if serial /= 0 & gsc-mobile state.items.world serial then gsc-shear state player serial now
+    else let at = gv-lot state.vendor serial 0
+    in if serial == 0 | at < 0 then gh-denied "You can't use the scissors on that."
+    else let lot = list-at state.vendor.lots at
+    in let from = lot.item
+    in let into = gsc-into from
+    in if into == 0 | not (eg-id state.vendor.currency.world.catalog into) then gh-denied "Scissors cannot be used on that to produce anything."
+    else if lot.actor /= player.actor | not (gv-owned state.items.world serial player.serial 65) then gh-denied "You can't use the scissors on that."
+    else let w = state.vendor.currency.world
+    in let p = ep-actor w player.actor
+    in let n = lot.quantity
+    in if n < 1 | ep-at p.stock from < n | not (ep-room p into n) then gh-denied "Scissors cannot be used on that to produce anything."
+    else let qn = lot.quality * n
+    in let wn = lot.wear * n
+    in let cn = lot.basis
+    in let s0 = ep-add p.stock from (0 - n)
+    in let q0 = ep-add p.quality from (0 - qn)
+    in let w0 = ep-add p.wear from (0 - wn)
+    in let c0 = ep-add p.cost from (0 - cn)
+    in let consumed = ep-add w.consumed from n
+    in let a = ep-add p.stock into n
+    in let b = ep-add p.quality into qn
+    in let c = ep-add p.cost into cn
+    in let d = ep-add p.wear into wn
+    in let e = ep-add w.crafted into n
+    in let relabelled = __record-set lot "item" into
+    in when world-get state.items.world serial
+      is Err (err) -> Err err
+      is Ok (stuff) -> when world-update state.items.world (__record-set stuff "graphic" (if into == 35 then #1081 else #0E21))
+        is Err (err) -> Err err
+        is Ok (_) -> let invalidated = gh-invalidate-quotes state.vendor 0
+          in when world-get state.items.world serial
+            is Err (err) -> Err err
+            is Ok (made) -> Ok (Just (gs-reply ([sip-item made] & gsi-sound-at state.items player.serial #0248
+              & [sip-message #FFFFFFFF #FFFF 6 (if into == 35 then "You cut the material into leather and place it in your backpack."
+                else "You cut the material into bandage and place it in your backpack.")]) "scissors cut"))
+  gsc-handler-at : GameHarvest, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  gsc-handler-at (state) (shard) (input) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if (op /= 6 | list-length packet /= 5) & (op /= #6C | list-length packet /= 19) then Ok None
+    else if not (gs-byte-range packet 0) then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
+      | state.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player state.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 10000 then Ok None
+    else let player = list-at state.vendor.players at
+    in let request = gh-session state input player slot
+    in if op == 6 then (if gsc-tool state player (bit-and (gp-u32 packet 1) #7FFFFFFF) < 0 then Ok None
+      else gsc-begin state player request (bit-and (gp-u32 packet 1) #7FFFFFFF) now)
+    else if request.target == 0 | request.target /= gp-u32 packet 2 | gsc-tool state player request.tool < 0 then Ok None
+    else let clear = __record-set request "target" 0
+    in if gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 then Ok (Just (gs-reply [] "scissors cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else gsc-cut state player (bit-and (gp-u32 packet 7) #7FFFFFFF) now

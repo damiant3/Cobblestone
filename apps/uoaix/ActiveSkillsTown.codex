@@ -1,0 +1,135 @@
+Chapter: ActiveSkillsTown
+  cites Uoaix chapter ActiveSkillsHiding
+  cites Uoaix chapter GameSkillsItems
+
+ ServUO Skills/Snooping.cs and Skills/Peacemaking.cs, GPL-2.0; ports/ServUO-LICENSE.txt.
+ Source-X CCharSkill.cpp Skill_Snooping and Skill_Peacemaking, Apache-2.0; Sphere-LICENSE.txt.
+
+  as-snoop : AsServices, ActiveSkills, AsActor, WorldObject, WorldObject -> GameReply
+  as-snoop (services) (s) (a) (player) (obj) =
+    if obj.kind /= 1 | obj.serial == player.serial | obj.health <= 0 | not (as-near player obj 1) | not (as-visible s player.serial obj.serial) then gsi-denied "You cannot peek into that."
+    else let pack = gsi-pack-find s.items.world obj.serial 0
+    in if pack == 0 | not (gsi-known s.items pack) | gmb-root s.items pack 65 /= 0 then gsi-denied "They have nothing you can peek into."
+    else let success = as-roll s a 28 (skc-random a.skills 1000)
+    in let told = services.snoop player.serial obj.serial pack success
+    in if not success then gs-reply [as-say "You fail to peek into the container."] "skills:snoop-failed"
+    else gs-reply [sip-open pack (gsi-meta s.items pack).gump, gsi-contents s.items pack 0 [#3C,0,0,0,0] 0] "skills:snooped"
+  as-instrument-graphic : Integer -> Boolean
+  as-instrument-graphic (g) = g == #0EB1 | g == #0EB2 | g == #0EB3 | g == #0EB4 | g == #0E9C | g == #0E9D | g == #0E9E
+  as-instrument-in : ActiveSkills, Integer, Integer -> Integer
+  as-instrument-in (s) (serial) (left) = if serial == 0 | left == 0 then 0
+    else let slot = world-slot s.items.world serial
+    in if slot < 0 then 0 else let next = world-next-sibling s.items.world serial
+    in if peek-qword s.items.world.buffer (24 + slot * 80) == 2 & as-instrument-graphic (peek-qword s.items.world.buffer (56 + slot * 80)) then serial
+    else let child = as-instrument-in s (world-first-child s.items.world serial) (left - 1)
+    in if child /= 0 then child else as-instrument-in s next left
+  as-instrument : ActiveSkills, Integer -> Integer
+  as-instrument (s) (owner) = let pack = gsi-pack-find s.items.world owner 0
+    in let held = as-instrument-in s (world-layer-serial s.items.world owner 1) 1
+    in if held /= 0 then held else if pack == 0 then 0 else as-instrument-in s (world-first-child s.items.world pack) 64
+  as-calm : ActiveSkills, Integer, Integer -> Integer
+  as-calm (s) (serial) (until) = let slot = world-slot s.items.world serial
+    in if slot < 0 then 0 else let actor = list-at s.combat.actors slot
+    in let stopped = if actor.serial == serial then let a = cb-stop s.combat actor in __record-set actor "war" False else actor
+    in let held = poke-qword s.calm (slot * 8) until in 1
+  as-calmed : ActiveSkills, Integer, Integer -> Boolean
+  as-calmed (s) (serial) (now) = let slot = world-slot s.items.world serial
+    in if slot < 0 then False else peek-qword s.calm (slot * 8) > now
+  as-fighters : ActiveSkills, WorldObject, Integer, Integer, List Integer -> List Integer
+  as-fighters (s) (player) (radius) (i) (out) = if i == s.combat.count then out
+    else let actor = list-at s.combat.actors (peek-qword s.combat.active (i * 8))
+    in let near = when world-get s.items.world actor.serial is Err (_) -> False is Ok (m) -> as-near player m radius
+    in as-fighters s player radius (i + 1) (if near & actor.serial /= player.serial then list-push out actor.serial else out)
+  as-calm-all : ActiveSkills, List Integer, Integer, Integer -> Integer
+  as-calm-all (s) (serials) (until) (i) = if i == list-length serials then i
+    else let calmed = as-calm s (list-at serials i) until in as-calm-all s serials until (i + 1)
+  as-peace : ActiveSkills, AsActor, WorldObject, WorldObject, Integer -> GameReply
+  as-peace (s) (a) (player) (obj) (now) =
+    if as-instrument s player.serial == 0 then gsi-denied "You need an instrument to play."
+    else if obj.kind /= 1 | obj.health <= 0 | not (as-near player obj 12) | not (as-visible s player.serial obj.serial) then gsi-denied "You cannot calm that."
+    else if not (as-roll s a 29 (skc-random a.skills 600)) then gs-reply [as-say "You play poorly, and there is no effect."] "skills:peace-poor"
+    else if not (as-roll s a 9 (skc-random a.skills 700)) then gs-reply [as-say "You attempt to calm everyone, but fail."] "skills:peace-failed"
+    else let until = now + gh-ticks (10000 + as-level a 9 * 20)
+    in if obj.serial /= player.serial then let one = as-calm s obj.serial until in gs-reply [as-say "You play hypnotic music, calming your target."] "skills:peace-one"
+    else let count = as-calm-all s (as-fighters s player (5 + as-level a 9 / 100) 0 (__list-with-capacity 16)) until 0
+    in gs-reply [as-say "You play your hypnotic music, stopping the battle."] "skills:peace-area"
+ UOX3 provocation.js, pre-AoS (isProvokeDifficultyBased off), dictionary.ENG 393, 830, 861, 1438, 1442, 1443, 1449, 1450,
+ 1451, 1452, 1646, 1730 and 9128: the first cursor takes an NPC within 10 tiles that UOX3 gives a TOPROV (services.provoke,
+ -1 without one, UOX3's 0x7FFF), the second whom it attacks, within 10 tiles of it. Musicianship rolls as Peacemaking rolls
+ it, then Provocation against TOPROV; a TOPROV above 100.0 cannot succeed. Success sets the two on each other, failure sets
+ the creature on the bard. The instrument sounds PlayInstrument's well or poorly played effect.
+  as-incite-sound : Integer, Boolean -> Integer
+  as-incite-sound (g) (well) = let base = if g == #0E9C then #38 else if g == #0E9D | g == #0E9E then #52
+      else if g == #0EB1 then #43 else if g == #0EB2 then #45 else #4C
+    in if well then base else base + 1
+  as-incite-first : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
+  as-incite-first (services) (s) (a) (game) (player) (obj) (now) = when cb-ensure s.combat game obj.serial
+    is Err (_) -> gsi-denied "You cannot provoke such a person!"
+    is Ok (creature) -> if not creature.npc then gsi-denied "You cannot provoke other players."
+      else if creature.immune | obj.health <= 0 then gsi-denied "You cannot provoke such a person!"
+      else if services.provoke obj.serial < 0 then gsi-denied "You have no chance of provoking that creature."
+      else if not (as-visible s player.serial obj.serial) then gsi-denied "You cannot see that"
+      else if not (as-near player obj 10) then gsi-denied "That is too far away."
+      else if as-instrument s player.serial == 0 then gsi-denied "You do not have an instrument to play on!"
+      else let first = __record-set a "provoked" obj.serial
+      in let cursor = as-target s a 22 now
+      in let line = "You play your music, inciting anger, and your target begins to look furious.  "
+      in gs-reply ([as-say (line & "Whom do you wish it to attack?")] & cursor.packets) "skills:incite-first"
+  as-incite : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject -> GameReply
+  as-incite (services) (s) (a) (game) (player) (obj) = let first = a.provoked
+    in let cleared = __record-set a "provoked" 0
+    in when cb-ensure s.combat game first
+      is Err (_) -> gsi-denied "That object is gone."
+      is Ok (creature) -> when world-get s.items.world first
+        is Err (_) -> gsi-denied "That object is gone."
+        is Ok (angry) -> when cb-ensure s.combat game obj.serial
+          is Err (_) -> gsi-denied "You cannot provoke such a person!"
+          is Ok (victim) -> if victim.immune | obj.health <= 0 | angry.health <= 0 then gsi-denied "You cannot provoke such a person!"
+            else if obj.serial == first then gsi-denied "Silly bard! You can't get something to attack itself."
+            else if not (as-near angry obj 10) then gsi-denied "That is too far away."
+            else let instrument = as-instrument s player.serial
+            in if instrument == 0 then gsi-denied "You do not have an instrument to play on!"
+            else let art = when world-get s.items.world instrument is Err (_) -> 0 is Ok (i) -> i.graphic
+            in if not (as-roll s a 29 (skc-random a.skills 600)) then
+              gs-reply [cbp-sound (as-incite-sound art False) player, as-say "You play rather poorly and to no effect."] "skills:incite-poor"
+            else let difficulty = services.provoke first
+            in let sound = cbp-sound (as-incite-sound art True) player
+            in if difficulty <= 1000 & as-roll s a 22 difficulty then
+              let set = cb-select s.combat game creature victim
+              in let back = if victim.npc then cb-select s.combat game victim creature else False
+              in gs-reply [sound, as-say "Your music succeeds as you start a fight."] "skills:incited"
+            else let turned = when cb-ensure s.combat game player.serial is Err (_) -> False is Ok (bard) -> cb-select s.combat game creature bard
+            in gs-reply [sound, as-say "Your music fails to incite enough anger."] "skills:incite-failed"
+ UOX3 enticement.js, dictionary.ENG 393, 862, 1444, 1445, 1446, 1447, 1448, 1642 and 1646: the first cursor takes an NPC
+ within 10 tiles that can follow (services.lure with leader -1: a spawned creature), the second whom it follows, within
+ 10 tiles of it. Musicianship and Enticement both roll as Peacemaking rolls Musicianship (UOX3 checks each from 0 to its
+ cap); success sets the creature following (1447), failure plays poorly (1448).
+  as-entice-first : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
+  as-entice-first (services) (s) (a) (game) (player) (obj) (now) = when cb-ensure s.combat game obj.serial
+    is Err (_) -> gsi-denied "You cannot entice vendors or invulnerable folk"
+    is Ok (creature) -> if not creature.npc then gsi-denied "You cannot entice other players."
+      else if creature.immune | obj.health <= 0 | not (services.lure obj.serial (0 - 1)) then gsi-denied "You cannot entice vendors or invulnerable folk"
+      else if not (as-visible s player.serial obj.serial) then gsi-denied "You cannot see that"
+      else if not (as-near player obj 10) then gsi-denied "That is too far away."
+      else let instrument = as-instrument s player.serial
+      in if instrument == 0 then gsi-denied "You do not have an instrument to play on!"
+      else let first = __record-set a "provoked" obj.serial
+      in let cursor = as-target s a 15 now
+      in let art = when world-get s.items.world instrument is Err (_) -> 0 is Ok (i) -> i.graphic
+      in gs-reply ([cbp-sound (as-incite-sound art True) player,
+        as-say "You play your music, luring them near. Whom do you wish them to follow?"] & cursor.packets) "skills:entice-first"
+  as-entice : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject -> GameReply
+  as-entice (services) (s) (a) (game) (player) (obj) = let first = a.provoked
+    in let cleared = __record-set a "provoked" 0
+    in when world-get s.items.world first
+      is Err (_) -> gsi-denied "That object is gone."
+      is Ok (lured) -> when cb-ensure s.combat game obj.serial
+        is Err (_) -> gsi-denied "You cannot entice vendors or invulnerable folk"
+        is Ok (leader) -> if leader.immune | obj.health <= 0 | lured.health <= 0 then gsi-denied "You cannot entice vendors or invulnerable folk"
+          else if not (as-near lured obj 10) then gsi-denied "That is too far away."
+          else let instrument = as-instrument s player.serial
+          in if instrument == 0 then gsi-denied "You do not have an instrument to play on!"
+          else let art = when world-get s.items.world instrument is Err (_) -> 0 is Ok (i) -> i.graphic
+          in if as-roll s a 29 (skc-random a.skills 600) & as-roll s a 15 (skc-random a.skills 600) & services.lure first obj.serial then
+            gs-reply [cbp-sound (as-incite-sound art True) player, as-say "You play your hypnotic music, luring them near your target."] "skills:enticed"
+          else gs-reply [cbp-sound (as-incite-sound art False) player, as-say "Your music fails to attract them."] "skills:entice-failed"

@@ -1,0 +1,172 @@
+Chapter: TownLiveProof
+  cites Uoaix chapter TownLiveCodec
+
+  tlp-check : Text, Boolean -> [Console] Nothing
+  tlp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tlp-fill : WalkMap, Integer -> Boolean
+  tlp-fill (map) (i) = if i == map.width * map.height then True
+    else let mark = __heap-save
+    in let ok = is-ok (walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0)
+    in let restored = __heap-restore mark in ok & tlp-fill map (i + 1)
+  tlp-at-trade : TownLive, Integer -> Boolean
+  tlp-at-trade (t) (i) = if i == t.count then True
+    else let r = list-at t.residents i
+    in when world-get t.vendors.game.world (tf-person t.people r.person).world-serial
+      is Err (_) -> False
+      is Ok (m) -> if not (wks-at-trade i (BbSpot { x = m.x, y = m.y, z = m.z })) then False else tlp-at-trade t (i + 1)
+  tlp-dressed : TownLive, Integer -> Boolean
+  tlp-dressed (t) (i) = if i == t.count then True
+    else let p = tf-person t.people (list-at t.residents i).person
+    in gmb-layer t.items p.world-serial 5 0 > 0 & gmb-layer t.items p.world-serial 4 0 > 0
+      & gmb-layer t.items p.world-serial 3 0 > 0 & tlp-dressed t (i + 1)
+  tlp-styled : TownLive, Integer -> Boolean
+  tlp-styled (t) (i) = if i == t.count then True
+    else let serial = (tf-person t.people (list-at t.residents i).person).world-serial
+    in let look = tl-look i serial
+    in look.body == (if i == 1 then 400 else 401)
+      & (when world-get t.vendors.game.world serial is Err (_) -> False is Ok (m) -> m.graphic == look.body & m.hue == look.skin)
+      & cst-wears t.items serial look.rows 0 & tlp-styled t (i + 1)
+  tlp-drain : TownLive, WalkMap, Integer, Integer -> Boolean
+  tlp-drain (t) (map) (seconds) (fuel) = if fuel == 0 then False
+    else if tl-ready t seconds 0 -1 tl-max-seconds < 0 then True
+    else let mark = __heap-save
+    in let ok = is-ok (tl-advance t map None seconds 64)
+    in let restored = __heap-restore mark
+    in ok & tlp-drain t map seconds (fuel - 1)
+  tlp-at-goal : TownLive, Integer -> Boolean
+  tlp-at-goal (t) (i) = if i == t.count then True
+    else let r = list-at t.residents i
+    in when world-get t.vendors.game.world (tf-person t.people r.person).world-serial
+      is Err (_) -> False
+      is Ok (obj) -> tl-at obj (tl-target t r) & r.via-home == 0 & tlp-at-goal t (i + 1)
+  tlp-said : Result (Maybe GameReply) Text -> Boolean
+  tlp-said (result) = when result
+    is Err (_) -> False
+    is Ok (None) -> False
+    is Ok (Just (reply)) -> list-length reply.packets > 0 & list-at (list-at reply.packets 0) 0 == 28
+  tlp-speech : TownLive, WalkMap -> [Console] Nothing
+  tlp-speech (t) (map) = let game = t.vendors.game
+    in let resident = list-at t.residents 0
+    in when world-get game.world (tf-person t.people resident.person).world-serial
+      is Err (e) -> print-line-uni ("FAIL speech resident " & e)
+      is Ok (npc) -> when world-create game.world (gs-mobile 0 (npc.x - 3) npc.y npc.z 400 1002)
+        is Err (e) -> print-line-uni ("FAIL speech viewer " & e)
+        is Ok (serial) ->
+          let slot = poke-qword game.characters 0 serial
+          in let active = __record-set game "active" serial
+          in let input = gn-input-with bb-specs 71
+          in let mode = __record-set input "mode" 2
+          in let phase = __record-set input.session "phase" 2
+          in let who = __record-set input.session "serial" serial
+          in let objects = world-count game.world
+          in let audit = t.mind.audit-count
+          in let said = tl-pulse t game input map 2593 0
+          in let quiet = tl-pulse t game input map 2593 1
+          in let reconnect = __record-set input "connection" 72
+          in let again = tl-pulse t game input map 2593 2
+          in let scratch = alloc-bytes 256
+          in act
+            tlp-check "approach speaks once logs fallback and changes no inventory" (tlp-said said & not (tlp-said quiet) & not (tlp-said again) & t.mind.audit-count == audit + 1 & world-count game.world == objects & euv-valid t.vendors.currency)
+            tlp-check "tile index refuses path into an occupied destination" (tl-plan t.nav game.world map None npc (npc.x - 3) npc.y npc.z scratch == -1)
+            let cleared = tl-reset-path resident
+            in let removed = world-delete game.world serial
+            in let unbound = poke-qword game.characters 0 0
+            in tlp-check "speech metadata remains serializable" (tlc-valid t map & is-ok removed)
+            length <- tl-plan t.nav game.world map None npc (npc.x - 10) (npc.y + 3) npc.z scratch
+            turns <- tlp-turns scratch length 1 (peek-byte scratch 0) 0
+            print-line-uni ("PATH length=" & show length & " turns=" & show turns)
+            reset <- tl-reset-path resident
+            tlp-check "a path 10 west and 3 south walks the diagonal run then the straight run, one turn, not a staircase" (length == 10 & turns == 1)
+          end
+  tlp-turns : Integer, Integer, Integer, Integer, Integer -> Integer
+  tlp-turns (path) (count) (i) (prev) (acc) = if i >= count then acc
+    else let d = peek-byte path i in tlp-turns path count (i + 1) d (if d == prev then acc else acc + 1)
+  tlp-door : TownLive, WalkMap -> [Console] Nothing
+  tlp-door (t) (map) = let data = alloc-bytes 240
+    in let zero = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 16 map.x
+    in let d = poke-qword data 24 map.y
+    in let e = poke-qword data 32 map.width
+    in let f = poke-qword data 40 map.height
+    in let g = poke-qword data 48 77
+    in let x = poke-qword data 64 1450
+    in let y = poke-qword data 72 1700
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let other = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let dy = poke-qword data 144 1
+    in when wd-read data 240 map 200
+      is Err (e) -> print-line-uni ("FAIL door fixture " & e)
+      is Ok (doors) -> let r = list-at t.residents 0
+        in let serial = (tf-person t.people r.person).world-serial
+        in let placed = world-update t.vendors.game.world (gs-mobile serial 1449 1700 0 400 1002)
+        in let probe = tl-probe t.vendors.game.world map (Just doors) serial 1449 1700 0 2
+        in let restored = peek-byte doors.opened 0 == 0 & not (is-ok (walk-step map 1449 1700 0 2))
+        in let locked = poke-qword data 120 4
+        in let refused = tl-probe t.vendors.game.world map (Just doors) serial 1449 1700 0 2 < -128
+        in let unlocked = poke-qword data 120 1
+        in let reset = tl-reset-path r
+        in when world-get t.vendors.game.world serial
+          is Err (e) -> print-line-uni ("FAIL door walker " & e)
+          is Ok (mobile) -> let walked = rte-try t.vendors.game map (Just doors) r.walk mobile 2
+            in tlp-check "door probe restores collision locked door refuses actual step opens" (is-ok placed & probe == 0 & restored & refused & is-ok walked & peek-byte doors.opened 0 == 1 & (when world-get t.vendors.game.world serial is Err (_) -> False is Ok (obj) -> obj.x == 1450 & obj.y == 1700))
+  tlp-codec : TownLive, WalkMap -> [Console] Nothing
+  tlp-codec (t) (map) = let buf = alloc-bytes tlc-bytes
+    in let saved = tlc-encode t map buf tlc-bytes
+    in when saved
+      is Err (e) -> print-line-uni ("FAIL codec encode " & e)
+      is Ok (_) -> when tlc-decode buf tlc-bytes t.vendors t.items map t.now
+        is Err (e) -> print-line-uni ("FAIL codec decode " & e)
+        is Ok (loaded) -> act
+          tlp-check "TLC1 restores schedules routes and shared world bindings" (tlc-valid loaded map & loaded.people.hour == t.people.hour & (list-at loaded.residents 0).next-step == (list-at t.residents 0).next-step & (list-at loaded.viewers 0).connection == -1)
+          let changed = poke-qword buf 32 2
+          in tlp-check "TLC1 rejects invalid home capacity" (not (is-ok (tlc-decode buf tlc-bytes t.vendors t.items map t.now)))
+        end
+  tlp-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
+  tlp-run (game) (map) (currency) = let v = gv-new game currency
+    in let items = gsi-new game.world
+    in when bb-populate v items map
+      is Err (e) -> print-line-uni ("FAIL shops " & e)
+      is Ok (_) -> when tl-populate v items map None 0 3
+        is Err (e) -> print-line-uni ("FAIL population " & e)
+        is Ok (t) -> act
+          tlp-check "three dressed residents use real production and shared lodging" (t.count == 3 & tlp-dressed t 0 & euv-valid currency & tlc-valid t map)
+          tlp-check "residents wear the townsfolk look, Nell and Mira as women and Jorin as a man" (tlp-styled t 0)
+          let first = tl-advance t map None 0 1
+          in tlp-check "one-step budget bounds movement packets" (when first is Err (_) -> False is Ok (r) -> list-length r.packets <= 1)
+          let home = tlp-drain t map 3500 100
+          in tlp-check "scheduled walk reaches shared lodging" (home & tlp-at-goal t 0)
+          let work = tlp-drain t map 40000 100
+          in tlp-check "scheduled walk reaches workplaces" (work & tlp-at-goal t 0)
+          tlp-check "at work Nell stands within 2 tiles of the Good Eats oven, Jorin of the anvil and the forge, and Mira of the Lords Clothiers loom (UOAIX-55)" (tlp-at-trade t 0)
+          let nell = list-at t.residents 0
+          in let old = tl-copy-spot nell.work (BbSpot { x = 1449, y = 1609, z = 0 })
+          in let settled = tl-resettle t map 0
+          in tlp-check "a work tile left inside the shop by an older world is re-placed beside the station (UOAIX-55)" (is-ok settled & wks-at-trade 0 nell.work)
+          let tavern = tlp-drain t map 74000 100
+          in tlp-check "scheduled walk reaches distinct tavern seats" (tavern & tlp-at-goal t 0 & (list-at t.residents 0).goal == 2)
+          tlp-speech t map
+          tlp-door t map
+          tlp-codec t map
+          let clock = gc-new 0
+          in let accrued = gc-accrue clock 100
+          in let before = tl-game-seconds clock 0
+          in let rate = gc-set-rate clock 3600 100
+          in tlp-check "live day-rate change preserves game-time phase" (accrued == 0 & rate == 0 & before == tl-game-seconds clock 0)
+        end
+  opening : [Console] Nothing = when bb-economy 0
+    is Err (e) -> print-line-uni ("FAIL economy " & e)
+    is Ok (currency) -> when world-new 128
+      is Err (e) -> print-line-uni ("FAIL world " & e)
+      is Ok (world) -> let chars = alloc-bytes 800
+        in let cleared = gs-zero chars 0
+        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+        in when walk-map-new 1408 1536 128 192
+          is Err (e) -> print-line-uni ("FAIL map " & e)
+          is Ok (map) -> let filled = tlp-fill map 0
+            in if filled then tlp-run game map currency else print-line-uni "FAIL terrain"

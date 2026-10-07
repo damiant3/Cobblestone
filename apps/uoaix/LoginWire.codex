@@ -1,0 +1,71 @@
+Chapter: LoginWire
+
+ The 1.25.32 login stream has a clear big-endian seed followed by rolling
+ XOR. POL LoginCrypt::Decrypt_Old describes the recurrence; the executable
+ client contains keys 389DE58C and 026950C6. Captured packets grade use.
+
+  UoLoginWire = record {
+    seed : Integer, seed-count : Integer, low : Integer, high : Integer,
+    packet : Integer, remaining : Integer, logins : Integer, selections : Integer,
+    hardware : Integer, failure : Integer, game : Boolean
+  }
+
+  uo-wire-new : Integer -> UoLoginWire
+  uo-wire-new (unused) = UoLoginWire {
+    seed = 0, seed-count = 0, low = 0, high = 0, packet = 0, remaining = 0,
+    logins = 0, selections = 0, hardware = 0, failure = 0, game = False
+  }
+
+  uo-wire-seed : UoLoginWire, Integer -> UoLoginWire
+  uo-wire-seed (st) (byte) =
+    let seed = st.seed * 256 + byte
+    in let count = st.seed-count + 1
+    in let s1 = __record-set st "seed" seed
+    in let s2 = __record-set s1 "seed-count" count
+    in if count < 4 then s2
+    else let low = bit-and (bit-or (bit-shl (bit-xor (bit-xor seed #FFFFFFFF) #1357) 16)
+      (bit-and (bit-xor seed #FFFFAAAA) #FFFF)) #FFFFFFFF
+    in let high = (bit-or (bit-shr (bit-xor seed #43210000) 16)
+      (bit-and (bit-xor (bit-xor seed #FFFFFFFF) #ABCDFFFF) #FFFF0000))
+    in let s3 = __record-set s2 "low" low
+    in let s4 = __record-set s3 "high" high
+    in __record-set s4 "game" (seed == #12345678)
+
+  uo-xor-byte : UoLoginWire, Integer -> Integer
+  uo-xor-byte (st) (byte) =
+    let decoded = bit-xor byte (bit-and st.low 255)
+    in let low = bit-xor (bit-or (bit-shr st.low 1) (bit-shl (bit-and st.high 1) 31)) #026950C6
+    in let high = bit-xor (bit-or (bit-shr st.high 1) (bit-shl (bit-and st.low 1) 31)) #389DE58C
+    in let a = __record-set st "low" low
+    in let b = __record-set st "high" high
+    in decoded
+
+  uo-wire-byte : UoLoginWire, Integer -> UoLoginWire
+  uo-wire-byte (st) (byte) =
+    if st.seed-count < 4 then uo-wire-seed st byte
+    else if st.game then st
+    else if st.failure /= 0 then st
+    else let decoded = uo-xor-byte st byte
+    in let s2 = st
+    in if s2.remaining == 0 then
+      let size = if decoded == 128 & s2.logins == 0 then 62
+        else if decoded == 164 & s2.logins == 1 then 149
+        else if decoded == 160 & s2.logins == 1 then 3
+        else if decoded == 115 & s2.logins == 1 then 2
+        else 0
+      in if size == 0 then __record-set s2 "failure" (decoded + 1)
+      else let s3 = __record-set s2 "packet" decoded
+      in __record-set s3 "remaining" (size - 1)
+    else if s2.packet == 160 & decoded /= 0 then __record-set s2 "failure" 257
+    else let left = s2.remaining - 1
+    in let s3 = __record-set s2 "remaining" left
+    in if left /= 0 then s3
+    else if s3.packet == 128 then __record-set s3 "logins" (s3.logins + 1)
+    else if s3.packet == 164 then __record-set s3 "hardware" (s3.hardware + 1)
+    else if s3.packet == 160 then __record-set s3 "selections" (s3.selections + 1)
+    else s3
+
+  uo-wire-feed : UoLoginWire, List Integer, Integer -> UoLoginWire
+  uo-wire-feed (st) (bytes) (i) =
+    if i >= list-length bytes then st
+    else uo-wire-feed (uo-wire-byte st (list-at bytes i)) bytes (i + 1)

@@ -1,0 +1,119 @@
+Chapter: TownNetworkHillKernels
+  cites Gpu chapter DeviceEffect
+
+  tnhk-clip : Integer, Integer, Integer -> Integer
+  tnhk-clip (x) (low) (high) = if x < low then low else if x > high then high else x
+  tnhk-candidate-one : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-candidate-one (best) (trial) (parameter) (delta) (i) = act
+    value <- device-load best i
+    device-store trial i (tnhk-clip (value + (if i == parameter then delta else 0)) -4000 4000)
+  end
+  kernel-tnh-candidate : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-tnh-candidate (best) (trial) (parameter) (delta) = act
+    bx <- block-idx-x
+    bd <- block-dim-x
+    tx <- thread-idx-x
+    i <- bx * bd + tx
+    if i < 766 then tnhk-candidate-one best trial parameter delta i else 0
+  end
+  tnhk-copy-one : Integer, Integer, Integer -> [Device] Integer
+  tnhk-copy-one (source) (target) (i) = act
+    value <- device-load source i
+    device-store target i value
+  end
+  kernel-tnh-copy : Integer, Integer -> [Device] Integer
+  kernel-tnh-copy (source) (target) = act
+    bx <- block-idx-x
+    bd <- block-dim-x
+    tx <- thread-idx-x
+    i <- bx * bd + tx
+    if i < 766 then tnhk-copy-one source target i else 0
+  end
+  tnhk-dot : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-dot (weights) (values) (base) (at) (width) (i) (sum) = act
+    if i == width then sum / 1000 else act
+      w <- device-load weights (base + i)
+      x <- device-load values (at + i)
+      tnhk-dot weights values base at width (i + 1) (sum + w * x)
+    end
+  end
+  tnhk-hidden-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-hidden-one (weights) (inputs) (hidden) (i) = act
+    row <- i - i / 16 * 16
+    value <- tnhk-dot weights inputs (row * 32) (i / 16 * 32) 32 0 0
+    bias <- device-load weights (512 + row)
+    device-store hidden i (tnhk-clip (value + bias) 0 4000)
+  end
+  kernel-tnh-hidden : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-tnh-hidden (weights) (inputs) (hidden) (samples) = act
+    bx <- block-idx-x
+    bd <- block-dim-x
+    tx <- thread-idx-x
+    i <- bx * bd + tx
+    if i < samples * 16 then tnhk-hidden-one weights inputs hidden i else 0
+  end
+  tnhk-output-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-output-one (weights) (hidden) (outputs) (i) = act
+    row <- i - i / 14 * 14
+    value <- tnhk-dot weights hidden (528 + row * 16) (i / 14 * 16) 16 0 0
+    bias <- device-load weights (752 + row)
+    result <- value + bias
+    clipped <- if row < 10 then result else tnhk-clip result (if row < 12 then 0 else -1000) 1000
+    device-store outputs i clipped
+  end
+  kernel-tnh-output : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-tnh-output (weights) (hidden) (outputs) (samples) = act
+    bx <- block-idx-x
+    bd <- block-dim-x
+    tx <- thread-idx-x
+    i <- bx * bd + tx
+    if i < samples * 14 then tnhk-output-one weights hidden outputs i else 0
+  end
+  tnhk-best : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-best (outputs) (base) (i) (best) (score) = act
+    if i == 10 then best else act
+      value <- device-load outputs (base + i)
+      if value > score then tnhk-best outputs base (i + 1) i value
+        else tnhk-best outputs base (i + 1) best score
+    end
+  end
+  tnhk-error : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-error (outputs) (outcomes) (base) (i) (sum) = act
+    if i == 14 then sum else act
+      predicted <- device-load outputs (base + i)
+      actual <- device-load outcomes (base + i)
+      difference <- predicted - actual
+      tnhk-error outputs outcomes base (i + 1) (sum + difference * difference / 16)
+    end
+  end
+  tnhk-score-one : Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-score-one (outputs) (outcomes) (scores) (i) = act
+    base <- i * 14
+    chosen <- tnhk-best outputs base 0 -1 0
+    reward <- if chosen < 0 then 0 else device-load outcomes (base + chosen)
+    error <- tnhk-error outputs outcomes base 0 0
+    device-store scores i (reward * 1000 - error)
+  end
+  kernel-tnh-score : Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-tnh-score (outputs) (outcomes) (scores) (samples) = act
+    bx <- block-idx-x
+    bd <- block-dim-x
+    tx <- thread-idx-x
+    i <- bx * bd + tx
+    if i < samples then tnhk-score-one outputs outcomes scores i else 0
+  end
+  tnhk-sum : Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-sum (scores) (samples) (i) (sum) = act
+    if i == samples then sum else act
+      value <- device-load scores i
+      tnhk-sum scores samples (i + 1) (sum + value)
+    end
+  end
+  kernel-tnh-reduce : Integer, Integer, Integer -> [Device] Integer
+  kernel-tnh-reduce (scores) (result) (samples) = act
+    tx <- thread-idx-x
+    if tx == 0 then act
+      sum <- tnhk-sum scores samples 0 0
+      device-store result 0 sum
+    end else 0
+  end

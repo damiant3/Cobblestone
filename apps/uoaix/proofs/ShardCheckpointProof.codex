@@ -1,0 +1,80 @@
+Chapter: ShardCheckpointProof
+  cites Uoaix chapter ShardCheckpoint
+  cites Uoaix chapter ShardFixture
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyMoney
+  cites Foreword chapter Result
+
+  shcp-check : Text, Boolean -> [Console] Nothing
+  shcp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  shcp-clear : Integer, Integer, Integer -> Integer
+  shcp-clear (buf) (size) (i) = if i >= size then 0
+    else let cleared = poke-byte buf i 0 in shcp-clear buf size (i + 1)
+
+  shcp-run : ShardCheckpoint -> [Console] Nothing
+  shcp-run (source) =
+    let size = shc-size source.game.game.world.capacity
+    in let buf = alloc-bytes (size + 8)
+    in let guard = poke-qword buf size 1234567
+    in let gms = gm-memory-new 0
+    in when shc-encode source buf size
+      is Err (e) -> print-line-uni ("FAIL composite encode " & e)
+      is Ok (written) -> act
+        shcp-check "composite extent and guard" (written == size & peek-qword buf size == 1234567 & shc-size world-max-objects < 4194304)
+        when shc-decode-record buf size 50 5 7 "After boot" gms
+          is Err (e) -> print-line-uni ("FAIL composite decode " & e)
+          is Ok (state) -> act
+            shcp-check "component commit positions agree" (state.game.state.checkpoint.tick == 50 & state.game.state.checkpoint.sequence == 5 & state.economy.tick == 50 & state.economy.sequence == 5)
+            shcp-check "nonempty game and catalog restored" (world-count state.game.game.world == 1 & state.economy.world.actor-count == 0 & state.economy.world.money.purse-count == 1 & em-total state.economy.world.money 1 == 0 & list-length state.economy.world.catalog.items > 60)
+            shcp-check "admin queues and audit restored" (state.panel.world.report-count == 1 & state.panel.world.job-state == 1 & state.panel.log-count == 2 & text-contains (admin-report-peek state.panel.world) "é λ")
+            shcp-check "clock rebased without offline progress" (state.panel.clock.last-tick == 7 & state.panel.clock.day-seconds == 3600 & state.panel.clock.phase == 17 & state.panel.clock.due == 2 & source.panel.clock.last-tick == 1000)
+            shcp-check "authority cleared and pending cancelled" (state.panel.active == 0 & state.panel.pending-state == 0 & list-at state.panel.log 2046 == -2 & state.panel.actor == "After boot")
+            let cleared = shcp-clear buf size 0
+            in shcp-check "whole input reuse preserves state" (world-count state.game.game.world == 1 & text-contains (admin-job-peek state.panel.world) "fixture job" & state.economy.world.money.purse-count == 1)
+            let advanced = __record-set state.game.state.townsfolk "hour" 1
+            in shcp-check "restored admin shares town state" (state.panel.world.world.hour == 1 & source.game.state.townsfolk.hour == 0)
+            let advanced = __record-set state.game.state.mind "fallbacks" 1
+            in let sequence = __record-set state.game.state.mind "sequence" 1
+            in shcp-check "restored admin shares mind state" (state.panel.world.mind.fallbacks == 1 & source.game.state.mind.fallbacks == 0)
+          end
+        let encoded = shc-encode source buf size
+        in shcp-check "composite outer metadata refused" (is-err (shc-decode-record buf size 50 6 7 "Owner" gms))
+        shcp-check "composite truncation refused" (is-err (shc-decode buf (size - 1) 7 "Owner" gms))
+        let corrupt = poke-byte buf 100 255
+        in shcp-check "composite checksum refused" (is-err (shc-decode buf size 7 "Owner" gms))
+        let encoded = shc-encode source buf size
+        in let rate = poke-qword buf 64 0
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in shcp-check "rehashed clock rate refused" (is-err (shc-decode buf size 7 "Owner" gms))
+        let encoded = shc-encode source buf size
+        in let phase = poke-qword buf 72 360000
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in shcp-check "rehashed clock phase refused" (is-err (shc-decode buf size 7 "Owner" gms))
+        let encoded = shc-encode source buf size
+        in let inner = 96 + gc-size source.game.game.world.capacity
+        in let tick = poke-qword buf (inner + 32) 51
+        in let inner-hash = poke-qword buf (inner + 48) (ws-hash (buf + inner) es-bytes 0 2166136261)
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in shcp-check "rehashed component clock disagreement refused" (is-err (shc-decode buf size 7 "Owner" gms))
+        let wrong = __record-set source.game.state.townsfolk "hour" 1
+        in act
+          shcp-check "mixed simulation hours refused" (is-err (shc-encode source buf size))
+          let restored = __record-set source.game.state.townsfolk "hour" 0
+          in shcp-check "source restored after hour control" (is-ok (shc-encode source buf size))
+        end
+        let wrong = __record-set source.economy "sequence" 6
+        in shcp-check "mixed commit source refused" (is-err (shc-encode source buf size))
+      end
+
+  opening : [Console] Nothing = when shf-new 4
+    is Err (e) -> print-line-uni ("FAIL fixture " & e)
+    is Ok (state) -> shcp-run state
+
+Page 1

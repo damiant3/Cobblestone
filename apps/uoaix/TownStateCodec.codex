@@ -1,0 +1,157 @@
+Chapter: TownStateCodec
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter TownStateFields
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+ TSC1: 64-byte header, a UWS1 checkpoint, then a 249936-byte state body.
+ Header cells: magic, version, total bytes, UWS1 bytes, tick, input sequence,
+ FNV32, reserved zero. FNV32 is corruption detection, not authentication.
+ Body: TfWorld header(40), towns(4*256), people(128*592), events(4096*8),
+ TmMind header(40), personas(128*712), audit(6144*8). All text is CCE.
+
+  TownState = record { checkpoint : WorldCheckpoint, townsfolk : TfWorld, mind : TmMind }
+  ts-body-bytes : Integer = 249936
+
+  ts-size : Integer -> Integer
+  ts-size (capacity) = 64 + ws-size capacity + ts-body-bytes
+
+  ts-write-towns : Integer, Integer, TfWorld, Integer -> Integer
+  ts-write-towns (buf) (at) (w) (i) =
+    if i == 4 then 0
+    else let a = ts-write-town buf (at + i * 256) (list-at w.towns i)
+    in ts-write-towns buf at w (i + 1)
+
+  ts-write-people : Integer, Integer, TfWorld, Integer -> Integer
+  ts-write-people (buf) (at) (w) (i) =
+    if i == 128 then 0
+    else let a = ts-write-person buf (at + i * 592) (list-at w.people i)
+    in ts-write-people buf at w (i + 1)
+
+  ts-write-personas : Integer, Integer, TmMind, Integer -> Integer
+  ts-write-personas (buf) (at) (m) (i) =
+    if i == 128 then 0
+    else let a = ts-write-persona buf (at + i * 712) (list-at m.personas i)
+    in ts-write-personas buf at m (i + 1)
+
+  ts-write-body : Integer, Integer, TfWorld, TmMind -> Integer
+  ts-write-body (buf) (at) (w) (m) =
+    let a = poke-qword buf at w.used
+    in let b = poke-qword buf (at + 8) w.town-count
+    in let c = poke-qword buf (at + 16) w.hour
+    in let d = poke-qword buf (at + 24) w.event-count
+    in let e = poke-qword buf (at + 32) w.sequence
+    in let f = ts-write-towns buf (at + 40) w 0
+    in let g = ts-write-people buf (at + 1064) w 0
+    in let h = ts-write-list buf (at + 76840) w.events 0
+    in let j = poke-qword buf (at + 109608) m.audit-count
+    in let k = poke-qword buf (at + 109616) m.sequence
+    in let l = poke-qword buf (at + 109624) m.fallbacks
+    in let n = poke-qword buf (at + 109632) m.refusals
+    in let o = poke-qword buf (at + 109640) m.accepted
+    in let p = ts-write-personas buf (at + 109648) m 0
+    in ts-write-list buf (at + 200784) m.audit 0
+
+  ts-encode : TownState, Integer, Integer -> Result Integer Text
+  ts-encode (state) (buf) (capacity) =
+    if not (ts-state-valid state.checkpoint state.townsfolk state.mind) then Err "town state invariant invalid"
+    else let world-bytes = ws-size state.checkpoint.world.capacity
+    in let size = 64 + world-bytes + ts-body-bytes
+    in if capacity < size then Err "town checkpoint destination too short"
+    else if buf < state.checkpoint.world.buffer + world-bytes - 64 & state.checkpoint.world.buffer < buf + size then Err "town checkpoint overlaps world table"
+    else when ws-encode state.checkpoint (buf + 64) world-bytes
+      is Err (e) -> Err e
+      is Ok (written) ->
+        let a = poke-qword buf 0 #31435354
+        in let b = poke-qword buf 8 1
+        in let c = poke-qword buf 16 size
+        in let d = poke-qword buf 24 world-bytes
+        in let e = poke-qword buf 32 state.checkpoint.tick
+        in let f = poke-qword buf 40 state.checkpoint.sequence
+        in let g = poke-qword buf 48 0
+        in let h = poke-qword buf 56 0
+        in let body = ts-write-body buf (64 + world-bytes) state.townsfolk state.mind
+        in let checksum = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in Ok size
+
+  ts-towns-wire-valid : Integer, Integer, Integer -> Boolean
+  ts-towns-wire-valid (buf) (at) (i) =
+    if i == 4 then True
+    else ts-town-wire-valid buf (at + i * 256) & ts-towns-wire-valid buf at (i + 1)
+
+  ts-people-wire-valid : Integer, Integer, Integer -> Boolean
+  ts-people-wire-valid (buf) (at) (i) =
+    if i == 128 then True
+    else ts-person-wire-valid buf (at + i * 592) & ts-people-wire-valid buf at (i + 1)
+
+  ts-personas-wire-valid : Integer, Integer, Integer -> Boolean
+  ts-personas-wire-valid (buf) (at) (i) =
+    if i == 128 then True
+    else ts-persona-wire-valid buf (at + i * 712) & ts-personas-wire-valid buf at (i + 1)
+
+  ts-read-towns : Integer, Integer, TfWorld, Integer -> Integer
+  ts-read-towns (buf) (at) (w) (i) =
+    if i == 4 then 0
+    else let a = ts-read-town buf (at + i * 256) (list-at w.towns i)
+    in ts-read-towns buf at w (i + 1)
+
+  ts-read-people : Integer, Integer, TfWorld, Integer -> Integer
+  ts-read-people (buf) (at) (w) (i) =
+    if i == 128 then 0
+    else let a = ts-read-person buf (at + i * 592) (list-at w.people i)
+    in ts-read-people buf at w (i + 1)
+
+  ts-read-personas : Integer, Integer, TmMind, Integer -> Integer
+  ts-read-personas (buf) (at) (m) (i) =
+    if i == 128 then 0
+    else let a = ts-read-persona buf (at + i * 712) (list-at m.personas i)
+    in ts-read-personas buf at m (i + 1)
+
+  ts-read-body : Integer, Integer, WorldCheckpoint -> TownState
+  ts-read-body (buf) (at) (checkpoint) =
+    let w = tf-new 0
+    in let m = tm-new 0
+    in let a = __record-set w "used" (peek-qword buf at)
+    in let b = __record-set w "town-count" (peek-qword buf (at + 8))
+    in let c = __record-set w "hour" (peek-qword buf (at + 16))
+    in let d = __record-set w "event-count" (peek-qword buf (at + 24))
+    in let e = __record-set w "sequence" (peek-qword buf (at + 32))
+    in let f = ts-read-towns buf (at + 40) w 0
+    in let g = ts-read-people buf (at + 1064) w 0
+    in let h = ts-read-list buf (at + 76840) w.events 0
+    in let j = __record-set m "audit-count" (peek-qword buf (at + 109608))
+    in let k = __record-set m "sequence" (peek-qword buf (at + 109616))
+    in let l = __record-set m "fallbacks" (peek-qword buf (at + 109624))
+    in let n = __record-set m "refusals" (peek-qword buf (at + 109632))
+    in let o = __record-set m "accepted" (peek-qword buf (at + 109640))
+    in let p = ts-read-personas buf (at + 109648) m 0
+    in let q = ts-read-list buf (at + 200784) m.audit 0
+    in TownState { checkpoint = checkpoint, townsfolk = w, mind = m }
+
+  ts-decode : Integer, Integer -> Result TownState Text
+  ts-decode (buf) (size) =
+    if size < ts-size 1 | size > ts-size world-max-objects then Err "town checkpoint length outside budget"
+    else if peek-qword buf 0 /= #31435354 | peek-qword buf 8 /= 1 | peek-qword buf 56 /= 0 then Err "town checkpoint format unsupported"
+    else let world-bytes = peek-qword buf 24
+    in if world-bytes < ws-size 1 | world-bytes > ws-size world-max-objects then Err "town world section length invalid"
+    else if peek-qword buf 16 /= size | size /= 64 + world-bytes + ts-body-bytes then Err "town checkpoint length mismatch"
+    else if peek-qword buf 32 < 0 | peek-qword buf 40 < 0 then Err "town checkpoint metadata invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "town checkpoint checksum invalid"
+    else let at = 64 + world-bytes
+    in if not (ts-towns-wire-valid buf (at + 40) 0 & ts-people-wire-valid buf (at + 1064) 0 & ts-personas-wire-valid buf (at + 109648) 0) then Err "town checkpoint text block invalid"
+    else when ws-decode (buf + 64) world-bytes
+      is Err (e) -> Err e
+      is Ok (checkpoint) ->
+        if checkpoint.tick /= peek-qword buf 32 | checkpoint.sequence /= peek-qword buf 40 then Err "town checkpoint metadata disagrees with world"
+        else let state = ts-read-body buf at checkpoint
+        in if not (ts-state-valid checkpoint state.townsfolk state.mind) then Err "town checkpoint state invalid"
+        else Ok state
+
+  ts-decode-record : Integer, Integer, Integer, Integer -> Result TownState Text
+  ts-decode-record (buf) (size) (tick) (sequence) =
+    if size < 64 then Err "town checkpoint record truncated"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "town checkpoint disagrees with record metadata"
+    else ts-decode buf size

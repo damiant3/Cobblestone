@@ -1,0 +1,40 @@
+Chapter: EconomyFighterProof
+  cites Uoaix chapter EconomyFighter
+  cites Uoaix chapter EconomyCurrencyValid
+
+  efp-check : Text, Boolean -> [Console] Integer
+  efp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  efp-loot : EfFighter, Integer, Integer -> Integer
+  efp-loot (f) (left) (kept) = if left == 0 then kept
+    else let got = ef-loot f 10 in if got < 0 then -1 else efp-loot f (left - 1) (kept + got)
+
+  opening : [Console] Integer = when bb-economy 0
+    is Err (e) -> act
+      print-line-uni ("FAIL economy " & e)
+      1
+    end
+    is Ok (x) -> when ef-new x 3002 200
+      is Err (e) -> act
+        print-line-uni ("FAIL fighter " & e)
+        1
+      end
+      is Ok (f) -> act
+        w <- x.world
+        actor <- f.producer.actor
+        crown <- w.mint-owner
+        crown-before <- if crown > 0 then ep-at (ep-actor w crown).stock 6 else 0
+        found-before <- ep-at w.found 6
+        kept <- efp-loot f 20 0
+        held <- ep-at (ep-actor w actor).stock 6
+        crown-after <- if crown > 0 then ep-at (ep-actor w crown).stock 6 else 0
+        print-line-uni ("FIGHTER loot=200 kept=" & show kept & " taxed=" & show f.taxed & " held=" & show held & " crown=" & show (crown-after - crown-before) & " tax=" & show w.money.tax)
+        a <- efp-check "loot gold enters as found gold ore, and every unit is kept by the fighter or paid to the crown" (kept == f.looted & held == kept
+          & f.looted + f.taxed == 200 & crown-after - crown-before == f.taxed & ep-at w.found 6 - found-before == 200)
+        b <- efp-check "the crown's share is taxed from the loot" (crown > 0 & w.money.tax > 0 & f.taxed > 0 & f.taxed < 200)
+        c <- efp-check "an empty loot is refused" (ef-loot f 0 == -1 & ep-at (ep-actor w actor).stock 6 == held)
+        d <- efp-check "currency and material census stay valid" (euv-valid x & ep-census w 1)
+        a + b + c + d
+      end

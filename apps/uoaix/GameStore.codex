@@ -1,0 +1,139 @@
+Chapter: GameStore
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter Townsfolk
+  cites Foreword chapter Result
+
+  GameStoreState = record { checkpoint : GameCheckpoint, inputs : Integer }
+
+  game-store-shared : GameCheckpoint -> Boolean
+  game-store-shared (saved) =
+    saved.game.world.buffer == saved.state.checkpoint.world.buffer
+      & saved.game.world.capacity == saved.state.checkpoint.world.capacity
+
+  game-store-current : UoStore, GameStoreState -> Boolean
+  game-store-current (store) (owner) =
+    store.fault == 0 & owner.inputs >= 0 & owner.inputs <= 4096
+      & store.sequence == owner.checkpoint.state.checkpoint.sequence
+      & store.tick == owner.checkpoint.state.checkpoint.tick & game-store-shared owner.checkpoint
+
+  game-store-bindings : TfWorld, WorldTable, Integer -> Boolean
+  game-store-bindings (town) (world) (i) =
+    if i >= town.used then True
+    else let person = list-at town.people i
+    in let valid = if person.alive == 0 | person.world-serial == 0 then True
+      else when world-get world person.world-serial
+        is Err (e) -> False
+        is Ok (mobile) -> mobile.kind == 1
+    in valid & game-store-bindings town world (i + 1)
+
+  game-store-prepare : GameCheckpoint, WorldAction -> Result WorldUndo Text
+  game-store-prepare (saved) (action) =
+    if not (game-store-shared saved) then Err "game store world ownership differs"
+    else when wa-prepare saved.state.checkpoint action
+      is Err (e) -> Err e
+      is Ok (undo) ->
+        if gc-slots saved.game.world saved.game.characters 0 & game-store-bindings saved.state.townsfolk saved.game.world 0 then Ok undo
+        else let restored = wa-rollback undo in Err "game action breaks character or town references"
+
+  game-store-publish : GameStoreState, Integer, Integer -> Integer
+  game-store-publish (owner) (sequence) (tick) =
+    let a = __record-set owner.checkpoint.state.checkpoint "sequence" sequence
+    in let b = __record-set owner.checkpoint.state.checkpoint "tick" tick
+    in let c = __record-set owner "inputs" (owner.inputs + 1)
+    in sequence
+
+  game-store-commit : UoStore, GameStoreState, WorldAction -> [Device.Block] Result Integer Text
+  game-store-commit (store) (owner) (action) =
+    if not (game-store-current store owner) | store.snapshot < 0 then act Err "game action owner/store mismatch or missing checkpoint" end
+    else if owner.inputs >= 4096 then act Err "game action suffix budget requires checkpoint" end
+    else let mark = __heap-save
+    in let buf = alloc-bytes wa-max-bytes
+    in when wa-encode action buf wa-max-bytes
+      is Err (e) -> act Err e end
+      is Ok (size) -> when game-store-prepare owner.checkpoint action
+        is Err (e) -> act Err e end
+        is Ok (undo) -> act
+          committed <- us-append store 2 action.sequence action.tick buf size
+          when committed
+            is Err (e) -> let restored = wa-rollback undo in Err e
+            is Ok (at) ->
+              let accepted = wa-accept undo
+              in let sequence = game-store-publish owner action.sequence action.tick
+              in let reclaimed = __heap-restore mark
+              in Ok sequence
+        end
+
+  game-store-save : UoStore, GameStoreState -> [Device.Block] Result Integer Text
+  game-store-save (store) (owner) =
+    if not (game-store-current store owner) then act Err "game checkpoint owner/store mismatch" end
+    else let mark = __heap-save
+    in let size = gc-size owner.checkpoint.game.world.capacity
+    in let buf = alloc-bytes size
+    in when gc-encode owner.checkpoint.state owner.checkpoint.game buf size
+      is Err (e) -> act Err e end
+      is Ok (n) -> act
+        saved <- us-append store 1 owner.checkpoint.state.checkpoint.sequence owner.checkpoint.state.checkpoint.tick buf n
+        when saved
+          is Err (e) -> Err e
+          is Ok (at) ->
+            let reset = __record-set owner "inputs" 0
+            in let reclaimed = __heap-restore mark
+            in Ok at
+      end
+
+  game-store-input : GameStoreState, Integer, Integer, Integer, Integer -> Result Integer Text
+  game-store-input (owner) (buf) (size) (sequence) (tick) = when wa-decode buf size
+    is Err (e) -> Err e
+    is Ok (action) ->
+      if action.sequence /= sequence | action.tick /= tick then Err "game action disagrees with record metadata"
+      else when game-store-prepare owner.checkpoint action
+        is Err (e) -> Err e
+        is Ok (undo) -> let accepted = wa-accept undo
+          in Ok (game-store-publish owner action.sequence action.tick)
+
+  game-store-suffix : UoStore, GameStoreState, Integer, Integer -> [Device.Block] Result GameStoreState Text
+  game-store-suffix (store) (owner) (at) (buf) =
+    if at == store.head then
+      if not (game-store-current store owner) then act Err "recovered game disagrees with store head" end
+      else if not (ts-state-valid owner.checkpoint.state.checkpoint owner.checkpoint.state.townsfolk owner.checkpoint.state.mind) then act Err "recovered game town invariant invalid" end
+      else act Ok owner end
+    else if at < 0 | at > store.head | owner.inputs >= 4096 then act Err "game recovery extent or input budget invalid" end
+    else let mark = __heap-save
+    in act
+      read <- us-read store at buf wa-max-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) ->
+          if row.kind /= 2 | row.next <= at | row.next > store.head then Err "game recovery suffix record invalid"
+          else let next = row.next
+          in when game-store-input owner buf row.length row.sequence row.tick
+            is Err (e) -> Err e
+            is Ok (sequence) -> let restored = __heap-restore mark
+              in game-store-suffix store owner next buf
+    end
+
+  game-store-restore : UoStore -> [Device.Block] Result GameStoreState Text
+  game-store-restore (store) =
+    if store.fault /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "game recovery requires a committed checkpoint" end
+    else let capacity = gc-size world-max-objects
+    in let snapshot = alloc-bytes capacity
+    in let input = alloc-bytes wa-max-bytes
+    in act
+      read <- us-read store store.snapshot snapshot capacity
+      when read
+        is Err (e) -> Err e
+        is Ok (row) ->
+          if row.kind /= 1 | row.next > store.head then Err "game recovery checkpoint record invalid"
+          else when gc-decode-record snapshot row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (saved) -> game-store-suffix store (GameStoreState { checkpoint = saved, inputs = 0 }) row.next input
+    end
+
+Page 1

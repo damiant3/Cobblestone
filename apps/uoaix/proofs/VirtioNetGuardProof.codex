@@ -1,0 +1,120 @@
+Chapter: VirtioNetGuardProof
+  cites Kernel chapter VirtioNetX86
+  cites Kernel chapter VirtioPciX86
+  cites Foreword chapter Console
+
+  ng-queue : Integer -> VpxQueue
+  ng-queue (index) =
+    let memory = alloc-bytes 4096
+    in let zero = vpx-zero memory 4096 0
+    in VpxQueue { desc = memory, avail = memory + 1024, used = memory + 2048,
+      size = 32, notify = memory + 3072, index = index, avail-index = if index == 0 then 32 else 0,
+      last-used = 0, fault = 0 }
+
+  ng-state : Integer -> Integer
+  ng-state (unused) =
+    let base = alloc-bytes 256
+    in let zero = vpx-zero base 256 0
+    in let rx = ng-queue 0
+    in let tx = ng-queue 1
+    in let saved-rx = vnx-save-queue base vnx-rx-q rx
+    in let saved-tx = vnx-save-queue base vnx-tx-q tx
+    in let buffers = alloc-bytes (32 * 2048)
+    in let cleared = vpx-zero buffers (32 * 2048) 0
+    in let tx-buffer = alloc-bytes 2048
+    in let clear-tx = vpx-zero tx-buffer 2048 0
+    in let completion = alloc-bytes 8
+    in let a = poke-qword base 0 vnx-magic
+    in let b = poke-qword base 160 buffers
+    in let c = poke-qword base 168 tx-buffer
+    in let d = poke-qword base 176 completion
+    in base
+
+  ng-post : Integer, Integer, Integer, Integer, Integer -> Integer
+  ng-post (base) (id) (length) (flags) (buffers) =
+    let q = vnx-load-queue base vnx-rx-q
+    in let a = poke-32 q.used 4 id
+    in let b = poke-32 q.used 8 length
+    in let c = poke-16 q.used 2 1
+    in let buffer = peek-qword base 160
+    in let d = poke-byte buffer 0 flags
+    in let e = poke-16 buffer 10 buffers
+    in let f = poke-byte buffer 12 77
+    in let g = poke-byte buffer 25 88
+    in 0
+
+  ng-check : Text, Boolean -> [Console] Integer
+  ng-check (name) (ok) = act
+    print-line-uni (name & (if ok then " PASS" else " FAIL"))
+    if ok then 0 else 1
+  end
+
+  ng-idle : Integer, List Integer, Integer -> Integer
+  ng-idle (base) (dst) (left) =
+    if left == 0 then 0
+    else let n = vnx-recv-into base dst
+    in if n /= 0 then 1 else ng-idle base dst (left - 1)
+
+  opening : [Console] Nothing = act
+    base <- ng-state 0
+    dst <- vnx-zeros 1522 []
+    mark <- __heap-save
+    idle <- ng-idle base dst 100000
+    delta <- __heap-save - mark
+    c1 <- ng-check "empty polls retain no heap" (idle == 0 & delta == 0)
+    ready <- ng-post base 0 26 0 1
+    mark2 <- __heap-save
+    n <- vnx-recv-into base dst
+    delta2 <- __heap-save - mark2
+    c2 <- ng-check "complete frame and queue metadata survive scratch restore" (n == 14 & list-at dst 0 == 77 & list-at dst 13 == 88 & delta2 == 0 & peek-qword base (vnx-rx-q + 48) == 33 & peek-qword base (vnx-rx-q + 56) == 1)
+    short <- ng-state 0
+    short-post <- ng-post short 0 26 0 1
+    small <- [9,9,9]
+    short-n <- vnx-recv-into short small
+    c3 <- ng-check "small caller receives no truncated frame" (short-n == 0 & list-at small 0 == 9 & peek-qword short 232 == 1)
+    offload <- ng-state 0
+    offload-post <- ng-post offload 0 26 1 1
+    offload-n <- vnx-recv-into offload dst
+    c4 <- ng-check "unnegotiated checksum offload refused" (offload-n == 0 & peek-qword offload 232 == 1 & vnx-valid offload)
+    merged <- ng-state 0
+    merged-post <- ng-post merged 0 26 0 2
+    merged-n <- vnx-recv-into merged dst
+    c5 <- ng-check "unnegotiated merged buffers refused" (merged-n == 0 & peek-qword merged 232 == 1)
+    bad-id <- ng-state 0
+    bad-post <- ng-post bad-id 99 26 0 1
+    bad-n <- vnx-recv-into bad-id dst
+    c6 <- ng-check "unowned completion faults driver" (bad-n == 0 & not (vnx-valid bad-id))
+    oversized <- ng-state 0
+    oversized-post <- ng-post oversized 0 2049 0 1
+    oversized-n <- vnx-recv-into oversized dst
+    c7 <- ng-check "oversized DMA completion faults driver" (oversized-n == 0 & not (vnx-valid oversized))
+    tx <- ng-state 0
+    txq <- vnx-load-queue tx vnx-tx-q
+    tx-id <- poke-32 txq.used 4 0
+    tx-length <- poke-32 txq.used 8 0
+    tx-ready <- poke-16 txq.used 2 1
+    frame <- [1,2,3,4,5,6,7,8,9,10,11,12,13,14]
+    tx-mark <- __heap-save
+    sent <- vnx-send tx frame
+    tx-delta <- __heap-save - tx-mark
+    c8 <- ng-check "transmit header payload completion and heap" (sent == 1 & tx-delta == 0 & peek-byte (peek-qword tx 168) 0 == 0 & peek-16 (peek-qword tx 168) 10 == 0 & peek-byte (peek-qword tx 168) 12 == 1 & peek-byte (peek-qword tx 168) 25 == 14 & peek-qword tx 224 == 1)
+    invalid <- vnx-send tx [1,2,3,4,5,6,7,8,9,10,11,12,13,256]
+    c9 <- ng-check "invalid octet refuses before publish" (invalid == 0 & peek-qword tx (vnx-tx-q + 48) == 1)
+    other <- ng-state 0
+    other-q <- vnx-load-queue other vnx-tx-q
+    other-id <- poke-32 other-q.used 4 1
+    other-length <- poke-32 other-q.used 8 0
+    other-ready <- poke-16 other-q.used 2 1
+    other-sent <- vnx-send other frame
+    c10 <- ng-check "TX completion must own descriptor zero" (other-sent == 0 & not (vnx-valid other))
+    timeout <- ng-state 0
+    timeout-q <- vnx-load-queue timeout vnx-tx-q
+    timed <- vnx-await-tx timeout timeout-q 0
+    reuse <- vnx-send timeout frame
+    c11 <- ng-check "timeout prevents DMA buffer reuse" (timed == 0 & reuse == 0 & not (vnx-valid timeout) & peek-qword timeout (vnx-tx-q + 48) == 0)
+    single <- ng-state 0
+    single-post <- ng-post single 0 26 0 0
+    single-n <- vnx-recv-into single dst
+    c12 <- ng-check "MAC-only zero count uses the single completion" (single-n == 14 & peek-qword single 216 == 1 & vnx-valid single)
+    print-line-uni ("VIRTIO NET GUARDS failures=" & show (c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12))
+  end

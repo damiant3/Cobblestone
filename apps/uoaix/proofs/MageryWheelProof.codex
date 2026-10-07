@@ -1,0 +1,134 @@
+Chapter: MageryWheelProof
+  cites Uoaix chapter MageryCodec
+  cites Uoaix chapter WorldTimers
+
+  mwp-check : Text, Boolean -> [Console] Nothing
+  mwp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  mwp-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  mwp-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  mwp-land : WalkMap, Integer -> Integer
+  mwp-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let written = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in mwp-land map (i + 1)
+  mwp-decoration : WalkMap -> Result WdState Text
+  mwp-decoration (map) = let data = alloc-bytes 64
+    in let zero = mgs-zero data 0 8
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 16 map.x
+    in let c = poke-qword data 24 map.y
+    in let d = poke-qword data 32 map.width
+    in let e = poke-qword data 40 map.height
+    in wd-read data 64 map 200
+  MwpEnv = record { game : GameShard, map : WalkMap, magic : Magery, input : GameInput, hero : Integer, npc : Integer, wheel : Maybe WorldTimers }
+  mwp-env : Boolean -> Result MwpEnv Text
+  mwp-env (wheeled) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (game) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> Err e
+      is Ok (map) -> let filled = mwp-land map 0
+        in when mwp-decoration map
+          is Err (e) -> Err e
+          is Ok (decoration) -> let hero-mobile = gs-mobile 0 1421 1698 0 400 1002
+            in let hp = __record-set hero-mobile "health" 10
+            in let hero = world-create game.world hero-mobile
+            in let character = poke-qword game.characters 0 1
+            in let strength = poke-byte game.characters 79 30
+            in let dexterity = poke-byte game.characters 80 20
+            in let intelligence = poke-byte game.characters 81 20
+            in let npc-mobile = gs-mobile 0 1422 1698 0 400 1002
+            in let npc-hp = __record-set npc-mobile "health" 30
+            in let npc = world-create game.world npc-mobile
+            in let items = gsi-new game.world
+            in let bank = gmb-new items #4A
+            in let combat = cb-new game 42
+            in let magic = mgs-new items bank combat decoration None (mwp-cover map)
+            in let input = gn-input-with (gsi-specs 0) 1
+            in let mode = __record-set input "mode" 2
+            in let phase = __record-set input.session "phase" 2
+            in let serial = __record-set input.session "serial" 1
+            in let active = __record-set game "active" 1
+            in let bound = mge-bind magic
+            in when (if is-ok hero & is-ok npc then wtm-new 256 256 0 else Err "fixture allocation")
+              is Err (e) -> Err e
+              is Ok (w) -> Ok (MwpEnv { game = game, map = map, magic = magic, input = input, hero = 1, npc = 2, wheel = if wheeled then Just w else None })
+ The hero regenerates mana in its own pulses; the NPC never pulses and carries poison (four ticks),
+ a strength bonus expiring at 12 s, protection to 15 s and night to 25 s.
+  mwp-arm : MwpEnv -> Result Integer Text
+  mwp-arm (env) = when mg-session env.magic env.game env.input
+    is Err (e) -> Err e
+    is Ok (hero) -> when mgs-ensure env.magic env.game env.npc
+      is Err (e) -> Err e
+      is Ok (npc) -> let low = __record-set hero "mana" 5
+        in let regen = __record-set hero "regen" 0
+        in let hero-tracked = mgs-track env.magic hero
+        in let p = __record-set npc "poison" 1
+        in let pl = __record-set npc "poison-left" 4
+        in let pd = __record-set npc "poison-due" (mgd-ticks 2000)
+        in let pp = __record-set npc "poisoner" env.hero
+        in let bonus = poke-qword npc.mods 0 3
+        in let until = poke-qword npc.mods 8 (mgd-ticks 12000)
+        in let pr = __record-set npc "protection" 5
+        in let pu = __record-set npc "protected-until" (mgd-ticks 15000)
+        in let nl = __record-set npc "light" 9
+        in let nt = __record-set npc "night" (mgd-ticks 25000)
+        in let npc-tracked = mgs-track env.magic npc
+        in if hero-tracked < 0 | npc-tracked < 0 then Err "track" else Ok 0
+  mwp-drain : MwpEnv, Integer -> Integer
+  mwp-drain (env) (tick) = when env.wheel
+    is None -> 0
+    is Just (w) -> let e = wtm-next w tick
+      in if e < 0 then 0
+      else let fired = if w.kind == mgs-kind then mgs-fired env.magic w.key else 0 in mwp-drain env tick
+  mwp-state : MwpEnv, List Integer -> List Integer
+  mwp-state (env) (trace) = let hero = list-at env.magic.actors (world-slot env.game.world env.hero)
+    in let npc = list-at env.magic.actors (world-slot env.game.world env.npc)
+    in let hp = when world-get env.game.world env.npc is Err (_) -> -1 is Ok (m) -> m.health
+    in let a = list-push trace hero.mana
+    in let b = list-push a npc.poison
+    in let c = list-push b npc.poison-left
+    in let d = list-push c hp
+    in let e = list-push d (peek-qword npc.mods 0)
+    in let f = list-push e npc.protection
+    in list-push f npc.light
+  mwp-run : MwpEnv, Integer, Integer, List Integer, List Integer -> [Device.Block] Result (List Integer) Text
+  mwp-run (env) (k) (limit) (trace) (visits) = if k > limit then act Ok (trace & visits) end
+    else let now = k * mgd-ticks 100
+    in let drained = mwp-drain env now
+    in act
+      pulsed <- mg-pulse env.magic env.game env.input env.map 2593 now
+      when pulsed
+        is Err (e) -> Err e
+        is Ok (_) -> mwp-run env (k + 1) limit (mwp-state env trace) (if k == 160 | k == 240 then list-push visits env.magic.visits else visits)
+    end
+  mwp-first-difference : List Integer, List Integer, Integer, Integer -> Integer
+  mwp-first-difference (a) (b) (i) (n) = if i == n then -1
+    else if list-at a i /= list-at b i then i else mwp-first-difference a b (i + 1) n
+  mwp-timeline : Boolean -> [Device.Block] Result (List Integer) Text
+  mwp-timeline (wheeled) = when mwp-env wheeled
+    is Err (e) -> act Err e end
+    is Ok (env) -> when mwp-arm env
+      is Err (e) -> act Err e end
+      is Ok (_) -> let attached = when env.wheel is None -> 0 is Just (w) -> mgs-attach env.magic w in mwp-run env 1 3000 (__list-with-capacity 21008) (__list-with-capacity 2)
+
+  opening : [Console, Device.Block] Nothing = act
+    scanned <- mwp-timeline False
+    wheeled <- mwp-timeline True
+    when scanned
+      is Err (e) -> print-line-uni ("FAIL scan timeline " & e)
+      is Ok (a) -> when wheeled
+        is Err (e) -> print-line-uni ("FAIL wheel timeline " & e)
+        is Ok (b) -> let n = list-length a - 2
+          in let diff = if list-length b /= list-length a then 0 else mwp-first-difference a b 0 n
+          in let scan-window = list-at a (n + 1) - list-at a n
+          in let wheel-window = list-at b (n + 1) - list-at b n
+          in act
+            print-line-uni ("trace-values=" & show n & " first-difference=" & show diff & " window-visits scan=" & show scan-window & " wheel=" & show wheel-window)
+            mwp-check "the wheel and the per-pulse scan produce the same mana, poison, hit point, bonus, protection and night trace over 3000 pulses" (diff < 0 & n == 3000 * 7)
+            mwp-check "the NPC's effects all end: poison spent with damage dealt, bonus, protection and night cleared" (list-at b (n - 4) < 30 & list-at b (n - 4) > 0 & list-at b (n - 6) == -1 & list-at b (n - 5) == 0 & list-at b (n - 3) == 0 & list-at b (n - 2) == 0 & list-at b (n - 1) == 0)
+            mwp-check "between the NPC's deadlines the wheel visits one actor fewer per pulse than the scan (80 pulses)" (scan-window - wheel-window == 80)
+          end
+  end
+
+Page 1

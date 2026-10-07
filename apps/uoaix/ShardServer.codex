@@ -1,0 +1,285 @@
+Chapter: ShardServer
+  cites Uoaix chapter ShardLinks
+  cites Uoaix chapter ShardTx
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameHuffman
+  cites Uoaix chapter WalkMap
+  cites Net chapter NetDriver
+  cites Net chapter NetIO
+  cites Net chapter NetCompact
+  cites Net chapter WebServer
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Works chapter Http
+  cites Foreword chapter Result
+
+  ShardProtocol = record { base : Integer, game : GameInput, epoch : Integer,
+    closing : Integer, activity : Integer, disconnected : Boolean, seen : Integer }
+  ShardServer = record { links : ShardLinks, protocols : List ShardProtocol,
+    game : GameShard, map : WalkMap, huffman : Integer, host-port : Integer,
+    next-connection : Integer, timer : Integer, rx : List Integer }
+  ShardEncoded = record { packets : List (List Integer), bytes : Integer }
+
+ Each slot reserves a fixed construction arena for GameInput and its owned
+ buffers. Check the constructor's extent before writing any such arena.
+
+  ss-protocol-bytes : Integer = 69632
+
+  ss-protocol-new : Integer -> ShardProtocol
+  ss-protocol-new (unused) =
+    let base = __heap-save
+    in let reserve = __heap-advance ss-protocol-bytes
+    in let outer = __heap-save
+    in let into = __heap-restore base
+    in let game = gn-input 0
+    in let back = __heap-restore outer
+    in ShardProtocol { base = base, game = game, epoch = 0, closing = 0, activity = 0, disconnected = False, seen = 0 }
+
+  ss-protocols : Integer, List ShardProtocol -> List ShardProtocol
+  ss-protocols (left) (out) = if left == 0 then out
+    else ss-protocols (left - 1) (list-push out (ss-protocol-new 0))
+
+  ss-new : GameShard, WalkMap, Integer, Integer, List Integer, List Integer, List Integer, List Integer, List Integer, Integer -> Result ShardServer Text
+  ss-new (game) (map) (huffman) (host-port) (ports) (mac) (ip) (gateway) (mask) (now) =
+    if now < 0 | host-port < 1024 | host-port > 65535 | list-length ports < 1 | list-length ports > sl-max-links then Err "shard server configuration invalid"
+    else let before = __heap-save
+    in let probe = gn-input 0
+    in let size = __heap-save - before
+    in let reset = __heap-restore before
+    in if size > ss-protocol-bytes then Err "game input exceeds construction arena"
+    else let protocols = ss-protocols (list-length ports) (__list-with-capacity (list-length ports))
+    in let rx = net-io-rx []
+    in when sl-new ports mac ip gateway mask
+      is Err (e) -> Err e
+      is Ok (links) ->
+        let server = ShardServer { links = links, protocols = protocols,
+          game = game, map = map, huffman = huffman, host-port = host-port,
+          next-connection = 0, timer = now, rx = rx }
+        in let saved = __record-set links "mark" __heap-save
+        in Ok server
+
+  ss-reset : ShardServer, Integer, Integer -> Integer
+  ss-reset (server) (i) (now) =
+    let slot = list-at server.links.slots i
+    in let protocol = list-at server.protocols i
+    in let number = server.next-connection
+    in let outer = __heap-save
+    in let into = __heap-restore protocol.base
+    in let game = gn-input number
+    in let back = __heap-restore outer
+    in let saved = __record-set protocol "game" game
+    in let logged = __record-set game "log" server.game.log
+    in let epoch = __record-set protocol "epoch" slot.epoch
+    in let closing = __record-set protocol "closing" 0
+    in let connected = __record-set protocol "disconnected" False
+    in let seen = __record-set protocol "seen" 0
+    in let activity = __record-set protocol "activity" now
+    in let counted = if slot.port == 2593 then __record-set server "next-connection" (number + 1) else server
+    in 0
+
+  ss-shift : Integer, Integer, Integer, Integer -> Integer
+  ss-shift (buffer) (used) (count) (i) = if i >= used - count then 0
+    else let written = poke-byte buffer i (peek-byte buffer (count + i))
+    in ss-shift buffer used count (i + 1)
+
+  ss-consume : ShardLink, Integer -> Integer
+  ss-consume (slot) (count) =
+    let transport = slot.transport
+    in let shifted = ss-shift transport.recv-base transport.recv-len count 0
+    in let length = __record-set transport "recv-len" (transport.recv-len - count)
+    in 0
+
+  ss-encode-replies : Integer, Boolean, List (List Integer), Integer, Integer, List (List Integer) -> Result ShardEncoded Text
+  ss-encode-replies (huffman) (compress) (packets) (i) (size) (out) =
+    if i >= list-length packets then Ok (ShardEncoded { packets = out, bytes = size })
+    else let encoded = if compress then gh-encode huffman (list-at packets i) else Ok (list-at packets i)
+    in when encoded
+      is Err (e) -> Err e
+      is Ok (bytes) ->
+        if size + list-length bytes > stx-max-bytes then Err "game response exceeds transmit budget"
+        else ss-encode-replies huffman compress packets (i + 1) (size + list-length bytes) (list-push out bytes)
+
+  ss-flatten : List (List Integer), Integer, Integer, List Integer -> List Integer
+  ss-flatten (packets) (i) (j) (out) =
+    if i >= list-length packets then out
+    else let bytes = list-at packets i
+    in if j >= list-length bytes then ss-flatten packets (i + 1) 0 out
+    else ss-flatten packets i (j + 1) (list-push out (list-at bytes j))
+
+  ss-game-replies : Integer, Boolean, List (List Integer) -> Result (List Integer) Text
+  ss-game-replies (huffman) (compress) (packets) =
+    if list-length packets > 64 then Err "game response packet budget exceeded"
+    else when ss-encode-replies huffman compress packets 0 0 (__list-with-capacity (list-length packets))
+      is Err (e) -> Err e
+      is Ok (encoded) -> Ok (ss-flatten encoded.packets 0 0 (__list-with-capacity encoded.bytes))
+
+  ss-refuse : ShardProtocol, Text -> [Console] Integer
+  ss-refuse (protocol) (reason) = act
+    diagnosed <- gn-refuse protocol.game reason
+    let close = __record-set protocol "closing" 2 in 0
+  end
+
+  ss-game-input : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), ShardServer, Integer, Integer -> [Console, e] Integer
+  ss-game-input (handler) (server) (i) (at) =
+    let slot = list-at server.links.slots i
+    in let protocol = list-at server.protocols i
+    in let state = protocol.game
+    in if at >= slot.transport.recv-len then let consumed = ss-consume slot at in 0
+    else when gn-byte server.game state (peek-byte slot.transport.recv-base at)
+      is Err (e) -> ss-refuse protocol e
+      is Ok (complete) ->
+        if not complete then ss-game-input handler server i (at + 1)
+        else let packet = __buf-read-bytes state.buffer 0 state.used
+        in let reset = __record-set state "used" 0
+        in let consumed = ss-consume slot (at + 1)
+        in act
+          handled <- handler server.game state server.map server.host-port packet
+          when handled
+            is Err (e) -> ss-refuse protocol e
+            is Ok (reply) -> when ss-game-replies server.huffman (state.mode == 2) reply.packets
+              is Err (e) -> ss-refuse protocol e
+              is Ok (bytes) -> when stx-enqueue slot.tx bytes
+                is Err (e) -> ss-refuse protocol e
+                is Ok (n) -> act
+                  slg-line server.game.log slg-network slg-debug ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show state.connection)
+                  positioned <- gn-position server.game state.session
+                  diagnosed <- if reply.close & list-at packet 0 /= 160 & list-at packet 0 /= 1 then gn-refuse state reply.note else act 0 end
+                  let close = if reply.close then __record-set protocol "closing" 1 else protocol
+                  in 1
+                end
+        end
+
+  ss-http-input : (HttpRequest -> [e] Result HttpResponse Text), ShardServer, Integer -> [Console, e] Integer
+  ss-http-input (handler) (server) (i) =
+    let slot = list-at server.links.slots i
+    in let protocol = list-at server.protocols i
+    in let length = slot.transport.recv-len
+    in let seen = __record-set protocol "seen" length
+    in let bytes = __buf-read-bytes slot.transport.recv-base 0 length
+    in let total = wb-request-total bytes length
+    in if total < 0 then
+      if length >= sl-recv-bytes | net-io-peer-finished slot.transport then let failed = __record-set protocol "closing" 2 in 0 else 0
+    else let request = http-parse-request (wb-slice bytes 0 total [])
+    in let consumed = ss-consume slot total
+    in let again = __record-set protocol "seen" -1
+    in act
+      handled <- handler request
+      when handled
+        is Err (e) -> act
+          slg-line server.game.log slg-admin slg-warn ("REFUSE admin handler " & e)
+          let failed = __record-set protocol "closing" 2 in 0
+        end
+        is Ok (response) -> when stx-enqueue slot.tx (http-encode response)
+          is Err (e) -> act
+            slg-line server.game.log slg-admin slg-warn ("REFUSE admin response " & e)
+            let failed = __record-set protocol "closing" 2 in 0
+          end
+          is Ok (n) -> 1
+    end
+
+  ss-pass : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), (HttpRequest -> [e] Result HttpResponse Text), ShardServer, Integer, Integer -> [Console, e] Integer
+  ss-pass (game-handler) (http-handler) (server) (i) (now) =
+    if i >= list-length server.links.slots then 0
+    else let slot = list-at server.links.slots i
+    in let protocol = list-at server.protocols i
+    in if not slot.occupied then ss-pass game-handler http-handler server (i + 1) now
+    else let reset = if protocol.epoch /= slot.epoch then ss-reset server i now else 0
+    in let failed = if slot.failed | now - protocol.activity > 30000 then __record-set protocol "closing" 2 else protocol
+    in act
+      consumed <- if protocol.closing /= 0 | slot.tx.offset /= slot.tx.used | slot.transport.recv-len == 0 then act 0 end
+        else if slot.port == 2593 then ss-game-input game-handler server i 0
+        else if protocol.seen == slot.transport.recv-len & not (net-io-peer-finished slot.transport) then act 0 end
+        else ss-http-input http-handler server i
+      ended <- if protocol.closing == 0 & slot.transport.recv-len == 0 & net-io-peer-finished slot.transport then
+        if slot.port == 2593 & (protocol.game.used > 0 | (protocol.game.wire.seed-count > 0 & protocol.game.wire.seed-count < 4)) then ss-refuse protocol "incomplete packet at EOF"
+        else let closing = __record-set protocol "closing" 1 in act 0 end
+        else act 0 end
+      let sent = if protocol.closing == 2 | slot.failed | slot.tx.offset == slot.tx.used then 0 else when sl-send server.links i
+        is Err (e) -> let failed = __record-set protocol "closing" 2 in 0
+        is Ok (n) -> n
+      in act
+        rest <- ss-pass game-handler http-handler server (i + 1) now
+        consumed + sent + rest
+      end
+    end
+
+  ss-close-pass : ShardServer, Integer -> [Console] Integer
+  ss-close-pass (server) (i) = if i >= list-length server.links.slots then 0
+    else let slot = list-at server.links.slots i
+    in let protocol = list-at server.protocols i
+    in if not slot.occupied then ss-close-pass server (i + 1)
+    else let disconnected = if protocol.closing /= 0 & not protocol.disconnected then
+      let closed = if slot.port == 2593 then gs-disconnect server.game protocol.game.session else 0
+      in let notified = __record-set protocol "disconnected" True in 0 else 0
+    in let closing = if protocol.closing == 0 then Ok False else sl-close server.links i (protocol.closing == 2)
+    in when closing
+      is Err (e) -> act
+        slg-line server.game.log slg-network slg-error ("FAIL shard close " & e)
+        0 - 1
+      end
+      is Ok (began) ->
+        let released = if net-io-conn-closed slot.transport & net-outbox-count slot.transport.session == 0 then sl-release server.links i else Ok i
+        in ss-close-pass server (i + 1)
+
+  ss-receive : ShardServer, Integer, Integer -> [Network.Read, Network.Write] Integer
+  ss-receive (server) (budget) (total) = if budget <= 0 then total else act
+    received <- net-driver-recv-into server.rx
+    if received <= 0 then total
+    else let now = get-ticks
+    in let index = sl-feed server.links server.rx received
+    in let active = if index >= 0 & eth-ethertype-within server.rx received == eth-type-ipv4 then __record-set (list-at server.protocols index) "activity" now else list-at server.protocols 0
+    in act
+      flushed <- sl-flush server.links 0
+      ss-receive server (budget - 1) (total + received)
+    end
+  end
+
+  ss-round : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), (HttpRequest -> [e] Result HttpResponse Text), ShardServer -> [Console, Network.Read, Network.Write, e] Integer
+  ss-round (game-handler) (http-handler) (server) = act
+    received <- ss-receive server 16 0
+    let now = get-ticks
+    in act
+      progress <- ss-pass game-handler http-handler server 0 now
+      sent <- sl-flush server.links 0
+      closed <- ss-close-pass server 0
+      flushed-close <- sl-flush server.links 0
+      let ticked = if now - server.timer >= 10 then
+        let timer = __record-set server "timer" now in sl-tick server.links 0 else Ok 0
+      in act
+        flushed-tick <- sl-flush server.links 0
+        when ticked
+          is Err (e) -> act
+            slg-line server.game.log slg-network slg-error ("FAIL shard timer " & e)
+            0 - 1
+          end
+          is Ok (n) ->
+            if closed < 0 then -1
+            else let compacted = if __heap-save - server.links.mark > 1048576 then sl-compact server.links else Ok 0
+            in when compacted
+              is Err (e) -> act
+                slg-line server.game.log slg-network slg-error ("FAIL shard compaction " & e)
+                0 - 1
+              end
+              is Ok (n) -> received + progress
+      end
+    end
+  end
+
+  ss-loop : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), (HttpRequest -> [e] Result HttpResponse Text), ShardServer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  ss-loop (game-handler) (http-handler) (server) (idle) = act
+    progress <- ss-round game-handler http-handler server
+    if progress < 0 then progress
+    else let polls = if progress > 0 then 0 else if idle >= web-idle-polls then idle else idle + 1
+    in let waited = if polls > 0 then web-idle-wait polls else 0
+    in ss-loop game-handler http-handler server polls
+  end
+
+  ss-serve : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), (HttpRequest -> [e] Result HttpResponse Text), ShardServer -> [Console, Network.Read, Network.Write, e] Integer
+  ss-serve (game-handler) (http-handler) (server) =
+    let saved = __record-set server.links "mark" __heap-save
+    in ss-loop game-handler http-handler server 0
+
+Page 1

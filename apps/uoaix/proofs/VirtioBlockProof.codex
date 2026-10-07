@@ -1,0 +1,53 @@
+Chapter: VirtioBlockProof
+  cites Kernel chapter VirtioBlkX86
+  cites Kernel chapter VirtioPciX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Result
+
+  vbp-check : Text, Boolean -> [Console] Nothing
+  vbp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  vbp-fill : Integer, Integer -> Integer
+  vbp-fill (buf) (i) =
+    if i >= 512 then 0
+    else let written = poke-byte buf i (bit-and (i * 37 + 11) 255)
+    in vbp-fill buf (i + 1)
+
+  vbp-equal : Integer, Integer, Integer -> Boolean
+  vbp-equal (a) (b) (i) =
+    if i >= 512 then True
+    else if peek-byte a i /= peek-byte b i then False else vbp-equal a b (i + 1)
+
+  vbp-run : VbxState -> [Console] Nothing
+  vbp-run (state) =
+    let out = alloc-bytes 512
+    in let source = alloc-bytes 512
+    in let filled = vbp-fill source 0
+    in let read = vbx-read state 0 out
+    in act
+      print-line-uni ("VBX sectors=" & show state.capacity & " readonly=" & show (if state.readonly then 1 else 0) & " flush=" & show (if state.flush then 1 else 0))
+      vbp-check "sector zero read" (is-ok read & peek-byte out 0 == 161 & peek-byte out 511 == 90)
+      let last = vbx-read state (state.capacity - 1) out
+      in vbp-check "last sector read" (is-ok last & peek-byte out 0 == 195)
+      let before = state.queue.avail-index
+      in let low = vbx-read state (-1) out
+      in let high = vbx-read state state.capacity out
+      in vbp-check "sector bounds refuse before publish" (is-err low & is-err high & state.queue.avail-index == before)
+      let previous = vbx-read state 10 out
+      in if is-err previous then print-line-uni "FAIL prior sector read"
+      else print-line-uni ("VBX prior-write=" & show (if vbp-equal source out 0 then 1 else 0))
+      if state.readonly then
+        let before = state.queue.avail-index
+        in let write = vbx-write state 10 source
+        in vbp-check "read-only write refused" (is-err write & state.queue.avail-index == before)
+      else let write = vbx-write state 10 source
+      in let read = vbx-read state 10 out
+      in vbp-check "write flush readback" (is-ok write & is-ok read & vbp-equal source out 0)
+    end
+
+  opening : [Console] Nothing =
+    when vbx-find pci-scan-all
+      is Err (e) -> print-line-uni ("VBX REFUSED " & e)
+      is Ok (state) -> vbp-run state
+
+Page 1

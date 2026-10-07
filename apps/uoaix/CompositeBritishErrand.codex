@@ -1,0 +1,202 @@
+Chapter: CompositeBritishErrand
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter GameMonster
+
+ Saved-path stepping follows TownLive's port of Source-X CCharNPCAct.cpp
+ NPC_WalkToPoint, Apache-2.0; Sphere-LICENSE.txt.
+
+  CbErrand = record { serial : Integer, leg : Integer, visit : Integer, mined : Integer, blocked : Integer,
+    home : BbSpot, stand-z : Integer, driven : Integer, walk : RteWalk,
+    route : Maybe WalkMap, nav : Maybe TlPath, wind : Maybe WalkMap, wind-nav : Maybe TlPath, timed : Boolean, reported : Integer }
+ Wheel kind 5 is Lord British's errand; its key is 0 (WorldTimers.md).
+  cbe-kind : Integer = 5
+ Legs (F48): 0 sets out, 1 walks to the alcove behind the throne, 2 mines the Royal Mine in Wind, 3 walks to its
+ return gate, 4 walks to the Britain banker and strikes the gold, 5 is done.
+  cbe-done : Integer = 5
+ The alcove goal is the passable curtain end at 1323,1620 (cpr-alcove); the bank stand is the tile south of the banker.
+  cbe-alcove-x : Integer = 1323
+  cbe-alcove-y : Integer = 1620
+  cbe-bank-x : Integer = gmb-bank-x
+  cbe-bank-y : Integer = gmb-bank-y + 1
+ gs-create-at enters every new character at 1420,1698.
+  cbe-entry-x : Integer = 1420
+  cbe-entry-y : Integer = 1698
+ An NPC walks a tile in 400 ms (Sphere's NPC walk delay); a mining try waits the 3 s harvest
+ cooldown; at home and while blocked the errand looks again once a second.
+  cbe-step-ticks : Integer = gm-ticks 400
+  cbe-mine-ticks : Integer = gm-ticks 3000
+  cbe-wait-ticks : Integer = gm-ticks 1000
+ A driving client pulses every 100 ms; three seconds without a pulse from British's session hands the errand back.
+  cbe-drive-ticks : Integer = gm-ticks 3000
+ A visit tries at most 64 times, the gatherer's limit (cgg-visit-limit).
+  cbe-visit-limit : Integer = 64
+  cbe-bytes : Integer = 88
+ Both windows keep 8 tiles to spare on the map cache's 8-tile blocks: Britain's covers the alcove, the throne, the
+ bank stand and the entry; Wind's the Royal Mine's arrival, its veins within two tiles of it, and its gate.
+  cbe-window-x : Integer = (min cbe-alcove-x (min cbe-bank-x cbe-entry-x) - 8) / 8 * 8
+  cbe-window-y : Integer = (min cbe-alcove-y (min cbe-bank-y cbe-entry-y) - 8) / 8 * 8
+  cbe-window-width : Integer = (max cbe-bank-x cbe-entry-x + 16) / 8 * 8 - cbe-window-x
+  cbe-window-height : Integer = (max cbe-bank-y cbe-entry-y + 16) / 8 * 8 - cbe-window-y
+  cbe-wind-x : Integer = (cpr-royal-x - 8) / 8 * 8
+  cbe-wind-y : Integer = (cpr-royal-y - 10) / 8 * 8
+  cbe-wind-width : Integer = (cpr-royal-x + 18) / 8 * 8 - cbe-wind-x
+  cbe-wind-height : Integer = (cpr-royal-gate-y + 16) / 8 * 8 - cbe-wind-y
+
+  cbe-new : Integer, BbSpot -> CbErrand
+  cbe-new (serial) (home) =
+    CbErrand { serial = serial, leg = 0, visit = 0, mined = 0, blocked = 0, home = home, stand-z = 0, driven = 0,
+      walk = rte-walk 0, route = None, nav = None, wind = None, wind-nav = None, timed = False, reported = -1 }
+  cbe-finished : CbErrand -> Boolean
+  cbe-finished (c) = c.leg == cbe-done
+  cbe-spans : WalkMap, Integer, Integer, Integer, Integer -> Boolean
+  cbe-spans (map) (x) (y) (width) (height) = map.x <= x & map.y <= y
+    & map.x + map.width >= x + width & map.y + map.height >= y + height
+  cbe-inside : WalkMap, Integer, Integer -> Boolean
+  cbe-inside (map) (x) (y) = x >= map.x & y >= map.y & x < map.x + map.width & y < map.y + map.height
+  cbe-route : CbErrand, WalkMap, WalkMap -> Result Integer Text
+  cbe-route (c) (map) (wind) = if not (cbe-spans map cbe-window-x cbe-window-y cbe-window-width cbe-window-height)
+      then Err "British's route window does not cover the errand"
+    else if not (cbe-spans wind cbe-wind-x cbe-wind-y cbe-wind-width cbe-wind-height) then Err "British's Wind window does not cover the Royal Mine"
+    else let bound = __record-set c "route" (Just map)
+    in let planner = __record-set c "nav" (Just (tl-path-new map))
+    in let mine = __record-set c "wind" (Just wind)
+    in let miner = __record-set c "wind-nav" (Just (tl-path-new wind)) in Ok 0
+  cbe-drive : CbErrand, Integer, Integer -> Integer
+  cbe-drive (c) (serial) (tick) = if serial == 0 | serial /= c.serial then 0
+    else let stamped = __record-set c "driven" (max 1 tick) in 1
+  cbe-driven : CbErrand, Integer -> Boolean
+  cbe-driven (c) (tick) = c.driven > 0 & tick - c.driven < cbe-drive-ticks
+
+  cbe-reset : CbErrand -> Integer
+  cbe-reset (c) = rte-drop c.walk
+  cbe-blocked : CbErrand -> Result Integer Text
+  cbe-blocked (c) = let cleared = cbe-reset c
+    in let count = __record-set c "blocked" (c.blocked + 1) in Ok 0
+  cbe-leg : CbErrand, WorldTable, Integer -> Result Integer Text
+  cbe-leg (c) (world) (leg) = let cleared = cbe-reset c
+    in let moved = __record-set c "leg" leg
+    in let touched = world-touch world in Ok 1
+  cbe-z : WalkMap, Integer, Integer -> Result Integer Text
+  cbe-z (map) (x) (y) = when walk-ground map x y
+    is Err (e) -> Err e
+    is Ok (ground) -> walk-height map x y ground
+  cbe-aim : CbErrand, WorldTable, WalkMap, Integer, Integer, Integer -> Result Integer Text
+  cbe-aim (c) (world) (map) (x) (y) (leg) = when cbe-z map x y
+    is Err (_) -> cbe-blocked c
+    is Ok (z) -> let stood = __record-set c "stand-z" z in cbe-leg c world leg
+ A teleport lands on the surface reached from `from`: the throne room floor (z 55) lies above its land (z 50).
+  cbe-jump : CbErrand, WorldTable, WorldObject, WalkMap, Integer, Integer, Integer -> Result Boolean Text
+  cbe-jump (c) (world) (m) (map) (x) (y) (from) = when walk-height map x y from
+    is Err (_) -> let b = cbe-blocked c in Ok False
+    is Ok (z) -> when world-update world (WorldObject { serial = m.serial, kind = 1, x = x, y = y, z = z,
+        graphic = m.graphic, hue = m.hue, container = 0, amount = 1, health = m.health })
+      is Err (e) -> Err e
+      is Ok (_) -> Ok True
+  cbe-move : CbErrand, WorldTable, WalkMap, TlPath, WorldObject, Integer, Integer, Integer -> Result Integer Text
+  cbe-move (c) (world) (map) (nav) (mobile) (x) (y) (z) = let moves = c.walk.moves
+    in when rte-toward-in nav world None map None rte-any c.walk mobile x y z
+      is Err (e) -> Err e
+      is Ok (_) -> if c.walk.moves == moves then cbe-blocked c else Ok 1
+  cbe-grown : CprState, Integer -> Boolean
+  cbe-grown (s) (node) = let w = s.harvest.vendor.currency.world
+    in node >= 1 & eh-valid-node w node & (list-at w.nodes (node - 1)).stage == 2
+ The first Royal Mine vein whose node has grown, else the first vein's node.
+  cbe-vein : CprState, List (List Integer), Integer, Integer -> Integer
+  cbe-vein (s) (veins) (i) (first) = if i == list-length veins then first
+    else let v = list-at veins i
+    in let at = gh-site-find s.harvest 5 (list-at v 0) (list-at v 1) (list-at v 2) 0
+    in if at < 0 then cbe-vein s veins (i + 1) first
+    else let node = (list-at s.harvest.sites at).node
+    in if cbe-grown s node then node else cbe-vein s veins (i + 1) (if first == 0 then node else first)
+  cbe-node : CprState -> Integer
+  cbe-node (s) = cbe-vein s cpr-royal-veins 0 0
+  cbe-crown : CprState -> Integer
+  cbe-crown (s) = s.harvest.vendor.currency.world.mint-owner
+  cbe-depart : CbErrand, CprState, WorldTable, WalkMap -> Result Integer Text
+  cbe-depart (c) (s) (world) (route) = if cbe-crown s <= 0 | cbe-node s < 1 then cbe-blocked c
+    else when bb-require (bb-producer s.harvest.vendor.currency (cbe-crown s)) 25 1
+      is Err (_) -> cbe-blocked c
+      is Ok (_) -> cbe-aim c world route cbe-alcove-x cbe-alcove-y 1
+  cbe-arrive : CbErrand, WorldTable -> Result Integer Text
+  cbe-arrive (c) (world) = let fresh = __record-set c "visit" 0 in cbe-leg c world 2
+  cbe-mine : CbErrand, CprState, WorldTable, WalkMap -> Result Integer Text
+  cbe-mine (c) (s) (world) (wind) = let w = s.harvest.vendor.currency.world
+    in let node = cbe-node s
+    in let got = eh-harvest w (cbe-crown s) node
+    in let visits = c.visit + 1
+    in let tried = __record-set c "visit" visits
+    in let gained = if got > 0 then __record-set c "mined" (c.mined + got) else c
+    in let equipped = got /= -1 | (cbe-grown s (cbe-node s) & is-ok (bb-require (bb-producer s.harvest.vendor.currency (cbe-crown s)) 25 1))
+    in if not equipped | visits >= cbe-visit-limit then cbe-aim c world wind cpr-royal-gate-x cpr-royal-gate-y 3
+    else let touched = world-touch world in Ok 1
+ Two gold ore smelt to one ingot (EconomyCatalog recipe 32), so the crown strikes what British mined.
+  cbe-bank : CbErrand, CprState, WorldTable -> Result Integer Text
+  cbe-bank (c) (s) (world) = let struck = bb-crown-coin s.harvest.vendor.currency 3 (c.mined / 2) in cbe-leg c world cbe-done
+  cbe-walk : CbErrand, CprState, WorldTable, WorldObject, WalkMap, TlPath, WalkMap, TlPath -> Result Integer Text
+  cbe-walk (c) (s) (world) (m) (route) (nav) (wind) (wind-nav) =
+    if c.leg == 0 then cbe-depart c s world route
+    else if c.leg == 1 then (if cbe-inside wind m.x m.y then cbe-arrive c world
+      else if cpr-alcove m.x m.y then (when cbe-jump c world m wind cpr-royal-x cpr-royal-y cpr-royal-z
+        is Err (e) -> Err e
+        is Ok (jumped) -> if jumped then cbe-arrive c world else Ok 0)
+      else cbe-move c world route nav m cbe-alcove-x cbe-alcove-y c.stand-z)
+    else if c.leg == 2 then cbe-mine c s world wind
+    else if c.leg == 3 then (if cbe-inside route m.x m.y then cbe-aim c world route cbe-bank-x cbe-bank-y 4
+      else if m.x == cpr-royal-gate-x & m.y == cpr-royal-gate-y then (when cbe-jump c world m route cpr-throne-x cpr-throne-y cpr-seat-z
+        is Err (e) -> Err e
+        is Ok (jumped) -> if jumped then cbe-aim c world route cbe-bank-x cbe-bank-y 4 else Ok 0)
+      else cbe-move c world wind wind-nav m cpr-royal-gate-x cpr-royal-gate-y c.stand-z)
+    else if m.x == cbe-bank-x & m.y == cbe-bank-y then cbe-bank c s world
+    else cbe-move c world route nav m cbe-bank-x cbe-bank-y c.stand-z
+  cbe-step : CbErrand, CprState, WorldTable, Integer -> Result Integer Text
+  cbe-step (c) (s) (world) (tick) = if cbe-finished c | c.serial == 0 then Ok 0
+    else if cbe-driven c tick then let cleared = cbe-reset c in Ok 0
+    else when world-get world c.serial
+      is Err (_) -> let gone = __record-set c "serial" 0 in Ok 0
+      is Ok (mobile) -> when c.route
+        is None -> Ok 0
+        is Just (route) -> when c.nav
+          is None -> Ok 0
+          is Just (nav) -> when c.wind
+            is None -> Ok 0
+            is Just (wind) -> when c.wind-nav
+              is None -> Ok 0
+              is Just (wind-nav) -> cbe-walk c s world mobile route nav wind wind-nav
+  cbe-delay : CbErrand -> Integer
+  cbe-delay (c) = if c.leg == 1 | c.leg == 3 | c.leg == 4 then cbe-step-ticks else if c.leg == 2 then cbe-mine-ticks else cbe-wait-ticks
+
+ Version 1 was the Britain-mine errand (done at leg 4); its finished errand stays finished and any other restarts.
+  cbe-encode : CbErrand, WorldTable, Integer -> Integer
+  cbe-encode (c) (world) (buf) = let alive = c.serial /= 0 & is-ok (world-get world c.serial)
+    in let a = poke-qword buf 0 #31454243
+    in let b = poke-qword buf 8 2
+    in let d = poke-qword buf 16 (if alive then c.serial else 0)
+    in let e = poke-qword buf 24 c.leg
+    in let f = poke-qword buf 32 c.visit
+    in let g = poke-qword buf 40 c.mined
+    in let h = poke-qword buf 48 c.blocked
+    in let i = poke-qword buf 56 c.home.x
+    in let j = poke-qword buf 64 c.home.y
+    in let k = poke-qword buf 72 c.home.z
+    in let l = poke-qword buf 80 c.stand-z
+    in cbe-bytes
+  cbe-decode : WorldTable, Integer -> Result CbErrand Text
+  cbe-decode (world) (buf) = let serial = peek-qword buf 16
+    in let version = peek-qword buf 8
+    in let saved = peek-qword buf 24
+    in let visit = peek-qword buf 32
+    in let mined = peek-qword buf 40
+    in let blocked = peek-qword buf 48
+    in let last = if version == 1 then 4 else cbe-done
+    in if peek-qword buf 0 /= #31454243 | (version /= 1 & version /= 2) then Err "British errand format"
+    else if serial < 0 | saved < 0 | saved > last | visit < 0 | visit > cbe-visit-limit | mined < 0 | blocked < 0 then Err "British errand state invalid"
+    else let leg = if version == 2 then saved else if saved == 4 then cbe-done else 0
+    in let live = serial /= 0 & (when world-get world serial is Err (_) -> False is Ok (m) -> m.kind == 1)
+    in let c = cbe-new (if live then serial else 0) (BbSpot { x = peek-qword buf 56, y = peek-qword buf 64, z = peek-qword buf 72 })
+    in let a = __record-set c "leg" leg
+    in let b = __record-set c "visit" (if version == 2 then visit else 0)
+    in let d = __record-set c "mined" mined
+    in let e = __record-set c "blocked" blocked
+    in let f = __record-set c "stand-z" (peek-qword buf 80) in Ok c

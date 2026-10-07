@@ -1,0 +1,145 @@
+Chapter: CompositeCampingProof
+  cites Uoaix chapter CompositeStore
+
+  ccp-check : Text, Boolean -> [Console] Integer
+  ccp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  ccp-fill : WalkMap, Integer -> Integer
+  ccp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in ccp-fill map (i + 1)
+  ccp-create : Integer -> List Integer
+  ccp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Camper" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  ccp-use : Integer -> List Integer
+  ccp-use (serial) = gp-put32 [6] serial
+  ccp-note : Result GameReply Text -> Text
+  ccp-note (r) = when r is Ok (reply) -> reply.note is Err (e) -> "error " & e
+  ccp-said : Result (Maybe GameReply) Text, Text -> Boolean
+  ccp-said (r) (text) = when r is Ok (Just (reply)) -> text-contains reply.note "camping:camp" & ccp-has reply.packets (as-say text) 0 is otherwise -> False
+  ccp-has : List (List Integer), List Integer, Integer -> Boolean
+  ccp-has (packets) (p) (i) = if i == list-length packets then False else (list-at packets i == p) | ccp-has packets p (i + 1)
+  ccp-move : GameShard, Integer, Integer, Integer -> Boolean
+  ccp-move (game) (serial) (x) (y) = when world-get game.world serial
+    is Err (_) -> False
+    is Ok (m) -> is-ok (world-update game.world (__record-set (__record-set m "x" x) "y" y))
+  ccp-amount : GameShard, Integer -> Integer
+  ccp-amount (game) (serial) = when world-get game.world serial is Err (_) -> 0 is Ok (m) -> m.amount
+  ccp-fire : GameShard, Integer, Integer -> Integer
+  ccp-fire (game) (graphic) (slot) = if slot >= game.world.capacity then 0
+    else when world-at game.world slot
+      is Err (_) -> ccp-fire game graphic (slot + 1)
+      is Ok (o) -> if o.kind == 2 & o.container == 0 & o.graphic == graphic then o.serial else ccp-fire game graphic (slot + 1)
+  ccp-fires : GameShard -> Integer
+  ccp-fires (game) = ccp-fire game cf-burning 0 + ccp-fire game cf-smoulder 0 + ccp-fire game cf-out 0
+  ccp-concealed : CompositeGame, Integer -> Integer
+  ccp-concealed (owner) (serial) = let slot = world-slot owner.items.world serial in if slot < 0 then -1 else peek-byte owner.active.concealed slot
+  ccp-first : CompositeOwner, List GameOpcodeSpec, WalkMap -> [Console, Device.Block] Integer
+  ccp-first (store) (specs) (map) = let owner = store.state in act
+      input <- gn-input-with specs 1
+      mode <- __record-set input "mode" 2
+      phase <- __record-set input.session "phase" 1
+      game <- owner.checkpoint.game
+      entry <- cs-route store game input map 2593 (ccp-create 0)
+      player <- input.session.serial
+      placed <- ccp-move game player 1440 1710
+      skilled <- gs-skill-set game player 10 1000
+      pack <- gsi-pack-find game.world player 0
+      carried <- world-create game.world (__record-set (gs-item pack cf-kindling 0) "amount" 2)
+      kindling <- when carried is Err (_) -> 0 is Ok (k) -> k
+      known <- gsi-register owner.items kindling 0 0 True True
+      ground <- world-create game.world (WorldObject { serial = 0, kind = 2, x = 1441, y = 1712, z = 0, graphic = cf-kindling, hue = 0, container = 0, amount = 1, health = 0 })
+      loose <- when ground is Err (_) -> 0 is Ok (k) -> k
+      seen <- gsi-register owner.items loose 0 0 True True
+      a <- ccp-check "the fixture camper carries two kindling in its pack and one lies on the ground" (is-ok entry & placed & skilled >= 0 & pack > 0 & kindling > 0 & loose > 0)
+      floor <- cs-route store game input map 2593 (ccp-use loose)
+      b <- ccp-check "kindling on the ground is refused: it must be carried" (ccp-note floor == "That must be in your backpack to use it." & ccp-fires game == 0)
+      far <- ccp-move game player 5300 1000
+      deep <- cs-route store game input map 2593 (ccp-use kindling)
+      back <- ccp-move game player 1440 1710
+      c <- ccp-check "kindling is refused in a dungeon" (far & back & ccp-note deep == "There is not a spot nearby to place your campfire." & ccp-amount game kindling == 2)
+      lit <- cs-route store game input map 2593 (ccp-use kindling)
+      fire <- ccp-fire game cf-burning 0
+      print-line-uni ("LIT " & ccp-note lit & " fire " & show fire & " kindling " & show (ccp-amount game kindling))
+      d <- ccp-check "at Camping 100.0 kindling lights a campfire on a tile beside the camper and one kindling is spent" (ccp-note lit == "camping:lit" & fire > 0
+        & ccp-amount game kindling == 1 & (when world-get game.world fire is Err (_) -> False is Ok (f) -> walk-abs (f.x - 1440) + walk-abs (f.y - 1710) == 1))
+      committed <- cs-commit store True
+      e <- ccp-check "the world commits with the lit campfire" (is-ok committed)
+      t0 <- get-ticks
+      first <- cs-pulse store game input map 2593 t0
+      departing <- cg-depart owner player
+      lingering <- ccp-concealed owner player
+      returned <- cg-return owner player
+      f <- ccp-check "near a fire the camp starts securing, and a logout then still lingers" (ccp-said first "You feel it would take a few moments to secure your camp." & lingering /= 2 & not (cf-secure owner.camps player))
+      secured <- cs-pulse store game input map 2593 (t0 + gm-ticks 31000)
+      safe <- cg-depart owner player
+      gone <- ccp-concealed owner player
+      g <- ccp-check "after 30 seconds the camp is secure and a logout leaves the world at once" (ccp-said secured "The camp is now secure." & cf-secure owner.camps player & gone == 2)
+      undone <- cg-return owner player
+      smoulder <- cs-pulse store game input map 2593 (t0 + gm-ticks 61000)
+      dim <- ccp-fire game cf-smoulder 0
+      out <- cs-pulse store game input map 2593 (t0 + gm-ticks 91000)
+      cold <- ccp-fire game cf-out 0
+      cleared <- not (cf-secure owner.camps player)
+      ended <- cs-pulse store game input map 2593 (t0 + gm-ticks 101000)
+      print-line-uni ("FIRE smoulder " & show dim & " out " & show cold & " left " & show (ccp-fires game))
+      h <- ccp-check "the fire smoulders at 60 s, goes out at 90 s (the camp no longer secure) and is removed at 100 s" (dim == fire & cold == fire & cleared & ccp-fires game == 0)
+      relit <- cs-route store game input map 2593 (ccp-use kindling)
+      kept <- cs-commit store True
+      i <- ccp-check "a second fire from the last kindling commits with the world" (ccp-note relit == "camping:lit" & is-ok kept & ccp-fires game > 0)
+      a + b + c + d + e + f + g + h + i
+  end
+  ccp-later : CompositeOwner, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  ccp-later (store) (specs) = let owner = store.state in when walk-map-new 1392 1664 96 96
+    is Err (e) -> ccp-check e False
+    is Ok (map) -> act
+      game <- owner.checkpoint.game
+      saved <- ccp-fires game
+      swept <- cf-camp owner.camps game.world (gs-item 0 0 0) 0
+      ccp-check "a restart removes the campfire the last run saved" (saved > 0 & ccp-fires game == 0)
+    end
+
+  ccp-data : Integer -> Integer
+  ccp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+ The world timers (the campfire's stages among them) run only with decoration bound, as on the live server.
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> ccp-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1392 1664 96 96
+     is Err (e) -> ccp-check e False
+     is Ok (map) -> let filled = ccp-fill map 0
+      in let data = ccp-data 0
+      in when wd-read data 240 map map.stride
+       is Err (e) -> ccp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> ccp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) None None
+       when loaded
+        is Err (e) -> ccp-check ("recovery " & e) False
+        is Ok (owner) -> if fresh then ccp-first owner specs map else ccp-later owner specs
+      end
+    end
+
+Page 1

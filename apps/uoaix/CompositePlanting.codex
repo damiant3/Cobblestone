@@ -1,0 +1,353 @@
+Chapter: CompositePlanting
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter WorldFlora
+
+ A player plants a timber sapling (item 56) on a free ground tile: the tile becomes an owned plot planted with
+ timber (EconomyHarvest eh-ground, eh-plant) and a harvest site, which UHC1 persists. A planted tree draws as
+ world items under serials 7D000001 and up, two a site (the sapling or trunk, then the leaves).
+  CplRequest = record { serial : Integer, target : Integer, lot : Integer, expires : Integer, resource : Integer }
+  CplViewer = record { connection : Integer, sent : Integer, used : Integer }
+  CplState = record { requests : List CplRequest, nonce : Integer, viewers : List CplViewer, clock : Integer }
+  cpl-serial-base : Integer = #7D000000
+  cpl-context : Integer = #504C0000
+ Timber is resource 15 on ground kind 2; its seed is item 56 (EconomyCatalog).
+  cpl-resource : Integer = 15
+  cpl-ground : Integer = 2
+  cpl-sapling : Integer = 56
+ TILEDATA art: sapling 0x0CE9, oak trunk 0x0CDA and oak leaves 0x0CDB, stump 0x0E56.
+  cpl-sapling-art : Integer = #0CE9
+  cpl-trunk-art : Integer = #0CDA
+  cpl-leaves-art : Integer = #0CDB
+ A fruit tree (resource 16) is TILEDATA's apple tree 0x0D94 with leaves 0x0D95; it is picked by hand, not chopped.
+  cpl-trunk : Integer -> Integer
+  cpl-trunk (resource) = if resource == 16 then #0D94 else cpl-trunk-art
+  cpl-leaves : Integer -> Integer
+  cpl-leaves (resource) = if resource == 16 then #0D95 else cpl-leaves-art
+  cpl-stump-art : Integer = #0E56
+  cpl-requests : Integer, List CplRequest -> List CplRequest
+  cpl-requests (left) (xs) = if left == 0 then xs else cpl-requests (left - 1) (list-push xs (CplRequest { serial = 0, target = 0, lot = -1, expires = 0, resource = 0 }))
+  cpl-seed-resource : EpWorld, Integer, Integer -> Integer
+  cpl-seed-resource (w) (item) (i) = if item <= 0 | i >= list-length w.catalog.resources then 0
+    else if (list-at w.catalog.resources i).seed == item then i + 1 else cpl-seed-resource w item (i + 1)
+ Timber (15) and fruit (16) grow as trees; every other seeded resource grows as a crop.
+  cpl-tree : Integer -> Boolean
+  cpl-tree (resource) = resource == 15 | resource == 16
+ TILEDATA crop art: sprouts 0x0C68 while young; cotton 0x0C4F, flax 0x1A99, wheat 0x0C55, cabbage 0x0C7B for
+ vegetables, ginseng 0x18E9, garlic 0x18E1, mandrake 0x18DF and nightshade 0x18E5 when mature. The 1.25 client does
+ not pick an item whose art weighs 255 under a target cursor (Damian 2026-10-06: wheat, cotton and sprouts did not
+ highlight, flax at 0, cabbage and mandrake at 1 did), so a weight-255 crop is drawn with the 0x1A movable flag 0x20.
+  cpl-crop-art : Integer -> Integer
+  cpl-crop-art (resource) = if resource == 10 then #0C4F else if resource == 11 then #1A99 else if resource == 13 then #0C55
+    else if resource == 14 then #0C7B else if resource == 17 then #18E9 else if resource == 18 then #18E1
+    else if resource == 19 then #18DF else if resource == 20 then #18E5 else #0C68
+  cpl-heavy-art : Integer -> Boolean
+  cpl-heavy-art (art) = art == #0C4F | art == #0C55 | art == #0C68
+  cpl-viewers : Integer, List CplViewer -> List CplViewer
+  cpl-viewers (left) (xs) = if left == 0 then xs
+    else let sent = alloc-bytes 256
+    in let cleared = wf-fill sent 0 256 0
+    in cpl-viewers (left - 1) (list-push xs (CplViewer { connection = -1, sent = sent, used = 0 }))
+  cpl-new : Integer -> CplState
+  cpl-new (unused) = CplState { requests = cpl-requests 8 [], nonce = 0, viewers = cpl-viewers 8 [], clock = 0 }
+  cpl-denied : Text -> Result (Maybe GameReply) Text
+  cpl-denied (text) = Ok (Just (gsi-denied text))
+  cpl-flora-at : Maybe WfState, Integer, Integer -> Boolean
+  cpl-flora-at (flora) (x) (y) = when flora
+    is None -> False
+    is Just (s) -> let block = (x / 8) * 512 + y / 8 in cpl-row-at s x y (wf-first s block) (wf-first s (block + 1))
+  cpl-row-at : WfState, Integer, Integer, Integer, Integer -> Boolean
+  cpl-row-at (s) (x) (y) (i) (last) = if i >= last then False else if wf-x s i == x & wf-y s i == y then True else cpl-row-at s x y (i + 1) last
+  cpl-node : GameHarvest, Integer -> EpNode
+  cpl-node (h) (k) = list-at h.vendor.currency.world.nodes ((list-at h.sites k).node - 1)
+  cpl-planted : GameHarvest, Integer -> Boolean
+  cpl-planted (h) (k) = let site = list-at h.sites k
+    in eh-valid-node h.vendor.currency.world site.node & (cpl-node h k).planted == 1 & (cpl-node h k).resource == site.resource
+ Double-click: an owned sapling lot asks for a ground target; one's own planted sapling is tended, then watered.
+  cpl-begin : CplState, GameHarvest, GameShard, GameInput, Integer, Integer -> Result (Maybe GameReply) Text
+  cpl-begin (state) (h) (shard) (input) (serial) (now) = let v = h.vendor
+    in let at = gv-lot v serial 0
+    in if at < 0 then Ok None
+    else let lot = list-at v.lots at
+    in let resource = cpl-seed-resource v.currency.world lot.item 0
+    in if resource == 0 then Ok None
+    else let player = gv-player v input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if player < 0 | slot < 0 | slot >= 8 | lot.actor /= (list-at v.players player).actor then cpl-denied "That sapling is not yours."
+    else if state.nonce > 65535 then cpl-denied "Planting target contexts exhausted."
+    else let request = list-at state.requests slot
+    in let target = cpl-context + state.nonce
+    in let counted = __record-set state "nonce" (state.nonce + 1)
+    in let a = __record-set request "serial" input.session.serial
+    in let b = __record-set request "target" target
+    in let c = __record-set request "lot" serial
+    in let d = __record-set request "expires" (now + gh-ticks 10000)
+    in let r = __record-set request "resource" resource
+    in let cursor = sip-target target
+    in let ground = list-set-at cursor 1 1
+    in Ok (Just (gs-reply [cursor, sip-message #FFFFFFFF #FFFF 6 (if cpl-tree resource then "Where do you plant the sapling?" else "Where do you sow it?")] "planting target"))
+  cpl-care : GameHarvest, GameInput, Integer -> Result (Maybe GameReply) Text
+  cpl-care (h) (input) (k) = let v = h.vendor
+    in let player = gv-player v input.session.serial 0
+    in if k < 0 | k >= h.count | not (cpl-planted h k) then Ok None
+    else if player >= 0 & (cpl-node h k).owner /= (list-at v.players player).actor & eh-common v.currency.world (cpl-node h k) then
+      (if (cpl-node h k).stage == 2 & (list-at h.sites k).resource /= 15 then cpl-reap h (list-at v.players player) k
+      else if (cpl-node h k).stage >= 2 then cpl-denied "That needs no more care."
+      else cpl-denied "The crown's gardeners tend that.")
+    else if player < 0 | (cpl-node h k).owner /= (list-at v.players player).actor then cpl-denied "You did not plant that."
+    else let n = cpl-node h k
+    in let w = v.currency.world
+    in let actor = (list-at v.players player).actor
+    in if n.stage == 2 & (list-at h.sites k).resource /= 15 then cpl-reap h (list-at v.players player) k
+    else if n.stage >= 2 then cpl-denied "That needs no more care."
+    else if n.tended == 0 & not (cpl-roll h (list-at v.players player) (list-at h.sites k).resource) then cpl-denied "You fail to tend the plant."
+    else if n.tended == 0 then (if eh-care w actor (list-at h.sites k).node False < 0 then cpl-denied "You cannot tend that now." else Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 "You tend the sapling."] "planting tend")))
+    else if n.water == 0 then (if eh-care w actor (list-at h.sites k).node True < 0 then cpl-denied "You need water for the sapling." else Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 "You water the sapling."] "planting water")))
+    else cpl-denied "The sapling is tended and watered."
+ Sowing and tending roll and practise the resource's client skill (Farming for crops, F55) in the player's row.
+  cpl-roll : GameHarvest, GvPlayer, Integer -> Boolean
+  cpl-roll (h) (player) (resource) = let w = h.vendor.currency.world
+    in let r = list-at w.catalog.resources (resource - 1)
+    in let bound = gh-row h.vendor player
+    in ep-practice-as (ep-actor w player.actor) r.skill (ep-classic r.skill 0 r.item)
+ A mature crop is reaped by hand (crops take no tool): its yield and the seed it returns go to the backpack.
+  cpl-reap : GameHarvest, GvPlayer, Integer -> Result (Maybe GameReply) Text
+  cpl-reap (h) (player) (k) = let w = h.vendor.currency.world
+    in let site = list-at h.sites k
+    in let r = list-at w.catalog.resources (site.resource - 1)
+    in let bound = gh-row h.vendor player
+    in let produced = 100 + ep-level (ep-actor w player.actor) r.skill (ep-classic r.skill 0 r.item) * 9 / 10
+    in let quantity = eh-harvest w player.actor site.node
+    in if quantity == -2 then cpl-denied "You fail to gather anything."
+    else if quantity < 1 then cpl-denied "There is nothing to reap."
+    else when gh-output h player r.item quantity produced (site.x * 4096 + site.y)
+      is Err (e) -> Err e
+      is Ok (crop) -> when (if r.seed > 0 then gh-output h player r.seed 1 1000 (site.x * 4096 + site.y + 1) else Ok [])
+        is Err (e) -> Err e
+        is Ok (seed) -> let packets = if list-length seed == 0 then [crop] else [crop, seed]
+          in Ok (Just (gs-reply (list-push packets (sip-message #FFFFFFFF #FFFF 6 "You reap the crop.")) "planting reaped"))
+ Target: a free ground tile within two, with no flora, harvest site or object on it.
+  cpl-target : CplState, GameHarvest, Maybe WfState, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
+  cpl-target (state) (h) (flora) (shard) (input) (map) (packet) (now) = let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 | slot >= 8 then Ok None
+    else let request = list-at state.requests slot
+    in if request.target == 0 | request.target /= gp-u32 packet 2 | request.serial /= input.session.serial then cpl-denied "That planting target is no longer active."
+    else let lot-serial = request.lot
+    in let resource = request.resource
+    in let clear = __record-set request "target" 0
+    in let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in if x == 65535 | y == 65535 then Ok (Just (gs-reply [] "planting cancelled"))
+    else if now > request.expires then cpl-denied "That planting target expired."
+    else let v = h.vendor
+    in let at = gv-lot v lot-serial 0
+    in let player = gv-player v input.session.serial 0
+    in if resource < 1 | resource > list-length v.currency.world.catalog.resources then cpl-denied "That planting target is no longer active."
+    else if at < 0 | player < 0 | (list-at v.lots at).item /= (list-at v.currency.world.catalog.resources (resource - 1)).seed | (list-at v.lots at).quantity < 1 | (list-at v.lots at).actor /= (list-at v.players player).actor then cpl-denied "The seed is no longer yours."
+    else when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> let cell = walk-cell map x y
+        in if gp-u32 packet 7 /= 0 | gp-u16 packet 17 /= 0 | cell < 0 | not (walk-ready map x y) then cpl-denied "Plant the sapling on open ground."
+        else if walk-abs (x - mobile.x) > 2 | walk-abs (y - mobile.y) > 2 | (x == mobile.x & y == mobile.y) then cpl-denied "That spot is out of reach."
+        else let z = walk-z map x y
+        in if peek-qword map.solids (cell * map.stride) /= 0 | world-tile-first shard.world x y /= 0 | cpl-flora-at flora x y | gh-site-find h resource x y z 0 >= 0 then cpl-denied "Something already grows or stands there."
+        else if h.count >= 256 then cpl-denied "Nothing more can be planted."
+        else let w = v.currency.world
+        in let actor = (list-at v.players player).actor
+        in if not (cpl-roll h (list-at v.players player) resource) then cpl-denied "You fail to plant the seed."
+        else let plot = eh-ground w actor (ep-actor w actor).place (list-at w.catalog.resources (resource - 1)).ground
+        in if plot < 1 then cpl-denied "That ground cannot be planted."
+        else if eh-plant w actor plot resource < 0 then cpl-denied "It will not take there."
+        else when cpl-debit h at lot-serial
+          is Err (e) -> Err e
+          is Ok (update) -> let site = list-at h.sites h.count
+            in let a = __record-set site "x" x
+            in let b = __record-set site "y" y
+            in let c = __record-set site "z" z
+            in let d = __record-set site "resource" resource
+            in let e = __record-set site "node" plot
+            in let counted = __record-set h "count" (h.count + 1)
+            in let touched = world-touch shard.world
+            in Ok (Just (gs-reply [update, sip-message #FFFFFFFF #FFFF 6 "You plant the sapling."] "planting planted"))
+ The lot gives up one sapling the way a bandage does; eh-plant has already taken it from the actor's stock.
+  cpl-debit : GameHarvest, Integer, Integer -> Result (List Integer) Text
+  cpl-debit (h) (at) (serial) = let v = h.vendor
+    in let lot = list-at v.lots at
+    in let basis = lot.basis / lot.quantity
+    in let remaining = lot.quantity - 1
+    in when world-get h.items.world serial
+      is Err (e) -> Err e
+      is Ok (item) -> let shared = __record-set lot "basis" (lot.basis - basis)
+        in let left = __record-set lot "quantity" remaining
+        in let retired = if remaining == 0 then gh-retire-lot v at else 0
+        in let quoted = gh-invalidate-quotes v 0
+        in if item.amount <= 1 then (when world-delete h.items.world serial is Err (e) -> Err e is Ok (_) -> Ok (sip-remove serial))
+        else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
+        in when world-update h.items.world reduced
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (sip-item reduced)
+  cpl-handler : CplState, GameHarvest, Maybe WfState, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
+  cpl-handler (state) (h) (flora) (shard) (input) (map) (packet) (now) = if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if op == 6 & list-length packet == 5 then
+      (let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+      in if input.mode /= 2 | input.session.phase /= 2 then Ok None
+      else if serial > cpl-serial-base & serial <= cpl-serial-base + 512 then cpl-care h input ((serial - cpl-serial-base - 1) / 2)
+      else cpl-begin state h shard input serial now)
+    else if (op == 7 | op == 9) & list-length packet >= 5 & bit-and (gp-u32 packet 1) #7FFFFFFF > cpl-serial-base & bit-and (gp-u32 packet 1) #7FFFFFFF <= cpl-serial-base + 512 then
+      Ok (Just (if op == 7 then gs-reply [sip-bounce 0] "planting:immovable" else cpl-name h (bit-and (gp-u32 packet 1) #7FFFFFFF)))
+    else if op == #6C & list-length packet == 19 & bit-and (gp-u32 packet 7) #7FFFFFFF > cpl-serial-base & bit-and (gp-u32 packet 7) #7FFFFFFF <= cpl-serial-base + 512 then
+      (if input.mode /= 2 | input.session.phase /= 2 then Ok None else cpl-tool h input packet)
+    else if op == #6C & list-length packet == 19 & bit-and (gp-u32 packet 2) #FFFF0000 == cpl-context then
+      (if input.mode /= 2 | input.session.phase /= 2 then Ok None else cpl-target state h flora shard input map packet now)
+    else Ok None
+ Each viewer remembers what it drew per site: 0 nothing, 1 sapling, 2 trunk and leaves, 3 stump.
+  cpl-label : GameHarvest, Integer -> Text
+  cpl-label (h) (k) = if k < 0 | k >= h.count | not (cpl-planted h k) then "a bare plot"
+    else let site = list-at h.sites k
+    in let w = h.vendor.currency.world
+    in let name = (list-at w.catalog.items ((list-at w.catalog.resources (site.resource - 1)).item - 1)).name
+    in let stage = (cpl-node h k).stage
+    in if site.resource == 15 then (if stage == 2 then "a tree (chop it with a hatchet)" else if stage == 3 then "a stump" else "a sapling")
+    else if site.resource == 16 then (if stage == 2 then "an apple tree (double-click to pick its fruit)" else "a fruit sapling")
+    else if stage == 2 then name & " (reap it with a shovel)" else "young " & name
+  cpl-name : GameHarvest, Integer -> GameReply
+  cpl-name (h) (serial) = gs-reply [sip-message serial 0 6 (cpl-label h ((serial - cpl-serial-base - 1) / 2))] "planting:name"
+  cpl-request : GameHarvest, Integer, Integer -> Integer
+  cpl-request (h) (context) (i) = if i == list-length h.requests then -1
+    else if context /= 0 & (list-at h.requests i).target == context then i else cpl-request h context (i + 1)
+  cpl-tool : GameHarvest, GameInput, List Integer -> Result (Maybe GameReply) Text
+  cpl-tool (h) (input) (packet) = let r = cpl-request h (gp-u32 packet 2) 0
+    in let v = h.vendor
+    in let player = gv-player v input.session.serial 0
+    in let k = (bit-and (gp-u32 packet 7) #7FFFFFFF - cpl-serial-base - 1) / 2
+    in if r < 0 | player < 0 | k >= h.count then Ok None
+    else if (list-at h.requests r).serial /= input.session.serial | not (cpl-planted h k) then Ok None
+    else let lot = gh-tool h (list-at v.players player) (list-at h.requests r).tool
+    in let item = if lot < 0 then 0 else (list-at v.lots lot).item
+    in let resource = (list-at h.sites k).resource
+    in if item == 26 & resource == 15 then Ok None
+    else let clear = __record-set (list-at h.requests r) "target" 0
+    in if item == 25 & not (cpl-tree resource) then cpl-dig h (list-at v.players player) k
+    else cpl-denied (if resource == 16 then "Pick its fruit by hand." else if resource == 15 then "Chop it with a hatchet." else "Reap it with a shovel.")
+  cpl-dig : GameHarvest, GvPlayer, Integer -> Result (Maybe GameReply) Text
+  cpl-dig (h) (player) (k) = let n = cpl-node h k
+    in if n.owner /= player.actor & not (eh-common h.vendor.currency.world n) then cpl-denied "You did not plant that."
+    else if n.stage /= 2 then cpl-denied "That is not ready to reap."
+    else cpl-reap h player k
+  cpl-viewer : CplState, Integer -> CplViewer
+  cpl-viewer (state) (connection) = let found = cpl-viewer-find state.viewers connection 0
+    in let v = list-at state.viewers (if found >= 0 then found else cpl-viewer-oldest state.viewers 0 0)
+    in let fresh = if found >= 0 then 0 else let cleared = wf-fill v.sent 0 256 0 in let c = __record-set v "connection" connection in 0
+    in let tick = __record-set state "clock" (state.clock + 1)
+    in let used = __record-set v "used" state.clock in v
+  cpl-viewer-find : List CplViewer, Integer, Integer -> Integer
+  cpl-viewer-find (viewers) (connection) (i) = if i == list-length viewers then -1
+    else if (list-at viewers i).connection == connection then i else cpl-viewer-find viewers connection (i + 1)
+  cpl-viewer-oldest : List CplViewer, Integer, Integer -> Integer
+  cpl-viewer-oldest (viewers) (i) (best) = if i == list-length viewers then best
+    else cpl-viewer-oldest viewers (i + 1) (if (list-at viewers i).used < (list-at viewers best).used then i else best)
+  cpl-want : GameHarvest, Integer -> Integer
+  cpl-want (h) (k) = if not (cpl-planted h k) then 0 else let stage = (cpl-node h k).stage
+    in let tree = cpl-tree (list-at h.sites k).resource
+    in if stage == 2 then (if tree then 2 else 4) else if stage == 3 then (if tree then 3 else 0) else 1
+  cpl-item : Integer, Integer, Integer, Integer, Integer -> List Integer
+  cpl-item (serial) (art) (x) (y) (z) = if cpl-heavy-art art
+    then sip-length (list-push (list-push (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#1A,0,0] serial) art) x) (bit-or y #4000)) (bit-and z 255)) #20)
+    else sip-length (list-push (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#1A,0,0] serial) art) x) y) (bit-and z 255))
+  cpl-draw : GameHarvest, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cpl-draw (h) (k) (had) (want) (packets) = let site = list-at h.sites k
+    in let main = cpl-serial-base + k * 2 + 1
+    in let dropped = if had == 2 & want /= 2 then list-push packets (sip-remove (main + 1)) else packets
+    in if want == 0 then (if had == 0 then dropped else list-push dropped (sip-remove main))
+    else let art = if want == 1 then (if cpl-tree site.resource then cpl-sapling-art else #0C68)
+      else if want == 2 then cpl-trunk site.resource else if want == 4 then cpl-crop-art site.resource else cpl-stump-art
+    in let drawn = list-push dropped (cpl-item main art site.x site.y site.z)
+    in if want == 2 then list-push drawn (cpl-item (main + 1) (cpl-leaves site.resource) site.x site.y site.z) else drawn
+  cpl-scan : GameHarvest, CplViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cpl-scan (h) (v) (x) (y) (k) (packets) = if k >= h.count | k >= 256 then packets
+    else let site = list-at h.sites k
+    in let near = walk-abs (site.x - x) <= 18 & walk-abs (site.y - y) <= 18
+    in let had = peek-byte v.sent k
+    in let want = if near then cpl-want h k else 0
+    in if had == want then cpl-scan h v x y (k + 1) packets
+    else let set = poke-byte v.sent k want
+    in cpl-scan h v x y (k + 1) (if near then cpl-draw h k had want packets else packets)
+ A mature planted tree stands as its trunk: the trunk's TILEDATA collider is in the walk map while the node is
+ mature and out of it otherwise, so the stage 3a lookup answers timber for a hatchet aimed at it.
+  cpl-collide : GameHarvest, Integer, WalkMap, Integer -> Integer
+  cpl-collide (h) (tiles) (map) (k) = if tiles == 0 | k >= h.count | k >= 256 then 0
+    else let site = list-at h.sites k
+    in let cell = walk-cell map site.x site.y
+    in let changed = if cell < 0 | not (cpl-planted h k) | not (cpl-tree site.resource) then 0
+      else let at = wf-tile-at (cpl-trunk site.resource)
+      in let flags = mul-u32 tiles at
+      in let height = peek-byte tiles (at + 16)
+      in let found = wf-solid-find map cell site.z height flags 0
+      in let mature = (cpl-node h k).stage == 2
+      in if mature & found < 0 then (when walk-add-solid map site.x site.y site.z height flags is Err (_) -> 0 is Ok (_) -> 1)
+      else if not mature & found >= 0 then let dropped = wf-solid-drop map cell found in 1
+      else 0
+    in changed + cpl-collide h tiles map (k + 1)
+ A hatchet aimed at a mature planted tree's item becomes the static target of its trunk.
+  cpl-target-packet : GameHarvest, List Integer -> List Integer
+  cpl-target-packet (h) (packet) = if list-length packet /= 19 | list-at packet 0 /= #6C then packet
+    else let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in if serial <= cpl-serial-base | serial > cpl-serial-base + 512 then packet
+    else let k = (serial - cpl-serial-base - 1) / 2
+    in if k >= h.count | not (cpl-planted h k) | (list-at h.sites k).resource /= 15 | (cpl-node h k).stage /= 2 then packet
+    else let site = list-at h.sites k
+    in let head = [list-at packet 0, list-at packet 1, list-at packet 2, list-at packet 3, list-at packet 4, list-at packet 5, list-at packet 6]
+    in gp-put16 (list-push (list-push (gp-put16 (gp-put16 (gp-put32 head 0) site.x) site.y) (list-at packet 15)) (bit-and site.z 255)) cpl-trunk-art
+  cpl-view : CplState, GameHarvest, Integer, Integer, Integer -> List (List Integer)
+  cpl-view (state) (h) (connection) (x) (y) = cpl-scan h (cpl-viewer state connection) x y 0 []
+ The Royal Test Farm (UOAIX-58) is the farmhouse at 1223..1239,1567..1583. Each bed is resource, x, y in the field to
+ its south, MAP0.MUL land at z 0 with no static (1222..1228 are furrows). Each furnishing is TILEDATA art, x, y on a
+ free floor tile at z 0; the fireplace stands under the house's chimney static at 1227,1568.
+  cpl-farm-beds : List (List Integer) = [[10, 1222, 1587], [11, 1224, 1587], [13, 1226, 1587], [14, 1228, 1587],
+    [17, 1230, 1587], [18, 1232, 1587], [19, 1234, 1587], [20, 1236, 1587], [15, 1224, 1590], [16, 1230, 1590]]
+  cpl-farm-furniture : List (List Integer) = [[#0935, 1227, 1569], [#09ED, 1228, 1569], [#0E7F, 1230, 1568],
+    [#0E77, 1231, 1568], [#1039, 1227, 1572], [#0B2F, 1225, 1576], [#0B31, 1229, 1576], [#0A55, 1225, 1582],
+    [#0A55, 1227, 1582], [#0E3D, 1230, 1582], [#1015, 1233, 1568], [#1039, 1238, 1568], [#0E77, 1238, 1569],
+    [#0E77, 1238, 1570], [#0F34, 1233, 1573], [#0F34, 1234, 1573], [#1037, 1233, 1574], [#0E87, 1238, 1573],
+    [#0E88, 1238, 1574], [#0B41, 1235, 1578], [#0B42, 1236, 1578], [#14E0, 1237, 1578]]
+  cpl-farm-plant : GameHarvest, List (List Integer), Integer -> Integer
+  cpl-farm-plant (h) (beds) (i) = if i == list-length beds then 0
+    else let bed = list-at beds i
+    in let resource = list-at bed 0
+    in let x = list-at bed 1
+    in let y = list-at bed 2
+    in let w = h.vendor.currency.world
+    in if w.mint-owner <= 0 | h.count >= 256 | gh-site-find h resource x y 0 0 >= 0 then cpl-farm-plant h beds (i + 1)
+    else let node = eh-source w resource eh-royal-place
+    in if node < 1 then cpl-farm-plant h beds (i + 1)
+    else let n = list-at w.nodes (node - 1)
+    in let a = __record-set n "owner" w.mint-owner
+    in let b = __record-set n "planted" 1
+    in let site = list-at h.sites h.count
+    in let c = __record-set site "x" x
+    in let d = __record-set site "y" y
+    in let e = __record-set site "z" 0
+    in let f = __record-set site "resource" resource
+    in let g = __record-set site "node" node
+    in let counted = __record-set h "count" (h.count + 1)
+    in 1 + cpl-farm-plant h beds (i + 1)
+  cpl-farm-at : WorldTable, Integer, Integer -> Boolean
+  cpl-farm-at (world) (serial) (art) = if serial == 0 then False
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == art & o.container == 0) then True
+    else cpl-farm-at world (world-tile-next world serial) art
+  cpl-farm-furnish : GsiState, List (List Integer), Integer -> Integer
+  cpl-farm-furnish (items) (pieces) (i) = if i == list-length pieces then 0
+    else let piece = list-at pieces i
+    in let art = list-at piece 0
+    in let x = list-at piece 1
+    in let y = list-at piece 2
+    in if cpl-farm-at items.world (world-tile-first items.world x y) art | world-count items.world >= items.world.capacity then cpl-farm-furnish items pieces (i + 1)
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> cpl-farm-furnish items pieces (i + 1)
+      is Ok (serial) -> let fixed = gsi-register items serial 0 0 False False
+        in 1 + cpl-farm-furnish items pieces (i + 1)
+  cpl-farm-install : GameHarvest -> Integer
+  cpl-farm-install (h) = let planted = cpl-farm-plant h cpl-farm-beds 0
+    in let furnished = cpl-farm-furnish h.items cpl-farm-furniture 0
+    in let touched = if planted + furnished > 0 then world-touch h.items.world else 0
+    in planted + furnished

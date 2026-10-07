@@ -1,0 +1,95 @@
+Chapter: GameVendorPackets
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter ItemNames
+
+ Adapted from SphereServer X (Apache-2.0), commit dd28a0ad53258adb55b548b1bd4df989065a1fe4:
+ src/network/send.cpp and receive.cpp. Codex translation for the pre-grid
+ classic client. Attribution and license: GameVendor.md and ports/Source-X-LICENSE.txt.
+
+  GvQuote = record { serial : Integer, quantity : Integer, price : Integer,
+    graphic : Integer, hue : Integer, item : Integer, lot : Integer }
+  gvp-ascii : List Integer, Text, Integer, Integer -> List Integer
+  gvp-ascii (bytes) (text) (i) (count) = if i == count then bytes
+    else let code = if i < text-length text & i < count - 1 then to-unicode (char-code (char-at text i)) else 0
+    in gvp-ascii (list-push bytes (if code > 127 then 63 else code)) text (i + 1) count
+  gvp-finish : List Integer -> List Integer
+  gvp-finish (p) = let a = list-set-at p 1 (list-length p / 256)
+    in let b = list-set-at p 2 (int-mod (list-length p) 256) in p
+  gvp-close : Integer -> List Integer
+  gvp-close (vendor) = list-push (gp-put32 (gp-put16 (gp-start 59) 8) vendor) 0
+  gvp-open : Integer -> List Integer
+  gvp-open (vendor) = gp-put16 (gp-put32 (gp-start 36) vendor) 48
+  gvp-remove : Integer -> List Integer
+  gvp-remove (serial) = gp-put32 (gp-start 29) serial
+  gvp-mobile : WorldObject -> List Integer
+  gvp-mobile (mobile) =
+    let a = gp-put16 (gp-put32 (gp-put16 (gp-start 120) 23) mobile.serial) mobile.graphic
+    in let b = gp-put16 (gp-put16 a mobile.x) mobile.y
+    in let c = list-push (list-push b (bit-and mobile.z 255)) 0
+    in gp-put32 (list-push (list-push (gp-put16 c mobile.hue) 0) 1) 0
+  gvp-contained : WorldObject -> List Integer
+  gvp-contained (item) =
+    let a = list-push (gp-put16 (gp-put32 (gp-start 37) item.serial) item.graphic) 0
+    in let b = gp-put16 (gp-put16 (gp-put16 a item.amount) item.x) item.y
+    in gp-put16 (gp-put32 b item.container) item.hue
+  gvp-content-row : List Integer, GvQuote, Integer, Integer -> List Integer
+  gvp-content-row (p) (q) (container) (position) =
+    let a = list-push (gp-put16 (gp-put32 p q.serial) q.graphic) 0
+    in let b = gp-put16 (gp-put16 (gp-put16 a q.quantity) position) 1
+    in gp-put16 (gp-put32 b container) q.hue
+  gvp-contents-loop : List GvQuote, Integer, Integer, Integer, List Integer -> List Integer
+  gvp-contents-loop (offers) (count) (container) (i) (out) = if i < 0 then out
+    else gvp-contents-loop offers count container (i - 1) (gvp-content-row out (list-at offers i) container (i + 1))
+ ServUO VendorBuyContent: the client pairs 0x74 entries with 0x3C rows sorted by
+ x; rows go out last to first with x = index + 1, and 0x74 goes first to last.
+  gvp-contents : List GvQuote, Integer, Integer -> List Integer
+  gvp-contents (offers) (count) (container) =
+    let p = gp-put16 (gp-put16 (gp-start 60) (5 + count * 19)) count
+    in gvp-contents-loop offers count container (count - 1) p
+  gvp-name : EgCatalog, GvQuote -> Text
+  gvp-name (catalog) (q) = let art = item-art-name q.graphic
+    in if art == "" then (list-at catalog.items (q.item - 1)).name else art
+  gvp-buy-loop : EgCatalog, List GvQuote, Integer, Integer, List Integer -> List Integer
+  gvp-buy-loop (catalog) (offers) (count) (i) (out) = if i == count then out
+    else let q = list-at offers i
+    in let name = gvp-name catalog q
+    in let length = if text-length name > 63 then 64 else text-length name + 1
+    in let next = gvp-ascii (list-push (gp-put32 out q.price) length) name 0 length
+    in gvp-buy-loop catalog offers count (i + 1) next
+  gvp-buy : EgCatalog, List GvQuote, Integer, Integer -> List Integer
+  gvp-buy (catalog) (offers) (count) (container) =
+    let p = list-push (gp-put32 (gp-put16 (gp-start 116) 0) container) count
+    in gvp-finish (gvp-buy-loop catalog offers count 0 p)
+  gvp-sell-loop : EgCatalog, List GvQuote, Integer, Integer, List Integer -> List Integer
+  gvp-sell-loop (catalog) (offers) (count) (i) (out) = if i == count then out
+    else let q = list-at offers i
+    in let name = gvp-name catalog q
+    in let length = if text-length name > 63 then 64 else text-length name + 1
+    in let a = gp-put16 (gp-put16 (gp-put32 out q.serial) q.graphic) q.hue
+    in let b = gp-put16 (gp-put16 (gp-put16 a q.quantity) q.price) length
+    in gvp-sell-loop catalog offers count (i + 1) (gvp-ascii b name 0 length)
+  gvp-sell : EgCatalog, List GvQuote, Integer, Integer -> List Integer
+  gvp-sell (catalog) (offers) (count) (vendor) =
+    let p = gp-put16 (gp-put32 (gp-put16 (gp-start 158) 0) vendor) count
+    in gvp-finish (gvp-sell-loop catalog offers count 0 p)
+  gvp-hello : WorldObject, Text -> List (List Integer)
+  gvp-hello (npc) (name) = [list-set-at (gvp-speech npc name name) 9 6, gvp-speech npc name "Hello"]
+  gvp-speech : WorldObject, Text, Text -> List Integer
+  gvp-speech (vendor) (name) (message) =
+    let p = gp-put16 (gp-start 28) (45 + text-length message)
+    in let a = list-push (gp-put16 (gp-put32 p vendor.serial) vendor.graphic) 0
+    in let b = gvp-ascii (gp-put16 (gp-put16 a 946) 3) name 0 30
+    in gvp-ascii b message 0 (text-length message + 1)
+  gvp-status : WorldObject, Integer, Integer, Integer -> List Integer
+  gvp-status (mobile) (characters) (slot) (gold) =
+    let p = gp-status mobile characters slot
+    in let n = if gold > 4294967295 then 4294967295 else gold
+    in let a = list-set-at p 58 (bit-and (bit-shr n 24) 255)
+    in let b = list-set-at p 59 (bit-and (bit-shr n 16) 255)
+    in let c = list-set-at p 60 (bit-and (bit-shr n 8) 255)
+    in let d = list-set-at p 61 (bit-and n 255)
+    in p
+  gvp-coin-sound : WorldObject -> List Integer
+  gvp-coin-sound (player) = gp-put16 (gp-put16 (gp-put16 [#54,1,0,#32,0,0] player.x) player.y) player.z

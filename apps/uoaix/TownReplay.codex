@@ -1,0 +1,105 @@
+Chapter: TownReplay
+  cites Uoaix chapter TownInput
+  cites Uoaix chapter TownInputCodec
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  TownOutcome = record { code : Integer, detail : Text }
+
+  ti-bound-elsewhere : TfWorld, Integer, Integer, Integer -> Boolean
+  ti-bound-elsewhere (w) (npc) (mobile) (i) =
+    if i == w.used then False
+    else let p = list-at w.people i
+    in if p.serial /= npc & p.alive == 1 & p.world-serial == mobile then True
+    else ti-bound-elsewhere w npc mobile (i + 1)
+
+  ti-bind-mobile : TownState, Integer, Integer -> Integer
+  ti-bind-mobile (state) (npc) (mobile) =
+    if not (tf-valid-person state.townsfolk npc) then -1
+    else let p = tf-person state.townsfolk npc
+    in if mobile == 0 then let cleared = __record-set p "world-serial" 0 in 0
+    else if p.alive == 0 | ti-bound-elsewhere state.townsfolk npc mobile 0 then -1
+    else when world-get state.checkpoint.world mobile
+      is Err (e) -> -1
+      is Ok (obj) -> if obj.kind /= 1 then -1 else let linked = __record-set p "world-serial" mobile in 0
+
+  ti-execute-simulation : TownState, TownInput -> Integer
+  ti-execute-simulation (state) (entry) =
+    let w = state.townsfolk
+    in let m = state.mind
+    in let a = list-at entry.args 0
+    in let b = list-at entry.args 1
+    in let c = list-at entry.args 2
+    in let d = list-at entry.args 3
+    in let e = list-at entry.args 4
+    in if entry.operation == 2 then tf-add-town w entry.text a b c
+    else if entry.operation == 3 then tf-add-person w entry.text a b c d e
+    else if entry.operation == 4 then tf-marry w a b
+    else if entry.operation == 5 then tf-expect-birth w a b
+    else if entry.operation == 6 then tf-buy w a b c d
+    else if entry.operation == 7 then tf-step w
+    else if entry.operation == 8 then tf-ack-events w
+    else if entry.operation == 9 then tm-configure m w a entry.text entry.extra b c d
+    else if entry.operation == 10 then (tm-respond m w a b c entry.text entry.proposal d e).outcome
+    else if entry.operation == 11 then (tm-stub m w a b c entry.text).outcome
+    else if entry.operation == 12 then tm-ack-audit m
+    else ti-bind-mobile state a b
+
+  ti-execute : TownState, TownInput -> TownOutcome
+  ti-execute (state) (entry) =
+    if entry.operation == 1 then
+      if entry.world-event.operation == 3 & ti-bound-elsewhere state.townsfolk 0 entry.world-event.object.serial 0 then TownOutcome { code = -100, detail = "world mobile is still bound" }
+      else when wj-apply state.checkpoint.world entry.world-event
+        is Err (e) -> TownOutcome { code = -100, detail = e }
+        is Ok (value) -> TownOutcome { code = value, detail = "world mutation" }
+    else TownOutcome { code = ti-execute-simulation state entry, detail = "simulation outcome" }
+
+  ti-apply : TownState, TownInput -> Result TownOutcome Text
+  ti-apply (state) (entry) =
+    if not (ti-shape-valid entry) then Err "town input shape invalid"
+    else if state.checkpoint.sequence == 9223372036854775807 then Err "town input sequence exhausted"
+    else if entry.sequence /= state.checkpoint.sequence + 1 | entry.tick < state.checkpoint.tick then Err "town input sequence gap or clock reversal"
+    else if entry.operation == 1 & (entry.world-event.sequence /= entry.sequence | entry.world-event.tick /= entry.tick) then Err "town input world metadata mismatch"
+    else let outcome = ti-execute state entry
+    in if outcome.code /= entry.expected then Err "town input outcome mismatch; candidate must be discarded"
+    else let tick = __record-set state.checkpoint "tick" entry.tick
+    in let sequence = __record-set state.checkpoint "sequence" entry.sequence
+    in Ok outcome
+
+  ti-retains-text : TownInput, Integer -> Boolean
+  ti-retains-text (entry) (code) =
+    ((entry.operation == 2 | entry.operation == 3) & code > 0) | (entry.operation == 9 & code == 0)
+
+  ti-replay-loop : TownState, Integer, Integer, Integer -> Result TownState Text
+  ti-replay-loop (state) (buf) (count) (i) =
+    if i == count then Ok state
+    else let mark = __heap-save
+    in when ti-decode (buf + i * ti-frame-bytes) ti-frame-bytes
+      is Err (e) -> Err e
+      is Ok (entry) -> when ti-apply state entry
+        is Err (e) -> Err e
+        is Ok (outcome) ->
+          let keep = ti-retains-text entry outcome.code
+          in if keep then ti-replay-loop state buf count (i + 1)
+          else let restored = __heap-restore mark
+          in ti-replay-loop state buf count (i + 1)
+
+  ti-replay : TownState, Integer, Integer -> Result TownState Text
+  ti-replay (source) (buf) (size) =
+    if size < 0 | size > 5242880 | int-mod size ti-frame-bytes /= 0 then Err "town input replay length outside budget"
+    else if source.checkpoint.world.capacity < 1 | source.checkpoint.world.capacity > world-max-objects then Err "town input source capacity invalid"
+    else let bytes = ts-size source.checkpoint.world.capacity
+    in let memory = alloc-bytes bytes
+    in when ts-encode source memory bytes
+      is Err (e) -> Err e
+      is Ok (n) -> when ts-decode memory bytes
+        is Err (e) -> Err e
+        is Ok (copy) -> when ti-replay-loop copy buf (size / ti-frame-bytes) 0
+          is Err (e) -> Err e
+          is Ok (complete) -> if ts-state-valid complete.checkpoint complete.townsfolk complete.mind then Ok complete else Err "town input replay produced invalid state"

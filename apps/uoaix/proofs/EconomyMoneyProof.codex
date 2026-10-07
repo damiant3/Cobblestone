@@ -1,0 +1,88 @@
+Chapter: EconomyMoneyProof
+  cites Uoaix chapter EconomyMoney
+
+  emp-check : Text, Boolean -> [Console] Nothing
+  emp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  emp-fill : EmMoney, Integer -> Integer
+  emp-fill (w) (n) = if n == 0 then 0 else
+    let a = em-pay w 2 3 1
+    in if a /= 0 then -1 else emp-fill w (n - 1)
+
+  emp-main : Integer -> [Console] Nothing
+  emp-main (unused) = act
+    mark <- __heap-save
+    w <- em-new 0
+    built <- __heap-save
+    vendor <- em-open w 2 100
+    player <- em-open w 3 200
+    royal <- em-open w 5 300
+    town <- em-open w 4 400
+    emp-check "empty purses and unique owners" (vendor == 2 & player == 3 & royal == 4 & town == 5 & em-total w 1 == 0 & em-open w 2 100 == -1)
+    emp-check "unauthorized issue refused" (em-issue w False 1000 2 == -1 & w.issued == 0 & w.entry-count == 0)
+    emp-check "starting grant refused and mint issuance admitted" (em-issue w True 1000 1 == -1 & w.issued == 0 & em-issue w True 1000 2 == 0 & em-issue w True 1 1 == -1 & (em-purse w 1).coin == 1000)
+    emp-check "grant restricted to crown business" (em-pay w 1 vendor 50 == -1 & em-grant w True vendor 50 == -1 & em-grant w False royal 50 == -1 & em-grant w True royal 100 == 0)
+    emp-check "vendor starts on treasury loan" (em-lend w 1 vendor 200 20 24 == 1 & (em-purse w vendor).coin == 200 & (em-purse w 1).coin == 700)
+    emp-check "logged tax authorization" (em-set-tax w False 1000 == -1 & em-set-tax w True 10001 == -1 & em-set-tax w True 1000 == 0)
+    before <- w.entry-count
+    emp-check "taxed payment" (em-pay w vendor player 100 == 0 & (em-purse w vendor).coin == 100 & (em-purse w player).coin == 90 & (em-purse w 1).coin == 710)
+    first <- list-at w.ledger before
+    second <- list-at w.ledger (before + 1)
+    emp-check "double entry action identity" (w.entry-count == before + 2 & first.action == second.action & first.payer == vendor & first.payee == player & first.amount == 90 & second.payee == 1 & second.amount == 10)
+    seq <- w.sequence
+    emp-check "insufficient and malformed payments atomic" (em-pay w vendor player 101 == -1 & em-pay w vendor vendor 1 == -1 & em-pay w 0 player 1 == -1 & em-pay w vendor player 0 == -1 & em-pay w vendor player (em-limit + 1) == -1 & w.sequence == seq & (em-purse w vendor).coin == 100)
+    emp-check "loan terms and matching debtor" (em-lend w royal player 20 2 48 == 2 & (list-at w.loans 1).lender == royal & (list-at w.loans 1).borrower == player & (em-purse w player).coin == 108 & em-repay w vendor 2 1 == -1)
+    emp-check "partial repayment and overpayment refusal" (em-repay w vendor 1 50 == 0 & em-repay w vendor 1 171 == -1 & (list-at w.loans 0).paid == 50)
+    emp-check "default event once" (em-advance w 24 == 0 & w.defaults == 1 & (list-at w.loans 0).status == 3 & em-advance w 25 == 0 & w.defaults == 1 & em-advance w 24 == -1)
+    emp-check "repayment settles taxed loan" (em-repay w player 2 22 == 0 & (list-at w.loans 1).status == 2 & (list-at w.loans 1).paid == 22 & em-repay w player 2 1 == -1)
+    coin <- em-total w 1
+    treasury <- (em-purse w 1).coin
+    emp-check "decay transfers to treasury" (em-reclaim w player 10 == 0 & (em-purse w 1).coin == treasury + 10 & em-total w 1 == coin)
+    emp-check "source advances census" (em-issue w True 7 2 == 0 & w.issued == 1007 & em-total w 1 == 1007)
+    emp-check "ledger matches every purse" (em-balanced w 1)
+    changed <- __record-set (em-purse w player) "coin" ((em-purse w player).coin + 1)
+    emp-check "census detects unlogged coin" (not (em-balanced w 1))
+    print-line-uni ("MONEY-BYTES " & show (built - mark))
+  end
+
+  emp-bounds : Integer -> [Console] Nothing
+  emp-bounds (unused) = act
+    w <- em-new 0
+    one <- em-open w 2 1
+    two <- em-open w 3 1
+    seed <- em-issue w True 10000 2
+    loan <- em-lend w 1 one 9999 0 1
+    start <- __heap-save
+    filled <- emp-fill w (em-rows - w.entry-count - 1)
+    finish <- __heap-save
+    coin <- (em-purse w one).coin
+    seq <- w.sequence
+    emp-check "bounded ledger operations allocate no heap" (filled == 0 & finish == start)
+    emp-check "full default batch refused before clock mutation" (em-advance w 1 == -1 & w.hour == 0 & w.defaults == 0 & (list-at w.loans 0).status == 1 & w.sequence == seq)
+    emp-check "last row then full payment refusal" (em-pay w one two 1 == 0 & em-pay w one two 1 == -1 & w.entry-count == em-rows & (em-purse w one).coin == coin - 1)
+    emp-check "full ledger refuses mint and tax atomically" (em-issue w True 1 2 == -1 & em-set-tax w True 500 == -1 & w.issued == 10000 & w.tax == 0)
+    emp-check "full ledger census" (em-balanced w 1)
+  end
+
+  emp-open-all : EmMoney, Integer -> Integer
+  emp-open-all (w) (i) = if i == 256 then 0 else
+    if em-open w 2 i /= i + 1 then -1 else emp-open-all w (i + 1)
+  emp-loan-all : EmMoney, Integer -> Integer
+  emp-loan-all (w) (i) = if i == 128 then 0 else
+    if em-lend w 1 2 1 0 1 /= i + 1 then -1 else emp-loan-all w (i + 1)
+  emp-limits : Integer -> [Console] Nothing
+  emp-limits (unused) = act
+    w <- em-new 0
+    emp-check "purse capacity refuses before reuse" (emp-open-all w 1 == 0 & em-open w 2 256 == -1 & w.purse-count == 256 & (em-purse w 256).owner == 255)
+    emp-check "source integer bound" (em-issue w True (em-limit + 1) 2 == -1 & em-issue w True em-limit 2 == 0 & em-issue w True 1 2 == -1)
+    emp-check "loan capacity and overflow guards" (em-lend w 1 2 em-limit 1 1 == -1 & emp-loan-all w 0 == 0 & em-lend w 1 2 1 0 1 == -1 & w.loan-count == 128 & (em-purse w 2).coin == 128)
+    emp-check "all due loans default as one action" (em-advance w 1 == 0 & w.defaults == 128 & (list-at w.loans 127).status == 3)
+    emp-check "defaulted debt remains payable" (em-repay w 2 1 1 == 0 & (list-at w.loans 0).status == 2 & (list-at w.loans 1).status == 3 & w.defaults == 128)
+    emp-check "full tax remains conserved" (em-set-tax w True 10000 == 0 & em-pay w 2 3 10 == 0 & (em-purse w 3).coin == 0 & em-balanced w 1)
+  end
+
+  opening : [Console] Nothing = act
+    emp-main 0
+    emp-bounds 0
+    emp-limits 0
+  end

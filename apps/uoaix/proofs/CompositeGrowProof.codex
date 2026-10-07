@@ -1,0 +1,98 @@
+Chapter: CompositeGrowProof
+  cites Uoaix chapter CompositeStore
+
+ Boot 1 writes a current-format composite at capacity 4096; boot 2 loads it through cs-upgrade and cu-grow.
+  cgp-small : Integer = 4096
+  cgp-check : Text, Boolean -> [Console] Integer
+  cgp-check (label) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & label)
+    if ok then 0 else 1
+  end
+  cgp-generations : Integer -> [Console] Integer
+  cgp-generations (unused) = when world-new 2
+    is Err (e) -> cgp-check e False
+    is Ok (world) -> when world-create world (gs-mobile 0 1420 1698 0 400 1002)
+      is Err (e) -> cgp-check e False
+      is Ok (mobile) -> when world-create world (gs-item mobile 5399 0)
+        is Err (e) -> cgp-check e False
+        is Ok (old) -> let deleted = world-delete world old
+          in when world-create world (gs-item mobile 5399 0)
+            is Err (e) -> cgp-check e False
+            is Ok (current) -> when cu-world world 16384
+              is Err (e) -> cgp-check e False
+              is Ok (grown) -> when world-create grown (gs-item 0 5422 0)
+                is Err (e) -> cgp-check e False
+                is Ok (next) -> cgp-check "capacity growth preserves live IDs and cannot revive stale generations" (is-err (world-get grown old) & is-ok (world-get grown current) & world-first-child grown mobile == current & next /= old & next /= current)
+  cgp-fill : WalkMap, Integer -> Integer
+  cgp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cgp-fill map (i + 1)
+  cgp-create : Integer -> List Integer
+  cgp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Grower" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cgp-new : Integer -> Result CompositeGame Text
+  cgp-new (capacity) = when cg-game capacity
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency 0
+        is Err (e) -> Err e
+        is Ok (vendor) -> cg-founded game vendor (gsi-new game.world)
+  cgp-setup : CompositeSetup = CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }
+  cgp-write : UoStore, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cgp-write (store) (map) (specs) = when cgp-new cgp-small
+    is Err (e) -> cgp-check e False
+    is Ok (state) -> when cg-install state cgp-setup
+      is Err (e) -> cgp-check e False
+      is Ok (_) -> let size = cc-size cgp-small
+        in let saved = alloc-bytes size
+        in when cc-encode state 0 0 saved size
+          is Err (e) -> cgp-check e False
+          is Ok (written) -> act
+            appended <- us-append store 1 0 0 saved written
+            owner <- cs-owner state store saved written
+            input <- gn-input-with specs 1
+            mode <- __record-set input "mode" 2
+            phase <- __record-set input.session "phase" 1
+            entry <- cs-route owner state.checkpoint.game input map 2593 (cgp-create 0)
+            serial <- peek-qword state.checkpoint.game.characters 0
+            killed <- when world-get state.checkpoint.game.world serial
+              is Err (e) -> Err e
+              is Ok (m) -> world-update state.checkpoint.game.world (__record-set (__record-set m "health" 0) "x" 1421)
+            touched <- world-touch state.checkpoint.game.world
+            saved2 <- cs-commit owner True
+            print-line-uni ("SMALL serial=" & show serial & " capacity=" & show state.checkpoint.game.world.capacity & " players=" & show state.vendor.player-count)
+            cgp-check "a capacity-4096 composite in the current format is written" (is-ok appended & is-ok entry & serial > 0 & is-ok killed & is-ok saved2 & state.vendor.player-count == 1)
+          end
+  cgp-grown : UoStore, Integer -> [Console, Device.Block] Integer
+  cgp-grown (store) (before) = act
+    loaded <- cs-load store 0
+    when loaded
+      is Err (e) -> cgp-check e False
+      is Ok (owner) -> let game = owner.state.checkpoint.game
+        in let serial = peek-qword game.characters 0
+        in let player = list-at owner.state.vendor.players 0
+        in act
+          a <- cgp-check "a small composite upgrades capacity and components" (game.world.capacity == world-max-objects & store.sequence == before & owner.state.resurrection.shrine > 0)
+          b <- cgp-check "character serial position and death survive upgrade" (serial > 0 & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.x == 1421 & m.y == 1698 & m.health == 0))
+          c <- cgp-check "vendor binding, ledger and inventory remain bound" (owner.state.vendor.player-count == 1 & player.serial == serial & euv-valid owner.state.vendor.currency & gsi-known owner.state.items player.pack)
+          a + b + c
+        end
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cgp-check e False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> cgp-check e False
+      is Ok (map) -> let filled = cgp-fill map 0 in act
+        generations <- cgp-generations 0
+        opened <- us-open 0 131072
+        when opened
+          is Err (e) -> cgp-check e False
+          is Ok (store) -> act
+            rest <- if store.head == 0 then cgp-write store map specs else cgp-grown store store.sequence
+            generations + rest
+          end
+      end

@@ -1,0 +1,99 @@
+Chapter: CompositeActiveSkills
+  cites Uoaix chapter CompositeStore
+
+  cas-check : Text, Boolean -> [Console] Integer
+  cas-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cas-fill : WalkMap, Integer -> Integer
+  cas-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cas-fill map (i + 1)
+  cas-create : Integer -> List Integer
+  cas-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Shade" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,21,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cas-use : Text -> List Integer
+  cas-use (text) = sip-length (gp-ascii [#12,0,0,#24] text 0 (text-length text + 1))
+  cas-op : Result GameReply Text, Integer -> Boolean
+  cas-op (result) (op) = when result
+    is Err (_) -> False
+    is Ok (r) -> cas-has r.packets op 0
+  cas-has : List (List Integer), Integer, Integer -> Boolean
+  cas-has (packets) (op) (i) = if i == list-length packets then False
+    else (list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op) | cas-has packets op (i + 1)
+  cas-note : Result GameReply Text -> Text
+  cas-note (result) = when result is Err (e) -> "ERROR " & e is Ok (r) -> r.note
+  cas-spec : List GameOpcodeSpec, Integer -> Boolean
+  cas-spec (specs) (i) = if i == list-length specs then False else (list-at specs i).opcode == #7D | cas-spec specs (i + 1)
+
+  cas-first : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cas-first (store) (map) (specs) = let owner = store.state in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (cas-create 0)
+    game <- owner.checkpoint.game
+    player <- list-at owner.vendor.players 0
+    queried <- cs-route store game input map 2593 (gp-put32 [#34,#ED,#ED,#ED,#ED,5] player.serial)
+    a <- cas-check "0x34 skill query answers from the active-skill levels" (is-ok entry & cas-op queried #3A & cas-note queried == "skills:list")
+    hid <- cs-route store game input map 2593 (cas-use "21 0")
+    actor <- list-at owner.active.actors 0
+    print-line-uni ("HIDE " & cas-note hid & " level " & show (as-level actor 21) & " attempts " & show actor.skills.attempts)
+    b <- cas-check "Hiding reaches the active-skill handler and practices" (is-ok hid & actor.serial == player.serial & actor.skills.attempts > 0)
+    c <- cas-check "the composite frames 0x7D menu answers" (cas-spec specs 0)
+    targets <- cas-targets owner game player.serial
+    committed <- cs-commit store True
+    d <- cas-check "active-skill state commits" (is-ok committed)
+    a + b + c + targets + d
+  end
+  cas-targets : CompositeGame, GameShard, Integer -> [Console] Integer
+  cas-targets (owner) (game) (serial) = let npc = gs-mobile 0 1422 1698 0 400 1002
+    in let hp = __record-set npc "health" 30
+    in let created = world-create game.world npc
+    in let monster = when created is Err (_) -> 0 is Ok (s) -> s
+    in let actor = list-at owner.active.actors 0
+    in when cb-ensure owner.combat game monster
+      is Err (e) -> cas-check ("monster actor " & e) False
+      is Ok (m) -> when cb-ensure owner.combat game serial
+        is Err (e) -> cas-check ("player actor " & e) False
+        is Ok (p) -> act
+          hidden <- actor.hidden
+          refused <- not (cb-select owner.combat game m p)
+          e <- cas-check "a monster cannot select the hidden player" (hidden & refused)
+          struck <- owner.combat.struck-hook serial
+          admitted <- cb-select owner.combat game m p
+          stopped <- cb-stop owner.combat m
+          f <- cas-check "a strike reveals the hidden player, who can then be selected" (not actor.hidden & admitted)
+          calmed <- as-calm owner.active monster (get-ticks + gh-ticks 60000)
+          g <- cas-check "a calmed monster cannot be selected" (not (cb-select owner.combat game p m))
+          stilled <- cb-stop owner.combat p
+          e + f + g
+        end
+  cas-later : CompositeOwner -> [Console] Integer
+  cas-later (store) = let owner = store.state
+    in let player = list-at owner.vendor.players 0
+    in let actor = list-at owner.active.actors 0
+    in act
+      print-line-uni ("RESTORED level " & show (gs-skill owner.checkpoint.game player.serial 21) & " attempts " & show actor.skills.attempts)
+      cas-check "restart restores the active-skill actor and attempts, and the skill table its Hiding level" (actor.serial == player.serial & actor.skills.attempts > 0 & gs-skill owner.checkpoint.game player.serial 21 >= 500)
+    end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cas-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cas-check e False
+     is Ok (map) -> let filled = cas-fill map 0 in act
+       opened <- us-open 0 131072
+       when opened
+        is Err (e) -> cas-check ("store " & e) False
+        is Ok (store) -> let fresh = store.head == 0 in act
+         loaded <- cs-load store 0
+         when loaded
+          is Err (e) -> cas-check ("recovery " & e) False
+          is Ok (owner) -> if fresh then cas-first owner map specs else cas-later owner
+        end
+      end

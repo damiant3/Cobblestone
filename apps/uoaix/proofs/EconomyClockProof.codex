@@ -1,0 +1,57 @@
+Chapter: EconomyClockProof
+  cites Uoaix chapter EconomyClock
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyCatalog
+  cites Foreword chapter Result
+
+  EcpSummary = record { passed : Boolean, leather : Integer, made : Integer,
+    rows : Integer, trades : Integer }
+  ecp-check : Text, Boolean -> [Console] Nothing
+  ecp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  ecp-reagents : EpWorld, Integer -> Boolean
+  ecp-reagents (w) (item) = if item == 25 then True else ep-at w.gathered item > 0 & ecp-reagents w (item + 1)
+  ecp-chain-made : EpWorld, Integer -> Boolean
+  ecp-chain-made (w) (chain) =
+    if chain == 1 then ep-at w.crafted 40 > 0 & ep-at w.crafted 41 > 0
+    else if chain == 2 then ep-at w.crafted 32 > 0 & ep-at w.crafted 43 > 0
+    else if chain == 3 then ep-at w.crafted 44 > 0
+    else if chain == 4 then ep-at w.crafted 46 > 0
+    else if chain == 5 then ep-at w.crafted 34 > 0 & ep-at w.crafted 50 > 0
+    else if chain == 6 then ep-at w.crafted 47 > 0 & ep-at w.crafted 48 > 0
+    else ecp-reagents w 17
+  ecp-chains : EpWorld, Integer -> Boolean
+  ecp-chains (w) (chain) = if chain == 8 then True else ecp-chain-made w chain & ecp-chains w (chain + 1)
+  ecp-shop-stock : EpWorld, Integer, Integer -> Integer
+  ecp-shop-stock (w) (item) (actor) = if actor == 55 then 0 else ep-at (ep-actor w actor).stock item + ecp-shop-stock w item (actor + 1)
+  ecp-one : Boolean -> [Console] EcpSummary
+  ecp-one (starve) = act
+    when ec-fixture 0
+      is Err (e) -> act
+        print-line-uni ("FAIL fixture " & e)
+        EcpSummary { passed = False, leather = -1, made = -1, rows = 0, trades = 0 }
+      end
+      is Ok (clock) -> act
+        bootstrap <- clock.world
+        ecp-check (if starve then "shortage bootstrap mines first gold" else "normal bootstrap mines first gold") (bootstrap.mint-ingots == 1 & ep-at bootstrap.gathered 6 == 2 & ep-at bootstrap.crafted 32 == 1 & ep-at bootstrap.consumed 32 == 1 & bootstrap.money.issued == 6000000 & (list-at bootstrap.money.ledger 0).kind == 11 & (list-at bootstrap.money.ledger 1).kind == 4 & (list-at bootstrap.money.ledger 2).kind == 12)
+        start <- __heap-save
+        result <- ec-run clock 720 starve
+        finish <- __heap-save
+        w <- clock.world
+        ok <- result == 0 & clock.checks == 30 & clock.bad-census == 0 & clock.exhausted == 0 & w.hour == 720 & w.money.hour == 720
+        ecp-check (if starve then "shortage arm 30 daily censuses" else "normal arm 30 daily censuses") ok
+        ecp-check (if starve then "shortage arm flat tick heap" else "normal arm flat tick heap") (start == finish)
+        ecp-check (if starve then "shortage arm coin conserved" else "normal arm coin conserved") (em-total w.money 1 == 6000000 & em-balanced w.money 1)
+        ecp-check (if starve then "shortage arm no orphan stock" else "normal arm no orphan stock") (ep-census w 1)
+        ecp-check (if starve then "shortage arm all chains started" else "normal arm all chains started") (ecp-chains w 1)
+        stock <- ecp-shop-stock w 44 1
+        made <- ep-at w.crafted 44
+        print-line-uni ((if starve then "SHORTAGE " else "NORMAL ") & show w.hour & " " & show w.trade-count & " " & show w.money.entry-count & " " & show stock & " " & show made)
+        EcpSummary { passed = ok, leather = stock, made = made, rows = w.money.entry-count, trades = w.trade-count }
+      end
+  end
+  opening : [Console] Nothing = act
+    normal <- ecp-one False
+    shortage <- ecp-one True
+    ecp-check "hunter removal empties downstream leather shelf" (normal.passed & shortage.passed & normal.leather > 0 & shortage.leather == 0 & normal.made > shortage.made & shortage.made > 0)
+  end

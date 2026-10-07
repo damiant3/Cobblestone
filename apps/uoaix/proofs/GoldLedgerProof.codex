@@ -1,0 +1,61 @@
+Chapter: GoldLedgerProof
+  cites Uoaix chapter GameVendorDemo
+  glp-check : Text, Boolean -> [Console] Nothing
+  glp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  glp-held : EmMoney, Integer, Integer -> Integer
+  glp-held (m) (i) (sum) = if i > m.purse-count then sum else glp-held m (i + 1) (sum + (em-purse m i).coin)
+  glp-hours : EuCurrency, Integer -> Boolean
+  glp-hours (x) (left) = if left == 0 then True else if eu-hour x < 0 then False else glp-hours x (left - 1)
+  glp-bound : EmMoney, Integer, Integer -> Integer
+  glp-bound (m) (action) (i) = if i == m.entry-count then 0
+    else let r = list-at m.ledger i
+    in (if r.action == action & r.payer > 0 then r.amount else 0) + glp-bound m action (i + 1)
+  glp-event : EuCurrency, EmMoney, EmEntry, Integer -> Boolean
+  glp-event (x) (m) (r) (i) = if i == x.count then False
+    else let e = list-at x.events i
+    in if e.gold-seq == r.action & e.gold > 0
+      & (if e.kind == 4 then glp-bound m r.action 0 == e.gold else r.amount == e.gold) then True
+    else glp-event x m r (i + 1)
+  glp-treasury : EmEntry -> Boolean
+  glp-treasury (r) = r.amount > 0 & (r.payer == 0 | r.payer == 1 | r.payee == 1)
+  glp-rows : EuCurrency, EmMoney, Integer, Integer, Integer -> Integer
+  glp-rows (x) (m) (i) (stop) (missing) = if i == stop then missing
+    else let r = list-at m.ledger i
+    in glp-rows x m (i + 1) stop (if glp-treasury r & not (glp-event x m r 0) then missing + 1 else missing)
+  glp-flows : EmMoney, Integer, Integer, Integer -> Integer
+  glp-flows (m) (i) (stop) (count) = if i == stop then count
+    else glp-flows m (i + 1) stop (if glp-treasury (list-at m.ledger i) then count + 1 else count)
+  glp-day : EuCurrency, Integer, Integer, Integer, Integer -> [Console] Nothing
+  glp-day (x) (day) (payer) (payee) (taxed) = act
+    m <- x.world.money
+    first <- m.entry-count
+    before <- (em-purse m 1).coin
+    paid <- eu-pay x True payer payee 0 0 10
+    after <- (em-purse m 1).coin
+    advanced <- glp-hours x 24
+    treasury <- (em-purse m 1).coin
+    circulating <- glp-held m 2 0
+    print-line-uni ("GOLD day=" & show day & " minted=" & show m.issued & " treasury=" & show treasury & " circulating=" & show circulating)
+    glp-check ("day " & show day & ": minted equals treasury plus circulating") (m.issued == treasury + circulating)
+    glp-check ("day " & show day & ": the treasury grew by exactly the tax drained") (paid >= 0 & after - before == taxed & treasury == after)
+    flows <- glp-flows m first m.entry-count 0
+    missing <- glp-rows x m first m.entry-count 0
+    print-line-uni ("LOG day=" & show day & " treasury-rows=" & show flows & " unmatched=" & show missing)
+    glp-check ("day " & show day & ": every faucet and drain row has its currency-log event with the matching amount") (flows > 0 & missing == 0)
+  end
+  glp-run : EuCurrency -> [Console] Nothing
+  glp-run (x) = act
+    w <- x.world
+    royal <- (ep-actor w 1).purse
+    vendor <- (ep-actor w 2).purse
+    rate <- x.world.money.tax
+    glp-check "the demo economy has minted gold and a 10% tax" (x.world.money.issued > 0 & rate == 1000)
+    glp-day x 1 vendor royal (10 * rate / 10000)
+    glp-day x 2 vendor royal (10 * rate / 10000)
+    glp-day x 3 royal vendor (10 * rate / 10000)
+  end
+  opening : [Console] Nothing = act
+    when gvd-economy 0
+      is Err (e) -> print-line-uni ("FAIL economy " & e)
+      is Ok (x) -> glp-run x
+  end

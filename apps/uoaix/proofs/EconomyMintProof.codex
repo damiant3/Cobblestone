@@ -1,0 +1,45 @@
+Chapter: EconomyMintProof
+  cites Uoaix chapter EconomyClock
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyMint
+  cites Foreword chapter Result
+
+  emp-check : Text, Boolean -> [Console] Nothing
+  emp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  emp-run : EcClock -> [Console] Nothing
+  emp-run (clock) = act
+    w <- clock.world
+    lord <- clock.consumer
+    p <- ep-actor w lord
+    mint <- w.station-count
+    smelter <- mint - 1
+    emp-check "first coin from mined ore and consumed ingot" (w.mint-ingots == 1 & w.money.issued == 6000000 & ep-at w.gathered 6 == 2 & ep-at w.crafted 32 == 1 & ep-at w.consumed 32 == 1 & ep-at p.stock 32 == 0)
+    emp-check "starting treasury grant forbidden" (em-issue w.money True 1 1 == -1)
+    mined <- eh-harvest w lord (ec-node w lord 6 0)
+    smelted <- ep-craft w lord 8 smelter
+    emp-check "second ingot requires ore and fuel" (mined == 2 & smelted == 1 & ep-at p.stock 32 == 1)
+    saved <- w.money.entry-count
+    treasury <- (em-purse w.money 1).coin
+    emp-check "mint policy requires crown authority" (emi-configure w False lord 1 == -1 & emi-configure w True 1 1 == -1 & w.mint-owner == lord & w.mint-rate == 6000000 & w.money.entry-count == saved)
+    emp-check "generic craft cannot issue coin" (ep-craft w lord 30 mint == -1 & w.money.entry-count == saved & ep-at p.stock 32 == 1)
+    emp-check "unauthorized and wrong workplace mint refused" (emi-strike w False lord mint 1 == -1 & emi-strike w True lord smelter 1 == -1 & ep-at p.stock 32 == 1 & (em-purse w.money 1).coin == treasury)
+    full <- __record-set w.money "entry-count" (em-rows - 1)
+    emp-check "mint reserves issue and material rows together" (emi-strike w True lord mint 1 == -1 & ep-at p.stock 32 == 1 & (em-purse w.money 1).coin == treasury & w.mint-ingots == 1)
+    restore <- __record-set w.money "entry-count" saved
+    before <- __heap-save
+    struck <- emi-strike w True lord mint 1
+    after <- __heap-save
+    issue <- list-at w.money.ledger saved
+    material <- list-at w.money.ledger (saved + 1)
+    emp-check "mint consumes gold and credits treasury" (struck == 0 & ep-at p.stock 32 == 0 & w.mint-ingots == 2 & w.money.issued == 12000000 & (em-purse w.money 1).coin == treasury + 6000000)
+    emp-check "mint ledger binds coin to ingot action" (issue.kind == 4 & issue.reference == 2 & issue.amount == 6000000 & material.kind == 12 & material.reference == 1 & material.action == issue.action)
+    emp-check "mint preserves censuses without heap growth" (before == after & ep-census w 1 & em-balanced w.money 1)
+    emp-check "empty or disabled mint cannot repeat issuance" (emi-strike w True lord mint 1 == -1 & emi-configure w True lord 0 == 0 & w.mint-rate == 0 & emi-strike w True lord mint 1 == -1 & w.money.issued == 12000000)
+  end
+  opening : [Console] Nothing = act
+    when ec-fixture 0
+      is Err (e) -> print-line-uni ("FAIL fixture " & e)
+      is Ok (clock) -> emp-run clock
+  end

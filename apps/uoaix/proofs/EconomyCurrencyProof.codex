@@ -1,0 +1,129 @@
+Chapter: EconomyCurrencyProof
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Foreword chapter Result
+
+  eup-check : Text, Boolean -> [Console] Nothing
+  eup-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  eup-days : EuCurrency, Integer, Integer -> Boolean
+  eup-days (x) (hour) (stop) = if hour == stop then True
+    else if eu-hour x /= 0 then False
+    else (int-mod x.world.hour 24 /= 0 | eu-census x) & eup-days x (hour + 1) stop
+  eup-run : EuCurrency -> [Console] Nothing
+  eup-run (x) = act
+    w <- x.world
+    crown <- eu-open x 5 1
+    player <- eu-open x 2 7
+    vendor <- eu-open x 3 9
+    town <- eu-open x 4 1
+    actor <- ep-admit w crown 1
+    p <- ep-actor w actor
+    hand <- ep-station w actor 1 1
+    smelter <- ep-station w actor 3 1
+    mint <- ep-station w actor 12 1
+    stone <- eh-source w 1 1
+    branch <- eh-source w 2 1
+    fuel <- eh-source w 2 1
+    gold <- eh-source w 6 1
+    copper <- eh-source w 25 1
+    silver <- eh-source w 26 1
+    eup-check "three empty treasuries and aligned legal identities" (crown == 2 & player == 3 & vendor == 4 & town == 5 & x.copper.issued == 0 & x.silver.issued == 0 & w.money.issued == 0 & eu-census x & eu-open x 2 7 == -1)
+    eup-check "default exchange valuation and zero purse" (eu-value x 100 0 0 == eu-value x 0 10 0 & eu-value x 0 10 0 == eu-value x 0 0 1 & eu-value x 0 0 0 == 0 & eu-value x -1 0 0 == -1)
+    gathered-stone <- eh-harvest w actor stone
+    gathered-branch <- eh-harvest w actor branch
+    gathered-fuel <- eh-harvest w actor fuel
+    pick <- ep-craft w actor 1 hand
+    hammer <- ep-craft w actor 31 hand
+    master-mining <- ep-set p.skills 1 1000
+    master-gold <- ep-set p.skills 2 1000
+    master-smelting <- ep-set p.skills 8 1000
+    mined-gold <- eh-harvest w actor gold
+    mined-copper <- eh-harvest w actor copper
+    mined-silver <- eh-harvest w actor silver
+    smelted-gold <- ep-craft w actor 8 smelter
+    smelted-copper <- ep-craft w actor 32 smelter
+    smelted-silver <- ep-craft w actor 33 smelter
+    eup-check "mint inputs come from gathering mining and smelting" (gathered-stone == 4 & gathered-branch == 4 & gathered-fuel == 4 & pick == 1 & hammer == 1 & mined-gold == 2 & mined-copper == 4 & mined-silver == 2 & smelted-gold == 1 & smelted-copper == 1 & smelted-silver == 1 & ep-census w 1)
+    before-policy <- x.count
+    eup-check "mint and rate policies require verified Lord British" (eu-mint-policy x False actor 1 1000 == -1 & eu-rates x False actor 200 20 == -1 & eu-rates x True 0 200 20 == -1 & eu-rates x True actor 99 10 == -1 & x.count == before-policy)
+    eup-check "each mint starts disabled" (eu-strike x True actor mint 1 1 == -1 & eu-strike x True actor mint 2 1 == -1 & eu-strike x True actor mint 3 1 == -1 & eu-census x)
+    policy-c <- eu-mint-policy x True actor 1 1000
+    policy-s <- eu-mint-policy x True actor 2 100
+    policy-g <- eu-mint-policy x True actor 3 10
+    eup-check "each metal has separate logged mint yield" (policy-c == 0 & policy-s == 0 & policy-g == 0 & x.copper-yield == 1000 & x.silver-yield == 100 & w.mint-rate == 10)
+    before-mint <- __heap-save
+    struck-c <- eu-strike x True actor mint 1 1
+    struck-s <- eu-strike x True actor mint 2 1
+    struck-g <- eu-strike x True actor mint 3 1
+    after-mint <- __heap-save
+    eup-check "three metals mint only against matching consumed ingots" (struck-c == 0 & struck-s == 0 & struck-g == 0 & x.copper.issued == 1000 & x.silver.issued == 100 & w.money.issued == 10 & ep-at p.stock 65 == 0 & ep-at p.stock 66 == 0 & ep-at p.stock 32 == 0 & eu-census x & before-mint == after-mint)
+    eup-check "empty mint and unauthorized strike cannot issue" (eu-strike x True actor mint 1 1 == -1 & eu-strike x False actor mint 2 1 == -1 & eu-strike x True actor smelter 3 1 == -1)
+    loan-c <- eu-lend x True 1 player 1 200 0 48
+    loan-s <- eu-lend x True 1 player 2 20 0 48
+    loan-g <- eu-lend x True 1 player 3 2 0 48
+    tax <- eu-tax x True actor 1000
+    eup-check "loans retain denomination and common tax is logged" (loan-c == 1 & loan-s == 1 & loan-g == 1 & tax == 0 & x.copper.tax == 1000 & x.silver.tax == 1000 & w.money.tax == 1000)
+    before-pay <- __heap-save
+    paid <- eu-pay x True player vendor 100 10 2
+    after-pay <- __heap-save
+    e <- list-at x.events (x.count - 1)
+    eup-check "mixed payment taxes each metal without converting coins" (paid == 0 & (em-purse x.copper player).coin == 100 & (em-purse x.silver player).coin == 10 & (em-purse w.money player).coin == 0 & (em-purse x.copper vendor).coin == 90 & (em-purse x.silver vendor).coin == 9 & (em-purse w.money vendor).coin == 2 & (em-purse x.copper 1).coin == 810 & (em-purse x.silver 1).coin == 81 & (em-purse w.money 1).coin == 8 & eu-census x & before-pay == after-pay)
+    eup-check "one currency event binds all three money sequences" (e.kind == 4 & e.actor == player & e.party == vendor & e.copper == 100 & e.silver == 10 & e.gold == 2 & e.copper-seq == x.copper.sequence & e.silver-seq == x.silver.sequence & e.gold-seq == w.money.sequence & e.copper-rate == 100 & e.silver-rate == 10)
+    saved-c <- (em-purse x.copper player).coin
+    saved-count <- x.count
+    eup-check "late insufficient metal refuses whole mixed payment" (eu-pay x True player vendor 1 11 0 == -1 & eu-pay x False player vendor 1 1 0 == -1 & (em-purse x.copper player).coin == saved-c & x.count == saved-count)
+    saved-rows <- x.silver.entry-count
+    filled <- __record-set x.silver "entry-count" em-rows
+    eup-check "late ledger exhaustion refuses before first debit" (eu-pay x True player vendor 1 1 0 == -1 & (em-purse x.copper player).coin == saved-c & x.count == saved-count)
+    restored <- __record-set x.silver "entry-count" saved-rows
+    grant <- eu-grant x True actor town 10 1 1
+    eup-check "royal grants move each metal to town without issuance" (grant == 0 & (em-purse x.copper town).coin == 10 & (em-purse x.silver town).coin == 1 & (em-purse w.money town).coin == 1 & eu-grant x True actor player 1 0 0 == -1 & eu-census x)
+    old-count <- x.count
+    repriced <- eu-rates x True actor 200 20
+    policy <- list-at x.events old-count
+    eup-check "logged rate change preserves every coin and loan denomination" (repriced == 0 & eu-value x 0 0 1 == 200 & eu-value x 0 1 0 == 10 & policy.kind == 2 & policy.actor == actor & policy.copper-rate == 200 & policy.silver-rate == 20 & x.copper.issued == 1000 & x.silver.issued == 100 & w.money.issued == 10 & (list-at w.money.loans 0).principal == 2 & eu-census x)
+    gold-return <- eu-pay x True vendor player 0 0 2
+    repaid <- eu-repay x True player 3 loan-g 2
+    eup-check "gold debt repays as gold after repricing" (gold-return == 0 & repaid == 0 & (list-at w.money.loans 0).status == 2 & eu-census x)
+    loan-v <- eu-lend x True 1 player 3 1 0 48
+    crown-c <- (em-purse x.copper 1).coin
+    crown-s <- (em-purse x.silver 1).coin
+    partial <- eu-repay-value x True player 3 loan-v 50 0 0
+    valued <- eu-repay-value x True player 3 loan-v 100 10 0
+    v <- list-at x.events (x.count - 1)
+    eup-check "a gold debt repays at value in copper and silver, and a value that is not a whole gold refuses" (loan-v == 2 & partial == -1 & valued == 0
+      & (list-at w.money.loans 1).status == 2 & (list-at w.money.loans 1).paid == 1 & (em-purse x.copper player).coin == 0 & (em-purse x.silver player).coin == 0
+      & (em-purse x.copper 1).coin == crown-c + 100 & (em-purse x.silver 1).coin == crown-s + 10 & v.kind == 13 & v.reference == loan-v & eu-census x)
+    heap-before <- __heap-save
+    days <- eup-days x 0 720
+    heap-after <- __heap-save
+    eup-check "thirty days conserve every metal with no hourly heap growth" (days & w.hour == 720 & x.copper.hour == 720 & x.silver.hour == 720 & x.copper.defaults == 1 & x.silver.defaults == 1 & w.money.defaults == 0 & eu-census x & heap-before == heap-after)
+    second-copper <- ep-craft w actor 32 smelter
+    saved-events <- x.count
+    full-events <- __record-set x "count" em-rows
+    eup-check "full currency history refuses mint before material loss" (second-copper == 1 & eu-strike x True actor mint 1 1 == -1 & ep-at p.stock 65 == 1 & x.copper.issued == 1000)
+    restore-events <- __record-set x "count" saved-events
+    bypass-c <- em-open x.copper 2 99
+    bypass-s <- em-open x.silver 2 99
+    bypass-g <- em-open w.money 2 99
+    eup-check "matching direct admissions cannot bypass currency history" (bypass-c == bypass-s & bypass-s == bypass-g & not (eu-ready x) & eu-rates x True actor 100 10 == -1)
+  end
+  eup-world : EpWorld -> [Console] Nothing
+  eup-world (w) = act
+    before <- __heap-save
+    result <- eu-new w
+    after <- __heap-save
+    print-line-uni ("CURRENCY-BYTES " & show (after - before))
+    eup-check "currency construction below 3 MiB beyond economy" (after - before < 3145728)
+    when result
+      is Err (e) -> print-line-uni ("FAIL currency " & e)
+      is Ok (x) -> eup-run x
+  end
+  opening : [Console] Nothing = act
+    when ep-new (ex-catalog 0) (em-new 0)
+      is Err (e) -> print-line-uni ("FAIL currency world " & e)
+      is Ok (w) -> eup-world w
+  end

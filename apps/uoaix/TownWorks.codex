@@ -1,0 +1,269 @@
+Chapter: TownWorks
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+
+  TwTown = record { last-raid : Integer, active-raid : Integer,
+    militia : Integer, damaged : Integer, repaired : Integer }
+  TwSite = record { town : Integer, owner : Integer }
+  TwOrder = record { town : Integer, kind : Integer, target : Integer,
+    worker : Integer, boards : Integer, nails : Integer, delivered-boards : Integer,
+    delivered-nails : Integer, hours : Integer, progress : Integer,
+    last-hour : Integer, fee : Integer, status : Integer, money-action : Integer,
+    station : Integer }
+  TwBounty = record { town : Integer, home : Integer, threat : Integer,
+    reward : Integer, winner : Integer, proof : Integer, status : Integer,
+    money-action : Integer }
+  TwDamage = record { station : Integer, boards : Integer, nails : Integer,
+    hours : Integer, fee : Integer }
+  TwWorld = record { government : TgWorld, towns : List TwTown,
+    sites : List TwSite, orders : List TwOrder, bounties : List TwBounty,
+    order-count : Integer, bounty-count : Integer, militia : Integer,
+    worker-stamps : Integer }
+
+  tw-towns : Integer, List TwTown -> List TwTown
+  tw-towns (i) (xs) = if i == 4 then xs else tw-towns (i + 1) (list-push xs (TwTown {
+    last-raid = 0, active-raid = 0, militia = 0, damaged = 0, repaired = 0 }))
+  tw-sites : Integer, List TwSite -> List TwSite
+  tw-sites (i) (xs) = if i == 64 then xs else tw-sites (i + 1) (list-push xs (TwSite { town = 0, owner = 0 }))
+  tw-orders : Integer, List TwOrder -> List TwOrder
+  tw-orders (i) (xs) = if i == 128 then xs else tw-orders (i + 1) (list-push xs (TwOrder {
+    town = 0, kind = 0, target = 0, worker = 0, boards = 0, nails = 0,
+    delivered-boards = 0, delivered-nails = 0, hours = 0, progress = 0,
+    last-hour = 0, fee = 0, status = 0, money-action = 0, station = 0 }))
+  tw-bounties : Integer, List TwBounty -> List TwBounty
+  tw-bounties (i) (xs) = if i == 128 then xs else tw-bounties (i + 1) (list-push xs (TwBounty {
+    town = 0, home = 0, threat = 0, reward = 0, winner = 0, proof = 0, status = 0, money-action = 0 }))
+  tw-new : TgWorld -> TwWorld
+  tw-new (g) = TwWorld { government = g, towns = tw-towns 0 [], sites = tw-sites 0 [],
+    orders = tw-orders 0 [], bounties = tw-bounties 0 [], order-count = 0,
+    bounty-count = 0, militia = ep-buffer 128, worker-stamps = ep-buffer 128 }
+  tw-worker : TwWorld, Integer, Integer -> Integer
+  tw-worker (t) (actor) (town) = let g = t.government
+    in if not (ep-valid-actor g.economy actor) then 0
+    else let purse = em-purse g.economy.money (ep-actor g.economy actor).purse
+    in if purse.kind == 2 & tg-resident g purse.owner town then purse.owner else 0
+  tw-site-valid : TwWorld, Integer, Integer -> Boolean
+  tw-site-valid (t) (town) (station) =
+    if station <= 0 | station > t.government.economy.station-count | station > list-length t.sites then False
+    else let site = list-at t.sites (station - 1)
+    in site.town == town & site.owner == (list-at t.government.economy.stations (station - 1)).owner
+  tw-admit-site : TwWorld, Integer, Integer, Integer, Boolean -> Integer
+  tw-admit-site (t) (mayor) (town) (station) (permitted) = let g = t.government
+    in if not permitted | not (tg-mayor g mayor town) | station <= 0 | station > g.economy.station-count | station > list-length t.sites | not (tg-room g 1) then -1
+    else let site = list-at t.sites (station - 1)
+    in if site.town /= 0 & site.town /= town then -1
+    else let a = __record-set site "town" town
+    in let b = __record-set site "owner" (list-at g.economy.stations (station - 1)).owner
+    in tg-event g 13 town mayor station 0 0
+  tw-revoke-site : TwWorld, Integer, Integer, Integer -> Integer
+  tw-revoke-site (t) (mayor) (town) (station) = let g = t.government
+    in if not (tg-mayor g mayor town) | not (tw-site-valid t town station) | not (tg-room g 1) then -1
+    else let site = list-at t.sites (station - 1)
+    in let a = __record-set site "town" 0
+    in let b = __record-set site "owner" 0
+    in tg-event g 14 town mayor station 0 0
+  tw-muster : TwWorld, Integer, Integer, Integer -> Integer
+  tw-muster (t) (town) (i) (count) = if i == t.government.people.used then count
+    else let npc = i + 1
+    in let eligible = tg-resident t.government npc town & not (tg-employed t.government npc 0)
+    in let a = if eligible then ep-set t.militia i town else 0
+    in tw-muster t town (i + 1) (count + (if eligible then 1 else 0))
+  tw-demobilize : TwWorld, Integer, Integer -> Integer
+  tw-demobilize (t) (town) (i) = if i == 128 then 0
+    else let a = if ep-at t.militia i == town then ep-set t.militia i 0 else 0
+    in tw-demobilize t town (i + 1)
+  tw-raid : TwWorld, Boolean, Integer, Integer -> Integer
+  tw-raid (t) (authorized) (town) (event) = let g = t.government
+    in if not authorized | not (tg-valid-town g town) | event <= 0 | event > ep-limit | not (tg-room g 1) then -1
+    else let local = list-at t.towns (town - 1)
+    in if local.active-raid /= 0 | event <= local.last-raid then -1
+    else let count = tw-muster t town 0 0
+    in let a = __record-set local "last-raid" event
+    in let b = __record-set local "active-raid" event
+    in let c = __record-set local "militia" count
+    in tg-event g 15 town 0 event count 0
+  tw-order-open : TwWorld, Integer, Integer, Integer, Integer -> Boolean
+  tw-order-open (t) (town) (kind) (target) (i) = if i == t.order-count then False
+    else let o = list-at t.orders i
+    in (o.town == town & o.kind == kind & o.target == target & (o.status == 1 | o.status == 2)) | tw-order-open t town kind target (i + 1)
+  tw-stand-down : TwWorld, Boolean, Integer, Integer -> Integer
+  tw-stand-down (t) (authorized) (town) (event) = let g = t.government
+    in if not authorized | not (tg-valid-town g town) | not (tg-room g 1) then -1
+    else let local = list-at t.towns (town - 1)
+    in if event <= 0 | local.active-raid /= event then -1
+    else let a = __record-set local "active-raid" 0
+    in let b = __record-set local "militia" 0
+    in let clear = tw-demobilize t town 0
+    in tg-event g 16 town 0 event 0 0
+  tw-damage-valid : TwWorld, Integer, TwDamage -> Boolean
+  tw-damage-valid (t) (town) (d) =
+    tw-site-valid t town d.station & d.boards >= 0 & d.boards <= 1000000
+      & d.nails >= 0 & d.nails <= 1000000 & d.boards + d.nails > 0
+      & d.hours > 0 & d.hours <= 720 & d.fee >= 0 & d.fee <= 1000000
+      & (list-at t.government.economy.catalog.items 37).name == "boards"
+      & (list-at t.government.economy.catalog.items 38).name == "nails"
+  tw-end-raid : TwWorld, Boolean, Integer, Integer, TwDamage -> Integer
+  tw-end-raid (t) (authorized) (town) (event) (damage) = let g = t.government
+    in if not authorized | not (tg-valid-town g town) | not (tg-room g 2) then -1
+    else let local = list-at t.towns (town - 1)
+    in if event /= local.active-raid | event == 0 | t.order-count == 128 | not (tw-damage-valid t town damage) | tw-order-open t town 1 damage.station 0 then -1
+    else let order = list-at t.orders t.order-count
+    in let id = t.order-count + 1
+    in let a = __record-set order "town" town
+    in let b = __record-set order "kind" 1
+    in let c = __record-set order "target" damage.station
+    in let d = __record-set order "boards" damage.boards
+    in let e = __record-set order "nails" damage.nails
+    in let f = __record-set order "hours" damage.hours
+    in let h = __record-set order "fee" damage.fee
+    in let j = __record-set order "status" 1
+    in let k = __record-set order "last-hour" -1
+    in let m = __record-set t "order-count" id
+    in let broken = __record-set (list-at g.economy.stations (damage.station - 1)) "enabled" 0
+    in let n = __record-set local "damaged" (local.damaged + 1)
+    in let p = __record-set local "active-raid" 0
+    in let q = __record-set local "militia" 0
+    in let clear = tw-demobilize t town 0
+    in let raid = tg-event g 16 town 0 event damage.station 0
+    in let repair = tg-event g 17 town 0 id damage.fee 0
+    in id
+  tw-skill : Integer -> Integer
+  tw-skill (kind) = if kind == 2 then 5 else if kind == 9 then 8 else 9
+  tw-candidate : TwWorld, Integer, Integer, Integer -> Integer
+  tw-candidate (t) (town) (skill) (actor) = if not (tg-valid-town t.government town) | skill < 1 | skill > 10 | actor < 1 | actor > t.government.economy.actor-count then 0
+    else let npc = tw-worker t actor town
+    in if npc > 0 & npc /= (tg-office t.government town).mayor & not (tg-employed t.government npc 0) & ep-at (ep-actor t.government.economy actor).skills skill > 0 then actor
+    else tw-candidate t town skill (actor + 1)
+  tw-assign-repair : TwWorld, Integer, Integer, Integer -> Integer
+  tw-assign-repair (t) (mayor) (id) (actor) = let g = t.government
+    in if id <= 0 | id > t.order-count | not (tg-room g 1) then -1
+    else let o = list-at t.orders (id - 1)
+    in if o.kind /= 1 | (o.status /= 1 & o.status /= 2) | not (tg-mayor g mayor o.town) | tw-worker t actor o.town == 0 then -1
+    else if o.status == 2 & tw-worker t o.worker o.town > 0 then -1
+    else if ep-at (ep-actor g.economy actor).skills 6 == 0 then -1
+    else let a = __record-set o "worker" actor
+    in let b = __record-set o "status" 2
+    in tg-event g 18 o.town mayor id actor 0
+  tw-deliver : TwWorld, Integer, Integer, Integer, Integer -> Integer
+  tw-deliver (t) (actor) (id) (boards) (nails) = let g = t.government
+    in if id <= 0 | id > t.order-count | not (ep-valid-actor g.economy actor) | boards < 0 | nails < 0 | boards + nails <= 0 | boards > 1000000 | nails > 1000000 | not (tg-room g 1) then -1
+    else let o = list-at t.orders (id - 1)
+    in let p = ep-actor g.economy actor
+    in if o.kind /= 1 | o.status /= 2 | o.worker /= actor | tw-worker t actor o.town == 0 | not (tw-site-valid t o.town o.target) | p.place /= (list-at g.economy.stations (o.target - 1)).place then -1
+    else if boards > o.boards - o.delivered-boards | nails > o.nails - o.delivered-nails | not (ep-has p 38 boards) | not (ep-has p 39 nails) then -1
+    else let a = ep-consume g.economy p 38 boards
+    in let b = ep-consume g.economy p 39 nails
+    in let c = __record-set o "delivered-boards" (o.delivered-boards + boards)
+    in let d = __record-set o "delivered-nails" (o.delivered-nails + nails)
+    in tg-event g 19 o.town (tw-worker t actor o.town) id (boards + nails) 0
+  tw-pay-repair : TwWorld, Integer, Integer -> Integer
+  tw-pay-repair (t) (mayor) (id) = let g = t.government
+    in if id <= 0 | id > t.order-count | not (tg-room g 1) then -1
+    else let o = list-at t.orders (id - 1)
+    in if o.kind /= 1 | o.status /= 4 | not (tg-mayor g mayor o.town) then -1
+    else let purse = (ep-actor g.economy o.worker).purse
+    in if tg-pay g (tg-office g o.town).purse purse o.fee /= 0 then -1
+    else let a = __record-set o "status" 3
+    in let b = __record-set o "money-action" g.economy.money.sequence
+    in tg-event g 21 o.town mayor id o.fee g.economy.money.sequence
+  tw-work : TwWorld, Integer, Integer -> Integer
+  tw-work (t) (actor) (id) = let g = t.government
+    in if id <= 0 | id > t.order-count | not (ep-valid-actor g.economy actor) | not (tg-room g 1) then -1
+    else let o = list-at t.orders (id - 1)
+    in let p = ep-actor g.economy actor
+    in if o.kind /= 1 | o.status /= 2 | o.worker /= actor | tw-worker t actor o.town == 0 | not (tw-site-valid t o.town o.target) | o.last-hour >= g.economy.hour | ep-at t.worker-stamps (actor - 1) >= g.economy.hour + 1 | p.attempts >= ep-limit then -1
+    else if p.place /= (list-at g.economy.stations (o.target - 1)).place | o.delivered-boards /= o.boards | o.delivered-nails /= o.nails | not (ep-tool p 62) then -1
+    else let success = ep-practice p 6
+    in let worn = ep-wear g.economy p 62
+    in let stamp = __record-set o "last-hour" g.economy.hour
+    in let worker-stamp = ep-set t.worker-stamps (actor - 1) (g.economy.hour + 1)
+    in if not success then let logged = tg-event g 20 o.town (tw-worker t actor o.town) id 0 0 in -2
+    else let progress = __record-set o "progress" (o.progress + 1)
+    in if o.progress < o.hours then tg-event g 20 o.town (tw-worker t actor o.town) id 1 0
+    else let restored = __record-set (list-at g.economy.stations (o.target - 1)) "enabled" 1
+    in let paid = if o.fee == 0 then 0 else tg-pay g (tg-office g o.town).purse p.purse o.fee
+    in let status = __record-set o "status" (if paid == 0 then 3 else 4)
+    in let action = if paid == 0 & o.fee > 0 then g.economy.money.sequence else 0
+    in let receipt = __record-set o "money-action" action
+    in let local = list-at t.towns (o.town - 1)
+    in let count = __record-set local "repaired" (local.repaired + 1)
+    in tg-event g 21 o.town (tw-worker t actor o.town) id o.fee action
+
+  tw-present : TwWorld, Integer, Integer, Integer -> Boolean
+  tw-present (t) (town) (kind) (i) = if i == t.government.economy.station-count then False
+    else let s = list-at t.government.economy.stations i
+    in (tw-site-valid t town (i + 1) & s.kind == kind & s.enabled == 1 & tw-operable t s.owner (tw-skill kind)) | tw-present t town kind (i + 1)
+  tw-operable : TwWorld, Integer, Integer -> Boolean
+  tw-operable (t) (actor) (skill) = let g = t.government
+    in if not (ep-valid-actor g.economy actor) | skill < 1 | skill > 10 then False
+    else let p = ep-actor g.economy actor
+    in let purse = em-purse g.economy.money p.purse
+    in if ep-at p.skills skill == 0 then False
+    else if purse.kind /= 2 then True
+    else if not (tf-valid-person g.people purse.owner) then False
+    else let npc = tf-person g.people purse.owner
+    in npc.alive == 1 & npc.age >= 6570
+  tw-essential : TwWorld, Integer, Integer, Integer -> Integer
+  tw-essential (t) (mayor) (town) (kind) = let g = t.government
+    in if not (tg-mayor g mayor town) | (kind /= 2 & kind /= 9 & kind /= 6) then -1
+    else if tw-present t town kind 0 | tw-order-open t town 2 kind 0 then 0
+    else if t.order-count == 128 | not (tg-room g 1) then -1
+    else let o = list-at t.orders t.order-count
+    in let id = t.order-count + 1
+    in let a = __record-set o "town" town
+    in let b = __record-set o "kind" 2
+    in let c = __record-set o "target" kind
+    in let d = __record-set o "status" 1
+    in let e = __record-set t "order-count" id
+    in let logged = tg-event g 22 town mayor id kind 0
+    in id
+  tw-staff : TwWorld, Integer, Integer, Integer, Integer -> Integer
+  tw-staff (t) (mayor) (id) (actor) (station) = let g = t.government
+    in if id <= 0 | id > t.order-count | not (ep-valid-actor g.economy actor) | not (tg-room g 1) then -1
+    else let o = list-at t.orders (id - 1)
+    in if o.kind /= 2 | o.status /= 1 | not (tg-mayor g mayor o.town) | not (tw-site-valid t o.town station) | tw-worker t actor o.town == 0 then -1
+    else let s = list-at g.economy.stations (station - 1)
+    in if s.owner /= actor | s.kind /= o.target | s.enabled == 0 | ep-at (ep-actor g.economy actor).skills (tw-skill o.target) == 0 then -1
+    else let a = __record-set o "worker" actor
+    in let b = __record-set o "status" 3
+    in let c = __record-set o "station" station
+    in tg-event g 23 o.town mayor id actor 0
+  tw-bounty-known : TwWorld, Integer, Integer, Integer, Integer -> Boolean
+  tw-bounty-known (t) (town) (home) (threat) (i) = if i == t.bounty-count then False
+    else let b = list-at t.bounties i
+    in (b.town == town & b.home == home & b.threat == threat) | tw-bounty-known t town home threat (i + 1)
+  tw-post : TwWorld, Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
+  tw-post (t) (mayor) (town) (home) (threat) (reward) (eligible) = let g = t.government
+    in if not eligible | not (tg-mayor g mayor town) | home <= 0 | threat <= 0 | threat > ep-limit | reward <= 0 | reward > 1000000 | t.bounty-count == 128 | not (tg-room g 1) then -1
+    else if tw-bounty-known t town home threat 0 then -1
+    else let b = list-at t.bounties t.bounty-count
+    in let id = t.bounty-count + 1
+    in let a = __record-set b "town" town
+    in let c = __record-set b "home" home
+    in let d = __record-set b "threat" threat
+    in let e = __record-set b "reward" reward
+    in let f = __record-set b "status" 1
+    in let h = __record-set t "bounty-count" id
+    in let logged = tg-event g 24 town mayor id reward 0
+    in id
+  tw-claim : TwWorld, Boolean, Integer, Integer, Integer, Integer, Integer -> Integer
+  tw-claim (t) (verified) (id) (home) (threat) (event) (winner) = let g = t.government
+    in if not verified | id <= 0 | id > t.bounty-count | event <= 0 | event > ep-limit | not (em-valid-purse g.economy.money winner) | not (tg-room g 1) then -1
+    else let b = list-at t.bounties (id - 1)
+    in let purse = em-purse g.economy.money winner
+    in if b.status /= 1 | b.home /= home | b.threat /= threat | (purse.kind /= 2 & purse.kind /= 3) then -1
+    else let a = __record-set b "winner" winner
+    in let c = __record-set b "proof" event
+    in let d = __record-set b "status" 2
+    in tg-event g 25 b.town 0 id event 0
+  tw-pay-bounty : TwWorld, Integer, Integer -> Integer
+  tw-pay-bounty (t) (mayor) (id) = let g = t.government
+    in if id <= 0 | id > t.bounty-count | not (tg-room g 1) then -1
+    else let b = list-at t.bounties (id - 1)
+    in if b.status /= 2 | not (tg-mayor g mayor b.town) then -1
+    else if tg-pay g (tg-office g b.town).purse b.winner b.reward /= 0 then -1
+    else let a = __record-set b "status" 3
+    in let c = __record-set b "money-action" g.economy.money.sequence
+    in tg-event g 26 b.town mayor id b.reward g.economy.money.sequence

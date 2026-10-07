@@ -1,0 +1,287 @@
+Chapter: TownStateProof
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter TownStateValid
+  cites Uoaix chapter TownStateFields
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+  cites Foreword chapter Console
+
+  tsp-check : Text, Boolean -> [Console] Nothing
+  tsp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  tsp-object : Integer -> WorldObject
+  tsp-object (kind) = WorldObject { serial = 0, kind = kind, x = 1420, y = 1690, z = -5, graphic = 400, hue = 17, container = 0, amount = 1, health = 77 }
+
+  tsp-old-audit : TmMind, TfWorld, Integer -> Integer
+  tsp-old-audit (m) (w) (left) =
+    if left == 0 then tm-ack-audit m
+    else let a = tm-stub m w 0 1 0 "unconfigured"
+    in tsp-old-audit m w (left - 1)
+
+  tsp-fixture : WorldTable -> TownState
+  tsp-fixture (world) =
+    let mobile = world-create world (tsp-object 1)
+    in let item = world-create world (tsp-object 2)
+    in let removed = world-delete world 1073741826
+    in let w = tf-new 0
+    in let m = tm-new 0
+    in let town = tf-add-town w "Britain" 201 202 203
+    in let one = tf-add-person w "Mara\nBaker" town 100 102 1 9300
+    in let two = tf-add-person w "Iolo" town 100 103 2 9000
+    in let child = tf-add-person w "Child" town 100 100 0 12
+    in let hour = __record-set w "hour" 48
+    in let married = tf-marry w one two
+    in let due = tf-expect-birth w one 3
+    in let p = tf-person w one
+    in let bound = __record-set p "world-serial" 1
+    in let children = __record-set p "children" 1
+    in let count2 = __record-set (tf-person w two) "children" 1
+    in let par1 = __record-set (tf-person w child) "parent-a" 1
+    in let par2 = __record-set (tf-person w child) "parent-b" 2
+    in let hunger = __record-set p "hunger" 31
+    in let fatigue = __record-set p "fatigue" 42
+    in let mood = __record-set p "mood" 53
+    in let coin = __record-set p "coin" 64
+    in let bread = __record-set p "bread" 75
+    in let goods = __record-set p "goods" 86
+    in let activity = __record-set p "activity" 6
+    in let death-age = __record-set p "death-age" 29210
+    in let event = tf-event w 4 p 0
+    in let configured = tm-configure m w 1 "Mara says: \"Bread first\".\nThen rest." "The ovens need me." 3 128 2
+    in let old = tsp-old-audit m w 18
+    in let fallback = tm-stub m w 1 1 1 "hello"
+    in let gift = tm-respond m w 1 2 2 "morning" (TmProposal { actor = 1, kind = 1, target = 2, item = 1, quantity = 2, destination = 0, speech = "Bread." }) 1 12
+    in TownState { checkpoint = WorldCheckpoint { world = world, tick = 12345, sequence = 77 }, townsfolk = w, mind = m }
+
+  tsp-equal : Integer, Integer, Integer, Integer -> Boolean
+  tsp-equal (a) (b) (size) (i) =
+    if i == size then True
+    else if peek-byte a i /= peek-byte b i then False
+    else tsp-equal a b size (i + 1)
+
+  tsp-tamper : TownState, Integer, Integer, Integer, Integer -> Boolean
+  tsp-tamper (state) (buf) (size) (offset) (value) =
+    let mark = __heap-save
+    in let reset = ts-encode state buf size
+    in let changed = poke-qword buf offset value
+    in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+    in let refused = is-err (ts-decode buf size)
+    in let restored = __heap-restore mark
+    in refused
+
+  tsp-list-equal : List Integer, List Integer, Integer -> Boolean
+  tsp-list-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i == list-length a then True
+    else list-at a i == list-at b i & tsp-list-equal a b (i + 1)
+
+  tsp-person-list-equal : List TfPerson, List TfPerson, Integer -> Boolean
+  tsp-person-list-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i == list-length a then True
+    else tsp-person-equal (list-at a i) (list-at b i) & tsp-person-list-equal a b (i + 1)
+
+  tsp-town-list-equal : List TfTown, List TfTown, Integer -> Boolean
+  tsp-town-list-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i == list-length a then True
+    else tsp-town-equal (list-at a i) (list-at b i) & tsp-town-list-equal a b (i + 1)
+
+  tsp-persona-list-equal : List TmPersona, List TmPersona, Integer -> Boolean
+  tsp-persona-list-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i == list-length a then True
+    else tsp-persona-equal (list-at a i) (list-at b i) & tsp-persona-list-equal a b (i + 1)
+
+  tsp-person-equal : TfPerson, TfPerson -> Boolean
+  tsp-person-equal (a) (b) =
+    a.serial == b.serial
+    & a.world-serial == b.world-serial
+    & a.name == b.name
+    & a.town == b.town
+    & a.home == b.home
+    & a.workplace == b.workplace
+    & a.place == b.place
+    & a.job == b.job
+    & a.age == b.age
+    & a.alive == b.alive
+    & a.spouse == b.spouse
+    & a.parent-a == b.parent-a
+    & a.parent-b == b.parent-b
+    & a.children == b.children
+    & a.due == b.due
+    & a.death-age == b.death-age
+    & a.illness == b.illness
+    & a.hunger == b.hunger
+    & a.fatigue == b.fatigue
+    & a.mood == b.mood
+    & a.coin == b.coin
+    & a.bread == b.bread
+    & a.goods == b.goods
+    & a.activity == b.activity
+    & tsp-list-equal a.schedule b.schedule 0
+    & tsp-list-equal a.memories b.memories 0
+    & a.memory-next == b.memory-next
+    & a.memory-count == b.memory-count
+
+  tsp-town-equal : TfTown, TfTown -> Boolean
+  tsp-town-equal (a) (b) =
+    a.serial == b.serial
+    & a.name == b.name
+    & a.market == b.market
+    & a.tavern == b.tavern
+    & a.temple == b.temple
+    & a.vendor == b.vendor
+    & a.population == b.population
+    & a.grain == b.grain
+    & a.bread == b.bread
+    & a.ingots == b.ingots
+    & a.goods == b.goods
+    & a.crop == b.crop
+    & a.harvested == b.harvested
+    & a.baked == b.baked
+    & a.forged == b.forged
+    & a.sold == b.sold
+    & a.births == b.births
+    & a.deaths == b.deaths
+    & a.marriages == b.marriages
+    & a.illnesses == b.illnesses
+    & a.shortages == b.shortages
+    & a.observations == b.observations
+    & a.adhered == b.adhered
+    & a.eaten == b.eaten
+
+  tsp-folk-equal : TfWorld, TfWorld -> Boolean
+  tsp-folk-equal (a) (b) =
+    tsp-person-list-equal a.people b.people 0
+    & tsp-town-list-equal a.towns b.towns 0
+    & a.used == b.used
+    & a.town-count == b.town-count
+    & a.hour == b.hour
+    & tsp-list-equal a.events b.events 0
+    & a.event-count == b.event-count
+    & a.sequence == b.sequence
+
+  tsp-persona-equal : TmPersona, TmPersona -> Boolean
+  tsp-persona-equal (a) (b) =
+    a.npc == b.npc
+    & a.description == b.description
+    & a.fallback == b.fallback
+    & a.call-limit == b.call-limit
+    & a.token-budget == b.token-budget
+    & a.gift-limit == b.gift-limit
+    & a.call-hour == b.call-hour
+    & a.calls == b.calls
+    & a.request == b.request
+
+  tsp-mind-equal : TmMind, TmMind -> Boolean
+  tsp-mind-equal (a) (b) =
+    tsp-persona-list-equal a.personas b.personas 0
+    & tsp-list-equal a.audit b.audit 0
+    & a.audit-count == b.audit-count
+    & a.sequence == b.sequence
+    & a.fallbacks == b.fallbacks
+    & a.refusals == b.refusals
+    & a.accepted == b.accepted
+
+
+  tsp-roundtrip : TownState, Integer, Integer -> [Console] Nothing
+  tsp-roundtrip (source) (buf) (size) = when ts-decode-record buf size 12345 77
+    is Err (e) -> print-line-uni ("FAIL decode " & e)
+    is Ok (copy) -> act
+      tsp-check "every declared simulation field" (tsp-folk-equal source.townsfolk copy.townsfolk & tsp-mind-equal source.mind copy.mind)
+      out <- alloc-bytes size
+      encoded <- ts-encode copy out size
+      tsp-check "all wire fields survive" (is-ok encoded & tsp-equal buf out size 0)
+      p <- tf-person copy.townsfolk 1
+      persona <- list-at copy.mind.personas 0
+      tsp-check "text and clocks" (p.name == "Mara\nBaker" & persona.description == "Mara says: \"Bread first\".\nThen rest." & copy.townsfolk.hour == 48 & copy.checkpoint.tick == 12345 & copy.checkpoint.sequence == 77)
+      tsp-check "family and needs" (p.spouse == 2 & (tf-person copy.townsfolk 3).parent-a == 1 & (tf-person copy.townsfolk 3).parent-b == 2 & p.due == 3 & p.hunger == 31 & p.fatigue == 42 & p.mood == 53 & p.death-age == 29210)
+      tsp-check "inventory and audit" (p.coin == 64 & p.bread == 73 & p.goods == 86 & (tf-person copy.townsfolk 2).bread == 2 & copy.mind.audit-count == 2 & copy.mind.sequence == 20 & copy.mind.fallbacks == 19 & copy.mind.refusals == 18 & copy.mind.accepted == 1)
+      tsp-check "schedule and memories" (list-at p.schedule 7 == 1 & list-at p.schedule 20 == 4 & p.memory-count == 2 & p.memory-next == 2 & list-at p.memories 0 == 1 & list-at p.memories 1 == 2)
+      tsp-check "pending events retained" (copy.townsfolk.event-count == 2 & copy.townsfolk.sequence == 2 & tf-step copy.townsfolk == -3)
+      replay <- tm-stub copy.mind copy.townsfolk 1 1 2 "repeat"
+      tsp-check "restored request guard" (replay.outcome == 10)
+      created <- world-create copy.checkpoint.world (tsp-object 2)
+      tsp-check "allocator generation retained" (when created is Err (e) -> False is Ok (id) -> id == 1073741830)
+      changed <- __record-set p "coin" 999
+      wiped <- ts-zero buf size 0
+      tsp-check "restored state detached" ((tf-person source.townsfolk 1).coin == 64 & source.mind.sequence == 20 & world-count source.checkpoint.world == 1 & p.name == "Mara\nBaker")
+    end
+
+  tsp-small : WorldTable -> [Console] Nothing
+  tsp-small (world) = act
+    state <- tsp-fixture world
+    size <- ts-size world.capacity
+    buf <- alloc-bytes size
+    zero <- ts-zero buf size 0
+    tsp-check "source invariants" (ts-state-valid state.checkpoint state.townsfolk state.mind)
+    tsp-check "short destination refuses without write" (is-err (ts-encode state buf (size - 1)) & peek-qword buf 0 == 0)
+    encoded <- ts-encode state buf size
+    tsp-check "encode exact size" (when encoded is Err (e) -> False is Ok (n) -> n == 250400)
+    base <- 64 + ws-size world.capacity
+    person <- base + 1064
+    tsp-check "independent header cells" (peek-qword buf 0 == #31435354 & peek-qword buf 8 == 1 & peek-qword buf 16 == 250400 & peek-qword buf 24 == 400 & peek-qword buf 32 == 12345 & peek-qword buf 40 == 77 & peek-qword buf 64 == #31535755)
+    tsp-check "independent scalar cells" (peek-qword buf person == 1 & peek-qword buf (person + 8) == 1 & peek-qword buf (person + 56) == 9300 & peek-qword buf (person + 104) == 3 & peek-qword buf (person + 128) == 31 & peek-qword buf (person + 152) == 64 & peek-qword buf (person + 160) == 73 & peek-qword buf (person + 168) == 86)
+    tsp-check "truncated and oversized input" (is-err (ts-decode buf 63) & is-err (ts-decode buf (size - 1)) & is-err (ts-decode buf 4194304))
+    tsp-check "outer record metadata" (is-err (ts-decode-record buf size 12346 77) & is-err (ts-decode-record buf size 12345 78))
+    tsp-roundtrip state buf size
+    tsp-check "rehash clock mismatch" (tsp-tamper state buf size 32 12346)
+    tsp-check "rehash oversized text" (tsp-tamper state buf size (person + 200) 65)
+    tsp-check "rehash population mismatch" (tsp-tamper state buf size (base + 80) 0)
+    tsp-check "rehash used-slot overflow" (tsp-tamper state buf size base 129)
+    tsp-check "rehash broken spouse" (tsp-tamper state buf size (person + 592 + 72) 0)
+    tsp-check "rehash duplicate mobile" (tsp-tamper state buf size (person + 592 + 8) 1)
+    tsp-check "rehash invalid budget" (tsp-tamper state buf size (base + 109648 + 16) 513)
+    tsp-check "rehash invalid audit" (tsp-tamper state buf size (base + 200784 + 32) 99)
+    reset <- ts-encode state buf size
+    cycle1 <- poke-qword buf (person + 80) 3
+    hash <- poke-qword buf 48 (ws-hash buf size 0 2166136261)
+    tsp-check "rehash parent cycle" (is-err (ts-decode buf size))
+    reset2 <- ts-encode state buf size
+    bad <- poke-byte buf (size - 1) 1
+    tsp-check "checksum corruption" (is-err (ts-decode buf size))
+  end
+
+  tsp-text : Integer, Text -> Text
+  tsp-text (left) (text) = if left == 0 then text else tsp-text (left - 1) (text & "Z")
+
+  tsp-fill : TfWorld, TmMind, Text, Text, Text, Integer -> Integer
+  tsp-fill (w) (m) (name) (description) (fallback) (i) =
+    if i == 128 then 0
+    else let npc = tf-add-person w name 1 100 100 0 9000
+    in let configured = tm-configure m w npc description fallback 8 512 10
+    in tsp-fill w m name description fallback (i + 1)
+
+  tsp-large : WorldTable -> [Console] Nothing
+  tsp-large (world) = act
+    w <- tf-new 0
+    m <- tm-new 0
+    town <- tf-add-town w "Britain" 201 202 203
+    filled <- tsp-fill w m (tsp-text 64 "") (tsp-text 512 "") (tsp-text 128 "") 0
+    state <- TownState { checkpoint = WorldCheckpoint { world = world, tick = 0, sequence = 0 }, townsfolk = w, mind = m }
+    size <- ts-size world.capacity
+    buf <- alloc-bytes size
+    encoded <- ts-encode state buf size
+    tsp-check "maximum checkpoint below store cap" (is-ok encoded & size == 1560800 & size < 4194304)
+    before <- __heap-save
+    decoded <- ts-decode buf size
+    after <- __heap-save
+    print-line-uni ("DECODE-BYTES " & show (after - before))
+    tsp-check "maximum decode budget" (after - before < 16777216)
+    when decoded
+      is Err (e) -> print-line-uni ("FAIL maximum decode " & e)
+      is Ok (copy) -> tsp-check "full personas and text restored" (copy.townsfolk.used == 128 & (tf-town copy.townsfolk 1).population == 128 & text-length (list-at copy.mind.personas 127).description == 512 & text-length (tf-person copy.townsfolk 128).name == 64)
+  end
+
+  opening : [Console] Nothing = act
+    when world-new 4
+      is Err (e) -> print-line-uni ("FAIL world " & e)
+      is Ok (world) -> tsp-small world
+    when world-new 16384
+      is Err (e) -> print-line-uni ("FAIL world " & e)
+      is Ok (world) -> tsp-large world
+  end

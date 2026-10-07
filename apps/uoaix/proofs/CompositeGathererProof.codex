@@ -1,0 +1,279 @@
+Chapter: CompositeGathererProof
+  cites Uoaix chapter CompositeStore
+
+ Every ingot the blacksmith bought: the gatherer's two and any the gatherer-miners (UOAIX-30) sold it.
+  cgp-bought : GvWorld, Integer, Integer -> Integer
+  cgp-bought (v) (buyer) (i) = if i == v.sale-count then 0 else let s = list-at v.sales i in (if s.buyer == buyer & s.item == 31 then s.quantity else 0) + cgp-bought v buyer (i + 1)
+  cgp-check : Text, Boolean -> [Console] Integer
+  cgp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cgp-fill : WalkMap, Integer -> Integer
+  cgp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cgp-fill map (i + 1)
+  cgp-data : Integer -> Integer
+  cgp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  cgp-mobile : CompositeGame, CgGatherer -> WorldObject
+  cgp-mobile (owner) (c) = when world-get owner.checkpoint.game.world c.serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  cgp-at : CompositeGame, Integer -> WorldObject
+  cgp-at (owner) (serial) = when world-get owner.checkpoint.game.world serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  cgp-coin : EuCurrency, Integer -> Integer
+  cgp-coin (x) (actor) = let purse = (ep-actor x.world actor).purse
+    in (em-purse x.copper purse).coin + (em-purse x.silver purse).coin + (em-purse x.world.money purse).coin
+  cgp-ore : CgGatherer -> Integer
+  cgp-ore (c) = let x = c.gatherer.producer.currency in ep-at (ep-actor x.world c.gatherer.producer.actor).stock 5
+  cgp-line : CompositeGame, CgGatherer, Text -> Text
+  cgp-line (owner) (c) (label) = let m = cgp-mobile owner c
+    in let x = c.gatherer.producer.currency
+    in "GATHERER " & label & " at " & show m.x & "," & show m.y & " home " & show c.home.x & "," & show c.home.y
+      & " node " & show c.node.x & "," & show c.node.y & " leg=" & show c.leg & " trips=" & show c.trips
+      & " gathered=" & show c.gatherer.gathered & " ore=" & show (cgp-ore c) & " pickaxe=" & show (ep-at (ep-actor x.world c.gatherer.producer.actor).stock 25)
+      & " mining=" & show (ep-at (ep-actor x.world c.gatherer.producer.actor).skills 1) & " blocked=" & show c.blocked
+      & " coin=" & show (cgp-coin x c.gatherer.producer.actor) & " made=" & show c.made & " sold=" & show c.sold
+      & " ingots=" & show (ep-at (ep-actor x.world c.gatherer.producer.actor).stock 31)
+ Ticks until the gatherer has completed trips trips; reached records that it stood on the node tile.
+  cgp-trip : CompositeGame, CgGatherer, WalkMap, Integer, Integer, Integer, Integer -> Integer
+  cgp-trip (owner) (c) (map) (trips) (tick) (left) (reached) = if left == 0 | (c.trips >= trips & c.leg == 0) then reached
+    else when cg-world-tick owner owner.checkpoint.game map c.serial tick
+      is Err (_) -> -1
+      is Ok (_) -> let m = cgp-mobile owner c
+        in cgp-trip owner c map trips (tick + 1000) (left - 1) (if c.leg == 2 & m.x == c.node.x & m.y == c.node.y then reached + 1 else reached)
+ Ticks until the gatherer is home after a sale; beside counts ticks it stood within the blacksmith's reach while selling.
+  cgp-sale : CompositeGame, CgGatherer, WalkMap, Integer, Integer, Integer -> Integer
+  cgp-sale (owner) (c) (map) (tick) (left) (beside) = if left == 0 | (c.sold > 0 & c.leg == 0) then beside
+    else let selling = c.leg == 5
+    in when cg-world-tick owner owner.checkpoint.game map c.serial tick
+      is Err (_) -> -1
+      is Ok (_) -> cgp-sale owner c map (tick + 1000) (left - 1) (if selling & c.sold > 0 then beside + 1 else beside)
+  cgp-value : EuCurrency, Integer -> Integer
+  cgp-value (x) (actor) = let purse = (ep-actor x.world actor).purse
+    in eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+  cgp-smith : CompositeGame -> Integer
+  cgp-smith (owner) = (list-at owner.vendor.vendors 1).actor
+  cgp-sold : GvWorld, Integer, Integer, Integer -> Integer
+  cgp-sold (v) (seller) (item) (i) = if i == v.sale-count then 0 else let s = list-at v.sales i in (if s.seller == seller & s.item == item then s.quantity else 0) + cgp-sold v seller item (i + 1)
+  cgp-stocked : GvWorld, Integer, Integer, Integer -> Integer
+  cgp-stocked (v) (item) (container) (i) = if i == v.lot-count then 0
+    else let l = list-at v.lots i
+    in (if (item == 0 | l.item == item) & gv-under v.game.world l.serial container 65 then l.quantity else 0) + cgp-stocked v item container (i + 1)
+  cgp-idle : CgGatherer -> Boolean
+  cgp-idle (c) = c.leg == 0 & c.lot == 0 & cgg-held c 5 < 2 & not (cgg-ready c)
+  cgp-settle : CompositeGame, CgGatherer, WalkMap, Integer, Integer -> Integer
+  cgp-settle (owner) (c) (map) (tick) (left) = if left == 0 then -1
+    else when cg-world-tick owner owner.checkpoint.game map c.serial tick
+      is Err (_) -> -2
+      is Ok (_) -> if cgp-idle c & csn-smith-idle owner.smith owner.vendor then left else cgp-settle owner c map (tick + 1000) (left - 1)
+ Each round grows the node for 48 economy hours and runs the world until the gatherer is idle again.
+  cgp-rounds : CompositeGame, CgGatherer, WalkMap, Integer, Integer -> Integer
+  cgp-rounds (owner) (c) (map) (sold) (rounds) = if c.sold >= sold | rounds == 0 then rounds
+    else let x = owner.vendor.currency
+    in if not (cg-economy-hours x (x.world.hour + 48) 48) then -1
+    else if cgp-settle owner c map 9000000 1500 < 0 then -2
+    else cgp-rounds owner c map sold (rounds - 1)
+  cgp-census : EuCurrency -> Boolean
+  cgp-census (x) = euv-valid x & ep-census x.world 1
+  cgp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  cgp-first (store) (map) = let owner = store.state in when owner.gatherer
+    is None -> cgp-check "a fresh Britain world binds the gatherer" False
+    is Just (c) -> act
+      x <- owner.vendor.currency
+      start <- cgp-mobile owner c
+      print-line-uni (cgp-line owner c "fresh")
+      bound <- cgp-check "a fresh Britain world binds the gatherer as a world mobile at home with a self-made pickaxe and no coin" (start.kind == 1 & start.x == c.home.x & start.y == c.home.y & c.leg == 0
+        & ep-at (ep-actor x.world c.gatherer.producer.actor).stock 25 >= 1 & cgp-coin x c.gatherer.producer.actor == 0)
+      smith <- list-at owner.vendor.vendors 1
+      empty <- cgp-check "the actual blacksmith starts with nothing for sale and the provisioner keeps its stock" (cgp-stocked owner.vendor 0 smith.stock 0 == 0
+        & cgp-stocked owner.vendor 0 (list-at owner.vendor.vendors 0).stock 0 > 0)
+      reached <- cgp-trip owner c map 1 1000 2000 0
+      print-line-uni (cgp-line owner c "trip")
+      ended <- cgp-mobile owner c
+      walked <- cgp-check "with no client, the world tick walks the gatherer to its ore node, mines and walks home" (reached > 0 & c.trips == 1 & c.leg == 0
+        & ended.x == c.home.x & ended.y == c.home.y & c.gatherer.gathered > 0 & cgp-ore c == c.gatherer.gathered)
+      conserved <- cgp-check "currency and material census stay valid" (cgp-census x & cgp-coin x c.gatherer.producer.actor == 0)
+      committed <- cs-commit store True
+      saved <- cgp-check "the gatherer commits with the composite" (is-ok committed)
+      bound + empty + walked + conserved + saved
+    end
+  cgp-later : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  cgp-later (store) (map) = let owner = store.state in when owner.gatherer
+    is None -> cgp-check "restart restores the gatherer" False
+    is Just (c) -> if c.sold >= 2 then cgp-fourth store c else if c.sold > 0 then cgp-third store map c else cgp-second store map c
+  cgp-third : CompositeOwner, WalkMap, CgGatherer -> [Console, Device.Block] Integer
+  cgp-third (store) (map) (c) = let owner = store.state in act
+    x <- owner.vendor.currency
+    print-line-uni (cgp-line owner c "after-sale")
+    m <- cgp-mobile owner c
+    kept <- cgp-check "restart keeps the sale: gatherer home with its coin, the ingot with the blacksmith" (m.x == c.home.x & m.y == c.home.y & c.leg == 0
+      & c.made == 1 & c.sold == 1 & c.lot == 0 & cgp-value x c.gatherer.producer.actor > 0 & ep-at (ep-actor x.world (cgp-smith owner)).stock 31 >= 1)
+    conserved <- cgp-check "currency and material census stay valid after the sale restart" (cgp-census x)
+    merchant <- list-at owner.vendor.vendors 1
+    crafted-before <- ep-at x.world.crafted 70
+    left <- cgp-rounds owner c map 2 6
+    print-line-uni (cgp-line owner c "second-sale")
+    swords <- cgp-stocked owner.vendor 70 merchant.stock 0
+    bought <- cgp-bought owner.vendor merchant.actor 0
+    print-line-uni ("SMITH swords=" & show swords & " ingots=" & show (ep-at (ep-actor x.world merchant.actor).stock 31) & " ingot-lots=" & show (cgp-stocked owner.vendor 31 merchant.extra 0) & " bought=" & show bought & " rounds-left=" & show left)
+    forged <- cgp-check "every two ingots the blacksmith buys become a longsword, in its stock or sold (the crown buys its surplus)" (left >= 0 & c.sold == 2 & bought >= 2 & swords + cgp-sold owner.vendor merchant.actor 70 0 == bought / 2
+      & ep-at (ep-actor x.world merchant.actor).stock 31 == int-mod bought 2 & cgp-stocked owner.vendor 31 merchant.extra 0 == int-mod bought 2
+      & ep-at x.world.crafted 70 == crafted-before + bought / 2 & gvsc-valid owner.vendor & cgp-census x)
+    s <- owner.smith
+    smith <- cgp-at owner merchant.serial
+    shop <- list-at bb-shops 1
+    print-line-uni ("SMITH forged=" & show s.forged & " at " & show s.forged-x & "," & show s.forged-y & " now " & show smith.x & "," & show smith.y & " counter " & show s.counter.x & "," & show s.counter.y & " leg=" & show s.leg)
+    stationed <- cgp-check "the blacksmith forged standing within 2 tiles of the anvil and the forge, then walked back to its counter in the shop (UOAIX-55)" (s.forged == bought / 2
+      & walk-abs (s.forged-x - wks-anvil.x) <= 2 & walk-abs (s.forged-y - wks-anvil.y) <= 2 & walk-abs (s.forged-x - wks-forge.x) <= 2 & walk-abs (s.forged-y - wks-forge.y) <= 2
+      & s.leg == 0 & smith.x == s.counter.x & smith.y == s.counter.y & smith.x >= shop.x1 & smith.x <= shop.x2 & smith.y >= shop.y1 & smith.y <= shop.y2)
+    committed <- cs-commit store True
+    saved <- cgp-check "the forged longsword commits with the composite" (is-ok committed)
+    kept + conserved + forged + stationed + saved
+  end
+  cgp-fourth : CompositeOwner, CgGatherer -> [Console, Device.Block] Integer
+  cgp-fourth (store) (c) = let owner = store.state in act
+    x <- owner.vendor.currency
+    merchant <- list-at owner.vendor.vendors 1
+    print-line-uni (cgp-line owner c "after-forge")
+    kept <- cgp-check "restart keeps the longswords in the blacksmith's stock or sold, and both sales" (c.sold == 2 & cgp-stocked owner.vendor 70 merchant.stock 0 + cgp-sold owner.vendor merchant.actor 70 0 == cgp-bought owner.vendor merchant.actor 0 / 2
+      & gvsc-valid owner.vendor & cgp-census x)
+    kept
+  end
+  cgp-second : CompositeOwner, WalkMap, CgGatherer -> [Console, Device.Block] Integer
+  cgp-second (store) (map) (c) = let owner = store.state in act
+      x <- owner.vendor.currency
+      print-line-uni (cgp-line owner c "restored")
+      m <- cgp-mobile owner c
+      restored <- cgp-check "restart restores the gatherer at home with its trip, ore and pickaxe" (m.kind == 1 & m.x == c.home.x & m.y == c.home.y
+        & c.leg == 0 & c.trips == 1 & c.gatherer.gathered > 0 & cgp-ore c == c.gatherer.gathered & ep-at (ep-actor x.world c.gatherer.producer.actor).stock 25 >= 1)
+      waited <- cg-world-tick owner owner.checkpoint.game map c.serial 1000
+      idle <- cgp-check "a mined-out node keeps the gatherer home until it regrows" (is-ok waited & c.leg == 0)
+      grown <- cg-economy-hours x (x.world.hour + 48) 48
+      left <- cg-world-tick owner owner.checkpoint.game map c.serial 2000
+      print-line-uni (cgp-line owner c "regrown")
+      again <- cgp-check "after the node regrows the restored gatherer sets out again" (grown & is-ok left & c.leg == 1)
+      conserved <- cgp-check "currency and material census stay valid after restart" (cgp-census x)
+      second <- cgp-trip owner c map 2 3000 2000 0
+      print-line-uni (cgp-line owner c "second-trip")
+      smith <- cgp-smith owner
+      gatherer-before <- cgp-value x c.gatherer.producer.actor
+      smith-before <- cgp-value x smith
+      smith-ingots <- ep-at (ep-actor x.world smith).stock 31
+      sales-before <- owner.vendor.sale-count
+      beside <- cgp-sale owner c map 500000 2000 0
+      print-line-uni (cgp-line owner c "sold")
+      gained <- cgp-value x c.gatherer.producer.actor - gatherer-before
+      spent <- smith-before - cgp-value x smith
+      print-line-uni ("SALE gatherer+" & show gained & " smith-" & show spent & " sales=" & show owner.vendor.sale-count & " smelted at " & show c.smelt-x & "," & show c.smelt-y)
+      home <- cgp-mobile owner c
+      sold <- cgp-check "the gatherer smelts two ore into an ingot, walks to the blacksmith and sells it" (second > 0 & c.trips == 3 & beside == 1 & c.made == 1 & c.sold == 1 & c.lot == 0
+        & owner.vendor.sale-count == sales-before + 1 & ep-at (ep-actor x.world smith).stock 31 == smith-ingots + 1 & cgp-ore c == 0
+        & home.x == c.home.x & home.y == c.home.y)
+      forged-at <- cgp-check "the gatherer smelted standing within 2 tiles of the smithy's forge (UOAIX-55)" (c.made == 1 & walk-abs (c.smelt-x - wks-forge.x) <= 2 & walk-abs (c.smelt-y - wks-forge.y) <= 2)
+      paid <- cgp-check "coin moves from the blacksmith to the gatherer and the census holds" (gained > 0 & spent >= gained & cgp-census x)
+      committed <- cs-commit store True
+      saved <- cgp-check "the sale commits with the composite" (is-ok committed)
+      restored + idle + again + conserved + sold + forged-at + paid + saved
+    end
+
+  cgp-fighter : CompositeGame, Boolean -> [Console] Integer
+  cgp-fighter (owner) (fresh) = when owner.fighter
+    is None -> cgp-check "the Britain world has a fighter" False
+    is Just (c) -> let x = owner.vendor.currency
+      in let m = when world-get owner.checkpoint.game.world c.serial is Err (_) -> gs-item 0 0 0 is Ok (o) -> o
+      in let p = ep-actor x.world c.fighter.producer.actor
+      in act
+        print-line-uni ("FIGHTER " & (if fresh then "founded" else "restored") & " serial=" & show c.serial & " at " & show m.x & "," & show m.y & " home " & show c.home.x & "," & show c.home.y & " actor=" & show c.fighter.producer.actor & " kills=" & show c.kills)
+        cgp-check ((if fresh then "the Britain world founds" else "restart restores") & " a fighter: a world mobile at its own home beside the gatherer's and an economy actor at place 200") (m.kind == 1 & m.x == c.home.x & m.y == c.home.y
+          & p.place == 200 & c.fighter.producer.actor /= (when owner.gatherer is None -> 0 is Just (g) -> g.gatherer.producer.actor)
+          & (when owner.gatherer is None -> False is Just (g) -> g.home.x /= c.home.x | g.home.y /= c.home.y))
+      end
+  cgp-miners-styled : CompositeGame, Integer -> Boolean
+  cgp-miners-styled (owner) (i) = if i == list-length owner.miners then True
+    else cst-styled owner.items (list-at owner.miners i).serial cst-miner & cgp-miners-styled owner (i + 1)
+  cgp-styled : CompositeGame -> [Console] Integer
+  cgp-styled (owner) = let ok = list-length owner.miners == cgm-limit & cgp-miners-styled owner 0
+      & (when owner.gatherer is None -> False is Just (g) -> cst-styled owner.items g.serial cst-miner)
+      & (when owner.fighter is None -> False is Just (f) -> cst-styled owner.items f.serial cst-fighter)
+    in cgp-check "the gatherer and every miner wear the miner's look with a pickaxe in hand, and the fighter the fighter's look" ok
+  cgp-steps : CgGatherer, TownLive, WalkMap, Maybe WdState, Integer -> Integer
+  cgp-steps (c) (t) (map) (doors) (n) = if n == 0 then 0 else let r = cgg-step c t map doors in cgp-steps c t map doors (n - 1)
+  cgp-backoff : CompositeGame -> [Console] Integer
+  cgp-backoff (owner) = if list-length owner.miners == 0 then cgp-check "the Britain world founds miners" False
+    else let c = list-at owner.miners 0
+    in when owner.town
+      is None -> cgp-check "backoff town" False
+      is Just (t) -> when owner.town-map
+        is None -> cgp-check "backoff map" False
+        is Just (britain) -> act
+          far <- __record-set c "node" (BbSpot { x = 5000, y = 100, z = 0 })
+          out <- __record-set c "leg" 1
+          direct <- __record-set c "via" 0
+          calm <- cgg-calm c
+          unplanned <- cgg-reset c
+          stepped <- cgp-steps c t britain owner.town-doors 10
+          print-line-uni ("BACKOFF fails=" & show c.walk.fails & " rest=" & show c.walk.rest & " blocked=" & show c.blocked & " leg=" & show c.leg & " serial=" & show c.serial & " route=" & show c.walk.route & " step=" & show c.walk.step)
+          cgp-check "a miner whose plan keeps failing plans 3 times in 10 steps, not 10 (F30)" (c.walk.fails == 3 & c.walk.rest > 0)
+        end
+  cgp-routes : CompositeGame -> [Console] Integer
+  cgp-routes (owner) = when owner.town
+    is None -> cgp-check "routes town" False
+    is Just (t) -> when owner.town-map
+      is None -> cgp-check "routes map" False
+      is Just (britain) -> when owner.gatherer
+        is None -> cgp-check "routes gatherer" False
+        is Just (g) -> when bb-placement t.vendors.game.world britain cgg-node-region 0
+         is Err (e) -> cgp-check ("routes free target " & e) False
+         is Ok (free) -> act
+          m <- cgp-mobile owner g
+          before <- t.nav.route-count
+          one <- rte-plan t.nav t.vendors.game.world britain owner.town-doors m free.x free.y free.z
+          grown <- t.nav.route-count
+          two <- rte-plan t.nav t.vendors.game.world britain owner.town-doors m free.x free.y free.z
+          print-line-uni ("ROUTES to " & show free.x & "," & show free.y & " before=" & show before & " after=" & show t.nav.route-count & " ids=" & show one & "," & show two & " steps=" & show (rte-key t.nav one 6))
+          cgp-check "a second walk between the same two tiles reuses the first walk's shared route by id (flyweight)" (one >= 0 & two == one & grown <= before + 1 & t.nav.route-count == grown & rte-key t.nav one 6 > 0)
+        end
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> cgp-check e False
+    is Ok (map) -> when walk-map-new 1408 1536 96 160
+     is Err (e) -> cgp-check e False
+     is Ok (britain) -> let filled = cgp-fill map 0
+      in let town-filled = cgp-fill britain 0
+      in let data = cgp-data 0
+      in when wd-read data 240 map map.stride
+       is Err (e) -> cgp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cgp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+       when loaded
+        is Err (e) -> cgp-check ("recovery " & e) False
+        is Ok (owner) -> when cg-town-doors owner.state data 240
+         is Err (e) -> cgp-check ("town doors " & e) False
+         is Ok (_) -> act
+          fought <- cgp-fighter owner.state fresh
+          styled <- cgp-styled owner.state
+          rest <- if fresh then cgp-first owner map else cgp-later owner map
+          backed <- if fresh then cgp-backoff owner.state else act 0 end
+          shared <- cgp-routes owner.state
+          fought + styled + rest + backed + shared
+         end
+      end
+    end

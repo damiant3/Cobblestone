@@ -1,0 +1,477 @@
+Chapter: EconomyCurrency
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMint
+  cites Foreword chapter Result
+
+  EuEvent = record { sequence : Integer, hour : Integer, kind : Integer,
+    actor : Integer, party : Integer, metal : Integer, copper : Integer,
+    silver : Integer, gold : Integer, reference : Integer,
+    copper-rate : Integer, silver-rate : Integer, copper-seq : Integer,
+    silver-seq : Integer, gold-seq : Integer }
+  EuCurrency = record { world : EpWorld, copper : EmMoney, silver : EmMoney,
+    events : List EuEvent, count : Integer, copper-rate : Integer,
+    silver-rate : Integer, copper-owner : Integer, silver-owner : Integer,
+    copper-yield : Integer, silver-yield : Integer, copper-ingots : Integer,
+    silver-ingots : Integer, copper-seq : Integer, silver-seq : Integer,
+    gold-seq : Integer, purse-count : Integer, base : Integer, start : EuStart }
+  EuStart = record { copper : EmMoney, silver : EmMoney, gold : EmMoney, cells : Integer, sealed : Integer,
+    archive : Integer, pending : Integer, room : Integer,
+    probed : Integer, region : Integer, capacity : Integer, next : Integer, segments : Integer, last : Integer }
+ Start cells: the thirteen policy cells in euf-write-policy order, then world hour, mint owner, mint rate and mint ingots.
+  eu-start-cells : Integer = 17
+  eu-start-new : Integer -> EuStart
+  eu-start-new (unused) = EuStart { copper = em-bare 0, silver = em-bare 0, gold = em-bare 0, cells = ep-buffer eu-start-cells, sealed = 0,
+    archive = 0, pending = 0, room = -1, probed = 0, region = 0, capacity = 0, next = 0, segments = 0, last = 0 }
+ SEG1 (UOAIX-50): a 128-byte header (magic, version, bytes, segment, event base, event rows, FNV32 at 48, copper,
+ silver and gold rows, trade rows, previous segment FNV32 at 88), the start state that began the segment (three
+ 13376-byte tables, 17 cells), the three ledger openings and the trade opening, then the sealed events (120 bytes),
+ copper, silver and gold rows (56) and trades (72).
+  eu-seg-table : Integer = 13376
+  eu-seg-rows-at : Integer = 128 + 3 * eu-seg-table + eu-start-cells * 8 + 3 * em-open-cells * 8 + ep-open-cells * 8
+  eu-seg-max : Integer = eu-seg-rows-at + em-rows * 120 + 3 * em-rows * 56 + ep-trade-limit * 72
+  eu-seg-cells : Integer, Integer, Integer, Integer -> Integer
+  eu-seg-cells (from) (to) (count) (i) = if i == count then 0 else let a = poke-qword to (i * 8) (peek-qword from (i * 8)) in eu-seg-cells from to count (i + 1)
+  eu-seg-purses : Integer, EmMoney, Integer -> Integer
+  eu-seg-purses (buf) (m) (i) = if i == 256 then 0
+    else let p = list-at m.purses i
+    in let a = poke-qword buf (64 + i * 24) p.kind
+    in let b = poke-qword buf (72 + i * 24) p.owner
+    in let c = poke-qword buf (80 + i * 24) p.coin
+    in eu-seg-purses buf m (i + 1)
+  eu-seg-loans : Integer, EmMoney, Integer -> Integer
+  eu-seg-loans (buf) (m) (i) = if i == 128 then 0
+    else let l = list-at m.loans i
+    in let at = 64 + 256 * 24 + i * 56
+    in let a = poke-qword buf at l.lender
+    in let b = poke-qword buf (at + 8) l.borrower
+    in let c = poke-qword buf (at + 16) l.principal
+    in let d = poke-qword buf (at + 24) l.interest
+    in let e = poke-qword buf (at + 32) l.due
+    in let f = poke-qword buf (at + 40) l.paid
+    in let g = poke-qword buf (at + 48) l.status
+    in eu-seg-loans buf m (i + 1)
+  eu-seg-table-write : Integer, EmMoney -> Integer
+  eu-seg-table-write (buf) (m) = let a = poke-qword buf 0 m.purse-count
+    in let b = poke-qword buf 8 m.loan-count
+    in let c = poke-qword buf 16 m.entry-count
+    in let d = poke-qword buf 24 m.sequence
+    in let e = poke-qword buf 32 m.hour
+    in let f = poke-qword buf 40 m.tax
+    in let g = poke-qword buf 48 m.issued
+    in let h = poke-qword buf 56 m.defaults
+    in let p = eu-seg-purses buf m 0
+    in eu-seg-loans buf m 0
+  eu-seg-events : EuCurrency, Integer, Integer -> Integer
+  eu-seg-events (x) (buf) (i) = if i == x.count then 0
+    else let e = list-at x.events i
+    in let at = buf + i * 120
+    in let a = poke-qword at 0 e.sequence
+    in let b = poke-qword at 8 e.hour
+    in let c = poke-qword at 16 e.kind
+    in let d = poke-qword at 24 e.actor
+    in let f = poke-qword at 32 e.party
+    in let g = poke-qword at 40 e.metal
+    in let h = poke-qword at 48 e.copper
+    in let j = poke-qword at 56 e.silver
+    in let k = poke-qword at 64 e.gold
+    in let l = poke-qword at 72 e.reference
+    in let m = poke-qword at 80 e.copper-rate
+    in let n = poke-qword at 88 e.silver-rate
+    in let o = poke-qword at 96 e.copper-seq
+    in let p = poke-qword at 104 e.silver-seq
+    in let q = poke-qword at 112 e.gold-seq
+    in eu-seg-events x buf (i + 1)
+  eu-seg-rows : EmMoney, Integer, Integer -> Integer
+  eu-seg-rows (m) (buf) (i) = if i == m.entry-count then 0
+    else let e = list-at m.ledger i
+    in let at = buf + i * 56
+    in let a = poke-qword at 0 e.action
+    in let b = poke-qword at 8 e.hour
+    in let c = poke-qword at 16 e.payer
+    in let d = poke-qword at 24 e.payee
+    in let f = poke-qword at 32 e.amount
+    in let g = poke-qword at 40 e.kind
+    in let h = poke-qword at 48 e.reference
+    in eu-seg-rows m buf (i + 1)
+  eu-seg-trades : EpWorld, Integer, Integer -> Integer
+  eu-seg-trades (w) (buf) (i) = if i == w.trade-count then 0
+    else let t = list-at w.trades i
+    in let at = buf + i * 72
+    in let a = poke-qword at 0 t.action
+    in let b = poke-qword at 8 t.hour
+    in let c = poke-qword at 16 t.buyer
+    in let d = poke-qword at 24 t.seller
+    in let e = poke-qword at 32 t.item
+    in let f = poke-qword at 40 t.quantity
+    in let g = poke-qword at 48 t.gross
+    in let h = poke-qword at 56 t.quality
+    in let j = poke-qword at 64 t.durability
+    in eu-seg-trades w buf (i + 1)
+  eu-seg-bytes : EuCurrency -> Integer
+  eu-seg-bytes (x) = eu-seg-rows-at + x.count * 120 + (x.copper.entry-count + x.silver.entry-count + x.world.money.entry-count) * 56 + x.world.trade-count * 72
+  eu-seg-capture : EuCurrency -> Integer
+  eu-seg-capture (x) =
+    let buf = if x.start.archive == 0 then let made = alloc-bytes (eu-seg-max + 512) in let kept = __record-set x.start "archive" made in made else x.start.archive
+    in let w = x.world
+    in let tables = buf + 128
+    in let cells = tables + 3 * eu-seg-table
+    in let opens = cells + eu-start-cells * 8
+    in let rows = buf + eu-seg-rows-at
+    in let copper-at = rows + x.count * 120
+    in let silver-at = copper-at + x.copper.entry-count * 56
+    in let gold-at = silver-at + x.silver.entry-count * 56
+    in let trade-at = gold-at + w.money.entry-count * 56
+    in let h0 = poke-qword buf 0 #31474553
+    in let h1 = poke-qword buf 8 1
+    in let h2 = poke-qword buf 16 (eu-seg-bytes x)
+    in let h3 = poke-qword buf 24 (x.start.sealed + 1)
+    in let h4 = poke-qword buf 32 x.base
+    in let h5 = poke-qword buf 40 x.count
+    in let h6 = poke-qword buf 56 x.copper.entry-count
+    in let h7 = poke-qword buf 64 x.silver.entry-count
+    in let h8 = poke-qword buf 72 w.money.entry-count
+    in let h9 = poke-qword buf 80 w.trade-count
+    in let h10 = poke-qword buf 88 0
+    in let s1 = eu-seg-table-write tables x.start.copper
+    in let s2 = eu-seg-table-write (tables + eu-seg-table) x.start.silver
+    in let s3 = eu-seg-table-write (tables + 2 * eu-seg-table) x.start.gold
+    in let s4 = eu-seg-cells x.start.cells cells eu-start-cells 0
+    in let o1 = eu-seg-cells x.copper.opening opens em-open-cells 0
+    in let o2 = eu-seg-cells x.silver.opening (opens + em-open-cells * 8) em-open-cells 0
+    in let o3 = eu-seg-cells w.money.opening (opens + 2 * em-open-cells * 8) em-open-cells 0
+    in let o4 = eu-seg-cells w.opening (opens + 3 * em-open-cells * 8) ep-open-cells 0
+    in let r1 = eu-seg-events x rows 0
+    in let r2 = eu-seg-rows x.copper copper-at 0
+    in let r3 = eu-seg-rows x.silver silver-at 0
+    in let r4 = eu-seg-rows w.money gold-at 0
+    in let r5 = eu-seg-trades w trade-at 0
+    in let hash = poke-qword buf 48 (eu-seg-hash buf (eu-seg-bytes x) 0 2166136261)
+    in let pending = __record-set x.start "pending" 1 in 0
+  eu-seg-hash : Integer, Integer, Integer, Integer -> Integer
+  eu-seg-hash (buf) (count) (i) (hash) = if i == count then hash
+    else eu-seg-hash buf count (i + 1) (if i >= 48 & i < 56 then hash else bit-and ((bit-xor hash (peek-byte buf i)) * 16777619) 4294967295)
+
+  eu-events : Integer, List EuEvent -> List EuEvent
+  eu-events (i) (xs) = if i == em-rows then xs else
+    eu-events (i + 1) (list-push xs (EuEvent { sequence = 0, hour = 0,
+      kind = 0, actor = 0, party = 0, metal = 0, copper = 0, silver = 0,
+      gold = 0, reference = 0, copper-rate = 0, silver-rate = 0,
+      copper-seq = 0, silver-seq = 0, gold-seq = 0 }))
+  eu-catalog : EpWorld -> Boolean
+  eu-catalog (w) = if list-length w.catalog.items < 68 then False
+    else (list-at w.catalog.items 62).name == "copper ore"
+      & (list-at w.catalog.items 63).name == "silver ore"
+      & (list-at w.catalog.items 64).name == "copper ingots"
+      & (list-at w.catalog.items 65).name == "silver ingots"
+      & (list-at w.catalog.items 66).name == "copper coin"
+      & (list-at w.catalog.items 67).name == "silver coin"
+  eu-new : EpWorld -> Result EuCurrency Text
+  eu-new (w) = if not (eu-catalog w) | w.money.purse-count /= 1
+    | w.money.entry-count /= 0 | w.money.sequence /= 0 | w.money.issued /= 0
+    | w.actor-count /= 0 | w.hour /= 0 | w.money.hour /= 0
+    | w.mint-owner /= 0 | w.mint-rate /= 0 | w.mint-ingots /= 0 then Err "currency requires new metal economy"
+    else Ok (EuCurrency { world = w, copper = em-new 0, silver = em-new 0,
+      events = eu-events 0 [], count = 0, copper-rate = 100, silver-rate = 10,
+      copper-owner = 0, silver-owner = 0, copper-yield = 0, silver-yield = 0,
+      copper-ingots = 0, silver-ingots = 0, copper-seq = 0, silver-seq = 0, gold-seq = 0, purse-count = 1,
+      base = 0, start = eu-start-new 0 })
+  eu-metal : Integer -> Boolean
+  eu-metal (metal) = metal >= 1 & metal <= 3
+  eu-money : EuCurrency, Integer -> EmMoney
+  eu-money (x) (metal) = if metal == 1 then x.copper else if metal == 2 then x.silver else x.world.money
+  eu-ready : EuCurrency -> Boolean
+  eu-ready (x) = x.copper.hour == x.world.hour & x.silver.hour == x.world.hour
+    & x.world.money.hour == x.world.hour
+    & x.purse-count == x.world.money.purse-count
+    & x.copper.purse-count == x.world.money.purse-count
+    & x.silver.purse-count == x.world.money.purse-count
+    & x.copper.sequence == x.copper-seq & x.silver.sequence == x.silver-seq
+    & x.world.money.sequence == x.gold-seq
+  eu-room : EuCurrency -> Boolean
+  eu-room (x) = eu-ready x & x.count < em-rows
+  eu-log : EuCurrency, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-log (x) (kind) (actor) (party) (metal) (copper) (silver) (gold) (reference) =
+    let e = list-at x.events x.count
+    in let a = __record-set e "sequence" (x.base + x.count + 1)
+    in let b = __record-set e "hour" x.world.hour
+    in let c = __record-set e "kind" kind
+    in let d = __record-set e "actor" actor
+    in let f = __record-set e "party" party
+    in let g = __record-set e "metal" metal
+    in let h = __record-set e "copper" copper
+    in let j = __record-set e "silver" silver
+    in let k = __record-set e "gold" gold
+    in let l = __record-set e "reference" reference
+    in let m = __record-set e "copper-rate" x.copper-rate
+    in let n = __record-set e "silver-rate" x.silver-rate
+    in let o = __record-set e "copper-seq" x.copper.sequence
+    in let p = __record-set e "silver-seq" x.silver.sequence
+    in let q = __record-set e "gold-seq" x.world.money.sequence
+    in let r = __record-set x "copper-seq" x.copper.sequence
+    in let s = __record-set x "silver-seq" x.silver.sequence
+    in let t = __record-set x "gold-seq" x.world.money.sequence
+    in let u = __record-set x "count" (x.count + 1)
+    in let v = __record-set x "purse-count" x.world.money.purse-count
+    in 0
+  eu-open : EuCurrency, Integer, Integer -> Integer
+  eu-open (x) (kind) (owner) = if not (eu-room x) | kind < 2 | kind > 5
+    | owner <= 0 | x.world.money.purse-count == 256 then -1
+    else if em-find x.world.money kind owner 1 /= 0 then -1
+    else let c = em-open x.copper kind owner
+    in let s = em-open x.silver kind owner
+    in let g = em-open x.world.money kind owner
+    in let logged = eu-log x 1 owner g kind 0 0 0 0
+    in g
+  eu-royal : EuCurrency, Boolean, Integer -> Boolean
+  eu-royal (x) (verified-lord) (actor) = if not verified-lord | not (ep-valid-actor x.world actor) then False
+    else (em-purse x.world.money (ep-actor x.world actor).purse).kind == 5
+  eu-rates : EuCurrency, Boolean, Integer, Integer, Integer -> Integer
+  eu-rates (x) (verified-lord) (actor) (copper-per-gold) (silver-per-gold) =
+    if not (eu-room x) | not (eu-royal x verified-lord actor)
+      | copper-per-gold < 1 | copper-per-gold > 1000000
+      | silver-per-gold < 1 | silver-per-gold > copper-per-gold then -1
+    else if int-mod copper-per-gold silver-per-gold /= 0 then -1
+    else let c = __record-set x "copper-rate" copper-per-gold
+    in let s = __record-set x "silver-rate" silver-per-gold
+    in eu-log x 2 actor 0 0 0 0 0 0
+  eu-tax : EuCurrency, Boolean, Integer, Integer -> Integer
+  eu-tax (x) (verified-lord) (actor) (rate) =
+    if not (eu-room x) | not (eu-royal x verified-lord actor) | rate < 0 | rate > 10000
+      | not (em-room x.copper 1) | not (em-room x.silver 1) | not (em-room x.world.money 1) then -1
+    else let c = em-set-tax x.copper True rate
+    in let s = em-set-tax x.silver True rate
+    in let g = em-set-tax x.world.money True rate
+    in eu-log x 3 actor 0 0 0 0 0 rate
+  eu-amounts : Integer, Integer, Integer -> Boolean
+  eu-amounts (c) (s) (g) = c >= 0 & c <= em-limit & s >= 0 & s <= em-limit
+    & g >= 0 & g <= em-limit & (c > 0 | s > 0 | g > 0)
+  eu-value : EuCurrency, Integer, Integer, Integer -> Integer
+  eu-value (x) (c) (s) (g) = if not (eu-ready x) | c < 0 | c > em-limit | s < 0 | s > em-limit | g < 0 | g > em-limit then -1
+    else c + s * (x.copper-rate / x.silver-rate) + g * x.copper-rate
+  eu-can-pay : EmMoney, Integer, Integer, Integer -> Boolean
+  eu-can-pay (m) (payer) (payee) (amount) = amount == 0 | em-can-pay m payer payee amount
+  eu-pay-one : EmMoney, Integer, Integer, Integer -> Integer
+  eu-pay-one (m) (payer) (payee) (amount) = if amount == 0 then 0 else em-pay m payer payee amount
+  eu-pay : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-pay (x) (verified-payer) (payer) (payee) (copper) (silver) (gold) =
+    if not verified-payer | not (eu-room x) | not (eu-amounts copper silver gold)
+      | payer == 1 | not (em-valid-purse x.world.money payer) | not (em-valid-purse x.world.money payee) | payer == payee then -1
+    else if not (eu-can-pay x.copper payer payee copper)
+      | not (eu-can-pay x.silver payer payee silver) | not (eu-can-pay x.world.money payer payee gold) then -1
+    else let c = eu-pay-one x.copper payer payee copper
+    in let s = eu-pay-one x.silver payer payee silver
+    in let g = eu-pay-one x.world.money payer payee gold
+    in eu-log x 4 payer payee 0 copper silver gold 0
+  eu-unit : EuCurrency, Integer -> Integer
+  eu-unit (x) (metal) = if metal == 3 then x.copper-rate else if metal == 2 then x.copper-rate / x.silver-rate else 1
+ An exchange breaks coin with the crown at the current rates, at any distance.
+ When the treasury holds too little of the smaller coin, the crown decrees the
+ shortfall into being (Damian, 2026-10-05); the event's party cell records it.
+  eu-exchange : EuCurrency, Integer, Integer, Integer, Integer -> Integer
+  eu-exchange (x) (purse) (from) (amount) (to) =
+    if not (eu-room x) | not (eu-metal from) | not (eu-metal to) | to >= from | amount <= 0 | amount > em-limit
+      | purse <= 1 | not (em-valid-purse x.world.money purse) then -1
+    else let out = amount * eu-unit x from / eu-unit x to
+    in let source = eu-money x from
+    in let target = eu-money x to
+    in let reserve = (em-purse target 1).coin
+    in let shortfall = if reserve >= out then 0 else out - reserve
+    in if out <= 0 | out > em-limit | not (em-can-move source purse 1 amount) | not (em-room source 1) | not (em-room target 2)
+      | target.issued > em-limit - shortfall | (em-purse target purse).coin > em-limit - out then -1
+    else let a = em-reclaim source purse amount
+    in let b = if shortfall > 0 then em-decree target shortfall else 0
+    in let c = em-payout target purse out
+    in eu-log x 12 purse shortfall from (if to == 1 then out else 0) (if to == 2 then out else 0) (if to == 3 then out else 0) amount
+  eu-sale : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-sale (x) (verified-payer) (payer) (payee) (price) (copper) (silver) (gold) =
+    if not verified-payer | not (eu-room x) | not (eu-amounts copper silver gold)
+      | price <= 0 | price > ep-limit | payer <= 1 | payee <= 1 | payer == payee
+      | not (em-valid-purse x.world.money payer) | not (em-valid-purse x.world.money payee) then -1
+    else if not (ep-purse-used x.world payer 0) | not (ep-purse-used x.world payee 0) then -1
+    else if eu-value x copper silver gold /= price
+      | not (eu-can-pay x.copper payer payee copper) | not (eu-can-pay x.silver payer payee silver)
+      | not (eu-can-pay x.world.money payer payee gold) | not (em-room x.world.money 3)
+      | x.world.money.sequence > em-limit - 2 then -1
+    else let c = eu-pay-one x.copper payer payee copper
+    in let s = eu-pay-one x.silver payer payee silver
+    in let g = eu-pay-one x.world.money payer payee gold
+    in let action = em-begin x.world.money
+    in let valuation = em-row x.world.money payer payee 0 15 price
+    in eu-log x 11 payer payee 0 copper silver gold price
+
+  eu-can-grant : EmMoney, Integer, Integer -> Boolean
+  eu-can-grant (m) (payee) (amount) = amount == 0 | (em-can-move m 1 payee amount & em-room m 1)
+  eu-grant-one : EmMoney, Integer, Integer -> Integer
+  eu-grant-one (m) (payee) (amount) = if amount == 0 then 0
+    else if (em-purse m payee).kind == 4 then em-town-grant m True payee amount else em-grant m True payee amount
+  eu-grant : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-grant (x) (verified-lord) (actor) (payee) (copper) (silver) (gold) =
+    if not (eu-room x) | not (eu-royal x verified-lord actor) | not (eu-amounts copper silver gold)
+      | not (em-valid-purse x.world.money payee) then -1
+    else let kind = (em-purse x.world.money payee).kind
+    in if kind /= 4 & kind /= 5 then -1
+    else if not (eu-can-grant x.copper payee copper) | not (eu-can-grant x.silver payee silver)
+      | not (eu-can-grant x.world.money payee gold) then -1
+    else let c = eu-grant-one x.copper payee copper
+    in let s = eu-grant-one x.silver payee silver
+    in let g = eu-grant-one x.world.money payee gold
+    in eu-log x 5 actor payee 0 copper silver gold 0
+  eu-mint-policy : EuCurrency, Boolean, Integer, Integer, Integer -> Integer
+  eu-mint-policy (x) (verified-lord) (actor) (metal) (yield) =
+    if not (eu-room x) | not (eu-royal x verified-lord actor) | not (eu-metal metal)
+      | yield < 0 | yield > 1000000000 then -1
+    else let m = eu-money x metal
+    in if not (em-room m 1) then -1
+    else let configured = if metal == 3 then emi-configure x.world True actor yield
+      else let a = em-begin m
+      in let b = em-row m 0 (ep-actor x.world actor).purse 0 11 yield
+      in let c = if metal == 1 then __record-set x "copper-owner" actor else __record-set x "silver-owner" actor
+      in let d = if metal == 1 then __record-set x "copper-yield" yield else __record-set x "silver-yield" yield
+      in 0
+    in eu-log x 6 actor 0 metal 0 0 0 yield
+  eu-strike : EuCurrency, Boolean, Integer, Integer, Integer, Integer -> Integer
+  eu-strike (x) (verified-mint) (actor) (station) (metal) (ingots) =
+    if not verified-mint | not (eu-room x) | not (eu-metal metal)
+      | not (ep-valid-actor x.world actor) | station <= 0 | station > x.world.station-count
+      | ingots <= 0 | ingots > 1000 then -1
+    else let owner = if metal == 1 then x.copper-owner else if metal == 2 then x.silver-owner else x.world.mint-owner
+    in let yield = if metal == 1 then x.copper-yield else if metal == 2 then x.silver-yield else x.world.mint-rate
+    in let used = if metal == 1 then x.copper-ingots else if metal == 2 then x.silver-ingots else x.world.mint-ingots
+    in let item = if metal == 1 then 65 else if metal == 2 then 66 else 32
+    in let m = eu-money x metal
+    in let p = ep-actor x.world actor
+    in let s = list-at x.world.stations (station - 1)
+    in let coins = ingots * yield
+    in if owner /= actor | yield <= 0 | s.kind /= 12 | s.owner /= actor | s.place /= p.place | s.enabled == 0
+      | not (ep-has p item ingots) | not (ep-tool p 62) | used > ep-limit - ingots
+      | ep-at x.world.consumed item > ep-limit - ingots | not (em-room m 2)
+      | m.issued > em-limit - coins | (em-purse m 1).coin > em-limit - coins then -1
+    else let struck = if metal == 3 then emi-strike x.world True actor station ingots
+      else let a = em-issue m True coins 2
+      in let b = ep-consume x.world p item ingots
+      in let c = ep-wear x.world p 62
+      in let d = if metal == 1 then __record-set x "copper-ingots" (used + ingots) else __record-set x "silver-ingots" (used + ingots)
+      in em-row m p.purse 1 0 12 ingots
+    in eu-log x 7 actor 1 metal (if metal == 1 then coins else 0) (if metal == 2 then coins else 0) (if metal == 3 then coins else 0) ingots
+  eu-lend : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-lend (x) (verified-lender) (lender) (borrower) (metal) (principal) (interest) (due) =
+    if not verified-lender | not (eu-room x) | not (eu-metal metal) then -1
+    else let loan = em-lend (eu-money x metal) lender borrower principal interest due
+    in if loan < 0 then -1
+    else let logged = eu-log x 8 lender borrower metal (if metal == 1 then principal else 0) (if metal == 2 then principal else 0) (if metal == 3 then principal else 0) loan
+    in loan
+  eu-repay : EuCurrency, Boolean, Integer, Integer, Integer, Integer -> Integer
+  eu-repay (x) (verified-borrower) (borrower) (metal) (loan) (amount) =
+    if not verified-borrower | not (eu-room x) | not (eu-metal metal) then -1
+    else let paid = em-repay (eu-money x metal) borrower loan amount
+    in if paid < 0 then -1 else eu-log x 9 borrower 0 metal (if metal == 1 then amount else 0) (if metal == 2 then amount else 0) (if metal == 3 then amount else 0) loan
+ Root's ruling 2026-10-06: a debt is a value in copper units at the current rates, so a repayment in any mix of copper,
+ silver and gold counts toward it at value, with no exchange, and the lender receives the coins as paid. A loan's
+ principal and paid stay whole units of its metal, so the coins' value must be a whole number of those units.
+  eu-repay-value : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-repay-value (x) (verified-borrower) (borrower) (metal) (loan) (copper) (silver) (gold) =
+    if not verified-borrower | not (eu-room x) | not (eu-metal metal) | not (eu-amounts copper silver gold) then -1
+    else let m = eu-money x metal
+    in let value = eu-value x copper silver gold
+    in let per = eu-unit x metal
+    in if value <= 0 | per <= 0 | int-mod value per /= 0 | loan <= 0 | loan > m.loan-count then -1
+    else let l = list-at m.loans (loan - 1)
+    in let units = value / per
+    in if l.borrower /= borrower | l.status == 2 | units > l.principal + l.interest - l.paid
+      | not (eu-can-pay x.copper borrower l.lender copper) | not (eu-can-pay x.silver borrower l.lender silver)
+      | not (eu-can-pay x.world.money borrower l.lender gold) then -1
+    else let c = eu-pay-one x.copper borrower l.lender copper
+    in let s = eu-pay-one x.silver borrower l.lender silver
+    in let g = eu-pay-one x.world.money borrower l.lender gold
+    in let p = __record-set l "paid" (l.paid + units)
+    in let d = if l.paid == l.principal + l.interest then __record-set l "status" 2 else l
+    in eu-log x 13 borrower l.lender metal copper silver gold loan
+  eu-can-advance : EmMoney, Integer -> Boolean
+  eu-can-advance (m) (hour) = hour <= em-limit & hour >= m.hour & em-room m (em-due-count m hour 0 + 1)
+ A seal (UOAIX-50) leaves room for an hour's work: 1024 rows in the event log and each ledger, 512 trades.
+  eu-seal-due : EuCurrency -> Boolean
+  eu-seal-due (x) = x.count > em-rows - 1024 | x.copper.entry-count > em-rows - 1024 | x.silver.entry-count > em-rows - 1024
+    | x.world.money.entry-count > em-rows - 1024 | x.world.trade-count > ep-trade-limit - 512
+  eu-clear-events : EuCurrency, Integer -> Integer
+  eu-clear-events (x) (i) = if i == x.count then 0
+    else let e = list-at x.events i
+    in let a = __record-set e "sequence" 0
+    in let b = __record-set e "hour" 0
+    in let c = __record-set e "kind" 0
+    in let d = __record-set e "actor" 0
+    in let f = __record-set e "party" 0
+    in let g = __record-set e "metal" 0
+    in let h = __record-set e "copper" 0
+    in let j = __record-set e "silver" 0
+    in let k = __record-set e "gold" 0
+    in let l = __record-set e "reference" 0
+    in let m = __record-set e "copper-rate" 0
+    in let n = __record-set e "silver-rate" 0
+    in let o = __record-set e "copper-seq" 0
+    in let p = __record-set e "silver-seq" 0
+    in let q = __record-set e "gold-seq" 0
+    in eu-clear-events x (i + 1)
+  eu-start-policy : EuCurrency -> Integer
+  eu-start-policy (x) = let c = x.start.cells
+    in let a0 = ep-set c 0 x.count
+    in let a1 = ep-set c 1 x.copper-rate
+    in let a2 = ep-set c 2 x.silver-rate
+    in let a3 = ep-set c 3 x.copper-owner
+    in let a4 = ep-set c 4 x.silver-owner
+    in let a5 = ep-set c 5 x.copper-yield
+    in let a6 = ep-set c 6 x.silver-yield
+    in let a7 = ep-set c 7 x.copper-ingots
+    in let a8 = ep-set c 8 x.silver-ingots
+    in let a9 = ep-set c 9 x.copper-seq
+    in let a10 = ep-set c 10 x.silver-seq
+    in let a11 = ep-set c 11 x.gold-seq
+    in let a12 = ep-set c 12 x.purse-count
+    in let a13 = ep-set c 13 x.world.hour
+    in let a14 = ep-set c 14 x.world.mint-owner
+    in let a15 = ep-set c 15 x.world.mint-rate
+    in ep-set c 16 x.world.mint-ingots
+  eu-seal : EuCurrency -> Integer
+  eu-seal (x) = if not (eu-ready x) then -1
+    else if x.start.room >= 0 & x.start.room * 512 < eu-seg-bytes x then -1
+    else let captured = eu-seg-capture x
+    in let w = x.world
+    in let gold = em-seal w.money
+    in let owner = em-open-set w.money em-open-mint-purse (if w.mint-owner == 0 then 0 else (ep-actor w w.mint-owner).purse)
+    in let rate = em-open-set w.money em-open-mint-rate w.mint-rate
+    in let ingots = em-open-set w.money em-open-ingots w.mint-ingots
+    in let copper = em-seal x.copper
+    in let silver = em-seal x.silver
+    in let trades = ep-seal-trades w
+    in let c = em-copy-table x.copper x.start.copper
+    in let s = em-copy-table x.silver x.start.silver
+    in let g = em-copy-table w.money x.start.gold
+    in let cleared = eu-clear-events x 0
+    in let based = __record-set x "base" (x.base + x.count)
+    in let counted = __record-set x "count" 0
+    in let policy = eu-start-policy x
+    in let sealed = __record-set x.start "sealed" (x.start.sealed + 1) in 0
+  eu-hour : EuCurrency -> Integer
+  eu-hour (x) = if not (eu-ready x) | x.world.hour >= ep-limit then -1
+    else let rolled = if eu-seal-due x then eu-seal x else 0
+    in if not (eu-room x) then -1
+    else let hour = x.world.hour + 1
+    in if not (eu-can-advance x.copper hour) | not (eu-can-advance x.silver hour)
+      | not (eu-can-advance x.world.money hour) then -1
+    else let c = em-advance x.copper hour
+    in let s = em-advance x.silver hour
+    in let g = eh-step x.world
+    in eu-log x 10 0 0 0 0 0 0 hour
+  eu-identities : EuCurrency, Integer -> Boolean
+  eu-identities (x) (id) = if id > x.world.money.purse-count then True
+    else let g = em-purse x.world.money id
+    in let c = em-purse x.copper id
+    in let s = em-purse x.silver id
+    in c.kind == g.kind & s.kind == g.kind & c.owner == g.owner & s.owner == g.owner & eu-identities x (id + 1)
+  eu-census : EuCurrency -> Boolean
+  eu-census (x) = eu-ready x & eu-identities x 1 & em-balanced x.copper 1
+    & em-balanced x.silver 1 & em-balanced x.world.money 1 & ep-census x.world 1
+    & x.copper.tax == x.world.money.tax & x.silver.tax == x.world.money.tax
+    & ep-at x.world.consumed 65 >= x.copper-ingots & ep-at x.world.consumed 66 >= x.silver-ingots
+    & ep-at x.world.consumed 32 >= x.world.mint-ingots

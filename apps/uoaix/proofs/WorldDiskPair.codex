@@ -1,0 +1,154 @@
+Chapter: WorldDiskPair
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldBlock
+  cites Foreword chapter Result
+
+  udp-check : Text, Boolean -> [Console] Nothing
+  udp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  udp-fill : Integer, Integer, Integer -> Integer
+  udp-fill (buf) (size) (i) = if i >= size then buf else let w = poke-byte buf i (bit-and (i * 7 + 3) 255) in udp-fill buf size (i + 1)
+
+  udp-blank : UoDevice, Integer -> [Device.Block] Boolean
+  udp-blank (device) (sector) = act
+    read <- us-device-read device sector
+    when read
+      is Err (_) -> False
+      is Ok (buf) -> us-empty buf 0
+  end
+
+  udp-deltas : UoStore, Integer, Integer, Integer -> [Device.Block] Integer
+  udp-deltas (store) (delta) (size) (seq) =
+    if not (us-fits store size) then act seq end
+    else act
+      appended <- us-append store 2 seq seq delta size
+      when appended
+        is Err (_) -> seq
+        is Ok (_) -> udp-deltas store delta size (seq + 1)
+    end
+
+  udp-picked : Result UoStore Text, Integer, Integer -> Boolean
+  udp-picked (opened) (start) (sequence) = when opened
+    is Err (_) -> False
+    is Ok (s) -> s.start == start & s.sequence == sequence
+
+  udp-journal : UoDevice, Integer, Integer, Integer, Integer -> [Device.Block] Result UoStore Text
+  udp-journal (device) (start) (sectors) (snapshot) (deltas) = act
+    w <- us-wipe device start
+    opened <- us-open-on device start sectors
+    when opened
+      is Err (e) -> Err e
+      is Ok (store) -> act
+        saved <- us-append store 1 0 0 snapshot 2000
+        logged <- us-append store 2 1 1 deltas 100
+        if is-ok saved & is-ok logged then Ok store else Err "journal setup failed"
+      end
+  end
+
+  udp-live : UoDevice, Integer, Integer -> [Console, Device.Block] Nothing
+  udp-live (device) (snapshot) (delta) = act
+    opened <- us-open-pair device 0 64
+    when opened
+      is Err (e) -> print-line-uni ("FAIL fresh pair " & e)
+      is Ok (store) -> act
+        udp-check "a blank pair opens its first half, empty, with the second half as its twin" (store.start == 0 & store.twin == 32 & store.head == 0 & store.sectors == 32)
+        saved <- us-append store 1 0 0 snapshot 2000
+        last <- udp-deltas store delta 100 1
+        udp-check "the first half fills to 13 deltas after its snapshot and refuses the 14th" (is-ok saved & last == 14 & store.head == 31 & not (us-fits store 100))
+        switched <- us-switch store 14 14 snapshot 2000
+        udp-check "the switch commits a snapshot at the next sequence at the start of the second half" (is-ok switched & store.start == 32 & store.twin == 0 & store.head == 5 & store.snapshot == 0 & store.sequence == 14)
+        retired <- udp-blank device 0
+        udp-check "the old half's first sector is wiped after the switch" retired
+        logged <- us-append store 2 15 15 delta 100
+        reopened <- us-open-pair device 0 64
+        udp-check "a delta after the switch lands in the second half, and a reopen picks the second half at that sequence" (is-ok logged & udp-picked reopened 32 15)
+        back <- udp-deltas store delta 100 16
+        again <- us-switch store back back snapshot 2000
+        returned <- us-open-pair device 0 64
+        udp-check "a second switch returns to the first half" (is-ok again & store.start == 0 & store.twin == 32 & udp-picked returned 0 back)
+      end
+  end
+
+  udp-crash : UoDevice, Integer, Integer -> [Console, Device.Block] Nothing
+  udp-crash (device) (snapshot) (delta) = act
+    built <- udp-journal device 64 32 snapshot delta
+    w1 <- us-wipe device 96
+    c1 <- us-open-pair device 64 64
+    udp-check "crash after the twin wipe: the live half is picked at its sequence" (is-ok built & udp-picked c1 64 1)
+    twin <- us-open-on device 96 32
+    torn <- when twin
+      is Err (_) -> act False end
+      is Ok (b) -> act
+        written <- us-append b 1 2 2 snapshot 2000
+        cleared <- us-wipe device 96
+        is-ok written & cleared
+      end
+    c2 <- us-open-pair device 64 64
+    udp-check "crash before the twin's commit sector: the payload is ignored and the live half is picked" (torn & udp-picked c2 64 1)
+    twin2 <- us-open-on device 96 32
+    committed <- when twin2
+      is Err (_) -> act False end
+      is Ok (b) -> act
+        written <- us-append b 1 2 2 snapshot 2000
+        is-ok written
+      end
+    c3 <- us-open-pair device 64 64
+    stale <- udp-blank device 64
+    udp-check "crash after the twin's commit, before the old half is wiped: the twin is picked and the open finishes the wipe" (committed & udp-picked c3 96 2 & stale)
+    rebuilt <- udp-journal device 64 32 snapshot delta
+    w2 <- us-wipe device 96
+    twin3 <- us-open-on device 96 32
+    tied <- when twin3
+      is Err (_) -> act False end
+      is Ok (b) -> act
+        written <- us-append b 1 1 1 snapshot 2000
+        is-ok written
+      end
+    c4 <- us-open-pair device 64 64
+    dropped <- udp-blank device 96
+    udp-check "two halves at one sequence (an interrupted boot upgrade): the first half is kept and the twin wiped" (is-ok rebuilt & tied & udp-picked c4 64 1 & dropped)
+  end
+
+  udp-refusals : UoDevice, Integer, Integer -> [Console, Device.Block] Nothing
+  udp-refusals (device) (snapshot) (delta) = act
+    w1 <- us-wipe device 128
+    whole <- us-open-on device 128 64
+    crossing <- when whole
+      is Err (_) -> act False end
+      is Ok (store) -> act
+        saved <- us-append store 1 0 0 snapshot 2000
+        last <- udp-deltas store delta 100 1
+        is-ok saved & store.head > 32
+      end
+    c1 <- us-open-pair device 128 64
+    udp-check "a legacy journal with a record across the half boundary is refused" (crossing & is-err c1)
+    w2 <- us-wipe device 128
+    whole2 <- us-open-on device 128 64
+    exact <- when whole2
+      is Err (_) -> act False end
+      is Ok (store) -> act
+        saved <- us-append store 1 0 0 snapshot 2000
+        last <- udp-deltas store delta 600 1
+        is-ok saved & store.head > 32
+      end
+    c2 <- us-open-pair device 128 64
+    udp-check "a legacy journal ending a record exactly on the half boundary and continuing past it is refused" (exact & (when c2 is Err (e) -> text-length e > 0 is Ok (_) -> False))
+    w3 <- us-wipe device 128
+    garbage <- us-device-write device 160 delta
+    c3 <- us-open-pair device 128 64
+    udp-check "a blank first half beside an unreadable second half is refused, never a new world" (is-err c3)
+    built <- udp-journal device 128 32 snapshot delta
+    w4 <- us-device-write device 160 delta
+    c4 <- us-open-pair device 128 64
+    udp-check "a live first half beside a garbage second half is picked" (is-ok built & udp-picked c4 128 1)
+  end
+
+  opening : [Console, Device.Block] Nothing = let snapshot = udp-fill (alloc-bytes 2048) 2000 0
+    in let delta = udp-fill (alloc-bytes 1024) 600 0
+    in act
+      udp-live UoIde snapshot delta
+      udp-crash UoIde snapshot delta
+      udp-refusals UoIde snapshot delta
+    end
+
+Page 1

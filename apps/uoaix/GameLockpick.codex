@@ -1,0 +1,48 @@
+Chapter: GameLockpick
+  cites Uoaix chapter GameHarvest
+
+ UOX3 js/skill/lockpicking.js and dictionary.ENG 475, 678, 932: a lockpick (0x14FC, 0x14FD) opens a cursor;
+ an unlocked container answers 932 and anything without a lock 678. This world has no locked containers or
+ doors, so the Lockpicking roll (skill 24, 935, 933, 936) has nothing to open.
+  glp-art : Integer -> Boolean
+  glp-art (graphic) = graphic == #14FC | graphic == #14FD
+  glp-tool : GameHarvest, GsiActor, Integer -> Boolean
+  glp-tool (state) (actor) (serial) = if serial == 0 | not (gsi-known state.items serial) then False
+    else when world-get state.items.world serial
+      is Err (_) -> False
+      is Ok (pick) -> pick.kind == 2 & glp-art pick.graphic & gsi-access state.items actor pick
+  glp-begin : GameHarvest, GhRequest, Integer, Integer -> Result (Maybe GameReply) Text
+  glp-begin (state) (request) (tool) (now) =
+    if state.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+    else let target = #48410000 + state.nonce
+    in let nonce = __record-set state "nonce" (state.nonce + 1)
+    in let context = __record-set request "target" target
+    in let selected = __record-set request "tool" tool
+    in let expires = __record-set request "expires" (now + gh-ticks 10000)
+    in Ok (Just (gs-reply [sip-target target, sip-message #FFFFFFFF #FFFF 6 "What lock would you like to pick?"] "lockpick target"))
+  glp-pick : GameHarvest, Integer -> Result (Maybe GameReply) Text
+  glp-pick (state) (serial) =
+    if serial /= 0 & gsi-known state.items serial & (gsi-meta state.items serial).gump /= 0 then gh-denied "That is not locked."
+    else gh-denied "That does not have a lock."
+  glp-handler-at : GameHarvest, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  glp-handler-at (state) (shard) (input) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if (op /= 6 | list-length packet /= 5) & (op /= #6C | list-length packet /= 19) then Ok None
+    else if not (gs-byte-range packet 0) then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
+      | state.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player state.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 10000 then Ok None
+    else let player = list-at state.vendor.players at
+    in let actor = list-at state.items.actors slot
+    in let request = gh-session state input player slot
+    in if op == 6 then (if not (glp-tool state actor (bit-and (gp-u32 packet 1) #7FFFFFFF)) then Ok None
+      else glp-begin state request (bit-and (gp-u32 packet 1) #7FFFFFFF) now)
+    else if request.target == 0 | request.target /= gp-u32 packet 2 | not (glp-tool state actor request.tool) then Ok None
+    else let clear = __record-set request "target" 0
+    in if gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 then Ok (Just (gs-reply [] "lockpick cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else glp-pick state (bit-and (gp-u32 packet 7) #7FFFFFFF)

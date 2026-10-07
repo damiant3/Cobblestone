@@ -1,0 +1,75 @@
+Chapter: TownNetworkFeatures
+  cites Uoaix chapter TownNetworkFrame
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter EconomyCurrency
+  cites Foreword chapter Result
+
+  TnlCulture = record { people : TfWorld, trade : List Integer, known : List Integer }
+  TnlBinding = record { economy : EpWorld, culture : TnlCulture, npc : Integer,
+    actor : Integer, item : Integer, role : Integer, goal : Integer, needed : Integer,
+    hours : List Integer, town : Integer, at : Integer, total : Integer }
+  tnl-culture : TfWorld -> TnlCulture
+  tnl-culture (people) = TnlCulture { people = people, trade = tn-zeros 4, known = tn-zeros 4 }
+  tnl-town : TnlCulture, Boolean, Integer, Integer -> Integer
+  tnl-town (c) (verified) (town) (trade) =
+    if not verified | town < 1 | town > c.people.town-count | trade < -1000 | trade > 1000 then -1
+    else let a = list-set-at c.trade (town - 1) trade
+    in let b = list-set-at c.known (town - 1) 1 in 0
+  tnl-history : TnlCulture, List Integer, Integer, Integer -> Integer
+  tnl-history (c) (hours) (i) (total) = if i == 4 then total
+    else let amount = list-at hours i
+    in if amount < 0 | amount > ep-limit - total then -1
+    else if amount > 0 & (i >= c.people.town-count | list-at c.known i == 0) then -1
+    else tnl-history c hours (i + 1) (total + amount)
+  tnl-copy : List Integer, List Integer, Integer -> Integer
+  tnl-copy (source) (target) (i) = if i == 4 then 0
+    else let a = list-set-at target i (list-at source i) in tnl-copy source target (i + 1)
+  tnl-identity : EpWorld, TnlCulture, Integer, Integer -> Boolean
+  tnl-identity (w) (c) (npc) (actor) =
+    if not (ep-valid-actor w actor) | not (tf-valid-person c.people npc) then False
+    else let p = tf-person c.people npc
+    in let economic = ep-actor w actor
+    in let purse = em-purse w.money economic.purse
+    in p.alive == 1 & purse.kind == 2 & purse.owner == npc
+      & p.town > 0 & p.town <= c.people.town-count & list-at c.known (p.town - 1) == 1
+      & p.place == economic.place & w.hour == c.people.hour & w.hour >= 0 & w.hour <= ep-limit
+  tnl-bind : EpWorld, TnlCulture, Integer, Integer, Integer, Integer, List Integer -> Result TnlBinding Text
+  tnl-bind (w) (c) (npc) (actor) (item) (role) (history) =
+    if eu-catalog w then Err "economy-v1 uses gold units"
+    else if not (tnl-identity w c npc actor) | not (eg-id w.catalog item)
+      | role < 0 | role > 4 | list-length history /= 4 then Err "network binding refused"
+    else let total = tnl-history c history 0 0
+    in if total < 0 then Err "residence history refused"
+    else let hours = tn-zeros 4
+    in let copied = tnl-copy history hours 0
+    in Ok (TnlBinding { economy = w, culture = c, npc = npc, actor = actor,
+      item = item, role = role, goal = 0, needed = 1, hours = hours,
+      town = (tf-person c.people npc).town, at = w.hour, total = total })
+  tnl-goal : TnlBinding, Integer, Integer -> Integer
+  tnl-goal (b) (item) (needed) =
+    if (item /= 0 & not (eg-id b.economy.catalog item)) | needed < 1 | needed > ep-stock-limit then -1
+    else let a = __record-set b "goal" item in let c = __record-set b "needed" needed in 0
+  tnl-time-valid : TnlBinding -> Boolean
+  tnl-time-valid (b) = b.economy.hour >= b.at & b.economy.hour - b.at <= ep-limit - b.total
+  tnl-accrue : TnlBinding -> Integer
+  tnl-accrue (b) =
+    let elapsed = b.economy.hour - b.at
+    in let a = list-set-at b.hours (b.town - 1) (list-at b.hours (b.town - 1) + elapsed)
+    in let c = __record-set b "total" (b.total + elapsed)
+    in let d = __record-set b "at" b.economy.hour in 0
+  tnl-arrive : TnlBinding, Boolean -> Integer
+  tnl-arrive (b) (verified) =
+    if not verified | not (tnl-identity b.economy b.culture b.npc b.actor) | not (tnl-time-valid b) then -1
+    else let accrued = tnl-accrue b
+    in let a = __record-set b "town" (tf-person b.culture.people b.npc).town in 0
+  tnl-weighted : TnlBinding, Integer, Integer -> Integer
+  tnl-weighted (b) (i) (sum) = if i == 4 then
+      if b.total == 0 then list-at b.culture.trade (b.town - 1) else sum / b.total
+    else tnl-weighted b (i + 1) (sum + list-at b.hours i * list-at b.culture.trade i)
+  tnl-frame : TnlBinding, TnState -> Integer
+  tnl-frame (b) (s) =
+    if not (tnl-identity b.economy b.culture b.npc b.actor) | not (tnl-time-valid b)
+      | list-length s.inputs /= 32 | s.head /= s.count then -1
+    else if (tf-person b.culture.people b.npc).town /= b.town then -1
+    else let accrued = tnl-accrue b
+    in tnf-frame b.economy b.actor b.item b.role b.goal b.needed (tnl-weighted b 0 0) s.inputs 0

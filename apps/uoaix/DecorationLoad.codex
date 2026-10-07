@@ -1,0 +1,36 @@
+Chapter: DecorationLoad
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter MulClient
+
+ DWD1 is a local install artifact filtered against the installed TILEDATA.
+ Its bytes and decoded client properties are never bundled into the image.
+
+  wdl-chunks : MulClient, Integer, Integer, Integer -> [Network.Read, Network.Write] Result Integer Text
+  wdl-chunks (client) (buffer) (size) (at) = if at == size then Ok size
+    else let count = min 65536 (size - at)
+    in let mark = __heap-save
+    in act
+      read <- mc-fetch client ("/decoration/" & show at & "/" & show count) count (buffer + at)
+      when read
+        is Err (e) -> Err e
+        is Ok (_) -> let restored = __heap-restore mark in wdl-chunks client buffer size (at + count)
+    end
+  wdl-load : WalkMap, Integer -> [Network.Read, Network.Write] Result WdState Text
+  wdl-load (map) (stride) = let header = alloc-bytes 64
+    in let client = MulClient { port = 46000 }
+    in act
+      read <- mc-fetch client "/decoration/0/64" 64 header
+      when read
+        is Err (e) -> Err e
+        is Ok (_) -> let count = peek-qword header 8
+          in if peek-qword header 0 /= #31445744 | count < 0 | count > 65536 then Err "DWD1 download header"
+          else let size = 64 + count * 176
+          in let buffer = alloc-bytes size
+          in let copied = wd-copy header buffer 0 8
+          in act
+            loaded <- wdl-chunks client buffer size 64
+            when loaded
+              is Err (e) -> Err e
+              is Ok (_) -> wd-read buffer size map stride
+          end
+    end

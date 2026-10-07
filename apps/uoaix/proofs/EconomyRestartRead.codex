@@ -1,0 +1,33 @@
+Chapter: EconomyRestartRead
+  cites Uoaix chapter EconomyStore
+  cites Uoaix chapter EconomyInputFixtures
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  err-check : Text, Boolean -> [Console] Nothing
+  err-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 8192
+    when opened
+      is Err (e) -> print-line-uni ("FAIL open " & e)
+      is Ok (store) -> act
+        recovered <- economy-store-restore store
+        when recovered
+          is Err (e) -> print-line-uni ("FAIL recovery " & e)
+          is Ok (recovery) -> act
+            state <- recovery.state
+            w <- state.world
+            err-check "latest checkpoint plus 121-input suffix" (recovery.inputs == 121 & state.sequence == 169 & state.tick == 1690 & store.sequence == 169 & store.tick == 1690)
+            err-check "mint loan trades and farm restored" (eif-valid state)
+            err-check "reboot coin and material counters" (w.money.issued == 1000 & em-total w.money 1 == 1000 & w.mint-ingots == 1 & w.money.defaults == 1 & ep-at w.gathered 6 == 2 & ep-at w.consumed 32 == 1 & ep-at w.consumed 54 == 1 & ep-at w.consumed 4 == 1)
+          end
+        saved <- store.sequence
+        changed <- __record-set store "sequence" (saved + 1)
+        disagreement <- economy-store-restore store
+        err-check "cached head disagreement refused" (is-err disagreement)
+        restored <- __record-set store "sequence" saved
+        err-check "store metadata restored after refusal" (store.sequence == saved)
+      end
+  end

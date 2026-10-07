@@ -1,0 +1,109 @@
+Chapter: GameCombatCodec
+  cites Uoaix chapter GameCombat
+  cites Foreword chapter Result
+
+ UCB1 stores a 48-byte header and 136-byte actor rows. Integer cells are
+ little-endian qwords; names are 30 ASCII bytes followed by two zero bytes.
+ The encompassing checkpoint owns integrity and world/metadata atomicity.
+
+  cbc-size : Integer -> Integer
+  cbc-size (count) = 48 + count * 136
+  cbc-write-row : CombatActor, Integer -> Integer
+  cbc-write-row (a) (buf) =
+    let w0 = poke-qword buf 0 a.serial
+    in let w1 = poke-qword buf 8 a.maximum
+    in let w2 = poke-qword buf 16 a.strength
+    in let w3 = poke-qword buf 24 a.dexterity
+    in let w4 = poke-qword buf 32 a.skill
+    in let w5 = poke-qword buf 40 a.tactics
+    in let w6 = poke-qword buf 48 a.anatomy
+    in let w7 = poke-qword buf 56 a.low
+    in let w8 = poke-qword buf 64 a.high
+    in let w9 = poke-qword buf 72 a.body
+    in let w10 = poke-qword buf 80 a.corpse
+    in let w11 = poke-qword buf 88 (if a.npc then 1 else 0)
+    in let w12 = poke-qword buf 96 (if a.immune then 1 else 0)
+    in let name = cb-copy-name (buf + 104) a.name 0 0
+    in let p0 = poke-byte buf 134 0
+    in poke-byte buf 135 0
+  cbc-write : GameCombat, Integer, Integer -> Integer
+  cbc-write (c) (buf) (i) = if i == list-length c.actors then 0
+    else let w = cbc-write-row (list-at c.actors i) (buf + 48 + i * 136)
+    in cbc-write c buf (i + 1)
+  cbc-encode : GameCombat, Integer, Integer -> Result Integer Text
+  cbc-encode (c) (buf) (capacity) =
+    let count = list-length c.actors
+    in if count < 1 | count > world-max-objects then Err "combat capacity invalid"
+    else if capacity < cbc-size count then Err "combat destination too short"
+    else let h0 = poke-qword buf 0 #31424355
+    in let h1 = poke-qword buf 8 1
+    in let h2 = poke-qword buf 16 count
+    in let h3 = poke-qword buf 24 c.seed
+    in let h4 = poke-qword buf 32 c.draws
+    in let h5 = poke-qword buf 40 c.scene
+    in let rows = cbc-write c buf 0
+    in Ok (cbc-size count)
+  cbc-range : Integer, Integer, Integer, Integer -> Boolean
+  cbc-range (buf) (at) (low) (high) =
+    let n = peek-qword buf at in n >= low & n <= high
+  cbc-name-valid : Integer, Integer -> Boolean
+  cbc-name-valid (buf) (i) = if i == 30 then True
+    else peek-byte buf (104 + i) < 128 & cbc-name-valid buf (i + 1)
+  cbc-row-valid : Integer -> Boolean
+  cbc-row-valid (buf) =
+    cbc-range buf 0 0 1073741823
+    & cbc-range buf 8 0 65535 & cbc-range buf 16 0 65535
+    & cbc-range buf 24 1 1000 & cbc-range buf 32 0 1000
+    & cbc-range buf 40 0 1000 & cbc-range buf 48 0 1000
+    & cbc-range buf 56 1 1000 & cbc-range buf 64 (peek-qword buf 56) 1000
+    & cbc-range buf 72 0 16383 & cbc-range buf 80 0 2147483647
+    & cbc-range buf 88 0 1 & cbc-range buf 96 0 1
+    & cbc-name-valid buf 0 & peek-byte buf 134 == 0 & peek-byte buf 135 == 0
+  cbc-rows-valid : Integer, Integer, Integer -> Boolean
+  cbc-rows-valid (buf) (count) (i) = if i == count then True
+    else cbc-row-valid (buf + 48 + i * 136) & cbc-rows-valid buf count (i + 1)
+  cbc-read-row : CombatActor, Integer -> Integer
+  cbc-read-row (a) (buf) =
+    let r0 = __record-set a "serial" (peek-qword buf 0)
+    in let r1 = __record-set a "maximum" (peek-qword buf 8)
+    in let r2 = __record-set a "strength" (peek-qword buf 16)
+    in let r3 = __record-set a "dexterity" (peek-qword buf 24)
+    in let r4 = __record-set a "skill" (peek-qword buf 32)
+    in let r5 = __record-set a "tactics" (peek-qword buf 40)
+    in let r6 = __record-set a "anatomy" (peek-qword buf 48)
+    in let r7 = __record-set a "low" (peek-qword buf 56)
+    in let r8 = __record-set a "high" (peek-qword buf 64)
+    in let r9 = __record-set a "body" (peek-qword buf 72)
+    in let r10 = __record-set a "corpse" (peek-qword buf 80)
+    in let r11 = __record-set a "npc" (peek-qword buf 88 == 1)
+    in let r12 = __record-set a "immune" (peek-qword buf 96 == 1)
+    in let name = cb-copy-name a.name buf 104 0
+    in let w = __record-set a "war" False
+    in let t = __record-set a "target" 0
+    in let d = __record-set a "due" 0
+    in let link = __record-set a "connection" 0
+    in 0
+  cbc-read : GameCombat, Integer, Integer -> Integer
+  cbc-read (c) (buf) (i) = if i == list-length c.actors then 0
+    else let r = cbc-read-row (list-at c.actors i) (buf + 48 + i * 136)
+    in cbc-read c buf (i + 1)
+  cbc-decode : GameCombat, Integer, Integer -> Result Integer Text
+  cbc-decode (c) (buf) (size) =
+    let count = list-length c.actors
+    in if count < 1 | count > world-max-objects then Err "combat capacity invalid"
+    else if size /= cbc-size count then Err "combat checkpoint length invalid"
+    else if peek-qword buf 0 /= #31424355 | peek-qword buf 8 /= 1
+      | peek-qword buf 16 /= count then Err "combat checkpoint format invalid"
+    else if not (cbc-range buf 32 0 2147483647) | not (cbc-range buf 40 0 2)
+      | not (cbc-rows-valid buf count 0) then Err "combat checkpoint data invalid"
+    else let rows = cbc-read c buf 0
+    in let active = cb-active-reset c
+    in let seed = __record-set c "seed" (peek-qword buf 24)
+    in let draws = __record-set c "draws" (peek-qword buf 32)
+    in let scene = __record-set c "scene" (peek-qword buf 40)
+    in let tick = __record-set c "tick" 0
+    in let seen = cb-seen-clear c.seen 0
+    in Ok size
+
+Page 1
+

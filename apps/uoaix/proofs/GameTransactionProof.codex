@@ -1,0 +1,187 @@
+Chapter: GameTransactionProof
+  cites Uoaix chapter GameTransaction
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter Result
+
+  gtp-check : Text, Boolean -> [Console] Nothing
+  gtp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gtp-game : Integer -> Result GameShard Text
+  gtp-game (capacity) = when world-new capacity
+    is Err (e) -> Err e
+    is Ok (world) ->
+      let characters = alloc-bytes 800
+      in let cleared = gs-zero characters 0
+      in Ok (GameShard { world = world, characters = characters, accounts = ga-new ga-dev, next-key = 100, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 })
+
+  gtp-input : Integer, Integer -> GameInput
+  gtp-input (mode) (phase) =
+    let input = gn-input 0
+    in let m = __record-set input "mode" mode
+    in let p = __record-set input.session "phase" phase
+    in input
+
+  gtp-map : WalkMap, Integer -> Integer
+  gtp-map (map) (i) = if i >= map.width * map.height then 0
+    else let marked = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in gtp-map map (i + 1)
+
+  gtp-create : Integer -> List Integer
+  gtp-create (slot) =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Avatar" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,0,50,1,50,2,0]
+    in let skin = gp-put16 stats 1002
+    in let hair = gp-put16 (gp-put16 skin 8251) 1102
+    in let beard = gp-put16 (gp-put16 hair 8254) 1102
+    in gp-put32 (gp-put32 (gp-zeros beard 2) slot) 0
+
+  gtp-size : GameShard -> Integer
+  gtp-size (game) = 16 + game.world.capacity * 80
+
+  gtp-move : GameShard, GameInput, WalkMap -> [Console] Nothing
+  gtp-move (game) (input) (map) =
+    let size = gtp-size game
+    in let before = alloc-bytes size
+    in let copied = ws-copy game.world.buffer before size 0
+    in when gt-prepare game input map 2593 [2,2,0]
+      is Err (e) -> print-line-uni ("FAIL turn " & e)
+      is Ok (turn) -> act
+        gtp-check "turn changes only volatile session state" (not (gt-changed turn.undo) & input.session.direction == 2 & input.session.sequence == 1)
+        let accepted = gt-accept turn.undo
+        in when gt-prepare game input map 2593 [2,2,1]
+          is Err (e) -> print-line-uni ("FAIL walk " & e)
+          is Ok (walk) -> act
+            gtp-check "walk captures one world slot" (walk.undo.count == 1 & gt-changed walk.undo & (when world-get game.world 1 is Err (e) -> False is Ok (mobile) -> mobile.x == 1421))
+            let restored = gt-rollback walk.undo
+            in act
+              gtp-check "walk rollback restores bytes and sequence" (restored & gt-equal before game.world.buffer size 0 & input.session.direction == 2 & input.session.sequence == 1)
+              when gt-prepare game input map 2593 [1,255,255,255,255]
+                is Err (e) -> print-line-uni ("FAIL logout " & e)
+                is Ok (logout) ->
+                  let changed = gt-changed logout.undo
+                  in let restored = gt-rollback logout.undo
+                  in gtp-check "logout rollback restores active session" (not changed & restored & game.active == 1 & input.session.phase == 2 & input.session.serial == 1)
+            end
+          end
+      end
+
+  gtp-world : GameShard, WalkMap -> [Console] Nothing
+  gtp-world (game) (map) =
+    let input = gtp-input 2 1
+    in let size = gtp-size game
+    in let before = alloc-bytes size
+    in let copied = ws-copy game.world.buffer before size 0
+    in when gt-prepare game input map 2593 (gtp-create 0)
+      is Err (e) -> print-line-uni ("FAIL creation " & e)
+      is Ok (prepared) -> act
+        gtp-check "creation captures bounded mobile and equipment footprint" (prepared.undo.count == 5 & world-count game.world == 5 & gt-changed prepared.undo & peek-qword game.characters 0 == 1)
+        let restored = gt-rollback prepared.undo
+        in act
+          gtp-check "creation rollback restores free list generations and metadata" (restored & gt-equal before game.world.buffer size 0 & gt-equal (prepared.undo.bytes + 88) game.characters 800 0 & game.active == 0 & input.session.phase == 1 & input.session.serial == 0)
+          gtp-check "closed undo cannot be reused" (not (gt-rollback prepared.undo) & not (gt-accept prepared.undo))
+          when gt-prepare game input map 2593 (gtp-create 0)
+            is Err (e) -> print-line-uni ("FAIL second creation " & e)
+            is Ok (accepted) ->
+              let committed = gt-accept accepted.undo
+              in act
+                gtp-check "accept retains creation and prevents rollback" (committed & not (gt-rollback accepted.undo) & world-count game.world == 5 & game.active == 1)
+                gtp-move game input map
+              end
+        end
+      end
+
+  gtp-refusals : GameShard, WalkMap -> [Console] Nothing
+  gtp-refusals (game) (map) =
+    let input = gtp-input 2 1
+    in let size = gtp-size game
+    in let before = alloc-bytes size
+    in let copied = ws-copy game.world.buffer before size 0
+    in let failed = is-err (gt-prepare game input map 2593 (gtp-create 0))
+    in act
+      gtp-check "partial creation refusal restores persistent bytes" (failed & gt-equal before game.world.buffer size 0 & peek-qword game.characters 0 == 0)
+      let bare = gtp-create 0
+      in let hair-high = list-set-at bare 82 0
+      in let hair-low = list-set-at bare 83 0
+      in let beard-high = list-set-at bare 86 0
+      in let beard-low = list-set-at bare 87 0
+      in when gt-prepare game input map 2593 bare
+        is Err (e) -> print-line-uni ("FAIL creation after refusal " & e)
+        is Ok (created) ->
+          let serial = peek-qword game.characters 0
+          in let restored = gt-rollback created.undo
+          in gtp-check "creation after partial refusal keeps original serial generation" (serial == 1 & restored & gt-equal before game.world.buffer size 0 & gt-equal (created.undo.bytes + 88) game.characters 800 0)
+      let pending = __record-set game "pending-key" 42
+      in let phase = __record-set input.session "phase" 0
+      in let key = __record-set input.session "key" 42
+      in let packet = gp-zeros (gp-put32 (gp-start 145) 42) 60
+      in let refused = is-err (gt-prepare game input map 2593 packet)
+      in act
+        gtp-check "domain refusal still consumes a bad login relay key" (refused & game.pending-key == 0 & gt-equal before game.world.buffer size 0)
+        gtp-check "unknown packet profile refuses without mutation" (is-err (gt-prepare game input map 2593 [255]) & gt-equal before game.world.buffer size 0)
+        let cycle = poke-qword game.world.buffer 24 0
+        in gtp-check "cyclic free prefix refuses before mutation" (is-err (gt-prepare game input map 2593 (gtp-create 0)) & world-count game.world == 0 & peek-qword game.world.buffer 16 == 0)
+      end
+    end
+
+  gtp-relay : GameShard, WalkMap -> [Console] Nothing
+  gtp-relay (game) (map) =
+    let input = gtp-input 1 0
+    in let packet = list-push (gp-zeros ((gp-ascii (gp-start 128) "uoaixtest" 0 30) & [104,98,84,92,107,103,88,102,103]) 21) 0
+    in when gt-prepare game input map 2593 packet
+      is Err (e) -> print-line-uni ("FAIL listing " & e)
+      is Ok (listed) ->
+        let set = input.listed
+        in let restored = gt-rollback listed.undo
+        in act
+          gtp-check "rollback restores login listing flag" (set & restored & not input.listed)
+          let listed = __record-set input "listed" True
+          in when gt-prepare game input map 2593 [160,0,0]
+            is Err (e) -> print-line-uni ("FAIL relay " & e)
+            is Ok (relay) ->
+              let changed = gt-changed relay.undo
+              in let restored = gt-rollback relay.undo
+              in gtp-check "relay rollback restores counter and pending key" (changed & relay.undo.count == 0 & restored & game.next-key == 100 & game.pending-key == 0 & input.listed)
+        end
+
+  gtp-budget : GameShard, WalkMap -> Integer
+  gtp-budget (game) (map) =
+    let input = gtp-input 2 1
+    in let before = __heap-save
+    in when gt-prepare game input map 2593 [115,7]
+      is Err (e) -> -1
+      is Ok (prepared) ->
+        let bytes = __heap-save - before
+        in let accepted = gt-accept prepared.undo
+        in let restored = __heap-restore before
+        in bytes
+
+  opening : [Console] Nothing = when walk-map-new 1418 1696 8 8
+    is Err (e) -> print-line-uni ("FAIL map " & e)
+    is Ok (map) ->
+      let filled = gtp-map map 0
+      in when gtp-game 64
+        is Err (e) -> print-line-uni ("FAIL game " & e)
+        is Ok (game) -> act
+          gtp-world game map
+          when gtp-game 3
+            is Err (e) -> print-line-uni ("FAIL short game " & e)
+            is Ok (short) -> gtp-refusals short map
+          when gtp-game 8
+            is Err (e) -> print-line-uni ("FAIL relay game " & e)
+            is Ok (small) -> act
+              gtp-relay small map
+              let small-cost = gtp-budget small map
+              in when gtp-game world-max-objects
+                is Err (e) -> print-line-uni ("FAIL large game " & e)
+                is Ok (large) -> let large-cost = gtp-budget large map
+                  in gtp-check "capture heap is independent of world capacity" (small-cost > 0 & small-cost == large-cost & large-cost < 4096)
+            end
+        end
+
+Page 1

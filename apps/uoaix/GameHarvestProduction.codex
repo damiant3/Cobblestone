@@ -1,0 +1,213 @@
+Chapter: GameHarvestProduction
+  cites Uoaix chapter GameHarvestState
+  cites Uoaix chapter GameCombatPackets
+  cites Foreword chapter Random
+
+  GhCandidate = record { world : EpWorld, actor : EpActor, node : EpNode }
+  gh-copy : Integer, Integer, Integer, Integer -> Integer
+  gh-copy (source) (target) (cells) (i) = if i == cells then 0
+    else let value = poke-qword target (i * 8) (peek-qword source (i * 8))
+    in gh-copy source target cells (i + 1)
+  gh-buffer : Integer, Integer -> Integer
+  gh-buffer (source) (cells) = let target = alloc-bytes (cells * 8)
+    in let copied = gh-copy source target cells 0 in target
+  gh-actor-list : List EpActor, Integer, List EpActor -> List EpActor
+  gh-actor-list (source) (i) (out) = if i == list-length source then out
+    else gh-actor-list source (i + 1) (list-push out (list-at source i))
+  gh-node-list : List EpNode, Integer, List EpNode -> List EpNode
+  gh-node-list (source) (i) (out) = if i == list-length source then out
+    else gh-node-list source (i + 1) (list-push out (list-at source i))
+  gh-candidate : EpWorld, Integer, Integer, GvLot -> GhCandidate
+  gh-candidate (w) (actor-id) (node-id) (lot) =
+    let p = ep-actor w actor-id
+    in let n = list-at w.nodes (node-id - 1)
+    in let actor = EpActor { purse = p.purse, place = p.place, hunger = p.hunger,
+      attempts = p.attempts, stock = gh-buffer p.stock 129, quality = gh-buffer p.quality 129,
+      cost = gh-buffer p.cost 129, wear = gh-buffer p.wear 129, skills = gh-buffer p.skills 11, row = p.row }
+    in let node = EpNode { resource = n.resource, place = n.place, owner = n.owner,
+      ground = n.ground, planted = n.planted, stage = n.stage, ready = n.ready, water = n.water, tended = n.tended }
+    in let actors = gh-actor-list w.actors 0 (__list-with-capacity (list-length w.actors))
+    in let nodes = gh-node-list w.nodes 0 (__list-with-capacity (list-length w.nodes))
+    in let pa = list-set-at actors (actor-id - 1) actor
+    in let pn = list-set-at nodes (node-id - 1) node
+    in let quantity = ep-set actor.stock lot.item 1
+    in let quality = ep-set actor.quality lot.item lot.quality
+    in let cost = ep-set actor.cost lot.item lot.basis
+    in let wear = ep-set actor.wear lot.item lot.wear
+    in let candidate = EpWorld { catalog = w.catalog, money = w.money,
+      actors = actors, stations = w.stations, nodes = nodes,
+      actor-count = w.actor-count, station-count = w.station-count, node-count = w.node-count,
+      hour = w.hour, gathered = gh-buffer w.gathered 129, found = w.found, crafted = w.crafted,
+      consumed = gh-buffer w.consumed 129, sales = w.sales, turnover = w.turnover,
+      crown-turnover = w.crown-turnover, trades = w.trades, trade-count = w.trade-count,
+      mint-owner = w.mint-owner, mint-rate = w.mint-rate, mint-ingots = w.mint-ingots, opening = w.opening }
+    in GhCandidate { world = candidate, actor = actor, node = node }
+  gh-recombine : GhCandidate, EpActor, GvLot -> Integer
+  gh-recombine (candidate) (original) (lot) =
+    let p = candidate.actor
+    in let a = ep-add p.stock lot.item (ep-at original.stock lot.item - 1)
+    in let b = ep-add p.quality lot.item (ep-at original.quality lot.item - lot.quality)
+    in let c = ep-add p.cost lot.item (ep-at original.cost lot.item - lot.basis)
+    in ep-add p.wear lot.item (ep-at original.wear lot.item - lot.wear)
+  gh-publish : GhCandidate, EpWorld, Integer, Integer -> Integer
+  gh-publish (candidate) (world) (actor-id) (node-id) =
+    let p = ep-actor world actor-id
+    in let n = list-at world.nodes (node-id - 1)
+    in let a = gh-copy candidate.actor.stock p.stock 129 0
+    in let b = gh-copy candidate.actor.quality p.quality 129 0
+    in let c = gh-copy candidate.actor.cost p.cost 129 0
+    in let d = gh-copy candidate.actor.wear p.wear 129 0
+    in let e = gh-copy candidate.actor.skills p.skills 11 0
+    in let f = __record-set p "attempts" candidate.actor.attempts
+    in let g = gh-copy candidate.world.gathered world.gathered 129 0
+    in let h = gh-copy candidate.world.consumed world.consumed 129 0
+    in let stage = __record-set n "stage" candidate.node.stage
+    in let ready = __record-set n "ready" candidate.node.ready
+    in let water = __record-set n "water" candidate.node.water
+    in let tended = __record-set n "tended" candidate.node.tended
+    in 0
+  gh-invalidate-quotes : GvWorld, Integer -> Integer
+  gh-invalidate-quotes (v) (i) = if i == v.player-count then 0
+    else let player = list-at v.players i
+    in let a = __record-set player "vendor" 0
+    in let b = __record-set player "side" 0
+    in let c = __record-set player "count" 0
+    in let d = __record-set player "expires" 0
+    in gh-invalidate-quotes v (i + 1)
+  gh-retire-lot : GvWorld, Integer -> Integer
+  gh-retire-lot (v) (at) = let removed = list-at v.lots at
+    in let last = v.lot-count - 1
+    in let moved = list-at v.lots last
+    in let a = list-set-at v.lots at moved
+    in let b = list-set-at v.lots last removed
+    in let c = __record-set v "lot-count" last
+    in 0
+ Item 56 is the catalog's timber sapling (EconomyCatalog); 0x0CE9 is TILEDATA's "sapling" art.
+  gh-sapling : Integer = 56
+  gh-output-graphic : Integer -> Integer
+  gh-output-graphic (item) = if item == 5 | item == 6 | item == 63 | item == 64 then #19B9 else if item == 15 then #1BDD else if item == gh-sapling then #0CE9
+    else if item == 10 then #0DF9 else if item == 12 then #0DF8 else if item == 50 then #097B else if item == 11 then #1A9C else if item == 13 then #1EBD else if item == 14 then #0C7C
+    else if item == 16 then #09D0 else if item == 17 then #0F85 else if item == 18 then #0F84 else if item == 19 then #0F86 else if item == 20 then #0F88
+    else if item >= 52 & item <= 61 then #0C68
+    else if item == 9 then #09CC else #0DCF
+ ServUO Lumberjacking and Mining EffectSounds: 0x13E per chop, 0x125 or 0x126 per swing; Fishing.cs and
+ UOX3 fishing.js splash 0x364. Pre-SA EffectActions: mine 11, chop 13, fish 12.
+  gh-sound : Integer, Integer -> Integer
+  gh-sound (item) (draw) = if item == 15 then #013E else if item == 9 then #0364
+    else if item == 5 | item == 6 | item == 63 | item == 64 then (if int-mod draw 2 == 0 then #0125 else #0126) else 0
+  gh-action : Integer -> Integer
+  gh-action (item) = if item == 15 then 13 else if item == 9 then 12 else 11
+ Harvest quality falls into three grades, and a lot records its grade's floor so that one
+ stack holds one grade: low below 400, common below 700, fine from 700.
+  gh-grade : Integer -> Integer
+  gh-grade (quality) = if quality < 400 then 100 else if quality < 700 then 400 else 700
+  gh-grade-name : Integer -> Text
+  gh-grade-name (quality) = if quality < 400 then "low" else if quality < 700 then "common" else "fine"
+ ServUO Container.DropItem places a new item at a random point of the container gump's
+ Data/containers.cfg rectangle (0x3C 44,65 142x94; 0x3D 29,34 108x94; 0x4A 18,105 144x73) less
+ the art's extent. Art bounds are not installed; 30 pixels stands in for them.
+  gh-drop-x : Integer, Integer -> Integer
+  gh-drop-x (gump) (draw) = if gump == #003D then 29 + int-mod draw 78 else if gump == #004A then 18 + int-mod draw 114 else 44 + int-mod draw 112
+  gh-drop-y : Integer, Integer -> Integer
+  gh-drop-y (gump) (draw) = if gump == #003D then 34 + int-mod draw 64 else if gump == #004A then 105 + int-mod draw 43 else 65 + int-mod draw 64
+  gh-stack : GameHarvest, GvPlayer, Integer, Integer, Integer, Integer -> Integer
+  gh-stack (state) (player) (item) (quality) (quantity) (serial) = if serial == 0 then 0
+    else let next = world-next-sibling state.items.world serial
+    in let at = gv-lot state.vendor serial 0
+    in if at < 0 then gh-stack state player item quality quantity next
+    else let l = list-at state.vendor.lots at
+    in if l.actor == player.actor & l.item == item & l.quality == quality & l.wear == 32 & l.quantity + quantity <= 60000
+      & gh-stack-art state.items.world serial item then serial
+    else gh-stack state player item quality quantity next
+  gh-stack-art : WorldTable, Integer, Integer -> Boolean
+  gh-stack-art (world) (serial) (item) = when world-get world serial is Err (_) -> False is Ok (o) -> o.graphic == gh-output-graphic item
+  gh-merge-fits : GvWorld, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gh-merge-fits (v) (actor) (item) (quantity) (quality) (basis) = let p = ep-actor v.currency.world actor
+    in gv-represented v actor item 0 0 + quantity <= ep-at p.stock item
+      & gv-represented v actor item 1 0 + quantity * quality <= ep-at p.quality item
+      & gv-represented v actor item 2 0 + quantity * 32 <= ep-at p.wear item
+      & gv-represented v actor item 3 0 + basis <= ep-at p.cost item
+  gh-merge : GameHarvest, GvPlayer, Integer, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  gh-merge (state) (player) (serial) (item) (quantity) (quality) (basis) =
+    if not (gh-merge-fits state.vendor player.actor item quantity quality basis) then Err "harvest output provenance refused"
+    else when world-get state.items.world serial
+      is Err (e) -> Err e
+      is Ok (stack) -> when world-update state.items.world (__record-set stack "amount" (stack.amount + quantity))
+        is Err (e) -> Err e
+        is Ok (_) -> let l = list-at state.vendor.lots (gv-lot state.vendor serial 0)
+          in let counted = __record-set l "quantity" (l.quantity + quantity)
+          in let priced = __record-set l "basis" (l.basis + basis)
+          in when world-get state.items.world serial
+            is Err (e) -> Err e
+            is Ok (made) -> Ok (sip-item made)
+  gh-output : GameHarvest, GvPlayer, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  gh-output (state) (player) (item) (quantity) (produced) (draw) =
+    gh-place state player item quantity (gh-grade produced) (if list-length state.vendor.currency.world.catalog.items >= 68 then quantity else 0) draw
+  gh-place : GameHarvest, GvPlayer, Integer, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  gh-place (state) (player) (item) (quantity) (quality) (basis) (draw) =
+    let stack = gh-stack state player item quality quantity (world-first-child state.items.world player.pack)
+    in if stack > 0 then gh-merge state player stack item quantity quality basis
+    else let gump = (gsi-meta state.items player.pack).gump
+    in let spot = bit-and (mix-bits draw player.serial) #7FFFFFFF
+    in let obj = WorldObject { serial = 0, kind = 2, x = gh-drop-x gump spot, y = gh-drop-y gump (spot / 4096), z = 0,
+      graphic = gh-output-graphic item, hue = 0, container = player.pack, amount = quantity, health = 0 }
+    in when world-create state.items.world obj
+      is Err (e) -> Err e
+      is Ok (serial) ->
+        let lot = gv-add-lot state.vendor serial player.actor item quality 32 basis
+        in if lot < 0 then Err "harvest output provenance refused"
+        else let known = gsi-register state.items serial 0 0 True False
+        in when world-get state.items.world serial
+          is Err (e) -> Err e
+          is Ok (made) -> Ok (sip-item made)
+  gh-produce : GameHarvest, GvPlayer, Integer, Integer, Integer -> Result GameReply Text
+  gh-produce (state) (player) (node-id) (lot-id) (now) =
+    let v = state.vendor
+    in let w = v.currency.world
+    in let p = ep-actor w player.actor
+    in let lot = list-at v.lots lot-id
+    in let node = list-at w.nodes (node-id - 1)
+    in let resource = list-at w.catalog.resources (node.resource - 1)
+    in if lot.quantity /= 1 | lot.actor /= player.actor | resource.tool /= lot.item
+      | ep-at p.stock lot.item < 1 | ep-at p.quality lot.item < lot.quality
+      | ep-at p.cost lot.item < lot.basis | ep-at p.wear lot.item < lot.wear
+      | not (gv-owned state.items.world player.pack player.serial 65)
+      | world-has-child state.items.world lot.serial 0 then Ok (gsi-denied "Harvest inventory binding refused.")
+    else let bound = gh-row state.vendor player
+    in let candidate = gh-candidate w player.actor node-id lot
+    in let level = ep-level p resource.skill (ep-classic resource.skill 0 resource.item)
+    in let result = eh-harvest candidate.world player.actor node-id
+    in if result == -1 then Ok (gsi-denied (gh-say (gh-tool-type lot.item) 3))
+    else let unseeded = if result > 0 & resource.seed > 0 & resource.seed /= gh-sapling then eh-add-yield candidate.world candidate.actor resource.seed (0 - 1) 1000 else 0
+    in let broken = ep-at candidate.actor.stock lot.item == 0
+    in let outputs = if result < 0 then 0 else if resource.seed == gh-sapling then 2 else 1
+    in if v.lot-count + outputs - (if broken then 1 else 0) > gv-lot-limit
+      | world-count state.items.world + outputs - (if broken then 1 else 0) > state.items.world.capacity then Ok (gsi-denied "No room for harvested resources.")
+    else let combined = gh-recombine candidate p lot
+    in let published = gh-publish candidate w player.actor node-id
+    in let tool-serial = lot.serial
+    in let retired = if broken then when world-delete state.items.world tool-serial
+      is Err (e) -> Err e
+      is Ok (_) -> let removed = gh-retire-lot v lot-id in Ok 0
+      else let used = __record-set lot "wear" (lot.wear - 1) in Ok 0
+    in when retired
+      is Err (e) -> Err e
+      is Ok (_) ->
+        let invalidated = gh-invalidate-quotes v 0
+        in let packets = if broken then [sip-remove tool-serial] else []
+        in let animation = list-push packets (cbp-animation player.serial (gh-action resource.item))
+        in let sound = gh-sound resource.item now
+        in let swung = if sound == 0 then animation else animation & gsi-sound-at state.items player.serial sound
+        in let skill = list-push swung (gh-skills state player (gsi-slot v.game player.serial 0))
+        in if result < 0 then Ok (gs-reply (list-push skill (sip-message #FFFFFFFF #FFFF 6 (gh-say (gh-tool-type lot.item) 4))) "harvest failed attempt")
+        else let produced = 100 + level * 9 / 10
+        in when gh-output state player resource.item result produced now
+          is Err (e) -> Err e
+          is Ok (item) -> when (if resource.seed == gh-sapling then gh-output state player gh-sapling 1 1000 (now + 1) else Ok [])
+            is Err (e) -> Err e
+            is Ok (sapling) -> let drawn = if list-length sapling == 0 then list-push skill item else list-push (list-push skill item) sapling
+              in let at = gh-site-of state node-id 0
+              in let spot = if at < 0 then "" else let site = list-at state.sites at in " at " & show site.x & "," & show site.y & "," & show site.z
+              in Ok (gs-reply (list-push drawn (sip-message #FFFFFFFF #FFFF 6 (gh-say (gh-tool-type lot.item) 5))) ("harvest produced item=" & show resource.item & " node=" & show node-id & spot))
+
+Page 1

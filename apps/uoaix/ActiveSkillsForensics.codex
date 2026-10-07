@@ -1,0 +1,59 @@
+Chapter: ActiveSkillsForensics
+  cites Uoaix chapter ActiveSkillsHiding
+  cites Uoaix chapter GameSkillsItems
+
+ UOX3 js/skill/forensics.js and dictionary.ENG 393, 6007-6012 and 9279-9284, GPL-2.0-or-later; ports/UOX3-LICENSE.txt.
+ UOX3's CheckSkill (skill, low, high) is read as: at or above high it succeeds without a roll, otherwise it rolls at the
+ midpoint of low and high. A corpse within 7 tiles is read on a check from 0 to 55.0: its age (past 60 and 180 s), its
+ killer and its last looter. A container is read on a check up to its last picker's Lockpicking and names that picker. A
+ character is read on a check up to its Stealing; no thieves' guild exists, so none is found a thief. Anything else, or a
+ failed check, notices nothing.
+  as-check-range : ActiveSkills, AsActor, Integer, Integer, Integer -> Boolean
+  as-check-range (s) (a) (skill) (low) (high) = if as-level a skill >= high then True else as-roll s a skill ((low + high) / 2)
+  as-name-bytes : Integer, Integer, List Integer -> List Integer
+  as-name-bytes (buf) (i) (out) = if i == 30 then out else let b = peek-byte buf i
+    in if b == 0 then out else as-name-bytes buf (i + 1) (list-push out b)
+  as-mobile-name : ActiveSkills, GameShard, Integer -> Text
+  as-mobile-name (s) (game) (serial) = if serial <= 0 then "" else when cb-ensure s.combat game serial
+    is Err (_) -> ""
+    is Ok (m) -> unicode-bytes-to-text (as-name-bytes m.name 0 (__list-with-capacity 30))
+ UOX3 spiritspeak.js and dictionary.ENG 1501 and 1502: Spirit Speak checks from 0 to 100.0; success plays 0x24A and lets the
+ character understand ghosts for 30 s, plus a second per whole point of Spirit Speak, plus a second per point of Intelligence.
+  as-spirit : AsServices, ActiveSkills, AsActor, WorldObject, Integer -> GameReply
+  as-spirit (services) (s) (a) (player) (now) = if not (as-check-range s a 32 0 1000) then
+      gs-reply [as-say "You fail your attempt at contacting the netherworld."] "skills:spirit-failed"
+    else let slot = world-slot s.items.world player.serial
+    in let until = now + gh-ticks (1000 * (30 + as-level a 32 / 10 + services.intelligence player.serial))
+    in let held = if slot < 0 then 0 else poke-qword s.spirit (slot * 8) until
+    in gs-reply [cbp-sound #024A player, as-say "You establish a connection to the netherworld."] "skills:spirit"
+  as-corpse : ActiveSkills, GameShard, WorldObject, Integer, Integer -> GameReply
+  as-corpse (s) (game) (obj) (slot) (now) =
+    let killer = peek-qword s.combat.slain (slot * 16)
+    in let died = peek-qword s.combat.slain (slot * 16 + 8)
+    in let age = if died == 0 | now - died > gh-ticks 180000 then "It stinks quite a lot by now."
+      else if now - died > gh-ticks 60000 then "It is beginning to smell a bit." else "It looks to have been freshly... planted."
+    in let named = as-mobile-name s game killer
+    in let looter = if peek-qword s.items.looted (slot * 16 + 8) /= obj.serial then ""
+      else as-mobile-name s game (peek-qword s.items.looted (slot * 16))
+    in let blame = if text-length named == 0 then "The killer left no traces for you to find." else "The killer was " & named & "."
+    in let spoil = if text-length looter == 0 then "The corpse has not been desecrated." else "The corpse was last looted by " & looter & "."
+    in gs-reply [as-say "You examine the body...", as-say age, as-say blame, as-say spoil] "skills:forensics-corpse"
+  as-forensics : ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
+  as-forensics (s) (a) (game) (player) (obj) (now) =
+    let nothing = gs-reply [as-say "You notice nothing unusual."] "skills:forensics-nothing"
+    in if obj.kind == 1 then
+      (let stealing = if gsi-slot game obj.serial 0 < 0 then 0 else gs-skill game obj.serial 33
+      in let checked = as-check-range s a 19 0 stealing in nothing)
+    else if obj.kind /= 2 then nothing
+    else if not (as-near player obj 7) then gsi-denied "That is too far away."
+    else let slot = world-slot s.items.world obj.serial
+    in if slot < 0 then nothing
+    else if obj.graphic == #2006 then (if as-check-range s a 19 0 550 then as-corpse s game obj slot now else nothing)
+    else let mark = if peek-qword s.picks (slot * 16 + 8) == obj.serial then peek-qword s.picks (slot * 16) else 0
+    in if mark == 0 & (not (gsi-known s.items obj.serial) | (gsi-meta s.items obj.serial).gump == 0) then nothing
+    else if not (as-check-range s a 19 0 (int-mod mark 2048)) then nothing
+    else let picker = as-mobile-name s game (mark / 2048)
+    in if text-length picker == 0 then nothing
+    else gs-reply [as-say ("This lock was last picked by " & picker & ".")] "skills:forensics-lock"
+
+Page 1

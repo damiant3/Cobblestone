@@ -1,0 +1,166 @@
+Chapter: GameVendorUndo
+  cites Uoaix chapter GameVendorTrade
+  cites Uoaix chapter EconomyCurrencyFields
+  cites Uoaix chapter EconomyStateFields
+
+  GvSaved = record { target : Integer, bytes : Integer, size : Integer }
+  GvUndo = record { bytes : Integer, buffers : List GvSaved, buyer : Integer, seller : Integer,
+    entries : Integer, copper-entries : Integer, silver-entries : Integer,
+    events : Integer, trades : Integer, lots : Integer, sales : Integer,
+    sequence : Integer, count : Integer }
+  gvu-save-buffer : Integer, Integer -> GvSaved
+  gvu-save-buffer (target) (size) = let bytes = alloc-bytes size
+    in let copied = ws-copy target bytes size 0 in GvSaved { target = target, bytes = bytes, size = size }
+  gvu-restore-buffers : List GvSaved, Integer -> Integer
+  gvu-restore-buffers (xs) (i) = if i == list-length xs then 0 else let row = list-at xs i
+    in let copied = ws-copy row.bytes row.target row.size 0 in gvu-restore-buffers xs (i + 1)
+  gvu-write-lot : Integer, Integer, GvLot -> Integer
+  gvu-write-lot (buf) (at) (p) =
+    let f0 = poke-qword buf (at + 0) p.serial
+    in let f1 = poke-qword buf (at + 8) p.actor
+    in let f2 = poke-qword buf (at + 16) p.item
+    in let f3 = poke-qword buf (at + 24) p.quantity
+    in let f4 = poke-qword buf (at + 32) p.quality
+    in let f5 = poke-qword buf (at + 40) p.wear
+    in let f6 = poke-qword buf (at + 48) p.basis
+    in 0
+  gvu-read-lot : Integer, Integer, GvLot -> Integer
+  gvu-read-lot (buf) (at) (p) =
+    let f0 = __record-set p "serial" (peek-qword buf (at + 0))
+    in let f1 = __record-set p "actor" (peek-qword buf (at + 8))
+    in let f2 = __record-set p "item" (peek-qword buf (at + 16))
+    in let f3 = __record-set p "quantity" (peek-qword buf (at + 24))
+    in let f4 = __record-set p "quality" (peek-qword buf (at + 32))
+    in let f5 = __record-set p "wear" (peek-qword buf (at + 40))
+    in let f6 = __record-set p "basis" (peek-qword buf (at + 48))
+    in 0
+  gvu-write-sale : Integer, Integer, GvSale -> Integer
+  gvu-write-sale (buf) (at) (p) =
+    let f0 = poke-qword buf (at + 0) p.source
+    in let f1 = poke-qword buf (at + 8) p.delivered
+    in let f2 = poke-qword buf (at + 16) p.buyer
+    in let f3 = poke-qword buf (at + 24) p.seller
+    in let f4 = poke-qword buf (at + 32) p.item
+    in let f5 = poke-qword buf (at + 40) p.quantity
+    in let f6 = poke-qword buf (at + 48) p.quality
+    in let f7 = poke-qword buf (at + 56) p.wear
+    in let f8 = poke-qword buf (at + 64) p.gross
+    in let f9 = poke-qword buf (at + 72) p.currency-event
+    in let f10 = poke-qword buf (at + 80) p.gold-action
+    in let f11 = poke-qword buf (at + 88) p.hour
+    in 0
+  gvu-read-sale : Integer, Integer, GvSale -> Integer
+  gvu-read-sale (buf) (at) (p) =
+    let f0 = __record-set p "source" (peek-qword buf (at + 0))
+    in let f1 = __record-set p "delivered" (peek-qword buf (at + 8))
+    in let f2 = __record-set p "buyer" (peek-qword buf (at + 16))
+    in let f3 = __record-set p "seller" (peek-qword buf (at + 24))
+    in let f4 = __record-set p "item" (peek-qword buf (at + 32))
+    in let f5 = __record-set p "quantity" (peek-qword buf (at + 40))
+    in let f6 = __record-set p "quality" (peek-qword buf (at + 48))
+    in let f7 = __record-set p "wear" (peek-qword buf (at + 56))
+    in let f8 = __record-set p "gross" (peek-qword buf (at + 64))
+    in let f9 = __record-set p "currency-event" (peek-qword buf (at + 72))
+    in let f10 = __record-set p "gold-action" (peek-qword buf (at + 80))
+    in let f11 = __record-set p "hour" (peek-qword buf (at + 88))
+    in 0
+  gvu-lots : GvWorld, Integer, Boolean, Integer -> Integer
+  gvu-lots (v) (buf) (restore) (i) = if i == gv-lot-limit then 0
+    else let done = if restore then gvu-read-lot buf (512 + i * 56) (list-at v.lots i)
+      else gvu-write-lot buf (512 + i * 56) (list-at v.lots i)
+    in gvu-lots v buf restore (i + 1)
+  gvu-tail : GvWorld, GvUndo, Boolean, Integer -> Integer
+  gvu-tail (v) (u) (restore) (i) = if i == u.count then 0
+    else let at = 512 + gv-lot-limit * 56 + i * 680
+    in let x = v.currency
+    in let w = x.world
+    in let a = if restore then euf-read-event u.bytes at (list-at x.events (u.events + i))
+      else euf-write-event u.bytes at (list-at x.events (u.events + i))
+    in let b = if restore then es-read-entry u.bytes (at + 120) (list-at w.money.ledger (u.entries + i * 3))
+      else es-write-entry u.bytes (at + 120) (list-at w.money.ledger (u.entries + i * 3))
+    in let c = if restore then es-read-entry u.bytes (at + 176) (list-at w.money.ledger (u.entries + i * 3 + 1))
+      else es-write-entry u.bytes (at + 176) (list-at w.money.ledger (u.entries + i * 3 + 1))
+    in let g = if restore then es-read-entry u.bytes (at + 232) (list-at w.money.ledger (u.entries + i * 3 + 2))
+      else es-write-entry u.bytes (at + 232) (list-at w.money.ledger (u.entries + i * 3 + 2))
+    in let c1 = if restore then es-read-entry u.bytes (at + 288) (list-at x.copper.ledger (u.copper-entries + i * 2))
+      else es-write-entry u.bytes (at + 288) (list-at x.copper.ledger (u.copper-entries + i * 2))
+    in let c2 = if restore then es-read-entry u.bytes (at + 344) (list-at x.copper.ledger (u.copper-entries + i * 2 + 1))
+      else es-write-entry u.bytes (at + 344) (list-at x.copper.ledger (u.copper-entries + i * 2 + 1))
+    in let s1 = if restore then es-read-entry u.bytes (at + 400) (list-at x.silver.ledger (u.silver-entries + i * 2))
+      else es-write-entry u.bytes (at + 400) (list-at x.silver.ledger (u.silver-entries + i * 2))
+    in let s2 = if restore then es-read-entry u.bytes (at + 456) (list-at x.silver.ledger (u.silver-entries + i * 2 + 1))
+      else es-write-entry u.bytes (at + 456) (list-at x.silver.ledger (u.silver-entries + i * 2 + 1))
+    in let d = if restore then es-read-trade u.bytes (at + 512) (list-at w.trades (u.trades + i))
+      else es-write-trade u.bytes (at + 512) (list-at w.trades (u.trades + i))
+    in let e = if restore then gvu-read-sale u.bytes (at + 584) (list-at v.sales (u.sales + i))
+      else gvu-write-sale u.bytes (at + 584) (list-at v.sales (u.sales + i))
+    in gvu-tail v u restore (i + 1)
+  gvu-money : Integer, Integer, EmMoney, Integer, Integer, Boolean -> Integer
+  gvu-money (buf) (at) (m) (buyer) (seller) (restore) =
+    let a = if restore then es-read-money buf at m else es-write-money buf at m
+    in let b = if restore then es-read-purse buf (at + 64) (em-purse m 1) else es-write-purse buf (at + 64) (em-purse m 1)
+    in let c = if restore then es-read-purse buf (at + 88) (em-purse m buyer) else es-write-purse buf (at + 88) (em-purse m buyer)
+    in let d = if restore then es-read-purse buf (at + 112) (em-purse m seller) else es-write-purse buf (at + 112) (em-purse m seller)
+    in 0
+  gvu-save : GvWorld, Integer, Integer, Integer -> GvUndo
+  gvu-save (v) (buyer) (seller) (count) =
+    let x = v.currency
+    in let w = x.world
+    in let b = ep-actor w buyer
+    in let s = ep-actor w seller
+    in let bytes = alloc-bytes (512 + gv-lot-limit * 56 + count * 680)
+    in let p = euf-write-policy bytes 0 x
+    in let m = gvu-money bytes 104 w.money b.purse s.purse False
+    in let cm = gvu-money bytes 240 x.copper b.purse s.purse False
+    in let sm = gvu-money bytes 376 x.silver b.purse s.purse False
+    in let u = GvUndo { bytes = bytes, buyer = buyer, seller = seller,
+      entries = w.money.entry-count, copper-entries = x.copper.entry-count, silver-entries = x.silver.entry-count,
+      events = x.count, trades = w.trade-count,
+      lots = v.lot-count, sales = v.sale-count, sequence = v.sequence, count = count,
+      buffers = [gvu-save-buffer b.stock 1032, gvu-save-buffer b.quality 1032,
+        gvu-save-buffer b.wear 1032, gvu-save-buffer b.cost 1032,
+        gvu-save-buffer s.stock 1032, gvu-save-buffer s.quality 1032,
+        gvu-save-buffer s.wear 1032, gvu-save-buffer s.cost 1032,
+        gvu-save-buffer w.sales 1032, gvu-save-buffer w.turnover 64, gvu-save-buffer w.crown-turnover 64] }
+    in let lots = gvu-lots v bytes False 0
+    in let tail = gvu-tail v u False 0
+    in u
+  gvu-restore : GvWorld, GvUndo -> Integer
+  gvu-restore (v) (u) =
+    let w = v.currency.world
+    in let buffers = gvu-restore-buffers u.buffers 0
+    in let p = euf-read-policy u.bytes 0 v.currency
+    in let buyer = (ep-actor w u.buyer).purse
+    in let seller = (ep-actor w u.seller).purse
+    in let m = gvu-money u.bytes 104 w.money buyer seller True
+    in let cm = gvu-money u.bytes 240 v.currency.copper buyer seller True
+    in let sm = gvu-money u.bytes 376 v.currency.silver buyer seller True
+    in let lots = gvu-lots v u.bytes True 0
+    in let tail = gvu-tail v u True 0
+    in let a = __record-set v "lot-count" u.lots
+    in let b = __record-set v "sale-count" u.sales
+    in let c = __record-set v "sequence" u.sequence
+    in let d = __record-set w "trade-count" u.trades
+    in 0
+  gv-checkout : GvWorld, List GvLine, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  gv-checkout (v) (lines) (buyer) (seller) (owner) (destination) (actor) =
+    if not (gv-check-lots v lines seller buyer owner 0) then Err "vendor stock or ownership changed"
+    else let changed = gv-change v lines buyer 0
+    in let rolled = gv-seal-sales v
+    in if not (gv-can-pay v lines buyer seller) then Err "vendor funds or capacity refused"
+    else when gv-world-plan v lines destination (peek-qword v.game.world.buffer 8) 0 []
+      is Err (e) -> Err e
+      is Ok (events) ->
+        let money = gvu-save v buyer seller (list-length lines)
+        in let checkpoint = WorldCheckpoint { world = v.game.world, tick = v.currency.world.hour, sequence = v.sequence }
+        in let action = WorldAction { sequence = v.sequence + 1, tick = v.currency.world.hour,
+          actor = actor, target = owner, kind = 59, events = events }
+        in when wa-prepare checkpoint action
+          is Err (e) -> Err e
+          is Ok (undo) -> if gv-pay-lines v lines buyer seller 0 /= 0 then
+            let restored = gvu-restore v money
+            in let world = wa-rollback undo
+            in Err "vendor payment refused; cart restored"
+          else let accepted = wa-accept undo
+          in let sequence = __record-set v "sequence" (v.sequence + 1)
+          in Ok (list-length lines)

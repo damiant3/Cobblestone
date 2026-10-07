@@ -1,0 +1,120 @@
+Chapter: TownNetworkFeaturesProof
+  cites Uoaix chapter TownNetworkFeatures
+  cites Uoaix chapter EconomyInputFixtures
+  cites Foreword chapter Result
+
+  tnfp-check : Text, Boolean -> [Console] Nothing
+  tnfp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tnfp-hours : EpWorld, TfWorld, Integer -> Integer
+  tnfp-hours (w) (people) (n) = if n == 0 then 0
+    else if eh-step w /= 0 | tf-step people /= 0 then -1
+    else let ack = tf-ack-events people in tnfp-hours w people (n - 1)
+  tnfp-bound : TnlBinding, List Integer -> [Console] Nothing
+  tnfp-bound (b) (history) = act
+    s <- tn-new 0
+    prior-happy <- list-set-at s.inputs 30 777
+    prior-alarm <- list-set-at s.inputs 31 123
+    stale <- list-set-at s.inputs 1 999
+    goal <- tnl-goal b 10 4
+    start <- __heap-save
+    framed <- tnl-frame b s
+    finish <- __heap-save
+    p <- ep-actor b.economy b.actor
+    tnfp-check "live economy frame uses current stocks needs role and quote" (goal == 0 & framed == 0 & list-at s.inputs 0 == p.hunger * 10 & list-at s.inputs 5 == ep-at p.stock 10 * 1000 / 4 & list-at s.inputs 6 == ep-at p.stock 10 * 250 & list-at s.inputs 9 == (ep-price-gold b.economy b.actor 10 - 10) * 20 & list-at s.inputs 12 == 1000)
+    tnfp-check "residence weights enter culture input" (list-at s.inputs 25 == 400)
+    tnfp-check "frame clears unused slots and preserves recurrent slots" (list-at s.inputs 1 == 0 & list-at s.inputs 30 == 777 & list-at s.inputs 31 == 123)
+    changed-source <- list-set-at history 0 0
+    tnfp-check "residence history is copied at admission" (list-at b.hours 0 == 288 & tnl-weighted b 0 0 == 400)
+    tnfp-check "live frame retains no new heap" (start == finish)
+    invalid-goal <- tnl-goal b 999 1
+    tnfp-check "invalid goal leaves binding unchanged" (invalid-goal == -1 & b.goal == 10 & b.needed == 4)
+    duplicate <- tnl-frame b s
+    tnfp-check "same-hour sampling does not duplicate residence" (duplicate == 0 & b.total == 384)
+    saved-inputs <- s.inputs
+    short-inputs <- __record-set s "inputs" []
+    tnfp-check "short input state refuses without residence mutation" (tnl-frame b s == -1 & b.total == 384)
+    restored-inputs <- __record-set s "inputs" saved-inputs
+    saved-at <- b.at
+    reversed <- __record-set b "at" (b.at + 1)
+    tnfp-check "clock reversal refuses without residence mutation" (tnl-frame b s == -1 & b.total == 384)
+    restored-at <- __record-set b "at" saved-at
+    advanced <- tnfp-hours b.economy b.culture.people 8
+    elapsed <- tnl-frame b s
+    tnfp-check "elapsed hours accrue only to current town" (advanced == 0 & elapsed == 0 & list-at b.hours 0 == 288 & list-at b.hours 1 == 104 & list-at s.inputs 25 == (288 * 800 - 104 * 800) / 392)
+    person <- tf-person b.culture.people b.npc
+    old-town <- tf-town b.culture.people 2
+    new-town <- tf-town b.culture.people 1
+    depart <- __record-set old-town "population" (old-town.population - 1)
+    enter <- __record-set new-town "population" (new-town.population + 1)
+    move <- __record-set person "town" 1
+    sentinel <- list-set-at s.inputs 0 -999
+    tnfp-check "unrecorded town change refuses before frame mutation" (tnl-frame b s == -1 & list-at s.inputs 0 == -999 & b.town == 2 & b.total == 392)
+    denied <- tnl-arrive b False
+    arrived <- tnl-arrive b True
+    later <- tnfp-hours b.economy b.culture.people 2
+    new-frame <- tnl-frame b s
+    tnfp-check "verified arrival preserves previous towns and advances new town" (denied == -1 & arrived == 0 & later == 0 & new-frame == 0 & b.town == 1 & list-at b.hours 0 == 290 & list-at b.hours 1 == 104 & b.total == 394)
+    old-value <- list-at b.culture.trade 0
+    denied-culture <- tnl-town b.culture False 1 0
+    too-large <- tnl-town b.culture True 1 1001
+    tnfp-check "culture edits require verified bounded data" (denied-culture == -1 & too-large == -1 & list-at b.culture.trade 0 == old-value)
+    edited <- tnl-town b.culture True 1 600
+    reframed <- tnl-frame b s
+    tnfp-check "current town profiles shape residence-weighted opinion input" (edited == 0 & reframed == 0 & list-at s.inputs 25 == (290 * 600 - 104 * 800) / 394)
+    count <- __record-set s "count" 1
+    pending <- tnl-frame b s
+    tnfp-check "pending action queue prevents feature replacement" (pending == -1 & s.head == 0 & s.count == 1)
+    drain <- __record-set s "head" 1
+    hour <- b.culture.people.hour
+    skew <- __record-set b.culture.people "hour" (hour + 1)
+    tnfp-check "mismatched world clocks refuse" (tnl-frame b s == -1 & b.at == hour)
+    restore-hour <- __record-set b.culture.people "hour" hour
+    old-place <- person.place
+    place <- __record-set person "place" (old-place + 1)
+    tnfp-check "mismatched actor location refuses" (tnl-frame b s == -1)
+    restore-place <- __record-set person "place" old-place
+    dead <- __record-set person "alive" 0
+    tnfp-check "dead actor binding refuses" (tnl-frame b s == -1)
+    alive <- __record-set person "alive" 1
+    when tnl-bind b.economy b.culture b.npc b.actor b.item b.role [ep-limit,0,0,0]
+      is Err (message) -> print-line-uni ("FAIL limit binding " & message)
+      is Ok (full) -> act
+        next <- tnfp-hours b.economy b.culture.people 1
+        tnfp-check "residence capacity refuses without wrapping" (next == 0 & tnl-frame full s == -1 & full.total == ep-limit & list-at full.hours 0 == ep-limit)
+      end
+  end
+  tnfp-run : EpWorld -> [Console] Nothing
+  tnfp-run (w) = act
+    people <- tf-new 0
+    one <- tf-add-town people "Trinsic" 100 100 100
+    two <- tf-add-town people "Vesper" 100 100 100
+    first <- tf-add-person people "First" one 100 100 0 7000
+    second <- tf-add-person people "Farmer" two 100 100 1 7000
+    align <- __record-set people "hour" w.hour
+    c <- tnl-culture people
+    c1 <- tnl-town c True one 800
+    c2 <- tnl-town c True two -800
+    history <- [288,96,0,0]
+    tnfp-check "actor binding rejects wrong legal owner" (is-err (tnl-bind w c first 2 10 3 history))
+    tnfp-check "history rejects unknown towns negative hours and wrong shape" (is-err (tnl-bind w c second 2 10 3 [0,0,1,0]) & is-err (tnl-bind w c second 2 10 3 [-1,0,0,0]) & is-err (tnl-bind w c second 2 10 3 []))
+    start <- __heap-save
+    bound <- tnl-bind w c second 2 10 3 history
+    finish <- __heap-save
+    when bound
+      is Err (message) -> print-line-uni ("FAIL binding " & message)
+      is Ok (b) -> act
+        print-line-uni ("BINDING-BYTES " & show (finish - start))
+        tnfp-bound b history
+      end
+    inputs <- tn-zeros 32
+    sentinel <- list-set-at inputs 0 17
+    tnfp-check "invalid shared frame arguments leave target unchanged" (tnf-frame w 2 10 3 0 0 0 inputs 0 == -1 & tnf-frame w 2 10 3 0 1 0 inputs 1 == -1 & list-at inputs 0 == 17)
+  end
+  opening : [Console] Nothing = act
+    when eif-source 0
+      is Err (message) -> print-line-uni ("FAIL fixture " & message)
+      is Ok (state) -> act
+        fixture <- eif-build state
+        if fixture.failed /= 0 then print-line-uni "FAIL fixture setup" else tnfp-run state.world
+      end
+  end

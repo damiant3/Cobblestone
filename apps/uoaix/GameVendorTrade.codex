@@ -1,0 +1,237 @@
+Chapter: GameVendorTrade
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameVendorBuys
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter ItemActions
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Foreword chapter Result
+
+ Adapted admission/order from SphereServer X CClientEvent.cpp Event_VendorBuy
+ and Event_VendorSell, Apache-2.0. Gold settlement uses EuCurrency; selected
+ serial lots retain exact quality/wear and sold goods are retained, not deleted.
+
+  GvLine = record { lot : Integer, quantity : Integer, price : Integer,
+    delivered : Integer, basis : Integer, copper : Integer, silver : Integer, gold : Integer }
+  gv-quote : GvPlayer, Integer, Integer -> Integer
+  gv-quote (p) (serial) (i) = if i == p.count then -1
+    else if (list-at p.offers i).serial == serial then i else gv-quote p serial (i + 1)
+  gv-line-find : List GvLine, Integer, Integer -> Integer
+  gv-line-find (lines) (lot) (i) = if i == list-length lines then -1
+    else if (list-at lines i).lot == lot then i else gv-line-find lines lot (i + 1)
+  gv-read-lines : GvWorld, GvPlayer, List Integer, Integer, Integer, Integer, Integer, List GvLine -> Result (List GvLine) Text
+  gv-read-lines (v) (p) (packet) (count) (start) (stride) (i) (lines) = if i == count then Ok lines
+    else let at = start + i * stride
+    in let serial = gp-u32 packet at
+    in let quantity = gp-u16 packet (at + 4)
+    in let quote = gv-quote p serial 0
+    in if quantity == 0 | quote < 0 then Err "item is not in current vendor quote"
+    else let q = list-at p.offers quote
+    in when (if q.lot >= 0 then Ok q.lot else gvb-admit v p q)
+      is Err (e) -> Err e
+      is Ok (lot) -> let bound = __record-set q "lot" lot
+        in let old = gv-line-find lines lot 0
+        in if old >= 0 then
+          let line = list-at lines old
+          in if line.quantity > q.quantity - quantity then Err "duplicate quantity exceeds quoted stock"
+          else let changed = __record-set line "quantity" (line.quantity + quantity)
+          in gv-read-lines v p packet count start stride (i + 1) lines
+        else if quantity > q.quantity then Err "quantity exceeds quoted stock"
+        else gv-read-lines v p packet count start stride (i + 1) (list-push lines (GvLine {
+          lot = lot, quantity = quantity, price = q.price, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }))
+  gv-line-total : GvWorld, List GvLine, Integer, Integer, Integer -> Integer
+  gv-line-total (v) (lines) (item) (field) (i) = if i == list-length lines then 0
+    else let line = list-at lines i
+    in let l = list-at v.lots line.lot
+    in let n = if item > 0 & l.item /= item then 0 else if field == 0 then line.quantity
+      else if field == 1 then line.quantity * l.quality else if field == 2 then line.quantity * l.wear
+      else if field == 3 then line.basis else line.quantity * line.price
+    in n + gv-line-total v lines item field (i + 1)
+  gv-check-lots : GvWorld, List GvLine, Integer, Integer, Integer, Integer -> Boolean
+  gv-check-lots (v) (lines) (seller) (buyer) (owner) (i) = if not (world-indexed v.game.world) then False
+    else if i == list-length lines then True
+    else let line = list-at lines i
+    in if line.lot < 0 | line.lot >= v.lot-count | line.price < 1 | line.price > 1000000 then False
+    else let l = list-at v.lots line.lot
+    in if l.actor /= seller | line.quantity <= 0 | line.quantity > l.quantity | not (gv-owned v.game.world l.serial owner 65) then False
+    else if not (gv-sale-source v l.serial owner seller) then False
+    else when world-get v.game.world l.serial
+      is Err (e) -> False
+      is Ok (obj) -> if obj.kind /= 2 | obj.amount /= l.quantity | world-child-count v.game.world l.serial > 0 then False
+        else let basis = __record-set line "basis" (l.basis * line.quantity / l.quantity)
+        in gv-check-lots v lines seller buyer owner (i + 1)
+  gv-check-pools : GvWorld, List GvLine, Integer, Integer, Integer -> Boolean
+  gv-check-pools (v) (lines) (buyer) (seller) (i) = if i == list-length lines then True
+    else let l = list-at v.lots (list-at lines i).lot
+    in let b = ep-actor v.currency.world buyer
+    in let s = ep-actor v.currency.world seller
+    in let quantity = gv-line-total v lines l.item 0 0
+    in let quality = gv-line-total v lines l.item 1 0
+    in let wear = gv-line-total v lines l.item 2 0
+    in let basis = gv-line-total v lines l.item 3 0
+    in let gross = gv-line-total v lines l.item 4 0
+    in ep-at s.stock l.item >= quantity & ep-room b l.item quantity
+      & ep-at s.quality l.item >= quality & ep-at s.wear l.item >= wear & ep-at s.cost l.item >= basis
+      & ep-at b.cost l.item <= ep-limit - gross & ep-at v.currency.world.sales l.item <= ep-limit - quantity
+      & gv-check-pools v lines buyer seller (i + 1)
+  gv-splits : GvWorld, List GvLine, Integer -> Integer
+  gv-splits (v) (lines) (i) = if i == list-length lines then 0
+    else let line = list-at lines i
+    in (if line.quantity < (list-at v.lots line.lot).quantity then 1 else 0) + gv-splits v lines (i + 1)
+  gv-chain-total : GvWorld, List GvLine, Integer, Integer -> Integer
+  gv-chain-total (v) (lines) (chain) (i) = if i == list-length lines then 0
+    else let line = list-at lines i
+    in let item = (list-at v.lots line.lot).item
+    in (if (list-at v.currency.world.catalog.items (item - 1)).chain == chain then line.quantity * line.price else 0) + gv-chain-total v lines chain (i + 1)
+  gv-chains-room : GvWorld, List GvLine, Integer -> Boolean
+  gv-chains-room (v) (lines) (chain) = if chain == 8 then True
+    else ep-at v.currency.world.turnover chain <= ep-limit - gv-chain-total v lines chain 0 & gv-chains-room v lines (chain + 1)
+  gv-tender-plan : EuCurrency, List GvLine, Integer, Integer, Integer, Integer -> Boolean
+  gv-tender-plan (x) (lines) (copper) (silver) (gold) (i) = if i == list-length lines then True
+    else let line = list-at lines i
+    in let price = line.quantity * line.price
+    in let g = if gold < price / x.copper-rate then gold else price / x.copper-rate
+    in let rest = price - g * x.copper-rate
+    in let silver-unit = x.copper-rate / x.silver-rate
+    in let s = if silver < rest / silver-unit then silver else rest / silver-unit
+    in let c = rest - s * silver-unit
+    in if c > copper then False
+    else let a = __record-set line "copper" c
+    in let b = __record-set line "silver" s
+    in let d = __record-set line "gold" g
+    in gv-tender-plan x lines (copper - c) (silver - s) (gold - g) (i + 1)
+  gv-change : GvWorld, List GvLine, Integer, Integer -> Integer
+  gv-change (v) (lines) (buyer) (step) = if step == 70 | not (ep-valid-actor v.currency.world buyer) then 0
+    else let x = v.currency
+    in let purse = (ep-actor x.world buyer).purse
+    in let c = (em-purse x.copper purse).coin
+    in let s = (em-purse x.silver purse).coin
+    in let g = (em-purse x.world.money purse).coin
+    in if purse <= 1 | gv-tender-plan x lines c s g 0 then 0
+    else if s > 0 then (if eu-exchange x purse 2 s 1 /= 0 then 0 else gv-change v lines buyer (step + 1))
+    else if g > 0 then (if eu-exchange x purse 3 1 2 /= 0 then 0 else gv-change v lines buyer (step + 1))
+    else 0
+  gv-metal-total : List GvLine, Integer, Integer -> Integer
+  gv-metal-total (lines) (metal) (i) = if i == list-length lines then 0
+    else let line = list-at lines i
+    in (if metal == 1 then line.copper else if metal == 2 then line.silver else line.gold) + gv-metal-total lines metal (i + 1)
+  gv-metal-room : EuCurrency, List GvLine, Integer, Integer, Integer -> Boolean
+  gv-metal-room (x) (lines) (buyer) (seller) (metal) =
+    let m = eu-money x metal
+    in let amount = gv-metal-total lines metal 0
+    in let count = list-length lines
+    in m.entry-count <= em-rows - count * (if metal == 3 then 3 else 2)
+      & m.sequence <= em-limit - count * (if metal == 3 then 2 else 1)
+      & (em-purse m buyer).coin >= amount & (em-purse m seller).coin <= em-limit - amount
+      & (em-purse m 1).coin <= em-limit - amount
+  gv-can-pay : GvWorld, List GvLine, Integer, Integer -> Boolean
+  gv-can-pay (v) (lines) (buyer) (seller) =
+    if not (eu-ready v.currency) | not (ep-valid-actor v.currency.world buyer) | not (ep-valid-actor v.currency.world seller) | buyer == seller then False
+    else let w = v.currency.world
+    in let b = ep-actor w buyer
+    in let s = ep-actor w seller
+    in let count = list-length lines
+    in let gross = gv-line-total v lines 0 4 0
+    in count > 0 & count <= 32 & b.place == s.place & b.purse /= s.purse & b.purse /= 1 & s.purse /= 1
+      & v.sale-count <= 1024 - count & w.trade-count <= ep-trade-limit - count
+      & v.currency.count <= em-rows - count & v.sequence < ep-limit
+      & gross > 0 & gross <= em-limit
+      & gv-tender-plan v.currency lines (em-purse v.currency.copper b.purse).coin (em-purse v.currency.silver b.purse).coin (em-purse w.money b.purse).coin 0
+      & gv-metal-room v.currency lines b.purse s.purse 1 & gv-metal-room v.currency lines b.purse s.purse 2 & gv-metal-room v.currency lines b.purse s.purse 3
+      & v.lot-count <= gv-lot-limit - gv-splits v lines 0 & gv-check-pools v lines buyer seller 0 & gv-chains-room v lines 1
+ Classic backpack gump 0x3C interior: x 44..141, y 65..93. Spread is a hash of the
+ serial and cart line, so a replay places items identically.
+  gv-spot-x : Integer, Integer -> Integer
+  gv-spot-x (serial) (i) = 44 + int-mod (bit-and (serial * 7919 + i * 104729) #7FFFFFFF) 98
+  gv-spot-y : Integer, Integer -> Integer
+  gv-spot-y (serial) (i) = 65 + int-mod (bit-and (serial * 6007 + i * 389) #7FFFFFFF) 29
+  gv-world-plan : GvWorld, List GvLine, Integer, Integer, Integer, List WorldEvent -> Result (List WorldEvent) Text
+  gv-world-plan (v) (lines) (container) (free) (i) (events) = if i == list-length lines then Ok events
+    else let line = list-at lines i
+    in let lot = list-at v.lots line.lot
+    in when world-get v.game.world lot.serial
+      is Err (e) -> Err e
+      is Ok (obj) ->
+        if line.quantity == obj.amount then
+          let moved = ia-copy obj obj.serial obj.amount container (gv-spot-x obj.serial i) (gv-spot-y obj.serial i) 0
+          in let saved = __record-set line "delivered" obj.serial
+          in gv-world-plan v lines container free (i + 1) (list-push events (ia-event (v.sequence + 1) v.currency.world.hour 2 moved))
+        else if free < 0 | free >= v.game.world.capacity then Err "vendor split exceeds world capacity"
+        else let old = peek-qword v.game.world.buffer (16 + free * 80)
+        in if old > 0 then Err "vendor free slot invalid"
+        else let low = if old == 0 then free + 1 else bit-and (0 - old) world-serial-mask + v.game.world.capacity
+        in if low > world-serial-mask then Err "vendor serial generation exhausted"
+        else let serial = world-item-bit + low
+        in let next = peek-qword v.game.world.buffer (24 + free * 80)
+        in let remainder = ia-copy obj obj.serial (obj.amount - line.quantity) obj.container obj.x obj.y obj.z
+        in let moved = ia-copy obj serial line.quantity container (gv-spot-x serial i) (gv-spot-y serial i) 0
+        in let saved = __record-set line "delivered" serial
+        in let first = list-push events (ia-event (v.sequence + 1) v.currency.world.hour 2 remainder)
+        in gv-world-plan v lines container next (i + 1) (list-push first (ia-event (v.sequence + 1) v.currency.world.hour 1 moved))
+  gv-pay-line : GvWorld, GvLine, Integer, Integer -> Integer
+  gv-pay-line (v) (line) (buyer) (seller) =
+    let w = v.currency.world
+    in let b = ep-actor w buyer
+    in let s = ep-actor w seller
+    in let l = list-at v.lots line.lot
+    in let item = l.item
+    in let quality = line.quantity * l.quality
+    in let wear = line.quantity * l.wear
+    in let gross = line.quantity * line.price
+    in let chain = (list-at w.catalog.items (item - 1)).chain
+    in let paid = eu-sale v.currency True b.purse s.purse gross line.copper line.silver line.gold
+    in if paid /= 0 then -1
+    else let a = ep-add s.stock item (0 - line.quantity)
+    in let c = ep-add s.quality item (0 - quality)
+    in let d = ep-add s.wear item (0 - wear)
+    in let e = ep-add s.cost item (0 - line.basis)
+    in let f = ep-add b.stock item line.quantity
+    in let g = ep-add b.quality item quality
+    in let h = ep-add b.wear item wear
+    in let j = ep-add b.cost item gross
+    in let sold = ep-add w.sales item line.quantity
+    in let total = ep-add w.turnover chain gross
+    in let crown = if (em-purse w.money b.purse).kind == 5 then ep-add w.crown-turnover chain gross else 0
+    in let trade = list-at w.trades w.trade-count
+    in let t0 = __record-set trade "action" w.money.sequence
+    in let t1 = __record-set trade "hour" w.hour
+    in let t2 = __record-set trade "buyer" b.purse
+    in let t3 = __record-set trade "seller" s.purse
+    in let t4 = __record-set trade "item" item
+    in let t5 = __record-set trade "quantity" line.quantity
+    in let t6 = __record-set trade "gross" gross
+    in let t7 = __record-set trade "quality" quality
+    in let t8 = __record-set trade "durability" wear
+    in let recorded = __record-set w "trade-count" (w.trade-count + 1)
+    in let sale = list-at v.sales v.sale-count
+    in let s0 = __record-set sale "source" l.serial
+    in let s1 = __record-set sale "delivered" line.delivered
+    in let s2 = __record-set sale "buyer" buyer
+    in let s3 = __record-set sale "seller" seller
+    in let s4 = __record-set sale "item" item
+    in let s5 = __record-set sale "quantity" line.quantity
+    in let s6 = __record-set sale "quality" quality
+    in let s7 = __record-set sale "wear" wear
+    in let s8 = __record-set sale "gross" gross
+    in let s9 = __record-set sale "currency-event" (v.currency.base + v.currency.count)
+    in let s10 = __record-set sale "gold-action" w.money.sequence
+    in let s11 = __record-set sale "hour" w.hour
+    in let counted = __record-set v "sale-count" (v.sale-count + 1)
+    in let target = if line.delivered == l.serial then l else list-at v.lots v.lot-count
+    in let count = if line.delivered == l.serial then v else __record-set v "lot-count" (v.lot-count + 1)
+    in let q = __record-set target "quality" l.quality
+    in let charge = __record-set target "wear" l.wear
+    in let typ = __record-set target "item" item
+    in let remaining = if line.delivered == l.serial then l else __record-set l "quantity" (l.quantity - line.quantity)
+    in let cost = if line.delivered == l.serial then l else __record-set l "basis" (l.basis - line.basis)
+    in let owner = __record-set target "actor" buyer
+    in let id = __record-set target "serial" line.delivered
+    in let amount = __record-set target "quantity" line.quantity
+    in let paid = __record-set target "basis" gross
+    in 0
+  gv-pay-lines : GvWorld, List GvLine, Integer, Integer, Integer -> Integer
+  gv-pay-lines (v) (lines) (buyer) (seller) (i) = if i == list-length lines then 0
+    else if gv-pay-line v (list-at lines i) buyer seller /= 0 then -1 else gv-pay-lines v lines buyer seller (i + 1)

@@ -1,0 +1,84 @@
+Chapter: AdminContext
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Encode chapter Json
+
+  cx-extra-none : Text, Integer, Integer -> Text
+  cx-extra-none (topic) (id) (after) = ""
+
+  cx-error : Text -> Text
+  cx-error (reason) = "{\"error\":" & json-quote reason & "}"
+
+  cx-known : Text -> Boolean
+  cx-known (topic) = topic == "character" | topic == "npc" | topic == "persona" | topic == "memory" | topic == "family" | topic == "opinions" | topic == "town" | topic == "market" | topic == "registry" | topic == "events" | topic == "town-culture"
+
+  cx-npc-json : TfPerson -> Text
+  cx-npc-json (p) = "{\"npc\":" & show p.serial & ",\"world_serial\":" & show p.world-serial & ",\"name\":" & json-quote p.name
+    & ",\"town\":" & show p.town & ",\"place\":" & show p.place & ",\"home\":" & show p.home & ",\"workplace\":" & show p.workplace
+    & ",\"job\":" & show p.job & ",\"age_days\":" & show p.age & ",\"alive\":" & show p.alive
+    & ",\"hunger\":" & show p.hunger & ",\"fatigue\":" & show p.fatigue & ",\"mood\":" & show p.mood
+    & ",\"illness\":" & show p.illness & ",\"activity\":" & show p.activity
+    & ",\"coin\":" & show p.coin & ",\"bread\":" & show p.bread & ",\"goods\":" & show p.goods & "}"
+
+  cx-parts : List Text -> Text
+  cx-parts (parts) = "[" & text-concat-list parts & "]"
+
+  cx-child-rows : TfWorld, Integer, Integer, List Text -> Text
+  cx-child-rows (w) (id) (i) (parts) =
+    if i >= w.used then cx-parts parts
+    else let p = list-at w.people i
+    in if p.parent-a /= id & p.parent-b /= id then cx-child-rows w id (i + 1) parts
+    else let separated = if list-length parts == 0 then parts else list-push parts ","
+    in cx-child-rows w id (i + 1) (list-push separated (show p.serial))
+
+  cx-registry-rows : TfWorld, Integer, Integer, List Text -> Text
+  cx-registry-rows (w) (i) (stop) (parts) =
+    if i >= stop then cx-parts parts
+    else let separated = if list-length parts == 0 then parts else list-push parts ","
+    in cx-registry-rows w (i + 1) stop (list-push separated (cx-npc-json (list-at w.people i)))
+
+  cx-event-rows : TfWorld, Integer, Integer, Integer, Integer, List Text -> Text
+  cx-event-rows (w) (town) (i) (remaining) (cursor) (parts) =
+    if i >= w.event-count | remaining == 0 then "{\"scope\":\"unacknowledged-town-events\",\"rows\":" & cx-parts parts & ",\"next\":" & show (if i >= w.event-count then 0 else cursor) & "}"
+    else let at = i * 4
+    in let npc = list-at w.events (at + 1)
+    in let sequence = w.sequence - w.event-count + i + 1
+    in if town > 0 & (tf-person w npc).town /= town then cx-event-rows w town (i + 1) remaining sequence parts
+    else let row = "{\"sequence\":" & show sequence & ",\"kind\":" & show (list-at w.events at) & ",\"npc\":" & show npc & ",\"other\":" & show (list-at w.events (at + 2)) & ",\"game_hour\":" & show (list-at w.events (at + 3)) & "}"
+    in let separated = if list-length parts == 0 then parts else list-push parts ","
+    in cx-event-rows w town (i + 1) (remaining - 1) sequence (list-push separated row)
+
+  cx-native : TfWorld, TmMind, Text, Integer, Integer -> Text
+  cx-native (w) (m) (topic) (id) (after) =
+    if topic == "registry" then
+      let start = min after w.used
+      in let stop = min w.used (start + 16)
+      in "{\"scope\":\"layer1-npcs\",\"rows\":" & cx-registry-rows w start stop [] & ",\"next\":" & show (if stop < w.used then stop else 0) & "}"
+    else if topic == "character" then "{\"available\":false,\"reason\":\"character-adapter-not-bound\"}"
+    else if topic == "events" then cx-event-rows w id (min w.event-count (max 0 (after - (w.sequence - w.event-count)))) 16 after []
+    else if topic == "town" | topic == "market" | topic == "town-culture" then
+      if id < 1 | id > w.town-count then cx-error "town-id"
+      else let t = tf-town w id
+      in if topic == "town-culture" then "{\"available\":false,\"town\":" & show id & ",\"reason\":\"culture-adapter-not-bound\"}"
+      else if topic == "market" then "{\"scope\":\"layer1-town-market\",\"town\":" & show id & ",\"vendor_npc\":" & show t.vendor & ",\"bread\":{\"price\":1,\"stock\":" & show t.bread & "},\"goods\":{\"price\":3,\"stock\":" & show t.goods & "}}"
+      else "{\"town\":" & show id & ",\"name\":" & json-quote t.name & ",\"population\":" & show t.population & ",\"market\":" & show t.market & ",\"tavern\":" & show t.tavern & ",\"temple\":" & show t.temple & ",\"births\":" & show t.births & ",\"deaths\":" & show t.deaths & "}"
+    else if not (tf-valid-person w id) then cx-error "npc-id"
+    else let p = tf-person w id
+    in if topic == "npc" then cx-npc-json p
+    else if topic == "memory" then "{\"npc\":" & show id & ",\"event_ids\":" & tm-memory-json p 0 "[" & ",\"detail_scope\":\"use retained events or durable adapter\"}"
+    else if topic == "family" then "{\"npc\":" & show id & ",\"spouse\":" & show p.spouse & ",\"parent_a\":" & show p.parent-a & ",\"parent_b\":" & show p.parent-b & ",\"children\":" & cx-child-rows w id 0 [] & "}"
+    else if topic == "opinions" then "{\"available\":false,\"npc\":" & show id & ",\"mood\":" & show p.mood & ",\"reason\":\"opinion-adapter-not-bound\"}"
+    else let persona = list-at m.personas (id - 1)
+    in if persona.npc /= id then cx-error "unconfigured-persona"
+    else "{\"npc\":" & show id & ",\"description\":" & json-quote persona.description & ",\"fallback\":" & json-quote persona.fallback & ",\"token_budget\":" & show persona.token-budget & "}"
+
+  cx-read : TfWorld, TmMind, (Text, Integer, Integer -> Text), Text, Integer, Integer -> Text
+  cx-read (w) (m) (extra) (topic) (id) (after) =
+    if not (cx-known topic) then cx-error "context-topic"
+    else if id < 0 | id > 2147483647 | after < 0 | after > 2147483647 then cx-error "context-range"
+    else let supplied = extra topic id after
+    in let body = if supplied == "" then cx-native w m topic id after else supplied
+    in if text-length body > 16384 then cx-error "context-too-large"
+    else let parsed = json-parse-value body 0 (text-length body)
+    in if not parsed.ok | skip-ws body parsed.next (text-length body) /= text-length body then cx-error "context-adapter-json"
+    else "{\"topic\":" & json-quote topic & ",\"id\":" & show id & ",\"game_hour\":" & show w.hour & ",\"data\":" & body & "}"

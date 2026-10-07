@@ -1,0 +1,183 @@
+Chapter: TownMind
+  cites Uoaix chapter Townsfolk
+  cites Encode chapter Json
+
+Section: Records
+
+  TmPersona = record {
+    npc : Integer, description : Text, fallback : Text,
+    call-limit : Integer, token-budget : Integer, gift-limit : Integer,
+    call-hour : Integer, calls : Integer, request : Integer
+  }
+
+  TmProposal = record {
+    actor : Integer, kind : Integer, target : Integer,
+    item : Integer, quantity : Integer, destination : Integer, speech : Text
+  }
+
+  TmReply = record {
+    speech : Text, outcome : Integer, moved : Integer, fallback : Integer
+  }
+
+  TmMind = record {
+    personas : List TmPersona, audit : List Integer, audit-count : Integer,
+    sequence : Integer, fallbacks : Integer, refusals : Integer, accepted : Integer
+  }
+
+  tm-empty-persona : Integer -> TmPersona
+  tm-empty-persona (unused) = TmPersona {
+    npc = 0, description = "", fallback = "I must return to my work.",
+    call-limit = 2, token-budget = 128, gift-limit = 0,
+    call-hour = -1, calls = 0, request = 0
+  }
+
+  tm-personas : Integer, List TmPersona -> List TmPersona
+  tm-personas (n) (xs) =
+    if n == 128 then xs else tm-personas (n + 1) (list-push xs (tm-empty-persona n))
+
+  tm-new : Integer -> TmMind
+  tm-new (unused) = TmMind {
+    personas = tm-personas 0 [], audit = tf-zeros 6144 [], audit-count = 0,
+    sequence = 0, fallbacks = 0, refusals = 0, accepted = 0
+  }
+
+  tm-configure : TmMind, TfWorld, Integer, Text, Text, Integer, Integer, Integer -> Integer
+  tm-configure (m) (w) (npc) (description) (fallback) (calls) (tokens) (gifts) =
+    if not (tf-valid-person w npc) then -1
+    else if text-length description == 0 | text-length description > 512 | text-length fallback == 0 | text-length fallback > 128 then -1
+    else if calls < 1 | calls > 8 | tokens < 1 | tokens > 512 | gifts < 0 | gifts > 10 then -1
+    else let p = list-at m.personas (npc - 1)
+    in if p.npc /= 0 then -1
+    else let a = __record-set p "npc" npc
+    in let b = __record-set p "description" description
+    in let c = __record-set p "fallback" fallback
+    in let d = __record-set p "call-limit" calls
+    in let e = __record-set p "token-budget" tokens
+    in let f = __record-set p "gift-limit" gifts
+    in 0
+
+Section: Quoted Context
+
+  tm-memory-json : TfPerson, Integer, Text -> Text
+  tm-memory-json (p) (i) (text) =
+    if i == p.memory-count then text & "]"
+    else let at = int-mod (p.memory-next - p.memory-count + i + 16) 16
+    in tm-memory-json p (i + 1) (text & (if i == 0 then "" else ",") & show (list-at p.memories at))
+
+  tm-context : TmMind, TfWorld, Integer, Integer, Text -> Text
+  tm-context (m) (w) (npc) (event) (line) =
+    if not (tf-valid-person w npc) | event < 1 | event > 4 | text-length line > 512 then "{\"error\":\"invalid-context\"}"
+    else let persona = list-at m.personas (npc - 1)
+    in let person = tf-person w npc
+    in if persona.npc == 0 then "{\"error\":\"unconfigured-persona\"}"
+    else "{\"persona\":" & json-quote persona.description & ",\"npc\":" & show npc & ",\"event\":" & show event & ",\"hour\":" & show w.hour & ",\"name\":" & json-quote person.name & ",\"hunger\":" & show person.hunger & ",\"fatigue\":" & show person.fatigue & ",\"token_budget\":" & show persona.token-budget & ",\"memory\":" & tm-memory-json person 0 "[" & ",\"player_text\":" & json-quote line & "}"
+
+Section: Inventory Rules
+
+  tm-stock : TfPerson, Integer -> Integer
+  tm-stock (p) (item) = if item == 1 then p.bread else if item == 2 then p.goods else p.coin
+
+  tm-store : TfPerson, Integer, Integer -> TfPerson
+  tm-store (p) (item) (amount) =
+    if item == 1 then __record-set p "bread" amount
+    else if item == 2 then __record-set p "goods" amount
+    else __record-set p "coin" amount
+
+  tm-validate : TfWorld, TmPersona, Integer, TmProposal -> Integer
+  tm-validate (w) (persona) (event) (proposal) =
+    if proposal.actor /= persona.npc then 5
+    else let actor = tf-person w persona.npc
+    in if actor.alive == 0 then 5
+    else if text-length proposal.speech > 256 then 3
+    else if proposal.kind == 0 then 0
+    else if proposal.kind == 1 then
+      if event /= 2 | persona.gift-limit == 0 then 12
+      else if not (tf-valid-person w proposal.target) | proposal.target == proposal.actor then 5
+      else if proposal.item < 1 | proposal.item > 3 | proposal.quantity <= 0 | proposal.quantity > persona.gift-limit then 6
+      else let target = tf-person w proposal.target
+      in if target.alive == 0 | actor.town /= target.town | actor.place /= target.place then 7
+      else if tm-stock actor proposal.item < proposal.quantity | tm-stock target proposal.item > 1000000 - proposal.quantity then 6
+      else 0
+    else if proposal.kind == 2 then
+      if event /= 2 | actor.illness > 0 then 12
+      else let town = tf-town w actor.town
+      in if proposal.destination == actor.home | proposal.destination == actor.workplace | proposal.destination == town.market | proposal.destination == town.tavern | proposal.destination == town.temple then 0 else 7
+    else 4
+
+  tm-apply : TfWorld, TmProposal -> Integer
+  tm-apply (w) (proposal) =
+    if proposal.kind == 0 then 0
+    else let actor = tf-person w proposal.actor
+    in if proposal.kind == 1 then
+      let target = tf-person w proposal.target
+      in let available = tm-stock actor proposal.item
+      in let owned = tm-stock target proposal.item
+      in let a = tm-store actor proposal.item (available - proposal.quantity)
+      in let b = tm-store target proposal.item (owned + proposal.quantity)
+      in proposal.quantity
+    else let a = __record-set actor "place" proposal.destination in 0
+
+Section: Audit and Admission
+
+  tm-reason : Integer -> Text
+  tm-reason (code) =
+    if code == 0 then "accepted"
+    else if code == 1 then "model-unavailable"
+    else if code == 2 then "hourly-call-limit"
+    else if code == 3 then "text-limit"
+    else if code == 4 then "action-not-supported"
+    else if code == 5 then "actor-or-target"
+    else if code == 6 then "inventory-or-quantity"
+    else if code == 7 then "location"
+    else if code == 8 then "token-budget"
+    else if code == 9 then "audit-full"
+    else if code == 10 then "request-replayed"
+    else if code == 11 then "unconfigured-or-invalid-context"
+    else "event-policy"
+
+  tm-log : TmMind, TfWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  tm-log (m) (w) (npc) (event) (request) (outcome) (moved) =
+    let at = m.audit-count * 6
+    in let a = list-set-at m.audit at npc
+    in let b = list-set-at m.audit (at + 1) w.hour
+    in let c = list-set-at m.audit (at + 2) event
+    in let d = list-set-at m.audit (at + 3) request
+    in let e = list-set-at m.audit (at + 4) outcome
+    in let f = list-set-at m.audit (at + 5) moved
+    in let g = __record-set m "audit-count" (m.audit-count + 1)
+    in let h = __record-set m "sequence" (m.sequence + 1)
+    in let i = if outcome == 0 then __record-set m "accepted" (m.accepted + 1) else __record-set m "fallbacks" (m.fallbacks + 1)
+    in let j = if outcome > 1 then __record-set m "refusals" (m.refusals + 1) else m
+    in 0
+
+  tm-ack-audit : TmMind -> Integer
+  tm-ack-audit (m) = let a = __record-set m "audit-count" 0 in 0
+
+  tm-admit : TmPersona, TfWorld, Integer, Integer, Text -> Integer
+  tm-admit (persona) (w) (event) (request) (line) =
+    if persona.npc == 0 | event < 1 | event > 4 | request <= 0 | request > 1000000000 then 11
+    else if request <= persona.request then 10
+    else let a = __record-set persona "request" request
+    in if text-length line > 512 then 3
+    else let b = if persona.call-hour /= w.hour then __record-set persona "calls" 0 else persona
+    in let c = __record-set persona "call-hour" w.hour
+    in if persona.calls >= persona.call-limit then 2
+    else let d = __record-set persona "calls" (persona.calls + 1) in 0
+
+  tm-respond : TmMind, TfWorld, Integer, Integer, Integer, Text, TmProposal, Integer, Integer -> TmReply
+  tm-respond (m) (w) (npc) (event) (request) (line) (proposal) (provider) (tokens) =
+    if m.audit-count >= 1024 then TmReply { speech = "", outcome = 9, moved = 0, fallback = 0 }
+    else if not (tf-valid-person w npc) then
+      let a = tm-log m w npc event request 11 0
+      in TmReply { speech = "I cannot answer now.", outcome = 11, moved = 0, fallback = 1 }
+    else let persona = list-at m.personas (npc - 1)
+    in let admission = tm-admit persona w event request line
+    in let outcome = if admission /= 0 then admission else if provider /= 1 then 1 else if tokens < 0 | tokens > persona.token-budget then 8 else tm-validate w persona event proposal
+    in let moved = if outcome == 0 then tm-apply w proposal else 0
+    in let a = tm-log m w npc event request outcome moved
+    in TmReply { speech = if outcome == 0 then proposal.speech else persona.fallback, outcome = outcome, moved = moved, fallback = if outcome == 0 then 0 else 1 }
+
+  tm-stub : TmMind, TfWorld, Integer, Integer, Integer, Text -> TmReply
+  tm-stub (m) (w) (npc) (event) (request) (line) =
+    let proposal = TmProposal { actor = npc, kind = 0, target = 0, item = 0, quantity = 0, destination = 0, speech = "" }
+    in tm-respond m w npc event request line proposal 0 0

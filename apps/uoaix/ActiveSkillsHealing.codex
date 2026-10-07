@@ -1,0 +1,134 @@
+Chapter: ActiveSkillsHealing
+  cites Uoaix chapter ActiveSkillsHiding
+  cites Uoaix chapter GameHarvestProduction
+
+ ServUO Items/Skill Items/Misc/Bandage.cs (BandageContext: range 2, self delay
+ 5s + 0.5s per 10 dexterity under 120, other delay 3s at 100 dexterity else 4s,
+ heal between anatomy/5 + healing/5 + 3 and anatomy/5 + healing/2 + 10, cure at
+ 60/60, resurrect at 80/80), GPL-2.0; ports/ServUO-LICENSE.txt. Source-X
+ CCharSkill.cpp Skill_Healing, Apache-2.0; Sphere-LICENSE.txt. Item 75 is the
+ Britain catalog's clean bandages.
+
+  as-bandage-stock : ActiveSkills, GvLot -> Boolean
+  as-bandage-stock (s) (row) = let actor = ep-actor s.vendor.currency.world row.actor
+    in ep-at actor.stock 75 >= 1 & ep-at actor.quality 75 >= row.quality & ep-at actor.wear 75 >= row.wear
+      & ep-at actor.cost 75 >= row.basis / row.quantity & ep-at s.vendor.currency.world.consumed 75 < ep-limit
+  as-bandage-lot : ActiveSkills, Integer, Integer -> Integer
+  as-bandage-lot (s) (owner) (serial) = let at = gv-lot s.vendor serial 0
+    in let player = gv-player s.vendor owner 0
+    in let slot = world-slot s.items.world serial
+    in if at < 0 | player < 0 | slot < 0 then -1
+    else let row = list-at s.vendor.lots at
+    in let p = list-at s.vendor.players player
+    in if row.item /= 75 | row.actor /= p.actor | row.quantity < 1 | peek-qword s.items.world.buffer (80 + slot * 80) /= row.quantity then -1
+    else if not (gv-under s.items.world serial p.pack 65) | gmb-root s.items serial 65 /= 0 | not (as-bandage-stock s row) then -1
+    else at
+  as-bandage-debit : ActiveSkills, Integer -> Integer
+  as-bandage-debit (s) (at) = let lot = list-at s.vendor.lots at
+    in let actor = ep-actor s.vendor.currency.world lot.actor
+    in let basis = lot.basis / lot.quantity
+    in let remaining = lot.quantity - 1
+    in let a = ep-add actor.stock 75 -1
+    in let b = ep-add actor.quality 75 (0 - lot.quality)
+    in let c = ep-add actor.wear 75 (0 - lot.wear)
+    in let d = ep-add actor.cost 75 (0 - basis)
+    in let e = ep-add s.vendor.currency.world.consumed 75 1
+    in let f = __record-set lot "basis" (lot.basis - basis)
+    in let g = __record-set lot "quantity" remaining
+    in let retired = if remaining == 0 then gh-retire-lot s.vendor at else 0
+    in gh-invalidate-quotes s.vendor 0
+  as-bandage-take : ActiveSkills, Integer, Integer -> Result (List Integer) Text
+  as-bandage-take (s) (at) (serial) = when world-get s.items.world serial
+    is Err (e) -> Err e
+    is Ok (item) -> if item.amount == 1 then when world-delete s.items.world serial
+        is Err (e) -> Err e
+        is Ok (_) -> let debited = as-bandage-debit s at in Ok (sip-remove serial)
+      else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
+      in when world-update s.items.world reduced
+        is Err (e) -> Err e
+        is Ok (_) -> let debited = as-bandage-debit s at in Ok (sip-item reduced)
+  as-bandage-use : ActiveSkills, AsActor, WorldObject, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  as-bandage-use (s) (a) (mobile) (direction) (serial) (now) = if now < a.next then Ok (Just (gsi-denied "You must wait to perform another action."))
+    else if a.due > 0 then Ok (Just (gsi-denied "You are already applying bandages."))
+    else if as-bandage-lot s mobile.serial serial < 0 then Ok (Just (gsi-denied "Those bandages cannot be used."))
+    else let revealed = as-unhide s a mobile direction
+    in let cursor = as-target s a 17 now
+    in let kept = __record-set a "bandage" serial
+    in Ok (Just (gs-reply (revealed & [as-say "Whom do you wish to heal?"] & cursor.packets) cursor.note))
+  as-heal-delay : ActiveSkills, GameShard, Integer, Integer -> Integer
+  as-heal-delay (s) (game) (healer) (patient) = let dexterity = when cb-ensure s.combat game healer is Err (_) -> 0 is Ok (c) -> max 0 (min 120 c.dexterity)
+    in gh-ticks (if healer == patient then 5000 + 50 * (120 - dexterity) else if dexterity >= 100 then 3000 else 4000)
+ UOX3 healing.js: an animal patient is bandaged with Veterinary (39) and Animal Lore (2) in the places a person takes
+ Healing (17) and Anatomy (1), with the same thresholds, amounts and delays.
+  as-heal-skill : AsServices, Integer -> Integer
+  as-heal-skill (services) (patient) = if services.animal patient then 39 else 17
+  as-heal-lore : Integer -> Integer
+  as-heal-lore (skill) = if skill == 39 then 2 else 1
+  as-heal-begin : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
+  as-heal-begin (services) (s) (a) (game) (player) (patient) (now) =
+    let skill = as-heal-skill services patient.serial
+    in if patient.kind /= 1 | not (as-near player patient 2) | not (as-visible s player.serial patient.serial) then gsi-denied "You cannot reach that being."
+    else if as-bandage-lot s player.serial a.bandage < 0 then gsi-denied "Those bandages cannot be used."
+    else if patient.health <= 0 & (as-level a skill < 800 | as-level a (as-heal-lore skill) < 800) then gsi-denied "You are not skilled enough to resurrect that being."
+    else let bound = __record-set a "patient" patient.serial
+    in let due = __record-set a "due" (now + as-heal-delay s game player.serial patient.serial)
+    in gs-reply [as-say "You begin applying the bandages."] "skills:bandage-begun"
+  as-heal-stop : AsActor, Text, Text -> GameReply
+  as-heal-stop (a) (text) (note) = let b = __record-set a "bandage" 0
+    in let p = __record-set a "patient" 0
+    in let d = __record-set a "due" 0
+    in gs-reply [as-say text] note
+  as-heal-amount : ActiveSkills, AsActor, Integer -> Integer
+  as-heal-amount (s) (a) (skill) = let lore = as-heal-lore skill
+    in let low = as-level a lore / 50 + as-level a skill / 50 + 3
+    in let high = as-level a lore / 50 + as-level a skill / 20 + 10
+    in low + skc-random a.skills (high - low + 1)
+  as-heal-raise : AsServices, ActiveSkills, AsActor, WorldObject, WorldObject, Integer -> Text
+  as-heal-raise (services) (s) (a) (player) (patient) (skill) = if not (as-roll s a skill (skc-random a.skills 1000)) then "You fail to resurrect the patient."
+    else if not (services.resurrect player.serial patient.serial) then "You fail to resurrect the patient."
+    else "You are able to resurrect your patient."
+  as-heal-cure : AsServices, ActiveSkills, AsActor, WorldObject, Integer -> Text
+  as-heal-cure (services) (s) (a) (patient) (skill) = if as-level a skill < 600 | as-level a (as-heal-lore skill) < 600 then "You have failed to cure your target!"
+    else if not (as-roll s a skill (min 1000 (600 + 100 * services.poison patient.serial))) then "You have failed to cure your target!"
+    else if not (services.cure patient.serial) then "You have failed to cure your target!"
+    else "You have cured the target of all poisons."
+  as-heal-apply : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject -> Result (List (List Integer)) Text
+  as-heal-apply (services) (s) (a) (game) (player) (patient) =
+    let skill = as-heal-skill services patient.serial
+    in let anatomy = as-roll s a (as-heal-lore skill) (skc-random a.skills 600)
+    in if patient.health <= 0 then Ok [as-say (as-heal-raise services s a player patient skill)]
+    else if services.poison patient.serial >= 0 then Ok [as-say (as-heal-cure services s a patient skill)]
+    else if not (as-roll s a skill (skc-random a.skills 500)) then Ok [as-say "You apply the bandages, but they barely help."]
+    else when cb-ensure s.combat game patient.serial
+      is Err (e) -> Err e
+      is Ok (c) -> let healed = min (max 1 c.maximum) (patient.health + as-heal-amount s a skill)
+        in when world-update s.items.world (__record-set patient "health" healed)
+          is Err (e) -> Err e
+          is Ok (_) -> Ok [as-say "You finish applying the bandages.", cbp-health patient.serial healed (max 1 c.maximum) (patient.serial == player.serial)]
+  as-heal-finish : AsServices, ActiveSkills, AsActor, GameShard, GameInput, WorldObject, Integer -> Result GameReply Text
+  as-heal-finish (services) (s) (a) (game) (input) (player) (now) =
+    if a.connection /= input.connection | player.health <= 0 then Ok (as-heal-stop a "You stop applying the bandages." "skills:bandage-interrupted")
+    else when world-get s.items.world a.patient
+      is Err (_) -> Ok (as-heal-stop a "Your patient is gone." "skills:bandage-interrupted")
+      is Ok (patient) -> let at = as-bandage-lot s player.serial a.bandage
+        in if patient.kind /= 1 | not (as-near player patient 2) then Ok (as-heal-stop a "You did not stay close enough to heal your target." "skills:bandage-interrupted")
+        else if at < 0 then Ok (as-heal-stop a "Your bandages are gone." "skills:bandage-interrupted")
+        else when as-bandage-take s at a.bandage
+          is Err (e) -> Err e
+          is Ok (spent) -> when as-heal-apply services s a game player patient
+            is Err (e) -> Err e
+            is Ok (packets) -> let paced = __record-set a "next" (now + gh-ticks 1000)
+              in let done = as-heal-stop a "" "skills:bandage-finished"
+              in Ok (gs-reply ([spent] & packets) "skills:bandage-finished")
+  as-heal-pulse : AsServices, ActiveSkills, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  as-heal-pulse (services) (s) (game) (input) (now) =
+    if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | s.items.world.buffer /= game.world.buffer then Ok None
+    else let slot = gsi-slot game input.session.serial 0
+    in if slot < 0 then Ok None else let a = list-at s.actors slot
+    in if a.serial /= input.session.serial | a.due == 0 | now < a.due then Ok None
+    else when world-get game.world a.serial
+      is Err (e) -> Err e
+      is Ok (player) -> let before = as-level a 17 + as-level a 39
+        in when as-heal-finish services s a game input player now
+          is Err (e) -> Err e
+          is Ok (reply) -> Ok (Just (if as-level a 17 + as-level a 39 == before then reply else gs-reply (list-push reply.packets (as-skills a)) (reply.note & "; skills:gain")))

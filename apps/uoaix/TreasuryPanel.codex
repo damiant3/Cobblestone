@@ -1,0 +1,70 @@
+Chapter: TreasuryPanel
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyCurrency
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+
+  TreasuryBinding = record { world : EpWorld, currency : Maybe EuCurrency, actor : Integer }
+
+  tr-sequence : TreasuryBinding -> Integer
+  tr-sequence (binding) = when binding.currency
+    is None -> binding.world.money.sequence
+    is Just (currency) -> currency.count
+
+  tr-backend : TreasuryBinding -> Text
+  tr-backend (binding) = when binding.currency
+    is None -> "gold"
+    is Just (currency) -> "currency"
+
+  tr-balance : TreasuryBinding, Integer -> Integer
+  tr-balance (binding) (metal) = when binding.currency
+    is None -> (em-purse binding.world.money 1).coin
+    is Just (currency) -> (em-purse (eu-money currency metal) 1).coin
+
+  tr-metals : TreasuryBinding -> Text
+  tr-metals (binding) = when binding.currency
+    is None -> ",\"metals\":[3]"
+    is Just (currency) -> ",\"metals\":[1,2,3],\"copper\":" & show (em-purse currency.copper 1).coin & ",\"silver\":" & show (em-purse currency.silver 1).coin
+      & ",\"copper_per_gold\":" & show currency.copper-rate & ",\"silver_per_gold\":" & show currency.silver-rate
+
+  tr-businesses : TreasuryBinding, Integer, List Text -> Text
+  tr-businesses (binding) (id) (parts) =
+    let money = binding.world.money
+    in if id > money.purse-count then "[" & text-concat-list parts & "]"
+    else let purse = em-purse money id
+    in if purse.kind /= 5 then tr-businesses binding (id + 1) parts
+    else let separated = if list-length parts == 0 then parts else list-push parts ","
+    in let metals = when binding.currency
+      is None -> ""
+      is Just (currency) -> ",\"copper\":" & show (em-purse currency.copper id).coin & ",\"silver\":" & show (em-purse currency.silver id).coin
+    in let row = "{\"purse\":" & show id & ",\"owner\":" & show purse.owner & ",\"balance\":" & show purse.coin & metals & "}"
+    in tr-businesses binding (id + 1) (list-push separated row)
+
+  tr-chains : EpWorld, Integer, List Text -> Text
+  tr-chains (world) (chain) (parts) =
+    if chain == 8 then "[" & text-concat-list parts & "]"
+    else let total = ep-at world.turnover chain
+    in let crown = ep-at world.crown-turnover chain
+    in let name = if chain == 1 then "Metal and stone" else if chain == 2 then "Gold" else if chain == 3 then "Leather" else if chain == 4 then "Textiles" else if chain == 5 then "Food" else if chain == 6 then "Wood" else "Reagents"
+    in let row = "{\"chain\":" & show chain & ",\"name\":" & json-quote name & ",\"turnover\":" & show total & ",\"crown\":" & show crown & ",\"share_basis_points\":" & (if total == 0 then "null" else show (crown * 10000 / total)) & "}"
+    in let separated = if chain == 1 then parts else list-push parts ","
+    in tr-chains world (chain + 1) (list-push separated row)
+
+  tr-view : TreasuryBinding, Boolean -> Text
+  tr-view (binding) (enabled) =
+    let world = binding.world
+    in "{\"available\":true,\"writable\":" & (if enabled then "true" else "false") & ",\"backend\":" & json-quote (tr-backend binding) & tr-metals binding
+    & ",\"balance\":" & show (em-purse world.money 1).coin & ",\"tax_basis_points\":" & show world.money.tax
+    & ",\"game_hour\":" & show world.hour & ",\"businesses\":" & tr-businesses binding 1 []
+    & ",\"chains\":" & tr-chains world 1 [] & "}"
+
+  tr-apply : TreasuryBinding, Text, Integer, Integer, Integer -> Integer
+  tr-apply (binding) (action) (business) (amount) (metal) =
+    when binding.currency
+      is None -> if action == "treasury-tax" then em-set-tax binding.world.money True amount
+        else if action == "treasury-grant" & metal == 3 then em-grant binding.world.money True business amount else -1
+      is Just (currency) -> if action == "treasury-tax" then eu-tax currency True binding.actor amount
+        else if action /= "treasury-grant" | not (em-valid-purse currency.world.money business) then -1
+        else if (em-purse currency.world.money business).kind /= 5 then -1
+        else eu-grant currency True binding.actor business (if metal == 1 then amount else 0) (if metal == 2 then amount else 0) (if metal == 3 then amount else 0)

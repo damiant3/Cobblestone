@@ -1,0 +1,134 @@
+Chapter: PanelAuditCodec
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter GameClock
+  cites Uoaix chapter WorldSnapshot
+  cites Encode chapter Json
+  cites Foreword chapter Result
+
+ UPA1 stores the owner audit and session counter, not live authority.
+ Each 1040-byte row has length(8), CCE text(1020), padding(4), result(8).
+ Restore cancels the one queued action and clears all connection/session state.
+
+  pac-size : Integer = 96 + 128 * 1040
+
+  pac-json-row : Text, Integer, Integer -> Boolean
+  pac-json-row (body) (id) (sessions) =
+    if not (admin-json-safe body 0 0 False False 0) then False
+    else let parsed = json-parse-value body 0 (text-length body)
+    in if not parsed.ok then False
+    else let session = admin-int parsed.value "session"
+    in skip-ws body parsed.next (text-length body) == text-length body & admin-int parsed.value "id" == id & session >= 0 & session <= sessions
+
+  pac-row-valid : AdminPanel, Integer -> Boolean
+  pac-row-valid (p) (i) =
+    let at = i * 1024
+    in let length = list-at p.log at
+    in let result = list-at p.log (at + 1022)
+    in if length < 0 | length > 1020 | result < -2 | result > 1 then False
+    else if i >= p.log-count then length == 0 & result == 0
+    else if result == 0 & (p.pending-state /= 1 | p.pending-log /= i + 1) then False
+    else ac-text-valid p.log at length 0 & pac-json-row (admin-load p.log at) (i + 1) p.sessions
+
+  pac-rows-valid : AdminPanel, Integer -> Boolean
+  pac-rows-valid (p) (i) = if i >= 128 then True
+    else let mark = __heap-save
+    in let valid = pac-row-valid p i
+    in let restored = __heap-restore mark
+    in valid & pac-rows-valid p (i + 1)
+
+  pac-state-valid : AdminPanel -> Boolean
+  pac-state-valid (p) =
+    if list-length p.log /= 131072 | p.log-count < 0 | p.log-count > 128 then False
+    else if p.sessions < 0 | p.sessions > 999999999 | p.active < 0 | p.active > 1 | p.touched < 0 then False
+    else if p.pending-state < 0 | p.pending-state > 1 then False
+    else if p.pending-state == 1 & (p.active /= 1 | p.pending-session /= p.sessions | p.pending-session == 0 | p.pending /= p.pending-log | p.pending-log < 1 | p.pending-log > p.log-count) then False
+    else if p.pending-state == 1 & list-at p.log ((p.pending-log - 1) * 1024 + 1022) /= 0 then False
+    else pac-rows-valid p 0
+
+  pac-write-text : Integer, List Integer, Integer, Integer, Integer -> Integer
+  pac-write-text (buf) (values) (at) (length) (i) = if i >= 1024 then 0
+    else let saved = poke-byte buf (8 + i) (if i < length then list-at values (at + 1 + i) else 0)
+    in pac-write-text buf values at length (i + 1)
+
+  pac-write-rows : Integer, AdminPanel, Integer -> Integer
+  pac-write-rows (buf) (p) (i) = if i >= 128 then 0
+    else let length = list-at p.log (i * 1024)
+    in let saved = poke-qword buf (i * 1040) length
+    in let text = pac-write-text (buf + i * 1040) p.log (i * 1024) length 0
+    in let result = poke-qword buf (i * 1040 + 1032) (list-at p.log (i * 1024 + 1022))
+    in pac-write-rows buf p (i + 1)
+
+  pac-encode : AdminPanel, Integer, Integer, Integer, Integer -> Result Integer Text
+  pac-encode (p) (tick) (sequence) (buf) (capacity) =
+    if tick < 0 | sequence < 0 | capacity < pac-size then Err "panel checkpoint extent or metadata invalid"
+    else if not (pac-state-valid p) then Err "panel audit invalid or action in flight"
+    else let a = poke-qword buf 0 #31415055
+    in let b = poke-qword buf 8 1
+    in let c = poke-qword buf 16 pac-size
+    in let d = poke-qword buf 24 0
+    in let e = poke-qword buf 32 tick
+    in let f = poke-qword buf 40 sequence
+    in let g = poke-qword buf 56 0
+    in let h = poke-qword buf 64 p.sessions
+    in let j = poke-qword buf 72 p.log-count
+    in let k = poke-qword buf 80 (if p.pending-state == 1 then p.pending-log else 0)
+    in let l = poke-qword buf 88 p.pending-state
+    in let rows = pac-write-rows (buf + 96) p 0
+    in let hash = poke-qword buf 48 (ws-hash buf pac-size 0 2166136261)
+    in Ok pac-size
+
+  pac-padding : Integer, Integer -> Boolean
+  pac-padding (buf) (i) = if i >= 1024 then True
+    else peek-byte buf (8 + i) == 0 & pac-padding buf (i + 1)
+
+  pac-wire-rows : Integer, Integer, Integer, Integer -> Boolean
+  pac-wire-rows (buf) (count) (pending) (i) = if i >= 128 then True
+    else let slot = buf + 96 + i * 1040
+    in let length = peek-qword slot 0
+    in let result = peek-qword slot 1032
+    in if length < 0 | length > 1020 | result < -2 | result > 1 then False
+    else if i >= count & (length /= 0 | result /= 0) then False
+    else if i < count & result == 0 & pending /= i + 1 then False
+    else if pending == i + 1 & result /= 0 then False
+    else pac-padding slot length & pac-wire-rows buf count pending (i + 1)
+
+  pac-read-rows : Integer, AdminPanel, Integer -> Integer
+  pac-read-rows (buf) (p) (i) = if i >= 128 then 0
+    else let length = peek-qword buf (i * 1040)
+    in let saved = list-set-at p.log (i * 1024) length
+    in let text = ac-read-text (buf + i * 1040) p.log (i * 1024) length 0
+    in let result = list-set-at p.log (i * 1024 + 1022) (peek-qword buf (i * 1040 + 1032))
+    in pac-read-rows buf p (i + 1)
+
+  pac-decode : Integer, Integer, AdminWorld, Text, GmMemory, GameClock -> Result AdminPanel Text
+  pac-decode (buf) (size) (world) (actor) (gms) (clock) =
+    if size /= pac-size then Err "panel checkpoint length invalid"
+    else if peek-qword buf 0 /= #31415055 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size then Err "panel checkpoint format unsupported"
+    else if peek-qword buf 24 /= 0 | peek-qword buf 56 /= 0 then Err "panel checkpoint reserved data"
+    else if peek-qword buf 32 < 0 | peek-qword buf 40 < 0 then Err "panel checkpoint metadata invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "panel checkpoint checksum invalid"
+    else let sessions = peek-qword buf 64
+    in let count = peek-qword buf 72
+    in let pending = peek-qword buf 80
+    in let state = peek-qword buf 88
+    in if sessions < 0 | sessions > 999999999 | count < 0 | count > 128 | state < 0 | state > 1 then Err "panel checkpoint scalar bounds invalid"
+    else if (state == 0 & pending /= 0) | (state == 1 & (pending < 1 | pending > count | sessions == 0)) then Err "panel checkpoint pending reference invalid"
+    else if not (pac-wire-rows buf count pending 0) then Err "panel checkpoint row bounds or outcomes invalid"
+    else let p = panel-new-with-gms world actor gms
+    in let bound = __record-set p "clock" clock
+    in let n = __record-set p "sessions" sessions
+    in let rows = __record-set p "log-count" count
+    in let copied = pac-read-rows (buf + 96) p 0
+    in let cancelled = if pending > 0 then panel-log-result p pending -2 else 0
+    in if pac-state-valid p then Ok p else Err "panel checkpoint audit identity invalid"
+
+  pac-decode-record : Integer, Integer, Integer, Integer, AdminWorld, Text, GmMemory, GameClock -> Result AdminPanel Text
+  pac-decode-record (buf) (size) (tick) (sequence) (world) (actor) (gms) (clock) =
+    if size < 64 then Err "panel checkpoint record truncated"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "panel checkpoint disagrees with record metadata"
+    else pac-decode buf size world actor gms clock
+
+Page 1

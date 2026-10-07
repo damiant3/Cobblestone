@@ -1,0 +1,94 @@
+Chapter: EconomyArchive
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldBlock
+  cites Foreword chapter Result
+
+ The archive region (UOAIX-50): the map-cache header names it, start sector at 304 and capacity in sectors at 312,
+ both relative to the map cache. Its first sector is ARC1: magic, version 1, segments, next free sector (relative
+ to the region), the last segment's FNV32 at 32 and the header FNV32 at 48. SEG1 payloads follow, sector aligned.
+  ea-magic : Integer = #31435241
+  ea-hash : Integer -> Integer
+  ea-hash (buf) = eu-seg-hash buf 512 0 2166136261
+  ea-probe : UoDevice, EuCurrency -> [Device.Block] Result Integer Text
+  ea-probe (device) (x) = if x.start.probed == 1 then act Ok x.start.region end
+    else act
+      probed <- __record-set x.start "probed" 1
+      sectors <- us-device-count device
+      if sectors <= wmc-start then act Ok 0 end
+      else act
+        read <- us-device-read device wmc-start
+        when read
+          is Err (e) -> Err e
+          is Ok (header) -> if peek-qword header 0 /= #32434D55 | peek-qword header 304 <= 0 then Ok 0
+            else let region = peek-qword header 304
+            in let capacity = peek-qword header 312
+            in if capacity < 2 | wmc-start + region + capacity > sectors then Err "archive region outside the disk"
+            else ea-read-header device x region capacity
+      end
+    end
+  ea-read-header : UoDevice, EuCurrency, Integer, Integer -> [Device.Block] Result Integer Text
+  ea-read-header (device) (x) (region) (capacity) = act
+    read <- us-device-read device (wmc-start + region)
+    when read
+      is Err (e) -> Err e
+      is Ok (arc) -> let fresh = peek-qword arc 0 == 0 & peek-qword arc 48 == 0
+        in if not fresh & (peek-qword arc 0 /= ea-magic | peek-qword arc 8 /= 1 | peek-qword arc 48 /= ea-hash arc) then Err "archive header invalid"
+        else let next = if fresh then 1 else peek-qword arc 24
+        in if next < 1 | next > capacity then Err "archive header extent invalid"
+        else let a = __record-set x.start "region" region
+        in let b = __record-set x.start "capacity" capacity
+        in let c = __record-set x.start "next" next
+        in let d = __record-set x.start "segments" (if fresh then 0 else peek-qword arc 16)
+        in let f = __record-set x.start "last" (if fresh then 0 else peek-qword arc 32)
+        in let g = __record-set x.start "room" (capacity - next)
+        in Ok region
+    end
+  ea-write-sectors : UoDevice, Integer, Integer, Integer, Integer -> [Device.Block] Boolean
+  ea-write-sectors (device) (sector) (buf) (count) (i) = if i == count then act True end
+    else act
+      ok <- us-write-checked device (sector + i) (buf + i * 512)
+      if not ok then False else ea-write-sectors device sector buf count (i + 1)
+    end
+  ea-zero : Integer, Integer, Integer -> Integer
+  ea-zero (buf) (at) (stop) = if at >= stop then 0 else let a = poke-byte buf at 0 in ea-zero buf (at + 1) stop
+ Ok 1 wrote a segment, Ok 0 had nothing to write, Ok -1 found no region (the rows are discarded).
+  ea-flush : UoDevice, EuCurrency -> [Device.Block] Result Integer Text
+  ea-flush (device) (x) = if x.start.pending == 0 then act Ok 0 end
+    else act
+      probed <- ea-probe device x
+      when probed
+        is Err (e) -> Err e
+        is Ok (region) -> if region == 0 then let dropped = __record-set x.start "pending" 0 in Ok -1
+          else let seg = x.start.archive
+          in let bytes = peek-qword seg 16
+          in let count = (bytes + 511) / 512
+          in if peek-qword seg 24 <= x.start.segments then let dropped = __record-set x.start "pending" 0 in Ok 0
+          else if x.start.next + count > x.start.capacity then Err "ARCHIVE FULL: the economy archive region cannot hold the next segment"
+          else let padded = ea-zero seg bytes (count * 512)
+          in let linked = poke-qword seg 88 x.start.last
+          in let hash = poke-qword seg 48 (eu-seg-hash seg bytes 0 2166136261)
+          in act
+            wrote <- ea-write-sectors device (wmc-start + region + x.start.next) seg count 0
+            if not wrote then Err "archive segment write failed"
+            else let arc = alloc-bytes 512
+            in let cleared = ea-zero arc 0 512
+            in let next = x.start.next + count
+            in let a = poke-qword arc 0 ea-magic
+            in let b = poke-qword arc 8 1
+            in let c = poke-qword arc 16 (peek-qword seg 24)
+            in let d = poke-qword arc 24 next
+            in let f = poke-qword arc 32 (peek-qword seg 48)
+            in let g = poke-qword arc 48 (ea-hash arc)
+            in act
+              headed <- us-write-checked device (wmc-start + region) arc
+              if not headed then Err "archive header write failed"
+              else let s = __record-set x.start "segments" (peek-qword seg 24)
+              in let n = __record-set x.start "next" next
+              in let l = __record-set x.start "last" (peek-qword seg 48)
+              in let r = __record-set x.start "room" (x.start.capacity - next)
+              in let p = __record-set x.start "pending" 0 in Ok 1
+            end
+          end
+    end

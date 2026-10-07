@@ -1,0 +1,142 @@
+Chapter: LawProof
+  cites Uoaix chapter Law
+  cites Foreword chapter Result
+
+  lp-check : Text, Boolean -> [Console] Integer
+  lp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  lp-mobile : WorldTable, Integer, Integer -> Integer
+  lp-mobile (world) (x) (y) = when world-create world (WorldObject {
+    serial = 0, kind = 1, x = x, y = y, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 50 })
+    is Err (e) -> -1
+    is Ok (serial) -> serial
+  lp-x : LawWorld, Integer -> Integer
+  lp-x (w) (serial) = (world-read-slot w.world (world-slot w.world serial)).x
+  lp-walk : LawWorld, Integer, Integer -> Integer
+  lp-walk (w) (serial) (target) = let mark = __heap-save
+    in let p = world-read-slot w.world (world-slot w.world serial)
+    in let x = p.x
+    in let result = if x == target then 0 else lw-step w serial (x + (if x < target then 1 else -1)) p.y True
+    in let restored = __heap-restore mark
+    in if result /= 0 then -1 else if x == target then 0 else lp-walk w serial target
+  lp-fill : LawWorld, Integer, Integer -> Boolean
+  lp-fill (w) (offender) (id) = if id == 129 then True
+    else lw-deed w True id offender 1 1 == id & lp-fill w offender (id + 1)
+  lp-guard-edges : WorldTable -> Boolean
+  lp-guard-edges (world) =
+    let offender = lp-mobile world 200 200
+    in let witness = lp-mobile world 200 201
+    in let first = lp-mobile world 202 200
+    in let second = lp-mobile world 198 200
+    in let dead = lp-mobile world 201 200
+    in let upper-guard = lp-mobile world 200 200
+    in let upper-guard-obj = world-read-slot world (world-slot world upper-guard)
+    in let upper-guard-z = __record-set upper-guard-obj "z" 1
+    in let lifted = world-update world upper-guard-obj
+    in let w = lw-new world
+    in let g1 = lw-add-guard w True first 1
+    in let g2 = lw-add-guard w True second 1
+    in let gd = lw-add-guard w True dead 1
+    in let gz = lw-add-guard w True upper-guard 1
+    in let dead-obj = world-read-slot world (world-slot world dead)
+    in let dead-health = __record-set dead-obj "health" 0
+    in let killed = world-update world dead-obj
+    in let crime = lw-deed w True 1 offender 2 1
+    in let seen = lw-observe w True crime witness True True
+    in let told = lw-report w seen True
+    in let called = lw-call w seen True
+    in let capture = lw-capture w crime
+    in let fight = lw-fight w crime True
+    in called == g1 & capture == 0 & gd > 0 & fight == 1 & (list-at w.guards (gd - 1)).state == 0
+      & (list-at w.guards (g2 - 1)).case-id == crime & (list-at w.guards (gz - 1)).state == 0
+      & lw-nearest w 1 offender offender 99999999 0 0 == 0
+  lp-run : WorldTable -> [Console] Integer
+  lp-run (world) = act
+    offender <- lp-mobile world 100 100
+    witness <- lp-mobile world 110 100
+    player <- lp-mobile world 110 101
+    guard <- lp-mobile world 125 100
+    before <- __heap-save
+    w <- lw-new world
+    after <- __heap-save
+    print-line-uni ("LAW-STATE-BYTES " & show (after - before))
+    g <- lw-add-guard w True guard 1
+    theft <- lw-deed w True 1 offender 1 1
+    a <- lp-check "unwitnessed deed is retained for notoriety but not known to guards" (theft == 1 & w.count == 1 & not (lw-case w theft).known & lw-capture w theft == -1 & (list-at w.guards 0).state == 0)
+    denied <- lw-observe w False theft witness True True
+    quiet <- lw-observe w True theft witness True False
+    b <- lp-check "unwilling NPC remembers the offender without making a known crime" (denied == -1 & quiet == 1 & lw-remembers w witness offender 0 & lw-report w quiet True == -1 & not (lw-case w theft).known)
+    consent <- lw-willing w quiet True True
+    told <- lw-report w quiet True
+    c <- lp-check "willing testimony makes crime known but no guard in earshot responds" (consent == 0 & told == 0 & (lw-case w theft).known & lw-call w quiet True == 0 & lp-x w guard == 125)
+    stepped <- lp-walk w guard 122
+    heard <- lw-call w quiet True
+    d <- lp-check "guard hearing boundary selects pursuit without moving the guard" (stepped == 0 & heard == g & lp-x w guard == 122 & lw-capture w theft == -1)
+    leap <- lw-step w guard 103 100 True
+    blocked <- lw-step w guard 121 100 False
+    walk-before <- __heap-save
+    walked <- lp-walk w guard 104
+    walk-after <- __heap-save
+    print-line-uni ("LAW-WALK-RETAINED-BYTES " & show (walk-after - walk-before))
+    four <- lw-capture w theft
+    last <- lw-step w guard 103 100 True
+    arrest <- lw-capture w theft
+    e <- lp-check "path-admitted single steps reach the three-tile arrest boundary without teleport" (leap == -1 & blocked == -1 & walked == 0 & four == -1 & last == 0 & arrest == 0 & lp-x w guard == 103 & (lw-case w theft).status == 1)
+    jail <- lw-jail-set w True 1 102 100
+    submitted <- lw-submit w theft True
+    early <- lw-arrive w theft
+    escorted <- lp-walk w offender 102
+    arrived <- lw-arrive w theft
+    f <- lp-check "submission escorts to jail and starts the deed's table term on arrival" (jail == 0 & submitted == 0 & early == -1 & escorted == 0 & arrived == 0 & (lw-case w theft).status == 4 & (lw-case w theft).due == 1 & lp-x w offender == 102)
+    escape <- lw-step w offender 103 100 True
+    premature <- lw-release w theft
+    hour <- lw-hour w 1
+    released <- lw-release w theft
+    g1 <- lp-check "jail blocks movement until the sentence is served" (escape == -1 & premature == -1 & hour == 0 & released == 0 & (lw-case w theft).status == 5 & lw-remembers w witness offender 0)
+    guard2 <- lp-mobile world 110 100
+    guard3 <- lp-mobile world 106 100
+    guard4 <- lp-mobile world 104 100
+    guard5 <- lp-mobile world 107 100
+    foreign <- lp-mobile world 102 100
+    d2 <- lw-add-guard w True guard2 1
+    d3 <- lw-add-guard w True guard3 1
+    d4 <- lw-add-guard w True guard4 1
+    d5 <- lw-add-guard w True guard5 1
+    df <- lw-add-guard w True foreign 2
+    murder <- lw-deed w True 2 offender 3 1
+    seen <- lw-observe w True murder player False True
+    reported <- lw-report w seen True
+    called <- lw-call w seen True
+    h <- lp-check "player witnesses report and nearest hearing guard responds" (reported == 0 & called == d2 & not (lw-remembers w player offender 0) & (lw-case w murder).term == 24)
+    advanced <- lp-walk w guard2 105
+    caught <- lw-capture w murder
+    assistants <- lw-fight w murder True
+    i <- lp-check "fight selects exactly three nearest other town guards with no movement" (advanced == 0 & caught == 0 & assistants == 3 & (list-at w.guards (g - 1)).case-id == murder & (list-at w.guards (d4 - 1)).case-id == murder & (list-at w.guards (d3 - 1)).case-id == murder & (list-at w.guards (d5 - 1)).state == 0 & (list-at w.guards (df - 1)).state == 0 & lp-x w guard == 103 & lp-x w guard4 == 104 & lp-x w guard3 == 106)
+    repeated <- lw-fight w murder True
+    won <- lw-won-fight w murder True
+    j <- lp-check "winning combat keeps the reported crime and testimony" (repeated == -1 & won == 0 & (lw-case w murder).known & (lw-case w murder).status == 0 & (list-at w.witnesses (seen - 1)).reported)
+    changed <- lw-sentence-set w True 3 48
+    next <- lw-deed w True 3 offender 3 1
+    k <- lp-check "sentence edits affect new deeds only and require keeper authority" (changed == 0 & (lw-case w murder).term == 24 & (lw-case w next).term == 48 & lw-sentence-set w False 1 99 == -1 & lw-sentence-set w True 1 0 == -1)
+    l <- lp-check "duplicate source and unverified actions are refused" (lw-deed w True 1 offender 1 1 == -1 & lw-deed w False 4 offender 1 1 == -1 & lw-report w seen False == -1 & lw-call w seen False == -1 & lw-add-guard w True guard 1 == -1 & lw-hour w 0 == -1)
+    full <- lp-fill w offender 4
+    refused <- lw-deed w True 129 offender 1 1
+    m <- lp-check "full case storage refuses without overwriting prior evidence" (full & refused == -1 & (lw-case w theft).source == 1 & w.count == 128)
+    n <- lp-check "ties dead occupied and other-floor guards preserve bounded assistance" (lp-guard-edges world)
+    o <- lp-check "walk scratch is reclaimed between steps" (walk-after == walk-before)
+    a + b + c + d + e + f + g1 + h + i + j + k + l + m + n + o
+  end
+  opening : [Console] Integer = act
+    when world-new 64
+      is Err (e) -> act
+        print-line-uni ("FAIL " & e)
+        1
+      end
+      is Ok (world) -> act
+        failures <- lp-run world
+        print-line-uni ("UOAIX LAW failures=" & show failures)
+        failures
+      end
+  end

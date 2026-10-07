@@ -1,0 +1,49 @@
+Chapter: CompositeHelpCommands
+  cites Uoaix chapter CompositeStore
+
+ Client 1.25.32 0x9B (Request Help) is 258 bytes and carries no text.
+  ch-page-request : List Integer -> Boolean
+  ch-page-request (packet) = list-length packet == 258 & list-at packet 0 == #9B
+ "[pages" and "[pageack <id>" (British only): classic 0x03 speech, text from byte 8.
+  ch-pages-request : List Integer -> Boolean
+  ch-pages-request (packet) = list-length packet >= 14 & list-at packet 0 == 3 & list-at packet 8 == 91
+    & list-at packet 9 == 112 & list-at packet 10 == 97 & list-at packet 11 == 103 & list-at packet 12 == 101 & list-at packet 13 == 115
+  ch-ack-request : List Integer -> Boolean
+  ch-ack-request (packet) = list-length packet > 17 & list-at packet 0 == 3 & list-at packet 8 == 91
+    & list-at packet 9 == 112 & list-at packet 10 == 97 & list-at packet 11 == 103 & list-at packet 12 == 101
+    & list-at packet 13 == 97 & list-at packet 14 == 99 & list-at packet 15 == 107 & list-at packet 16 == 32
+  ch-number : List Integer, Integer, Integer, Integer -> Integer
+  ch-number (packet) (i) (value) (digits) =
+    if i >= list-length packet | list-at packet i < 48 | list-at packet i > 57 then (if digits == 0 then -1 else value)
+    else if digits == 9 then -1
+    else ch-number packet (i + 1) (value * 10 + list-at packet i - 48) (digits + 1)
+  ch-say : GameInput, Text -> GameReply
+  ch-say (input) (text) = gs-reply [sip-message input.session.serial #FFFF 6 text] "help"
+  ch-page : CompositeOwner, GameShard, GameInput -> [Console] Result GameReply Text
+  ch-page (owner) (game) (input) = when world-get game.world input.session.serial
+    is Err (e) -> act Ok (ch-say input "Your help request could not be placed.") end
+    is Ok (m) -> let id = hp-add owner.pages m.serial m.x m.y m.z hpet-ticks
+      in if id < 0 then act
+        slg-line game.log slg-help slg-warn ("HELP refused queue full serial=" & show m.serial)
+        Ok (ch-say input "The help queue is full; please try again later.")
+      end else act
+        slg-line game.log slg-help slg-info ("HELP page=" & show id & " serial=" & show m.serial & " at " & show m.x & " " & show m.y & " " & show m.z & " pending=" & show owner.pages.count)
+        Ok (ch-say input ("Your help request is queued as page " & show id & ". A staff member will answer."))
+      end
+  ch-lines : HelpPages, Integer, Integer, List (List Integer) -> List (List Integer)
+  ch-lines (h) (serial) (i) (acc) = if i == h.count then acc
+    else let p = list-at h.pages i
+    in let age = (hpet-ticks - p.at) / max 1 hpet-ticks-per-second
+    in ch-lines h serial (i + 1) (list-push acc (sip-message serial #FFFF 6 ("Page " & show p.id & ": serial " & show p.serial
+      & " at " & show p.x & " " & show p.y & " " & show p.z & ", " & show age & "s ago")))
+  ch-pages : CompositeOwner, GameInput -> GameReply
+  ch-pages (owner) (input) = if owner.pages.count == 0 then ch-say input "No pending pages."
+    else gs-reply (ch-lines owner.pages input.session.serial 0 (__list-with-capacity hp-limit)) "british:pages"
+  ch-ack : CompositeOwner, GameInput, List Integer -> [Console] Result GameReply Text
+  ch-ack (owner) (input) (packet) = let id = ch-number packet 17 0 0
+    in if id < 1 then act Ok (ch-say input "Usage: [pageack id") end
+    else if not (hp-ack owner.pages id) then act Ok (ch-say input ("No pending page " & show id & ".")) end
+    else act
+      slg-line owner.state.checkpoint.game.log slg-help slg-info ("HELP ack page=" & show id & " pending=" & show owner.pages.count)
+      Ok (ch-say input ("Page " & show id & " closed."))
+    end

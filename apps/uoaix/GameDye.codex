@@ -1,0 +1,102 @@
+Chapter: GameDye
+  cites Uoaix chapter GameHarvest
+
+ UOX3 cPlayerAction.cpp IT_DYE/IT_DYEVAT, targeting.cpp ColorsTarget/DVatTarget, CPacketReceive.cpp
+ CPIDyeWindow::Handle and dictionary.ENG 400, 441, 442, 1031, 1032, 1033: dyes (0x0FA9) aimed at a dye tub (0x0FAB)
+ open the hue picker (0x95: serial, 0, model 0x0FAB); the reply's hue, outside 2..0x3E9 made 0x3E9, becomes the
+ tub's hue. A dye tub aimed at dyeable clothing gives it the tub's hue. Both play 0x23E. UOX3 marks dyeability per
+ item definition; here it is the shirt, short pants and cloth arts this world has. The 0x95 reply must name the
+ tub the server offered, marked in the request's target as 0x4842 and the offer's nonce.
+  gdy-spec : GameOpcodeSpec = GameOpcodeSpec { opcode = #95, size = 9, minimum = 9, maximum = 9 }
+  gdy-dyes : Integer -> Boolean
+  gdy-dyes (g) = g == #0FA9
+  gdy-tub : Integer -> Boolean
+  gdy-tub (g) = g == #0FAB
+  gdy-dyeable : Integer -> Boolean
+  gdy-dyeable (g) = g == #1517 | g == #1518 | g == #152E | g == #152F | (g >= #175D & g <= #1768)
+  gdy-reach : GameHarvest, GsiActor, Integer, (Integer -> Boolean) -> Integer
+  gdy-reach (state) (actor) (serial) (art) = if serial == 0 | not (gsi-known state.items serial) then 0
+    else when world-get state.items.world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind /= 2 | not (art o.graphic) then 0 else if gsi-access state.items actor o then serial else -1
+  gdy-begin : GameHarvest, GhRequest, Integer, Integer, Text, Text -> Result (Maybe GameReply) Text
+  gdy-begin (state) (request) (tool) (now) (prompt) (note) =
+    if state.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+    else let target = #48410000 + state.nonce
+    in let nonce = __record-set state "nonce" (state.nonce + 1)
+    in let context = __record-set request "target" target
+    in let selected = __record-set request "tool" tool
+    in let expires = __record-set request "expires" (now + gh-ticks 10000)
+    in Ok (Just (gs-reply [sip-target target, sip-message #FFFFFFFF #FFFF 6 prompt] note))
+  gdy-window : Integer -> List Integer
+  gdy-window (tub) = gp-put16 (gp-put16 (gp-put32 [#95] tub) 0) #0FAB
+  gdy-offer : GameHarvest, GsiActor, GhRequest, Integer, Integer -> Result (Maybe GameReply) Text
+  gdy-offer (state) (actor) (request) (serial) (now) = let tub = gdy-reach state actor serial gdy-tub
+    in if tub == 0 then gh-denied "You can only use this item on a dye vat."
+    else if tub < 0 then gh-denied "That is too far away!"
+    else if state.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+    else let marked = __record-set request "target" (#48420000 + state.nonce)
+    in let nonce = __record-set state "nonce" (state.nonce + 1)
+    in let selected = __record-set request "tool" tub
+    in let expires = __record-set request "expires" (now + gh-ticks 60000)
+    in Ok (Just (gs-reply [gdy-window tub] "dye window"))
+  gdy-paint : GameHarvest, Integer, WorldObject, Integer -> Result (Maybe GameReply) Text
+  gdy-paint (state) (who) (item) (hue) = when world-update state.items.world (__record-set item "hue" hue)
+    is Err (e) -> Err e
+    is Ok (_) -> when world-get state.items.world item.serial
+      is Err (e) -> Err e
+      is Ok (painted) -> Ok (Just (gs-reply ([gsi-placement state.items painted] & gsi-sound-at state.items who #023E) "dyed"))
+  gdy-clothe : GameHarvest, GsiActor, WorldObject, Integer -> Result (Maybe GameReply) Text
+  gdy-clothe (state) (actor) (tub) (serial) =
+    if serial == 0 | not (gsi-known state.items serial) then gh-denied "You can only dye clothes with this."
+    else when world-get state.items.world serial
+      is Err (_) -> gh-denied "You can only dye clothes with this."
+      is Ok (item) -> if item.kind /= 2 | not (gsi-access state.items actor item) then gh-denied "That is too far away!"
+        else if not (gdy-dyeable item.graphic) then gh-denied "You can only dye clothes with this."
+        else if item.container /= 0 & not (gv-owned state.items.world serial actor.serial 65) then gh-denied "This is not yours!"
+        else gdy-paint state actor.serial item tub.hue
+  gdy-handler-at : GameHarvest, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  gdy-handler-at (state) (shard) (input) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if (op /= 6 | list-length packet /= 5) & (op /= #6C | list-length packet /= 19) & (op /= #95 | list-length packet /= 9) then Ok None
+    else if not (gs-byte-range packet 0) then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
+      | state.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player state.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 60000 then Ok None
+    else let player = list-at state.vendor.players at
+    in let actor = list-at state.items.actors slot
+    in let request = gh-session state input player slot
+    in if op == 6 then
+      (let used = bit-and (gp-u32 packet 1) #7FFFFFFF
+      in let dyes = gdy-reach state actor used gdy-dyes
+      in let tub = gdy-reach state actor used gdy-tub
+      in if dyes > 0 then gdy-begin state request dyes now "Which dye vat will you use this on?" "dyes target"
+      else if tub > 0 then gdy-begin state request tub now "Select the clothing to use this on." "dye tub target"
+      else if dyes < 0 | tub < 0 then gh-denied "That is too far away!"
+      else Ok None)
+    else if op == #95 then
+      (if bit-and request.target #FFFF0000 /= #48420000 | request.tool /= bit-and (gp-u32 packet 1) #7FFFFFFF then Ok None
+      else let clear = __record-set request "target" 0
+      in if now > request.expires then gh-denied "That target expired."
+      else let tub = gdy-reach state actor request.tool gdy-tub
+      in if tub <= 0 then gh-denied "That is too far away!"
+      else when world-get state.items.world tub
+        is Err (e) -> Err e
+        is Ok (vat) -> let hue = gp-u16 packet 7 in gdy-paint state actor.serial vat (if hue < 2 | hue > #03E9 then #03E9 else hue))
+    else if request.target == 0 | request.target /= gp-u32 packet 2 then Ok None
+    else let dyes = gdy-reach state actor request.tool gdy-dyes
+    in let tub = gdy-reach state actor request.tool gdy-tub
+    in if dyes == 0 & tub == 0 then Ok None
+    else let clear = __record-set request "target" 0
+    in if gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 then Ok (Just (gs-reply [] "dye cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else if dyes < 0 | tub < 0 then gh-denied "That is too far away!"
+    else let aimed = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in if dyes > 0 then gdy-offer state actor request aimed now
+    else when world-get state.items.world tub
+      is Err (e) -> Err e
+      is Ok (vat) -> gdy-clothe state actor vat aimed

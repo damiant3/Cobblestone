@@ -1,0 +1,54 @@
+Chapter: GameCombatDress
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter CharacterStylist
+
+  cbd-name : Integer, Text, Integer -> Boolean
+  cbd-name (buf) (name) (i) = if i == 30 then True
+    else let expected = if i < text-length name then to-unicode (char-code (char-at name i)) else 0
+    in peek-byte buf i == expected & cbd-name buf name (i + 1)
+ Only the stylist gives a fixture hair (layer 11, after every clothing row in cst-head), so a fixture wearing hair is styled and the pulse allocates nothing for it.
+  cbd-dress : GameCombat, GsiState, Integer -> Result Integer Text
+  cbd-dress (c) (items) (i) = cbd-dress-root c items (world-first-child items.world 0)
+  cbd-dress-root : GameCombat, GsiState, Integer -> Result Integer Text
+  cbd-dress-root (c) (items) (serial) = if serial == 0 then Ok 0
+    else let next = world-next-sibling items.world serial
+    in let slot = world-slot items.world serial
+    in if slot < 0 then Err "clothing root index invalid"
+    else if peek-qword items.world.buffer (24 + slot * 80) /= 1 then cbd-dress-root c items next
+    else let a = list-at c.actors slot
+    in if not a.npc | a.serial /= serial then cbd-dress-root c items next
+    else if not (cbd-name a.name "Sparring partner" 0 | cbd-name a.name "Veteran opponent" 0) then cbd-dress-root c items next
+    else when world-get items.world a.serial
+      is Err (_) -> cbd-dress-root c items next
+      is Ok (m) -> if m.kind /= 1 | m.health == 0 | gmb-layer items a.serial 11 0 > 0 then cbd-dress-root c items next
+        else when cst-style items a.serial cst-fighter
+          is Err (e) -> Err e
+          is Ok (_) -> cbd-dress-root c items next
+  cbd-reply : GsiState, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
+  cbd-reply (items) (result) = when result
+    is Err (e) -> Err e
+    is Ok (None) -> Ok None
+    is Ok (Just (reply)) -> Ok (Just (gmb-reply items reply))
+  cbd-handler : GameCombat, GsiState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  cbd-handler (c) (items) (shard) (input) (map) (port) (packet) =
+    cbd-reply items (cb-handler c shard input map port packet)
+  cbd-pulse : GameCombat, GsiState, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  cbd-pulse (c) (items) (shard) (input) (map) (port) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial then Ok None
+    else if list-length items.items /= shard.world.capacity then Err "combat clothing capacity"
+    else if items.world.buffer /= 0 & items.world.buffer /= shard.world.buffer then Err "combat clothing world binding"
+    else let bound = __record-set items "world" shard.world
+    in when cb-pulse c shard input map port tick
+      is Err (e) -> Err e
+      is Ok (reply) -> when cbd-dress c items 0
+        is Err (e) -> Err e
+        is Ok (_) -> cbd-reply items (Ok reply)
+  cbd-server : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
+  cbd-server (port) (window) =
+    let c = cb-state 64 42
+    in let scene = __record-set c "scene" 1
+    in let items = gsi-new (WorldTable { buffer = 0, capacity = 64, index = 0 })
+    in game-server-with (cb-specs 0) (gn-route (cbd-handler c items)) (cbd-pulse c items) port window
+
+Page 1

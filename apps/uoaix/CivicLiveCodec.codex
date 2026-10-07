@@ -1,0 +1,108 @@
+Chapter: CivicLiveCodec
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter TownLiveCodec
+
+  cvc-clothes-at : Integer = 64 + 2 * 432
+  cvc-law-at : Integer = cvc-clothes-at + 11 * 56
+  cvc-bytes : Integer = cvc-law-at + lsc-bytes
+  cvc-spots : Integer, Integer, CvPatrol, Boolean, Integer -> Integer
+  cvc-spots (buf) (at) (p) (read) (i) = if i == 4 then 0
+    else let spot = tlc-spot-fields buf (at + 80 + i * 24) (list-at p.route i) read
+    in cvc-spots buf at p read (i + 1)
+  cvc-patrols : CivicLive, Integer, Boolean, Integer -> Integer
+  cvc-patrols (s) (buf) (read) (i) = if i == 2 then 0
+    else let p = list-at s.guards i
+    in let at = 64 + i * 432
+    in let f0 = if read then let a = __record-set p "serial" (peek-qword buf (at + 0)) in 0 else poke-qword buf (at + 0) p.serial
+    in let f1 = if read then let a = __record-set p "law-id" (peek-qword buf (at + 8)) in 0 else poke-qword buf (at + 8) p.law-id
+    in let f2 = if read then let a = __record-set p "waypoint" (peek-qword buf (at + 16)) in 0 else poke-qword buf (at + 16) p.waypoint
+    in let f3 = if read then let a = __record-set p "next-step" (peek-qword buf (at + 24)) in 0 else poke-qword buf (at + 24) p.next-step
+    in let f4 = if read then let a = __record-set p "direction" (peek-qword buf (at + 32)) in 0 else poke-qword buf (at + 32) p.direction
+    in let f5 = if read then rte-drop p.walk else poke-qword buf (at + 40) 0
+    in let f6 = if read then 0 else poke-qword buf (at + 48) 0
+    in let target = tlc-spot-fields buf (at + 56) p.target read
+    in let spots = cvc-spots buf at p read 0
+    in let path = if read then 0 else wd-zero (buf + at + 176) 0 256
+    in cvc-patrols s buf read (i + 1)
+  cvc-clothes : CivicLive, Integer, Boolean, Integer -> Integer
+  cvc-clothes (s) (buf) (read) (i) = if i == 11 then 0
+    else let p = list-at s.clothes i
+    in let at = cvc-clothes-at + i * 56
+    in let f0 = if read then let a = __record-set p "serial" (peek-qword buf (at + 0)) in 0 else poke-qword buf (at + 0) p.serial
+    in let f1 = if read then let a = __record-set p "owner" (peek-qword buf (at + 8)) in 0 else poke-qword buf (at + 8) p.owner
+    in let f2 = if read then let a = __record-set p "item" (peek-qword buf (at + 16)) in 0 else poke-qword buf (at + 16) p.item
+    in let f3 = if read then let a = __record-set p "quality" (peek-qword buf (at + 24)) in 0 else poke-qword buf (at + 24) p.quality
+    in let f4 = if read then let a = __record-set p "wear" (peek-qword buf (at + 32)) in 0 else poke-qword buf (at + 32) p.wear
+    in let f5 = if read then let a = __record-set p "basis" (peek-qword buf (at + 40)) in 0 else poke-qword buf (at + 40) p.basis
+    in let f6 = if read then let a = __record-set p "layer" (peek-qword buf (at + 48)) in 0 else poke-qword buf (at + 48) p.layer
+    in cvc-clothes s buf read (i + 1)
+  cvc-mobile : WorldTable, Integer -> Boolean
+  cvc-mobile (world) (serial) = if not (lsc-mobile serial) then False
+    else when world-get world serial is Err (_) -> True is Ok (m) -> m.kind == 1
+  cvc-route : CvPatrol, WalkMap, Integer -> Boolean
+  cvc-route (p) (map) (i) = if i == 4 then True else tlc-spot map (list-at p.route i) & cvc-route p map (i + 1)
+  cvc-patrol-valid : CivicLive, WalkMap, Integer -> Boolean
+  cvc-patrol-valid (s) (map) (i) = if i == 2 then True else let p = list-at s.guards i
+    in p.law-id == i + 1 & p.serial == (list-at s.law.guards i).serial & (list-at s.law.guards i).town == 1
+      & cvc-mobile s.law.world p.serial & p.serial /= s.mayor & gv-slot s.town.vendors.game p.serial 0 < 0
+      & lsc-range p.waypoint 3 & lsc-range p.next-step tl-max-seconds & lsc-range p.direction 7
+      & ((p.target.x == -1 & p.target.y == -1 & p.target.z == 0) | tlc-spot map p.target)
+      & cvc-route p map 0 & cvc-patrol-valid s map (i + 1)
+  cvc-cloth-unique : CivicLive, Integer, Integer -> Boolean
+  cvc-cloth-unique (s) (i) (j) = if j == i then True
+    else (list-at s.clothes i).serial /= (list-at s.clothes j).serial & cvc-cloth-unique s i (j + 1)
+  cvc-cloth-valid : CivicLive, Integer -> Boolean
+  cvc-cloth-valid (s) (i) = if i == 11 then True else let c = list-at s.clothes i
+    in let position = if i < 3 then i else int-mod (i - 3) 4
+    in let owner = if i < 3 then s.mayor else (list-at s.guards ((i - 3) / 4)).serial
+    in if c.owner /= owner | c.item /= (if position == 3 then 70 else 46)
+      | c.layer /= (if position == 0 then 5 else if position == 1 then 4 else if position == 2 then 3 else 1)
+      | not (lsc-range c.quality 1000) | not (lsc-range c.wear 32) | not (lsc-range c.basis ep-limit) then False
+    else when world-get s.law.world c.serial
+      is Err (_) -> False
+      is Ok (item) -> item.kind == 2 & item.amount == 1 & gsi-known s.town.items c.serial
+        & (gsi-meta s.town.items c.serial).layer == c.layer & not (gsi-meta s.town.items c.serial).movable
+        & (if lw-live s.law c.owner then gv-owned s.law.world c.serial c.owner 65 else True)
+        & cvc-cloth-unique s i 0 & cvc-cloth-valid s (i + 1)
+  cvc-pool : CivicLive, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cvc-pool (s) (item) (i) (quantity) (quality) (wear) (basis) = if i == 11 then
+      let p = ep-actor s.town.vendors.currency.world s.production-actor
+      in ep-at p.stock item >= quantity & ep-at p.quality item >= quality & ep-at p.wear item >= wear & ep-at p.cost item >= basis
+    else let c = list-at s.clothes i
+    in if c.item /= item then cvc-pool s item (i + 1) quantity quality wear basis
+      else cvc-pool s item (i + 1) (quantity + 1) (quality + c.quality) (wear + c.wear) (basis + c.basis)
+  cvc-valid : CivicLive, WalkMap -> Boolean
+  cvc-valid (s) (map) = if list-length s.guards /= 2 | list-length s.clothes /= 11 | s.cloth-count /= 11
+    | s.law.guard-count /= 2 | not (lsc-range s.cursor 1) | s.now < 0 | s.now > tl-max-seconds - 86400
+    | s.law.world.buffer /= s.town.vendors.game.world.buffer | s.law.hour /= s.now / 3600
+    | not (eu-royal s.town.vendors.currency True s.production-actor) then False
+    else lsc-valid s.law & cvc-mobile s.law.world s.mayor & gv-slot s.town.vendors.game s.mayor 0 < 0 & cvc-patrol-valid s map 0
+      & cvc-cloth-valid s 0 & cvc-pool s 46 0 0 0 0 0 & cvc-pool s 70 0 0 0 0 0
+  cvc-encode : CivicLive, WalkMap, Integer, Integer -> Result Integer Text
+  cvc-encode (s) (map) (buf) (capacity) = if capacity < cvc-bytes | not (cvc-valid s map) then Err "Civic checkpoint state or capacity"
+    else when lsc-encode s.law (buf + cvc-law-at) lsc-bytes
+      is Err (e) -> Err e
+      is Ok (_) -> let a = poke-qword buf 0 #31435643
+        in let b = poke-qword buf 8 1
+        in let c = poke-qword buf 16 cvc-bytes
+        in let d = poke-qword buf 24 s.mayor
+        in let e = poke-qword buf 32 s.production-actor
+        in let f = poke-qword buf 40 s.now
+        in let g = poke-qword buf 56 s.cursor
+        in let patrols = cvc-patrols s buf False 0
+        in let clothes = cvc-clothes s buf False 0
+        in let hash = poke-qword buf 48 (ws-hash buf cvc-bytes 0 2166136261) in Ok cvc-bytes
+  cvc-decode : Integer, Integer, TownLive, WalkMap -> Result CivicLive Text
+  cvc-decode (buf) (size) (town) (map) = if size /= cvc-bytes then Err "Civic checkpoint extent"
+    else if peek-qword buf 0 /= #31435643 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size
+      | peek-qword buf 40 > town.now | peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "Civic checkpoint header or checksum"
+    else when lsc-decode (buf + cvc-law-at) lsc-bytes town.vendors.game.world
+      is Err (e) -> Err e
+      is Ok (law) -> let s = cv-new town law (peek-qword buf 32)
+        in let a = __record-set s "mayor" (peek-qword buf 24)
+        in let b = __record-set s "now" (peek-qword buf 40)
+        in let c = __record-set s "cursor" (peek-qword buf 56)
+        in let d = __record-set s "cloth-count" 11
+        in let patrols = cvc-patrols s buf True 0
+        in let clothes = cvc-clothes s buf True 0
+        in if cvc-valid s map then Ok s else Err "Civic checkpoint bindings"

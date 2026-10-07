@@ -1,0 +1,83 @@
+Chapter: ReportSubjectProof
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Encode chapter Json
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+  rs-json : Text -> JsonValue
+  rs-json (text) = (json-parse-value text 0 (text-length text)).value
+
+  rs-report : AdminWorld, Text -> Text
+  rs-report (a) (subject) = admin-dispatch a 3 ("{\"command\":\"report-add\",\"happened\":\"Dispute\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":2,\"evidence\":\"log 21\"," & subject & "}")
+
+  rs-no-account : Text -> Boolean
+  rs-no-account (body) = when json-get (rs-json body) "account"
+    is None -> True
+    is Just (value) -> False
+
+  rs-quotes : Integer, List Integer -> Text
+  rs-quotes (n) (acc) = if n == 0 then raw-bytes-to-text acc else rs-quotes (n - 1) (list-push acc (char-code-at "\"" 0))
+
+  rs-roundtrip : AdminWorld, Text -> Boolean
+  rs-roundtrip (a) (legacy) =
+    let buf = alloc-bytes ac-size
+    in when ac-encode a 70 11 buf ac-size
+      is Err (e) -> False
+      is Ok (size) -> when ac-decode-record buf size 70 11 a.world a.mind
+        is Err (e) -> False
+        is Ok (b) ->
+          let old-ok = admin-report-peek b == legacy
+          in let old-ack = admin-report-ack b 1
+          in let npc = admin-report-peek b
+          in let npc-ack = admin-report-ack b 2
+          in let world = admin-report-peek b
+          in let world-ack = admin-report-ack b 3
+          in let object = admin-report-peek b
+          in let object-ack = admin-report-ack b 4
+          in let account = admin-report-peek b
+          in let overwritten = poke-byte buf 200 0
+          in old-ok & size == ac-size & b.report-count == 1 & a.report-count == 5
+            & rs-no-account npc & admin-report-kind (rs-json npc) == "npc" & admin-report-subject-id (rs-json npc) == 1
+            & rs-no-account world & admin-report-kind (rs-json world) == "world" & admin-report-subject-id (rs-json world) == 0
+            & rs-no-account object & admin-report-subject-id (rs-json object) == 42
+            & json-get-str (rs-json account) "account" "" == "Avatar" & admin-report-peek b == account
+
+  rs-check : Text, Boolean -> [Console] Integer
+  rs-check (name) (ok) = act
+    print-line-uni (name & (if ok then " PASS" else " FAIL"))
+    if ok then 0 else 1
+  end
+
+  opening : [Console] Nothing = act
+    a <- admin-world-new (tf-new 0) (tm-new 0)
+    legacy <- "{\"id\":1,\"account\":\"Legacy Avatar\",\"happened\":\"Old report\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":1,\"evidence\":\"old log\"}"
+    stored <- admin-store a.reports 0 legacy
+    count <- __record-set a "report-count" 1
+    sequence <- __record-set a "report-sequence" 1
+    npc <- rs-report a "\"subject_kind\":\"npc\",\"subject_id\":1"
+    world <- rs-report a "\"subject_kind\":\"world\""
+    object <- rs-report a "\"subject_kind\":\"world\",\"subject_id\":42,\"account\":\"\""
+    account <- rs-report a "\"account\":\"Avatar\""
+    c1 <- rs-check "NPC world and legacy account producers are admitted" (admin-int (rs-json npc) "queued" == 2 & admin-int (rs-json world) "queued" == 3 & admin-int (rs-json object) "queued" == 4 & admin-int (rs-json account) "queued" == 5)
+    missing <- rs-report a "\"subject_kind\":\"npc\""
+    mixed <- rs-report a "\"subject_kind\":\"npc\",\"subject_id\":1,\"account\":\"invented\""
+    negative <- rs-report a "\"subject_kind\":\"world\",\"subject_id\":-1"
+    unknown <- rs-report a "\"subject_kind\":\"someone\",\"account\":\"Avatar\""
+    bad-kind <- rs-report a "\"subject_kind\":1,\"account\":\"Avatar\""
+    bad-id <- rs-report a "\"subject_kind\":\"npc\",\"subject_id\":\"1\""
+    c2 <- rs-check "ambiguous missing and malformed subjects leave queue unchanged" (text-contains missing "report-fields" & text-contains mixed "report-fields" & text-contains negative "report-fields" & text-contains unknown "report-fields" & text-contains bad-kind "report-fields" & text-contains bad-id "report-fields" & a.report-count == 5 & a.report-sequence == 5)
+    c3 <- rs-check "UAC1 round trip preserves mixed subjects and exact legacy body" (rs-roundtrip a legacy)
+    summaries <- panel-reports a 0 []
+    c4 <- rs-check "panel summary supplies kind for legacy body without rewriting it" (text-contains summaries "Legacy Avatar" & text-contains summaries "\"subject_kind\":\"account\"" & text-contains summaries "\"subject_kind\":\"npc\"" & text-contains summaries "\"subject_kind\":\"world\"" & admin-report-peek a == legacy)
+    q64 <- rs-quotes 64 (__list-with-capacity 64)
+    q256 <- rs-quotes 256 (__list-with-capacity 256)
+    q512 <- rs-quotes 512 (__list-with-capacity 512)
+    large <- admin-report a (JsonObject [json-pair "account" (JsonStr q64), json-pair "happened" (JsonStr q256), json-pair "location" (JsonStr q64), json-pair "wall_time" (JsonStr q64), json-pair "game_hour" (JsonInt 2147483647), json-pair "evidence" (JsonStr q512)])
+    c5 <- rs-check "escaped subject metadata cannot exceed the fixed text slot" (text-contains large "report-size" & a.report-count == 5 & a.report-sequence == 5)
+    print-line-uni ("UOAIX REPORT SUBJECT failures=" & show (c1+c2+c3+c4+c5))
+  end

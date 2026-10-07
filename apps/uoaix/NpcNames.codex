@@ -1,0 +1,67 @@
+Chapter: NpcNames
+  cites Uoaix chapter CharacterStylist
+
+ UOAIX-56: an NPC shows its profession until a character asks its name. Each name is fixed by serial with the
+ stylist's seed (cst-pick, salt 7), and follows the gender the stylist draws (cst-female), so a restart names it again.
+ At most nn-limit (character, NPC) pairs are known.
+
+  NnKnown = record { pairs : Integer, count : Integer }
+  nn-limit : Integer = 1024
+  nn-new : Integer -> NnKnown
+  nn-new (unused) = NnKnown { pairs = alloc-bytes (nn-limit * 16), count = 0 }
+  nn-male : List Text = ["Gareth", "Aldric", "Bram", "Cedric", "Duncan", "Edmund", "Fendrel", "Godwin",
+    "Hamon", "Ivo", "Jory", "Kendrick", "Leofric", "Merrick", "Osric", "Tobin"]
+  nn-female : List Text = ["Alys", "Brenna", "Cerys", "Dulcie", "Elsbeth", "Fenna", "Gwyneth", "Hester",
+    "Isolde", "Joan", "Katrin", "Lisbet", "Maud", "Nessa", "Rowena", "Tilda"]
+  nn-name : Integer, Integer -> Text
+  nn-name (role) (serial) = if cst-female role serial then list-at nn-female (cst-pick serial 7 (list-length nn-female))
+    else list-at nn-male (cst-pick serial 7 (list-length nn-male))
+  nn-at : NnKnown, Integer, Integer, Integer -> Integer
+  nn-at (k) (character) (npc) (i) = if i == k.count then -1
+    else if peek-qword k.pairs (i * 16) == character & peek-qword k.pairs (i * 16 + 8) == npc then i
+    else nn-at k character npc (i + 1)
+  nn-knows : NnKnown, Integer, Integer -> Boolean
+  nn-knows (k) (character) (npc) = nn-at k character npc 0 >= 0
+  nn-learn : NnKnown, Integer, Integer -> Integer
+  nn-learn (k) (character) (npc) = if character <= 0 | npc <= 0 | nn-knows k character npc then 0
+    else if k.count == nn-limit then -1
+    else let a = poke-qword k.pairs (k.count * 16) character
+    in let b = poke-qword k.pairs (k.count * 16 + 8) npc
+    in let c = __record-set k "count" (k.count + 1) in 1
+  nn-bytes : Integer = 8 + nn-limit * 16
+  nn-copy : Integer, Integer, Integer, Integer -> Integer
+  nn-copy (from) (to) (bytes) (i) = if i >= bytes then 0 else let a = poke-qword to i (peek-qword from i) in nn-copy from to bytes (i + 8)
+  nn-encode : NnKnown, Integer -> Integer
+  nn-encode (k) (buf) = let n = poke-qword buf 0 k.count
+    in let zeroed = nn-zero (buf + 8) (k.count * 16) (nn-limit * 16)
+    in nn-copy k.pairs (buf + 8) (k.count * 16) 0
+  nn-zero : Integer, Integer, Integer -> Integer
+  nn-zero (buf) (i) (stop) = if i >= stop then 0 else let a = poke-qword buf i 0 in nn-zero buf (i + 8) stop
+  nn-valid : Integer, Integer, Integer -> Boolean
+  nn-valid (buf) (i) (count) = if i == nn-limit then True
+    else if i < count then peek-qword buf (i * 16) > 0 & peek-qword buf (i * 16 + 8) > 0 & nn-valid buf (i + 1) count
+    else peek-qword buf (i * 16) == 0 & peek-qword buf (i * 16 + 8) == 0 & nn-valid buf (i + 1) count
+  nn-decode : NnKnown, Integer -> Result Integer Text
+  nn-decode (k) (buf) = let count = peek-qword buf 0
+    in if count < 0 | count > nn-limit | not (nn-valid (buf + 8) 0 count) then Err "known names extent"
+    else let copied = nn-copy (buf + 8) k.pairs (count * 16) 0
+    in let n = __record-set k "count" count in Ok count
+ A character not yet known shows the title of its best skill (UOAIX-56): ServUO SkillInfo's skill titles, in skill-id
+ order 0-45 (the order of csk-names), GPL-2.0; ports/ServUO-LICENSE.txt.
+  nn-titles : List Text = ["alchemist", "biologist", "naturalist", "merchant", "weapon master", "duelist", "beggar",
+    "blacksmith", "bowyer", "pacifier", "explorer", "carpenter", "cartographer", "chef", "scout", "demoralizer",
+    "scholar", "healer", "fisherman", "detective", "shepherd", "shade", "rouser", "scribe", "infiltrator", "mage",
+    "warder", "tactician", "spy", "bard", "assassin", "archer", "medium", "pickpocket", "tailor", "tamer",
+    "praegustator", "tinker", "ranger", "veterinarian", "swordsman", "armsman", "fencer", "wrestler", "lumberjack", "miner"]
+  nn-profession : Integer -> Text
+  nn-profession (skill) = if skill < 0 | skill >= list-length nn-titles then "a stranger"
+    else let title = list-at nn-titles skill
+    in let first = char-at title 0
+    in (if nn-vowel first 0 then "an " else "a ") & title
+  nn-vowel : Char, Integer -> Boolean
+  nn-vowel (c) (i) = if i == 5 then False else c == char-at "aeiou" i | nn-vowel c (i + 1)
+  nn-label : NnKnown, Integer, Integer, Integer, Text -> Text
+  nn-label (k) (character) (role) (npc) (profession) = if nn-knows k character npc then nn-name role npc & " the " & profession
+    else "the " & profession
+
+Page 1

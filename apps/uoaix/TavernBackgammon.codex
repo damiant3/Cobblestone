@@ -1,0 +1,197 @@
+Chapter: TavernBackgammon
+  cites Games chapter Backgammon
+  cites Games chapter Rng
+  cites Foreword chapter Random
+  cites Foreword chapter Result
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyMoney
+
+  TbPatron = record { identity : Integer, purse : Integer, npc : Boolean,
+    skill : Integer, drink : Integer, appetite : Integer, wager-limit : Integer }
+  TbTable = record { currency : EuCurrency, players : List TbPatron, board : BackgammonBoard,
+    dice : List Integer, dice-count : Integer, seed : Integer, state : Integer, turn : Integer,
+    metal : Integer, stake : Integer, hour : Integer, events : Integer, event-count : Integer,
+    paid : Integer, payout : Integer }
+
+  tb-copy-patron : TbPatron -> TbPatron
+  tb-copy-patron (p) = TbPatron { identity = p.identity, purse = p.purse, npc = p.npc,
+    skill = p.skill, drink = p.drink, appetite = p.appetite, wager-limit = p.wager-limit }
+  tb-valid-patron : EuCurrency, TbPatron -> Boolean
+  tb-valid-patron (x) (p) = if p.identity <= 0 | p.skill < 0 | p.skill > 1000 | p.drink < 0 | p.drink > 1000
+    | p.appetite < 0 | p.appetite > 1000 | p.wager-limit < 0 | p.wager-limit > 1000000 | not (em-valid-purse x.world.money p.purse) then False
+    else (em-purse x.world.money p.purse).kind == (if p.npc then 3 else 2)
+  tb-new : EuCurrency, TbPatron, TbPatron, Integer, Integer, Integer, Boolean -> Result TbTable Text
+  tb-new (x) (one) (two) (metal) (stake) (server-seed) (verified-challenge) =
+    if not verified-challenge | not (eu-ready x) | not (tb-valid-patron x one) | not (tb-valid-patron x two)
+      | one.identity == two.identity | one.purse == two.purse | not (eu-metal metal)
+      | stake < 1 | stake > 1000000 | stake > one.wager-limit | stake > two.wager-limit then Err "tavern challenge refused"
+    else Ok (TbTable { currency = x, players = [tb-copy-patron one, tb-copy-patron two], board = backgammon-new,
+      dice = [0,0,0,0], dice-count = 0, seed = server-seed, state = 0, turn = 0,
+      metal = metal, stake = stake, hour = x.world.hour, events = alloc-bytes (2048 * 48), event-count = 0, paid = 0, payout = 0 })
+  tb-seat : TbTable, Integer -> Integer
+  tb-seat (t) (principal) = if (list-at t.players 0).identity == principal then 0
+    else if (list-at t.players 1).identity == principal then 1 else -1
+  tb-log : TbTable, Integer, Integer, Integer, Integer, Integer -> Integer
+  tb-log (t) (kind) (actor) (a) (b) (c) = if t.event-count == 2048 then -1
+    else let at = t.event-count * 48
+    in let x1 = poke-qword t.events at (t.event-count + 1)
+    in let x2 = poke-qword t.events (at + 8) kind
+    in let x3 = poke-qword t.events (at + 16) actor
+    in let x4 = poke-qword t.events (at + 24) a
+    in let x5 = poke-qword t.events (at + 32) b
+    in let x6 = poke-qword t.events (at + 40) c
+    in let used = __record-set t "event-count" (t.event-count + 1) in 0
+  tb-random : TbTable -> Integer
+  tb-random (t) = let mark = __heap-save
+    in let next = rng-next (rng-new t.seed)
+    in let value = bit-and (mix-bits next.state 1) #7FFFFFFF
+    in let saved = __record-set t "seed" next.state
+    in let restored = __heap-restore mark in value
+  tb-die : TbTable, Integer -> Integer
+  tb-die (t) (left) = if left == 0 then -1 else let n = tb-random t
+    in if n >= 2147483646 then tb-die t (left - 1) else 1 + int-mod n 6
+  tb-interest : TbPatron, Integer, Integer -> Boolean
+  tb-interest (p) (stake) (server-choice) = stake >= 1 & stake <= p.wager-limit
+    & server-choice >= 0 & server-choice < 1000 & server-choice < p.appetite + p.drink / 2
+  tb-strength : TbPatron -> Integer
+  tb-strength (p) = if p.skill > p.drink then p.skill - p.drink else 0
+  tb-cover : TbTable, Integer -> Boolean
+  tb-cover (t) (cube) = if cube < 1 | cube > em-limit / (t.stake * 3) | not (eu-room t.currency) then False
+    else let money = eu-money t.currency t.metal
+    in let one = (list-at t.players 0).purse
+    in let two = (list-at t.players 1).purse
+    in em-can-pay money one two (t.stake * cube * 3) & em-can-pay money two one (t.stake * cube * 3)
+  tb-accept : TbTable, Integer, Boolean, Boolean -> Integer
+  tb-accept (t) (principal) (verified-choice) (mind-consent) =
+    if not verified-choice | tb-seat t principal /= 1 | t.state /= 0 | t.event-count == 2048 | not (tb-cover t 1) then -1
+    else let p = list-at t.players 1
+    in let accepted = if not p.npc then True else mind-consent & tb-interest p t.stake (int-mod (tb-random t) 1000)
+    in let logged = tb-log t (if accepted then 1 else 9) principal t.stake t.metal 0
+    in let state = __record-set t "state" (if accepted then 1 else 5)
+    in if accepted then 0 else 1
+  tb-decline : TbTable, Integer, Boolean -> Integer
+  tb-decline (t) (principal) (verified-choice) = if not verified-choice | tb-seat t principal /= 1 | t.state /= 0 | t.event-count == 2048 then -1
+    else let logged = tb-log t 9 principal t.stake t.metal 0
+    in let state = __record-set t "state" 5 in 0
+
+  tb-copy-points : List Integer, List Integer, Integer -> Integer
+  tb-copy-points (src) (dst) (i) = if i == 24 then 0
+    else let copied = list-set-at dst i (list-at src i) in tb-copy-points src dst (i + 1)
+  tb-copy-board : BackgammonBoard, BackgammonBoard -> Integer
+  tb-copy-board (src) (dst) = let points = tb-copy-points src.points dst.points 0
+    in let a = __record-set dst "bar-white" src.bar-white
+    in let b = __record-set dst "bar-black" src.bar-black
+    in let c = __record-set dst "off-white" src.off-white
+    in let d = __record-set dst "off-black" src.off-black
+    in let e = __record-set dst "current-player" src.current-player
+    in let f = __record-set dst "cube" src.cube
+    in let g = __record-set dst "cube-owner" src.cube-owner
+    in let h = __record-set dst "offered" src.offered
+    in let j = __record-set dst "dropped" src.dropped in 0
+  tb-dice-list : TbTable, Integer, List Integer -> List Integer
+  tb-dice-list (t) (i) (xs) = if i == t.dice-count then xs
+    else tb-dice-list t (i + 1) (list-push xs (list-at t.dice i))
+  tb-store-dice : TbTable, List Integer, Integer -> Integer
+  tb-store-dice (t) (xs) (i) = if i == 4 then let n = __record-set t "dice-count" (list-length xs) in 0
+    else let saved = list-set-at t.dice i (if i < list-length xs then list-at xs i else 0)
+    in tb-store-dice t xs (i + 1)
+  tb-next : TbTable -> Integer
+  tb-next (t) = let a = __record-set t.board "current-player" (1 - t.board.current-player)
+    in let b = __record-set t "turn" (t.turn + 1)
+    in let c = __record-set t "dice-count" 0
+    in let d = __record-set t "state" 1 in 0
+  tb-roll : TbTable, Integer, Boolean -> Integer
+  tb-roll (t) (principal) (verified) = if not verified | t.state /= 1 | t.board.offered /= 0
+    | tb-seat t principal /= t.board.current-player | t.event-count == 2048 then -1
+    else let d1 = tb-die t 16
+    in let d2 = tb-die t 16
+    in if d1 < 1 | d2 < 1 then -1
+    else let player = if t.turn /= 0 then t.board.current-player else if d1 > d2 then 0 else 1
+    in let logged = tb-log t 2 principal d1 d2 player
+    in if t.turn == 0 & d1 == d2 then 0
+    else let mark = __heap-save
+    in let dice = tb-store-dice t (if d1 == d2 then [d1,d1,d1,d1] else [d1,d2]) 0
+    in let set-player = __record-set t.board "current-player" player
+    in let state = __record-set t "state" 2
+    in let reclaimed = __heap-restore mark in 0
+  tb-move : TbTable, Integer, Integer, Integer, Boolean -> Integer
+  tb-move (t) (principal) (from) (die) (verified) = if not verified | t.state /= 2
+    | tb-seat t principal /= t.board.current-player | t.event-count == 2048 then -1
+    else let mark = __heap-save
+    in let dice = tb-dice-list t 0 []
+    in let legal = bg-legal t.board dice from die
+    in let result = if not legal then -1 else
+      let logged = tb-log t 3 principal from die t.board.current-player
+      in let copied = tb-copy-board (bg-play t.board dice from die) t.board
+      in let remaining = bg-drop-one dice die 0 False []
+      in let saved = tb-store-dice t remaining 0
+      in if bg-check-win t.board then let finished = __record-set t "state" 3 in 0
+      else if bg-max-use t.board remaining 24 == 0 then tb-next t else 0
+    in let reclaimed = __heap-restore mark in result
+  tb-pass : TbTable, Integer, Boolean -> Integer
+  tb-pass (t) (principal) (verified) = if not verified | t.state /= 2 | tb-seat t principal /= t.board.current-player | t.event-count == 2048 then -1
+    else let mark = __heap-save
+    in let allowed = bg-max-use t.board (tb-dice-list t 0 []) 24 == 0
+    in let result = if not allowed then -1 else let logged = tb-log t 4 principal 0 0 0 in tb-next t
+    in let reclaimed = __heap-restore mark in result
+  tb-double : TbTable, Integer, Boolean -> Integer
+  tb-double (t) (principal) (verified) = if not verified | t.state /= 1 | t.turn == 0
+    | tb-seat t principal /= t.board.current-player | t.event-count == 2048 | not (tb-cover t (t.board.cube * 2)) then -1
+    else if not (bg-can-double t.board) then -1 else let mark = __heap-save
+    in let logged = tb-log t 5 principal t.board.cube 0 0
+    in let copied = tb-copy-board (bg-double t.board) t.board
+    in let reclaimed = __heap-restore mark in 0
+  tb-answer : TbTable, Integer, Boolean, Boolean -> Integer
+  tb-answer (t) (principal) (take) (verified) = if not verified | t.state /= 1 | t.board.offered /= 1
+    | tb-seat t principal /= 1 - t.board.current-player | t.event-count == 2048 then -1
+    else if take & not (tb-cover t (t.board.cube * 2)) then -1 else let mark = __heap-save
+    in let logged = tb-log t (if take then 6 else 7) principal t.board.cube 0 0
+    in let copied = tb-copy-board (if take then bg-take t.board else bg-drop t.board) t.board
+    in let state = if take then 0 else let finished = __record-set t "state" 3 in 0
+    in let reclaimed = __heap-restore mark in 0
+  tb-first : BackgammonBoard, List Integer, Integer, Integer -> Integer
+  tb-first (b) (dice) (i) (from) = if i == list-length dice then -1
+    else if from == 25 then tb-first b dice (i + 1) 0
+    else if bg-legal b dice from (list-at dice i) then (list-at dice i) * 32 + from
+    else tb-first b dice i (from + 1)
+  tb-npc : TbTable -> Integer
+  tb-npc (t) = let seat = if t.board.offered == 1 then 1 - t.board.current-player else t.board.current-player
+    in let p = list-at t.players seat
+    in if not p.npc then -1
+    else if t.state == 1 & t.board.offered == 1 then tb-answer t p.identity (bg-ai-take t.board & tb-cover t (t.board.cube * 2)) True
+    else if t.state == 1 then
+      if t.turn > 0 & bg-ai-double t.board & tb-cover t (t.board.cube * 2) then tb-double t p.identity True else tb-roll t p.identity True
+    else if t.state /= 2 then -1 else let mark = __heap-save
+    in let dice = tb-dice-list t 0 []
+    in let picked = if int-mod (tb-random t) 1000 < tb-strength p then bg-ai-pick t.board dice else tb-first t.board dice 0 0
+    in let result = if picked < 0 then tb-pass t p.identity True else tb-move t p.identity (bit-and picked 31) (bit-shru picked 5) True
+    in let reclaimed = __heap-restore mark in result
+  tb-settle : TbTable -> Integer
+  tb-settle (t) = if t.state /= 3 | t.event-count == 2048 | not (bg-check-win t.board) then -1
+    else let winner = bg-winner t.board
+    in let amount = t.stake * bg-points t.board
+    in let payer = (list-at t.players (1 - winner)).purse
+    in let payee = (list-at t.players winner).purse
+    in let result = eu-pay t.currency True payer payee (if t.metal == 1 then amount else 0) (if t.metal == 2 then amount else 0) (if t.metal == 3 then amount else 0)
+    in if result /= 0 then -1
+    else let logged = tb-log t 8 (list-at t.players winner).identity amount t.metal t.currency.count
+    in let event = __record-set t "paid" t.currency.count
+    in let gross = __record-set t "payout" amount
+    in let state = __record-set t "state" 4 in 0
+  tb-drink : TbTable, Integer, Boolean -> Integer
+  tb-drink (t) (principal) (verified-served) = let seat = tb-seat t principal
+    in if not verified-served | seat < 0 | t.event-count == 2048 then -1
+    else let p = list-at t.players seat
+    in let next = if p.drink > 800 then 1000 else p.drink + 200
+    in let logged = tb-log t 10 principal p.drink next 0
+    in let updated = __record-set p "drink" next in 0
+  tb-hour : TbTable, Integer -> Integer
+  tb-hour (t) (hour) = if hour < t.hour | hour > 1000000000000 | t.event-count == 2048 then -1
+    else let elapsed = hour - t.hour
+    in let loss = if elapsed > 40 then 1000 else elapsed * 25
+    in let logged = tb-log t 11 0 t.hour hour 0
+    in let a = list-at t.players 0
+    in let b = list-at t.players 1
+    in let d1 = __record-set a "drink" (if a.drink > loss then a.drink - loss else 0)
+    in let d2 = __record-set b "drink" (if b.drink > loss then b.drink - loss else 0)
+    in let updated = __record-set t "hour" hour in 0

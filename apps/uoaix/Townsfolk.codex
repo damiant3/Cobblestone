@@ -1,0 +1,384 @@
+Chapter: Townsfolk
+
+Section: State
+
+  TfPerson = record {
+    serial : Integer, world-serial : Integer, name : Text, town : Integer,
+    home : Integer, workplace : Integer, place : Integer,
+    job : Integer, age : Integer, alive : Integer,
+    spouse : Integer, parent-a : Integer, parent-b : Integer,
+    children : Integer, due : Integer, death-age : Integer,
+    illness : Integer, hunger : Integer, fatigue : Integer, mood : Integer,
+    coin : Integer, bread : Integer, goods : Integer,
+    activity : Integer, schedule : List Integer,
+    memories : List Integer, memory-next : Integer, memory-count : Integer
+  }
+
+  TfTown = record {
+    serial : Integer, name : Text, market : Integer, tavern : Integer, temple : Integer,
+    vendor : Integer, population : Integer, grain : Integer, bread : Integer,
+    ingots : Integer, goods : Integer, crop : Integer,
+    harvested : Integer, baked : Integer, forged : Integer, sold : Integer,
+    births : Integer, deaths : Integer, marriages : Integer, illnesses : Integer,
+    shortages : Integer, observations : Integer, adhered : Integer, eaten : Integer
+  }
+
+  TfWorld = record {
+    people : List TfPerson, towns : List TfTown,
+    used : Integer, town-count : Integer, hour : Integer,
+    events : List Integer, event-count : Integer, sequence : Integer
+  }
+
+Section: Allocation
+
+  tf-zeros : Integer, List Integer -> List Integer
+  tf-zeros (n) (xs) =
+    if n <= 0 then xs else tf-zeros (n - 1) (list-push xs 0)
+
+  tf-schedule : Boolean -> List Integer
+  tf-schedule (child) =
+    if child then [0,0,0,0,0,0,2,7,7,7,7,3,2,7,7,7,7,7,3,2,6,5,0,0]
+    else [0,0,0,0,0,0,2,1,1,1,1,3,2,1,1,1,1,1,3,2,4,6,5,0]
+
+  tf-empty-person : Integer -> TfPerson
+  tf-empty-person (unused) = TfPerson {
+    serial = 0, world-serial = 0, name = "", town = 0, home = 0, workplace = 0, place = 0,
+    job = 0, age = 0, alive = 0, spouse = 0, parent-a = 0, parent-b = 0,
+    children = 0, due = -1, death-age = 29200, illness = 0,
+    hunger = 0, fatigue = 0, mood = 70, coin = 0, bread = 0, goods = 0,
+    activity = 0, schedule = tf-schedule False,
+    memories = tf-zeros 16 [], memory-next = 0, memory-count = 0
+  }
+
+  tf-people : Integer, List TfPerson -> List TfPerson
+  tf-people (n) (xs) =
+    if n == 128 then xs else tf-people (n + 1) (list-push xs (tf-empty-person n))
+
+  tf-empty-town : Integer -> TfTown
+  tf-empty-town (unused) = TfTown {
+    serial = 0, name = "", market = 0, tavern = 0, temple = 0, vendor = 0,
+    population = 0, grain = 0, bread = 0, ingots = 0, goods = 0, crop = 0,
+    harvested = 0, baked = 0, forged = 0, sold = 0, births = 0, deaths = 0,
+    marriages = 0, illnesses = 0, shortages = 0, observations = 0, adhered = 0, eaten = 0
+  }
+
+  tf-towns : Integer, List TfTown -> List TfTown
+  tf-towns (n) (xs) =
+    if n == 4 then xs else tf-towns (n + 1) (list-push xs (tf-empty-town n))
+
+  tf-new : Integer -> TfWorld
+  tf-new (unused) = TfWorld {
+    people = tf-people 0 [], towns = tf-towns 0 [], used = 0, town-count = 0,
+    hour = 0, events = tf-zeros 4096 [], event-count = 0, sequence = 0
+  }
+
+Section: Admission
+
+  tf-valid-person : TfWorld, Integer -> Boolean
+  tf-valid-person (w) (id) = id > 0 & id <= w.used
+  tf-person : TfWorld, Integer -> TfPerson
+  tf-person (w) (id) = list-at w.people (id - 1)
+  tf-town : TfWorld, Integer -> TfTown
+  tf-town (w) (id) = list-at w.towns (id - 1)
+
+  tf-add-town : TfWorld, Text, Integer, Integer, Integer -> Integer
+  tf-add-town (w) (name) (market) (tavern) (temple) =
+    if w.town-count >= 4 then -2
+    else if text-length name == 0 | text-length name > 64 | market <= 0 | tavern <= 0 | temple <= 0 then -1
+    else let t = list-at w.towns w.town-count
+    in let id = w.town-count + 1
+    in let a = __record-set t "serial" id
+    in let b = __record-set t "name" name
+    in let c = __record-set t "market" market
+    in let d = __record-set t "tavern" tavern
+    in let e = __record-set t "temple" temple
+    in let f = __record-set w "town-count" id
+    in id
+
+  tf-add-person : TfWorld, Text, Integer, Integer, Integer, Integer, Integer -> Integer
+  tf-add-person (w) (name) (town) (home) (workplace) (job) (age) =
+    if w.used >= 128 then -2
+    else if town <= 0 | town > w.town-count | home <= 0 | workplace <= 0 then -1
+    else if text-length name == 0 | text-length name > 64 | job < 0 | job > 4 | age < 0 | age >= 29200 then -1
+    else if job > 0 & age < 6570 then -1
+    else if job == 4 & workplace /= (tf-town w town).market then -1
+    else let p = list-at w.people w.used
+    in let t = tf-town w town
+    in let id = w.used + 1
+    in let a = __record-set p "serial" id
+    in let b = __record-set p "name" name
+    in let c = __record-set p "town" town
+    in let d = __record-set p "home" home
+    in let e = __record-set p "workplace" workplace
+    in let f = __record-set p "place" home
+    in let g = __record-set p "job" job
+    in let h = __record-set p "age" age
+    in let i = __record-set p "alive" 1
+    in let j = tf-set-schedule p (if job == 0 then 1 else 0) 0
+    in let k = __record-set w "used" id
+    in let l = __record-set t "population" (t.population + 1)
+    in let m = if job == 4 & t.vendor == 0 then __record-set t "vendor" id else t
+    in id
+
+  tf-set-schedule : TfPerson, Integer, Integer -> Integer
+  tf-set-schedule (p) (child) (h) =
+    if h == 24 then 0
+    else let action = if h < 6 | h == 23 then 0
+      else if h == 6 | h == 12 | h == 19 then 2
+      else if h == 11 | h == 18 then 3
+      else if h == 20 then (if child == 1 then 6 else 4)
+      else if h == 21 then (if child == 1 then 5 else 6)
+      else if h == 22 then (if child == 1 then 0 else 5)
+      else (if child == 1 then 7 else 1)
+    in let a = list-set-at p.schedule h action
+    in tf-set-schedule p child (h + 1)
+
+Section: Events
+
+  tf-remember : TfPerson, Integer -> Integer
+  tf-remember (p) (sequence) =
+    let a = list-set-at p.memories p.memory-next sequence
+    in let b = __record-set p "memory-next" (int-mod (p.memory-next + 1) 16)
+    in let c = __record-set p "memory-count" (if p.memory-count < 16 then p.memory-count + 1 else 16)
+    in 0
+
+  tf-event : TfWorld, Integer, TfPerson, Integer -> Integer
+  tf-event (w) (kind) (p) (other) =
+    if w.event-count >= 1024 then -3
+    else let at = w.event-count * 4
+    in let seq = w.sequence + 1
+    in let a = list-set-at w.events at kind
+    in let b = list-set-at w.events (at + 1) p.serial
+    in let c = list-set-at w.events (at + 2) other
+    in let d = list-set-at w.events (at + 3) w.hour
+    in let e = __record-set w "event-count" (w.event-count + 1)
+    in let f = __record-set w "sequence" seq
+    in tf-remember p seq
+
+  tf-ack-events : TfWorld -> Integer
+  tf-ack-events (w) = let a = __record-set w "event-count" 0 in 0
+
+  tf-marry : TfWorld, Integer, Integer -> Integer
+  tf-marry (w) (one) (two) =
+    if not (tf-valid-person w one) | not (tf-valid-person w two) | one == two then -1
+    else if w.event-count >= 1024 then -3
+    else let a = tf-person w one
+    in let b = tf-person w two
+    in if a.alive == 0 | b.alive == 0 | a.age < 6570 | b.age < 6570 then -1
+    else if a.town /= b.town | a.spouse /= 0 | b.spouse /= 0 then -1
+    else if a.parent-a == two | a.parent-b == two | b.parent-a == one | b.parent-b == one then -1
+    else if (a.parent-a > 0 & (a.parent-a == b.parent-a | a.parent-a == b.parent-b)) | (a.parent-b > 0 & (a.parent-b == b.parent-a | a.parent-b == b.parent-b)) then -1
+    else let c = __record-set a "spouse" two
+    in let d = __record-set b "spouse" one
+    in let t = tf-town w a.town
+    in let e = __record-set t "marriages" (t.marriages + 1)
+    in let seq = w.sequence + 1
+    in let f = tf-event w 1 a two
+    in tf-remember b seq
+
+  tf-expect-birth : TfWorld, Integer, Integer -> Integer
+  tf-expect-birth (w) (parent) (due-day) =
+    if not (tf-valid-person w parent) then -1
+    else let p = tf-person w parent
+    in if p.alive == 0 | p.spouse == 0 | p.due >= 0 | due-day <= w.hour / 24 | due-day > w.hour / 24 + 280 then -1
+    else let mate = tf-person w p.spouse
+    in if mate.alive == 0 | mate.due >= 0 then -1
+    else let a = __record-set p "due" due-day in 0
+
+Section: Economy
+
+  tf-buy : TfWorld, Integer, Integer, Integer, Integer -> Integer
+  tf-buy (w) (buyer) (vendor) (item) (quantity) =
+    if not (tf-valid-person w buyer) | not (tf-valid-person w vendor) | buyer == vendor | quantity <= 0 | quantity > 1000 then -1
+    else let p = tf-person w buyer
+    in let v = tf-person w vendor
+    in if p.alive == 0 | v.alive == 0 | v.job /= 4 | p.town /= v.town | p.place /= v.workplace | v.place /= v.workplace | v.illness > 0 then -1
+    else if v.activity /= 1 & v.activity /= 3 then -1
+    else if item /= 1 & item /= 2 then -1
+    else let t = tf-town w p.town
+    in let price = quantity * (if item == 1 then 1 else 3)
+    in let stock = if item == 1 then t.bread else t.goods
+    in if stock < quantity then -4
+    else if p.coin < price | v.coin > 1000000 - price then -5
+    else if (if item == 1 then p.bread else p.goods) > 1000000 - quantity then -2
+    else let a = __record-set p "coin" (p.coin - price)
+    in let b = __record-set v "coin" (v.coin + price)
+    in let c = if item == 1 then __record-set p "bread" (p.bread + quantity) else __record-set p "goods" (p.goods + quantity)
+    in let d = if item == 1 then __record-set t "bread" (t.bread - quantity) else __record-set t "goods" (t.goods - quantity)
+    in let e = __record-set t "sold" (t.sold + quantity)
+    in 0
+
+  tf-work : TfPerson, TfTown -> Integer
+  tf-work (p) (t) =
+    if p.job == 1 then
+      if t.crop < 2 | t.grain > 999998 then let a = __record-set t "shortages" (t.shortages + 1) in 0
+      else let a = __record-set t "crop" (t.crop - 2)
+      in let b = __record-set t "grain" (t.grain + 2)
+      in let c = __record-set t "harvested" (t.harvested + 2) in 0
+    else if p.job == 2 then
+      if t.grain < 2 | t.bread > 999996 then let a = __record-set t "shortages" (t.shortages + 1) in 0
+      else let a = __record-set t "grain" (t.grain - 2)
+      in let b = __record-set t "bread" (t.bread + 4)
+      in let c = __record-set t "baked" (t.baked + 4) in 0
+    else if p.job == 3 then
+      if t.ingots < 1 | t.goods >= 1000000 then let a = __record-set t "shortages" (t.shortages + 1) in 0
+      else let a = __record-set t "ingots" (t.ingots - 1)
+      in let b = __record-set t "goods" (t.goods + 1)
+      in let c = __record-set t "forged" (t.forged + 1) in 0
+    else 0
+
+Section: Clock
+
+  tf-clamp : Integer -> Integer
+  tf-clamp (n) = if n < 0 then 0 else if n > 100 then 100 else n
+
+  tf-place : TfPerson, TfTown, Integer -> Integer
+  tf-place (p) (t) (action) =
+    if action == 1 then p.workplace
+    else if action == 3 then t.market
+    else if action == 4 then t.tavern
+    else if action == 5 then t.temple
+    else p.home
+
+  tf-hour-person : TfWorld, TfPerson, Integer -> Integer
+  tf-hour-person (w) (p) (h) =
+    if p.alive == 0 then 0
+    else let t = tf-town w p.town
+    in let planned = list-at p.schedule h
+    in let action = if p.illness > 0 & planned /= 2 then 0 else planned
+    in let a = __record-set p "activity" action
+    in let b = __record-set p "place" (tf-place p t action)
+    in let c = __record-set p "hunger" (tf-clamp (p.hunger + 3))
+    in let d = __record-set p "fatigue" (tf-clamp (p.fatigue + (if action == 0 then -12 else 4)))
+    in let e = __record-set t "observations" (t.observations + 1)
+    in let f = __record-set t "adhered" (t.adhered + (if action == planned then 1 else 0))
+    in let g = if action == 1 then tf-work p t else 0
+    in let j = if action == 2 & p.bread == 0 & p.age < 6570 then tf-feed-child w p else 0
+    in let k = if action == 2 & p.bread > 0 then tf-meal p t else 0
+    in let l = if action == 4 | action == 6 then __record-set p "mood" (tf-clamp (p.mood + 3)) else p
+    in 0
+
+  tf-meal : TfPerson, TfTown -> Integer
+  tf-meal (p) (t) =
+    let a = __record-set p "bread" (p.bread - 1)
+    in let b = __record-set p "hunger" (tf-clamp (p.hunger - 30))
+    in let c = __record-set t "eaten" (t.eaten + 1) in 0
+
+  tf-feed-child : TfWorld, TfPerson -> Integer
+  tf-feed-child (w) (p) =
+    if p.parent-a == 0 then 0
+    else let parent = tf-person w p.parent-a
+    in let other = if p.parent-b > 0 then tf-person w p.parent-b else parent
+    in let donor = if parent.alive == 1 & parent.bread > 0 then parent else other
+    in if donor.alive == 0 | donor.bread == 0 then 0
+    else let a = __record-set donor "bread" (donor.bread - 1)
+    in let b = __record-set p "bread" 1 in 0
+
+  tf-hours : TfWorld, Integer, Integer -> Integer
+  tf-hours (w) (i) (h) =
+    if i == w.used then 0
+    else let a = tf-hour-person w (list-at w.people i) h
+    in tf-hours w (i + 1) h
+
+  tf-market : TfWorld, Integer -> Integer
+  tf-market (w) (i) =
+    if i == w.used then 0
+    else let p = list-at w.people i
+    in let t = tf-town w p.town
+    in let a = if p.alive == 1 & p.activity == 3 & p.age >= 6570 & t.vendor > 0 & p.serial /= t.vendor then tf-buy w p.serial t.vendor 1 (if p.children > 0 then 4 else 2) else 0
+    in let own = if p.alive == 1 & p.serial == t.vendor & p.activity == 3 & t.bread >= 2 & p.bread <= 999998 then tf-vendor-ration p t else 0
+    in let b = if a < 0 then __record-set t "shortages" (t.shortages + 1) else t
+    in tf-market w (i + 1)
+
+  tf-vendor-ration : TfPerson, TfTown -> Integer
+  tf-vendor-ration (p) (t) =
+    let a = __record-set t "bread" (t.bread - 2)
+    in let b = __record-set p "bread" (p.bread + 2) in 0
+
+  tf-vendors : TfWorld, Integer, Integer -> Integer
+  tf-vendors (w) (i) (h) =
+    if i == w.used then 0
+    else let p = list-at w.people i
+    in let a = if p.alive == 1 & p.job == 4 & p.illness == 0 & (h == 11 | h == 18) then __record-set p "place" p.workplace else p
+    in tf-vendors w (i + 1) h
+
+  tf-death : TfWorld, TfPerson -> Integer
+  tf-death (w) (p) =
+    let t = tf-town w p.town
+    in let a = __record-set p "alive" 0
+    in let b = __record-set p "due" -1
+    in let c = __record-set t "population" (t.population - 1)
+    in let d = __record-set t "deaths" (t.deaths + 1)
+    in let e = if p.spouse > 0 then __record-set (tf-person w p.spouse) "spouse" 0 else p
+    in let f = __record-set p "spouse" 0
+    in let g = if t.vendor == p.serial then __record-set t "vendor" 0 else t
+    in tf-event w 3 p 0
+
+  tf-day-person : TfWorld, TfPerson, Integer -> Integer
+  tf-day-person (w) (p) (day) =
+    if p.alive == 0 then 0
+    else let age = p.age + 1
+    in let a = __record-set p "age" age
+    in if age >= p.death-age | (p.hunger >= 100 & p.illness >= 3) then tf-death w p
+    else let t = tf-town w p.town
+    in let ill = if p.hunger >= 90 | p.fatigue >= 90 then p.illness + 1 else 0
+    in let b = if ill > 0 & p.illness == 0 then tf-event w 4 p 0 else 0
+    in let c = if ill > 0 & p.illness == 0 then __record-set t "illnesses" (t.illnesses + 1) else t
+    in let d = __record-set p "illness" ill
+    in let e = __record-set p "mood" (tf-clamp (p.mood - (if ill > 0 then 10 else 0)))
+    in 0
+
+  tf-days : TfWorld, Integer, Integer, Integer -> Integer
+  tf-days (w) (i) (limit) (day) =
+    if i == limit then 0
+    else let a = tf-day-person w (list-at w.people i) day
+    in tf-days w (i + 1) limit day
+
+  tf-births : TfWorld, Integer, Integer, Integer -> Integer
+  tf-births (w) (i) (limit) (day) =
+    if i == limit then 0
+    else let p = list-at w.people i
+    in let a = if p.alive == 1 & p.due >= 0 & p.due <= day then tf-birth w p else 0
+    in tf-births w (i + 1) limit day
+
+  tf-birth : TfWorld, TfPerson -> Integer
+  tf-birth (w) (p) =
+    if p.spouse == 0 then let a = __record-set p "due" -1 in tf-event w 6 p 0
+    else let mate = tf-person w p.spouse
+    in if w.used >= 128 then tf-event w 5 p 0
+    else let id = tf-add-person w "Newborn" p.town p.home p.home 0 0
+    in let child = tf-person w id
+    in let a = __record-set child "parent-a" p.serial
+    in let b = __record-set child "parent-b" mate.serial
+    in let c = __record-set p "children" (p.children + 1)
+    in let d = __record-set mate "children" (mate.children + 1)
+    in let e = __record-set p "due" -1
+    in let t = tf-town w p.town
+    in let f = __record-set t "births" (t.births + 1)
+    in let seq = w.sequence + 1
+    in let g = tf-event w 2 p id
+    in let h = tf-remember mate seq
+    in tf-remember child seq
+
+  tf-grow : TfWorld, Integer -> Integer
+  tf-grow (w) (i) =
+    if i == w.town-count then 0
+    else let t = list-at w.towns i
+    in let a = __record-set t "crop" (if t.crop < 32 then t.crop + 32 else 64)
+    in tf-grow w (i + 1)
+
+  tf-step : TfWorld -> Integer
+  tf-step (w) =
+    if w.event-count /= 0 then -3
+    else if w.hour >= 8760000 then -2
+    else let h = int-mod w.hour 24
+    in let next-hour = w.hour + 1
+    in let a = tf-hours w 0 h
+    in let b = tf-vendors w 0 h
+    in let c = if h == 11 | h == 18 then tf-market w 0 else 0
+    in let d = __record-set w "hour" next-hour
+    in let limit = w.used
+    in let e = if h == 23 then tf-days w 0 limit (next-hour / 24) else 0
+    in let f = if h == 23 then tf-births w 0 limit (next-hour / 24) else 0
+    in let g = if h == 23 then tf-grow w 0 else 0
+    in 0

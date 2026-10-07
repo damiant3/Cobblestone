@@ -1,0 +1,116 @@
+Chapter: CompositeSecondCharacterProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  sc-check : Text, Boolean -> [Console] Integer
+  sc-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  sc-fill : WalkMap, Integer -> Integer
+  sc-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in sc-fill map (i + 1)
+  sc-create : Text -> List Integer
+  sc-create (who) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header who 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  sc-decoration : WalkMap -> Result WdState Text
+  sc-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  sc-own-purse : GvWorld, Integer -> Boolean
+  sc-own-purse (v) (row) = let p = list-at v.players row
+    in let w = v.currency.world
+    in p.actor > 1 & ep-valid-actor w p.actor
+      & (em-purse w.money (ep-actor w p.actor).purse).kind == 3
+      & (em-purse w.money (ep-actor w p.actor).purse).owner == p.serial
+  sc-enter : CompositeOwner, WalkMap, List GameOpcodeSpec, Integer, Text -> [Console, Device.Block] Result GameReply Text
+  sc-enter (store) (map) (specs) (connection) (who) = act
+    input <- gn-input-with specs connection
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    cs-route store store.state.checkpoint.game input map 2593 (sc-create who)
+  end
+  sc-quit : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  sc-quit (store) (map) (specs) = let game = store.state.checkpoint.game
+    in let cleared = __record-set game "active" 0 in act 0 end
+  sc-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  sc-run (store) (map) (specs) = let owner = store.state in act
+    first <- sc-enter store map specs 1 "First"
+    a <- sc-check "first character binds installation actor 1" (is-ok first & owner.vendor.player-count == 1 & (list-at owner.vendor.players 0).actor == 1)
+    out1 <- sc-quit store map specs
+    second <- sc-enter store map specs 2 "Second"
+    print-line-uni ("SECOND " & (when second is Err (e) -> "refused " & e is Ok (r) -> "entered " & r.note) & " fault=" & show store.store.fault)
+    b <- sc-check "second character enters with its own player purse and actor" (is-ok second & store.store.fault == 0 & owner.vendor.player-count == 2
+      & (list-at owner.vendor.players 1).serial /= (list-at owner.vendor.players 0).serial & sc-own-purse owner.vendor 1
+      & peek-qword owner.checkpoint.game.characters 0 /= 0 & peek-qword owner.checkpoint.game.characters 160 /= 0)
+    out2 <- sc-quit store map specs
+    objects <- world-count owner.checkpoint.game.world
+    full <- __record-set owner.vendor "player-count" gv-player-limit
+    refused <- sc-enter store map specs 3 "Third"
+    c <- sc-check "creation past player capacity refuses before any change" (is-err refused & store.store.fault == 0
+      & world-count owner.checkpoint.game.world == objects & peek-qword owner.checkpoint.game.characters 320 == 0)
+    room <- __record-set owner.vendor "player-count" 2
+    third <- sc-enter store map specs 4 "Third"
+    d <- sc-check "owner still serves after a capacity refusal" (is-ok third & store.store.fault == 0 & owner.vendor.player-count == 3 & sc-own-purse owner.vendor 2)
+    out3 <- sc-quit store map specs
+    doomed <- (list-at owner.vendor.players 1).serial
+    del-in <- gn-input-with specs 5
+    del-mode <- __record-set del-in "mode" 2
+    del-phase <- __record-set del-in.session "phase" 1
+    deleted <- cs-route store owner.checkpoint.game del-in map 2593 (gp-put32 (gp-zeros [#83] 30) 1 & [0,0,0,0])
+    print-line-uni ("DELETE " & (when deleted is Err (e) -> "refused " & e is Ok (r) -> "ok " & r.note) & " fault=" & show store.store.fault & " players=" & show owner.vendor.player-count)
+    forced <- cs-commit store True
+    e <- sc-check "deleting a bound character releases its row and commits" (is-ok deleted & is-ok forced & store.store.fault == 0
+      & owner.vendor.player-count == 2 & gv-player owner.vendor doomed 0 == -1 & peek-qword owner.checkpoint.game.characters 160 == 0)
+    out4 <- sc-quit store map specs
+    refill <- sc-enter store map specs 6 "Fourth"
+    f <- sc-check "the freed row admits a new character" (is-ok refill & store.store.fault == 0 & owner.vendor.player-count == 3 & sc-own-purse owner.vendor 2)
+    a + b + c + d + e + f
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> sc-check e False
+     is Ok (map) -> let filled = sc-fill map 0
+      in when sc-decoration map
+       is Err (e) -> sc-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> act
+        print-line-uni ("FAIL store " & e)
+        1
+      end
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> act
+          print-line-uni ("FAIL recovery " & e)
+          1
+        end
+        is Ok (owner) -> if fresh then sc-run owner map specs
+          else sc-check "restart restores the released player table" (owner.state.vendor.player-count == 3 & owner.store.fault == 0
+            & sc-own-purse owner.state.vendor 1 & sc-own-purse owner.state.vendor 2 & (list-at owner.state.vendor.players 0).actor == 1)
+      end
+    end

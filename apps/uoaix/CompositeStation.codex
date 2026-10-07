@@ -1,0 +1,110 @@
+Chapter: CompositeStation
+  cites Uoaix chapter WorkStations
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter GameVendorUndo
+
+ Legs: -1 unbound, 0 at the counter, 1 to the station, 2 at the station, 3 back to the counter. The blacksmith
+ (vendor 1) forges a longsword from 2 bought ingots at the anvil beside the forge; the baker (vendor 3) bakes bread
+ from 2 bought flour at the oven (bb-craft-from). Mode 1 restocks a sold-out good from the shop's own production
+ (bb-restock-shop): the tailor (vendor 2) at the loom beside the spinning wheel, the tinker (vendor 6) at its bench, the carpenter (vendor 7) at The Saw Horse's bench.
+  CsnSmith = record { walker : RteWalk, serial : Integer, counter : BbSpot, work : BbSpot, leg : Integer,
+    forged : Integer, forged-x : Integer, forged-y : Integer,
+    vendor : Integer, input : Integer, product : Integer, art : Integer, station-a : BbSpot, station-b : BbSpot, mode : Integer }
+  csn-worker : Integer, Integer, Integer, Integer, BbSpot, BbSpot -> CsnSmith
+  csn-worker (vendor) (input) (product) (art) (a) (b) = CsnSmith { walker = rte-walk 0, serial = 0, counter = BbSpot { x = 0, y = 0, z = 0 },
+    work = BbSpot { x = 0, y = 0, z = 0 }, leg = -1, forged = 0, forged-x = 0, forged-y = 0,
+    vendor = vendor, input = input, product = product, art = art, station-a = a, station-b = b, mode = 0 }
+  csn-smith : Integer -> CsnSmith
+  csn-smith (unused) = csn-worker 1 31 70 #0F60 wks-anvil wks-forge
+  csn-baker : Integer -> CsnSmith
+  csn-baker (unused) = csn-worker 3 33 34 #103C wks-oven wks-oven
+  csn-tailor : Integer -> CsnSmith
+  csn-tailor (unused) = let s = csn-worker 2 0 0 0 wks-loom wks-wheel in let restocking = __record-set s "mode" 1 in s
+  csn-tinker : Integer -> CsnSmith
+  csn-tinker (unused) = let s = csn-worker 6 0 0 0 wks-tinker wks-tinker in let restocking = __record-set s "mode" 1 in s
+  csn-carpenter : Integer -> CsnSmith
+  csn-carpenter (unused) = let s = csn-worker 7 0 0 0 wks-saw-bench wks-saw-bench in let restocking = __record-set s "mode" 1 in s
+  csn-smith-ready : CsnSmith, GvWorld -> Boolean
+  csn-smith-ready (s) (v) = if s.mode == 1 then bb-restock-ready v s.vendor else bb-craft-ready v s.vendor s.input 2
+  csn-smith-idle : CsnSmith, GvWorld -> Boolean
+  csn-smith-idle (s) (v) = s.leg <= 0 & not (csn-smith-ready s v)
+  csn-spot-set : BbSpot, Integer, Integer, Integer -> Integer
+  csn-spot-set (spot) (x) (y) (z) = let a = __record-set spot "x" x
+    in let b = __record-set spot "y" y
+    in let c = __record-set spot "z" z in 0
+  csn-smith-bind : CsnSmith, GvWorld, WalkMap, WorldObject -> Result (List (List Integer)) Text
+  csn-smith-bind (s) (v) (map) (mobile) = let shop = list-at bb-shops s.vendor
+    in let inside = mobile.x >= shop.x1 & mobile.x <= shop.x2 & mobile.y >= shop.y1 & mobile.y <= shop.y2
+    in let placed = if inside then Ok (BbSpot { x = mobile.x, y = mobile.y, z = mobile.z }) else bb-placement v.game.world map shop 0
+    in when placed
+      is Err (e) -> Err e
+      is Ok (spot) -> let kept = csn-spot-set s.counter spot.x spot.y spot.z
+        in let bound = __record-set s "serial" mobile.serial
+        in let cleared = rte-drop s.walker
+        in let leg = __record-set s "leg" (if inside then 0 else 3) in Ok []
+  csn-smith-depart : CsnSmith, TownLive, WalkMap -> Result (List (List Integer)) Text
+  csn-smith-depart (s) (t) (map) = when wks-spot t.vendors.game.world map s.station-a s.station-b 0
+    is Err (_) -> let count = __record-set s.walker "blocked" (s.walker.blocked + 1) in Ok []
+    is Ok (spot) -> let kept = csn-spot-set s.work spot.x spot.y spot.z
+      in let cleared = rte-drop s.walker
+      in let out = __record-set s "leg" 1 in Ok []
+  csn-smith-work : CsnSmith, TownLive, WorldObject -> Result (List (List Integer)) Text
+  csn-smith-work (s) (t) (mobile) = if not (wks-near mobile s.station-a & wks-near mobile s.station-b) then let again = __record-set s "leg" 1 in Ok []
+    else when (if s.mode == 1 then bb-restock-shop t.vendors t.items s.vendor else bb-craft-from t.vendors t.items s.vendor s.input 2 s.product s.art)
+      is Err (e) -> Err e
+      is Ok (n) -> let made = if n < 1 then 0
+          else let a = __record-set s "forged" (s.forged + n)
+          in let b = __record-set s "forged-x" mobile.x
+          in let c = __record-set s "forged-y" mobile.y in 0
+        in let cleared = rte-drop s.walker
+        in let back = __record-set s "leg" 3 in Ok []
+ The crown is the town's reserve buyer (EconomyClock.md): at its counter the blacksmith sells the crown one longsword a
+ game day at its posted price while it holds two or more (one stays on sale), paid from the crown's purse, so the coin it pays miners for ingots comes back. The
+ crown's armoury is not in the world: the sword is delivered into the shop's input box, deleted and consumed.
+  csn-crown-today : EpWorld, Integer, Integer, Integer -> Boolean
+  csn-crown-today (w) (purse) (item) (i) = if i >= w.trade-count then False
+    else let t = list-at w.trades i
+    in (t.buyer == purse & t.item == item & t.hour / 24 == w.hour / 24) | csn-crown-today w purse item (i + 1)
+  csn-crown-lot : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  csn-crown-lot (v) (actor) (owner) (item) (i) = if i >= v.lot-count then -1
+    else let l = list-at v.lots i
+    in if l.actor == actor & l.item == item & l.quantity == 1 & gv-sale-source v l.serial owner actor then i
+    else csn-crown-lot v actor owner item (i + 1)
+  csn-crown-count : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  csn-crown-count (v) (actor) (owner) (item) (i) = if i >= v.lot-count then 0
+    else let l = list-at v.lots i
+    in (if l.actor == actor & l.item == item & gv-sale-source v l.serial owner actor then l.quantity else 0) + csn-crown-count v actor owner item (i + 1)
+  csn-crown-buy : CsnSmith, TownLive -> Result Integer Text
+  csn-crown-buy (s) (t) = let v = t.vendors
+    in let w = v.currency.world
+    in let merchant = list-at v.vendors s.vendor
+    in let crown = w.mint-owner
+    in if s.mode /= 0 | s.vendor /= 1 | crown <= 0 | not (ep-valid-actor w crown) then Ok 0
+    else let at = csn-crown-lot v merchant.actor merchant.serial s.product 0
+    in let price = ep-price w merchant.actor s.product
+    in if at < 0 | price < 1 | csn-crown-count v merchant.actor merchant.serial s.product 0 < 2 | csn-crown-today w (ep-actor w crown).purse s.product 0 then Ok 0
+    else let line = GvLine { lot = at, quantity = 1, price = price, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+    in when gv-checkout v [line] crown merchant.actor merchant.serial merchant.extra merchant.serial
+      is Err (_) -> Ok 0
+      is Ok (_) -> let held = gv-lot v line.delivered 0
+        in let retired = if held >= 0 then gh-retire-lot v held else 0
+        in when world-delete v.game.world line.delivered
+        is Err (e) -> Err e
+        is Ok (_) -> let used = ep-consume w (ep-actor w crown) s.product 1
+          in let touched = world-touch v.game.world in Ok 1
+  csn-counter : CsnSmith, TownLive, WalkMap -> Result (List (List Integer)) Text
+  csn-counter (s) (t) (map) = when csn-crown-buy s t
+    is Err (e) -> Err e
+    is Ok (_) -> if csn-smith-ready s t.vendors then csn-smith-depart s t map else Ok []
+  csn-smith-step (s) (t) (map) (doors) = let v = t.vendors
+    in when world-get v.game.world (list-at v.vendors s.vendor).serial
+      is Err (_) -> Ok []
+      is Ok (mobile) -> if mobile.kind /= 1 | mobile.health <= 0 then Ok []
+        else if s.leg < 0 | s.serial /= mobile.serial then csn-smith-bind s v map mobile
+        else if s.leg == 0 then csn-counter s t map
+        else if s.leg == 2 then csn-smith-work s t mobile
+        else let target = if s.leg == 1 then s.work else s.counter
+        in if tl-at mobile target then let arrived = __record-set s "leg" (if s.leg == 1 then 2 else 0) in let cleared = rte-drop s.walker in Ok []
+        else rte-toward t.nav v.game map doors s.walker mobile target.x target.y target.z

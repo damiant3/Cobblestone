@@ -1,0 +1,63 @@
+Chapter: AdminPanelServeProof
+  cites Uoaix chapter AdminServer
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminProtocol
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Foreword chapter Result
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Encode chapter Json
+  cites Net chapter NetDriver
+
+  panel-proof-line : [Console] Text = act
+    line <- read-line
+    when line
+      is Just (text) -> text
+      is None -> ""
+  end
+
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    health <- panel-proof-line
+    mind-key <- panel-proof-line
+    keeper <- panel-proof-line
+    human <- panel-proof-line
+    epoch <- panel-proof-line
+    let world = tf-new 0
+    in let town = tf-add-town world "Britain" 1 2 3
+    in let npc = tf-add-person world "Mara" town 4 5 2 9000
+    in let mind = tm-new 0
+    in let a = admin-world-new world mind
+    in let gms = gm-memory-new 1000
+    in let ga = gm-memory-register gms 101 "MaraTester" True
+    in let gb = gm-memory-register gms 102 "IoloTester" True
+    in let gn = gm-memory-register gms 9001 "NPC baker" False
+    in let grant-text = "{\"account\":102,\"powers\":512,\"coin_each\":10,\"coin_day\":20,\"item_each\":0,\"item_day\":0,\"title_day\":0,\"plot_day\":0}"
+    in let granted = gm-memory-edit gms "Shard owner" "gm-dub" ((json-parse-value grant-text 0 (text-length grant-text)).value) 0
+    in let favor = gm-memory-act gms 102 1 "favor-coins" 101 0 5 0 "seeded stand-in favor"
+    in let p = panel-new-with-gms a "Shard owner" gms
+    in let levels = panel-bind-log p (slg-new slg-trace)
+    in let economy-bound = when efi-source 0
+      is Err (e) -> -1
+      is Ok (state) -> let scenario = efi-build state
+        in if scenario.failed /= 0 | not (efi-valid state) then -1 else panel-bind-currency p state.currency 1 True
+    in let c = panel-connect p 1 "uoaixtest" "Iolo" "127.0.0.1" "2026-10-04T07:00:00Z"
+    in let report-text = "{\"account\":\"uoaixtest\",\"happened\":\"Player requests help near the bakery\",\"location\":\"Britain\",\"wall_time\":\"2026-10-04T07:01:00Z\",\"game_hour\":0,\"evidence\":\"log 17: <img src=x onerror=window.__panelInjected=1> Please help with my lost bag.\"}"
+    in let report = (json-parse-value report-text 0 (text-length report-text)).value
+    in let queued = admin-report a report
+    in let npc-report = "{\"subject_kind\":\"npc\",\"subject_id\":1,\"happened\":\"NPC dispute at the bakery\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":0,\"evidence\":\"NPC log 21\"}"
+    in let npc-queued = admin-report a ((json-parse-value npc-report 0 (text-length npc-report)).value)
+    in let world-report = "{\"subject_kind\":\"world\",\"subject_id\":0,\"happened\":\"Town well needs repair\",\"location\":\"Britain\",\"wall_time\":\"fixture\",\"game_hour\":0,\"evidence\":\"World log 22\"}"
+    in let world-queued = admin-report a ((json-parse-value world-report 0 (text-length world-report)).value)
+    in when admin-auth-new [health,mind-key,keeper,human] epoch
+      is None -> print-line-uni "PANEL CONFIG REFUSED"
+      is Just (auth) -> act
+        card <- net-driver-bring-up
+        print-line-uni "PANEL READY 2594"
+        served <- panel-serve auth p 2594
+        print-line-uni ("PANEL STOP " & show served)
+      end
+  end

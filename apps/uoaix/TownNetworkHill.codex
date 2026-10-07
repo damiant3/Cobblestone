@@ -1,0 +1,137 @@
+Chapter: TownNetworkHill
+  cites Uoaix chapter TownNetwork
+  cites Uoaix chapter TownNetworkHillPtx
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Result
+
+  TnhGpu = record {
+    module : Integer, best : Integer, trial : Integer, inputs : Integer, outcomes : Integer,
+    hidden : Integer, outputs : Integer, scores : Integer, total : Integer, samples : Integer,
+    score : Integer, best-score : Integer, accepted : Integer, closed : Boolean,
+    weight-grid : GpuGrid, hidden-grid : GpuGrid, output-grid : GpuGrid, score-grid : GpuGrid,
+    reduce-grid : GpuGrid, parameter : GpuParam, delta : GpuParam,
+    candidate-params : List GpuParam, hidden-params : List GpuParam, output-params : List GpuParam,
+    score-params : List GpuParam, reduce-params : List GpuParam, copy-params : List GpuParam
+  }
+  tnh-scratch : Integer = #BD700000
+  tnh-grid : Integer -> GpuGrid
+  tnh-grid (n) = GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1,
+    bx = 128, by = 1, bz = 1, shared = 0 }
+  tnh-range : List Integer, Integer, Integer -> Boolean
+  tnh-range (xs) (bound) (i) = if i == list-length xs then True
+    else if list-at xs i < 0 - bound | list-at xs i > bound then False
+    else tnh-range xs bound (i + 1)
+  tnh-put : List Integer, Integer -> Integer
+  tnh-put (xs) (i) = if i == list-length xs then 0
+    else let a = poke-qword tnh-scratch (i * 8) (list-at xs i) in tnh-put xs (i + 1)
+  tnh-outcome-range : List Integer, Integer -> Boolean
+  tnh-outcome-range (xs) (i) = if i == list-length xs then True
+    else let column = int-mod i 14
+    in let value = list-at xs i
+    in if value < -1000 | value > 1000 then False
+    else if (column == 10 | column == 11) & value < 0 then False
+    else tnh-outcome-range xs (i + 1)
+  tnh-upload : Integer, List Integer -> Boolean
+  tnh-upload (handle) (xs) = let written = tnh-put xs 0
+    in gpu-buf-write handle 0 (list-length xs * 8) tnh-scratch
+  tnh-free : List Integer, Integer -> Boolean
+  tnh-free (handles) (i) = if i == list-length handles then True
+    else let h = list-at handles i
+    in let ok = if h > 0 then gpu-buf-free-raw h else True
+    in let rest = tnh-free handles (i + 1)
+    in ok & rest
+  tnh-close : TnhGpu -> Boolean
+  tnh-close (g) = if g.closed then False
+    else let a = __record-set g "closed" True
+    in tnh-free [g.best,g.trial,g.inputs,g.outcomes,g.hidden,g.outputs,g.scores,g.total] 0
+  tnh-plan : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Integer -> TnhGpu
+  tnh-plan (mh) (best) (trial) (inputs) (outcomes) (hidden) (outputs) (scores) (total) (samples) =
+    let parameter = gpu-arg-u64 0
+    in let delta = gpu-arg-u64 0
+    in TnhGpu {
+      module = mh, best = best, trial = trial, inputs = inputs, outcomes = outcomes,
+      hidden = hidden, outputs = outputs, scores = scores, total = total, samples = samples,
+      score = 0, best-score = 0, accepted = 0, closed = False,
+      weight-grid = tnh-grid 766, hidden-grid = tnh-grid (samples * 16),
+      output-grid = tnh-grid (samples * 14), score-grid = tnh-grid samples, reduce-grid = tnh-grid 1,
+      parameter = parameter, delta = delta,
+      candidate-params = [gpu-arg-buf best 0,gpu-arg-buf trial 0,parameter,delta],
+      hidden-params = [gpu-arg-buf trial 0,gpu-arg-buf inputs 0,gpu-arg-buf hidden 0,gpu-arg-u64 samples],
+      output-params = [gpu-arg-buf trial 0,gpu-arg-buf hidden 0,gpu-arg-buf outputs 0,gpu-arg-u64 samples],
+      score-params = [gpu-arg-buf outputs 0,gpu-arg-buf outcomes 0,gpu-arg-buf scores 0,gpu-arg-u64 samples],
+      reduce-params = [gpu-arg-buf scores 0,gpu-arg-buf total 0,gpu-arg-u64 samples],
+      copy-params = [gpu-arg-buf trial 0,gpu-arg-buf best 0]
+    }
+  tnh-allocate : Integer, Integer -> Result TnhGpu Text
+  tnh-allocate (mh) (samples) =
+    let best = gpu-buf-alloc-raw (766 * 8)
+    in let trial = gpu-buf-alloc-raw (766 * 8)
+    in let inputs = gpu-buf-alloc-raw (samples * 32 * 8)
+    in let outcomes = gpu-buf-alloc-raw (samples * 14 * 8)
+    in let hidden = gpu-buf-alloc-raw (samples * 16 * 8)
+    in let outputs = gpu-buf-alloc-raw (samples * 14 * 8)
+    in let scores = gpu-buf-alloc-raw (samples * 8)
+    in let total = gpu-buf-alloc-raw 8
+    in let missing = best <= 0 | trial <= 0 | inputs <= 0 | outcomes <= 0
+    in let no-scratch = hidden <= 0 | outputs <= 0 | scores <= 0 | total <= 0
+    in if missing | no-scratch then
+      let freed = tnh-free [best,trial,inputs,outcomes,hidden,outputs,scores,total] 0
+      in Err "GPU allocation refused"
+    else Ok (tnh-plan mh best trial inputs outcomes hidden outputs scores total samples)
+  tnh-evaluate : TnhGpu -> Boolean
+  tnh-evaluate (g) = if g.closed then False
+    else if gpu-launch-module g.module "kernel_tnh_hidden" g.hidden-grid g.hidden-params < 0 then False
+    else if gpu-launch-module g.module "kernel_tnh_output" g.output-grid g.output-params < 0 then False
+    else if gpu-launch-module g.module "kernel_tnh_score" g.score-grid g.score-params < 0 then False
+    else if gpu-launch-module g.module "kernel_tnh_reduce" g.reduce-grid g.reduce-params < 0 then False
+    else if not (gpu-buf-read g.total 0 8 tnh-scratch) then False
+    else let score = peek-qword tnh-scratch 0
+    in let saved = __record-set g "score" score
+    in True
+  tnh-candidate : TnhGpu, Integer, Integer -> Boolean
+  tnh-candidate (g) (parameter) (delta) = if g.closed then False
+    else if parameter < 0 | parameter >= 766 | delta < -1000 | delta > 1000 then False
+    else let p = __record-set g.parameter "value" parameter
+    in let d = __record-set g.delta "value" delta
+    in gpu-launch-module g.module "kernel_tnh_candidate" g.weight-grid g.candidate-params >= 0
+  tnh-open : Integer, List Integer, List Integer, List Integer -> Result TnhGpu Text
+  tnh-open (samples) (weights) (inputs) (outcomes) =
+    if samples < 1 | samples > 1024 then Err "sample bound"
+    else if list-length weights /= 766 | list-length inputs /= samples * 32 then Err "hill input shape"
+    else if list-length outcomes /= samples * 14 then Err "hill outcome shape"
+    else if not (tnh-range weights 4000 0 & tnh-range inputs 1000 0 & tnh-outcome-range outcomes 0)
+      then Err "hill value bound"
+    else let mh = gpu-module-load tnh-training-ptx
+    in if mh <= 0 then Err "GPU module refused"
+    else when tnh-allocate mh samples
+      is Err (message) -> Err message
+      is Ok (g) ->
+        if not (tnh-upload g.best weights & tnh-upload g.inputs inputs & tnh-upload g.outcomes outcomes)
+          then let closed = tnh-close g in Err "GPU upload refused"
+        else if not (tnh-candidate g 0 0) then let closed = tnh-close g in Err "initial candidate refused"
+        else if not (tnh-evaluate g) then let closed = tnh-close g in Err "initial score refused"
+        else let saved = __record-set g "best-score" g.score in Ok g
+  tnh-try : TnhGpu, Integer, Integer -> Integer
+  tnh-try (g) (parameter) (delta) = if not (tnh-candidate g parameter delta) then -1
+    else if not (tnh-evaluate g) then -1
+    else if g.score <= g.best-score then 0
+    else if gpu-launch-module g.module "kernel_tnh_copy" g.weight-grid g.copy-params < 0 then -1
+    else let saved = __record-set g "best-score" g.score
+    in let counted = __record-set g "accepted" (g.accepted + 1)
+    in 1
+  tnh-copy-values : List Integer, Integer, Integer -> Boolean
+  tnh-copy-values (xs) (base) (i) = if i == list-length xs then True
+    else let value = peek-qword tnh-scratch ((base + i) * 8)
+    in if value < -4000 | value > 4000 then False
+    else let a = list-set-at xs i value in tnh-copy-values xs base (i + 1)
+  tnh-export : TnhGpu -> Result TnModel Text
+  tnh-export (g) = if g.closed then Err "closed hill state"
+    else if not (gpu-buf-read g.best 0 (766 * 8) tnh-scratch) then Err "GPU read refused"
+    else let hw = tn-zeros 512
+    in let hb = tn-zeros 16
+    in let ow = tn-zeros 224
+    in let ob = tn-zeros 14
+    in if not (tnh-copy-values hw 0 0 & tnh-copy-values hb 512 0
+      & tnh-copy-values ow 528 0 & tnh-copy-values ob 752 0) then Err "invalid hill weights"
+    else tn-model hw hb ow ob

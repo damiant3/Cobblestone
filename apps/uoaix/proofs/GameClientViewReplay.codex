@@ -1,0 +1,139 @@
+Chapter: GameClientViewReplay
+  cites Uoaix chapter GameClientView
+
+  gcvr-check : Text, Boolean -> [Console] Integer
+  gcvr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  gcvr-find : List (List Integer), Integer, Integer -> List Integer
+  gcvr-find (packets) (op) (i) = if i == list-length packets then []
+    else let packet = list-at packets i in if list-at packet 0 == op then packet else gcvr-find packets op (i + 1)
+  gcvr-packets : Result GameReply Text -> List (List Integer)
+  gcvr-packets (result) = when result is Err (_) -> [] is Ok (reply) -> reply.packets
+  gcvr-status : GameShard -> List Integer
+  gcvr-status (game) = when world-get game.world 1 is Err (_) -> [] is Ok (m) -> gp-status m game.characters 0
+  gcvr-move : GameShard, Integer -> Result Integer Text
+  gcvr-move (game) (x) = when world-get game.world 1
+    is Err (e) -> Err e
+    is Ok (m) -> let changed = __record-set m "x" x in world-update game.world m
+  gcvr-health : GameShard, Integer, Integer -> Result Integer Text
+  gcvr-health (game) (serial) (health) = when world-get game.world serial
+    is Err (e) -> Err e
+    is Ok (m) -> let changed = __record-set m "health" health in world-update game.world m
+  gcvr-far : GameShard, Integer -> Result Integer Text
+  gcvr-far (game) (left) = if left == 0 then Ok 0 else let mark = __heap-save
+    in let item = gs-item 0 1 0
+    in let x = __record-set item "x" (3000 + int-mod left 128)
+    in let y = __record-set item "y" (1000 + left / 128)
+    in when world-create game.world item
+      is Err (e) -> Err e
+      is Ok (_) -> let restored = __heap-restore mark in gcvr-far game (left - 1)
+  gcvr-run : GameShard, GameClientView -> [Console] Integer
+  gcvr-run (game) (view) = act
+    player <- world-create game.world (gs-mobile 0 100 100 0 400 1002)
+    npc <- world-create game.world (gs-mobile 0 101 100 0 400 1002)
+    slot <- poke-qword game.characters 0 1
+    strength <- poke-byte game.characters 79 50
+    dexterity <- poke-byte game.characters 80 20
+    intelligence <- poke-byte game.characters 81 30
+    active <- __record-set game "active" 1
+    items <- gsi-new game.world
+    clothes <- gmb-dress items 2
+    populated <- gcvr-far game 16000
+    combat <- cb-new game 42
+    own <- cb-ensure combat game 1
+    other <- cb-ensure combat game 2
+    input <- gn-input 9
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 2
+    serial <- __record-set input.session "serial" 1
+    status <- gcvr-status game
+    gold <- list-set-at status 61 42
+    first <- gcv-apply view combat items game input status (gs-reply [[#4F,0]] "entry")
+    packets <- gcvr-packets first
+    draw <- gcvr-find packets #78 0
+    health <- gcvr-find packets #A1 0
+    season <- gcvr-find packets #BC 0
+    light <- gcvr-find packets #4F 0
+    a <- gcvr-check "entry draws equipped mobile and exact legacy health/environment" (is-ok first & list-length draw == 46 & gp-u32 draw 3 == 2 & list-length health == 9 & gp-u16 health 5 == 100 & gp-u16 health 7 == 100 & list-length season == 3 & list-at season 1 == 1 & list-at season 2 == 1 & list-at light 1 == 10)
+    own-packet <- gcvr-find packets #11 0
+    mana <- gcvr-find packets #A2 0
+    stamina <- gcvr-find packets #A3 0
+    b <- gcvr-check "owner status preserves money and seeds mana/stamina bars" (gp-u32 own-packet 58 == 42 & gp-u16 mana 5 == 30 & gp-u16 mana 7 == 30 & gp-u16 stamina 5 == 20)
+    quiet <- gcv-apply view combat items game input status (gs-reply [] "idle")
+    c <- gcvr-check "unchanged idle emits no packets" (is-ok quiet & list-length (gcvr-packets quiet) == 0)
+    premature <- gcv-apply view combat items game input status (gs-reply [cbp-remove 2] "family range removal")
+    retained <- gcvr-check "family removal cannot erase a mobile still in the world" (is-ok premature & list-length (gcvr-packets premature) == 0)
+    requested <- gcv-apply view combat items game input status (gs-reply [status] "status request")
+    query <- gcvr-check "unchanged requested status still replies" (list-length (gcvr-find (gcvr-packets requested) #11 0) == 66)
+    wounded <- gcvr-health game 2 25
+    hurt <- gcv-apply view combat items game input status (gs-reply [[#A1,0,0,0,2,0,100,0,50]] "hit")
+    hit <- gcvr-find (gcvr-packets hurt) #A1 0
+    d <- gcvr-check "health change emits one scaled update" (list-length (gcvr-packets hurt) == 1 & gp-u32 hit 1 == 2 & gp-u16 hit 7 == 50)
+    moved <- gcvr-move game 119
+    boundary <- gcv-apply view combat items game input status (gs-reply [] "walk")
+    e <- gcvr-check "inclusive sight boundary retains mobile" (list-length (gcvr-packets boundary) == 0)
+    farther <- gcvr-move game 120
+    outside <- gcv-apply view combat items game input status (gs-reply [] "walk")
+    f <- gcvr-check "leaving sight lets the client cull without removal packets" (list-length (gcvr-packets outside) == 0 & view.visible-count == 0)
+    far-draw <- when world-get game.world 2 is Err (_) -> [] is Ok (m) -> cbp-mobile m 4 0 3
+    hidden <- gcv-apply view combat items game input status (gs-reply [far-draw] "old family draw")
+    g <- gcvr-check "family draw cannot reintroduce out-of-range mobile" (list-length (gcvr-packets hidden) == 0)
+    returned <- gcvr-move game 100
+    back <- gcv-apply view combat items game input status (gs-reply [] "walk")
+    h <- gcvr-check "reentry redraws mobile and health" (list-length (gcvr-find (gcvr-packets back) #78 0) > 0 & list-length (gcvr-find (gcvr-packets back) #A1 0) == 9)
+    environment <- gcv-environment view 3 10
+    changed <- gcv-apply view combat items game input status (gs-reply [] "season")
+    env <- gcvr-packets changed
+    j <- gcvr-check "season change precedes forced light refresh" (list-length env == 2 & list-at (list-at env 0) 0 == #BC & list-at (list-at env 0) 1 == 3 & list-at (list-at env 1) 0 == #4F)
+    skinned <- when world-get game.world 2 is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set m "hue" 1050)
+    redrawn <- gcv-apply view combat items game input status (gs-reply [] "restyle")
+    full <- gcvr-find (gcvr-packets redrawn) #78 0
+    restyled <- gcvr-check "a skin change redraws the mobile with its equipment, not a bare move" (is-ok skinned & list-length full == 46 & gp-u32 full 3 == 2 & gp-u16 full 15 == 1050 & list-length (gcvr-find (gcvr-packets redrawn) #77 0) == 0)
+    stepped <- when world-get game.world 2 is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set m "x" (m.x + 1))
+    east <- gcv-apply view combat items game input status (gs-reply [] "npc step")
+    step <- gcvr-find (gcvr-packets east) #77 0
+    leapt <- when world-get game.world 2 is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" (m.x - 2)) "y" (m.y + 2))
+    southwest <- gcv-apply view combat items game input status (gs-reply [] "npc run")
+    run <- gcvr-find (gcvr-packets southwest) #77 0
+    print-line-uni ("FACING step=" & show (list-length step) & "," & (if list-length step == 17 then show (list-at step 12) else "-") & " run=" & show (list-length run) & "," & (if list-length run == 17 then show (list-at run 12) else "-"))
+    facing <- gcvr-check "a mobile moved without its own 0x77 is sent one facing its step: east walking, south-west running" (is-ok stepped & is-ok leapt & list-length step == 17 & list-at step 12 == 2 & list-length run == 17 & list-at run 12 == #85)
+    reconnect <- __record-set input "connection" 10
+    fresh <- gcv-apply view combat items game input status (gs-reply [] "reconnect")
+    k <- gcvr-check "reconnect rebuilds transient view and status" (list-length (gcvr-find (gcvr-packets fresh) #78 0) > 0 & list-length (gcvr-find (gcvr-packets fresh) #11 0) == 66)
+    dead <- gcvr-health game 1 0
+    ghost <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "death")
+    l <- gcvr-check "ghost receives desolate season and bright light" (list-at (gcvr-find (gcvr-packets ghost) #BC 0) 1 == 4 & list-at (gcvr-find (gcvr-packets ghost) #4F 0) 1 == 0)
+    canonical <- game.world
+    readonly <- WorldTable { buffer = canonical.buffer, capacity = canonical.capacity, index = 0 }
+    shadow <- __record-set game "world" readonly
+    refused <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "unindexed")
+    restored <- __record-set game "world" canonical
+    missing <- gcvr-check "unavailable index refuses live view" (is-err refused)
+    scale <- gcvr-check "indexed full-capacity world keeps only nearby mobile slots" (game.world.capacity == 16384 & world-count game.world == 16005 & is-ok populated & view.visible-count == 1 & is-ok moved & is-ok farther & is-ok returned & is-ok wounded & is-ok dead)
+    extra <- world-create game.world (gs-mobile 0 102 100 0 400 1002)
+    extra-serial <- when extra is Err (_) -> 0 is Ok (value) -> value
+    extra-view <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "new mobile")
+    deleted <- world-delete game.world extra-serial
+    gone <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "delete")
+    deletion <- gcvr-check "actual world deletion still emits removal" (is-ok extra & is-ok extra-view & is-ok deleted & list-length (gcvr-packets gone) == 1 & gp-u32 (gcvr-find (gcvr-packets gone) #1D 0) 1 == extra-serial)
+    a+b+c+retained+query+d+e+f+g+h+j+restyled+facing+k+l+missing+scale+deletion
+  end
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> act
+      print-line-uni e
+      1
+    end
+    is Ok (game) -> when world-new 16384
+      is Err (e) -> act
+        print-line-uni e
+        1
+      end
+      is Ok (world) -> let bound = __record-set game "world" world
+        in when gcv-new world.capacity 18 True 1 10
+          is Err (e) -> act
+            print-line-uni e
+            1
+          end
+          is Ok (view) -> gcvr-run game view

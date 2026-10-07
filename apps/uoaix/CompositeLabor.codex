@@ -1,0 +1,46 @@
+Chapter: CompositeLabor
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter WorldTimers
+
+ Wheel kind 2 is a resident's hourly shift; its key is the resident index (WorldTimers.md).
+  clb-kind : Integer = 2
+ One game hour is 300 real seconds at the composite's 12 game seconds per real second (cg-town-rate).
+  clb-hour-ticks : Integer = 300 * pit-input-hz / pit-count
+ An hour worked pays 1 copper: 8 hours make the 8 copper of a day's needs (EconomyCurrency.md, "Price scale").
+  clb-wage : Integer = 1
+ Residents 0, 1 and 2 (Nell, Jorin, Mira) work at shops 3, 1 and 2 (tl-populate-people).
+  clb-employer : Integer -> Integer
+  clb-employer (resident) = if resident == 0 then 3 else if resident == 1 then 1 else 2
+  clb-attach : TownLive, WorldTimers, Integer, Integer -> Integer
+  clb-attach (t) (timers) (tick) (i) = if i == t.count then 0
+    else if wtm-add timers (tick + clb-hour-ticks) clb-kind i < 0 then -1
+    else clb-attach t timers tick (i + 1)
+  clb-coin : EuCurrency, Integer, Integer -> Integer
+  clb-coin (x) (purse) (metal) = (em-purse (if metal == 1 then x.copper else if metal == 2 then x.silver else x.world.money) purse).coin
+  clb-copper : EuCurrency, Integer -> Integer
+  clb-copper (x) (purse) = if clb-coin x purse 1 >= clb-wage then 0
+    else if clb-coin x purse 2 >= 1 then eu-exchange x purse 2 1 1
+    else if clb-coin x purse 3 < 1 then -1
+    else if eu-exchange x purse 3 1 2 < 0 then -1
+    else eu-exchange x purse 2 1 1
+  clb-pay : TownLive, Integer -> Integer
+  clb-pay (t) (resident) = let x = t.vendors.currency
+    in let shop = (ep-actor x.world (list-at t.vendors.vendors (clb-employer resident)).actor).purse
+    in let worker = (ep-actor x.world (list-at t.residents resident).actor).purse
+    in if clb-copper x shop < 0 then -1
+    else eu-pay x True shop worker clb-wage 0 0
+  clb-working : TownLive, Integer -> Boolean
+  clb-working (t) (resident) = let r = list-at t.residents resident
+    in r.goal == 1 & (when world-get t.vendors.game.world (tf-person t.people r.person).world-serial
+      is Err (_) -> False
+      is Ok (m) -> m.health > 0 & tl-at m r.work)
+  clb-scheduled : TownLive, Integer -> Boolean
+  clb-scheduled (t) (resident) = tl-action (tf-person t.people (list-at t.residents resident).person) (t.now / 3600) == 1
+  clb-fire : TownLive, WorldTimers, WalkMap, Maybe WdState, Integer, Integer -> Integer
+  clb-fire (t) (timers) (map) (doors) (resident) (tick) = if resident < 0 | resident >= t.count then -1
+    else let paid = if clb-working t resident then clb-pay t resident else 0
+    in let r = list-at t.residents resident
+    in let directed = if clb-scheduled t resident then tl-direct t map doors r.person r.actor 1 0 (t.now + 3600) else 0
+    in let next = wtm-add timers (tick + clb-hour-ticks) clb-kind resident
+    in let touched = world-touch t.vendors.game.world
+    in if next < 0 then -2 else paid

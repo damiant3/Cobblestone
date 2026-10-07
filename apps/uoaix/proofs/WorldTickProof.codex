@@ -1,0 +1,123 @@
+Chapter: WorldTickProof
+  cites Uoaix chapter CompositeScript
+
+  wtp-check : Text, Boolean -> [Console] Integer
+  wtp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  wtp-fill : WalkMap, Integer -> Integer
+  wtp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in wtp-fill map (i + 1)
+  wtp-data : Integer -> Integer
+  wtp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  wtp-wages : EuCurrency, Integer, Integer -> Integer
+  wtp-wages (x) (i) (stop) = if i >= stop then 0
+    else let ev = list-at x.events i
+    in (if ev.kind == 4 then ev.copper else 0) + wtp-wages x (i + 1) stop
+  wtp-trips : CompositeGame -> Integer
+  wtp-trips (owner) = when owner.gatherer is None -> -1 is Just (c) -> c.trips
+  wtp-census : CompositeGame -> Boolean
+  wtp-census (owner) = euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1 & gvsc-valid owner.vendor
+  wtp-nobody : Integer -> Maybe CsPlayer
+  wtp-nobody (unused) = None
+  wtp-pulse : Maybe CsPlayer, Integer -> [Console, Device.Block] Result Integer Text
+  wtp-pulse (p) (tick) = when p
+    is None -> act Ok 0 end
+    is Just (c) -> let at = __record-set c "tick" tick in csp-pulse c 0
+ gl-round restores the heap to the serve mark once it has grown 1 MiB past it (sl-compact),
+ and runs the world tick with no session active.
+  wtp-run : CompositeOwner, WalkMap, Maybe CsPlayer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  wtp-run (store) (map) (p) (mark) (tick) (left) (compactions) = if left == 0 then compactions else act
+    pulsed <- wtp-pulse p tick
+    game <- store.state.checkpoint.game
+    old <- game.active
+    cleared <- __record-set game "active" 0
+    ran <- cs-tick store game map (cg-tick-watcher store.state) tick
+    restored <- __record-set game "active" old
+    if is-err pulsed | is-err ran then act
+      print-line-uni ("FAIL at " & show tick & ": pulse " & (when pulsed is Err (e) -> e is Ok (_) -> "ok") & ", world tick " & (when ran is Err (e) -> e is Ok (_) -> "ok"))
+      0 - 1
+    end
+    else if __heap-save - mark > 1048576 then
+      let reclaimed = __heap-restore mark in wtp-run store map p mark (tick + 100) (left - 1) (compactions + 1)
+    else wtp-run store map p mark (tick + 100) (left - 1) compactions
+  end
+  wtp-first : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  wtp-first (store) (map) (specs) = let owner = store.state in act
+    x <- owner.vendor.currency
+    views <- cs-views store 8
+    p <- csp-new store map specs 1
+    logged <- csp-login p "Visitor"
+    a <- wtp-check "a scripted client logs in and stands in the world" (is-ok views & is-ok logged & p.input.session.phase == 2)
+    fired <- owner.timers.fired
+    events <- x.count
+    trips <- wtp-trips owner
+    client <- Just p
+    nobody <- wtp-nobody 0
+    mark <- __heap-save
+    compactions <- wtp-run store map client mark 100 7200 0
+    wages <- wtp-wages x events x.count
+    print-line-uni ("CLIENT day ticks=7200 compactions=" & show compactions & " pulses-refused=" & show p.failed & " fired=" & show (owner.timers.fired - fired)
+      & " wages=" & show wages & " trips=" & show trips & "->" & show (wtp-trips owner) & " economy-hour=" & show x.world.hour)
+    b <- wtp-check "with a client in the world, the world tick runs once a second beside its pulses for a game day" (compactions > 0 & p.failed == 0)
+    c <- wtp-check "the gatherer completes a trip while the client is connected" (trips >= 0 & wtp-trips owner > trips)
+    d <- wtp-check "shifts pay wages and the wheel fires while the client is connected" (wages > 0 & owner.timers.fired > fired)
+    alone <- owner.timers.fired
+    after <- wtp-run store map nobody mark 720100 600 0
+    e <- wtp-check "with no client, the world tick keeps the wheel firing" (after >= 0 & owner.timers.fired > alone)
+    f <- wtp-check "currency, material and vendor census stay valid" (wtp-census owner)
+    committed <- cs-commit store True
+    g <- wtp-check "the world commits" (is-ok committed)
+    a + b + c + d + e + f + g
+  end
+  wtp-later : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  wtp-later (store) (map) = let owner = store.state in act
+    fired <- owner.timers.fired
+    nobody <- wtp-nobody 0
+    mark <- __heap-save
+    compactions <- wtp-run store map nobody mark 100 600 0
+    wtp-check "after a restart the world tick runs the restored world with a valid census" (compactions >= 0 & wtp-trips owner >= 1
+      & owner.timers.fired > fired & wtp-census owner)
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> wtp-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> wtp-check e False
+     is Ok (map) -> when walk-map-new 1408 1536 96 160
+      is Err (e) -> wtp-check e False
+      is Ok (britain) -> let filled = wtp-fill map 0
+       in let town-filled = wtp-fill britain 0
+       in let data = wtp-data 0
+       in when wd-read data 240 map map.stride
+        is Err (e) -> wtp-check e False
+        is Ok (decoration) -> act
+      opened <- us-open 0 131072
+      when opened
+       is Err (e) -> wtp-check ("store " & e) False
+       is Ok (store) -> let fresh = store.head == 0 in act
+        loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+        when loaded
+         is Err (e) -> wtp-check ("recovery " & e) False
+         is Ok (owner) -> when cg-town-doors owner.state data 240
+          is Err (e) -> wtp-check ("town doors " & e) False
+          is Ok (_) -> if fresh then wtp-first owner map specs else wtp-later owner map
+       end
+     end

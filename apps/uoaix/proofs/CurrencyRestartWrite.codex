@@ -1,0 +1,64 @@
+Chapter: CurrencyRestartWrite
+  cites Uoaix chapter EconomyCurrencyInput
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyStore
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  crw-checkpoint : UoStore, CurrencyCheckpoint, Integer -> [Device.Block] Result Integer Text
+  crw-checkpoint (store) (state) (buf) = when euc-encode state buf euc-bytes
+    is Err (e) -> act Err e end
+    is Ok (size) -> us-append store 1 state.sequence state.tick buf size
+  crw-loop : UoStore, CurrencyCheckpoint, EuiScenario, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  crw-loop (store) (state) (scenario) (frame) (snapshot) (i) =
+    if i == list-length scenario.entries then act Ok i end
+    else let mark = __heap-save
+    in let entry = list-at scenario.entries i
+    in when eui-encode entry frame eui-frame-bytes
+      is Err (e) -> act Err e end
+      is Ok (size) -> act
+        logged <- us-append store 2 entry.sequence entry.tick frame size
+        when logged
+          is Err (e) -> act Err e end
+          is Ok (offset) -> when eui-apply state entry
+            is Err (e) -> act Err e end
+            is Ok (result) -> act
+              checkpoint <- if entry.sequence == scenario.middle then crw-checkpoint store state snapshot else act Ok 0 end
+              when checkpoint
+                is Err (e) -> act Err e end
+                is Ok (at) -> let restored = __heap-restore mark in crw-loop store state scenario frame snapshot (i + 1)
+            end
+      end
+  crw-run : UoStore, CurrencyCheckpoint, EuiScenario -> [Console, Device.Block] Nothing
+  crw-run (store) (state) (scenario) = act
+    blank <- currency-store-restore store
+    print-line-uni (if is-err blank then "PASS blank currency recovery refused" else "FAIL blank recovery admitted")
+    snapshot <- alloc-bytes euc-bytes
+    frame <- alloc-bytes eui-frame-bytes
+    saved <- crw-checkpoint store state snapshot
+    when saved
+      is Err (e) -> print-line-uni ("FAIL initial checkpoint " & e)
+      is Ok (offset) -> act
+        completed <- crw-loop store state scenario frame snapshot 0
+        when completed
+          is Err (e) -> print-line-uni ("FAIL input commit " & e)
+          is Ok (count) -> act
+            print-line-uni (if scenario.failed == 0 & count == 156 & scenario.middle == 121 & store.sequence == 156 & store.tick == 1560 & store.snapshot > 0 & store.fault == 0 then "PASS currency checkpoints and 156 inputs committed" else "FAIL commit metadata")
+            print-line-uni (if efi-valid state then "PASS live three-metal mint payment policy and debt state" else "FAIL live state")
+          end
+      end
+  end
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 16384
+    when opened
+      is Err (e) -> print-line-uni ("FAIL open " & e)
+      is Ok (store) -> when efi-source 0
+        is Err (e) -> print-line-uni ("FAIL fixture " & e)
+        is Ok (simulation) -> act
+          scenario <- efi-build simulation
+          when efi-source 0
+            is Err (e) -> print-line-uni ("FAIL initial state " & e)
+            is Ok (state) -> crw-run store state scenario
+        end
+  end

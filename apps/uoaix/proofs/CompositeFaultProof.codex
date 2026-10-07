@@ -1,0 +1,80 @@
+Chapter: CompositeFaultProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  cfi-check : Text, Boolean -> [Console] Integer
+  cfi-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cfi-fill : WalkMap, Integer -> Integer
+  cfi-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cfi-fill map (i + 1)
+  cfi-create : Integer -> List Integer
+  cfi-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Faulty" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cfi-err-starts : Result GameReply Text, Text -> Boolean
+  cfi-err-starts (r) (prefix) = when r is Ok (_) -> False is Err (e) -> text-starts-with e prefix
+  cfi-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cfi-run (store) (map) (specs) = let owner = store.state in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (cfi-create 0)
+    game <- owner.checkpoint.game
+    good <- owner.active.next-target
+    before <- store.store.sequence
+    broken <- __record-set owner.active "next-target" 70000
+    refused <- cs-commit store True
+    a <- cfi-check "a save the codec refuses keeps the last commit and does not latch" (is-ok entry & is-err refused & store.store.fault == 0
+      & store.refusals == 1 & store.refused-at > 0 & store.store.sequence == before)
+    dirty <- __record-set owner.combat "draws" (owner.combat.draws + 1)
+    soft <- cs-commit-soft store
+    b <- cfi-check "a soft commit logs a refusal and answers Ok" (is-ok soft & store.store.fault == 0 & store.refusals == 2)
+    short <- cs-route store game input map 2593 [5]
+    pinged <- cs-route store game input map 2593 [115, 0]
+    c <- cfi-check "a refused packet drops only its route and the next route is served" (is-err short & is-ok pinged & store.store.fault == 0)
+    mended <- __record-set owner.active "next-target" good
+    resumed <- cs-commit store True
+    d <- cfi-check "a valid commit resumes saving and clears the refusal count" (is-ok resumed & store.refusals == 0 & store.refused-at == 0
+      & store.store.sequence == before + 1)
+    again <- __record-set owner.active "next-target" 70000
+    first <- cs-commit store True
+    aged <- __record-set store "refused-at" (hpet-ticks - (cs-save-limit + 1) * max 1 hpet-ticks-per-second)
+    latched <- cs-commit store True
+    routed <- cs-route store game input map 2593 [115, 0]
+    ticked <- cs-tick store game map 0 0
+    e <- cfi-check "a refusal older than the save limit latches, names why, and the tick reports the latch" (is-err first & is-err latched
+      & store.store.fault == 1 & text-starts-with store.latch "saves refused for 300 s: "
+      & cfi-err-starts routed "composite owner requires restart: saves refused for 300 s: "
+      & (when ticked is Ok (n) -> n == -1 is Err (_) -> False))
+    a + b + c + d + e
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cfi-check e False
+     is Ok (map) -> let filled = cfi-fill map 0 in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> act
+        print-line-uni ("FAIL store " & e)
+        1
+      end
+      is Ok (store) -> act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None })
+       when loaded
+        is Err (e) -> act
+          print-line-uni ("FAIL recovery " & e)
+          1
+        end
+        is Ok (owner) -> cfi-run owner map specs
+      end
+    end

@@ -1,0 +1,124 @@
+Chapter: EconomyCurrencyInput
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  CurrencyInput = record { sequence : Integer, tick : Integer, operation : Integer,
+    expected : Integer, args : List Integer }
+  eui-frame-bytes : Integer = 128
+  eui-new : Integer, Integer, Integer -> CurrencyInput
+  eui-new (sequence) (tick) (operation) = CurrencyInput { sequence = sequence,
+    tick = tick, operation = operation, expected = 0, args = [0,0,0,0,0,0,0,0] }
+  eui-count : Integer -> Integer
+  eui-count (op) = if op == 1 | op == 2 | op == 4 | op == 6 | op == 15 | op == 17 then 2
+    else if op == 3 | op == 5 | op == 8 | op == 16 | op == 18 | op == 19 then 3
+    else if op == 7 | op == 9 then 4 else if op == 10 | op == 14 then 5
+    else if op == 11 | op == 12 then 6 else if op == 13 then 7 else if op == 20 then 1 else 0
+  eui-unused : List Integer, Integer -> Boolean
+  eui-unused (args) (i) = if i == 8 then True else list-at args i == 0 & eui-unused args (i + 1)
+  eui-shape : CurrencyInput -> Boolean
+  eui-shape (entry) =
+    if entry.sequence <= 0 | entry.sequence > ep-limit | not (ev-range entry.tick ep-limit)
+      | entry.operation < 1 | entry.operation > 21 | list-length entry.args /= 8 then False
+    else if not (eui-unused entry.args (eui-count entry.operation)) then False
+    else if entry.operation >= 7 & entry.operation <= 14 then ev-range (list-at entry.args 0) 1
+    else if entry.operation == 19 then ev-range (list-at entry.args 2) 1 else True
+  eui-execute : EuCurrency, CurrencyInput -> Integer
+  eui-execute (x) (entry) =
+    let a = list-at entry.args 0
+    in let b = list-at entry.args 1
+    in let c = list-at entry.args 2
+    in let d = list-at entry.args 3
+    in let e = list-at entry.args 4
+    in let f = list-at entry.args 5
+    in let g = list-at entry.args 6
+    in let op = entry.operation
+    in if op == 1 then eu-open x a b
+    else if op == 2 then ep-admit x.world a b
+    else if op == 3 then ep-station x.world a b c
+    else if op == 4 then eh-source x.world a b
+    else if op == 5 then eh-ground x.world a b c
+    else if op == 6 then ep-place x.world a b
+    else if op == 7 then eu-rates x (a == 1) b c d
+    else if op == 8 then eu-tax x (a == 1) b c
+    else if op == 9 then eu-mint-policy x (a == 1) b c d
+    else if op == 10 then eu-strike x (a == 1) b c d e
+    else if op == 11 then eu-pay x (a == 1) b c d e f
+    else if op == 12 then eu-grant x (a == 1) b c d e f
+    else if op == 13 then eu-lend x (a == 1) b c d e f g
+    else if op == 14 then eu-repay x (a == 1) b c d e
+    else if op == 15 then eh-harvest x.world a b
+    else if op == 16 then ep-craft x.world a b c
+    else if op == 17 then ep-eat x.world a b
+    else if op == 18 then eh-plant x.world a b c
+    else if op == 19 then eh-care x.world a b (c == 1)
+    else if op == 20 then eh-eaten x.world a else eu-hour x
+  eui-apply : CurrencyCheckpoint, CurrencyInput -> Result Integer Text
+  eui-apply (state) (entry) =
+    if not (eui-shape entry) then Err "currency input shape invalid"
+    else if state.sequence >= ep-limit | entry.sequence /= state.sequence + 1 | entry.tick < state.tick then Err "currency input sequence or tick invalid"
+    else if not (eu-ready state.currency) then Err "currency owner state invalid"
+    else let result = eui-execute state.currency entry
+    in if result /= entry.expected then Err "currency input outcome mismatch; discard candidate"
+    else let a = __record-set state "sequence" entry.sequence
+    in let b = __record-set state "tick" entry.tick
+    in Ok result
+  eui-write-args : Integer, List Integer, Integer -> Integer
+  eui-write-args (buf) (args) (i) = if i == 8 then 0
+    else let a = poke-qword buf (64 + i * 8) (list-at args i)
+    in eui-write-args buf args (i + 1)
+  eui-read-args : Integer, List Integer, Integer -> Integer
+  eui-read-args (buf) (args) (i) = if i == 8 then 0
+    else let a = list-set-at args i (peek-qword buf (64 + i * 8))
+    in eui-read-args buf args (i + 1)
+  eui-encode : CurrencyInput, Integer, Integer -> Result Integer Text
+  eui-encode (entry) (buf) (capacity) =
+    if capacity < eui-frame-bytes | not (eui-shape entry) then Err "currency input shape or destination invalid"
+    else let a = poke-qword buf 0 #31495545
+    in let b = poke-qword buf 8 1
+    in let c = poke-qword buf 16 eui-frame-bytes
+    in let d = poke-qword buf 24 entry.operation
+    in let e = poke-qword buf 32 entry.tick
+    in let f = poke-qword buf 40 entry.sequence
+    in let g = poke-qword buf 48 0
+    in let h = poke-qword buf 56 entry.expected
+    in let args = eui-write-args buf entry.args 0
+    in let checksum = poke-qword buf 48 (ws-hash buf eui-frame-bytes 0 2166136261)
+    in Ok eui-frame-bytes
+  eui-decode : Integer, Integer -> Result CurrencyInput Text
+  eui-decode (buf) (size) =
+    if size /= eui-frame-bytes then Err "currency input length invalid"
+    else if peek-qword buf 0 /= #31495545 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size then Err "currency input format invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "currency input checksum invalid"
+    else let entry = eui-new (peek-qword buf 40) (peek-qword buf 32) (peek-qword buf 24)
+    in let a = __record-set entry "expected" (peek-qword buf 56)
+    in let b = eui-read-args buf entry.args 0
+    in if not (eui-shape entry) then Err "currency input fields invalid" else Ok entry
+  eui-decode-record : Integer, Integer, Integer, Integer -> Result CurrencyInput Text
+  eui-decode-record (buf) (size) (tick) (sequence) =
+    if size /= eui-frame-bytes then Err "currency input record length invalid"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "currency input record metadata mismatch"
+    else eui-decode buf size
+  eui-replay-loop : CurrencyCheckpoint, Integer, Integer, Integer -> Result CurrencyCheckpoint Text
+  eui-replay-loop (state) (buf) (count) (i) =
+    if i == count then if euv-valid state.currency then Ok state else Err "currency replay final state invalid"
+    else let mark = __heap-save
+    in when eui-decode (buf + i * eui-frame-bytes) eui-frame-bytes
+      is Err (e) -> Err e
+      is Ok (entry) -> when eui-apply state entry
+        is Err (e) -> Err e
+        is Ok (result) -> let restored = __heap-restore mark in eui-replay-loop state buf count (i + 1)
+  eui-replay : CurrencyCheckpoint, Integer, Integer -> Result CurrencyCheckpoint Text
+  eui-replay (source) (buf) (bytes) =
+    if bytes < 0 | bytes > 4096 * eui-frame-bytes | int-mod bytes eui-frame-bytes /= 0 then Err "currency replay batch length invalid"
+    else let snapshot = alloc-bytes euc-bytes
+    in when euc-encode source snapshot euc-bytes
+      is Err (e) -> Err e
+      is Ok (size) -> when euc-decode snapshot size
+        is Err (e) -> Err e
+        is Ok (state) -> eui-replay-loop state buf (bytes / eui-frame-bytes) 0

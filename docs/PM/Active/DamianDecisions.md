@@ -12,8 +12,7 @@ ruling there and deletes the item here.
 | # | decision | what waits |
 |---|---|---|
 | 0.1 | **Standing GO (Damian, 2026-10-04) for local development client runs** against the codex-vm server "as long as i am not typing": the driver checks physical input idle before every click and aborts otherwise. Open: nothing; this row is a standing reminder until stages 0 and 1 pass (login through character creation pass; the create packet is reek's fix in progress). | stages 0 and 1 acceptance (`apps/uoaix/GameServer.md`) |
-| 0.2 | **Publish the UOAIX page** on cobblestoneproject.com (built, with the UO art; preview `D:\Projects\Cobblestone-val\apps\landing\web\uoaix.html`). | the public page |
-| 0.3 | **Release timing:** a full release or a preview push (root's CurrentPlan row). | the next public release |
+| 0.2 | **Publish the UOAIX page** (Damian, 2026-10-06: "we will deal with publish and release later") on cobblestoneproject.com (built, with the UO art; preview `D:\Projects\Cobblestone-val\apps\landing\web\uoaix.html`). | the public page |
 
 ## 6. UOAIX, the shard (`apps/uoaix/UOAIX.md` section 10)
 

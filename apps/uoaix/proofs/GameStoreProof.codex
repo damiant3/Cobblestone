@@ -1,0 +1,163 @@
+Chapter: GameStoreProof
+  cites Uoaix chapter GameStore
+  cites Uoaix chapter GameCheckpoint
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter ItemActions
+  cites Uoaix chapter WorldAction
+  cites Uoaix chapter WorldJournal
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldBlock
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter TownStateCodec
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Foreword chapter Result
+
+  gst-check : Text, Boolean -> [Console] Nothing
+  gst-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+
+  gst-packet : List Integer =
+    let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Avatar" 0 30) "" 0 30
+    in let stats = name & [0, 30, 20, 15, 0, 50, 1, 50, 2, 0]
+    in gp-put16 (gp-put16 (gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0) 55) 77
+
+  gst-item : Integer, Integer, Integer -> WorldObject
+  gst-item (serial) (parent) (amount) = WorldObject { serial = serial, kind = 2,
+    x = 1420, y = 1698, z = 0, graphic = 7151, hue = 0, container = parent, amount = amount, health = 0 }
+
+  gst-amount : WorldTable, Integer -> Integer
+  gst-amount (world) (serial) = when world-get world serial is Err (e) -> -1 is Ok (obj) -> obj.amount
+
+  gst-action : Integer, List WorldEvent -> WorldAction
+  gst-action (seq) (events) = WorldAction { sequence = seq, tick = seq, actor = 1, kind = 1, target = 1073741828, events = events }
+
+  gst-event : Integer, Integer, WorldObject -> WorldEvent
+  gst-event (seq) (op) (obj) = WorldEvent { sequence = seq, tick = seq, operation = op, object = obj }
+
+  gst-admission : ItemAdmission = ItemAdmission { movable = True, stackable = True, destination = True }
+
+  gst-write : UoStore, GameStoreState -> [Console, Device.Block] Nothing
+  gst-write (store) (owner) =
+    let world = owner.checkpoint.game.world
+    in act
+      blank <- game-store-restore store
+      gst-check "blank store refuses recovery" (is-err blank)
+      saved <- game-store-save store owner
+      gst-check "initial complete game checkpoint committed" (is-ok saved & store.snapshot == 0)
+      when ia-plan owner.checkpoint.state.checkpoint 1 (ItemMove { actor = 1, item = 1073741827, amount = 3, destination = ItemGround 1421 1698 0 }) gst-admission
+        is Err (e) -> print-line-uni ("FAIL split plan " & e)
+        is Ok (action) -> act
+          committed <- game-store-commit store owner action
+          gst-check "split commits once with conserved quantity" (is-ok committed & store.sequence == 1 & owner.inputs == 1 & gst-amount world 1073741827 == 7 & gst-amount world 1073741830 == 3 & world-count world == 6)
+        end
+      let head = store.head
+      in let bad-npc = gst-action 2 [gst-event 2 2 (gst-item 1073741828 1 6), gst-event 2 3 (gs-mobile 5 1420 1698 0 400 0)]
+      in act
+        refused <- game-store-commit store owner bad-npc
+        gst-check "town reference refusal rolls back whole action" (is-err refused & store.head == head & store.sequence == 1 & gst-amount world 1073741828 == 5 & is-ok (world-get world 5))
+        let bad-character = gst-action 2 [gst-event 2 2 (gst-item 1073741828 1 6), gst-event 2 3 (gst-item 1073741826 1 1)]
+        in act
+          refused <- game-store-commit store owner bad-character
+          gst-check "equipment reference refusal rolls back whole action" (is-err refused & store.head == head & gst-amount world 1073741828 == 5 & is-ok (world-get world 1073741826))
+        end
+        let capacity = store.sectors
+        in let full = __record-set store "sectors" store.head
+        in let update = gst-action 2 [gst-event 2 2 (gst-item 1073741828 1 6)]
+        in act
+          refused <- game-store-commit store owner update
+          gst-check "disk admission refusal rolls back memory" (is-err refused & store.head == head & store.sequence == 1 & owner.inputs == 1 & gst-amount world 1073741828 == 5)
+          let reset = __record-set store "sectors" capacity
+          in let full = __record-set owner "inputs" 4096
+          in act
+            refused <- game-store-commit store owner update
+            let reset = __record-set owner "inputs" 1
+            in gst-check "suffix budget refuses before mutation" (is-err refused & store.head == head & gst-amount world 1073741828 == 5)
+          end
+        end
+      end
+      when ia-plan owner.checkpoint.state.checkpoint 2 (ItemMove { actor = 1, item = 1073741827, amount = 7, destination = ItemStack 1073741828 }) gst-admission
+        is Err (e) -> print-line-uni ("FAIL merge plan " & e)
+        is Ok (action) -> act
+          committed <- game-store-commit store owner action
+          gst-check "merge commits both records together" (is-ok committed & store.sequence == 2 & owner.inputs == 2 & gst-amount world 1073741827 == -1 & gst-amount world 1073741828 == 12 & world-count world == 5)
+        end
+      later-saved <- game-store-save store owner
+      gst-check "later checkpoint resets suffix budget" (is-ok later-saved & store.snapshot > 0 & owner.inputs == 0)
+      let moved = gst-action 3 [gst-event 3 2 (gs-mobile 5 1422 1698 0 400 0)]
+      in act
+        committed <- game-store-commit store owner moved
+        gst-check "post-checkpoint action committed" (is-ok committed & store.sequence == 3 & owner.inputs == 1)
+      end
+      let pending = alloc-bytes 512
+      in let cleared = us-zero pending 0
+      in let partial = poke-byte pending 0 85
+      in act
+        wrote <- us-device-write store.device (store.start + store.head + 1) pending
+        gst-check "uncommitted payload fixture written" (is-ok wrote)
+      end
+    end
+
+  gst-setup : UoStore, GameShard -> [Console, Device.Block] Nothing
+  gst-setup (store) (game) =
+    let mobile = world-create game.world (gs-mobile 0 1420 1698 0 400 1002)
+    in let shirt = world-create game.world (gs-item 1 5399 55)
+    in let source = world-create game.world (gst-item 0 1 10)
+    in let target = world-create game.world (gst-item 0 1 5)
+    in let npc = world-create game.world (gs-mobile 0 1420 1698 0 400 0)
+    in let char = poke-qword game.characters 0 1
+    in let packet = gs-store-create game.characters 0 gst-packet 0
+    in let equipment = gs-store-equipment game.characters 0 [1073741826, 0, 0, 0] 0
+    in let active = __record-set game "active" 1
+    in let pending = __record-set game "pending-key" 123
+    in let town = tf-new 0
+    in let britain = tf-add-town town "Britain" 10 20 30
+    in let mara = tf-add-person town "Mara" 1 10 10 0 7000
+    in let linked = __record-set (tf-person town 1) "world-serial" 5
+    in let state = TownState { checkpoint = WorldCheckpoint { world = game.world, sequence = 0, tick = 0 }, townsfolk = town, mind = tm-new 0 }
+    in if not (is-ok mobile & is-ok shirt & is-ok source & is-ok target & is-ok npc & britain == 1 & mara == 1) then act print-line-uni "FAIL fixture setup" end
+    else gst-write store (GameStoreState { checkpoint = GameCheckpoint { state = state, game = game }, inputs = 0 })
+
+  gst-read : UoStore -> [Console, Device.Block] Nothing
+  gst-read (store) = act
+    recovered <- game-store-restore store
+    when recovered
+      is Err (e) -> print-line-uni ("FAIL recovery " & e)
+      is Ok (owner) ->
+        let game = owner.checkpoint.game
+        in let state = owner.checkpoint.state
+        in act
+          gst-check "latest checkpoint plus complete suffix recovered" (store.sequence == 3 & state.checkpoint.sequence == 3 & state.checkpoint.tick == 3 & owner.inputs == 1 & store.tail == 0)
+          gst-check "all physical records restored" (world-count game.world == 5 & gst-amount game.world 1073741827 == -1 & gst-amount game.world 1073741828 == 12 & gst-amount game.world 1073741830 == 3)
+          gst-check "character metadata and equipment restored" (peek-qword game.characters 0 == 1 & peek-byte game.characters 18 == 65 & peek-qword game.characters 112 == 1073741826 & gc-slots game.world game.characters 0)
+          gst-check "town identity and world binding restored" (state.townsfolk.used == 1 & (tf-person state.townsfolk 1).name == "Mara" & (tf-person state.townsfolk 1).world-serial == 5)
+          gst-check "post-checkpoint NPC movement restored" (when world-get game.world 5 is Err (e) -> False is Ok (obj) -> obj.x == 1422)
+          gst-check "connections reset and relay counter restored" (game.active == 0 & game.pending-key == 0 & game.next-key == 305419895)
+          gst-check "game and town share recovered world" (game.world.buffer == state.checkpoint.world.buffer)
+          let wrong = __record-set store "tick" 4
+          in act
+            refused <- game-store-restore store
+            gst-check "outer head metadata mismatch refused" (is-err refused)
+          end
+        end
+  end
+
+  opening : [Console, Device.Block] Nothing = act
+    line <- read-line
+    let mode = when line is Just (text) -> text is None -> ""
+    in act
+      opened <- us-open 0 8192
+      when opened
+        is Err (e) -> print-line-uni ("FAIL store open " & e)
+        is Ok (store) ->
+          if mode == "read" then gst-read store
+          else if mode /= "write" then act print-line-uni "FAIL proof mode" end
+          else when gs-new 0
+            is Err (e) -> act print-line-uni ("FAIL game setup " & e) end
+            is Ok (game) -> gst-setup store game
+    end
+  end
+
+Page 1

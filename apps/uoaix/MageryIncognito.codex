@@ -1,0 +1,58 @@
+Chapter: MageryIncognito
+  cites Uoaix chapter MageryState
+  cites Uoaix chapter NpcNames
+
+ GPL-2.0 port of ServUO Spells/Fifth/Incognito.cs, classic: a random skin hue, hair and beard style and
+ hue, and a random name by gender, for 6 x Magery / 50 + 1 seconds (Magery in tenths), at most 144; then
+ the original look and name return. Hair and beard the caster wears are restyled in place; none is grown
+ or shaved, so restoring never deletes a worn item.
+
+  mgi-name : MgActor -> Text
+  mgi-name (actor) = if actor.inc-name >= 1000 then list-at nn-female (actor.inc-name - 1000) else list-at nn-male (actor.inc-name - 1)
+  mgi-item : WorldTable, Integer -> WorldObject
+  mgi-item (world) (serial) = if serial == 0 then gs-item 0 0 0
+    else when world-get world serial is Err (_) -> gs-item 0 0 0 is Ok (o) -> o
+  mgi-set : Magery, Integer, Integer, Integer, Integer -> Result Integer Text
+  mgi-set (magic) (owner) (layer) (graphic) (hue) = let found = gmb-layer magic.items owner layer 0
+    in if found == 0 then Ok 0
+    else when world-get magic.items.world found
+      is Err (e) -> Err e
+      is Ok (item) -> world-update magic.items.world (__record-set (__record-set item "graphic" graphic) "hue" hue)
+  mgi-begin : Magery, GameShard, MgActor, WorldObject, Integer -> Result Integer Text
+  mgi-begin (magic) (shard) (actor) (mobile) (skill) =
+    let hair = mgi-item shard.world (gmb-layer magic.items mobile.serial 11 0)
+    in let beard = mgi-item shard.world (gmb-layer magic.items mobile.serial 16 0)
+    in let female = mobile.graphic == 401
+    in let seconds = min 144 (6 * skill / 50 + 1)
+    in let a = __record-set actor "incognito" (magic.tick + mgd-ticks (seconds * 1000))
+    in let b = __record-set actor "inc-name" (if female then 1000 + mgs-random magic (list-length nn-female) else 1 + mgs-random magic (list-length nn-male))
+    in let c = __record-set actor "inc-hue" mobile.hue
+    in let d = __record-set actor "inc-hair" hair.graphic
+    in let e = __record-set actor "inc-hair-hue" hair.hue
+    in let f = __record-set actor "inc-beard" beard.graphic
+    in let g = __record-set actor "inc-beard-hue" beard.hue
+    in let skin = 1002 + mgs-random magic 57
+    in when world-update shard.world (__record-set mobile "hue" skin)
+      is Err (e) -> Err e
+      is Ok (_) -> when mgi-set magic mobile.serial 11 (cst-hair-art (mgs-random magic 10)) (1102 + mgs-random magic 48)
+        is Err (e) -> Err e
+        is Ok (_) -> when mgi-set magic mobile.serial 16 (cst-beard-art (mgs-random magic 7)) (1102 + mgs-random magic 48)
+          is Err (e) -> Err e
+          is Ok (_) -> let tracked = mgs-track magic actor in let touched = mgs-touch magic in Ok seconds
+  mgi-end : Magery, MgActor, Boolean -> Result Integer Text
+  mgi-end (magic) (actor) (skin) = if actor.incognito == 0 then Ok 0
+    else let world = magic.items.world
+    in when (if not skin then Ok 0 else when world-get world actor.serial is Err (_) -> Ok 0 is Ok (m) -> world-update world (__record-set m "hue" actor.inc-hue))
+      is Err (e) -> Err e
+      is Ok (_) -> when (if actor.inc-hair == 0 then Ok 0 else mgi-set magic actor.serial 11 actor.inc-hair actor.inc-hair-hue)
+        is Err (e) -> Err e
+        is Ok (_) -> when (if actor.inc-beard == 0 then Ok 0 else mgi-set magic actor.serial 16 actor.inc-beard actor.inc-beard-hue)
+          is Err (e) -> Err e
+          is Ok (_) -> let a = __record-set actor "incognito" 0
+            in let b = __record-set actor "inc-name" 0
+            in let c = __record-set actor "inc-hue" 0
+            in let d = __record-set actor "inc-hair" 0
+            in let e = __record-set actor "inc-hair-hue" 0
+            in let f = __record-set actor "inc-beard" 0
+            in let g = __record-set actor "inc-beard-hue" 0
+            in let touched = mgs-touch magic in Ok 1

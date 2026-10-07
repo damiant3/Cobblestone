@@ -1,0 +1,188 @@
+Chapter: CompositeViewsProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  cvp-check : Text, Boolean -> [Console] Integer
+  cvp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cvp-fill : WalkMap, Integer -> Integer
+  cvp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cvp-fill map (i + 1)
+  cvp-create : Text -> List Integer
+  cvp-create (who) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header who 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cvp-draws : List (List Integer), Integer, Integer, Integer -> Integer
+  cvp-draws (packets) (serial) (i) (n) = if i == list-length packets then n
+    else let p = list-at packets i
+    in cvp-draws packets serial (i + 1) (if list-length p > 6 & list-at p 0 == #78 & bit-and (gp-u32 p 3) #7FFFFFFF == serial then n + 1 else n)
+  cvp-pulse-draws : Result (Maybe GameReply) Text, Integer -> Integer
+  cvp-pulse-draws (r) (serial) = when r
+    is Err (_) -> -1
+    is Ok (m) -> when m is None -> 0 is Just (reply) -> cvp-draws reply.packets serial 0 0
+  cvp-say : Text -> List Integer
+  cvp-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
+  cvp-speech : List (List Integer), Integer, Integer, Integer -> Integer
+  cvp-speech (packets) (serial) (i) (n) = if i == list-length packets then n
+    else let p = list-at packets i
+    in cvp-speech packets serial (i + 1) (if list-length p > 7 & (list-at p 0 == #1C | list-at p 0 == #AE) & gp-u32 p 3 == serial then n + 1 else n)
+  cvp-pulse-speech : Result (Maybe GameReply) Text, Integer -> Integer
+  cvp-pulse-speech (r) (serial) = when r
+    is Err (_) -> -1
+    is Ok (m) -> when m is None -> 0 is Just (reply) -> cvp-speech reply.packets serial 0 0
+  cvp-has : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  cvp-has (r) (opcode) (size) = when r
+    is Err (_) -> False
+    is Ok (m) -> when m is None -> False is Just (reply) -> cvp-has-in reply.packets opcode size 0
+  cvp-has-in : List (List Integer), Integer, Integer, Integer -> Boolean
+  cvp-has-in (packets) (opcode) (size) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p > 0 & list-at p 0 == opcode & (size == 0 | list-length p == size)) | cvp-has-in packets opcode size (i + 1)
+  cvp-hp : GameShard, Integer -> Integer
+  cvp-hp (game) (serial) = when world-get game.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  cvp-fight : CompositeOwner, GameShard, GameInput, WalkMap, CombatActor, Integer, Integer, Integer, Boolean -> [Console, Device.Block] Boolean
+  cvp-fight (store) (game) (one) (map) (orc) (victim) (tick) (left) (menu) =
+    if left == 0 | cvp-hp game victim == 0 then act menu end
+    else let due = __record-set orc "due" 0 in act
+      pulsed <- cs-pulse store game one map 2593 tick
+      cvp-fight store game one map orc victim (tick + 1) (left - 1) (menu | cvp-has pulsed 44 2)
+    end
+  cvp-input : List GameOpcodeSpec, Integer -> GameInput
+  cvp-input (specs) (connection) = let input = gn-input-with specs connection
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 1 in input
+  cvp-run : CompositeOwner, WalkMap, List GameOpcodeSpec, Integer -> [Console, Device.Block] Integer
+  cvp-run (store) (map) (specs) (pool) = let game = store.state.checkpoint.game in act
+    reserved <- cs-views store pool
+    one <- cvp-input specs 1
+    two <- cvp-input specs 2
+    a-entry <- cs-route store game one map 2593 (cvp-create "Alpha")
+    a <- one.session.serial
+    idle-a <- __record-set game "active" 0
+    b-entry <- cs-route store game two map 2593 (cvp-create "Beta")
+    b <- two.session.serial
+    cvp-check "two characters are created on two connections" (is-ok reserved & is-ok a-entry & is-ok b-entry & a > 0 & b > 0 & a /= b)
+  end
+  cvp-turns : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cvp-turns (store) (map) (specs) = let game = store.state.checkpoint.game in act
+    one <- cvp-input specs 1
+    two <- cvp-input specs 2
+    a <- peek-qword game.characters 0
+    b <- peek-qword game.characters 160
+    who-a <- __record-set one.session "serial" a
+    who-b <- __record-set two.session "serial" b
+    phase-a <- __record-set one.session "phase" 2
+    phase-b <- __record-set two.session "phase" 2
+    returned-a <- cg-return store.state a
+    returned-b <- cg-return store.state b
+    as-a <- __record-set game "active" a
+    a-first <- cs-pulse store game one map 2593 100
+    as-b <- __record-set game "active" b
+    b-first <- cs-pulse store game two map 2593 101
+    as-a2 <- __record-set game "active" a
+    a-again <- cs-pulse store game one map 2593 102
+    as-b2 <- __record-set game "active" b
+    b-again <- cs-pulse store game two map 2593 103
+    print-line-uni ("TURNS alpha sees beta " & show (cvp-pulse-draws a-first b) & " then " & show (cvp-pulse-draws a-again b)
+      & "; beta sees alpha " & show (cvp-pulse-draws b-first a) & " then " & show (cvp-pulse-draws b-again a))
+    x <- cvp-check "each connection draws the other character once" (cvp-pulse-draws a-first b == 1 & cvp-pulse-draws b-first a == 1)
+    y <- cvp-check "a connection's view survives the other connection's callback" (cvp-pulse-draws a-again b == 0 & cvp-pulse-draws b-again a == 0)
+    said <- __record-set game "active" b
+    spoke <- cs-route store game two map 2593 (cvp-say "hello alpha")
+    heard-b <- cs-pulse store game two map 2593 104
+    as-a3 <- __record-set game "active" a
+    heard-a <- cs-pulse store game one map 2593 105
+    again-a <- cs-pulse store game one map 2593 106
+    print-line-uni ("SPEECH alpha hears " & show (cvp-pulse-speech heard-a b) & " then " & show (cvp-pulse-speech again-a b) & "; beta hears itself " & show (cvp-pulse-speech heard-b b))
+    z <- cvp-check "a player's speech reaches the other connection once and never echoes to the speaker" (is-ok spoke & cvp-pulse-speech heard-a b == 1 & cvp-pulse-speech again-a b == 0 & cvp-pulse-speech heard-b b == 0)
+    w <- cvp-death store game one two map b
+    u <- cvp-bandaged store game two map a b
+    v <- cvp-overweight store game one a
+    x + y + z + w + u + v
+  end
+  cvp-bandaged : CompositeOwner, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Device.Block] Integer
+  cvp-bandaged (store) (game) (two) (map) (a) (b) = act
+    dead <- cvp-hp game b == 0
+    raised <- cg-as-resurrect store.state a b
+    living <- cvp-hp game b > 0
+    as-b <- __record-set game "active" b
+    told <- cs-pulse store game two map 2593 400
+    again <- cs-pulse store game two map 2593 401
+    twice <- cg-as-resurrect store.state a b
+    cvp-check "a bandage raises a player ghost, whose next pulse alone redraws it alive (UOAIX-52)" (dead & raised & living & cvp-has told #55 0 & cvp-has told #20 0 & not (cvp-has again #55 0) & not twice)
+  end
+  cvp-overweight : CompositeOwner, GameShard, GameInput, Integer -> [Console, Device.Block] Integer
+  cvp-overweight (store) (game) (one) (a) = let row = game.characters in act
+    active <- __record-set game "active" a
+    step <- [2, one.session.direction, one.session.sequence]
+    light <- cp-overload store game one step
+    weak <- poke-byte row 79 1
+    rested <- poke-byte row 145 0
+    pile <- __record-set (gs-item a #0EED 0) "amount" 5000
+    gold <- world-create game.world pile
+    heavy <- cp-overload store game one step
+    spent <- peek-byte row 145
+    exhausted <- poke-byte row 145 (peek-byte row 80)
+    refused <- cp-overweight game one
+    note <- when refused is Err (e) -> e is Ok (r) -> r.note
+    told <- when refused is Err (_) -> False is Ok (r) -> list-length r.packets == 2 & list-at (list-at r.packets 0) 0 == #21 & list-at (list-at r.packets 1) 0 == #1C
+    passed <- cvp-check "an overloaded step spends 5 stamina, and at 0 the step is refused with 1783 (UOX3 IsOverloaded)" (light == -1 & is-ok gold & heavy == 0 & spent == 5 & note == "walk overweight" & told & one.session.sequence == 0)
+    piles <- cvp-piles game a 200
+    rested-again <- poke-byte row 145 0
+    before <- __heap-save
+    started <- get-ticks
+    measured <- cp-overload store game one step
+    elapsed <- get-ticks - started
+    used <- __heap-save - before
+    print-line-uni ("OVERWEIGHT-STEP items=" & show (piles + 1) & " heap=" & show used & " ticks=" & show elapsed & " slot=" & show measured)
+    passed
+  end
+  cvp-piles : GameShard, Integer, Integer -> Integer
+  cvp-piles (game) (a) (left) = if left == 0 then 0
+    else when world-create game.world (gs-item a #0EED 0) is Err (_) -> 0 is Ok (_) -> 1 + cvp-piles game a (left - 1)
+  cvp-death : CompositeOwner, GameShard, GameInput, GameInput, WalkMap, Integer -> [Console, Device.Block] Integer
+  cvp-death (store) (game) (one) (two) (map) (b) = when world-get game.world b
+    is Err (e) -> cvp-check e False
+    is Ok (beta) -> when world-create game.world (gs-mobile 0 (beta.x + 1) beta.y beta.z 17 0)
+      is Err (e) -> cvp-check e False
+      is Ok (serial) -> let c = store.state.combat
+        in let profiled = cb-profile c game serial "Orc" 40 20 30 1000
+        in let frail = world-update game.world (__record-set beta "health" 1)
+        in when cb-ensure c game serial
+          is Err (e) -> cvp-check e False
+          is Ok (orc) -> when cb-ensure c game b
+            is Err (e) -> cvp-check e False
+            is Ok (victim) -> let as-b = __record-set game "active" b
+              in let aimed = cb-select c game orc victim in act
+              beta-menu <- cvp-fight store game two map orc b 200 40 False
+              dead <- cvp-hp game b == 0
+              as-a <- __record-set game "active" (peek-qword game.characters 0)
+              told <- cs-pulse store game one map 2593 300
+              print-line-uni ("DEATH beta dead " & show (if dead then 1 else 0) & " menu " & show (if beta-menu then 1 else 0)
+                & "; alpha pulse swing " & show (if cvp-has told #2F 0 then 1 else 0) & " death " & show (if cvp-has told #AF 0 then 1 else 0))
+              passed <- aimed & dead & beta-menu & cvp-has told #2F 0 & cvp-has told #AF 0
+              cvp-check "a fight in one player's pulse reaches the other player in range: the swing and the death" passed
+            end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cvp-check e False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> cvp-check e False
+      is Ok (map) -> let filled = cvp-fill map 0 in act
+        opened <- us-open 0 131072
+        when opened
+          is Err (e) -> cvp-check e False
+          is Ok (store) -> let fresh = store.head == 0 in act
+            loaded <- cs-load store 0
+            when loaded
+              is Err (e) -> cvp-check e False
+              is Ok (owner) -> act
+                reserved <- cs-views owner 2
+                if fresh then cvp-run owner map specs 2 else cvp-turns owner map specs
+              end
+          end
+      end

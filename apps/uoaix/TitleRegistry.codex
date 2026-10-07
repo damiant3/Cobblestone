@@ -1,0 +1,429 @@
+Chapter: TitleRegistry
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter Result
+
+  TrParty = record { kind : Integer, id : Integer }
+  TrEvidence = record { serial : Integer, present : Boolean, marked : Boolean,
+    owner : TrParty, mark : TrParty, mark-revision : Integer }
+  TrTitle = record { serial : Integer, registrar : Integer,
+    owner-kind : Integer, owner-id : Integer, mark-kind : Integer, mark-id : Integer,
+    mark-revision : Integer, revision : Integer, pending-remark : Integer,
+    offer-kind : Integer, offer-id : Integer, offer-nonce : Integer,
+    offer-revision : Integer, status : Integer, last-cause : Integer, parent : Integer }
+  TrEvent = record { sequence : Integer, hour : Integer, serial : Integer,
+    kind : Integer, registrar : Integer, from-kind : Integer, from-id : Integer,
+    to-kind : Integer, to-id : Integer, mark-kind : Integer, mark-id : Integer,
+    mark-revision : Integer, revision : Integer, reference : Integer }
+  TrRegistry = record { towns : Integer, titles : List TrTitle, history : List TrEvent,
+    used : Integer, count : Integer, sequence : Integer, hour : Integer, busy : Integer }
+  TrCommand = record { kind : Integer, verified : Boolean, registrar : Integer,
+    actor : TrParty, recipient : TrParty, evidence : TrEvidence,
+    nonce : Integer, event : Integer, parent : Integer, hour : Integer }
+  TrUndo = record { registry : TrRegistry, before : TrTitle, slot : Integer,
+    serial : Integer, used : Integer, count : Integer, sequence : Integer,
+    hour : Integer, result : Integer, open : Integer }
+  TrBatchUndo = record { registry : TrRegistry, units : List TrUndo,
+    used : Integer, count : Integer, sequence : Integer, hour : Integer,
+    open : Integer }
+
+  tr-limit : Integer = 1000000000000
+  tr-titles : Integer, List TrTitle -> List TrTitle
+  tr-titles (i) (xs) = if i == 128 then xs else tr-titles (i + 1) (list-push xs (TrTitle {
+    serial = 0, registrar = 0, owner-kind = 0, owner-id = 0, mark-kind = 0,
+    mark-id = 0, mark-revision = 0, revision = 0, pending-remark = 0,
+    offer-kind = 0, offer-id = 0, offer-nonce = 0, offer-revision = 0,
+    status = 0, last-cause = 0, parent = 0 }))
+  tr-events : Integer, List TrEvent -> List TrEvent
+  tr-events (i) (xs) = if i == 4096 then xs else tr-events (i + 1) (list-push xs (TrEvent {
+    sequence = 0, hour = 0, serial = 0, kind = 0, registrar = 0,
+    from-kind = 0, from-id = 0, to-kind = 0, to-id = 0, mark-kind = 0,
+    mark-id = 0, mark-revision = 0, revision = 0, reference = 0 }))
+  tr-new : Integer -> Result TrRegistry Text
+  tr-new (towns) = if towns < 0 | towns > 1024 then Err "registry town budget invalid"
+    else Ok (TrRegistry { towns = towns, titles = tr-titles 0 [], history = tr-events 0 [],
+      used = 0, count = 0, sequence = 0, hour = 0, busy = 0 })
+  tr-party-valid : TrParty -> Boolean
+  tr-party-valid (p) = (p.kind >= 1 & p.kind <= 4 & p.id > 0 & p.id <= tr-limit) | (p.kind == 5 & p.id == 0)
+  tr-same : TrParty, Integer, Integer -> Boolean
+  tr-same (p) (kind) (id) = p.kind == kind & p.id == id
+  tr-serial-valid : Integer -> Boolean
+  tr-serial-valid (serial) = serial > 0 & serial <= 2147483647 & bit-and serial world-item-bit /= 0 & bit-and serial world-serial-mask > 0
+  tr-evidence-valid : TrEvidence -> Boolean
+  tr-evidence-valid (e) = tr-serial-valid e.serial & e.present & e.marked & tr-party-valid e.owner & e.mark-revision > 0 & e.mark-revision <= tr-limit
+  tr-find : TrRegistry, Integer, Integer -> Integer
+  tr-find (r) (serial) (i) = if i == r.used then 0
+    else if (list-at r.titles i).serial == serial then i + 1 else tr-find r serial (i + 1)
+  tr-room : TrRegistry, Integer -> Boolean
+  tr-room (r) (hour) = r.busy == 0 & r.count < 4096 & r.sequence < tr-limit & hour >= r.hour & hour <= tr-limit
+  tr-clear-offer : TrTitle -> Integer
+  tr-clear-offer (t) = let a = __record-set t "offer-kind" 0
+    in let b = __record-set t "offer-id" 0
+    in let c = __record-set t "offer-nonce" 0
+    in let d = __record-set t "offer-revision" 0 in 0
+  tr-log : TrRegistry, TrTitle, Integer, Integer, Integer, Integer, Integer -> Integer
+  tr-log (r) (t) (kind) (from-kind) (from-id) (reference) (hour) =
+    let e = list-at r.history r.count
+    in let seq = r.sequence + 1
+    in let a = __record-set e "sequence" seq
+    in let b = __record-set e "hour" hour
+    in let c = __record-set e "serial" t.serial
+    in let d = __record-set e "kind" kind
+    in let f = __record-set e "registrar" t.registrar
+    in let g = __record-set e "from-kind" from-kind
+    in let h = __record-set e "from-id" from-id
+    in let j = __record-set e "to-kind" (if kind == 2 then t.offer-kind else t.owner-kind)
+    in let k = __record-set e "to-id" (if kind == 2 then t.offer-id else t.owner-id)
+    in let m = __record-set e "mark-kind" t.mark-kind
+    in let n = __record-set e "mark-id" t.mark-id
+    in let p = __record-set e "mark-revision" t.mark-revision
+    in let q = __record-set e "revision" t.revision
+    in let s = __record-set e "reference" reference
+    in let u = __record-set r "count" (r.count + 1)
+    in let v = __record-set r "sequence" seq
+    in let w = __record-set r "hour" hour
+    in seq
+  tr-register : TrRegistry, Boolean, Integer, TrParty, TrEvidence, Integer -> Integer
+  tr-register (r) (verified) (registrar) (actor) (e) (hour) =
+    if not verified | registrar < 0 | registrar > r.towns | not (tr-party-valid actor) | not (tr-evidence-valid e) | not (tr-room r hour) | r.used == 128 then -1
+    else if not (tr-same actor e.owner.kind e.owner.id) | not (tr-same e.mark actor.kind actor.id) | tr-find r e.serial 0 /= 0 then -1
+    else let t = list-at r.titles r.used
+    in let id = r.used + 1
+    in let a = __record-set t "serial" e.serial
+    in let b = __record-set t "registrar" registrar
+    in let c = __record-set t "owner-kind" actor.kind
+    in let d = __record-set t "owner-id" actor.id
+    in let f = __record-set t "mark-kind" e.mark.kind
+    in let g = __record-set t "mark-id" e.mark.id
+    in let h = __record-set t "mark-revision" e.mark-revision
+    in let j = __record-set t "revision" 1
+    in let k = __record-set t "status" 1
+    in let m = __record-set r "used" id
+    in let logged = tr-log r t 1 0 0 0 hour
+    in id
+  tr-owned : TrTitle, TrParty, TrEvidence -> Boolean
+  tr-owned (t) (actor) (e) = t.status == 1 & tr-evidence-valid e
+    & tr-same actor t.owner-kind t.owner-id & tr-same e.owner t.owner-kind t.owner-id
+  tr-offer : TrRegistry, Boolean, TrParty, TrParty, TrEvidence, Integer -> Integer
+  tr-offer (r) (verified) (actor) (recipient) (e) (hour) =
+    let id = tr-find r e.serial 0
+    in if not verified | id == 0 | not (tr-party-valid recipient) | not (tr-room r hour) then -1
+    else let t = list-at r.titles (id - 1)
+    in if not (tr-owned t actor e) | tr-same recipient t.owner-kind t.owner-id | t.offer-nonce /= 0 then -1
+    else let nonce = r.sequence + 1
+    in let a = __record-set t "offer-kind" recipient.kind
+    in let b = __record-set t "offer-id" recipient.id
+    in let c = __record-set t "offer-nonce" nonce
+    in let d = __record-set t "offer-revision" t.revision
+    in tr-log r t 2 t.owner-kind t.owner-id nonce hour
+  tr-cancel : TrRegistry, Boolean, TrParty, Integer, Integer, Integer -> Integer
+  tr-cancel (r) (verified) (actor) (serial) (nonce) (hour) =
+    let id = tr-find r serial 0
+    in if not verified | id == 0 | nonce <= 0 | not (tr-room r hour) then -1
+    else let t = list-at r.titles (id - 1)
+    in if t.status /= 1 | not (tr-same actor t.owner-kind t.owner-id) | t.offer-nonce /= nonce then -1
+    else let cleared = tr-clear-offer t
+    in let logged = tr-log r t 3 t.owner-kind t.owner-id nonce hour
+    in 0
+  tr-accept : TrRegistry, Boolean, TrParty, Integer, TrEvidence, Integer -> Integer
+  tr-accept (r) (verified) (actor) (nonce) (e) (hour) =
+    let id = tr-find r e.serial 0
+    in if not verified | id == 0 | nonce <= 0 | not (tr-room r hour) | not (tr-evidence-valid e) then -1
+    else let t = list-at r.titles (id - 1)
+    in if t.status /= 1 | t.offer-nonce /= nonce | t.offer-revision /= t.revision | not (tr-same actor t.offer-kind t.offer-id) | not (tr-same e.owner t.owner-kind t.owner-id) then -1
+    else let old-kind = t.owner-kind
+    in let old-id = t.owner-id
+    in let a = __record-set t "owner-kind" actor.kind
+    in let b = __record-set t "owner-id" actor.id
+    in let c = __record-set t "revision" (t.revision + 1)
+    in let d = __record-set t "pending-remark" 1
+    in let cleared = tr-clear-offer t
+    in let logged = tr-log r t 4 old-kind old-id nonce hour
+    in 0
+  tr-remark : TrRegistry, Boolean, TrParty, TrEvidence, Integer -> Integer
+  tr-remark (r) (verified) (actor) (e) (hour) =
+    let id = tr-find r e.serial 0
+    in if not verified | id == 0 | not (tr-room r hour) then -1
+    else let t = list-at r.titles (id - 1)
+    in if not (tr-owned t actor e) | t.pending-remark /= 1 | not (tr-same e.mark actor.kind actor.id) | e.mark-revision <= t.mark-revision then -1
+    else let a = __record-set t "mark-kind" e.mark.kind
+    in let b = __record-set t "mark-id" e.mark.id
+    in let c = __record-set t "mark-revision" e.mark-revision
+    in let d = __record-set t "pending-remark" 0
+    in let f = __record-set t "revision" (t.revision + 1)
+    in let cleared = tr-clear-offer t
+    in let logged = tr-log r t 5 t.owner-kind t.owner-id 0 hour
+    in 0
+  tr-release : TrRegistry, Boolean, TrParty, TrEvidence, Integer, Integer -> Integer
+  tr-release (r) (verified) (actor) (e) (event) (hour) =
+    let id = tr-find r e.serial 0
+    in if not verified | id == 0 | event <= 0 | event > tr-limit | not (tr-room r hour) then -1
+    else let t = list-at r.titles (id - 1)
+    in if not (tr-owned t actor e) | event <= t.last-cause then -1
+    else let old-kind = t.owner-kind
+    in let old-id = t.owner-id
+    in let a = __record-set t "owner-kind" 0
+    in let b = __record-set t "owner-id" 0
+    in let c = __record-set t "status" 2
+    in let d = __record-set t "pending-remark" 0
+    in let f = __record-set t "last-cause" event
+    in let h = __record-set t "revision" (t.revision + 1)
+    in let cleared = tr-clear-offer t
+    in let logged = tr-log r t 6 old-kind old-id event hour
+    in 0
+  tr-claim : TrRegistry, Boolean, TrParty, TrEvidence, Integer, Integer -> Integer
+  tr-claim (r) (verified) (actor) (e) (event) (hour) =
+    let id = tr-find r e.serial 0
+    in if not verified | id == 0 | event <= 0 | event > tr-limit | not (tr-room r hour) | not (tr-party-valid actor) | not (tr-evidence-valid e) then -1
+    else let t = list-at r.titles (id - 1)
+    in if t.status /= 2 | event <= t.last-cause | not (tr-same actor e.owner.kind e.owner.id) then -1
+    else let a = __record-set t "owner-kind" actor.kind
+    in let b = __record-set t "owner-id" actor.id
+    in let c = __record-set t "status" 1
+    in let d = __record-set t "pending-remark" 1
+    in let f = __record-set t "last-cause" event
+    in let h = __record-set t "revision" (t.revision + 1)
+    in let logged = tr-log r t 7 0 0 event hour
+    in 0
+  tr-succeed : TrRegistry, Boolean, TrParty, TrParty, TrEvidence, Integer, Integer, Integer -> Integer
+  tr-succeed (r) (verified) (old) (heir) (e) (cause) (event) (hour) =
+    let id = tr-find r e.serial 0
+    in if not verified | id == 0 | not (tr-party-valid heir) | event <= 0 | event > tr-limit | not (tr-room r hour) then -1
+    else let t = list-at r.titles (id - 1)
+    in if not (tr-owned t old e) | tr-same heir t.owner-kind t.owner-id | event <= t.last-cause | (cause /= 1 & cause /= 2) then -1
+    else if (cause == 1 & old.kind /= 1) | (cause == 2 & old.kind /= 2) then -1
+    else let a = __record-set t "owner-kind" heir.kind
+    in let b = __record-set t "owner-id" heir.id
+    in let c = __record-set t "pending-remark" 1
+    in let d = __record-set t "last-cause" event
+    in let f = __record-set t "revision" (t.revision + 1)
+    in let cleared = tr-clear-offer t
+    in let logged = tr-log r t (if cause == 1 then 10 else 11) old.kind old.id event hour
+    in 0
+  tr-derive : TrRegistry, Boolean, Integer, TrEvidence, Integer -> Integer
+  tr-derive (r) (verified) (parent) (e) (hour) =
+    let id = tr-find r parent 0
+    in if not verified | id == 0 | r.used == 128 | not (tr-room r hour) | not (tr-evidence-valid e) | tr-find r e.serial 0 /= 0 then -1
+    else let source = list-at r.titles (id - 1)
+    in if source.status /= 1 | not (tr-same e.owner source.owner-kind source.owner-id) | not (tr-same e.mark source.mark-kind source.mark-id) | e.mark-revision /= source.mark-revision then -1
+    else let t = list-at r.titles r.used
+    in let result = r.used + 1
+    in let a = __record-set t "serial" e.serial
+    in let b = __record-set t "registrar" source.registrar
+    in let c = __record-set t "owner-kind" source.owner-kind
+    in let d = __record-set t "owner-id" source.owner-id
+    in let f = __record-set t "mark-kind" source.mark-kind
+    in let g = __record-set t "mark-id" source.mark-id
+    in let h = __record-set t "mark-revision" source.mark-revision
+    in let j = __record-set t "revision" 1
+    in let k = __record-set t "pending-remark" source.pending-remark
+    in let m = __record-set t "status" 1
+    in let n = __record-set t "last-cause" source.last-cause
+    in let p = __record-set t "parent" parent
+    in let q = __record-set r "used" result
+    in let logged = tr-log r t 8 source.owner-kind source.owner-id parent hour
+    in result
+  tr-retire : TrRegistry, Boolean, Integer, Integer, Integer -> Integer
+  tr-retire (r) (verified) (serial) (event) (hour) = let id = tr-find r serial 0
+    in if not verified | id == 0 | event <= 0 | event > tr-limit | not (tr-room r hour) then -1
+    else let t = list-at r.titles (id - 1)
+    in if t.status == 3 | event <= t.last-cause then -1
+    else let a = __record-set t "status" 3
+    in let b = __record-set t "last-cause" event
+    in let c = __record-set t "pending-remark" 0
+    in let d = __record-set t "revision" (t.revision + 1)
+    in let cleared = tr-clear-offer t
+    in let logged = tr-log r t 9 t.owner-kind t.owner-id event hour
+    in 0
+  tr-owner : TrRegistry, Integer -> Result TrParty Text
+  tr-owner (r) (serial) = if r.busy /= 0 then Err "registry transaction still open"
+    else let id = tr-find r serial 0
+    in if id == 0 then Err "no registered title"
+    else let t = list-at r.titles (id - 1) in Ok (TrParty { kind = t.owner-kind, id = t.owner-id })
+  tr-status : TrRegistry, Integer -> Integer
+  tr-status (r) (serial) = if r.busy /= 0 then -1 else let id = tr-find r serial 0
+    in if id == 0 then 0 else (list-at r.titles (id - 1)).status
+  tr-check-mark : TrRegistry, TrEvidence -> Integer
+  tr-check-mark (r) (e) = if r.busy /= 0 then -1 else let id = tr-find r e.serial 0
+    in if id == 0 then 0
+    else let t = list-at r.titles (id - 1)
+    in if t.status == 3 | not e.present then 5
+    else if not e.marked | not (tr-same e.mark t.mark-kind t.mark-id) | e.mark-revision /= t.mark-revision then 3
+    else if t.status == 2 then 4
+    else if not (tr-same e.owner t.owner-kind t.owner-id) then 3
+    else if t.pending-remark == 1 then 2 else 1
+  tr-copy-event : TrEvent -> TrEvent
+  tr-copy-event (e) = TrEvent { sequence = e.sequence, hour = e.hour, serial = e.serial,
+    kind = e.kind, registrar = e.registrar, from-kind = e.from-kind, from-id = e.from-id,
+    to-kind = e.to-kind, to-id = e.to-id, mark-kind = e.mark-kind, mark-id = e.mark-id,
+    mark-revision = e.mark-revision, revision = e.revision, reference = e.reference }
+  tr-page-loop : TrRegistry, Integer, Integer, Integer, Integer, List TrEvent -> List TrEvent
+  tr-page-loop (r) (serial) (before) (limit) (i) (xs) =
+    if i < 0 | list-length xs == limit then xs
+    else let e = list-at r.history i
+    in if e.serial == serial & (before == 0 | e.sequence < before) then tr-page-loop r serial before limit (i - 1) (list-push xs (tr-copy-event e))
+    else tr-page-loop r serial before limit (i - 1) xs
+  tr-history : TrRegistry, Integer, Integer, Integer -> Result (List TrEvent) Text
+  tr-history (r) (serial) (before) (limit) =
+    if r.busy /= 0 then Err "registry transaction still open"
+    else if not (tr-serial-valid serial) | before < 0 | before > tr-limit | limit < 1 | limit > 16 then Err "registry page bounds invalid"
+    else Ok (tr-page-loop r serial before limit (r.count - 1) [])
+
+  tr-copy-title : TrTitle -> TrTitle
+  tr-copy-title (t) = TrTitle {
+    serial = t.serial,
+    registrar = t.registrar,
+    owner-kind = t.owner-kind,
+    owner-id = t.owner-id,
+    mark-kind = t.mark-kind,
+    mark-id = t.mark-id,
+    mark-revision = t.mark-revision,
+    revision = t.revision,
+    pending-remark = t.pending-remark,
+    offer-kind = t.offer-kind,
+    offer-id = t.offer-id,
+    offer-nonce = t.offer-nonce,
+    offer-revision = t.offer-revision,
+    status = t.status,
+    last-cause = t.last-cause,
+    parent = t.parent }
+
+  tr-restore-title : TrTitle, TrTitle -> Integer
+  tr-restore-title (target) (source) =
+    let a0 = __record-set target "serial" source.serial
+    in let a1 = __record-set target "registrar" source.registrar
+    in let a2 = __record-set target "owner-kind" source.owner-kind
+    in let a3 = __record-set target "owner-id" source.owner-id
+    in let a4 = __record-set target "mark-kind" source.mark-kind
+    in let a5 = __record-set target "mark-id" source.mark-id
+    in let a6 = __record-set target "mark-revision" source.mark-revision
+    in let a7 = __record-set target "revision" source.revision
+    in let a8 = __record-set target "pending-remark" source.pending-remark
+    in let a9 = __record-set target "offer-kind" source.offer-kind
+    in let a10 = __record-set target "offer-id" source.offer-id
+    in let a11 = __record-set target "offer-nonce" source.offer-nonce
+    in let a12 = __record-set target "offer-revision" source.offer-revision
+    in let a13 = __record-set target "status" source.status
+    in let a14 = __record-set target "last-cause" source.last-cause
+    in let a15 = __record-set target "parent" source.parent
+    in 0
+
+  tr-zero-event : TrEvent -> Integer
+  tr-zero-event (e) =
+    let a0 = __record-set e "sequence" 0
+    in let a1 = __record-set e "hour" 0
+    in let a2 = __record-set e "serial" 0
+    in let a3 = __record-set e "kind" 0
+    in let a4 = __record-set e "registrar" 0
+    in let a5 = __record-set e "from-kind" 0
+    in let a6 = __record-set e "from-id" 0
+    in let a7 = __record-set e "to-kind" 0
+    in let a8 = __record-set e "to-id" 0
+    in let a9 = __record-set e "mark-kind" 0
+    in let a10 = __record-set e "mark-id" 0
+    in let a11 = __record-set e "mark-revision" 0
+    in let a12 = __record-set e "revision" 0
+    in let a13 = __record-set e "reference" 0
+    in 0
+
+  tr-execute : TrRegistry, TrCommand -> Integer
+  tr-execute (r) (c) =
+    if c.kind == 1 then tr-register r c.verified c.registrar c.actor c.evidence c.hour
+    else if c.kind == 2 then tr-offer r c.verified c.actor c.recipient c.evidence c.hour
+    else if c.kind == 3 then tr-cancel r c.verified c.actor c.evidence.serial c.nonce c.hour
+    else if c.kind == 4 then tr-accept r c.verified c.actor c.nonce c.evidence c.hour
+    else if c.kind == 5 then tr-remark r c.verified c.actor c.evidence c.hour
+    else if c.kind == 6 then tr-release r c.verified c.actor c.evidence c.event c.hour
+    else if c.kind == 7 then tr-claim r c.verified c.actor c.evidence c.event c.hour
+    else if c.kind == 8 then tr-derive r c.verified c.parent c.evidence c.hour
+    else if c.kind == 9 then tr-retire r c.verified c.evidence.serial c.event c.hour
+    else if c.kind == 10 | c.kind == 11 then tr-succeed r c.verified c.actor c.recipient c.evidence (c.kind - 9) c.event c.hour
+    else -1
+  tr-prepare : TrRegistry, TrCommand -> Result TrUndo Text
+  tr-prepare (r) (c) =
+    if r.busy /= 0 then Err "registry already has a prepared action"
+    else if c.kind < 1 | c.kind > 11 | not (tr-room r c.hour) then Err "registry command or history admission refused"
+    else let id = tr-find r c.evidence.serial 0
+    in if id == 0 & (r.used == 128 | (c.kind /= 1 & c.kind /= 8)) then Err "registry action target absent"
+    else let slot = if id == 0 then r.used else id - 1
+    in let undo = TrUndo { registry = r, before = tr-copy-title (list-at r.titles slot),
+      slot = slot, serial = c.evidence.serial, used = r.used, count = r.count,
+      sequence = r.sequence, hour = r.hour, result = -1, open = 1 }
+    in let result = tr-execute r c
+    in if result < 0 then Err "registry action refused"
+    else let saved = __record-set undo "result" result
+    in let busy = __record-set r "busy" 1
+    in Ok undo
+  tr-undo-valid : TrUndo -> Boolean
+  tr-undo-valid (u) =
+    u.open == 1 & u.slot >= 0 & u.slot < 128 & u.count >= 0 & u.count < 4096
+      & u.registry.busy == 1 & u.registry.count == u.count + 1
+      & u.registry.sequence == u.sequence + 1
+      & u.registry.used == u.used + (if u.before.serial == 0 then 1 else 0)
+      & (list-at u.registry.titles u.slot).serial == u.serial
+      & (list-at u.registry.history u.count).serial == u.serial
+  tr-accept-undo : TrUndo -> Integer
+  tr-accept-undo (u) = if not (tr-undo-valid u) then -1
+    else let a = __record-set u.registry "busy" 0
+    in let b = __record-set u "open" 0 in 0
+  tr-rollback : TrUndo -> Integer
+  tr-rollback (u) = if not (tr-undo-valid u) then -1
+    else let r = u.registry
+    in let a = tr-restore-title (list-at r.titles u.slot) u.before
+    in let b = tr-zero-event (list-at r.history u.count)
+    in let c = __record-set r "used" u.used
+    in let d = __record-set r "count" u.count
+    in let e = __record-set r "sequence" u.sequence
+    in let f = __record-set r "hour" u.hour
+    in let g = __record-set r "busy" 0
+    in let h = __record-set u "open" 0
+    in 0
+
+  tr-batch-hours : List TrCommand, Integer, Integer -> Boolean
+  tr-batch-hours (commands) (hour) (i) = if i == list-length commands then True
+    else (list-at commands i).hour == hour & tr-batch-hours commands hour (i + 1)
+  tr-unwind : TrRegistry, List TrUndo, Integer -> Integer
+  tr-unwind (r) (units) (i) = if i < 0 then 0
+    else let busy = __record-set r "busy" 1
+    in if tr-rollback (list-at units i) /= 0 then -1 else tr-unwind r units (i - 1)
+  tr-batch-loop : TrBatchUndo, List TrCommand, Integer -> Result TrBatchUndo Text
+  tr-batch-loop (batch) (commands) (i) = if i == list-length commands then
+      let busy = __record-set batch.registry "busy" 1 in Ok batch
+    else when tr-prepare batch.registry (list-at commands i)
+      is Err (e) ->
+        let reverted = tr-unwind batch.registry batch.units (list-length batch.units - 1)
+        in let closed = __record-set batch "open" 0
+        in if reverted /= 0 then Err "registry batch rollback invariant failed" else Err e
+      is Ok (undo) ->
+        let saved = __record-set batch "units" (list-push batch.units undo)
+        in let unlocked = __record-set batch.registry "busy" 0
+        in tr-batch-loop batch commands (i + 1)
+  tr-prepare-batch : TrRegistry, List TrCommand -> Result TrBatchUndo Text
+  tr-prepare-batch (r) (commands) =
+    if r.busy /= 0 | list-length commands < 1 | list-length commands > 64 then Err "registry batch count or ownership invalid"
+    else if not (tr-batch-hours commands (list-at commands 0).hour 0) then Err "registry batch hours disagree"
+    else let batch = TrBatchUndo { registry = r, units = [], used = r.used,
+      count = r.count, sequence = r.sequence, hour = r.hour, open = 1 }
+    in tr-batch-loop batch commands 0
+  tr-units-open : TrBatchUndo, Integer -> Boolean
+  tr-units-open (b) (i) = if i == list-length b.units then True
+    else let u = list-at b.units i
+    in u.open == 1 & u.count == b.count + i & u.sequence == b.sequence + i & tr-units-open b (i + 1)
+  tr-batch-valid : TrBatchUndo -> Boolean
+  tr-batch-valid (b) =
+    if b.open /= 1 | b.registry.busy /= 1 | list-length b.units < 1 | list-length b.units > 64 then False
+    else b.registry.count == b.count + list-length b.units
+      & b.registry.sequence == b.sequence + list-length b.units
+      & tr-units-open b 0 & tr-undo-valid (list-at b.units (list-length b.units - 1))
+  tr-close-units : List TrUndo, Integer -> Integer
+  tr-close-units (units) (i) = if i == list-length units then 0
+    else let a = __record-set (list-at units i) "open" 0 in tr-close-units units (i + 1)
+  tr-accept-batch : TrBatchUndo -> Integer
+  tr-accept-batch (b) = if not (tr-batch-valid b) then -1
+    else let units = tr-close-units b.units 0
+    in let a = __record-set b.registry "busy" 0
+    in let c = __record-set b "open" 0 in 0
+  tr-rollback-batch : TrBatchUndo -> Integer
+  tr-rollback-batch (b) = if not (tr-batch-valid b) then -1
+    else let restored = tr-unwind b.registry b.units (list-length b.units - 1)
+    in let closed = __record-set b "open" 0
+    in restored

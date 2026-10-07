@@ -1,0 +1,325 @@
+Chapter: WorldDisk
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter WorldBlock
+  cites Foreword chapter Result
+
+ UOS1 appends one commit sector followed by payload sectors. The commit
+ sector is written last. Its eight cells are magic, version, kind,
+ sequence, tick, byte length, header FNV32 and payload FNV32. A zero sector
+ ends the log. A torn header is reported as a tail, never applied.
+
+  UoStore = record {
+    start : Integer, sectors : Integer, head : Integer, snapshot : Integer,
+    sequence : Integer, tick : Integer, tail : Integer, fault : Integer, device : UoDevice, twin : Integer
+  }
+  UoDiskRecord = record {
+    kind : Integer, sequence : Integer, tick : Integer, length : Integer, next : Integer
+  }
+  us-max-sectors : Integer = 131072
+  us-max-payload : Integer = 16777216
+
+  us-zero : Integer, Integer -> Integer
+  us-zero (buf) (i) =
+    if i >= 512 then 0 else let w = poke-byte buf i 0 in us-zero buf (i + 1)
+
+  us-empty : Integer, Integer -> Boolean
+  us-empty (buf) (i) =
+    if i >= 512 then True
+    else if peek-byte buf i /= 0 then False else us-empty buf (i + 1)
+
+  us-equal : Integer, Integer, Integer -> Boolean
+  us-equal (a) (b) (i) =
+    if i >= 512 then True
+    else if peek-byte a i /= peek-byte b i then False else us-equal a b (i + 1)
+
+  us-hash : Integer, Integer, Integer, Integer -> Integer
+  us-hash (buf) (count) (i) (hash) =
+    if i >= count then hash
+    else us-hash buf count (i + 1) (bit-and ((bit-xor hash (peek-byte buf i)) * 16777619) 4294967295)
+
+  us-span : Integer -> Integer
+  us-span (bytes) = 1 + (bytes + 511) / 512
+
+  us-ordered : UoStore, Integer, Integer, Integer -> Boolean
+  us-ordered (store) (kind) (seq) (tick) =
+    if tick < store.tick then False
+    else if kind == 1 then seq == store.sequence | (store.head == 0 & seq >= 0)
+    else if store.snapshot < 0 | store.sequence == 9223372036854775807 then False
+    else seq == store.sequence + 1
+
+  us-header-valid : Integer, Integer, Integer -> Boolean
+  us-header-valid (buf) (at) (limit) =
+    if peek-qword buf 0 /= #31534F55 | peek-qword buf 8 /= 1 then False
+    else let kind = peek-qword buf 16
+    in let size = peek-qword buf 40
+    in if (kind /= 1 & kind /= 2) | size <= 0 | size > us-max-payload then False
+    else if peek-qword buf 24 < 0 | peek-qword buf 32 < 0 then False
+    else if at < 0 | at >= limit then False
+    else us-span size <= limit - at
+
+  us-payload-hash : UoDevice, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-payload-hash (device) (sector) (left) (hash) =
+    if left <= 0 then act Ok hash end
+    else let mark = __heap-save
+    in act
+      read <- us-device-read device sector
+      when read
+        is Err (e) -> Err e
+        is Ok (buf) -> let n = if left < 512 then left else 512
+          in let next = us-hash buf n 0 hash
+          in let restored = __heap-restore mark
+          in us-payload-hash device (sector + 1) (left - n) next
+    end
+
+  us-scan : UoStore -> [Device.Block] Result UoStore Text
+  us-scan (store) =
+    if store.head == store.sectors then act Ok store end
+    else let mark = __heap-save
+    in act
+      read <- us-device-read store.device (store.start + store.head)
+      when read
+       is Err (e) -> Err e
+       is Ok (buf) ->
+      if us-empty buf 0 then let restored = __heap-restore mark in Ok store
+      else if peek-qword buf 48 /= ws-hash buf 64 0 2166136261 then
+        if store.head == 0 then let restored = __heap-restore mark in Err "store initial header unrecognized or corrupt"
+        else let tail = __record-set store "tail" 1
+        in let restored = __heap-restore mark in Ok store
+      else if not (us-header-valid buf store.head store.sectors) then
+        let restored = __heap-restore mark in Err "store header invalid"
+      else let kind = peek-qword buf 16
+      in let seq = peek-qword buf 24
+      in let tick = peek-qword buf 32
+      in let size = peek-qword buf 40
+      in let digest = peek-qword buf 56
+      in if not (us-ordered store kind seq tick) then
+        let restored = __heap-restore mark in Err "store sequence or checkpoint order invalid"
+      else act
+        hashed <- us-payload-hash store.device (store.start + store.head + 1) size 2166136261
+        when hashed
+         is Err (e) -> Err e
+         is Ok (actual) -> if actual /= digest then let restored = __heap-restore mark in Err "store payload checksum invalid"
+        else let snapshot = if kind == 1 then __record-set store "snapshot" store.head else store
+        in let next = __record-set store "head" (store.head + us-span size)
+        in let s = __record-set store "sequence" seq
+        in let t = __record-set store "tick" tick
+        in let restored = __heap-restore mark
+        in us-scan store
+      end
+    end
+
+  us-open : Integer, Integer -> [Device.Block] Result UoStore Text
+  us-open (start) (sectors) = us-open-on UoIde start sectors
+
+  us-open-on : UoDevice, Integer, Integer -> [Device.Block] Result UoStore Text
+  us-open-on (device) (start) (sectors) = act
+    count <- us-device-count device
+    if start < 0 | sectors < 2 | sectors > us-max-sectors | start > count then Err "store region invalid"
+    else if sectors > count - start then Err "store region outside disk"
+    else us-scan (UoStore { start = start, sectors = sectors, head = 0, snapshot = -1,
+      sequence = 0, tick = 0, tail = 0, fault = 0, device = device, twin = -1 })
+  end
+
+ A paired journal splits one span into two halves and exactly one half is live. A compaction commits a
+ full snapshot at a higher sequence into the other half, then wipes the first sector of the old half, so a
+ crash at any step leaves one half that replays to the last committed sequence.
+
+  us-wipe : UoDevice, Integer -> [Device.Block] Boolean
+  us-wipe (device) (sector) = let mark = __heap-save
+    in let buf = alloc-bytes 512
+    in let zero = us-zero buf 0
+    in act
+      ok <- us-write-checked device sector buf
+      let restored = __heap-restore mark in ok
+    end
+
+  us-fits : UoStore, Integer -> Boolean
+  us-fits (store) (size) = us-span size <= store.sectors - store.head
+
+  us-switch : UoStore, Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-switch (store) (seq) (tick) (source) (size) =
+    if store.twin < 0 then act Err "store disk budget exhausted" end
+    else if store.fault /= 0 then act Err "store faulted; reopen required" end
+    else act
+      cleared <- us-wipe store.device store.twin
+      if not cleared then Err "store twin wipe failed"
+      else act
+        opened <- us-open-on store.device store.twin store.sectors
+        when opened
+          is Err (e) -> Err ("store twin " & e)
+          is Ok (fresh) -> if fresh.head /= 0 then Err "store twin not empty after wipe"
+            else act
+              written <- us-append fresh 1 seq tick source size
+              when written
+                is Err (e) -> Err ("store twin " & e)
+                is Ok (at) -> act
+                  retired <- us-wipe store.device store.start
+                  let old = store.start
+                  in let s = __record-set store "start" store.twin
+                  in let t = __record-set store "twin" old
+                  in let h = __record-set store "head" fresh.head
+                  in let c = __record-set store "snapshot" 0
+                  in let q = __record-set store "sequence" seq
+                  in let k = __record-set store "tick" tick
+                  in let l = __record-set store "tail" 0
+                  in if retired then Ok at
+                  else let fault = __record-set store "fault" 1 in Err "store retired half wipe failed"
+                end
+            end
+        end
+      end
+
+  us-adopt : UoStore, Integer, Boolean -> [Device.Block] Result UoStore Text
+  us-adopt (store) (twin) (retire) = let paired = __record-set store "twin" twin
+    in if not retire then act Ok store end
+    else act
+      wiped <- us-wipe store.device twin
+      if wiped then Ok store else Err "store stale half wipe failed"
+    end
+
+  us-straddle : UoDevice, Integer, Integer, UoStore -> [Device.Block] Result UoStore Text
+  us-straddle (device) (start) (half) (first) =
+    if first.head < half then us-adopt first (start + half) False
+    else act
+      whole <- us-open-on device start (half * 2)
+      when whole
+        is Err (_) -> us-adopt first (start + half) False
+        is Ok (w) -> if w.head > half then Err "store journal crosses the half boundary; compact it offline (compact-world.ps1)"
+          else us-adopt first (start + half) False
+    end
+
+  us-pick : UoDevice, Integer, Integer, Result UoStore Text, Result UoStore Text -> [Device.Block] Result UoStore Text
+  us-pick (device) (start) (half) (first) (second) =
+    when first
+      is Err (e) -> act Err ("store first half " & e) end
+      is Ok (a) -> when second
+        is Err (f) -> if a.snapshot >= 0 then us-straddle device start half a
+          else act Err ("store second half " & f) end
+        is Ok (b) -> if a.snapshot >= 0 & b.snapshot >= 0 then
+            (if a.sequence >= b.sequence then us-adopt a (start + half) True else us-adopt b start True)
+          else if a.snapshot >= 0 then us-straddle device start half a
+          else if b.snapshot >= 0 then us-adopt b start False
+          else us-adopt a (start + half) False
+
+  us-open-pair : UoDevice, Integer, Integer -> [Device.Block] Result UoStore Text
+  us-open-pair (device) (start) (sectors) = let half = sectors / 2
+    in act
+      first <- us-open-on device start half
+      second <- us-open-on device (start + half) half
+      us-pick device start half first second
+    end
+
+  us-write-checked : UoDevice, Integer, Integer -> [Device.Block] Boolean
+  us-write-checked (device) (sector) (buf) =
+    let mark = __heap-save
+    in act
+      wrote <- us-device-write device sector buf
+      when wrote
+        is Err (e) -> let restored = __heap-restore mark in False
+        is Ok (status) -> act
+          read <- us-device-read device sector
+          when read
+            is Err (e) -> let restored = __heap-restore mark in False
+            is Ok (data) -> let same = us-equal buf data 0
+              in let restored = __heap-restore mark in same
+        end
+    end
+
+  us-write-payload : UoDevice, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Boolean
+  us-write-payload (device) (sector) (source) (size) (at) (buf) =
+    if at >= size then act True end
+    else let zero = us-zero buf 0
+    in let n = if size - at < 512 then size - at else 512
+    in let copied = ws-copy (source + at) buf n 0
+    in act
+      ok <- us-write-checked device sector buf
+      if not ok then False else us-write-payload device (sector + 1) source size (at + n) buf
+    end
+
+  us-append : UoStore, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-append (store) (kind) (seq) (tick) (source) (size) =
+    if store.fault /= 0 then act Err "store faulted; reopen required" end
+    else if (kind /= 1 & kind /= 2) | size <= 0 | size > us-max-payload | seq < 0 | tick < store.tick then act Err "store append metadata invalid" end
+    else if not (us-ordered store kind seq tick) then act Err "store sequence or checkpoint order invalid" end
+    else if us-span size > store.sectors - store.head then act Err "store disk budget exhausted" end
+    else let mark = __heap-save
+    in let buf = alloc-bytes 512
+    in let zero = us-zero buf 0
+    in act
+      cleared <- us-write-checked store.device (store.start + store.head) buf
+      payload <- if cleared then us-write-payload store.device (store.start + store.head + 1) source size 0 buf else act False end
+      if not payload then
+        let fault = __record-set store "fault" 1
+        in let restored = __heap-restore mark in Err "store payload write/readback failed"
+      else let zero = us-zero buf 0
+      in act
+       terminated <- if store.head + us-span size < store.sectors then us-write-checked store.device (store.start + store.head + us-span size) buf else act True end
+       if not terminated then let fault = __record-set store "fault" 1
+       in let restored = __heap-restore mark in Err "store terminator write/readback failed"
+       else let a = poke-qword buf 0 #31534F55
+      in let b = poke-qword buf 8 1
+      in let c = poke-qword buf 16 kind
+      in let d = poke-qword buf 24 seq
+      in let e = poke-qword buf 32 tick
+      in let f = poke-qword buf 40 size
+      in let g = poke-qword buf 56 (us-hash source size 0 2166136261)
+      in let h = poke-qword buf 48 (ws-hash buf 64 0 2166136261)
+      in act
+        committed <- us-write-checked store.device (store.start + store.head) buf
+        if not committed then
+          let fault = __record-set store "fault" 1
+          in let restored = __heap-restore mark in Err "store commit write/readback failed"
+        else let at = store.head
+        in let cp = if kind == 1 then __record-set store "snapshot" at else store
+        in let head = __record-set store "head" (at + us-span size)
+        in let s = __record-set store "sequence" seq
+        in let t = __record-set store "tick" tick
+        in let tail = __record-set store "tail" 0
+        in let restored = __heap-restore mark in Ok at
+      end
+      end
+    end
+
+  us-read-payload : UoDevice, Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-read-payload (device) (sector) (out) (size) (at) =
+    if at >= size then act Ok 0 end
+    else let mark = __heap-save
+    in act
+      read <- us-device-read device sector
+      when read
+        is Err (e) -> Err e
+        is Ok (buf) -> let n = if size - at < 512 then size - at else 512
+          in let copied = ws-copy buf (out + at) n 0
+          in let restored = __heap-restore mark
+          in us-read-payload device (sector + 1) out size (at + n)
+    end
+
+  us-read : UoStore, Integer, Integer, Integer -> [Device.Block] Result UoDiskRecord Text
+  us-read (store) (at) (out) (capacity) =
+    if at < 0 | at >= store.head then act Err "store record outside committed prefix" end
+    else let mark = __heap-save
+    in act
+      read <- us-device-read store.device (store.start + at)
+      when read
+       is Err (e) -> Err e
+       is Ok (buf) ->
+      if not (us-header-valid buf at store.head) then let restored = __heap-restore mark in Err "store record header invalid"
+      else if peek-qword buf 48 /= ws-hash buf 64 0 2166136261 then let restored = __heap-restore mark in Err "store record header checksum invalid"
+      else let size = peek-qword buf 40
+      in let kind = peek-qword buf 16
+      in let seq = peek-qword buf 24
+      in let tick = peek-qword buf 32
+      in let digest = peek-qword buf 56
+      in if capacity < size then let restored = __heap-restore mark in Err "store read destination too short"
+      else act
+        copied <- us-read-payload store.device (store.start + at + 1) out size 0
+        when copied
+         is Err (e) -> Err e
+         is Ok (n) -> let valid = us-hash out size 0 2166136261 == digest
+        in let restored = __heap-restore mark
+        in if not valid then Err "store read payload checksum invalid"
+        else Ok (UoDiskRecord { kind = kind, sequence = seq, tick = tick, length = size, next = at + us-span size })
+      end
+    end
+
+Page 1

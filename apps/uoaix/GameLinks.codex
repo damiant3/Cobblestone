@@ -1,0 +1,334 @@
+Chapter: GameLinks
+  cites Uoaix chapter ShardServer
+  cites Net chapter NetIdle
+
+  GameRelay = record { key : Integer, expires : Integer }
+  GamePeer = record { clock : NetIdleClock, pulse : Integer, account : Integer, lord : Integer }
+  GameLinks = record { server : ShardServer, specs : List GameOpcodeSpec,
+    peers : List GamePeer, relays : List GameRelay, lifetime : Integer, fault : Boolean,
+    web : (HttpRequest -> Result HttpResponse Text), tick-at : Integer, tick-failures : Integer,
+    watermark-at : Integer, heap-peak : Integer, stack-low : Integer }
+  gl-ports : List Integer, Integer -> Boolean
+  gl-ports (ports) (i) = if i == list-length ports then True else (list-at ports i == 2593 | list-at ports i == 2594) & gl-ports ports (i + 1)
+  gl-web-none : HttpRequest -> Result HttpResponse Text
+  gl-web-none (request) = Err "no admin panel is bound to these game links"
+  gl-bind-web : GameLinks, (HttpRequest -> Result HttpResponse Text) -> Integer
+  gl-bind-web (owner) (web) = let bound = __record-set owner "web" web in 0
+  gl-relays : Integer, List GameRelay -> List GameRelay
+  gl-relays (left) (out) = if left == 0 then out else gl-relays (left - 1) (list-push out (GameRelay { key = 0, expires = 0 }))
+  gl-peers : ShardServer, Integer, List GamePeer -> Result (List GamePeer) Text
+  gl-peers (server) (i) (out) = if i == list-length server.protocols then Ok out
+    else when ni-clock (list-at server.links.slots i).transport server.rx
+      is Err (e) -> Err e
+      is Ok (clock) -> gl-peers server (i + 1) (list-push out (GamePeer { clock = clock, pulse = 0, account = -1, lord = 0 }))
+  gl-new : List GameOpcodeSpec, GameShard, WalkMap, Integer, Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> Result GameLinks Text
+  gl-new (specs) (game) (map) (huffman) (port) (ports) (mac) (ip) (gateway) (mask) =
+    if not (go-valid specs) | not (gl-ports ports 0) then Err "game links registry or ports invalid"
+    else when ss-new game map huffman port ports mac ip gateway mask get-ticks
+      is Err (e) -> Err e
+      is Ok (server) -> when gl-peers server 0 []
+        is Err (e) -> Err e
+        is Ok (peers) -> let owner = GameLinks { server = server, specs = specs, peers = peers,
+          relays = gl-relays sl-max-links [], lifetime = hpet-ticks-per-second * 120, fault = False, web = gl-web-none, tick-at = 0, tick-failures = 0,
+          watermark-at = 0, heap-peak = 0, stack-low = 0 }
+          in let saved = __record-set server.links "mark" __heap-save in Ok owner
+  gl-ticket : GameLinks, Integer, Integer, Integer -> Integer
+  gl-ticket (owner) (key) (now) (i) = if key == 0 | i == list-length owner.relays then -1
+    else let ticket = list-at owner.relays i
+    in if ticket.key == key & ticket.expires > now then i else gl-ticket owner key now (i + 1)
+  gl-free-ticket : GameLinks, Integer, Integer -> Integer
+  gl-free-ticket (owner) (now) (i) = if i == list-length owner.relays then -1
+    else let ticket = list-at owner.relays i
+    in if ticket.key == 0 | ticket.expires <= now then i else gl-free-ticket owner now (i + 1)
+  gl-actor-used : GameLinks, Integer, Integer, Integer -> Boolean
+  gl-actor-used (owner) (serial) (except) (i) = if serial == 0 | i == list-length owner.server.protocols then False
+    else let p = list-at owner.server.protocols i
+    in if i /= except & not p.disconnected & p.game.session.phase == 2 & p.game.session.serial == serial then True
+      else gl-actor-used owner serial except (i + 1)
+  gl-reset : GameLinks, Integer, Integer -> Integer
+  gl-reset (owner) (i) (now) = let reset = ss-reset owner.server i get-ticks
+    in let protocol = list-at owner.server.protocols i
+    in let registry = __record-set protocol.game "opcodes" owner.specs
+    in let peer = list-at owner.peers i
+    in let epoch = __record-set peer.clock "epoch" now
+    in let base = __record-set peer.clock "base-tick" (list-at owner.server.links.slots i).transport.session.now-ticks
+    in let pulse = __record-set peer "pulse" now
+    in let account = __record-set peer "account" (0 - 1)
+    in let lord = __record-set peer "lord" 0 in 0
+ GameShard.characters holds one account's slots, so each session lends its own account and game-login
+ flag for its callback; ga-bind writes the previous account's working slots back first.
+  gl-lend : GameLinks, Integer -> Integer
+  gl-lend (owner) (i) = let peer = list-at owner.peers i
+    in if peer.account < 0 then 0
+    else let bound = ga-bind owner.server.game.accounts owner.server.game.characters peer.account
+    in poke-qword owner.server.game.accounts 56 peer.lord
+  gl-adopt : GameLinks, Integer -> Integer
+  gl-adopt (owner) (i) = let peer = list-at owner.peers i
+    in let a = __record-set peer "account" (ga-bound owner.server.game.accounts)
+    in let b = __record-set peer "lord" (peek-qword owner.server.game.accounts 56) in 0
+  gl-byte : GameLinks, GameInput, Integer -> Result Boolean Text
+  gl-byte (owner) (input) (byte) =
+    if input.mode /= 0 | input.wire.seed-count /= 3 then gn-byte owner.server.game input byte
+    else let seed = input.wire.seed * 256 + byte
+    in let key = if gl-ticket owner seed hpet-ticks 0 >= 0 then seed else 0
+    in let previous = owner.server.game.pending-key
+    in let borrowed = __record-set owner.server.game "pending-key" key
+    in let result = gn-byte owner.server.game input byte
+    in let restored = __record-set owner.server.game "pending-key" previous in result
+
+ The single event loop lends legacy handlers only the actor authenticated by
+ this slot. active and pending-key are volatile compatibility fields; the
+ shared next-key counter still changes inside the owner's action callback.
+
+  gl-handle : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), GameLinks, Integer, List Integer -> [e] Result GameReply Text
+  gl-handle (handler) (owner) (i) (packet) =
+    if owner.fault then act Err "game links owner requires restart" end
+    else if list-length packet == 0 then act Err "empty game packet" end
+    else let server = owner.server
+    in let input = (list-at server.protocols i).game
+    in let op = list-at packet 0
+    in let relay = input.mode == 1 & op == 160
+    in let login = input.mode == 2 & op == 145
+    in let now = hpet-ticks
+    in let ticket = if login then gl-ticket owner input.session.key now 0 else -1
+    in let free = if relay then gl-free-ticket owner now 0 else -1
+    in let lent = gl-lend owner i
+    in let selected = if input.mode /= 2 | input.session.phase /= 1 then -1
+      else if op == 93 then gp-u32 packet 65 else if op == 0 then gp-u32 packet 92 else -1
+    in let busy = if selected < 0 | selected >= 5 then False
+      else gl-actor-used owner (peek-qword server.game.characters (selected * 160)) i 0
+    in if login & ticket < 0 then act Err "relay key absent, consumed or expired" end
+    else if relay & free < 0 then act Err "relay ticket capacity" end
+    else if selected >= 5 then act Err "character slot outside account" end
+    else if busy then act Err "character already connected" end
+    else let old-active = server.game.active
+    in let old-key = server.game.pending-key
+    in let active = __record-set server.game "active" (if input.session.phase == 2 then input.session.serial else 0)
+    in let key = if login then __record-set server.game "pending-key" input.session.key else server.game
+    in act
+      handled <- handler server.game input server.map server.host-port packet
+      let issued = if relay & is-ok handled then server.game.pending-key else 0
+      in let saved = if issued == 0 then 0 else let row = list-at owner.relays free
+        in let k = __record-set row "key" issued in let t = __record-set row "expires" (now + owner.lifetime) in 0
+      in let consumed = if not login then 0 else let row = list-at owner.relays ticket
+        in let k = __record-set row "key" 0 in 0
+      in let adopted = if login & is-ok handled & input.session.phase == 1 then gl-adopt owner i else 0
+      in let restore-active = __record-set server.game "active" old-active
+      in let restore-key = __record-set server.game "pending-key" old-key
+      in handled
+    end
+ A death answer's full re-entry redraws every view at once: 270 packets in Britain (play-head18).
+ The count bounds ss-encode-replies' one frame per packet; stx-max-bytes bounds the bytes.
+  gl-reply-packets : Integer = 4096
+  gl-queue : GameLinks, Integer, GameReply -> Result Integer Text
+  gl-queue (owner) (i) (reply) = let input = (list-at owner.server.protocols i).game
+    in if list-length reply.packets > gl-reply-packets then Err "game response packet budget exceeded"
+    else when ss-encode-replies owner.server.huffman (input.mode == 2) reply.packets 0 0 []
+      is Err (e) -> Err e
+      is Ok (encoded) -> stx-enqueue (list-at owner.server.links.slots i).tx (ss-flatten encoded.packets 0 0 (__list-with-capacity encoded.bytes))
+  gl-input : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), GameLinks, Integer, Integer -> [Console, e] Integer
+  gl-input (handler) (owner) (i) (at) = let slot = list-at owner.server.links.slots i
+    in let protocol = list-at owner.server.protocols i
+    in let input = protocol.game
+    in if at == slot.transport.recv-len then let consumed = ss-consume slot at in 0
+    else when gl-byte owner input (peek-byte slot.transport.recv-base at)
+      is Err (e) -> ss-refuse protocol e
+      is Ok (complete) -> if not complete then gl-input handler owner i (at + 1)
+        else let packet = __buf-read-bytes input.buffer 0 input.used
+        in let reset = __record-set input "used" 0
+        in let consumed = ss-consume slot (at + 1)
+        in act
+          handled <- gl-handle handler owner i packet
+          when handled
+            is Err (e) -> ss-refuse protocol e
+            is Ok (reply) -> when gl-queue owner i reply
+              is Err (e) -> ss-refuse protocol e
+              is Ok (_) -> act
+                slg-line owner.server.game.log slg-network slg-debug ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show input.connection)
+                positioned <- gn-position owner.server.game input.session
+                let closing = if reply.close then __record-set protocol "closing" 1 else protocol in 1
+              end
+        end
+  gl-pulse : (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text), GameLinks, Integer, Integer -> [Console, e] Integer
+  gl-pulse (pulse) (owner) (i) (now) = let p = list-at owner.server.protocols i
+    in let peer = list-at owner.peers i
+    in if p.game.mode /= 2 | p.game.session.phase /= 2 | now - peer.pulse < peer.clock.period then act 0 end
+    else let old = owner.server.game.active
+    in let lent = gl-lend owner i
+    in let active = __record-set owner.server.game "active" p.game.session.serial
+    in let scheduled = __record-set peer "pulse" now
+    in act
+      result <- pulse owner.server.game p.game owner.server.map owner.server.host-port get-ticks
+      let restored = __record-set owner.server.game "active" old
+      in when result
+        is Err (e) -> ss-refuse p e
+        is Ok (None) -> 0
+        is Ok (Just (reply)) -> when gl-queue owner i reply
+          is Err (e) -> ss-refuse p e
+          is Ok (_) -> let closing = if reply.close then __record-set p "closing" 1 else p in 1
+    end
+ 4072 is the kernel's ram-size cell (X86_64Boot ram-size-addr, bytes); the heap starts at 6 MiB and must stay
+ below the 32 demand-stack reserve pages and their guard page, 33 pages of 2 MiB under the top of RAM.
+  gl-heap-base : Integer = 6291456
+  gl-stack-reserve : Integer = 32 * 2097152
+  gl-ram-size-cell : Integer = 4072
+  gl-heap-ceiling : Integer -> Integer
+  gl-heap-ceiling (unused) = peek-qword gl-ram-size-cell 0 - 33 * 2097152 - gl-heap-base
+  gl-watermark : GameLinks, Integer -> [Console] Integer
+  gl-watermark (owner) (now) = let used = __heap-save - gl-heap-base
+    in let peak = __record-set owner "heap-peak" (max owner.heap-peak used)
+    in let sp = __stack-save
+    in let low = __record-set owner "stack-low" (if owner.stack-low == 0 | sp < owner.stack-low then sp else owner.stack-low)
+    in if owner.watermark-at /= 0 & now - owner.watermark-at < 60 * hpet-ticks-per-second then act 0 end
+    else let stamped = __record-set owner "watermark-at" now
+    in let ceiling = gl-heap-ceiling 0
+    in let pct = if ceiling <= 0 then 100 else owner.heap-peak * 100 / ceiling
+    in let top = peek-qword gl-ram-size-cell 0
+    in let stack-pct = (top - owner.stack-low) * 100 / gl-stack-reserve
+    in act
+      slg-line owner.server.game.log slg-world (if pct >= 80 | stack-pct >= 80 then slg-warn else slg-info) ("WATERMARK heap-used=" & show (used / 1048576)
+        & "MiB heap-peak=" & show (owner.heap-peak / 1048576) & "MiB heap-ceiling=" & show (ceiling / 1048576) & "MiB heap-peak-pct=" & show pct
+        & " stack-used=" & show ((top - sp) / 1024) & "KiB stack-peak=" & show ((top - owner.stack-low) / 1024) & "KiB stack-reserve=" & show (gl-stack-reserve / 1024) & "KiB stack-peak-pct=" & show stack-pct)
+      1
+    end
+  gl-tick : (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks, Integer -> [Console, e] Integer
+  gl-tick (world) (owner) (now) = if now - owner.tick-at < hpet-ticks-per-second then act 0 end
+    else let first = owner.tick-at == 0
+    in let stamped = __record-set owner "tick-at" now
+    in act
+      announced <- if first then slg-line owner.server.game.log slg-world slg-info "WORLD ticks on: once per second" else act 0 end
+      marked <- gl-watermark owner now
+      result <- world owner.server.game owner.server.map get-ticks
+      when result
+        is Err (e) -> let failures = owner.tick-failures + 1
+          in let counted = __record-set owner "tick-failures" failures
+          in if failures > 3 & int-mod failures 60 /= 0 then act 0 end else act
+            slg-line owner.server.game.log slg-world slg-error ("FAIL world tick failures=" & show failures & ": " & e)
+            0
+          end
+        is Ok (n) -> if n < 0 then act
+            slg-line owner.server.game.log slg-world slg-error "STOP serving: the world owner latched; the host supervisor restarts the guest"
+            let stopped = __record-set owner "fault" True in 0
+          end
+          else if owner.tick-failures == 0 then act 1 end
+          else let failures = owner.tick-failures
+          in let cleared = __record-set owner "tick-failures" 0 in act
+            slg-line owner.server.game.log slg-world slg-info ("WORLD tick recovered after " & show failures & " failures")
+            1
+          end
+    end
+  gl-close : (GameShard, GameInput -> [e] Result Integer Text), GameLinks, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gl-close (disconnect) (owner) (i) = let slot = list-at owner.server.links.slots i
+    in let p = list-at owner.server.protocols i
+    in if p.closing == 0 then act 0 end
+    else act
+      notified <- if p.disconnected then act 0 end
+        else if slot.port == 2594 then let marked = __record-set p "disconnected" True in act 0 end else
+        let old = owner.server.game.active
+        in let lent = gl-lend owner i
+        in let active = __record-set owner.server.game "active" (if p.game.session.phase == 2 then p.game.session.serial else 0)
+        in act
+          ended <- gn-finish-disconnect disconnect owner.server.game p.game
+          let restored = __record-set owner.server.game "active" old
+          in let marked = __record-set p "disconnected" True
+          in let fault = if ended /= 0 then __record-set owner "fault" True else owner in ended
+        end
+      aged <- gl-time-before-rx owner 0 hpet-ticks
+      received <- ss-receive owner.server 16 0
+      timed <- ni-advance slot.transport (list-at owner.peers i).clock hpet-ticks __heap-save
+      let saved = __record-set slot "transport" timed
+      in if notified /= 0 then -1 else when sl-close owner.server.links i (p.closing == 2)
+        is Err (e) -> act
+          slg-line owner.server.game.log slg-network slg-error ("FAIL game link close " & e)
+          0 - 1
+        end
+        is Ok (_) -> 0
+    end
+  gl-pass : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text), GameLinks, Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
+  gl-pass (handler) (pulse) (disconnect) (owner) (i) (now) = if i == list-length owner.server.protocols then 0
+    else let slot = list-at owner.server.links.slots i
+    in let p = list-at owner.server.protocols i
+    in if not slot.occupied then gl-pass handler pulse disconnect owner (i + 1) now
+    else let reset = if p.epoch /= slot.epoch then gl-reset owner i now else 0
+    in let failed = if slot.failed | net-io-conn-closed slot.transport | get-ticks - p.activity > 30000 then __record-set p "closing" 2 else p
+    in act
+      consumed <- if p.closing /= 0 | slot.tx.offset /= slot.tx.used | slot.transport.recv-len == 0 then act 0 end
+        else if slot.port == 2593 then gl-input handler owner i 0
+        else if p.seen == slot.transport.recv-len & not (net-io-peer-finished slot.transport) then act 0 end
+        else act
+          served <- ss-http-input owner.web owner.server i
+          let closed = if served > 0 then __record-set p "closing" 1 else p in served
+        end
+      eof <- if p.closing == 0 & slot.transport.recv-len == 0 & net-io-peer-finished slot.transport then
+        if p.game.used > 0 | (p.game.wire.seed-count > 0 & p.game.wire.seed-count < 4) then ss-refuse p "incomplete packet at EOF"
+        else let closed = __record-set p "closing" 1 in act 0 end
+        else act 0 end
+      pulsed <- if p.closing == 0 & slot.tx.offset == slot.tx.used then gl-pulse pulse owner i now else act 0 end
+      aged-send <- gl-time-before-rx owner 0 hpet-ticks
+      received-send <- ss-receive owner.server 16 0
+      timed-send <- ni-advance slot.transport (list-at owner.peers i).clock hpet-ticks __heap-save
+      let saved-send = __record-set slot "transport" timed-send
+      in let sent = if p.closing == 2 | slot.failed | slot.tx.offset == slot.tx.used then 0 else when sl-send owner.server.links i
+        is Err (_) -> let failed = __record-set p "closing" 2 in 0
+        is Ok (n) -> n
+      in act
+        flushed <- sl-flush owner.server.links 0
+        closed <- gl-close disconnect owner i
+        if closed < 0 then -1 else act
+          flushed-close <- sl-flush owner.server.links 0
+          let released = if net-io-conn-closed slot.transport & net-outbox-count slot.transport.session == 0 & p.disconnected then sl-release owner.server.links i else Ok i
+          in act
+            rest <- gl-pass handler pulse disconnect owner (i + 1) now
+            if rest < 0 then rest else consumed + pulsed + sent + rest
+          end
+        end
+      end
+    end
+  gl-time-before-rx : GameLinks, Integer, Integer -> [Network.Write] Integer
+  gl-time-before-rx (owner) (i) (now) = if i >= list-length owner.server.links.slots then 0
+    else let slot = list-at owner.server.links.slots i
+    in if not slot.occupied then gl-time-before-rx owner (i + 1) now
+    else let p = list-at owner.server.protocols i
+    in let reset = if p.epoch /= slot.epoch then gl-reset owner i now else 0
+    in act
+      timed <- ni-stamp slot.transport (list-at owner.peers i).clock now
+      let saved = __record-set slot "transport" timed
+      in gl-time-before-rx owner (i + 1) now
+    end
+
+  gl-loop : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text), (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks -> [Console, Network.Read, Network.Write, e] Integer
+  gl-loop (handler) (pulse) (disconnect) (world) (owner) = if owner.fault then act -1 end else act
+    round <- gl-round handler pulse disconnect world owner
+    if round < 0 then -1 else gl-loop handler pulse disconnect world owner
+  end
+ A self-call inside a `when` arm is not a tail call and leaked one frame per round (a 64 MiB stack
+ exhausted after 627 s, play-head11, 2026-10-06); the recursion stays in an `if` branch.
+  gl-round : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text), (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks -> [Console, Network.Read, Network.Write, e] Integer
+  gl-round (handler) (pulse) (disconnect) (world) (owner) = act
+    aged <- gl-time-before-rx owner 0 hpet-ticks
+    received <- ss-receive owner.server 16 0
+    worked <- gl-pass handler pulse disconnect owner 0 hpet-ticks
+    ticked <- gl-tick world owner hpet-ticks
+    flushed <- sl-flush owner.server.links 0
+    if worked < 0 | owner.fault then -1
+    else when (if __heap-save - owner.server.links.mark > 1048576 then sl-compact owner.server.links else Ok 0)
+      is Err (e) -> act
+        slg-line owner.server.game.log slg-network slg-error ("FAIL game links compaction " & e)
+        0 - 1
+      end
+      is Ok (_) -> let parked = if received == 0 & worked == 0 & ticked == 0 then cpu-park else 0 in 1
+  end
+  gl-serve : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
+    (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
+    (GameShard, GameInput -> [e] Result Integer Text), (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks -> [Console, Network.Read, Network.Write, e] Integer
+  gl-serve (handler) (pulse) (disconnect) (world) (owner) = let saved = __record-set owner.server.links "mark" __heap-save
+    in act
+      slg-line owner.server.game.log slg-network slg-info "LISTEN game-links"
+      gl-loop handler pulse disconnect world owner
+    end

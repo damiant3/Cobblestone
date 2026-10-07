@@ -1,0 +1,148 @@
+Chapter: TownLive
+  cites Uoaix chapter TownLiveState
+  cites Uoaix chapter GameClock
+
+ Saved-path stepping and first-contact speech shape follow Source-X
+ CCharNPCAct.cpp NPC_WalkToPoint/NPC_OnHear, Apache-2.0; Sphere-LICENSE.txt.
+ Schedules, movement and speech cooldowns use game time supplied by the owner.
+
+  tl-game-seconds : GameClock, Integer -> Integer
+  tl-game-seconds (clock) (hour) = if not (gc-rate-valid clock.day-seconds) | hour < 0 | hour > 8760000
+    | clock.phase < 0 | clock.phase >= clock.day-seconds * 100 | clock.due < 0 then -1
+    else hour * 3600 + (if clock.due > 0 then 0 else clock.phase * 36 / clock.day-seconds)
+  tl-action : TfPerson, Integer -> Integer
+  tl-action (p) (hour) = let planned = list-at p.schedule (int-mod hour 24)
+    in if p.illness > 0 & planned /= 2 then 0 else planned
+  tl-next-change : TfPerson, Integer, Integer, Integer -> Integer
+  tl-next-change (p) (hour) (action) (offset) =
+    if offset == 24 | tl-action p (hour + offset) /= action then (hour + offset) * 3600
+    else tl-next-change p hour action (offset + 1)
+  tl-goal : TfPerson, TfTown, Integer -> Integer
+  tl-goal (p) (town) (action) = let place = tf-place p town action
+    in if place == town.tavern then 2 else if place == p.workplace | place == town.market then 1 else 0
+  tl-target : TownLive, TlResident -> BbSpot
+  tl-target (t) (r) = if r.via-home == 1 then t.entrance else if r.goal == 0 then r.home else if r.goal == 1 then r.work else r.tavern
+  tl-at : WorldObject, BbSpot -> Boolean
+  tl-at (m) (p) = m.x == p.x & m.y == p.y & walk-abs (m.z - p.z) <= 2
+  tl-reset-path : TlResident -> Integer
+  tl-reset-path (r) = rte-drop r.walk
+  tl-held : TlResident, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  tl-held (r) (at-time) (packets) = let retry = __record-set r "next-step" (at-time + tl-retry-seconds)
+    in let count = __record-set r "blocked" (r.blocked + 1)
+    in Ok packets
+  tl-step-resident : TownLive, TlResident, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
+  tl-step-resident (t) (r) (map) (doors) =
+    let p = tf-person t.people r.person
+    in let at-time = r.next-step
+    in if p.alive == 0 then let stopped = __record-set r "next-step" tl-max-seconds in Ok []
+    else when world-get t.vendors.game.world p.world-serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> if mobile.health <= 0 then
+        let death = tf-death t.people p
+        in let stopped = __record-set r "next-step" tl-max-seconds
+        in Ok []
+      else let controlled = r.control.expires > at-time
+      in let action = if controlled then r.control.action else tl-action p (at-time / 3600)
+      in let town = tf-town t.people p.town
+      in let goal = if controlled then r.control.goal else tl-goal p town action
+      in let activity = __record-set p "activity" action
+      in let place = __record-set p "place" (if controlled then r.control.place else tf-place p town action)
+      in let changed = if r.goal == goal then 0 else
+        let via = __record-set r "via-home" (if goal == 0 | r.goal == 0 then 1 else 0)
+        in let selected = __record-set r "goal" goal
+        in tl-reset-path r
+      in let target = if controlled & r.via-home == 0 then r.control.target else tl-target t r
+      in if tl-at mobile target then
+        if r.via-home == 1 then let arrived = __record-set r "via-home" 0
+          in let cleared = tl-reset-path r in Ok []
+        else let rest = __record-set r "next-step" (if controlled then r.control.expires else tl-next-change p (at-time / 3600) action 1)
+          in let cleared = tl-reset-path r in Ok []
+      else let moves = r.walk.moves
+      in when rte-toward t.nav t.vendors.game map doors r.walk mobile target.x target.y target.z
+        is Err (e) -> Err e
+        is Ok (packets) -> if r.walk.moves == moves then tl-held r at-time packets
+          else let face = __record-set r "direction" r.walk.facing
+          in let next = __record-set r "next-step" (at-time + tl-move-seconds) in Ok packets
+  tl-ready : TownLive, Integer, Integer, Integer, Integer -> Integer
+  tl-ready (t) (now) (offset) (best) (due) = if offset == t.count then best
+    else let i = int-mod (t.cursor + offset) t.count
+    in let r = list-at t.residents i
+    in let valid = r.next-step <= now & r.next-step < tl-max-seconds
+    in tl-ready t now (offset + 1) (if valid & (best < 0 | r.next-step < due) then i else best) (if valid & (best < 0 | r.next-step < due) then r.next-step else due)
+  tl-advance-steps : TownLive, WalkMap, Maybe WdState, Integer, Integer, List (List Integer) -> Result GameReply Text
+  tl-advance-steps (t) (map) (doors) (budget) (done) (packets) =
+    let ready = if done == budget then -1 else tl-ready t t.now 0 -1 tl-max-seconds
+    in if ready < 0 then Ok (gs-reply packets ("townsfolk steps=" & show done))
+    else let r = list-at t.residents ready
+    in when tl-step-resident t r map doors
+      is Err (e) -> Err e
+      is Ok (next) -> let cursor = __record-set t "cursor" (int-mod (ready + 1) t.count)
+        in let touched = world-touch t.vendors.game.world
+        in tl-advance-steps t map doors budget (done + 1) (packets & next)
+  tl-advance : TownLive, WalkMap, Maybe WdState, Integer, Integer -> Result GameReply Text
+  tl-advance (t) (map) (doors) (seconds) (budget) =
+    if seconds < 0 | seconds > tl-max-seconds - 86400 | budget < 1 | budget > 64
+      | seconds / 3600 < t.people.hour | not (world-indexed t.vendors.game.world)
+      | t.count < 1 | t.count > 3 then Err "Townsfolk clock or movement budget"
+    else let now = __record-set t "now" (max t.now seconds)
+    in let hour = if t.people.hour == seconds / 3600 then 0 else
+      let changed = __record-set t.people "hour" (seconds / 3600)
+      in world-touch t.vendors.game.world
+    in tl-advance-steps t map doors budget 0 []
+
+  tl-person-for : TownLive, Integer, Integer -> Integer
+  tl-person-for (t) (serial) (i) = if i == t.count then 0
+    else let p = tf-person t.people (list-at t.residents i).person
+    in if p.world-serial == serial then p.serial else tl-person-for t serial (i + 1)
+  tl-handler : TownLive, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+  tl-handler (t) (game) (input) (map) (port) (packet) =
+    if list-length packet < 1 | list-at packet 0 /= 9 then Ok None
+    else if list-length packet /= 5 | not (gs-byte-range packet 0) then Err "Townsfolk name packet extent"
+    else let person = tl-person-for t (gp-u32 packet 1) 0
+    in if person == 0 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial
+      | game.world.buffer /= t.vendors.game.world.buffer then Err "Townsfolk name authority"
+    else when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (viewer) -> when world-get game.world (tf-person t.people person).world-serial
+        is Err (e) -> Err e
+        is Ok (npc) -> if walk-abs (viewer.x - npc.x) > 18 | walk-abs (viewer.y - npc.y) > 18 then Ok None
+          else let p = tf-person t.people person
+          in Ok (Just (gs-reply (gvp-hello npc p.name) "townsfolk name"))
+  tl-greet : TownLive, TlViewer, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
+  tl-greet (t) (view) (viewer) (slot) (i) (packets) = if i == t.count then packets
+    else let r = list-at t.residents i
+    in let p = tf-person t.people r.person
+    in when world-get t.vendors.game.world p.world-serial
+      is Err (_) -> tl-greet t view viewer slot (i + 1) packets
+      is Ok (npc) ->
+        let mask = bit-shl 1 i
+        in let was = bit-and view.inside mask /= 0
+        in let near = p.alive == 1 & npc.health > 0 & viewer.health > 0
+          & walk-abs (viewer.x - npc.x) <= 3 & walk-abs (viewer.y - npc.y) <= 3 & walk-abs (viewer.z - npc.z) <= 16
+        in let changed = if was == near then 0 else let updated = __record-set view "inside" (bit-xor view.inside mask) in 0
+        in let persona = list-at t.mind.personas (p.serial - 1)
+        in let same = list-at r.last-speaker slot == viewer.serial
+        in if not near | was | (same & t.now < list-at r.last-speech slot + tl-speech-seconds)
+          | t.mind.audit-count >= 1024 | persona.request >= 1000000000
+          | (persona.call-hour == t.people.hour & persona.calls >= persona.call-limit) then tl-greet t view viewer slot (i + 1) packets
+        else let reply = tm-stub t.mind t.people p.serial 1 (persona.request + 1) ""
+        in let owner = list-set-at r.last-speaker slot viewer.serial
+        in let said = list-set-at r.last-speech slot t.now
+        in let touched = world-touch t.vendors.game.world
+        in tl-greet t view viewer slot (i + 1) (list-push packets (gvp-speech npc p.name reply.speech))
+  tl-pulse : TownLive, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
+  tl-pulse (t) (game) (input) (map) (port) (tick) =
+    if input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else if game.active /= input.session.serial | game.world.buffer /= t.vendors.game.world.buffer then Err "Townsfolk speech authority"
+    else let slot = gv-slot game input.session.serial 0
+    in if slot < 0 then Err "Townsfolk viewer binding"
+    else let view = list-at t.viewers (tl-viewer-at t.viewers input.connection 0 0)
+    in let reset = if view.serial == input.session.serial & view.connection == input.connection then 0 else
+      let serial = __record-set view "serial" input.session.serial
+      in let connection = __record-set view "connection" input.connection
+      in let inside = __record-set view "inside" 0 in 0
+    in when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (viewer) -> let packets = tl-greet t view viewer slot 0 []
+        in if list-length packets == 0 then Ok None else Ok (Just (gs-reply packets "townsfolk canned greeting; model unavailable"))

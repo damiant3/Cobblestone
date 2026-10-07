@@ -1,0 +1,126 @@
+Chapter: TownLiveCodec
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter EconomyCurrencyValid
+
+  tlc-body-at : Integer = 88
+  tlc-routes-at : Integer = tlc-body-at + ts-body-bytes
+  tlc-route-bytes : Integer = 576
+  tlc-bytes : Integer = tlc-routes-at + 3 * tlc-route-bytes
+  tlc-spot : WalkMap, BbSpot -> Boolean
+  tlc-spot (map) (p) = walk-cell map p.x p.y >= 0 & p.z >= -128 & p.z <= 127
+  tlc-clothes-distinct : TownLive, Integer, Integer -> Boolean
+  tlc-clothes-distinct (t) (i) (j) = if i == 9 then True
+    else if j == i then tlc-clothes-distinct t (i + 1) 0
+    else let one = list-at (list-at t.residents (i / 3)).clothes (int-mod i 3)
+    in let two = list-at (list-at t.residents (j / 3)).clothes (int-mod j 3)
+    in one.serial /= two.serial & tlc-clothes-distinct t i (j + 1)
+  tlc-cloth-valid : TownLive, TlResident, Integer, Integer, Integer, Integer -> Boolean
+  tlc-cloth-valid (t) (r) (i) (quality) (wear) (basis) = if i == 3 then
+    let p = ep-actor t.vendors.currency.world r.actor
+    in ep-at p.stock 46 >= 3 & ep-at p.quality 46 >= quality & ep-at p.wear 46 >= wear & ep-at p.cost 46 >= basis
+    else let c = list-at r.clothes i
+    in if not (ev-range c.quality 1000) | not (ev-range c.wear 32) | not (ev-range c.basis ep-limit) then False
+    else when world-get t.vendors.game.world c.serial
+      is Err (_) -> False
+      is Ok (obj) -> obj.kind == 2 & obj.amount == 1
+        & gsi-known t.items c.serial & (gsi-meta t.items c.serial).layer == (if i == 0 then 5 else if i == 1 then 4 else 3)
+        & not (gsi-meta t.items c.serial).movable
+        & tlc-cloth-valid t r (i + 1) (quality + c.quality) (wear + c.wear) (basis + c.basis)
+  tlc-speech-valid : TlResident, Integer -> Boolean
+  tlc-speech-valid (r) (i) = if i == 5 then True
+    else ev-range (list-at r.last-speaker i) 1073741823
+      & list-at r.last-speech i >= -600 & list-at r.last-speech i <= tl-max-seconds
+      & tlc-speech-valid r (i + 1)
+  tlc-residents-valid : TownLive, WalkMap, Integer -> Boolean
+  tlc-residents-valid (t) (map) (i) = if i == t.count then True
+    else let r = list-at t.residents i
+    in if r.person /= i + 1 | not (ep-valid-actor t.vendors.currency.world r.actor)
+      | list-length r.clothes /= 3 | list-length r.last-speaker /= 5 | list-length r.last-speech /= 5
+      | not (ev-range r.next-step tl-max-seconds) | r.goal < -1 | r.goal > 2 | not (ev-range r.via-home 1)
+      | not (ev-range r.direction 7)
+      | not (ev-range r.blocked 1000000000) then False
+    else let p = tf-person t.people r.person
+    in let purse = em-purse t.vendors.currency.world.money (ep-actor t.vendors.currency.world r.actor).purse
+    in p.home == 1001 & p.workplace == 100 & p.town == 1
+      & purse.kind == 2 & purse.owner == 2000 + i
+      & gv-slot t.vendors.game p.world-serial 0 < 0 & gv-vendor t.vendors p.world-serial 0 < 0
+      & tlc-spot map r.home & tlc-spot map r.work & tlc-spot map r.tavern
+      & tlc-speech-valid r 0 & tlc-cloth-valid t r 0 0 0 0
+      & (list-at t.mind.personas (r.person - 1)).gift-limit == 0 & tlc-residents-valid t map (i + 1)
+  tlc-valid : TownLive, WalkMap -> Boolean
+  tlc-valid (t) (map) = if t.count /= 3 | t.people.used /= 3 | t.people.town-count /= 1
+    | t.home-capacity < 3 | t.home-capacity > 128 | list-length t.residents /= 3 | list-length t.viewers /= tl-viewer-limit
+    | not (ev-range t.cursor 2) | not (world-indexed t.vendors.game.world) | t.items.world.buffer /= t.vendors.game.world.buffer then False
+    else tlc-spot map t.entrance
+      & ts-state-valid (WorldCheckpoint { world = t.vendors.game.world, tick = 0, sequence = 0 }) t.people t.mind
+      & euv-valid t.vendors.currency & tlc-residents-valid t map 0 & tlc-clothes-distinct t 0 0
+  tlc-spot-fields : Integer, Integer, BbSpot, Boolean -> Integer
+  tlc-spot-fields (buf) (at) (p) (read) = if read then
+    let a = __record-set p "x" (peek-qword buf at)
+    in let b = __record-set p "y" (peek-qword buf (at + 8))
+    in let c = __record-set p "z" (peek-qword buf (at + 16)) in 0
+    else let a = poke-qword buf at p.x
+    in let b = poke-qword buf (at + 8) p.y
+    in let c = poke-qword buf (at + 16) p.z in 0
+  tlc-clothes : Integer, Integer, TlResident, Boolean, Integer -> Integer
+  tlc-clothes (buf) (at) (r) (read) (i) = if i == 3 then 0
+    else let c = list-at r.clothes i
+    in let offset = at + 144 + i * 32
+    in let c0 = if read then let loaded = __record-set c "serial" (peek-qword buf (offset + 0)) in 0 else poke-qword buf (offset + 0) c.serial
+    in let c1 = if read then let loaded = __record-set c "quality" (peek-qword buf (offset + 8)) in 0 else poke-qword buf (offset + 8) c.quality
+    in let c2 = if read then let loaded = __record-set c "wear" (peek-qword buf (offset + 16)) in 0 else poke-qword buf (offset + 16) c.wear
+    in let c3 = if read then let loaded = __record-set c "basis" (peek-qword buf (offset + 24)) in 0 else poke-qword buf (offset + 24) c.basis
+    in tlc-clothes buf at r read (i + 1)
+  tlc-routes : TownLive, Integer, Boolean, Integer -> Integer
+  tlc-routes (t) (buf) (read) (i) = if i == 3 then 0
+    else let r = list-at t.residents i
+    in let at = tlc-routes-at + i * tlc-route-bytes
+    in let f0 = if read then let loaded = __record-set r "person" (peek-qword buf (at + 0)) in 0 else poke-qword buf (at + 0) r.person
+    in let f8 = if read then let loaded = __record-set r "actor" (peek-qword buf (at + 8)) in 0 else poke-qword buf (at + 8) r.actor
+    in let f88 = if read then let loaded = __record-set r "next-step" (peek-qword buf (at + 88)) in 0 else poke-qword buf (at + 88) r.next-step
+    in let f96 = if read then let loaded = __record-set r "goal" (peek-qword buf (at + 96)) in 0 else poke-qword buf (at + 96) r.goal
+    in let f104 = if read then let loaded = __record-set r "via-home" (peek-qword buf (at + 104)) in 0 else poke-qword buf (at + 104) r.via-home
+    in let f112 = if read then let loaded = __record-set r "direction" (peek-qword buf (at + 112)) in 0 else poke-qword buf (at + 112) r.direction
+    in let rerouted = if read then rte-drop r.walk else 0
+    in let f136 = if read then let loaded = __record-set r "blocked" (peek-qword buf (at + 136)) in 0 else poke-qword buf (at + 136) r.blocked
+    in let home = tlc-spot-fields buf (at + 16) r.home read
+    in let work = tlc-spot-fields buf (at + 40) r.work read
+    in let tavern = tlc-spot-fields buf (at + 64) r.tavern read
+    in let clothes = tlc-clothes buf at r read 0
+    in let speakers = if read then ts-read-list buf (at + 240) r.last-speaker 0 else ts-write-list buf (at + 240) r.last-speaker 0
+    in let speech = if read then ts-read-list buf (at + 280) r.last-speech 0 else ts-write-list buf (at + 280) r.last-speech 0
+    in tlc-routes t buf read (i + 1)
+  tlc-encode : TownLive, WalkMap, Integer, Integer -> Result Integer Text
+  tlc-encode (t) (map) (buf) (capacity) = if capacity < tlc-bytes then Err "Live townsfolk destination too short"
+    else if not (tlc-valid t map) then Err "Live townsfolk state invalid"
+    else let cleared = wd-zero buf 0 tlc-bytes
+    in let a = poke-qword buf 0 #31434C54
+    in let b = poke-qword buf 8 1
+    in let c = poke-qword buf 16 tlc-bytes
+    in let d = poke-qword buf 24 t.count
+    in let e = poke-qword buf 32 t.home-capacity
+    in let f = poke-qword buf 40 t.cursor
+    in let entry = tlc-spot-fields buf 64 t.entrance False
+    in let body = ts-write-body buf tlc-body-at t.people t.mind
+    in let routes = tlc-routes t buf False 0
+    in let hash = poke-qword buf 48 (ws-hash buf tlc-bytes 0 2166136261)
+    in Ok tlc-bytes
+  tlc-decode : Integer, Integer, GvWorld, GsiState, WalkMap, Integer -> Result TownLive Text
+  tlc-decode (buf) (size) (v) (items) (map) (now) =
+    if size /= tlc-bytes | now < 0 | now > tl-max-seconds - 86400 then Err "Live townsfolk extent or clock"
+    else if peek-qword buf 0 /= #31434C54 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size
+      | peek-qword buf 24 /= 3 | peek-qword buf 32 < 3 | peek-qword buf 32 > 128
+      | not (ev-range (peek-qword buf 40) 2) | peek-qword buf 56 /= 0 then Err "Live townsfolk header"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "Live townsfolk checksum"
+    else if not (ts-towns-wire-valid buf (tlc-body-at + 40) 0 & ts-people-wire-valid buf (tlc-body-at + 1064) 0
+      & ts-personas-wire-valid buf (tlc-body-at + 109648) 0) then Err "Live townsfolk text"
+    else let body = ts-read-body buf tlc-body-at (WorldCheckpoint { world = v.game.world, tick = 0, sequence = 0 })
+    in let t = tl-bind v items map now (peek-qword buf 32) body.townsfolk body.mind
+    in let count = __record-set t "count" 3
+    in let cursor = __record-set t "cursor" (peek-qword buf 40)
+    in let entry = tlc-spot-fields buf 64 t.entrance True
+    in let routes = tlc-routes t buf True 0
+    in if t.people.hour > now / 3600 | not (tlc-valid t map) then Err "Live townsfolk bindings or schedule invalid"
+    else when tl-entrance-stand t map
+      is Err (e) -> Err e
+      is Ok (_) -> Ok t

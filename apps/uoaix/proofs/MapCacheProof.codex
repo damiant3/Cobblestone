@@ -1,0 +1,147 @@
+Chapter: MapCacheProof
+  cites Uoaix chapter MapCache
+  cites Kernel chapter Hpet
+  cites Uoaix chapter DecorationCodec
+  cites Uoaix chapter MiningTiles
+  cites Uoaix chapter WorldFlora
+
+  mcp-overlay : MapCacheState -> [Console, Device.Block] Integer
+  mcp-overlay (cache) = act
+    data <- wmc-decoration cache
+    when data
+      is Err (e) -> act
+        print-line-uni ("FAIL installed decoration " & e)
+        1
+      end
+      is Ok (installed) -> when wd-read installed.data installed.size cache.map cache.map.stride
+        is Err (e) -> act
+          print-line-uni ("FAIL installed overlay " & e)
+          1
+        end
+        is Ok (state) -> act
+          moved <- wmc-cover cache 1420 1698
+          when moved
+            is Err (e) -> act
+              print-line-uni ("FAIL overlay paging " & e)
+              1
+            end
+            is Ok (map) -> when wd-rebind state map map.stride
+              is Err (e) -> act
+                print-line-uni ("FAIL overlay rebind " & e)
+                1
+              end
+              is Ok (_) -> act
+                print-line-uni ("PASS installed decoration rebind count=" & show state.count)
+                0
+              end
+        end
+  end
+
+  mcp-flora-sent : WfState, Integer, Integer, Integer, Integer -> Integer
+  mcp-flora-sent (s) (x) (y) (total) (left) = if left == 0 then total
+    else let n = list-length (wf-view s 1 x y) in if n == 0 then total else mcp-flora-sent s x y (total + n) (left - 1)
+  mcp-flora : MapCacheState -> [Console, Device.Block] Integer
+  mcp-flora (cache) = act
+    started <- hpet-ticks
+    loaded <- wmc-flora cache
+    when loaded
+      is Err (e) -> act
+        print-line-uni ("FAIL installed flora " & e)
+        1
+      end
+      is Ok (installed) -> if installed.size == 0 then act
+          print-line-uni "FAIL installed flora: the cache holds no flora table"
+          1
+        end
+        else when wf-read installed.data installed.size
+          is Err (e) -> act
+            print-line-uni ("FAIL installed flora " & e)
+            1
+          end
+          is Ok (s) -> act
+            read <- hpet-ticks
+            print-line-uni ("PASS installed flora rows=" & show s.count & " load-us=" & show ((read - started) * 1000000 / max 1 hpet-ticks-per-second)
+              & " near-1420-1698=" & show (mcp-flora-sent s 1420 1698 0 1000))
+            0
+          end
+  end
+  mcp-tile : MapCacheState, Integer, Integer, Boolean -> [Console, Device.Block] Integer
+  mcp-tile (cache) (x) (y) (mountain) = act
+    paged <- wmc-cover cache x y
+    when paged
+      is Err (e) -> act
+        print-line-uni ("FAIL land tile page " & e)
+        1
+      end
+      is Ok (map) -> act
+        marked <- bit-and (peek-qword map.land (walk-cell map x y * 24 + 16)) mt-mountain-flag /= 0
+        print-line-uni ((if marked == mountain then "PASS " else "FAIL ") & "land at " & show x & "," & show y & (if marked then " is " else " is not ") & "marked mountain")
+        if marked == mountain then 0 else 1
+      end
+  end
+  mcp-hash : WalkMap, Integer, Integer -> Integer
+  mcp-hash (map) (i) (hash) = if i == map.width * map.height then hash
+    else let land = us-hash (map.land + i * 24) 24 0 hash
+    in let solids = map.solids + i * map.stride
+    in mcp-hash map (i + 1) (us-hash solids (8 + peek-qword solids 0 * 24) 0 land)
+  mcp-sample : WalkMap, Integer -> [Console] Integer
+  mcp-sample (map) (i) = if i == 20 then act
+    print-line-uni "map samples complete"
+    0
+  end else let x = 1408 + int-mod i 10
+    in let y = 1680 + i / 10
+    in when walk-ground map x y
+      is Err (e) -> act
+        print-line-uni ("FAIL sample " & e)
+        1
+      end
+      is Ok (z) -> act
+        print-line-uni ("LAND " & show x & " " & show y & " " & show z)
+        mcp-sample map (i + 1)
+      end
+  opening : [Console, Device.Block] Integer = let clock = hpet-start in act
+    start <- hpet-ticks
+    opened <- wmc-open UoIde
+    loaded <- when opened is Err (e) -> act Err e end is Ok (cache) -> wmc-cover cache 1420 1698
+    stop <- hpet-ticks
+    when loaded
+      is Err (e) -> act
+        print-line-uni ("FAIL cache " & e)
+        1
+      end
+      is Ok (page) -> when opened
+       is Err (e) -> act
+        print-line-uni ("FAIL cache " & e)
+        1
+       end
+       is Ok (cache) -> when walk-map-sized 1408 1680 64 48 cache.colliders
+        is Err (e) -> act
+          print-line-uni ("FAIL diagnostic map " & e)
+          1
+        end
+        is Ok (map) -> act
+        filled <- wmc-fill cache map 0
+        when filled is Err (e) -> print-line-uni ("FAIL decoded window " & e) is Ok (_) -> print-line-uni "PASS decoded comparison window"
+        print-line-uni ("MAPCACHE complete us=" & show ((stop - start) * 1000000 / max 1 hpet-ticks-per-second)
+          & " hash=" & show (mcp-hash map 0 2166136261))
+        sampled <- mcp-sample map 0
+        north <- wmc-cover cache 1420 1679
+        when north
+          is Err (e) -> print-line-uni ("FAIL north page " & e)
+          is Ok (map) -> when walk-ground map 1420 1679
+            is Err (e) -> print-line-uni ("FAIL old boundary " & e)
+            is Ok (z) -> print-line-uni ("PAGE 1420 1679 " & show z)
+        far <- wmc-cover cache 1000 1000
+        when far is Err (e) -> print-line-uni ("FAIL distant page " & e) is Ok (map) -> print-line-uni "PASS distant page"
+        edge <- wmc-cover cache 6140 4090
+        when edge is Err (e) -> print-line-uni ("FAIL edge page " & e) is Ok (map) -> print-line-uni "PASS map edge page"
+        refused <- wmc-cover cache 6144 4090
+        print-line-uni (if is-err refused then "PASS outside map refused" else "FAIL outside map admitted")
+        side <- mcp-tile cache 1404 1534 True
+        mine <- mcp-tile cache 1451 1528 True
+        smith <- mcp-tile cache 1418 1547 False
+        overlay <- mcp-overlay cache
+        flora <- mcp-flora cache
+        sampled + overlay + side + mine + smith + flora
+      end
+  end

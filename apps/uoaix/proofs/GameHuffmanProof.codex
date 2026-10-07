@@ -1,0 +1,41 @@
+Chapter: GameHuffmanProof
+  cites Uoaix chapter GameHuffman
+  cites Foreword chapter Result
+
+  ghp-hex : List Integer, Integer, List Text -> Text
+  ghp-hex (bytes) (i) (pieces) =
+    if i >= list-length bytes then text-concat-list pieces
+    else let n = list-at bytes i
+    in let digits = "0123456789ABCDEF"
+    in let pair = char-to-text (char-at digits (n / 16)) & char-to-text (char-at digits (bit-and n 15))
+    in ghp-hex bytes (i + 1) (list-push pieces pair)
+
+  ghp-case : Integer, Text, List Integer -> [Console] Nothing
+  ghp-case (table) (label) (input) = when gh-encode table input
+    is Err (e) -> print-line-uni ("FAIL " & label & " " & e)
+    is Ok (output) -> print-line-uni (label & " " & ghp-hex output 0 [])
+
+  ghp-singletons : Integer, Integer -> [Console] Nothing
+  ghp-singletons (table) (i) =
+    if i >= 256 then print-line-uni "singletons complete"
+    else let mark = __heap-save
+    in act
+      ghp-case table (show i) [i]
+      let restored = __heap-restore mark
+      in ghp-singletons table (i + 1)
+    end
+
+  ghp-pattern : Integer, Integer, List Integer -> List Integer
+  ghp-pattern (i) (stop) (acc) =
+    if i >= stop then acc
+    else ghp-pattern (i + 1) stop (list-push acc (bit-and (i * 73 + 19) 255))
+
+  opening : [Console] Nothing =
+    let table = gh-new 0
+    in act
+      ghp-case table "empty" []
+      ghp-singletons table 0
+      ghp-case table "pattern" (ghp-pattern 0 4096 (__list-with-capacity 4096))
+      print-line-uni ("reject non-byte " & show (is-err (gh-encode table [256])))
+      print-line-uni ("reject budget " & show (is-err (gh-encode table (ghp-pattern 0 4097 (__list-with-capacity 4097)))))
+    end

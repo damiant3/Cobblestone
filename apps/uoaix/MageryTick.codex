@@ -1,0 +1,159 @@
+Chapter: MageryTick
+  cites Uoaix chapter GameMagery
+
+  mgt-modified : MgActor, Integer -> Boolean
+  mgt-modified (actor) (i) = if i == 6 then False
+    else if peek-qword actor.mods (i * 16) /= 0 then True else mgt-modified actor (i + 1)
+  mgt-needed : MgActor -> Boolean
+  mgt-needed (actor) = actor.stage /= 0 | actor.mana < mgs-stat actor 2 | actor.night > 0
+    | actor.protected-until > 0 | actor.poison >= 0 | mgt-modified actor 0 | actor.incognito > 0
+  mgt-incognito : Magery, GameShard, GameInput, MgActor -> Result (List (List Integer)) Text
+  mgt-incognito (magic) (shard) (input) (actor) =
+    if actor.incognito == 0 | actor.incognito > magic.tick | actor.serial /= input.session.serial then Ok []
+    else when mgi-end magic actor True
+      is Err (e) -> Err e
+      is Ok (_) -> when world-get shard.world actor.serial
+        is Err (e) -> Err e
+        is Ok (now) -> Ok ([mgp-appearance magic input now] & mga-worn shard actor.serial 11 & mga-worn shard actor.serial 16)
+  mgt-poison : Magery, GameShard, GameInput, MgActor, WorldObject -> Result (List (List Integer)) Text
+  mgt-poison (magic) (shard) (input) (actor) (mobile) = if actor.poison < 0 | magic.tick < actor.poison-due then Ok []
+    else if actor.poison-left == 0 then let a = __record-set actor "poison" -1
+      in let touched = mgs-touch magic in Ok [mgp-appearance magic input mobile]
+    else let health = peek-qword shard.world.buffer (88 + world-slot shard.world actor.serial * 80)
+    in let damage = mge-poison-damage magic actor health
+    in let a = __record-set actor "poison-left" (actor.poison-left - 1)
+    in let b = __record-set actor "poison-due" (magic.tick + mgd-ticks (if actor.poison == 3 then 4000 else 3000))
+    in let touched = mgs-touch magic
+    in mge-harm magic shard input actor.poisoner actor.serial damage cb-cause-poison
+  mgt-cast : Magery, GameShard, GameInput, MgActor, WorldObject -> [Device.Block] Result (List (List Integer)) Text
+  mgt-cast (magic) (shard) (input) (actor) (mobile) =
+    if actor.stage == 0 then act Ok [] end
+    else if actor.serial /= input.session.serial | actor.connection /= input.connection then act Ok [] end
+    else if actor.stage == 2 then act
+      Ok (if magic.tick > actor.due then mge-fizzle magic shard actor else [])
+    end
+    else let slot = cb-slot shard actor.serial 0
+    in let holding = if slot < 0 then 0 else (list-at magic.items.actors slot).holding
+    in if mobile.x /= actor.x | mobile.y /= actor.y | mobile.z /= actor.z | mobile.health < actor.health
+      | holding /= 0 | not (mgs-equipment magic actor 1 False) then act Ok (mge-fizzle magic shard actor) end
+    else if magic.tick < actor.due then act Ok [] end
+    else let recovery = __record-set actor "recovery" (magic.tick + mgd-ticks 750)
+    in if mgd-self actor.spell then act
+      finished <- mg-complete magic shard input actor mobile (MgAim { object = mobile, point = mobile, door = -1 })
+      when finished is Err (e) -> Err e is Ok (reply) -> Ok reply.packets
+    end
+    else if magic.next-target > 65535 then let cancelled = mgs-reset-cast actor
+      in act Ok [sip-message mobile.serial mobile.graphic 6 "Spell target contexts are exhausted."] end
+    else let cursor = #4D470000 + magic.next-target
+    in let a = __record-set magic "next-target" (magic.next-target + 1)
+    in let b = __record-set actor "cursor" cursor
+    in let c = __record-set actor "stage" 2
+    in let d = __record-set actor "due" (magic.tick + mgd-ticks 30000)
+    in let packet = mgp-target cursor (mgd-ground actor.spell)
+    in let flags = list-set-at packet 6 (if mgd-harmful actor.spell then 1 else if mgd-beneficial actor.spell then 2 else 0)
+    in act Ok [packet] end
+  mgt-one : Magery, GameShard, GameInput, MgActor -> [Device.Block] Result (List (List Integer)) Text
+  mgt-one (magic) (shard) (input) (actor) = when world-get shard.world actor.serial
+    is Err (_) -> let removed = mgs-untrack magic actor in act Ok [] end
+    is Ok (mobile) -> if mobile.health == 0 then let cleared = mge-clear magic actor in act Ok [] end
+      else let modified = mge-expire-mods magic actor 0
+      in let synced = if modified then mge-sync magic actor else 0
+      in let night = actor.night > 0 & actor.night <= magic.tick
+      in let night-off = if not night then 0 else let a = __record-set actor "night" 0
+        in let b = __record-set actor "light" 0 in mgs-touch magic
+      in let protection = if actor.protected-until == 0 | actor.protected-until > magic.tick then 0
+        else let a = __record-set actor "protected-until" 0
+        in let b = __record-set actor "protection" 0 in mgs-touch magic
+      in let regen = actor.mana < mgs-stat actor 2 & actor.regen <= magic.tick
+      in let restored = if not regen then 0 else let a = __record-set actor "mana" (actor.mana + 1)
+        in let b = __record-set actor "regen" (if actor.mana == mgs-stat actor 2 then 0 else magic.tick + mgr-regen-delay shard actor)
+        in mgs-touch magic
+      in let status = if modified then mge-stats magic shard input actor else Ok []
+      in when status
+        is Err (e) -> act Err e end
+        is Ok (stats) -> when mgt-incognito magic shard input actor
+        is Err (e) -> act Err e end
+        is Ok (disguise) -> let packets = stats & disguise
+        in when mgt-poison magic shard input actor mobile
+          is Err (e) -> act Err e end
+          is Ok (poison) -> when world-get shard.world actor.serial
+            is Err (_) -> act Ok (packets & poison) end
+            is Ok (current) -> if current.health == 0 then act Ok (packets & poison) end
+              else act
+                casting <- mgt-cast magic shard input actor current
+                when casting
+                  is Err (e) -> Err e
+                  is Ok (cast) -> let final = packets & poison & cast
+                    in let with-mana = if regen & actor.serial == input.session.serial then list-push final (mgp-mana actor) else final
+                    in let with-light = if night & actor.serial == input.session.serial then list-push with-mana (mgp-light actor) else with-mana
+                    in let removed = if mgt-needed actor then 0 else mgs-untrack magic actor
+                    in Ok with-light
+              end
+  mgt-snapshot : Magery, Integer, List Integer -> List Integer
+  mgt-snapshot (magic) (i) (out) = if i == magic.count then out
+    else mgt-snapshot magic (i + 1) (list-push out (peek-qword magic.active (i * 8)))
+  mgt-actors : Magery, GameShard, GameInput, List Integer, Integer, List (List Integer) -> [Device.Block] Result (List (List Integer)) Text
+  mgt-actors (magic) (shard) (input) (serials) (i) (out) = if i == list-length serials then act Ok out end
+    else let slot = list-at serials i
+    in if (list-at magic.actors slot).position < 0 then mgt-actors magic shard input serials (i + 1) out
+    else act
+      visited <- __record-set magic "visits" (magic.visits + 1)
+      ticked <- mgt-one magic shard input (list-at magic.actors slot)
+      when ticked
+        is Err (e) -> Err e
+        is Ok (packets) -> let rearmed = mgs-arm magic (list-at magic.actors slot)
+          in mgt-actors magic shard input serials (i + 1) (out & packets)
+    end
+  mgt-due : Magery, Integer, List Integer -> List Integer
+  mgt-due (magic) (i) (out) = if i == magic.due-count then out
+    else mgt-due magic (i + 1) (list-push out (peek-qword magic.due (i * 8)))
+  mgt-unarmed : Magery, Integer, List Integer -> List Integer
+  mgt-unarmed (magic) (i) (out) = if i == magic.count then out
+    else let slot = peek-qword magic.active (i * 8)
+    in mgt-unarmed magic (i + 1) (if (list-at magic.actors slot).armed == 0 then list-push out slot else out)
+ With a wheel, a pulse visits the actors whose entries fired, the pulsing player's own actor (casting
+ fizzles on movement and death clears effects at once, as the scan did), and unarmed actors after a full pool.
+  mgt-has : List Integer, Integer, Integer -> Boolean
+  mgt-has (xs) (x) (i) = if i == list-length xs then False else if list-at xs i == x then True else mgt-has xs x (i + 1)
+  mgt-visits : Magery, GameShard, GameInput -> List Integer
+  mgt-visits (magic) (shard) (input) = let due = mgt-due magic 0 (__list-with-capacity (magic.due-count + 1))
+    in let drained = __record-set magic "due-count" 0
+    in let own = world-slot shard.world input.session.serial
+    in let mine = if own >= 0 & (list-at magic.actors own).position >= 0 & not (mgt-has due own 0) then list-push due own else due
+    in if magic.unarmed == 0 then mine
+    else let reset = __record-set magic "unarmed" 0 in mine & mgt-unarmed magic 0 []
+  mgt-walls : Magery, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mgt-walls (magic) (i) (out) = if i == 32 then
+      if list-length out == 0 then Ok out else when mga-refresh magic
+        is Err (e) -> Err e
+        is Ok (_) -> Ok out
+    else let wall = list-at magic.walls i
+    in if wall.serial == 0 | wall.until > magic.tick then mgt-walls magic (i + 1) out
+    else let serial = wall.serial
+    in when (if world-slot magic.items.world serial < 0 then Ok 0 else world-delete magic.items.world serial)
+      is Err (e) -> Err e
+      is Ok (_) -> let a = __record-set wall "serial" 0
+        in let b = __record-set wall "until" 0
+        in let touched = mgs-touch magic
+        in mgt-walls magic (i + 1) (list-push out (sip-remove serial))
+  mg-pulse : Magery, GameShard, GameInput, WalkMap, Integer, Integer -> [Device.Block] Result (Maybe GameReply) Text
+  mg-pulse (magic) (shard) (input) (map) (port) (now) = if input.mode /= 2 | input.session.phase /= 2 then act Ok None end
+    else if now < magic.tick | shard.active /= input.session.serial | shard.world.buffer /= magic.items.world.buffer then act Err "magery pulse binding" end
+    else let tick = __record-set magic "tick" now
+    in act
+      actors <- mgt-actors magic shard input (when magic.wheel is None -> mgt-snapshot magic 0 (__list-with-capacity magic.count) is Just (_) -> mgt-visits magic shard input) 0 []
+      when actors
+        is Err (e) -> Err e
+        is Ok (packets) -> when mgt-walls magic 0 []
+          is Err (e) -> Err e
+          is Ok (walls) -> if list-length packets == 0 & list-length walls == 0 then Ok None
+            else Ok (Just (mgp-reply magic (gs-reply (packets & walls) "magery:pulse")))
+    end
+  mg-entry : Magery, GameShard, GameInput, GameReply -> Result GameReply Text
+  mg-entry (magic) (shard) (input) (reply) = when mg-session magic shard input
+    is Err (e) -> Err e
+    is Ok (actor) -> Ok (mgp-reply magic (GameReply { packets = reply.packets & [mgp-mana actor,mgp-light actor], close = reply.close, note = reply.note }))
+  mg-disconnect : Magery, GameShard, GameInput -> Integer
+  mg-disconnect (magic) (shard) (input) = let slot = world-slot shard.world input.session.serial
+    in if slot < 0 then 0 else let actor = list-at magic.actors slot
+    in if actor.serial /= input.session.serial | actor.connection /= input.connection then 0 else mgs-reset-cast actor

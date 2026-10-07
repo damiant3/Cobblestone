@@ -1,0 +1,202 @@
+Chapter: WorldIndex
+
+ Runtime-only side arrays use slot+1 links (zero is absent). The direct
+ 768x512 block directory selects a recycled64-tile page. Page storage is
+ reserved at construction, so receive-arena restoration cannot free it.
+
+  wi-row : Integer, Integer -> Integer
+  wi-row (index) (slot) = index + 128 + slot * 72
+  wi-directory : Integer, Integer -> Integer
+  wi-directory (index) (capacity) = index + 128 + capacity * 72
+  wi-page : Integer, Integer, Integer -> Integer
+  wi-page (index) (capacity) (tag) = wi-directory index capacity + 1572864 + (tag - 1) * 304
+  wi-bytes : Integer -> Integer
+  wi-bytes (capacity) = 128 + 1572864 + capacity * 376
+  wi-zero : Integer, Integer, Integer -> Integer
+  wi-zero (buf) (size) (i) = if i >= size then 0 else let cleared = poke-qword buf i 0 in wi-zero buf size (i + 8)
+  wi-free-pages : Integer, Integer, Integer -> Integer
+  wi-free-pages (index) (capacity) (i) = if i == capacity then 0
+    else let next = poke-qword (wi-page index capacity (i + 1)) 32 (if i + 1 == capacity then 0 else i + 2)
+    in wi-free-pages index capacity (i + 1)
+  wi-new : Integer -> Integer
+  wi-new (capacity) = let index = alloc-bytes (wi-bytes capacity)
+    in let clear = wi-zero index (wi-bytes capacity) 0
+    in let pages = wi-free-pages index capacity 0
+    in let free = poke-qword index 8 1
+    in let cap = poke-qword index 24 capacity
+    in let ready = poke-qword index 32 1
+    in index
+  wi-slot : Integer, Integer, Integer -> Integer
+  wi-slot (buffer) (capacity) (serial) = if serial <= 0 | serial > 2147483647 then -1
+    else let low = bit-and serial 1073741823
+    in if low == 0 then -1 else let slot = int-mod (low - 1) capacity
+    in if peek-qword buffer (16 + slot * 80) == serial then slot else -1
+  wi-serial : Integer, Integer -> Integer
+  wi-serial (buffer) (tag) = if tag <= 0 then 0 else peek-qword buffer (16 + (tag - 1) * 80)
+  wi-layer : Integer, Integer, Integer -> Integer
+  wi-layer (buffer) (index) (slot) = let row = wi-row index slot
+    in if peek-qword row 48 == peek-qword buffer (16 + slot * 80) then peek-qword row 40 else 0
+  wi-child-layer : Integer, Integer, Integer, Integer, Integer -> Integer
+  wi-child-layer (buffer) (index) (tag) (layer) (best) = if tag == 0 then best
+    else let slot = tag - 1
+    in let next = peek-qword (wi-row index slot) 16
+    in wi-child-layer buffer index next layer (if wi-layer buffer index slot == layer & (best == 0 | tag < best) then tag else best)
+  wi-set-layer : Integer, Integer, Integer, Integer, Integer -> Integer
+  wi-set-layer (buffer) (capacity) (index) (slot) (layer) = let row = wi-row index slot
+    in let name = poke-qword row 48 (peek-qword buffer (16 + slot * 80))
+    in let changed = poke-qword row 40 layer in 0
+  wi-raise : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wi-raise (buffer) (capacity) (index) (parent) (height) (left) = if parent == 0 then 0
+    else if left <= 0 then -1
+    else let slot = wi-slot buffer capacity parent
+    in if slot < 0 then -1 else let row = wi-row index slot
+    in if peek-qword row 32 >= height then 0
+    else let raised = poke-qword row 32 height
+    in wi-raise buffer capacity index (peek-qword buffer (72 + slot * 80)) (height + 1) (left - 1)
+  wi-maximum : Integer, Integer, Integer -> Integer
+  wi-maximum (index) (tag) (best) = if tag == 0 then best
+    else let row = wi-row index (tag - 1)
+    in wi-maximum index (peek-qword row 16) (max best (peek-qword row 32 + 1))
+  wi-refresh : Integer, Integer, Integer, Integer, Integer -> Integer
+  wi-refresh (buffer) (capacity) (index) (parent) (left) = if parent == 0 | left <= 0 then 0
+    else let slot = wi-slot buffer capacity parent
+    in if slot < 0 then 0 else let row = wi-row index slot
+    in let height = wi-maximum index (peek-qword row 8) 0
+    in if height == peek-qword row 32 then 0
+    else let changed = poke-qword row 32 height
+    in wi-refresh buffer capacity index (peek-qword buffer (72 + slot * 80)) (left - 1)
+  wi-child-add : Integer, Integer, Integer, Integer, Boolean -> Integer
+  wi-child-add (buffer) (capacity) (index) (slot) (heights) = let serial = peek-qword buffer (72 + slot * 80)
+    in if serial == 0 then wi-root-add index slot else let parent = wi-slot buffer capacity serial
+    in if parent < 0 then -1 else let row = wi-row index parent
+    in let child = wi-row index slot
+    in let head = peek-qword row 8
+    in let next = poke-qword child 16 head
+    in let prev = poke-qword child 24 0
+    in let linked = if head == 0 then 0 else poke-qword (wi-row index (head - 1)) 24 (slot + 1)
+    in let first = poke-qword row 8 (slot + 1)
+    in let count = poke-qword row 0 (peek-qword row 0 + 1)
+    in if heights then wi-raise buffer capacity index serial (peek-qword child 32 + 1) 64 else 0
+  wi-child-remove : Integer, Integer, Integer, Integer -> Integer
+  wi-child-remove (buffer) (capacity) (index) (slot) = let serial = peek-qword buffer (72 + slot * 80)
+    in if serial == 0 then wi-root-remove index slot else let parent = wi-slot buffer capacity serial
+    in if parent < 0 then -1 else let row = wi-row index parent
+    in let child = wi-row index slot
+    in let next = peek-qword child 16
+    in let prev = peek-qword child 24
+    in let first = if prev == 0 then poke-qword row 8 next else poke-qword (wi-row index (prev - 1)) 16 next
+    in let linked = if next == 0 then 0 else poke-qword (wi-row index (next - 1)) 24 prev
+    in let count = poke-qword row 0 (peek-qword row 0 - 1)
+    in let clear-next = poke-qword child 16 0
+    in let clear-prev = poke-qword child 24 0
+    in if peek-qword child 32 + 1 < peek-qword row 32 then 0
+    else if peek-qword child 32 == 0 & peek-qword row 32 == 1 & peek-qword row 0 > 0 then 0
+    else wi-refresh buffer capacity index serial 64
+  wi-root-add : Integer, Integer -> Integer
+  wi-root-add (index) (slot) = let row = wi-row index slot
+    in let head = peek-qword index 56
+    in let next = poke-qword row 16 head
+    in let prev = poke-qword row 24 0
+    in let linked = if head == 0 then 0 else poke-qword (wi-row index (head - 1)) 24 (slot + 1)
+    in let first = poke-qword index 56 (slot + 1)
+    in poke-qword index 48 (peek-qword index 48 + 1)
+  wi-root-remove : Integer, Integer -> Integer
+  wi-root-remove (index) (slot) = let row = wi-row index slot
+    in let next = peek-qword row 16
+    in let prev = peek-qword row 24
+    in let first = if prev == 0 then poke-qword index 56 next else poke-qword (wi-row index (prev - 1)) 16 next
+    in let linked = if next == 0 then 0 else poke-qword (wi-row index (next - 1)) 24 prev
+    in let a = poke-qword row 16 0
+    in let b = poke-qword row 24 0
+    in poke-qword index 48 (peek-qword index 48 - 1)
+  wi-page-get : Integer, Integer, Integer -> Integer
+  wi-page-get (index) (capacity) (block) = let directory = wi-directory index capacity
+    in let found = peek-32 directory (block * 4)
+    in if found > 0 then found else let tag = peek-qword index 8
+    in if tag == 0 then 0 else let page = wi-page index capacity tag
+    in let free = poke-qword index 8 (peek-qword page 32)
+    in let first = peek-qword index 16
+    in let a = poke-qword page 0 block
+    in let b = poke-qword page 8 0
+    in let c = poke-qword page 16 first
+    in let d = poke-qword page 24 0
+    in let e = if first == 0 then 0 else poke-qword (wi-page index capacity first) 24 tag
+    in let active = poke-qword index 16 tag
+    in let mapped = poke-32 directory (block * 4) tag
+    in tag
+  wi-page-free : Integer, Integer, Integer -> Integer
+  wi-page-free (index) (capacity) (tag) = let page = wi-page index capacity tag
+    in let next = peek-qword page 16
+    in let prev = peek-qword page 24
+    in let first = if prev == 0 then poke-qword index 16 next else poke-qword (wi-page index capacity prev) 16 next
+    in let linked = if next == 0 then 0 else poke-qword (wi-page index capacity next) 24 prev
+    in let cleared = poke-32 (wi-directory index capacity) (peek-qword page 0 * 4) 0
+    in let free = poke-qword page 32 (peek-qword index 8)
+    in poke-qword index 8 tag
+  wi-tile-add : Integer, Integer, Integer, Integer -> Integer
+  wi-tile-add (buffer) (capacity) (index) (slot) = if peek-qword buffer (72 + slot * 80) /= 0 then 0
+    else let x = peek-qword buffer (32 + slot * 80)
+    in let y = peek-qword buffer (40 + slot * 80)
+    in let block = x / 8 * 512 + y / 8
+    in let tag = wi-page-get index capacity block
+    in if tag == 0 then -1 else let page = wi-page index capacity tag
+    in let at = 48 + (int-mod y 8 * 8 + int-mod x 8) * 4
+    in let head = peek-32 page at
+    in let row = wi-row index slot
+    in let a = poke-qword row 56 head
+    in let b = poke-qword row 64 0
+    in let c = if head == 0 then 0 else poke-qword (wi-row index (head - 1)) 64 (slot + 1)
+    in let d = poke-32 page at (slot + 1)
+    in poke-qword page 8 (peek-qword page 8 + 1)
+  wi-tile-remove : Integer, Integer, Integer, Integer -> Integer
+  wi-tile-remove (buffer) (capacity) (index) (slot) = if peek-qword buffer (72 + slot * 80) /= 0 then 0
+    else let x = peek-qword buffer (32 + slot * 80)
+    in let y = peek-qword buffer (40 + slot * 80)
+    in let tag = peek-32 (wi-directory index capacity) ((x / 8 * 512 + y / 8) * 4)
+    in if tag == 0 then -1 else let page = wi-page index capacity tag
+    in let at = 48 + (int-mod y 8 * 8 + int-mod x 8) * 4
+    in let row = wi-row index slot
+    in let next = peek-qword row 56
+    in let prev = peek-qword row 64
+    in let a = if prev == 0 then poke-32 page at next else poke-qword (wi-row index (prev - 1)) 56 next
+    in let b = if next == 0 then 0 else poke-qword (wi-row index (next - 1)) 64 prev
+    in let c = poke-qword row 56 0
+    in let d = poke-qword row 64 0
+    in let count = poke-qword page 8 (peek-qword page 8 - 1)
+    in if peek-qword page 8 == 0 then wi-page-free index capacity tag else 0
+  wi-tile-head : Integer, Integer, Integer, Integer -> Integer
+  wi-tile-head (index) (capacity) (x) (y) = if x < 0 | x >= 6144 | y < 0 | y >= 4096 then 0
+    else let tag = peek-32 (wi-directory index capacity) ((x / 8 * 512 + y / 8) * 4)
+    in if tag == 0 then 0 else peek-32 (wi-page index capacity tag) (48 + (int-mod y 8 * 8 + int-mod x 8) * 4)
+  wi-clear-pages : Integer, Integer -> Integer
+  wi-clear-pages (index) (capacity) = let tag = peek-qword index 16
+    in if tag == 0 then 0 else let page = wi-page index capacity tag
+    in let clear = wi-zero (page + 48) 256 0
+    in let count = poke-qword page 8 0
+    in let freed = wi-page-free index capacity tag
+    in wi-clear-pages index capacity
+  wi-clear-rows : Integer, Integer, Integer -> Integer
+  wi-clear-rows (index) (capacity) (i) = if i == capacity then 0
+    else let row = wi-row index i
+    in let a = wi-zero row 40 0
+    in let b = wi-zero (row + 56) 16 0
+    in wi-clear-rows index capacity (i + 1)
+  wi-build-rows : Integer, Integer, Integer, Integer -> Boolean
+  wi-build-rows (buffer) (capacity) (index) (i) = if i == capacity then True
+    else if peek-qword buffer (16 + i * 80) <= 0 then wi-build-rows buffer capacity index (i + 1)
+    else if wi-child-add buffer capacity index i False < 0 then False
+    else if wi-tile-add buffer capacity index i < 0 then False
+    else wi-build-rows buffer capacity index (i + 1)
+  wi-build-heights : Integer, Integer, Integer, Integer -> Boolean
+  wi-build-heights (buffer) (capacity) (index) (i) = if i == capacity then True
+    else if peek-qword buffer (16 + i * 80) <= 0 then wi-build-heights buffer capacity index (i + 1)
+    else if wi-raise buffer capacity index (peek-qword buffer (72 + i * 80)) 1 64 < 0 then False
+    else wi-build-heights buffer capacity index (i + 1)
+  wi-rebuild : Integer, Integer, Integer -> Boolean
+  wi-rebuild (buffer) (capacity) (index) = let pending = poke-qword index 32 0
+    in let pages = wi-clear-pages index capacity
+    in let rows = wi-clear-rows index capacity 0
+    in let root-count = poke-qword index 48 0
+    in let root-head = poke-qword index 56 0
+    in if not (wi-build-rows buffer capacity index 0 & wi-build-heights buffer capacity index 0) then False
+    else let ready = poke-qword index 32 1 in True
