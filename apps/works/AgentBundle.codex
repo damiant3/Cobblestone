@@ -144,19 +144,39 @@ Section: The Chain
       is Just (mb) -> ab-check-signature vol mb
   end
 
+ The author keys this device trusts. The one entry is the demo author key build/make-agent-bundle.ps1 derives from
+ its fixed seed (the public half of the key that signs the bundled agent); a manifest's own `pubkey` line is only a
+ claim and must name one of these.
+
+  ab-trusted-authors : List (List Integer) =
+    [[156, 122, 186, 36, 125, 75, 154, 139, 121, 181, 110, 171, 24, 37, 116, 229,
+      248, 205, 149, 64, 40, 154, 31, 137, 90, 6, 158, 0, 91, 88, 179, 202]]
+
+  ab-trusted : List Integer, Integer -> Boolean
+  ab-trusted (pub) (i) =
+    if i >= list-length ab-trusted-authors then False
+    else if list-at ab-trusted-authors i == pub then True
+    else ab-trusted pub (i + 1)
+
   ab-check-signature : Fat16Volume, List Integer -> [Device.Block] AgentBundleVerdict
   ab-check-signature (vol) (mb) =
+    when ab-signature-refusal mb
+      is Just (why) -> BundleRefused why
+      is None -> ab-check-model vol mb
+
+  ab-signature-refusal : List Integer -> Maybe Text
+  ab-signature-refusal (mb) =
     let sig-off = ab-value-offset mb (ab-text-to-ascii "sig") 0
-    in if sig-off < 0 then BundleRefused "manifest carries no signature"
+    in if sig-off < 0 then Just "manifest carries no signature"
     else let signed-len = sig-off - 4
     in let sig = ab-field-hex mb "sig"
     in let pub = ab-field-hex mb "pubkey"
-    in if list-length sig /= 64 then BundleRefused "signature is not 64 bytes"
-    else if list-length pub /= 32 then BundleRefused "public key is not 32 bytes"
+    in if list-length sig /= 64 then Just "signature is not 64 bytes"
+    else if list-length pub /= 32 then Just "public key is not 32 bytes"
+    else if ab-trusted pub 0 == False then Just "manifest author key is not trusted"
     else let msg = ab-slice mb 0 signed-len []
-    in if ed25519-verify pub msg sig == False
-      then BundleRefused "manifest signature does not verify"
-      else ab-check-model vol mb
+    in if ed25519-verify pub msg sig == False then Just "manifest signature does not verify"
+    else None
 
   ab-check-model : Fat16Volume, List Integer -> [Device.Block] AgentBundleVerdict
   ab-check-model (vol) (mb) =

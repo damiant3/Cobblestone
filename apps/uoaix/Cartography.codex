@@ -37,9 +37,28 @@ Chapter: Cartography
               is Err (e) -> Err e
               is Ok (made) -> Ok (Just (gs-reply ([spent, sip-item made] & sound & [gal-say "You create the item and place it in your backpack.", as-skills a])
                 ("cartography drew reach=" & show reach)))
+ The skills window's Cartography button (0x12 type 0x24, skill 12) draws with the first blank map in the backpack,
+ as a double-click on it would (UOAIX-71); without a blank map and a pen it names both.
+  cart-button : List Integer -> Boolean
+  cart-button (packet) = list-length packet >= 6 & list-length packet <= 64 & list-at packet 0 == #12 & gp-u16 packet 1 == list-length packet
+    & list-at packet 3 == #24 & list-at packet (list-length packet - 1) == 0 & gsi-skill-number packet 4 0 == 12
+  cart-skill : GameHarvest, ActiveSkills, Magery, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  cart-skill (h) (s) (magic) (game) (input) (now) =
+    let at = gv-player h.vendor input.session.serial 0
+    in let slot = gsi-slot game input.session.serial 0
+    in if at < 0 | slot < 0 then Ok None
+    else when world-get h.items.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if me.health <= 0 then Ok (Just (gsi-denied "You cannot use skills while dead."))
+        else let pack = (list-at h.vendor.players at).pack
+        in let blank = gal-find h.items.world (world-first-child h.items.world pack) cart-blank 0
+        in if blank == 0 | cart-pen h.items.world pack == 0 then Ok (Just (gsi-denied "You need a blank map and a mapmaker's pen in your backpack to draw a map."))
+        else cart-draw h s magic (as-session s game input me slot) me pack blank now
   cart-handler-at : GameHarvest, ActiveSkills, Magery, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
   cart-handler-at (h) (s) (magic) (game) (input) (packet) (now) =
-    if list-length packet /= 5 | list-at packet 0 /= 6 then Ok None
+    if cart-button packet then (if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | h.items.world.buffer /= game.world.buffer then Ok None
+      else cart-skill h s magic game input now)
+    else if list-length packet /= 5 | list-at packet 0 /= 6 then Ok None
     else if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | h.items.world.buffer /= game.world.buffer then Ok None
     else let used = bit-and (gp-u32 packet 1) #7FFFFFFF
     in when world-get h.items.world used

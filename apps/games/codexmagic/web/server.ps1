@@ -1205,6 +1205,7 @@ try {
         try {
             if ($path -eq '/' -or $path -eq '/index') { $resp.Redirect('/welcome.html'); $resp.StatusCode = 302 }
             elseif ($path -match '^\/([\w.-]+\.(html|css|js|png|jpg|svg|wav|mp3|codex))$') { Send-StaticFile -Response $resp -FilePath (Join-Path $WebDir $matches[1]) }
+            elseif ($path -like '/api/magic/state-dump*') { Send-Json $resp '{"error":"not found"}' 404 }
             elseif ($path -like '/api/*') {
                 # Try CDX first for all API calls
                 $cdxPath = $path -replace '^/api/auth/', '/api/magic/auth/' -replace '^/api/admin/', '/api/magic/admin/' -replace '^/api/market/', '/api/magic/market/' -replace '^/api/clan/', '/api/magic/clan/'

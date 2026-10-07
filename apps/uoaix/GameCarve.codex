@@ -159,8 +159,91 @@ Chapter: GameCarve
         in when world-get state.items.world fish.serial
           is Err (err) -> Err err
           is Ok (made) -> Ok (Just (gs-reply [sip-item made, sip-message #FFFFFFFF #FFFF 6 "You slice your fish into raw fish steaks."] "carve fish"))
-  gca-target : GameCarve, GvPlayer, GhRequest, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
-  gca-target (c) (player) (request) (input) (packet) (now) =
+ ServUO Scripts/Items/Tools/BladedItemTarget.cs (Lumberjacking), GPL-2.0; ports/ServUO-LICENSE.txt: a bladed
+ item on a tree puts kindling (0x0DE1) in the backpack (cliloc 500491, 500492; 500490 when it cannot, 500489 on
+ anything else). Damian 2026-10-06 adds wood items: one unit of the carver's own fallen branches (item 2), logs
+ (15) or boards (38) becomes one kindling. ServUO spends 5 from the tree's harvest bank; a tree here is not spent.
+ Kindling with no economy lot is a plain item, as Campfires spends it; a new piece joins a lot-less stack in the pack.
+  gca-kindling : Integer = #0DE1
+  gca-wood : Integer -> Boolean
+  gca-wood (item) = item == 2 | item == 15 | item == 38
+  gca-kindling-in : GameHarvest, Integer -> Integer
+  gca-kindling-in (state) (serial) = if serial == 0 then 0
+    else when world-get state.items.world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.graphic == gca-kindling & o.amount < 60000 & gv-lot state.vendor serial 0 < 0 then serial
+        else gca-kindling-in state (world-next-sibling state.items.world serial)
+  gca-said : List (List Integer) -> List (List Integer)
+  gca-said (out) = list-push (list-push out (sip-message #FFFFFFFF #FFFF 6 "You put some kindling into your backpack.")) (sip-message #FFFFFFFF #FFFF 6 "An axe would probably get you more wood.")
+  gca-kindle : GameHarvest, GvPlayer, List (List Integer), Integer -> Result (Maybe GameReply) Text
+  gca-kindle (state) (player) (out) (now) =
+    let pack = gsi-pack-find state.items.world player.serial 0
+    in let stack = if pack == 0 then 0 else gca-kindling-in state (world-first-child state.items.world pack)
+    in if pack == 0 | (stack == 0 & world-count state.items.world + 1 > state.items.world.capacity) then gh-denied "You can't place any kindling into your backpack!"
+    else if stack /= 0 then (when world-get state.items.world stack
+      is Err (e) -> Err e
+      is Ok (pile) -> let grown = __record-set pile "amount" (pile.amount + 1)
+        in when world-update state.items.world grown
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (Just (gs-reply (gca-said (list-push out (sip-item grown))) "kindling")))
+    else let spot = bit-and (mix-bits now player.serial) #7FFFFFFF
+    in let piece = WorldObject { serial = 0, kind = 2, x = 44 + int-mod spot 100, y = 65 + int-mod (spot / 4096) 60, z = 0,
+      graphic = gca-kindling, hue = 0, container = pack, amount = 1, health = 0 }
+    in when world-create state.items.world piece
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register state.items serial 0 0 True False /= 0 then Err "kindling registration refused"
+        else when world-get state.items.world serial
+          is Err (e) -> Err e
+          is Ok (made) -> Ok (Just (gs-reply (gca-said (list-push out (sip-item made))) "kindling"))
+ One unit is spent as Campfires spends kindling: the lot debits one unit's stock, quality, wear and basis and counts it
+ consumed, and the world stack shrinks by one.
+  gca-whittle : GameHarvest, GvPlayer, WorldObject, Integer -> Result (Maybe GameReply) Text
+  gca-whittle (state) (player) (wood) (now) =
+    let v = state.vendor
+    in let at = gv-lot v wood.serial 0
+    in if at < 0 | not (gv-owned state.items.world wood.serial player.serial 65) then gh-denied "You can't use material outside your backpack."
+    else let lot = list-at v.lots at
+    in let actor = ep-actor v.currency.world lot.actor
+    in if lot.actor /= player.actor | not (gca-wood lot.item) then gh-denied "You can't use a bladed item on that!"
+    else if lot.quantity < 1 | wood.amount /= lot.quantity | ep-at actor.stock lot.item < 1 then gh-denied "That wood cannot be used."
+    else let basis = lot.basis / lot.quantity
+    in let a = ep-add actor.stock lot.item -1
+    in let b = ep-add actor.quality lot.item (0 - lot.quality)
+    in let d = ep-add actor.wear lot.item (0 - lot.wear)
+    in let e = ep-add actor.cost lot.item (0 - basis)
+    in let f = ep-add v.currency.world.consumed lot.item 1
+    in let g = __record-set lot "basis" (lot.basis - basis)
+    in let remaining = lot.quantity - 1
+    in let h = __record-set lot "quantity" remaining
+    in let retired = if remaining == 0 then gh-retire-lot v at else 0
+    in let invalidated = gh-invalidate-quotes v 0
+    in let spent = if remaining == 0 then (when world-delete state.items.world wood.serial is Err (e) -> Err e is Ok (_) -> Ok (sip-remove wood.serial))
+      else let left = __record-set wood "amount" remaining in (when world-update state.items.world left is Err (e) -> Err e is Ok (_) -> Ok (sip-item left))
+    in when spent
+      is Err (e) -> Err e
+      is Ok (packet) -> gca-kindle state player [packet] now
+  gca-near : WorldObject, Integer, Integer, Integer -> Boolean
+  gca-near (mobile) (x) (y) (z) = x >= mobile.x - 2 & x <= mobile.x + 2 & y >= mobile.y - 2 & y <= mobile.y + 2 & z >= mobile.z - 16 & z <= mobile.z + 16
+  gca-bladed : GameCarve, GvPlayer, GhRequest, WorldObject, List Integer, (Integer, Integer, Integer, Integer, Integer -> Boolean), Integer -> Result (Maybe GameReply) Text
+  gca-bladed (c) (player) (request) (mobile) (packet) (tree) (now) =
+    let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in let raw = list-at packet 16
+    in let z = if raw >= 128 then raw - 256 else raw
+    in let graphic = gp-u16 packet 17
+    in if serial == 0 then
+      (if not (tree (gp-u16 packet 11) (gp-u16 packet 13) z graphic 0) then gh-denied "You can't use a bladed item on that!"
+      else if not (gca-near mobile (gp-u16 packet 11) (gp-u16 packet 13) z) then gh-denied "That is too far away."
+      else let paced = __record-set request "next" (now + gh-ticks 1000) in gca-kindle c.harvest player [] now)
+    else when world-get c.harvest.items.world serial
+      is Err (_) -> gh-denied "You can't use a bladed item on that!"
+      is Ok (o) -> if o.kind == 2 & o.container == 0 & tree o.x o.y o.z o.graphic serial then
+          (if not (gca-near mobile o.x o.y o.z) then gh-denied "That is too far away."
+          else let paced = __record-set request "next" (now + gh-ticks 1000) in gca-kindle c.harvest player [] now)
+        else if o.kind == 2 & gv-lot c.harvest.vendor serial 0 >= 0 then
+          (let paced = __record-set request "next" (now + gh-ticks 1000) in gca-whittle c.harvest player o now)
+        else gh-denied "You can't use a bladed item on that!"
+  gca-target : GameCarve, GvPlayer, GhRequest, GameInput, List Integer, (Integer, Integer, Integer, Integer, Integer -> Boolean), Integer -> Result (Maybe GameReply) Text
+  gca-target (c) (player) (request) (input) (packet) (tree) (now) =
     let state = c.harvest
     in let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
     in let clear = __record-set request "target" 0
@@ -171,7 +254,8 @@ Chapter: GameCarve
     else if (list-at state.items.actors (gsi-slot state.vendor.game input.session.serial 0)).holding /= 0 then gh-denied "Finish moving that item first."
     else when world-get state.items.world player.serial
       is Err (e) -> Err e
-      is Ok (mobile) -> when world-get state.items.world serial
+      is Ok (mobile) -> if gca-blade (list-at state.vendor.lots lot).item & not (gca-carcass state serial) then gca-bladed c player request mobile packet tree now
+        else when world-get state.items.world serial
         is Err (_) -> gh-denied "You cannot carve that."
         is Ok (corpse) -> if corpse.kind == 2 & gca-fish-art corpse.graphic then gca-fish c player corpse
           else if corpse.kind /= 2 | corpse.graphic /= 8198 then gh-denied "You cannot carve that."
@@ -180,6 +264,9 @@ Chapter: GameCarve
           else if corpse.health /= 0 then gh-denied "You see nothing useful to carve from the corpse."
           else let next = __record-set request "next" (now + gh-ticks 1000)
           in gca-carve c player corpse lot now
+  gca-carcass : GameHarvest, Integer -> Boolean
+  gca-carcass (state) (serial) = if serial == 0 then False
+    else when world-get state.items.world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & (o.graphic == 8198 | gca-fish-art o.graphic)
   gca-carves : GameCarve, Integer, Integer -> Boolean
   gca-carves (c) (tool) (serial) = let at = gv-lot c.harvest.vendor tool 0
     in if at < 0 then False
@@ -192,8 +279,8 @@ Chapter: GameCarve
         else when world-get c.harvest.items.world serial
           is Err (_) -> False
           is Ok (target) -> target.kind == 2 & (target.graphic == 8198 | gca-fish-art target.graphic)
-  gca-handler-at : GameCarve, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
-  gca-handler-at (c) (shard) (input) (packet) (now) =
+  gca-handler-at : GameCarve, GameShard, GameInput, List Integer, (Integer, Integer, Integer, Integer, Integer -> Boolean), Integer -> Result (Maybe GameReply) Text
+  gca-handler-at (c) (shard) (input) (packet) (tree) (now) =
     let state = c.harvest
     in if list-length packet == 0 then Ok None
     else let op = list-at packet 0
@@ -215,4 +302,4 @@ Chapter: GameCarve
       is Err (e) -> Err e
       is Ok (mobile) -> if mobile.health <= 0 then gh-denied "You cannot carve while dead."
         else if op == 6 then gca-begin state player request (bit-and (gp-u32 packet 1) #7FFFFFFF) now
-        else gca-target c player request input packet now
+        else gca-target c player request input packet tree now

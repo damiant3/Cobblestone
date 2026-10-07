@@ -53,10 +53,12 @@ Chapter: GameCombatReplay
         before <- cbr-hits shard own.serial
         bounced <- cb-pulse combat shard input map 2594 animal.due
         cbr-check "goat retaliates on an immune player with attack 0x9B, no damage, no get-hit" (is-ok peace & cbr-opcode bounced 47 0 & cbr-sound bounced #009B 0 & not (cbr-sound bounced #0154 0) & cbr-hits shard own.serial == before)
+        cbr-check "the struck player in peace with no target fights back: targets the goat, sent war mode and 0xAA (UOX3 StartAttack)" (own.target == goat & own.war & cbr-has bounced (cbp-war True) 0 & cbr-has bounced (cbp-target goat) 0)
         mortal <- __record-set own "immune" False
         bitten <- cb-pulse combat shard input map 2594 animal.due
         cbr-check "goat bite on a male player plays get-hit 0x154" (cbr-sound bitten #009B 0 & cbr-sound bitten #0154 0 & cbr-hits shard own.serial < before)
         calm <- cb-stop combat animal
+        settled <- cb-stop combat own
         removed <- world-delete shard.world goat
         cbr-check "goat leaves the fight" (is-ok removed & combat.count == 0)
       end
@@ -140,6 +142,9 @@ Chapter: GameCombatReplay
         is Err (message) -> print-line-uni ("FAIL parry metadata " & message)
         is Ok (enemy) -> act
           before <- cbr-hits shard own.serial
+          row <- shard.characters + gs-char-slot shard.characters own.serial 0 * 160
+          tired <- peek-byte row 145
+          stamp <- peek-qword row 152
           tally <- alloc-bytes 24
           wrestling <- gs-skill-set shard own.serial 43 0
           novice <- gs-skill-set shard own.serial 5 0
@@ -159,6 +164,9 @@ Chapter: GameCombatReplay
           cbr-check "without a shield Parrying 100.0 blocks nothing" (peek-qword tally 8 == 10)
           rehurt <- when world-get shard.world own.serial is Err (_) -> False is Ok (m) -> is-ok (world-update shard.world (__record-set m "health" before))
           calm <- cb-stop combat enemy
+          settled <- cb-stop combat own
+          retired <- poke-byte row 145 tired
+          restamped <- poke-qword row 152 stamp
           removed <- world-delete shard.world foe
           restored <- gs-skill-set shard own.serial 5 0
           cbr-check "the swordsman leaves the fight" (is-ok removed & combat.count == 0)

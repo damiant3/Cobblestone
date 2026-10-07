@@ -24,13 +24,14 @@ Chapter: EconomyStateCodec
   es-v2-bytes : Integer = es-v1-bytes + (ep-station-limit - 64) * 32
   es-v3-bytes : Integer = es-v2-bytes + (ep-node-limit - 256) * 72
   es-v4-bytes : Integer = es-v3-bytes + 1032
-  es-bytes : Integer = es-v4-bytes + em-open-cells * 8 + ep-open-cells * 8
+  es-v5-bytes : Integer = es-v4-bytes + em-open-cells * 8 + ep-open-cells * 8
+  es-bytes : Integer = es-v5-bytes + 1032
   es-station-at : Integer -> Integer
   es-station-at (i) = if i < 64 then es-stations-at + i * 32 else es-v1-bytes + (i - 64) * 32
   es-node-at : Integer -> Integer
   es-node-at (i) = if i < 256 then es-nodes-at + i * 72 else es-v2-bytes + (i - 256) * 72
   es-version : Integer -> Integer
-  es-version (size) = if size == es-v1-bytes then 1 else if size == es-v2-bytes then 2 else if size == es-v3-bytes then 3 else if size == es-v4-bytes then 4 else if size == es-bytes then 5 else 0
+  es-version (size) = if size == es-v1-bytes then 1 else if size == es-v2-bytes then 2 else if size == es-v3-bytes then 3 else if size == es-v4-bytes then 4 else if size == es-v5-bytes then 5 else if size == es-bytes then 6 else 0
 
   es-zero-range : Integer, Integer, Integer -> Boolean
   es-zero-range (buf) (at) (stop) = if at == stop then True
@@ -156,6 +157,7 @@ Chapter: EconomyStateCodec
     in let a6 = es-copy-cells w.found (buf + es-v3-bytes) 129 0
     in let a7 = es-copy-cells w.money.opening (buf + es-v4-bytes) em-open-cells 0
     in let a8 = es-copy-cells w.opening (buf + es-v4-bytes + em-open-cells * 8) ep-open-cells 0
+    in let a9 = es-copy-cells w.taxed (buf + es-v5-bytes) 129 0
     in 0
 
   es-read-actors : Integer, EpWorld, Integer -> Integer
@@ -177,9 +179,11 @@ Chapter: EconomyStateCodec
   es-read-found : Integer, Integer, EpWorld -> Integer
   es-read-found (buf) (size) (w) = if size >= es-v4-bytes then es-copy-cells (buf + es-v3-bytes) w.found 129 0 else 0
   es-read-opening : Integer, Integer, EpWorld -> Integer
-  es-read-opening (buf) (size) (w) = if size /= es-bytes then 0
+  es-read-opening (buf) (size) (w) = if size < es-v5-bytes then 0
     else let a = es-copy-cells (buf + es-v4-bytes) w.money.opening em-open-cells 0
     in es-copy-cells (buf + es-v4-bytes + em-open-cells * 8) w.opening ep-open-cells 0
+  es-read-taxed : Integer, Integer, EpWorld -> Integer
+  es-read-taxed (buf) (size) (w) = if size == es-bytes then es-copy-cells (buf + es-v5-bytes) w.taxed 129 0 else 0
 
   es-overlap : Integer, Integer, Integer, Integer -> Boolean
   es-overlap (one) (size) (two) (bytes) = one < two + bytes & two < one + size
@@ -195,6 +199,7 @@ Chapter: EconomyStateCodec
       | es-overlap buf es-bytes w.crafted 1032 | es-overlap buf es-bytes w.consumed 1032
       | es-overlap buf es-bytes w.sales 1032 | es-overlap buf es-bytes w.turnover 64
       | es-overlap buf es-bytes w.crown-turnover 64 | es-overlap buf es-bytes w.found 1032
+      | es-overlap buf es-bytes w.taxed 1032
 
   es-encode : EconomyCheckpoint, Integer, Integer -> Result Integer Text
   es-encode (checkpoint) (buf) (capacity) =
@@ -205,7 +210,7 @@ Chapter: EconomyStateCodec
     in if es-buffer-overlap buf w then Err "economy destination overlaps inventory"
     else let clear = ts-zero buf es-bytes 0
     in let h0 = poke-qword buf 0 #31434555
-    in let h1 = poke-qword buf 8 5
+    in let h1 = poke-qword buf 8 6
     in let h2 = poke-qword buf 16 es-bytes
     in let h3 = poke-qword buf 24 es-catalog-bytes
     in let h4 = poke-qword buf 32 checkpoint.tick
@@ -249,6 +254,7 @@ Chapter: EconomyStateCodec
         in let counters = es-read-counters buf w
         in let found = es-read-found buf size w
         in let opening = es-read-opening buf size w
+        in let taxed = es-read-taxed buf size w
         in if not (ev-valid w) then Err "economy checkpoint state invalid"
         else Ok (EconomyCheckpoint { world = w, tick = peek-qword buf 32, sequence = peek-qword buf 40 })
   es-decode-record : Integer, Integer, Integer, Integer -> Result EconomyCheckpoint Text

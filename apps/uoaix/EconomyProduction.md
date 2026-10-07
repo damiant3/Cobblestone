@@ -109,6 +109,20 @@ Each purchase appends action ID, hour, buyer/seller purse IDs, item type,
 quantity, gross coin, quality and remaining charges. The action ID matches
 the corresponding money-ledger action. Trade and ledger capacity are checked
 before either coin or goods move. Logs are never overwritten or cleared.
+
+**Theft transfer** (`as-steal-lot`, `ActiveSkillsStealing.codex`): a successful
+steal of an item held as an economy lot moves its units from the victim's actor
+to the thief's with no payment: stock, quality and wear at the lot's own
+per-unit grade, and cost by the lot's share of basis. A whole stack keeps its
+lot under the thief; part of a pile reduces the victim's lot and opens a new
+one for the thief. Every census holds because no unit is made or destroyed.
+The thief must be a player with an economy actor and room for the units, or
+the steal fails before anything moves. It writes no trade-log row (that log is
+tied to money actions); the record is the steal reply's note in the server log,
+`skills:stolen; theft item=<id> quantity=<n> from-actor=<a> to-actor=<b>`.
+Stealing a lot-less item (summoned or testing stock) moves only the world item.
+A coin pile in an economy actor's pack is purse coin, not material: its theft is
+the currency theft in [EconomyCurrency.md](EconomyCurrency.md) (`eu-steal`).
 These records describe one item-type sale, not a multi-item barter or a
 complete server log of serial-numbered player trades.
 

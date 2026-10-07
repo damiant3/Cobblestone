@@ -73,15 +73,17 @@ Chapter: EconomyHarvest
   eh-tax-units (seed) (rate) (quantity) (i) (taken) = if i == quantity then taken
     else let roll = int-mod (int-mod (seed * 1103515245 + i * 12345 + 1013904223) 2147483648) 10000
     in eh-tax-units seed rate quantity (i + 1) (if roll < rate then taken + 1 else taken)
+ The Crown takes 10% of mined gold, silver and copper ore, in basis points (Damian 2026-10-06: "mining should have a 10% tax right off the top").
+  eh-mining-tax : Integer = 1000
   eh-find-tax : EpWorld, Integer, Integer, Integer, Integer -> Integer
   eh-find-tax (w) (actor) (item) (quantity) (quality) =
     eh-find-tax-at w actor item quantity quality (if list-length w.catalog.items >= 68 then 1 else 0)
   eh-find-tax-at : EpWorld, Integer, Integer, Integer, Integer, Integer -> Integer
   eh-find-tax-at (w) (actor) (item) (quantity) (quality) (unit-cost) =
-    if (item /= 6 & item /= 63 & item /= 64) | w.mint-owner <= 0 | actor == w.mint-owner | w.money.tax <= 0 | not (ep-valid-actor w w.mint-owner) then 0
-    else let share = eh-tax-units (ep-actor w actor).attempts w.money.tax quantity 0 0
+    if (item /= 6 & item /= 63 & item /= 64) | w.mint-owner <= 0 | actor == w.mint-owner | not (ep-valid-actor w w.mint-owner) then 0
+    else let share = eh-tax-units (ep-actor w actor).attempts eh-mining-tax quantity 0 0
     in let crown = ep-actor w w.mint-owner
-    in if share <= 0 | not (ep-room crown item share) then 0
+    in if share <= 0 | not (ep-room crown item share) | ep-at w.taxed item > ep-limit - share then 0
     else let p = ep-actor w actor
     in let cost = share * unit-cost
     in let a = ep-add p.stock item (0 - share)
@@ -92,6 +94,7 @@ Chapter: EconomyHarvest
     in let f = ep-add crown.quality item (share * quality)
     in let g = ep-add crown.wear item (share * 32)
     in let h = ep-add crown.cost item cost
+    in let j = ep-add w.taxed item share
     in share
  Station kind 13 is the King's warrant to mine gold ore at its place; craft
  stations are kinds 1..12, so no recipe can bind it.
@@ -115,10 +118,15 @@ Chapter: EconomyHarvest
     in let e = __record-set w "station-count" (w.station-count + 1)
     in w.station-count
  A fruit tree (resource 16) stays a grown tree when picked; its fruit returns at ready (Damian 2026-10-06).
+  eh-royal-gold : EpWorld, EpNode -> Boolean
+  eh-royal-gold (w) (n) = n.resource == 6 & w.mint-owner > 0 & n.place == (ep-actor w w.mint-owner).place
   eh-orchard : EpNode -> Boolean
   eh-orchard (n) = n.resource == 16
   eh-harvest : EpWorld, Integer, Integer -> Integer
-  eh-harvest (w) (actor) (node) =
+  eh-harvest (w) (actor) (node) = eh-harvest-at w actor node False
+ A seam (gh-seam-begin) is worked by any miner, the gold appointment waived (root, 2026-10-07), and is never royal gold.
+  eh-harvest-at : EpWorld, Integer, Integer, Boolean -> Integer
+  eh-harvest-at (w) (actor) (node) (seam) =
     if not (ep-valid-actor w actor) | not (eh-valid-node w node) then -1
     else let p = ep-actor w actor
     in let n = list-at w.nodes (node - 1)
@@ -127,7 +135,7 @@ Chapter: EconomyHarvest
     in let level = ep-level p r.skill (ep-classic r.skill 0 r.item)
     in let quantity = 1 + (r.quantity - 1) * level / 1000
     in if r.item == 51 | r.seed == 51 | not (ep-tool p r.tool) | not (ep-room p r.item quantity) | ep-at w.gathered r.item > ep-limit - quantity | w.hour > ep-limit - r.regrow then -1
-    else if r.item == 6 & not (eh-appointed w actor n.place) then -1
+    else if r.item == 6 & not seam & not (eh-appointed w actor n.place) then -1
     else if r.seed > 0 & (not (ep-room p r.seed 1) | ep-at w.gathered r.seed >= ep-limit) then -1
     else let success = ep-practice p r.skill
     in let wear = ep-wear w p r.tool
@@ -135,8 +143,8 @@ Chapter: EconomyHarvest
     else let a = eh-add-yield w p r.item quantity (100 + level * 9 / 10)
     in let taxed = eh-find-tax w actor r.item quantity (100 + level * 9 / 10)
     in let b = if r.seed > 0 then eh-add-yield w p r.seed 1 1000 else 0
-    in let c = __record-set n "stage" (if eh-orchard n then 2 else 0)
-    in let d = __record-set n "ready" (w.hour + r.regrow)
+    in let c = __record-set n "stage" (if eh-orchard n | (eh-royal-gold w n & not seam) then 2 else 0)
+    in let d = __record-set n "ready" (if eh-royal-gold w n & not seam then n.ready else w.hour + r.regrow)
     in let e = __record-set n "water" 0
     in let f = __record-set n "tended" 0
     in quantity

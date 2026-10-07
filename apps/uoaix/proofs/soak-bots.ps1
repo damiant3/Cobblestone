@@ -2,12 +2,14 @@
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$World,
     [Parameter(Mandatory)][string]$CompressionSource,[Parameter(Mandatory)][string]$OutDir,
     [ValidateRange(1,7)][int]$Bots=6,[ValidateRange(1,1440)][int]$Minutes=120,[int]$Seed=1,
-    [ValidateRange(30,900)][int]$StartupSeconds=300,[string]$Vm='',[string]$CoverLog='')
+    [ValidateRange(30,900)][int]$StartupSeconds=300,[string]$Vm='',[string]$CoverLog='',[ValidateRange(1,100)][int]$ClockScale=1)
 # Scripted-player soak (UOAIX-49 part B): N bot characters on N links drive every packet family
 # against a COPY of a world disk through the real composite server, in testing mode, for -Minutes.
 # Fatal: a server FAIL/!EXC/OUT OF MEMORY/"requires restart"/"SAVE REFUSED" line or the guest exiting. Every bot
 # disconnect, every server REFUSE and every unanswered request is counted and named in soak.log.
 # The guest runs under the host sampling profiler; coverage is functions sampled over functions in the map.
+# -ClockScale N runs every guest timer N times faster (codex-vm -clock-scale, UOAIX-82); the soak always runs the
+# server in testing mode, which is the only mode a scaled clock is for. -Minutes stays wall-clock minutes.
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
@@ -17,6 +19,8 @@ if((Get-FileHash $CompressionSource).Hash -ne '807165537C00C83F295DC98F229F53D31
 $hash=[Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($repo.ToLowerInvariant()))
 $Port=20000+(([BitConverter]::ToUInt16($hash,0)+7) % 10000)
 if(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue){throw "Port $Port is held; refusing to share it"}
+$AdminPort=$Port+1
+if(Get-NetTCPConnection -State Listen -LocalPort $AdminPort -ErrorAction SilentlyContinue){throw "Port $AdminPort is held; refusing to share it"}
 $OutDir=[IO.Path]::GetFullPath($OutDir);if(Test-Path $OutDir){throw 'OutDir must be new'};[void](New-Item -ItemType Directory $OutDir)
 $disk=Join-Path $OutDir 'world.disk';Copy-Item -LiteralPath $World $disk
 $source=[IO.File]::ReadAllText((Resolve-Path $CompressionSource))
@@ -78,14 +82,16 @@ function Say([string]$Text){$t=[Text.Encoding]::ASCII.GetBytes($Text);$p=[byte[]
 function Serial-Packet([int]$Op,[long]$Serial){$p=[byte[]]::new(5);$p[0]=$Op;Put32 $p 1 $Serial;return ,$p}
 function Target-Ground($B,[int]$X,[int]$Y,[int]$Z){$p=[byte[]]::new(19);$p[0]=0x6C;$p[1]=1;Put32 $p 2 $B.Cursor;Put16 $p 11 $X;Put16 $p 13 $Y;$p[16]=$Z-band 255;return ,$p}
 function Target-Object($B,[long]$Serial,[int]$X,[int]$Y,[int]$Z,[int]$Graphic){$p=[byte[]]::new(19);$p[0]=0x6C;$p[1]=0;Put32 $p 2 $B.Cursor;Put32 $p 7 $Serial;Put16 $p 11 $X;Put16 $p 13 $Y;$p[16]=$Z-band 255;Put16 $p 17 $Graphic;return ,$p}
-$families=@('walk','say','go','goto','vendor','bank','harvest','craft','carve','combat','moongate','inventory','click','magery','help','chop','skill','fighter','reap','sow')
+$families=@('mint','walk','say','go','goto','vendor','bank','harvest','craft','carve','combat','moongate','inventory','click','magery','help','chop','skill','fighter','reap','sow',
+    'camping','cartography','taste','forensics','spirit','poisoning','stealing','herding',
+    'bard','tracking','healing','alchemy','inscription','arms')
 $fatalPattern='(?m)^.*(?:^FAIL|!EXC|OUT OF MEMORY|requires restart|SAVE REFUSED).*$'
 $tally=@{};foreach($f in $families+@('death','ghost','buy','target','menu')){$tally[$f]=0}
 $recvOps=@{};$disconnects=[Collections.Generic.List[string]]::new()
 function New-Bot([int]$Index){
     [pscustomobject]@{Index=$Index;Name=$(if($Index -eq 1){'British'}else{'soakbot'+[char](96+$Index)});Password=$(if($Index -eq 1){'Astronaut'}else{''});Flora=@{};Crops=@{};Tcp=$null;Stream=$null;Key=0L;Plain=$null;Up=$false;Serial=0L;X=0;Y=0;Z=0;
         Seq=0;Pending=-1;Pack=0L;Cursor=0L;CursorAt=[datetime]::MinValue;Dead=$false;DeathAsked=$false;Mobiles=@{};Items=@{};Corpses=@{};Places=[Collections.Generic.List[string]]::new();
-        BuyFrom=0L;Menu=$null;Blocked=@{};Sent=0;Received=0;NextAt=[datetime]::UtcNow;Last='login';Logins=0;Reconnect=[datetime]::UtcNow}
+        BuyFrom=0L;Menu=$null;Blocked=@{};Held=@{};Sent=0;Received=0;NextAt=[datetime]::UtcNow;Last='login';Logins=0;Reconnect=[datetime]::UtcNow}
 }
 function Connect-Bot($B){
     $B.Logins++;$key=Open-Relay $B.Name $B.Password
@@ -131,6 +137,8 @@ function Handle($B,[byte[]]$P){
         0x74{$B.BuyFrom=U32 $P 3}
         0x7C{$B.Menu=$P}
         0x1C{if($P.Length -gt 44){$t=[Text.Encoding]::ASCII.GetString($P,44,$P.Length-44).Trim([char]0)
+            if($t -match 'successfully steal'){Count 'stolen'}
+            if($t -match 'walks where it was instructed|begins to follow you'){Count 'herded'}
             if($t -match '^[A-Za-z ]+: (.+)$'){foreach($w in ($Matches[1] -split ' ')){if($w -and -not $B.Places.Contains($w)){$B.Places.Add($w)}}}}}
     }
 }
@@ -144,11 +152,43 @@ function Owned($B,$Serial){$c=$B.Items[$Serial][1];for($i=0;$i -lt 4;$i++){if($B
 function Item-Of($B,[int]$Graphic){$m=@($B.Items.Keys|Where-Object{$B.Items[$_][0] -eq $Graphic -and (Owned $B $_)});if($m.Count -eq 0){return 0};return $m[$rng.Next($m.Count)]}
 function Nearest($B,[scriptblock]$Want){$best=0;$far=99;foreach($k in $B.Mobiles.Keys){if($k -eq $B.Serial){continue};$m=$B.Mobiles[$k];if(-not (& $Want $m)){continue};$d=[Math]::Max([Math]::Abs($m[1]-$B.X),[Math]::Abs($m[2]-$B.Y));if($d -lt $far){$far=$d;$best=$k}};return $best}
 function Walk($B,[int]$Dir){$B.Pending=$Dir;$seq=$B.Seq;$B.Seq=if($B.Seq -eq 255){1}else{$B.Seq+1};Send-Plain $B ([byte[]]@(2,$Dir,$seq))}
-function Use-Then-Target($B,[long]$Tool,[scriptblock]$Target,[string]$Family,[string]$Speech=''){
-    if($Tool -eq 0 -and -not $Speech){return}
-    $before=$B.CursorAt;Send-Plain $B $(if($Speech){Say $Speech}else{Serial-Packet 6 $Tool})
+function Skill-Use([int]$Skill){$t=[Text.Encoding]::ASCII.GetBytes("$Skill 0");$p=[byte[]]::new(5+$t.Length);$p[0]=0x12;Put16 $p 1 $p.Length;$p[3]=0x24;$t.CopyTo($p,4);return ,$p}
+function Use-Then-Target($B,[long]$Tool,[scriptblock]$Target,[string]$Family,[string]$Speech='',[byte[]]$Packet=$null){
+    if($Tool -eq 0 -and -not $Speech -and -not $Packet){return}
+    $before=$B.CursorAt;Send-Plain $B $(if($Packet){$Packet}elseif($Speech){Say $Speech}else{Serial-Packet 6 $Tool})
     $deadline=[datetime]::UtcNow.AddSeconds(2);while($B.CursorAt -eq $before -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
-    if($B.CursorAt -ne $before){Send-Plain $B (& $Target);$tally['target']++}else{$k="nocursor-$Family";$tally[$k]=1+$(if($tally.ContainsKey($k)){$tally[$k]}else{0})}
+    if($B.CursorAt -ne $before){Send-Plain $B (& $Target);$tally['target']++;Count "cursor-$Family"}else{$k="nocursor-$Family";$tally[$k]=1+$(if($tally.ContainsKey($k)){$tally[$k]}else{0})}
+}
+function Count([string]$Key){$tally[$Key]=1+$(if($tally.ContainsKey($Key)){$tally[$Key]}else{0})}
+function Any-Owned($B){$m=@($B.Items.Keys|Where-Object{$_ -ne $B.Pack -and (Owned $B $_)});if($m.Count -eq 0){return 0};return $m[$rng.Next($m.Count)]}
+# A skill item the bot carries; British (the only [add caller) summons one when it has none.
+function Ensure-Item($B,[string]$Hex,[int]$Graphic,[int]$Amount,[string]$Family){
+    $s=Item-Of $B $Graphic;if($s){return $s}
+    if($B.Index -eq 1){Send-Plain $B (Say "[add $Hex $Amount");$deadline=[datetime]::UtcNow.AddSeconds(2);while(-not $s -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1;$s=Item-Of $B $Graphic}}
+    if(-not $s){Count "noitem-$Family"};return $s
+}
+# The second cursor of a two-step skill (poison then weapon, animal then place).
+function Next-Target($B,[scriptblock]$Target,[string]$Family){
+    $before=$B.CursorAt;$deadline=[datetime]::UtcNow.AddSeconds(2);while($B.CursorAt -eq $before -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
+    if($B.CursorAt -ne $before){Send-Plain $B (& $Target);$tally['target']++;Count "cursor-$Family"}else{Count "nocursor2-$Family"}
+}
+# British sets the skill a scenario needs so its success branch is reachable (testing mode; others keep their own levels).
+function Prime($B,[string]$Skill){if($B.Index -eq 1){Send-Plain $B (Say "[skill $Skill 100")}}
+# Answers an 0x7C menu with its first entry; a nested menu gets one more answer.
+function Answer-Menu($B,[string]$Family,[int]$Depth=2){
+    for($d=0;$d -lt $Depth;$d++){$B.Menu=$null;$deadline=[datetime]::UtcNow.AddSeconds(2);while($null -eq $B.Menu -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
+        if($null -eq $B.Menu){if($d -eq 0){Count "nomenu-$Family"};return}
+        $m=$B.Menu;$tl=$m[9];$at=10+$tl;$count=$m[$at];if($count -le 0){return}
+        $g=U16 $m ($at+1);$a=[byte[]]::new(13);$a[0]=0x7D;Put32 $a 1 (U32 $m 3);Put16 $a 5 (U16 $m 7);Put16 $a 7 1;Put16 $a 9 $g;Send-Plain $B $a;Count "menu-$Family"}
+}
+function Creature($B){return Nearest $B {param($m) $m[0] -lt 400}}
+# Wields an item (0x07 lift, 0x13 equip); whatever the bot held in hand goes back to its pack first (0x07 lift, 0x08 drop),
+# so a bow is never refused beside a dagger.
+function Equip($B,[long]$Item,[int]$Layer){
+    foreach($k in @($B.Held.Keys)){$h=$B.Held[$k];if($h -ne $Item -and $B.Pack){$l=[byte[]]::new(7);$l[0]=7;Put32 $l 1 $h;Put16 $l 5 1;Send-Plain $B $l
+        $d=[byte[]]::new(14);$d[0]=8;Put32 $d 1 $h;Put16 $d 5 60;Put16 $d 7 80;Put32 $d 10 $B.Pack;Send-Plain $B $d};$B.Held.Remove($k)}
+    $l=[byte[]]::new(7);$l[0]=7;Put32 $l 1 $Item;Put16 $l 5 1;Send-Plain $B $l
+    $e=[byte[]]::new(10);$e[0]=0x13;Put32 $e 1 $Item;$e[5]=$Layer;Put32 $e 6 $B.Serial;Send-Plain $B $e;$B.Held[$Layer]=$Item;Pump-Bot $B 32
 }
 function Act($B){
     if($B.DeathAsked){$B.DeathAsked=$false;Send-Plain $B ([byte[]]@(44,1));$tally['death']++;$B.Last='death answer';return}
@@ -163,22 +203,30 @@ function Act($B){
             $humans=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $B.Mobiles[$_][0] -ge 400 -and $B.Mobiles[$_][0] -le 401 -and [Math]::Max([Math]::Abs($B.Mobiles[$_][1]-$B.X),[Math]::Abs($B.Mobiles[$_][2]-$B.Y)) -le 8});$v=if($humans.Count -gt 0){$humans[$rng.Next($humans.Count)]}else{0}
             if($v){Send-Plain $B (Serial-Packet 9 $v);Send-Plain $B (Serial-Packet 6 $v)};Send-Plain $B (Say 'vendor buy')
             $deadline=[datetime]::UtcNow.AddSeconds(2);$B.BuyFrom=0;while($B.BuyFrom -eq 0 -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
-            if($B.BuyFrom -ne 0 -and $v){$lots=@($B.Items.Keys|Where-Object{$B.Items[$_][1] -eq $B.BuyFrom});$tools=@($lots|Where-Object{@(0x0EC4,0x13F6,0x13E3,0x0E86) -contains $B.Items[$_][0]});$pick=@(if($tools.Count -gt 0){$tools}else{$lots});$lot=if($pick.Count -gt 0){$pick[$rng.Next($pick.Count)]}else{0}
+            if($B.BuyFrom -ne 0 -and $v){$lots=@($B.Items.Keys|Where-Object{$B.Items[$_][1] -eq $B.BuyFrom});$tools=@($lots|Where-Object{@(0x0EC4,0x13F6,0x13E3,0x0E86,0x0E21) -contains $B.Items[$_][0]});$pick=@(if($tools.Count -gt 0){$tools}else{$lots});$lot=if($pick.Count -gt 0){$pick[$rng.Next($pick.Count)]}else{0}
                 if($lot){$p=[byte[]]::new(15);$p[0]=0x3B;Put16 $p 1 15;Put32 $p 3 $v;$p[7]=2;$p[8]=0x1A;Put32 $p 9 $lot;Put16 $p 13 1;Send-Plain $B $p;$tally['buy']++}}}
         'bank'{Send-Plain $B (Say '[go 1438 1695');Send-Plain $B (Say 'bank')}
         'inventory'{if($B.Pack){Send-Plain $B (Serial-Packet 6 $B.Pack);Pump-Bot $B 64;foreach($k in @($B.Items.Keys)){if($B.Items[$k][0] -eq 0x0E76 -and $B.Items[$k][1] -eq $B.Pack){Send-Plain $B (Serial-Packet 6 $k)}}}else{Send-Plain $B (Serial-Packet 6 ($B.Serial-bor 0x80000000))}}
         'harvest'{Send-Plain $B (Say '[go 1452 1529');Pump-Bot $B 64;Use-Then-Target $B (Item-Of $B 0x0E86) {Target-Ground $B 1451 1528 40} 'harvest'}
-        'craft'{$h=Item-Of $B 0x13E3;if($h){Send-Plain $B (Say '[go 1418 1547');Pump-Bot $B 64;$B.Menu=$null;Send-Plain $B (Serial-Packet 6 $h);$deadline=[datetime]::UtcNow.AddSeconds(2);while($null -eq $B.Menu -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
-            if($B.Menu){$m=$B.Menu;$tl=$m[9];$at=10+$tl;$count=$m[$at];if($count -gt 0){$g=U16 $m ($at+1);$a=[byte[]]::new(13);$a[0]=0x7D;Put32 $a 1 (U32 $m 3);Put16 $a 5 (U16 $m 7);Put16 $a 7 1;Put16 $a 9 $g;Send-Plain $B $a;$tally['menu']++}}else{$tally['nomenu-craft']=1+$(if($tally.ContainsKey('nomenu-craft')){$tally['nomenu-craft']}else{0})}}}
+        'craft'{$kinds=@(@(0x13E3,7),@(0x0F9D,34),@(0x1034,11),@(0x1EB8,37),@(0x097F,13),@(0x1043,13),@(0x1022,8));$kind=$kinds[$rng.Next($kinds.Count)];$h=Item-Of $B $kind[0]
+            if($B.Index -eq 1){foreach($m in @(@('1BF2',0x1BF2),@('1BD7',0x1BD7),@('1766',0x1766),@('097A',0x097A),@('1BDD',0x1BDD))){if(-not (Item-Of $B $m[1])){[void](Ensure-Item $B $m[0] $m[1] 20 'craft')}}}
+            if($h){if($kind[0] -eq 0x13E3){Send-Plain $B (Say '[go 1418 1547');Pump-Bot $B 64};Prime $B "$($kind[1])";Send-Plain $B (Serial-Packet 6 $h);Answer-Menu $B ('craft-{0:X4}' -f $kind[0]) 2}
+            else{Count ('noitem-craft-{0:X4}' -f $kind[0])}}
         'carve'{$c=0;foreach($k in $B.Corpses.Keys){$c=$k;break};if($c){$at=$B.Corpses[$c];Send-Plain $B (Say "[go $($at[0]) $($at[1])");Pump-Bot $B 64;Use-Then-Target $B (Item-Of $B 0x0EC4) {Target-Object $B $c $at[0] $at[1] 0 0x2006} 'carve'}}
         'combat'{$t=Nearest $B {param($m) $m[0] -lt 400 -or $m[0] -gt 403};if(-not $t){$t=Nearest $B {param($m) $true}}
             if($t){Send-Plain $B ([byte[]]@(114,1,0,50,0));Send-Plain $B (Serial-Packet 5 $t);$m=$B.Mobiles[$t]
                 for($i=0;$i -lt 4;$i++){$dx=[Math]::Sign($m[1]-$B.X);$dy=[Math]::Sign($m[2]-$B.Y);if($dx -eq 0 -and $dy -eq 0){break};Walk $B ([Array]::IndexOf(@('0,-1','1,-1','1,0','1,1','0,1','-1,1','-1,0','-1,-1'),"$dx,$dy"))}}
             else{Send-Plain $B (Say '[go 1385 1487')}}
         'moongate'{Send-Plain $B (Say '[go 1337 1997');Pump-Bot $B 64;Walk $B 6;Walk $B 6}
-        'magery'{$n=1+$rng.Next(16);$txt=[Text.Encoding]::ASCII.GetBytes("$n");$p=[byte[]]::new(5+$txt.Length);$p[0]=0x12;Put16 $p 1 $p.Length;$p[3]=0x56;$txt.CopyTo($p,4);$before=$B.CursorAt;Send-Plain $B $p
+        'magery'{Prime $B 'magery';$n=1+$rng.Next(64);$txt=[Text.Encoding]::ASCII.GetBytes("$n");$p=[byte[]]::new(5+$txt.Length);$p[0]=0x12;Put16 $p 1 $p.Length;$p[3]=0x56;$txt.CopyTo($p,4);$before=$B.CursorAt;Send-Plain $B $p
             $deadline=[datetime]::UtcNow.AddSeconds(4);while($B.CursorAt -eq $before -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
-            if($B.CursorAt -ne $before){$t=Nearest $B {param($m) $true};if($t -and $rng.Next(2) -eq 0){$m=$B.Mobiles[$t];Send-Plain $B (Target-Object $B $t $m[1] $m[2] 0 $m[0])}else{Send-Plain $B (Target-Object $B $B.Serial $B.X $B.Y $B.Z 400)};$tally['target']++}}
+            if($B.CursorAt -ne $before){$t=Nearest $B {param($m) $true};$pick=$rng.Next(4);$i=Any-Owned $B
+                if($pick -eq 0 -and $t){$m=$B.Mobiles[$t];Send-Plain $B (Target-Object $B $t $m[1] $m[2] 0 $m[0])}
+                elseif($pick -eq 1){Send-Plain $B (Target-Ground $B ($B.X+2) $B.Y $B.Z);Count 'ground-magery'}
+                elseif($pick -eq 2 -and $i){Send-Plain $B (Target-Object $B $i 0 0 0 $B.Items[$i][0]);Count 'item-magery'}
+                else{Send-Plain $B (Target-Object $B $B.Serial $B.X $B.Y $B.Z 400)};$tally['target']++}}
+        'mint'{Send-Plain $B (Say '[go 1333 1603');Pump-Bot $B 64;$m=@($B.Mobiles.Keys|Where-Object{$B.Mobiles[$_][1] -eq 1334 -and $B.Mobiles[$_][2] -eq 1603});$i=Ensure-Item $B '1BF2' 0x1BF2 3 'mint'
+            if($m.Count -gt 0 -and $i){$l=[byte[]]::new(7);$l[0]=7;Put32 $l 1 $i;Put16 $l 5 3;Send-Plain $B $l;$d=[byte[]]::new(14);$d[0]=8;Put32 $d 1 $i;Put16 $d 5 0xFFFF;Put16 $d 7 0xFFFF;Put32 $d 10 $m[0];Send-Plain $B $d;Count 'drop-mint'}else{Count 'nominter-mint'}}
         'help'{$p=[byte[]]::new(258);$p[0]=0x9B;Send-Plain $B $p}
         'chop'{$t=0;$far=99;foreach($k in $B.Flora.Keys){$f=$B.Flora[$k];$d=[Math]::Max([Math]::Abs($f[0]-$B.X),[Math]::Abs($f[1]-$B.Y));if($d -lt $far){$far=$d;$t=$k}}
             if(-not $t){Send-Plain $B (Say '[go 1420 1698')}else{$f=$B.Flora[$t];Send-Plain $B (Say "[go $($f[0]+1) $($f[1])");Pump-Bot $B 64;Use-Then-Target $B (Item-Of $B 0x0F43) {Target-Object $B $t $f[0] $f[1] 0 $f[2]} 'chop'}}
@@ -193,18 +241,116 @@ function Act($B){
         'fighter'{Send-Plain $B (Say '[go 1385 1487');Pump-Bot $B 64;Send-Plain $B ([byte[]]@(114,1,0,50,0))
             $bots=@($fleet|ForEach-Object Serial);$t=Nearest $B {param($m) $m[0] -ge 400 -and $m[0] -le 401};if($t -and $bots -notcontains $t){Send-Plain $B (Serial-Packet 5 $t)}}
         'click'{$t=Nearest $B {param($m) $true};if($t){Send-Plain $B (Serial-Packet 9 $t)};$s=[byte[]]::new(10);$s[0]=0x34;Put32 $s 1 0xEDEDEDEDL;$s[5]=4;Put32 $s 6 $B.Serial;Send-Plain $B $s}
+        'camping'{$k=Item-Of $B 0x0DE1;$knife=Item-Of $B 0x0EC4;$tree=0;$far=99;foreach($t in $B.Flora.Keys){$f=$B.Flora[$t];$d=[Math]::Max([Math]::Abs($f[0]-$B.X),[Math]::Abs($f[1]-$B.Y));if($d -lt $far){$far=$d;$tree=$t}}
+            if(-not $k -and $knife -and $tree){$f=$B.Flora[$tree];Send-Plain $B (Say "[go $($f[0]+1) $($f[1])");Pump-Bot $B 64;Use-Then-Target $B $knife {Target-Object $B $tree $f[0] $f[1] 0 $f[2]} 'kindling'}
+            else{if(-not $k){$k=Ensure-Item $B '0DE1' 0x0DE1 3 'camping'};if($k){$l=[byte[]]::new(7);$l[0]=7;Put32 $l 1 $k;Send-Plain $B $l;$d=[byte[]]::new(14);$d[0]=8;Put32 $d 1 $k;Put16 $d 5 $B.X;Put16 $d 7 $B.Y;$d[9]=[byte]($B.Z -band 255);Put32 $d 10 0xFFFFFFFF;Send-Plain $B $d;Pump-Bot $B 16;Send-Plain $B (Serial-Packet 6 $k)}}}
+        'cartography'{$drawn=Item-Of $B 0x14EB
+            if($drawn -and $rng.Next(2) -eq 0){Send-Plain $B (Serial-Packet 6 $drawn)}
+            else{Prime $B 'cartography';$blank=Ensure-Item $B '14EC' 0x14EC 2 'cartography';$pen=Ensure-Item $B '0FBF' 0x0FBF 1 'cartography'
+                if($rng.Next(2) -eq 0){Send-Plain $B (Skill-Use 12);Count 'button-cartography'}elseif($blank -and $pen){Send-Plain $B (Serial-Packet 6 $blank)}}}
+        'taste'{Use-Then-Target $B 0 {$i=Any-Owned $B;if($i){Target-Object $B $i 0 0 0 $B.Items[$i][0]}else{Target-Object $B $B.Serial $B.X $B.Y $B.Z 400}} 'taste' -Packet (Skill-Use 36)}
+        'forensics'{$c=0;foreach($k in $B.Corpses.Keys){$c=$k;break}
+            if($c){$at=$B.Corpses[$c];Send-Plain $B (Say "[go $($at[0]) $($at[1])");Pump-Bot $B 64;Use-Then-Target $B 0 {Target-Object $B $c $at[0] $at[1] 0 0x2006} 'forensics' -Packet (Skill-Use 19)}
+            else{Use-Then-Target $B 0 {if($B.Pack){Target-Object $B $B.Pack 0 0 0 0x0E75}else{Target-Object $B $B.Serial $B.X $B.Y $B.Z 400}} 'forensics' -Packet (Skill-Use 19)}}
+        'spirit'{Send-Plain $B (Skill-Use 32)}
+        'poisoning'{$potion=Ensure-Item $B '0F0A' 0x0F0A 1 'poisoning'
+            Use-Then-Target $B 0 {$i=if($potion){$potion}else{Any-Owned $B};if($i){Target-Object $B $i 0 0 0 $B.Items[$i][0]}else{Target-Object $B $B.Serial $B.X $B.Y $B.Z 400}} 'poisoning' -Packet (Skill-Use 30)
+            Next-Target $B {$w=Any-Owned $B;if($w){Target-Object $B $w 0 0 0 $B.Items[$w][0]}else{Target-Object $B $B.Serial $B.X $B.Y $B.Z 400}} 'poisoning'}
+        'stealing'{Prime $B 'stealing';$bots=@($fleet|ForEach-Object Serial)
+            $people=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $bots -notcontains $_ -and $B.Mobiles[$_][0] -ge 400 -and $B.Mobiles[$_][0] -le 401})
+            if($people.Count -eq 0 -and $rng.Next(2) -eq 0){Send-Plain $B (Say "[go $(1490+$rng.Next(10)) $(1610+$rng.Next(10))");Pump-Bot $B 128;$people=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $bots -notcontains $_ -and $B.Mobiles[$_][0] -ge 400 -and $B.Mobiles[$_][0] -le 401})}
+            $t=if($people.Count -gt 0){$people[$rng.Next($people.Count)]}else{Creature $B}
+            if(-not $t -or $bots -contains $t){Send-Plain $B (Say "[go $(1340+$rng.Next(30)) $(1450+$rng.Next(50))");Pump-Bot $B 128;$t=Creature $B}
+            if($t -and $bots -notcontains $t){$m=$B.Mobiles[$t];Send-Plain $B (Say "[go $($m[1]+1) $($m[2])");Pump-Bot $B 64;$m=$B.Mobiles[$t];if($m){Use-Then-Target $B 0 {Target-Object $B $t $m[1] $m[2] 0 $m[0]} 'stealing' -Packet (Skill-Use 33)}}else{Count 'notarget-stealing'}}
+        'herding'{$crook=Ensure-Item $B '0E81' 0x0E81 1 'herding'
+            if($crook){Prime $B 'herding';Send-Plain $B (Say "[go $(1340+$rng.Next(100)) $(1512+$rng.Next(20))");Pump-Bot $B 128
+                $near=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $B.Mobiles[$_][0] -lt 400});$t=if($near.Count -gt 0){$near[$rng.Next($near.Count)]}else{0}
+                if($t){$m=$B.Mobiles[$t];Send-Plain $B (Say "[go $($m[1]+1) $($m[2])");Pump-Bot $B 64}
+                if($t -and $B.Mobiles.ContainsKey($t)){$m=$B.Mobiles[$t];Use-Then-Target $B $crook {Target-Object $B $t $m[1] $m[2] 0 $m[0]} 'herding';Next-Target $B {Target-Ground $B ($m[1]+3) $m[2] $B.Z} 'herding'}else{Count 'notarget-herding'}}}
+        'bard'{$lute=Ensure-Item $B '0EB3' 0x0EB3 1 'bard'
+            if($lute){$skill=@(9,22,15,28)[$rng.Next(4)];$name=@{9='peacemaking';22='provocation';15='enticement';28='snooping'}[$skill];Prime $B $name
+                if($skill -ne 28){Send-Plain $B (Say '[goto britspawn');Pump-Bot $B 64}
+                $t=if($skill -eq 28){Nearest $B {param($m) $true}}else{Creature $B}
+                if($t){$m=$B.Mobiles[$t];Use-Then-Target $B 0 {Target-Object $B $t $m[1] $m[2] 0 $m[0]} "bard-$name" -Packet (Skill-Use $skill)
+                    if($skill -eq 22 -or $skill -eq 15){$u=Nearest $B {param($m2) $m2[0] -lt 400};Next-Target $B {if($skill -eq 15 -or -not $u -or -not $B.Mobiles.ContainsKey($u)){Target-Object $B $B.Serial $B.X $B.Y $B.Z 400}else{$o=$B.Mobiles[$u];Target-Object $B $u $o[1] $o[2] 0 $o[0]}} "bard-$name"}}
+                else{Count 'notarget-bard'}}}
+        'tracking'{Prime $B 'tracking';Send-Plain $B (Skill-Use 38);Answer-Menu $B 'tracking' 2}
+        'healing'{$band=Ensure-Item $B '0E21' 0x0E21 10 'healing';if(-not $band){Count 'noitem-healing'}
+            else{Prime $B 'healing';$t=Nearest $B {param($m) $true};Use-Then-Target $B $band {if($t -and $rng.Next(2) -eq 0){$o=$B.Mobiles[$t];Target-Object $B $t $o[1] $o[2] 0 $o[0]}else{Target-Object $B $B.Serial $B.X $B.Y $B.Z 400}} 'healing'}}
+        'alchemy'{$mortar=Ensure-Item $B '0E9B' 0x0E9B 1 'alchemy';$bottle=Ensure-Item $B '0F0E' 0x0F0E 3 'alchemy'
+            $reagent=@('0F85','0F84','0F7A')[$rng.Next(3)];$r=Ensure-Item $B $reagent ([Convert]::ToInt32($reagent,16)) 5 'alchemy'
+            if($mortar -and $r){Prime $B 'alchemy';Use-Then-Target $B $mortar {Target-Object $B $r 0 0 0 $B.Items[$r][0]} 'alchemy'}
+            $potion=@(@(0x0F0C,0x0F07,0x0F0B)|ForEach-Object{Item-Of $B $_}|Where-Object{$_})|Select-Object -First 1;if($potion){Send-Plain $B (Serial-Packet 6 $potion);Count 'drink-alchemy'}}
+        'inscription'{$pen=Ensure-Item $B '0FBF' 0x0FBF 1 'inscription';$scroll=Ensure-Item $B '0E34' 0x0E34 5 'inscription';$book=Ensure-Item $B '0EFA' 0x0EFA 1 'inscription'
+            if($pen -and $scroll){Prime $B 'inscription';Use-Then-Target $B $pen {Target-Object $B $scroll 0 0 0 0x0E34} 'inscription';Answer-Menu $B 'inscription' 2}}
+        # A bow and arrows (archery: range, ammunition, line of sight), a heater shield (Parrying when the prey strikes back)
+        # or the kit dagger (a coated one poisons); then the bot fights the nearest creature.
+        'arms'{$kind=$rng.Next(3);$w=0;$layer=1
+            if($kind -eq 0){$w=Ensure-Item $B '13B2' 0x13B2 1 'arms-bow';[void](Ensure-Item $B '0F3F' 0x0F3F 30 'arms-arrows');$layer=2;Prime $B 'archery'}
+            elseif($kind -eq 1){$w=Ensure-Item $B '1B76' 0x1B76 1 'arms-shield';$layer=2;Prime $B 'parrying'}
+            else{$w=Item-Of $B 0x0F52;if(-not $w){Count 'noitem-arms-dagger'}}
+            if($w){Equip $B $w $layer;Count "equip-arms-$kind";Send-Plain $B (Say '[goto britspawn');Pump-Bot $B 64;$t=Creature $B
+                if($t){Send-Plain $B ([byte[]]@(114,1,0,50,0));Send-Plain $B (Serial-Packet 5 $t);Pump-Bot $B 64}else{Count 'notarget-arms'}}}
     }
 }
 $log=Join-Path $OutDir 'server.log';$err=Join-Path $OutDir 'guest.stderr';$option=Join-Path $OutDir 'launch.input';$prof=Join-Path $OutDir 'prof.txt'
-[IO.File]::WriteAllText($option,"UOAIX TESTING`n",[Text.Encoding]::ASCII)
+# The owner drives the admin port too (UOAIX-49 B): keys as start-composite-game.ps1 -Admin provisions them (health,
+# mind, keeper, human, epoch); the owner is the human role 4. Only read-only panel commands run, so the world is unchanged.
+$adminKeys=@(1..5|ForEach-Object{[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()})
+$ownerKey=[Convert]::FromHexString($adminKeys[3])
+$adminRequest=[Security.Cryptography.HMACSHA256]::HashData($ownerKey,[Text.Encoding]::UTF8.GetBytes("UOAIX1/request/4/$($adminKeys[4])"))
+$adminResponse=[Security.Cryptography.HMACSHA256]::HashData($ownerKey,[Text.Encoding]::UTF8.GetBytes("UOAIX1/response/4/$($adminKeys[4])"))
+$adminHttp=[Net.Http.HttpClient]::new();$adminHttp.Timeout=[TimeSpan]::FromSeconds(10);$adminHttp.DefaultRequestHeaders.ConnectionClose=$true
+$admin=@{Sequence=0;Ceiling=0;Session=0;NextAt=[datetime]::MinValue;Turn=0}
+$adminCommands=@('panel-data','treasury-view','panel-levels','gm-list','gm-log','panel-log','panel-cover')
+function Admin-Post([string]$Path,[string]$Body){
+    $request=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post,"http://127.0.0.1:$AdminPort$Path")
+    $request.Content=[Net.Http.StringContent]::new($Body,[Text.Encoding]::ASCII,'text/plain')
+    try{$response=$adminHttp.Send($request);try{return @{status=[int]$response.StatusCode;body=$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()}}finally{$response.Dispose()}}finally{$request.Dispose()}
+}
+function Admin-Tag([byte[]]$Secret,[string]$Text){[Convert]::ToHexString([Security.Cryptography.HMACSHA256]::HashData($Secret,[Text.Encoding]::UTF8.GetBytes($Text))).ToLowerInvariant()}
+function Admin-Reserve{
+    $challenge=[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
+    $label="UOAIX1/sequence/4/$challenge"
+    $probe=Admin-Post '/handshake' "4`n$challenge`n$(Admin-Tag $adminRequest $label)";$parts=$probe.body.Split("`n")
+    if($probe.status -ne 200 -or $parts.Length -ne 2 -or $parts[1] -cne (Admin-Tag $adminResponse "$label/$($parts[0])")){throw "admin probe $($probe.status)"}
+    $floor=[long]$parts[0];$label="UOAIX1/reserve/4/$challenge/$floor"
+    $reserve=Admin-Post '/handshake' "4`n$challenge`n$floor`n$(Admin-Tag $adminRequest $label)";$parts=$reserve.body.Split("`n")
+    if($reserve.status -ne 200 -or $parts.Length -ne 2 -or $parts[1] -cne (Admin-Tag $adminResponse $label)){throw "admin reserve $($reserve.status)"}
+    $admin.Sequence=$floor;$admin.Ceiling=$floor+1024
+}
+function Admin-Send([string]$Json){
+    if($admin.Sequence -ge $admin.Ceiling){Admin-Reserve}
+    $admin.Sequence++;$seq=$admin.Sequence
+    $nonce=[byte[]]::new(12);[BitConverter]::GetBytes([uint64]$seq).CopyTo($nonce,4)
+    $plain=[Text.Encoding]::UTF8.GetBytes($Json);$cipher=[byte[]]::new($plain.Length);$tag=[byte[]]::new(16)
+    $aes=[Security.Cryptography.AesGcm]::new($adminRequest,16);try{$aes.Encrypt($nonce,$plain,$cipher,$tag,[Text.Encoding]::UTF8.GetBytes("UOAIX1/request/4/$seq"))}finally{$aes.Dispose()}
+    $reply=Admin-Post '/admin' "4`n$seq`n$([Convert]::ToHexString($cipher).ToLowerInvariant())`n$([Convert]::ToHexString($tag).ToLowerInvariant())"
+    $parts=$reply.body.Split("`n");if($reply.status -ne 200 -or $parts.Length -ne 2){throw "admin $($reply.status)"}
+    $cipher=[Convert]::FromHexString($parts[0]);$plain=[byte[]]::new($cipher.Length)
+    $aes=[Security.Cryptography.AesGcm]::new($adminResponse,16);try{$aes.Decrypt($nonce,$cipher,[Convert]::FromHexString($parts[1]),$plain,[Text.Encoding]::UTF8.GetBytes("UOAIX1/response/4/$seq"))}finally{$aes.Dispose()}
+    return [Text.Encoding]::UTF8.GetString($plain)
+}
+function Admin-Step{
+    if([datetime]::UtcNow -lt $admin.NextAt){return};$admin.NextAt=[datetime]::UtcNow.AddSeconds(2)
+    try{
+        if($admin.Ceiling -eq 0){Admin-Reserve}
+        if($admin.Session -eq 0){$admin.Session=[long]((Admin-Send '{"command":"panel-open"}')|ConvertFrom-Json).session;Count 'admin-panel-open';return}
+        $c=$adminCommands[$admin.Turn % $adminCommands.Count];$admin.Turn++
+        $extra=if($c -eq 'gm-log'){',"before":0'}elseif($c -eq 'panel-log'){',"before":1'}else{''}
+        $text=Admin-Send ('{"command":"'+$c+'","session":'+$admin.Session+$extra+'}')
+        if($text -match '^\{"error"'){Count "adminerr-$c"}else{Count "admin-$c"}
+    }catch{Count 'admin-refused';$admin.Session=0;$admin.Ceiling=0}
+}
+[IO.File]::WriteAllText($option,"ADMIN $($adminKeys -join ' ')`nUOAIX TESTING`n",[Text.Encoding]::ASCII)
 $vmPath=if($Vm){(Resolve-Path $Vm).Path}else{Join-Path $repo 'tools/codex-vm.exe'}
 if((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt 1572864){throw 'RAM admission'}
 $fleet=@(1..$Bots|ForEach-Object{New-Bot $_})
 $env:CODEX_VM_PROFILE=$prof
-try{$guest=Start-Process $vmPath -ArgumentList @('-kernel',('"'+$Artifact+'"'),'-disk',('"'+$disk+'"'),'-output',('"'+$log+'"'),'-headless','-mem','3072','-e1000-nat','-portfwd',"${Port}:2593",'-input',('"'+$option+'"')) -WindowStyle Hidden -PassThru -RedirectStandardError $err}
+try{$guest=Start-Process $vmPath -ArgumentList @('-kernel',('"'+$Artifact+'"'),'-disk',('"'+$disk+'"'),'-output',('"'+$log+'"'),'-headless','-mem','3072','-e1000-nat','-portfwd',"${Port}:2593",'-portfwd',"${AdminPort}:2594",'-input',('"'+$option+'"'),'-clock-scale',"$ClockScale") -WindowStyle Hidden -PassThru -RedirectStandardError $err}
 finally{$env:CODEX_VM_PROFILE=''}
 @{pid=$guest.Id;guests=1;log=$log;port=$Port;bots=$Bots;minutes=$Minutes;world=$World}|ConvertTo-Json|Set-Content (Join-Path $OutDir 'run.json')
-Note "SOAK guest PID=$($guest.Id) port=$Port bots=$Bots minutes=$Minutes world=$World"
+Note "SOAK guest PID=$($guest.Id) port=$Port bots=$Bots minutes=$Minutes clock-scale=$ClockScale world=$World"
 $fatal=''
 function Dump-Cover{$cb=@($fleet|Where-Object Up)|Select-Object -First 1;if($cb){try{Send-Plain $cb (Say '[cover');$until=[datetime]::UtcNow.AddSeconds(3);while([datetime]::UtcNow -lt $until){Pump-Bot $cb 1}}catch{}}}
 function Read-Log{if(-not (Test-Path $log)){return ''};$f=[IO.File]::Open($log,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete));$r=[IO.StreamReader]::new($f);try{return $r.ReadToEnd()}finally{$r.Dispose()}}
@@ -228,6 +374,7 @@ try{
                 if([datetime]::UtcNow -ge $b.NextAt){Act $b;$b.NextAt=[datetime]::UtcNow.AddMilliseconds(300+$rng.Next(1200))}
             }catch{Drop-Bot $b $_.Exception.Message}
         }
+        Admin-Step
         Start-Sleep -Milliseconds 10
         if([datetime]::UtcNow -ge $nextReport){
             $nextReport=[datetime]::UtcNow.AddMinutes(1);$text=Read-Log;$new=$text.Substring([Math]::Min($seen,$text.Length));$seen=$text.Length

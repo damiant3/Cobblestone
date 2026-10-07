@@ -59,6 +59,14 @@ Chapter: TownNetworkLive
     in let sampled = __record-set r "at" w.hour
     in let frame = tnf-frame w r.actor r.item r.role goal 1 (tnv-culture-value n r 0 0) r.state.inputs 0
     in if frame /= 0 then frame else tn-input r.state 2 (tn-clip (gla-funds g.town.vendors.currency r.actor * 10 / g.town.vendors.currency.copper-rate) -1000 1000)
+  tnv-feel : TownNetworkLive, Integer -> Integer
+  tnv-feel (n) (i) = if i == list-length n.agents | i == n.actions.town.count then 0
+    else let s = (list-at n.agents i).state
+    in let t = n.actions.town
+    in let a = list-set-at t.feel (i * 3) (tn-opinion s 0)
+    in let b = list-set-at t.feel (i * 3 + 1) (tn-opinion s 1)
+    in let c = list-set-at t.feel (i * 3 + 2) (tn-alarm s)
+    in tnv-feel n (i + 1)
   tnv-infer : TownNetworkLive, TnvAgent -> Integer
   tnv-infer (n) (r) = if not (ea-room n.actions.book 10) | r.thoughts == ep-limit then -14
     else if tnv-frame n r /= 0 then -16
@@ -68,6 +76,7 @@ Chapter: TownNetworkLive
     in let next = __record-set r "think-at" (n.actions.town.now + 900)
     in let prepared = __record-set r "prepared" 0
     in let affect = gla-affect n.actions r.person r.actor (tn-happiness r.state) (tn-alarm r.state)
+    in let felt = tnv-feel n 0
     in if affect /= 0 then affect else count
   tnv-lot : GameLiveActions, Integer, Integer, Integer, Integer -> Integer
   tnv-lot (g) (actor) (owner) (item) (i) = if i == g.town.vendors.lot-count then -1
@@ -189,7 +198,7 @@ Chapter: TownNetworkLive
   tnv-round (n) (map) (doors) (budget) (seen) (done) = if seen == list-length n.agents | done == budget then done
     else let r = list-at n.agents n.cursor
     in let cursor = __record-set n "cursor" (int-mod (n.cursor + 1) (list-length n.agents))
-    in if r.next > n.actions.town.now then tnv-round n map doors budget (seen + 1) done
+    in if r.next > n.actions.town.now | (tf-person n.actions.town.people r.person).alive == 0 then tnv-round n map doors budget (seen + 1) done
     else let inferred = if r.state.head == r.state.count then tnv-infer n r else 0
     in if inferred == -14 then tnv-round n map doors budget (seen + 1) done
     else if inferred < 0 then inferred

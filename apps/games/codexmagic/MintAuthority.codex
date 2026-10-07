@@ -85,13 +85,13 @@ Section: Mint Operations
     coins-minted : Integer
   }
 
-  mint-for-purchase : MintAuthorityState, ChainState, Integer, Integer, Integer -> MintResult
-  mint-for-purchase (auth) (chain) (account) (usd-amount) (timestamp) =
+  mint-for-purchase : MintAuthorityState, ChainState, Integer, Integer, Integer, List Integer -> MintResult
+  mint-for-purchase (auth) (chain) (account) (usd-amount) (timestamp) (platform-seed) =
     let coins = usd-amount * auth.rate-usd-to-coin
     in if coins <= 0 then MintResult { authority = auth, chain = chain, success = False, reason = "Invalid amount", coins-minted = 0 }
     else if is-suspicious auth account then MintResult { authority = auth, chain = chain, success = False, reason = "Account flagged", coins-minted = 0 }
-    else let nonce = get-nonce chain (auth.platform-key)
-    in let tx = sign-transaction (auth.platform-key) account coins TxMint nonce timestamp (auth.platform-key)
+    else let nonce = next-nonce chain (auth.platform-key)
+    in let tx = sign-transaction (auth.platform-key) account coins TxMint nonce timestamp platform-seed
     in let submit = submit-validated chain tx (auth.platform-key)
     in if submit.accepted == False then MintResult { authority = auth, chain = submit.chain, success = False, reason = submit.reason, coins-minted = 0 }
     else let event = MintEvent { event-id = list-length (auth.mint-events), account = account, amount = coins, usd-paid = usd-amount, timestamp = timestamp, tx-hash = tx.tx-hash }
@@ -118,12 +118,12 @@ Section: Burn Operations
     success : Boolean
   }
 
-  burn-coins : MintAuthorityState, ChainState, Integer, Integer, BurnReason, Integer -> BurnResult
-  burn-coins (auth) (chain) (account) (amount) (reason) (timestamp) =
+  burn-coins : MintAuthorityState, ChainState, Integer, Integer, BurnReason, Integer, List Integer -> BurnResult
+  burn-coins (auth) (chain) (account) (amount) (reason) (timestamp) (seed) =
     let bal = get-balance chain account
     in if bal < amount then BurnResult { authority = auth, chain = chain, success = False }
-    else let nonce = get-nonce chain account
-    in let tx = sign-transaction account 0 amount TxBurn nonce timestamp account
+    else let nonce = next-nonce chain account
+    in let tx = sign-transaction account 0 amount TxBurn nonce timestamp seed
     in let submit = submit-validated chain tx (auth.platform-key)
     in if submit.accepted == False then BurnResult { authority = auth, chain = submit.chain, success = False }
     else let event = BurnEvent { event-id = list-length (auth.burn-events), account = account, amount = amount, burn-reason = reason, timestamp = timestamp }

@@ -129,22 +129,31 @@ Chapter: BritainProduction
       is Ok (_) -> let station = bb-station p.currency.world p.actor 12 0
         in if station < 1 | eu-mint-policy p.currency True p.actor metal yield /= 0 then Err "Britain mint policy refused"
         else if eu-strike p.currency True p.actor station metal 1 /= 0 then Err "Britain mint refused" else Ok 0
-  bb-crown-coin : EuCurrency, Integer, Integer -> Integer
-  bb-crown-coin (x) (metal) (left) =
+ An owner smelts its own ore two at a time and has each ingot struck at the crown's mint, at most left ingots (R8).
+  bb-coin : EuCurrency, Integer, Integer, Integer -> Integer
+  bb-coin (x) (owner) (metal) (left) =
     let crown = x.world.mint-owner
     in let ore = if metal == 1 then 63 else if metal == 2 then 64 else 6
     in let ingot = if metal == 1 then 65 else if metal == 2 then 66 else 32
-    in if left == 0 | crown <= 0 | not (ep-valid-actor x.world crown) then 0
-    else let p = ep-actor x.world crown
+    in if left == 0 | crown <= 0 | not (ep-valid-actor x.world crown) | not (ep-valid-actor x.world owner) then 0
+    else let p = ep-actor x.world owner
     in if ep-at p.stock ingot < 1 & ep-at p.stock ore < 2 then 0
     else let smelted = if ep-at p.stock ingot >= 1 then Ok 0
       else let recipe = bb-recipe x.world.catalog ingot 0
-      in if recipe < 1 then Err "no smelting recipe" else bb-crown-smelt x crown ingot recipe 16
+      in if recipe < 1 then Err "no smelting recipe"
+      else if owner /= crown & not (bb-holds p (list-at x.world.catalog.recipes (recipe - 1))) then Err "owner lacks smelting inputs"
+      else bb-crown-smelt x owner ingot recipe 16
     in when smelted
       is Err (_) -> 0
       is Ok (_) -> let mint = bb-station x.world crown 12 0
-        in if mint < 1 | ep-at p.stock ingot < 1 | eu-strike x True crown mint metal 1 /= 0 then 0
-        else 1 + bb-crown-coin x metal (left - 1)
+        in if mint < 1 | ep-at p.stock ingot < 1 | eu-strike x True owner mint metal 1 /= 0 then 0
+        else 1 + bb-coin x owner metal (left - 1)
+ An owner other than the crown smelts only from inputs it already holds; bb-craft's ensure would harvest and craft the rest.
+  bb-holds : EpActor, EgRecipe -> Boolean
+  bb-holds (p) (r) = (r.one == 0 | ep-at p.stock r.one >= r.one-count) & (r.two == 0 | ep-at p.stock r.two >= r.two-count)
+    & (r.three == 0 | ep-at p.stock r.three >= r.three-count) & (r.tool == 0 | ep-tool p r.tool)
+  bb-crown-coin : EuCurrency, Integer, Integer -> Integer
+  bb-crown-coin (x) (metal) (left) = bb-coin x x.world.mint-owner metal left
   bb-crown-smelt : EuCurrency, Integer, Integer, Integer, Integer -> Result Integer Text
   bb-crown-smelt (x) (crown) (ingot) (recipe) (left) = if left == 0 then Err "crown smelting failed"
     else when bb-craft (bb-producer x crown) ingot recipe 0

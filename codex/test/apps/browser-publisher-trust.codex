@@ -1,0 +1,72 @@
+Chapter: BrowserPublisherTrustTest
+  cites Browser chapter PageRuntime
+  cites Browser chapter PageFetcher
+  cites Browser chapter PageSandbox
+  cites Browser chapter TrustManager
+  cites Browser chapter ContentAddress
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Console
+
+Section: Pages
+
+  pt-bytes : List Integer = [72, 101, 108, 108, 111]
+
+  pt-hash : ContentHash = content-hash-source pt-bytes
+
+  pt-seed : List Integer = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]
+  pt-pub : List Integer = ed25519-public-key pt-seed
+  pt-sig : List Integer = ed25519-sign pt-seed pt-pub (content-hash-to-bytes pt-hash)
+
+  pt-page : Maybe (List Integer), Maybe (List Integer) -> FetchedPage
+  pt-page (publisher) (sig) = FetchedPage {
+    fp-bytes = pt-bytes, fp-content-hash = pt-hash, fp-publisher = publisher, fp-signature = sig,
+    fp-capabilities = [], fp-is-source = True, fp-version = 1, fp-content-type = "text/codex", fp-size = list-length pt-bytes }
+
+  pt-code : PageLoadResult -> Text
+  pt-code (r) =
+    when r
+      is PageLoaded (tree) (title) (caps) -> "past trust"
+      is PageCompileError (m) -> "past trust"
+      is PageFetchError (m) -> "refused: " & m
+      is PageTrustDenied (t) -> "refused: publisher not trusted"
+      is PageSizeDenied (s) -> "refused: size"
+
+  pt-load : FetchedPage, TrustStore -> Text
+  pt-load (page) (store) = pt-code (load-fetched-page page sandbox-default-config store 800 600)
+
+  pt-empty : TrustStore = trust-store-new []
+  pt-granted : TrustStore = trust-store-grant (trust-store-new []) pt-pub TierStatic 0
+  pt-own : TrustStore = trust-store-new pt-pub
+
+  pt-hex-digit : Integer -> Text
+  pt-hex-digit (n) = text-take (text-drop "0123456789abcdef" n) 1
+
+  pt-hex : List Integer, Integer, Text -> Text
+  pt-hex (bs) (i) (acc) = if i >= list-length bs then acc else pt-hex bs (i + 1) (acc & pt-hex-digit (bit-shru (list-at bs i) 4) & pt-hex-digit (bit-and (list-at bs i) 15))
+
+  pt-head : List Text = ["HTTP/1.1 200 OK", "X-Codex-Publisher: ed25519:" & pt-hex pt-pub 0 "", "X-Codex-Signature: " & pt-hex pt-sig 0 ""]
+
+  pt-same : Maybe (List Integer), List Integer -> Boolean
+  pt-same (m) (want) = when m is None -> False is Just (got) -> got == want
+
+  pt-none : Maybe (List Integer) -> Boolean
+  pt-none (m) = when m is None -> True is Just (_) -> False
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("page digest bytes are octets = " & show (ed-octets-valid (content-hash-to-bytes pt-hash) 0 36))
+    print-line-uni ("publisher header decodes to the key = " & show (pt-same (parse-pub-key pt-head) pt-pub))
+    print-line-uni ("signature header decodes to the signature = " & show (pt-same (parse-sig pt-head) pt-sig))
+    print-line-uni ("malformed publisher header refused = " & show (pt-none (parse-pub-key ["HTTP/1.1 200 OK", "X-Codex-Publisher: ed25519:zz"])))
+    print-line-uni ("signature verifies under the page's key = " & show (verify-fetched-signature (pt-page (Just pt-pub) (Just pt-sig))))
+    print-line-uni ("page with no publisher and no signature = " & pt-load (pt-page None None) pt-granted)
+    print-line-uni ("granted publisher, signature missing = " & pt-load (pt-page (Just pt-pub) None) pt-granted)
+    print-line-uni ("signed page, publisher unknown to the trust store = " & pt-load (pt-page (Just pt-pub) (Just pt-sig)) pt-empty)
+    print-line-uni ("signed page, publisher granted in the trust store = " & pt-load (pt-page (Just pt-pub) (Just pt-sig)) pt-granted)
+    print-line-uni ("signed page, publisher is the browser's own key = " & pt-load (pt-page (Just pt-pub) (Just pt-sig)) pt-own)
+    print-line-uni ("no publisher is trusted = " & show (publisher-trusted pt-granted None))
+    print-line-uni ("an empty key against an empty own key is trusted = " & show (publisher-trusted pt-empty (Just [])))
+  end
+
+Page 1

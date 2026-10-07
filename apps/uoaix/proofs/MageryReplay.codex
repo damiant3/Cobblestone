@@ -14,6 +14,9 @@ Chapter: MageryReplay
   mr-casts : Magery, GameShard, Integer, Integer, Integer -> Integer
   mr-casts (magic) (game) (spell) (left) (ok) = if left == 0 then ok
     else mr-casts magic game spell (left - 1) (if mgr-cast-skill magic game 1 (mgd-circle spell) then ok + 1 else ok)
+  mr-resists : Magery, GameShard, Integer, Integer -> Integer
+  mr-resists (magic) (game) (left) (held) = if left == 0 then held
+    else mr-resists magic game (left - 1) (if mge-resisted magic game 1 1 then held + 1 else held)
   MrEnv = record { game : GameShard, map : WalkMap, magic : Magery, input : GameInput, actor : MgActor }
   mr-land : WalkMap, Integer -> Integer
   mr-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
@@ -204,6 +207,133 @@ Chapter: MageryReplay
         pulse <- mg-pulse env.magic env.game env.input env.map 2593 5000
         mr-check "a poison tick on the player logs DAMAGE with cause poison and the poisoner as source" (is-ok pulse & mr-row env 12 1 cb-cause-poison & peek-byte env.magic.combat.events 126 == 1)
       end
+ UOAIX-81: Paralyze freezes for (7 + 20% of Magery) seconds, damage thaws, and a frozen player neither walks nor casts.
+  mr-frozen : MrEnv, Integer -> Integer
+  mr-frozen (env) (serial) = (list-at env.magic.combat.actors (world-slot env.game.world serial)).frozen
+  mr-paralyze : Integer -> [Console, Device.Block] Integer
+  mr-paralyze (unused) = when mr-env 0
+    is Err (e) -> mr-check ("paralyze fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-shl 1 37))
+      reply <- mr-cast env 38 12 1000
+      now <- max env.magic.tick env.magic.combat.tick
+      held <- mr-frozen env 12
+      a <- mr-check ("UOAIX-81: Paralyze at GM Magery on a creature with no Resisting Spells freezes it for 27 seconds and costs its reagents and 14 mana (frozen until tick " & show held & ")") (held > now & held - now <= mgd-ticks 27000 & held - now > mgd-ticks 26000 & env.actor.mana == 20 - 14 & mr-costs env 38 0 & list-length reply.packets > 0)
+      hit <- env.magic.combat.damage-hook env.game env.input 1 12 1
+      b <- mr-check "UOAIX-81: a point of damage frees the paralysed creature" (is-ok hit & mr-frozen env 12 == 0)
+      ensured <- cb-ensure env.magic.combat env.game 1
+      self <- list-at env.magic.combat.actors (world-slot env.game.world 1)
+      froze <- __record-set self "frozen" (now + mgd-ticks 60000)
+      walked <- mg-handle-at env.magic env.game env.input env.map 2593 [2,0,0,0,0,0,0] (now + 1)
+      cast <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 5) (now + 2)
+      thawed <- __record-set self "frozen" 0
+      free <- mg-handle-at env.magic env.game env.input env.map 2593 [2,0,0,0,0,0,0] (now + 3)
+      c <- mr-check "UOAIX-81: a frozen player's walk is refused and a cast answers that the player is frozen; thawed, the walk passes Magery by" ((mr-reply walked).note == "magery:frozen walk" & (mr-reply cast).note == "magery:frozen cast" & (mr-reply free).note == "NONE")
+      d <- mr-check "UOAIX-81: Paralyze is harmful, so it takes the UOAIX-77 resist roll, and its scroll and words are 'An Ex Por'" (mgd-harmful 38 & mgd-supported 38 & mgd-words 38 == "An Ex Por" & mgd-scroll-spell (mgd-scroll 38) == 38)
+      a + b + c + d
+    end
+ UOAIX-81 slice 2: Curse, Mana Drain, Mass Curse and Mana Vampire on a creature with no Resisting Spells (whole share).
+  mr-slice2 : Integer -> [Console, Device.Block] Integer
+  mr-slice2 (spell) = when mr-env 0
+    is Err (e) -> mr-check ("slice 2 fixture " & e) False
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> mr-check ("slice 2 target " & e) False
+      is Ok (npc) -> act
+        gm <- gs-skill-set env.game 1 25 1000
+        book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+        learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-or (bit-or (bit-shl 1 26) (bit-shl 1 30)) (bit-or (bit-shl 1 45) (bit-shl 1 52))) (bit-or (bit-or (bit-shl 1 29) (bit-shl 1 36)) (bit-or (bit-shl 1 41) (bit-or (bit-shl 1 42) (bit-shl 1 50))))))
+        wise <- if spell == 53 | spell == 51 then __record-set env.actor "intelligence" 100 else env.actor
+        full <- if spell == 53 | spell == 51 then __record-set env.actor "mana" 100 else env.actor
+        stored <- __record-set npc "mana" 30
+        moved <- if spell == 46 then (when world-get env.game.world 12 is Err (_) -> -1 is Ok (m) -> when world-update env.game.world (__record-set (__record-set m "x" 1423) "y" 1700) is Err (_) -> -1 is Ok (_) -> 0) else 0
+        reply <- mr-cast env spell (if spell == 46 then 0 else 12) 1000
+        lowered <- mgs-stat npc 0 < npc.strength & mgs-stat npc 1 < npc.dexterity & mgs-stat npc 2 < npc.intelligence
+        ok <- if spell == 27 | spell == 46 then lowered & moved == 0
+          else if spell == 31 then npc.mana < 30 & npc.mana >= 0
+          else if spell == 30 | spell == 37 | spell == 42 | spell == 43 | spell == 51 then (when world-get env.game.world 12 is Err (_) -> False is Ok (m) -> m.health < 30) & (spell /= 51 | env.actor.mana == 100 - 40)
+          else npc.mana == 0 & env.actor.mana == 100 - 40 + 30
+        mr-check ("UOAIX-81: spell " & show spell & " (" & mgd-words spell & ") " & (if spell == 27 then "lowers all three stats" else if spell == 31 then "drains the target's mana" else if spell == 46 then "curses a creature within 2 tiles of the point" else if spell /= 53 then "damages the target" else "moves all of the target's mana to the caster") & " and costs its reagents and " & show (mgd-mana spell) & " mana") (ok & mr-costs env spell 0 & (spell == 53 | spell == 51 | env.actor.mana == 20 - mgd-mana spell) & list-length reply.packets > 0)
+      end
+ UOAIX-81: Explosion's 2.5 s fuse (Damian, 2026-10-07: "the delay was key so you could land corp por at the same time").
+ An Energy Bolt begun when the Explosion's 0.75 s recovery ends takes the sixth circle's 1.75 s, so it lands on the
+ fuse's own tick.
+  mr-health : MrEnv, Integer -> Integer
+  mr-health (env) (serial) = when world-get env.game.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  mr-explosion : Integer -> [Console, Device.Block] Integer
+  mr-explosion (unused) = when mr-env 0
+    is Err (e) -> mr-check ("explosion fixture " & e) False
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> mr-check ("explosion target " & e) False
+      is Ok (npc) -> act
+        gm <- gs-skill-set env.game 1 25 1000
+        book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+        learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-shl 1 41) (bit-shl 1 42)))
+        wise <- __record-set env.actor "intelligence" 100
+        full <- __record-set env.actor "mana" 100
+        sturdy <- mr-hp env 12 250
+        lit <- mr-cast env 43 12 1000
+        quiet <- mr-health env 12
+        fuse <- npc.fuse
+        start <- 1000 + mgd-delay 43 + mgd-ticks 750
+        bolt <- mr-cast env 42 12 start
+        landed <- start + mgd-delay 42 + 1
+        bolted <- mr-health env 12
+        pending <- npc.fuse
+        boom <- mg-pulse env.magic env.game env.input env.map 2593 fuse
+        after <- mr-health env 12
+        mr-check ("UOAIX-81: Explosion lands nothing at its cast and detonates 2.5 s later; an Energy Bolt begun as the Explosion's recovery ends lands on the fuse's tick (" & show landed & " = " & show fuse & "), so both land together (health 250, then " & show bolted & " after the bolt, then " & show after & " after the blast)") (sturdy == 250 & quiet == 250 & fuse == 1000 + mgd-delay 43 + 1 + mgd-ticks 2500 & landed == fuse & bolted < 250 & pending == fuse & is-ok boom & after < bolted & npc.fuse == 0 & list-length bolt.packets > 0)
+      end
+ UOAIX-81 slice 4: Greater Heal on the wounded caster, and the area spells on a creature moved within reach of the point.
+  mr-slice4 : Integer -> [Console, Device.Block] Integer
+  mr-slice4 (spell) = when mr-env 0
+    is Err (e) -> mr-check ("slice 4 fixture " & e) False
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> mr-check ("slice 4 target " & e) False
+      is Ok (npc) -> act
+        gm <- gs-skill-set env.game 1 25 1000
+        book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+        learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-or (bit-shl 1 24) (bit-shl 1 25)) (bit-or (bit-shl 1 28) (bit-or (bit-shl 1 48) (bit-or (bit-shl 1 54) (bit-or (bit-shl 1 56) (bit-or (bit-shl 1 49) (bit-or (bit-shl 1 27) (bit-or (bit-shl 1 38) (bit-shl 1 46))))))))))
+        big <- spell == 49 | spell == 50 | spell == 55 | spell == 57
+        wise <- if big then __record-set env.actor "intelligence" 100 else env.actor
+        full <- if big then __record-set env.actor "mana" 100 else env.actor
+        poisoned <- if spell == 25 then (let a = __record-set npc "poison" 0 in let b = __record-set npc "poison-left" 10 in 0) else 0
+        moved <- if spell == 25 | spell == 26 | spell == 49 | spell == 55 then (when world-get env.game.world 12 is Err (_) -> -1 is Ok (m) -> when world-update env.game.world (__record-set (__record-set m "x" 1423) "y" 1700) is Err (_) -> -1 is Ok (_) -> 0) else 0
+        fielded <- if spell == 28 | spell == 39 | spell == 47 then (when world-get env.game.world 12 is Err (_) -> -1 is Ok (m) -> when world-update env.game.world (__record-set (__record-set m "x" 1424) "y" 1701) is Err (_) -> -1 is Ok (_) -> 0) else 0
+        reply <- mr-cast env spell (if spell == 29 then 1 else if spell == 57 then 1 else 0) 1000
+        stood <- if spell == 28 | spell == 39 | spell == 47 then mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-delay spell + 2) else Ok None
+        hurt <- mr-health env 12
+        healed <- mr-health env 1
+        ok <- if spell == 28 then hurt < 30 & fielded == 0 & is-ok stood & is-ok (walk-height env.map 1424 1701 0)
+          else if spell == 39 then npc.poison >= 0 & fielded == 0 & is-ok stood
+          else if spell == 47 then (list-at env.magic.combat.actors (world-slot env.game.world 12)).frozen > env.magic.tick & fielded == 0 & is-ok stood
+          else if spell == 29 then healed > 10 else if spell == 50 then world-count env.game.world == 19 & is-err (walk-height env.map 1424 1701 0) else if spell == 25 then npc.poison == -1 else if spell == 26 then npc.protected-until > env.magic.tick
+          else hurt < 30
+        mr-check ("UOAIX-81: spell " & show spell & " (" & mgd-words spell & ") " & (if spell == 29 then "heals the caster" else if spell == 25 then "cures a creature within 2 tiles" else if spell == 26 then "protects a creature within 3 tiles" else if spell == 50 then "raises five impassable field tiles" else if spell == 28 then "burns a creature standing in it and stays passable" else if spell == 39 then "poisons a creature standing in it" else if spell == 47 then "freezes a creature standing in it" else "damages a creature in its area") & " and costs its reagents and " & show (mgd-mana spell) & " mana") (ok & moved == 0 & mr-costs env spell 0 & env.actor.mana == (if big then 100 else 20) - mgd-mana spell & list-length reply.packets > 0)
+      end
+ UOAIX-81: Magic Reflection stores 8 circles at GM Magery without Inscription; a Magic Arrow (first circle) at a creature
+ holding 8 returns to its caster and leaves 7.
+  mr-reflect : Integer -> [Console, Device.Block] Integer
+  mr-reflect (unused) = when mr-env 0
+    is Err (e) -> mr-check ("reflect fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-shl 1 35))
+      reply <- mr-cast env 36 1 1000
+      a <- mr-check ("UOAIX-81: spell 36 (In Jux Sanct) stores " & show env.actor.reflect & " circles of reflection and costs its reagents and 14 mana") (env.actor.reflect == 8 & env.actor.mana == 20 - 14 & mr-costs env 36 0 & list-length reply.packets > 0)
+      b <- when mr-env 0
+        is Err (e) -> mr-check ("reflect fixture " & e) False
+        is Ok (other) -> when mgs-ensure other.magic other.game 12
+          is Err (e) -> mr-check ("reflect target " & e) False
+          is Ok (npc) -> act
+            charged <- __record-set npc "reflect" 8
+            arrow <- mr-cast other 5 12 1000
+            mr-check ("UOAIX-81: a Magic Arrow at a creature holding 8 reflection circles returns to its caster (caster " & show (mr-health other 1) & " of 10, creature " & show (mr-health other 12) & " of 30) and leaves " & show npc.reflect) (mr-health other 12 == 30 & mr-health other 1 < 10 & npc.reflect == 7)
+          end
+      a + b
+    end
   mr-damage-paths : Integer, Integer -> [Console, Device.Block] Integer
   mr-damage-paths (path) (failures) = if path == 5 then act failures end
     else act
@@ -293,7 +423,7 @@ Chapter: MageryReplay
     full <- mgs-book env.magic #40000003 (0 - 1)
     shown <- mg-book-open env.magic env.game env.input #40000003
     rows <- list-at shown.packets 2
-    mr-check "a spellbook holding every spell lists only the 27 working spells" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 27 & list-length rows == 518 & gp-u16 rows 12 == 1 & gp-u16 rows 449 == 24 & gp-u16 rows 468 == 32 & gp-u16 rows 487 == 35 & gp-u16 rows 506 == 45)
+    mr-check "a spellbook holding every spell lists exactly the 48 working spells (UOAIX-81), 1 through 32, then 35 and on to 57" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 48 & list-length rows == 917 & gp-u16 rows 12 == 1 & gp-u16 rows 601 == 32 & gp-u16 rows 620 == 35 & gp-u16 rows 639 == 36 & gp-u16 rows 905 == 57)
   end
   mr-quiver : MrEnv -> [Console, Device.Block] Integer
   mr-quiver (env) = act
@@ -463,7 +593,20 @@ Chapter: MageryReplay
         middle <- gs-skill-set game 1 25 300
         practised <- mr-casts magic game 9 200 0
         g <- mr-check "casting practises Magery in the skill table" (gs-skill game 1 25 > 300)
-        a+b+c+d+e+f+g
+        gm-magery <- gs-skill-set game 1 25 1000
+        gm-resist <- gs-skill-set game 1 26 1000
+        gm-eval <- gs-skill-set game 1 16 1000
+        held <- mr-resists magic game 400 0
+        h <- mr-check ("UOAIX-77: GM Resisting Spells and Eval Int against a GM mage with GM Eval Int resist more often than not, " & show held & " of 400, and an unresisted spell lands a tenth") (held > 200 & held < 260 & mge-share game 1 1 == 100)
+        no-resist <- gs-skill-set game 1 26 0
+        whole <- mge-share game 1 1
+        bare <- mr-resists magic game 1 0
+        i <- mr-check "UOAIX-77: with no Resisting Spells nothing resists and the whole spell lands" (bare == 0 & whole == 1000 & mge-resist-chance 1000 0 == 0)
+        j <- mr-check "UOAIX-77: a defence leading the attack resists more, to 95%; a defence trailing it resists its share of 55%" (mge-resist-chance 1000 1000 == 550 & mge-resist-chance 500 1000 == 750 & mge-resist-chance 0 2000 == 950 & mge-resist-chance 1000 500 == 275 & mge-landed 1000 500 == 500 & mge-landed 1000 950 == 100)
+        green <- gs-skill-set game 1 26 300
+        trained <- mr-resists magic game 300 0
+        k <- mr-check "UOAIX-77: the resist roll practises Resisting Spells in the skill table" (gs-skill game 1 26 > 300)
+        a+b+c+d+e+f+g+h+i+j+k
       end
   end
   opening : [Console, Device.Block] Integer = when gs-new 0
@@ -487,6 +630,8 @@ Chapter: MageryReplay
           regressions <- mr-regressions 0 0
           killed <- mr-damage-paths 1 0
           scrolls <- mr-scroll-case 0
-          print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions + killed + scrolls))
-          failures + effects + regressions + killed + scrolls
+          paralysed <- mr-paralyze 0
+          cursed <- mr-slice2 27 + mr-slice2 31 + mr-slice2 46 + mr-slice2 53 + mr-slice2 30 + mr-slice2 37 + mr-slice2 42 + mr-slice2 51 + mr-explosion 0 + mr-slice4 29 + mr-slice4 25 + mr-slice4 26 + mr-slice4 49 + mr-slice4 55 + mr-slice4 57 + mr-slice4 50 + mr-slice4 28 + mr-slice4 39 + mr-slice4 47 + mr-reflect 0
+          print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions + killed + scrolls + paralysed + cursed))
+          failures + effects + regressions + killed + scrolls + paralysed + cursed
         end

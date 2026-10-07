@@ -1,6 +1,7 @@
 Chapter: MageryResources
   cites Uoaix chapter MageryPackets
   cites Uoaix chapter SkillCurve
+  cites Uoaix chapter GameHunger
 
  ServUO Spell.ConsumeReagents consumes one of each listed reagent through
  Backpack.ConsumeTotal. This port walks indexed pack descendants, never bank
@@ -38,7 +39,9 @@ Chapter: MageryResources
   mgr-resource (magic) (owner) (kind) = let pack = gsi-pack-find magic.items.world owner 0
     in if pack == 0 then 0 else mgr-find magic (world-first-child magic.items.world pack) (mgd-reagent kind) 64
   mgr-lot-ready : Magery, Integer, Integer -> Boolean
-  mgr-lot-ready (magic) (owner) (serial) = when magic.vendor
+  mgr-lot-ready (magic) (owner) (serial) = mgr-vendor-ready magic.vendor owner serial
+  mgr-vendor-ready : Maybe GvWorld, Integer, Integer -> Boolean
+  mgr-vendor-ready (market) (owner) (serial) = when market
     is None -> True
     is Just (vendor) -> let lot = gv-lot vendor serial 0
       in if lot < 0 then True else let player = gv-player vendor owner 0
@@ -56,8 +59,10 @@ Chapter: MageryResources
     in let b = __record-set player "count" 0
     in let c = __record-set player "expires" 0 in mgr-invalidate vendor (i + 1)
   mgr-debit : Magery, Integer, Integer -> Result Integer Text
-  mgr-debit (magic) (owner) (serial) = if not (mgr-lot-ready magic owner serial) then Err "reagent lot admission changed"
-    else when magic.vendor
+  mgr-debit (magic) (owner) (serial) = mgr-vendor-debit magic.vendor owner serial
+  mgr-vendor-debit : Maybe GvWorld, Integer, Integer -> Result Integer Text
+  mgr-vendor-debit (market) (owner) (serial) = if not (mgr-vendor-ready market owner serial) then Err "reagent lot admission changed"
+    else when market
       is None -> Ok 0
       is Just (vendor) -> let at = gv-lot vendor serial 0
         in if at < 0 then Ok 0 else let lot = list-at vendor.lots at
@@ -135,4 +140,6 @@ Chapter: MageryResources
   mgr-regen-delay (shard) (actor) = let points = mgs-stat actor 2 * 10 + mgs-skill shard actor.serial 46
     in let millis = if points <= 0 then 7000 else if points <= 2000 then 7000 - 239 * points / 48 + 19 * points * points / 19200
       else if points < 2400 then 1000 else 750
-    in mgd-ticks (max 500 (min 7000 millis))
+    in let ticks = mgd-ticks (max 250 (min (min 7000 millis) (cb-regen-full-ms / max 1 (mgs-stat actor 2))))
+    in let slot = gs-char-slot shard.characters actor.serial 0
+    in if slot < 0 then ticks else gh-interval (shard.characters + slot * 160) ticks

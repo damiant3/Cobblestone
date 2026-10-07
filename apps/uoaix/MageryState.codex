@@ -15,15 +15,16 @@ Chapter: MageryState
     poison-left : Integer, poison-last : Integer, poisoner : Integer, spell : Integer, stage : Integer,
     due : Integer, cursor : Integer, connection : Integer, x : Integer, y : Integer, z : Integer, health : Integer,
     recovery : Integer, position : Integer, armed : Integer, incognito : Integer, inc-name : Integer, inc-hue : Integer,
-    inc-hair : Integer, inc-hair-hue : Integer, inc-beard : Integer, inc-beard-hue : Integer, scroll : Integer }
+    inc-hair : Integer, inc-hair-hue : Integer, inc-beard : Integer, inc-beard-hue : Integer, scroll : Integer,
+    fuse : Integer, fuser : Integer, reflect : Integer }
   MgItem = record { serial : Integer, spells : Integer, rune : Boolean, x : Integer, y : Integer, z : Integer,
     lockable : Boolean, locked : Boolean, trapped : Boolean, trapper : Integer, key : Integer, chart : Boolean }
-  MgWall = record { serial : Integer, until : Integer }
+  MgWall = record { serial : Integer, until : Integer, caster : Integer, next : Integer }
   Magery = record { items : GsiState, bank : GmbState, combat : GameCombat, decoration : WdState, vendor : Maybe GvWorld,
     actors : List MgActor, definitions : List MgItem, walls : List MgWall,
     active : Integer, count : Integer, seed : Integer, next-target : Integer, tick : Integer,
     cover : (Integer, Integer, Integer -> [Device.Block] Result WalkMap Text),
-    wheel : Maybe WorldTimers, due : Integer, due-count : Integer, unarmed : Integer, visits : Integer }
+    wheel : Maybe WorldTimers, due : Integer, due-count : Integer, unarmed : Integer, visits : Integer, wall-due : Integer, wall-visits : Integer }
   mgs-zero : Integer, Integer, Integer -> Integer
   mgs-zero (buffer) (i) (size) = if i == size then 0 else let zero = poke-qword buffer (i * 8) 0 in mgs-zero buffer (i + 1) size
   mgs-actors : Integer, List MgActor -> List MgActor
@@ -36,7 +37,8 @@ Chapter: MageryState
       equipment = equipment, night = 0, light = 0, absorb = 0, protection = 0, protected-until = 0,
       poison = -1, poison-due = 0, poison-left = 0, poison-last = 0, poisoner = 0, spell = 0, stage = 0,
       due = 0, cursor = 0, connection = -1, x = 0, y = 0, z = 0, health = 0, recovery = 0, position = -1, armed = 0,
-      incognito = 0, inc-name = 0, inc-hue = 0, inc-hair = 0, inc-hair-hue = 0, inc-beard = 0, inc-beard-hue = 0, scroll = 0 }))
+      incognito = 0, inc-name = 0, inc-hue = 0, inc-hair = 0, inc-hair-hue = 0, inc-beard = 0, inc-beard-hue = 0, scroll = 0,
+      fuse = 0, fuser = 0, reflect = 0 }))
   mgs-items : Integer, List MgItem -> List MgItem
   mgs-items (left) (out) = if left == 0 then out else mgs-items (left - 1) (list-push out (MgItem {
     serial = 0, spells = 0, rune = False, x = 0, y = 0, z = 0, lockable = False, locked = False, trapped = False, trapper = 0, key = 0, chart = False }))
@@ -51,14 +53,14 @@ Chapter: MageryState
         in let d = __record-set meta "z" reach
         in let touched = mgs-touch magic in Ok serial
   mgs-walls : Integer, List MgWall -> List MgWall
-  mgs-walls (left) (out) = if left == 0 then out else mgs-walls (left - 1) (list-push out (MgWall { serial = 0, until = 0 }))
+  mgs-walls (left) (out) = if left == 0 then out else mgs-walls (left - 1) (list-push out (MgWall { serial = 0, until = 0, caster = 0, next = 0 }))
   mgs-new : GsiState, GmbState, GameCombat, WdState, Maybe GvWorld,
     (Integer, Integer, Integer -> [Device.Block] Result WalkMap Text) -> Magery
   mgs-new (items) (bank) (combat) (decoration) (vendor) (cover) = let capacity = items.world.capacity
     in Magery { items = items, bank = bank, combat = combat, decoration = decoration, vendor = vendor,
       actors = mgs-actors capacity (__list-with-capacity capacity), definitions = mgs-items capacity (__list-with-capacity capacity),
       walls = mgs-walls 32 (__list-with-capacity 32), active = alloc-bytes (capacity * 8), count = 0,
-      seed = 42, next-target = 1, tick = 0, cover = cover, wheel = None, due = alloc-bytes (capacity * 8), due-count = 0, unarmed = 0, visits = 0 }
+      seed = 42, next-target = 1, tick = 0, cover = cover, wheel = None, due = alloc-bytes (capacity * 8), due-count = 0, unarmed = 0, visits = 0, wall-due = 0, wall-visits = 0 }
   mgs-touch : Magery -> Integer
   mgs-touch (magic) = world-touch magic.items.world
   mgs-random : Magery, Integer -> Integer
@@ -77,7 +79,8 @@ Chapter: MageryState
     in let protection = mgs-earlier night actor.protected-until
     in let regen = if actor.mana < mgs-stat actor 2 then mgs-earlier protection actor.regen else protection
     in let poison = if actor.poison >= 0 then mgs-earlier regen actor.poison-due else regen
-    in let disguised = mgs-earlier poison actor.incognito
+    in let fused = mgs-earlier poison actor.fuse
+    in let disguised = mgs-earlier fused actor.incognito
     in if actor.stage /= 0 then mgs-earlier disguised actor.due else disguised
  One wheel entry per tracked actor, keyed by its world slot, at its earliest deadline. An entry already
  pending at or before that deadline is kept: its firing re-arms. A full pool leaves the actor unarmed and
@@ -92,8 +95,18 @@ Chapter: MageryState
       else if actor.armed /= 0 & actor.armed <= next then 0
       else if wtm-set w next mgs-kind slot < 0 then let a = __record-set actor "armed" 0 in let u = __record-set magic "unarmed" (magic.unarmed + 1) in -1
       else let a = __record-set actor "armed" next in 0
+  mgs-wall-arm : Magery, Integer -> Integer
+  mgs-wall-arm (magic) (i) = when magic.wheel
+    is None -> 0
+    is Just (w) -> if (list-at magic.walls i).serial == 0 then 0
+      else if wtm-set w (list-at magic.walls i).until mgs-kind (list-length magic.actors + i) >= 0 then 0
+      else let due = __record-set magic "wall-due" (bit-or magic.wall-due (bit-shl 1 i)) in -1
+  mgs-wall-arm-all : Magery, Integer -> Integer
+  mgs-wall-arm-all (magic) (i) = if i == 32 then 0 else let armed = mgs-wall-arm magic i in mgs-wall-arm-all magic (i + 1)
   mgs-fired : Magery, Integer -> Integer
-  mgs-fired (magic) (slot) = if slot < 0 | slot >= list-length magic.actors then 0
+  mgs-fired (magic) (slot) = if slot >= list-length magic.actors & slot < list-length magic.actors + 32 then
+      let due = __record-set magic "wall-due" (bit-or magic.wall-due (bit-shl 1 (slot - list-length magic.actors))) in 0
+    else if slot < 0 | slot >= list-length magic.actors then 0
     else let actor = list-at magic.actors slot
     in let consumed = __record-set actor "armed" 0
     in if magic.due-count >= list-length magic.actors then let u = __record-set magic "unarmed" (magic.unarmed + 1) in 0
@@ -103,7 +116,7 @@ Chapter: MageryState
   mgs-arm-all (magic) (i) = if i >= magic.count then 0
     else let armed = mgs-arm magic (list-at magic.actors (peek-qword magic.active (i * 8))) in mgs-arm-all magic (i + 1)
   mgs-attach : Magery, WorldTimers -> Integer
-  mgs-attach (magic) (w) = let bound = __record-set magic "wheel" (Just w) in mgs-arm-all magic 0
+  mgs-attach (magic) (w) = let bound = __record-set magic "wheel" (Just w) in let walls = mgs-wall-arm-all magic 0 in mgs-arm-all magic 0
   mgs-untrack : Magery, MgActor -> Integer
   mgs-untrack (magic) (actor) = if actor.position < 0 then 0
     else let disarmed = when magic.wheel is None -> 0 is Just (w) -> if actor.armed == 0 then 0
@@ -181,8 +194,11 @@ Chapter: MageryState
   mgs-known : Magery, Integer -> Boolean
   mgs-known (magic) (serial) = let slot = world-slot magic.items.world serial
     in slot >= 0 & (if slot < 0 then False else (list-at magic.definitions slot).serial == serial)
- Spell n is bit n - 1 of a book's mask; the spells that work are 1-24 (circles 1-3), 32 Recall, 35 Incognito, 45 Mark.
-  mgs-working : Integer = #100480FFFFFF
+ Spell n is bit n - 1 of a book's mask; the working mask is every spell mgd-supported admits.
+  mgs-working : Integer = mgs-supported-mask 1 0
+  mgs-supported-mask : Integer, Integer -> Integer
+  mgs-supported-mask (spell) (mask) = if spell > 64 then mask
+    else mgs-supported-mask (spell + 1) (if mgd-supported spell then bit-or mask (bit-shl 1 (spell - 1)) else mask)
   mgs-spells : Magery, Integer -> Integer
   mgs-spells (magic) (serial) = if not (mgs-known magic serial) then 0 else (list-at magic.definitions (world-slot magic.items.world serial)).spells
   mgs-book : Magery, Integer, Integer -> Result Integer Text

@@ -21,7 +21,8 @@ and persists TLC1 in UCC1; `proofs/CompositeBritainWorld.codex` grades the
 fresh build, walking, naming, greeting and the restart. Each composite pulse
 with a player in game advances the composite town clock (12 game seconds per
 real second, persisted beside TLC1), calls `tl-advance` with budget 8 over the
-Britain map, then `tl-pulse`; `tl-handler` precedes the other 09 handlers.
+Britain map, then `tl-pulse`; `cg-trade-click` (the trade label, below) precedes
+`tl-handler`, which precedes the other 09 handlers.
 Movement persists with the composite's timed save, like player walking.
 
 After `bb-populate`, on a fresh private installation candidate:
@@ -54,7 +55,7 @@ Movement takes 12 game seconds per adjacent tile; blocked paths retry after
 
 `tl-pulse state` is the per-viewer approach-speech callback with the standard
 GameDispatch pulse signature. Bind the pulse after advancement. A living
-player entering a resident's three-tile radius receives one short canned
+player entering a resident's three-tile radius in its sight (`tl-sight`, UOAIX-68) receives one short canned
 line. The persona stub logs the model-unavailable fallback. The ten-game-minute
 per-player cooldown survives reconnect and restore. Persona call and audit
 budgets also apply; exhausting either suppresses further greetings.
@@ -68,8 +69,12 @@ replies. The adapter performs no raw network sends.
 
 The composite calls `tls-show` after `tl-pulse` (`cg-town-show`) and appends
 `tls-status` to a resident's 09 reply (`cg-town-status`). For a viewer within
-18 tiles:
+18 tiles that the resident can see (`tl-sight`):
 
+- a resident is labelled by trade ("the baker", "the blacksmith", "the tailor", from its job) on a click, the
+  0x11 status, the paperdoll and the name field of every line it says, until the character asks its name
+  ("name" in earshot); it then answers "I am Nell the baker." and is labelled with its name from then on
+  (UOAIX-56, `cg-trade-label`). The bank lineup's resident copy is the same person and shares the knowledge;
 - a click answers the resident's goal: busy at or on the way to work, at or
   off to the Blue Boar, resting at or heading home to the Sweet Dreams Inn;
 - a resident standing on its work tile during work shows it once per 60 game

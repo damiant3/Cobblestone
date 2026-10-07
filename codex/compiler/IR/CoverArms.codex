@@ -1,0 +1,313 @@
+Chapter: CoverArms
+  cites Codex chapter Codex Types (int-ty-default, empty-row)
+  cites Codex chapter Phase Allocator (deck-record)
+
+Section: Arm Instrumentation
+
+  CoverWalk = record {
+   cw-expr : IRExpr,
+   cw-next : Integer
+  }
+
+  CoverList = record {
+   cl-exprs : List IRExpr,
+   cl-next : Integer
+  }
+
+  CoverBranches = record {
+   cb-branches : List IRBranch,
+   cb-next : Integer
+  }
+
+  CoverStmts = record {
+   cs-stmts : List IRActStmt,
+   cs-next : Integer
+  }
+
+  CoverFields = record {
+   cf-fields : List IRFieldVal,
+   cf-next : Integer
+  }
+
+  CoverClauses = record {
+   cc-clauses : List IRHandleClause,
+   cc-next : Integer
+  }
+
+  cover-arm-call : Integer, SourceSpan -> IRExpr
+  cover-arm-call (k) (sp) =
+    deck-record (
+      let fn = deck-record (IrName "__cover-arm" (deck-record (FunTy int-ty-default empty-row int-ty-default)) sp)
+      in IrApply fn (deck-record (IrIntLit k sp)) int-ty-default sp
+    )
+
+  cover-arm-wrap : Text, Integer, IRExpr -> IRExpr
+  cover-arm-wrap (kind) (k) (body) =
+    let sp = ir-expr-span body
+    in deck-record (IrLet ("__cov-" & kind) int-ty-default (cover-arm-call k sp) body sp)
+
+  cover-walk : IRExpr, Integer -> CoverWalk
+  cover-walk (e) (k) =
+    when e
+     is IrIf (c) (t) (el) (ty) (sp) ->
+      let wc = cover-walk c k
+      in let wt = cover-walk t (wc.cw-next + 1)
+      in let we = cover-walk el (wt.cw-next + 1)
+      in let th = cover-arm-wrap "then" (wc.cw-next) (wt.cw-expr)
+      in let ot = cover-arm-wrap "else" (wt.cw-next) (we.cw-expr)
+      in CoverWalk { cw-expr = deck-record (IrIf (wc.cw-expr) th ot ty sp), cw-next = we.cw-next }
+     is IrMatch (sc) (bs) (ty) (sp) ->
+      let ws = cover-walk sc k
+      in let wb = cover-walk-branches bs 0 (list-length bs) [] (ws.cw-next)
+      in CoverWalk { cw-expr = deck-record (IrMatch (ws.cw-expr) (wb.cb-branches) ty sp), cw-next = wb.cb-next }
+     is IrLet (n) (ty) (v) (b) (sp) ->
+      let wv = cover-walk v k
+      in let wb = cover-walk b (wv.cw-next)
+      in CoverWalk { cw-expr = deck-record (IrLet n ty (wv.cw-expr) (wb.cw-expr) sp), cw-next = wb.cw-next }
+     is IrApply (f) (a) (ty) (sp) ->
+      let wf = cover-walk f k
+      in let wa = cover-walk a (wf.cw-next)
+      in CoverWalk { cw-expr = deck-record (IrApply (wf.cw-expr) (wa.cw-expr) ty sp), cw-next = wa.cw-next }
+     is IrBinary (op) (l) (r) (ty) (sp) ->
+      let wl = cover-walk l k
+      in let wr = cover-walk r (wl.cw-next)
+      in CoverWalk { cw-expr = deck-record (IrBinary op (wl.cw-expr) (wr.cw-expr) ty sp), cw-next = wr.cw-next }
+     is IrNegate (x) (ty) (sp) ->
+      let wx = cover-walk x k
+      in CoverWalk { cw-expr = deck-record (IrNegate (wx.cw-expr) ty sp), cw-next = wx.cw-next }
+     is IrLambda (ps) (b) (ty) (sp) ->
+      let wb = cover-walk b k
+      in CoverWalk { cw-expr = deck-record (IrLambda ps (wb.cw-expr) ty sp), cw-next = wb.cw-next }
+     is IrList (es) (ty) (sp) ->
+      let wl = cover-walk-list es 0 (list-length es) [] k
+      in CoverWalk { cw-expr = deck-record (IrList (wl.cl-exprs) ty sp), cw-next = wl.cl-next }
+     is IrAct (ss) (ty) (sp) ->
+      let ws = cover-walk-stmts ss 0 (list-length ss) [] k
+      in CoverWalk { cw-expr = deck-record (IrAct (ws.cs-stmts) ty sp), cw-next = ws.cs-next }
+     is IrRecord (n) (fs) (ty) (sp) ->
+      let wf = cover-walk-fields fs 0 (list-length fs) [] k
+      in CoverWalk { cw-expr = deck-record (IrRecord n (wf.cf-fields) ty sp), cw-next = wf.cf-next }
+     is IrFieldAccess (r) (f) (ty) (sp) ->
+      let wr = cover-walk r k
+      in CoverWalk { cw-expr = deck-record (IrFieldAccess (wr.cw-expr) f ty sp), cw-next = wr.cw-next }
+     is IrFieldStore (r) (f) (v) (ty) (sp) ->
+      let wr = cover-walk r k
+      in let wv = cover-walk v (wr.cw-next)
+      in CoverWalk { cw-expr = deck-record (IrFieldStore (wr.cw-expr) f (wv.cw-expr) ty sp), cw-next = wv.cw-next }
+     is IrHandle (eff) (h) (cs) (ty) (sp) ->
+      let wh = cover-walk h k
+      in let wc = cover-walk-clauses cs 0 (list-length cs) [] (wh.cw-next)
+      in CoverWalk { cw-expr = deck-record (IrHandle eff (wh.cw-expr) (wc.cc-clauses) ty sp), cw-next = wc.cc-next }
+     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
+      let wb = cover-walk body k
+      in CoverWalk { cw-expr = deck-record (IrWithTimeout secs effs scopes (wb.cw-expr) ty sp), cw-next = wb.cw-next }
+     is IrFork (body) (ty) (sp) ->
+      let wb = cover-walk body k
+      in CoverWalk { cw-expr = deck-record (IrFork (wb.cw-expr) ty sp), cw-next = wb.cw-next }
+     is IrAwait (task) (ty) (sp) ->
+      let wt = cover-walk task k
+      in CoverWalk { cw-expr = deck-record (IrAwait (wt.cw-expr) ty sp), cw-next = wt.cw-next }
+     is IrTry (max) (body) (fb) (fail) (ty) (sp) ->
+      let wb = cover-walk-stmts body 0 (list-length body) [] k
+      in let wf = cover-walk-stmts fb 0 (list-length fb) [] (wb.cs-next)
+      in let wx = cover-walk-stmts fail 0 (list-length fail) [] (wf.cs-next)
+      in CoverWalk { cw-expr = deck-record (IrTry max (wb.cs-stmts) (wf.cs-stmts) (wx.cs-stmts) ty sp), cw-next = wx.cs-next }
+     is otherwise -> CoverWalk { cw-expr = e, cw-next = k }
+
+  cover-walk-list : List IRExpr, Integer, Integer, List IRExpr, Integer -> CoverList
+  cover-walk-list (es) (i) (len) (acc) (k) =
+    if i >= len then CoverList { cl-exprs = acc, cl-next = k }
+    else let w = cover-walk (list-at es i) k
+    in cover-walk-list es (i + 1) len (list-push acc (w.cw-expr)) (w.cw-next)
+
+  cover-walk-branches : List IRBranch, Integer, Integer, List IRBranch, Integer -> CoverBranches
+  cover-walk-branches (bs) (i) (len) (acc) (k) =
+    if i >= len then CoverBranches { cb-branches = acc, cb-next = k }
+    else let b = list-at bs i
+    in let wg = cover-walk (b.guard) k
+    in let wb = cover-walk (b.body) (wg.cw-next + 1)
+    in let nb = deck-record (IRBranch {
+     pattern = b.pattern,
+     body = cover-arm-wrap "is" (wg.cw-next) (wb.cw-expr),
+     guard = wg.cw-expr,
+     span = b.span,
+     alt-group = b.alt-group
+    })
+    in cover-walk-branches bs (i + 1) len (list-push acc nb) (wb.cw-next)
+
+  cover-walk-stmts : List IRActStmt, Integer, Integer, List IRActStmt, Integer -> CoverStmts
+  cover-walk-stmts (ss) (i) (len) (acc) (k) =
+    if i >= len then CoverStmts { cs-stmts = acc, cs-next = k }
+    else let w = cover-walk (ir-act-stmt-expr (list-at ss i)) k
+    in let ns = cover-rebuild-stmt (list-at ss i) (w.cw-expr)
+    in cover-walk-stmts ss (i + 1) len (list-push acc ns) (w.cw-next)
+
+  cover-rebuild-stmt : IRActStmt, IRExpr -> IRActStmt
+  cover-rebuild-stmt (s) (e) =
+    when s
+     is IrDoBind (n) (t) (v) (sp) -> deck-record (IrDoBind n t e sp)
+     is IrDoExec (v) (sp) -> deck-record (IrDoExec e sp)
+
+  cover-walk-fields : List IRFieldVal, Integer, Integer, List IRFieldVal, Integer -> CoverFields
+  cover-walk-fields (fs) (i) (len) (acc) (k) =
+    if i >= len then CoverFields { cf-fields = acc, cf-next = k }
+    else let fv = list-at fs i
+    in let w = cover-walk (fv.value) k
+    in let nf = deck-record (IRFieldVal { name = fv.name, value = w.cw-expr, span = fv.span })
+    in cover-walk-fields fs (i + 1) len (list-push acc nf) (w.cw-next)
+
+  cover-walk-clauses : List IRHandleClause, Integer, Integer, List IRHandleClause, Integer -> CoverClauses
+  cover-walk-clauses (cs) (i) (len) (acc) (k) =
+    if i >= len then CoverClauses { cc-clauses = acc, cc-next = k }
+    else let c = list-at cs i
+    in let w = cover-walk (c.body) k
+    in let nc = deck-record (IRHandleClause {
+     op-name = c.op-name,
+     params = c.params,
+     resume-name = c.resume-name,
+     body = w.cw-expr,
+     span = c.span
+    })
+    in cover-walk-clauses cs (i + 1) len (list-push acc nc) (w.cw-next)
+
+  cover-walk-defs : List IRDef, Integer, Integer, List IRDef, Integer -> List IRDef
+  cover-walk-defs (ds) (i) (len) (acc) (k) =
+    if i >= len then acc
+    else let d = list-at ds i
+    in let w = cover-walk (d.body) k
+    in let walked = __record-set d "body" (w.cw-expr)
+    in cover-walk-defs ds (i + 1) len (list-push acc (deck-record walked)) (w.cw-next)
+
+  cover-arms-in-chapter : IRChapter -> IRChapter
+  cover-arms-in-chapter (ch) =
+    __record-set ch "defs" (cover-walk-defs (ch.defs) 0 (list-length (ch.defs)) [] 0)
+
+Section: Arm Sites
+
+  CoverSite = record {
+   site-arm : Integer,
+   site-kind : Text,
+   site-span : SourceSpan
+  }
+
+  cover-site-of : Text, IRExpr, SourceSpan, List CoverSite -> List CoverSite
+  cover-site-of (n) (v) (sp) (acc) =
+    when v
+     is IrApply (f) (a) (ty) (asp) -> cover-site-call n f a sp acc
+     is otherwise -> acc
+
+  cover-site-call : Text, IRExpr, IRExpr, SourceSpan, List CoverSite -> List CoverSite
+  cover-site-call (n) (f) (a) (sp) (acc) =
+    when f
+     is IrName (fname) (fty) (fsp) -> if fname == "__cover-arm" then cover-site-arm n a sp acc else acc
+     is otherwise -> acc
+
+  cover-site-arm : Text, IRExpr, SourceSpan, List CoverSite -> List CoverSite
+  cover-site-arm (n) (a) (sp) (acc) =
+    when a
+     is IrIntLit (k) (ksp) -> list-push acc (CoverSite { site-arm = k, site-kind = n, site-span = sp })
+     is otherwise -> acc
+
+  cover-sites : IRExpr, List CoverSite -> List CoverSite
+  cover-sites (e) (acc) =
+    when e
+     is IrLet (n) (ty) (v) (b) (sp) -> cover-sites b (cover-site-of n v sp (cover-sites v acc))
+     is IrIf (c) (t) (el) (ty) (sp) -> cover-sites el (cover-sites t (cover-sites c acc))
+     is IrMatch (sc) (bs) (ty) (sp) -> cover-sites-branches bs 0 (list-length bs) (cover-sites sc acc)
+     is IrApply (f) (a) (ty) (sp) -> cover-sites a (cover-sites f acc)
+     is IrBinary (op) (l) (r) (ty) (sp) -> cover-sites r (cover-sites l acc)
+     is IrNegate (x) (ty) (sp) -> cover-sites x acc
+     is IrLambda (ps) (b) (ty) (sp) -> cover-sites b acc
+     is IrList (es) (ty) (sp) -> cover-sites-list es 0 (list-length es) acc
+     is IrAct (ss) (ty) (sp) -> cover-sites-stmts ss 0 (list-length ss) acc
+     is IrRecord (n) (fs) (ty) (sp) -> cover-sites-fields fs 0 (list-length fs) acc
+     is IrFieldAccess (r) (f) (ty) (sp) -> cover-sites r acc
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> cover-sites v (cover-sites r acc)
+     is IrHandle (eff) (h) (cs) (ty) (sp) -> cover-sites-clauses cs 0 (list-length cs) (cover-sites h acc)
+     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> cover-sites body acc
+     is IrFork (body) (ty) (sp) -> cover-sites body acc
+     is IrAwait (task) (ty) (sp) -> cover-sites task acc
+     is IrTry (max) (body) (fb) (fail) (ty) (sp) ->
+      let a1 = cover-sites-stmts body 0 (list-length body) acc
+      in let a2 = cover-sites-stmts fb 0 (list-length fb) a1
+      in cover-sites-stmts fail 0 (list-length fail) a2
+     is otherwise -> acc
+
+  cover-sites-list : List IRExpr, Integer, Integer, List CoverSite -> List CoverSite
+  cover-sites-list (es) (i) (len) (acc) =
+    if i >= len then acc
+    else cover-sites-list es (i + 1) len (cover-sites (list-at es i) acc)
+
+  cover-sites-branches : List IRBranch, Integer, Integer, List CoverSite -> List CoverSite
+  cover-sites-branches (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in cover-sites-branches bs (i + 1) len (cover-sites (b.body) (cover-sites (b.guard) acc))
+
+  cover-sites-stmts : List IRActStmt, Integer, Integer, List CoverSite -> List CoverSite
+  cover-sites-stmts (ss) (i) (len) (acc) =
+    if i >= len then acc
+    else cover-sites-stmts ss (i + 1) len (cover-sites (ir-act-stmt-expr (list-at ss i)) acc)
+
+  cover-sites-fields : List IRFieldVal, Integer, Integer, List CoverSite -> List CoverSite
+  cover-sites-fields (fs) (i) (len) (acc) =
+    if i >= len then acc
+    else let fv = list-at fs i
+    in cover-sites-fields fs (i + 1) len (cover-sites (fv.value) acc)
+
+  cover-sites-clauses : List IRHandleClause, Integer, Integer, List CoverSite -> List CoverSite
+  cover-sites-clauses (cs) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at cs i
+    in cover-sites-clauses cs (i + 1) len (cover-sites (c.body) acc)
+
+  cover-sites-max : List CoverSite, Integer, Integer, Integer -> Integer
+  cover-sites-max (ss) (i) (len) (m) =
+    if i >= len then m
+    else let s = list-at ss i
+    in cover-sites-max ss (i + 1) len (if s.site-arm + 1 > m then s.site-arm + 1 else m)
+
+  CoverArmPlan = record {
+   cap-map : List Integer,
+   cap-count : Integer
+  }
+
+  cover-arm-blank : Integer, List Integer -> List Integer
+  cover-arm-blank (left) (m) = if left <= 0 then m else cover-arm-blank (left - 1) (list-push m (0 - 1))
+
+  cover-arm-number-sites : List CoverSite, Integer, Integer, List Integer, Integer -> Integer
+  cover-arm-number-sites (ss) (i) (len) (m) (next) =
+    if i >= len then next
+    else let set = list-set-at m ((list-at ss i).site-arm) next
+    in cover-arm-number-sites ss (i + 1) len m (next + 1)
+
+  cover-arm-number : List IRDef, Integer, Integer, List Integer, Integer -> Integer
+  cover-arm-number (ds) (i) (len) (m) (next) =
+    if i >= len then next
+    else let h = __heap-save
+    in let ss = cover-sites ((list-at ds i).body) []
+    in let after = cover-arm-number-sites ss 0 (list-length ss) m next
+    in let restored = __heap-restore h
+    in cover-arm-number ds (i + 1) len m after
+
+  cover-arm-plan : List IRDef -> CoverArmPlan
+  cover-arm-plan (ds) =
+    let len = list-length ds
+    in let limit = cover-arm-limit ds 0 len 0
+    in let m = cover-arm-blank limit (__list-with-capacity (if limit < 1 then 1 else limit))
+    in let count = cover-arm-number ds 0 len m 0
+    in CoverArmPlan { cap-map = m, cap-count = count }
+
+  cover-arm-slot : List Integer, Integer -> Integer
+  cover-arm-slot (m) (k) = if k < 0 | k >= list-length m then 0 - 1 else list-at m k
+
+  cover-arm-limit : List IRDef, Integer, Integer, Integer -> Integer
+  cover-arm-limit (ds) (i) (len) (m) =
+    if i >= len then m
+    else let h = __heap-save
+    in let ss = cover-sites ((list-at ds i).body) []
+    in let found = cover-sites-max ss 0 (list-length ss) m
+    in let restored = __heap-restore h
+    in cover-arm-limit ds (i + 1) len found
+
+Page 1

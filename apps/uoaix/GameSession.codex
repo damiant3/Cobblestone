@@ -5,6 +5,7 @@ Chapter: GameSession
   cites Uoaix chapter GameAccounts
   cites Uoaix chapter CharacterSkills
   cites Uoaix chapter ServerLog
+  cites Uoaix chapter GameHunger
   cites Foreword chapter Result
 
  Five character slots, 160 bytes each: mobile serial, 100 creation bytes
@@ -21,7 +22,7 @@ Chapter: GameSession
     else let clear = poke-byte buffer i 0 in gs-zero buffer (i + 1)
 
   gs-new : Integer -> Result GameShard Text
-  gs-new (unused) = when world-new 64
+  gs-new (capacity) = when world-new (if capacity <= 0 then 64 else capacity)
     is Err (e) -> Err e
     is Ok (world) ->
       let characters = alloc-bytes 800
@@ -150,7 +151,7 @@ Chapter: GameSession
   gs-store-create : Integer, Integer, List Integer, Integer -> Integer
   gs-store-create (characters) (slot) (packet) (i) =
     if i >= 104 then 0
-    else let saved = poke-byte characters (slot * 160 + 8 + i) (list-at packet i)
+    else let saved = poke-byte characters (slot * 160 + 8 + i) (if i >= 40 & i < 70 then 0 else list-at packet i)
     in gs-store-create characters slot packet (i + 1)
 
   gs-store-equipment : Integer, Integer, List Integer, Integer -> Integer
@@ -235,14 +236,10 @@ Chapter: GameSession
       is Err (e) -> Err e
       is Ok (_) -> gs-delete-tree world serial depth
     else world-delete world serial
- The character password is the one typed at creation (create bytes 40..69,
- stored at slot offset 48), compared up to the first NUL on each side: the client leaves junk after it.
-  gs-delete-password : Integer, Integer, List Integer, Integer -> Boolean
-  gs-delete-password (characters) (slot) (packet) (k) =
-    let given = if k == 30 then 0 else list-at packet (1 + k)
-    in let stored = if k == 30 then 0 else peek-byte characters (slot * 160 + 48 + k)
-    in if given == 0 | stored == 0 then given == stored
-    else given == stored & gs-delete-password characters slot packet (k + 1)
+  gs-delete-verified : GameShard, List Integer -> Boolean
+  gs-delete-verified (shard) (packet) = when ga-packet-password packet 1 0 []
+    is Err (_) -> False
+    is Ok (password) -> ga-verify-either shard.accounts (ga-bound shard.accounts) password
   gs-clear-slot : Integer, Integer, Integer -> Integer
   gs-clear-slot (characters) (slot) (i) = if i == 160 then 0
     else let z = poke-byte characters (slot * 160 + i) 0 in gs-clear-slot characters slot (i + 1)
@@ -253,7 +250,7 @@ Chapter: GameSession
     in if slot < 0 | slot >= 5 then Ok (gs-reply [[#85, 1]] "character delete refused: slot")
     else let serial = peek-qword shard.characters (slot * 160)
     in if serial == 0 then Ok (gs-reply [[#85, 1]] "character delete refused: empty slot")
-    else if not (gs-delete-password shard.characters slot packet 0) then Ok (gs-reply [[#85, 0]] "character delete refused: password")
+    else if not (gs-delete-verified shard packet) then Ok (gs-reply [[#85, 0]] "character delete refused: password")
     else when gs-delete-tree shard.world serial 16
       is Err (e) -> Err e
       is Ok (_) -> let cleared = gs-clear-slot shard.characters slot 0
@@ -289,13 +286,14 @@ Chapter: GameSession
     let before = peek-byte at 145
     in if before == 0 & not ran then False
     else let last = peek-qword at 152
-    in let points = if before == 0 | last <= 0 | now < last then 0 else (now - last) / gs-stamina-period
+    in let period = gh-interval at gs-stamina-period
+    in let points = if before == 0 | last <= 0 | now < last then 0 else (now - last) / period
     in let rested = max 0 (before - points)
     in let steps = peek-byte at 146 + (if ran then 1 else 0)
     in let tired = if steps >= 15 then min (gp-stat at 1) (rested + 1) else rested
     in let counted = poke-byte at 146 (if steps >= 15 then 0 else steps)
     in let stamp = if tired == 0 then poke-qword at 152 0 else if before == 0 | last <= 0 | now < last then poke-qword at 152 now
-      else if points > 0 then poke-qword at 152 (last + points * gs-stamina-period) else 0
+      else if points > 0 then poke-qword at 152 (last + points * period) else 0
     in let saved = poke-byte at 145 tired
     in tired /= before
  UOX3 movement.cpp: a living character at 0 stamina may not step (dictionary.ENG 1382).

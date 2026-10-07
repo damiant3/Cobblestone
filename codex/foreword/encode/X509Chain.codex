@@ -237,6 +237,7 @@ Section: Issuers
   x509-issuer-ok (issuer) =
     if issuer.xc-is-ca == False then ChainIssuerNotCa
     else if x509-can-verify (issuer.xc-key) == False then ChainIssuerCannotSign
+    else if issuer.xc-cert-sign == False then ChainIssuerCannotSign
     else ChainOk
 
 Section: Names
@@ -421,8 +422,17 @@ Section: The Walk
   x509-to-issuer : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
   x509-to-issuer (chain) (anchors) (now) (i) =
     when x509-issuer-ok (list-at chain (i + 1))
-      is ChainOk -> x509-issuer-link chain anchors now i
+      is ChainOk -> x509-path-allowed chain anchors now i
       is otherwise -> x509-issuer-ok (list-at chain (i + 1))
+
+ RFC 5280 6.1.4 (l, m): the issuer at i + 1 has i certificates between it and the leaf, every one of them a CA it
+ vouched for, and its pathLenConstraint bounds that count.
+
+  x509-path-allowed : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
+  x509-path-allowed (chain) (anchors) (now) (i) =
+    let limit = (list-at chain (i + 1)).xc-path-len
+    in if limit >= 0 & i > limit then ChainTooLong
+    else x509-issuer-link chain anchors now i
 
   x509-issuer-link : List X509Cert, List X509Anchor, List Integer, Integer -> X509Verdict
   x509-issuer-link (chain) (anchors) (now) (i) =

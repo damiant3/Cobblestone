@@ -134,29 +134,31 @@ Chapter: CompositeBritainWorld
         is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" npc.x) "y" (npc.y + 1)) "z" npc.z)
     named <- cs-route store game input map 2593 (gp-put32 [9] l.resident)
     greeted <- cs-pulse store game input map 2593 2102000
-    greeting <- cbw-check "the resident copy answers its name and greets on approach" (l.resident /= 0 & is-ok resident
-      & (when owner.town is None -> False is Just (t) -> cbw-label named (tf-person t.people l.person).name)
+    greeting <- cbw-check "the resident copy shows its trade and greets on approach" (l.resident /= 0 & is-ok resident
+      & cbw-label named "the baker"
       & (when greeted is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> cbw-spoke r.packets l.resident 0))
     healer <- (list-at owner.vendor.vendors (bb-shop-count + cg-healer-shop)).serial
     raised <- cbw-healer store map input healer
     baker <- cbw-greets store map input (list-at owner.vendor.vendors 3).serial 2105000
     smith <- cbw-greets store map input (list-at owner.vendor.vendors 1).serial 2106000
-    asked-name <- cbw-naming store map input (list-at owner.vendor.vendors 3).serial "baker" cst-shopkeeper
-    asked-banker <- cbw-naming store map input l.banker "banker" cst-banker
-    removed + placed + shops + banked + greeting + raised + baker + smith + asked-name + asked-banker
+    shopkeeper <- (list-at owner.vendor.vendors 3).serial
+    asked-name <- cbw-naming store map input shopkeeper "baker" (nn-name cst-shopkeeper shopkeeper) "what is your name"
+    asked-banker <- cbw-naming store map input l.banker "banker" (nn-name cst-banker l.banker) "banker, what is your name"
+    asked-resident <- cbw-naming store map input l.resident "baker" (when owner.town is None -> "" is Just (t) -> (tf-person t.people l.person).name) "what is your name"
+    removed + placed + shops + banked + greeting + raised + baker + smith + asked-name + asked-banker + asked-resident
   end
- UOAIX-56: a shopkeeper's click shows its profession until the character asks its name; then it says its name and the
- character's client is relabelled at once, and every later click shows the name.
-  cbw-naming : CompositeOwner, WalkMap, GameInput, Integer, Text, Integer -> [Console, Device.Block] Integer
-  cbw-naming (store) (map) (input) (npc) (word) (style) = let owner = store.state in act
+ UOAIX-56: a shopkeeper's, banker's or resident's click shows its profession until the character asks its name; then it
+ says its name and the character's client is relabelled at once, and every later click shows the name.
+  cbw-naming : CompositeOwner, WalkMap, GameInput, Integer, Text, Text, Text -> [Console, Device.Block] Integer
+  cbw-naming (store) (map) (input) (npc) (word) (name) (question) = let owner = store.state in act
     game <- owner.checkpoint.game
     placed <- cbw-ghost-at owner npc 2 50
     before <- cs-route store game input map 2593 (gp-put32 [9] npc)
     bar-before <- cs-route store game input map 2593 (gp-put32 (gp-put32 [#34] #EDEDEDED & [4]) npc)
-    asked <- cs-route store game input map 2593 (cbw-say "what is your name")
+    asked <- cs-route store game input map 2593 (cbw-say question)
     after <- cs-route store game input map 2593 (gp-put32 [9] npc)
     bar-after <- cs-route store game input map 2593 (gp-put32 (gp-put32 [#34] #EDEDEDED & [4]) npc)
-    full <- nn-name style npc & " the " & word
+    full <- name & " the " & word
     print-line-uni ("NAMED " & word & " " & show npc & " as " & full)
     cbw-check ("the " & word & " shows 'the " & word & "' until asked, answers its name and relabels at once, and is named on every later click") (is-ok placed
       & cbw-label before ("the " & word)
@@ -168,6 +170,10 @@ Chapter: CompositeBritainWorld
  F31: a shopkeeper at its own shop greets with its shop line, never the bank's.
   cbw-text : List Integer, Integer, List Integer -> Text
   cbw-text (p) (i) (out) = if i >= list-length p | list-at p i == 0 then utf8-bytes-to-text out else cbw-text p (i + 1) (list-push out (list-at p i))
+  cbw-speaker : List (List Integer), Integer, Text, Integer -> Boolean
+  cbw-speaker (packets) (serial) (name) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p > 44 & list-at p 0 == #1C & gp-u32 p 3 == serial & cbw-text (list-take p 44) 14 [] == name) | cbw-speaker packets serial name (i + 1)
   cbw-says : List (List Integer), Integer, Text, Integer -> Boolean
   cbw-says (packets) (serial) (word) (i) = if i == list-length packets then False
     else let p = list-at packets i
@@ -253,8 +259,8 @@ Chapter: CompositeBritainWorld
         fighter <- when owner.fighter is None -> 0 is Just (f) -> f.serial
         named <- cs-route store game input map 2593 (gp-put32 [6] nell)
         plain <- cs-route store game input map 2593 (gp-put32 [6] fighter)
-        c <- cbw-check "double-clicking a resident opens her paperdoll named Nell, and the fighter's opens unnamed" (nell > 0 & fighter > 0
-          & cbw-doll named nell [78,101,108,108] & cbw-doll plain fighter [])
+        c <- cbw-check "double-clicking a resident opens her paperdoll under her trade before anyone asks her name, and the fighter's opens unnamed" (nell > 0 & fighter > 0
+          & cbw-doll named nell (text-to-utf8-bytes "the baker") & cbw-doll plain fighter [])
         a + b + c
       end
  Later arms pulse a minute past the door arm, so its autoclose fires; the door
@@ -371,8 +377,8 @@ Chapter: CompositeBritainWorld
         nell <- cbw-npc-at t 0
         by-nell <- cbw-beside game player.serial nell.x (nell.y + 1) nell.z
         hailed <- cs-route store game input map 2593 (cbw-say "Nell, how is the bread today?")
-        answer <- cbw-check "naming a resident draws that resident's reply" (is-ok by-nell
-          & (when hailed is Err (_) -> False is Ok (r) -> cbw-from r.packets #1C 3 nell.serial 0 >= 1))
+        answer <- cbw-check "naming a resident draws that resident's reply, spoken under the name the lineup copy taught" (is-ok by-nell
+          & (when hailed is Err (_) -> False is Ok (r) -> cbw-from r.packets #1C 3 nell.serial 0 >= 1 & cbw-speaker r.packets nell.serial "Nell the baker" 0))
         alone <- cbw-beside game player.serial 1460 1700 0
         chat <- cs-route store game input map 2593 (cbw-say "lovely weather")
         echo <- cbw-check "ordinary chat with no NPC near returns only the player's echo" (is-ok alone
@@ -425,7 +431,7 @@ Chapter: CompositeBritainWorld
         b <- poke-qword owner.shows (at + 8) input.connection
         c <- poke-qword owner.shows (at + 16) (ev.sequence - 1)
         d <- poke-qword owner.shows (at + 24) (t.now + 1000000)
-        told <- cg-town-show owner t game input
+        told <- cg-town-show owner t (cg-sight-map owner map) game input
         goods <- cbw-check "a resident's audit-book purchase is said overhead to a player nearby" (who == 0 & ev.item == 5 & is-ok by-trader
           & (when told is None -> False is Just (x) -> cbw-from x.packets #1C 3 trader.serial 0 >= 1))
         r <- list-at t.residents 1
@@ -437,8 +443,8 @@ Chapter: CompositeBritainWorld
         working <- __record-set r "goal" 1
         by-smith <- cbw-beside game player.serial r.work.x (r.work.y + 1) r.work.z
         due <- poke-qword owner.shows (at + 24) 0
-        shown <- cg-town-show owner t game input
-        again <- cg-town-show owner t game input
+        shown <- cg-town-show owner t (cg-sight-map owner map) game input
+        again <- cg-town-show owner t (cg-sight-map owner map) game input
         work <- cbw-check "the smith at his anvil swings and sounds once, then waits a game minute" (is-ok placed & is-ok by-smith
           & (when shown is None -> False is Just (x) -> cbw-from x.packets #6E 1 smith.serial 0 == 1 & cbw-has x.packets #54 0)
           & (when again is None -> True is Just (x) -> cbw-from x.packets #6E 1 smith.serial 0 == 0))
@@ -499,7 +505,7 @@ Chapter: CompositeBritainWorld
     inn <- cbw-check "the innkeeper stands in the Sweet Dreams Inn off every resident's bed" (cbw-inn-clear owner)
     lineup <- cbw-lineup store map input
     speeched <- cbw-speech store map input
-    resident-label <- cbw-check "a resident single-click returns a name label" (when owner.town is None -> False is Just (t) -> cbw-label named (tf-person t.people (list-at t.residents 0).person).name)
+    resident-label <- cbw-check "a resident's single-click before anyone asks its name labels its trade" (cbw-label named "the baker")
     reopened <- cbw-reopen owner map
     committed <- cs-commit store True
     print-line-uni ("BRITAIN objects=" & show (world-count game.world) & " residents=" & show (cbw-signature owner))

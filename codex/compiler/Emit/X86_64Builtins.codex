@@ -998,6 +998,21 @@ Section: Builtin Emission
     in let rd = alloc-temp called
     in EmitResult { state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax), reg = rd.reg }
 
+  cover-arm-literal : IRExpr -> Integer
+  cover-arm-literal (e) =
+    when e
+     is IrIntLit (v) (sp) -> v
+     is otherwise -> 0 - 1
+
+  emit-cover-arm-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-cover-arm-builtin (st) (args) =
+    let k = cover-arm-slot (st.cover-arm-map) (cover-arm-literal (list-at args 0))
+    in let saved = if st.cover & k >= 0 then st-append-code (fc-evict-reg st reg-r11) (push-r reg-r11) else st
+    in let st0 = if st.cover & k >= 0 then st-append-code (emit-cover-base saved reg-r11 ((st.cover-arms + k) * 8)) ([73, 255, 3] & pop-r reg-r11)
+      else st
+    in let rd = alloc-temp st0
+    in EmitResult { state = st-append-code (rd.state) (li (rd.reg) 0), reg = rd.reg }
+
   emit-heap-restore-builtin : CodegenState, List IRExpr -> EmitResult
   emit-heap-restore-builtin (st) (args) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)

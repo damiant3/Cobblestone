@@ -66,6 +66,12 @@ Chapter: CompositeReplay
   cr-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
   cr-noted : Result GameReply Text, Text -> Boolean
   cr-noted (r) (note) = when r is Err (_) -> False is Ok (v) -> v.note == note
+  cr-summoned-lot : GvWorld, Integer, Integer, Integer -> Integer
+  cr-summoned-lot (v) (serial) (graphic) (amount) = if serial == 0 then -1
+    else when world-get v.game.world serial
+      is Err (_) -> -1
+      is Ok (item) -> if item.graphic == graphic & item.amount == amount & gv-lot v serial 0 >= 0 then gv-lot v serial 0
+        else cr-summoned-lot v (world-next-sibling v.game.world serial) graphic amount
   cr-child : WorldTable, Integer, Integer, Integer -> Boolean
   cr-child (world) (serial) (graphic) (amount) = if serial == 0 then False
     else when world-get world serial
@@ -223,13 +229,24 @@ Chapter: CompositeReplay
     weak <- cp-british map store game input (cr-say "[attr str 25")
     d <- cr-check "[attr str 25 lowers 30 held hits to 25" (healed == 0 & cr-noted weak "british:attr" & cr-hits game me == 25 & cr-status weak 37 == 25 & cr-status weak 39 == 25)
     zero <- cp-british map store game input (cr-say "[attr all 0")
-    over <- cp-british map store game input (cr-say "[attr str 256")
+    over <- cp-british map store game input (cr-say "[attr str 101")
     luck <- cp-british map store game input (cr-say "[attr luck 50")
-    e <- cr-check "[attr refuses a value of 0, a value past 255 and an unknown stat" (cr-noted zero "british:refused" & cr-noted over "british:refused" & cr-noted luck "british:refused" & gp-stat row 0 == 25)
+    e <- cr-check "[attr refuses a value of 0, a stat past 100 and an unknown stat" (cr-noted zero "british:refused" & cr-noted over "british:refused" & cr-noted luck "british:refused" & gp-stat row 0 == 25)
     asked <- cp-british map store game input (cr-say "[attr dex 40 target")
     aimed <- cp-british map store game input (cr-target (cat-base + 256 + 40) me 0 0)
     f <- cr-check "[attr dex 40 target opens a cursor and sets the picked character's dexterity" (cr-noted asked "british:cursor"
       & gp-u32 (cr-packet asked 1) 2 == #4C420000 + cat-base + 256 + 40 & cr-noted aimed "british:attr" & gp-stat row 1 == 40)
+    hurt <- cp-british map store game input (cr-say "[attr hits 10")
+    full <- cp-british map store game input (cr-say "[attr hits 99")
+    i <- cr-check "[attr hits 10 sets the hits and the 0x11 status; [attr hits 99 stops at strength 25" (cr-noted hurt "british:attr" & cr-status hurt 37 == 10 & cr-noted full "british:attr" & cr-hits game me == 25 & cr-status full 37 == 25)
+    winded <- cp-british map store game input (cr-say "[attr stam 15")
+    fresh <- cp-british map store game input (cr-say "[attr stam 99")
+    j <- cr-check "[attr stam 15 leaves 25 of dexterity 40 spent; [attr stam 99 stops at dexterity 40" (cr-noted winded "british:attr" & cr-status winded 50 == 15 & cr-noted fresh "british:attr" & peek-byte row 145 == 0 & cr-status fresh 50 == 40)
+    dead <- cp-british map store game input (cr-say "[attr hits 0")
+    huge <- cp-british map store game input (cr-say "[attr stam 101")
+    bare <- cp-british map store game input (cr-say "[attr mana 5")
+    l <- cr-check "[attr refuses hits 0, a pool past 100, and mana on a shard without magery" (cr-noted dead "british:refused" & cr-noted huge "british:refused" & cr-noted bare "british:refused" & cr-hits game me == 25)
+    k <- cr-attr-mana store map input me
     helped <- cp-british map store game input (cr-say "[help")
     g <- cr-check "[help lists the British commands, [attr and [skill among them" (cr-noted helped "british:help" & cr-has-text (when helped is Err (_) -> [] is Ok (v) -> v.packets) [91, 97, 116, 116, 114] 0
       & cr-has-text (when helped is Err (_) -> [] is Ok (v) -> v.packets) [91, 115, 107, 105, 108, 108] 0)
@@ -240,8 +257,28 @@ Chapter: CompositeReplay
     rehealed <- cr-heal game me hits0
     h <- cr-check "[attr puts the stats back for the later boots" (cr-noted back-s "british:attr" & cr-noted back-d "british:attr" & cr-noted back-i "british:attr" & rehealed == 0
       & gp-stat row 0 == str0 & gp-stat row 1 == dex0 & gp-stat row 2 == int0)
-    a + b + c + d + e + f + g + h
+    a + b + c + d + e + f + g + h + i + j + k + l
   end
+ The live server attaches magery (CompositeGameServer); the mana arms attach it the same way and detach it after.
+  cr-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  cr-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  cr-attr-mana : CompositeOwner, WalkMap, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-attr-mana (store) (map) (input) (me) = let owner = store.state in let game = owner.checkpoint.game in when cr-decoration map
+    is Err (e) -> cr-check ("[attr mana decoration " & e) False
+    is Ok (decoration) -> act
+      magic <- mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (cr-cover map)
+      attached <- __record-set owner "magic" (Just magic)
+      drained <- cp-british map store game input (cr-say "[attr mana 0")
+      brimming <- cp-british map store game input (cr-say "[attr mana 99")
+      k <- cr-check "[attr mana 0 empties the mana in the 0x11 status; [attr mana 99 stops at intelligence 60" (cr-noted drained "british:attr" & cr-status drained 54 == 0 & cr-noted brimming "british:attr" & cr-status brimming 54 == 60)
+      aimed <- cp-british map store game input (cr-target (cat-base + 6 * 256 + 5) me 0 0)
+      m <- cr-check "[attr mana 5 by cursor sets the picked character's mana to 5" (cr-noted aimed "british:attr" & cr-status aimed 54 == 5)
+      refilled <- cp-british map store game input (cr-say "[attr mana 99")
+      detached <- __record-set owner "magic" None
+      k + m
+    end
   cr-decoration : WalkMap -> Result WdState Text
   cr-decoration (map) = let data = alloc-bytes 240
     in let clear = wd-zero data 0 240
@@ -269,7 +306,7 @@ Chapter: CompositeReplay
     else let piece = list-at pieces i
     in (if cpl-farm-at world (world-tile-first world (list-at piece 1) (list-at piece 2)) (list-at piece 0) then 1 else 0) + cr-farm-in world pieces (i + 1)
   cr-farm : WorldTable -> Integer
-  cr-farm (world) = cr-farm-in world cpl-farm-furniture 0 + (if cpr-gate-at world (world-tile-first world cpr-royal-gate-x cpr-royal-gate-y) then 1 else 0) + cr-mill world + cr-veins world cpr-royal-veins 0
+  cr-farm (world) = cr-farm-in world cpl-farm-furniture 0 + cr-farm-in world cpl-mint-furniture 0 + (if cmr-serial world == 0 then 0 else cr-tree world (cmr-serial world)) + (if cpr-gate-at world (world-tile-first world cpr-royal-gate-x cpr-royal-gate-y) then 1 else 0) + cr-mill world
  The farmer (UOAIX-55) is a mobile with its backpack and dress: count its whole container tree.
   cr-farmer : CompositeGame -> Integer
   cr-farmer (owner) = when owner.farmer is None -> 0 is Just (f) -> if f.serial == 0 then 0 else cr-tree owner.checkpoint.game.world f.serial
@@ -281,9 +318,6 @@ Chapter: CompositeReplay
   cr-mill (world) = cr-piece world 0 + cr-piece world 1 + cr-piece world 2
   cr-piece : WorldTable, Integer -> Integer
   cr-piece (world) (i) = if cpr-art-at world (world-tile-first world (wks-mill.x - 1 + i) wks-mill.y) (list-at wks-mill-art i) then 1 else 0
-  cr-veins : WorldTable, List (List Integer), Integer -> Integer
-  cr-veins (world) (veins) (i) = if i == list-length veins then 0
-    else (if cpr-vein-marked world (world-tile-first world (list-at (list-at veins i) 0) (list-at (list-at veins i) 1)) then 1 else 0) + cr-veins world veins (i + 1)
   cr-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
   cr-run (store) (map) (specs) = let owner = store.state in act
     input <- gn-input-with specs 1
@@ -351,8 +385,38 @@ Chapter: CompositeReplay
     added <- cp-add store owner.checkpoint.game input (cr-say "[add 1BF2 5")
     holder <- gsi-pack-find owner.checkpoint.game.world (list-at owner.vendor.players 0).serial 0
     summoned <- cr-check "British summons an item stack into the backpack and it commits" (cr-noted added "british:add" & cr-child owner.checkpoint.game.world (world-first-child owner.checkpoint.game.world holder) #1BF2 5 & store.store.sequence > before-walk + 3)
+    summon-lot <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #1BF2 5
+    lotted <- cr-check "the summoned ingots are a found economy lot of 5 for British and the census balances (UOAIX-85)" (summon-lot >= 0
+      & (list-at owner.vendor.lots (max 0 summon-lot)).item == 31 & (list-at owner.vendor.lots (max 0 summon-lot)).quantity == 5 & euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1)
+    named <- cr-named store input holder
     british <- cr-british store map input before-walk
-    a + peaceful + b + safe + migration + door-check + c + d + e + f + g + relogged + h + j + bank-check + k + l + m + n + p + q + summoned + british
+    a + peaceful + b + safe + migration + door-check + c + d + e + f + g + relogged + h + j + bank-check + k + l + m + n + p + q + summoned + named + british
+  end
+  cr-tile : Integer, Integer, Text -> Integer
+  cr-tile (tiles) (graphic) (name) = let bytes = text-to-unicode-bytes name
+    in cr-poke tiles (it-entry tiles graphic + 17) bytes 0
+  cr-poke : Integer, Integer, List Integer, Integer -> Integer
+  cr-poke (tiles) (at) (bytes) (i) = if i >= list-length bytes then 0 else let p = poke-byte tiles (at + i) (list-at bytes i) in cr-poke tiles at bytes (i + 1)
+  cr-zero : Integer, Integer, Integer -> Integer
+  cr-zero (tiles) (i) (n) = if i == n then tiles else let z = poke-qword tiles (i * 8) 0 in cr-zero tiles (i + 1) n
+  cr-named : CompositeOwner, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-named (store) (input) (holder) = let owner = store.state in act
+    kept <- owner.items.tiles
+    tiles <- cr-zero (alloc-bytes 608256) 0 76032
+    s1 <- cr-tile tiles #0F60 "longsword"
+    s2 <- cr-tile tiles #0F61 "longsword"
+    s3 <- cr-tile tiles #0F5E "broadsword"
+    installed <- __record-set owner.items "tiles" tiles
+    world <- owner.checkpoint.game.world
+    objects <- world-count world
+    long <- cp-add store owner.checkpoint.game input (cr-say "[add LongSword 2")
+    added <- world-count world
+    vague <- cp-add store owner.checkpoint.game input (cr-say "[add sword")
+    unknown <- cp-add store owner.checkpoint.game input (cr-say "[add dragon")
+    after <- world-count world
+    restored <- __record-set owner.items "tiles" kept
+    cr-check "[add by item name summons the first exact art with its count; a partial name lists its matches and an unknown name refuses, adding nothing" (cr-noted long "british:add" & cr-child world (world-first-child world holder) #0F60 2 & added == objects + 1
+      & cr-noted vague "testing:go" & cr-noted unknown "testing:go" & after == added)
   end
   cr-delta : Integer -> [Console] Integer
   cr-delta (unused) = let before = alloc-bytes 128

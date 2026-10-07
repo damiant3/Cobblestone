@@ -227,7 +227,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**74 applications, 1,414 modules** (2026-10-03), all written in Codex and compiled by
+**75 applications, 1,856 modules** (2026-10-07), all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -242,18 +242,27 @@ for 149 checks (2026-09-28).
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,850,758 bytes, 2026-10-06, UOAIX-49: cover mode and __stack-save) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,875,467 bytes, 2026-10-07, serial ring at 0xF00000 and heap at 0x1000000; Ed25519 refuses small-order A and R) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `2E0343A67ED83856` |
-| SHA-256 | `753E2F25A3AFF7BD30454A9BC560D93766238CAB5C9B2C64DE7A3F3DDFB3B9DD` |
-| MD5 | `05C08A23C045AE5E2486548CE6DE24DE` |
+| Content hash prefix | `A716B8E82EAEFD0B` |
+| SHA-256 | `279DF926B5F6811D37BF245AD7E93676DDB060FF7276D5510FC9B5E46F5F893F` |
+| MD5 | `7DB1807FB359E0BB88FEA7A3300133BA` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
 file's SHA-256 and the two rows above do not agree by construction.
+
+**The project signer key is pinned.** Every verifier of a CDX (the kernel's
+binary check, `SeedVerify`, the CDX chain and the seed's self-verify) carries
+the project's Ed25519 public key compiled in from `seed/signer.pub` and
+refuses a CDX whose header names any other key. Check the key out of band:
+
+| Key | SHA-256 of its 32 raw bytes |
+|---|---|
+| Project signer public key | `2A598716FE6EDC1D7357FCE10A4628CE4FFA0EAE97F467DE9E4F627F1656B17E` |
 
 **`seed/Codex.img`** (33,554,432 bytes) -- bootable GPT disk image with the
 first-boot ceremony and twelve open font faces. Inter is the desktop default;
@@ -261,7 +270,7 @@ font selection and notices are documented in [fonts/README.md](fonts/README.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `EE88298DE26533C29EFA9F497E52E5C173FA6EF10DE8A8380EAC26ECC36FF168` |
+| SHA-256 | `EE86DDBD6D5F5B178CFD9D4C75CC824D701A7331EB592A958500C0D967325B2C` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -289,8 +298,10 @@ stranger; the procedure is in
 
 All 59 rehearsal arms passed on Codex VM and QEMU/OVMF on 2026-10-02,
 using a 180-second minimum VM-arm allowance. The shipping check confirmed
-the checked-in default configuration. The boot image contains the exact
-release seed, and all 6,380 text-map rows match its embedded MAP1.
+the checked-in default configuration. The diagnostic image is unchanged
+since that rehearsal. `seed/Codex.img` is built from the release seed
+(main 38368), and all 6,463 rows of `seed/Codex.map` match the seed's
+embedded MAP1 (checked 2026-10-07).
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and
@@ -588,8 +599,8 @@ segment of the directory name, capitalized. Full catalog:
 | Shell | `codex/foreword/shell/` | 6 |
 | Boards | `codex/boards/` | 9 |
 | OS (excl. net, kernel) | `codex/os/*/` | 86 |
-| Net | `codex/os/net/` | 43 |
-| Kernel | `codex/os/kernel/` | 52 |
+| Net | `codex/os/net/` | 44 |
+| Kernel | `codex/os/kernel/` | 56 |
 
 ---
 
@@ -597,13 +608,13 @@ segment of the directory name, capitalized. Full catalog:
 
 ```
 codex/
-  compiler/      Self-hosted compiler (69 files, 72,695 lines) (2026-10-06)
+  compiler/      Self-hosted compiler (70 files, 73,384 lines) (2026-10-07)
   foreword/      451 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (186 modules) (2026-10-06)
   plugs/         59 plugs, 257 source modules -- IR-text-driven emitters (2026-10-03)
-  test/          Compiler samples + OS integration tests (2,250 files) (2026-10-03)
-apps/            74 applications, 1,414 modules (2026-10-03)
+  test/          Compiler samples + OS integration tests (2,251 files) (2026-10-07)
+apps/            75 applications, 1,856 modules (2026-10-07)
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions

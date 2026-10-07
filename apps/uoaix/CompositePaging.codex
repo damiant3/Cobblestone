@@ -7,6 +7,7 @@ Chapter: CompositePaging
   cites Uoaix chapter CompositeAccountCommands
   cites Uoaix chapter GotoPlaceData
   cites Uoaix chapter CompositeSkillCommand
+  cites Uoaix chapter CompositeRemoval
 
   cp-cover : MapCacheState, CompositeOwner, GameShard, GameInput -> [Device.Block] Result Integer Text
   cp-cover (cache) (owner) (game) (input) =
@@ -193,7 +194,8 @@ Chapter: CompositePaging
     is Ok (m) -> gs-reply [sip-message input.session.serial #FFFF 6 ("You are at " & show m.x & " " & show m.y & " " & show m.z)] "testing:where"
   cp-go-say : GameInput, Text -> Result GameReply Text
   cp-go-say (input) (text) = Ok (gs-reply [sip-message input.session.serial #FFFF 6 text] "testing:go")
- "[add <art hex> [count]" (British only): a summoned item into the backpack.
+ "[add <art hex|item name> [count]" (British only): a summoned item into the backpack. A token
+ of at most four hex digits that holds a digit or is four long is art; anything else is a TILEDATA name.
   cp-add-request : List Integer -> Boolean
   cp-add-request (packet) = list-length packet > 13 & list-at packet 0 == 3 & list-at packet 8 == 91
     & list-at packet 9 == 97 & list-at packet 10 == 100 & list-at packet 11 == 100 & list-at packet 12 == 32
@@ -206,22 +208,78 @@ Chapter: CompositePaging
   cp-add : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
   cp-add (owner) (game) (input) (packet) =
     let art = cp-hex packet 13 0 0
-    in let graphic = list-at art 0
     in let after = list-at art 1
+    in let stop = cp-text-end packet 13
+    in let digits = list-at art 2
     in let amount = if after < list-length packet & list-at packet after == 32 & cp-digit packet (after + 1) then cp-number packet (after + 1) 0 else 1
-    in let pack = gsi-pack-find game.world input.session.serial 0
-    in if list-at art 2 == 0 | graphic < 1 | graphic > #3FFF | amount < 1 | amount > 60000 then act cp-go-say input "Usage: [add art-hex [count]" end
+    in if digits > 0 & digits <= 4 & (after >= stop | list-at packet after == 32) & (digits == 4 | cp-has-digit packet 13 after)
+      then cp-add-art owner game input (list-at art 0) amount ("Added " & show amount & ".")
+    else cp-add-named owner game input packet stop
+  cp-text-end : List Integer, Integer -> Integer
+  cp-text-end (packet) (i) = if i >= list-length packet then i else if list-at packet i == 0 then i else cp-text-end packet (i + 1)
+  cp-has-digit : List Integer, Integer, Integer -> Boolean
+  cp-has-digit (packet) (i) (stop) = if i >= stop then False else if cp-digit packet i then True else cp-has-digit packet (i + 1) stop
+  cp-trim-end : List Integer, Integer, Integer -> Integer
+  cp-trim-end (packet) (start) (stop) = if stop > start & list-at packet (stop - 1) == 32 then cp-trim-end packet start (stop - 1) else stop
+ A trailing all-digit word after a space is the count.
+  cp-count-at : List Integer, Integer, Integer -> Integer
+  cp-count-at (packet) (start) (stop) = let last = cp-trim-end packet start stop
+    in let first = cp-word-start packet start last
+    in if first > start & first < last & cp-digits-end packet first == last then first else -1
+  cp-word-start : List Integer, Integer, Integer -> Integer
+  cp-word-start (packet) (start) (i) = if i <= start then start else if list-at packet (i - 1) == 32 then i else cp-word-start packet start (i - 1)
+  cp-hex-list : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  cp-hex-list (tiles) (buf) (at) (i) (count) (acc) = if i >= count then acc
+    else let g = peek-qword buf ((at + i) * 8)
+    in cp-hex-list tiles buf at (i + 1) count (acc & (if text-length acc == 0 then "" else ", ") & it-name tiles g 1 & " (" & cp-hex-text g "" & ")")
+  cp-add-named : CompositeOwner, GameShard, GameInput, List Integer, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-add-named (owner) (game) (input) (packet) (stop) =
+    let tiles = owner.state.items.tiles
+    in let counted = cp-count-at packet 13 stop
+    in let amount = if counted < 0 then 1 else cp-number packet counted 0
+    in let last = cp-trim-end packet 13 (if counted < 0 then stop else counted)
+    in if tiles == 0 then act cp-go-say input "Item names are not installed; use [add art-hex [count]." end
+    else if last - 13 < 1 | last - 13 > 20 then act cp-go-say input "Usage: [add art-hex|name [count]" end
+    else let buf = it-find-new 0
+    in let found = it-find tiles packet 13 (last - 13) buf 0
+    in let exact = peek-qword buf 0
+    in let partial = peek-qword buf 8
+    in let chosen = if exact > 0 then peek-qword buf 16 else peek-qword buf 80
+    in let also = if exact <= 1 then "" else " Also: " & cp-hex-list tiles buf 3 0 (min 7 (exact - 1)) "" & "."
+    in if exact > 0 | partial == 1 then cp-add-art owner game input chosen amount ("Added " & show amount & " " & it-name tiles chosen amount & " (" & cp-hex-text chosen "" & ")." & also)
+    else if partial > 1 then act cp-go-say input ("Which one? " & cp-hex-list tiles buf 10 0 (min 8 partial) "" & (if partial > 8 then " and " & show (partial - 8) & " more." else ".")) end
+    else act cp-go-say input "No item has that name." end
+  cp-add-art : CompositeOwner, GameShard, GameInput, Integer, Integer, Text -> [Console, Device.Block] Result GameReply Text
+  cp-add-art (owner) (game) (input) (graphic) (amount) (said) =
+    let pack = gsi-pack-find game.world input.session.serial 0
+    in if graphic < 1 | graphic > #3FFF | amount < 1 | amount > 60000 then act cp-go-say input "Usage: [add art-hex|name [count]" end
     else if pack == 0 then act cp-go-say input "No backpack." end
     else when cts-item owner.state.items pack graphic amount 0
       is Err (e) -> act cp-go-say input ("Cannot add: " & e) end
       is Ok (serial) -> let touched = world-item-touch game.world in act
+        item <- cp-add-item graphic
+        lotted <- cp-add-lot owner input.session.serial serial item amount
+        logged <- slg-line game.log slg-world slg-info ("SUMMON gm=" & show input.session.serial & " serial=" & show serial & " graphic=" & cp-hex-text graphic "" & " amount=" & show amount & " item=" & show item & " lot=" & (if lotted then "yes" else "no"))
         committed <- cs-commit owner False
         when committed
           is Err (e) -> Err e
           is Ok (_) -> when world-get game.world serial
             is Err (e) -> Err e
-            is Ok (item) -> Ok (gs-reply [gsi-placement owner.state.items item, sip-message input.session.serial #FFFF 6 ("Added " & show amount & ".")] "british:add")
+            is Ok (item) -> Ok (gs-reply [gsi-placement owner.state.items item, sip-message input.session.serial #FFFF 6 said] "british:add")
       end
+ UOAIX-85: a summoned catalog good enters the summoner's economy actor as found stock at an unskilled craft's full
+ quality and wear (ep-find) and becomes a lot (gv-add-lot), as the testing kit's tools do (cpr-kit-each), so it can be
+ crafted with, healed with or sold; the SUMMON log line names the GM source. Art with no catalog item stays a plain item.
+  cp-add-item : Integer -> Integer
+  cp-add-item (g) = if g == #13B2 | g == #13B1 then 48 else if g == #0F3F then 49
+    else let kit = cpr-kit-item g in if kit > 0 then kit else gvb-item-of g
+  cp-add-lot : CompositeOwner, Integer, Integer, Integer, Integer -> Boolean
+  cp-add-lot (owner) (me) (serial) (item) (amount) = let v = owner.state.vendor
+    in let at = gv-player v me 0
+    in if item <= 0 | at < 0 then False
+    else let actor = (list-at v.players at).actor
+    in if ep-find v.currency.world actor item amount /= 0 then False
+    else gv-add-lot v serial actor item 1000 32 0 >= 0
  0x6C target cursor: byte 1 is 0 for an object, 1 for a location; bytes 2..5
  the cursor id ("LB" in the high word here); the answer carries the target
  serial at 7, x at 11, y at 13 and z at 16, and x = FFFF on cancel.
@@ -238,12 +296,14 @@ Chapter: CompositePaging
   cp-inspect-word : List Integer = [91, 105, 110, 115, 112, 101, 99, 116]
   cp-move-word : List Integer = [91, 109, 111, 118, 101]
   cp-summon-word : List Integer = [91, 115, 117, 109, 109, 111, 110, 32]
+  cp-remove-word : List Integer = [91, 114, 101, 109, 111, 118, 101]
+  cp-kill-word : List Integer = [91, 107, 105, 108, 108]
   cp-target-request : List Integer -> Boolean
   cp-target-request (packet) = list-length packet == 19 & list-at packet 0 == #6C & bit-and (gp-u32 packet 2) #FFFF0000 == cp-cursor-tag
   cp-british-request : List Integer -> Boolean
   cp-british-request (packet) = if list-length packet == 0 then False
     else if list-at packet 0 == #6C then cp-target-request packet
-    else cp-alone packet cp-invisible-word | cp-alone packet cp-inspect-word | cp-alone packet cp-move-word
+    else cp-alone packet cp-invisible-word | cp-alone packet cp-inspect-word | cp-alone packet cp-move-word | cp-alone packet cp-remove-word | cp-alone packet cp-kill-word
       | (list-at packet 0 == 3 & cp-word packet cp-summon-word 0) | csk-request packet | cat-request packet | cp-alone packet cp-help-word | cp-alone packet cp-cover-word
   cp-british : WalkMap, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
   cp-british (map) (owner) (game) (input) (packet) =
@@ -251,6 +311,8 @@ Chapter: CompositePaging
     else if cp-alone packet cp-invisible-word then act Ok (cp-invisible owner game input) end
     else if cp-alone packet cp-inspect-word then act Ok (cp-cursor input 1 0 "Inspect what?") end
     else if cp-alone packet cp-move-word then let cleared = __record-set owner.state "moving" 0 in act Ok (cp-cursor input 2 0 "Move what?") end
+    else if cp-alone packet cp-remove-word then act Ok (cp-cursor input 4 0 "Remove what?") end
+    else if cp-alone packet cp-kill-word then act Ok (cp-cursor input 5 0 "Kill what?") end
     else if csk-request packet then act Ok (cp-skill owner game input packet) end
     else if cat-request packet then act Ok (cp-attr owner game input packet) end
     else if cp-alone packet cp-help-word then act Ok (cp-help input) end
@@ -287,8 +349,10 @@ Chapter: CompositePaging
     else if context == 1 then act Ok (cp-inspect game input serial) end
     else if context == 2 then act Ok (cp-pick owner game input serial) end
     else if context == 3 then cp-place map owner game input x y z
+    else if context == 4 then crm-remove owner game input serial
+    else if context == 5 then crm-kill owner game input serial
     else if context >= 16 & context < 16 + 47 * 1001 then act Ok (cp-skill-on owner game input serial (csk-from-context context)) end
-    else if context >= cat-base & context < cat-base + 4 * 256 then act Ok (cp-attr-on owner game input serial (cat-from-context context)) end
+    else if context >= cat-base & context < cat-base + 7 * 256 then act Ok (cp-attr-on owner game input serial (cat-from-context context)) end
     else act Ok (cp-say input "british:refused" "That target is no longer active.") end
   cp-skill : CompositeOwner, GameShard, GameInput, List Integer -> GameReply
   cp-skill (owner) (game) (input) (packet) = if not owner.state.testing then cp-say input "british:refused" "[skill works only in testing mode."
@@ -305,7 +369,7 @@ Chapter: CompositePaging
   cp-attr (owner) (game) (input) (packet) = if not owner.state.testing then cp-say input "british:refused" "[attr works only in testing mode."
     else when cat-parse packet
       is Err (e) -> cp-say input "british:refused" e
-      is Ok (r) -> if r.target then cp-cursor input (cat-context r) 0 ("Whose " & list-at ["strength", "dexterity", "intelligence", "stats"] r.skill & "?")
+      is Ok (r) -> if r.target then cp-cursor input (cat-context r) 0 ("Whose " & list-at ["strength", "dexterity", "intelligence", "stats", "hit points", "stamina", "mana"] r.skill & "?")
         else cp-attr-on owner game input input.session.serial r
   cp-attr-on : CompositeOwner, GameShard, GameInput, Integer, CskRequest -> GameReply
   cp-attr-on (owner) (game) (input) (serial) (r) = when cat-apply owner.state game input serial r
@@ -313,8 +377,8 @@ Chapter: CompositePaging
     is Ok (status) -> let said = cp-say input "british:attr" (cat-said r)
       in if serial == input.session.serial then gs-reply (said.packets & [status]) "british:attr" else said
   cp-help-word : List Integer = [91, 104, 101, 108, 112]
-  cp-help-lines : List Text = ["[go x y, [goto [place], [where", "[add art-hex [count], [summon body-hex", "[invisible, [inspect, [move, [cover",
-    "[skill <name|id|all> <0.0-100.0> [target] (testing)", "[attr <str|dex|int|all> <1-255> [target] (testing)",
+  cp-help-lines : List Text = ["[go x y, [goto [place], [where", "[add art-hex|name [count], [summon body-hex", "[invisible, [inspect, [move, [cover, [remove, [kill",
+    "[skill <name|id|all> <0.0-100.0> [target] (testing)", "[attr <str|dex|int|all|hits> <1-100>, [attr <stam|mana> <0-100>, then [target] (testing)",
     "[pages, [pageack id, [account name password, [accounts"]
   cp-help : GameInput -> GameReply
   cp-help (input) = gs-reply (cp-say-lines input cp-help-lines 0 []) "british:help"

@@ -6,6 +6,7 @@ Chapter: TownLiveState
   cites Uoaix chapter TownStateCodec
   cites Uoaix chapter GameCombatPackets
   cites Uoaix chapter CharacterStylist
+  cites Uoaix chapter NpcLines
 
   TlCloth = record { serial : Integer, quality : Integer, wear : Integer, basis : Integer }
   TlControl = record { action : Integer, goal : Integer, place : Integer, vendor : Integer,
@@ -17,7 +18,7 @@ Chapter: TownLiveState
   TlViewer = record { serial : Integer, connection : Integer, inside : Integer }
   TownLive = record { vendors : GvWorld, items : GsiState, people : TfWorld, mind : TmMind,
     residents : List TlResident, viewers : List TlViewer, count : Integer, home-capacity : Integer,
-    entrance : BbSpot, nav : TlPath, now : Integer, cursor : Integer }
+    entrance : BbSpot, nav : TlPath, now : Integer, cursor : Integer, lines : NlLibrary, feel : List Integer }
   tl-move-seconds : Integer = 12
   tl-retry-seconds : Integer = 60
   tl-speech-seconds : Integer = 600
@@ -45,7 +46,8 @@ Chapter: TownLiveState
   tl-bind (v) (items) (map) (now) (home-capacity) (people) (mind) = TownLive { vendors = v, items = items,
     people = people, mind = mind, residents = tl-residents 0 now (__list-with-capacity 3),
     viewers = tl-viewers 0 (__list-with-capacity tl-viewer-limit), count = 0, home-capacity = home-capacity,
-    entrance = BbSpot { x = 1495, y = 1618, z = 0 }, nav = tl-path-new map, now = now, cursor = 0 }
+    entrance = BbSpot { x = 1495, y = 1618, z = 0 }, nav = tl-path-new map, now = now, cursor = 0,
+    lines = nl-library 0, feel = [0,0,0,0,0,0,0,0,0] }
   tl-new : GvWorld, GsiState, WalkMap, Integer, Integer -> TownLive
   tl-new (v) (items) (map) (now) (home-capacity) = tl-bind v items map now home-capacity (tf-new 0) (tm-new 0)
   tl-copy-spot : BbSpot, BbSpot -> Integer
@@ -164,8 +166,43 @@ Chapter: TownLiveState
                   is Err (e) -> Err e
                   is Ok (_) -> when cst-apply t.items serial (tl-look i serial)
                     is Err (e) -> Err e
-                    is Ok (_) -> let count = __record-set t "count" (i + 1)
-                      in tl-populate-people t map (i + 1)
+                    is Ok (_) -> when tl-pack t (bb-producer t.vendors.currency actor) serial i
+                      is Err (e) -> Err e
+                      is Ok (_) -> let count = __record-set t "count" (i + 1)
+                        in tl-populate-people t map (i + 1)
+ A resident carries a backpack (layer 21) holding produced goods of its trade, as economy lots it owns: Nell
+ bread (34), Jorin iron ingots (31), Mira cloth (37). They are what a thief can take.
+  tl-pack : TownLive, BbProducer, Integer, Integer -> Result Integer Text
+  tl-pack (t) (p) (mobile) (i) = when bb-container t.vendors t.items p mobile 21
+    is Err (e) -> Err e
+    is Ok (pack) -> let item = if i == 0 then 34 else if i == 1 then 31 else 37
+      in when bb-produce p item
+        is Err (e) -> Err e
+        is Ok (_) -> bb-materialise t.vendors t.items p pack (if i == 0 then #103B else if i == 1 then #1BF2 else #1766) 0 0 0 True
+ A resident's pack shows a quarter of its purse as coin piles, copper #0EEA, silver #0EF0 and gold #0EED (root,
+ 2026-10-07: a resident keeps most of its money banked, so one theft cannot empty it); as-steal-coin steals from them.
+  tl-coin-share : Integer = 4
+  tl-coin-art : Integer -> Integer
+  tl-coin-art (metal) = if metal == 1 then #0EEA else if metal == 2 then #0EF0 else #0EED
+  tl-coins : TownLive, Integer, Integer -> Integer
+  tl-coins (t) (i) (metal) = if metal > 3 | i < 0 | i >= t.count then 0
+    else let r = list-at t.residents i
+    in let x = t.vendors.currency
+    in let purse = (ep-actor x.world r.actor).purse
+    in let shown = (em-purse (if metal == 1 then x.copper else if metal == 2 then x.silver else x.world.money) purse).coin / tl-coin-share
+    in let world = t.vendors.game.world
+    in let pack = gsi-pack-find world (tf-person t.people r.person).world-serial 0
+    in let pile = if pack == 0 then 0 else gsi-child-art world (world-first-child world pack) (tl-coin-art metal) 0
+    in let done = if pack == 0 then 0
+      else if pile == 0 then (if shown == 0 then 0 else tl-coin-make t pack metal shown)
+      else if shown == 0 then (when world-delete world pile is Err (_) -> 0 is Ok (_) -> 0)
+      else (when world-get world pile is Err (_) -> 0 is Ok (o) -> when world-update world (__record-set o "amount" shown) is Err (_) -> 0 is Ok (_) -> 0)
+    in tl-coins t i (metal + 1)
+  tl-coin-make : TownLive, Integer, Integer, Integer -> Integer
+  tl-coin-make (t) (pack) (metal) (shown) = let o = __record-set (__record-set (__record-set (gs-item pack (tl-coin-art metal) 0) "amount" shown) "x" 60) "y" 80
+    in when world-create t.vendors.game.world o
+      is Err (_) -> 0
+      is Ok (made) -> gsi-register t.items made 0 0 True True
  Nell (0) and Mira (2) are women, Jorin (1) a man.
   tl-female : Integer -> Boolean
   tl-female (i) = i /= 1

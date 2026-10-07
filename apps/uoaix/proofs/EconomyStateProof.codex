@@ -29,6 +29,21 @@ Chapter: EconomyStateProof
     in let original = poke-qword buf at saved
     in let hash = poke-qword buf 48 old-hash
     in refused
+  esp-taxed-kept : Integer -> Boolean
+  esp-taxed-kept (buf) =
+    let at = es-v5-bytes + 6 * 8
+    in let saved = peek-qword buf at
+    in let old-hash = peek-qword buf 48
+    in let changed = poke-qword buf at 1
+    in let rehash = poke-qword buf 48 (ws-hash buf es-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let kept = when es-decode buf es-bytes
+      is Err (_) -> False
+      is Ok (state) -> ep-at state.world.taxed 6 == 1 & ep-at state.world.taxed 7 == 0
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at saved
+    in let hash = poke-qword buf 48 old-hash
+    in kept
   esp-items : EgCatalog, Integer, List EgItem -> List EgItem
   esp-items (c) (i) (xs) = if i == 128 then xs
     else let core = i == 3 | i == 13 | i == 15 | i == 31 | i == 33 | i == 49 | i == 50 | i == 61
@@ -139,7 +154,7 @@ Chapter: EconomyStateProof
     buf <- alloc-bytes es-bytes
     copy <- alloc-bytes es-bytes
     written <- es-encode source buf es-bytes
-    esp-check "header and independent section layout" (is-ok written & es-v1-bytes == 1360768 & es-v2-bytes == 1366912 & es-v3-bytes == 1422208 & es-v4-bytes == 1423240 & es-bytes == 1431656 & peek-qword buf 0 == #31434555 & peek-qword buf 8 == 5 & peek-qword buf 16 == es-bytes & peek-qword buf 32 == 7310 & peek-qword buf 40 == 88 & peek-qword buf 64 == 62 & peek-qword buf 72 == 24 & peek-qword buf 80 == 31 & peek-qword buf es-money-at == 56 & peek-qword buf es-world-at == 55)
+    esp-check "header and independent section layout" (is-ok written & es-v1-bytes == 1360768 & es-v2-bytes == 1366912 & es-v3-bytes == 1422208 & es-v4-bytes == 1423240 & es-v5-bytes == 1431656 & es-bytes == 1432688 & peek-qword buf 0 == #31434555 & peek-qword buf 8 == 6 & peek-qword buf 16 == es-bytes & peek-qword buf 32 == 7310 & peek-qword buf 40 == 88 & peek-qword buf 64 == 62 & peek-qword buf 72 == 24 & peek-qword buf 80 == 31 & peek-qword buf es-money-at == 56 & peek-qword buf es-world-at == 55)
     before-decode <- __heap-save
     decoded <- es-decode-record buf es-bytes 7310 88
     after-decode <- __heap-save
@@ -149,10 +164,18 @@ Chapter: EconomyStateProof
       is Err (e) -> print-line-uni ("FAIL decode " & e)
       is Ok (state) -> esp-restored source buf copy state
     esp-check "record metadata and truncation refused" (is-err (es-decode-record buf es-bytes 7310 89) & is-err (es-decode buf (es-bytes - 1)))
+    ore-taxed <- ep-at w.taxed 6 + ep-at w.taxed 63 + ep-at w.taxed 64
+    print-line-uni ("ECONOMY-ORE-TAXED " & show ore-taxed)
+    untaxed-gold <- ep-set w.taxed 6 0
+    untaxed-copper <- ep-set w.taxed 63 0
+    untaxed-silver <- ep-set w.taxed 64 0
+    legacy-source <- es-encode source buf es-bytes
+    esp-check "a world with no mining tax re-encodes for the legacy layouts" (ore-taxed > 0 & is-ok legacy-source)
     esp-legacy buf copy es-v1-bytes 1 "1"
     esp-legacy buf copy es-v2-bytes 2 "2"
     esp-legacy buf copy es-v3-bytes 3 "3"
     esp-legacy buf copy es-v4-bytes 4 "4"
+    esp-legacy buf copy es-v5-bytes 5 "5"
     esp-check "rehashed spare station slot refused" (esp-refused buf (es-station-at 200) 1)
     esp-check "rehashed spare node slot past 256 refused" (esp-refused buf (es-node-at 900) 1)
     esp-check "rehashed purse mismatch refused" (esp-refused buf (es-purses-at + 24 + 16) ((em-purse w.money 2).coin + 1))
@@ -163,6 +186,9 @@ Chapter: EconomyStateProof
     esp-check "rehashed inactive actor refused" (esp-refused buf (es-actors-at + 127 * 4248 + 32 + 8) 1)
     esp-check "catalog dimensions text and spare slots refused" (esp-refused buf 64 129 & esp-refused buf 104 65 & esp-refused buf (96 + 127 * 80) 1)
     esp-check "reserved header refused" (esp-refused buf 56 1)
+    esp-check "a mining tax within the ore mined decodes and keeps its count" (ep-at w.gathered 6 > 0 & esp-taxed-kept buf)
+    esp-check "rehashed tax on an untaxable item refused" (esp-refused buf (es-v5-bytes + 8) 1)
+    esp-check "rehashed gold tax past the gold mined refused" (esp-refused buf (es-v5-bytes + 6 * 8) (ep-at w.gathered 6 + ep-at w.found 6 + 1))
     esp-check "encoder refuses inventory overlap" (is-err (es-encode source (ep-actor w 1).stock es-bytes))
     esp-maximum source buf
     bad <- __record-set (em-purse w.money 2) "coin" ((em-purse w.money 2).coin + 1)

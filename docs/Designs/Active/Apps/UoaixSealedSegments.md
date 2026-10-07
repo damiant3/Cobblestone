@@ -139,5 +139,7 @@ world runs about 16 real months.
    segment 1, 2,105,960 bytes: 7,224 events and 6,867 gold rows), the
    `EconomyArchiveRead` walk, `compact-world.ps1`, `install-map-cache.ps1`, and
    the same walk again, byte for byte. `EconomySealProof` grades the capture
-   and the refusal of a seal that would not fit. Open: a live shard's seal rate.
+   and the refusal of a seal that would not fit. Open: a live shard's seal rate,
+   read from the `ECONOMY ROWS` line each commit logs (economy hour; event,
+   copper, silver, gold and trade rows).
 3. A fresh live world on the new format (UCC1 24 and a reinstalled cache).

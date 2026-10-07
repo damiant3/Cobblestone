@@ -263,7 +263,7 @@ Chapter: GameWorldSpawn
       is Ok (actor) -> if not (cb-select g.combat shard a actor) | cb-reach map m target then False
         else gws-walk g shard map slot m (cb-direction (target.x - m.x) (target.y - m.y)) True
   gws-pet : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject -> Boolean
-  gws-pet (g) (shard) (map) (slot) (m) = if g.combat.tick < slot.due then False
+  gws-pet (g) (shard) (map) (slot) (m) = if g.combat.tick < slot.due | gws-frozen g shard m then False
     else let a = list-at g.combat.actors (world-slot shard.world m.serial)
     in when world-get shard.world slot.owner
       is Err (_) -> let stopped = cb-stop g.combat a in let peace = __record-set a "war" False
@@ -308,13 +308,16 @@ Chapter: GameWorldSpawn
     in let due = __record-set slot "due" g.combat.tick in 1 + gws-order g master order (i + 1)
   gws-act : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, WorldObject -> Boolean
   gws-act (g) (shard) (map) (slot) (m) (viewer) = if slot.owner /= 0 then gws-pet g shard map slot m else gws-wild g shard map slot m viewer
+ A paralysed creature (CombatActor.frozen, Magery) stands still until it thaws.
+  gws-frozen : GameWorldSpawn, GameShard, WorldObject -> Boolean
+  gws-frozen (g) (shard) (m) = let a = list-at g.combat.actors (world-slot shard.world m.serial) in a.serial == m.serial & a.frozen > g.combat.tick
   gws-wild : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, WorldObject -> Boolean
   gws-wild (g) (shard) (map) (slot) (m) (viewer) =
     let a = list-at g.combat.actors (world-slot shard.world m.serial)
     in let p = list-at g.catalog.profiles slot.profile
     in let seen = viewer.health > 0 & viewer.serial /= g.unseen
     in let hostile = seen & (p.ai == 2 | p.ai == 11) & gm-near m.x m.y viewer.x viewer.y gws-aggro
-    in if g.combat.tick < slot.due & not (hostile & gws-slot-seen g slot & not (a.war & a.target /= 0)) then False
+    in if gws-frozen g shard m | (g.combat.tick < slot.due & not (hostile & gws-slot-seen g slot & not (a.war & a.target /= 0))) then False
     else let speed = 1000 + cb-random g.combat (max 1 ((100 - a.dexterity) / 3)) * 100
     in let due = __record-set slot "due" (g.combat.tick + gm-ticks (max 100 (min 5000 speed)))
     in let near = seen & gm-near m.x m.y viewer.x viewer.y 6

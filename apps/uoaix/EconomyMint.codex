@@ -2,6 +2,11 @@ Chapter: EconomyMint
   cites Uoaix chapter EconomyProduction
   cites Uoaix chapter EconomyMoney
 
+ The Crown keeps 10% of the coin struck from an owner's ingots, in basis points (Damian 2026-10-06: "another 10% to coin it").
+  emi-fee : Integer = 1000
+  emi-paid : Integer, Boolean -> Integer
+  emi-paid (coin) (operator) = if operator then 0 else coin - coin * emi-fee / 10000
+
   emi-configure : EpWorld, Boolean, Integer, Integer -> Integer
   emi-configure (w) (authorized) (owner) (rate) =
     if not authorized | not (ep-valid-actor w owner) | rate < 0 | rate > 1000000000 | not (em-room w.money 1) then -1
@@ -14,15 +19,19 @@ Chapter: EconomyMint
 
   emi-strike : EpWorld, Boolean, Integer, Integer, Integer -> Integer
   emi-strike (w) (authorized) (actor) (station) (ingots) =
-    if not authorized | not (ep-valid-actor w actor) | actor /= w.mint-owner | w.mint-rate == 0 | ingots <= 0 | ingots > 1000 | station <= 0 | station > w.station-count then -1
+    if not authorized | not (ep-valid-actor w actor) | w.mint-owner <= 0 | w.mint-rate == 0 | ingots <= 0 | ingots > 1000 | station <= 0 | station > w.station-count then -1
     else let p = ep-actor w actor
     in let s = list-at w.stations (station - 1)
     in let coin = ingots * w.mint-rate
-    in if s.kind /= 12 | s.owner /= actor | s.place /= p.place | s.enabled == 0 | not (ep-has p 32 ingots) | not (ep-tool p 62) | w.mint-ingots > ep-limit - ingots then -1
-    else if not (em-room w.money 2) | w.money.issued > em-limit - coin | (em-purse w.money 1).coin > em-limit - coin then -1
+    in let operator = actor == w.mint-owner
+    in let paid = emi-paid coin operator
+    in if s.kind /= 12 | s.owner /= w.mint-owner | s.place /= p.place | s.enabled == 0 | not (ep-has p 32 ingots) | (operator & not (ep-tool p 62)) | w.mint-ingots > ep-limit - ingots then -1
+    else if not (em-room w.money (if paid > 0 then 3 else 2)) | w.money.issued > em-limit - coin | (em-purse w.money 1).coin > em-limit - coin
+      | (paid > 0 & (em-purse w.money p.purse).coin > em-limit - paid) then -1
     else let issued = em-issue w.money True coin 2
     in if issued /= 0 then -1
     else let a = ep-consume w p 32 ingots
-    in let b = ep-wear w p 62
+    in let b = if operator then ep-wear w p 62 else 0
     in let c = __record-set w "mint-ingots" (w.mint-ingots + ingots)
-    in em-row w.money p.purse 1 0 12 ingots
+    in let d = em-row w.money p.purse 1 0 12 ingots
+    in if paid > 0 then em-payout w.money p.purse paid else 0

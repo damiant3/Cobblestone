@@ -100,49 +100,12 @@ Chapter: CompositeGatherer
     in let next = if c.leg == 1 then 2 else if c.leg == 4 then 5 else if c.leg == 6 then 7 else 0
     in let placed = if c.leg == 1 then ep-place w actor c.gatherer.place else if c.leg == 3 then ep-place w actor cgg-town-place else 0
     in let trips = if c.leg == 3 then let counted = __record-set c "trips" (c.trips + 1) in (if c.gatherer.place > cgg-place & c.gatherer.place <= cgg-place + 4 then cgg-next-vein c t else 0) else 0
-    in let sold = if c.leg == 3 & placed == 0 then cgg-crown-sell t.vendors.currency actor 63 + cgg-crown-sell t.vendors.currency actor 64 else 0
+    in let sold = if c.leg == 3 & placed == 0 then bb-coin t.vendors.currency actor 1 16 + bb-coin t.vendors.currency actor 2 16 else 0
     in let crowned = __record-set c "crowned" (c.crowned + sold)
     in let visit = __record-set c "visit" 0
     in let arrived = __record-set c "leg" next
     in let touched = world-touch t.vendors.game.world
     in if placed /= 0 then Err "gatherer economic place" else Ok []
- The crown's mint buys copper (63) and silver (64) ore in pairs at the market price, paid in gold, and
- mints it before each commit (root 2026-10-06, UOAIX-30); both stand in Britain (place 100).
- The posted price is 1 gold per pair, below the 1000 copper or 100 silver a pair mints (1.43 gold at 700
- copper and 70 silver to the gold), paid through eu-sale so the currency history records it.
-  cgg-crown-sell : EuCurrency, Integer, Integer -> Integer
-  cgg-crown-sell (x) (seller) (ore) = let w = x.world
-    in let crown = w.mint-owner
-    in let pairs = if ep-valid-actor w seller then ep-at (ep-actor w seller).stock ore / 2 else 0
-    in if crown <= 0 | crown == seller | pairs == 0 | not (ep-valid-actor w crown) | w.trade-count == ep-trade-limit then 0
-    else let b = ep-actor w crown
-    in let s = ep-actor w seller
-    in let quantity = pairs * 2
-    in let gross = pairs * x.copper-rate
-    in let chain = (list-at w.catalog.items (ore - 1)).chain
-    in if not (ep-room b ore quantity) | ep-at b.cost ore > ep-limit - pairs | ep-at w.turnover chain > ep-limit - gross then 0
-    else let quality = ep-at s.quality ore * quantity / ep-at s.stock ore
-    in let durability = ep-at s.wear ore * quantity / ep-at s.stock ore
-    in if eu-sale x True b.purse s.purse gross 0 0 pairs /= 0 then 0
-    else let c = ep-remove s ore quantity
-    in let d = ep-add b.stock ore quantity
-    in let e = ep-add b.quality ore quality
-    in let f = ep-add b.cost ore pairs
-    in let g = ep-add b.wear ore durability
-    in let h = ep-add w.sales ore quantity
-    in let k = ep-add w.turnover chain gross
-    in let crowned = ep-add w.crown-turnover chain gross
-    in let trade = list-at w.trades w.trade-count
-    in let t0 = __record-set trade "action" w.money.sequence
-    in let t1 = __record-set trade "hour" w.hour
-    in let t2 = __record-set trade "buyer" b.purse
-    in let t3 = __record-set trade "seller" s.purse
-    in let t4 = __record-set trade "item" ore
-    in let t5 = __record-set trade "quantity" quantity
-    in let t6 = __record-set trade "gross" gross
-    in let t7 = __record-set trade "quality" quality
-    in let t8 = __record-set trade "durability" durability
-    in let recorded = __record-set w "trade-count" (w.trade-count + 1) in pairs
   cgg-vein-node : EpWorld, Integer, Integer, Integer -> Integer
   cgg-vein-node (w) (resource) (place) (i) = if i == w.node-count then eh-source w resource place
     else let n = list-at w.nodes i
@@ -312,6 +275,16 @@ Chapter: CompositeGatherer
             is Ok (pack) -> let born = __record-set c "serial" serial
               in let bound = __record-set c "pack" pack
               in let touched = world-touch world in Ok []
+ A miner gathers one fallen branch (item 2) per two copper (63) or silver (64) ore at its own place before walking
+ home, because smelting them (recipes 65, 66) takes a held branch and Britain's branches are the baker's fuel.
+  cgg-fuel : CgGatherer -> Integer
+  cgg-fuel (c) = let need = cgg-held c 63 / 2 + cgg-held c 64 / 2
+    in if c.trade.raw /= cgg-ore | need <= cgg-held c 2 then 0
+    else when bb-require c.gatherer.producer 2 need
+      is Err (_) -> 0
+      is Ok (_) -> 1
+  cgg-leave-node : CgGatherer, TownLive -> Result (List (List Integer)) Text
+  cgg-leave-node (c) (t) = let fueled = cgg-fuel c in cgg-depart c t 3
  Legs: 0 home, 1 out to the node, 2 mining, 3 back home, 4 to the blacksmith, 5 selling, 6 to the forge, 7 smelting.
  Every departure from and return to home passes the lodging entrance.
   cgg-step : CgGatherer, TownLive, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
@@ -328,13 +301,13 @@ Chapter: CompositeGatherer
         else when (if c.trade.tool == 0 then Ok 0 else bb-require c.gatherer.producer c.trade.tool 1)
           is Err (_) -> let count = __record-set c "blocked" (c.blocked + 1) in Ok []
           is Ok (_) -> cgg-depart c t 1
-      else if c.leg == 2 & cgg-capped c then cgg-depart c t 3
+      else if c.leg == 2 & cgg-capped c then cgg-leave-node c t
       else if c.leg == 2 then
         let got = egg-hour c.gatherer
         in let visits = c.visit + 1
         in let tried = __record-set c "visit" visits
         in let touched = world-touch t.vendors.game.world
-        in if got <= 0 & visits < cgg-visit-limit then Ok [] else cgg-depart c t 3
+        in if got <= 0 & visits < cgg-visit-limit then Ok [] else cgg-leave-node c t
       else if c.leg == 5 then cgg-sell c t mobile
       else if c.leg == 7 then cgg-forge-work c t map mobile
       else cgg-move c t mobile map doors

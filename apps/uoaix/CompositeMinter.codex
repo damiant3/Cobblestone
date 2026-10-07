@@ -1,0 +1,71 @@
+Chapter: CompositeMinter
+  cites Uoaix chapter CompositePlanting
+
+ The Royal Minter stands in the Royal Mint room of Castle British (Damian 2026-10-07: "there should be a minter NPC here
+ that does the minting"; the room is at 1334,1603,72). A player drops a stack of their own copper (65), silver (66) or
+ gold (32) ingots on the minter within two tiles: the whole stack is struck into coin for the player's purse and the
+ Crown keeps its tenth (eu-strike, EconomyMint.md). The minter is a saved world mobile told apart by its hue.
+  cmr-x : Integer = 1334
+  cmr-y : Integer = 1603
+  cmr-z : Integer = 72
+  cmr-hue : Integer = #0496
+  cmr-find : WorldTable, Integer -> Integer
+  cmr-find (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 1 & o.hue == cmr-hue & o.container == 0) then serial
+    else cmr-find world (world-tile-next world serial)
+  cmr-serial : WorldTable -> Integer
+  cmr-serial (world) = cmr-find world (world-tile-first world cmr-x cmr-y)
+  cmr-install : GsiState -> Integer
+  cmr-install (items) = if cmr-serial items.world /= 0 | world-count items.world >= items.world.capacity then 0
+    else when world-create items.world (gs-mobile 0 cmr-x cmr-y cmr-z 400 cmr-hue)
+      is Err (_) -> 0
+      is Ok (serial) -> let touched = world-touch items.world in 1
+  cmr-metal : Integer -> Integer
+  cmr-metal (item) = if item == 65 then 1 else if item == 66 then 2 else if item == 32 then 3 else 0
+  cmr-refuse : GameHarvest, GameShard, GameInput, Integer, Text -> Result (Maybe GameReply) Text
+  cmr-refuse (h) (shard) (input) (slot) (text) = let b = gsi-bounce h.items (gsi-session h.items shard input slot) 1
+    in Ok (Just (gs-reply (list-push b.packets (sip-message #FFFFFFFF #FFFF 6 text)) "minter refused"))
+ The striker's economy place is set to the crown mint's for the strike and put back after it.
+  cmr-drop : GameHarvest, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  cmr-drop (h) (shard) (input) (serial) = let v = h.vendor
+    in let w = v.currency.world
+    in let slot = gsi-slot shard input.session.serial 0
+    in let at = gv-lot v serial 0
+    in let player = gv-player v input.session.serial 0
+    in if slot < 0 | slot >= 8 then Ok None
+    else if at < 0 | player < 0 | (list-at v.lots at).actor /= (list-at v.players player).actor then cmr-refuse h shard input slot "The minter strikes only your own ingots."
+    else let lot = list-at v.lots at
+    in let metal = cmr-metal lot.item
+    in if metal == 0 then cmr-refuse h shard input slot "The minter strikes copper, silver and gold ingots."
+    else if lot.quantity > 1000 then cmr-refuse h shard input slot "The minter strikes at most 1000 ingots at a time."
+    else when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> if walk-abs (cmr-x - mobile.x) > 2 | walk-abs (cmr-y - mobile.y) > 2 then cmr-refuse h shard input slot "The minter is out of reach."
+        else let actor = lot.actor
+        in let p = ep-actor w actor
+        in let station = if w.mint-owner <= 0 then 0 else bb-station w w.mint-owner 12 0
+        in if station < 1 then cmr-refuse h shard input slot "The Royal Mint is closed."
+        else let quantity = lot.quantity
+        in let home = p.place
+        in let before = (em-purse (eu-money v.currency metal) p.purse).coin
+        in let moved = ep-place w actor (list-at w.stations (station - 1)).place
+        in let struck = eu-strike v.currency True actor station metal quantity
+        in let back = ep-place w actor home
+        in if struck < 0 then cmr-refuse h shard input slot "The minter cannot strike those ingots now."
+        else let retired = gh-retire-lot v at
+        in let quoted = gh-invalidate-quotes v 0
+        in let coined = (em-purse (eu-money v.currency metal) p.purse).coin - before
+        in let released = __record-set (list-at h.items.actors slot) "holding" 0
+        in when world-delete h.items.world serial
+          is Err (e) -> Err e
+          is Ok (_) -> let touched = world-touch h.items.world
+            in Ok (Just (gs-reply [sip-remove serial, sip-message #FFFFFFFF #FFFF 6 ("The minter strikes " & show quantity & " ingots into " & show coined & " " & (if metal == 1 then "copper" else if metal == 2 then "silver" else "gold") & "; the Crown keeps its tenth.")] "minter struck"))
+  cmr-handler : GameHarvest, GameShard, GameInput, List Integer -> Result (Maybe GameReply) Text
+  cmr-handler (h) (shard) (input) (packet) = if list-length packet < 5 then Ok None
+    else let op = list-at packet 0
+    in let minter = cmr-serial h.items.world
+    in if minter == 0 | input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else if op == 9 & bit-and (gp-u32 packet 1) #7FFFFFFF == minter then
+      Ok (Just (gs-reply [sip-message minter 0 6 "the Royal Minter"] "minter:name"))
+    else if op == 8 & list-length packet >= 14 & gp-u32 packet 10 == minter then cmr-drop h shard input (bit-and (gp-u32 packet 1) #7FFFFFFF)
+    else Ok None

@@ -310,6 +310,23 @@ Chapter: CompositePlanting
     [#0A55, 1227, 1582], [#0E3D, 1230, 1582], [#1015, 1233, 1568], [#1039, 1238, 1568], [#0E77, 1238, 1569],
     [#0E77, 1238, 1570], [#0F34, 1233, 1573], [#0F34, 1234, 1573], [#1037, 1233, 1574], [#0E87, 1238, 1573],
     [#0E88, 1238, 1574], [#0B41, 1235, 1578], [#0B42, 1236, 1578], [#14E0, 1237, 1578]]
+ The Royal Mint (UOAIX-78) is the Castle British room at 1329..1339,1600..1608 on the z 72 floor (STATICS0.MUL; Damian
+ stood at 1334,1603), doorways at 1333,1599, 1334,1609 and 1340,1604. Each furnishing is art, x, y, z; the table top is z 78.
+ The brass sign hangs east of the wall beside the east doorway.
+  cpl-mint-sign : Integer = #0BD2
+  cpl-mint-sign-x : Integer = 1341
+  cpl-mint-sign-y : Integer = 1603
+  cpl-mint-furniture : List (List Integer) = [[#197A, 1329, 1600, 72], [#0FB1, 1330, 1600, 72], [#0FAF, 1330, 1601, 72],
+    [#0B6B, 1337, 1600, 72], [#0B6B, 1338, 1600, 72], [#1852, 1337, 1600, 78], [#0EEF, 1338, 1600, 78],
+    [#0EF2, 1337, 1606, 72], [#0EEF, 1338, 1606, 72], [#0EEC, 1339, 1606, 72], [#1BEB, 1329, 1606, 72],
+    [#1BF5, 1330, 1606, 72], [#1BF4, 1329, 1607, 72], [#0E7C, 1338, 1608, 72], [cpl-mint-sign, cpl-mint-sign-x, cpl-mint-sign-y, 72]]
+  cpl-mint-label : GameShard, List Integer -> Maybe GameReply
+  cpl-mint-label (game) (packet) = if list-length packet /= 5 | list-at packet 0 /= 9 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in when world-get game.world serial
+      is Err (_) -> None
+      is Ok (item) -> if item.kind /= 2 | item.graphic /= cpl-mint-sign | item.x /= cpl-mint-sign-x | item.y /= cpl-mint-sign-y | item.container /= 0 then None
+        else Just (gs-reply [sip-message serial item.graphic 6 "Royal Mint"] "items:sign")
   cpl-farm-plant : GameHarvest, List (List Integer), Integer -> Integer
   cpl-farm-plant (h) (beds) (i) = if i == list-length beds then 0
     else let bed = list-at beds i
@@ -342,12 +359,13 @@ Chapter: CompositePlanting
     in let x = list-at piece 1
     in let y = list-at piece 2
     in if cpl-farm-at items.world (world-tile-first items.world x y) art | world-count items.world >= items.world.capacity then cpl-farm-furnish items pieces (i + 1)
-    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = art, hue = 0, container = 0, amount = 1, health = 0 })
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = (if list-length piece > 3 then list-at piece 3 else 0), graphic = art, hue = 0, container = 0, amount = 1, health = 0 })
       is Err (_) -> cpl-farm-furnish items pieces (i + 1)
       is Ok (serial) -> let fixed = gsi-register items serial 0 0 False False
         in 1 + cpl-farm-furnish items pieces (i + 1)
   cpl-farm-install : GameHarvest -> Integer
   cpl-farm-install (h) = let planted = cpl-farm-plant h cpl-farm-beds 0
     in let furnished = cpl-farm-furnish h.items cpl-farm-furniture 0
-    in let touched = if planted + furnished > 0 then world-touch h.items.world else 0
-    in planted + furnished
+    in let minted = cpl-farm-furnish h.items cpl-mint-furniture 0
+    in let touched = if planted + furnished + minted > 0 then world-touch h.items.world else 0
+    in planted + furnished + minted

@@ -114,26 +114,172 @@ Chapter: MageryActions
         in when world-get shard.world serial
           is Err (e) -> Err e
           is Ok (item) -> Ok [sip-item item,mgp-sound source #01E2]
+ ServUO effects and sounds: Magic Arrow and Fireball fly (0x36E4, 0x36D4), Energy Bolt flies 0x379F with 0x20A; Harm,
+ Mind Blast (0x213), Explosion (0x36BD, 0x307) and Flame Strike (0x3709, 0x208) show on the target; Lightning is a bolt
+ (Effects.SendBoltEffect) whose only sound is 0x29.
+  mga-damage-show : WorldObject, WorldObject, Integer -> List (List Integer)
+  mga-damage-show (source) (target) (spell) = if spell == 30 then [mgp-sound target #0029]
+    else let graphic = if spell == 5 then #36E4 else if spell == 18 then #36D4 else if spell == 42 then #379F
+      else if spell == 43 then #36BD else if spell == 51 then #3709 else #374A
+    in let sound = if spell == 5 then #01E5 else if spell == 18 then #044B else if spell == 37 then #0213 else if spell == 42 then #020A
+      else if spell == 43 then #0307 else if spell == 51 then #0208 else #01F1
+    in [mgp-effect source target graphic (spell == 5 | spell == 18 | spell == 42),mgp-sound target sound]
+  mga-stat-mods : Magery, GameShard, GameInput, MgActor, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
+  mga-stat-mods (magic) (shard) (input) (actor) (source) (target) (spell) =
+    let amount = 1 + mgs-skill shard source.serial 25 / 100
+    in let share = if mgd-harmful spell then mge-share shard source.serial target.serial else 1000
+    in let until = magic.tick + mgd-ticks (mgs-skill shard source.serial 25 * 120 * share / 1000)
+    in let signed = if mgd-harmful spell then 0 - amount else amount
+    in let stat = if spell == 1 | spell == 9 then 1 else if spell == 3 | spell == 10 then 2 else 0
+    in let first = mge-mod magic actor stat signed until
+    in let rest = if spell /= 17 & spell /= 27 & spell /= 46 then 0 else let dex = mge-mod magic actor 1 signed until in mge-mod magic actor 2 signed until
+    in mge-stats magic shard input actor
+ ServUO Fourth/ManaDrain and Seventh/ManaVampire (pre-AOS): Mana Drain takes 1 to 100 of the target's mana and Mana
+ Vampire all of it, moving only what fits into the caster; the landed share scales either. Effect 0x374A, sound
+ 0x1F8 (drain) and 0x1F9 (vampire).
+  mga-drain : Magery, GameShard, GameInput, MgActor, MgActor, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
+  mga-drain (magic) (shard) (input) (caster) (actor) (source) (target) (spell) =
+    let taken = if spell == 31 then 1 + mgs-random magic (max 1 (min 100 actor.mana)) else actor.mana
+    in let landed = min actor.mana (taken * mge-share shard source.serial target.serial / 1000)
+    in let given = if spell == 53 then min landed (max 0 (mgs-stat caster 2 - caster.mana)) else 0
+    in let moved = if spell == 53 then given else landed
+    in let a = __record-set actor "mana" (actor.mana - moved)
+    in let b = if given > 0 then __record-set caster "mana" (caster.mana + given) else caster
+    in let touched = mgs-touch magic
+    in Ok ([mgp-effect target target #374A False,mgp-sound target (if spell == 31 then #01F8 else #01F9)]
+      & (if target.serial == input.session.serial then [mgp-mana actor] else [])
+      & (if given > 0 & source.serial == input.session.serial then [mgp-mana caster] else []))
+ ServUO Sixth/MassCurse: Curse on every other mobile within 2 tiles of the point, each rolling its own resist.
+  mga-mass-curse : Magery, GameShard, GameInput, WorldObject, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mga-mass-curse (magic) (shard) (input) (source) (point) (k) (packets) = if k == 25 then Ok packets
+    else let x = point.x - 2 + int-mod k 5
+    in let y = point.y - 2 + k / 5
+    in if x < 0 | y < 0 | x >= 6144 | y >= 4096 then mga-mass-curse magic shard input source point (k + 1) packets
+    else when mga-curse-tile magic shard input source (world-tile-first shard.world x y) packets
+      is Err (e) -> Err e
+      is Ok (more) -> mga-mass-curse magic shard input source point (k + 1) more
+  mga-curse-tile : Magery, GameShard, GameInput, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mga-curse-tile (magic) (shard) (input) (source) (serial) (packets) = if serial == 0 then Ok packets
+    else let next = world-tile-next shard.world serial
+    in when world-get shard.world serial
+      is Err (_) -> mga-curse-tile magic shard input source next packets
+      is Ok (m) -> if m.kind /= 1 | m.health <= 0 | m.serial == source.serial | not (magic.combat.admit-hook source.serial m.serial) then mga-curse-tile magic shard input source next packets
+        else if mge-resisted magic shard source.serial m.serial then
+          mga-curse-tile magic shard input source next (list-push packets (sip-message m.serial m.graphic 6 "You feel yourself resisting magical energy."))
+        else when mgs-ensure magic shard m.serial
+          is Err (e) -> Err e
+          is Ok (actor) -> when mga-stat-mods magic shard input actor source m 46
+            is Err (e) -> Err e
+            is Ok (shown) -> mga-curse-tile magic shard input source next (packets & shown & [mgp-effect m m #374A False,mgp-sound m #01E1])
+ ServUO pre-AOS area spells. Arch Cure (25) cures within 2 tiles of its point at Cure's chance less 1%; Arch Protection
+ (26) gives everyone within 3 tiles Protection; Chain Lightning (49) and Meteor Swarm (55) split 27 to 48 among the
+ harmful targets within 2 tiles; Earthquake (57) strikes within 1 + Magery/15 tiles of the caster for 60% of each
+ target's hits, at least 10 on a creature and at most 75, unscaled by Eval Int (ServUO applies no damage scalar to it).
+ Every harmful one rolls each target's resist and lands its share (UOAIX-77). Mobiles are found tile by tile through the
+ world's tile chains.
+  mga-protect : Magery, GameShard, Integer, MgActor -> Integer
+  mga-protect (magic) (shard) (caster) (actor) =
+    let value = min 75 ((mgs-skill shard caster 16 + mgs-skill shard caster 46 + mgs-skill shard caster 23) / 40)
+    in let amount = __record-set actor "protection" (max 0 value)
+    in let until = __record-set actor "protected-until" (magic.tick + mgd-ticks (max 15000 (min 240000 (mgs-skill shard caster 25 * 200))))
+    in let tracked = mgs-track magic actor
+    in mgs-touch magic
+  mga-area-wanted : Magery, WorldObject, WorldObject, Integer -> Boolean
+  mga-area-wanted (magic) (source) (m) (spell) = m.kind == 1 & m.health > 0
+    & (spell == 25 | spell == 26 | (m.serial /= source.serial & magic.combat.admit-hook source.serial m.serial))
+  mga-area-count : Magery, GameShard, WorldObject, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  mga-area-count (magic) (shard) (source) (point) (radius) (spell) (k) (n) = let side = 2 * radius + 1
+    in if k == side * side then n
+    else let x = point.x - radius + int-mod k side
+    in let y = point.y - radius + k / side
+    in let here = if x < 0 | y < 0 | x >= 6144 | y >= 4096 then 0 else mga-tile-count magic shard source (world-tile-first shard.world x y) spell 0
+    in mga-area-count magic shard source point radius spell (k + 1) (n + here)
+  mga-tile-count : Magery, GameShard, WorldObject, Integer, Integer, Integer -> Integer
+  mga-tile-count (magic) (shard) (source) (serial) (spell) (n) = if serial == 0 then n
+    else let next = world-tile-next shard.world serial
+    in when world-get shard.world serial
+      is Err (_) -> mga-tile-count magic shard source next spell n
+      is Ok (m) -> mga-tile-count magic shard source next spell (if mga-area-wanted magic source m spell then n + 1 else n)
+  mga-area : Magery, GameShard, GameInput, WorldObject, WorldObject, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mga-area (magic) (shard) (input) (source) (point) (radius) (spell) (base) (k) (packets) = let side = 2 * radius + 1
+    in if k == side * side then Ok packets
+    else let x = point.x - radius + int-mod k side
+    in let y = point.y - radius + k / side
+    in if x < 0 | y < 0 | x >= 6144 | y >= 4096 then mga-area magic shard input source point radius spell base (k + 1) packets
+    else when mga-area-tile magic shard input source (world-tile-first shard.world x y) spell base packets
+      is Err (e) -> Err e
+      is Ok (more) -> mga-area magic shard input source point radius spell base (k + 1) more
+  mga-area-tile : Magery, GameShard, GameInput, WorldObject, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mga-area-tile (magic) (shard) (input) (source) (serial) (spell) (base) (packets) = if serial == 0 then Ok packets
+    else let next = world-tile-next shard.world serial
+    in when world-get shard.world serial
+      is Err (_) -> mga-area-tile magic shard input source next spell base packets
+      is Ok (m) -> if not (mga-area-wanted magic source m spell) then mga-area-tile magic shard input source next spell base packets
+        else when mga-area-one magic shard input source m spell base
+          is Err (e) -> Err e
+          is Ok (shown) -> mga-area-tile magic shard input source next spell base (packets & shown)
+  mga-area-one : Magery, GameShard, GameInput, WorldObject, WorldObject, Integer, Integer -> Result (List (List Integer)) Text
+  mga-area-one (magic) (shard) (input) (source) (m) (spell) (base) = when mgs-ensure magic shard m.serial
+    is Err (e) -> Err e
+    is Ok (actor) -> if spell == 25 then
+        (if actor.poison < 0 then Ok []
+        else let chance = (10000 + mgs-skill shard source.serial 25 * 75 / 10 - (actor.poison + 1) * 1750) / 100 - 1
+        in if mgs-random magic 100 >= chance then Ok []
+        else let a = __record-set actor "poison" -1
+        in let b = __record-set actor "poison-left" 0
+        in let touched = mgs-touch magic
+        in Ok [mgp-appearance magic input m,mgp-effect m m #373A False,mgp-sound m #01E0])
+      else if spell == 26 then let given = mga-protect magic shard source.serial actor in Ok [mgp-effect m m #375A False,mgp-sound m #01F7]
+      else if mge-resisted magic shard source.serial m.serial then Ok [sip-message m.serial m.graphic 6 "You feel yourself resisting magical energy."]
+      else let damage = if spell == 57 then max 1 ((if cb-slot shard m.serial 0 < 0 then max 10 (min 75 (m.health * 6 / 10)) else min 75 (m.health * 6 / 10)) * mge-share shard source.serial m.serial / 1000)
+        else mge-scaled shard source m base 1000
+      in when mge-harm magic shard input source.serial m.serial damage cb-cause-spell
+        is Err (e) -> Err e
+        is Ok (hurt) -> Ok ((if spell == 49 then [mgp-sound m #0029] else if spell == 55 then [mgp-effect m m #36BD False] else []) & hurt)
+ ServUO Fifth/Paralyze (pre-AOS): (7 + 20% of Magery) seconds, sound 0x204, effect 0x376A; the landed share scales it.
+ ServUO Fifth/MagicReflect and SpellHelper.CheckReflect (pre-AOS): Magic Reflection holds 8 circles, 15 when Magery plus
+ Inscription reach 200.0; a harmful spell spends its circle + 1 and returns to its caster while the store stays at 0 or
+ above, and the store clears at 0. The reflect store is volatile.
+  mga-reflects : Magery, MgActor, Integer -> Boolean
+  mga-reflects (magic) (actor) (spell) = let left = actor.reflect - (mgd-circle spell + 1)
+    in let spent = __record-set actor "reflect" (max 0 left)
+    in let touched = mgs-touch magic in left >= 0
   mga-mobile : Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> Result (List (List Integer)) Text
   mga-mobile (magic) (shard) (input) (caster) (source) (aim) (spell) = let target = aim.object
     in when mgs-ensure magic shard target.serial
       is Err (e) -> Err e
-      is Ok (actor) -> if spell == 4 then mge-heal magic shard input source.serial target
-        else if spell == 5 | spell == 12 | spell == 18 then
+      is Ok (actor) -> if mgd-harmful spell & target.serial /= source.serial & actor.reflect > 0 & mga-reflects magic actor spell then
+          mga-mobile magic shard input caster source (MgAim { object = source, point = source, door = -1 }) spell
+        else if spell == 4 then mge-heal magic shard input source.serial target
+        else if spell == 29 then mge-greater-heal magic shard input source.serial target
+        else if spell == 36 then
+          if actor.reflect > 0 then Ok [sip-message target.serial target.graphic 6 "This spell is already in effect."]
+          else let charged = __record-set actor "reflect" (8 + (mgs-skill shard source.serial 25 + mgs-skill shard source.serial 23) / 2000 * 7)
+          in let touched = mgs-touch magic in Ok [mgp-effect target target #375A False,mgp-sound target #01ED]
+        else if mgd-harmful spell & mge-resisted magic shard source.serial target.serial then
+          Ok [sip-message target.serial target.graphic 6 "You feel yourself resisting magical energy."]
+        else if spell == 43 then
+          let lit = __record-set actor "fuse" (magic.tick + mgd-ticks 2500)
+          in let by = __record-set actor "fuser" source.serial
+          in let tracked = mgs-track magic actor
+          in let touched = mgs-touch magic in Ok []
+        else if spell == 5 | spell == 12 | spell == 18 | spell == 30 | spell == 37 | spell == 42 | spell == 51 then
           let damage = mge-spell-damage magic shard source target spell
           in when mge-harm magic shard input source.serial target.serial damage cb-cause-spell
             is Err (e) -> Err e
-            is Ok (packets) -> Ok ([mgp-effect source target (if spell == 5 then #36E4 else if spell == 18 then #36D4 else #374A) (spell /= 12),
-              mgp-sound target (if spell == 5 then #01E5 else if spell == 18 then #044B else #01F1)] & packets)
-        else if spell == 1 | spell == 3 | spell == 8 | spell == 9 | spell == 10 | spell == 16 | spell == 17 then
-          let amount = 1 + mgs-skill shard source.serial 25 / 100
-          in let until = magic.tick + mgd-ticks (mgs-skill shard source.serial 25 * 120)
-          in let stat = if spell == 1 | spell == 9 then 1 else if spell == 3 | spell == 10 then 2 else 0
-          in let first = mge-mod magic actor stat (if mgd-harmful spell then 0 - amount else amount) until
-          in let blessed = if spell /= 17 then 0 else let dex = mge-mod magic actor 1 amount until in mge-mod magic actor 2 amount until
-          in when mge-stats magic shard input actor
+            is Ok (packets) -> Ok (mga-damage-show source target spell & packets)
+        else if spell == 1 | spell == 3 | spell == 8 | spell == 9 | spell == 10 | spell == 16 | spell == 17 | spell == 27 then
+          when mga-stat-mods magic shard input actor source target spell
             is Err (e) -> Err e
-            is Ok (packets) -> Ok (packets & [mgp-effect target target #376A False,mgp-sound target #01EA])
+            is Ok (packets) -> Ok (packets & [mgp-effect target target #376A False,mgp-sound target (if spell == 27 then #01E1 else #01EA)])
+        else if spell == 31 | spell == 53 then mga-drain magic shard input caster actor source target spell
+        else if spell == 38 then
+          when cb-ensure magic.combat shard target.serial
+            is Err (e) -> Err e
+            is Ok (held) -> let now = max magic.tick magic.combat.tick
+              in let until = now + mgd-ticks ((7000 + mgs-skill shard source.serial 25 * 20) * mge-share shard source.serial target.serial / 1000)
+              in let frozen = __record-set held "frozen" (max held.frozen until)
+              in let touched = mgs-touch magic in Ok [mgp-effect target target #376A False,mgp-sound target #0204]
         else if spell == 6 then
           let level = 26 * mgs-skill shard source.serial 25 / 1000
           in let a = __record-set actor "night" (magic.tick + mgd-ticks ((15 + mgs-random magic 25) * 60000))
@@ -167,7 +313,7 @@ Chapter: MageryActions
             else if mgd-poison-threshold total (dx * dx + dy * dy) 1300 False then 1 else 0
           in let a = __record-set actor "poison" (max actor.poison level)
           in let b = __record-set actor "poison-due" (magic.tick + mgd-ticks 3500)
-          in let c = __record-set actor "poison-left" 10
+          in let c = __record-set actor "poison-left" (max 1 (10 * mge-share shard source.serial target.serial / 1000))
           in let d = __record-set actor "poison-last" 0
           in let e = __record-set actor "poisoner" source.serial
           in let tracked = mgs-track magic actor
@@ -239,7 +385,8 @@ Chapter: MageryActions
         in let b = __record-set wall "until" 0
         in let touched = mgs-touch magic
         in let restored = __heap-restore mark in mga-overlay magic (i + 1)
-      is Ok (item) -> when mga-solid magic item
+      is Ok (item) -> if mga-field-kind item.graphic /= 0 then let restored = __heap-restore mark in mga-overlay magic (i + 1)
+        else when mga-solid magic item
         is Err (e) -> Err e
         is Ok (_) -> let restored = __heap-restore mark in mga-overlay magic (i + 1)
   mga-refresh : Magery -> Result Integer Text
@@ -261,30 +408,51 @@ Chapter: MageryActions
     in let dy = source.y - target.y
     in let horizontal = (dx - dy >= 0 & dx + dy < 0) | (dx - dy < 0 & dx + dy >= 0)
     in mga-point (target.x + (if horizontal then i else 0)) (target.y + (if horizontal then 0 else i)) target.z
-  mga-wall-ready : Magery, GameShard, WorldObject, WorldObject, Integer -> Boolean
-  mga-wall-ready (magic) (shard) (source) (target) (i) = if i == 2 then True
+  mga-wall-ready : Magery, GameShard, WorldObject, WorldObject, Integer, Integer -> Boolean
+  mga-wall-ready (magic) (shard) (source) (target) (spell) (i) = if i == mga-wall-last spell + 1 then True
     else let point = mga-wall-point source target i
-    in if mga-occupied shard.world (world-tile-first shard.world point.x point.y) 0 point.z shard.world.capacity then False
+    in if (spell == 24 | spell == 50) & mga-occupied shard.world (world-tile-first shard.world point.x point.y) 0 point.z shard.world.capacity then False
     else when walk-height magic.decoration.map point.x point.y point.z
       is Err (_) -> False
-      is Ok (z) -> if z /= point.z then False else mga-wall-ready magic shard source target (i + 1)
-  mga-walls : Magery, GameShard, WorldObject, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
-  mga-walls (magic) (shard) (source) (target) (i) (packets) = if i == 2 then when mga-refresh magic
+      is Ok (z) -> if z /= point.z then False else mga-wall-ready magic shard source target spell (i + 1)
+ ServUO pre-AOS fields (Fourth/FireField, Fifth/PoisonField, Sixth/ParalyzeField, Seventh/EnergyField): five tiles,
+ art east-west or north-south, lasting Fire 4 s + 50% of Magery, Poison 3 s + Magery/2.5, Paralyze 3 s + Magery/3,
+ Energy 2 s + 28% of Magery. Only Wall of Stone and Energy Field block; the others act on whoever stands in them
+ (mgt-fields), and their kind is read back from the art so a restored world keeps them passable.
+  mga-wall-last : Integer -> Integer
+  mga-wall-last (spell) = if spell == 24 then 1 else 2
+  mga-field-kind : Integer -> Integer
+  mga-field-kind (graphic) = if graphic == #398C | graphic == #3996 then 28 else if graphic == #3915 | graphic == #3922 then 39
+    else if graphic == #3967 | graphic == #3979 then 47 else 0
+  mga-field-art : Integer, Boolean -> Integer
+  mga-field-art (spell) (east) = if spell == 24 then #0082 else if spell == 28 then (if east then #398C else #3996)
+    else if spell == 39 then (if east then #3915 else #3922) else if spell == 47 then (if east then #3967 else #3979)
+    else if east then #3946 else #3956
+  mga-field-ms : GameShard, Integer, Integer -> Integer
+  mga-field-ms (shard) (caster) (spell) = let m = mgs-skill shard caster 25
+    in if spell == 24 then 10000 else if spell == 28 then 4000 + m * 50 else if spell == 39 then 3000 + m * 40
+    else if spell == 47 then 3000 + m * 100 / 3 else 2000 + m * 28
+  mga-walls : Magery, GameShard, WorldObject, WorldObject, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  mga-walls (magic) (shard) (source) (target) (spell) (i) (packets) = if i == mga-wall-last spell + 1 then when mga-refresh magic
       is Err (e) -> Err e
-      is Ok (_) -> Ok (list-push packets (mgp-sound target #01F6))
+      is Ok (_) -> Ok (list-push packets (mgp-sound target (if spell == 24 then #01F6 else if spell == 28 then #020C else #020B)))
     else let point = mga-wall-point source target i
-    in let item = WorldObject { serial = 0, kind = 2, x = point.x, y = point.y, z = point.z, graphic = #0082,
+    in let item = WorldObject { serial = 0, kind = 2, x = point.x, y = point.y, z = point.z,
+      graphic = mga-field-art spell ((mga-wall-point source target 1).y == target.y),
       hue = 0, container = 0, amount = 1, health = 0 }
     in let slot = mga-wall-slot magic 0
     in if slot < 0 then Err "magic field budget changed" else when world-create shard.world item
       is Err (e) -> Err e
       is Ok (serial) -> let wall = list-at magic.walls slot
         in let a = __record-set wall "serial" serial
-        in let b = __record-set wall "until" (magic.tick + mgd-ticks 10000)
+        in let b = __record-set wall "until" (magic.tick + mgd-ticks (mga-field-ms shard source.serial spell))
+        in let c = __record-set wall "caster" source.serial
+        in let d = __record-set wall "next" 0
+        in let armed = mgs-wall-arm magic slot
         in let registered = gsi-register magic.items serial 0 0 False False
         in when world-get shard.world serial
           is Err (e) -> Err e
-          is Ok (placed) -> mga-walls magic shard source target (i + 1) (list-push packets (sip-ground placed))
+          is Ok (placed) -> mga-walls magic shard source target spell (i + 1) (list-push packets (sip-ground placed))
   mga-prepare : Magery, GameShard, GameInput, WorldObject, MgAim, Integer -> [Device.Block] Result (Maybe MgAim) Text
   mga-prepare (magic) (shard) (input) (source) (aim) (spell) = if spell /= 22 & spell /= 32 then act Ok (Just aim) end
     else let point = if spell == 22 then aim.point else let rune = list-at magic.definitions (world-slot shard.world aim.object.serial)
@@ -322,7 +490,14 @@ Chapter: MageryActions
   mga-apply (magic) (shard) (input) (caster) (source) (aim) (spell) =
     if spell == 2 then act mga-food magic shard source end
     else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then act mga-container magic shard input aim spell end
-    else if spell == 24 then act mga-walls magic shard source aim.point -1 [] end
+    else if spell == 24 | spell == 28 | spell == 39 | spell == 47 | spell == 50 then act mga-walls magic shard source aim.point spell (0 - mga-wall-last spell) [] end
     else if spell == 22 | spell == 32 then act mga-travel magic shard input source aim.point end
     else if spell == 45 then act mga-mark magic source aim.object end
+    else if spell == 46 then act mga-mass-curse magic shard input source aim.point 0 [] end
+    else if spell == 25 | spell == 26 then act mga-area magic shard input source aim.point (if spell == 25 then 2 else 3) spell 0 0 [mgp-sound aim.point #0299] end
+    else if spell == 49 | spell == 55 then act
+      let count = max 1 (mga-area-count magic shard source aim.point 2 spell 0 0)
+      in mga-area magic shard input source aim.point 2 spell ((27 + mgs-random magic 22) / count) 0 (if spell == 55 then [mgp-sound aim.point #0160] else [])
+    end
+    else if spell == 57 then act mga-area magic shard input source source (1 + mgs-skill shard source.serial 25 / 150) spell 0 0 [] end
     else act mga-mobile magic shard input caster source aim spell end

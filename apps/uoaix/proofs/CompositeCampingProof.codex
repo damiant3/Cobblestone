@@ -57,17 +57,21 @@ Chapter: CompositeCampingProof
       loose <- when ground is Err (_) -> 0 is Ok (k) -> k
       seen <- gsi-register owner.items loose 0 0 True True
       a <- ccp-check "the fixture camper carries two kindling in its pack and one lies on the ground" (is-ok entry & placed & skilled >= 0 & pack > 0 & kindling > 0 & loose > 0)
-      floor <- cs-route store game input map 2593 (ccp-use loose)
-      b <- ccp-check "kindling on the ground is refused: it must be carried" (ccp-note floor == "That must be in your backpack to use it." & ccp-fires game == 0)
+      packed <- cs-route store game input map 2593 (ccp-use kindling)
+      b <- ccp-check "kindling in the pack is refused with a word to set it down (UOAIX-87)" (ccp-note packed == "Set the kindling down on the ground to light it." & ccp-fires game == 0 & ccp-amount game kindling == 2)
+      cave <- world-create game.world (WorldObject { serial = 0, kind = 2, x = 5300, y = 1001, z = 0, graphic = cf-kindling, hue = 0, container = 0, amount = 1, health = 0 })
+      buried <- when cave is Err (_) -> 0 is Ok (k) -> k
       far <- ccp-move game player 5300 1000
-      deep <- cs-route store game input map 2593 (ccp-use kindling)
+      deep <- cs-route store game input map 2593 (ccp-use buried)
+      reach <- cs-route store game input map 2593 (ccp-use loose)
       back <- ccp-move game player 1440 1710
-      c <- ccp-check "kindling is refused in a dungeon" (far & back & ccp-note deep == "There is not a spot nearby to place your campfire." & ccp-amount game kindling == 2)
-      lit <- cs-route store game input map 2593 (ccp-use kindling)
+      c <- ccp-check "ground kindling is refused in a dungeon, and from more than 2 tiles away" (far & back & buried > 0 & ccp-note deep == "There is not a spot nearby to place your campfire."
+        & ccp-note reach == "I can't reach that." & ccp-amount game buried == 1 & ccp-amount game loose == 1 & ccp-fires game == 0)
+      lit <- cs-route store game input map 2593 (ccp-use loose)
       fire <- ccp-fire game cf-burning 0
-      print-line-uni ("LIT " & ccp-note lit & " fire " & show fire & " kindling " & show (ccp-amount game kindling))
-      d <- ccp-check "at Camping 100.0 kindling lights a campfire on a tile beside the camper and one kindling is spent" (ccp-note lit == "camping:lit" & fire > 0
-        & ccp-amount game kindling == 1 & (when world-get game.world fire is Err (_) -> False is Ok (f) -> walk-abs (f.x - 1440) + walk-abs (f.y - 1710) == 1))
+      print-line-uni ("LIT " & ccp-note lit & " fire " & show fire & " kindling " & show (ccp-amount game loose))
+      d <- ccp-check "at Camping 100.0 kindling on the ground lights a campfire on its own tile and is spent (UOAIX-87)" (ccp-note lit == "camping:lit" & fire > 0
+        & ccp-amount game loose == 0 & (when world-get game.world fire is Err (_) -> False is Ok (f) -> f.x == 1441 & f.y == 1712))
       committed <- cs-commit store True
       e <- ccp-check "the world commits with the lit campfire" (is-ok committed)
       t0 <- get-ticks
@@ -89,9 +93,11 @@ Chapter: CompositeCampingProof
       ended <- cs-pulse store game input map 2593 (t0 + gm-ticks 101000)
       print-line-uni ("FIRE smoulder " & show dim & " out " & show cold & " left " & show (ccp-fires game))
       h <- ccp-check "the fire smoulders at 60 s, goes out at 90 s (the camp no longer secure) and is removed at 100 s" (dim == fire & cold == fire & cleared & ccp-fires game == 0)
-      relit <- cs-route store game input map 2593 (ccp-use kindling)
+      pile <- world-create game.world (WorldObject { serial = 0, kind = 2, x = 1439, y = 1710, z = 0, graphic = cf-kindling, hue = 0, container = 0, amount = 2, health = 0 })
+      heap <- when pile is Err (_) -> 0 is Ok (k) -> k
+      relit <- cs-route store game input map 2593 (ccp-use heap)
       kept <- cs-commit store True
-      i <- ccp-check "a second fire from the last kindling commits with the world" (ccp-note relit == "camping:lit" & is-ok kept & ccp-fires game > 0)
+      i <- ccp-check "a second fire from a ground stack of two leaves one kindling there and commits with the world" (ccp-note relit == "camping:lit" & is-ok kept & ccp-fires game > 0 & ccp-amount game heap == 1)
       a + b + c + d + e + f + g + h + i
   end
   ccp-later : CompositeOwner, List GameOpcodeSpec -> [Console, Device.Block] Integer

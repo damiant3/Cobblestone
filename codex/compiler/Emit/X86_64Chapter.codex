@@ -3,9 +3,10 @@ Chapter: X86-64 Code Generator
   cites Emit chapter Emit Allocator (init-emit-workspace)
   cites Codex chapter Build Settings (code-buffer-size, data-buffer-size, accum-capacity)
   cites Codex chapter UTF-8 To CCE (cce-push-bytes)
+  cites Codex chapter CoverArms (CoverArmPlan, cover-arm-plan)
 
 Section: Bare-Metal Start
-  bare-metal-heap-base : Integer = 6291456
+  bare-metal-heap-base : Integer = 16777216
 
   emit-oom-string : CodegenState, List Integer, Integer -> CodegenState
   emit-oom-string (st) (chars) (i) =
@@ -198,14 +199,17 @@ Section: Bare-Metal Start
     in let restored = __heap-restore mark
     in cover-zero-fill buf (at + chunk) stop
 
-  cover-reserve : CodegenState, Integer -> CodegenState
-  cover-reserve (st) (count) =
+  cover-reserve : CodegenState, Integer, CoverArmPlan -> CodegenState
+  cover-reserve (st) (defs) (plan) =
     let base = (st.data-len + 7) / 8 * 8
+    in let count = defs + plan.cap-count
+    in let mapped = __record-set st "cover-arm-map" (plan.cap-map)
     in let filled = cover-zero-fill (st.workspace.data-buffer) (st.data-len) (base + count * 8)
     in let st1 = __record-set st "data-len" (__narrow filled)
     in let st2 = __record-set st1 "cover" True
     in let st3 = __record-set st2 "cover-base" base
-    in __record-set st3 "cover-count" count
+    in let st4 = __record-set st3 "cover-arms" defs
+    in __record-set st4 "cover-count" count
 
   emit-serial-string : CodegenState, List Integer -> CodegenState
   emit-serial-string (st) (chars) = emit-oom-string st chars 0
@@ -963,7 +967,9 @@ Section: Finalize
     cover = False,
     cover-base = 0,
     cover-count = 0,
-    cover-slot = 0 - 1
+    cover-slot = 0 - 1,
+    cover-arms = 0,
+    cover-arm-map = []
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -1252,7 +1258,22 @@ Section: Capability Manifest
     in let func-count = list-length (st2d.fo-names)
     in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
     in let full-len = content-len + list-length cap-bytes + list-length eff-bytes
-    in if full-len + list-length debug-map > st2d.workspace.code-capacity then
+    in let ring-room = serial-ring-buf-addr - load-base
+    in let over-ring = if load-base == bare-metal-load-addr then content-len > ring-room else False
+    in if over-ring then
+      let ring-head = "Code and rodata (" & integer-to-text content-len & " bytes at " & integer-to-text load-base & ")"
+      in let ring-tail = " reaches the serial ring at " & integer-to-text serial-ring-buf-addr
+      in let ring-msg = ring-head & ring-tail & "; at most " & integer-to-text ring-room & " bytes fit below it"
+      in let st-err = st-add-error st2d cdx-image-overlaps-serial-ring ring-msg synthetic-span
+      in EmitChapterResult {
+       header-bytes = [],
+       content-buf = 0,
+       content-len = 0,
+       tail-bytes = [],
+       bag = st-err.bag,
+       symbol-map = []
+      }
+    else if full-len + list-length debug-map > st2d.workspace.code-capacity then
       let cap-msg = "CDX content (" & integer-to-text full-len & " bytes) exceeds code-buffer capacity; raise code-buffer-size"
       in let st-err = st-add-error st2d cdx-resource-exhausted cap-msg synthetic-span
       in EmitChapterResult {
@@ -1493,7 +1514,7 @@ Section: Binary Debug Map (MAP1)
     in let st-wc = emit-wcet-unchecked st-dri unchecked 0
     in let st0a = emit-runtime-helpers st-wc
     in let dx = __deck-exit
-    in let st0c = if cover then cover-reserve st0a (list-length defs-lifted) else st0a
+    in let st0c = if cover then cover-reserve st0a (list-length defs-lifted) (cover-arm-plan defs-lifted) else st0a
     in let st1d = emit-all-defs st0c defs-lifted 0
     in let st1v = emit-vec-cmp-helpers-if-called st1d
     in let st1 = if st1v.cover then emit-cover-dump-fn st1v else st1v

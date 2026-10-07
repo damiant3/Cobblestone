@@ -159,7 +159,10 @@ cells, and a door a resident opens arms the 20 s autoclose.
 UCC1 version6 appends a townsfolk section: one length qword (0 or
 `tlc-bytes`), the town clock in game seconds, then TLC1, decoded against the
 Britain map; a townsfolk world loaded without that map refuses. Version5
-(no clock qword) decodes with clock 0. UCC1 version4 combines UGC1/TSC1, full EUC1, GVS1, UCB1, GSI1, monsterUMC1,
+(no clock qword) decodes with clock 0. The last 64 bytes of the GVS1 budget
+hold the removed townspeople (`GvWorld.gone`, `[remove` on a vendor or banker):
+a count of at most 7, then that many serials, the rest zero (`cc-gone-valid`);
+a world saved before them reads zero there, none removed. UCC1 version4 combines UGC1/TSC1, full EUC1, GVS1, UCB1, GSI1, monsterUMC1,
 shrineUSR1, doorWDS1, a48-byte CGT1 testing-grant section and a magery
 section: one length qword (0 or `576 + 368 * capacity`) then MGM2. Decode
 holds the MGM2 bytes and every commit before magery attaches writes them back

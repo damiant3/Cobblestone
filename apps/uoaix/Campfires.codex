@@ -4,11 +4,11 @@ Chapter: Campfires
   cites Uoaix chapter GameMonster
 
  ServUO Scripts/Items/Consumables/Kindling.cs and Items/Functional/Campfire.cs, GPL-2.0; ports/ServUO-LICENSE.txt.
- Kindling (0x0DE1) in the backpack rolls Camping (10) at an even chance per skill point and, on success, spends one
- and lights a non-movable campfire (0x0DE3) on a free tile north, west, south or east of the camper, never in a
- dungeon (x 5120 and east on the 6144-wide map). The fire smoulders (0x0DE9) at 60 s, goes out (0x0DEA) at 90 s and
- is removed at 100 s. A player within 7 tiles of a lit fire for 30 s has a secure camp and logs out at once.
- ServUO also lights kindling lying on the ground; here it must be carried. Fires are not saved: a restart removes them.
+ Kindling (0x0DE1) lying on the ground within 2 tiles rolls Camping (10) at an even chance per skill point and, on
+ success, spends one and lights a non-movable campfire (0x0DE3) on the kindling's own tile, never in a dungeon (x 5120
+ and east on the 6144-wide map). Kindling in a container is refused (Damian, 2026-10-07). The fire smoulders (0x0DE9)
+ at 60 s, goes out (0x0DEA) at 90 s and is removed at 100 s. A player within 7 tiles of a lit fire for 30 s has a
+ secure camp and logs out at once. Fires are not saved: a restart removes them.
  The table holds 16 fires (serial) and 16 campers (player, fire, start tick, secure), then a purged flag.
   cf-limit : Integer = 16
   cf-kind : Integer = 9
@@ -29,13 +29,6 @@ Chapter: Campfires
   cf-fire (o) = o.kind == 2 & o.container == 0 & (o.graphic == cf-burning | o.graphic == cf-smoulder | o.graphic == cf-out)
   cf-row : Integer, Integer, Integer -> Integer
   cf-row (camps) (serial) (i) = if i == cf-limit then -1 else if peek-qword camps (i * 8) == serial then i else cf-row camps serial (i + 1)
-  cf-spot : GameShard, WalkMap, WorldObject, Integer, Integer -> Integer
-  cf-spot (game) (map) (mobile) (start) (k) = if k == 4 then -1
-    else let direction = list-at [0, 6, 4, 2] (int-mod (start + k) 4)
-    in when walk-step map mobile.x mobile.y mobile.z direction
-      is Err (_) -> cf-spot game map mobile start (k + 1)
-      is Ok (z) -> if gm-occupied game (mobile.x + walk-dx direction) (mobile.y + walk-dy direction) 0 then cf-spot game map mobile start (k + 1)
-        else direction
  One kindling is spent as a bandage is (ActiveSkillsHealing): an economy lot, when the stack has one, debits one unit's
  stock, quality, wear and basis and counts it consumed; kindling with no lot is just an item.
   cf-lot-ready : ActiveSkills, Integer, Integer -> Boolean
@@ -70,24 +63,22 @@ Chapter: Campfires
       in when world-update s.items.world reduced
         is Err (e) -> Err e
         is Ok (_) -> Ok (sip-item reduced)
-  cf-carried : ActiveSkills, Integer, Integer -> Boolean
-  cf-carried (s) (owner) (serial) = let pack = gsi-pack-find s.items.world owner 0 in pack /= 0 & gv-under s.items.world serial pack 65
   cf-light : Integer, ActiveSkills, WorldTimers, GameShard, GameInput, WalkMap, WorldObject, Integer, Integer -> Result (Maybe GameReply) Text
   cf-light (camps) (s) (timers) (game) (input) (map) (mobile) (kindling) (tick) =
     let slot = gsi-slot game mobile.serial 0
     in if slot < 0 then Err "camping player binding"
-    else if not (cf-carried s mobile.serial kindling) then Ok (Just (gsi-denied "That must be in your backpack to use it."))
-    else let a = as-session s game input mobile slot
-    in let direction = if mobile.x >= 5120 then -1 else cf-spot game map mobile (skc-random a.skills 4) 0
-    in let free = cf-row camps 0 0
-    in if direction < 0 | free < 0 then Ok (Just (gsi-denied "There is not a spot nearby to place your campfire."))
-    else if not (as-roll s a 10 (skc-random a.skills 1000)) then Ok (Just (gs-reply [as-say "You fail to ignite the campfire.", as-skills a] "camping:failed"))
-    else if not (cf-lot-ready s mobile.serial kindling) then Ok (Just (gsi-denied "That kindling cannot be used."))
-    else when cf-take s kindling
-        is Err (e) -> Err e
-        is Ok (spent) -> when walk-step map mobile.x mobile.y mobile.z direction
+    else when world-get game.world kindling
+      is Err (e) -> Err e
+      is Ok (item) -> if item.container /= 0 then Ok (Just (gsi-denied "Set the kindling down on the ground to light it."))
+        else if walk-abs (item.x - mobile.x) > 2 | walk-abs (item.y - mobile.y) > 2 then Ok (Just (gsi-denied "I can't reach that."))
+        else let a = as-session s game input mobile slot
+        in let free = cf-row camps 0 0
+        in if item.x >= 5120 | free < 0 then Ok (Just (gsi-denied "There is not a spot nearby to place your campfire."))
+        else if not (as-roll s a 10 (skc-random a.skills 1000)) then Ok (Just (gs-reply [as-say "You fail to ignite the campfire.", as-skills a] "camping:failed"))
+        else if not (cf-lot-ready s mobile.serial kindling) then Ok (Just (gsi-denied "That kindling cannot be used."))
+        else when cf-take s kindling
           is Err (e) -> Err e
-          is Ok (z) -> let fire = WorldObject { serial = 0, kind = 2, x = mobile.x + walk-dx direction, y = mobile.y + walk-dy direction, z = z,
+          is Ok (spent) -> let fire = WorldObject { serial = 0, kind = 2, x = item.x, y = item.y, z = item.z,
               graphic = cf-burning, hue = 0, container = 0, amount = 1, health = 0 }
             in when world-create game.world fire
               is Err (e) -> Err e

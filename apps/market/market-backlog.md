@@ -13,3 +13,4 @@ is still real is never quietly dropped.
 | Source | Gap |
 |---|---|
 | `MarketWeb.codex:177`, `:189` | Health inserts the store name raw; `products-json-loop` inserts product IDs/names raw. JSON quote/backslash/control escaping is absent. The current active-product provider returns an empty list, so the product branch is a helper-contract gap until populated. Source-inspected 2026-10-01 at main 33668. |
+| `MarketDb.codex` `market-read-users`, `MarketWeb.codex` `handle-register` | Users have no write path: `market-read-users` serves `sample-users` (placeholder hashes no login can match), and `handle-register` drops the user `register-user` returns. `migrate-password-hash` (MarketAuth) therefore upgrades a legacy hash at login with no store to write it to; the login handler calls it once a user table is read and written. |

@@ -38,9 +38,19 @@ Chapter: MageryEffects
     in when world-get shard.world actor.serial
       is Err (_) -> cancel
       is Ok (mobile) -> cancel & mgp-fizzle mobile
+ ServUO Mobile.OnDamage: damage frees a paralysed mobile.
+  mge-thaw : Magery, Integer, Integer -> Integer
+  mge-thaw (magic) (slot) (serial) = if slot >= list-length magic.combat.actors then 0
+    else let a = list-at magic.combat.actors slot
+    in if a.serial /= serial | a.frozen == 0 then 0 else let thawed = __record-set a "frozen" 0 in 1
+  mge-frozen : Magery, GameShard, Integer -> Boolean
+  mge-frozen (magic) (shard) (serial) = let slot = world-slot shard.world serial
+    in if slot < 0 | slot >= list-length magic.combat.actors then False
+    else let a = list-at magic.combat.actors slot in a.serial == serial & a.frozen > max magic.tick magic.combat.tick
   mge-interrupt : Magery, GameShard, Integer, Integer -> List (List Integer)
   mge-interrupt (magic) (shard) (serial) (damage) = let slot = world-slot shard.world serial
-    in if slot < 0 | damage <= 0 then [] else let actor = list-at magic.actors slot
+    in if slot < 0 | damage <= 0 then [] else let thawed = mge-thaw magic slot serial
+    in let actor = list-at magic.actors slot
     in if actor.serial /= serial | actor.stage /= 1 then []
     else if actor.protected-until > magic.tick & mgs-random magic 100 < actor.protection then []
     else mge-fizzle magic shard actor
@@ -94,22 +104,53 @@ Chapter: MageryEffects
       in Ok (CombatImpact { damage = damage, packets = interrupted })
   mge-bind : Magery -> Integer
   mge-bind (magic) = let bound = __record-set magic.combat "damage-hook" (mge-impact magic) in 0
-  mge-resisted : Magery, GameShard, Integer, Integer, Integer -> Boolean
-  mge-resisted (magic) (shard) (caster) (target) (spell) = let resist = mgs-skill shard target 26
-    in let skill = mgs-skill shard caster 25
-    in let chance = max (resist / 5) (resist - ((skill - 200) / 5 + (mgd-circle spell + 1) * 50)) / 2
-    in mgs-random magic 1000 < max 0 chance
+ UOAIX-77 (Damian, 2026-10-07): Resisting Spells is armour against every harmful spell. Attack is the caster's Magery and
+ defence the target's Resisting Spells, each scaled by its owner's Evaluating Intelligence as Tactics scales a weapon
+ (half at 0, whole at GM). A defence at least the attack resists outright 55% of the time (equals favour the resister),
+ 4% more per 100 points of lead, to 95%; a smaller defence resists 55% of its share of the attack, 0 with none. An
+ unresisted spell lands its effective share, attack minus defence over attack, never below a tenth, so equals barely
+ hurt each other. The roll practises the target's Resisting Spells against the attack.
+  mge-attack : GameShard, Integer -> Integer
+  mge-attack (shard) (serial) = mgs-skill shard serial 25 * (1000 + mgs-skill shard serial 16) / 2000
+  mge-defence : GameShard, Integer -> Integer
+  mge-defence (shard) (serial) = mgs-skill shard serial 26 * (1000 + mgs-skill shard serial 16) / 2000
+  mge-resist-chance : Integer, Integer -> Integer
+  mge-resist-chance (attack) (defence) = if defence <= 0 then 0
+    else if defence >= attack then min 950 (550 + (defence - attack) * 4 / 10)
+    else 550 * defence / attack
+  mge-landed : Integer, Integer -> Integer
+  mge-landed (attack) (defence) = if defence <= 0 then 1000 else if attack <= defence then 100
+    else max 100 ((attack - defence) * 1000 / attack)
+  mge-resisted : Magery, GameShard, Integer, Integer -> Boolean
+  mge-resisted (magic) (shard) (caster) (target) = let attack = mge-attack shard caster
+    in let resisted = mgs-random magic 1000 < mge-resist-chance attack (mge-defence shard target)
+    in let skill = mgs-skill shard target 26
+    in let practised = if skill >= 1000 | mgs-random magic 1000 >= skc-gain-at 100 skill attack resisted then 0
+      else gs-skill-set shard target 26 (skill + 1)
+    in resisted
+  mge-share : GameShard, Integer, Integer -> Integer
+  mge-share (shard) (caster) (target) = mge-landed (mge-attack shard caster) (mge-defence shard target)
+ ServUO pre-AOS damage: Lightning 12-20, Energy Bolt 24-41, Explosion 23-44, Flame Strike 27-48 (Utility.Random(a, b) is a
+ plus 0 to b - 1); Mind Blast is half the gap between the caster's highest and lowest stat, at most 45.
+  mge-mind-blast : Magery, GameShard, Integer -> Integer
+  mge-mind-blast (magic) (shard) (caster) = when mgs-ensure magic shard caster
+    is Err (_) -> 0
+    is Ok (a) -> let s = mgs-stat a 0 in let d = mgs-stat a 1 in let i = mgs-stat a 2
+      in min 45 ((max s (max d i) - min s (min d i)) / 2)
   mge-spell-damage : Magery, GameShard, WorldObject, WorldObject, Integer -> Integer
   mge-spell-damage (magic) (shard) (source) (target) (spell) =
-    let base = if spell == 5 then 4 + mgs-random magic 4 else if spell == 12 then 1 + mgs-random magic 15 else 10 + mgs-random magic 7
-    in let resist = if mge-resisted magic shard source.serial target.serial spell then 750 else 1000
-    in let evaluation = mgs-skill shard source.serial 16
-    in let resistance = mgs-skill shard target.serial 26
-    in let scalar = 1000 + (evaluation - resistance) / (if evaluation > resistance then 5 else 2) + (mgs-skill shard source.serial 25 - 1000) / 4
-    in let creature = if cb-slot shard target.serial 0 < 0 & target.graphic /= 400 & target.graphic /= 401 then 2 else 1
+    let base = if spell == 5 then 4 + mgs-random magic 4 else if spell == 12 then 1 + mgs-random magic 15
+      else if spell == 30 then 12 + mgs-random magic 9 else if spell == 42 then 24 + mgs-random magic 18
+      else if spell == 43 then 23 + mgs-random magic 22 else if spell == 51 then 27 + mgs-random magic 22
+      else if spell == 37 then mge-mind-blast magic shard source.serial else 10 + mgs-random magic 7
     in let range = max (walk-abs (source.x - target.x)) (walk-abs (source.y - target.y))
     in let distance = if spell /= 12 | range <= 1 then 1000 else if range == 2 then 500 else 250
-    in max 0 (base * resist * max 0 scalar * creature * distance / 1000000000)
+    in mge-scaled shard source target base distance
+  mge-scaled : GameShard, WorldObject, WorldObject, Integer, Integer -> Integer
+  mge-scaled (shard) (source) (target) (base) (distance) =
+    let scalar = 1000 + mgs-skill shard source.serial 16 / 5 + (mgs-skill shard source.serial 25 - 1000) / 4
+    in let creature = if cb-slot shard target.serial 0 < 0 & target.graphic /= 400 & target.graphic /= 401 then 2 else 1
+    in max 1 (base * mge-share shard source.serial target.serial * max 0 scalar * creature * distance / 1000000000)
   mge-mod : Magery, MgActor, Integer, Integer, Integer -> Integer
   mge-mod (magic) (actor) (stat) (value) (until) = let at = stat * 32 + (if value >= 0 then 0 else 16)
     in let old = peek-qword actor.mods at
@@ -136,13 +177,18 @@ Chapter: MageryEffects
         is Ok (mobile) -> let slot = cb-slot shard actor.serial 0
           in if slot < 0 then Ok packets else Ok (packets & [mgp-status actor (gp-status mobile shard.characters slot),mgp-mana actor])
   mge-heal : Magery, GameShard, GameInput, Integer, WorldObject -> Result (List (List Integer)) Text
-  mge-heal (magic) (shard) (input) (source) (target) = when cb-ensure magic.combat shard target.serial
+  mge-heal (magic) (shard) (input) (source) (target) = mge-heal-by magic shard input target (mgs-skill shard source 25 / 100 + 1 + mgs-random magic 5) #01F2
+ ServUO Fourth/GreaterHeal: 40% of Magery plus 1 to 10, sound 0x202.
+  mge-greater-heal : Magery, GameShard, GameInput, Integer, WorldObject -> Result (List (List Integer)) Text
+  mge-greater-heal (magic) (shard) (input) (source) (target) = mge-heal-by magic shard input target (mgs-skill shard source 25 / 25 + 1 + mgs-random magic 10) #0202
+  mge-heal-by : Magery, GameShard, GameInput, WorldObject, Integer, Integer -> Result (List (List Integer)) Text
+  mge-heal-by (magic) (shard) (input) (target) (amount) (sound) = when cb-ensure magic.combat shard target.serial
     is Err (e) -> Err e
-    is Ok (actor) -> let healed = min actor.maximum (target.health + mgs-skill shard source 25 / 100 + 1 + mgs-random magic 5)
+    is Ok (actor) -> let healed = min actor.maximum (target.health + amount)
       in when world-update shard.world (cb-object target healed target.graphic target.hue target.container)
         is Err (e) -> Err e
         is Ok (_) -> Ok [cbp-health target.serial healed actor.maximum (target.serial == input.session.serial),
-          mgp-effect target target #376A False,mgp-sound target #01F2]
+          mgp-effect target target #376A False,mgp-sound target sound]
   mge-expire-mods : Magery, MgActor, Integer -> Boolean
   mge-expire-mods (magic) (actor) (i) = if i == 6 then False else let at = i * 16
     in let until = peek-qword actor.mods (at + 8)

@@ -1,6 +1,7 @@
 Chapter: EconomyCurrencyValid
   cites Uoaix chapter EconomyCurrency
   cites Uoaix chapter EconomyCurrencyFields
+  cites Uoaix chapter EconomyMint
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyProduction
   cites Uoaix chapter EconomyStateValid
@@ -28,7 +29,7 @@ Chapter: EconomyCurrencyValid
   euv-shadow (w) = EpWorld { catalog = w.catalog, money = em-new 0,
     actors = w.actors, stations = w.stations, nodes = w.nodes, actor-count = 0,
     station-count = w.station-count, node-count = w.node-count, hour = 0,
-    gathered = w.gathered, found = w.found, crafted = w.crafted, consumed = w.consumed,
+    gathered = w.gathered, found = w.found, taxed = w.taxed, crafted = w.crafted, consumed = w.consumed,
     sales = w.sales, turnover = w.turnover, crown-turnover = w.crown-turnover,
     trades = w.trades, trade-count = w.trade-count, mint-owner = 0, mint-rate = 0, mint-ingots = 0, opening = w.opening }
   euv-started : EmMoney, EmMoney -> EmMoney
@@ -57,14 +58,20 @@ Chapter: EconomyCurrencyValid
     in let used = if e.metal == 1 then x.copper-ingots else if e.metal == 2 then x.silver-ingots else x.world.mint-ingots
     in let m = eu-money x e.metal
     in let coins = yield * e.reference
-    in if e.actor /= owner | not (eu-royal x True e.actor) | yield <= 0 | used > ep-limit - e.reference
-      | not (em-room m 2) | m.issued > em-limit - coins | (em-purse m 1).coin > em-limit - coins then -1
+    in let operator = e.actor == owner
+    in let paid = emi-paid coins operator
+    in let purse = if ep-valid-actor x.world e.actor then (ep-actor x.world e.actor).purse else 0
+    in if owner <= 0 | (operator & not (eu-royal x True e.actor)) | purse <= 1 | e.party /= (if paid > 0 then purse else 1)
+      | yield <= 0 | used > ep-limit - e.reference
+      | not (em-room m (if paid > 0 then 3 else 2)) | m.issued > em-limit - coins | (em-purse m 1).coin > em-limit - coins then -1
     else let a = em-issue m True coins 2
-    in let b = em-row m (ep-actor x.world e.actor).purse 1 0 12 e.reference
+    in let b = em-row m purse 1 0 12 e.reference
     in let c = if e.metal == 1 then __record-set x "copper-ingots" (used + e.reference)
       else if e.metal == 2 then __record-set x "silver-ingots" (used + e.reference)
       else let updated = __record-set x.world "mint-ingots" (used + e.reference) in x
-    in eu-log x 7 e.actor 1 e.metal (if e.metal == 1 then coins else 0) (if e.metal == 2 then coins else 0) (if e.metal == 3 then coins else 0) e.reference
+    in let d = if paid > 0 then em-payout m purse paid else 0
+    in if d /= 0 then -1
+    else eu-log x 7 e.actor e.party e.metal (if e.metal == 1 then coins else 0) (if e.metal == 2 then coins else 0) (if e.metal == 3 then coins else 0) e.reference
   euv-hour : EuCurrency -> Integer
   euv-hour (x) = if not (eu-room x) | x.world.hour >= ep-limit then -1
     else let hour = x.world.hour + 1
@@ -93,7 +100,8 @@ Chapter: EconomyCurrencyValid
     else if e.kind == 10 then euv-hour x
     else if e.kind == 11 then eu-sale x True e.actor e.party e.reference e.copper e.silver e.gold
     else if e.kind == 12 then eu-exchange x e.actor e.metal e.reference (if e.copper > 0 then 1 else if e.silver > 0 then 2 else 3)
-    else if e.kind == 13 then eu-repay-value x True e.actor e.metal e.reference e.copper e.silver e.gold else -1
+    else if e.kind == 13 then eu-repay-value x True e.actor e.metal e.reference e.copper e.silver e.gold
+    else if e.kind == 14 then eu-steal x e.actor e.party e.copper e.silver e.gold else -1
   euv-replay : EuCurrency, EuCurrency, Integer -> Boolean
   euv-replay (source) (x) (i) = if i == source.count then True
     else let e = list-at source.events i

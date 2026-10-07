@@ -1,6 +1,7 @@
 Chapter: GameDeleteProof
   cites Uoaix chapter GameNet
   cites Uoaix chapter GameSession
+  cites Uoaix chapter GameAccounts
   cites Uoaix chapter GamePackets
   cites Uoaix chapter WalkMap
   cites Foreword chapter Result
@@ -38,18 +39,18 @@ Chapter: GameDeleteProof
   gdp-run : GameShard, WalkMap -> [Console] Integer
   gdp-run (shard) (map) = act
     made1 <- gdp-made shard map [0,120,121,122]
-    a <- gdp-check "an empty creation password with junk after its NUL deletes with an empty client password with other junk" (made1 == 0 & gdp-answer (gs-delete shard (gdp-delete [0,97,98,99] 0)) == #86 & peek-qword shard.characters 0 == 0)
-    made2 <- gdp-made shard map [112,119,0,113,113]
-    b <- gdp-check "a password followed by junk on both sides deletes when the bytes before NUL match" (made2 == 0 & gdp-answer (gs-delete shard (gdp-delete [112,119,0,114] 0)) == #86)
-    made3 <- gdp-made shard map [112,119]
-    c <- gdp-check "a different password is refused" (made3 == 0 & gdp-answer (gs-delete shard (gdp-delete [112,120] 0)) == 100)
-    d <- gdp-check "an empty client password is refused for a set password" (gdp-answer (gs-delete shard (gdp-delete [0,112,119] 0)) == 100)
-    e <- gdp-check "a client password that extends the set one is refused" (gdp-answer (gs-delete shard (gdp-delete [112,119,120] 0)) == 100)
-    cleared <- gs-delete shard (gdp-delete [112,119] 0)
-    made4 <- gdp-made shard map [0]
-    f <- gdp-check "a set client password is refused for an empty creation password" (made4 == 0 & gdp-answer (gs-delete shard (gdp-delete [112,119] 0)) == 100)
+    a <- gdp-check "an empty client password is refused for a character created without one" (made1 == 0 & gdp-answer (gs-delete shard (gdp-delete [0,97,98,99] 0)) == 100 & peek-qword shard.characters 0 /= 0)
+    b <- gdp-check "the account password deletes, junk after its NUL ignored" (gdp-answer (gs-delete shard (gdp-delete (ga-british-password & [0,113]) 0)) == #86 & peek-qword shard.characters 0 == 0)
+    made2 <- gdp-made shard map [112,119]
+    c <- gdp-check "the creation password is not stored" (made2 == 0 & gdp-stored-blank shard.characters 0)
+    d <- gdp-check "the creation password does not delete" (gdp-answer (gs-delete shard (gdp-delete [112,119] 0)) == 100 & peek-qword shard.characters 0 /= 0)
+    e <- gdp-check "a password that extends the account one is refused" (gdp-answer (gs-delete shard (gdp-delete (ga-british-password & [120]) 0)) == 100)
+    f <- gdp-check "an empty client password is refused" (gdp-answer (gs-delete shard (gdp-delete [0] 0)) == 100 & peek-qword shard.characters 0 /= 0)
     a + b + c + d + e + f
   end
+  gdp-stored-blank : Integer, Integer -> Boolean
+  gdp-stored-blank (characters) (k) = if k >= 30 then True
+    else peek-byte characters (48 + k) == 0 & gdp-stored-blank characters (k + 1)
   opening : [Console] Integer = when gs-new 0
     is Err (e) -> gdp-check e False
     is Ok (shard) -> when walk-map-new 1408 1680 64 64

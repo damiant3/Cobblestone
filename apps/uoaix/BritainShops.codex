@@ -94,7 +94,35 @@ Chapter: BritainShops
       is Ok (_) -> bb-restock v items p container goods (i + 1)
   bb-placeholder-loan-gold : Integer = 1
   bb-placeholder-loan-interest : Integer = 0
-  bb-placeholder-loan-hours : Integer = 48
+ A shop repays its crown loan as soon as it can afford it (Damian's loan ruling, EconomyCurrency.md "Crown loans"): it keeps working
+ capital worth the loan's principal and pays whole gold units from the rest, gold first, then silver, then copper.
+  bb-debt : EmMoney, Integer, Integer -> Integer
+  bb-debt (m) (purse) (i) = if i == m.loan-count then 0
+    else let loan = list-at m.loans i
+    in if loan.borrower == purse & loan.lender == 1 & loan.status /= 2 then i + 1 else bb-debt m purse (i + 1)
+  bb-repay : EuCurrency, Integer -> Integer
+  bb-repay (x) (actor) = if not (ep-valid-actor x.world actor) then 0
+    else let purse = (ep-actor x.world actor).purse
+    in let id = bb-debt x.world.money purse 0
+    in if id == 0 then 0
+    else let loan = list-at x.world.money.loans (id - 1)
+    in let gold = (em-purse x.world.money purse).coin
+    in let silver = (em-purse x.silver purse).coin
+    in let copper = (em-purse x.copper purse).coin
+    in let per-gold = eu-unit x 3
+    in let value = eu-value x copper silver gold
+    in let keep = loan.principal * per-gold
+    in let units = if per-gold < 1 | value <= keep then 0 else min (loan.principal + loan.interest - loan.paid) ((value - keep) / per-gold)
+    in let g = min gold units
+    in let rest = (units - g) * per-gold
+    in let s = min silver (rest / eu-unit x 2)
+    in let k = rest - s * eu-unit x 2
+    in if units < 1 | k > copper then 0
+    else if eu-repay-value x True purse 3 id k s g < 0 then -1 else units
+  bb-repay-shops : GvWorld, Integer -> Integer
+  bb-repay-shops (v) (i) = if i >= v.vendor-count then 0
+    else let paid = bb-repay v.currency (list-at v.vendors i).actor
+    in (if paid > 0 then paid else 0) + bb-repay-shops v (i + 1)
   bb-populate-one : GvWorld, GsiState, WalkMap, Integer -> Result Integer Text
   bb-populate-one (v) (items) (map) (i) = if i == bb-shop-count then Ok 0
     else when bb-placement v.game.world map (list-at bb-shops i) 0
@@ -107,7 +135,7 @@ Chapter: BritainShops
         let purse = eu-open v.currency 2 (1000 + index)
         in let actor = if purse < 1 then -1 else ep-admit v.currency.world purse 100
         in if actor < 1 then Err "Britain vendor actor budget"
-        else if eu-lend v.currency True 1 purse 3 bb-placeholder-loan-gold bb-placeholder-loan-interest (v.currency.world.hour + bb-placeholder-loan-hours) < 1 then Err "Britain vendor loan refused"
+        else if eu-lend v.currency True 1 purse 3 bb-placeholder-loan-gold bb-placeholder-loan-interest em-limit < 1 then Err "Britain vendor loan refused"
         else let p = bb-producer v.currency actor
         in when world-create v.game.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
           is Err (e) -> Err e

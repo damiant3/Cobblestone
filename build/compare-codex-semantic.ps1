@@ -65,7 +65,12 @@ function Parse-OneDef([string[]]$lines, [int]$start, [string]$chapter) {
     $bodyLines = [System.Text.StringBuilder]::new()
     if ($isType) { [void]$bodyLines.AppendLine($lines[$start]) }
     elseif ($inlineBody) { [void]$bodyLines.AppendLine("$name = $inlineBody") }
-    $j = $start + 1
+    $sigEnd = $start + 1
+    while (-not $isType -and -not $inlineBody -and $sig.TrimEnd() -match '(->|,)$' -and $sigEnd -lt $lines.Count -and $lines[$sigEnd].Length -gt 0 -and [char]::IsWhiteSpace($lines[$sigEnd][0])) {
+        $sig = $sig.TrimEnd() + ' ' + $lines[$sigEnd].Trim()
+        $sigEnd++
+    }
+    $j = $sigEnd
     while ($j -lt $lines.Count) {
         $ln = $lines[$j]
         if ($ln -match '^(HEAP|STACK):\d+') { $j++; continue }
@@ -303,6 +308,14 @@ function Strip-RedundantParens([System.Collections.Generic.List[string]]$tokens)
 
 
 function Normalize-OpAliases([System.Collections.Generic.List[string]]$tokens) {
+    for ($i = $tokens.Count - 2; $i -ge 0; $i--) {
+        if ($tokens[$i] -ne 'not') { continue }
+        $e = $i + 1
+        if ($tokens[$e] -eq '(') { $e = Find-MatchingClose $tokens $e; if ($e -lt 0) { continue } }
+        elseif (Is-AtomToken $tokens[$e]) { while ($e + 2 -lt $tokens.Count -and $tokens[$e + 1] -eq '.' -and (Is-AtomToken $tokens[$e + 2])) { $e += 2 } }
+        else { continue }
+        $tokens.RemoveAt($i); $tokens.Insert($e, 'False'); $tokens.Insert($e, '='); $tokens.Insert($e, '=')
+    }
     for ($i = 0; $i -lt $tokens.Count; $i++) {
         if ($tokens[$i] -eq ',' -and $i + 1 -lt $tokens.Count -and $tokens[$i+1].Length -gt 0 -and [char]::IsUpper($tokens[$i+1][0])) { $tokens[$i] = '->' }
     }

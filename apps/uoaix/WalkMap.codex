@@ -99,6 +99,29 @@ Chapter: WalkMap
   walk-z : WalkMap, Integer, Integer -> Integer
   walk-z (map) (x) (y) = peek-qword map.land (walk-cell map x y * 24 + 8)
 
+ UOX3 line of sight: a ray from 14 z above (ax, ay, az) toward (bx, by, bz), sampled at step i of steps, is stopped by
+ land above it and by any collider flagged tiledata Window or NoShoot (0x3000) spanning its height; a bridge counts
+ half its height (0x400).
+  walk-ray : WalkMap, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  walk-ray (map) (ax) (ay) (az) (bx) (by) (bz) (i) (steps) = if i >= steps then True
+    else let x = ax + walk-round ((bx - ax) * i) steps
+    in let y = ay + walk-round ((by - ay) * i) steps
+    in let z = az + 14 + walk-round ((bz - az) * i) steps
+    in if not (walk-ready map x y) then False
+    else if walk-z map x y > z then False
+    else if not (walk-cell-clear map x y z 0) then False else walk-ray map ax ay az bx by bz (i + 1) steps
+  walk-round : Integer, Integer -> Integer
+  walk-round (n) (d) = if n >= 0 then (2 * n + d) / (2 * d) else 0 - (0 - 2 * n + d) / (2 * d)
+  walk-cell-clear : WalkMap, Integer, Integer, Integer, Integer -> Boolean
+  walk-cell-clear (map) (x) (y) (z) (i) = let cell = walk-cell map x y
+    in if cell < 0 then False else let count = peek-qword map.solids (cell * map.stride)
+    in if i >= count then True else let at = cell * map.stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let flags = peek-qword map.solids (at + 16)
+    in let height = peek-qword map.solids (at + 8) / (if bit-and flags 1024 /= 0 then 2 else 1)
+    in if bit-and flags #3000 /= 0 & base <= z + 1 & base + height >= z then False
+    else walk-cell-clear map x y z (i + 1)
+
   walk-abs : Integer -> Integer
   walk-abs (n) = if n < 0 then 0 - n else n
 

@@ -24,10 +24,10 @@ Address              Size       Region
 0x00015000 (84 KB)    32 KB     IST stacks (ist-stacks-base, 16 x 2048)
 0x0001D000 (118 KB)   12 KB     Free hole -- xhci-diag lives at its head
 0x00020000 (128 KB)  256 KB     AP idle stacks (ap-stacks-base, 16 x 16 KB)
-0x00100000 (1 MB)     4 MB      Binary code segment (bare-metal-load-addr)
-                                  Current seed: ~2.3 MB of 4 MB headroom
-0x00500000 (5 MB)     1 MB      Serial ring buffer (serial-ring-buf-addr)
-0x00600000 (6 MB)     ────      Heap base (bare-metal-heap-base, R10 init)
+0x00100000 (1 MB)    14 MB      Binary code + rodata (bare-metal-load-addr)
+                                  CDX9013 refuses code + rodata reaching the ring
+0x00F00000 (15 MB)    1 MB      Serial ring buffer (serial-ring-buf-addr)
+0x01000000 (16 MB)    ────      Heap base (bare-metal-heap-base, R10 init)
      │                           Heap grows UP ──►
      │                           (phase decks + bivy, ~150-200 MB for selfhost)
      │
@@ -245,7 +245,7 @@ Defined in `codex/compiler/Emit/X86_64State.codex`:
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | bare-metal-load-addr | 0x100000 (1 MB) | Binary load address |
-| bare-metal-heap-base | 0x600000 (6 MB) | R10 initial value |
+| bare-metal-heap-base | 0x1000000 (16 MB) | R10 initial value |
 | bare-metal-ram-size | 0x0C0000000 (3 GB) | Total physical memory |
 | bare-metal-stack-top | 0x0C0000000 (3 GB) | RSP initial value (dynamic via GPA 0xFE8) |
 
@@ -760,7 +760,7 @@ Heap (after desugar boundary compact, CDX selfhost)
 
 base     Reservation-copy pattern means dead decks are reclaimed.
 (R10) ──►┌──────────────────────────────────────┐
-0x600000  │  init-phase-allocator (mountain base)│
+0x1000000 │  init-phase-allocator (mountain base)│
           ├──────────────────────────────────────┤
           │  Frontend keep deck      ~25 MB      │  Copied survivors:
           │  Floor: 192 MB                       │  AChapter, assignments,
@@ -1388,11 +1388,14 @@ value. The default VM memory is 3072 MB (`-mem 3072`), reduced from
 
 ### Code Buffer Ceiling
 
-The compiler's own code segment is approximately 2.1 MB. The code
-buffer (`code-buffer-size`) is 8 MB with roughly 5.9 MB headroom. The
-serial ring buffer at 0x500000 (5 MB) sits between the code and heap,
-providing a hard upper bound on code size at the current layout (4 MB
-for the binary, starting at 0x100000).
+The compiler's own payload is 3,875,272 bytes (2026-10-07). The code
+buffer (`code-buffer-size`) is 8 MB. Code and rodata load at 0x100000 and
+must end below the serial ring at 0xF00000, a 14 MB bound the emitter
+enforces (CDX9013, `ImageOverlapsSerialRing`). The capability, effect and
+debug-map sections after rodata are not bounded: nothing in the guest reads
+them, and the ring and heap overwrite them harmlessly. codex-vm reads the
+ring address per kernel from the CDX heap field (ring = heap base - 1 MB),
+so a CDX built before COMPILER-127 still boots with its ring at 0x500000.
 
 ### Stack Size
 

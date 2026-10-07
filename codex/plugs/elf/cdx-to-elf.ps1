@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 # X86_64Chapter.codex bare-metal-heap-base.
 $LoadAddr   = 1048576
 $CellBase   = 131072
-$HeapBase   = 6291456
+$HeapBase   = 16777216
 $CellSpan   = 0x10000      # covers the relocated cells and the print scratch
 $HeapSpan   = 3221225472L  # 3 GB, matching the bare-metal test VM envelope
 

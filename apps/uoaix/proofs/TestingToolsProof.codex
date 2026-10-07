@@ -322,6 +322,8 @@ Chapter: TestingToolsProof
   ttp-cover (map) (x) (y) (z) = act
     if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
   end
+  ttp-bits : Integer, Integer, Integer -> Integer
+  ttp-bits (mask) (i) (n) = if i == 64 then n else ttp-bits mask (i + 1) (n + bit-and (bit-shru mask i) 1)
   ttp-inscribe : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer, WalkMap -> [Console, Device.Block] Integer
   ttp-inscribe (p) (owner) (world) (pack) (pick) (me) (map) = when ttp-decoration map
     is Err (e) -> ttp-check ("inscription decoration " & e) False
@@ -331,6 +333,14 @@ Chapter: TestingToolsProof
       book <- ttp-find world (world-first-child world pack) #0EFA 2
       registered <- mgs-book magic book mgs-working
       known <- ttp-check "the kit spellbook registers with the working spells" (book > 0 & is-ok registered)
+      aged <- mgs-book magic book #100480FFFFFF
+      raised <- cg-books magic owner.checkpoint.game True (world-first-child world me) 4
+      filled <- mgs-spells magic book
+      again <- mgs-book magic book #100480FFFFFF
+      plain <- cg-books magic owner.checkpoint.game False (world-first-child world me) 4
+      left <- mgs-spells magic book
+      restored <- mgs-book magic book mgs-working
+      full <- ttp-check ("a testing entry fills a carried spellbook from the old 27-spell mask to every working spell (" & show (ttp-bits filled 0 0) & " of 48 counted by hand), and a normal entry leaves it as it was") (is-ok aged & filled == mgs-working & ttp-bits filled 0 0 == 48 & left == #100480FFFFFF & is-ok restored)
       scribed <- ttp-scribe p owner world pack pick me
       clumsy <- ttp-find world (world-first-child world pack) #1F2E 2
       reading <- csp-send p (gp-put32 [6] clumsy)
@@ -346,7 +356,7 @@ Chapter: TestingToolsProof
       sick <- ttp-check "drinking a greater poison potion poisons the drinker at Magery level 2 (282)" (vial > 0 & ttp-note gulp == "potion poison" & cg-as-poison owner me == 2)
       cured <- cg-as-cure owner me
       detached <- __record-set owner "magic" None
-      known + scribed + used + locks + doors + sick
+      known + full + scribed + used + locks + doors + sick
     end
   ttp-locked-door : CsPlayer, CompositeGame, WorldTable, WalkMap, Integer -> [Console, Device.Block] Integer
   ttp-locked-door (p) (owner) (world) (map) (me) = when ttp-decoration map

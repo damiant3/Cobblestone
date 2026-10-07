@@ -91,10 +91,51 @@ Chapter: GameCarveReplay
   gcp-target (context) (serial) (x) (y) =
     let a = gp-put32 (list-push (gp-put32 [#6C,0] context) 0) serial
     in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,0]) 8198
+  gcp-tree : Integer, Integer, Integer, Integer, Integer -> Boolean
+  gcp-tree (x) (y) (z) (graphic) (serial) = graphic == #0CCA
+  gcp-static : Integer, Integer, Integer, Integer -> List Integer
+  gcp-static (context) (x) (y) (graphic) =
+    let a = gp-put32 (list-push (gp-put32 [#6C,1] context) 0) 0
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,0]) graphic
+  gcp-chop : GameCarve, GameShard, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  gcp-chop (c) (shard) (input) (map) (tool) (x) (y) (graphic) (now) =
+    let begin = gcp-handle c shard input map (gp-put32 [6] tool) now
+    in let context = (list-at c.harvest.requests 0).target
+    in gcp-handle c shard input map (gcp-static context x y graphic) (now + 1)
+  gcp-log : GvWorld, GsiState, Integer -> Integer
+  gcp-log (v) (items) (pack) = if ep-find v.currency.world 1 15 1 < 0 then 0
+    else when world-create v.game.world (gs-item pack #1BDD 0)
+      is Err (_) -> 0
+      is Ok (serial) ->
+        let lot = gv-add-lot v serial 1 15 1000 32 0
+        in let known = gsi-register items serial 0 0 True False
+        in if lot < 0 | known /= 0 then 0 else serial
+  gcp-wood : GameCarve, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> [Console] Nothing
+  gcp-wood (c) (shard) (input) (map) (pack) (knife) (now) = when world-get shard.world input.session.serial
+    is Err (e) -> print-line-uni ("FAIL wood player " & e)
+    is Ok (me) -> act
+      v <- c.harvest.vendor
+      w <- v.currency.world
+      p <- ep-actor w 1
+      cut <- gcp-chop c shard input map knife (me.x + 1) me.y #0CCA now
+      gcp-check "a knife on a tree puts kindling (0x0DE1) into the backpack, as ServUO BladedItemTarget" (gcp-said cut "You put some kindling into your backpack." & gcp-parts shard.world (world-first-child shard.world pack) #0DE1 0 == 1)
+      more <- gcp-chop c shard input map knife (me.x + 1) (me.y + 1) #0CCA (now + 2000)
+      gcp-check "a second cut joins the same kindling stack" (gcp-said more "An axe would probably get you more wood." & gcp-parts shard.world (world-first-child shard.world pack) #0DE1 0 == 2 & gcp-count more #25 0 0 == 1)
+      far <- gcp-chop c shard input map knife (me.x + 3) me.y #0CCA (now + 4000)
+      rock <- gcp-chop c shard input map knife (me.x + 1) me.y #053B (now + 6000)
+      gcp-check "a tree three tiles away is out of reach and a rock refuses the blade" (gcp-said far "That is too far away." & gcp-said rock "You can't use a bladed item on that!" & gcp-parts shard.world (world-first-child shard.world pack) #0DE1 0 == 2)
+      log <- gcp-log v c.harvest.items pack
+      logs <- ep-at p.stock 15
+      used <- ep-at w.consumed 15
+      whittled <- gcp-use c shard input map knife log me.x me.y (now + 8000)
+      gcp-check "a knife on the carver's own log spends one log for one kindling and the census holds" (log > 0 & gcp-said whittled "You put some kindling into your backpack."
+        & gcp-amount shard.world log #1BDD == -1 & ep-at p.stock 15 == logs - 1 & ep-at w.consumed 15 == used + 1
+        & gcp-parts shard.world (world-first-child shard.world pack) #0DE1 0 == 3 & ep-census w 1 & gvsc-valid v)
+    end
   gcp-lookup : WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer
   gcp-lookup (map) (mobile) (x) (y) (z) (graphic) = 0
   gcp-handle : GameCarve, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
-  gcp-handle (c) (shard) (input) (map) (packet) (now) = when gca-handler-at c shard input packet now
+  gcp-handle (c) (shard) (input) (map) (packet) (now) = when gca-handler-at c shard input packet gcp-tree now
     is Err (e) -> Err e
     is Ok (Just (reply)) -> Ok (Just reply)
     is Ok (None) -> gh-handler-at gcp-lookup gh-produce c.harvest shard input map 2593 packet now
@@ -148,7 +189,7 @@ Chapter: GameCarveReplay
         distant <- gcp-use c shard input map knife far (me.x + 3) me.y 8000
         gcp-check "a corpse three tiles away is out of reach" (gcp-said distant "That is too far away." & gcp-health shard.world far == 0)
         notcorpse <- gcp-use c shard input map knife axe me.x me.y 10000
-        gcp-check "a knife on anything but a corpse is refused" (gcp-said notcorpse "You cannot carve that.")
+        gcp-check "a knife on an item that is no corpse, fish, tree or wood is refused" (gcp-said notcorpse "You can't use a bladed item on that!")
         sword <- when world-create shard.world (gs-item pack #0F5E 0) is Err (_) -> 0 is Ok (s) -> s
         known <- gsi-register c.harvest.items sword 0 0 True False
         swing <- gcp-handle c shard input map (gp-put32 [6] sword) 12000
@@ -171,6 +212,7 @@ Chapter: GameCarveReplay
         trout <- gcp-fish v c.harvest.items pack 1
         hacked <- gcp-use c shard input map axe trout me.x me.y 20000
         gcp-check "a hatchet's cursor on a backpack fish slices it, not the harvest path" (trout > 0 & gcp-said hacked "You slice your fish into raw fish steaks." & gcp-amount shard.world trout #097A == 4 & gvsc-valid v)
+        gcp-wood c shard input map pack knife 22000
       end
   end
   gcp-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing

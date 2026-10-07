@@ -23,7 +23,7 @@ Chapter: GameVendorState
     vendors : List GvVendor, players : List GvPlayer, lots : List GvLot,
     sales : List GvSale, vendor-count : Integer, player-count : Integer,
     lot-count : Integer, sale-count : Integer, sequence : Integer,
-    owners : List GvOwner, owner-count : Integer, sale-base : Integer, trading : Integer }
+    owners : List GvOwner, owner-count : Integer, sale-base : Integer, trading : Integer, gone : Integer }
   gv-owners : Integer, List GvOwner -> List GvOwner
   gv-owners (i) (xs) = if i == 128 then xs
     else gv-owners (i + 1) (list-push xs (GvOwner { serial = 0, actor = 0 }))
@@ -52,7 +52,24 @@ Chapter: GameVendorState
     vendors = gv-vendors 0 (__list-with-capacity 16), players = gv-players 0 (__list-with-capacity gv-player-limit),
     lots = gv-lots 0 (__list-with-capacity gv-lot-limit), sales = gv-sales 0 (__list-with-capacity 1024),
     vendor-count = 0, player-count = 0, lot-count = 0, sale-count = 0, sequence = 0,
-    owners = gv-owners 0 (__list-with-capacity 128), owner-count = 0, sale-base = 0, trading = 16 }
+    owners = gv-owners 0 (__list-with-capacity 128), owner-count = 0, sale-base = 0, trading = 16, gone = gv-gone-new 0 }
+  gv-gone-bytes : Integer = 64
+  gv-gone-limit : Integer = 7
+  gv-gone-zero : Integer, Integer -> Integer
+  gv-gone-zero (buffer) (i) = if i == 8 then buffer else let z = poke-qword buffer (i * 8) 0 in gv-gone-zero buffer (i + 1)
+  gv-gone-new : Integer -> Integer
+  gv-gone-new (unused) = gv-gone-zero (alloc-bytes gv-gone-bytes) 0
+  gv-gone-at : GvWorld, Integer, Integer -> Boolean
+  gv-gone-at (v) (serial) (i) = if i >= peek-qword v.gone 0 then False else if peek-qword v.gone (8 + i * 8) == serial then True else gv-gone-at v serial (i + 1)
+  gv-gone : GvWorld, Integer -> Boolean
+  gv-gone (v) (serial) = serial /= 0 & gv-gone-at v serial 0
+  gv-gone-add : GvWorld, Integer -> Integer
+  gv-gone-add (v) (serial) = if gv-gone v serial then 0
+    else if serial <= 0 | peek-qword v.gone 0 >= gv-gone-limit then -1
+    else let n = peek-qword v.gone 0 in let a = poke-qword v.gone (8 + n * 8) serial in let b = poke-qword v.gone 0 (n + 1) in 0
+  gv-gone-actor : GvWorld, Integer, Integer -> Boolean
+  gv-gone-actor (v) (actor) (i) = if i >= v.vendor-count then False
+    else if (list-at v.vendors i).actor == actor & gv-gone v (list-at v.vendors i).serial then True else gv-gone-actor v actor (i + 1)
   gv-clear-sales : GvWorld, Integer -> Integer
   gv-clear-sales (v) (i) = if i == v.sale-count then 0
     else let s = list-at v.sales i

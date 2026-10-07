@@ -32,7 +32,7 @@ Section: RPC Messages
 
   RaftMsg =
     | RequestVote (Integer) (Text) (Integer) (Integer)
-    | VoteResponse (Integer) (Boolean)
+    | VoteResponse (Integer) (Text) (Boolean)
     | AppendEntries (Integer) (Text) (Integer) (Integer) (List LogEntry) (Integer)
     | AppendResponse (Integer) (Boolean) (Integer)
 
@@ -40,8 +40,8 @@ Section: RPC Messages
   raft-msg-label (m) = when m
     is RequestVote (term) (candidate) (last-idx) (last-term) ->
       "RequestVote term=" & show term & " from=" & candidate
-    is VoteResponse (term) (granted) ->
-      "VoteResponse term=" & show term & " granted=" & if granted then "yes" else "no"
+    is VoteResponse (term) (voter) (granted) ->
+      "VoteResponse term=" & show term & " from=" & voter & " granted=" & if granted then "yes" else "no"
     is AppendEntries (term) (leader) (prev-idx) (prev-term) (entries) (commit) ->
       "AppendEntries term=" & show term & " leader=" & leader & " entries=" & show (list-length entries)
     is AppendResponse (term) (success) (match-idx) ->
@@ -128,7 +128,8 @@ Section: Election
       rs-voted-for = st.rs-id,
       rs-log = st.rs-log, rs-log-length = st.rs-log-length,
       rs-commit-index = st.rs-commit-index, rs-last-applied = st.rs-last-applied,
-      rs-peers = st.rs-peers, rs-peer-count = st.rs-peer-count,
+      rs-peers = raft-clear-votes (st.rs-peers) 0 (st.rs-peer-count) [],
+      rs-peer-count = st.rs-peer-count,
       rs-votes-received = 1,
       rs-leader-id = "",
       rs-election-timeout = st.rs-election-timeout,
@@ -153,18 +154,50 @@ Section: Election
     in if can-vote then if log-ok then __record-set st2 "rs-voted-for" candidate else st2
     else st2
 
-  raft-handle-vote-response : RaftState, Integer, Boolean -> RaftState
-  raft-handle-vote-response (st) (term) (granted) =
+  raft-handle-vote-response : RaftState, Integer, Text, Boolean -> RaftState
+  raft-handle-vote-response (st) (term) (voter) (granted) =
     let st2 = raft-maybe-step-down st term
+    in let idx = raft-peer-index (st2.rs-peers) voter 0 (st2.rs-peer-count)
     in when st2.rs-role
       is Candidate ->
-        if granted then
-          let new-votes = st2.rs-votes-received + 1
-          in if new-votes >= raft-quorum-size st2 then
-            raft-become-leader (__record-set st2 "rs-votes-received" new-votes)
-          else __record-set st2 "rs-votes-received" new-votes
-        else st2
+        if granted == False then st2
+        else if term /= st2.rs-current-term then st2
+        else if idx < 0 then st2
+        else let peers = raft-mark-granted (st2.rs-peers) idx 0 (st2.rs-peer-count) []
+        in let new-votes = 1 + raft-count-granted peers 0 (st2.rs-peer-count) 0
+        in let st3 = __record-set (__record-set st2 "rs-peers" peers) "rs-votes-received" new-votes
+        in if new-votes >= raft-quorum-size st3 then raft-become-leader st3
+        else st3
       is otherwise -> st2
+
+  raft-peer-index : List RaftPeer, Text, Integer, Integer -> Integer
+  raft-peer-index (peers) (id) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at peers i).rp-id == id then i
+    else raft-peer-index peers id (i + 1) n
+
+  raft-mark-granted : List RaftPeer, Integer, Integer, Integer, List RaftPeer -> List RaftPeer
+  raft-mark-granted (peers) (idx) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at peers i
+    in raft-mark-granted peers idx (i + 1) n (list-push acc (if i == idx then raft-peer-with-vote p True else p))
+
+  raft-clear-votes : List RaftPeer, Integer, Integer, List RaftPeer -> List RaftPeer
+  raft-clear-votes (peers) (i) (n) (acc) =
+    if i >= n then acc
+    else raft-clear-votes peers (i + 1) n (list-push acc (raft-peer-with-vote (list-at peers i) False))
+
+  raft-peer-with-vote : RaftPeer, Boolean -> RaftPeer
+  raft-peer-with-vote (p) (granted) = RaftPeer {
+    rp-id = p.rp-id, rp-next-index = p.rp-next-index,
+    rp-match-index = p.rp-match-index, rp-vote-granted = granted,
+    rp-last-contact = p.rp-last-contact
+  }
+
+  raft-count-granted : List RaftPeer, Integer, Integer, Integer -> Integer
+  raft-count-granted (peers) (i) (n) (acc) =
+    if i >= n then acc
+    else raft-count-granted peers (i + 1) n (if (list-at peers i).rp-vote-granted then acc + 1 else acc)
 
   raft-become-leader : RaftState -> RaftState
   raft-become-leader (st) =

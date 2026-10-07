@@ -15,8 +15,8 @@ Keep an accepted candidate below later request scratch marks.
 
 ## EUC1 layout
 
-The version 5 payload is 3413904 bytes. Cells are little-endian 64-bit
-integers. The decoder also accepts version 4 (3350728 bytes), version 1
+The version 6 payload is 3414936 bytes. Cells are little-endian 64-bit
+integers. The decoder refuses version 5. The decoder also accepts version 4 (3350728 bytes), version 1
 (3288256 bytes), version 2 (3294400 bytes) and version 3 (3349696 bytes), which
 embed UEC1 version 4, 1, 2 and 3, carry no tail and no event base, and decode
 with a zero opening.
@@ -24,9 +24,9 @@ with a zero opening.
 | Offset | Content |
 |---:|---|
 | 0 | Magic `0x31435545` |
-| 8 | Version 5 (the embedded UEC1 version) |
+| 8 | Version 6 (the embedded UEC1 version) |
 | 16 | Total payload length |
-| 24 | Embedded UEC1 length, 1431656 |
+| 24 | Embedded UEC1 length, 1432688 |
 | 32 | Outer tick |
 | 40 | Outer input sequence |
 | 48 | FNV32 over the payload, skipping this cell |
@@ -36,10 +36,10 @@ with a zero opening.
 | 176 | Segment count |
 | 184 | Reserved zero through offset 191 |
 | 192 | Complete UEC1 gold/material checkpoint |
-| 1431848 | Copper money block, 472128 bytes |
-| 1903976 | Silver money block, 472128 bytes |
-| 2376104 | 8192 currency events, 120 bytes each |
-| 3359144 | Copper and silver openings (906 cells each), three start tables of 13376 bytes, 17 start cells |
+| 1432880 | Copper money block, 472128 bytes |
+| 1905008 | Silver money block, 472128 bytes |
+| 2377136 | 8192 currency events, 120 bytes each |
+| 3360176 | Copper and silver openings (906 cells each), three start tables of 13376 bytes, 17 start cells |
 
 Policy cells are event count, copper-per-gold, silver-per-gold, copper owner,
 silver owner, copper yield, silver yield, copper ingots, silver ingots,

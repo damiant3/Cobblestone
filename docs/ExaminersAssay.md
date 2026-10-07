@@ -2185,7 +2185,7 @@ useful shape of the result -- it is the measurement proving the old test could
 not have caught this, not merely a claim that it did not.
 
 **One fragility worth knowing before this test is moved or reordered.** Its
-`.expected` carries the literal addresses `6291456` and `6291520` -- the heap
+`.expected` carries the literal addresses `16777216` and `16777280` -- the heap
 base and 64 bytes past it -- because the two buffers are the first allocations
 the program makes. Anything that allocates ahead of them moves both numbers.
 

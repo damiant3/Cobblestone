@@ -75,14 +75,38 @@ spawn regions for healers, smiths and innkeepers, and the nearest world-spawn
 region within 200 tiles; Britain's rows are hand-placed. Wind has no bank or
 smith, Magincia no healer, smith or inn, and the islands Magincia and Nujel'm
 no spawn region in that range. `[add art-hex [count]`
-summons an item stack into the backpack and commits. `[skill <name|id|all> <0.0-100.0> [target]` (testing mode) sets a skill of the speaker or, with `target`, of a character of the same account picked by cursor: the session's ClassicSkills level, the economy actor's mapped skill and live Wrestling, Tactics and Anatomy (never the character record's creation skills, which every save validates); a name is any unique prefix without spaces (`[skill swo 90`). `[attr <str|dex|int|all> <1-255> [target]` (testing mode) sets strength, dexterity or intelligence the same way, in character record bytes 147..149 (0 reads the creation stat at 79..81), which every stat reader takes through `gp-stat`; the status bar is resent, a lowered strength lowers held hits and a lowered dexterity lowers stamina spent. `[help` lists the British commands. `[invisible` toggles
+summons an item stack into the backpack and commits; `[add <item name> [count]`
+(UOAIX-69) does the same by TILEDATA name, case-insensitive, spaces allowed
+(`[add longsword`, `[add bread loaf 5`). A token of at most four hex digits that
+holds a digit or is four long is art (`[add bed` is a name). Several exact
+matches are one item's art variants, so the lowest art is added and the reply
+names the others; with no exact match, one partial match is added, several are
+listed (eight at most, with their art), and none refuses. Names match the
+singular form only. The scan reads all 16384 entries under a heap mark and
+retains nothing (`proofs/ItemTableProof`). `[skill <name|id|all> <0.0-100.0> [target]` (testing mode) sets a skill of the speaker or, with `target`, of a character of the same account picked by cursor: the session's ClassicSkills level, the economy actor's mapped skill and live Wrestling, Tactics and Anatomy (never the character record's creation skills, which every save validates); a name is any unique prefix without spaces (`[skill swo 90`). `[attr <str|dex|int|all> <1-255> [target]` (testing mode) sets strength, dexterity or intelligence the same way, in character record bytes 147..149 (0 reads the creation stat at 79..81), which every stat reader takes through `gp-stat`; the status bar is resent, a lowered strength lowers held hits and a lowered dexterity lowers stamina spent. `[help` lists the British commands. `[invisible` toggles
 invisibility: the client draws British hidden (0x20 flag 0x80) and monsters do
 not hunt British; one character plays at a time, so no other client is shown
 British, and the state ends at restart. `[summon body-hex` creates a creature
 beside British and commits. `[inspect` opens a target cursor and prints the
 target's serial, graphic, hue, place, amount and health. `[move` opens a
 target cursor for a ground item or a creature (not a character, not a
-contained item), then a location cursor, and commits the move.
+contained item), then a location cursor, and commits the move. `[remove`
+(`CompositeRemoval`) opens a target cursor and deletes the targeted item, with
+everything inside it, or NPC, then logs `REMOVE` with its serial, graphic and
+place and commits. A deleted vendor lot leaves the ledger as consumed goods, and
+a monster or spawn slot frees at its next visit. A removed resident dies in the
+town (`tf-death`): its lots leave the ledger, its owner row and clothes go, and
+the town, the live network and their codecs pass over a dead resident, so the
+world saves and restores with it. A removed vendor or banker is concealed for
+good, not deleted: its serial joins the saved removed list (7 at most), it
+trades no more (`gv-checkout` refuses its actor), banks no more and answers no
+speech, and every boot conceals it again (`crm-reapply`); its rows, lots and
+containers stay, so a vendor's row index (its shop role) holds. Re-staffing a
+shop is the case that needs a true delete. Refused: player characters, British,
+the other townspeople (workers, the economy NPCs), their goods other than a lot,
+moongates, shrines, and a player's backpack or bank box. `[kill` opens a target cursor and deals a creature its full hits from
+British through the spell damage path (corpse, loot, respawn), logs `KILL` and
+commits; players, British, townspeople and items are refused.
 
 ## Managed accounts
 

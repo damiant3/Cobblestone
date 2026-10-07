@@ -1,0 +1,121 @@
+Chapter: CompositeFoodProof
+  cites Uoaix chapter CompositeStore
+
+  cfd-check : Text, Boolean -> [Console] Integer
+  cfd-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cfd-fill : WalkMap, Integer -> Integer
+  cfd-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cfd-fill map (i + 1)
+  cfd-create : Integer -> List Integer
+  cfd-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Eater" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cfd-use : Integer -> List Integer
+  cfd-use (serial) = gp-put32 [6] serial
+  cfd-note : Result GameReply Text -> Text
+  cfd-note (r) = when r is Ok (reply) -> reply.note is Err (e) -> "error " & e
+  cfd-has : List (List Integer), List Integer, Integer -> Boolean
+  cfd-has (packets) (p) (i) = if i == list-length packets then False else (list-at packets i == p) | cfd-has packets p (i + 1)
+  cfd-said : Result GameReply Text, Text -> Boolean
+  cfd-said (r) (text) = when r is Ok (reply) -> cfd-has reply.packets (gs-system text) 0 is Err (_) -> False
+  cfd-amount : GameShard, Integer -> Integer
+  cfd-amount (game) (serial) = when world-get game.world serial is Err (_) -> 0 is Ok (m) -> m.amount
+  cfd-row : GameShard, Integer -> Integer
+  cfd-row (game) (serial) = game.characters + gs-char-slot game.characters serial 0 * 160
+  cfd-item : CompositeGame, GameShard, Integer, Integer, Integer -> Integer
+  cfd-item (owner) (game) (parent) (graphic) (amount) = when world-create game.world (__record-set (gs-item parent graphic 0) "amount" amount)
+    is Err (_) -> 0
+    is Ok (serial) -> if gsi-register owner.items serial 0 0 True True /= 0 then 0 else serial
+  cfd-regen : CompositeGame, GameShard, Integer -> Integer
+  cfd-regen (owner) (game) (player) = when cb-ensure owner.combat game player
+    is Err (_) -> -1
+    is Ok (a) -> let reset = __record-set a "regen" 0
+      in let ticked = __record-set owner.combat "tick" 1000
+      in when cb-regen owner.combat game a is Err (_) -> -1 is Ok (_) -> a.regen - 1000
+  cfd-rested : Integer -> Integer
+  cfd-rested (row) = let spent = poke-byte row 145 20
+    in let stamp = poke-qword row 152 1000
+    in let rested = gs-stamina row (1000 + 6 * gs-stamina-period) False
+    in 20 - peek-byte row 145
+  cfd-first : CompositeOwner, List GameOpcodeSpec, WalkMap -> [Console, Device.Block] Integer
+  cfd-first (store) (specs) (map) = let owner = store.state in act
+      input <- gn-input-with specs 1
+      mode <- __record-set input "mode" 2
+      phase <- __record-set input.session "phase" 1
+      game <- owner.checkpoint.game
+      entry <- cs-route store game input map 2593 (cfd-create 0)
+      player <- input.session.serial
+      row <- cfd-row game player
+      unset <- gh-fed row
+      pack <- gsi-pack-find game.world player 0
+      steaks <- cfd-item owner game pack #097B 3
+      bread <- cfd-item owner game pack #103B 1
+      loose <- cfd-item owner game 0 #097B 1
+      a <- cfd-check "a new eater is fed (hunger 10, slot byte 150 unset) and carries three fish steaks and a loaf; a steak lies loose" (is-ok entry & unset == 10 & peek-byte row 150 == 0 & steaks > 0 & bread > 0 & loose > 0)
+      floor <- cs-route store game input map 2593 (cfd-use loose)
+      b <- cfd-check "food not carried is refused" (cfd-note floor == "That must be in your backpack to use it." & gh-fed row == 10 & cfd-amount game loose == 1)
+      first <- cs-route store game input map 2593 (cfd-use steaks)
+      c <- cfd-check "a fish steak (FillFactor 3) eats one of the stack: hunger 13, ServUO 500870, an eating sound" (cfd-note first == "hunger:eat" & gh-fed row == 13 & cfd-amount game steaks == 2
+        & cfd-said first "After eating the food, you feel much less hungry." & (when first is Ok (r) -> cfd-has-sound r.packets 0 is Err (_) -> False))
+      second <- cs-route store game input map 2593 (cfd-use steaks)
+      third <- cs-route store game input map 2593 (cfd-use steaks)
+      gone <- world-get game.world steaks
+      d <- cfd-check "the last steak of the stack is eaten and removed; hunger 19 is quite full (500871)" (gh-fed row == 19 & is-err gone & cfd-said third "You feel quite full after consuming the food.")
+      loaf <- cs-route store game input map 2593 (cfd-use bread)
+      stuffed <- gh-fed row
+      cheese <- cfd-item owner game pack #097D 1
+      refused <- cs-route store game input map 2593 (cfd-use cheese)
+      e <- cfd-check "a loaf takes hunger to the cap of 20 (500872), and at 20 more food is refused (500867)" (stuffed == 20 & cfd-said loaf "You manage to eat the food, but you are stuffed!"
+        & cfd-note refused == "You are simply too full to eat any more!" & cfd-amount game cheese == 1)
+      full-hp <- cfd-regen owner game player
+      full-st <- cfd-rested row
+      starved <- gh-set row 2
+      hungry-hp <- cfd-regen owner game player
+      hungry-st <- cfd-rested row
+      fed <- gh-set row 10
+      fed-hp <- cfd-regen owner game player
+      fed-st <- cfd-rested row
+      print-line-uni ("REGEN hit-point interval fed " & show fed-hp & " full " & show full-hp & " hungry " & show hungry-hp & "; stamina back in 6 periods fed " & show fed-st & " full " & show full-st & " hungry " & show hungry-st)
+      f <- cfd-check "hit points and stamina regenerate at the normal rate when fed, 50% faster at 15 and above, at half rate below 5" (fed-hp > 0 & full-hp == fed-hp * 2 / 3 & hungry-hp == fed-hp * 2
+        & fed-st == 6 & full-st == 9 & hungry-st == 3)
+      ate <- gh-set row 17
+      decayed <- cg-hunger-fire owner game player
+      g <- cfd-check "the 5-minute hunger timer takes 1 away and re-arms itself" (gh-fed row == 16 & decayed >= 0)
+      committed <- cs-commit store True
+      h <- cfd-check "the world commits with hunger 16" (is-ok committed)
+      a + b + c + d + e + f + g + h
+  end
+  cfd-has-sound : List (List Integer), Integer -> Boolean
+  cfd-has-sound (packets) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p == 12 & list-at p 0 == #54 & list-at p 2 == 0 & list-at p 3 >= #3A & list-at p 3 <= #3C) | cfd-has-sound packets (i + 1)
+  cfd-later : CompositeOwner, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cfd-later (store) (specs) = let owner = store.state in act
+      game <- owner.checkpoint.game
+      player <- peek-qword game.characters 0
+      cfd-check "a restart restores the eater's hunger 16" (player > 0 & gh-fed (cfd-row game player) == 16)
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cfd-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1392 1664 96 96
+     is Err (e) -> cfd-check e False
+     is Ok (map) -> let filled = cfd-fill map 0
+      in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cfd-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) None None
+       when loaded
+        is Err (e) -> cfd-check ("recovery " & e) False
+        is Ok (owner) -> if fresh then cfd-first owner specs map else cfd-later owner specs
+      end
+    end
+
+Page 1

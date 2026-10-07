@@ -16,7 +16,7 @@ passively.
 | ActiveSkillsHealing | bandage Healing, and Veterinary on an animal: cure, heal, resurrect |
 | ActiveSkillsTown | Snooping, Peacemaking, Provocation (two cursors; a spawned creature's TOPROV from `ProvokeData`, through `AsServices.provoke`), Enticement (two cursors; `AsServices.lure` sets a spawn slot's `follow`, which `GameWorldSpawn` walks) |
 | ActiveSkillsPoisoning | Poisoning: a poison potion (`GameAlchemy` nightshade, 0x0F0A) coats a sword or fencing weapon (item health strength * 256 + charges); `GameCombat` spends the charges on landed blows through `AsServices.envenom` |
-| ActiveSkillsStealing | Stealing from an NPC's backpack, random or targeted (weight against skill, worn armor; no thieves' guild or witnesses) |
+| ActiveSkillsStealing | Stealing from an NPC's backpack, random or targeted (weight against skill, worn armor; no thieves' guild or witnesses); a stolen economy lot passes to the thief by the theft transfer (`EconomyProduction.md`), and a stolen coin pile moves purse to purse (`eu-steal`, `EconomyCurrency.md`). Britain's residents carry backpacks of their trade's goods (`tl-pack`); shopkeepers and bankers are immune |
 | ActiveSkillsForensics | Forensic Evaluation: a corpse's killer and death tick (`GameCombat.slain`), its last looter (`GsiState.looted`), a container's last picker (`ActiveSkills.picks`, written by `GameLocks`); Spirit Speak: a window (`ActiveSkills.spirit`) in which `CompositeEvents` delivers ghost speech clear |
 | ActiveSkillsTracking | Tracking menus (`0x7C`/`0x7D`, menu ids `#9000..#9FFF`) and the quest arrow (`0xBA`) |
 | ActiveSkillsTaming | Animal Taming: the cursor, three timed attempts, the master binding through `AsServices` |
@@ -101,10 +101,18 @@ choice removed.
 
 ## Camping
 
-ServUO `Kindling.cs` and `Campfire.cs` (`Campfires.codex`). Double-clicking kindling (0x0DE1) carried in the backpack
-rolls Camping (10) at an even chance per skill point; success spends one (through its economy lot when it has one) and
-lights a non-movable campfire (0x0DE3) on a free tile north, west, south or east of the camper. Refused: kindling not
-carried (ServUO also lights it on the ground), a dungeon (x 5120 and east), no free tile, 16 fires already lit. The fire
+Kindling is made with a blade (UOAIX-70; ServUO `BladedItemTarget.cs`, `GameCarve.codex`): a knife or dagger's
+cursor on a tree within 2 tiles (a tree static on the map or a tree in the world) puts one kindling in the backpack,
+joining a kindling stack that has no economy lot; on the carver's own fallen branches, logs or boards it spends one
+unit through the lot and gives one kindling. Anything else answers "You can't use a bladed item on that!". ServUO
+spends 5 wood from the tree's harvest bank; a tree here is not spent, and each cut paces the blade 1 s.
+`proofs/GameCarveReplay` grades the tree, the stack, reach, a rock and a log.
+
+ServUO `Kindling.cs` and `Campfire.cs` (`Campfires.codex`). Double-clicking kindling (0x0DE1) lying on the ground
+within 2 tiles rolls Camping (10) at an even chance per skill point; success spends one (through its economy lot when it
+has one) and lights a non-movable campfire (0x0DE3) on the kindling's own tile. Refused: kindling in a container ("Set
+the kindling down on the ground to light it.", Damian 2026-10-07), out of reach, a dungeon (x 5120 and east), 16 fires
+already lit. The fire
 smoulders (0x0DE9) at 60 s, goes out (0x0DEA) at 90 s and is removed at 100 s (timer kind 9). A player within 7 tiles
 of a lit fire is told the camp is securing, and 30 s later that it is secure; a logout from a secure camp leaves the
 world at once instead of lingering 300 s (`cg-depart`). Fires and camps are not saved: the first pulse after a boot
@@ -119,8 +127,10 @@ against a difficulty between 10.0 and 70.0. Success spends the blank map and dra
 64 + 2 x skill tiles each way around the cartographer (264 at 100.0); a failure spends nothing. Double-clicking the
 drawn map sends MapDetails (0x90): gump 0x139D, the bounds clamped to the map, 200 by 200. The map's centre and reach
 live in Magery's item definitions (`mgs-chart`: x, y, and the reach in z), saved by MGC1 as flag 16, so drawing needs
-Magery attached, as the server attaches it at boot. `proofs/CompositeCartographyProof` grades it (two boots), red
-across a restart with the flag unsaved.
+Magery attached, as the server attaches it at boot. The skills window's Cartography button (skill 12) draws with the
+first blank map in the backpack as a double-click on it would, and without a blank map and a pen answers "You need a
+blank map and a mapmaker's pen in your backpack to draw a map." (UOAIX-71). `proofs/CompositeCartographyProof` grades
+it (two boots), red across a restart with the flag unsaved.
 
 ## Taste Identification
 

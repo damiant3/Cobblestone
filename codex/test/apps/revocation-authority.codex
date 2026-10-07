@@ -1,0 +1,40 @@
+Chapter: RevocationAuthorityTest
+  cites Services chapter Revocation
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+
+ SignatureSlippage part B. Keys a and b are RFC 8032 section 7.1 test vectors
+ 1 and 2. Every record below carries a genuine signature by its authority, so
+ each refusal is the authority rule and not the signature check.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+Section: Vectors
+  sk-a : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  sk-b : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  ra-hash : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+ revocation-add writes into the store it is handed (L-ALIAS), so every
+ scenario gets a store of its own.
+  ra-store : Integer -> RevocationStore
+  ra-store (unused) = RevocationStore { rs-records = [], rs-count = 0, rs-last-check = 0 }
+
+Section: Body
+  opening : [Console] Nothing =
+    let pa = ed25519-public-key sk-a
+    in let pb = ed25519-public-key sk-b
+    in let by-b = sign-revocation (revoke-key-compromise pb pa 100 50 "not mine to revoke") sk-b
+    in let by-a = sign-revocation (revoke-key-compromise pa pa 100 50 "my key leaked") sk-a
+    in let content = sign-revocation (build-revocation RevokeContent (ScopeContentHash ra-hash) pb 100 100 "retract") sk-b
+    in let s1 = revocation-add (ra-store 1) by-b
+    in let s2 = revocation-add (ra-store 2) by-a
+    in let s3 = revocation-add (ra-store 3) content
+    in act
+      print-line-uni ("b revokes a: signature=" & show-bool (verify-revocation by-b) & " stored=" & show s1.rs-count & " a revoked=" & show-bool (is-identity-revoked s1 pa))
+      print-line-uni ("a revokes a: signature=" & show-bool (verify-revocation by-a) & " stored=" & show s2.rs-count & " a revoked=" & show-bool (is-identity-revoked s2 pa))
+      print-line-uni ("b retracts content: signature=" & show-bool (verify-revocation content) & " stored=" & show s3.rs-count & " content revoked=" & show-bool (is-content-revoked s3 ra-hash))
+    end

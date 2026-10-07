@@ -85,17 +85,22 @@ Chapter: CompositeSkillCommand
   csk-name (skill) = if skill == 46 then "all skills" else list-at csk-names skill
   csk-said : CskRequest -> Text
   csk-said (r) = csk-name r.skill & " set to " & show (r.value / 10) & "." & show (int-mod r.value 10)
- "[attr str|dex|int|all <1-255> [target]": a CskRequest whose skill is the stat (3 for all). A value is one record
- byte (gp-stat).
+ "[attr str|dex|int|all|hits|stam|mana <value> [target]": a CskRequest whose skill is the stat (3 for all, 4 to 6 for
+ hits, stamina and mana). A stat caps at 100 before buffs (Damian, 2026-10-07), and maximum hits, stamina and mana
+ are strength, dexterity and intelligence.
   cat-word : List Integer = [91, 97, 116, 116, 114, 32]
   cat-request : List Integer -> Boolean
   cat-request (packet) = list-length packet > 14 & list-at packet 0 == 3 & csk-prefix packet cat-word 0
-  cat-names : List Text = ["str", "dex", "int", "all"]
+  cat-names : List Text = ["str", "dex", "int", "all", "hits", "stam", "mana"]
   cat-stat : List Integer, Integer, Integer, Integer -> Integer
-  cat-stat (packet) (at) (stop) (i) = if i == 4 then -1
-    else if stop - at == 3 & csk-starts packet at stop (gp-ascii [] (list-at cat-names i) 0 3) 0 then i
+  cat-stat (packet) (at) (stop) (i) = if i == list-length cat-names then -1
+    else let name = list-at cat-names i
+    in if stop - at == text-length name & csk-starts packet at stop (gp-ascii [] name 0 (text-length name)) 0 then i
     else cat-stat packet at stop (i + 1)
-  cat-usage : Text = "Usage: [attr <str|dex|int|all> <1-255> [target]"
+  cat-most : Integer = 100
+  cat-least : Integer -> Integer
+  cat-least (stat) = if stat == 5 | stat == 6 then 0 else 1
+  cat-usage : Text = "Usage: [attr <str|dex|int|all|hits> <1-100> or [attr <stam|mana> <0-100>, then [target]"
   cat-parse : List Integer -> Result CskRequest Text
   cat-parse (packet) = let a = csk-skip packet 14
     in let a-end = csk-end packet a
@@ -105,7 +110,7 @@ Chapter: CompositeSkillCommand
     in let c-end = csk-end packet c
     in let stat = cat-stat packet a a-end 0
     in let value = if b-end == b then -1 else csk-digits packet b b-end 0
-    in if stat < 0 | value < 1 | value > 255 then Err cat-usage
+    in if stat < 0 | value < cat-least stat | value > cat-most then Err cat-usage
     else if c-end > c & not (csk-starts packet c c-end [116, 97, 114, 103, 101, 116] 0 & c-end - c == 6) then Err cat-usage
     else Ok (CskRequest { skill = stat, value = value, target = c-end > c })
  Cursor contexts past the [skill range (16 + 47 * 1001): base + stat * 256 + value.
@@ -148,14 +153,34 @@ Chapter: CompositeSkillCommand
       is Err (e) -> Err e
       is Ok (mobile) -> if mobile.kind /= 1 then Err "That is not a character."
         else let row = game.characters + slot * 160
-        in let written = if r.skill == 3 then cat-set row 0 r.value + cat-set row 1 r.value + cat-set row 2 r.value else cat-set row r.skill r.value
-        in when cat-sync owner game mobile row
+        in let written = if r.skill >= 4 then Ok 0
+          else let set = if r.skill == 3 then cat-set row 0 r.value + cat-set row 1 r.value + cat-set row 2 r.value else cat-set row r.skill r.value
+          in cat-sync owner game mobile row
+        in when (when written is Err (e) -> Err e is Ok (_) -> if r.skill >= 4 then cat-pool owner game mobile row r else Ok 0)
           is Err (e) -> Err e
           is Ok (_) -> let touched = world-touch game.world
             in when world-get game.world serial
               is Err (e) -> Err e
               is Ok (now) -> Ok (cg-status owner (gp-status now game.characters slot))
+ Hits, stamina (dexterity less the spent byte 145) or magery mana, each capped at its maximum; the request keeps the value set.
+  cat-pool : CompositeGame, GameShard, WorldObject, Integer, CskRequest -> Result Integer Text
+  cat-pool (owner) (game) (mobile) (row) (r) =
+    if r.skill == 4 then let v = min r.value (gp-stat row 0)
+      in let kept = __record-set r "value" v
+      in let healed = __record-set mobile "health" v
+      in when world-update game.world mobile is Err (e) -> Err e is Ok (_) -> Ok 0
+    else if r.skill == 5 then let v = min r.value (gp-stat row 1)
+      in let kept = __record-set r "value" v
+      in let spent = poke-byte row 145 (gp-stat row 1 - v) in Ok 0
+    else when owner.magic
+      is None -> Err "Mana needs magery on this shard."
+      is Just (magic) -> when mgs-ensure magic game mobile.serial
+        is Err (e) -> Err e
+        is Ok (actor) -> let v = min r.value (mgs-stat actor 2)
+          in let kept = __record-set r "value" v
+          in let set = __record-set actor "mana" v
+          in let touched = mgs-touch magic in Ok 0
   cat-said : CskRequest -> Text
-  cat-said (r) = list-at ["Strength", "Dexterity", "Intelligence", "All stats"] r.skill & " set to " & show r.value & "."
+  cat-said (r) = list-at ["Strength", "Dexterity", "Intelligence", "All stats", "Hit points", "Stamina", "Mana"] r.skill & " set to " & show r.value & "."
 
 Page 1

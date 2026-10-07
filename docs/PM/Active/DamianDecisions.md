@@ -20,9 +20,7 @@ Each row carries root's recommendation (R) where root has one.
 
 | # | id | decision | R |
 |---|---|---|---|
-| 6.2 | R2 | The language model provider and model for NPC speech and the keeper, where the relay runs, and the monthly budget; or local Qwen3 as the relay model. | Claude for the keeper; batch-generate the canned library first and size the budget from its cost |
 | 6.4 | R6 | Host ruled: Vultr, custom ISO. Still open: region, plan size, when the shard goes public; and opening the Vultr account (yours). | the region nearest you; the smallest 1 GiB plan; public after stage 6 |
-| 6.6 | R8 | Ruled: no starting purse, Lord British mines the first gold; monsters carry only gold they acquired. Still open: the mint's terms (who sells it gold, at what price) and other sinks (repairs, guild fees). | the mint buys gold ingots from anyone at a crown price Lord British sets on the panel; no other sinks yet |
 
 ## 1. Time-bound
 

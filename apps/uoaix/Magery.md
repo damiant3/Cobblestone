@@ -32,6 +32,51 @@ traversal. PIT conversion uses pit-input-hz and pit-count, never an assumed
 1kHz clock. Damage delegates corpse/death handling to the combat owner.
 The owner supplies map coverage and commits before publishing replies.
 
+Resisting Spells is armour against every harmful spell (UOAIX-77, Damian's design, not ServUO's): attack is
+the caster's Magery and defence the target's Resisting Spells, each scaled by its owner's Evaluating Intelligence
+(half at 0.0, whole at GM). First a full-resist roll (`mge-resisted`: 55% between equals, rising 4% per 10.0
+points of defence lead to 95%, falling with the attack's lead to 0 with no defence) answers "You feel yourself
+resisting magical energy." and nothing lands; otherwise the damage, a curse's duration and poison's ticks are
+scaled by the landed share (`mge-share`: attack minus defence over attack, at least a tenth). Between GM equals a
+cast lands on 45% of tries at a tenth, about 1/20 of an unresisted cast. The roll practises the target's
+Resisting Spells. Creatures have no skill row, so their defence is 0 and nothing changes for them.
+
+Paralyze (38, UOAIX-81) freezes its target for ServUO's pre-AOS (7 + 20% of Magery) seconds scaled by the landed
+share: `CombatActor.frozen` holds the thaw tick on the combat clock. A frozen actor does not swing (`cb-batches`), a
+frozen creature does not step (`gws-frozen`), and a frozen player's walk is refused and a cast from a book, macro or
+scroll answers "You are frozen and cannot cast." (`mg-casting`). Any damage thaws (`mge-thaw`, in `mge-interrupt`).
+The freeze is volatile: GameCombatCodec does not store it, so a restart thaws everyone.
+
+Curse (27) lowers strength, dexterity and intelligence as Clumsy, Feeblemind and Weaken lower one each; Mass Curse (46)
+curses every other admissible mobile within 2 tiles of its point, each rolling its own resist (`mga-mass-curse`). Mana
+Drain (31) takes 1 to 100 of the target's mana, Mana Vampire (53) all of it, moving only what fits under the caster's
+intelligence (`mga-drain`); the landed share scales each. Mana costs follow ServUO's circle table (4, 6, 9, 11, 14,
+20, 40, 50).
+
+Damage spells take ServUO's pre-AOS bases (`mge-spell-damage`): Magic Arrow 4-7, Harm 1-15, Fireball 10-16, Lightning
+12-20, Energy Bolt 24-41, Explosion 23-44, Flame Strike 27-48, and Mind Blast half the gap between the caster's
+highest and lowest stat (at most 45), each scaled by Eval Int, Magery and the landed share. Explosion's cast lights a
+fuse on the target (`MgActor.fuse`, `fuser`) and the blast lands 2.5 s later from the pulse (`mgt-fuse`), so an Energy Bolt
+begun as the Explosion's recovery ends lands on the same tick. The fuse is volatile: a restart drops it.
+
+Greater Heal (29) heals 40% of Magery plus 1 to 10. The area spells walk the tile chains around their point
+(`mga-area`): Arch Cure (25, 2 tiles) cures at Cure's chance less 1%; Arch Protection (26, 3 tiles, caster included)
+gives this shard's Protection, not pre-AOS virtual armour, which combat does not model; Chain Lightning (49) and
+Meteor Swarm (55) split 27 to 48 among the harmful targets within 2 tiles; Earthquake (57) strikes within 1 + Magery/15
+tiles of the caster for 60% of each target's hits (at least 10 on a creature, at most 75), unscaled by Eval Int.
+
+Energy Field (50) is Wall of Stone's placement (`mga-walls`, `mga-wall-last`) five tiles long in art 0x3946 (east-west) or
+0x3956, impassable, for 28% of Magery plus 2 seconds (ServUO pre-AOS), sound 0x20B. Fire Field (28), Poison Field (39) and
+Paralyze Field (47) use the same five-tile placement but stay passable and may be cast over mobiles: each pulse,
+whoever stands in one is burnt for 2 once a second, poisoned at the caster's level, or frozen as by Paralyze
+(`mgt-fields`), each through the resist roll and the landed share. A field's kind is read from its art
+(`mga-field-kind`), so a restored world keeps it passable; its caster (`MgWall.caster`) is volatile, and a restored
+field acts as from a caster with no skill. A paralyze field re-freezes whoever is still standing in it once they thaw.
+
+Magic Reflection (36) stores 8 circles of reflection, 15 when Magery plus Inscription reach 200.0; a harmful spell
+aimed at its holder spends circle + 1 and returns to its caster while the store stays at 0 or above (`mga-reflects`,
+ServUO SpellHelper.CheckReflect). The store is volatile.
+
 ## Composite integration
 
 Allocate `mgs-new items bank combat decoration vendor cover` before the

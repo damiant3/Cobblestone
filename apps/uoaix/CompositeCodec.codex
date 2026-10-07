@@ -81,12 +81,13 @@ Chapter: CompositeCodec
     in let items-at = combat-at + cbc-size count
     in let clear = ts-zero buf 128 0
     in let padding = ts-zero (buf + vendor-at) cc-vendor-budget 0
+    in let gone = ws-copy owner.vendor.gone (buf + combat-at - gv-gone-bytes) gv-gone-bytes 0
     in let extra = ts-zero (buf + cc-base-size count) (256 + 32 + 65560 + 48) 0
     in when gc-encode owner.checkpoint.state game (buf + game-at) (gc-size count)
       is Err (e) -> Err e
       is Ok (_) -> when euc-encode (CurrencyCheckpoint { currency = owner.vendor.currency, sequence = sequence, tick = tick }) (buf + currency-at) euc-bytes
         is Err (e) -> Err e
-        is Ok (_) -> when gvsc-encode owner.vendor (buf + vendor-at) cc-vendor-budget
+        is Ok (_) -> when gvsc-encode owner.vendor (buf + vendor-at) (cc-vendor-budget - gv-gone-bytes)
           is Err (e) -> Err e
           is Ok (vendor-size) -> when cbc-encode owner.combat (buf + combat-at) (cbc-size count)
             is Err (e) -> Err e
@@ -126,7 +127,7 @@ Chapter: CompositeCodec
               is Err (e) -> Err e
               is Ok (_) ->
               let a = poke-qword buf 0 #31434355
-              in let b = poke-qword buf 8 24
+              in let b = poke-qword buf 8 25
               in let c = poke-qword buf 16 size
               in let d = poke-qword buf 24 count
               in let e = poke-qword buf 32 sequence
@@ -437,6 +438,10 @@ Chapter: CompositeCodec
               is Just (state) -> when wdc-write state (buf + at + 288) (wdc-size state)
                 is Err (e) -> Err e
                 is Ok (size) -> let door-size = poke-qword buf 112 size in Ok 0
+  cc-gone-valid : Integer, Integer -> Boolean
+  cc-gone-valid (at) (i) = if i == gv-gone-limit then peek-qword at 0 >= 0 & peek-qword at 0 <= gv-gone-limit
+    else let serial = peek-qword at (8 + i * 8)
+    in if (if i < peek-qword at 0 then serial < 1 | serial > world-serial-mask else serial /= 0) then False else cc-gone-valid at (i + 1)
   cc-decode : Integer, Integer, Integer, Integer -> Result CompositeGame Text
   cc-decode (buf) (size) (sequence) (tick) = cc-decode-with buf size sequence tick None
   cc-decode-with : Integer, Integer, Integer, Integer, Maybe WdState -> Result CompositeGame Text
@@ -447,7 +452,7 @@ Chapter: CompositeCodec
     else let capacity = peek-qword buf 24
     in let version = peek-qword buf 8
     in let currency = if version >= 24 then euc-bytes else if version >= 9 then euc-v4-bytes else if version == 8 then euc-v2-bytes else euc-v1-bytes
-    in if version /= 23 & version /= 24 then Err "composite world predates format 23 (one skill store per character); start a fresh world"
+    in if version /= 25 then Err "composite world predates format 25 (the Crown's mining tax counter); start a fresh world"
     else if capacity < 64 | capacity > world-max-objects
       | size /= (if version == 1 then cc-base-size capacity else if version == 2 then cc-v2-size capacity else if version == 3 then cc-v3-size capacity else if version == 4 then cc-v4-size capacity else if version == 5 then cc-v5-size capacity else if version == 6 then cc-v6-size capacity else if version <= 9 then cc-v9-size capacity else if version == 10 then cc-v10-size capacity else if version == 11 then cc-v11-size capacity else if version == 12 then cc-v12-size capacity else if version == 13 then cc-v13-size capacity else if version == 14 then (if size == cc-v14a-size capacity - euc-bytes + currency then cc-v14a-size capacity else cc-v14-size capacity) else if version == 15 then cc-v15-size capacity else if version == 16 then cc-v16-size capacity else if version == 17 then cc-v17-size capacity else if version == 18 then cc-v18-size capacity else if version == 21 then cc-v21-size capacity else cc-size capacity) - euc-bytes + currency then Err "composite checkpoint capacity invalid"
     else if peek-qword buf 0 /= #31434355 | peek-qword buf 16 /= size
@@ -458,8 +463,8 @@ Chapter: CompositeCodec
     in let combat-at = vendor-at + cc-vendor-budget
     in let items-at = combat-at + cbc-size capacity
     in if peek-qword buf 56 /= gc-size capacity | peek-qword buf 64 /= currency | peek-qword buf 80 /= cbc-size capacity
-      | peek-qword buf 88 /= 16 + capacity * 40 | vendor-size < 1 | vendor-size > cc-vendor-budget then Err "composite section lengths invalid"
-    else if not ((if version >= 3 then peek-qword buf 120 == 48 else gc-zero-range buf (if version == 1 then 96 else 120) 128) & gc-zero-range buf (vendor-at + vendor-size) combat-at) then Err "composite reserved bytes invalid"
+      | peek-qword buf 88 /= 16 + capacity * 40 | vendor-size < 1 | vendor-size > cc-vendor-budget - gv-gone-bytes then Err "composite section lengths invalid"
+    else if not ((if version >= 3 then peek-qword buf 120 == 48 else gc-zero-range buf (if version == 1 then 96 else 120) 128) & gc-zero-range buf (vendor-at + vendor-size) (combat-at - gv-gone-bytes) & cc-gone-valid (buf + combat-at - gv-gone-bytes) 0) then Err "composite reserved bytes invalid"
     else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "composite checksum invalid"
     else when gc-decode-record (buf + 128) (gc-size capacity) tick sequence
       is Err (e) -> Err e
@@ -468,7 +473,8 @@ Chapter: CompositeCodec
         is Ok (currency) -> when gvsc-decode (buf + vendor-at) vendor-size game.game currency.currency
           is Err (e) -> Err e
           is Ok (vendor) ->
-            let combat = cb-new game.game 0
+            let restored = ws-copy (buf + combat-at - gv-gone-bytes) vendor.gone gv-gone-bytes 0
+            in let combat = cb-new game.game 0
             in when cbc-decode combat (buf + combat-at) (cbc-size capacity)
               is Err (e) -> Err e
               is Ok (_) -> when gic-read game.game.world (buf + items-at) (16 + capacity * 40)

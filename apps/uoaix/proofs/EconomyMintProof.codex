@@ -4,6 +4,7 @@ Chapter: EconomyMintProof
   cites Uoaix chapter EconomyHarvest
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyMint
+  cites Uoaix chapter EconomyStateValid
   cites Foreword chapter Result
 
   emp-check : Text, Boolean -> [Console] Nothing
@@ -36,7 +37,22 @@ Chapter: EconomyMintProof
     emp-check "mint consumes gold and credits treasury" (struck == 0 & ep-at p.stock 32 == 0 & w.mint-ingots == 2 & w.money.issued == 12000000 & (em-purse w.money 1).coin == treasury + 6000000)
     emp-check "mint ledger binds coin to ingot action" (issue.kind == 4 & issue.reference == 2 & issue.amount == 6000000 & material.kind == 12 & material.reference == 1 & material.action == issue.action)
     emp-check "mint preserves censuses without heap growth" (before == after & ep-census w 1 & em-balanced w.money 1)
-    emp-check "empty or disabled mint cannot repeat issuance" (emi-strike w True lord mint 1 == -1 & emi-configure w True lord 0 == 0 & w.mint-rate == 0 & emi-strike w True lord mint 1 == -1 & w.money.issued == 12000000)
+    other <- if lord == 1 then 2 else 1
+    o <- ep-actor w other
+    mint-place <- (list-at w.stations (mint - 1)).place
+    away <- ep-place w other (mint-place + 1)
+    given <- ep-find w other 32 1
+    emp-check "an owner away from the Crown's mint is refused" (away == 0 & given >= 0 & emi-strike w True other mint 1 == -1 & ep-at o.stock 32 == 1)
+    placed <- ep-place w other mint-place
+    purse-before <- (em-purse w.money o.purse).coin
+    treasury-mid <- (em-purse w.money 1).coin
+    rows <- w.money.entry-count
+    owned <- emi-strike w True other mint 1
+    payout <- list-at w.money.ledger (rows + 2)
+    print-line-uni ("OWNER-STRIKE owner+" & show ((em-purse w.money o.purse).coin - purse-before) & " treasury+" & show ((em-purse w.money 1).coin - treasury-mid) & " rows+" & show (w.money.entry-count - rows))
+    emp-check "an owner with no hammer has its own ingot struck and the Crown keeps 10%" (owned == 0 & ep-at o.stock 32 == 0 & (em-purse w.money o.purse).coin == purse-before + 5400000 & (em-purse w.money 1).coin == treasury-mid + 600000 & w.mint-ingots == 3 & w.money.issued == 18000000)
+    emp-check "the owner's strike is issue, ingot row, then a payout row to the owner" (w.money.entry-count == rows + 3 & payout.kind == 17 & payout.payer == 1 & payout.payee == o.purse & payout.amount == 5400000 & ev-valid w)
+    emp-check "empty or disabled mint cannot repeat issuance" (emi-strike w True lord mint 1 == -1 & emi-configure w True lord 0 == 0 & w.mint-rate == 0 & emi-strike w True lord mint 1 == -1 & w.money.issued == 18000000)
   end
   opening : [Console] Nothing = act
     when ec-fixture 0

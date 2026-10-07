@@ -1,9 +1,9 @@
 # Build CodexMagic server: topo-sort app chapters, compile to CDX.
 # compile.ps1 handles foreword/data dependency resolution automatically.
-# Usage: apps/games/codexmagic/build.ps1 [-Entry MagicServer]
+# Usage: apps/games/codexmagic/build.ps1 [-Entry MagicServerMain]
 [CmdletBinding()]
 param(
-    [string]$Entry = 'MagicServer',
+    [string]$Entry = 'MagicServerMain',
     [switch]$Repl
 )
 

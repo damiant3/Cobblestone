@@ -1,6 +1,6 @@
 Chapter: X86-64 Boot Infrastructure
   cites Foreword chapter Capability
-  cites Emit chapter X86-64 Code Generator (and-ri, cmp-ri, emit-out-byte, reg-rdi, st-append-code)
+  cites Emit chapter X86-64 Code Generator (and-ri, bare-metal-heap-base, cmp-ri, emit-out-byte, reg-rdi, st-append-code)
 
 Section: Memory Address Map
 
@@ -91,7 +91,7 @@ Section: Memory Address Map
   trace-cursor-addr : Integer = 458760
   trace-buf-addr : Integer = 458768
   trace-max-entries : Integer = 12000
-  serial-ring-buf-addr : Integer = 5242880
+  serial-ring-buf-addr : Integer = 15728640
 
  A hosted build cannot keep the runtime cells where bare metal keeps them,
  and the two systems refuse them for DIFFERENT reasons -- which matters,
@@ -720,7 +720,7 @@ Section: Size and Threshold Constants
     in let legacy2 = s1.code-len
     in let s2 = st-append-code s1 (jcc cc-b 0 & mov-load-u32 reg-rax reg-rdi 12 & cmp-ri reg-rax 256)
     in let short = s2.code-len
-    in let s3 = st-append-code s2 (jcc cc-b 0 & mov-load reg-rdx reg-rdi 224 & cmp-ri reg-rdx 6291456)
+    in let s3 = st-append-code s2 (jcc cc-b 0 & mov-load reg-rdx reg-rdi 224 & cmp-ri reg-rdx bare-metal-heap-base)
     in let low = s3.code-len
     in let s4 = st-append-code s3 (jcc cc-b 0 & mov-rr reg-rax reg-rdx & and-ri reg-rax 4095 & test-rr reg-rax reg-rax)
     in let align = s4.code-len
@@ -1353,7 +1353,7 @@ Section: Page Fault Handler
  the faulting stack. That is a double fault, delivered on the TSS IST1 stack,
  and it produces an !EXC dump rather than the OUT OF MEMORY line.
 
-  demand-heap-lo-page : Integer = 6291456 / 2097152
+  demand-heap-lo-page : Integer = bare-metal-heap-base / 2097152
 
   demand-heap-hi-page : Integer = 2147483648 / 2097152
 
@@ -3102,18 +3102,18 @@ Section: Process Management
     in let dvv1 = st-append-code dvv0 (li reg-rax 0)
     in let dvv2 = st-append-code dvv1 (mov-store reg-rdi reg-rax 0)
     in let slt8 = emit-slice-table-init dvv2
-    in let st5 = emit-build-process-page-tables slt8 32768 6291456
+    in let st5 = emit-build-process-page-tables slt8 32768 bare-metal-heap-base
     in let st5u = emit-demand-unmap st5
     in let saff0 = st-append-code st5u (li reg-rdi spawn-affinity-addr)
     in let saff1 = st-append-code saff0 (li reg-rax (-1))
     in let saff2 = st-append-code saff1 (mov-store reg-rdi reg-rax 0)
-    in let st6 = emit-create-process saff2 0 proc-state-running 32768 6291456
+    in let st6 = emit-create-process saff2 0 proc-state-running 32768 bare-metal-heap-base
     in let p0aff0 = st-append-code st6 (li reg-rdi (proc-table-base + proc-affinity-offset))
     in let p0aff1 = st-append-code p0aff0 (li reg-rax 0)
     in let p0aff2 = st-append-code p0aff1 (mov-store reg-rdi reg-rax 0)
     in let st7 = st-append-code p0aff2 (li reg-rax 32768)
     in let st8 = st-append-code st7 [15, 34, 216]
-    in st-append-code st8 (li reg-r10 6291456)
+    in st-append-code st8 (li reg-r10 bare-metal-heap-base)
 
   emit-slice-table-init : CodegenState -> CodegenState
   emit-slice-table-init (st) =

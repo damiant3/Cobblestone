@@ -22,6 +22,8 @@ Chapter: BritainShopsProof
   bsp-funded : BbTown, Integer -> Boolean
   bsp-funded (t) (i) = if i == bb-shop-count then True
     else (em-purse t.vendors.currency.world.money (ep-actor t.vendors.currency.world (list-at t.vendors.vendors i).actor).purse).coin == bb-placeholder-loan-gold & bsp-funded t (i + 1)
+  bsp-due : EuCurrency, Integer -> Boolean
+  bsp-due (x) (i) = if i == x.world.money.loan-count then True else (list-at x.world.money.loans i).due == em-limit & bsp-due x (i + 1)
   bsp-say : Text -> List Integer
   bsp-say (text) = gp-ascii [3,0,text-length text + 9,0,3,178,0,3] text 0 (text-length text + 1)
   bsp-name : Result (Maybe GameReply) Text, Text -> Boolean
@@ -157,6 +159,14 @@ Chapter: BritainShopsProof
         bsp-check "eight reference shop regions and registered outfits" (v.vendor-count == bb-shop-count & bsp-shops town 0)
         bsp-check "all stock and clothing trace to recipes and conserved purses" (eg-validate currency.world.catalog == 0 & euv-valid currency & gvsc-valid v)
         bsp-check "eight funded vendor loans and zero invented coin" (bsp-funded town 0 & currency.world.money.loan-count == bb-shop-count & currency.world.money.issued == bb-placeholder-gold-yield & currency.copper.issued == bb-placeholder-copper-yield & currency.silver.issued == bb-placeholder-silver-yield)
+        shop-actor <- (list-at v.vendors 0).actor
+        shop-purse <- (ep-actor currency.world shop-actor).purse
+        kept <- bb-repay currency shop-actor
+        funded <- eu-pay currency True 2 shop-purse 0 0 2
+        repaid <- bb-repay currency shop-actor
+        loan0 <- list-at currency.world.money.loans 0
+        bsp-check "shop loans fall due at em-limit, so a due hour never defaults one" (bsp-due currency 0)
+        bsp-check "a shop repays its crown loan only from what it holds beyond the loan's worth of working capital" (kept == 0 & funded == 0 & repaid == 1 & loan0.status == 2 & (em-purse currency.world.money shop-purse).coin == 2 & bb-repay currency shop-actor == 0 & euv-valid currency)
         print-line-uni ("Britain prices bread=" & show (ep-price currency.world (list-at v.vendors 3).actor 34) & " pizza=" & show (ep-price currency.world (list-at v.vendors 3).actor 76))
         bsp-check "a day's bread and meal quote near 8 copper" (ep-price currency.world (list-at v.vendors 3).actor 34 + ep-price currency.world (list-at v.vendors 3).actor 76 <= 8)
         let buf = alloc-bytes gvsc-bytes

@@ -1,0 +1,55 @@
+Chapter: SigSlipTags
+  cites Foreword chapter AesGcm
+  cites Foreword chapter ChaCha20Poly1305
+  cites Foreword chapter Poly1305
+  cites Foreword chapter Maybe
+
+ SignatureSlippage part D: each tag check refuses every degenerate tag (empty, one byte short, one byte long, all
+ zero, the right tag with its last byte flipped, the right tag with a byte outside 0..255) and accepts the right tag.
+
+Section: Inputs
+
+  sst-key : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+  sst-nonce : List Integer = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2]
+  sst-aad : List Integer = [65, 66, 67]
+  sst-plain : List Integer = [104, 101, 108, 108, 111]
+
+Section: Cases
+
+ Case 0 the right tag, 1 empty, 2 fifteen bytes, 3 seventeen bytes, 4 all zero, 5 last byte flipped, 6 first byte + 256.
+  sst-tag : List Integer, Integer -> List Integer
+  sst-tag (good) (case) =
+    if case == 0 then good
+    else if case == 1 then []
+    else if case == 2 then list-take good 15
+    else if case == 3 then good & [0]
+    else if case == 4 then [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    else if case == 5 then list-set-at (list-take good 16) 15 (bit-xor (list-at good 15) 1)
+    else list-set-at (list-take good 16) 0 (list-at good 0 + 256)
+  sst-word : Boolean -> Text
+  sst-word (ok) = if ok then "ACCEPTED" else "REJECTED"
+
+Section: Verifiers
+
+  sst-gcm : Integer -> Text
+  sst-gcm (case) = let r = aesgcm-encrypt sst-key sst-nonce sst-plain sst-aad
+    in sst-word (when aesgcm-decrypt sst-key sst-nonce r.ciphertext sst-aad (sst-tag r.tag case) is Just (_) -> True is None -> False)
+  sst-chacha : Integer -> Text
+  sst-chacha (case) = let r = chacha20poly1305-encrypt sst-key sst-nonce sst-plain sst-aad
+    in sst-word (when chacha20poly1305-decrypt sst-key sst-nonce r.cp-ciphertext sst-aad (sst-tag r.cp-tag case) is Just (_) -> True is None -> False)
+  sst-poly : Integer -> Text
+  sst-poly (case) = sst-word (poly1305-verify sst-key sst-plain (sst-tag (poly1305-mac sst-key sst-plain) case))
+  sst-line : Integer -> Text
+  sst-line (case) = "case " & show case & " aesgcm=" & sst-gcm case & " chachapoly=" & sst-chacha case & " poly1305=" & sst-poly case
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (sst-line 0)
+    print-line-uni (sst-line 1)
+    print-line-uni (sst-line 2)
+    print-line-uni (sst-line 3)
+    print-line-uni (sst-line 4)
+    print-line-uni (sst-line 5)
+    print-line-uni (sst-line 6)
+  end

@@ -27,10 +27,11 @@ $towns = @(
     @{ town='Wind'; prefix='wind'; file='wind'; location='Wind'; gate=-1 }
 )
 # Britain's rows are hand-placed (CompositePaging history): location.dfn 27 and 28, BritainCatalog shop centres,
-# GameMoongates' gate, and the stand south of CompositeLineup's row.
+# GameMoongates' gate, the stand south of CompositeLineup's row, the throne (cpr-throne-x/y) and the Royal Minter's tile.
 $britain = @(
     @('britbank',1436,1693), @('britbank2',1656,1614), @('britmoon',1336,1997), @('britlineup',1437,1696),
-    @('brithealer',1473,1611), @('britsmith',1418,1547), @('britinn',1497,1616), @('britfarm',1229,1575)
+    @('brithealer',1473,1611), @('britsmith',1418,1547), @('britinn',1497,1616), @('britfarm',1229,1575),
+    @('throne',1326,1624), @('mint',1334,1603)
 )
 
 $sourceHashes = [ordered]@{}

@@ -90,10 +90,17 @@ Chapter: TownLive
       in world-touch t.vendors.game.world
     in tl-advance-steps t map doors budget 0 []
 
+ UOAIX-68: an NPC hears a player and is seen by one only along a clear line (walk-ray: walls, doors and floors block).
+ The ray runs from the lower of the two ends, so either end asks the same question.
+  tl-sight : WalkMap, WorldObject, WorldObject -> Boolean
+  tl-sight (map) (a) (b) = let distance = max (walk-abs (a.x - b.x)) (walk-abs (a.y - b.y))
+    in let reverse = a.x > b.x | (a.x == b.x & a.y > b.y) | (a.x == b.x & a.y == b.y & a.z > b.z)
+    in let from = if reverse then b else a in let to = if reverse then a else b
+    in walk-ray map from.x from.y from.z to.x to.y to.z 1 (max 1 (2 * max distance (walk-abs (a.z - b.z))))
   tl-person-for : TownLive, Integer, Integer -> Integer
   tl-person-for (t) (serial) (i) = if i == t.count then 0
     else let p = tf-person t.people (list-at t.residents i).person
-    in if p.world-serial == serial then p.serial else tl-person-for t serial (i + 1)
+    in if p.alive == 1 & p.world-serial == serial then p.serial else tl-person-for t serial (i + 1)
   tl-handler : TownLive, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   tl-handler (t) (game) (input) (map) (port) (packet) =
     if list-length packet < 1 | list-at packet 0 /= 9 then Ok None
@@ -109,28 +116,36 @@ Chapter: TownLive
         is Ok (npc) -> if walk-abs (viewer.x - npc.x) > 18 | walk-abs (viewer.y - npc.y) > 18 then Ok None
           else let p = tf-person t.people person
           in Ok (Just (gs-reply (gvp-hello npc p.name) "townsfolk name"))
-  tl-greet : TownLive, TlViewer, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
-  tl-greet (t) (view) (viewer) (slot) (i) (packets) = if i == t.count then packets
+  tl-line : TownLive, Integer, Integer, Integer -> Text
+  tl-line (t) (i) (topic) (variety) = let p = tf-person t.people (list-at t.residents i).person
+    in let trade = list-at t.feel (i * 3)
+    in let work = list-at t.feel (i * 3 + 1)
+    in let outlook = if topic == 1 then trade else if topic == 2 then work else (trade + work) / 2
+    in let mood = nl-mood p.mood (list-at t.feel (i * 3 + 2))
+    in nl-pick t.lines 3 (tf-town t.people p.town).name (nl-job-role p.job) topic (nl-opinion outlook) mood variety
+  tl-greet : TownLive, WalkMap, TlViewer, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
+  tl-greet (t) (map) (view) (viewer) (slot) (i) (packets) = if i == t.count then packets
     else let r = list-at t.residents i
     in let p = tf-person t.people r.person
     in when world-get t.vendors.game.world p.world-serial
-      is Err (_) -> tl-greet t view viewer slot (i + 1) packets
+      is Err (_) -> tl-greet t map view viewer slot (i + 1) packets
       is Ok (npc) ->
         let mask = bit-shl 1 i
         in let was = bit-and view.inside mask /= 0
         in let near = p.alive == 1 & npc.health > 0 & viewer.health > 0
-          & walk-abs (viewer.x - npc.x) <= 3 & walk-abs (viewer.y - npc.y) <= 3 & walk-abs (viewer.z - npc.z) <= 16
+          & walk-abs (viewer.x - npc.x) <= 3 & walk-abs (viewer.y - npc.y) <= 3 & walk-abs (viewer.z - npc.z) <= 16 & tl-sight map npc viewer
         in let changed = if was == near then 0 else let updated = __record-set view "inside" (bit-xor view.inside mask) in 0
         in let persona = list-at t.mind.personas (p.serial - 1)
         in let same = list-at r.last-speaker slot == viewer.serial
         in if not near | was | (same & t.now < list-at r.last-speech slot + tl-speech-seconds)
           | t.mind.audit-count >= 1024 | persona.request >= 1000000000
-          | (persona.call-hour == t.people.hour & persona.calls >= persona.call-limit) then tl-greet t view viewer slot (i + 1) packets
+          | (persona.call-hour == t.people.hour & persona.calls >= persona.call-limit) then tl-greet t map view viewer slot (i + 1) packets
         else let reply = tm-stub t.mind t.people p.serial 1 (persona.request + 1) ""
+        in let line = tl-line t i 0 persona.request
         in let owner = list-set-at r.last-speaker slot viewer.serial
         in let said = list-set-at r.last-speech slot t.now
         in let touched = world-touch t.vendors.game.world
-        in tl-greet t view viewer slot (i + 1) (list-push packets (gvp-speech npc p.name reply.speech))
+        in tl-greet t map view viewer slot (i + 1) (list-push packets (gvp-speech npc p.name (if text-length line == 0 then reply.speech else line)))
   tl-pulse : TownLive, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   tl-pulse (t) (game) (input) (map) (port) (tick) =
     if input.mode /= 2 | input.session.phase /= 2 then Ok None
@@ -144,5 +159,5 @@ Chapter: TownLive
       in let inside = __record-set view "inside" 0 in 0
     in when world-get game.world input.session.serial
       is Err (e) -> Err e
-      is Ok (viewer) -> let packets = tl-greet t view viewer slot 0 []
+      is Ok (viewer) -> let packets = tl-greet t map view viewer slot 0 []
         in if list-length packets == 0 then Ok None else Ok (Just (gs-reply packets "townsfolk canned greeting; model unavailable"))

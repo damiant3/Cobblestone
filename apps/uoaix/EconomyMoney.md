@@ -88,6 +88,8 @@ Kind 15 is the currency coordinator's zero-coin sale valuation marker; its
 reference is the quoted gold price, not gold paid. Actual tender and tax stay
 in their denomination ledgers. [EconomyCurrency.md](EconomyCurrency.md) owns
 the matching currency event and material-trade validation.
+Kind 19 is a theft (`em-steal`): coin moves between two private purses with no
+tax and reference 0.
 
 `em-town-grant state authorized townPurse amount` transfers treasury coin to
 an admitted town purse. [TownGovernment.md](TownGovernment.md) supplies town

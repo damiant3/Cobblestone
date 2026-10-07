@@ -1,7 +1,7 @@
 Chapter: TransactionValidator
-  cites Foreword chapter Wrap64
   cites CodexMagic chapter ChainCore
   cites CodexMagic chapter Auth
+  cites Foreword chapter Ed25519
 
  We say:
 
@@ -17,7 +17,7 @@ Section: Full Validation Pipeline
 
   validate-tx : ChainState, ChainTx, Integer -> TxValidation
   validate-tx (chain) (tx) (platform-key) =
-    if validate-signature-check tx == False then TxValidation { valid = False, reason = "Invalid signature", tx = tx }
+    if validate-signature-check chain tx == False then TxValidation { valid = False, reason = "Invalid signature", tx = tx }
     else if validate-nonce chain tx == False then TxValidation { valid = False, reason = "Invalid nonce (replay detected)", tx = tx }
     else if validate-amount tx == False then TxValidation { valid = False, reason = "Invalid amount", tx = tx }
     else if validate-mint-authority tx platform-key == False then TxValidation { valid = False, reason = "Unauthorized mint", tx = tx }
@@ -27,28 +27,39 @@ Section: Full Validation Pipeline
 
 Section: Signature Verification
 
-  validate-signature-check : ChainTx -> Boolean
-  validate-signature-check (tx) =
-    let expected-hash = compute-tx-hash (tx.sender) (tx.receiver) (tx.amount) (tx-type-id (tx.tx-type)) (tx.nonce) (tx.timestamp)
-    in let sig-check = hash-combine (hash-combine hash-zero (tx.sig-high)) (tx.sig-low)
-    in let recomputed = hash-combine (hash-combine hash-zero (expected-hash.h0 * 31 + tx.sender)) (expected-hash.h1 * 37 + tx.nonce)
-    in sig-check.h0 == recomputed.h0
+ The message is the 16 ASCII bytes "codexmagic-tx-v1" followed by sender,
+ receiver, amount, type id, nonce and timestamp as 8-byte big-endian words.
 
-  sign-transaction : Integer, Integer, Integer, ChainTxType, Integer, Integer, Integer -> ChainTx
-  sign-transaction (sender) (receiver) (amount) (ttype) (nonce) (timestamp) (private-key) =
+  tx-domain : List Integer = [99, 111, 100, 101, 120, 109, 97, 103, 105, 99, 45, 116, 120, 45, 118, 49]
+
+  tx-message : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  tx-message (sender) (receiver) (amount) (type-id) (nonce) (timestamp) =
+    tx-domain & tx-be64 sender & tx-be64 receiver & tx-be64 amount & tx-be64 type-id & tx-be64 nonce & tx-be64 timestamp
+
+  tx-be64 : Integer -> List Integer
+  tx-be64 (v) = [
+    bit-and (bit-shru v 56) 255, bit-and (bit-shru v 48) 255, bit-and (bit-shru v 40) 255, bit-and (bit-shru v 32) 255,
+    bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255
+  ]
+
+  validate-signature-check : ChainState, ChainTx -> Boolean
+  validate-signature-check (chain) (tx) =
+    let key = account-key-of chain (tx.sender)
+    in if list-length key /= 32 then False
+    else if list-length (tx.signature) /= 64 then False
+    else ed25519-verify key (tx-message (tx.sender) (tx.receiver) (tx.amount) (tx-type-id (tx.tx-type)) (tx.nonce) (tx.timestamp)) (tx.signature)
+
+  sign-transaction : Integer, Integer, Integer, ChainTxType, Integer, Integer, List Integer -> ChainTx
+  sign-transaction (sender) (receiver) (amount) (ttype) (nonce) (timestamp) (seed) =
     let tx-hash = compute-tx-hash sender receiver amount (tx-type-id ttype) nonce timestamp
-    in let sig-high = bit-xor (tx-hash.h0 * 31 + sender) (w64-mul private-key 2654435761)
-    in let sig-low = bit-xor (tx-hash.h1 * 37 + nonce) (w64-mul private-key 2246822519)
-    in let sig-check = hash-combine (hash-combine hash-zero sig-high) sig-low
-    in let recomputed = hash-combine (hash-combine hash-zero (tx-hash.h0 * 31 + sender)) (tx-hash.h1 * 37 + nonce)
-    in ChainTx { tx-hash = tx-hash, sender = sender, receiver = receiver, amount = amount, tx-type = ttype, nonce = nonce, timestamp = timestamp, sig-high = sig-high, sig-low = sig-low, data-field = 0 }
-
+    in let msg = tx-message sender receiver amount (tx-type-id ttype) nonce timestamp
+    in let signature = ed25519-sign seed (ed25519-public-key seed) msg
+    in ChainTx { tx-hash = tx-hash, sender = sender, receiver = receiver, amount = amount, tx-type = ttype, nonce = nonce, timestamp = timestamp, signature = signature, data-field = 0 }
 Section: Nonce Validation
 
   validate-nonce : ChainState, ChainTx -> Boolean
   validate-nonce (chain) (tx) =
-    let expected-nonce = get-nonce chain (tx.sender)
-    in tx.nonce >= expected-nonce
+    tx.nonce > last-nonce chain (tx.sender)
 
 Section: Amount Validation
 

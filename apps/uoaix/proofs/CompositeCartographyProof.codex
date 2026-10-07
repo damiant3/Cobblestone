@@ -35,6 +35,15 @@ Chapter: CompositeCartographyProof
   ckp-give (owner) (game) (pack) (graphic) = when world-create game.world (gs-item pack graphic 0)
     is Err (_) -> 0
     is Ok (serial) -> let known = gsi-register owner.items serial 0 0 True True in serial
+  ckp-button : Integer -> List Integer
+  ckp-button (unused) = [#12, 0, 9, #24, 49, 50, 32, 48, 0]
+  ckp-count : GameShard, Integer, Integer, Integer -> Integer
+  ckp-count (game) (graphic) (slot) (n) = if slot >= game.world.capacity then n
+    else when world-at game.world slot
+      is Err (_) -> ckp-count game graphic (slot + 1) n
+      is Ok (o) -> ckp-count game graphic (slot + 1) (if o.kind == 2 & o.graphic == graphic then n + 1 else n)
+  ckp-said : Result (Maybe GameReply) Text -> Text
+  ckp-said (r) = when r is Err (e) -> "error " & e is Ok (None) -> "none" is Ok (Just (reply)) -> reply.note
   ckp-first : CompositeOwner, List GameOpcodeSpec, WalkMap -> [Console, Device.Block] Integer
   ckp-first (store) (specs) (map) = let owner = store.state in act
       input <- gn-input-with specs 1
@@ -47,6 +56,8 @@ Chapter: CompositeCartographyProof
       pack <- gsi-pack-find game.world player 0
       blank <- ckp-give owner game pack cart-blank
       a <- ckp-check "the fixture mapmaker carries a blank map" (is-ok entry & placed & pack > 0 & blank > 0)
+      pressed <- cs-route store game input map 2593 (ckp-button 0)
+      a2 <- ckp-check "the Cartography skill button without a pen names the blank map and the mapmaker's pen" (ckp-note pressed == "You need a blank map and a mapmaker's pen in your backpack to draw a map." & ckp-find game cart-drawn 0 == 0)
       penless <- cs-route store game input map 2593 (ckp-use blank)
       b <- ckp-check "a blank map with no mapmaker's pen in the pack is refused" (ckp-note penless == "You need a mapmaker's pen to draw a map." & ckp-find game cart-drawn 0 == 0)
       pen <- ckp-give owner game pack #0FBF
@@ -61,9 +72,14 @@ Chapter: CompositeCartographyProof
       d <- ckp-check "double-clicking the drawn map sends MapDetails 0x90: gump 0x139D, bounds 1176,1446 to 1704,1974, 200 by 200" (list-length seen == 19
         & list-at seen 0 == #90 & gp-u32 seen 1 == map-serial & gp-u16 seen 5 == #139D & gp-u16 seen 7 == 1176 & gp-u16 seen 9 == 1446
         & gp-u16 seen 11 == 1704 & gp-u16 seen 13 == 1974 & gp-u16 seen 15 == 200 & gp-u16 seen 17 == 200)
+      empty <- cs-route store game input map 2593 (ckp-button 0)
+      blank2 <- ckp-give owner game pack cart-blank
+      later <- when owner.magic is None -> Err "no magery" is Just (magic) -> cart-handler-at owner.production.harvest owner.active magic game input (ckp-button 0) (get-ticks + gh-ticks 10000)
+      f <- ckp-check "with no blank map the button names both items again; with one, the button draws as a double-click does" (ckp-note empty == "You need a blank map and a mapmaker's pen in your backpack to draw a map."
+        & ckp-said later == "cartography drew reach=264" & is-err (world-get game.world blank2) & ckp-count game cart-drawn 0 0 == 2)
       committed <- cs-commit store True
       e <- ckp-check "the world commits with the drawn map" (is-ok committed)
-      a + b + c + d + e
+      a + a2 + b + c + d + f + e
   end
   ckp-later : CompositeOwner, Magery -> [Console] Integer
   ckp-later (store) (magic) = let owner = store.state in act

@@ -2,7 +2,9 @@
 #
 # Inputs: the compile log (-Log of compile.ps1 -RawFlags cover), which carries one
 # "CDX6015: [COVER] <slot> <name>" line per instrumented definition with its source
-# span, and one or more run outputs holding "COVER:<slot>:<count>" blocks. A program
+# span, one "CDX6015: [COVER-ARM] <slot> <name> __cov-<then|else|is>" line per if arm and
+# match branch with the arm's span (arm slots follow the definition slots), and one or
+# more run outputs holding "COVER:<slot>:<count>" blocks. A program
 # prints a block at exit and at every __cover-dump call; counts are cumulative, so the
 # LAST block of each output is that run's total. Several outputs (several runs of the
 # same binary) are summed.
@@ -21,9 +23,13 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $slots = @{}
+$arms = @{}
 foreach ($line in [IO.File]::ReadLines((Resolve-Path $Log).Path)) {
     if ($line -match '^(.*?):(\d+):\d+: info CDX6015: \[COVER\] (\d+) (\S+)') {
         $slots[[int]$matches[3]] = [pscustomobject]@{ File = $matches[1]; Line = [int]$matches[2]; Name = $matches[4]; Count = [long]0 }
+    }
+    elseif ($line -match '^(.*?):(\d+):(\d+): info CDX6015: \[COVER-ARM\] (\d+) (\S+) __cov-(\S+)') {
+        $arms[[int]$matches[4]] = [pscustomobject]@{ File = $matches[1]; Line = [int]$matches[2]; Column = [int]$matches[3]; Name = $matches[5]; Kind = $matches[6]; Count = [long]0 }
     }
 }
 if ($slots.Count -eq 0) { Write-Host "coverage-report: no [COVER] lines in $Log (was it compiled with -RawFlags cover?)"; exit 1 }
@@ -38,7 +44,10 @@ foreach ($o in $Output) {
     }
     if ($null -eq $last) { Write-Host "coverage-report: no complete COVER block in $o"; continue }
     $blocks++
-    foreach ($k in $last.Keys) { if ($slots.ContainsKey($k)) { $slots[$k].Count += $last[$k] } }
+    foreach ($k in $last.Keys) {
+        if ($slots.ContainsKey($k)) { $slots[$k].Count += $last[$k] }
+        elseif ($arms.ContainsKey($k)) { $arms[$k].Count += $last[$k] }
+    }
 }
 if ($blocks -eq 0) { Write-Host 'coverage-report: no run output carried a COVER block'; exit 1 }
 
@@ -50,7 +59,13 @@ $chapters = @($rows | Group-Object File | ForEach-Object {
 } | Sort-Object Never, Chapter -Descending)
 $hitAll = @($rows | Where-Object { $_.Count -gt 0 }).Count
 $summary = 'coverage: {0} of {1} definitions entered ({2:N1}%), {3} chapters, {4} run(s)' -f $hitAll, $rows.Count, (100.0 * $hitAll / [math]::Max(1, $rows.Count)), $chapters.Count, $blocks
+$entered = @{}
+foreach ($s in $slots.Values) { if ($s.Count -gt 0) { $entered["$($s.File)|$($s.Name)"] = $true } }
+$armRows = @($arms.Values | Where-Object { ($Filter -eq '' -or $_.File -like "*$Filter*") -and $entered.ContainsKey("$($_.File)|$($_.Name)") })
+$armHit = @($armRows | Where-Object { $_.Count -gt 0 }).Count
+$armSummary = 'arms: {0} of {1} arms taken in entered definitions ({2:N1}%)' -f $armHit, $armRows.Count, (100.0 * $armHit / [math]::Max(1, $armRows.Count))
 Write-Host $summary
+if ($arms.Count -gt 0) { Write-Host $armSummary }
 $chapters | Select-Object -First $Top | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
 if ($Markdown -ne '') {
@@ -62,6 +77,12 @@ if ($Markdown -ne '') {
     [void]$md.AppendLine("`n## Never run`n")
     foreach ($g in ($rows | Where-Object { $_.Count -eq 0 } | Sort-Object File, Line | Group-Object File)) {
         [void]$md.AppendLine("- $($g.Name.Replace($root + '\', '').Replace('\', '/')): " + (($g.Group | ForEach-Object { "$($_.Name) ($($_.Line))" }) -join ', '))
+    }
+    if ($arms.Count -gt 0) {
+        [void]$md.AppendLine("`n## Arms never taken in entered definitions`n`n$armSummary`n")
+        foreach ($g in ($armRows | Where-Object { $_.Count -eq 0 } | Sort-Object File, Line, Column | Group-Object File)) {
+            [void]$md.AppendLine("- $($g.Name.Replace($root + '\', '').Replace('\', '/')): " + (($g.Group | ForEach-Object { "$($_.Name) $($_.Kind) ($($_.Line):$($_.Column))" }) -join ', '))
+        }
     }
     [IO.File]::WriteAllText($Markdown, $md.ToString(), (New-Object Text.UTF8Encoding $false))
     Write-Host "coverage-report: wrote $Markdown"

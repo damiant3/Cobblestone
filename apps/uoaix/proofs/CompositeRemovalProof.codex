@@ -1,0 +1,194 @@
+Chapter: CompositeRemovalProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  crp-check : Text, Boolean -> [Console] Integer
+  crp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  crp-fill : WalkMap, Integer -> Integer
+  crp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in crp-fill map (i + 1)
+  crp-decoration : WalkMap -> Result WdState Text
+  crp-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  crp-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  crp-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  crp-create : Integer -> List Integer
+  crp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Composite" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  crp-say : Text -> List Integer
+  crp-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
+  crp-target : Integer, Integer -> List Integer
+  crp-target (context) (serial) = gp-zeros (gp-put16 (gp-put16 (gp-put32 (list-push (gp-put32 [#6C, 0] (#4C420000 + context)) 0) serial) 0) 0) 4
+  crp-noted : Result GameReply Text, Text -> Boolean
+  crp-noted (r) (note) = when r is Err (_) -> False is Ok (v) -> v.note == note
+  crp-said : Result GameReply Text, Text -> Boolean
+  crp-said (r) (text) = when r is Err (_) -> False is Ok (v) -> list-length v.packets > 0 & crp-has-text (list-at v.packets (list-length v.packets - 1)) text
+  crp-has-text : List Integer, Text -> Boolean
+  crp-has-text (p) (text) = list-length p >= 44 + text-length text & crp-text-at p text 0
+  crp-text-at : List Integer, Text, Integer -> Boolean
+  crp-text-at (p) (text) (i) = if i == text-length text then True
+    else if list-at p (44 + i) /= to-unicode (char-code-at text i) then False else crp-text-at p text (i + 1)
+  crp-mobile-at : WorldTable, Integer, Integer -> Integer
+  crp-mobile-at (world) (serial) (graphic) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 1 & o.graphic == graphic then serial else crp-mobile-at world (world-tile-next world serial) graphic
+  crp-corpse-at : WorldTable, Integer -> Boolean
+  crp-corpse-at (world) (serial) = if serial == 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (o) -> if o.kind == 2 & o.graphic == 8198 then True else crp-corpse-at world (world-tile-next world serial)
+  crp-corpse-serial : WorldTable, Integer -> Integer
+  crp-corpse-serial (world) (serial) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.graphic == 8198 then serial else crp-corpse-serial world (world-tile-next world serial)
+  crp-child : WorldTable, Integer, Integer -> Integer
+  crp-child (world) (serial) (graphic) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.graphic == graphic then serial else crp-child world (world-next-sibling world serial) graphic
+  crp-gone : WorldTable, Integer -> Boolean
+  crp-gone (world) (serial) = world-slot world serial < 0
+  crp-bind : CompositeOwner, WalkMap -> Integer
+  crp-bind (store) (map) = let owner = store.state
+    in when owner.decoration
+      is None -> -1
+      is Just (decoration) -> let magic = mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (crp-cover map)
+        in let hooked = mge-bind magic
+        in let attached = __record-set owner "magic" (Just magic)
+        in mgs-attach magic owner.timers
+  crp-summon : CompositeOwner, WalkMap, GameInput, Text, Integer -> [Console, Device.Block] Integer
+  crp-summon (store) (map) (input) (word) (graphic) = let game = store.state.checkpoint.game in act
+    summoned <- cp-british map store game input (crp-say word)
+    when world-get game.world input.session.serial
+      is Err (_) -> 0
+      is Ok (m) -> crp-mobile-at game.world (world-tile-first game.world (m.x + 1) m.y) graphic
+  end
+  crp-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  crp-run (store) (map) (specs) = let owner = store.state in let game = owner.checkpoint.game in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store game input map 2593 (crp-create 0)
+    pulse <- cs-pulse store game input map 2593 100
+    playing <- __record-set input.session "phase" 2
+    active <- __record-set game "active" input.session.serial
+    bound <- crp-bind store map
+    me <- input.session.serial
+    a <- crp-check "fixture: entered, monsters spawned, magery bound" (is-ok entry & is-ok pulse & (list-at owner.monsters.slots 0).serial > 0 & bound == 0)
+    cursor <- cp-british map store game input (crp-say "[kill")
+    other <- cp-british map store game input (crp-say "[remove")
+    b <- crp-check "[kill and [remove raise target cursors 5 and 4" (crp-noted cursor "british:cursor" & gp-u32 (list-at (when cursor is Ok (v) -> v.packets is Err (_) -> [[]]) 1) 2 == #4C420005
+      & crp-noted other "british:cursor" & gp-u32 (list-at (when other is Ok (v) -> v.packets is Err (_) -> [[]]) 1) 2 == #4C420004)
+    victim <- crp-summon store map input "[summon 11" #11
+    spot <- (when world-get game.world victim is Err (_) -> 0 is Ok (m) -> world-tile-first game.world m.x m.y)
+    place <- (when world-get game.world victim is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
+    sequence <- store.store.sequence
+    killed <- cp-british map store game input (crp-target 5 victim)
+    corpse <- crp-corpse-serial game.world (world-tile-first game.world (list-at place 0) (list-at place 1))
+    c <- crp-check "[kill on a summoned creature: the creature is gone, a corpse lies on its tile, opens as a corpse container (gump 9), and the world commits" (victim > 0 & crp-noted killed "british:kill"
+      & crp-gone game.world victim & corpse > 0 & gsi-known owner.items corpse & (gsi-meta owner.items corpse).gump == 9 & store.store.sequence > sequence)
+    doomed <- crp-summon store map input "[summon 12" #12
+    count <- world-count game.world
+    gone <- cp-british map store game input (crp-target 4 doomed)
+    d <- crp-check "[remove on a summoned creature: deleted with no corpse, one object fewer" (doomed > 0 & crp-noted gone "british:remove" & crp-gone game.world doomed & world-count game.world == count - 1)
+    monster <- (list-at owner.monsters.slots 0).serial
+    culled <- cp-british map store game input (crp-target 4 monster)
+    later <- cs-pulse store game input map 2593 200
+    e <- crp-check "[remove on a monster: deleted, and the next pulse frees its slot" (crp-noted culled "british:remove" & crp-gone game.world monster & is-ok later & (list-at owner.monsters.slots 0).serial /= monster)
+    pack <- (list-at owner.vendor.players 0).pack
+    added <- cp-add store game input (crp-say "[add 1BF2 3")
+    ingot <- crp-child game.world (world-first-child game.world pack) #1BF2
+    dropped <- cp-british map store game input (crp-target 4 ingot)
+    print-line-uni ("ITEM add=" & (when added is Err (e) -> e is Ok (v) -> v.note) & " ingot=" & show ingot & " remove=" & (when dropped is Err (e) -> e is Ok (v) -> v.note))
+    f <- crp-check "[remove on an item in the backpack: deleted" (ingot > 0 & crp-noted dropped "british:remove" & crp-gone game.world ingot)
+    lot <- (list-at owner.vendor.lots 0).serial
+    lots <- owner.vendor.lot-count
+    sold <- cp-british map store game input (crp-target 4 lot)
+    g <- crp-check "[remove on a vendor's stock lot: deleted, the lot leaves the ledger and the vendor world still validates" (lot > 0 & crp-noted sold "british:remove"
+      & crp-gone game.world lot & owner.vendor.lot-count == lots - 1 & gv-lot owner.vendor lot 0 < 0 & gvsc-valid owner.vendor)
+    vendor <- (list-at owner.vendor.vendors 0).serial
+    stock <- (list-at owner.vendor.vendors 0).stock
+    objects <- world-count game.world
+    spare <- cp-british map store game input (crp-target 5 vendor)
+    goods <- cp-british map store game input (crp-target 4 stock)
+    town <- cp-british map store game input (crp-target 4 vendor)
+    twice <- cp-british map store game input (crp-target 4 vendor)
+    traded <- gv-checkout owner.vendor [] (list-at owner.vendor.players 0).actor (list-at owner.vendor.vendors 0).actor vendor stock vendor
+    hidden <- crp-hidden store vendor
+    dismissed <- (crp-said spare "A townsperson cannot be killed." & crp-said goods "A townsperson's goods cannot be removed yet." & crp-noted town "british:remove" & crp-said twice "Already removed."
+      & gv-gone owner.vendor vendor & hidden & not (gmb-is-banker owner.banks vendor 0) & (when traded is Err (x) -> x == "vendor removed" is Ok (_) -> False)
+      & world-count game.world == objects & world-slot game.world vendor >= 0 & gvsc-valid owner.vendor)
+    h <- crp-check "a vendor: [kill and its stock refuse; [remove conceals it for good, stops its trading and banking, and every registry still validates" dismissed
+    banker <- list-at owner.banks.bankers 0
+    banked <- cp-british map store game input (crp-target 4 banker)
+    h2 <- crp-check "the bank's banker: [remove conceals it and it banks no more" (banker > 0 & crp-noted banked "british:remove" & gv-gone owner.vendor banker & crp-hidden store banker & not (gmb-is-banker owner.banks banker 0))
+    self <- cp-british map store game input (crp-target 4 me)
+    slay <- cp-british map store game input (crp-target 5 me)
+    bag <- cp-british map store game input (crp-target 4 pack)
+    rock <- cp-british map store game input (crp-target 5 pack)
+    j <- crp-check "the player, its backpack and an item refuse: no object leaves" (crp-noted self "british:refused" & crp-noted slay "british:refused" & crp-said bag "A player's backpack or bank box cannot be removed."
+      & crp-said rock "[kill targets a creature." & world-count game.world == objects & crp-gone game.world pack == False)
+    saved <- cs-commit store True
+    k <- crp-check "the world commits after every removal" (is-ok saved)
+    a + b + c + d + e + f + g + h + h2 + j + k
+  end
+  crp-hidden : CompositeOwner, Integer -> Boolean
+  crp-hidden (store) (serial) = let slot = world-slot store.state.items.world serial in slot >= 0 & peek-byte store.state.active.concealed slot == 3
+  crp-later : CompositeOwner -> [Console] Integer
+  crp-later (store) = let owner = store.state
+    in let vendor = (list-at owner.vendor.vendors 0).serial
+    in let restored = gv-gone owner.vendor vendor & peek-qword owner.vendor.gone 0 == 2
+    in let banker = peek-qword owner.vendor.gone 16
+    in let reapplied = crm-reapply owner 0
+    in let ok = restored & crp-hidden store vendor & crp-hidden store banker & not (gmb-is-banker owner.banks banker 0) & not (gmb-is-banker owner.banks vendor 0) & gvsc-valid owner.vendor
+    in crp-check "the restart restores both removals: the vendor and the banker are concealed again and bank no more" ok
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> crp-check e False
+     is Ok (map) -> let filled = crp-fill map 0
+      in when crp-decoration map
+       is Err (e) -> crp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> crp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> crp-check ("recovery " & e) False
+        is Ok (owner) -> if fresh then crp-run owner map specs else crp-later owner
+      end
+    end
+
+Page 1

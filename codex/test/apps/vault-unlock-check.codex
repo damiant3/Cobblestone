@@ -1,0 +1,67 @@
+Chapter: VaultUnlockCheckTest
+  cites Secrets chapter SecretsApp
+  cites Secrets chapter SecretsPersist
+  cites Secrets chapter Vault
+  cites Secrets chapter SecretEntry
+  cites Foreword chapter Maybe
+
+Section: Helpers
+
+  enrolled : Integer -> VaultIndex
+  enrolled (k) =
+    when vault-set-password vault-index-new "correct horse"
+      is Just (vi) -> vi
+      is None -> vault-index-new
+
+  opens : Maybe VaultIndex -> Text
+  opens (r) =
+    when r
+      is Just (vi) -> if vault-is-unlocked vi then "opened" else "returned locked"
+      is None -> "refused"
+
+  sets : Maybe VaultIndex -> Text
+  sets (r) =
+    when r
+      is Just (_) -> "set"
+      is None -> "refused"
+
+  reloaded : Integer -> VaultIndex
+  reloaded (k) = vault-index-from-text (vault-index-to-text (enrolled k))
+
+  legacy-with-entry : Integer -> VaultIndex
+  legacy-with-entry (k) =
+    VaultIndex {
+      vi-vaults = [vault-add-secret (vault-new "personal" "My Vault" PersonalVault) SecretPassword "bank" "me" "" "pw" 1],
+      vi-active = "personal",
+      vi-master-key = None,
+      vi-salt = [],
+      vi-check = []
+    }
+
+  app-try : VaultIndex, Text -> Text
+  app-try (vi) (pw) =
+    let st = __record-set (__record-set (secrets-app-init 80 25) "sa-vault-index" vi) "sa-password-input" pw
+    in let after = secrets-try-unlock st
+    in "status=" & after.sa-status & " unlocked=" & (if vault-is-unlocked (after.sa-vault-index) then "yes" else "no")
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("vault, no password record, any password: " & opens (vault-unlock vault-index-new "hunter22"))
+    print-line-uni ("vault, set empty password: " & sets (vault-set-password vault-index-new ""))
+    print-line-uni ("vault, correct password: " & opens (vault-unlock (enrolled 0) "correct horse"))
+    print-line-uni ("vault, wrong password: " & opens (vault-unlock (enrolled 0) "wrong"))
+    print-line-uni ("vault, empty password: " & opens (vault-unlock (enrolled 0) ""))
+    print-line-uni ("vault, one character short: " & opens (vault-unlock (enrolled 0) "correct hors"))
+    print-line-uni ("vault, trailing space: " & opens (vault-unlock (enrolled 0) "correct horse "))
+    print-line-uni ("vault, saved and reloaded, correct password: " & opens (vault-unlock (reloaded 0) "correct horse"))
+    print-line-uni ("vault, saved and reloaded, wrong password: " & opens (vault-unlock (reloaded 0) "wrong"))
+    print-line-uni ("vault, pre-fix header has a password record: " & (if vault-has-password (vault-index-from-text "VAULTS:personal|1\n---\npersonal|My Vault|0|1|0|Default") then "yes" else "no"))
+    print-line-uni ("app, fresh vault, empty password: " & app-try vault-index-new "")
+    print-line-uni ("app, fresh vault, first password enrolls: " & app-try vault-index-new "correct horse")
+    print-line-uni ("app, stored vault, wrong password: " & app-try (reloaded 0) "wrong")
+    print-line-uni ("app, stored vault, correct password: " & app-try (reloaded 0) "correct horse")
+    print-line-uni ("app, pre-fix vault with an entry, any password: " & app-try (legacy-with-entry 0) "hunter22")
+  end
+
+Page 1

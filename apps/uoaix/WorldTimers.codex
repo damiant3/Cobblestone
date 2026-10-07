@@ -3,7 +3,7 @@ Chapter: WorldTimers
  Entry fields by qword index: 0 deadline, 1 kind (0 when free), 2 key, 3 next, 4 prev.
 
   WorldTimers = record { pool : Integer, heads : Integer, capacity : Integer, slots : Integer,
-    free : Integer, used : Integer, now : Integer, limit : Integer, kind : Integer, key : Integer, fired : Integer }
+    free : Integer, used : Integer, now : Integer, limit : Integer, kind : Integer, key : Integer, fired : Integer, peak : Integer }
   wtm-get : WorldTimers, Integer, Integer -> Integer
   wtm-get (w) (e) (field) = peek-qword w.pool (e * 40 + field * 8)
   wtm-put : WorldTimers, Integer, Integer, Integer -> Integer
@@ -20,7 +20,7 @@ Chapter: WorldTimers
   wtm-new : Integer, Integer, Integer -> Result WorldTimers Text
   wtm-new (capacity) (slots) (now) = if capacity < 1 | capacity > 65536 | slots < 1 | slots > 4096 | now < 0 then Err "world timer bounds"
     else let w = WorldTimers { pool = alloc-bytes (capacity * 40), heads = alloc-bytes (slots * 8), capacity = capacity, slots = slots,
-      free = 0, used = 0, now = now, limit = now, kind = 0, key = 0, fired = 0 }
+      free = 0, used = 0, now = now, limit = now, kind = 0, key = 0, fired = 0, peak = 0 }
     in let entries = wtm-init w 0
     in let buckets = wtm-empty w.heads 0 slots
     in Ok w
@@ -49,7 +49,8 @@ Chapter: WorldTimers
     in let b = wtm-put w e 1 kind
     in let c = wtm-put w e 2 key
     in let d = wtm-link w e (wtm-slot w due)
-    in let u = __record-set w "used" (w.used + 1) in e
+    in let u = __record-set w "used" (w.used + 1)
+    in let p = if w.used > w.peak then __record-set w "peak" w.used else w in e
   wtm-find : WorldTimers, Integer, Integer, Integer -> Integer
   wtm-find (w) (kind) (key) (e) = if e == w.capacity then -1
     else if wtm-get w e 1 == kind & wtm-get w e 2 == key then e

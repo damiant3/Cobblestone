@@ -60,9 +60,22 @@ Chapter: CompositeLaborProof
       print-line-uni ("LABOR day " & show day & " " & (tf-person t.people r.person).name & " wages=" & show wages & " bought=" & show bought & " ate=" & show ate
         & " coin=" & show (eu-value x (em-purse x.copper (clp-purse owner r.actor)).coin (em-purse x.silver (clp-purse owner r.actor)).coin (em-purse x.world.money (clp-purse owner r.actor)).coin))
       ok <- clp-check ("day " & show day & ": " & (tf-person t.people r.person).name & " works a paid shift, buys and eats (the farmer, the miller and the baker restock the town's food)") (wages > 0 & bought > 0 & ate > 0)
+      hours <- clp-check ("day " & show day & ": " & (tf-person t.people r.person).name & " is paid for at least 7 hours at work") (wages >= 7)
       rest <- clp-resident owner t book day events sequence food (i + 1)
-      ok + rest
+      ok + hours + rest
     end
+  clp-pile : TownLive, Integer -> Integer
+  clp-pile (t) (i) = let world = t.vendors.game.world
+    in let pack = gsi-pack-find world (tf-person t.people (list-at t.residents i).person).world-serial 0
+    in let pile = if pack == 0 then 0 else gsi-child-art world (world-first-child world pack) (tl-coin-art 1) 0
+    in if pile == 0 then 0 else when world-get world pile is Err (_) -> 0 is Ok (o) -> o.amount
+  clp-piles : TownLive, Integer -> Integer
+  clp-piles (t) (i) = if i == t.count then 0 else clp-pile t i + clp-piles t (i + 1)
+  clp-quarter : TownLive, Integer -> Boolean
+  clp-quarter (t) (i) = if i == t.count then True
+    else let refreshed = tl-coins t i 1
+    in let x = t.vendors.currency
+    in clp-pile t i == (em-purse x.copper (ep-actor x.world (list-at t.residents i).actor).purse).coin / tl-coin-share & clp-quarter t (i + 1)
   clp-day : CompositeGame, WalkMap, Integer, Integer -> [Console] Integer
   clp-day (owner) (map) (tick) (day) = when owner.town
     is None -> clp-check "townsfolk bound" False
@@ -77,8 +90,9 @@ Chapter: CompositeLaborProof
           ran <- clp-check ("day " & show day & " runs headless") (ended > 0)
           print-line-uni ("LABOR day " & show day & " food offered at dawn=" & show food & " survival overrides=" & show n.guards)
           each <- clp-resident owner t n.actions.book day events sequence food 0
+          coins <- clp-check ("day " & show day & ": the shifts put coin piles in the residents' packs, each a quarter of its purse's copper") (clp-piles t 0 > 0 & clp-quarter t 0)
           census <- clp-check ("day " & show day & ": currency and material census valid") (euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1 & gvsc-valid owner.vendor)
-          ran + each + census
+          ran + each + coins + census
         end
   clp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   clp-first (store) (map) = let owner = store.state in act

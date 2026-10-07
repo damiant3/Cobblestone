@@ -18,6 +18,7 @@ Chapter: MagicServer
   cites CodexMagic chapter ServerUtil
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Foreword chapter Sha256
   cites Net chapter WebServer
   cites Kernel chapter Hpet
 
@@ -47,7 +48,8 @@ Section: Server State
     total-minted : Integer,
     total-burned : Integer,
     coin-for-sale : Integer,
-    coin-price : Integer
+    coin-price : Integer,
+    secret : Text
   }
 
   MagicStep = record {
@@ -60,10 +62,10 @@ Section: Server State
     let s1 = season-new 2026 3 "Age of Embers"
     in let s1b = season-activate s1
     in let game = game-new full-card-pool general-warlord general-dawn-commander
-    in MagicStore { pause-active = False, pause-remaining = 0, game = game, turn = supervised-start game, orders = [posture-default, posture-default], game-active = False, templates = full-card-pool, generals = [general-warlord, general-high-sage, general-verdant-keeper, general-shadow-prince, general-dawn-commander], accounts = [], num-accounts = 0, tokens = [], ledger = ledger-new 100, current-season = s1b, match-record = match-record-new 0 0 0 0 0, account-keys = [], next-nonce = 1000, platform = platform-new, next-token-id = 1000, total-minted = 0, total-burned = 0, coin-for-sale = 0, coin-price = 1 }
+    in MagicStore { pause-active = False, pause-remaining = 0, game = game, turn = supervised-start game, orders = [posture-default, posture-default], game-active = False, templates = full-card-pool, generals = [general-warlord, general-high-sage, general-verdant-keeper, general-shadow-prince, general-dawn-commander], accounts = [], num-accounts = 0, tokens = [], ledger = ledger-new 100, current-season = s1b, match-record = match-record-new 0 0 0 0 0, account-keys = [], next-nonce = 1000, platform = platform-new, next-token-id = 1000, total-minted = 0, total-burned = 0, coin-for-sale = 0, coin-price = 1, secret = "" }
 
   store-set : MagicStore, GameState, Boolean, List PlayerAccount, Integer, List CardToken, ManaCoinLedger, PlatformAuthority, Integer -> MagicStore
-  store-set (s) (g) (ga) (accts) (na) (toks) (led) (plat) (ntid) = MagicStore { pause-active = s.pause-active, pause-remaining = s.pause-remaining, game = g, turn = s.turn, orders = s.orders, game-active = ga, templates = s.templates, generals = s.generals, accounts = accts, num-accounts = na, tokens = toks, ledger = led, current-season = s.current-season, match-record = s.match-record, account-keys = s.account-keys, next-nonce = s.next-nonce, platform = plat, next-token-id = ntid, total-minted = s.total-minted, total-burned = s.total-burned, coin-for-sale = s.coin-for-sale, coin-price = s.coin-price }
+  store-set (s) (g) (ga) (accts) (na) (toks) (led) (plat) (ntid) = MagicStore { pause-active = s.pause-active, pause-remaining = s.pause-remaining, game = g, turn = s.turn, orders = s.orders, game-active = ga, templates = s.templates, generals = s.generals, accounts = accts, num-accounts = na, tokens = toks, ledger = led, current-season = s.current-season, match-record = s.match-record, account-keys = s.account-keys, next-nonce = s.next-nonce, platform = plat, next-token-id = ntid, total-minted = s.total-minted, total-burned = s.total-burned, coin-for-sale = s.coin-for-sale, coin-price = s.coin-price, secret = s.secret }
 
   update-store-game : MagicStore, GameState, Boolean -> MagicStore
   update-store-game (store) (gs) (active) = store-set store gs active (store.accounts) (store.num-accounts) (store.tokens) (store.ledger) (store.platform) (store.next-token-id)
@@ -1385,18 +1387,19 @@ Section: Auth Handler
     in let pw = extract-query-param line "p"
     in let pw-sc = score-pw pw
     in let is-first = store.num-accounts == 0
-    in if text-length handle < 2 then magic-respond-error store "handle too short"
+    in if text-length (store.secret) == 0 then magic-respond-error store "server has no session secret"
+    else if text-length handle < 2 then magic-respond-error store "handle too short"
     else if text-length pw < 5 then magic-respond-error store "password too short"
     else if find-account-by-handle (store.accounts) handle 0 (store.num-accounts) >= 0 then magic-respond-error store "handle already taken"
     else let disp = if text-length display > 0 then display else handle
-    in let acct = account-new (store.num-accounts) handle disp pw pw-sc SubFree
+    in let acct = account-new (store.num-accounts) handle disp (magic-pw-hash handle pw) pw-sc SubFree
     in let acct2 = if is-first then set-account-admin acct True else acct
-    in let session = "s" & show (store.next-nonce)
+    in let session = magic-session store (store.num-accounts)
     in let acct3 = set-account-session acct2 session
     in let new-accts = list-push (store.accounts) acct3
     in let ledger2 = ledger-mint (store.ledger) (store.num-accounts) 500
     in let ns = update-store-accounts store new-accts (store.num-accounts + 1)
-    in let ns2 = update-store-ledger ns ledger2
+    in let ns2 = magic-bump-nonce (update-store-ledger ns ledger2)
     in magic-respond-json ns2 ("{\"token\":" & jstr session & ",\"handle\":" & jstr handle & ",\"display\":" & jstr disp & ",\"id\":" & show (acct3.account-id) & ",\"admin\":" & jbool (acct3.admin) & ",\"starterGrant\":true,\"starterBalance\":500}")
 
   handle-login : MagicStore, Text -> MagicStep
@@ -1404,14 +1407,15 @@ Section: Auth Handler
     let handle = extract-query-param line "u"
     in let pw = extract-query-param line "p"
     in let idx = find-account-by-handle (store.accounts) handle 0 (store.num-accounts)
-    in if idx < 0 then magic-respond-error store "unknown handle"
+    in if text-length (store.secret) == 0 then magic-respond-error store "server has no session secret"
+    else if idx < 0 then magic-respond-error store "unknown handle"
     else let acct = list-at (store.accounts) idx
     in if acct.banned then magic-respond-error store "account banned"
-    else if acct.password /= pw then magic-respond-error store "wrong password"
-    else let session = "s" & show (store.next-nonce)
+    else if magic-digest (magic-pw-hash handle pw) /= magic-digest (acct.password) then magic-respond-error store "wrong password"
+    else let session = magic-session store (acct.account-id)
     in let acct2 = set-account-session acct session
     in let new-accts = list-set-at (store.accounts) idx acct2
-    in let ns = update-store-accounts store new-accts (store.num-accounts)
+    in let ns = magic-bump-nonce (update-store-accounts store new-accts (store.num-accounts))
     in magic-respond-json ns ("{\"token\":" & jstr session & ",\"handle\":" & jstr handle & ",\"display\":" & jstr (acct2.display-name) & ",\"id\":" & show (acct2.account-id) & ",\"admin\":" & jbool (acct2.admin) & "}")
 
   handle-me : MagicStore, Text -> MagicStep
@@ -1464,6 +1468,26 @@ Section: Auth Handler
     in let new-tokens = remove-tokens-for-account (store.tokens) (acct.account-id) 0 (list-length (store.tokens)) []
     in let ns = update-store-tokens store new-tokens (store.ledger)
     in magic-respond-json ns ("{\"ok\":true,\"wiped\":" & show count & "}")
+
+ SignatureSlippage part E: a session token is a digest under the server's
+ secret (drawn from the device seed at boot), the counter moves on every
+ issue, and a password is kept as a salted digest. With no secret the server
+ issues no session.
+  magic-digest : Text -> Text
+  magic-digest (t) = sha256-to-hex (sha256 (text-to-bytes t))
+
+  magic-pw-hash : Text, Text -> Text
+  magic-pw-hash (handle) (pw) = magic-digest ("codexmagic-pw|" & handle & "|" & pw)
+
+  magic-session : MagicStore, Integer -> Text
+  magic-session (store) (account-id) = "s" & magic-digest (store.secret & "|" & show account-id & "|" & show (store.next-nonce))
+
+  magic-bump-nonce : MagicStore -> MagicStore
+  magic-bump-nonce (store) = __record-set store "next-nonce" (store.next-nonce + 1)
+
+  magic-store-keyed : MagicStore, List Integer -> MagicStore
+  magic-store-keyed (store) (seeds) =
+    __record-set store "secret" (magic-digest (show (list-at seeds 0) & ":" & show (list-at seeds 1) & ":" & show (list-at seeds 2) & ":" & show (list-at seeds 3)))
 
   find-account-by-handle : List PlayerAccount, Text, Integer, Integer -> Integer
   find-account-by-handle (accts) (handle) (i) (len) =
@@ -1667,7 +1691,7 @@ Section: Admin Handlers
   handle-admin-mint (store) (line) =
     let amt = parse-int (extract-query-param line "amount") 0
     in if amt <= 0 then magic-respond-error store "amount must be positive"
-    else let ns = MagicStore { pause-active = store.pause-active, pause-remaining = store.pause-remaining, game = store.game, turn = store.turn, orders = store.orders, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted + amt, total-burned = store.total-burned, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price }
+    else let ns = MagicStore { pause-active = store.pause-active, pause-remaining = store.pause-remaining, game = store.game, turn = store.turn, orders = store.orders, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted + amt, total-burned = store.total-burned, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price, secret = store.secret }
     in magic-respond-json ns ("{\"ok\":true,\"supply\":" & show (ns.total-minted - ns.total-burned) & ",\"minted\":" & show (ns.total-minted) & "}")
 
   handle-admin-grant : MagicStore, Text -> MagicStep
@@ -1685,7 +1709,7 @@ Section: Admin Handlers
   handle-admin-burn (store) (line) =
     let amt = parse-int (extract-query-param line "amount") 0
     in if amt <= 0 then magic-respond-error store "amount must be positive"
-    else let ns = MagicStore { pause-active = store.pause-active, pause-remaining = store.pause-remaining, game = store.game, turn = store.turn, orders = store.orders, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted, total-burned = store.total-burned + amt, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price }
+    else let ns = MagicStore { pause-active = store.pause-active, pause-remaining = store.pause-remaining, game = store.game, turn = store.turn, orders = store.orders, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce, platform = store.platform, next-token-id = store.next-token-id, total-minted = store.total-minted, total-burned = store.total-burned + amt, coin-for-sale = store.coin-for-sale, coin-price = store.coin-price, secret = store.secret }
     in magic-respond-json ns ("{\"ok\":true,\"supply\":" & show (ns.total-minted - ns.total-burned) & ",\"burned\":" & show (ns.total-burned) & "}")
 
   handle-admin-users : MagicStore -> MagicStep
@@ -1744,7 +1768,7 @@ Section: Clan Authority Handlers
     in let result = register-clan (store.platform) name tag founder instance-key (store.next-nonce)
     in if result.success == False then magic-respond-error store "registration failed: tag already taken"
     else let ns = update-store-platform store (result.platform)
-    in let ns2 = MagicStore { pause-active = ns.pause-active, pause-remaining = ns.pause-remaining, game = ns.game, turn = ns.turn, orders = ns.orders, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform, next-token-id = ns.next-token-id, total-minted = ns.total-minted, total-burned = ns.total-burned, coin-for-sale = ns.coin-for-sale, coin-price = ns.coin-price }
+    in let ns2 = MagicStore { pause-active = ns.pause-active, pause-remaining = ns.pause-remaining, game = ns.game, turn = ns.turn, orders = ns.orders, game-active = ns.game-active, templates = ns.templates, generals = ns.generals, accounts = ns.accounts, num-accounts = ns.num-accounts, tokens = ns.tokens, ledger = ns.ledger, current-season = ns.current-season, match-record = ns.match-record, account-keys = ns.account-keys, next-nonce = ns.next-nonce + 1, platform = ns.platform, next-token-id = ns.next-token-id, total-minted = ns.total-minted, total-burned = ns.total-burned, coin-for-sale = ns.coin-for-sale, coin-price = ns.coin-price, secret = ns.secret }
     in magic-respond-json ns2 ("{\"registered\":true,\"clan-id\":" & show (result.clan-id) & ",\"name\":" & jstr name & ",\"tag\":" & jstr tag & ",\"auth-token\":" & show (result.auth-token) & "}")
 
   handle-clan-authorize : MagicStore, Text -> MagicStep
@@ -1941,12 +1965,16 @@ Section: Server Loop
     else print-line-uni "SERVER-EXIT"
   end
 
-  opening : [Console, Network.Read, Network.Write] Nothing = act
+  magic-serve : [Console, Network.Read, Network.Write, Identity] Nothing = act
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9200 host-ip 1000
     in let ts = transport-new sess
     in act
+      s0 <- device-seed 0
+      s1 <- device-seed 1
+      s2 <- device-seed 2
+      s3 <- device-seed 3
       ts1 <- net-io-connect ts
-      magic-loop (MagicLoop { mstate = magic-store-new, transport = ts1 })
+      magic-loop (MagicLoop { mstate = magic-store-keyed magic-store-new [s0, s1, s2, s3], transport = ts1 })
     end
   end
 

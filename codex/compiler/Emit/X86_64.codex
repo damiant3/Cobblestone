@@ -1,5 +1,6 @@
 Chapter: X86-64 Code Generator
   cites Codex chapter CdxCodes (cdx-accum-overflow, cdx-bounds-proven, cdx-call-census, cdx-claim-recognized, cdx-cover-slot, cdx-ir-error)
+  cites Codex chapter CoverArms (CoverSite, cover-arm-slot, cover-sites)
   cites Codex chapter CdxCodes (cdx-rt-wcet-exceeded, cdx-rt-wcet-opaque, cdx-rt-wcet-report, cdx-rt-wcet-unchecked)
   cites Codex chapter Codex Types (i64-max, i64-min)
   cites Codex chapter IR Chapter (ir-expr-span, ir-expr-type)
@@ -1170,7 +1171,18 @@ Section: Function Emission
       else wcet-st
     in let cover-st = if st.cover then st-add-info census-st cdx-cover-slot ("[COVER] " & show i & " " & def.name) (def.span)
       else census-st
-    in emit-all-defs cover-st defs (i + 1)
+    in let arm-st = if st.cover then cover-arm-infos cover-st def (cover-sites (def.body) []) 0
+      else cover-st
+    in emit-all-defs arm-st defs (i + 1)
+
+  cover-arm-infos : CodegenState, IRDef, List CoverSite, Integer -> CodegenState
+  cover-arm-infos (st) (def) (sites) (i) =
+    if i >= list-length sites then st
+    else let s = list-at sites i
+    in let k = cover-arm-slot (st.cover-arm-map) (s.site-arm)
+    in if k < 0 then cover-arm-infos st def sites (i + 1)
+    else let msg = "[COVER-ARM] " & show (st.cover-arms + k) & " " & def.name & " " & s.site-kind
+    in cover-arm-infos (st-add-info st cdx-cover-slot msg (s.site-span)) def sites (i + 1)
 
   emit-call-census : CodegenState, IRDef, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> CodegenState
   emit-call-census (st) (def) (nbytes) (path) (insns) (pushes) (pops) (stores) (calls) (bad) =

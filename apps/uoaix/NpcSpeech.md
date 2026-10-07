@@ -40,16 +40,52 @@ without a name select the closest admitted NPC. Names use the authoritative
 TownLive persona or Britain shop registry, not player text. Bankers share
 the role name Banker and choose the nearest registered banker.
 
-Named townsfolk lines use TownMind's deterministic fallback with the full
-player line as quoted context, subject to existing call/audit budgets.
-No speech proposal can move inventory. Banker and vendor greetings are short
-role-specific canned lines. The vendor prompt says "Say vendor buy or vendor
-sell". Saying buy/sell to a named townsfolk resident
-does not redirect the request to a shop.
+## The canned library
 
-The bounded distance policy is implemented here. Geometry occlusion is not
-tested by this chapter; the four-tile policy is not a claim of full acoustic
-or line-of-sight simulation.
+Every NPC line comes from `NpcLines.codex`, the canned library (UOAIX-66,
+ruling R2: no relay, no provider key, no live call). A row is keyed by kind
+(shopkeeper, banker, townsfolk), town, role, topic (greeting, trade, work,
+news, chat), opinion (sour, even, glad) and mood (glum, even, cheerful,
+alarmed); an empty town or role and the value 9 are wildcards. The pick is
+the matching row with the most specific fields, and equally specific rows
+rotate by a variety number (the persona's request count for townsfolk, the
+speaker and clock for shopkeepers and bankers).
+
+- **Topic** is the first of trade, work, news and greeting whose keywords the
+  player's line contains (`ns-topic`), otherwise chat. An approach greeting is
+  topic 0.
+- **Townsfolk keys** use the persona's town and job, mood from `TfPerson.mood`
+  in thirds, alarm 600 and over as alarmed, and opinion from the townsfolk
+  network: trade talk reads opinion axis 0, work talk axis 1, other topics
+  their mean, with 250 either side of zero as a held opinion. The network
+  writes each resident's two axes and alarm into `TownLive.feel` on every
+  think (`tnv-feel`), and TNL1 restore rewrites them.
+- **Shopkeepers and bankers** key on kind, Britain and the shop role; their
+  opinion and mood are unknown, so only wildcard rows match them.
+- **`ns-bind` refuses an invalid library**: every shopkeeper greeting must say
+  both "vendor buy" and "vendor sell", every banker greeting "say bank", and
+  each kind must hold a fully wildcard row for every topic, so a valid key
+  never misses.
+
+A townsfolk reply still passes TownMind's budgets and is audited as a
+model-unavailable fallback; the reply note is `townsfolk canned line` on a
+library pick and `townsfolk named fallback` when the library misses and the
+persona's configured fallback is spoken. A shopkeeper or banker miss speaks the
+row's fixed greeting. `NlLibrary` counts hits and misses. No speech proposal
+can move inventory. Saying buy/sell to a named townsfolk resident does not
+redirect the request to a shop.
+
+The library ships in the image. Moving its rows into a database table waits
+for the database backend (`Database.md`).
+
+The bounded distance policy is implemented here. Walls block an NPC's line
+of sight, except a banker's (Damian, 2026-10-06: "line of sight for npcs should block through walls, except bankers."):
+a shopkeeper, resident, miner or farmer behind a wall neither hears, answers
+its name nor greets the player, and a resident's work show and overhead
+lines reach only a player it can see (UOAIX-68). The line is `tl-sight`: the
+ranged-combat ray (`cb-ray`, tiledata Window and NoShoot block it) cast over
+the Britain map the residents walk (`cg-sight-map`). A banker (`ns-heard`,
+kind 2) hears and greets by distance alone.
 
 ## Greetings and recovery
 
@@ -92,7 +128,14 @@ fester's complete composite by root.
 
 `proofs/NpcSpeechReplay.codex` covers four/five-tile boundaries, upper-case
 and name-addressed requests, whisper/emote refusal, word boundaries,
-malformed packets, banker access, logged townsfolk replies and NSC1 recovery.
+malformed packets, banker access, logged townsfolk replies and NSC1 recovery,
+line of sight (a wall silences Nell and not the banker),
+and the library: validity and its refusals, most-specific selection, town
+culture, mood and alarm buckets, rotation, a counted miss, topic
+classification, and the network outlook and alarm choosing a resident's line.
+A build that ignores the outlook fails exactly the outlook arm.
+`proofs/TownNetworkLiveProof.codex` grades `TownLive.feel` against the
+network after live rounds and after TNL1 restore.
 The existing vendor replay covers cart settlement and out-of-range refusal.
 
 Retained state is twenty-four fixed NPC rows and five viewer records, with
@@ -102,3 +145,10 @@ characters, all bounded by these tables and the C03 packet limit. Nearest
 selection and greetings scan only the registered NPC rows using indexed
 serial lookup. NSC1 work is linear in the fixed row count. Menu construction
 and TownMind keep their existing cost bounds; no economy clone is added.
+
+The library is built once per `TownLive` and retains 7064 bytes for 89 rows
+(measured 2026-10-06, kernel `753E2F25A3AFF7BD`); a pick is two linear scans
+of the rows and retained 0 bytes over 1000 picks. Topic classification calls
+`ns-has` for at most 42 keywords, and each `ns-char` goes through `to-unicode`
+(about a kilobyte), so `ns-topic` runs under a heap mark and keeps only its
+Integer.

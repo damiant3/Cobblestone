@@ -11,12 +11,13 @@ not rewrite these values.
 `es-encode checkpoint buffer capacity` returns the fixed encoded length or
 an error. `es-decode buffer actualLength` returns a detached checkpoint.
 Use `es-decode-record buffer actualLength outerTick outerSequence` when the
-payload comes from WorldDisk; both metadata values must agree. The version 4
-payload is 1423240 bytes and fits the existing store's payload budget. The
+payload comes from WorldDisk; both metadata values must agree. The version 6
+payload is 1432688 bytes and fits the existing store's payload budget. The
 decoder also accepts version 1 (1360768 bytes, 64 stations, 256 nodes),
-version 2 (1366912 bytes, 256 stations, 256 nodes) and version 3 (1422208
-bytes, no found counters): each is a prefix of the next, and re-encoding
-writes version 4.
+version 2 (1366912 bytes, 256 stations, 256 nodes), version 3 (1422208
+bytes, no found counters), version 4 (1423240 bytes, no openings) and
+version 5 (1431656 bytes, no mining tax counters): each is a prefix of the
+next, and re-encoding writes version 6.
 
 The caller supplies owned, disjoint output storage and stable source state.
 Encoding explicitly rejects overlap with inventory/counter buffers. Native
@@ -37,7 +38,7 @@ later build. Names use length-prefixed, zero-padded CCE text.
 | Offset | Content |
 |---:|---|
 | 0 | Magic `0x31434555` |
-| 8 | Version 4 (1, 2 or 3 for the shorter payloads) |
+| 8 | Version 6 (1 to 5 for the shorter payloads) |
 | 16 | Total bytes |
 | 24 | Catalog bytes, 25120 |
 | 32 | Outer tick |
@@ -57,7 +58,9 @@ later build. Names use length-prefixed, zero-padded CCE text.
 | 1356512 | Gathered, crafted, consumed and recent-sales arrays (129 cells each), then turnover and crown-turnover arrays (8 cells each) |
 | 1360768 | Versions 2 and 3: stations 65-256, 32 bytes each |
 | 1366912 | Versions 3 and 4: resource/plot nodes 257-1024, 72 bytes each |
-| 1422208 | Version 4 only: found array (129 cells) |
+| 1422208 | Versions 4 to 6: found array (129 cells) |
+| 1423240 | Versions 5 and 6: money opening (906 cells), then production opening (146 cells) |
+| 1431656 | Version 6 only: ore the Crown took at harvest, by item (129 cells; only gold, copper and silver ore, cells 6, 63 and 64, are nonzero) |
 
 An item slot has chain, text length and 64 CCE bytes (80 bytes total).
 Resource and recipe slots carry their seven and eleven scalar fields.

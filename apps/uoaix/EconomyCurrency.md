@@ -59,6 +59,11 @@ coin-unit prices and pays no labor.
   Scarcity and demand are proportional to unit cost in a copper world.
   Measured in `BritainShopsProof` (seed `4228CD5103DC4523`, 2026-10-05): a
   longsword quotes 708 copper, bread 3 and a pizza 4.
+- Theft: `eu-steal` (currency event kind 14; money rows kind 19) moves each metal
+  from the victim's purse to the thief's untaxed, all metals checked before any
+  moves. A resident's pack shows a quarter of its purse as coin piles (`tl-coins`,
+  refreshed each shift); stealing a pile is this event (`as-steal-coin`), so no
+  unbacked coin enters the world. `proofs/EconomyCurrencyProof`, `ActiveSkillsReplay`.
 - Change: `eu-exchange` (currency event kind 12; money rows kind 6 in, 16
   decree, 17 out) breaks a purse's coin with the crown at the current rates,
   at any distance (Damian, 2026-10-05). When the treasury lacks the smaller
@@ -130,9 +135,10 @@ Root's reading, binding until Damian corrects it:
   so gathering needs no coin.
 - Makers start broke and borrow from a lender NPC (Lord British, a mayor or a
   banker) to buy their first inputs.
-- Copper, silver and gold ore are all mineable, and each coin metal reaches the
-  treasury the same way: taxed in kind at harvest, smelted and minted by the
-  crown. Copper and silver ore any gatherer may mine; gold ore only a miner
+- Copper, silver and gold ore are all mineable, and the Crown takes 10% of each
+  in kind at harvest (R8, UOAIX.md section 5: copper and silver follow gold's
+  rules); iron and other ore are untaxed. Copper and silver ore any gatherer
+  may mine; gold ore only a miner
   holding the King's appointment may mine, and a gold node refuses anyone else.
 - The economy bootstraps at server initialization: on a new world, Lord
   British's first economic activity is to go gold mining, as an NPC when no
@@ -210,15 +216,20 @@ current rates (root's ruling, 2026-10-06): a repayment in any mix of copper,
 silver and gold counts toward it at value with no exchange step, and the lender
 receives the coins as paid, which also feeds the crown's change float (UOAIX-30).
 A loan keeps whole units of its metal, so a repayment settles whole units
-(`eu-repay-value`, currency event 13; `proofs/EconomyCurrencyProof`).
+(`eu-repay-value`, currency event 13; `proofs/EconomyCurrencyProof`). The loan is
+credited by a zero-coin ledger row of kind 18 (`em-credit`, amount the loan units,
+no purse), which the loan audit counts as repaid. Shop loans fall due at
+`em-limit`, so no due hour defaults one; a shop keeps working capital worth its
+loan's principal and repays whole gold units from the rest (`bb-repay`, every
+town step; `proofs/BritainShopsProof`).
 
 Stage 5 readings (root, 2026-10-06, under Damian's words; open to his correction):
 
 1. Which gold is counted? Ruled: gold coin, which enters only by `eu-strike`
    from gold ingots into the treasury; gold ore is a material.
-2. Where is an NPC gold find taxed? Ruled: in kind at harvest, so each gold
-   ore an NPC gathers moves the tax-rate share of that ore to the crown's stock,
-   which the crown smelts and mints.
+2. Where is a find taxed? Ruled: in kind at harvest, so 10% of the gold,
+   silver and copper ore a miner gathers moves to the crown's stock (R8), which
+   the crown smelts and mints.
 3. How does Lord British's first-login mining run with no client? Ruled: on
    his first login a gold node at Britain's mine becomes his; he mines it as a
    player, and the stage proof drives that with replayed packets (stage 7's
@@ -229,10 +240,13 @@ Stage 5 readings (root, 2026-10-06, under Damian's words; open to his correction
    circulating, so the stage's own check is that every faucet and drain event
    appears in the currency log with the matching amount.
 
-Reading 2 is built: `eh-find-tax` (EconomyHarvest) rolls each gold ore a non-mint
-actor finds against the tax rate (a per-unit roll seeded by the finder's attempt
-counter, so a 2-ore find still pays on average) and moves the taxed units, with
-their quality, wear and cost, to the mint actor. `proofs/GoldFindTaxProof`.
+Reading 2 is built: `eh-find-tax` (EconomyHarvest) rolls each gold, silver or copper
+ore a non-mint actor finds against `eh-mining-tax`, 10% and independent of the trade tax rate (a
+per-unit roll seeded by the finder's attempt counter, so a 2-ore find still pays
+on average), moves the taxed units, with their quality, wear and cost, to the
+mint actor, and counts them in the world's `taxed` table (UEC1 version 6),
+which the treasury view shows per metal (`gold_ore_taxed`, `silver_ore_taxed`,
+`copper_ore_taxed`). `proofs/GoldFindTaxProof`.
 
 The King's appointment is built: a warrant is an economy station of kind 13
 (`eh-warrant`) owned by the miner at a place, made only by `eh-appoint` with the
@@ -243,15 +257,20 @@ owner 0) gold is open, so the founding King mines first. `proofs/GoldFindTaxProo
 Copper and silver ore (Damian's ruling, root's reading 2026-10-06): any
 miner with a pickaxe may mine them, no appointment needed. A new pickaxe site
 on a mountain tile draws its vein from the tile (`cpr-vein`): copper ore at
-ServUO's copper vein chance, 8.4%; silver ore at 2.8%, a first value (UO has
-no silver ore); iron ore otherwise. Gold ore stays at appointed nodes only.
-`eh-find-tax` taxes copper and silver ore in kind exactly as gold ore, so the
-crown's share reaches its stock at harvest. `proofs/GoldFindTaxProof`,
-`proofs/CompositeProductionReplay`. Before every composite commit the crown smelts
+ServUO's copper vein chance, 8.4%; silver ore at 11.2% (UO has no silver ore);
+iron ore otherwise. Every player mining attempt can also turn up a seam
+(`gh-seam-begin`, UOAIX-86): gold 1%, silver 2%, copper 3% a roll, a temporary
+node the site mines until one yield works it out, after which the tile's own
+vein returns and the seam lies dormant for the next seam of its metal at that
+place. A gold seam waives the appointment (root's reading) and is never royal
+gold; a Royal Mine site takes no seam. Gold ore is otherwise mined at appointed
+nodes only. `proofs/GameHarvestReplay`.
+`eh-find-tax` taxes copper and silver ore in kind exactly as gold ore.
+`proofs/GoldFindTaxProof`, `proofs/CompositeProductionReplay`. Before every composite commit the crown smelts
 its copper and silver ore two at a time and strikes each ingot at its mint at
 the founding yield (`bb-crown-mint`, at most 16 ingots per metal per commit;
 a single ore waits for a second). `proofs/CrownMintProof`. The change decree
-stays as the alarm: it fires while no miner works copper or silver. The mint buys copper and silver ore from any seller, gatherer NPCs and players, at a posted price paid in coin the treasury holds, gold first, then smelts and mints it, so the faucet scales with mining (root's ruling 2026-10-06, open to Damian's correction).
+stays as the alarm: it fires while no miner works copper or silver. The mint buys nothing (R8): an owner has its own ingots struck at the crown's mint and the Crown keeps 10% as the minting fee (EconomyMint.md). The copper and silver gatherer, home from a trip, smelts its own ore two at a time with the fallen branches it gathered at its vein (`cgg-fuel`, one per two ore) and has each ingot struck into its own purse (`bb-coin`), so the faucet scales with mining. `proofs/CompositeVeinTripProof`.
 
 Britain's mine is built: `cg-install` installs a wild gold-ore node at the crown's
 place and a pickaxe harvest site at the rock tile 1451,1528 z 40

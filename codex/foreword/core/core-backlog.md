@@ -48,6 +48,34 @@ OUTPUT, so each is its own changelist with its own re-recorded expectations.
 
 ## Open
 
+**CORE-10. SECURITY: every published release verifies an unsigned image one
+time in four.** `ed25519-verify` (`Ed25519.codex`, since CL 1532, 2026-05-16)
+never refused a small-order A or R. The all-zero key and signature decode to
+one point of order 4 with S = 0, and the equation then holds whenever h is 3
+mod 4, so an unsigned CDX passes for one content hash in four. Every public
+release through Update 66 carries it. Head refuses A and R whose [8]P is the
+identity; `codex/test/apps/ed25519-small-order` grades all four h classes and a
+non-canonical S, and the depot verifier accepts its h = 3 case.
+
+Callers, all exposed until the fix ships: boot and seed self-verify
+(`apps/works/SeedVerify`, `GopWake`, `codex/os/verify/WakeCeremony` via
+`GopBoot`, `build/test-self-verify.ps1` behind the seed path); image load and
+inspection (`codex/os/verify/CdxBinary` `cdx-verify-signature` and so
+`CdxVerifier` and `VerifyReport`, `apps/works/CdxChain`, `CdxInspector`,
+`AgentBundle`); the repository and fact store (`codex/foreword/core/ImportGate`
+and so `FactDisk`, `apps/works/RepoProtocol`, `RepoProtocolPersist`,
+`FactArchive`); keys and products (`apps/works/KeyManager`, `GopWizard`,
+`codex/product/ProductAuthorization`, `ProductNotary`,
+`apps/services/Revocation`); peers and transport (`codex/os/trust/Handshake`,
+`apps/fileshare/PeerDiscovery`, `codex/foreword/encode/TlsCert`, `X509Chain`);
+the browser (`apps/browser/ContentAddress`, `PageFetcher`, `TrustManager`).
+
+OTA does not reach the verifier at all: `OtaUpdate.codex` `gate-b-run-all`,
+named "full 5-phase verification", checks the magic and a 136-byte minimum and
+ignores its `trusted-pubkey`. Open: the advisory for releases through Update 66
+(Damian's call, via root), and Gate B performing the signature check its name
+claims. Owner: red.
+
 **CORE-9. We can READ a certificate and cannot WRITE one, so we cannot stand
 in for ourselves: no self-signed certificate, and no CA of our own.** Ruled
 2026-09-08 by Damian: self-signing is where this goes, and the stand-in is
@@ -140,6 +168,25 @@ The two attest different things and have opposite exposure profiles, a signing
 key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
+
+**CORE-11. PBKDF2 is too slow on codex-vm for the current iteration guidance.**
+`pbkdf-hash` costs about 23 us per iteration on codex-vm (val 2026-10-07: four
+hashes at 20000 iterations and two at 100000, timed against a 1-iteration
+control). 600000 iterations, the current guidance for PBKDF2-HMAC-SHA256,
+would take about 14 s per verify. Every caller (`apps/market/MarketAuth`,
+`apps/uoaix/GameAccounts`) verifies on a single request loop, and both therefore
+stay at 20000. Each iteration runs `pb-prf`: two list-based `sha256` calls
+over a fresh concatenation and a word-to-byte conversion. A word-level PRF
+over the precomputed ipad and opad states is the open fix.
+
+**CORE-12. SHA-1, SHA-256 and SHA-512 alias a non-octet element instead of
+refusing it.** `bytes-to-words` (`Sha256.codex`) and its siblings in
+`Sha512.codex` and `Sha1.codex` OR each shifted element into the block word
+unmasked, so `sha256 [0, 0, 0, 256]` equals `sha256 [0, 0, 1, 0]` and
+`[0, 0, 0, -1]` equals `[255, 255, 255, 255]` (val probe, seed 279DF926).
+Text callers cannot reach it (`text-to-bytes` yields CCE bytes); a caller
+passing a raw Integer list is unaudited. Open: a census of raw-list callers,
+and a refusal of non-octet input the way `pbkdf-hash` refuses it.
 
 ## CCE has no Dingbats block
 

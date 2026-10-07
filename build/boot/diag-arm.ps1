@@ -1776,7 +1776,9 @@ $(1540 + $ChainShiftMs):83
             $k = New-Variant 'b3-short' '' $cfg
             if (-not $k) { $actual['b3-short'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
-                $lines = Invoke-Vm 'b3-short' $k $k @('-e1000', '-e1000-nat') 180
+                # Calibrated on the NAT's slower ACK path; codex-vm 35609 made the trace opt-in.
+                $prevTrace = $env:CODEX_VM_NET_TRACE; $env:CODEX_VM_NET_TRACE = '1'
+                try { $lines = Invoke-Vm 'b3-short' $k $k @('-e1000', '-e1000-nat') 180 } finally { $env:CODEX_VM_NET_TRACE = $prevTrace }
                 $actual['b3-short'] = Judge-Vm 'b3-short' $lines $k $true '' @{ b3 = 'short' }
             }
             Stop-Peer $job

@@ -67,8 +67,7 @@ Section: Transactions
     tx-type : ChainTxType,
     nonce : Integer,
     timestamp : Integer,
-    sig-high : Integer,
-    sig-low : Integer,
+    signature : List Integer,
     data-field : Integer
   }
 
@@ -108,10 +107,10 @@ Section: Transactions
     in let h6 = hash-combine h5 timestamp
     in hash-finalize h6
 
-  create-tx : Integer, Integer, Integer, ChainTxType, Integer, Integer, Integer, Integer -> ChainTx
-  create-tx (sender) (receiver) (amount) (ttype) (nonce) (timestamp) (sig-high) (sig-low) =
+  create-tx : Integer, Integer, Integer, ChainTxType, Integer, Integer, List Integer -> ChainTx
+  create-tx (sender) (receiver) (amount) (ttype) (nonce) (timestamp) (signature) =
     let h = compute-tx-hash sender receiver amount (tx-type-id ttype) nonce timestamp
-    in ChainTx { tx-hash = h, sender = sender, receiver = receiver, amount = amount, tx-type = ttype, nonce = nonce, timestamp = timestamp, sig-high = sig-high, sig-low = sig-low, data-field = 0 }
+    in ChainTx { tx-hash = h, sender = sender, receiver = receiver, amount = amount, tx-type = ttype, nonce = nonce, timestamp = timestamp, signature = signature, data-field = 0 }
 
 Section: Block Structure
 
@@ -172,7 +171,7 @@ Section: Genesis Block
 
   genesis-block : Integer -> Block
   genesis-block (timestamp) =
-    let platform-key-tx = create-tx 0 0 0 TxMint 0 timestamp 0 0
+    let platform-key-tx = create-tx 0 0 0 TxMint 0 timestamp []
     in create-block 0 hash-zero [platform-key-tx] 0 timestamp 0 0
 
 Section: Chain State
@@ -191,7 +190,8 @@ Section: Chain State
     account-id : Integer,
     balance : Integer,
     nonce : Integer,
-    last-active : Integer
+    last-active : Integer,
+    account-key : List Integer
   }
 
   chain-new : Integer -> ChainState
@@ -250,7 +250,7 @@ Section: Chain Operations
   apply-block-txs (accounts) (txs) (i) (len) =
     if i >= len then accounts
     else let tx = list-at txs i
-    in let accounts2 = apply-single-tx accounts tx
+    in let accounts2 = record-sender-nonce (apply-single-tx accounts tx) (tx.sender) (tx.nonce) 0 [] False
     in apply-block-txs accounts2 txs (i + 1) len
 
   apply-single-tx : List AccountState, ChainTx -> List AccountState
@@ -275,7 +275,7 @@ Section: Account Operations
 
   find-account-state : List AccountState, Integer, Integer, Integer -> AccountState
   find-account-state (accounts) (id) (i) (len) =
-    if i >= len then AccountState { account-id = id, balance = 0, nonce = 0, last-active = 0 }
+    if i >= len then AccountState { account-id = id, balance = 0, nonce = 0, last-active = 0, account-key = [] }
     else let a = list-at accounts i
     in if a.account-id == id then a
     else find-account-state accounts id (i + 1) len
@@ -298,15 +298,54 @@ Section: Account Operations
     if i >= len then
       if found then acc
       else let new-bal = if delta > 0 then delta else 0
-      in list-push acc (AccountState { account-id = id, balance = new-bal, nonce = nonce-inc, last-active = time })
+      in list-push acc (AccountState { account-id = id, balance = new-bal, nonce = nonce-inc, last-active = time, account-key = [] })
     else let a = list-at accounts i
     in if a.account-id == id then
       let new-bal = a.balance + delta
       in let safe-bal = if new-bal < 0 then 0 else new-bal
-      in upsert-account accounts id delta nonce-inc time (i + 1) len (list-push acc (AccountState { account-id = id, balance = safe-bal, nonce = a.nonce + 1, last-active = time })) True
+      in upsert-account accounts id delta nonce-inc time (i + 1) len (list-push acc (AccountState { account-id = id, balance = safe-bal, nonce = a.nonce, last-active = time, account-key = a.account-key })) True
     else upsert-account accounts id delta nonce-inc time (i + 1) len (list-push acc a) found
 
 Section: Chain Queries
+
+  record-sender-nonce : List AccountState, Integer, Integer, Integer, List AccountState, Boolean -> List AccountState
+  record-sender-nonce (accounts) (id) (n) (i) (acc) (found) =
+    if i >= list-length accounts then
+      if found then acc
+      else list-push acc (AccountState { account-id = id, balance = 0, nonce = n, last-active = 0, account-key = [] })
+    else let a = list-at accounts i
+    in if a.account-id == id then record-sender-nonce accounts id n (i + 1) (list-push acc (AccountState { account-id = id, balance = a.balance, nonce = max (a.nonce) n, last-active = a.last-active, account-key = a.account-key })) True
+    else record-sender-nonce accounts id n (i + 1) (list-push acc a) found
+
+  last-nonce : ChainState, Integer -> Integer
+  last-nonce (state) (account-id) = pending-nonce (state.pending-pool) account-id 0 (get-nonce state account-id)
+
+  pending-nonce : List ChainTx, Integer, Integer, Integer -> Integer
+  pending-nonce (pool) (id) (i) (best) =
+    if i >= list-length pool then best
+    else let p = list-at pool i
+    in pending-nonce pool id (i + 1) (if p.sender == id then max best (p.nonce) else best)
+
+  next-nonce : ChainState, Integer -> Integer
+  next-nonce (state) (account-id) = last-nonce state account-id + 1
+
+  register-account-key : ChainState, Integer, List Integer -> Maybe ChainState
+  register-account-key (state) (id) (key) =
+    if list-length key /= 32 then None
+    else if list-length ((get-account-state (state.accounts) id).account-key) /= 0 then None
+    else Just (ChainState { blocks = state.blocks, height = state.height, tip-hash = state.tip-hash, total-txs = state.total-txs, accounts = set-account-key (state.accounts) id key 0 (list-length (state.accounts)) [] False, pending-pool = state.pending-pool, validator-key = state.validator-key })
+
+  set-account-key : List AccountState, Integer, List Integer, Integer, Integer, List AccountState, Boolean -> List AccountState
+  set-account-key (accounts) (id) (key) (i) (len) (acc) (found) =
+    if i >= len then
+      if found then acc
+      else list-push acc (AccountState { account-id = id, balance = 0, nonce = 0, last-active = 0, account-key = key })
+    else let a = list-at accounts i
+    in if a.account-id == id then set-account-key accounts id key (i + 1) len (list-push acc (AccountState { account-id = id, balance = a.balance, nonce = a.nonce, last-active = a.last-active, account-key = key })) True
+    else set-account-key accounts id key (i + 1) len (list-push acc a) found
+
+  account-key-of : ChainState, Integer -> List Integer
+  account-key-of (state) (account-id) = (get-account-state (state.accounts) account-id).account-key
 
   get-balance : ChainState, Integer -> Integer
   get-balance (state) (account-id) =

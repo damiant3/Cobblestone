@@ -264,6 +264,21 @@ Chapter: EconomyCurrency
     in let s = eu-pay-one x.silver payer payee silver
     in let g = eu-pay-one x.world.money payer payee gold
     in eu-log x 4 payer payee 0 copper silver gold 0
+ Currency event kind 14 is a theft: each metal moves victim to thief untaxed (em-steal), all three checked before any moves.
+  eu-steal-can : EmMoney, Integer, Integer, Integer -> Boolean
+  eu-steal-can (m) (victim) (thief) (amount) = amount == 0 | (em-can-move m victim thief amount & em-room m 1)
+  eu-steal-one : EmMoney, Integer, Integer, Integer -> Integer
+  eu-steal-one (m) (victim) (thief) (amount) = if amount == 0 then 0 else em-steal m victim thief amount
+  eu-steal : EuCurrency, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-steal (x) (victim) (thief) (copper) (silver) (gold) =
+    if not (eu-room x) | not (eu-amounts copper silver gold) | victim <= 1 | thief <= 1 | victim == thief
+      | not (em-valid-purse x.world.money victim) | not (em-valid-purse x.world.money thief) then -1
+    else if not (eu-steal-can x.copper victim thief copper) | not (eu-steal-can x.silver victim thief silver)
+      | not (eu-steal-can x.world.money victim thief gold) then -1
+    else let c = eu-steal-one x.copper victim thief copper
+    in let s = eu-steal-one x.silver victim thief silver
+    in let g = eu-steal-one x.world.money victim thief gold
+    in eu-log x 14 victim thief 0 copper silver gold 0
   eu-unit : EuCurrency, Integer -> Integer
   eu-unit (x) (metal) = if metal == 3 then x.copper-rate else if metal == 2 then x.copper-rate / x.silver-rate else 1
  An exchange breaks coin with the crown at the current rates, at any distance.
@@ -344,17 +359,21 @@ Chapter: EconomyCurrency
     in let p = ep-actor x.world actor
     in let s = list-at x.world.stations (station - 1)
     in let coins = ingots * yield
-    in if owner /= actor | yield <= 0 | s.kind /= 12 | s.owner /= actor | s.place /= p.place | s.enabled == 0
-      | not (ep-has p item ingots) | not (ep-tool p 62) | used > ep-limit - ingots
-      | ep-at x.world.consumed item > ep-limit - ingots | not (em-room m 2)
-      | m.issued > em-limit - coins | (em-purse m 1).coin > em-limit - coins then -1
+    in let operator = actor == owner
+    in let paid = emi-paid coins operator
+    in if owner <= 0 | yield <= 0 | s.kind /= 12 | s.owner /= owner | s.place /= p.place | s.enabled == 0
+      | not (ep-has p item ingots) | (operator & not (ep-tool p 62)) | used > ep-limit - ingots
+      | ep-at x.world.consumed item > ep-limit - ingots | not (em-room m (if paid > 0 then 3 else 2))
+      | m.issued > em-limit - coins | (em-purse m 1).coin > em-limit - coins
+      | (paid > 0 & (em-purse m p.purse).coin > em-limit - paid) then -1
     else let struck = if metal == 3 then emi-strike x.world True actor station ingots
       else let a = em-issue m True coins 2
       in let b = ep-consume x.world p item ingots
-      in let c = ep-wear x.world p 62
+      in let c = if operator then ep-wear x.world p 62 else 0
       in let d = if metal == 1 then __record-set x "copper-ingots" (used + ingots) else __record-set x "silver-ingots" (used + ingots)
-      in em-row m p.purse 1 0 12 ingots
-    in eu-log x 7 actor 1 metal (if metal == 1 then coins else 0) (if metal == 2 then coins else 0) (if metal == 3 then coins else 0) ingots
+      in let e = em-row m p.purse 1 0 12 ingots
+      in if paid > 0 then em-payout m p.purse paid else 0
+    in eu-log x 7 actor (if paid > 0 then p.purse else 1) metal (if metal == 1 then coins else 0) (if metal == 2 then coins else 0) (if metal == 3 then coins else 0) ingots
   eu-lend : EuCurrency, Boolean, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   eu-lend (x) (verified-lender) (lender) (borrower) (metal) (principal) (interest) (due) =
     if not verified-lender | not (eu-room x) | not (eu-metal metal) then -1
@@ -379,13 +398,14 @@ Chapter: EconomyCurrency
     in if value <= 0 | per <= 0 | int-mod value per /= 0 | loan <= 0 | loan > m.loan-count then -1
     else let l = list-at m.loans (loan - 1)
     in let units = value / per
-    in if l.borrower /= borrower | l.status == 2 | units > l.principal + l.interest - l.paid
+    in if l.borrower /= borrower | l.status == 2 | units > l.principal + l.interest - l.paid | not (em-room m 3)
       | not (eu-can-pay x.copper borrower l.lender copper) | not (eu-can-pay x.silver borrower l.lender silver)
       | not (eu-can-pay x.world.money borrower l.lender gold) then -1
     else let c = eu-pay-one x.copper borrower l.lender copper
     in let s = eu-pay-one x.silver borrower l.lender silver
     in let g = eu-pay-one x.world.money borrower l.lender gold
     in let p = __record-set l "paid" (l.paid + units)
+    in let credited = em-credit m loan units
     in let d = if l.paid == l.principal + l.interest then __record-set l "status" 2 else l
     in eu-log x 13 borrower l.lender metal copper silver gold loan
   eu-can-advance : EmMoney, Integer -> Boolean

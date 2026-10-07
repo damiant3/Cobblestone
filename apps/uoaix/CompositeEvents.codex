@@ -1,5 +1,6 @@
 Chapter: CompositeEvents
   cites Uoaix chapter GamePackets
+  cites Foreword chapter Random
 
  A bounded ring of recent speech and combat packets that every other connection's pulse delivers once,
  in range, or to one listener alone. Packet bytes are copied into buffers allocated with the ring, because
@@ -55,14 +56,26 @@ Chapter: CompositeEvents
     else let p = list-at packets i
     in let spoken = list-length p > 7 & (list-at p 0 == #1C | list-at p 0 == #AE) & gp-u32 p 3 == speaker
     in ce-speech packets speaker (i + 1) (if spoken then list-push acc p else acc)
- Others hear a ghost in UO's ghost speech: every letter of the text (from byte 44 of 0x1C, 48 of 0xAE) becomes o or O.
- The copies are new lists, so the speaker's own reply keeps its words.
+ Others hear a ghost in UO's ghost speech (Damian 2026-10-07: "make sure the oooooOOOoos are totally random in length too, we
+ don't want messages leaking through"): the text (from byte 44 of 0x1C, 48 of 0xAE) is replaced by 4 to 32 o and O with
+ random case and word breaks, drawn from the clock, so neither its length nor any letter follows the words. The copies are
+ new lists, so the speaker's own reply keeps its words.
+  ce-ghost-min : Integer = 4
+  ce-ghost-max : Integer = 32
   ce-ghostly : List (List Integer), Integer, List (List Integer) -> List (List Integer)
   ce-ghostly (packets) (i) (out) = if i == list-length packets then out
     else let p = list-at packets i
-    in ce-ghostly packets (i + 1) (list-push out (ce-ghost-text p (if list-at p 0 == #1C then 44 else 48) 0 (__list-with-capacity (list-length p))))
-  ce-ghost-text : List Integer, Integer, Integer, List Integer -> List Integer
-  ce-ghost-text (p) (start) (i) (out) = if i == list-length p then out
-    else let b = list-at p i
-    in let letter = i >= start & ((b >= 65 & b <= 90) | (b >= 97 & b <= 122))
-    in ce-ghost-text p start (i + 1) (list-push out (if not letter then b else if int-mod (i * 7 + b) 3 == 0 then 79 else 111))
+    in ce-ghostly packets (i + 1) (list-push out (ce-ghost-text p (if list-at p 0 == #1C then 44 else 48) (mix-bits get-ticks (i + 1))))
+  ce-ghost-text : List Integer, Integer, Integer -> List Integer
+  ce-ghost-text (p) (start) (seed) = if list-length p < start then p
+    else let unicode = list-at p 0 /= #1C
+    in let n = rand-in-range seed 0 ce-ghost-min ce-ghost-max
+    in let body = ce-ghost-letters seed unicode n 0 (list-take p start)
+    in let ended = if unicode then list-push (list-push body 0) 0 else list-push body 0
+    in let hi = list-set-at ended 1 (list-length ended / 256)
+    in let lo = list-set-at ended 2 (int-mod (list-length ended) 256) in ended
+  ce-ghost-letters : Integer, Boolean, Integer, Integer, List Integer -> List Integer
+  ce-ghost-letters (seed) (unicode) (n) (k) (out) = if k == n then out
+    else let gap = k > 0 & k < n - 1 & rand-in-range seed (k + 100) 0 5 == 0
+    in let ch = if gap then 32 else if rand-in-range seed (k + 1000) 0 2 == 0 then 79 else 111
+    in ce-ghost-letters seed unicode n (k + 1) (if unicode then list-push (list-push out 0) ch else list-push out ch)

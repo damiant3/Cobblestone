@@ -1,0 +1,53 @@
+Chapter: GuardianPinTest
+  cites Accounts chapter ManagedAccounts
+  cites Accounts chapter ParentalUI
+  cites Foreword chapter Maybe
+
+ SignatureSlippage part E: the guardian account is created with no PIN, and an
+ empty PIN hash used to verify every PIN, so the guardian panel opened to
+ anyone at the keyboard. Now an empty hash verifies nothing and the first entry
+ of four or more digits sets the PIN.
+
+Section: Helpers
+  gp-view : ParentalUIState -> Text
+  gp-view (s) = when s.pu-view
+    is ViewAccountSelect -> "select"
+    is ViewPinEntry (id) -> "pin-entry " & show id
+    is ViewGuardianPanel -> "guardian panel"
+    is ViewManagedLauncher -> "launcher"
+    is otherwise -> "other"
+
+  gp-type : ParentalUIState, Text, Integer -> ParentalUIState
+  gp-type (s) (digits) (i) = if i >= text-length digits then handle-pin-event s 1 13 100
+    else gp-type (handle-pin-event s 1 (to-unicode (char-code (char-at digits i))) 100) digits (i + 1)
+
+  gp-entry : ParentalUIState -> ParentalUIState
+  gp-entry (s) = handle-select-event (__record-set (__record-set s "pu-view" ViewAccountSelect) "pu-pin-input" "") 49
+
+Section: Body
+  opening : [Console] Nothing =
+    let ui = parental-ui-init (account-store-new [1, 2, 3] 100) 800 600
+    in let guardian = when find-account ui.pu-store.as-accounts 1 is Just (a) -> a.acc-pin-hash is None -> [1]
+    in let empty-ok = when find-account ui.pu-store.as-accounts 1 is Just (a) -> verify-pin a "" is None -> True
+    in let line0 = "new guardian: pin hash bytes=" & show (list-length guardian) & " empty PIN verifies=" & (if empty-ok then "True" else "False")
+    in let picked = gp-entry ui
+    in let line1 = "select guardian: " & gp-view picked
+    in let short = gp-type picked "12" 0
+    in let line2 = "first PIN 12: " & gp-view short & " status=" & short.pu-status
+    in let cleared = __record-set short "pu-status" ""
+    in let first = gp-type (gp-entry cleared) "1234" 0
+    in let line3 = "first PIN 1234: " & gp-view first & " status=" & first.pu-status
+    in let locked = __record-set first "pu-store" (account-lock first.pu-store)
+    in let wrong = gp-type (gp-entry locked) "9999" 0
+    in let line4 = "after lock, 9999: " & gp-view wrong & " status=" & wrong.pu-status
+    in let again = __record-set wrong "pu-status" ""
+    in let right = gp-type (gp-entry again) "1234" 0
+    in let line5 = "after lock, 1234: " & gp-view right & " status=" & right.pu-status
+    in act
+      print-line-uni line0
+      print-line-uni line1
+      print-line-uni line2
+      print-line-uni line3
+      print-line-uni line4
+      print-line-uni line5
+    end

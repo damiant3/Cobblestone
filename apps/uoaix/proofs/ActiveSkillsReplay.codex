@@ -4,6 +4,7 @@ Chapter: ActiveSkillsReplay
   cites Uoaix chapter BritainProduction
   cites Uoaix chapter GameClientView
   cites Uoaix chapter CompositeEvents
+  cites Uoaix chapter EconomyCurrencyValid
   asr-check : Text, Boolean -> [Console] Nothing
   asr-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
   asr-equal-at : List Integer, List Integer, Integer -> Boolean
@@ -595,7 +596,15 @@ Chapter: ActiveSkillsReplay
     medium-heard <- ce-pending ring input.session.serial (as-spirit-hears s input.session.serial 210000001) 1420 1698 0 0 []
     asr-check "a ghost's words reach the living as o and O, and a listener in a Spirit Speak window clear" (added == 1 & list-length living == 1
       & list-at (list-at living 0) 44 /= 72 & list-at (list-at living 0) 45 /= 105 & list-length medium-heard == 1 & list-at (list-at medium-heard 0) 44 == 72 & list-at (list-at medium-heard 0) 45 == 105)
+    spoken <- asr-said 60 0 []
+    long-said <- list-at (ce-ghostly [spoken] 0 []) 0
+    short-said <- list-at (ce-ghostly [asr-said 1 0 []] 0 []) 0
+    asr-check "ghost speech has a random length of its own: 60 letters come out as at most 32 o and O, one letter as at least 4, and the speaker's own words stay" (list-length long-said - 45 <= ce-ghost-max & list-length short-said - 45 >= ce-ghost-min & gp-u16 long-said 1 == list-length long-said & asr-oo long-said 44 & asr-oo short-said 44 & list-length spoken == 105 & list-at spoken 44 == 97 & list-at spoken 103 == 97)
   end
+  asr-said : Integer, Integer, List Integer -> List Integer
+  asr-said (n) (i) (out) = if i == 44 + n then list-push out 0 else asr-said n (i + 1) (list-push out (if i == 0 then #1C else if i < 44 then 0 else 97))
+  asr-oo : List Integer, Integer -> Boolean
+  asr-oo (p) (i) = if i >= list-length p - 1 then True else (list-at p i == 32 | list-at p i == 79 | list-at p i == 111) & asr-oo p (i + 1)
   asr-envenom : Integer, Integer, Integer -> Boolean
   asr-envenom (target) (level) (poisoner) = True
   asr-poison-try : ActiveSkills, GameShard, GameInput, WalkMap, Integer, Integer, Text, Integer, Integer -> Result (Maybe GameReply) Text
@@ -636,6 +645,11 @@ Chapter: ActiveSkillsReplay
     fumbled <- asr-poison-try s shard input map deadly dagger "skills:poison-failed" 220500000 0
     asr-check "at Poisoning 0 a Deadly Poison fails (1649) and is spent, the dagger unchanged" (asr-noted fumbled "skills:poison-failed" & asr-item-health shard deadly == -1 & asr-item-health shard dagger == 256 + 16)
   end
+  asr-theft-logged : EuCurrency, Integer, Integer, Integer -> Boolean
+  asr-theft-logged (x) (victim) (thief) (amount) = let e = list-at x.events (x.count - 1)
+    in let r = list-at x.copper.ledger (x.copper.entry-count - 1)
+    in e.kind == 14 & e.actor == victim & e.party == thief & e.copper == amount & e.silver == 0 & e.gold == 0
+      & r.kind == 19 & r.payer == victim & r.payee == thief & r.amount == amount
   asr-stealing : ActiveSkills, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
   asr-stealing (s) (shard) (input) (map) (pack) = act
     a <- list-at s.actors 0
@@ -660,6 +674,36 @@ Chapter: ActiveSkillsReplay
     far-known <- gsi-register s.items far-coin 0 0 True True
     distant <- asr-cursor-try s shard input map 33 far-coin "none" (230000000 + gh-ticks 80000) 0
     asr-check "an item in the pack of an NPC ten tiles away is too far (886)" (far-meta == 0 & asr-has distant (asr-denied "You are too far away to steal that item.") 0)
+    w <- s.vendor.currency.world
+    purse <- eu-open s.vendor.currency 2 3001
+    mark <- if purse < 1 then -1 else ep-admit w purse 100
+    found <- if mark < 1 then -1 else ep-find w mark 34 4
+    bread <- when world-create shard.world (__record-set (gs-item victim #103B 0) "amount" 4) is Err (_) -> 0 is Ok (n) -> n
+    bread-meta <- gsi-register s.items bread 0 0 True True
+    bread-lot <- if mark < 1 then -1 else gv-add-lot s.vendor bread mark 34 1000 32 0
+    had <- ep-at (ep-actor w 1).stock 34
+    owned <- if mark < 1 then 0 else ep-at (ep-actor w mark).stock 34
+    shown <- gv-represented s.vendor 1 34 0 0
+    robbed <- asr-cursor-try s shard input map 33 bread "none" (230000000 + gh-ticks 100000) 0
+    took <- if mark < 1 then 0 else owned - ep-at (ep-actor w mark).stock 34
+    asr-check "stealing a lot moves its units to the thief's economy actor with no payment, the lot or a new one follows them, and the note records the theft" (found == 0 & bread-lot >= 0
+      & (when robbed is Ok (Just (r)) -> text-starts-with r.note "skills:stolen; theft item=34 quantity=" & text-contains r.note "to-actor=1" is Ok (None) -> False is Err (_) -> False)
+      & took >= 2 & took <= 4 & ep-at (ep-actor w 1).stock 34 == had + took & gv-represented s.vendor 1 34 0 0 == shown + took)
+    x <- s.vendor.currency
+    bag <- if mark < 1 then -1 else ep-find w mark 45 1
+    bag-lot <- if mark < 1 then -1 else gv-add-lot s.vendor victim mark 45 1000 0 0
+    funded <- eu-pay x True 2 purse 40 0 0
+    pile <- when world-create shard.world (__record-set (gs-item victim #0EEA 0) "amount" 9) is Err (_) -> 0 is Ok (n) -> n
+    pile-meta <- gsi-register s.items pile 0 0 True True
+    thief-c <- (em-purse x.copper 2).coin
+    mark-c <- (em-purse x.copper purse).coin
+    pinched <- asr-cursor-try s shard input map 33 pile "none" (230000000 + gh-ticks 120000) 0
+    lost <- mark-c - (em-purse x.copper purse).coin
+    left <- when world-get shard.world pile is Err (_) -> 0 is Ok (o) -> o.amount
+    asr-check "stealing a resident's copper pile moves the coins purse to purse untaxed (theft, currency kind 14), shrinks the pile by as much, puts no coin in the thief's pack, and the ledger records currency kind 14 and copper row kind 19" (bag == 0 & bag-lot >= 0 & funded >= 0 & pile > 0
+      & (when pinched is Ok (Just (r)) -> text-starts-with r.note "skills:stolen; theft coin metal=1 quantity=" is Ok (None) -> False is Err (_) -> False)
+      & lost >= 5 & lost <= 9 & (em-purse x.copper 2).coin == thief-c + lost & left == 9 - lost
+      & gsi-child-art shard.world (world-first-child shard.world pack) #0EEA 0 == 0 & asr-theft-logged x purse 2 lost)
   end
   asr-tracking : ActiveSkills, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
   asr-tracking (s) (shard) (input) (map) (animal) = act

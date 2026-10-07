@@ -104,20 +104,21 @@ Chapter: CompositeProduction
   cpr-royal-install (s) = let items = s.harvest.items
     in let veins = cpr-royal-vein s cpr-royal-veins 0
     in let gate = cpr-royal-gate items
-    in let marks = cpr-vein-marks items cpr-royal-veins 0
-    in let touched = if veins + gate + marks > 0 then world-touch items.world else 0
-    in veins + gate + marks
-  cpr-vein-marked : WorldTable, Integer -> Boolean
-  cpr-vein-marked (world) (serial) = if serial == 0 then False
-    else if gh-vein-marker world serial then True
-    else cpr-vein-marked world (world-tile-next world serial)
-  cpr-vein-marks : GsiState, List (List Integer), Integer -> Integer
-  cpr-vein-marks (items) (veins) (i) = if i == list-length veins then 0
+    in let unmarked = cpr-vein-unmark items cpr-royal-veins 0
+    in let touched = if veins + gate + unmarked > 0 then world-touch items.world else 0
+    in veins + gate
+  cpr-vein-mark-at : WorldTable, Integer -> Integer
+  cpr-vein-mark-at (world) (serial) = if serial == 0 then 0
+    else if gh-vein-marker world serial then serial
+    else cpr-vein-mark-at world (world-tile-next world serial)
+  cpr-vein-unmark : GsiState, List (List Integer), Integer -> Integer
+  cpr-vein-unmark (items) (veins) (i) = if i == list-length veins then 0
     else let v = list-at veins i
-    in if cpr-vein-marked items.world (world-tile-first items.world (list-at v 0) (list-at v 1)) | world-count items.world >= items.world.capacity then cpr-vein-marks items veins (i + 1)
-    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = list-at v 0, y = list-at v 1, z = list-at v 2, graphic = gh-vein-art, hue = gh-vein-hue, container = 0, amount = 1, health = 0 })
-      is Err (_) -> cpr-vein-marks items veins (i + 1)
-      is Ok (serial) -> let fixed = gsi-register items serial 0 0 False False in 1 + cpr-vein-marks items veins (i + 1)
+    in let mark = cpr-vein-mark-at items.world (world-tile-first items.world (list-at v 0) (list-at v 1))
+    in if mark == 0 then cpr-vein-unmark items veins (i + 1)
+    else when world-delete items.world mark
+      is Err (_) -> cpr-vein-unmark items veins (i + 1)
+      is Ok (_) -> 1 + cpr-vein-unmark items veins (i + 1)
   cpr-royal-gate : GsiState -> Integer
   cpr-royal-gate (items) = if cpr-gate-at items.world (world-tile-first items.world cpr-royal-gate-x cpr-royal-gate-y) | world-count items.world >= items.world.capacity then 0
     else when world-create items.world (WorldObject { serial = 0, kind = 2, x = cpr-royal-gate-x, y = cpr-royal-gate-y, z = cpr-royal-gate-z, graphic = cpr-royal-gate-art, hue = 0, container = 0, amount = 1, health = 0 })
@@ -151,7 +152,8 @@ Chapter: CompositeProduction
     else if g == #0EC4 | g == #0EC5 | g == #13F6 | g == #13F7 then 27
     else if g == #0F51 | g == #0F52 then 69
     else if g == #13E3 | g == #13E4 then 62
-    else if g == #0F9D | g == #1034 | g == #1035 | g == #1EB8 | g == #1EB9 | g == #097F | g == #1043 | g == #1022 | g == #1023 | g == #0FBB | g == #0FBC | (g >= #10E4 & g <= #10E7) | (g >= #1028 & g <= #1033) then 42
+    else if g == #10E7 then 28
+    else if g == #0F9D | g == #1034 | g == #1035 | g == #1EB8 | g == #1EB9 | g == #097F | g == #1043 | g == #1022 | g == #1023 | g == #0FBB | g == #0FBC | (g >= #10E4 & g <= #10E6) | (g >= #1028 & g <= #1033) then 42
     else if g == #0F9E | g == #0F9F then 74 else cpr-kit-material g
   cpr-kit-material : Integer -> Integer
   cpr-kit-material (g) = if g == #1BF2 then 31 else if g == #1BDD then 15 else if g == #1BD7 then 38
@@ -217,6 +219,13 @@ Chapter: CompositeProduction
       (when world-get items.world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.container == 0 & o.graphic == graphic & o.x == x & o.y == y)
     else let cell = walk-cell map x y
     in cell >= 0 & walk-ready map x y & cpr-static items.tiles map cell z graphic
+  cpr-heat-target : List Integer, List Integer -> List Integer
+  cpr-heat-target (placed) (packet) = if list-length placed == 19 & gp-u32 placed 7 == 0 & gp-u32 packet 7 /= 0 & gco-heat-art (gp-u16 placed 17) then placed else packet
+  cpr-tree-at : GsiState, WalkMap, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cpr-tree-at (items) (map) (x) (y) (z) (graphic) (serial) = if not (cpr-tree graphic) then False
+    else if serial /= 0 then True
+    else let cell = walk-cell map x y
+    in cell >= 0 & walk-ready map x y & cpr-static items.tiles map cell z graphic
   cpr-wet-cell : WalkMap, Integer, Integer -> Boolean
   cpr-wet-cell (map) (cell) (i) = if i == peek-qword map.solids (cell * map.stride) then False
     else if bit-and (peek-qword map.solids (cell * map.stride + 8 + i * 24 + 16)) 128 /= 0 then True
@@ -252,7 +261,7 @@ Chapter: CompositeProduction
   cpr-specs : Integer -> List GameOpcodeSpec
   cpr-specs (unused) = [gcr-spec, gdy-spec]
   cpr-handler-at : CprState, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
-  cpr-handler-at (s) (shard) (input) (map) (port) (packet) (now) = when gca-handler-at s.carve shard input packet now
+  cpr-handler-at (s) (shard) (input) (map) (port) (packet) (now) = when gca-handler-at s.carve shard input packet (cpr-tree-at s.harvest.items map) now
     is Err (e) -> Err e
     is Ok (Just (carved)) -> Ok (Just carved)
     is Ok (None) -> when gsc-handler-at s.harvest shard input packet now

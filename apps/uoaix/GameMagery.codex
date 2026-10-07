@@ -64,8 +64,8 @@ Chapter: GameMagery
     else if spell == 7 | spell == 15 then actor.absorb == 0 & actor.protected-until <= magic.tick
     else if spell == 19 then not (list-at magic.definitions (world-slot shard.world aim.object.serial)).locked
     else if spell == 23 then (list-at magic.definitions (world-slot shard.world aim.object.serial)).locked
-    else if spell == 24 then shard.world.capacity - world-count shard.world >= 3 & mga-wall-free magic 0 0 >= 3
-      & mga-wall-ready magic shard source aim.point -1
+    else if spell == 24 | spell == 28 | spell == 39 | spell == 47 | spell == 50 then shard.world.capacity - world-count shard.world >= 2 * mga-wall-last spell + 1 & mga-wall-free magic 0 0 >= 2 * mga-wall-last spell + 1
+      & mga-wall-ready magic shard source aim.point spell (0 - mga-wall-last spell)
     else True
   mg-complete : Magery, GameShard, GameInput, MgActor, WorldObject, MgAim -> [Device.Block] Result GameReply Text
   mg-complete (magic) (shard) (input) (actor) (source) (aim) = let spell = actor.spell
@@ -159,9 +159,24 @@ Chapter: GameMagery
               is Ok (spent) -> let sound = gsi-sound-at magic.items actor.serial #0249
                 in if stack > 1 then (let bounced = gsi-bounce magic.items inventory 5 in gs-reply (bounced.packets & sound) "magery:book-scribed")
                 else let released = __record-set inventory "holding" 0 in gs-reply (spent & sound) "magery:book-scribed"
+ A paralysed player (Paralyze, MageryActions) neither walks nor casts, from a book, a macro or a scroll.
+  mg-casting : List Integer, GameShard -> Boolean
+  mg-casting (packet) (shard) = if list-length packet >= 4 & list-at packet 0 == #12 then list-at packet 3 == #27 | list-at packet 3 == #56
+    else if list-length packet == 5 & list-at packet 0 == 6 then
+      (let at = world-slot shard.world (bit-and (gp-u32 packet 1) #7FFFFFFF) in at >= 0 & mgd-scroll-spell (peek-qword shard.world.buffer (56 + at * 80)) > 0)
+    else False
   mg-handle-at : Magery, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> [Device.Block] Result (Maybe GameReply) Text
   mg-handle-at (magic) (shard) (input) (map) (port) (packet) (now) =
     if input.mode /= 2 | input.session.phase /= 2 | list-length packet < 1 then act Ok None end
+    else if list-length packet >= 3 & list-at packet 0 == 2 & mge-frozen magic shard input.session.serial then act
+      when world-get shard.world input.session.serial
+        is Err (e) -> Err e
+        is Ok (mobile) -> when gs-deny-move input.session mobile (list-at packet 2)
+          is Err (e) -> Err e
+          is Ok (refused) -> Ok (Just (GameReply { packets = refused.packets, close = False, note = "magery:frozen walk" }))
+      end
+    else if mg-casting packet shard & mge-frozen magic shard input.session.serial then
+      act Ok (Just (gs-reply [gs-system "You are frozen and cannot cast."] "magery:frozen cast")) end
     else let opcode = list-at packet 0
     in if opcode /= #12 & opcode /= #6C & opcode /= 6 & opcode /= 8 then act Ok None end
     else if not (go-packet-valid (gsi-specs 0) packet) | not (gs-byte-range packet 0) then act Err "magery packet extent" end

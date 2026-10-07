@@ -1,6 +1,7 @@
 Chapter: CompositeSecondCharacterProof
   cites Uoaix chapter CompositeStore
   cites Uoaix chapter CompositePaging
+  cites Uoaix chapter GameAccounts
 
   sc-check : Text, Boolean -> [Console] Integer
   sc-check (name) (ok) = act
@@ -48,6 +49,11 @@ Chapter: CompositeSecondCharacterProof
     phase <- __record-set input.session "phase" 1
     cs-route store store.state.checkpoint.game input map 2593 (sc-create who)
   end
+  sc-delete : List Integer, Integer -> List Integer
+  sc-delete (password) (slot) = gp-put32 (sc-field (gp-zeros [#83] 30) 1 password 0) slot & [0,0,0,0]
+  sc-field : List Integer, Integer, List Integer, Integer -> List Integer
+  sc-field (packet) (at) (bytes) (i) = if i == list-length bytes then packet
+    else sc-field (list-set-at packet (at + i) (list-at bytes i)) at bytes (i + 1)
   sc-quit : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
   sc-quit (store) (map) (specs) = let game = store.state.checkpoint.game
     in let cleared = __record-set game "active" 0 in act 0 end
@@ -75,7 +81,9 @@ Chapter: CompositeSecondCharacterProof
     del-in <- gn-input-with specs 5
     del-mode <- __record-set del-in "mode" 2
     del-phase <- __record-set del-in.session "phase" 1
-    deleted <- cs-route store owner.checkpoint.game del-in map 2593 (gp-put32 (gp-zeros [#83] 30) 1 & [0,0,0,0])
+    wrong <- cs-route store owner.checkpoint.game del-in map 2593 (sc-delete [120] 1)
+    w <- sc-check "a refused delete keeps the character and its row" (is-ok wrong & store.store.fault == 0 & owner.vendor.player-count == 3 & gv-player owner.vendor doomed 0 >= 0 & peek-qword owner.checkpoint.game.characters 160 /= 0)
+    deleted <- cs-route store owner.checkpoint.game del-in map 2593 (sc-delete ga-british-password 1)
     print-line-uni ("DELETE " & (when deleted is Err (e) -> "refused " & e is Ok (r) -> "ok " & r.note) & " fault=" & show store.store.fault & " players=" & show owner.vendor.player-count)
     forced <- cs-commit store True
     e <- sc-check "deleting a bound character releases its row and commits" (is-ok deleted & is-ok forced & store.store.fault == 0
@@ -83,7 +91,7 @@ Chapter: CompositeSecondCharacterProof
     out4 <- sc-quit store map specs
     refill <- sc-enter store map specs 6 "Fourth"
     f <- sc-check "the freed row admits a new character" (is-ok refill & store.store.fault == 0 & owner.vendor.player-count == 3 & sc-own-purse owner.vendor 2)
-    a + b + c + d + e + f
+    a + b + c + d + e + f + w
   end
   opening : [Console, Device.Block] Integer = when cg-specs 0
     is Err (e) -> act

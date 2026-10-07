@@ -101,8 +101,8 @@ the restore are open design choices for the build.
    British leaves the robe in his corpse and resurrects with the body his combat actor recorded, until the next
    boot redresses him (`proofs/BritishCharacterProof`).
 3. Built: double-clicking a human NPC (`cb-form` 0, not a player character) opens its paperdoll (0x88,
-   flags 0), named by the source of its click label: a resident or the lineup resident by its person's
-   name, any other NPC unnamed (`cg-npc-paperdoll`, `proofs/CompositeBritainWorld`). A vendor still opens
+   flags 0), named by the viewer's label for it (`cg-npc-label`: a shopkeeper, banker, resident, miner or
+   the farmer by trade until asked, UOAIX-56), any other NPC unnamed (`cg-npc-paperdoll`). A vendor still opens
    its buy menu and a banker the bank box on double-click.
 4. Built: Incognito (spell 35, `MageryIncognito`): a random skin, the stylist's hair and beard art with
    random hues on the hair and beard the caster wears (none grown or shaved), and a random name by gender

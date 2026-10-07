@@ -152,6 +152,47 @@ Chapter: GameHarvestReplay
           cbr-check "backpack tool remains admitted" (gh-tool state p tool >= 0)
         end
   end
+  ghr-gold-roll : Integer, Integer, Integer -> Integer
+  ghr-gold-roll (now) (x) (y) = 5
+  ghr-no-roll : Integer, Integer, Integer -> Integer
+  ghr-no-roll (now) (x) (y) = 999
+ A crown at the miner's own place makes a gold node there royal (permanent) and the miner unappointed, so a seam
+ must both waive the appointment and work out.
+  ghr-seams : GameHarvest, GvWorld, GameInput, WalkMap, Integer, EpActor -> [Console] Nothing
+  ghr-seams (state) (v) (input) (map) (pick) (p) = act
+    w <- v.currency.world
+    purse <- eu-open v.currency 2 4242
+    crown <- if purse < 1 then -1 else ep-admit w purse p.place
+    crowned <- __record-set w "mint-owner" crown
+    at <- gh-site-column state 5 1419 1698 0
+    base <- if at < 0 then 0 else (list-at state.sites at).node
+    nodes <- w.node-count
+    gold <- ep-at p.stock 6
+    forced <- __record-set state "seam" ghr-gold-roll
+    reset <- __record-set p "attempts" 0
+    dug <- ghr-use state input map pick 1419 1698 #0220 5000
+    seam <- nodes + 1
+    cbr-check "a gold seam on an iron tile yields gold to an unappointed miner at a royal place, then lies dormant and the tile's own vein returns (UOAIX-86)" (crown > 0 & at >= 0
+      & text-starts-with (ghr-note dug) "harvest produced item=6 node=" & ep-at p.stock 6 > gold & w.node-count == seam
+      & (list-at w.nodes (seam - 1)).stage == 0 & (list-at w.nodes (seam - 1)).ready == ep-limit
+      & (list-at state.sites at).node == base & (list-at state.sites at).base == 0)
+    again <- __record-set p "attempts" 0
+    redug <- ghr-use state input map pick 1419 1698 #0220 6000
+    cbr-check "the next gold seam at that place reuses the dormant node" (text-starts-with (ghr-note redug) "harvest produced item=6 node=" & w.node-count == seam & (list-at w.nodes (seam - 1)).ready == ep-limit)
+    plain <- __record-set state "seam" ghr-no-roll
+    tried <- ghr-use state input map pick 1419 1698 #0220 7000
+    cbr-check "a roll past every seam leaves the tile on its own vein and makes no node" (w.node-count == seam & (list-at state.sites at).node == base & (list-at state.sites at).base == 0)
+    packed <- __record-set (list-at state.sites at) "base" seam
+    size <- ghc-size state.count
+    buf <- alloc-bytes size
+    encoded <- ghc-encode state 20000 buf size
+    restored <- gh-state v state.items
+    decoded <- ghc-decode restored 21000 buf size
+    unpacked <- __record-set (list-at state.sites at) "base" 0
+    uncrowned <- __record-set w "mint-owner" 0
+    calm <- __record-set state "seam" ghr-no-roll
+    cbr-check "the harvest codec keeps a seam's base in the site record (version 2)" (is-ok encoded & is-ok decoded & (list-at restored.sites at).node == base & (list-at restored.sites at).base == seam)
+  end
   ghr-live : GvWorld, GsiState, GameInput, WalkMap, Integer -> [Console] Nothing
   ghr-live (v) (items) (input) (map) (pack) = act
     state <- gh-state v items
@@ -205,6 +246,7 @@ Chapter: GameHarvestReplay
     rejected <- ghc-decode restored 9000 buf size
     cbr-check "bad source codec refuses without changing restored state" (is-err rejected & (list-at restored.requests 0).next == 8000)
     ghr-stacks state v pack
+    ghr-seams state v input map spare p
     ghr-rebind state v
   end
   ghr-ores : WorldTable, Integer, Integer -> Integer

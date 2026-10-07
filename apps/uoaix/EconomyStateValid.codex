@@ -3,6 +3,7 @@ Chapter: EconomyStateValid
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyProduction
   cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMint
 
   EvAudit = record { action : Integer, hour : Integer, tax : Integer,
     mint-purse : Integer, mint-rate : Integer, issued : Integer,
@@ -75,6 +76,7 @@ Chapter: EconomyStateValid
     else let active = item > 0 & item <= list-length w.catalog.items
     in ev-range (ep-at w.gathered item) (if active then ep-limit else 0)
       & ev-range (ep-at w.found item) (if active then ep-limit else 0)
+      & ev-range (ep-at w.taxed item) (if active & (item == 6 | item == 63 | item == 64) then ep-at w.gathered item + ep-at w.found item else 0)
       & ev-range (ep-at w.crafted item) (if active then ep-limit else 0)
       & ev-range (ep-at w.consumed item) (if active then ep-limit * 2 else 0)
       & ev-range (ep-at w.sales item) (if active then ep-limit else 0)
@@ -89,6 +91,14 @@ Chapter: EconomyStateValid
     else let e = list-at m.ledger i
     in let n = list-at m.ledger (i + 1)
     in n.action == e.action & n.hour == e.hour & n.kind == kind
+ An owner's strike (EconomyMint) issues, records the ingots, then pays the owner the coin less the Crown's fee as the next action.
+  ev-mint-paid : EmMoney, Integer, Integer -> Boolean
+  ev-mint-paid (m) (i) (paid) = let n = list-at m.ledger (i + 1)
+    in if n.payer <= 1 | not (em-valid-purse m n.payer) then False
+    else if paid <= 0 then True
+    else if i + 2 >= m.entry-count then False
+    else let o = list-at m.ledger (i + 2)
+    in o.kind == 17 & o.action == n.action + 1 & o.hour == n.hour & o.payer == 1 & o.payee == n.payer & o.amount == paid
   ev-gross : EmMoney, Integer -> Integer
   ev-gross (m) (i) = let e = list-at m.ledger i
     in if not (ev-next m i 2) then e.amount
@@ -118,7 +128,8 @@ Chapter: EconomyStateValid
     else if e.kind == 4 then
       if e.payer /= 0 | e.payee /= 1 | e.amount <= 0 | e.reference /= 2 | a.mint-rate == 0 | not (ev-next m i 12) then False
       else let n = list-at m.ledger (i + 1)
-      in n.payer == a.mint-purse & n.payee == 1 & n.amount == 0 & n.reference > 0 & n.reference <= 1000 & e.amount == n.reference * a.mint-rate
+      in n.payee == 1 & n.amount == 0 & n.reference > 0 & n.reference <= 1000 & e.amount == n.reference * a.mint-rate
+        & (n.payer == a.mint-purse | ev-mint-paid m i (emi-paid e.amount False))
     else if e.kind == 5 then if not (em-valid-purse m e.payee) then False else e.payer == 1 & e.payee > 1 & (em-purse m e.payee).kind == 5 & e.amount > 0 & e.reference == 0
     else if e.kind == 6 then e.payer > 1 & em-valid-purse m e.payer & e.payee == 1 & e.amount > 0 & e.reference == 0
     else if e.kind == 7 | e.kind == 8 then ev-loan-row m e & ev-transfer m a i
@@ -128,7 +139,9 @@ Chapter: EconomyStateValid
     else if e.kind == 12 then if i == 0 then False else (list-at m.ledger (i - 1)).action == e.action & (list-at m.ledger (i - 1)).kind == 4
     else if e.kind == 13 then if not (em-valid-purse m e.payee) then False else e.payer == 1 & e.payee > 1 & (em-purse m e.payee).kind == 4 & e.amount > 0 & e.reference == (em-purse m e.payee).owner
     else if e.kind == 16 then e.payer == 0 & e.payee == 1 & e.amount > 0 & e.reference == 0
+    else if e.kind == 18 then e.payer == 0 & e.payee == 0 & e.amount > 0 & e.reference >= 1 & e.reference <= m.loan-count
     else if e.kind == 17 then if not (em-valid-purse m e.payee) then False else e.payer == 1 & e.payee > 1 & e.amount > 0 & e.reference == 0
+    else if e.kind == 19 then e.payer > 1 & e.payee > 1 & e.payer /= e.payee & e.amount > 0 & e.reference == 0
     else if e.kind == 15 then e.amount == 0 & e.reference > 0 & e.reference <= ep-limit
       & e.payer > 1 & e.payee > 1 & e.payer /= e.payee & ep-purse-used w e.payer 0 & ep-purse-used w e.payee 0
       & list-length w.catalog.items >= 68
@@ -169,6 +182,7 @@ Chapter: EconomyStateValid
     in if e.reference /= id then ev-loan-history m id (i + 1) lent paid defaults
     else if e.kind == 7 then ev-gross m i == (list-at m.loans (id - 1)).principal & ev-loan-history m id (i + 1) (lent + 1) paid defaults
     else if e.kind == 8 then lent == 1 & ev-loan-history m id (i + 1) lent (paid + ev-gross m i) defaults
+    else if e.kind == 18 then lent == 1 & ev-loan-history m id (i + 1) lent (paid + e.amount) defaults
     else if e.kind == 9 then let l = list-at m.loans (id - 1)
       in lent == 1 & defaults == 0 & paid < l.principal + l.interest & ev-loan-history m id (i + 1) lent paid (defaults + 1)
     else ev-loan-history m id (i + 1) lent paid defaults
