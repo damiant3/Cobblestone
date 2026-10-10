@@ -1,0 +1,50 @@
+Chapter: PanelLogLevelsProof
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter ServerLog
+  cites Foreword chapter Console
+
+  plp-check : Text, Boolean -> [Console] Integer
+  plp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+
+  plp-set : AdminPanel, Integer, Text, Text -> Text
+  plp-set (p) (role) (subsystem) (level) = panel-dispatch p role ("{\"command\":\"panel-level-set\",\"session\":1,\"subsystem\":\"" & subsystem & "\",\"level\":\"" & level & "\"}")
+
+  opening : [Console] Nothing = act
+    p <- panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+    login <- panel-open p (get-ticks)
+    unbound <- plp-set p 4 "all" "info"
+    unbound-read <- panel-dispatch p 4 "{\"command\":\"panel-levels\",\"session\":1}"
+    c1 <- plp-check "an unbound panel refuses a change and reports bound false" (text-contains unbound "log-unbound" & text-contains unbound-read "\"bound\":false" & p.log-count == 1)
+    log <- slg-new slg-trace
+    bound <- panel-bind-log p log
+    keeper <- plp-set p 3 "all" "info"
+    stale <- panel-dispatch p 4 "{\"command\":\"panel-level-set\",\"session\":99,\"subsystem\":\"all\",\"level\":\"info\"}"
+    c2 <- plp-check "only the owner's live session changes levels" (text-contains keeper "role" & text-contains stale "session" & slg-on log slg-network slg-trace)
+    read <- panel-dispatch p 4 "{\"command\":\"panel-levels\",\"session\":1}"
+    c3 <- plp-check "panel-levels reports the global level and every subsystem" (text-contains read "\"all\":\"trace\"" & text-contains read "{\"name\":\"combat\",\"level\":\"inherit\"}" & text-contains read "{\"name\":\"help\",\"level\":\"inherit\"}")
+    all <- plp-set p 4 "all" "info"
+    c4 <- plp-check "setting all to info hides debug in every subsystem on the live log" (text-contains all "\"all\":\"info\"" & not (slg-on log slg-network slg-debug) & slg-on log slg-store slg-info)
+    combat <- plp-set p 4 "combat" "debug"
+    c5 <- plp-check "a combat override writes combat debug and leaves network at info" (text-contains combat "{\"name\":\"combat\",\"level\":\"debug\"}" & slg-on log slg-combat slg-debug & not (slg-on log slg-network slg-debug))
+    inherit-all <- plp-set p 4 "all" "inherit"
+    weather <- plp-set p 4 "weather" "info"
+    loud <- plp-set p 4 "combat" "loud"
+    c6 <- plp-check "inherit for all, an unknown subsystem and an unknown level are refused without change" (text-contains inherit-all "log-level" & text-contains weather "log-subsystem" & text-contains loud "log-level" & slg-threshold log slg-combat == slg-debug & peek-byte log 0 == slg-info & p.log-count == 3)
+    first <- admin-load p.log 1024
+    second <- admin-load p.log 2048
+    c7 <- plp-check "each change is logged with subsystem, old and new level" (text-contains first "\"action\":\"log-level\"" & text-contains first "\"subsystem\":\"all\"" & text-contains first "\"old_level\":\"trace\"" & text-contains first "\"new_level\":\"info\"" & text-contains second "\"old_level\":\"inherit\"" & text-contains second "\"new_level\":\"debug\"")
+    data <- panel-dispatch p 4 "{\"command\":\"panel-data\",\"session\":1}"
+    c8 <- plp-check "panel-data carries the log levels" (text-contains data "\"log_levels\":{\"bound\":true,\"all\":\"info\"")
+    full <- __record-set p "log-count" 127
+    denied <- plp-set p 4 "all" "error"
+    c9 <- plp-check "the log keeps recording at its 128th record: the change applies" (not (text-contains denied "action-log-full") & peek-byte log 0 == slg-error & p.log-count == 128)
+    print-line-uni ("UOAIX PANEL LOG LEVELS failures=" & show (c1+c2+c3+c4+c5+c6+c7+c8+c9))
+  end
+
+Page 1

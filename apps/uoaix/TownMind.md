@@ -1,10 +1,10 @@
-# UOAIX stage 4 groundwork
+# Town mind: personas, context and action policy
 
 `TownMind.codex` supplies persona configuration, quoted context, a single-action
 validator, deterministic unavailable-model replies, and an audit buffer over
-the [layer 1 simulation](Townsfolk.md). No model is called. Dialogue quality,
-autonomous morning planning and nightly memory summaries remain stage 4 work
-after R2 names the host. `MindProof.codex` owns the adversarial fixture and
+the [layer 1 simulation](Townsfolk.md). No model is called (ruling R2: canned
+lines, `NpcSpeech.md`). Dialogue quality, autonomous morning planning and
+nightly memory summaries are not built. `MindProof.codex` owns the adversarial fixture and
 positive controls; `test-mind.ps1` compiles and runs that fixture.
 
 ## Server boundary
@@ -109,9 +109,7 @@ by sequence. No persistence or network implementation is supplied here.
 The persistent state preallocates 128 persona records and the audit array.
 Persona records have nine machine-word fields (72 bytes), proposals seven
 (56 bytes), replies four (32 bytes), and the mind wrapper seven (56 bytes).
-Measured 2026-10-04 with kernel `9752080A0276505E`, the configured fixture
-retains 76952 bytes at construction; a stub reply allocates 88 bytes for its
-proposal and reply (`build-output/uoaix/mind-final-plain/mind.out`). Borrowed persona
+Borrowed persona
 text and generated context text are additional. Admission, validation and audit
 append are O(1); context preparation is bounded by the text caps and 16 memory
 indexes. Reply and context allocations are temporary: the caller can release

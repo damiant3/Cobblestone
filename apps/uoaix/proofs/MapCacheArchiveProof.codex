@@ -1,0 +1,49 @@
+Chapter: MapCacheArchiveProof
+  cites Uoaix chapter MapCache
+
+ A UMC2 header written to the guest disk: one data sector of map, one flora sector, then an archive region running to
+ the end of the disk, as install-map-cache.ps1 lays them out since UOAIX-50 stage 2.
+  mcap-check : Text, Boolean -> [Console] Integer
+  mcap-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  mcap-zero : Integer, Integer -> Integer
+  mcap-zero (buf) (i) = if i == 64 then 0 else let z = poke-qword buf (i * 8) 0 in mcap-zero buf (i + 1)
+  mcap-header : Integer, Integer, Integer -> Integer
+  mcap-header (sectors) (archive) (capacity) = let h = alloc-bytes 512
+    in let cleared = mcap-zero h 0
+    in let a = poke-qword h 0 #32434D55
+    in let b = poke-qword h 8 3
+    in let c = poke-qword h 16 6144
+    in let d = poke-qword h 24 4096
+    in let e = poke-qword h 32 393216
+    in let f = poke-qword h 40 6291456
+    in let g = poke-qword h 56 ((sectors - wmc-start) * 512)
+    in let i = poke-qword h 64 1
+    in let j = poke-qword h 72 wmc-data-sector
+    in let k = poke-qword h 112 wmc-data-sector
+    in let l = poke-qword h 120 1
+    in let m = poke-qword h 280 wmc-data-sector
+    in let n = poke-qword h 288 512
+    in let o = poke-qword h 304 archive
+    in let p = poke-qword h 312 capacity
+    in let hashed = poke-qword h 48 (ws-hash h 512 0 2166136261) in h
+  mcap-open : Integer, Integer -> [Console, Device.Block] Boolean
+  mcap-open (archive) (capacity) = act
+    sectors <- us-device-count UoIde
+    header <- mcap-header sectors archive capacity
+    written <- us-write-checked UoIde wmc-start header
+    opened <- wmc-open UoIde
+    shown <- print-line-uni ("OPEN archive=" & show archive & " capacity=" & show capacity & " " & (when opened is Err (e) -> e is Ok (c) -> "flora=" & show c.flora-sector & "+" & show c.flora-size))
+    written & is-ok opened
+  end
+  opening : [Console, Device.Block] Integer = act
+    sectors <- us-device-count UoIde
+    top <- sectors - wmc-start
+    after <- mcap-open (wmc-data-sector + 1) (top - wmc-data-sector - 1)
+    a <- mcap-check "flora followed by an economy archive region opens (install-map-cache since UOAIX-50 stage 2)" after
+    before <- mcap-open 0 0
+    b <- mcap-check "with no archive region, a flora table that stops short of the end of the disk still refuses" (not before)
+    a + b
+  end

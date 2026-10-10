@@ -84,15 +84,15 @@ Section: Phase 1 - Lock ManaCoin on Main Chain
     reason : Text
   }
 
-  initiate-lock : BridgeState, ChainState, Integer, Integer, Integer, Integer -> LockResult
-  initiate-lock (bridge) (chain) (account) (amount) (timestamp) (platform-key) =
+  initiate-lock : BridgeState, ChainState, Integer, Integer, Integer, Integer, List Integer -> LockResult
+  initiate-lock (bridge) (chain) (account) (amount) (timestamp) (platform-key) (seed) =
     let fee = amount * bridge.fee-pct / 100
     in let lock-amount = amount - fee
     in if lock-amount <= 0 then LockResult { bridge = bridge, chain = chain, lock-id = -1, success = False, reason = "Amount too small after fee" }
     else let bal = get-balance chain account
     in if bal < amount then LockResult { bridge = bridge, chain = chain, lock-id = -1, success = False, reason = "Insufficient balance" }
-    else let nonce = get-nonce chain account
-    in let tx = sign-transaction account 0 amount TxBridgeLock nonce timestamp account
+    else let nonce = next-nonce chain account
+    in let tx = sign-transaction account 0 amount TxBridgeLock nonce timestamp seed
     in let submit = submit-validated chain tx platform-key
     in if submit.accepted == False then LockResult { bridge = bridge, chain = submit.chain, lock-id = -1, success = False, reason = submit.reason }
     else let lock-id = list-length (bridge.pending-locks)
@@ -135,14 +135,14 @@ Section: Reverse - Burn clan coin, release ManaCoin
     released : Integer
   }
 
-  initiate-release : BridgeState, ChainState, Integer, Integer, Hash256, Integer, Integer -> ReleaseResult
-  initiate-release (bridge) (chain) (account) (amount) (burn-proof) (timestamp) (platform-key) =
+  initiate-release : BridgeState, ChainState, Integer, Integer, Hash256, Integer, Integer, List Integer -> ReleaseResult
+  initiate-release (bridge) (chain) (account) (amount) (burn-proof) (timestamp) (platform-key) (platform-seed) =
     let fee = amount * bridge.fee-pct / 100
     in let release-amount = amount - fee
     in if release-amount <= 0 then ReleaseResult { bridge = bridge, chain = chain, success = False, reason = "Amount too small", released = 0 }
     else if bridge.total-locked < release-amount then ReleaseResult { bridge = bridge, chain = chain, success = False, reason = "Bridge underfunded", released = 0 }
-    else let nonce = get-nonce chain platform-key
-    in let tx = sign-transaction platform-key account release-amount TxBridgeRelease nonce timestamp platform-key
+    else let nonce = next-nonce chain platform-key
+    in let tx = sign-transaction platform-key account release-amount TxBridgeRelease nonce timestamp platform-seed
     in let submit = submit-validated chain tx platform-key
     in if submit.accepted == False then ReleaseResult { bridge = bridge, chain = submit.chain, success = False, reason = submit.reason, released = 0 }
     else let release = BridgeRelease { release-id = list-length (bridge.pending-releases), account = account, amount = release-amount, fee = fee, sidechain-burn-proof = burn-proof, timestamp = timestamp, status = LockCompleted }

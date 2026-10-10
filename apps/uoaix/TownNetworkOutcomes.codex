@@ -13,12 +13,12 @@ Chapter: TownNetworkOutcomes
     trials : Integer, refusals : Integer, repeats : Integer }
   TnoCase = record { actor : Integer, job : EcJob, item : Integer, goal : Integer,
     needed : Integer, tool : Integer, skill : Integer, trade : Integer,
-    snapshot : Integer, original : Integer, compared : Integer, refused : Boolean }
+    snapshot : Integer, original : Integer, compared : Integer, refused : Boolean, seller : Integer }
   tno-equal : Integer, Integer, Integer -> Boolean
-  tno-equal (one) (two) (i) = if i == es-bytes then True
+  tno-equal (one) (two) (i) = if i >= peek-qword one 16 then True
     else if peek-qword one i /= peek-qword two i then False else tno-equal one two (i + 8)
   tno-copy : Integer, Integer, Integer -> Integer
-  tno-copy (source) (target) (i) = if i == es-bytes then 0
+  tno-copy (source) (target) (i) = if i >= peek-qword source 16 then 0
     else let a = poke-qword target i (peek-qword source i) in tno-copy source target (i + 8)
   tno-output : EpWorld, EcJob -> Integer
   tno-output (w) (job) = tnf-output w job.resource job.recipe
@@ -60,7 +60,7 @@ Chapter: TownNetworkOutcomes
       else ep-craft w c.actor c.job.recipe c.job.station
     else if action == 2 then
       if c.goal == 0 | ep-at (ep-actor w c.actor).stock c.goal >= c.needed then -1
-      else let seller = ec-seller clock c.actor c.goal 0 0
+      else let seller = if c.seller > 0 then c.seller else ec-seller clock c.actor c.goal 0 0
       in if seller == 0 then -1 else ep-buy w c.actor seller c.goal 1
     else if action == 3 then ep-buy w clock.consumer c.actor c.item 1
     else if action == 4 then ep-eat w c.actor (tno-food (ep-actor w c.actor))
@@ -83,12 +83,12 @@ Chapter: TownNetworkOutcomes
     in let result = tno-apply w clock c action
     in let refusal = __record-set c "refused" (result == -1)
     in if not (ep-census w 1 & em-balanced w.money 1 & ev-valid w) then -2000000002
-    else if result == -1 then when es-encode checkpoint c.compared es-bytes
+    else if result == -1 then when es-encode checkpoint c.compared (es-max-size w)
       is Err (_) -> -2000000003
       is Ok (_) -> if tno-equal c.snapshot c.compared 0 then -1000 else -2000000004
     else if result < -2 then -2000000005
     else
-      let coin = ((em-purse w.money p.purse).coin - before-coin) * 10 * (1000 + c.trade / 2) / 1000
+      let coin = ((em-purse w.money p.purse).coin - before-coin) * 2 * (1000 + c.trade / 2) / 1000
       in let hunger = (before-hunger - p.hunger) * before-hunger / 3
       in let food = (before-food - tno-food-count p) * 100
       in let progress = (tno-progress p c - before-goal) / 5
@@ -99,16 +99,29 @@ Chapter: TownNetworkOutcomes
   tno-trial : EcClock, TnoCase, Integer -> Integer
   tno-trial (clock) (c) (action) =
     let mark = __heap-save
-    in let result = when es-decode c.snapshot es-bytes
+    in let result = when es-decode c.snapshot (peek-qword c.snapshot 16)
       is Err (_) -> -2000000001
       is Ok (checkpoint) -> tno-trial-body checkpoint clock c action
     in let restored = __heap-restore mark
     in if not (tno-equal c.snapshot c.original 0) then -2000000006 else result
-  tno-frame : EcClock, TnoCase, TnoData, Integer -> Integer
-  tno-frame (clock) (c) (d) (row) =
+  tno-goal-price : EcClock, TnoCase -> Integer
+  tno-goal-price (clock) (c) = if c.goal == 0 then -1
+    else let seller = if c.seller > 0 then c.seller else ec-seller clock c.actor c.goal 0 0
+    in if seller == 0 then -1 else ep-price-gold clock.world seller c.goal
+  tno-dearest : EcClock, Integer, Integer, Integer, Integer -> Integer
+  tno-dearest (clock) (buyer) (item) (i) (best) = if i == 54 then best
+    else let id = i + 1
+    in let pick = if id == buyer | ep-at (ep-actor clock.world id).stock item - ec-keeps clock id item < 1 then best
+      else if best == 0 then id else if ep-price clock.world id item > ep-price clock.world best item then id else best
+    in tno-dearest clock buyer item (i + 1) pick
+  tno-frame : EcClock, TnoCase, TnoData, Integer, Integer -> Integer
+  tno-frame (clock) (c) (d) (row) (variant) =
     let role = tno-role clock.world c.job
     in let framed = tnf-frame clock.world c.actor c.item role c.goal c.needed c.trade d.inputs (row * 32)
     in let a30 = list-set-at d.inputs (row * 32 + 30) 500
+    in let price = tno-goal-price clock c
+    in let a7 = tnf-set d.inputs (row * 32) 7 (if price < 0 then 1000 else price * 5)
+    in let a3 = if variant == 1 | variant == 3 then tnf-set d.inputs (row * 32) 3 0 else 0
     in framed
   tno-actions : EcClock, TnoCase, TnoData, Integer, Integer -> Integer
   tno-actions (clock) (c) (d) (row) (action) = if action == 11 then 0
@@ -134,7 +147,7 @@ Chapter: TownNetworkOutcomes
     in let best = tno-max d row 0 0
     in let eat = list-at d.outcomes (base + 3)
     in let happiness = tn-clip (500 + best / 2) 0 1000
-    in let alarm = tn-clip (list-at d.inputs (row * 32) - (if eat > 0 then eat else 0)) 0 1000
+    in let alarm = tn-clip (list-at d.inputs (row * 32) - (if eat > 0 then eat else 0) + 1000 - list-at d.inputs (row * 32 + 3)) 0 1000
     in let market = (list-at d.outcomes (base + 1) + list-at d.outcomes (base + 2)) / 2
     in let a = list-set-at d.outcomes (base + 10) happiness
     in let b = list-set-at d.outcomes (base + 11) alarm
@@ -155,37 +168,96 @@ Chapter: TownNetworkOutcomes
     in let trade = (one-days * 800 + (16 - one-days) * -800) / 16
     in TnoCase { actor = actor, job = job, item = tno-output clock.world job,
       goal = goal, needed = tno-needed clock.world job goal, tool = tool, skill = skill,
-      trade = trade, snapshot = snapshot, original = original, compared = compared, refused = False }
-  tno-cases : EcClock, TnoData, Integer, Integer, Integer, Integer -> Integer
-  tno-cases (clock) (d) (snapshot) (original) (compared) (row) = if row == d.count then 0
-    else let advance = if row > 0 & int-mod row 8 == 0 then ec-run clock 12 False else 0
-    in if advance /= 0 then -2000000008
-    else let c = tno-case clock row snapshot original compared
-    in let food = if int-mod row 8 == 0 then ec-get clock c.actor 34 1 else True
+      trade = trade, snapshot = snapshot, original = original, compared = compared, refused = False, seller = 0 }
+  tno-row : EcClock, TnoData, TnoCase, Integer, Integer, Integer, Integer, Integer -> Integer
+  tno-row (clock) (d) (c) (snapshot) (original) (compared) (base) (variant) =
+    let row = base + variant * tno-base-rows
     in let checkpoint = EconomyCheckpoint { world = clock.world, tick = clock.world.hour, sequence = 0 }
-    in when es-encode checkpoint snapshot es-bytes
+    in let result = when es-encode checkpoint snapshot (es-max-size clock.world)
       is Err (_) -> -2000000009
       is Ok (_) ->
         let copy = tno-copy snapshot original 0
-        in let frame = tno-frame clock c d row
+        in let frame = tno-frame clock c d row variant
         in let actions = if frame /= 0 then -2000000012 else tno-actions clock c d row 1
         in if actions /= 0 then actions
         else let repeat = tno-repeat clock c d row 10
         in if repeat /= 0 then repeat
-        else let affect = tno-affect d row
-        in tno-cases clock d snapshot original compared (row + 1)
+        else tno-affect d row
+    in result
+  tno-feed : EcClock, Integer, Integer -> Integer
+  tno-feed (clock) (actor) (left) = if left == 0 | (ep-actor clock.world actor).hunger < 10 then 0
+    else let food = tno-food-for-sale clock actor
+    in if not (ec-get clock actor food 1) | ep-eat clock.world actor food /= 0 then 0
+    else 1 + tno-feed clock actor (left - 1)
+  tno-marked-up : EcClock, TnoData, TnoCase, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tno-marked-up (clock) (d) (c) (snapshot) (original) (compared) (row) (variant) (halves) =
+    let seller = if c.goal == 0 then 0 else ec-seller clock c.actor c.goal 0 0
+    in let chose = __record-set c "seller" seller
+    in tno-scaled-row clock d c snapshot original compared row variant halves seller c.goal
+  tno-scaled-row : EcClock, TnoData, TnoCase, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tno-scaled-row (clock) (d) (c) (snapshot) (original) (compared) (row) (variant) (halves) (holder) (item) =
+    if holder == 0 | item == 0 then tno-row clock d c snapshot original compared row variant
+    else let cost = (ep-actor clock.world holder).cost
+    in let before = ep-at cost item
+    in let raised = if before > ep-limit / halves then 0 else ep-set cost item (before * halves / 2)
+    in let result = tno-row clock d c snapshot original compared row variant
+    in let restored = ep-set cost item before
+    in result
+  tno-demand-row : EcClock, TnoData, TnoCase, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tno-demand-row (clock) (d) (c) (snapshot) (original) (compared) (row) (variant) (extra) =
+    let w = clock.world
+    in let opened = ep-at w.opening (ep-open-sales + c.item)
+    in let sold = ep-at w.sales c.item
+    in let raised = ep-set w.opening (ep-open-sales + c.item) (opened + extra)
+    in let resold = ep-set w.sales c.item (ev-sales w c.item 0 (ep-at w.opening ep-open-day) (opened + extra))
+    in let result = tno-row clock d c snapshot original compared row variant
+    in let reopened = ep-set w.opening (ep-open-sales + c.item) opened
+    in let restored = ep-set w.sales c.item sold
+    in result
+  tno-base-rows : Integer = 16
+  tno-cases : EcClock, TnoData, Integer, Integer, Integer, Integer -> Integer
+  tno-cases (clock) (d) (snapshot) (original) (compared) (row) = if row == tno-base-rows then 0
+    else let advance = if row > 0 & int-mod row 8 == 0 then ec-run clock 12 False else 0
+    in if advance /= 0 then -2000000008
+    else let c = tno-case clock row snapshot original compared
+    in let food = if int-mod row 8 == 0 then ec-get clock c.actor 34 1 else True
+    in let plain = tno-row clock d c snapshot original compared row 0
+    in if plain /= 0 then plain
+    else let raid = tno-row clock d c snapshot original compared row 1
+    in if raid /= 0 then raid
+    else let fed = tno-feed clock c.actor 4
+    in let f = tno-case clock row snapshot original compared
+    in let calm = tno-row clock d f snapshot original compared row 2
+    in if calm /= 0 then calm
+    else let alarmed = tno-row clock d f snapshot original compared row 3
+    in if alarmed /= 0 then alarmed
+    else let dearer = if f.goal == 0 then 0 else tno-dearest clock f.actor f.goal 0 0
+    in let chose = __record-set f "seller" dearer
+    in let pricey = tno-row clock d f snapshot original compared row 4
+    in if pricey /= 0 then pricey
+    else let dear = tno-marked-up clock d f snapshot original compared row 5 3
+    in if dear /= 0 then dear
+    else let dearest = tno-marked-up clock d f snapshot original compared row 6 4
+    in if dearest /= 0 then dearest
+    else let cheapest = __record-set f "seller" 0
+    in let richer = tno-demand-row clock d f snapshot original compared row 7 800
+    in if richer /= 0 then richer
+    else let richest = tno-demand-row clock d f snapshot original compared row 8 3200
+    in if richest /= 0 then richest
+    else tno-cases clock d snapshot original compared (row + 1)
   tno-build : Integer -> Result TnoData Text
   tno-build (unused) =
-    let data = TnoData { inputs = tn-zeros (16 * 32), outcomes = tn-zeros (16 * 14),
-      count = 16, trials = 0, refusals = 0, repeats = 0 }
+    let data = TnoData { inputs = tn-zeros (9 * tno-base-rows * 32), outcomes = tn-zeros (9 * tno-base-rows * 14),
+      count = 9 * tno-base-rows, trials = 0, refusals = 0, repeats = 0 }
     in let mark = __heap-save
     in let code = when ec-fixture 0
       is Err (_) -> -2000000010
       is Ok (clock) ->
         if ec-run clock 96 False /= 0 then -2000000011
-        else let snapshot = alloc-bytes es-bytes
-        in let original = alloc-bytes es-bytes
-        in let compared = alloc-bytes es-bytes
+        else let bound = es-max-size clock.world
+        in let snapshot = alloc-bytes bound
+        in let original = alloc-bytes bound
+        in let compared = alloc-bytes bound
         in tno-cases clock data snapshot original compared 0
     in let restored = __heap-restore mark
     in if code == 0 then Ok data else Err ("outcome corpus failed at " & show code)

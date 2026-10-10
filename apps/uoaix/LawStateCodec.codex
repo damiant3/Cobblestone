@@ -96,10 +96,10 @@ Chapter: LawStateCodec
   lsc-case-valid : LawWorld, Integer -> Boolean
   lsc-case-valid (w) (i) = if i == w.count then True else let c = list-at w.cases i
     in c.source > 0 & c.source <= 1000000000000 & lsc-mobile c.offender
-      & c.kind >= 1 & c.kind <= 3 & c.town >= 1 & c.town <= 16
+      & c.kind >= 1 & c.kind <= 4 & c.town >= 1 & c.town <= 16
       & lsc-range c.x 6143 & lsc-range c.y 4095 & lsc-range c.status 5 & lsc-range c.guard w.guard-count
       & c.term >= 1 & c.term <= 8760 & lsc-range c.due 1000000000000
-      & (c.status == 0 | (c.known & c.guard > 0))
+      & (c.status == 0 | (c.known & c.guard > 0) | (c.kind == 4 & not c.known & c.guard == 0 & c.status >= 4))
       & (c.guard == 0 | c.known) & c.known == lsc-known w (i + 1) 0
       & lsc-case-unique w i 0 & lsc-case-valid w (i + 1)
   lsc-witness-unique : LawWorld, Integer, Integer -> Boolean
@@ -124,9 +124,9 @@ Chapter: LawStateCodec
   lsc-jail-valid (w) (i) = if i == 16 then True else let j = list-at w.jails i
     in lsc-range j.x 6143 & lsc-range j.y 4095 & lsc-jail-valid w (i + 1)
   lsc-valid : LawWorld -> Boolean
-  lsc-valid (w) = if not (world-indexed w.world) | not (lsc-range w.count 128)
-    | not (lsc-range w.witness-count 256) | not (lsc-range w.guard-count 32) | not (lsc-range w.hour 1000000000000)
-    | list-length w.cases /= 128 | list-length w.witnesses /= 256 | list-length w.guards /= 32
+  lsc-valid (w) = if not (world-indexed w.world) | not (lsc-range w.count (list-length w.cases))
+    | not (lsc-range w.witness-count (list-length w.witnesses)) | not (lsc-range w.guard-count (list-length w.guards)) | not (lsc-range w.hour 1000000000000)
+    | list-length w.cases < lw-case-block | list-length w.witnesses < lw-witness-block | list-length w.guards < lw-guard-block
     | list-length w.jails /= 16 | list-length w.sentences /= 3 then False
     else list-at w.sentences 0 >= 1 & list-at w.sentences 0 <= 8760
       & list-at w.sentences 1 >= 1 & list-at w.sentences 1 <= 8760
@@ -144,11 +144,11 @@ Chapter: LawStateCodec
   lsc-encode : LawWorld, Integer, Integer -> Result Integer Text
   lsc-encode (w) (buf) (capacity) = if capacity < lsc-bytes | not (lsc-valid w) then Err "Law checkpoint state or capacity"
     else let a = poke-qword buf 0 #3143534C
-    in let b = poke-qword buf 8 1
+    in let b = poke-qword buf 8 2
     in let c = poke-qword buf 16 lsc-bytes
-    in let d = poke-qword buf 24 w.count
-    in let e = poke-qword buf 32 w.witness-count
-    in let f = poke-qword buf 40 w.guard-count
+    in let d = poke-qword buf 24 (min w.count lw-case-block)
+    in let e = poke-qword buf 32 (min w.witness-count lw-witness-block)
+    in let f = poke-qword buf 40 (min w.guard-count lw-guard-block)
     in let g = poke-qword buf 56 w.hour
     in let s0 = poke-qword buf 64 (list-at w.sentences 0)
     in let s1 = poke-qword buf 72 (list-at w.sentences 1)
@@ -157,7 +157,7 @@ Chapter: LawStateCodec
     in let guards = lsc-guards w buf False 0
     in let cases = lsc-cases w buf False 0
     in let witnesses = lsc-witnesses w buf False 0
-    in if not (lsc-unused buf w.count w.witness-count w.guard-count) then Err "Law checkpoint unused rows"
+    in if not (lsc-unused buf (min w.count lw-case-block) (min w.witness-count lw-witness-block) (min w.guard-count lw-guard-block)) then Err "Law checkpoint unused rows"
     else let hash = poke-qword buf 48 (ws-hash buf lsc-bytes 0 2166136261) in Ok lsc-bytes
   lsc-zero-range : Integer, Integer, Integer -> Boolean
   lsc-zero-range (buf) (at) (limit) = if at == limit then True else peek-qword buf at == 0 & lsc-zero-range buf (at + 8) limit
@@ -167,8 +167,55 @@ Chapter: LawStateCodec
       & lsc-zero-range buf (lsc-witnesses-at + witnesses * 40) lsc-bytes
       & lsc-zero-range buf (lsc-guards-at + guards * 32) lsc-cases-at
   lsc-decode : Integer, Integer, WorldTable -> Result LawWorld Text
-  lsc-decode (buf) (size) (world) = if size /= lsc-bytes then Err "Law checkpoint extent"
-    else if peek-qword buf 0 /= #3143534C | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size
+  lsc-decode (buf) (size) (world) = lsc-decode-tail buf size world 0 0
+ The law tail holds the rows past the first blocks: the case and witness extra counts, then those case rows (88 bytes)
+ and witness rows (40). The composite closes its image with it after the account tail.
+  lsc-tail-size : LawWorld -> Integer
+  lsc-tail-size (w) = 16 + max 0 (w.count - lw-case-block) * 88 + max 0 (w.witness-count - lw-witness-block) * 40 + 8 + max 0 (w.guard-count - lw-guard-block) * 32
+  lsc-tail-rows : LawWorld, Integer, Boolean, Integer, Integer, Integer -> Integer
+  lsc-tail-rows (w) (at) (read) (cases) (witnesses) (i) = if i >= cases + witnesses then 0
+    else let done = if i < cases then lsc-case-fields at (i * 88) (list-at w.cases (lw-case-block + i)) read
+      else lsc-witness-fields at (cases * 88 + (i - cases) * 40) (list-at w.witnesses (lw-witness-block + i - cases)) read
+    in lsc-tail-rows w at read cases witnesses (i + 1)
+  lsc-write-tail : LawWorld, Integer -> Integer
+  lsc-write-tail (w) (at) = let cases = max 0 (w.count - lw-case-block)
+    in let witnesses = max 0 (w.witness-count - lw-witness-block)
+    in let a = poke-qword at 0 cases
+    in let b = poke-qword at 8 witnesses
+    in let rows = lsc-tail-rows w (at + 16) False cases witnesses 0
+    in let base = at + 16 + cases * 88 + witnesses * 40
+    in let guards = max 0 (w.guard-count - lw-guard-block)
+    in let counted = poke-qword base 0 guards
+    in let rested = lsc-tail-guards w (base + 8) False guards 0 in at + lsc-tail-size w
+  lsc-tail-guards : LawWorld, Integer, Boolean, Integer, Integer -> Integer
+  lsc-tail-guards (w) (at) (read) (guards) (i) = if i >= guards then 0
+    else let done = lsc-guard-fields at (i * 32) (list-at w.guards (lw-guard-block + i)) read in lsc-tail-guards w at read guards (i + 1)
+  lsc-tail-length : Integer, Integer -> Integer
+  lsc-tail-length (at) (room) = if room < 16 | peek-qword at 0 < 0 | peek-qword at 8 < 0 | peek-qword at 0 > room / 88 | peek-qword at 8 > room / 40 then -1
+    else let base = 16 + peek-qword at 0 * 88 + peek-qword at 8 * 40
+    in if base + 8 > room then base
+    else let guards = peek-qword (at + base) 0
+    in if guards < 0 | guards > (room - base - 8) / 32 then -1 else base + 8 + guards * 32
+  lsc-read-tail : LawWorld, Integer, Integer -> Integer
+  lsc-read-tail (w) (at) (size) = if size == 0 then 0
+    else if lsc-tail-length at size /= size then -1
+    else let cases = peek-qword at 0
+    in let witnesses = peek-qword at 8
+    in if (cases > 0 & w.count /= lw-case-block) | (witnesses > 0 & w.witness-count /= lw-witness-block) then -1
+    else let a = if cases > 0 then __record-set w "cases" (lw-cases cases w.cases) else w
+    in let b = if witnesses > 0 then __record-set w "witnesses" (lw-witnesses witnesses w.witnesses) else w
+    in let c = __record-set w "count" (w.count + cases)
+    in let d = __record-set w "witness-count" (w.witness-count + witnesses)
+    in let rows = lsc-tail-rows w (at + 16) True cases witnesses 0
+    in let base = 16 + cases * 88 + witnesses * 40
+    in let guards = if size >= base + 8 then peek-qword (at + base) 0 else 0
+    in if guards > 0 & w.guard-count /= lw-guard-block then -1
+    else let e = if guards > 0 then __record-set w "guards" (lw-guards guards w.guards) else w
+    in let f = __record-set w "guard-count" (w.guard-count + guards)
+    in let g = lsc-tail-guards w (at + base + 8) True guards 0 in rows
+  lsc-decode-tail : Integer, Integer, WorldTable, Integer, Integer -> Result LawWorld Text
+  lsc-decode-tail (buf) (size) (world) (tail) (tail-size) = if size /= lsc-bytes then Err "Law checkpoint extent"
+    else if peek-qword buf 0 /= #3143534C | (peek-qword buf 8 /= 1 & peek-qword buf 8 /= 2) | peek-qword buf 16 /= size
       | not (lsc-range (peek-qword buf 24) 128) | not (lsc-range (peek-qword buf 32) 256)
       | not (lsc-range (peek-qword buf 40) 32) | not (lsc-range (peek-qword buf 56) 1000000000000) then Err "Law checkpoint header"
     else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 | not (lsc-bools buf 0)
@@ -185,4 +232,5 @@ Chapter: LawStateCodec
     in let guards = lsc-guards w buf True 0
     in let cases = lsc-cases w buf True 0
     in let witnesses = lsc-witnesses w buf True 0
-    in if lsc-valid w then Ok w else Err "Law checkpoint invariants"
+    in if tail-size > 0 & lsc-read-tail w tail tail-size < 0 then Err "Law checkpoint tail"
+    else if lsc-valid w then Ok w else Err "Law checkpoint invariants"

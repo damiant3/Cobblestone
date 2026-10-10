@@ -1,0 +1,65 @@
+Chapter: BvtCityShops
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter Cities
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvcs-made : Result Integer Text -> Integer
+  bvcs-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvcs-vendors : GvWorld, Integer -> Integer
+  bvcs-vendors (v) (i) = if i >= bb-shop-count then v.vendor-count
+    else let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 (1000 + i)) 100
+    in let npc = bvcs-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bvcs-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bvcs-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bvcs-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let added = gv-add-vendor v npc actor stock extra buys
+    in bvcs-vendors v (i + 1)
+ Flat land at z 0 under every cell of a shop region, so a keeper can be placed there.
+  bvcs-flat : WalkMap, BbShop, Integer, Integer -> Integer
+  bvcs-flat (map) (s) (x) (y) = if y > s.y2 then 0 else if x > s.x2 then bvcs-flat map s s.x1 (y + 1)
+    else let set = walk-set-land map x y 0 0 in bvcs-flat map s (x + 1) y
+  bvcs-lands : List CtCity, List WalkMap, List BbShop, Integer -> Integer
+  bvcs-lands (cities) (maps) (shops) (k) = if k >= list-length shops then 0
+    else let s = list-at shops k
+    in let one = when ct-map-at cities maps s.x1 s.y1 is None -> 0 is Just (map) -> bvcs-flat map s s.x1 s.y1 in bvcs-lands cities maps shops (k + 1)
+ A walk map per city, in table order.
+  bvcs-maps : List CtCity, Integer, List WalkMap -> Result (List WalkMap) Text
+  bvcs-maps (cities) (i) (out) = if i >= list-length cities then Ok out
+    else let c = list-at cities i
+    in when walk-map-sized (ct-x c) (ct-y c) (ct-width c) (ct-height c) 1 is Err (e) -> Err e is Ok (m) -> bvcs-maps cities (i + 1) (out & [m])
+  bvcs-stands : GvWorld, Integer, BbShop -> Boolean
+  bvcs-stands (v) (i) (s) = when world-get v.game.world (list-at v.vendors i).serial is Err (_) -> False is Ok (m) -> m.x >= s.x1 & m.x <= s.x2 & m.y >= s.y1 & m.y <= s.y2
+ The vendor a player standing on keeper i's own tile and naming its role reaches, or -2.
+  bvcs-nearest : GvWorld, Integer -> Integer
+  bvcs-nearest (v) (i) = when world-get v.game.world (list-at v.vendors i).serial is Err (_) -> -2 is Ok (m) -> gv-nearest v m (gvb-role i)
+  bvcs-count : Result Integer Text -> Integer
+  bvcs-count (r) = when r is Err (_) -> -1 is Ok (n) -> n
+  bvt-city-shops : Integer -> [Console] Integer
+  bvt-city-shops (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("city shops fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("city shops fixture economy: " & e) False
+      is Ok (x) -> let cities = ct-table 0
+        in when bvcs-maps cities 0 []
+          is Err (e) -> bvt-check ("city shops fixture map: " & e) False
+          is Ok (maps) -> act
+            v <- gv-new shard x
+            items <- gsi-new shard.world
+            growing <- bb-fixture-grow v items
+            britain <- bvcs-vendors v 0
+            shops <- ct-city-shops 0
+            flat <- bvcs-lands cities maps shops 0
+            n <- list-length shops
+            partial <- bvcs-count (bb-found-cities v items cities [list-at maps 0, list-at maps 1])
+            founded <- bvcs-count (bb-found-cities v items cities maps)
+            again <- bvcs-count (bb-found-cities v items cities maps)
+            s <- bb-shop-count
+            a <- bvt-check "every city's shops (Trinsic's 12, Skara Brae's 10, Ocllo's 11, Magincia's 9 and on) are founded once after Britain's, each keeper standing in its UOX3 keeper region" (britain == s & partial == 12 & founded == n - 12 & v.vendor-count == s + n & bvcs-stands v (s + 48) (list-at shops 48) & bvcs-stands v (s + 57) (list-at shops 57) & bvcs-stands v (s + n - 1) (list-at shops (n - 1)) & bvcs-stands v s (list-at shops 0) & bvcs-stands v (s + 6) (list-at shops 6) & bvcs-stands v (s + 11) (list-at shops 11) & bvcs-stands v (s + 12) (list-at shops 12) & bvcs-stands v (s + 21) (list-at shops 21) & bvcs-stands v (s + 22) (list-at shops 22) & bvcs-stands v (s + 32) (list-at shops 32) & bvcs-stands v (s + 33) (list-at shops 33) & bvcs-stands v (s + 41) (list-at shops 41))
+            b <- bvt-check "founding goes from the first city shop a world lacks and stops at the first city whose map did not load (Skara Brae here, after Trinsic's 12), so a saved world gains a new city at its next boot; a world holding every city shop founds none again" (partial == 12 & again == 0 & v.vendor-count == s + n)
+            c <- bvt-check "a city vendor sells, buys and is named as the Britain shop of its role; past the table it has none" (ct-vendor-role s == 0 & ct-vendor-role (s + 8) == 12 & ct-vendor-role (s + 11) == 16 & ct-vendor-role (s + 12) == 0 & ct-vendor-role (s + 21) == 17 & ct-vendor-role (s + n) == -1 & ct-vendor-role 5 == 5 & list-length (bb-shop-goods (s + 8)) == list-length (bb-goods 12) & list-length (bb-shop-goods (s + n)) == 0 & gvb-role (s + 8) == gvb-role 12)
+            d <- bvt-check "the shop binding accepts Britain's shops with the city shops" (is-ok (bb-bind v items))
+            e <- bvt-check ("a city vendor past the first 16 serves a player beside it (UOAIX-232: vendors.trading stopped every vendor from 16 at -1): " & show (bvcs-nearest v (s + 33))) (bvcs-nearest v (s + 33) == s + 33 & bvcs-nearest v (s + n - 1) == s + n - 1)
+            a + b + c + d + e
+          end

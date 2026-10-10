@@ -8,12 +8,28 @@ Chapter: GameMonster
  CChar::NPC_Act_Wander, NPC_WalkToPoint and NPC_Act_Fight.
  License: apps/uoaix/Sphere-LICENSE.txt.
 
-  MonsterSlot = record { serial : Integer, direction : Integer, due : Integer, visible : Boolean }
+  MonsterSlot = record { serial : Integer, direction : Integer, due : Integer, seen : Integer }
   GameMonster = record { combat : GameCombat, slots : List MonsterSlot,
-    x : Integer, y : Integer, z : Integer, radius : Integer, connection : Integer }
+    x : Integer, y : Integer, z : Integer, radius : Integer, links : List Integer, viewer : Integer, unseen : Integer }
+ GameLinks serves at most 32 game links; bit i of a slot's seen is viewer i.
+  gm-link-limit : Integer = 32
+  gm-links : Integer, List Integer -> List Integer
+  gm-links (left) (xs) = if left == 0 then xs else gm-links (left - 1) (list-push xs (0 - 1))
+  gm-link-at : List Integer, Integer, Integer, Integer -> Integer
+  gm-link-at (links) (connection) (i) (best) = if i == list-length links then best
+    else if list-at links i == connection then i
+    else gm-link-at links connection (i + 1) (if list-at links i < list-at links best then i else best)
+  gm-links-clear : List Integer, Integer -> Integer
+  gm-links-clear (links) (i) = if i == list-length links then 0
+    else let cleared = list-set-at links i (0 - 1) in gm-links-clear links (i + 1)
+  gm-slot-seen : GameMonster, MonsterSlot -> Boolean
+  gm-slot-seen (g) (slot) = bit-and slot.seen (bit-shl 1 g.viewer) /= 0
+  gm-slot-mark : GameMonster, MonsterSlot, Boolean -> Integer
+  gm-slot-mark (g) (slot) (on) = let bit = bit-shl 1 g.viewer
+    in let kept = __record-set slot "seen" (if on then bit-or slot.seen bit else bit-xor (bit-or slot.seen bit) bit) in 0
   gm-slots : Integer, List MonsterSlot -> List MonsterSlot
   gm-slots (left) (xs) = if left == 0 then xs
-    else let slot = MonsterSlot { serial = 0, direction = 4, due = 0, visible = False }
+    else let slot = MonsterSlot { serial = 0, direction = 4, due = 0, seen = 0 }
     in gm-slots (left - 1) (list-push xs slot)
   gm-new : GameCombat, Integer, Integer, Integer, Integer, Integer -> Result GameMonster Text
   gm-new (combat) (count) (x) (y) (z) (radius) =
@@ -21,7 +37,7 @@ Chapter: GameMonster
       | x < 0 | x > 6143 | y < 0 | y > 4095 | z < -128 | z > 127
       | radius < 1 | radius > 16 then Err "monster home budget"
     else Ok (GameMonster { combat = combat, slots = gm-slots count (__list-with-capacity count),
-      x = x, y = y, z = z, radius = radius, connection = -1 })
+      x = x, y = y, z = z, radius = radius, links = gm-links gm-link-limit (__list-with-capacity gm-link-limit), viewer = 0, unseen = 0 })
   gm-ticks : Integer -> Integer
   gm-ticks (milliseconds) = (milliseconds * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
   gm-near : Integer, Integer, Integer, Integer, Integer -> Boolean
@@ -32,7 +48,7 @@ Chapter: GameMonster
   gm-occupied-tile : GameShard, Integer -> Boolean
   gm-occupied-tile (shard) (serial) = if serial == 0 then False
     else let slot = world-slot shard.world serial
-    in if slot < 0 then False else if peek-qword shard.world.buffer (24 + slot * 80) == 1 then True
+    in if slot < 0 then False else if peek-qword (wi-object shard.world.buffer slot) 8 == 1 then True
     else gm-occupied-tile shard (world-tile-next shard.world serial)
   gm-spawn : GameMonster, GameShard, WalkMap, MonsterSlot, Integer -> Result Integer Text
   gm-spawn (g) (shard) (map) (slot) (attempt) =
@@ -44,7 +60,7 @@ Chapter: GameMonster
         let x = g.x + walk-dx direction
         in let y = g.y + walk-dy direction
         in if gm-occupied shard x y 0 then gm-spawn g shard map slot (attempt + 1)
-        else if peek-qword shard.world.buffer 0 >= shard.world.capacity then Ok 0
+        else if world-room shard.world <= 0 then Ok 0
         else when world-create shard.world (__record-set (gs-mobile 0 x y z 17 0) "health" 30)
           is Err (e) -> Err e
           is Ok (serial) ->
@@ -58,7 +74,7 @@ Chapter: GameMonster
   gm-step (g) (shard) (map) (slot) (m) (direction) =
     let x = m.x + walk-dx direction
     in let y = m.y + walk-dy direction
-    in if not (gm-near x y g.x g.y g.radius) | gm-occupied shard x y 0 then False
+    in if not (gm-near x y g.x g.y g.radius) | world-blocked shard.world x y then False
     else when walk-step map m.x m.y m.z direction
       is Err (_) -> False
       is Ok (z) ->
@@ -80,7 +96,7 @@ Chapter: GameMonster
     else let a = list-at g.combat.actors (world-slot shard.world m.serial)
     in let speed = 1000 + cb-random g.combat (max 1 ((100 - a.dexterity) / 3)) * 100
     in let due = __record-set slot "due" (g.combat.tick + gm-ticks (max 100 (min 5000 speed)))
-    in let hunt = viewer.health > 0 & gm-near viewer.x viewer.y g.x g.y g.radius
+    in let hunt = viewer.health > 0 & viewer.serial /= g.unseen & gm-near viewer.x viewer.y g.x g.y g.radius
       & gm-near m.x m.y viewer.x viewer.y 6
     in if hunt then when cb-ensure g.combat shard viewer.serial
       is Err (_) -> False
@@ -100,9 +116,9 @@ Chapter: GameMonster
   gm-show : GameMonster, MonsterSlot, WorldObject, WorldObject, Boolean, List (List Integer) -> List (List Integer)
   gm-show (g) (slot) (m) (viewer) (moved) (packets) =
     let near = gm-near m.x m.y viewer.x viewer.y 18
-    in let was = slot.visible
-    in let seen = __record-set slot "visible" near
-    in let a = list-at g.combat.actors (int-mod (m.serial - 1) (list-length g.combat.actors))
+    in let was = gm-slot-seen g slot
+    in let seen = gm-slot-mark g slot near
+    in let a = list-at g.combat.actors (cb-actor-slot m.serial (list-length g.combat.actors))
     in if near & not was then list-push packets (cbp-mobile m slot.direction (cbp-flags a.war False) 3)
     else if near & moved then list-push packets (cbp-move m slot.direction (cbp-flags a.war False) 3)
     else if was & not near then list-push packets (cbp-remove m.serial)
@@ -121,9 +137,9 @@ Chapter: GameMonster
     else when world-get shard.world slot.serial
       is Err (_) ->
         let old = slot.serial
-        in let shown = slot.visible
+        in let shown = gm-slot-seen g slot
         in let clear = __record-set slot "serial" 0
-        in let invisible = __record-set slot "visible" False
+        in let invisible = __record-set slot "seen" 0
         in let due = __record-set slot "due" (g.combat.tick + gm-ticks 60000)
         in Ok (if shown then list-push packets (cbp-remove old) else packets)
       is Ok (m) ->
@@ -140,7 +156,7 @@ Chapter: GameMonster
       is Ok (next) -> gm-all g shard map viewer (i + 1) next
   gm-forget : GameMonster, Integer -> Integer
   gm-forget (g) (i) = if i == list-length g.slots then 0
-    else let clear = __record-set (list-at g.slots i) "visible" False in gm-forget g (i + 1)
+    else let clear = gm-slot-mark g (list-at g.slots i) False in gm-forget g (i + 1)
   gm-pulse : GameMonster, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   gm-pulse (g) (shard) (input) (map) (host-port) (tick) =
     if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= shard.active then Ok None
@@ -148,8 +164,10 @@ Chapter: GameMonster
       is Err (e) -> Err e
       is Ok (combat) ->
         let packets = when combat is None -> [] is Just (r) -> r.packets
-        in let reset = if g.connection == input.connection then 0 else gm-forget g 0
-        in let link = __record-set g "connection" input.connection
+        in let at = gm-link-at g.links input.connection 0 0
+        in let index = __record-set g "viewer" at
+        in let reset = if list-at g.links at == input.connection then 0 else gm-forget g 0
+        in let link = list-set-at g.links at input.connection
         in when world-get shard.world input.session.serial
           is Err (e) -> Err e
           is Ok (viewer) -> when gm-all g shard map viewer 0 packets

@@ -8,19 +8,20 @@ Chapter: GameCraftCodec
   gcrc-write : GameCraft, Integer, Integer, Integer -> Integer
   gcrc-write (state) (now) (buf) (i) = if i == 5 then 0
     else let r = list-at state.requests i
-    in let a = poke-qword buf (32 + i * 16) r.serial
-    in let b = poke-qword buf (40 + i * 16) (max 0 (r.next - now))
+    in let bound = ghc-bound state.harvest r.serial i
+    in let a = poke-qword buf (32 + i * 16) (if bound then r.serial else 0)
+    in let b = poke-qword buf (40 + i * 16) (if bound then max 0 (r.next - now) else 0)
     in gcrc-write state now buf (i + 1)
   gcrc-encode : GameCraft, Integer, Integer, Integer -> Result Integer Text
   gcrc-encode (state) (now) (buf) (capacity) =
-    if capacity < 112 | now < 0 | now > 9223372036854775807 - gh-ticks 3000
-      | state.nonce < 1 | state.nonce > 16384 then Err "craft codec extent or nonce"
+    if capacity < 112 then Err "craft codec extent"
     else let a = poke-qword buf 0 #31434355
     in let b = poke-qword buf 8 1
     in let c = poke-qword buf 16 state.nonce
     in let d = poke-qword buf 24 0
     in let requests = gcrc-write state now buf 0
-    in if not (ghc-requests-valid state.harvest buf 0) then Err "craft codec player bindings"
+    in if now < 0 | now > 9223372036854775807 - gh-ticks 3000 | state.nonce < 1 | state.nonce > 16384 then Err "craft codec nonce or clock"
+    else if not (ghc-requests-valid state.harvest buf 0) then Err "craft codec player bindings"
     else Ok 112
   gcrc-read : GameCraft, Integer, Integer, Integer -> Integer
   gcrc-read (state) (now) (buf) (i) = if i == 5 then 0

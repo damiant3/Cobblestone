@@ -1,0 +1,130 @@
+Chapter: CompositeCompact
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter MapCache
+  cites Foreword chapter Result
+
+  CcpSource = record { store : UoStore, size : Integer, saved : Integer }
+  ccp-fail : Text -> [Console] Integer
+  ccp-fail (message) = act
+    print-line-uni ("COMPACT FAIL " & message)
+    1
+  end
+  ccp-better : Result UoStore Text, Result UoStore Text -> Result UoStore Text
+  ccp-better (x) (y) = when y
+    is Err (_) -> x
+    is Ok (b) -> if b.snapshot < 0 then x else when x
+      is Err (_) -> y
+      is Ok (a) -> if a.snapshot < 0 | b.sequence > a.sequence then y else x
+  ccp-load : Integer -> [Console, Device.Block] Result CcpSource Text
+  ccp-load (patch) = act
+    w <- block-select 0
+    region <- wmc-store-region UoIde
+    base <- list-at region 0
+    span <- list-at region 1
+    whole <- us-open base span
+    first <- us-open base (span / 2)
+    second <- us-open (base + span / 2) (span / 2)
+    when ccp-better (ccp-better whole first) second
+      is Err (e) -> Err ("source " & e)
+      is Ok (store) -> if store.snapshot < 0 then Err "source holds no snapshot"
+        else act
+          first-length <- us-record-length store store.snapshot
+          when first-length
+            is Err (e) -> Err ("source snapshot " & e)
+            is Ok (length) -> act
+              spanned <- cs-replay-span store patch (store.snapshot + us-span length) length
+              when spanned
+                is Err (e) -> Err ("source replay " & e)
+                is Ok (largest) -> let capacity = cs-room largest
+                  in let saved = alloc-bytes capacity
+                  in act
+                  loaded <- us-read store store.snapshot saved capacity
+                  when loaded
+                    is Err (e) -> Err ("source snapshot " & e)
+                    is Ok (row) -> if row.kind /= 1 then Err "source snapshot kind differs"
+                      else act
+                        replayed <- cs-replay store saved capacity row.length patch row.next row.sequence row.tick
+                        when replayed
+                          is Err (e) -> Err ("source replay " & e)
+                          is Ok (final) -> if peek-qword saved 16 /= final | peek-qword saved 32 /= store.sequence | peek-qword saved 40 /= store.tick then Err "replayed snapshot header disagrees with the journal"
+                            else Ok (CcpSource { store = store, size = final, saved = saved })
+                      end
+                  end
+              end
+          end
+        end
+  end
+  ccp-write : Integer, Integer, Integer, Integer -> [Console, Device.Block] Result UoStore Text
+  ccp-write (saved) (size) (sequence) (tick) = let zero = alloc-bytes 512
+    in let cleared = us-zero zero 0
+    in act
+      w <- block-select 1
+      region <- wmc-store-region UoIde
+      base <- list-at region 0
+      span <- list-at region 1
+      wiped <- us-device-write UoIde base zero
+      twin <- us-device-write UoIde (base + span / 2) zero
+      when wiped
+        is Err (e) -> Err ("target wipe " & e)
+        is Ok (_) -> when twin
+         is Err (e) -> act Err ("target second half wipe " & e) end
+         is Ok (_) -> act
+          opened <- us-open base (span / 2)
+          when opened
+            is Err (e) -> Err ("target " & e)
+            is Ok (store) -> if store.head /= 0 then Err "target journal not empty after wipe"
+              else act
+                appended <- us-append store 1 sequence tick saved size
+                when appended
+                  is Err (e) -> Err ("target append " & e)
+                  is Ok (_) -> Ok store
+              end
+          end
+      end
+  ccp-verify : Integer, Integer, Integer, Integer -> [Console, Device.Block] Result Integer Text
+  ccp-verify (expected) (size) (sequence) (check) = act
+    w <- block-select 1
+    region <- wmc-store-region UoIde
+    opened <- us-open-pair UoIde (list-at region 0) (list-at region 1)
+    when opened
+      is Err (e) -> Err ("reopen " & e)
+      is Ok (store) -> if store.start /= list-at region 0 | store.snapshot /= 0 | store.sequence /= sequence then Err "reopened journal is not one snapshot at the source sequence"
+        else act
+          loaded <- us-read store 0 check size
+          when loaded
+            is Err (e) -> Err ("reread " & e)
+            is Ok (row) -> if row.length /= size | row.next /= store.head then Err "reread extent differs"
+              else if us-hash check size 0 2166136261 /= expected then Err "reread bytes differ"
+              else Ok store.head
+          end
+        end
+  end
+  opening : [Console, Device.Block] Integer = let patch = alloc-bytes cd-max-bytes
+    in act
+      loaded <- ccp-load patch
+      when loaded
+        is Err (e) -> ccp-fail e
+        is Ok (loaded-source) -> let size = loaded-source.size
+          in let saved = loaded-source.saved
+          in let source = loaded-source.store
+          in let sequence = source.sequence
+          in let tick = source.tick
+          in let expected = us-hash saved size 0 2166136261
+          in act
+            print-line-uni ("COMPACT source records-end=" & show source.head & " sequence=" & show sequence & " tick=" & show tick & " snapshot-bytes=" & show size)
+            written <- ccp-write saved size sequence tick
+            when written
+              is Err (e) -> ccp-fail e
+              is Ok (_) -> act
+                verified <- ccp-verify expected size sequence (alloc-bytes (cs-room size))
+                when verified
+                  is Err (e) -> ccp-fail e
+                  is Ok (head) -> act
+                    print-line-uni ("COMPACT OK journal-sectors-used=" & show head & " sequence=" & show sequence & " tick=" & show tick)
+                    0
+                  end
+              end
+          end
+    end
+
+Page 1

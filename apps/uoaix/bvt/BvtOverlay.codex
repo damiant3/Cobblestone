@@ -1,0 +1,83 @@
+Chapter: BvtOverlay
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bov-owner : Integer -> Result CompositeGame Text
+  bov-owner (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> when cg-founded game vendor (gsi-new game.world)
+          is Err (e) -> Err e
+          is Ok (owner) -> when cg-spawn-attach owner
+            is Err (e) -> Err e
+            is Ok (_) -> Ok owner
+ Bits: 1 and 2 a 36-tile earshot square reaches a straight route's end and stops one tile past; 4 and 8 the same
+ across it; 16 and 32 a diagonal route touches and misses; 63 is all.
+  bov-touch : Integer -> Integer
+  bov-touch (unused) = (if gmo-touches 100 100 110 100 146 100 36 then 1 else 0) + (if gmo-touches 100 100 110 100 147 100 36 then 0 else 2)
+    + (if gmo-touches 100 100 110 100 105 136 36 then 4 else 0) + (if gmo-touches 100 100 110 100 105 137 36 then 0 else 8)
+    + (if gmo-touches 0 0 100 100 86 50 36 then 16 else 0) + (if gmo-touches 0 0 100 100 123 50 36 then 0 else 32)
+  bov-guard-edge : Integer -> Integer
+  bov-guard-edge (unused) = let segs = [100, 100, 110, 100, 0]
+    in (if gmo-guard-edge segs 146 100 then 1 else 0) + (if gmo-guard-edge segs 145 100 then 0 else 2) + (if gmo-guard-edge segs 147 100 then 0 else 4)
+  bov-edge-any : List WsRegion, Integer, Integer, Integer -> Boolean
+  bov-edge-any (regions) (x) (y) (i) = if i == list-length regions then False
+    else let a = (list-at regions i).area
+    in if x >= a.x1 & x <= a.x2 & y >= a.y1 & y <= a.y2 & (x == a.x1 | x == a.x2 | y == a.y1 | y == a.y2) then True
+    else bov-edge-any regions x y (i + 1)
+  bov-count : List WsRegion, Integer, Integer, Integer, Integer, Integer -> Integer
+  bov-count (regions) (x1) (y1) (x2) (y2) (k) = let w = x2 - x1 + 1
+    in if k >= w * (y2 - y1 + 1) then 0
+    else (if bov-edge-any regions (x1 + int-mod k w) (y1 + k / w) 0 then 1 else 0) + bov-count regions x1 y1 x2 y2 (k + 1)
+  bov-drain : GmOverlay, List WsRegion, WalkMap, Integer, WorldObject, Integer, Integer -> Integer
+  bov-drain (o) (regions) (map) (connection) (mobile) (pulses) (total) = if pulses == 0 then total
+    else let n = list-length (gmo-view o None regions (gld-new 0) map connection mobile)
+    in if n == 0 then total else bov-drain o regions map connection mobile (pulses - 1) (total + n)
+  bov-at : Integer, Integer -> WorldObject
+  bov-at (x) (y) = WorldObject { serial = 4242, kind = 1, x = x, y = y, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 10 }
+  bov-map : WalkMap = WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+  bov-land : GmLand = gld-new 0
+ Answers a bit per check over the Britain mine region (1445..1457, 1526..1534) with a GM standing at 1451,1530: 1 the first
+ pulses send every spawn-region edge tile in the 37-tile window, 2 a further pulse sends nothing, 4 a stranger's
+ connection gets nothing, 8 a step east sends exactly the new column's edges, 16 a click on the mine's corner names it,
+ 32 a click from a connection showing nothing is not answered, 64 hiding removes every edge in the window, 128 a
+ character change on the connection drops the row; 255 is all.
+  bov-spawn : Integer -> Integer
+  bov-spawn (unused) = when bov-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let regions = g.catalog.regions
+        in let mine = list-at regions (list-length regions - 1)
+        in if mine.name /= "Britain mine" then -2
+        else let o = gmo-new 0
+        in let row = gmo-show o 7 4242 gmo-spawns
+        in let here = bov-at 1451 1530
+        in let sent = bov-drain o regions bov-map 7 here 32 0
+        in let first = if sent > 0 & sent == bov-count regions 1433 1512 1469 1548 0 then 1 else 0
+        in let again = if list-length (gmo-view o None regions bov-land bov-map 7 here) == 0 then 2 else 0
+        in let stranger = if list-length (gmo-view o None regions bov-land bov-map 8 here) == 0 then 4 else 0
+        in let stepped = bov-drain o regions bov-map 7 (bov-at 1452 1530) 32 0
+        in let step = if stepped == bov-count regions 1470 1512 1470 1548 0 then 8 else 0
+        in let corner = gp-put32 [9] (gmo-serial gmo-spawn-base 1445 1526)
+        in let named = when gmo-click o None owner.spawns bov-land 7 corner
+          is None -> 0
+          is Just (r) -> if r.note == "overlay:name" & list-length r.packets >= 2 then 16 else 0
+        in let unseen = when gmo-click o None owner.spawns bov-land 8 corner is None -> 32 is Just (_) -> 0
+        in let removed = list-length (gmo-hide o None regions bov-land 7 (bov-at 1452 1530) gmo-spawns)
+        in let hidden = if removed == bov-count regions 1434 1512 1470 1548 0 & not (gmo-on o 7) then 64 else 0
+        in let again-row = gmo-show o 7 4242 gmo-spawns
+        in let other = gmo-view o None regions bov-land bov-map 7 (__record-set (bov-at 1452 1530) "serial" 4343)
+        in let dropped = if list-length other == 0 & not (gmo-on o 7) then 128 else 0
+        in first + again + stranger + step + named + unseen + hidden + dropped
+  bvt-overlay : Integer -> [Console] Integer
+  bvt-overlay (unused) = act
+    t <- bvt-check ("GM overlay: a route's 36-tile earshot square touches and stops at the right tiles (code " & show (bov-touch 0) & ")") (bov-touch 0 == 63)
+    e <- bvt-check ("GM overlay: a guard zone's edge is its last guarded tile (code " & show (bov-guard-edge 0) & ")") (bov-guard-edge 0 == 7)
+    n <- bov-spawn 0
+    s <- bvt-check ("GM overlay: spawn-region edges stream to the GM's connection only, once, and hide and click by serial (code " & show n & ")") (n == 255)
+    t + e + s
+  end

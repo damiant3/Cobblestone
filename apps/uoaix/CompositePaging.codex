@@ -1,8 +1,24 @@
 Chapter: CompositePaging
   cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePlays
   cites Uoaix chapter MapCache
   cites Uoaix chapter ItemTable
   cites Uoaix chapter BankCommands
+  cites Uoaix chapter CompositeHelpCommands
+  cites Uoaix chapter CompositeAccountCommands
+  cites Uoaix chapter GotoPlaceData
+  cites Uoaix chapter CompositeSkillCommand
+  cites Uoaix chapter CompositeRemoval
+  cites Uoaix chapter Decorator
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter RoyalStable
+  cites Uoaix chapter CityStables
+  cites Uoaix chapter Teleporters
+  cites Uoaix chapter PlayStories
+  cites Uoaix chapter PlayRun
+  cites Uoaix chapter ActiveSkillsTracking
+  cites Uoaix chapter Housing
 
   cp-cover : MapCacheState, CompositeOwner, GameShard, GameInput -> [Device.Block] Result Integer Text
   cp-cover (cache) (owner) (game) (input) =
@@ -12,13 +28,28 @@ Chapter: CompositePaging
       is Ok (mobile) -> act
         loaded <- wmc-cover cache mobile.x mobile.y
         when loaded
-          is Err (e) -> let stopped = cs-refuse owner e in Err e
+          is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
           is Ok (map) -> when owner.state.decoration
             is None -> Ok 0
             is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
-              is Err (e) -> let stopped = cs-refuse owner e in Err e
+              is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
               is Ok (_) -> Ok 0
       end
+ A new character enters at gs-create's fixed tile 1420,1698 before it has a mobile to cover, so the window
+ is paged there rather than left wherever the last covered player stood.
+  cp-creating : GameInput, List Integer -> Boolean
+  cp-creating (input) (packet) = input.mode == 2 & input.session.phase == 1 & list-length packet > 0 & list-at packet 0 == 0
+  cp-cover-at : MapCacheState, CompositeOwner, Integer, Integer -> [Device.Block] Result Integer Text
+  cp-cover-at (cache) (owner) (x) (y) = act
+    loaded <- wmc-cover cache x y
+    when loaded
+      is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
+      is Ok (map) -> when owner.state.decoration
+        is None -> Ok 0
+        is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
+          is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
+          is Ok (_) -> Ok 0
+  end
   cp-magic-cover : MapCacheState, WdState, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
   cp-magic-cover (cache) (decoration) (x) (y) (z) = act
     loaded <- wmc-cover cache x y
@@ -29,26 +60,227 @@ Chapter: CompositePaging
         is Ok (_) -> Ok map
   end
   cp-route : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
-  cp-route (cache) (owner) (game) (input) (map) (port) (packet) =
-    if (owner.state.testing | ga-is-british game.accounts) & input.mode == 2 & input.session.phase == 2 & cp-go-request packet then cp-go cache owner game input packet
+  cp-route (cache) (owner) (game) (input) (map) (port) (raw) =
+    let gumped = cp-decor-gump-answer (cpy-gump-answer (crg-answer raw))
+    in let landed = cp-speech-answer gumped cp-land-gump-id cp-land-commands
+    in let packet = if list-length landed < 15 | list-at landed 0 /= #B1 | gp-u32 landed 7 /= cp-story-gump-id then landed
+      else cp-speech-answer landed cp-story-gump-id (cp-story-commands owner.state.plays.stories 0 [])
+    in let travel = input.mode == 2 & input.session.phase == 2 & not owner.state.testing & not (ga-is-british game.accounts) & (cp-go-request packet | cp-goto-request packet)
+    in let player = input.mode == 2 & input.session.phase == 2 & not (ga-is-british game.accounts)
+    in let looking = player & cp-alone packet cp-inspect-word
+    in let looked = player & cp-target-request packet & bit-and (gp-u32 packet 2) #FFFF == 1
+    in let lord = input.mode == 2 & input.session.phase == 2 & ga-is-british game.accounts
+    in let kicking = (player | lord) & cp-alone packet cp-kick-word
+    in let kicked = (player | lord) & cp-target-request packet & bit-and (gp-u32 packet 2) #FFFF == 8
+    in let muting = (player | lord) & cp-alone packet cp-mute-word
+    in let muted = (player | lord) & cp-target-request packet & bit-and (gp-u32 packet 2) #FFFF == 9
+    in let unsticking = (player | lord) & cp-alone packet cp-unstuck-word
+    in let unstuck = (player | lord) & cp-target-request packet & bit-and (gp-u32 packet 2) #FFFF == 10
+    in let jailing = (player | lord) & cp-jail-hours packet > 0
+    in let jailed = (player | lord) & cp-jail-target packet
+    in let banning = (player | lord) & cp-alone packet cp-ban-word
+    in let banned = (player | lord) & cp-target-request packet & bit-and (gp-u32 packet 2) #FFFF == 11
+    in let unbanning = (player | lord) & list-length (cp-unban-name packet) > 0
+    in let peeking = if player & not lord then cg-worn-pack owner.state game input packet else 0
+    in let reading = player & ch-pages-request packet
+    in let acking = player & ch-ack-request packet
+    in let zoning = (player | lord) & (cp-alone packet cp-zones-word | cp-alone packet cp-spawns-word)
+    in let playing = player & cpy-request packet
+    in let storying = player & cpy-story-request packet
+    in let landing = (player | lord) & gld-word packet /= ""
+    in let showing = (player | lord) & cp-alone packet cp-landshow-word
+    in let aimed = (player | lord) & gld-answer packet
+    in let decorating = (player | lord) & cp-decor-request packet
+    in let decorated = (player | lord) & (cp-decor-target packet | cp-decor-choice-request packet)
+    in let gm = if lord & (kicking | kicked | muting | muted | unsticking | unstuck | jailing | jailed | banning | banned | unbanning | zoning | landing | showing | aimed | decorating | decorated) then ""
+      else if decorating then owner.gm-allow (ga-bound game.accounts) "decorate"
+      else if decorated then owner.gm-allow (ga-bound game.accounts) "?decorate"
+      else if travel then owner.gm-allow (ga-bound game.accounts) "go-to-player"
+      else if looking then owner.gm-allow (ga-bound game.accounts) "inspect"
+      else if looked then owner.gm-allow (ga-bound game.accounts) "?inspect"
+      else if kicking then owner.gm-allow (ga-bound game.accounts) "kick"
+      else if kicked then owner.gm-allow (ga-bound game.accounts) "?kick"
+      else if muting then owner.gm-allow (ga-bound game.accounts) "mute"
+      else if muted then owner.gm-allow (ga-bound game.accounts) "?mute"
+      else if unsticking then owner.gm-allow (ga-bound game.accounts) "unstuck"
+      else if unstuck then owner.gm-allow (ga-bound game.accounts) "?unstuck"
+      else if jailing then owner.gm-allow (ga-bound game.accounts) "jail"
+      else if jailed then owner.gm-allow (ga-bound game.accounts) "?jail"
+      else if banning | unbanning then owner.gm-allow (ga-bound game.accounts) "ban"
+      else if banned then owner.gm-allow (ga-bound game.accounts) "?ban"
+      else if peeking > 0 & owner.gm-allow (ga-bound game.accounts) "?inspect" == "" then owner.gm-allow (ga-bound game.accounts) "inspect"
+      else if reading then owner.gm-allow (ga-bound game.accounts) "?any"
+      else if acking then owner.gm-allow (ga-bound game.accounts) "support"
+      else if landing | showing | aimed then owner.gm-allow (ga-bound game.accounts) "?decorate"
+      else if zoning then owner.gm-allow (ga-bound game.accounts) "?any"
+      else if playing then owner.gm-allow (ga-bound game.accounts) "play"
+      else if storying then owner.gm-allow (ga-bound game.accounts) "director" else "-"
+    in let usage = if input.mode == 2 & input.session.phase == 2 then cp-usage packet else ""
+    in if usage /= "" & (lord | owner.state.testing | owner.gm-allow (ga-bound game.accounts) "?any" == "") then act Ok (cp-say input "help" usage) end
+    else if gm == "" & peeking > 0 then act Ok (cg-pack-open owner.state game input peeking) end
+    else if gm == "" & looking then act Ok (cp-cursor input 1 0 "Inspect what?") end
+    else if gm == "" & looked then act Ok (cp-inspect game input (gp-u32 packet 7)) end
+    else if gm == "" & muting then act Ok (cp-cursor input 9 0 "Mute or unmute whom?") end
+    else if gm == "" & muted then act Ok (cp-mute owner game input (gp-u32 packet 7)) end
+    else if gm == "" & reading then act Ok (ch-pages owner input) end
+    else if gm == "" & acking then ch-ack owner input packet
+    else if gm == "" & playing then cp-play-go cache owner game input packet
+    else if gm == "" & storying then cp-story owner game input packet
+    else if gm == "" & jailing then act Ok (cp-cursor input (cp-jail-context + cp-jail-hours packet) 0 ("Jail whom for " & show (cp-jail-hours packet) & " game hours? Pick a prisoner to release.")) end
+    else if gm == "" & jailed then cp-jail cache owner game input (gp-u32 packet 7) (bit-and (gp-u32 packet 2) #FFFF - cp-jail-context)
+    else if gm == "" & unsticking then act Ok (cp-cursor input 10 0 "Free whom?") end
+    else if gm == "" & unstuck then cp-unstuck cache owner game input (gp-u32 packet 7)
+    else if gm == "" & banning then act Ok (cp-cursor input 11 0 "Ban whose account?") end
+    else if gm == "" & banned then cp-ban owner game input (gp-u32 packet 7)
+    else if gm == "" & unbanning then cp-unban owner game input (cp-unban-name packet)
+    else if gm == "" & decorating then cp-decor owner game input packet
+    else if gm == "" & decorated & cp-decor-choice-request packet then cp-decor-choice owner game input packet
+    else if gm == "" & decorated then (if bit-and (gp-u32 packet 2) #FFFF >= cp-build-run then cp-build-answer owner game input packet else cp-decor-answer owner game input packet)
+    else if gm == "" & kicking then act Ok (cp-cursor input 8 0 "Kick whom?") end
+    else if gm == "" & showing then act Ok (cp-overlay owner game input gmo-land) end
+    else if gm == "" & landing then act Ok (gld-command owner.state.land input packet) end
+    else if gm == "" & aimed then cp-land-aim cache owner game input packet
+    else if gm == "" & zoning then act Ok (cp-overlay owner game input (if cp-alone packet cp-zones-word then gmo-guards else gmo-spawns)) end
+    else if gm == "" & kicked then act Ok (cp-say input "gm:kick" (if owner.kick (gp-u32 packet 7) > 0 then "Disconnected." else "No player is connected as that.")) end
+    else if gm == "" then (if cp-go-request packet then cp-go cache owner game input packet else cp-goto cache owner game input packet)
+    else if gm /= "-" & not looked & not kicked & not muted & not unstuck & not jailed & not banned & not decorated then act cp-go-say input ("GM refused: " & gm) end
+    else if (owner.state.testing | ga-is-british game.accounts) & input.mode == 2 & input.session.phase == 2 & cp-go-request packet then cp-go cache owner game input packet
+    else if (owner.state.testing | ga-is-british game.accounts) & input.mode == 2 & input.session.phase == 2 & cp-goto-request packet then cp-goto cache owner game input packet
     else if input.mode == 2 & input.session.phase == 2 & cp-where-request packet then act Ok (cp-where game input) end
+    else if (owner.state.testing | ga-is-british game.accounts) & input.mode == 2 & input.session.phase == 2 & cp-alone packet cp-cover-word then act Ok (cp-cover-dump input) end
+    else if input.mode == 2 & input.session.phase == 2 & list-length packet >= 15 & list-at packet 0 == #B1 & gp-u32 packet 7 == gvp-receipt-id then act Ok (gs-reply [] "gump:receipt-closed") end
+    else if input.mode == 2 & input.session.phase == 2 & cp-gumptest-answer packet then act Ok (cp-say input "gump:answer" ("Gump answered: button " & show (gp-u32 packet 11) & ".")) end
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cp-alone packet cp-gumptest-word then act Ok (cp-gump-test input) end
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cp-claim-request packet then cp-claim cache.map owner game input packet
+    else if input.mode == 2 & input.session.phase == 2 & cp-stable-name owner game input packet /= "" then cp-stable cache.map owner game input (cp-stable-name owner game input packet)
+    else if input.mode == 2 & input.session.phase == 2 & cp-city-stable-keeper game input packet /= 0 then cp-city-stable cache.map owner game input packet (cp-city-stable-keeper game input packet)
     else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cp-add-request packet then cp-add owner game input packet
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cpy-request packet then cp-play-go cache owner game input packet
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cp-british-request packet then cp-british cache.map owner game input packet
+    else if input.mode == 2 & input.session.phase == 2 & ch-page-request packet then ch-page owner game input
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ch-pages-request packet then act Ok (ch-pages owner input) end
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ch-ack-request packet then ch-ack owner input packet
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ca-account-request packet then ca-account owner game input packet
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ca-accounts-request packet then act Ok (ca-accounts game input) end
+    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cp-house-request packet then cp-house owner game input packet
     else if input.mode == 2 & input.session.phase == 2 & game.active == input.session.serial & bc-request packet then
       let reply = cp-refresh owner game input (bc-handle owner.state.banks game input packet get-ticks)
       in let weighed = cp-weigh owner input reply in act Ok reply end
     else act
-      covered <- cp-cover cache owner game input
-      when covered
-        is Err (e) -> Err e
-        is Ok (_) -> act
-          routed <- cs-route owner game input cache.map port packet
-          when routed
-            is Err (e) -> Err e
-            is Ok (reply) -> let refreshed = cp-refresh owner game input reply
-              in let weighed = cp-weigh owner input refreshed in Ok refreshed
-        end
+      drained <- cp-overload owner game input packet
+      if drained < 0 then cp-pass cache owner game input map port packet
+      else if gp-stat (game.characters + drained * 160) 1 > 0 & peek-byte (game.characters + drained * 160) 145 >= gp-stat (game.characters + drained * 160) 1 then act cp-overweight game input end
+      else act
+        passed <- cp-pass cache owner game input map port packet
+        when passed
+          is Err (e) -> Err e
+          is Ok (reply) -> Ok (GameReply { packets = list-push reply.packets (gs-stamina-packet (game.characters + drained * 160) input.session.serial),
+            close = reply.close, note = reply.note })
+      end
     end
+  cp-pass : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-pass (cache) (owner) (game) (input) (map) (port) (packet) = let entering = cp-entering input packet in act
+    covered <- if cp-creating input packet then cp-cover-at cache owner 1420 1698 else cp-cover cache owner game input
+    when covered
+      is Err (e) -> Err e
+      is Ok (_) -> act
+        was <- if cp-walk-step input packet then cp-tile-of game input.session.serial else 0 - 1
+        routed <- cs-route owner game input cache.map port packet
+        when routed
+          is Err (e) -> Err e
+          is Ok (reply) -> let refreshed = cp-refresh owner game input reply
+            in let weighed = cp-weigh owner input refreshed
+            in let raised = if entering & input.session.phase == 2 & ga-is-british game.accounts then cp-raised owner game input refreshed else refreshed
+            in if cp-royal-step game input packet then cp-royal cache owner game input raised was
+            else if cp-walk-step input packet then cp-teleport cache owner game input raised was else act Ok raised end
+      end
+  end
+ Lord British enters the world, created or played, with every skill at 100.0 and STR, DEX, INT and hits at 100 (Damian,
+ 2026-10-08: "give Lord British 100 in all skills and attr by default").
+  cp-entering : GameInput, List Integer -> Boolean
+  cp-entering (input) (packet) = if list-length packet == 0 then False
+    else input.mode == 2 & input.session.phase == 1 & (list-at packet 0 == 0 | list-at packet 0 == #5D)
+  cp-raised : CompositeOwner, GameShard, GameInput, GameReply -> GameReply
+  cp-raised (owner) (game) (input) (reply) = when cp-raise owner game input
+    is Err (_) -> reply
+    is Ok (packets) -> GameReply { packets = reply.packets & packets, close = reply.close, note = reply.note }
+ UOX3 movement.cpp IsOverloaded, CChar::GetWeightMax and uox.ini WEIGHTPERSTR=3.5: a living player carrying more than
+ strength x 3.5 + 40 stones spends 5 stamina on each step, and at 0 the step is refused (dictionary.ENG 1783). Answers the
+ drained character slot, or -1 when the packet is no step or the walker is not overloaded.
+  cp-overload : CompositeOwner, GameShard, GameInput, List Integer -> Integer
+  cp-overload (owner) (game) (input) (packet) =
+    if input.mode /= 2 | input.session.phase /= 2 | list-length packet < 3 | list-at packet 0 /= 2 | ga-is-british game.accounts then -1
+    else if bit-and (list-at packet 1) 7 /= input.session.direction | bit-and (list-at packet 1) 120 /= 0 | list-at packet 2 /= input.session.sequence then -1
+    else let slot = gs-char-slot game.characters input.session.serial 0
+    in if slot < 0 then -1
+    else when world-get game.world input.session.serial
+      is Err (_) -> -1
+      is Ok (mobile) -> if mobile.health <= 0 then -1
+        else let row = game.characters + slot * 160
+        in let actor = cp-holder owner.state.items.actors input.session.serial 0
+        in let held = if actor < 0 then 0 else (list-at owner.state.items.actors actor).holding
+        in let amount = if actor < 0 then 0 else (list-at owner.state.items.actors actor).amount
+        in let carried = it-carried owner.state.items.world owner.state.items.tiles input.session.serial False
+          + it-held owner.state.items.world owner.state.items.tiles input.session.serial held amount
+        in if carried * 2 <= gp-stat row 0 * 7 + 80 then -1
+        else let settled = gs-stamina row get-ticks False
+        in let before = peek-byte row 145
+        in let stamp = if before == 0 then poke-qword row 152 get-ticks else 0
+        in let spent = poke-byte row 145 (min (gp-stat row 1) (before + 5)) in slot
+  cp-overweight : GameShard, GameInput -> Result GameReply Text
+  cp-overweight (game) (input) = when world-get game.world input.session.serial
+    is Err (e) -> Err e
+    is Ok (mobile) -> let sequence = input.session.sequence
+      in let reset = __record-set input.session "sequence" 0
+      in Ok (gs-reply [gp-move-denied mobile input.session.direction sequence, gs-system "You are too fatigued to move, because you are carrying too much weight!"] "walk overweight")
  Classic 0x03 speech: text from byte 8. Testing mode only: "[go x y".
+  cp-royal-step : GameShard, GameInput, List Integer -> Boolean
+  cp-royal-step (game) (input) (packet) = ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2
+    & list-length packet > 0 & list-at packet 0 == 2
+  cp-royal : MapCacheState, CompositeOwner, GameShard, GameInput, GameReply, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-royal (cache) (owner) (game) (input) (reply) (was) = when world-get game.world input.session.serial
+    is Err (_) -> act Ok reply end
+    is Ok (m) -> if cpr-alcove m.x m.y then cp-royal-go cache owner game input reply cpr-royal-x cpr-royal-y cpr-royal-z
+      else if m.x == cpr-royal-gate-x & m.y == cpr-royal-gate-y then cp-royal-go cache owner game input reply cpr-mint-stand-x cpr-mint-stand-y cpr-mint-stand-z
+      else cp-teleport cache owner game input reply was
+  cp-walk-step : GameInput, List Integer -> Boolean
+  cp-walk-step (input) (packet) = input.mode == 2 & input.session.phase == 2 & list-length packet > 0 & list-at packet 0 == 2
+  cp-tile-of : GameShard, Integer -> Integer
+  cp-tile-of (game) (serial) = when world-get game.world serial is Err (_) -> 0 - 1 is Ok (m) -> m.x * 4096 + m.y
+ A walk onto a teleporter's tile (Teleporters) takes the walker to its destination, and the pets following him within
+ 12 tiles come with him, as ServUO's Teleporter takes them.
+  cp-teleport : MapCacheState, CompositeOwner, GameShard, GameInput, GameReply, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-teleport (cache) (owner) (game) (input) (reply) (was) = when world-get game.world input.session.serial
+    is Err (_) -> act Ok reply end
+    is Ok (m) -> let i = if m.x * 4096 + m.y == was then 0 - 1 else tp-find owner.state.teleports m.x m.y m.z
+      in if i < 0 then act Ok reply end
+      else let d = tp-dest owner.state.teleports i
+      in act
+        moved <- cp-go-at cache owner game input (list-at d 0) (list-at d 1) (list-at d 2)
+        when moved
+          is Err (e) -> Err e
+          is Ok (r) -> when world-get game.world input.session.serial
+            is Err (_) -> Ok (gs-reply (reply.packets & r.packets) "teleporter")
+            is Ok (there) -> let pets = when owner.state.spawns is None -> 0 is Just (g) -> (if there.x == m.x & there.y == m.y then 0 else cp-pets-along g game.world m.serial m there 0)
+              in Ok (gs-reply (reply.packets & r.packets) ("teleporter pets=" & show pets))
+      end
+  cp-pets-along : GameWorldSpawn, WorldTable, Integer, WorldObject, WorldObject, Integer -> Integer
+  cp-pets-along (g) (world) (master) (from) (to) (i) = if i >= list-length g.slots then 0
+    else let slot = list-at g.slots i
+    in let moved = if slot.serial == 0 | slot.owner /= master | slot.order /= gws-order-follow then 0
+      else when world-get world slot.serial
+        is Err (_) -> 0
+        is Ok (pet) -> if pet.container /= 0 | walk-abs (pet.x - from.x) > 12 | walk-abs (pet.y - from.y) > 12 then 0
+          else let a = __record-set pet "x" to.x in let b = __record-set pet "y" to.y in let c = __record-set pet "z" to.z
+          in when world-update world pet is Err (_) -> 0 is Ok (_) -> let filed = gws-refile g world i in 1
+    in moved + cp-pets-along g world master from to (i + 1)
+  cp-royal-go : MapCacheState, CompositeOwner, GameShard, GameInput, GameReply, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-royal-go (cache) (owner) (game) (input) (reply) (x) (y) (z) = act
+    moved <- cp-go-at cache owner game input x y z
+    when moved
+      is Err (e) -> Err e
+      is Ok (r) -> Ok (gs-reply (reply.packets & r.packets) "royal:teleport")
+  end
   cp-go-request : List Integer -> Boolean
   cp-go-request (packet) = list-length packet > 13 & list-at packet 0 == 3
     & list-at packet 8 == 91 & list-at packet 9 == 103 & list-at packet 10 == 111 & list-at packet 11 == 32
@@ -58,17 +290,437 @@ Chapter: CompositePaging
   cp-digits-end (packet) (i) = if cp-digit packet i then cp-digits-end packet (i + 1) else i
   cp-number : List Integer, Integer, Integer -> Integer
   cp-number (packet) (i) (value) = if not (cp-digit packet i) | value > 99999 then value else cp-number packet (i + 1) (value * 10 + list-at packet i - 48)
+  cp-goto-request : List Integer -> Boolean
+  cp-goto-request (packet) = list-length packet >= 14 & list-at packet 0 == 3 & list-at packet 8 == 91 & list-at packet 9 == 103
+    & list-at packet 10 == 111 & list-at packet 11 == 116 & list-at packet 12 == 111 & (list-at packet 13 == 0 | list-at packet 13 == 32)
+  cp-lower : Integer -> Integer
+  cp-lower (c) = if c >= 65 & c <= 90 then c + 32 else c
+  cp-same : List Integer, List Integer, Integer -> Boolean
+  cp-same (packet) (name) (i) = if i == list-length name then 14 + i < list-length packet & list-at packet (14 + i) == 0
+    else 14 + i < list-length packet & cp-lower (list-at packet (14 + i)) == list-at name i & cp-same packet name (i + 1)
+  cp-goto-place : List CpPlace, List Integer, Integer -> Integer
+  cp-goto-place (places) (packet) (i) = if i == list-length places then -1
+    else let p = list-at places i in if cp-same packet (gp-ascii [] p.name 0 (text-length p.name)) 0 then i else cp-goto-place places packet (i + 1)
+  cp-typed-end : List Integer, Integer -> Integer
+  cp-typed-end (packet) (i) = if i >= list-length packet | list-at packet i == 0 then i else cp-typed-end packet (i + 1)
+  cp-prefix : List Integer, List Integer, Integer, Integer -> Boolean
+  cp-prefix (packet) (name) (stop) (i) = if 14 + i >= stop then True
+    else i < list-length name & cp-lower (list-at packet (14 + i)) == list-at name i & cp-prefix packet name stop (i + 1)
+  cp-goto-matches : List CpPlace, List Integer, Integer, Integer, List CpPlace -> List CpPlace
+  cp-goto-matches (places) (packet) (stop) (i) (out) = if i == list-length places then out
+    else let p = list-at places i
+    in cp-goto-matches places packet stop (i + 1) (if cp-prefix packet (gp-ascii [] p.name 0 (text-length p.name)) stop 0 then list-push out p else out)
+  cp-place-lines : List CpPlace, Integer, Text, Text, List Text -> List Text
+  cp-place-lines (places) (i) (town) (line) (out) = if i == list-length places then (if text-length line == 0 then out else list-push out line)
+    else let p = list-at places i
+    in if p.town == town then cp-place-lines places (i + 1) town (line & " " & p.name) out
+    else cp-place-lines places (i + 1) p.town (p.town & ": " & p.name) (if text-length line == 0 then out else list-push out line)
+  cp-say-lines : GameInput, List Text, Integer, List (List Integer) -> List (List Integer)
+  cp-say-lines (input) (lines) (i) (out) = if i == list-length lines then out
+    else cp-say-lines input lines (i + 1) (list-push out (sip-message input.session.serial #FFFF 6 (list-at lines i)))
+  cp-goto : MapCacheState, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-goto (cache) (owner) (game) (input) (packet) = let places = gpd-places 0
+    in if list-length packet <= 15 | list-at packet 14 == 0 then act Ok (gs-reply (cp-say-lines input (["[goto <place>: go to a named place; part of a name lists the matches. Places:"] & cp-place-lines places 0 "" "" []) 0 []) "testing:go") end
+    else let at = cp-goto-place places packet 0
+    in if at >= 0 then let p = list-at places at in cp-go-to cache owner game input p.x p.y
+    else let matches = cp-goto-matches places packet (cp-typed-end packet 14) 0 []
+    in if list-length matches == 0 then act cp-go-say input "Unknown place. Say [goto for the list." end
+    else act Ok (gs-reply (cp-say-lines input (cp-place-lines matches 0 "" "" []) 0 []) "testing:go") end
  "[where" (byte 8 on): the speaker's own position.
   cp-where-request : List Integer -> Boolean
   cp-where-request (packet) = list-length packet >= 14 & list-at packet 0 == 3 & list-at packet 8 == 91
     & list-at packet 9 == 119 & list-at packet 10 == 104 & list-at packet 11 == 101 & list-at packet 12 == 114 & list-at packet 13 == 101
+  cp-cover-word : List Integer = [91, 99, 111, 118, 101, 114]
+ 0xB0 generic gump: serial, gump id, x, y, layout length (with its NUL), ASCII layout, text line count, then each line
+ as a character count and UCS-2 big-endian characters (Sphere Source-X PacketGumpDialog). The 1998 GUMPIDX.MUL holds
+ no 5054-5062 backing and no 4005-4007 buttons (the 1.25.32 client drew the text alone); it holds the nine-piece
+ backing 2600-2608 and the 63x23 button 247 (pressed 248), which the gumps use.
+  cp-gump-back : Integer = 2600
+  cp-gump-button : Integer = 247
+  cp-gump-pressed : Integer = 248
+  cp-gumptest-id : Integer = #DEC0
+  cp-gumptest-answer : List Integer -> Boolean
+  cp-gumptest-answer (packet) = list-length packet >= 15 & list-at packet 0 == #B1 & gp-u32 packet 7 == cp-gumptest-id
+  cp-gumptest-word : List Integer = [91, 103, 117, 109, 112, 116, 101, 115, 116]
+  cp-decor-tag : Integer = #44430000
+  cp-decor-word : List Integer = [91, 100, 101, 99, 111, 114]
+  cp-dc-place : List Integer = [112, 108, 97, 99, 101]
+  cp-dc-remove : List Integer = [114, 101, 109, 111, 118, 101]
+  cp-dc-mark : List Integer = [109, 97, 114, 107]
+  cp-dc-unmark : List Integer = [117, 110, 109, 97, 114, 107]
+  cp-dc-nudge : List Integer = [110, 117, 100, 103, 101]
+  cp-dc-area : List Integer = [109, 97, 114, 107, 97, 114, 101, 97]
+  cp-dc-list : List Integer = [108, 105, 115, 116]
+  cp-dc-unstatic : List Integer = [117, 110, 115, 116, 97, 116, 105, 99]
+  cp-unstatic-context : Integer = 4
+  cp-decor-request : List Integer -> Boolean
+  cp-decor-request (packet) = list-length packet >= 14 & list-at packet 0 == 3 & cp-word packet cp-decor-word 0
+    & (list-length packet == 14 | list-at packet 14 == 32 | list-at packet 14 == 0)
+  cp-decor-target : List Integer -> Boolean
+  cp-decor-target (packet) = list-length packet == 19 & list-at packet 0 == #6C & bit-and (gp-u32 packet 2) #FFFF0000 == cp-decor-tag
+  cp-at : List Integer, List Integer, Integer, Integer -> Boolean
+  cp-at (packet) (word) (at) (i) = if i >= list-length word then True
+    else if at + i >= list-length packet then False
+    else list-at packet (at + i) == list-at word i & cp-at packet word at (i + 1)
+  cp-sub : List Integer, List Integer -> Boolean
+  cp-sub (packet) (word) = let stop = 15 + list-length word
+    in cp-at packet word 15 0 & (stop >= list-length packet | list-at packet stop == 32 | list-at packet stop == 0)
+  cp-signed : List Integer, Integer -> List Integer
+  cp-signed (packet) (i) = let neg = i < list-length packet & list-at packet i == 45
+    in let start = if neg then i + 1 else i
+    in if not (cp-digit packet start) then [0, start, 0]
+    else let v = cp-number packet start 0 in [if neg then 0 - v else v, cp-digits-end packet start, 1]
+  cp-signed-next : List Integer, List Integer -> List Integer
+  cp-signed-next (packet) (prior) = if list-at prior 2 == 1 & list-at prior 1 < list-length packet & list-at packet (list-at prior 1) == 32 then cp-signed packet (list-at prior 1 + 1) else [0, list-at prior 1, 0]
+  cp-decor-cursor : GameInput, Integer, Text -> GameReply
+  cp-decor-cursor (input) (context) (text) =
+    gs-reply [cp-line input text, gp-zeros (list-push (gp-put32 [#6C, 0] (cp-decor-tag + context)) 0) 12] "decor:cursor"
+ A location cursor (type 1): the client answers a static with its art at 17, x at 11, y at 13 and z at 16.
+  cp-decor-pick : GameInput, Integer, Text -> GameReply
+  cp-decor-pick (input) (context) (text) =
+    gs-reply [cp-line input text, gp-zeros (list-push (gp-put32 [#6C, 1] (cp-decor-tag + context)) 0) 12] "decor:cursor"
+  cp-decor-usage : Text = "[decor gump | place <art hex> [hue hex] | remove | mark | unmark | nudge <dx> <dy> [dz] | markarea <radius> | list | run <art hex> | fill <art hex> | multi <id hex> | set <story> <set> | unstatic"
+  cp-decor : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-decor (owner) (game) (input) (packet) =
+    if cp-sub packet cp-dc-gump then act Ok (cp-decor-gump owner input) end
+    else if cp-sub packet cp-dc-place then cp-decor-place owner game input packet
+    else if cp-sub packet cp-dc-remove then act Ok (cp-decor-cursor input 1 "Remove which decoration?") end
+    else if cp-sub packet cp-dc-mark then act Ok (cp-decor-cursor input 2 "Mark which decoration for the bake?") end
+    else if cp-sub packet cp-dc-unmark then act Ok (cp-decor-cursor input 3 "Unmark which decoration?") end
+    else if cp-sub packet cp-dc-nudge then act Ok (cp-decor-nudge input packet) end
+    else if cp-sub packet cp-dc-area then cp-decor-area owner game input packet
+    else if cp-sub packet cp-dc-list then act Ok (cp-decor-list owner game input) end
+    else if cp-sub packet cp-dc-baked & ga-is-british game.accounts then cp-decor-baked owner game input packet
+    else if cp-sub packet cp-dc-run then act Ok (cp-build-ask input packet 19 cp-build-run "Run the wall from here to where?") end
+    else if cp-sub packet cp-dc-fill then act Ok (cp-build-ask input packet 20 cp-build-fill "Fill the floor from here to which corner?") end
+    else if cp-sub packet cp-dc-multi then cp-build-multi owner game input packet
+    else if cp-sub packet cp-dc-set then act Ok (cp-decor-set-ask owner input packet) end
+    else if cp-sub packet cp-dc-unstatic then act Ok (cp-decor-pick input cp-unstatic-context "Remove which client static at the next bake? [decor remove on its red copy cancels.") end
+    else if list-length packet == 14 | list-at packet 14 == 0 then act Ok (cp-decor-menu owner input) end
+    else act Ok (cp-say input "decor:help" cp-decor-usage) end
+  cp-dc-set : List Integer = [115, 101, 116]
+  cp-decor-set-base : Integer = #2000
+  cp-word-end : List Integer, Integer -> Integer
+  cp-word-end (packet) (i) = if i >= list-length packet | list-at packet i == 32 | list-at packet i == 0 then i else cp-word-end packet (i + 1)
+  cp-bytes-buf : List Integer, Integer, Integer -> Integer
+  cp-bytes-buf (packet) (from) (stop) = let buf = alloc-bytes 32 in let filled = cp-bytes-fill buf packet from stop 0 in buf
+  cp-bytes-fill : Integer, List Integer, Integer, Integer, Integer -> Integer
+  cp-bytes-fill (buf) (packet) (from) (stop) (i) = if from + i >= stop | i >= 32 then 0
+    else let b = poke-byte buf i (list-at packet (from + i)) in cp-bytes-fill buf packet from stop (i + 1)
+  cp-decor-set-ask : CompositeOwner, GameInput, List Integer -> GameReply
+  cp-decor-set-ask (owner) (input) (packet) =
+    let st = owner.state.plays.stories
+    in let a = 19
+    in let ae = cp-word-end packet a
+    in let b = ae + 1
+    in let be = cp-word-end packet b
+    in if ae == a | ae - a > 30 | ae >= list-length packet | list-at packet ae /= 32 | be == b | be - b > 30 then cp-say input "decor:help" "Usage: [decor set <story> <set>, then pick the decoration."
+    else let story = sty-find-story st (cp-bytes-buf packet a ae) 0 (ae - a) 0
+    in if story < 0 then cp-say input "decor:refused" "No story by that name; [story lists them."
+    else let set = sty-find-set st story (cp-bytes-buf packet b be) 0 (be - b) 0
+    in if set < 0 then cp-say input "decor:refused" "That story has no set by that name."
+    else cp-decor-cursor input (cp-decor-set-base + set) ("Add which decoration to set " & sty-set-name st set & " of story " & sty-story-name st story & "?")
+  cp-decor-member : CompositeOwner, Integer, Integer -> Result (List Integer) Text
+  cp-decor-member (owner) (set) (serial) =
+    let s = owner.state.decor
+    in let st = owner.state.plays.stories
+    in let row = dc-find s serial 0
+    in if row < 0 then Err "that is not a decoration"
+    else if dc-removal s row then Err "a removal mark joins no set"
+    else when world-get owner.state.items.world serial
+      is Err (e) -> Err e
+      is Ok (o) -> let on = sty-story st (sty-set st set 1) 1 == 1
+        in when sty-add-member st set o.graphic o.hue o.x o.y o.z (dc-account s row) (if on then serial else 0)
+          is Err (e) -> Err e
+          is Ok (_) -> let touched = world-touch owner.state.items.world in Ok []
+  cp-decor-menu-id : Integer = #DC00
+  cp-decor-entries : List Text = ["Place an item at your feet", "Remove a decoration", "Mark a decoration for the bake", "Unmark a decoration",
+    "Nudge a decoration", "Mark every decoration within 8 tiles", "List decorations near you", "Land: roads, ground, rivers"]
+  cp-decor-icons : List Integer = [#0FB1, #0F51, #14F0, #14EF, #0E21, #1F14, #0FBF, #0F39]
+  cp-decor-rows : List Integer, Integer -> List Integer
+  cp-decor-rows (out) (i) = if i >= list-length cp-decor-entries then out
+    else cp-decor-rows (as-menu-row out (list-at cp-decor-icons i) (list-at cp-decor-entries i)) (i + 1)
+  cp-decor-menu : CompositeOwner, GameInput -> GameReply
+  cp-decor-menu (owner) (input) =
+    let head = as-menu-head input.session.serial cp-decor-menu-id ("Decorator: " & show owner.state.decor.count & " placed, " & show (dc-marked-count owner.state.decor 0 0) & " marked") (list-length cp-decor-entries)
+    in gs-reply [sip-length (cp-decor-rows head 0)] "decor:menu"
+  cp-decor-choice-request : List Integer -> Boolean
+  cp-decor-choice-request (packet) = list-length packet == 13 & list-at packet 0 == #7D & gp-u16 packet 5 == cp-decor-menu-id
+  cp-decor-choice : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-decor-choice (owner) (game) (input) (packet) = let choice = gp-u16 packet 7
+    in if choice == 1 then act Ok (cp-say input "decor:help" "Say [decor place <art hex> [hue hex] where the item belongs.") end
+    else if choice == 2 then act Ok (cp-decor-cursor input 1 "Remove which decoration?") end
+    else if choice == 3 then act Ok (cp-decor-cursor input 2 "Mark which decoration for the bake?") end
+    else if choice == 4 then act Ok (cp-decor-cursor input 3 "Unmark which decoration?") end
+    else if choice == 5 then act Ok (cp-say input "decor:help" "Say [decor nudge <dx> <dy> [dz], then pick the decoration.") end
+    else if choice == 6 then cp-decor-area owner game input [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 109, 97, 114, 107, 97, 114, 101, 97, 32, 56, 0]
+    else if choice == 7 then act Ok (cp-decor-list owner game input) end
+    else if choice == 8 then act Ok (gld-menu owner game input) end
+    else act Ok (gs-reply [] "decor:menu-closed") end
+  cp-dc-run : List Integer = [114, 117, 110]
+  cp-dc-fill : List Integer = [102, 105, 108, 108]
+  cp-dc-multi : List Integer = [109, 117, 108, 116, 105]
+ Building pieces (UoaixDecorator.md item 6): a run lays one art along a straight line from the GM's tile to the picked
+ tile, a fill covers the rectangle between them, both at the GM's height; the cursor context carries the art, 0x8000 +
+ art for a run and 0xC000 + art for a fill (art is below 0x4000). A stroke places nothing unless all of it fits.
+  cp-build-run : Integer = #8000
+  cp-build-fill : Integer = #C000
+  cp-build-run-most : Integer = 64
+  cp-build-fill-most : Integer = 256
+  cp-build-ask : GameInput, List Integer, Integer, Integer, Text -> GameReply
+  cp-build-ask (input) (packet) (at) (base) (text) = let art = cp-hex packet at 0 0
+    in if list-at art 2 == 0 | list-at art 0 < 1 | list-at art 0 > #3FFF then cp-say input "decor:help" (if base == cp-build-run then "Usage: [decor run <art hex>" else "Usage: [decor fill <art hex>")
+    else cp-decor-cursor input (base + list-at art 0) text
+  cp-build-line : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cp-build-line (x0) (y0) (x1) (y1) (n) (i) (out) = if i > n then out
+    else let x = x0 + (if n == 0 then 0 else walk-round ((x1 - x0) * i) n)
+    in let y = y0 + (if n == 0 then 0 else walk-round ((y1 - y0) * i) n)
+    in cp-build-line x0 y0 x1 y1 n (i + 1) (list-push out (x * 4096 + y))
+  cp-build-rect : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cp-build-rect (x0) (y0) (x1) (y1) (x) (y) (out) = if y > y1 then out
+    else if x > x1 then cp-build-rect x0 y0 x1 y1 x0 (y + 1) out
+    else cp-build-rect x0 y0 x1 y1 (x + 1) y (list-push out (x * 4096 + y))
+  cp-build-place : CompositeOwner, Integer, Integer, Integer, List Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  cp-build-place (owner) (art) (z) (account) (tiles) (i) (out) = if i >= list-length tiles then Ok out
+    else let at = list-at tiles i
+    in when dc-place owner.state.decor owner.state.items art 0 (at / 4096) (int-mod at 4096) z account
+      is Err (e) -> Err ("placed " & show i & " of " & show (list-length tiles) & ": " & e)
+      is Ok (shown) -> cp-build-place owner art z account tiles (i + 1) (list-push out shown)
+  cp-build-answer : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-build-answer (owner) (game) (input) (packet) =
+    let context = bit-and (gp-u32 packet 2) #FFFF
+    in let fill = context >= cp-build-fill
+    in let art = context - (if fill then cp-build-fill else cp-build-run)
+    in let x1 = gp-u16 packet 11 in let y1 = gp-u16 packet 13
+    in if x1 == 65535 then act Ok (cp-say input "decor:cancel" "Cancelled.") end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot build: " & e)) end
+      is Ok (me) -> let n = max (walk-abs (x1 - me.x)) (walk-abs (y1 - me.y))
+        in let size = if fill then (walk-abs (x1 - me.x) + 1) * (walk-abs (y1 - me.y) + 1) else n + 1
+        in let most = if fill then cp-build-fill-most else cp-build-run-most
+        in let room = min (owner.state.decor.room - owner.state.decor.count) (world-room owner.state.items.world)
+        in if size > most then act Ok (cp-say input "decor:refused" ((if fill then "A fill" else "A run") & " covers at most " & show most & " tiles; that one is " & show size & ".")) end
+        else let tiles = if fill then cp-build-rect (min me.x x1) (min me.y y1) (max me.x x1) (max me.y y1) (min me.x x1) (min me.y y1) []
+          else cp-build-line me.x me.y x1 y1 n 0 []
+        in if list-length tiles > room then act Ok (cp-say input "decor:refused" ("Room for " & show room & " decorations until the next save grows the table; that needs " & show (list-length tiles) & ".")) end
+        else when cp-build-place owner art me.z (ga-bound game.accounts) tiles 0 []
+          is Err (e) -> act Ok (cp-say input "decor:refused" ("Building stopped, " & e)) end
+          is Ok (shown) -> act
+            logged <- slg-line game.log slg-world slg-info ("DECOR " & (if fill then "fill" else "run") & " gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)
+              & " art=" & cp-hex-text art "" & " from " & show me.x & " " & show me.y & " to " & show x1 & " " & show y1 & " z=" & show me.z & " pieces=" & show (list-length tiles))
+            Ok (gs-reply (list-push shown (cp-line input ("Placed " & show (list-length tiles) & " pieces. [decor markarea marks them for the bake."))) "decor:build")
+          end
+ A multi (MULTI.MUL id) is one item of art 0x4000 + id, which the 1.25 client draws whole; the bake expands it into its
+ component statics (bake-decor.ps1, val main 41747).
+  cp-build-multi : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-build-multi (owner) (game) (input) (packet) = let id = cp-hex packet 21 0 0
+    in if list-at id 2 == 0 | list-at id 0 < 0 | list-at id 0 > #3FFF then act Ok (cp-say input "decor:help" "Usage: [decor multi <multi id hex>") end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
+      is Ok (me) -> when dc-place owner.state.decor owner.state.items (#4000 + list-at id 0) 0 me.x me.y me.z (ga-bound game.accounts)
+        is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
+        is Ok (shown) -> act
+          logged <- slg-line game.log slg-world slg-info ("DECOR multi gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)
+            & " multi=" & cp-hex-text (list-at id 0) "" & " at " & show me.x & " " & show me.y & " " & show me.z)
+          Ok (gs-reply [shown, cp-line input "Placed the multi. [decor mark marks it for the bake."] "decor:multi")
+        end
+  cp-dc-baked : List Integer = [98, 97, 107, 101, 100]
+  cp-long : List Integer, Integer, Integer, Integer -> Integer
+  cp-long (packet) (i) (value) (digits) = if not (cp-digit packet i) | digits >= 10 then value
+    else cp-long packet (i + 1) (value * 10 + list-at packet i - 48) (digits + 1)
+  cp-serial-list : List Integer, Integer, List Integer -> List Integer
+  cp-serial-list (packet) (i) (out) = if i >= list-length packet | list-at packet i == 0 then out
+    else if cp-digit packet i then cp-serial-list packet (cp-digits-end packet i) (out & [cp-long packet i 0 0])
+    else cp-serial-list packet (i + 1) out
+  cp-decor-baked : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-decor-baked (owner) (game) (input) (packet) =
+    let serials = cp-serial-list packet 21 []
+    in let n = dc-baked owner.state.decor owner.state.items serials 0 0
+    in let touched = world-item-touch game.world
+    in act
+      logged <- slg-line game.log slg-world slg-info ("DECOR baked asked=" & show (list-length serials) & " removed=" & show n)
+      Ok (cp-say input "decor:baked" ("Baked " & show n & " of " & show (list-length serials) & " decorations."))
+    end
+  cp-decor-place : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-decor-place (owner) (game) (input) (packet) =
+    let art = cp-hex packet 21 0 0
+    in let after = list-at art 1
+    in let hue = if after < list-length packet & list-at packet after == 32 then cp-hex packet (after + 1) 0 0 else [0, after, 0]
+    in if list-at art 2 == 0 then act Ok (cp-say input "decor:help" "Usage: [decor place <art hex> [hue hex]") end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
+      is Ok (me) -> when dc-place owner.state.decor owner.state.items (list-at art 0) (list-at hue 0) me.x me.y me.z (ga-bound game.accounts)
+        is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
+        is Ok (shown) -> act
+          logged <- slg-line game.log slg-world slg-info ("DECOR place gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)
+            & " art=" & cp-hex-text (list-at art 0) "" & " hue=" & cp-hex-text (list-at hue 0) "" & " at " & show me.x & " " & show me.y & " " & show me.z)
+          Ok (gs-reply [shown, cp-line input "Placed. [decor nudge moves it; [decor mark marks it for the bake."] "decor:place")
+        end
+  cp-decor-nudge : GameInput, List Integer -> GameReply
+  cp-decor-nudge (input) (packet) =
+    let a = cp-signed packet 21
+    in let b = cp-signed-next packet a
+    in let c = cp-signed-next packet b
+    in let dx = list-at a 0
+    in let dy = list-at b 0
+    in let dz = if list-at c 2 == 1 then list-at c 0 else 0
+    in if list-at a 2 == 0 | list-at b 2 == 0 | dx < -7 | dx > 7 | dy < -7 | dy > 7 | dz < -31 | dz > 31 then cp-say input "decor:help" "Usage: [decor nudge <dx -7..7> <dy -7..7> [dz -31..31]"
+    else cp-decor-cursor input (#4000 + (dx + 7) * 1024 + (dy + 7) * 64 + dz + 31) ("Nudge which decoration by " & show dx & " " & show dy & " " & show dz & "?")
+  cp-decor-answer : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-decor-answer (owner) (game) (input) (packet) =
+    let context = bit-and (gp-u32 packet 2) #FFFF
+    in let serial = gp-u32 packet 7
+    in let s = owner.state.decor
+    in let items = owner.state.items
+    in let v = context - #4000
+    in if context == cp-unstatic-context then cp-unstatic-answer owner game input packet
+    else let result = if context == 1 then dc-remove s items serial
+      else if context == 2 | context == 3 then (if dc-set-mark s serial (context == 2) < 0 then Err "that is not a decoration" else let touched = world-touch items.world in Ok [])
+      else if context >= cp-decor-set-base & context < cp-decor-set-base + sty-max-sets then cp-decor-member owner (context - cp-decor-set-base) serial
+      else if context >= #4000 & context < #8000 then (when world-get items.world serial
+        is Err (e) -> Err e
+        is Ok (o) -> dc-move s items serial (o.x + v / 1024 - 7) (o.y + int-mod (v / 64) 16 - 7) (o.z + int-mod v 64 - 31))
+      else Err "unknown decorator cursor"
+    in let verb = if context == 1 then "removed" else if context == 2 then "marked" else if context == 3 then "unmarked"
+      else if context >= cp-decor-set-base & context < cp-decor-set-base + sty-max-sets then "added to its set" else "nudged"
+    in when result
+      is Err (e) -> act Ok (cp-say input "decor:refused" ("Decorator: " & e)) end
+      is Ok (shown) -> act
+        logged <- slg-line game.log slg-world slg-info ("DECOR " & verb & " gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts) & " serial=" & show serial)
+        Ok (gs-reply (if list-length shown == 0 then [cp-line input ("Decoration " & verb & ".")] else [shown, cp-line input ("Decoration " & verb & ".")]) ("decor:" & verb))
+      end
+  cp-unstatic-answer : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-unstatic-answer (owner) (game) (input) (packet) =
+    let x = gp-u16 packet 11 in let y = gp-u16 packet 13
+    in let raw = list-at packet 16 in let z = if raw >= 128 then raw - 256 else raw
+    in let art = gp-u16 packet 17
+    in if x == 65535 then act Ok (cp-say input "decor:cancel" "Cancelled.") end
+    else if gp-u32 packet 7 /= 0 then act Ok (cp-say input "decor:refused" "That is a world item; [decor remove takes decorations.") end
+    else if art < 1 | x >= 6144 | y >= 4096 then act Ok (cp-say input "decor:refused" "Pick a client static (a wall, a floor piece, a fixture), not the ground.") end
+    else when dc-place-removal owner.state.decor owner.state.items art x y z (ga-bound game.accounts)
+      is Err (e) -> act Ok (cp-say input "decor:refused" ("Decorator: " & e)) end
+      is Ok (shown) -> act
+        logged <- slg-line game.log slg-world slg-info ("DECOR unstatic gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)
+          & " art=" & cp-hex-text art "" & " at " & show x & " " & show y & " " & show z)
+        Ok (gs-reply [shown, cp-line input ("Static " & cp-hex-text art "" & " at " & show x & "," & show y & "," & show z & " is marked for removal at the next bake.")] "decor:unstatic")
+      end
+  cp-decor-area : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-decor-area (owner) (game) (input) (packet) =
+    let r = if cp-digit packet 24 then cp-number packet 24 0 else 0
+    in if r < 1 | r > 32 then act Ok (cp-say input "decor:help" "Usage: [decor markarea <radius 1..32>") end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Ok (cp-say input "decor:refused" e) end
+      is Ok (me) -> let n = cp-decor-mark-near owner.state.decor game.world me.x me.y r 0 0
+        in let touched = world-touch game.world
+        in act
+          logged <- slg-line game.log slg-world slg-info ("DECOR markarea gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts) & " radius=" & show r & " marked=" & show n)
+          Ok (cp-say input "decor:markarea" ("Marked " & show n & " decorations within " & show r & " tiles."))
+        end
+  cp-decor-mark-near : DcState, WorldTable, Integer, Integer, Integer, Integer, Integer -> Integer
+  cp-decor-mark-near (s) (world) (x) (y) (r) (i) (n) = if i >= s.count then n
+    else let hit = when world-get world (dc-serial s i)
+      is Err (_) -> False
+      is Ok (o) -> o.x >= x - r & o.x <= x + r & o.y >= y - r & o.y <= y + r
+    in let set = if hit & not (dc-marked s i) then dc-set-mark s (dc-serial s i) True else -1
+    in cp-decor-mark-near s world x y r (i + 1) (if set == 0 then n + 1 else n)
+  cp-decor-list : CompositeOwner, GameShard, GameInput -> GameReply
+  cp-decor-list (owner) (game) (input) = when world-get game.world input.session.serial
+    is Err (e) -> cp-say input "decor:list" e
+    is Ok (me) -> cp-say input "decor:list" ("Decorations " & show owner.state.decor.count & ", marked " & show (dc-marked-count owner.state.decor 0 0)
+      & "; near you: " & cp-decor-near owner.state.decor game.world me.x me.y 0 0 "")
+  cp-decor-near : DcState, WorldTable, Integer, Integer, Integer, Integer, Text -> Text
+  cp-decor-near (s) (world) (x) (y) (i) (shown) (out) = if i >= s.count | shown >= 8 then (if out == "" then "none" else out)
+    else when world-get world (dc-serial s i)
+      is Err (_) -> cp-decor-near s world x y (i + 1) shown out
+      is Ok (o) -> if o.x < x - 18 | o.x > x + 18 | o.y < y - 18 | o.y > y + 18 then cp-decor-near s world x y (i + 1) shown out
+        else cp-decor-near s world x y (i + 1) (shown + 1) ((if out == "" then "" else out & "; ") & cp-hex-text o.graphic "" & " at " & show o.x & "," & show o.y & "," & show o.z & (if dc-marked s i then " marked" else if dc-removal s i then " to remove" else ""))
+  cp-ucs2 : List Integer, Text, Integer -> List Integer
+  cp-ucs2 (bytes) (text) (i) = if i >= text-length text then bytes
+    else cp-ucs2 (gp-put16 bytes (to-unicode (char-code (char-at text i)))) text (i + 1)
+  cp-gump-test : GameInput -> GameReply
+  cp-gump-test (input) =
+    let layout = "{ page 0 }{ resizepic 0 0 " & show cp-gump-back & " 300 160 }{ text 40 40 0 0 }{ button 40 100 " & show cp-gump-button & " " & show cp-gump-pressed & " 1 0 1 }"
+    in let line = "UOAIX gump test: press the button"
+    in let head = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) input.session.serial) cp-gumptest-id) 50) 50) (text-length layout + 1)
+    in let counted = gp-put16 (gp-ascii head layout 0 (text-length layout + 1)) 1
+    in let packet = sip-length (cp-ucs2 (gp-put16 counted (text-length line)) line 0)
+    in gs-reply [cp-line input ("Gump test sent: 0xB0, " & show (list-length packet) & " bytes."), packet] "british:gumptest"
+ A button gump: a title line, then a button (art, pressed art) and its label per row, button k answering k (0xB1).
+  cp-gump-rows : List Text, Integer, Integer, Integer, Integer, Text -> Text
+  cp-gump-rows (labels) (art) (pressed) (label-x) (i) (layout) = if i >= list-length labels then layout
+    else cp-gump-rows labels art pressed label-x (i + 1) (layout & "{ button 20 " & show (50 + i * 30) & " " & show art & " " & show pressed
+      & " 1 0 " & show (i + 1) & " }{ text " & show label-x & " " & show (54 + i * 30) & " 0 " & show (i + 1) & " }")
+  cp-gump-lines : List Integer, List Text, Integer -> List Integer
+  cp-gump-lines (bytes) (labels) (i) = if i >= list-length labels then bytes
+    else let t = list-at labels i in cp-gump-lines (cp-ucs2 (gp-put16 bytes (text-length t)) t 0) labels (i + 1)
+  cp-gump-buttons : Integer, Integer, Text, List Text, Integer, Integer, Integer, Integer -> List Integer
+  cp-gump-buttons (serial) (id) (title) (labels) (art) (pressed) (label-x) (width) =
+    let layout = cp-gump-rows labels art pressed label-x 0 ("{ page 0 }{ resizepic 0 0 " & show cp-gump-back & " " & show width & " "
+      & show (90 + list-length labels * 30) & " }{ text 20 20 0 0 }")
+    in let head = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) id) 60) 60) (text-length layout + 1)
+    in let counted = gp-put16 (gp-ascii head layout 0 (text-length layout + 1)) (1 + list-length labels)
+    in sip-length (cp-gump-lines (cp-ucs2 (gp-put16 counted (text-length title)) title 0) labels 0)
+ The play authoring gump: a round button (2151, pressed 2152, both in the 1998 GUMPIDX) per [play command, under a line
+ naming the selected play.
+  cp-play-labels : List Text, Integer, List Text -> List Text
+  cp-play-labels (commands) (i) (out) = if i >= list-length commands then out else cp-play-labels commands (i + 1) (out & ["[play " & list-at commands i])
+  cp-play-gump : CompositeOwner, GameInput -> List Integer
+  cp-play-gump (owner) (input) = let title = "Plays: play " & show (plr-selected owner.state.plays + 1) & " selected"
+    in let labels = cp-play-labels cpy-gump-commands 0 []
+    in cp-gump-buttons input.session.serial cpy-gump-id title labels 2151 2152 60 300
+ A speech gump: button k answers as its k-th command spoken (speech type cpy-gump-mark), so each command keeps its own gate.
+  cp-speech-packet : Text -> List Integer
+  cp-speech-packet (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) cpy-gump-mark) 0) 3) text 0 (text-length text + 1)
+  cp-speech-answer : List Integer, Integer, List Text -> List Integer
+  cp-speech-answer (packet) (id) (commands) = if list-length packet < 15 | list-at packet 0 /= #B1 | gp-u32 packet 7 /= id then packet
+    else let b = gp-u32 packet 11
+    in if b < 1 | b > list-length commands then packet else cp-speech-packet (list-at commands (b - 1))
+ The land page (red's tools, GmLand): each button speaks one tool command; the tile is picked after the press as when typed.
+  cp-land-gump-id : Integer = #4C414E44
+  cp-land-commands : List Text = ["[land grass", "[land dirt", "[land cobblestones", "[land sand", "[land water", "[raise 1", "[raise 5",
+    "[lower 1", "[lower 5", "[flatten", "[brush 0", "[brush 2", "[brush 4", "[landclear", "[landshow"]
+  cp-land-gump : GameInput -> List Integer
+  cp-land-gump (input) = cp-gump-buttons input.session.serial cp-land-gump-id "Land tools: press one, then pick a tile" cp-land-commands cp-gump-button cp-gump-pressed 95 320
+ The Director's gump ([story gump): a button per story (the first cp-story-rows of them, a window's worth) switches it the
+ other way, spoken as [story on NAME or [story off NAME, and the gump comes back.
+  cp-story-gump-id : Integer = #53545259
+  cp-story-rows : Integer = 16
+  cp-story-commands : StyStore, Integer, List Text -> List Text
+  cp-story-commands (st) (i) (out) = if i >= sty-max-stories | list-length out >= cp-story-rows then out
+    else if sty-story st i 0 /= 1 then cp-story-commands st (i + 1) out
+    else cp-story-commands st (i + 1) (out & [(if sty-story st i 1 == 1 then "[story off " else "[story on ") & sty-story-name st i])
+  cp-story-labels : StyStore, Integer, List Text -> List Text
+  cp-story-labels (st) (i) (out) = if i >= sty-max-stories | list-length out >= cp-story-rows then out
+    else if sty-story st i 0 /= 1 then cp-story-labels st (i + 1) out
+    else cp-story-labels st (i + 1) (out & [sty-story-name st i & (if sty-story st i 1 == 1 then ": on (press to turn off)" else ": off (press to turn on)")])
+  cp-story-gump : CompositeOwner, GameInput -> List Integer
+  cp-story-gump (owner) (input) = let st = owner.state.plays.stories
+    in let labels = cp-story-labels st 0 []
+    in let title = if list-length labels == 0 then "Stories: none yet" else "Stories: press one to switch it"
+    in cp-gump-buttons input.session.serial cp-story-gump-id title labels cp-gump-button cp-gump-pressed 95 400
+ The decorator gump ([decor gump): the decorator menu's entries as 247/248 buttons; a press is read as that menu choice
+ (cp-decor-gump-answer makes the 0x7D the menu would send), so the menu's gate and handler serve it and the menu stays.
+  cp-decor-gump-id : Integer = #44434F52
+  cp-dc-gump : List Integer = [103, 117, 109, 112]
+  cp-decor-gump : CompositeOwner, GameInput -> GameReply
+  cp-decor-gump (owner) (input) = let title = "Decorator: " & show owner.state.decor.count & " placed, " & show (dc-marked-count owner.state.decor 0 0) & " marked"
+    in let gump = cp-gump-buttons input.session.serial cp-decor-gump-id title cp-decor-entries cp-gump-button cp-gump-pressed 95 400
+    in gs-reply [gump] "decor:gump"
+  cp-decor-gump-answer : List Integer -> List Integer
+  cp-decor-gump-answer (packet) = if list-length packet < 15 | list-at packet 0 /= #B1 | gp-u32 packet 7 /= cp-decor-gump-id then packet
+    else let b = gp-u32 packet 11
+    in if b < 1 | b > list-length cp-decor-entries then packet
+    else gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] (gp-u32 packet 3)) cp-decor-menu-id) b) 0) 0
+  cp-cover-dump : GameInput -> GameReply
+  cp-cover-dump (input) = let slots = __cover-dump in gs-reply [cp-line input ("COVER dumped " & show slots & " slots")] "testing:cover"
   cp-where : GameShard, GameInput -> GameReply
   cp-where (game) (input) = when world-get game.world input.session.serial
     is Err (_) -> gs-reply [sip-message input.session.serial #FFFF 6 "Position unavailable."] "testing:where"
     is Ok (m) -> gs-reply [sip-message input.session.serial #FFFF 6 ("You are at " & show m.x & " " & show m.y & " " & show m.z)] "testing:where"
   cp-go-say : GameInput, Text -> Result GameReply Text
   cp-go-say (input) (text) = Ok (gs-reply [sip-message input.session.serial #FFFF 6 text] "testing:go")
- "[add <art hex> [count]" (British only): a summoned item into the backpack.
+ "[add <art hex|item name> [count]" (British only): a summoned item into the backpack. A token
+ of at most four hex digits that holds a digit or is four long is art; anything else is a TILEDATA name.
   cp-add-request : List Integer -> Boolean
   cp-add-request (packet) = list-length packet > 13 & list-at packet 0 == 3 & list-at packet 8 == 91
     & list-at packet 9 == 97 & list-at packet 10 == 100 & list-at packet 11 == 100 & list-at packet 12 == 32
@@ -81,22 +733,695 @@ Chapter: CompositePaging
   cp-add : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
   cp-add (owner) (game) (input) (packet) =
     let art = cp-hex packet 13 0 0
-    in let graphic = list-at art 0
     in let after = list-at art 1
+    in let stop = cp-text-end packet 13
+    in let digits = list-at art 2
     in let amount = if after < list-length packet & list-at packet after == 32 & cp-digit packet (after + 1) then cp-number packet (after + 1) 0 else 1
-    in let pack = gsi-pack-find game.world input.session.serial 0
-    in if list-at art 2 == 0 | graphic < 1 | graphic > #3FFF | amount < 1 | amount > 60000 then act cp-go-say input "Usage: [add art-hex [count]" end
+    in if digits > 0 & digits <= 4 & (after >= stop | list-at packet after == 32) & (digits == 4 | cp-has-digit packet 13 after)
+      then cp-add-art owner game input (list-at art 0) amount ("Added " & show amount & ".")
+    else cp-add-named owner game input packet stop
+  cp-text-end : List Integer, Integer -> Integer
+  cp-text-end (packet) (i) = if i >= list-length packet then i else if list-at packet i == 0 then i else cp-text-end packet (i + 1)
+  cp-has-digit : List Integer, Integer, Integer -> Boolean
+  cp-has-digit (packet) (i) (stop) = if i >= stop then False else if cp-digit packet i then True else cp-has-digit packet (i + 1) stop
+  cp-trim-end : List Integer, Integer, Integer -> Integer
+  cp-trim-end (packet) (start) (stop) = if stop > start & list-at packet (stop - 1) == 32 then cp-trim-end packet start (stop - 1) else stop
+ A trailing all-digit word after a space is the count.
+  cp-count-at : List Integer, Integer, Integer -> Integer
+  cp-count-at (packet) (start) (stop) = let last = cp-trim-end packet start stop
+    in let first = cp-word-start packet start last
+    in if first > start & first < last & cp-digits-end packet first == last then first else -1
+  cp-word-start : List Integer, Integer, Integer -> Integer
+  cp-word-start (packet) (start) (i) = if i <= start then start else if list-at packet (i - 1) == 32 then i else cp-word-start packet start (i - 1)
+  cp-hex-list : Integer, Integer, Integer, Integer, Integer, Text -> Text
+  cp-hex-list (tiles) (buf) (at) (i) (count) (acc) = if i >= count then acc
+    else let g = peek-qword buf ((at + i) * 8)
+    in cp-hex-list tiles buf at (i + 1) count (acc & (if text-length acc == 0 then "" else ", ") & it-name tiles g 1 & " (" & cp-hex-text g "" & ")")
+  cp-add-named : CompositeOwner, GameShard, GameInput, List Integer, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-add-named (owner) (game) (input) (packet) (stop) =
+    let tiles = owner.state.items.tiles
+    in let counted = cp-count-at packet 13 stop
+    in let amount = if counted < 0 then 1 else cp-number packet counted 0
+    in let last = cp-trim-end packet 13 (if counted < 0 then stop else counted)
+    in if tiles == 0 then act cp-go-say input "Item names are not installed; use [add art-hex [count]." end
+    else if last - 13 < 1 | last - 13 > 20 then act cp-go-say input "Usage: [add art-hex|name [count]" end
+    else let buf = it-find-new 0
+    in let found = it-find tiles packet 13 (last - 13) buf 0
+    in let exact = peek-qword buf 0
+    in let partial = peek-qword buf 8
+    in let chosen = if exact > 0 then peek-qword buf 16 else peek-qword buf 80
+    in let also = if exact <= 1 then "" else " Also: " & cp-hex-list tiles buf 3 0 (min 7 (exact - 1)) "" & "."
+    in if exact > 0 | partial == 1 then cp-add-art owner game input chosen amount ("Added " & show amount & " " & it-name tiles chosen amount & " (" & cp-hex-text chosen "" & ")." & also)
+    else if partial > 1 then act cp-go-say input ("Which one? " & cp-hex-list tiles buf 10 0 (min 8 partial) "" & (if partial > 8 then " and " & show (partial - 8) & " more." else ".")) end
+    else act cp-go-say input "No item has that name." end
+  cp-add-art : CompositeOwner, GameShard, GameInput, Integer, Integer, Text -> [Console, Device.Block] Result GameReply Text
+  cp-add-art (owner) (game) (input) (graphic) (amount) (said) =
+    let pack = gsi-pack-find game.world input.session.serial 0
+    in if graphic < 1 | graphic > #3FFF | amount < 1 | amount > 60000 then act cp-go-say input "Usage: [add art-hex|name [count]" end
     else if pack == 0 then act cp-go-say input "No backpack." end
-    else when cts-item owner.state.items pack graphic amount 0
+    else when cts-item owner.state.items pack graphic amount (cp-add-gump graphic)
       is Err (e) -> act cp-go-say input ("Cannot add: " & e) end
-      is Ok (serial) -> let touched = world-item-touch game.world in act
+      is Ok (serial) -> let stacked = if cp-add-stacks graphic then gsi-register owner.state.items serial 0 0 True True else 0 in let touched = world-item-touch game.world in act
+        item <- cp-add-item graphic
+        lotted <- cp-add-lot owner input.session.serial serial item amount
+        logged <- slg-line game.log slg-world slg-info ("SUMMON gm=" & show input.session.serial & " serial=" & show serial & " graphic=" & cp-hex-text graphic "" & " amount=" & show amount & " item=" & show item & " lot=" & (if lotted then "yes" else "no"))
         committed <- cs-commit owner False
         when committed
           is Err (e) -> Err e
           is Ok (_) -> when world-get game.world serial
             is Err (e) -> Err e
-            is Ok (item) -> Ok (gs-reply [gsi-placement owner.state.items item, sip-message input.session.serial #FFFF 6 ("Added " & show amount & ".")] "british:add")
+            is Ok (item) -> Ok (gs-reply [gsi-placement owner.state.items item, sip-message input.session.serial #FFFF 6 said] "british:add")
       end
+ UOAIX-85: a summoned catalog good enters the summoner's economy actor as found stock at an unskilled craft's full
+ quality and wear (ep-find) and becomes a lot (gv-add-lot), as the testing kit's tools do (cpr-kit-each), so it can be
+ crafted with, healed with or sold; the SUMMON log line names the GM source. Art with no catalog item stays a plain item.
+ Container gumps of the 1.25 client: 0x49 a wooden or large crate chest, 0x3D a bag, 0x3C a backpack.
+  cp-add-gump : Integer -> Integer
+  cp-add-gump (g) = if g == #0E43 | g == #0E41 then #0049 else if g == #0E76 then #003D else if g == #0E75 then #003C else 0
+  cp-add-item : Integer -> Integer
+  cp-add-item (g) = if g == #13B2 | g == #13B1 then 48 else if g == #0F3F then 49
+    else let kit = cpr-kit-item g in if kit > 0 then kit else gvb-item-of g
+ A summoned good (a catalog item that is not a tool: nails 0x102E, boards, ingots, logs) stacks whatever its count, as
+ a vendor's or harvest's lot does; a tool does not.
+  cp-add-stacks : Integer -> Boolean
+  cp-add-stacks (g) = let kit = cpr-kit-item g
+    in if kit > 0 then cpr-kit-material g == kit else gvb-item-of g > 0 & gvb-item-of g /= 42
+  cp-add-lot : CompositeOwner, Integer, Integer, Integer, Integer -> Boolean
+  cp-add-lot (owner) (me) (serial) (item) (amount) = let v = owner.state.vendor
+    in let at = gv-player v me 0
+    in if item <= 0 | at < 0 then False
+    else let actor = (list-at v.players at).actor
+    in if ep-find v.currency.world actor item amount /= 0 then False
+    else gv-add-lot v serial actor item 1000 32 0 >= 0
+ 0x6C target cursor: byte 1 is 0 for an object, 1 for a location; bytes 2..5
+ the cursor id ("LB" in the high word here); the answer carries the target
+ serial at 7, x at 11, y at 13 and z at 16, and x = FFFF on cancel.
+  cp-cursor-tag : Integer = #4C420000
+  cp-word : List Integer, List Integer, Integer -> Boolean
+  cp-word (packet) (word) (i) = if i >= list-length word then True
+    else if 8 + i >= list-length packet then False
+    else if list-at packet (8 + i) /= list-at word i then False
+    else cp-word packet word (i + 1)
+  cp-alone : List Integer, List Integer -> Boolean
+  cp-alone (packet) (word) = if list-length packet < 8 | list-at packet 0 /= 3 | not (cp-word packet word 0) then False
+    else list-length packet == 8 + list-length word | list-at packet (8 + list-length word) == 0
+  cp-invisible-word : List Integer = [91, 105, 110, 118, 105, 115, 105, 98, 108, 101]
+  cp-inspect-word : List Integer = [91, 105, 110, 115, 112, 101, 99, 116]
+  cp-move-word : List Integer = [91, 109, 111, 118, 101]
+  cp-summon-word : List Integer = [91, 115, 117, 109, 109, 111, 110, 32]
+  cp-remove-word : List Integer = [91, 114, 101, 109, 111, 118, 101]
+  cp-kill-word : List Integer = [91, 107, 105, 108, 108]
+  cp-kick-word : List Integer = [91, 107, 105, 99, 107]
+  cp-mute-word : List Integer = [91, 109, 117, 116, 101]
+  cp-unstuck-word : List Integer = [91, 117, 110, 115, 116, 117, 99, 107]
+  cp-zones-word : List Integer = [91, 122, 111, 110, 101, 115]
+  cp-spawns-word : List Integer = [91, 115, 112, 97, 119, 110, 115]
+  cp-overlay : CompositeOwner, GameShard, GameInput, Integer -> GameReply
+  cp-overlay (owner) (game) (input) (flag) = when world-get game.world input.session.serial
+    is Err (_) -> cp-say input "gm:overlay" "Position unavailable."
+    is Ok (me) -> let s = owner.state
+      in let regions = when s.spawns is None -> [] is Just (g) -> g.catalog.regions
+      in if gmo-showing s.overlay input.connection flag then
+        gs-reply (list-push (gmo-hide s.overlay s.civic regions s.land input.connection me flag)
+          (cp-line input (if flag == gmo-guards then "Guard zones hidden." else if flag == gmo-spawns then "Spawn regions hidden." else "Land edits hidden."))) "gm:overlay"
+      else let row = gmo-show s.overlay input.connection me.serial flag
+      in cp-say input "gm:overlay" (if flag == gmo-guards
+        then "Guard zones shown: runes edge the ground within " & show cv-earshot & " tiles of a living guard's patrol route. Click one for its patrol."
+        else if flag == gmo-spawns then "Spawn regions shown: runes edge each spawn region. Click one for its creatures and births."
+        else "Land edits shown: " & show s.land.count & " wait for the bake; each rune stands at its new height. Click one for its edit.")
+  cp-landshow-word : List Integer = [91, 108, 97, 110, 100, 115, 104, 111, 119]
+ The decorator menu's Land item (blu): the land tools' usage.
+  gld-menu : CompositeOwner, GameShard, GameInput -> GameReply
+  gld-menu (owner) (game) (input) = gs-reply (gld-say-lines input.session.serial gld-usage 0 [] & [cp-land-gump input]) "decor:land-help"
+ A land tool's cursor answer: the stroke, then its runes (a dropped edit's rune is removed, the window redrawn) and an
+ ADMIN line in the server log.
+  cp-land-aim : MapCacheState, CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-land-aim (cache) (owner) (game) (input) (packet) = let s = owner.state
+    in let found = gld-tool-find s.land.tools input.connection 0
+    in let brush = if found < 0 then 0 else (list-at s.land.tools found).brush
+    in let op = bit-and (gp-u32 packet 2) #FFFF
+    in let x = gp-u16 packet 11 in let y = gp-u16 packet 13
+    in let reply = gld-target s.land cache.map input (ga-bound game.accounts) packet
+    in if reply.note /= "decor:land" then act Ok reply end
+    else let shown = if gmo-showing s.overlay input.connection gmo-land then 0 else gmo-show s.overlay input.connection input.session.serial gmo-land
+    in let redrawn = gmo-refresh s.overlay input.connection
+    in let dropped = if op == 4 then gmo-land-drop x y brush (0 - brush) (0 - brush) [] else []
+    in act
+      logged <- slg-line game.log slg-admin slg-info ("ADMIN land op=" & show op & " x=" & show x & " y=" & show y & " brush=" & show brush
+        & " edits=" & show s.land.count & " by=" & show input.session.serial)
+      Ok (GameReply { packets = dropped & reply.packets, close = reply.close, note = reply.note })
+    end
+  cp-player-mobile : GameShard, Integer, Integer -> Boolean
+  cp-player-mobile (game) (serial) (k) = if k >= ga-count game.accounts * 5 then False
+    else if peek-qword (ga-slots game.accounts (k / 5)) (int-mod k 5 * 160) == serial then True
+    else cp-player-mobile game serial (k + 1)
+ A freed character goes to the new-character entry tile 1420,1698 inside Britain, a safe zone (Damian, 2026-10-04).
+  cp-unstuck : MapCacheState, CompositeOwner, GameShard, GameInput, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-unstuck (cache) (owner) (game) (input) (serial) =
+    if serial == 0 | not (cp-player-mobile game serial 0) then act Ok (cp-say input "gm:unstuck" "Only a player's character can be freed.") end
+    else if cp-british-mobile game serial 0 then act Ok (cp-say input "gm:unstuck" "Lord British is never stuck.") end
+    else when world-get game.world serial
+      is Err (_) -> act Ok (cp-say input "gm:unstuck" "No player there.") end
+      is Ok (m) -> act
+        covered <- cp-cover-at cache owner 1420 1698
+        when covered
+          is Err (e) -> Err e
+          is Ok (_) -> when cp-go-ring cache.map 1420 1698 0 0
+            is Err (e) -> Ok (cp-say input "gm:unstuck" ("No standing room in Britain: " & e))
+            is Ok (spot) -> let a = __record-set m "x" (list-at spot 0)
+              in let b = __record-set m "y" (list-at spot 1)
+              in let c = __record-set m "z" (list-at spot 2)
+              in when world-update game.world m
+                is Err (e) -> Ok (cp-say input "gm:unstuck" ("Cannot move: " & e))
+                is Ok (_) -> act
+                  committed <- cs-commit owner False
+                  when committed
+                    is Err (e) -> Err e
+                    is Ok (_) -> Ok (cp-say input "gm:unstuck" (if owner.kick serial > 0 then "Freed to Britain; the player reconnects there." else "Freed to Britain."))
+                end
+      end
+  cp-british-mobile : GameShard, Integer, Integer -> Boolean
+  cp-british-mobile (game) (serial) (i) = let index = ga-british game.accounts
+    in if i >= 5 | index < 0 then False else peek-qword (ga-slots game.accounts index) (i * 160) == serial | cp-british-mobile game serial (i + 1)
+  cp-mute : CompositeOwner, GameShard, GameInput, Integer -> GameReply
+  cp-mute (owner) (game) (input) (serial) = if serial == 0 then cp-say input "gm:mute" "No player there."
+    else if cp-british-mobile game serial 0 then cp-say input "gm:mute" "Lord British cannot be muted."
+    else when world-get game.world serial
+      is Err (_) -> cp-say input "gm:mute" "No player there."
+      is Ok (m) -> if m.kind /= 1 then cp-say input "gm:mute" "Only a character can be muted."
+        else let at = cs-mute-at owner.muted serial 0
+        in if at >= 0 then let freed = list-set-at owner.muted at 0 in cp-say input "gm:mute" "Unmuted; others hear that character again."
+        else let free = cs-mute-at owner.muted 0 0
+        in if free < 0 then cp-say input "gm:mute" "64 characters are muted already."
+        else let added = list-set-at owner.muted free serial in cp-say input "gm:mute" "Muted; others no longer hear that character."
+  cp-ban-word : List Integer = [91, 98, 97, 110]
+  cp-unban-word : List Integer = [91, 117, 110, 98, 97, 110, 32]
+  cp-unban-name : List Integer -> List Integer
+  cp-unban-name (packet) = if list-length packet < 16 | list-at packet 0 /= 3 | not (cp-word packet cp-unban-word 0) then []
+    else cp-name-at packet 15 []
+  cp-name-at : List Integer, Integer, List Integer -> List Integer
+  cp-name-at (packet) (at) (out) = if at >= list-length packet | list-at packet at == 0 then out
+    else if list-length out >= 30 | not (ga-name-byte (list-at packet at)) then []
+    else cp-name-at packet (at + 1) (list-push out (list-at packet at))
+  cp-ban : CompositeOwner, GameShard, GameInput, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-ban (owner) (game) (input) (serial) = let account = ga-owner game.accounts serial 0
+    in if account < 0 then act Ok (cp-say input "gm:ban" "Only a player's character can be banned.") end
+    else if account == ga-british game.accounts then act Ok (cp-say input "gm:ban" "Lord British cannot be banned.") end
+    else if account == ga-bound game.accounts then act Ok (cp-say input "gm:ban" "You cannot ban your own account.") end
+    else let set = ga-set-ban game.accounts account True
+    in act
+      committed <- cs-commit owner False
+      when committed
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (cp-say input "gm:ban" (if owner.kick serial > 0 then "Banned; the player is disconnected and cannot log in." else "Banned; that account cannot log in."))
+    end
+  cp-unban : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-unban (owner) (game) (input) (name) = let account = ga-find game.accounts name 0
+    in if account < 0 then act Ok (cp-say input "gm:unban" "No account has that name.") end
+    else if not (ga-banned game.accounts account) then act Ok (cp-say input "gm:unban" "That account is not banned.") end
+    else let set = ga-set-ban game.accounts account False
+    in act
+      committed <- cs-commit owner False
+      when committed
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (cp-say input "gm:unban" "Unbanned; that account can log in again.")
+    end
+ The jail cursor carries its term: context #C000 plus 1 to 8760 hours (at most 57912, inside the context's 16 bits), above
+ every [skill target context (16 + skill * 1001 + value, at most 47062) and every [attr one (cat-base 47063 to 48854).
+  cp-jail-context : Integer = #C000
+  cp-jail-target : List Integer -> Boolean
+  cp-jail-target (packet) = cp-target-request packet & bit-and (gp-u32 packet 2) #FFFF > cp-jail-context
+    & bit-and (gp-u32 packet 2) #FFFF <= cp-jail-context + 8760
+  cp-jail-word : List Integer = [91, 106, 97, 105, 108, 32]
+  cp-jail-hours : List Integer -> Integer
+  cp-jail-hours (packet) = if list-length packet < 15 | list-at packet 0 /= 3 | not (cp-word packet cp-jail-word 0) then 0
+    else let stop = cp-digits-end packet 14
+    in if stop == 14 | (stop < list-length packet & list-at packet stop /= 0) then 0
+    else let hours = cp-number packet 14 0 in if hours < 1 | hours > 8760 then 0 else hours
+  cp-jail : MapCacheState, CompositeOwner, GameShard, GameInput, Integer, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-jail (cache) (owner) (game) (input) (serial) (hours) =
+    if hours < 1 | hours > 8760 then act Ok (cp-say input "gm:jail" "A jail term is 1 to 8760 game hours.") end
+    else if serial == 0 | not (cp-player-mobile game serial 0) then act Ok (cp-say input "gm:jail" "Only a player's character can be jailed.") end
+    else if cp-british-mobile game serial 0 then act Ok (cp-say input "gm:jail" "Lord British cannot be jailed.") end
+    else when owner.state.civic
+      is None -> act Ok (cp-say input "gm:jail" "Britain has no jail.") end
+      is Just (c) -> if lw-held c.law serial 0 then
+          let freed = lw-free c.law serial 0
+          in let touched = world-touch game.world in act
+            committed <- cs-commit owner False
+            when committed
+              is Err (e) -> Err e
+              is Ok (_) -> Ok (cp-say input "gm:jail" "Released from jail.")
+          end
+        else let jail = list-at c.law.jails 0
+        in if not jail.enabled then act Ok (cp-say input "gm:jail" "Britain has no jail.") end
+        else when world-get game.world serial
+          is Err (_) -> act Ok (cp-say input "gm:jail" "No player there.") end
+          is Ok (m) -> act
+            covered <- cp-cover-at cache owner jail.x jail.y
+            when covered
+              is Err (e) -> Err e
+              is Ok (_) -> when cp-go-ring cache.map jail.x jail.y 0 0
+                is Err (e) -> Ok (cp-say input "gm:jail" ("No standing room at the cell: " & e))
+                is Ok (spot) -> if lw-confine c.law True serial 1 hours < 0 then Ok (cp-say input "gm:jail" "Refused: the character is dead, or 128 law cases are open.")
+                  else let a = __record-set m "x" (list-at spot 0)
+                  in let b = __record-set m "y" (list-at spot 1)
+                  in let d = __record-set m "z" (list-at spot 2)
+                  in when world-update game.world m
+                    is Err (e) -> Ok (cp-say input "gm:jail" ("Cannot move: " & e))
+                    is Ok (_) -> act
+                      committed <- cs-commit owner False
+                      when committed
+                        is Err (e) -> Err e
+                        is Ok (_) -> Ok (cp-say input "gm:jail" ("Jailed for " & show hours & " game hours" & (if owner.kick serial > 0 then "; the player reconnects in the cell." else ".")))
+                    end
+          end
+  cp-time-word : List Integer = [91, 116, 105, 109, 101, 32]
+ "[time N" moves the town clock N game hours ahead in testing mode (Damian, 2026-10-07: "i don't know how to speed up
+ the clock"); the economy hour, crop growth and schedules catch up 24 hours per town step (cg-economy-hours).
+  cp-time : CompositeOwner, GameInput, List Integer -> GameReply
+  cp-time (owner) (input) (packet) = let hours = cp-number packet 14 0
+    in if not owner.state.testing then cp-say input "british:time" "The clock moves only in testing mode."
+    else if hours < 1 | hours > 720 then cp-say input "british:time" "Say [time and a number of game hours, 1 to 720."
+    else let moved = __record-set owner.state "town-seconds" (owner.state.town-seconds + hours * 3600)
+    in cp-say input "british:time" ("The clock advances " & show hours & " game hours; the town catches up a day at a time.")
+  cp-target-request : List Integer -> Boolean
+  cp-target-request (packet) = list-length packet == 19 & list-at packet 0 == #6C & bit-and (gp-u32 packet 2) #FFFF0000 == cp-cursor-tag
+  cp-british-request : List Integer -> Boolean
+  cp-british-request (packet) = if list-length packet == 0 then False
+    else if list-at packet 0 == #6C then cp-target-request packet
+    else cp-alone packet cp-invisible-word | cp-alone packet cp-inspect-word | cp-alone packet cp-move-word | cp-alone packet cp-remove-word | cp-alone packet cp-kill-word | cp-alone packet cp-plot-word
+      | (list-at packet 0 == 3 & cp-word packet cp-summon-word 0) | (list-at packet 0 == 3 & cp-word packet cp-time-word 0) | csk-request packet | cat-request packet | cp-alone packet cp-help-word | cp-alone packet cp-cover-word | cp-alone packet cp-navy-word | cpy-request packet | cpy-story-request packet | cp-mount-request packet
+  cp-british :WalkMap, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-british (map) (owner) (game) (input) (packet) =
+    if list-at packet 0 == #6C then cp-target map owner game input packet
+    else if cp-alone packet cp-invisible-word then act Ok (cp-invisible owner game input) end
+    else if cp-alone packet cp-inspect-word then act Ok (cp-cursor input 1 0 "Inspect what?") end
+    else if cp-alone packet cp-move-word then let cleared = __record-set owner.state "moving" 0 in act Ok (cp-cursor input 2 0 "Move what?") end
+    else if cp-alone packet cp-remove-word then act Ok (cp-cursor input 4 0 "Remove what?") end
+    else if cp-alone packet cp-kill-word then act Ok (cp-cursor input 5 0 "Kill what?") end
+    else if cp-alone packet cp-plot-word then let cleared = __record-set owner.state.construction "grantee" 0 in act Ok (cp-cursor input 6 0 "Grant a plot to whom?") end
+    else if csk-request packet then act Ok (cp-skill owner game input packet) end
+    else if cat-request packet then act Ok (cp-attr owner game input packet) end
+    else if cp-alone packet cp-help-word then act Ok (cp-help input) end
+    else if cp-alone packet cp-navy-word then cp-navy owner game input
+    else if cpy-request packet then cp-play owner game input packet
+    else if cpy-story-request packet then cp-story owner game input packet
+    else if cp-alone packet cp-cover-word then act Ok (cp-cover-dump input) end
+    else if cp-mount-request packet then act Ok (cp-mount input packet) end
+    else if list-at packet 0 == 3 & cp-word packet cp-time-word 0 then act Ok (cp-time owner input packet) end
+    else cp-summon map owner game input packet
+  cp-line : GameInput, Text -> List Integer
+  cp-line (input) (text) = sip-message input.session.serial #FFFF 6 text
+  cp-say : GameInput, Text, Text -> GameReply
+  cp-say (input) (note) (text) = gs-reply [cp-line input text] note
+  cp-cursor : GameInput, Integer, Integer, Text -> GameReply
+  cp-cursor (input) (context) (ground) (text) =
+    gs-reply [cp-line input text, gp-zeros (list-push (gp-put32 [#6C, ground] (cp-cursor-tag + context)) 0) 12] "british:cursor"
+  cp-nibble : Integer -> Text
+  cp-nibble (n) = if n < 10 then show n else if n == 10 then "A" else if n == 11 then "B" else if n == 12 then "C"
+    else if n == 13 then "D" else if n == 14 then "E" else "F"
+  cp-hex-text : Integer, Text -> Text
+  cp-hex-text (value) (acc) = let next = cp-nibble (int-mod value 16) & acc
+    in if value < 16 then "0x" & next else cp-hex-text (value / 16) next
+  cp-invisible : CompositeOwner, GameShard, GameInput -> GameReply
+  cp-invisible (owner) (game) (input) = let on = cg-invisible owner.state input.session.serial
+    in let said = if on then "You are invisible." else "You are visible."
+    in when world-get game.world input.session.serial
+      is Err (_) -> cp-say input "british:invisible" said
+      is Ok (me) -> cg-hide owner.state (gs-reply [gp-player me input.session.direction, cp-line input said] "british:invisible")
+  cp-target : WalkMap, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-target (map) (owner) (game) (input) (packet) =
+    let context = bit-and (gp-u32 packet 2) #FFFF
+    in let serial = gp-u32 packet 7
+    in let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in let raw-z = list-at packet 16
+    in let z = if raw-z >= 128 then raw-z - 256 else raw-z
+    in if serial == 0 & x == 65535 then let cleared = __record-set owner.state "moving" 0 in act Ok (cp-say input "british:cancel" "Cancelled.") end
+    else if context == 1 then act Ok (cp-inspect game input serial) end
+    else if context == 2 then act Ok (cp-pick owner game input serial) end
+    else if context == 3 then cp-place map owner game input x y z
+    else if context == 4 then crm-remove owner game input serial
+    else if context == 5 then crm-kill owner game input serial
+    else if context == 6 then act Ok (cp-plot-whom owner input serial) end
+    else if context == 7 then cp-plot-where map owner game input x y
+    else if context >= 16 & context < 16 + 47 * 1001 then act Ok (cp-skill-on owner game input serial (csk-from-context context)) end
+    else if context >= cat-base & context < cat-base + 7 * 256 then act Ok (cp-attr-on owner game input serial (cat-from-context context)) end
+    else act Ok (cp-say input "british:refused" "That target is no longer active.") end
+  cp-skill : CompositeOwner, GameShard, GameInput, List Integer -> GameReply
+  cp-skill (owner) (game) (input) (packet) = if not owner.state.testing then cp-say input "british:refused" "[skill works only in testing mode."
+    else when csk-parse packet
+      is Err (e) -> cp-say input "british:refused" e
+      is Ok (r) -> if r.target then cp-cursor input (csk-context r) 0 ("Whose " & csk-name r.skill & "?")
+        else cp-skill-on owner game input input.session.serial r
+  cp-skill-on : CompositeOwner, GameShard, GameInput, Integer, CskRequest -> GameReply
+  cp-skill-on (owner) (game) (input) (serial) (r) = when csk-apply owner.state game input serial r
+    is Err (e) -> cp-say input "british:refused" e
+    is Ok (list) -> let said = cp-say input "british:skill" (csk-said r)
+      in if serial == input.session.serial then gs-reply (said.packets & [list]) "british:skill" else said
+  cp-attr : CompositeOwner, GameShard, GameInput, List Integer -> GameReply
+  cp-attr (owner) (game) (input) (packet) = if not owner.state.testing then cp-say input "british:refused" "[attr works only in testing mode."
+    else when cat-parse packet
+      is Err (e) -> cp-say input "british:refused" e
+      is Ok (r) -> if r.target then cp-cursor input (cat-context r) 0 ("Whose " & list-at ["strength", "dexterity", "intelligence", "stats", "hit points", "stamina", "mana"] r.skill & "?")
+        else cp-attr-on owner game input input.session.serial r
+  cp-attr-on : CompositeOwner, GameShard, GameInput, Integer, CskRequest -> GameReply
+  cp-attr-on (owner) (game) (input) (serial) (r) = when cat-apply owner.state game input serial r
+    is Err (e) -> cp-say input "british:refused" e
+    is Ok (status) -> let said = cp-say input "british:attr" (cat-said r)
+      in if serial == input.session.serial then gs-reply (said.packets & [status]) "british:attr" else said
+ "[plot" grants a 9 by 9 plot (Construction): first the holder, a player, then the plot's center tile.
+  cp-plot-word : List Integer = [91, 112, 108, 111, 116]
+  cp-plot-whom : CompositeOwner, GameInput, Integer -> GameReply
+  cp-plot-whom (owner) (input) (serial) = if gv-player owner.state.vendor serial 0 < 0 then cp-say input "british:refused" "Only a player holds land."
+    else let chosen = __record-set owner.state.construction "grantee" serial in cp-cursor input 7 1 "Where is the center of the plot?"
+  cp-plot-where : WalkMap, CompositeOwner, GameShard, GameInput, Integer, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-plot-where (map) (owner) (game) (input) (x) (y) = let s = owner.state.construction
+    in let holder = s.grantee
+    in let cleared = __record-set s "grantee" 0
+    in when cn-grant s game owner.state.flora map holder x y (owner.state.town-seconds / 86400 + 1)
+      is Err (e) -> act Ok (cp-say input "british:refused" e) end
+      is Ok (plot) -> let touched = world-touch game.world in act
+        logged <- slg-line game.log slg-admin slg-info ("ADMIN plot " & show plot & " granted holder=" & show holder & " x=" & show (x - cn-plot-reach) & ".." & show (x + cn-plot-reach) & " y=" & show (y - cn-plot-reach) & ".." & show (y + cn-plot-reach) & " by=" & show input.session.serial)
+        committed <- cs-commit owner False
+        when committed
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (cp-say input "british:plot" ("Plot " & show plot & " granted: " & show (x - cn-plot-reach) & ".." & show (x + cn-plot-reach) & ", " & show (y - cn-plot-reach) & ".." & show (y + cn-plot-reach) & "."))
+      end
+ "[houses" lists the open bids on the crown's houses; "[house grant N" and "[house reject N" answer bid N.
+  cp-houses-word : List Integer = [91, 104, 111, 117, 115, 101, 115]
+  cp-house-word : List Integer = [91, 104, 111, 117, 115, 101, 32]
+  cp-house-request : List Integer -> Boolean
+  cp-house-request (packet) = cp-alone packet cp-houses-word | (list-length packet > 15 & list-at packet 0 == 3 & cp-word packet cp-house-word 0)
+  cp-house : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-house (owner) (game) (input) (packet) = let s = owner.state
+    in if cp-alone packet cp-houses-word then (let lines = hs-lines s.housing s.construction (as-mobile-name s.active game) 0 []
+      in act Ok (gs-reply (cp-say-lines input (if list-length lines == 0 then ["No house bids are open."] else lines) 0 []) "british:houses") end)
+    else let words = bc-words (bc-said packet 8 []) 0 [] []
+    in let id = if list-length words < 3 then 0 else bc-number (list-at words 2) 0 0
+    in let granting = list-length words >= 2 & bc-same (list-at words 1) [103, 114, 97, 110, 116]
+    in let rejecting = list-length words >= 2 & bc-same (list-at words 1) [114, 101, 106, 101, 99, 116]
+    in if id < 1 | not (granting | rejecting) then act Ok (cp-say input "british:house" "Say [houses, [house grant N or [house reject N.") end
+    else if rejecting then cp-house-done owner game input "reject" (hs-reject s.housing s.vendor.currency id)
+    else when hs-grant s.housing s.construction s.vendor.currency id (s.town-seconds / 86400 + 1)
+      is Err (e) -> act Ok (cp-say input "british:refused" e) end
+      is Ok (r) -> let unmarked = when s.magic is None -> 0 is Just (m) -> hs-unmark m s.housing (list-at r 1) 0 0
+        in cp-house-done owner game input "grant" (Ok ("Bid " & show id & " granted: " & hs-where s.housing (list-at r 1) & " is now the home of "
+        & as-mobile-name s.active game (list-at r 0) & (if list-at r 2 > 0 then "; " & show (list-at r 2) & " other bids on it stay in escrow" else "; every other bid on it is returned")
+        & "; " & show unmarked & (if unmarked == 1 then " rune" else " runes") & " marked inside deleted."))
+  cp-house-done : CompositeOwner, GameShard, GameInput, Text, Result Text Text -> [Console, Device.Block] Result GameReply Text
+  cp-house-done (owner) (game) (input) (verb) (result) = when result
+    is Err (e) -> act Ok (cp-say input "british:refused" e) end
+    is Ok (text) -> let touched = world-touch game.world in act
+      logged <- slg-line game.log slg-admin slg-info ("ADMIN house " & verb & " " & text & " by=" & show input.session.serial)
+      committed <- cs-commit owner False
+      when committed
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (cp-say input ("british:house-" & verb) text)
+    end
+ "[navy" is Lord British's order to the royal navy (Ships): it turns the standing order to patrol every day on or off,
+ logged as an administrative action and committed.
+  cp-play : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-play (owner) (game) (input) (packet) = let answer = cpy-command owner game input.session.serial packet in act
+    logged <- slg-line game.log slg-admin slg-info ("ADMIN play " & answer & " by=" & show input.session.serial)
+    committed <- cs-commit owner False
+    when committed
+      is Err (e) -> Err e
+      is Ok (_) -> Ok (cp-say input "british:play" answer)
+  end
+  cp-play-go : MapCacheState, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-play-go (cache) (owner) (game) (input) (packet) = if cpy-gump-request packet then act Ok (gs-reply [cp-play-gump owner input] "british:play-gump") end
+    else if cpy-gumped packet then act
+      played <- cp-play owner game input packet
+      when played
+        is Err (e) -> Err e
+        is Ok (said) -> Ok (gs-reply (said.packets & [cp-play-gump owner input]) said.note)
+    end
+    else act
+      played <- cp-play owner game input packet
+      went <- cp-play-went cache owner game input packet
+      when played
+        is Err (e) -> Err e
+        is Ok (said) -> when went
+          is Err (_) -> Ok said
+          is Ok (moved) -> Ok (gs-reply (said.packets & moved.packets) said.note)
+    end
+  cp-play-went : MapCacheState, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-play-went (cache) (owner) (game) (input) (packet) = let spot = cpy-scene-spot owner.state.plays packet
+    in if list-length spot < 2 then act Err "no scene" end
+    else cp-go-at cache owner game input (list-at spot 0) (list-at spot 1) -1
+  cp-story : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-story (owner) (game) (input) (packet) = if cpy-story-arg packet [103, 117, 109, 112] then act Ok (gs-reply [cp-story-gump owner input] "british:story-gump") end
+    else let answer = cpy-story-command owner packet in act
+    logged <- slg-line game.log slg-admin slg-info ("ADMIN story " & answer & " by=" & show input.session.serial)
+    committed <- cs-commit owner False
+    when committed
+      is Err (e) -> Err e
+      is Ok (_) -> let said = cp-say input "british:story" answer
+        in Ok (if list-at packet 3 == cpy-gump-mark then gs-reply (said.packets & [cp-story-gump owner input]) said.note else said)
+  end
+ UOAIX-183 experiment (Damian, 2026-10-09: "i know horses are ridable in this client"): "[mounttest <art hex>" shows Lord
+ British's own client a layer-25 (mount) item of that art on him under a serial no world object holds, so what the
+ client draws answers which art it rides; "[mounttest off" removes it. Nothing is stored.
+  cp-mount-word : List Integer = [91, 109, 111, 117, 110, 116, 116, 101, 115, 116]
+  cp-mount-serial : Integer = #7FFFFF01
+  cp-mount-request : List Integer -> Boolean
+  cp-mount-request (packet) = list-length packet >= 19 & list-at packet 0 == 3 & cp-word packet cp-mount-word 0
+  cp-mount-equip : Integer, Integer -> List Integer
+  cp-mount-equip (art) (mobile) = gp-put16 (gp-put32 (list-push (list-push (gp-put16 (gp-put32 [#2E] cp-mount-serial) art) 0) 25) mobile) 0
+  cp-mount : GameInput, List Integer -> GameReply
+  cp-mount (input) (packet) = if list-length packet > 21 & list-at packet 19 == 111 & list-at packet 20 == 102 then gs-reply [sip-remove cp-mount-serial, cp-line input "Mount test removed."] "british:mounttest"
+    else let art = cp-hex packet 19 0 0
+    in if list-at art 2 == 0 then cp-say input "british:mounttest" "Usage: [mounttest <art hex> | off. Later clients ride 3E9F to 3EA8 and 3EAA to 3EB4."
+    else gs-reply [cp-mount-equip (list-at art 0) input.session.serial, cp-line input ("Mount test: art " & cp-hex-text (list-at art 0) "" & " on layer 25.")] "british:mounttest"
+  cp-navy-word : List Integer = [91, 110, 97, 118, 121]
+  cp-navy : CompositeOwner, GameShard, GameInput -> [Console, Device.Block] Result GameReply Text
+  cp-navy (owner) (game) (input) = let order = 1 - owner.state.ships.patrol
+    in let set = __record-set owner.state.ships "patrol" order
+    in let touched = world-touch game.world in act
+      logged <- slg-line game.log slg-admin slg-info ("ADMIN navy " & (if order == 1 then "patrol daily" else "stand down") & " by=" & show input.session.serial)
+      committed <- cs-commit owner False
+      when committed
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (cp-say input "british:navy" (if order == 1 then "The royal navy will patrol the coast every day." else "The royal navy returns to its regular patrols."))
+    end
+  cp-help-word : List Integer = [91, 104, 101, 108, 112]
+  cp-help-lines : List Text = ["[go x y, [goto [place], [where", "[add art-hex|name [count], [summon body-hex", "[invisible, [inspect, [move, [cover, [remove, [kill, [plot, [navy, [play, [story, [kick, [mute, [unstuck, [jail hours, [ban, [unban name, [houses, [house grant N, [house reject N",
+    "[skill <name|id|all> <0.0-100.0> [target] (testing)", "[attr <str|dex|int|all|hits> <1-100>, [attr <stam|mana> <0-100>, then [target] (testing)",
+    "[pages, [pageack id, [account name password, [accounts", "[time <1-720> game hours ahead (testing)", "[zones, [spawns, [landshow", "Decorators: [land, [raise, [lower, [flatten, [brush, [landclear",
+    "A command that takes words, said alone, shows its usage; [<command> help shows the usage of one that takes none."]
+  cp-usages : List Text = ["[go", "[go x y: go to map tile x, y.",
+    "[play", "[play select 1-4|new|line STATEMENT|mark NAME|sample|start|pause|resume|reset|show: write and run a play.",
+    "[story", "[story, [story on NAME, [story off NAME: list the stories, or switch one's decoration sets on or off.",
+    "[add", "[add <art hex|item name> [count]: put a new item in your backpack.",
+    "[summon", "[summon <body hex>: summon a creature beside you.",
+    "[time", "[time <1-720>: move the town clock that many game hours ahead (testing mode).",
+    "[skill", "[skill <name|id|all> <0.0-100.0> [target]: set a skill; target picks a character of your account (testing mode).",
+    "[attr", "[attr <str|dex|int|all|hits> <1-100>, or [attr <stam|mana> <0-100>, then [target]: set a stat (testing mode).",
+    "[account", "[account <name> <password>: create a player account.",
+    "[pageack", "[pageack <id>: answer and close help page id.",
+    "[decor help", "[decor place <art hex> [hue hex] places at your feet; remove, mark, unmark and nudge <dx> <dy> [dz] pick a decoration; markarea <radius> marks every decoration near you; list counts them; unstatic picks a client static (a wall) to remove at the next bake.",
+    "[jail", "[jail <1-8760>: pick a player's character to jail in Britain's cell for that many game hours, or a prisoner to release.",
+    "[where help", "[where: say where you stand.",
+    "[invisible help", "[invisible: turn invisibility on or off; monsters do not hunt you while you are invisible.",
+    "[inspect help", "[inspect: pick an object to show its serial, art, hue, place, amount and health.",
+    "[move help", "[move: pick an object or creature, then the place to put it; an NPC takes up its routine from there.",
+    "[cover help", "[cover: dump the map cache's covered slots (testing mode).",
+    "[remove help", "[remove: pick an object or a townsperson to remove; players and Lord British are refused.",
+    "[kill help", "[kill: pick a creature to kill; players, townspeople and Lord British are refused.",
+    "[plot help", "[plot: pick a player, then the center tile of a 9 by 9 plot granted to that player.",
+    "[navy help", "[navy: order the royal navy to patrol the coast every day, or stand it down.",
+    "[kick help", "[kick: pick a player to disconnect.",
+    "[ban help", "[ban: pick a player's character; its account is disconnected and cannot log in until [unban.",
+    "[unban", "[unban <account name>: let a banned account log in again.",
+    "[mute help", "[mute: pick a character to mute or unmute; nobody hears a muted character.",
+    "[unstuck help", "[unstuck: pick a player's character to move to Britain; that player reconnects there.",
+    "[help help", "[help: list the commands.",
+    "[accounts help", "[accounts: list the accounts.",
+    "[pages help", "[pages: list the pending help pages.",
+    "[zones help", "[zones: show or hide the guard zones around you; click a rune for its patrol.",
+    "[spawns help", "[spawns: show or hide the spawn region edges around you; click a rune for its creatures and births.",
+    "[landshow help", "[landshow: show or hide the pending land edits around you as runes at their new height."]
+  cp-usage : List Integer -> Text
+  cp-usage (packet) = if list-length packet < 9 | list-at packet 0 /= 3 | list-at packet 8 /= 91 then "" else cp-usage-at packet cp-usages 0
+  cp-usage-at : List Integer, List Text, Integer -> Text
+  cp-usage-at (packet) (usages) (i) = if i + 1 >= list-length usages then ""
+    else let said = list-at usages i
+    in if cp-alone packet (gp-ascii [] said 0 (text-length said)) then list-at usages (i + 1) else cp-usage-at packet usages (i + 2)
+  cp-help : GameInput -> GameReply
+  cp-help (input) = gs-reply (cp-say-lines input cp-help-lines 0 []) "british:help"
+  cp-inspect : GameShard, GameInput, Integer -> GameReply
+  cp-inspect (game) (input) (serial) = when world-get game.world serial
+    is Err (e) -> cp-say input "british:refused" ("Nothing to inspect: " & e)
+    is Ok (o) -> let what = if o.kind == 1 then "mobile" else "item"
+      in let first = what & " " & cp-hex-text o.serial "" & " graphic " & cp-hex-text o.graphic "" & " hue " & cp-hex-text o.hue ""
+      in let place = if o.container == 0 then "at " & show o.x & " " & show o.y & " " & show o.z else "in " & cp-hex-text o.container ""
+      in let second = place & ", amount " & show o.amount & ", health " & show o.health
+      in gs-reply [cp-line input first, cp-line input second] "british:inspect"
+  cp-pick : CompositeOwner, GameShard, GameInput, Integer -> GameReply
+  cp-pick (owner) (game) (input) (serial) = when world-get game.world serial
+    is Err (e) -> cp-say input "british:refused" ("Nothing to move: " & e)
+    is Ok (o) -> if o.container /= 0 then cp-say input "british:refused" "Only an object on the ground or a creature moves."
+      else if o.kind == 1 & gsi-slot game o.serial 0 >= 0 then cp-say input "british:refused" "A character moves with [go x y."
+      else let picked = __record-set owner.state "moving" serial in cp-cursor input 3 1 "Where to?"
+  cp-place : WalkMap, CompositeOwner, GameShard, GameInput, Integer, Integer, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-place (map) (owner) (game) (input) (x) (y) (z) =
+    let serial = owner.state.moving
+    in let cleared = __record-set owner.state "moving" 0
+    in if serial == 0 then act Ok (cp-say input "british:refused" "Nothing is being moved.") end
+    else if x >= 6144 | y >= 4096 then act Ok (cp-say input "british:refused" "That place is outside the world.") end
+    else when world-get game.world serial
+      is Err (e) -> act Ok (cp-say input "british:refused" ("Nothing to move: " & e)) end
+      is Ok (o) -> when (if o.kind == 1 then cp-go-ring map x y 0 0 else Ok [x, y, z])
+        is Err (e) -> act Ok (cp-say input "british:refused" ("No standing room within 3 tiles: " & e)) end
+        is Ok (spot) -> let a = __record-set o "x" (list-at spot 0)
+          in let b = __record-set o "y" (list-at spot 1)
+          in let c = __record-set o "z" (list-at spot 2)
+          in when world-update game.world o
+            is Err (e) -> act Ok (cp-say input "british:refused" ("Cannot move: " & e)) end
+            is Ok (_) -> act
+              routine <- if o.kind == 1 then cg-npc-moved owner.state o.serial else ""
+              committed <- cs-commit owner False
+              when committed
+                is Err (e) -> Err e
+                is Ok (_) -> let said = cp-line input ("Moved to " & show o.x & " " & show o.y & " " & show o.z
+                    & (if routine == "" then "" else "; the " & routine & " goes on from here"))
+                  in Ok (gs-reply (if o.kind == 2 then [cbp-remove o.serial, sip-ground o, said] else [said]) "british:move")
+            end
+  cp-claim-word : List Integer = [99, 108, 97, 105, 109, 32]
+  cp-claim-request : List Integer -> Boolean
+  cp-claim-request (packet) = list-length packet > 15 & list-at packet 0 == 3 & cp-claim-at packet 0
+  cp-claim-at : List Integer, Integer -> Boolean
+  cp-claim-at (packet) (i) = if i >= 6 then True else cp-lower (list-at packet (8 + i)) == list-at cp-claim-word i & cp-claim-at packet (i + 1)
+  cp-claim-name : List Integer, Integer, List Integer -> List Integer
+  cp-claim-name (packet) (i) (out) = if i >= list-length packet | list-at packet i == 0 then out else cp-claim-name packet (i + 1) (list-push out (cp-lower (list-at packet i)))
+  cp-claim : WalkMap, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-claim (map) (owner) (game) (input) (packet) = cp-claim-named map owner game input (utf8-bytes-to-text (cp-claim-name packet 14 []))
+ Speech (0x03, text from byte 8) within the royal stableman's reach that names a tameable creature (RoyalStable).
+  cp-stable-name : CompositeOwner, GameShard, GameInput, List Integer -> Text
+  cp-stable-name (owner) (game) (input) (packet) = if list-length packet <= 9 | list-at packet 0 /= 3 | not (rst-near game.world input.session.serial) then ""
+    else let name = utf8-bytes-to-text (cp-claim-name packet 8 [])
+    in when owner.state.spawns is None -> "" is Just (g) -> if gws-royal-profile g name >= 0 then name else ""
+  cp-stable : WalkMap, CompositeOwner, GameShard, GameInput, Text -> [Console, Device.Block] Result GameReply Text
+  cp-stable (map) (owner) (game) (input) (name) = if ga-is-british game.accounts then cp-claim-named map owner game input name
+    else act Ok (cp-say input "stable:refused" "The royal stable serves only His Majesty.") end
+  cp-claim-named : WalkMap, CompositeOwner, GameShard, GameInput, Text -> [Console, Device.Block] Result GameReply Text
+  cp-claim-named (map) (owner) (game) (input) (name) = when owner.state.spawns
+      is None -> act Ok (cp-say input "british:claim" "This world has no creatures to claim.") end
+      is Just (g) -> let profile = gws-royal-profile g name
+        in if profile < 0 then act Ok (cp-say input "british:claim" ("The stableman has no tameable " & name & ".")) end
+        else when world-get game.world input.session.serial
+          is Err (e) -> act Err e end
+          is Ok (me) -> when cp-go-ring map (me.x + 1) me.y 0 0
+            is Err (e) -> act Ok (cp-say input "british:claim" ("No standing room beside you: " & e)) end
+            is Ok (spot) -> when gws-summon g game profile (list-at spot 0) (list-at spot 1) (list-at spot 2) me.serial (g.combat.tick + gws-forever)
+              is Err (e) -> act Ok (cp-say input "british:claim" ("The stableman cannot: " & e)) end
+              is Ok (serial) -> act
+                logged <- slg-line game.log slg-world slg-info ("CLAIM british=" & show me.serial & " creature=" & name & " serial=" & show serial)
+                committed <- cs-commit owner False
+                when committed
+                  is Err (e) -> Err e
+                  is Ok (_) -> Ok (cp-say input "british:claim" ("Your " & name & " is ready, trained and loyal, at your side."))
+              end
+ Speech (0x03, text from byte 8) of "stable" or "claim" alone, any case, within a city stablemaster's reach (CityStables).
+  cp-stable-word : List Integer = [115, 116, 97, 98, 108, 101]
+  cp-claim-alone : List Integer = [99, 108, 97, 105, 109]
+  cp-said : List Integer, List Integer, Integer -> Boolean
+  cp-said (packet) (word) (i) = if i == list-length word then list-length packet == 8 + i | list-at packet (8 + i) == 0
+    else list-length packet > 8 + i & cp-lower (list-at packet (8 + i)) == list-at word i & cp-said packet word (i + 1)
+  cp-city-stable-keeper : GameShard, GameInput, List Integer -> Integer
+  cp-city-stable-keeper (game) (input) (packet) = if list-length packet <= 9 | list-at packet 0 /= 3
+    | not (cp-said packet cp-stable-word 0 | cp-said packet cp-claim-alone 0 | cp-said packet cp-buy-alone 0 | cp-said-prefix packet cp-buy-word 0) then 0
+    else csm-near game.world input.session.serial
+  cp-buy-alone : List Integer = [98, 117, 121]
+  cp-buy-word : List Integer = [98, 117, 121, 32]
+  cp-said-prefix : List Integer, List Integer, Integer -> Boolean
+  cp-said-prefix (packet) (word) (i) = if i == list-length word then True
+    else list-length packet > 8 + i & cp-lower (list-at packet (8 + i)) == list-at word i & cp-said-prefix packet word (i + 1)
+ A sale: the price is tendered from the buyer's purse as a shop's is (gv-change, gv-tender-plan) and paid to the crown
+ only after the animal stands beside him; a refused payment dismisses it.
+  cp-stable-buy : WalkMap, CompositeOwner, GameShard, GameInput, GameWorldSpawn, Text -> [Console, Device.Block] Result GameReply Text
+  cp-stable-buy (map) (owner) (game) (input) (g) (name) =
+    let price = csm-price name
+    in let profile = if price < 0 then 0 - 1 else gws-profile-key g (csm-key name) 0
+    in let v = owner.state.vendor
+    in let at = gv-player v input.session.serial 0
+    in if price < 0 | profile < 0 then act Ok (cp-say input "stable:goods" csm-goods-text) end
+    else if at < 0 | not (eu-ready v.currency) then act Ok (cp-say input "stable:closed" "The stable sells nothing until the realm's coin is open.") end
+    else if gws-followers g game.world input.session.serial 0 + gws-control-slots (csm-key name) > csm-followers-max then act Ok (cp-say input "stable:full" "Thou hast too many followers to take another.") end
+    else let p = list-at v.players at
+    in let x = v.currency
+    in let line = GvLine { lot = 0, quantity = 1, price = price, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+    in let changed = gv-change v [line] p.actor 0
+    in let purse = if ep-valid-actor x.world p.actor then (ep-actor x.world p.actor).purse else 0
+    in if purse <= 1 | not (gv-tender-plan x [line] (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin 0) then act Ok (cp-say input "stable:poor" ("That is " & show price & " copper, and thou hast not the coin.")) end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Err e end
+      is Ok (me) -> when cp-go-ring map (me.x + 1) me.y 0 0
+        is Err (e) -> act Ok (cp-say input "stable:buy" ("No standing room beside you: " & e)) end
+        is Ok (spot) -> when gws-summon g game profile (list-at spot 0) (list-at spot 1) (list-at spot 2) me.serial (g.combat.tick + gws-forever)
+          is Err (e) -> act Ok (cp-say input "stable:buy" ("The stablemaster cannot: " & e)) end
+          is Ok (serial) -> if eu-pay x True purse 1 line.copper line.silver line.gold /= 0 then
+              (let undone = gws-dismiss g game serial in act Ok (cp-say input "stable:buy" "The sale could not be recorded.") end)
+            else act
+              logged <- slg-line game.log slg-world slg-info ("STABLE SALE buyer=" & show me.serial & " animal=" & name & " price=" & show price & " serial=" & show serial)
+              committed <- cs-commit owner False
+              when committed
+                is Err (e) -> Err e
+                is Ok (_) -> Ok (cp-say input "stable:buy" ("Here is thy " & name & ", for " & show price & " copper."))
+            end
+  cp-pets-text : Integer -> Text
+  cp-pets-text (n) = if n == 1 then "pet" else "pets"
+  cp-removes : List Integer, Integer, List (List Integer) -> List (List Integer)
+  cp-removes (serials) (i) (out) = if i == list-length serials then out else cp-removes serials (i + 1) (list-push out (cbp-remove (list-at serials i)))
+  cp-city-stable : WalkMap, CompositeOwner, GameShard, GameInput, List Integer, Integer -> [Console, Device.Block] Result GameReply Text
+  cp-city-stable (map) (owner) (game) (input) (packet) (keeper) = when owner.state.spawns
+    is None -> act Ok (cp-say input "stable:none" "This world keeps no animals.") end
+    is Just (g) -> if cp-said packet cp-buy-alone 0 then act Ok (cp-say input "stable:goods" csm-goods-text) end
+      else if cp-said-prefix packet cp-buy-word 0 then cp-stable-buy map owner game input g (utf8-bytes-to-text (cp-claim-name packet 12 []))
+      else if cp-said packet cp-stable-word 0 then
+        let stabled = csm-stable g game.world input.session.serial keeper
+        in if list-length stabled == 0 then act Ok (cp-say input "stable:none" "I see no pet of thine here to stable.") end
+        else act
+          logged <- slg-line game.log slg-world slg-info ("STABLE owner=" & show input.session.serial & " keeper=" & show keeper & " pets=" & show (list-length stabled))
+          committed <- cs-commit owner False
+          when committed
+            is Err (e) -> Err e
+            is Ok (_) -> Ok (gs-reply (cp-removes stabled 0 [] & [cp-line input ("I shall keep thy " & show (list-length stabled) & " " & cp-pets-text (list-length stabled) & ". Say claim when thou wouldst have them back.")]) "stable:stabled")
+        end
+      else when world-get game.world input.session.serial
+        is Err (e) -> act Err e end
+        is Ok (me) -> when cp-go-ring map (me.x + 1) me.y 0 0
+          is Err (e) -> act Ok (cp-say input "stable:claim" ("No standing room beside you: " & e)) end
+          is Ok (spot) -> let claimed = csm-claim g game.world me.serial [spot]
+            in if list-length claimed == 0 then act Ok (cp-say input "stable:claim" "Thou hast no pets stabled with me.") end
+            else act
+              logged <- slg-line game.log slg-world slg-info ("STABLE CLAIM owner=" & show me.serial & " pets=" & show (list-length claimed))
+              committed <- cs-commit owner False
+              when committed
+                is Err (e) -> Err e
+                is Ok (_) -> Ok (cp-say input "stable:claim" ("Here " & (if list-length claimed == 1 then "is thy pet" else "are thy " & show (list-length claimed) & " pets") & "."))
+            end
+  cp-summon : WalkMap, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  cp-summon (map) (owner) (game) (input) (packet) =
+    let body = cp-hex packet 16 0 0
+    in let graphic = list-at body 0
+    in if list-at body 2 == 0 | graphic < 1 | graphic > #3FF then act Ok (cp-say input "british:refused" "Usage: [summon body-hex") end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Err e end
+      is Ok (me) -> when cp-go-ring map (me.x + 1) me.y 0 0
+        is Err (e) -> act Ok (cp-say input "british:refused" ("No standing room within 3 tiles: " & e)) end
+        is Ok (spot) -> if world-room game.world <= 0 then act Ok (cp-say input "british:refused" "The world is full.") end
+          else when world-create game.world (__record-set (gs-mobile 0 (list-at spot 0) (list-at spot 1) (list-at spot 2) graphic 0) "health" 30)
+            is Err (e) -> act Ok (cp-say input "british:refused" ("Cannot summon: " & e)) end
+            is Ok (serial) -> let profile = cb-profile owner.state.combat game serial "Creature" 40 2 5 300
+              in act
+                committed <- cs-commit owner False
+                when committed
+                  is Err (e) -> Err e
+                  is Ok (_) -> Ok (cp-say input "british:summon" ("Summoned " & cp-hex-text serial "" & "."))
+              end
  Building floors sit above the land under them, so a stand is searched up to 16
  above the land; a blocked tile (a counter, a wall) yields the nearest standable
  tile, ring by ring out to 3.
@@ -122,11 +1447,22 @@ Chapter: CompositePaging
     in let x = cp-number packet 12 0
     in let y = cp-number packet (x-end + 1) 0
     in if x-end == 12 | y-end == x-end + 1 | x >= 6144 | y >= 4096 then act cp-go-say input "Usage: [go x y" end
-    else act
+    else cp-go-to cache owner game input x y
+  cp-go-to : MapCacheState, CompositeOwner, GameShard, GameInput, Integer, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-go-to (cache) (owner) (game) (input) (x) (y) = cp-go-at cache owner game input x y -1
+ A known destination height (z; -1 for none) is kept where a walker stands on it: the ring search stands 16 above the
+ land, so it put the Royal Mine gate's landing on the mint (z 72) one floor down, in the dining hall at z 50.
+  cp-go-stand : WalkMap, Integer, Integer, Integer -> Result (List Integer) Text
+  cp-go-stand (map) (x) (y) (z) = if z < 0 then cp-go-ring map x y 0 0
+    else when walk-height map x y z
+      is Err (_) -> cp-go-ring map x y 0 0
+      is Ok (h) -> if h == z then Ok [x, y, z] else cp-go-ring map x y 0 0
+  cp-go-at : MapCacheState, CompositeOwner, GameShard, GameInput, Integer, Integer, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
+  cp-go-at (cache) (owner) (game) (input) (x) (y) (z) = act
       loaded <- wmc-cover cache x y
       when loaded
         is Err (e) -> cp-go-say input ("Cannot go there: " & e)
-        is Ok (map) -> when cp-go-ring map x y 0 0
+        is Ok (map) -> when cp-go-stand map x y z
           is Err (e) -> cp-go-say input ("No standing room within 3 tiles: " & e)
           is Ok (spot) -> when world-get game.world input.session.serial
               is Err (e) -> Err e
@@ -140,7 +1476,7 @@ Chapter: CompositePaging
                       is None -> Ok 0
                       is Just (state) -> wd-rebind state map map.stride
                     in when rebound
-                      is Err (e) -> let stopped = cs-refuse owner e in Err e
+                      is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
                       is Ok (_) -> Ok (gs-reply [gp-player mobile input.session.direction,
                         sip-message input.session.serial #FFFF 6 ("Moved to " & show mobile.x & " " & show mobile.y & " " & show mobile.z)] "testing:go")
     end
@@ -170,8 +1506,121 @@ Chapter: CompositePaging
   cp-holder : List GsiActor, Integer, Integer -> Integer
   cp-holder (actors) (serial) (i) = if i >= list-length actors then -1
     else if (list-at actors i).serial == serial then i else cp-holder actors serial (i + 1)
+  cp-tick : MapCacheState, CompositeOwner, GameShard, WalkMap, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result Integer Text
+  cp-tick (cache) (owner) (game) (map) (tick) = let watcher = cg-tick-watcher owner.state
+    in if watcher == 0 then cs-tick owner game cache.map 0 tick
+    else when world-get game.world watcher
+      is Err (e) -> act Err e end
+      is Ok (mobile) -> act
+        covered <- cp-cover-at cache owner mobile.x mobile.y
+        when covered
+          is Err (e) -> Err e
+          is Ok (_) -> act
+            checked <- cp-map-check game cache.map
+            cs-tick owner game cache.map watcher tick
+          end
+      end
+ UOAIX-141 instrument.
+  cp-map-check : GameShard, WalkMap -> [Console] Integer
+  cp-map-check (game) (map) = let bad = if map.width == 64 & map.height == 64 & map.stride >= 32 then cp-map-bad map 0 else 0
+    in if bad < 0 then act 0 end
+    else act
+      said <- slg-line game.log slg-world slg-error ("MAPCACHE INVALID x=" & show map.x & " y=" & show map.y & " w=" & show map.width & " h=" & show map.height
+        & " stride=" & show map.stride & " land=" & show map.land & " solids=" & show map.solids & " cell=" & show bad
+        & " count=" & show (peek-qword map.solids (bad * map.stride)) & " entry0=" & show (peek-qword map.solids (bad * map.stride + 8))
+        & "," & show (peek-qword map.solids (bad * map.stride + 16)) & "," & show (peek-qword map.solids (bad * map.stride + 24)) & " heap=" & show __heap-save)
+      1
+    end
+  cp-map-bad : WalkMap, Integer -> Integer
+  cp-map-bad (map) (i) = if i >= 4096 then -1
+    else if not (walk-solids-sane map i 0) then i else cp-map-bad map (i + 1)
   cp-pulse : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result (Maybe GameReply) Text
-  cp-pulse (cache) (owner) (game) (input) (map) (port) (tick) = act
+  cp-pulse (cache) (owner) (game) (input) (map) (port) (tick) =
+    let granted = if not (gmo-on owner.state.overlay input.connection) | ga-is-british game.accounts then 0
+      else if owner.gm-allow (ga-bound game.accounts) "?any" == "" then 0
+      else gmo-drop owner.state.overlay input.connection
+    in let queued = if ga-is-british game.accounts then owner.panel-take 0 else []
+    in if list-length queued == 0 then act
+      pulsed <- cp-pulse-one cache owner game input map port tick
+      when pulsed
+        is Err (e) -> Err e
+        is Ok (r) -> let followed = cp-stats-follow owner game input
+          in if list-length followed == 0 then Ok r
+          else when r
+            is None -> Ok (Just (gs-reply followed "stats"))
+            is Just (g) -> Ok (Just (GameReply { packets = g.packets & followed, close = g.close, note = g.note }))
+    end
+    else act
+      applied <- cp-panel-apply cache owner game input map port queued 0 []
+      Ok (Just (gs-reply applied "panel:action"))
+    end
+ A stat a skill gain raised in the record (gs-skill-gain) reaches the cached actors at the player's next pulse: the
+ magery actor's base, whose buffs mge-sync folds into the combat actor, else the combat actor. A rise is told and the
+ client gets a fresh 0x11 status.
+  cp-stats-follow : CompositeOwner, GameShard, GameInput -> List (List Integer)
+  cp-stats-follow (owner) (game) (input) = if input.mode /= 2 | input.session.phase /= 2 then []
+    else let serial = input.session.serial
+    in let slot = gsi-slot game serial 0
+    in let at = world-slot game.world serial
+    in if slot < 0 | at < 0 | at >= list-length owner.state.combat.actors then []
+    else let row = game.characters + slot * 160
+    in let combat = list-at owner.state.combat.actors at
+    in let moved = when owner.state.magic
+      is None -> cp-follow-combat combat serial row
+      is Just (magic) -> if at >= list-length magic.actors then cp-follow-combat combat serial row
+        else let actor = list-at magic.actors at
+        in if actor.serial /= serial then cp-follow-combat combat serial row else cp-follow-magic magic actor row
+    in if moved < 0 then []
+    else when world-get game.world serial
+      is Err (_) -> []
+      is Ok (mobile) -> let status = cg-status owner.state (gp-status mobile game.characters slot)
+        in if moved == 3 then [status]
+        else [status, cp-line input ("Your " & list-at ["strength", "dexterity", "intelligence"] moved & " has increased by 1.")]
+ The stat that rose (0 to 2), 3 for a change that is no rise, -1 for none.
+  cp-follow-rise : Integer, Integer, Integer -> Integer
+  cp-follow-rise (a) (b) (c) = if a > 0 then 0 else if b > 0 then 1 else if c > 0 then 2 else if a == 0 & b == 0 & c == 0 then -1 else 3
+  cp-follow-combat : CombatActor, Integer, Integer -> Integer
+  cp-follow-combat (combat) (serial) (row) = if combat.serial /= serial then -1
+    else let moved = cp-follow-rise (gp-stat row 0 - combat.maximum) (gp-stat row 1 - combat.dexterity) 0
+    in if moved < 0 then -1
+    else let a = __record-set combat "maximum" (gp-stat row 0)
+    in let b = __record-set combat "strength" (gp-stat row 0)
+    in let c = __record-set combat "dexterity" (gp-stat row 1) in moved
+  cp-follow-magic : Magery, MgActor, Integer -> Integer
+  cp-follow-magic (magic) (actor) (row) = let moved = cp-follow-rise (gp-stat row 0 - actor.strength) (gp-stat row 1 - actor.dexterity) (gp-stat row 2 - actor.intelligence)
+    in if moved < 0 then -1
+    else let a = __record-set actor "strength" (gp-stat row 0)
+    in let b = __record-set actor "dexterity" (gp-stat row 1)
+    in let c = __record-set actor "intelligence" (gp-stat row 2)
+    in let d = __record-set actor "maximum" (gp-stat row 0)
+    in let synced = mge-sync magic actor in moved
+  cp-panel-apply : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, List (List Integer), Integer, List (List Integer) -> [Console, Network.Read, Network.Write, Device.Block] List (List Integer)
+  cp-panel-apply (cache) (owner) (game) (input) (map) (port) (queued) (i) (out) = if i == list-length queued then act out end
+    else act
+      routed <- if list-at (list-at queued i) 0 == #FF then act Ok (cp-lord owner game input (list-at (list-at queued i) 1 == 1)) end else cp-route cache owner game input map port (list-at queued i)
+      cp-panel-apply cache owner game input map port queued (i + 1) (when routed
+        is Err (e) -> list-push out (cp-line input ("Panel action failed: " & e))
+        is Ok (r) -> out & (if list-at (list-at queued i) 0 == #6C then cp-panel-keep r.packets 0 [] else r.packets))
+    end
+  cp-lord : CompositeOwner, GameShard, GameInput, Boolean -> GameReply
+  cp-lord (owner) (game) (input) (entering) = if not entering then cp-say input "panel:lord" "Lord British mode left; British stays invulnerable and keeps his stats and skills."
+    else when cp-raise owner game input
+      is Err (e) -> cp-say input "panel:lord" ("Lord British mode refused: " & e)
+      is Ok (packets) -> gs-reply (packets & [cp-line input "Lord British mode: every skill 100.0, every stat and hits 100."]) "panel:lord"
+  cp-raise : CompositeOwner, GameShard, GameInput -> Result (List (List Integer)) Text
+  cp-raise (owner) (game) (input) = let serial = input.session.serial
+    in when csk-apply owner.state game input serial (CskRequest { skill = 46, value = 1000, target = False })
+      is Err (e) -> Err e
+      is Ok (skills) -> when cat-apply owner.state game input serial (CskRequest { skill = 3, value = cat-most, target = False })
+        is Err (e) -> Err e
+        is Ok (_) -> when cat-apply owner.state game input serial (CskRequest { skill = 4, value = cat-most, target = False })
+          is Err (e) -> Err e
+          is Ok (status) -> Ok [skills, status]
+  cp-panel-keep : List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  cp-panel-keep (packets) (i) (out) = if i == list-length packets then out
+    else let p = list-at packets i in cp-panel-keep packets (i + 1) (if list-length p > 0 & list-at p 0 == #6C then out else list-push out p)
+  cp-pulse-one : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result (Maybe GameReply) Text
+  cp-pulse-one (cache) (owner) (game) (input) (map) (port) (tick) = act
     covered <- cp-cover cache owner game input
     when covered
       is Err (e) -> Err e

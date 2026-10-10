@@ -421,6 +421,7 @@ sidecar deleted, and only the second answers the question the battery asks.
 | `foo.skip` | Skipped entirely (first line = reason) |
 | `foo.slow` | Skipped unless `-Slow` (first line = reason) |
 | `foo.fatal` | Skipped unless `-Fatal` (kills VM at runtime) |
+| `foo.wall` | Run budget in whole seconds above the 60 s run-list default (61..600, first line). `bvt.ps1` and `test.ps1` (not under `CODEX_VM_HOST=qemu`) run such subjects one at a time in an extra slot with that budget |
 | `foo.flags` | First line appended to the compile mode line: `prose`, `passes=+name`, `decks=N`. Read by the batch harness only. See `docs/ExaminersAssay.md` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot) passed as `-keys-file`. This is the **keyboard**; `.stdin` is the **serial ring**. A keyboard read (`uefi-read-key` / `poll-key`) reads the PS/2 key cell and no `.stdin` reaches it -- pick by what the code reads. See `docs/ExaminersAssay.md` |
@@ -489,6 +490,19 @@ not start is usually another agent working, not a leak of yours. Check
 Build note: the linker fails with `LNK1104` if a codex-vm is holding
 `tools/codex-vm.exe` open, so stop **your own** VMs (as above) before
 `tools/build-vm.ps1`.
+
+#### REDIRECT codex-vm's STDERR TO TEMP, NOT UNDER THE WORKSPACE
+
+codex-vm writes stderr unbuffered. `Start-Process -RedirectStandardError` to a
+file under `D:\Projects\Cobblestone-*\build-output` turned a 0.2 s guest into a
+35-38 s one, and every UOAIX server boot into about 60 s; the same redirect
+into `[IO.Path]::GetTempPath()` stays at 0.2 s (fester, 2026-10-08, 5 arms).
+`-output` under `build-output` costs nothing. Redirect to TEMP and move the file
+into the evidence directory after the guest exits, as `build/test-run.ps1` and
+`apps/uoaix/bvt.ps1` do; `start-composite-game.ps1` names its TEMP stderr in
+`run.json` and the supervisor moves it into the run directory at exit.
+`compact-world.ps1`, `serve.ps1`, `train-town-network.ps1` and the
+`apps/uoaix/test-*.ps1` launchers still redirect under the workspace (2026-10-08).
 
 #### codex-vm REFUSES AN UNRECOGNISED ARGUMENT (since 2026-08-27)
 
@@ -586,6 +600,7 @@ codex-vm -kernel file.cdx [options]
 | `-xhci-intel-lock` | off | As `-xhci-intel`, and additionally make XUSB2PR read-only, modelling a part whose ports firmware pinned to the companion. A correct driver then finds nothing, which is what proves the routing gate rather than something else is deciding. |
 | `-xhci-csz` | off | Advertise CSZ=1 (HCCPARAMS1 bit 2) and hold every context to the 64-byte stride, the way Intel PCH silicon does. Every bed before this flag reported CSZ=0, so the driver's 64-byte context path shipped in every image and executed nowhere but on real Intel parts. A driver that hardcodes 32 writes its slot context inside the input control context and its ring pointers where the controller will not look. |
 | `-xhci-scratch <N>` | 0 | Declare N scratchpad buffers in HCSPARAMS2 and REFUSE the first ENABLE_SLOT (completion code 9, stderr verdict) unless DCBAA[0] points at a 64-byte-aligned array of N page-aligned, in-RAM page pointers. QEMU and this model declared zero forever; Intel parts demand real pages, and a missing array is silent corruption on metal. |
+| `-clock-scale N` | Guest time runs N times faster, 1..100 (UOAIX-82, soaks only): the PIT tick period shrinks by N and the LAPIC timer and HPET count N times faster, so `get-ticks`, `hpet-ticks` and every game timer built on them speed up; the RTC keeps wall time. Measured 2026-10-07: 200 ticks took 2264 ms at 1 and 428 ms at 10, boot included. `soak-bots.ps1 -ClockScale N` passes it. Every duration a guest measures in HPET ticks reads N times high, the UOAIX `WORLD COMMITTED ... encode-us` and `ms=` fields included: divide by N before comparing a scaled run with an unscaled one (measured 2026-10-08, median encode 510 ms at 10 against 49 ms at 1). |
 | `-no-hpet` | off (the HPET answers) | The HPET window at 0xFED00000 is dead: every register reads zero and every write is dropped. What decides is the capability period at offset 04, which a guest divides into a second to get its tick rate, so a zero period is the box saying it has no clock to offer. `Hpet.codex` turns that into a rate of zero, and `E1000e` and `NicAsde` above it fall back to counting reads instead of clocking a deadline -- the path every network timeout on a box without an HPET actually takes, and one that had no bed arm at all until 2026-08-19. Four readers in the diagnostic ladder say so under it (`nicsit`, `nicinit` and `nicring` state `no-hpet`, and the scene stage's frame row reads `plain=no-clock`), which is the `nic-nohpet` arm. The xHCI MFINDEX is unaffected: that runs off host time inside the model rather than off a register the guest was offered. |
 | `-hpet-frozen` | off (the HPET answers) | The HPET window is there and UNDECODED: every register reads all-ones and every write is dropped, which is the other dead clock and the one `-no-hpet` cannot express. A period of 0xFFFFFFFF derives a rate of 232830 Hz, bogus but nonzero, so every reader takes its CLOCKED wait path, and the counter at F0/F4 is 0xFFFFFFFF and never moves, so each of those waits is bounded only by its read fuel (`e1000-await-link-clocked` is 100000 batches of 4096 STATUS reads). The diagnostic ladder's `b3` stage reads the counter across 100000 reads at entry and answers `clock-stuck` before bring-up; that is the `b3-clockstuck` arm, whose cfg turns the three nic stages off so nothing ahead of b3 spends its fuel on the same clock first. (root, 2026-08-21, the shape blu asked for.) |
 | `-no-smbios` | off (SMBIOS is published) | With `-uefi`: leave the SMBIOS entries out of the ConfigurationTable, so a guest that goes looking is told "none offered". The arm for a reader's no-table state; the diagnostic ladder's smbios stage answers `no-table` and its box row `unnamed` under it. |
@@ -975,7 +990,7 @@ guest culled everything" from "the guest submitted geometry that landed
 somewhere unexpected" without a rebuild, and the last figure is what turns an
 intermittent flicker into a deterministic reading.
 
-**Serial I/O.** Ring buffer at GPA 0x500000 (1 MB). Source input is
+**Serial I/O.** Ring buffer 1 MB below the heap base the CDX header states (GPA 0xF00000; 0x500000 for a CDX built before COMPILER-127). Source input is
 pre-loaded from `-input` file. Output captured from guest UART writes
 to `-output` file. Ports 0x3F8-0x3FD (COM1). Protocol: guest reads
 input from ring buffer; writes output bytes; harness captures until
@@ -1930,6 +1945,60 @@ code, which is the number the script actually publishes.
 
 **A one-letter helper can be a built-in alias.** `function R` in a session script loses to `R`, which is `Invoke-History`, so every call fails with "A positional parameter cannot be found" and a file written back afterwards is written UNCHANGED while the script reports nothing applied. Name helpers with a verb and a noun.
 
+**`[IO.File]` resolves a relative path against the PROCESS directory, not the PowerShell location.** After `cd` (or `Set-Location`) a `[IO.File]::ReadAllBytes('x.codex')` reads from wherever the pwsh process started, while `Resolve-Path x.codex` follows the location: a read-modify-write that reads with the one and writes with the other writes an EMPTY file over the real one (fester, 2026-10-09: six opened files truncated to 0 bytes, restored with `p4 print -q -o` from their have revision, which also leaves them read-only). Pass absolute paths to every `[IO.File]` call.
+
+**Text built by a script mangles source; a source edit that spans lines goes through the Edit tool.** Four mechanisms, all silent:
+- An array literal: the comma binds tighter than `+`, so `@('a', 'b' + "x" + 'c')` is three elements, and `@( @('old','new') )` with ONE inner pair flattens to two strings, so a loop over pairs indexes characters; write `@( ,@('old','new') )`.
+- `@(@('a',1,2))` with ONE inner array flattens to its scalars, so a `foreach`/`Where-Object` over a one-row table
+  walks the values, not the row (a bvt.ps1 check read 0 of 1, main 41998); write `@(,@(...))` for a single row.
+- PowerShell names ignore case: a script variable `$doors` assigned after `param([string]$Doors)` overwrites the
+  parameter (and is coerced to its type). Name script variables apart from every parameter.
+- A here-string inserted as text ends without its final newline, so the next source line is glued onto the last inserted one and the compile error points at a line you did not write.
+- A `.Replace()` whose text carries a newline does not apply on this CRLF tree, or merges and drops neighbouring lines (a lost `in let`, a lost record field).
+- In argument mode `+` does not concatenate: `F 'a' 'b' + 'c'` passes `'b'`, `'+'` and `'c'`; build the string in parentheses or a variable first.
+
+A one-line scripted replacement is safe when the script checks that its match count is 1.
+
+**`build/test-compile-batch.ps1` over thousands of files is killed by host memory**; feed it chunks of about 400.
+
+**Separate PowerShell tool calls share no variables.** A value captured in one call is empty in the next, and a write built from it blanks what it replaces. Read the value in the same call that writes.
+
+**Stopping a `ForEach-Object -Parallel` fan-out does not stop its children.** The `compile.ps1` and `test-run.ps1` processes it started keep running after the parent is killed; kill each child tree (`Win32_Process` by `ParentProcessId`), then list processes whose command line names your output folder and confirm none remain.
+
+**`& build/compile.ps1 ... | Select-Object -First N` races a live compile.** `-First` returns as soon as it has N lines while the compile goes on running, so a `Test-Path` on `-Out` right after reads missing and the next step reads a half-written CDX. Use `-Last N`, which returns after the compile ends.
+
+**A `ForEach-Object -Parallel` scriptblock sees no script-level function or variable.** It runs in its own runspace; take values through `$using:` and inline the logic.
+
+**`[sbyte]$b` throws for a byte above 127, and the failed assignment keeps the PREVIOUS value**, so a reader of signed bytes (a MUL z) prints plausible wrong numbers instead of failing. Convert with `if ($b -ge 128) { $b - 256 } else { $b }` and check one known value.
+
+**An `[ordered]` hashtable indexed by an integer is POSITIONAL**: `$h[3]` is the fourth entry, not the key `3`, and assigning `$h[1]` on a one-entry table throws "index out of range" instead of adding key 1. A script that deletes by such an index removes the wrong entries and still reports success; key it by strings or use a plain hashtable.
+
+**A double-quoted string reads the longest variable name it can**: `"$nl2026"` is the empty variable `nl2026`, not `$nl` followed by `2026`, so text vanishes with no error. Write `"${nl}2026"`.
+
+**`[IO.File]` and `compile.ps1 -Src` resolve a relative path against the .NET current directory, not PowerShell's location.** After `Set-Location` into another workspace, a relative `WriteAllText` writes into the first one, and a relative `-Src` compiles the first workspace's file against the second's chapters. Pass `(Resolve-Path x).Path`.
+
+**Piping `Group-Object`'s `.Group` unrolls one level**: `foreach ($x in $g.Group)` sees each grouped array whole, but `$g.Group | ForEach-Object` iterates the elements inside the arrays, for a group of any size. Group `[pscustomobject]` rows.
+
+**`compile.ps1` writes diagnostics and `-Text` source to the `-Log` file**; `-Out` is the CDX, and the script's stdout carries only the `kernel: <path> [digest]` line and the exit value.
+
+**The harness refuses a call that deletes a file when the same call holds a regex or wildcard string** (`\d+`, `*`), reading those as the delete target. Delete in a call of its own with `-LiteralPath`.
+
+**A watcher that matches a status file reads its LAST line**; an older terminal line in the same file returns the loop at once.
+
+**A resumed gate or chain reads `build/output` as the last run left it**: a skipped concat leaves a stale `Codex.codex`, and a killed `test.ps1` leaves its `-CodexCdx` compiler installed as the working kernel. Re-concat and re-hash the kernel before anything reads either.
+
+**A new script that walks a tree is launched with a memory cap**: native calls through `Start-Process` with output to files, working sets polled, an abort over the cap. One dry run captured native output in-process and grew its `pwsh` to 28.5 GB (2026-09-29).
+
+**A run longer than the 10-minute tool timeout** is launched with `Start-Process` and waited on by a bounded loop over its PID.
+
+**A headless browser launched from the scratchpad is killed by its profile path across every browser image** (`chrome.exe` and `msedge.exe`); a chrome-only filter left 11 Edge processes alive.
+
+**A new executable that listens costs Damian a Windows firewall click.** Keep test binaries at one fixed path, and bind servers to `127.0.0.1:port`.
+
+**`diag-arm.ps1` builds its config ARMS from `build-output\diag.cdx`, the LAST `build-diag.ps1` run, whatever `-Img` names** (the baseline comes from the subject), so a control image built after the subject makes every config arm the control. Build the subject's image last and read `build-output/diag-recipe.txt` `kernel=` before believing an arm.
+
+**A random draw inside a grader is part of the instrument.** `seed % n` over a power-of-two LCG reads its low bits, which cycle (`% 2` alternates), so a sweep can silently never reach a case. Take the high bits, and print how many of each case the sweep reached.
+
 
 The section above is one instance of a general rule, and the rest of the
 instances cost a session each. **When a check you wrote in the moment
@@ -1958,7 +2027,9 @@ all the apparatus; the product was fine every time.
   are what separates the host refusing from the guest never asking**, and they
   are the first thing to read when a write does not land.
 - **`[uint32]0xFFFFFFFF` THROWS, because PowerShell parses `0xFFFFFFFF` as
-  Int32 minus one.** Measured 2026-08-15 writing a CRC32 helper to check GPT
+  Int32 minus one**, and every hex literal above `0x7FFFFFFF` is a negative
+  Int32 the same way, so a byte search or a `[uint64]` parameter given one
+  finds nothing or throws; parse with `[Convert]::ToUInt32('F14022F3', 16)`. Measured 2026-08-15 writing a CRC32 helper to check GPT
   fixtures: the seed line `$crc = [uint32]0xFFFFFFFF` threw on every call, the
   catch-free loop reported every one of 26 fixtures as failing both CRCs, and
   that read exactly like a corpus-wide finding. Write the constant in decimal
@@ -2070,9 +2141,6 @@ all the apparatus; the product was fine every time.
   it looks exactly like a code defect that ignores your change. Build in its own
   invocation; before measuring, check the artifact is NEWER than the source and
   that a name you just added is actually in it.
-- **A multi-line `.Replace()` silently does not apply on this CRLF tree**, and
-  the unchanged behaviour then reads as a defect in the code. The `Edit` tool
-  fails loudly instead; use it for anything spanning a line break.
 - **`-eq` on strings is CULTURE-SENSITIVE and called 1452 and 1453 bytes
   identical.** Comparing a capture against its `.expected`, printing the two
   lengths beside the verdict was the only reason the disagreement was noticed:
@@ -2089,11 +2157,15 @@ all the apparatus; the product was fine every time.
   and give any zero a positive control that would have been non-zero.
 - **`[...]` inside a `-like` pattern is a WILDCARD CHARACTER CLASS**, so
   `-like "*x=[$v]*"` throws or silently matches the wrong thing depending on
-  what `$v` holds. Use `.Contains()`.
+  what `$v` holds. Each `*` in `**reek**` is a wildcard too, so
+  `-like '| **reek** |*'` matches any row that mentions reek later on, not only
+  reek's own row. Use `.Contains()` or `.StartsWith()`.
 - **`Remove-Item` anywhere in a block can trip a guardrail on an
   unrelated-looking path, and then the WHOLE block silently does not run.** The
   symptom is not an error about the deletion; it is that nothing in the command
-  happened, which reads as the command having no effect.
+  happened, which reads as the command having no effect. The guardrail reads
+  the command TEXT, strings and here-strings included, so put such a step in a
+  scratch `.ps1` written with the Write tool and run it with `pwsh -File`.
 
 ### A gate run as a tool-call child dies with the session, and it reads as host trouble
 
@@ -3119,6 +3191,38 @@ The sample buffer lives at 0x60000 (profiler) / 0x70000 (alloc trace),
 in the free low-memory band above the AP stacks; earlier it sat inside
 the page tables and enabling it destroyed them after ~88 samples.
 
+**Profiling a UOAIX shard.** Compile `CompositeGameServer` (its `.map` lands
+beside the CDX), install a world (`install-map-cache.ps1`), set
+`CODEX_VM_PROFILE`, launch with `start-composite-game.ps1 -Testing -Open
+-ClockScale 30`, and stop it by setting the event
+`Global\CodexVmShutdown_<pid>`: the samples are written at a clean exit, so
+`Stop-Process` loses them. The host buffer holds 65,536 samples, about 15
+minutes of a busy shard. Profile with fewer than two other guests on the
+box: under six (2026-10-09) the same build ran the game at half speed and
+the A/B said nothing about speed.
+
+**The host sampler sees only running time.** A sample is taken only on a
+`Canceled` exit, so a guest halted in `cpu-park` (`sti; hlt`, waiting in
+codex-vm's own loop) is never sampled, and a cancel that lands during an exit
+is taken at the next run, so samples gather at exit sites (an HPET read is
+one). A share is a share of the guest's running time, not of the wall: on
+2026-10-09 `peek-32` under `hpet-ticks` was 58.6% of a trial's samples while
+the live shard of the same code used 8% of one host CPU. To ask whether a
+guest is busy, measure its process's CPU time on the host
+(`TotalProcessorTime` over a window), not a share.
+
+**A leaf's samples name no caller.** The host sampler records only RIP. To
+attribute a leaf, build a scratch codex-vm (never `tools/codex-vm.exe`) that
+also reads RSP and RBP at each sample (`WHvGetVirtualProcessorRegisters`)
+and records the guest words at `[rbp+8]` and `[[rbp]+8]`, each read inside
+`__try`/`__except` (guest RAM is not all backed on the host; an unguarded
+read crashed codex-vm), then resolve them against the map. Measured
+2026-10-09: 60% of a shard's samples in `peek-32` were `hpet-reg` under
+`hpet-ticks`. **An HPET read is an emulated register access** (three for
+`hpet-ticks`, one for `hpet-ticks-per-second`), so a loop that reads the
+clock more than once a pass, or re-reads the constant rate, spends its time
+in VM exits.
+
 ### The map answers whether a symbol SHIPS, which the source cannot
 
 `<out>.map` lists every function offset the build emitted, so grepping it is
@@ -3766,6 +3870,7 @@ guest path needs the `cli`.
 | `-Poison` | 0xCD fill in `__alloc` (catches uninitialized fields) |
 | `-Repl` | REPL loop (for batch compilation) |
 | `-Decks <N>` | Scale every phase deck floor to N% of the `BuildSettings` defaults (100 = defaults). Sends `decks=N` on the mode line. |
+| `-RawFlags cover` | Function coverage, bare-metal x86-64 only. Every reachable definition gets a 64-bit entry counter (standard emit path forced; inline passes off unless `passes=` says otherwise), and the compile log carries one `CDX6015: [COVER] <slot> <name>` line per definition with its span. The `cover-arms` IR pass (appended to the cover pipeline) also counts every `if` arm and `when` branch: arm slots follow the definition slots, numbered densely over the reachable definitions, and the log carries one `CDX6015: [COVER-ARM] <slot> <name> __cov-<then|else|is>` line per arm with the arm's span. The program prints `COVER-BEGIN:<n>`, then `COVER:<slot>:<count>` for every entered slot, then `COVER-END` on COM1 when `opening` returns and at every `__cover-dump` call (counts are cumulative; the builtin returns the slot count, and 0 in a build without `cover`, where it prints nothing). A server that never returns from `opening` must call `__cover-dump` itself. `build/coverage-report.ps1 -Log <compile log> -Output <run output(s)> [-Filter apps\uoaix] [-Markdown <file>]` joins the two into per-chapter hit/total and the never-run list, and with arm lines present, the arms taken in entered definitions and (in `-Markdown`) the arms never taken. `codex/test/cover-arms` grades the arm counts. Definitions pruned as unreachable are not in the denominator. |
 
 ### Running a compile from a second workspace: set `[Environment]::CurrentDirectory`
 

@@ -1,0 +1,128 @@
+Chapter: BritishCharacterProof
+  cites Uoaix chapter CompositeStore
+
+  bcp-check : Text, Boolean -> [Console] Integer
+  bcp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  bcp-fill : WalkMap, Integer -> Integer
+  bcp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bcp-fill map (i + 1)
+  bcp-named : Integer, List Integer, Integer -> Boolean
+  bcp-named (row) (name) (i) = if i == list-length name then peek-byte row (18 + i) == 0
+    else peek-byte row (18 + i) == list-at name i & bcp-named row name (i + 1)
+  bcp-slot : CompositeGame -> Integer
+  bcp-slot (owner) = let table = owner.checkpoint.game.accounts
+    in let index = ga-british table
+    in if index < 0 then 0 else ga-slots table index
+  bcp-british : CompositeGame -> Integer
+  bcp-british (owner) = let row = bcp-slot owner in if row == 0 then 0 else peek-qword row 0
+  bcp-state : CompositeGame, Text -> [Console] Integer
+  bcp-state (owner) (tag) = let serial = bcp-british owner
+    in act
+      print-line-uni ("BRITISH " & tag & " serial=" & show serial & " objects=" & show (world-count owner.checkpoint.game.world) & " bound=" & show (ga-bound owner.checkpoint.game.accounts))
+      0
+    end
+  bcp-costumed : CompositeGame, Integer -> Boolean
+  bcp-costumed (owner) (serial) = let robe = gmb-layer owner.items serial cst-british-layer 0
+    in robe > 0 & (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.graphic == 400)
+      & (when world-get owner.checkpoint.game.world robe is Err (_) -> False is Ok (o) -> o.graphic == #2042)
+  bcp-costume-in : CompositeGame, Integer -> Integer
+  bcp-costume-in (owner) (child) = if child == 0 then 0
+    else let rest = bcp-costume-in owner (world-next-sibling owner.checkpoint.game.world child)
+    in when world-get owner.checkpoint.game.world child is Err (_) -> rest is Ok (o) -> if o.graphic == #2042 then rest + 1 else rest
+  bcp-die : CompositeGame, Integer -> Integer
+  bcp-die (owner) (serial) = let game = owner.checkpoint.game
+    in let input = gn-input-with (when cg-specs 0 is Err (_) -> [] is Ok (specs) -> specs) 4
+    in when cb-ensure owner.combat game serial
+      is Err (_) -> 0
+      is Ok (a) -> when world-get game.world serial
+        is Err (_) -> 0
+        is Ok (m) -> when cb-die owner.combat game input 0 a m
+          is Err (_) -> 0
+          is Ok (_) -> when gr-robe owner.resurrection serial is Err (_) -> 0 is Ok (_) -> a.corpse
+  bcp-raise : CompositeGame, Integer -> Boolean
+  bcp-raise (owner) (serial) = let game = owner.checkpoint.game
+    in let bound = gs-bind game (ga-british game.accounts)
+    in when world-get game.world serial
+      is Err (_) -> False
+      is Ok (ghost) -> is-ok (gr-raise-world owner.resurrection game ghost (cb-slot game serial 0))
+  bcp-revive : CompositeGame, Integer -> [Console] Integer
+  bcp-revive (owner) (serial) = let costume = gmb-layer owner.items serial cst-british-layer 0
+    in let corpse = bcp-die owner serial
+    in let shrouded = (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.health == 0)
+      & bcp-costume-in owner (world-first-child owner.checkpoint.game.world corpse) == 1
+    in let raised = bcp-raise owner serial
+    in bcp-check "a resurrected British takes his own costume back from his corpse and sheds the death robe" (corpse > 0 & shrouded & raised
+      & bcp-costumed owner serial & gmb-layer owner.items serial cst-british-layer 0 == costume
+      & bcp-costume-in owner (world-first-child owner.checkpoint.game.world corpse) == 0)
+  bcp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  bcp-first (store) (map) = let owner = store.state in act
+    before <- world-count owner.checkpoint.game.world
+    bound <- ga-bound owner.checkpoint.game.accounts
+    made <- cg-british-character owner map
+    serial <- bcp-british owner
+    a <- bcp-check "a new world's British account gains a character named British in slot 0" ((when made is Err (_) -> False is Ok (n) -> n == 1)
+      & serial > 0 & bcp-named (bcp-slot owner) [66,114,105,116,105,115,104] 0
+      & (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.kind == 1)
+      & ga-bound owner.checkpoint.game.accounts == bound & owner.checkpoint.game.active == 0)
+    count <- world-count owner.checkpoint.game.world
+    again <- cg-british-character owner map
+    b <- bcp-check "a second call finds the character and creates nothing" ((when again is Err (_) -> False is Ok (n) -> n == 0) & world-count owner.checkpoint.game.world == count & count > before)
+    e <- bcp-check "British is body 400 wearing his costume 0x2042 on layer 22, and a body from 400 up swings and is hit as a human" (bcp-costumed owner serial
+      & cb-swing-action 990 1 == 9 & cb-hurt-action 990 == 20)
+    f <- bcp-revive owner serial
+    committed <- cs-commit store True
+    c <- bcp-check "the world commits" (is-ok committed)
+    d <- bcp-state owner "first"
+    a + b + e + f + c + d
+  end
+  bcp-later : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  bcp-later (store) (map) = let owner = store.state in act
+    serial <- bcp-british owner
+    count <- world-count owner.checkpoint.game.world
+    again <- cg-british-character owner map
+    a <- bcp-check "after a restart British is still in slot 0 and boot creates no second one" (serial > 0
+      & (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.kind == 1)
+      & (when again is Err (_) -> False is Ok (n) -> n == 0) & world-count owner.checkpoint.game.world == count)
+    e <- bcp-check "after a restart British keeps body 400 and his costume, and boot adds no second costume" (bcp-costumed owner serial)
+    b <- bcp-state owner "later"
+    c <- bcp-elsewhere owner map serial
+    a + e + b + c
+  end
+  bcp-elsewhere : CompositeGame, WalkMap, Integer -> [Console] Integer
+  bcp-elsewhere (owner) (map) (other) = let game = owner.checkpoint.game in act
+    bound <- gs-bind game (ga-british game.accounts)
+    renamed <- poke-byte game.characters 18 88
+    before <- world-count game.world
+    made <- cg-british-character owner map
+    row <- bcp-slot owner
+    a <- bcp-check "an account whose slots hold no British gains one in the first empty slot, slot 0 left alone" ((when made is Err (_) -> False is Ok (n) -> n == 2)
+      & peek-qword row 0 == other & peek-qword row 160 > 0 & bcp-named (row + 160) [66,114,105,116,105,115,104] 0
+      & (when world-get game.world (peek-qword row 160) is Err (_) -> False is Ok (m) -> m.kind == 1) & world-count game.world > before)
+    count <- world-count game.world
+    again <- cg-british-character owner map
+    b <- bcp-check "British in slot 1 is found and nothing more is created" ((when again is Err (_) -> False is Ok (n) -> n == 0) & world-count game.world == count)
+    a + b
+  end
+
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1536 96 224
+    is Err (e) -> bcp-check e False
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+     is Err (e) -> bcp-check e False
+     is Ok (britain) -> let filled = bcp-fill map 0 in let town-filled = bcp-fill britain 0 in act
+      opened <- us-open 0 131072
+      when opened
+        is Err (e) -> bcp-check ("store " & e) False
+        is Ok (store) -> let fresh = store.head == 0 in act
+          loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) (Just britain) None
+          when loaded
+            is Err (e) -> bcp-check ("recovery " & e) False
+            is Ok (owner) -> if fresh then bcp-first owner map else bcp-later owner map
+        end
+    end
+
+Page 1

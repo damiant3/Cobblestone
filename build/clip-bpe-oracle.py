@@ -30,6 +30,7 @@ PROMPTS = [
     '1024x768 3.14 v2.0 (masterpiece:1.2) [bad] {x} <lora:foo:0.8> !!! ... ?! --- @#$%^&*_=+~`|\\/"',
     'a<|endoftext|>b <|startoftext|> Supercalifragilisticexpialidocious',
     'Caf\u00e9 \u00c9COLE \u00fcber \u0416\u0418\u0417\u041d\u042c na\u00efve \u2018quoted\u2019 \u201cdouble\u201d',
+    '\u039f\u0394\u039f\u03a3 \u039b\u039f\u0393\u039f\u03a3, \u03a3 \u03a3\u0391\u03a3\u0391',
 ]
 
 def main():

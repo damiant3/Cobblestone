@@ -1,0 +1,499 @@
+Chapter: CompositeFighterProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter EconomyCurrencyValid
+
+ The fighter's own purchases of an item since a sale index (other trades, the farmer's flour, run beside it).
+  cfp-buys : GvWorld, Integer, Integer, Integer -> Integer
+  cfp-buys (v) (buyer) (item) (i) = if i >= v.sale-count then 0 else let s = list-at v.sales i in (if s.buyer == buyer & s.item == item then s.quantity else 0) + cfp-buys v buyer item (i + 1)
+  cfp-check : Text, Boolean -> [Console] Integer
+  cfp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cfp-fill : WalkMap, Integer -> Integer
+  cfp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cfp-fill map (i + 1)
+ The gatherer proof's one-door decoration at 1419,1690.
+  cfp-data : Integer -> Integer
+  cfp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  cfp-mobile : CompositeGame, CgFighter -> WorldObject
+  cfp-mobile (owner) (c) = when world-get owner.checkpoint.game.world c.serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  cfp-value : EuCurrency, Integer -> Integer
+  cfp-value (x) (purse) = eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+  cfp-offer-none : CompositeGame -> Boolean
+  cfp-offer-none (owner) = cgf-offer owner.vendor (list-at owner.vendor.vendors 1) 0 < 0
+  cfp-census : EuCurrency -> Boolean
+  cfp-census (x) = euv-valid x & ep-census x.world 1
+  cfp-line : CompositeGame, CgFighter, Text -> Text
+  cfp-line (owner) (c) (label) = let m = cfp-mobile owner c
+    in "FIGHTER " & label & " at " & show m.x & "," & show m.y & " hp=" & show m.health & " home " & show c.home.x & "," & show c.home.y
+      & " hunt " & show c.hunt.x & "," & show c.hunt.y & " leg=" & show c.leg & " visit=" & show c.visit & " took=" & show c.took
+      & " kills=" & show c.kills & " gold=" & show c.gold & " kept=" & show c.fighter.looted & " taxed=" & show c.fighter.taxed & " blocked=" & show c.blocked
+      & " skill=" & show c.skill
+  cfp-spin : Integer, Integer -> Integer
+  cfp-spin (target) (left) = if get-ticks >= target | left == 0 then left else cfp-spin target (left - 1)
+ World ticks around the fighter over its route window, 100 ms apart on the PIT clock the spawn codec bounds
+ its deadlines against, until the fighter reaches leg goal; answers the ticks left.
+ Each landed blow logs a combat event (cb-event: source, victim, damage); the tally counts the fighter's given and taken.
+  cfp-tally : GameCombat, Integer, Integer, Integer -> Integer
+  cfp-tally (c) (serial) (tally) (i) = if i >= c.event-count then cb-events-clear c
+    else let at = c.events + i * cb-event-bytes
+    in let given = if serial /= 0 & peek-qword at 0 == serial then let a = poke-qword tally 0 (peek-qword tally 0 + 1) in poke-qword tally 8 (peek-qword tally 8 + peek-qword at 24) else 0
+    in let taken = if serial /= 0 & peek-qword at 8 == serial then let b = poke-qword tally 16 (peek-qword tally 16 + 1) in poke-qword tally 24 (peek-qword tally 24 + peek-qword at 24) else 0
+    in cfp-tally c serial tally (i + 1)
+ Hunting ticks: at war with a live target (qword 32), that target within reach (40), and the swing due (48).
+  cfp-watch : CompositeGame, CgFighter, WalkMap, Integer -> Integer
+  cfp-watch (owner) (c) (route) (tally) = let game = owner.checkpoint.game
+    in when cb-ensure owner.combat game c.serial
+      is Err (_) -> 0
+      is Ok (a) -> if not a.war | a.target == 0 then
+        let idle = poke-qword tally 88 (peek-qword tally 88 + 1)
+        in let hunted = poke-qword tally 96 (peek-qword tally 96 + cfp-hunters owner c 0) in 0
+        else let w = poke-qword tally 32 (peek-qword tally 32 + 1)
+        in let due = if a.due <= owner.combat.tick then poke-qword tally 48 (peek-qword tally 48 + 1) else 0
+        in let swung = if peek-qword tally 56 /= 0 & a.due /= peek-qword tally 56 then poke-qword tally 72 (peek-qword tally 72 + 1) else 0
+        in let seen = poke-qword tally 56 a.due
+        in let odds = when cb-ensure owner.combat game a.target is Err (_) -> 0 is Ok (t) -> poke-qword tally 80 (cb-chance-of (cb-skill-for game a (cb-arms owner.combat c.serial)) (cb-skill-for game t (cb-arms owner.combat t.serial)))
+        in let now = poke-qword tally 64 owner.combat.tick
+        in when world-get game.world c.serial
+          is Err (_) -> 0
+          is Ok (me) -> when world-get game.world a.target
+            is Err (_) -> 0
+            is Ok (it) -> if cb-reach route me it then poke-qword tally 40 (peek-qword tally 40 + 1) else 0
+  cfp-hunters : CompositeGame, CgFighter, Integer -> Integer
+  cfp-hunters (owner) (c) (i) = when owner.spawns
+    is None -> 0
+    is Just (g) -> if i == list-length g.slots then 0
+      else let serial = (list-at g.slots i).serial
+      in let a = if serial == 0 then 0 else (list-at owner.combat.actors (world-slot owner.checkpoint.game.world serial)).target
+      in (if serial /= 0 & a == c.serial & cgf-alive owner.checkpoint.game.world serial then 1 else 0) + cfp-hunters owner c (i + 1)
+  cfp-run : CompositeGame, CgFighter, WalkMap, Integer, Integer, Integer -> Result Integer Text
+  cfp-run (owner) (c) (route) (goal) (left) (tally) = if left == 0 | c.leg == goal then Ok left
+    else let paced = cfp-spin (get-ticks + gm-ticks 100) 1000000000
+    in let cleared = cb-events-clear owner.combat
+    in when cg-world-tick owner owner.checkpoint.game route c.serial get-ticks
+      is Err (e) -> Err e
+      is Ok (_) -> let tallied = cfp-tally owner.combat c.serial tally 0
+        in let watched = if c.leg == 4 then cfp-watch owner c route tally else 0
+        in cfp-run owner c route goal (left - 1) tally
+  cfp-live : CompositeGame, CgFighter, WalkMap, Integer -> Result Integer Text
+  cfp-live (owner) (c) (route) (left) = if left == 0 | c.serial /= 0 then Ok left
+    else let paced = cfp-spin (get-ticks + gm-ticks 100) 1000000000
+    in when cg-world-tick owner owner.checkpoint.game route (when owner.gatherer is None -> 0 is Just (g) -> g.serial) get-ticks
+      is Err (e) -> Err e
+      is Ok (_) -> cfp-live owner c route (left - 1)
+ A CGF1 with qword 88 zero (every disk written before the errand) is a fighter at home with no errand; a fighter whose
+ mobile is gone is written with serial 0 and no errand, and decodes so.
+  cfp-codec : CompositeGame, CgFighter -> [Console] Integer
+  cfp-codec (owner) (c) = let buf = alloc-bytes cgf-bytes
+    in let x = owner.vendor.currency
+    in let world = owner.checkpoint.game.world
+    in let written = cgf-encode c world buf
+    in let zero = poke-qword buf 88 0
+    in let old = cgf-decode x world buf
+    in let away = poke-qword buf 88 (4 + 16 + 32 * 5)
+    in let hunting = cgf-decode x world buf
+    in let bad = poke-qword buf 88 -1
+    in let refused = cgf-decode x world buf
+    in let long = poke-qword buf 88 (32 * (cgf-hunt-limit + 1))
+    in let over = cgf-decode x world buf
+    in let leg = poke-qword buf 88 12
+    in let unknown = cgf-decode x world buf
+    in let ghost = cgf-new c.fighter (world.capacity * 4 + 7) c.home
+    in let hunt = __record-set ghost "leg" 4
+    in let dead = cgf-encode ghost world buf
+    in let dead-serial = peek-qword buf 16
+    in let dead-word = peek-qword buf 88
+    in let buried = cgf-decode x world buf
+    in let haunt = poke-qword buf 88 4
+    in let haunted = cgf-decode x world buf
+    in let restored = cgf-encode c world buf
+    in let practised = poke-qword buf 88 (4 + 16 + 32 * 5 + 412 * cgf-errand-unit)
+    in let skilled = cgf-decode x world buf
+    in let master = poke-qword buf 88 (1001 * cgf-errand-unit)
+    in let beyond = cgf-decode x world buf
+    in cfp-check "CGF1: a zero errand word decodes at home with no errand and the template skill, hunting with a kill after 5 steps and skill 41.2 round-trips, a negative word, leg 12, an overlong hunt and a skill past 100.0 are refused; a fighter with no mobile writes serial 0 and no errand but keeps its skill, decodes dead, and serial 0 with an errand is refused" (
+      (when old is Err (_) -> False is Ok (f) -> f.leg == 0 & f.took == 0 & f.visit == 0 & f.kills == c.kills & f.skill == cgf-skill)
+      & (when hunting is Err (_) -> False is Ok (f) -> f.leg == 4 & f.took == 1 & f.visit == 5)
+      & (when skilled is Err (_) -> False is Ok (f) -> f.leg == 4 & f.took == 1 & f.visit == 5 & f.skill == 412)
+      & (when beyond is Err (e) -> e == "fighter errand invalid" is Ok (_) -> False) & restored == cgf-bytes
+      & (when refused is Err (e) -> e == "fighter errand invalid" is Ok (_) -> False)
+      & (when over is Err (e) -> e == "fighter errand invalid" is Ok (_) -> False)
+      & (when unknown is Err (e) -> e == "fighter errand invalid" is Ok (_) -> False)
+      & dead-serial == 0 & dead-word == cgf-skill * cgf-errand-unit
+      & (when buried is Err (_) -> False is Ok (f) -> f.serial == 0 & f.leg == 0)
+      & (when haunted is Err (e) -> e == "fighter errand invalid" is Ok (_) -> False))
+  cfp-commit : CompositeOwner, Text -> [Console, Device.Block] Integer
+  cfp-commit (store) (name) = act
+    committed <- cs-commit store True
+    cfp-check (name & (when committed is Err (e) -> ": " & e is Ok (_) -> "")) (is-ok committed)
+  end
+ The blacksmith forges one longsword from two ingots it found, through bb-forge's own produce and materialise.
+  cfp-forge : CompositeGame -> Result Integer Text
+  cfp-forge (owner) = let v = owner.vendor
+    in let merchant = list-at v.vendors 1
+    in let p = bb-producer v.currency merchant.actor
+    in if ep-find v.currency.world merchant.actor 31 2 < 0 then Err "smith ingots"
+    else when bb-produce p 70
+      is Err (e) -> Err e
+      is Ok (_) -> bb-materialise v owner.items p merchant.stock #0F60 0 (bb-layer 70) 0 True
+ The gatherer strikes the fighter at 1 hit for 7, through cb-apply-hit, where the death hook runs before cb-die.
+ A 7-hit blow at 1 hit, through cb-apply-hit, where the death hook runs before cb-die.
+  cfp-strike : CompositeGame, Integer, Integer -> Result (List (List Integer)) Text
+  cfp-strike (owner) (killer) (target) = let game = owner.checkpoint.game
+    in when world-get game.world target
+      is Err (e) -> Err e
+      is Ok (m) -> when world-update game.world (__record-set m "health" 1)
+        is Err (e) -> Err e
+        is Ok (_) -> when world-get game.world killer
+          is Err (e) -> Err e
+          is Ok (k) -> when world-get game.world target
+            is Err (e) -> Err e
+            is Ok (victim) -> when cb-ensure owner.combat game killer
+              is Err (e) -> Err e
+              is Ok (a) -> when cb-ensure owner.combat game target
+                is Err (e) -> Err e
+                is Ok (v) -> cb-apply-hit owner.combat game (gn-input 0) a v k victim 7 []
+  cfp-kill : CompositeGame, CgFighter -> Result (List (List Integer)) Text
+  cfp-kill (owner) (c) = cfp-strike owner (when owner.gatherer is None -> 0 is Just (g) -> g.serial) c.serial
+  cfp-in-corpse : WorldTable, Integer -> Boolean
+  cfp-in-corpse (world) (serial) = when world-get world serial
+    is Err (_) -> False
+    is Ok (o) -> when world-get world o.container is Err (_) -> False is Ok (b) -> b.kind == 2 & b.graphic == 8198
+  cfp-fell : CompositeOwner, CgFighter -> [Console] Integer
+  cfp-fell (store) (c) = let owner = store.state in when owner.gatherer
+    is None -> cfp-check "the Britain world has a gatherer" False
+    is Just (g) -> let owners = owner.vendor.owner-count
+      in let pack = g.pack
+      in let killed = cfp-strike owner c.serial g.serial
+      in cfp-check "a lethal blow records the gatherer dead (serial 0, no pack, no lot), drops its owner row and corpses its backpack, and the vendor ledger stays valid" (
+        is-ok killed & g.serial == 0 & g.pack == 0 & g.lot == 0 & g.leg == 0 & owner.vendor.owner-count == owners - 1
+        & cfp-in-corpse owner.checkpoint.game.world pack & gvsc-valid owner.vendor & cfp-census owner.vendor.currency)
+  cfp-raise : CompositeGame, CgGatherer, CgFighter, WalkMap, Integer -> Result Integer Text
+  cfp-raise (owner) (g) (c) (route) (left) = if left == 0 | g.serial /= 0 then Ok left
+    else let paced = cfp-spin (get-ticks + gm-ticks 100) 1000000000
+    in when cg-world-tick owner owner.checkpoint.game route c.serial get-ticks
+      is Err (e) -> Err e
+      is Ok (_) -> cfp-raise owner g c route (left - 1)
+  cfp-spawn-hp : CompositeGame, GameWorldSpawn, Integer, Text -> Text
+  cfp-spawn-hp (owner) (g) (i) (out) = if i == list-length g.slots then out
+    else let serial = (list-at g.slots i).serial
+    in if serial == 0 then cfp-spawn-hp owner g (i + 1) out
+    else when world-get owner.checkpoint.game.world serial
+      is Err (_) -> cfp-spawn-hp owner g (i + 1) out
+      is Ok (m) -> cfp-spawn-hp owner g (i + 1) (out & " " & show serial & "@" & show m.x & "," & show m.y & ":" & show m.health & "/" & show (list-at owner.combat.actors (world-slot owner.checkpoint.game.world serial)).maximum)
+  cfp-loan : EmMoney, Integer, Integer -> EmLoan
+  cfp-loan (m) (purse) (i) = if i == m.loan-count then list-at m.loans 127 else if (list-at m.loans i).borrower == purse then list-at m.loans i else cfp-loan m purse (i + 1)
+  cfp-first : CompositeOwner, CgFighter, TownLive, WalkMap -> [Console, Device.Block] Integer
+  cfp-first (store) (c) (town) (route) = let owner = store.state in act
+    print-line-uni (cfp-line owner c "fresh")
+    codec <- cfp-codec owner c
+    x <- owner.vendor.currency
+    merchant <- list-at owner.vendor.vendors 1
+    forged <- cfp-forge owner
+    price <- ep-price x.world merchant.actor 70
+    purse <- (ep-actor x.world c.fighter.producer.actor).purse
+    smith-before <- cfp-value x (ep-actor x.world merchant.actor).purse
+    sales <- owner.vendor.sale-count
+    loans <- x.world.money.loan-count
+    print-line-uni ("SMITH longsword quote " & show price & (when forged is Err (e) -> " forge " & e is Ok (_) -> ""))
+    ran <- cfp-run owner c route 4 2500 (alloc-bytes 64)
+    print-line-uni (cfp-line owner c "hunting")
+    m <- cfp-mobile owner c
+    loan <- cfp-loan x.world.money purse 0
+    print-line-uni ("BOUGHT armed=" & (if cgf-armed town c.serial then "yes" else "no") & " swords=" & show (ep-at (ep-actor x.world c.fighter.producer.actor).stock 70)
+      & " loan=" & show loan.principal & "g due=" & show loan.due & " status=" & show loan.status & " smith+" & show (cfp-value x (ep-actor x.world merchant.actor).purse - smith-before) & " fighter-coin=" & show (cfp-value x purse))
+    bought <- cfp-check "on its first errand the unarmed fighter borrows from the crown, buys the blacksmith's longsword at its quote and wields it" (is-ok forged & price >= 1
+      & cgf-armed town c.serial & ep-at (ep-actor x.world c.fighter.producer.actor).stock 70 == 1 & cfp-buys owner.vendor c.fighter.producer.actor 70 sales == 1
+      & x.world.money.loan-count == loans + 1 & loan.borrower == purse & loan.principal == (price + x.copper-rate - 1) / x.copper-rate & loan.interest == 0 & loan.due == em-limit
+      & cfp-value x (ep-actor x.world merchant.actor).purse > smith-before & cfp-offer-none owner & cfp-census x)
+    out <- cfp-check ("with no client, the wheel walks the fighter from its home through the lodging entrance and the trailhead toward the cemetery, hunting where prey first comes into sight" & (when ran is Err (e) -> ": " & e is Ok (_) -> "")) (
+      (when ran is Err (e) -> False is Ok (n) -> n > 0) & c.leg == 4 & m.x >= cgf-window.x1 & m.x <= cgf-window.x2 & m.y >= cgf-window.y1 & m.y <= cgf-window.y2
+      & c.hunt.x >= 1382 & c.hunt.x <= 1389 & c.hunt.y >= 1484 & c.hunt.y <= 1491)
+    trained <- cfp-check "the fighter fights as a new Warrior character (ServUO profession 1): strength 45, dexterity 35, Swordsmanship, Tactics and Anatomy 30, 45 hits" (
+      when cb-ensure owner.combat owner.checkpoint.game c.serial is Err (_) -> False is Ok (a) -> a.strength == 45 & a.dexterity == 35 & a.skill == 300 & a.tactics == 300 & a.anatomy == 300 & a.maximum == 45 & m.health <= 45)
+    saved <- cfp-commit store "the fighter commits mid-errand"
+    codec + bought + out + trained + saved
+  end
+ The fighter engages only a lone prey (cgf-alone), and which spawn stands alone depends on the restored layout, which moves
+ with every object the world holds (one more catalog item can leave none). Boot 2 therefore moves the
+ first gold-carrying live spawn to a walkable tile within 10 of the fighter that no other live spawn comes within 8 of.
+  cfp-crowded : GameWorldSpawn, WorldTable, Integer, Integer, Integer, Integer -> Boolean
+  cfp-crowded (g) (world) (x) (y) (except) (i) = if i == list-length g.slots then False
+    else let serial = (list-at g.slots i).serial
+    in let near = if serial == 0 | serial == except then False else when world-get world serial
+      is Err (_) -> False
+      is Ok (o) -> o.health > 0 & max (walk-abs (o.x - x)) (walk-abs (o.y - y)) <= cgf-alone
+    in near | cfp-crowded g world x y except (i + 1)
+  cfp-clear-spot : GameWorldSpawn, WorldTable, WalkMap, WorldObject, Integer, Integer -> Integer
+  cfp-clear-spot (g) (world) (map) (m) (except) (k) = if k == 441 then -1
+    else let x = m.x - 10 + int-mod k 21
+    in let y = m.y - 10 + k / 21
+    in if max (walk-abs (m.x - x)) (walk-abs (m.y - y)) >= 2 & walk-ready map x y & not (gws-occupied world x y)
+      & not (cfp-crowded g world x y except 0) then x * 65536 + y
+    else cfp-clear-spot g world map m except (k + 1)
+  cfp-gold-slot : GameWorldSpawn, WorldTable, Integer -> Integer
+  cfp-gold-slot (g) (world) (i) = if i == list-length g.slots then -1
+    else let slot = list-at g.slots i
+    in let fit = slot.serial /= 0 & (list-at g.catalog.profiles slot.profile).taming == 0 & cgf-alive world slot.serial
+    in if fit then i else cfp-gold-slot g world (i + 1)
+  cfp-isolate : CompositeGame, WorldObject, WalkMap -> Boolean
+  cfp-isolate (owner) (m) (map) = when owner.spawns
+    is None -> False
+    is Just (g) -> let i = cfp-gold-slot g owner.items.world 0
+      in if i < 0 then False
+      else let serial = (list-at g.slots i).serial
+      in let spot = cfp-clear-spot g owner.items.world map m serial 0
+      in if spot < 0 then False
+      else when world-get owner.items.world serial
+        is Err (_) -> False
+        is Ok (o) -> let x = spot / 65536 in let y = int-mod spot 65536
+          in when world-update owner.items.world (__record-set (__record-set (__record-set o "x" x) "y" y) "z" (walk-z map x y))
+            is Err (_) -> False
+            is Ok (_) -> let filed = gws-refile g owner.items.world i in True
+ An unarmed fighter (50 hits) is outmatched by the cemetery's undead (46 to 100 hits), so either outcome of the fight is
+ graded: home below full health or with a kill, or dead. The arm after it then deletes the mobile as cb-die does for an NPC.
+  cfp-second : CompositeOwner, CgFighter, WalkMap -> [Console, Device.Block] Integer
+  cfp-second (store) (c) (route) = let owner = store.state in act
+    x <- owner.vendor.currency
+    print-line-uni (cfp-line owner c "restored")
+    kept <- cfp-check "restart restores the fighter hunting where it stopped in its route window" (c.leg == 4 & c.kills == 0
+      & (cfp-mobile owner c).x >= cgf-window.x1 & (cfp-mobile owner c).x <= cgf-window.x2 & (cfp-mobile owner c).y >= cgf-window.y1 & (cfp-mobile owner c).y <= cgf-window.y2)
+    isolated <- cfp-isolate owner (cfp-mobile owner c) route
+    tally <- alloc-bytes 104
+    zero <- wd-zero tally 0 104
+    ran <- cfp-run owner c route 0 5000 tally
+    print-line-uni ("BLOWS given " & show (peek-qword tally 0) & " for " & show (peek-qword tally 8) & ", taken " & show (peek-qword tally 16) & " for " & show (peek-qword tally 24) & "; hunting ticks at war " & show (peek-qword tally 32) & ", in reach " & show (peek-qword tally 40) & ", swing due " & show (peek-qword tally 48) & "; last due " & show (peek-qword tally 56) & " tick " & show (peek-qword tally 64) & "; swings " & show (peek-qword tally 72) & " at " & show (peek-qword tally 80) & "%; hunting ticks with no target " & show (peek-qword tally 88) & ", spawns targeting the fighter summed over them " & show (peek-qword tally 96))
+    print-line-uni ("SPAWNS" & (when owner.spawns is None -> " none" is Just (g) -> cfp-spawn-hp owner g 0 ""))
+    died <- c.serial == 0
+    print-line-uni (cfp-line owner c (if died then "dead" else "home"))
+    m <- cfp-mobile owner c
+    fought <- cfp-check ("the fighter fights in the cemetery, then comes home or dies, and the census holds" & (when ran is Err (e) -> ": " & e is Ok (_) -> "")) (
+      isolated & (when ran is Err (_) -> False is Ok (n) -> n > 0) & c.leg == 0 & c.visit == 0 & c.gold == c.fighter.looted + c.fighter.taxed & cfp-census x
+      & (died | (m.x == c.home.x & m.y == c.home.y & m.health > 0 & (m.health < cgf-strength | c.kills > 0))))
+    owners <- owner.vendor.owner-count
+    death <- if died then Ok [] else cfp-kill owner c
+    print-line-uni ("DEATH " & (when death is Err (e) -> e is Ok (_) -> "ok") & " owners " & show owners & " -> " & show owner.vendor.owner-count & " swords " & show (ep-at (ep-actor x.world c.fighter.producer.actor).stock 70))
+    buried <- cfp-check "a lethal blow records the fighter dead at home with no errand, its longsword lot and owner row settled so the vendor ledger stays valid" (is-ok death & c.serial == 0 & c.leg == 0
+      & (died | owner.vendor.owner-count == owners - 1) & ep-at (ep-actor x.world c.fighter.producer.actor).stock 70 == 0 & gvsc-valid owner.vendor & cfp-census x)
+    saved <- cfp-commit store "the dead fighter commits"
+    kept + fought + buried + saved
+  end
+  cfp-third : CompositeOwner, CgFighter, WalkMap -> [Console, Device.Block] Integer
+  cfp-third (store) (c) (route) = let owner = store.state in act
+    restored <- cfp-check "restart restores the dead fighter" (c.serial == 0 & c.leg == 0)
+    kills <- c.kills
+    ran <- cfp-live owner c route 50
+    print-line-uni (cfp-line owner c "revived")
+    m <- cfp-mobile owner c
+    revived <- cfp-check "the first world tick after boot raises the fighter at home for the same economy actor" ((when ran is Err (_) -> False is Ok (n) -> n > 0)
+      & c.serial /= 0 & m.kind == 1 & m.health > 0 & m.x == c.home.x & m.y == c.home.y & c.leg == 0 & c.kills == kills & cfp-census owner.vendor.currency)
+    dressed <- cfp-check "the revived fighter wears the fighter's look for its new serial" (cst-styled owner.items c.serial cst-fighter)
+    fell <- cfp-fell store c
+    saved <- cfp-commit store "the revived fighter and the dead gatherer commit"
+    restored + revived + dressed + fell + saved
+  end
+  cfp-fourth : CompositeOwner, CgFighter, WalkMap -> [Console, Device.Block] Integer
+  cfp-fourth (store) (c) (route) = let owner = store.state in when owner.gatherer
+    is None -> cfp-check "the Britain world has a gatherer" False
+    is Just (g) -> act
+      print-line-uni (cfp-line owner c "after")
+      m <- cfp-mobile owner c
+      kept <- cfp-check "restart restores the revived fighter at home with no errand" (c.serial /= 0 & m.kind == 1 & c.leg == 0
+        & m.x == c.home.x & m.y == c.home.y & cfp-census owner.vendor.currency)
+      dead <- cfp-check "restart restores the dead gatherer" (g.serial == 0 & g.leg == 0 & g.pack == 0)
+      owners <- owner.vendor.owner-count
+      ran <- cfp-raise owner g c route 20
+      gm <- when world-get owner.checkpoint.game.world g.serial is Err (_) -> gs-item 0 0 0 is Ok (o) -> o
+      print-line-uni ("GATHERER raised serial " & show g.serial & " at " & show gm.x & "," & show gm.y & " pack " & show g.pack & " owners " & show owners & " -> " & show owner.vendor.owner-count)
+      raised <- cfp-check "the next world tick raises the gatherer at home with a new backpack and its owner row, and the vendor ledger stays valid" ((when ran is Err (_) -> False is Ok (n) -> n > 0)
+        & g.serial /= 0 & gm.kind == 1 & gm.x == g.home.x & gm.y == g.home.y & g.pack /= 0 & gv-owned owner.checkpoint.game.world g.pack g.serial 2
+        & owner.vendor.owner-count == owners + 1 & gvsc-valid owner.vendor & cfp-census owner.vendor.currency)
+      dressed <- cfp-check "the raised gatherer wears the miner's look for its new serial" (cst-styled owner.items g.serial cst-miner)
+      rested <- cfp-rest owner c
+      chosen <- cfp-choose owner
+      practised <- cfp-practise owner c
+      sold <- cfp-sale owner c
+      kept + dead + raised + dressed + rested + chosen + practised + sold
+    end
+ Root's ruling 2026-10-06, the novice warrior: rest at home to full health, take the weakest lone prey, gain skill by swinging.
+  cfp-hp : CompositeGame, Integer, Integer -> Integer
+  cfp-hp (owner) (serial) (health) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> -1
+    is Ok (m) -> when world-update owner.checkpoint.game.world (__record-set m "health" health) is Err (_) -> -1 is Ok (_) -> 0
+  cfp-rest : CompositeGame, CgFighter -> [Console] Integer
+  cfp-rest (owner) (c) = let game = owner.checkpoint.game
+    in let hurt = cfp-hp owner c.serial 20
+    in let waited = cg-errand owner game get-ticks
+    in let healed = (cfp-mobile owner c).health
+    in let home = c.leg
+    in let whole = cfp-hp owner c.serial cgf-strength
+    in let ready = cg-errand owner game get-ticks
+    in let left = c.leg
+    in let back = __record-set c "leg" 0
+    in let cleared = cgf-reset c
+    in cfp-check "at 20 hits the fighter stays home and regains 7 per idle hour (one per 40 s), and at full health it sets out" (
+      hurt == 0 & is-ok waited & healed == 27 & home == 0 & whole == 0 & is-ok ready & left == 1)
+  cfp-gold : GameWorldSpawn, WorldTable, Integer, List Integer -> List Integer
+  cfp-gold (g) (world) (i) (out) = if i == list-length g.slots then out
+    else let serial = (list-at g.slots i).serial
+    in let live = serial /= 0 & (list-at g.catalog.profiles (list-at g.slots i).profile).taming == 0 & cgf-alive world serial
+    in cfp-gold g world (i + 1) (if live then list-push out serial else out)
+  cfp-put : WorldTable, Integer, Integer, Integer, Integer -> Integer
+  cfp-put (world) (serial) (x) (y) (health) = when world-get world serial
+    is Err (_) -> -1
+    is Ok (m) -> when world-update world (__record-set (__record-set (__record-set m "x" x) "y" y) "health" health) is Err (_) -> -1 is Ok (_) -> 0
+  cfp-scatter : GameWorldSpawn, WorldTable, Integer -> Integer
+  cfp-scatter (g) (world) (i) = if i == list-length g.slots then 0
+    else let serial = (list-at g.slots i).serial
+    in let moved = if serial /= 0 & cgf-alive world serial then cfp-put world serial (1200 + 10 * i) 1400 10 else 0
+    in cfp-scatter g world (i + 1)
+ Every live spawn goes 10 tiles apart and out of sight; then A (5 hits) stands 3 east of the point beside B (30 hits) 2 further
+ east, and C (40 hits) 6 west, 9 from A. A is the weakest but not alone, so C is taken; with B gone, A is.
+  cfp-choose : CompositeGame -> [Console] Integer
+  cfp-choose (owner) = when owner.spawns
+    is None -> cfp-check "spawns attached for the prey arm" False
+    is Just (g) -> let world = owner.checkpoint.game.world
+      in let gold = cfp-gold g world 0 []
+      in if list-length gold < 3 then cfp-check ("three live untameable spawns for the prey arm, found " & show (list-length gold)) False
+      else let a = list-at gold 0
+      in let b = list-at gold 1
+      in let cc = list-at gold 2
+      in let scattered = cfp-scatter g world 0
+      in let at = gs-mobile 0 1385 1488 0 400 0
+      in let placed = cfp-put world a 1388 1488 5 + cfp-put world b 1390 1488 30 + cfp-put world cc 1379 1488 40
+      in let crowded = cgf-prey g world at 0 0 4611686018427387903 (cgf-sight + 1)
+      in let gone = cfp-put world b 1200 1500 30
+      in let alone = cgf-prey g world at 0 0 4611686018427387903 (cgf-sight + 1)
+      in cfp-check "the fighter passes the weakest prey while another spawn stands within 8 tiles of it, takes the weakest lone one, and takes the weak one once it is alone" (
+        placed == 0 & gone == 0 & crowded == cc & alone == a)
+ A fighter back at the lodging entrance with a 120 gold ore lot of loot walks to the blacksmith, sells it all at the smith's
+ bid, repays the crown's loan at value from whatever coin it holds, and walks home. The fixture finds the lot onto the
+ fighter, as a lot taken from a corpse arrives.
+  cfp-ore-lot : CompositeGame, CgFighter, Integer -> Integer
+  cfp-ore-lot (owner) (c) (amount) = let v = owner.vendor
+    in if ep-find v.currency.world c.fighter.producer.actor 6 amount < 0 then 0
+    else when world-create v.game.world (WorldObject { serial = 0, kind = 2, x = 20, y = 20, z = 0,
+      graphic = gh-output-graphic 6, hue = item-ore-hue 6, container = c.serial, amount = amount, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register owner.items serial 0 0 True True /= 0 then 0
+        else if gv-add-lot v serial c.fighter.producer.actor 6 1000 32 0 < 0 then 0 else amount
+  cfp-errands : CompositeGame, CgFighter, Integer -> Integer
+  cfp-errands (owner) (c) (left) = if left == 0 | c.leg == 0 then left
+    else when cg-errand owner owner.checkpoint.game get-ticks
+      is Err (_) -> 0 - 1
+      is Ok (_) -> cfp-errands owner c (left - 1)
+  cfp-sale : CompositeGame, CgFighter -> [Console] Integer
+  cfp-sale (owner) (c) = when owner.town
+    is None -> cfp-check "townsfolk for the sale arm" False
+    is Just (town) -> let x = owner.vendor.currency
+      in let merchant = list-at owner.vendor.vendors 1
+      in let purse = (ep-actor x.world c.fighter.producer.actor).purse
+      in let kept = cfp-ore-lot owner c 120
+      in let ore = ep-at (ep-actor x.world c.fighter.producer.actor).stock 6
+      in let smith-ore = ep-at (ep-actor x.world merchant.actor).stock 6
+      in let coin = cfp-value x purse
+      in let debt = cfp-loan x.world.money purse 0
+      in let paid = debt.paid
+      in let sales = owner.vendor.sale-count
+      in let placed = cfp-put owner.checkpoint.game.world c.serial town.entrance.x town.entrance.y cgf-strength
+      in let walking = __record-set c "leg" 6
+      in let cleared = cgf-reset c
+      in let left = cfp-errands owner c 800
+      in let after-ore = ep-at (ep-actor x.world c.fighter.producer.actor).stock 6
+      in let after-coin = cfp-value x purse
+      in let after-paid = (cfp-loan x.world.money purse 0).paid
+      in let gold = (em-purse x.world.money purse).coin
+      in let repaid = cgf-repay c town
+      in let settled = cfp-loan x.world.money purse 0
+      in act
+        print-line-uni ("LOOT kept " & show kept & " of 120; sold " & show ore & " ore at " & show (gvb-bid x.world 1 6) & ": fighter coin " & show coin & " -> " & show after-coin
+          & " (" & show x.copper-rate & " copper to the gold), smith ore " & show smith-ore & " -> " & show (ep-at (ep-actor x.world merchant.actor).stock 6) & ", loan paid " & show paid & " -> " & show after-paid
+          & " of " & show (debt.principal + debt.interest) & "; repaid " & show repaid & " gold unit, loan status " & show settled.status & ", steps left " & show left & " leg " & show c.leg)
+        cfp-check "a fighter home from the hunt sells its gold ore loot to the blacksmith at the smith's bid, walks home, and repays the crown's loan only once its coin covers a whole gold" (
+          kept > 0 & placed == 0 & left > 0 & c.leg == 0 & after-ore == 0 & owner.vendor.sale-count == sales + 1
+          & (if after-coin >= eu-unit x 3 then after-paid > paid else after-paid == paid & repaid == 0 & settled.status == 1) & cfp-census x)
+      end
+ The hook combat calls on every melee swing, against a strong defender (90.0) and a weak one (5.0, more than 20.0 below).
+  cfp-swings : CompositeGame, Integer, Integer, Integer, Integer -> Integer
+  cfp-swings (owner) (attacker) (defender) (left) (gained) = if left == 0 then gained
+    else cfp-swings owner attacker defender (left - 1) (gained + owner.combat.swing-hook attacker defender True)
+  cfp-practise : CompositeGame, CgFighter -> [Console] Integer
+  cfp-practise (owner) (c) = when owner.spawns
+    is None -> cfp-check "spawns attached for the gain arm" False
+    is Just (g) -> let game = owner.checkpoint.game
+      in let gold = cfp-gold g game.world 0 []
+      in if list-length gold == 0 then cfp-check "a live spawn for the gain arm" False
+      else when cb-ensure owner.combat game c.serial
+        is Err (e) -> cfp-check e False
+        is Ok (a) -> when cb-ensure owner.combat game (list-at gold 0)
+          is Err (e) -> cfp-check e False
+          is Ok (p) -> let before = a.skill
+            in let strong = __record-set p "skill" 900
+            in let gained = cfp-swings owner c.serial p.serial 2000 0
+            in let after = a.skill
+            in let weak = __record-set p "skill" 50
+            in let none = cfp-swings owner c.serial p.serial 2000 0
+            in act
+              print-line-uni ("PRACTICE skill " & show before & " -> " & show after & " in 2000 swings against 90.0, then +" & show none & " against 5.0")
+              cfp-check "swinging raises the fighter's combat skill by the classic rule and the fighter keeps it, and a defender more than 20.0 below teaches nothing" (
+                gained > 0 & after == before + gained & c.skill == after & none == 0 & a.skill == after)
+            end
+ The route window is loaded by the caller and handed to the load (cs-load-town), as the server does from the map cache.
+  cfp-boot : CompositeOwner, Boolean, WalkMap -> [Console, Device.Block] Integer
+  cfp-boot (store) (fresh) (route) = let owner = store.state in when owner.fighter
+    is None -> cfp-check "the Britain world has a fighter" False
+    is Just (c) -> when owner.town
+      is None -> cfp-check "the Britain world has townsfolk" False
+      is Just (town) -> act
+        print-line-uni ("ROUTE window " & show route.x & "," & show route.y & " " & show route.width & "x" & show route.height
+          & " entrance " & show town.entrance.x & "," & show town.entrance.y)
+        attached <- cg-spawn-attach owner
+        ok <- cfp-check "the load binds the caller's route window to the fighter, and spawns attach" (is-ok attached
+          & (when c.route is None -> False is Just (r) -> r.x == route.x & r.y == route.y & r.width == route.width) & (when c.nav is None -> False is Just (_) -> True))
+        rest <- if fresh then cfp-first store c town route else if c.leg == 4 then cfp-second store c route
+          else if c.serial == 0 then cfp-third store c route else cfp-fourth store c route
+        ok + rest
+      end
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> cfp-check e False
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+     is Err (e) -> cfp-check e False
+     is Ok (britain) -> when walk-map-new cgf-window.x1 cgf-window.y1 (cgf-window.x2 - cgf-window.x1 + 1) (cgf-window.y2 - cgf-window.y1 + 1)
+     is Err (e) -> cfp-check ("route window " & e) False
+     is Ok (route) -> let filled = cfp-fill map 0
+      in let town-filled = cfp-fill britain 0
+      in let route-filled = cfp-fill route 0
+      in let data = cfp-data 0
+      in when wd-read data 240 map map.stride
+       is Err (e) -> cfp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cfp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) (Just route)
+       when loaded
+        is Err (e) -> cfp-check ("recovery " & e) False
+        is Ok (owner) -> let seeded = cg-seed-gold owner.state in when cg-town-doors owner.state data 240
+         is Err (e) -> cfp-check ("town doors " & e) False
+         is Ok (_) -> cfp-boot owner fresh route
+      end
+    end

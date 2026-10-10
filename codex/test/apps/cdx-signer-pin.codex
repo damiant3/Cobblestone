@@ -1,0 +1,43 @@
+Chapter: CdxSignerPinTest
+  cites Verify chapter CdxBinary
+  cites Foreword chapter Ed25519
+  cites Works chapter SeedVerify
+  cites Works chapter CdxChain
+
+ SignatureSlippage part B: a CDX header verifies as the project's only under
+ `cdx-signer-key`. t1-sk is RFC 8032 section 7.1 test vector 1, a key that is
+ not the project signer; its signature over the header's hash is genuine, so
+ the plain check accepts it and the pinned check must not. The accepting arm
+ under the project key is `build/test-self-verify.ps1` on the depot seed.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  sp-zeros : Integer -> List Integer
+  sp-zeros (n) = if n == 0 then [] else [0] & sp-zeros (n - 1)
+
+  sp-header : List Integer, List Integer, List Integer -> List Integer
+  sp-header (hash) (pub) (sig) = sp-zeros 8 & hash & pub & sig
+
+Section: Vectors
+  t1-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  sp-hash : List Integer = [7, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+
+Section: Body
+  opening : [Console] Nothing =
+    let pub = ed25519-public-key t1-sk
+    in let sig = ed25519-sign t1-sk pub sp-hash
+    in let foreign = sp-header sp-hash pub sig
+    in let borrowed = sp-header sp-hash cdx-signer-key sig
+    in let unsigned = sp-header sp-hash cdx-signer-key (sp-zeros 64)
+    in let seed-check = verify-seed-header foreign
+    in act
+      print-line-uni ("foreign key, genuine signature: plain=" & show-bool (cdx-verify-signature foreign) & " pinned=" & show-bool (cdx-signed-by-project foreign))
+      print-line-uni ("project key, foreign signature: pinned=" & show-bool (cdx-signed-by-project borrowed))
+      print-line-uni ("project key, zero signature: pinned=" & show-bool (cdx-signed-by-project unsigned))
+      print-line-uni ("header of 100 bytes: pinned=" & show-bool (cdx-signed-by-project (sp-zeros 100)))
+      print-line-uni ("SeedVerify, foreign key, genuine signature: signature-valid=" & show-bool (seed-check.signature-valid))
+      print-line-uni ("CdxChain, foreign key, genuine signature: " & cdxc-sig-refusal foreign True)
+    end

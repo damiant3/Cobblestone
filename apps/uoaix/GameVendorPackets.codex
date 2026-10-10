@@ -2,6 +2,7 @@ Chapter: GameVendorPackets
   cites Uoaix chapter GamePackets
   cites Uoaix chapter WorldRecords
   cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter ItemNames
 
  Adapted from SphereServer X (Apache-2.0), commit dd28a0ad53258adb55b548b1bd4df989065a1fe4:
  src/network/send.cpp and receive.cpp. Codex translation for the pre-grid
@@ -47,33 +48,78 @@ Chapter: GameVendorPackets
   gvp-contents (offers) (count) (container) =
     let p = gp-put16 (gp-put16 (gp-start 60) (5 + count * 19)) count
     in gvp-contents-loop offers count container (count - 1) p
-  gvp-name : EgCatalog, Integer -> Text
-  gvp-name (catalog) (item) = (list-at catalog.items (item - 1)).name
-  gvp-buy-loop : EgCatalog, List GvQuote, Integer, Integer, List Integer -> List Integer
-  gvp-buy-loop (catalog) (offers) (count) (i) (out) = if i == count then out
+  gvp-name : EgCatalog, GvQuote -> Text
+  gvp-name (catalog) (q) = let art = item-art-name q.graphic
+    in if art == "" then (list-at catalog.items (q.item - 1)).name else art
+ A price counts copper at the royal rates (copper-rate copper and silver-rate silver to the gold, EconomyCurrency.md
+ "Price scale"); the 1.25 client's buy and sell windows show one number a line and its own total, so each line's name
+ carries the price in coins, written as 6g5s.
+  gvp-per-silver : Integer, Integer -> Integer
+  gvp-per-silver (copper-rate) (silver-rate) = if silver-rate < 1 | silver-rate > copper-rate then copper-rate else copper-rate / silver-rate
+  gvp-coins : Integer, Integer, Integer -> Text
+  gvp-coins (n) (copper-rate) (silver-rate) = if n < 0 then show n
+    else if copper-rate <= 1 then show n & "g"
+    else let per-silver = gvp-per-silver copper-rate silver-rate
+    in let g = n / copper-rate
+    in let s = int-mod n copper-rate / per-silver
+    in let c = int-mod (int-mod n copper-rate) per-silver
+    in let gt = if g > 0 then show g & "g" else ""
+    in let st = if s > 0 then gt & show s & "s" else gt
+    in if c > 0 | st == "" then st & show c & "c" else st
+ A quoted price takes two adjacent coins (Damian, 2026-10-09, UOAIX-225): a gold or more is rounded to the nearest silver,
+ less than a gold stays exact in silver and copper. The quote itself is rounded, so the charge is the label.
+  gvp-round : Integer, Integer, Integer -> Integer
+  gvp-round (n) (copper-rate) (silver-rate) = if copper-rate <= 1 | n < copper-rate then n
+    else let per-silver = gvp-per-silver copper-rate silver-rate
+    in (n + per-silver / 2) / per-silver * per-silver
+  gvp-priced : Text, Integer, Integer, Integer -> Text
+  gvp-priced (name) (price) (copper-rate) (silver-rate) = if copper-rate < 1 then name
+    else let tag = " at " & gvp-coins price copper-rate silver-rate
+    in let room = 63 - text-length tag
+    in (if text-length name > room then substring name 0 room else name) & tag
+  gvp-buy-loop : EgCatalog, List GvQuote, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gvp-buy-loop (catalog) (offers) (count) (copper-rate) (silver-rate) (i) (out) = if i == count then out
     else let q = list-at offers i
-    in let name = gvp-name catalog q.item
+    in let name = gvp-priced (gvp-name catalog q) q.price copper-rate silver-rate
     in let length = if text-length name > 63 then 64 else text-length name + 1
     in let next = gvp-ascii (list-push (gp-put32 out q.price) length) name 0 length
-    in gvp-buy-loop catalog offers count (i + 1) next
-  gvp-buy : EgCatalog, List GvQuote, Integer, Integer -> List Integer
-  gvp-buy (catalog) (offers) (count) (container) =
+    in gvp-buy-loop catalog offers count copper-rate silver-rate (i + 1) next
+  gvp-buy : EgCatalog, List GvQuote, Integer, Integer, Integer, Integer -> List Integer
+  gvp-buy (catalog) (offers) (count) (container) (copper-rate) (silver-rate) =
     let p = list-push (gp-put32 (gp-put16 (gp-start 116) 0) container) count
-    in gvp-finish (gvp-buy-loop catalog offers count 0 p)
-  gvp-sell-loop : EgCatalog, List GvQuote, Integer, Integer, List Integer -> List Integer
-  gvp-sell-loop (catalog) (offers) (count) (i) (out) = if i == count then out
+    in gvp-finish (gvp-buy-loop catalog offers count copper-rate silver-rate 0 p)
+  gvp-sell-loop : EgCatalog, List GvQuote, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gvp-sell-loop (catalog) (offers) (count) (copper-rate) (silver-rate) (i) (out) = if i == count then out
     else let q = list-at offers i
-    in let name = gvp-name catalog q.item
+    in let name = gvp-priced (gvp-name catalog q) q.price copper-rate silver-rate
     in let length = if text-length name > 63 then 64 else text-length name + 1
     in let a = gp-put16 (gp-put16 (gp-put32 out q.serial) q.graphic) q.hue
     in let b = gp-put16 (gp-put16 (gp-put16 a q.quantity) q.price) length
-    in gvp-sell-loop catalog offers count (i + 1) (gvp-ascii b name 0 length)
-  gvp-sell : EgCatalog, List GvQuote, Integer, Integer -> List Integer
-  gvp-sell (catalog) (offers) (count) (vendor) =
+    in gvp-sell-loop catalog offers count copper-rate silver-rate (i + 1) (gvp-ascii b name 0 length)
+  gvp-sell : EgCatalog, List GvQuote, Integer, Integer, Integer, Integer -> List Integer
+  gvp-sell (catalog) (offers) (count) (vendor) (copper-rate) (silver-rate) =
     let p = gp-put16 (gp-put32 (gp-put16 (gp-start 158) 0) vendor) count
-    in gvp-finish (gvp-sell-loop catalog offers count 0 p)
+    in gvp-finish (gvp-sell-loop catalog offers count copper-rate silver-rate 0 p)
+ A text gump (0xB0): one backing (2600, in the 1998 GUMPIDX) and a text line per row, read top to bottom; it has no
+ buttons, so closing it answers button 0.
+  gvp-receipt-id : Integer = #52435054
+  gvp-ucs2 : List Integer, Text, Integer -> List Integer
+  gvp-ucs2 (bytes) (text) (i) = if i >= text-length text then bytes
+    else gvp-ucs2 (gp-put16 bytes (to-unicode (char-code (char-at text i)))) text (i + 1)
+  gvp-text-rows : List Text, Integer, Text -> Text
+  gvp-text-rows (rows) (i) (layout) = if i >= list-length rows then layout
+    else gvp-text-rows rows (i + 1) (layout & "{ text 25 " & show (20 + i * 20) & " 0 " & show i & " }")
+  gvp-text-lines : List Integer, List Text, Integer -> List Integer
+  gvp-text-lines (bytes) (rows) (i) = if i >= list-length rows then bytes
+    else let t = list-at rows i in gvp-text-lines (gvp-ucs2 (gp-put16 bytes (text-length t)) t 0) rows (i + 1)
+  gvp-text-gump : Integer, Integer, Integer, List Text -> List Integer
+  gvp-text-gump (serial) (id) (width) (rows) =
+    let layout = gvp-text-rows rows 0 ("{ page 0 }{ resizepic 0 0 2600 " & show width & " " & show (45 + list-length rows * 20) & " }")
+    in let head = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) id) 120) 80) (text-length layout + 1)
+    in let counted = gp-put16 (gp-ascii head layout 0 (text-length layout + 1)) (list-length rows)
+    in gvp-finish (gvp-text-lines counted rows 0)
   gvp-hello : WorldObject, Text -> List (List Integer)
-  gvp-hello (npc) (name) = [list-set-at (gvp-speech npc name name) 9 6, gvp-speech npc name "Hello"]
+  gvp-hello (npc) (name) = [list-set-at (gvp-speech npc name name) 9 6]
   gvp-speech : WorldObject, Text, Text -> List Integer
   gvp-speech (vendor) (name) (message) =
     let p = gp-put16 (gp-start 28) (45 + text-length message)

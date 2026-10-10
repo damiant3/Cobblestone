@@ -1,0 +1,51 @@
+Chapter: CompositeAccountCommands
+  cites Uoaix chapter CompositeStore
+
+ "[account <name> <password>" and "[accounts" (British only): classic 0x03 speech, text from byte 8.
+ The password goes only to ga-create, which commits its salted hash; no reply, note or log line carries it,
+ and every outcome is an Ok reply because a refused route logs the raw packet.
+  ca-account-request : List Integer -> Boolean
+  ca-account-request (packet) = list-length packet > 18 & list-at packet 0 == 3 & list-at packet 8 == 91
+    & list-at packet 9 == 97 & list-at packet 10 == 99 & list-at packet 11 == 99 & list-at packet 12 == 111
+    & list-at packet 13 == 117 & list-at packet 14 == 110 & list-at packet 15 == 116 & list-at packet 16 == 32
+  ca-accounts-request : List Integer -> Boolean
+  ca-accounts-request (packet) = list-length packet >= 17 & list-at packet 0 == 3 & list-at packet 8 == 91
+    & list-at packet 9 == 97 & list-at packet 10 == 99 & list-at packet 11 == 99 & list-at packet 12 == 111
+    & list-at packet 13 == 117 & list-at packet 14 == 110 & list-at packet 15 == 116 & list-at packet 16 == 115
+  ca-end : List Integer, Integer, Boolean -> Integer
+  ca-end (packet) (i) (spaces) = if i >= list-length packet then i
+    else let b = list-at packet i
+    in if b == 0 | (b == 32 & not spaces) then i else ca-end packet (i + 1) spaces
+  ca-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  ca-slice (packet) (i) (stop) (out) = if i >= stop then out else ca-slice packet (i + 1) stop (list-push out (list-at packet i))
+  ca-valid-name : List Integer, Integer -> Boolean
+  ca-valid-name (name) (i) = if i >= list-length name then True else ga-name-byte (list-at name i) & ca-valid-name name (i + 1)
+  ca-valid-password : List Integer, Integer -> Boolean
+  ca-valid-password (password) (i) = if i >= list-length password then True
+    else list-at password i >= 32 & list-at password i <= 126 & ca-valid-password password (i + 1)
+  ca-say : GameInput, Text -> GameReply
+  ca-say (input) (text) = gs-reply [sip-message input.session.serial #FFFF 6 text] "british:account"
+  ca-account : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
+  ca-account (owner) (game) (input) (packet) =
+    let name-end = ca-end packet 17 False
+    in let name = ca-slice packet 17 name-end []
+    in let spaced = name-end < list-length packet & list-at packet name-end == 32
+    in let password = if spaced then ca-slice packet (name-end + 1) (ca-end packet (name-end + 1) True) [] else []
+    in if list-length name < 1 | list-length name > 30 | not (ca-valid-name name 0)
+      | list-length password < 1 | list-length password > 30 | not (ca-valid-password password 0)
+    then act Ok (ca-say input "Usage: [account name password (name: 1-30 letters or digits; password: 1-30 printable)") end
+    else when ga-create game.accounts name password
+      is Err (e) -> act Ok (ca-say input ("Account not created: " & e)) end
+      is Ok (_) -> let touched = world-touch game.world in act
+        committed <- cs-commit owner True
+        when committed
+          is Err (e) -> Ok (ca-say input ("Account created but not saved: " & e))
+          is Ok (_) -> Ok (ca-say input ("Account " & unicode-bytes-to-text name & " created."))
+      end
+  ca-names : Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  ca-names (table) (serial) (i) (acc) = if i >= ga-count table then acc
+    else ca-names table serial (i + 1) (list-push acc (sip-message serial #FFFF 6
+      ("Account " & show (i + 1) & ": " & unicode-bytes-to-text (ga-record-name (ga-at table i) 0 []))))
+  ca-accounts : GameShard, GameInput -> GameReply
+  ca-accounts (game) (input) = gs-reply (list-push (ca-names game.accounts input.session.serial 0 [])
+    (sip-message input.session.serial #FFFF 6 (show (ga-count game.accounts) & " of " & show (ga-room game.accounts) & " accounts"))) "british:accounts"

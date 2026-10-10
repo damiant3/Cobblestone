@@ -1,0 +1,68 @@
+Chapter: BvtRegionWake
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bsv-land : WalkMap, Integer, Integer -> Integer
+  bsv-land (map) (i) (n) = if i >= n then 0
+    else let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0 in bsv-land map (i + 1) n
+ A flat window over Hythloth's fourth level, holding its balron room (region 3735, 6096..6110 by 32..46) whole and
+ none of the third level's (region 3725, 6080..6092 by 168..190).
+  bsv-map : Integer -> WalkMap
+  bsv-map (unused) = when walk-map-new 6088 24 32 32
+    is Err (_) -> WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+    is Ok (map) -> let landed = bsv-land map 0 (32 * 32) in map
+  bsv-region : List WsRegion, Integer, Integer -> Integer
+  bsv-region (regions) (id) (i) = if i == list-length regions then -1
+    else if (list-at regions i).id == id then i else bsv-region regions id (i + 1)
+ Answers a bit per check: 1 one spawn round over the window births the fourth-level balron although more than 16 regions
+ precede its room in the catalog (one shared cursor took 16 a round), 2 the third-level room, off the window, stays
+ empty; 3 is all, negative when the scenario cannot be built.
+  bsv-checks : Integer -> Integer
+  bsv-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let fourth = bsv-region g.catalog.regions 3735 0
+        in let third = bsv-region g.catalog.regions 3725 0
+        in let map = bsv-map 0
+        in let world = owner.checkpoint.game.world
+        in if fourth < 17 | third < 0 | map.width == 0 then -2
+        else let indexed = if world-indexed world then True else world-reindex world
+        in when world-create world (__record-set (gs-mobile 0 6100 52 0 400 0) "health" 50)
+          is Err (_) -> -3
+          is Ok (watcher) -> let tick = max (g.due + 1) (gm-ticks 1000000)
+            in when gws-world gws-ground g owner.checkpoint.game watcher map tick []
+              is Err (_) -> -4
+              is Ok (_) -> (if peek-qword g.populations (fourth * 8) == 1 then 1 else 0)
+                + (if peek-qword g.populations (third * 8) == 0 then 2 else 0)
+  bsv-undead : Text -> Boolean
+  bsv-undead (key) = key == "skeleton" | key == "zombie" | key == "ghoul" | key == "lich"
+  bsv-draws : List WsChoice, Integer -> Boolean
+  bsv-draws (choices) (i) = if i == list-length choices then True
+    else bsv-undead (list-at choices i).key & bsv-draws choices (i + 1)
+  bsv-prisoners : GameWorldSpawn, Integer -> Boolean
+  bsv-prisoners (g) (id) = let i = bsv-region g.catalog.regions id 0
+    in if i < 0 then False
+    else let group = (list-at g.catalog.regions i).group
+    in group >= 0 & group < list-length g.catalog.groups & list-length (list-at g.catalog.groups group).choices > 0
+      & bsv-draws (list-at g.catalog.groups group).choices 0
+ Answers 1 when both of Wrong's levels (regions 3850 and 3851) draw only undead prisoners, 2 when the catalog holds no
+ juka, whose bodies the 1.25 client does not draw; 3 is all, negative when not buildable.
+  bsv-wrong : Integer -> Integer
+  bsv-wrong (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> (if bsv-prisoners g 3850 & bsv-prisoners g 3851 then 1 else 0)
+        + (if gws-profile-key g "jukalord" 0 < 0 & gws-profile-key g "jukamage" 0 < 0 & gws-profile-key g "jukawarrior" 0 < 0 then 2 else 0)
+  bvt-region-wake : Integer -> [Console] Integer
+  bvt-region-wake (unused) = act
+    n <- bsv-checks 0
+    a <- bvt-check ("a spawn round wakes every region its map holds, wherever it lies, and none it does not: Hythloth's balron rooms (UOAIX-218, code " & show n & ")") (n == 3)
+    w <- bsv-wrong 0
+    b <- bvt-check ("Wrong holds undead prisoners and no creature the 1.25 client cannot draw (UOAIX-218, code " & show w & ")") (w == 3)
+    a + b
+  end

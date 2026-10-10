@@ -15,27 +15,31 @@ Keep an accepted candidate below later request scratch marks.
 
 ## EUC1 layout
 
-The version 3 payload is 3349696 bytes. Cells are little-endian 64-bit
-integers. The decoder also accepts version 1 (3288256 bytes) and version 2
-(3294400 bytes), which embed UEC1 version 1 and 2, so every later offset is
-61440 or 55296 bytes lower.
+The version 6 payload is 3414936 bytes. Cells are little-endian 64-bit
+integers. The decoder refuses version 5. The decoder also accepts version 4 (3350728 bytes), version 1
+(3288256 bytes), version 2 (3294400 bytes) and version 3 (3349696 bytes), which
+embed UEC1 version 4, 1, 2 and 3, carry no tail and no event base, and decode
+with a zero opening.
 
 | Offset | Content |
 |---:|---|
 | 0 | Magic `0x31435545` |
-| 8 | Version 3 |
+| 8 | Version 6 (the embedded UEC1 version) |
 | 16 | Total payload length |
-| 24 | Embedded UEC1 length, 1422208 |
+| 24 | Embedded UEC1 length, 1432688 |
 | 32 | Outer tick |
 | 40 | Outer input sequence |
 | 48 | FNV32 over the payload, skipping this cell |
 | 56 | Reserved zero |
 | 64 | Thirteen currency policy/counter cells |
-| 168 | Reserved zero through offset 191 |
+| 168 | Event base (events sealed before this segment) |
+| 176 | Segment count |
+| 184 | Reserved zero through offset 191 |
 | 192 | Complete UEC1 gold/material checkpoint |
-| 1422400 | Copper money block, 472128 bytes |
-| 1894528 | Silver money block, 472128 bytes |
-| 2366656 | 8192 currency events, 120 bytes each |
+| 1432880 | Copper money block, 472128 bytes |
+| 1905008 | Silver money block, 472128 bytes |
+| 2377136 | 8192 currency events, 120 bytes each |
+| 3360176 | Copper and silver openings (906 cells each), three start tables of 13376 bytes, 17 start cells |
 
 Policy cells are event count, copper-per-gold, silver-per-gold, copper owner,
 silver owner, copper yield, silver yield, copper ingots, silver ingots,
@@ -114,9 +118,8 @@ per-loan history scans, trade-party checks and ledger lookups, and per-item
 sales/turnover audits. All retain their existing fixed bounds. Reconstruction
 uses one set of fresh financial tables, not a per-event whole-state clone.
 
-Under seed `4228CD5103DC4523` on 2026-10-05, small and maximum-history decode
-both retained 3980199 bytes, excluding caller buffers, below the proof's
-5 MiB bound. Per-event and reconstruction allocations do not accumulate.
+Small and maximum-history decode retain the same heap, excluding caller
+buffers, below the proof's 5 MiB bound. Per-event and reconstruction allocations do not accumulate.
 `proofs/EconomyCurrencyCodecProof.codex` covers all three mined mint sources,
 mixed payment/tax, repricing, default and partial repayment, canonical
 roundtrip, detached candidates, rehashed corruption, reserved slots and the

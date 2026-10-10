@@ -1,0 +1,58 @@
+Chapter: BvtHousing
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-236: the crown's houses. Two bidders bid on one house and a third on another; a reject returns its escrow in full,
+ a grant pays the treasury, holds the house as the bidder's plot and returns the other bid on that house, and the ledger
+ replays (escrow is money row kind 22, currency event kind 15).
+  bhs-copper : EuCurrency, Integer -> Integer
+  bhs-copper (x) (purse) = (em-purse x.copper purse).coin
+  bhs-fund : EuCurrency, Integer, Integer -> Integer
+  bhs-fund (x) (town) (purse) = eu-pay x True town purse 300 0 0
+  bvt-housing : Integer -> [Console] Integer
+  bvt-housing (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("housing economy " & e) False
+    is Ok (x) -> act
+      minted <- bb-founding-stock x
+      town <- eu-open x 4 1
+      granted <- eu-grant x True 1 town 1000 0 0
+      ann <- eu-open x 2 3101
+      bob <- eu-open x 2 3102
+      cid <- eu-open x 2 3103
+      funded <- bhs-fund x town ann + bhs-fund x town bob + bhs-fund x town cid
+      s <- hs-new 0
+      opened <- hs-grow s x
+      moon <- hs-house-at-sign s 4688 1184 0
+      ann0 <- bhs-copper x ann
+      bob0 <- bhs-copper x bob
+      cid0 <- bhs-copper x cid
+      treasury0 <- bhs-copper x 1
+      a <- bvt-check "the census holds Damian's Moonglow house (sign 4688,1184) and the growth point opens the escrow purse" (hd-count > 100 & moon >= 0 & s.escrow > 1 & is-ok minted & granted == 0 & funded >= 0)
+      one <- hs-enter s x ann 9001 moon 120 0 0 100
+      two <- hs-enter s x bob 9002 moon 80 0 0 101
+      three <- hs-enter s x cid 9003 0 50 0 0 102
+      over <- hs-enter s x cid 9003 1 5000 0 0 103
+      b <- bvt-check "three bids move their copper into escrow; a bid past the purse is refused and moves nothing" (one == 1 & two == 2 & three == 3 & over < 0 & s.count == 3 & bhs-copper x ann == ann0 - 120 & bhs-copper x bob == bob0 - 80 & bhs-copper x cid == cid0 - 50 & bhs-copper x s.escrow == 250)
+      rejected <- hs-reject s x three
+      c <- bvt-check "a reject returns the bid's escrow in full and closes it" (is-ok rejected & bhs-copper x cid == cid0 & s.count == 2 & hs-bid-id s three 0 < 0 & is-err (hs-reject s x three))
+      land <- cn-new 0
+      sold <- hs-grant s land x one 3
+      bidder <- (when sold is Ok (r) -> list-at r 0 is Err (_) -> 0)
+      d <- bvt-check "a grant pays the treasury, returns the other bid on the house, and holds the house as the bidder's plot" (is-ok sold & bidder == 9001 & hs-holder s land moon == 9001 & bhs-copper x 1 == treasury0 + 120 & bhs-copper x bob == bob0 & bhs-copper x s.escrow == 0 & s.count == 0 & cn-plots land == 1 & cn-in-plot land 0 (hs-cell s moon 6) (hs-cell s moon 7) & cn-in-plot land 0 (hs-cell s moon 3) (hs-cell s moon 4))
+      m <- bvt-check "Mark inside a held house is its holder's alone; a house for sale and open land are anyone's" (hs-may-mark s land 9001 (hs-cell s moon 6) (hs-cell s moon 7) 0 & not (hs-may-mark s land 9002 (hs-cell s moon 6) (hs-cell s moon 7) 0) & hs-may-mark s land 9002 (hs-cell s 0 6) (hs-cell s 0 7) 0 & hs-may-mark s land 9002 1 1 0)
+      e <- bvt-check "the ledger stays balanced and replays with escrow rows (euv-valid)" (eu-census x & euv-valid x)
+      four <- hs-enter s x bob 9002 1 40 0 0 104
+      buf <- alloc-bytes (hs-tail-size s)
+      written <- hs-write-tail s buf
+      back <- hs-new 0
+      read <- hs-read-tail back buf (hs-tail-size s)
+      f <- bvt-check "the housing tail keeps the plot references and the open bids" (read == 1 & back.count == 1 & back.next == s.next & hs-plot back moon == hs-plot s moon & hs-bid back 0 0 == four & hs-bid back 0 2 == 9002 & hs-bid back 0 4 == 40 & written == buf + hs-tail-size s)
+      bad <- poke-qword buf (24 + hd-count * 8 + 8) hd-count
+      past <- hs-read-tail (hs-new 0) buf (hs-tail-size s)
+      mended <- poke-qword buf (24 + hd-count * 8 + 8) 1
+      kept <- hs-read-tail (hs-new 0) buf (hs-tail-size s)
+      other <- poke-qword buf 0 (hd-count + 1)
+      census <- hs-read-tail (hs-new 0) buf (hs-tail-size s)
+      g <- bvt-check "a bid naming a house past the census, and a tail of another census, are refused" (past < 0 & kept == 1 & census < 0)
+      a + b + c + d + m + e + f + g
+    end

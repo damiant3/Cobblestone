@@ -1,0 +1,115 @@
+Chapter: CompositeScript
+  cites Uoaix chapter CompositeStore
+
+  CsPlayer = record { store : CompositeOwner, map : WalkMap, input : GameInput,
+    tick : Integer, steps : Integer, sent : Integer, failed : Integer, refusal : Text,
+    cursor : Integer, last : List (List Integer) }
+
+  csp-new : CompositeOwner, WalkMap, List GameOpcodeSpec, Integer -> CsPlayer
+  csp-new (store) (map) (specs) (connection) = let input = gn-input-with specs connection
+    in let mode = __record-set input "mode" 2
+    in CsPlayer { store = store, map = map, input = input, tick = 100, steps = 0, sent = 0, failed = 0,
+      refusal = "", cursor = 0, last = [] }
+  csp-create : Text -> List Integer
+  csp-create (name) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let named = gp-ascii (gp-ascii header name 0 30) "" 0 30
+    in let stats = named & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  csp-cursor : List (List Integer), Integer, Integer -> Integer
+  csp-cursor (packets) (i) (prior) = if i == list-length packets then prior
+    else let p = list-at packets i
+    in if list-length p >= 6 & list-at p 0 == #6C then gp-u32 p 2 else csp-cursor packets (i + 1) prior
+  csp-kept : CsPlayer, GameReply -> GameReply
+  csp-kept (p) (reply) = let packets = __record-set p "last" reply.packets
+    in let cursor = __record-set p "cursor" (csp-cursor reply.packets 0 p.cursor)
+    in reply
+  csp-refused : CsPlayer, Text -> Text
+  csp-refused (p) (e) = let failed = __record-set p "failed" (p.failed + 1)
+    in let noted = __record-set p "refusal" e
+    in e
+  csp-send : CsPlayer, List Integer -> [Console, Device.Block] Result GameReply Text
+  csp-send (p) (packet) = act
+    routed <- cs-route p.store p.store.state.checkpoint.game p.input p.map 2593 packet
+    counted <- __record-set p "sent" (p.sent + 1)
+    when routed
+      is Err (e) -> Err (csp-refused p e)
+      is Ok (reply) -> Ok (csp-kept p reply)
+  end
+  csp-pulse : CsPlayer, Integer -> [Console, Device.Block] Result Integer Text
+  csp-pulse (p) (ms) = act
+    advanced <- __record-set p "tick" (p.tick + ms)
+    pulsed <- cs-pulse p.store p.store.state.checkpoint.game p.input p.map 2593 p.tick
+    when pulsed
+      is Err (e) -> Err (csp-refused p e)
+      is Ok (None) -> Ok 0
+      is Ok (Just (reply)) -> let kept = csp-kept p reply in Ok (list-length reply.packets)
+  end
+ The spin nests three levels of 64 so a wait of any length keeps the stack a few
+ hundred frames deep; 4096 outer rounds bound it.
+  csp-spin : Integer, Integer, Integer -> Boolean
+  csp-spin (target) (level) (n) = if get-ticks >= target then True
+    else if n == 0 then False
+    else if level > 0 & csp-spin target (level - 1) 64 then True
+    else csp-spin target level (n - 1)
+  csp-until : Integer, Integer -> Boolean
+  csp-until (target) (rounds) = if csp-spin target 2 64 then True else if rounds == 0 then False else csp-until target (rounds - 1)
+  csp-wait : Integer -> Boolean
+  csp-wait (milliseconds) = csp-wait-to (get-ticks + gh-ticks milliseconds) -1
+  csp-wait-to : Integer, Integer -> Boolean
+  csp-wait-to (target) (last) = if csp-until target 4096 then True
+    else let now = get-ticks in if now == last then False else csp-wait-to target now
+  csp-login : CsPlayer, Text -> [Console, Device.Block] Result Integer Text
+  csp-login (p) (name) = act
+    phase <- __record-set p.input.session "phase" 1
+    authenticated <- ga-logged p.store.state.checkpoint.game.accounts
+    entered <- csp-send p (csp-create name)
+    when entered
+      is Err (e) -> Err e
+      is Ok (_) -> if p.input.session.serial <= 0 then Err "script login bound no character" else Ok p.input.session.serial
+  end
+  csp-resume : CsPlayer, Integer -> Result Integer Text
+  csp-resume (p) (serial) = let game = p.store.state.checkpoint.game
+    in let phase = __record-set p.input.session "phase" 2
+    in let bound = __record-set p.input.session "serial" serial
+    in let active = __record-set game "active" serial
+    in when cg-entry p.store.state game p.input p.map (gs-reply [] "script resume")
+      is Err (e) -> Err (csp-refused p e)
+      is Ok (reply) -> let kept = csp-kept p reply in Ok serial
+  csp-replay : CsPlayer, List (List Integer), Integer -> [Console, Device.Block] Integer
+  csp-replay (p) (packets) (i) = if i == list-length packets then p.failed
+    else act
+      sent <- csp-send p (list-at packets i)
+      csp-replay p packets (i + 1)
+    end
+  csp-walk : CsPlayer, Integer -> List Integer
+  csp-walk (p) (direction) = let sequence = int-mod p.steps 256
+    in let stepped = __record-set p "steps" (p.steps + 1)
+    in [2, direction, sequence]
+  csp-direction : Integer, Integer -> Integer
+  csp-direction (dx) (dy) = if dx == 0 then (if dy < 0 then 0 else 4)
+    else if dy == 0 then (if dx > 0 then 2 else 6)
+    else if dx > 0 then (if dy < 0 then 1 else 3)
+    else if dy < 0 then 7 else 5
+  csp-walk-to : CsPlayer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Result Integer Text
+  csp-walk-to (p) (x) (y) (reach) (left) = when world-get p.store.state.checkpoint.game.world p.input.session.serial
+    is Err (e) -> act Err e end
+    is Ok (m) -> if max (abs (x - m.x)) (abs (y - m.y)) <= reach then act Ok left end
+      else if left == 0 then act Err "script walk budget" end
+      else act
+        sent <- csp-send p (csp-walk p (csp-direction (x - m.x) (y - m.y)))
+        csp-walk-to p x y reach (left - 1)
+      end
+  csp-say : Text -> List Integer
+  csp-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
+  csp-use : Integer -> List Integer
+  csp-use (serial) = gp-put32 [6] serial
+  csp-buy : Integer, Integer, Integer -> List Integer
+  csp-buy (vendor) (lot) (count) = gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] vendor) 2) 26) lot) count
+  csp-target-ground : CsPlayer, Integer, Integer, Integer, Integer -> List Integer
+  csp-target-ground (p) (x) (y) (z) (graphic) = let a = gp-put32 (list-push (gp-put32 [#6C,1] p.cursor) 0) 0
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0, bit-and z 255]) graphic
+  csp-has-op : CsPlayer, Integer, Integer -> Boolean
+  csp-has-op (p) (op) (i) = if i == list-length p.last then False
+    else (list-length (list-at p.last i) > 0 & list-at (list-at p.last i) 0 == op) | csp-has-op p op (i + 1)
+
+Page 1

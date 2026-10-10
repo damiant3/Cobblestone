@@ -4,12 +4,15 @@ Chapter: CompositeDelta
  CPD1 carries ordered offset/before/after qwords of a fixed-size canonical
  checkpoint. The WorldDisk commit is the only publication boundary.
 
-  cd-max-bytes : Integer = 3145792
+ An economy seal (UOAIX-50) clears up to about 250,000 qwords of sealed rows in one commit.
+  cd-max-changes : Integer = 524288
+  cd-max-bytes : Integer = 64 + cd-max-changes * 24
+  cd-budget-error : Text = "composite delta change budget exhausted"
   cd-write : Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
   cd-write (before) (after) (size) (out) (at) (count) =
     if at == size then Ok count
     else if peek-qword before at == peek-qword after at then cd-write before after size out (at + 8) count
-    else if count == 131072 then Err "composite delta change budget exhausted"
+    else if count == cd-max-changes then Err cd-budget-error
     else let row = 64 + count * 24
     in let a = poke-qword out row at
     in let b = poke-qword out (row + 8) (peek-qword before at)
@@ -17,7 +20,7 @@ Chapter: CompositeDelta
     in cd-write before after size out (at + 8) (count + 1)
   cd-encode : Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
   cd-encode (before) (after) (size) (sequence) (tick) (out) =
-    if size < 64 | size > us-max-payload | int-mod size 8 /= 0 | sequence < 1 | tick < 0 then Err "composite delta metadata invalid"
+    if size < 64 | int-mod size 8 /= 0 | sequence < 1 | tick < 0 then Err "composite delta metadata invalid"
     else when cd-write before after size out 0 0
       is Err (e) -> Err e
       is Ok (count) -> let bytes = 64 + count * 24
@@ -30,6 +33,12 @@ Chapter: CompositeDelta
         in let g = poke-qword out 56 count
         in let h = poke-qword out 48 (ws-hash out bytes 0 2166136261)
         in Ok bytes
+ The value a patch writes at offset at, or fallback when it leaves at unchanged; rows are in rising offset order.
+  cd-after : Integer, Integer, Integer, Integer -> Integer
+  cd-after (patch) (at) (fallback) (i) = if i >= peek-qword patch 56 | i >= cd-max-changes then fallback
+    else let row = 64 + i * 24
+    in let offset = peek-qword patch row
+    in if offset == at then peek-qword patch (row + 16) else if offset > at then fallback else cd-after patch at fallback (i + 1)
   cd-check : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
   cd-check (state) (size) (patch) (count) (i) (previous) = if i == count then True
     else let row = 64 + i * 24
@@ -48,7 +57,7 @@ Chapter: CompositeDelta
     else if peek-qword patch 0 /= #31445043 | peek-qword patch 8 /= 1 | peek-qword patch 16 /= bytes
       | peek-qword patch 24 /= size | peek-qword patch 32 /= sequence | peek-qword patch 40 /= tick then Err "composite delta header mismatch"
     else let count = peek-qword patch 56
-    in if count < 0 | count > 131072 | bytes /= 64 + count * 24 then Err "composite delta row count invalid"
+    in if count < 0 | count > cd-max-changes | bytes /= 64 + count * 24 then Err "composite delta row count invalid"
     else if peek-qword patch 48 /= ws-hash patch bytes 0 2166136261 then Err "composite delta checksum invalid"
     else if not (cd-check state size patch count 0 (0 - 1)) then Err "composite delta before image differs"
     else let copied = cd-copy state patch count 0 in Ok count

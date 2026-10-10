@@ -1,0 +1,216 @@
+Chapter: TownGovernmentInput
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter TownGovernmentValid
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter TownWorks
+  cites Uoaix chapter TownDisputes
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter TownStateFields
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+  GovernmentInput = record { sequence : Integer, tick : Integer, operation : Integer,
+    expected : Integer, args : List Integer, account : Text, happened : Text,
+    location : Text, wall-time : Text, evidence : Text }
+  tgi-bytes : Integer = 1088
+  tgi-new : Integer, Integer, Integer -> GovernmentInput
+  tgi-new (sequence) (tick) (operation) = GovernmentInput { sequence = sequence,
+    tick = tick, operation = operation, expected = 0,
+    args = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0], account = "", happened = "",
+    location = "", wall-time = "", evidence = "" }
+  tgi-count : Integer -> Integer
+  tgi-count (op) = if op == 1 | op == 4 | op == 7 | op == 12 | op == 18 | op == 22 | op == 29 then 4
+    else if op == 5 | op == 10 then 5
+    else if op == 6 | op == 19 | op == 20 | op == 25 | op == 27 then 2
+    else if op == 2 | op == 3 | op == 8 | op == 9 | op == 13 | op == 14 | op == 15 | op == 17 | op == 21 | op == 30 then 3
+    else if op == 16 then 8 else if op == 23 | op == 24 then 6
+    else if op == 26 | op == 28 then 11 else 0
+  tgi-unused : List Integer, Integer -> Boolean
+  tgi-unused (args) (i) = if i == 16 then True else list-at args i == 0 & tgi-unused args (i + 1)
+  tgi-flag : GovernmentInput, Integer -> Boolean
+  tgi-flag (e) (i) = ev-range (list-at e.args i) 1
+  tgi-shape : GovernmentInput -> Boolean
+  tgi-shape (e) =
+    if e.sequence <= 0 | e.sequence > ep-limit | not (ev-range e.tick ep-limit)
+      | e.operation < 1 | e.operation > 31 | list-length e.args /= 16 then False
+    else if not (tgi-unused e.args (tgi-count e.operation)) then False
+    else if e.operation /= 30 & (e.account /= "" | e.happened /= "" | e.location /= "" | e.wall-time /= "" | e.evidence /= "") then False
+    else if text-length e.account > 64 | text-length e.happened > 256 | text-length e.location > 64
+      | text-length e.wall-time > 64 | text-length e.evidence > 400 then False
+    else if e.operation == 1 | e.operation == 2 | e.operation == 9 | e.operation == 10
+      | e.operation == 14 | e.operation == 15 | e.operation == 16 | e.operation == 24 | e.operation == 26 then tgi-flag e 0
+    else if e.operation == 4 | e.operation == 12 then tgi-flag e 3
+    else if e.operation == 23 then tgi-flag e 5
+    else if e.operation == 28 then tgi-flag e 2 & tgi-flag e 3 & tgi-flag e 4
+    else if e.operation == 29 | e.operation == 30 then tgi-flag e 2 else True
+  tgi-hour : TgWorld -> Integer
+  tgi-hour (g) = when g.currency
+    is None -> eh-step g.economy
+    is Just (x) -> eu-hour x
+  tgi-execute : GovernmentCheckpoint, GovernmentInput -> Integer
+  tgi-execute (s) (entry) =
+    let g = s.government
+    in let t = s.works
+    in let d = s.disputes
+    in let a = list-at entry.args 0
+    in let b = list-at entry.args 1
+    in let c = list-at entry.args 2
+    in let f = list-at entry.args 3
+    in let h = list-at entry.args 4
+    in let j = list-at entry.args 5
+    in let k = list-at entry.args 6
+    in let l = list-at entry.args 7
+    in let m = list-at entry.args 8
+    in let n = list-at entry.args 9
+    in let p = list-at entry.args 10
+    in let op = entry.operation
+    in if op == 1 then tg-register g (a == 1) b c f
+    else if op == 2 then tg-appoint g (a == 1) b c
+    else if op == 3 then tg-set-dues g a b c
+    else if op == 4 then tg-collect g a b c (f == 1)
+    else if op == 5 then tg-hire g a b c f h
+    else if op == 6 then tg-retire g a b
+    else if op == 7 then tg-request g a b c f
+    else if op == 8 then tg-settle g a b c
+    else if op == 9 then tg-grant g (a == 1) b c
+    else if op == 10 then tg-loan g (a == 1) b c f h
+    else if op == 11 then tg-close-day g
+    else if op == 12 then tw-admit-site t a b c (f == 1)
+    else if op == 13 then tw-revoke-site t a b c
+    else if op == 14 then tw-raid t (a == 1) b c
+    else if op == 15 then tw-stand-down t (a == 1) b c
+    else if op == 16 then
+      let damage = TwDamage { station = f, boards = h, nails = j, hours = k, fee = l }
+      in tw-end-raid t (a == 1) b c damage
+    else if op == 17 then tw-assign-repair t a b c
+    else if op == 18 then tw-deliver t a b c f
+    else if op == 19 then tw-work t a b
+    else if op == 20 then tw-pay-repair t a b
+    else if op == 21 then tw-essential t a b c
+    else if op == 22 then tw-staff t a b c f
+    else if op == 23 then tw-post t a b c f h (j == 1)
+    else if op == 24 then tw-claim t (a == 1) b c f h j
+    else if op == 25 then tw-pay-bounty t a b
+    else if op == 26 then
+      let claimant = TrParty { kind = h, id = j }
+      in let respondent = TrParty { kind = k, id = l }
+      in td-file d (a == 1) b c f claimant respondent m n p
+    else if op == 27 then td-debt-settled d a b
+    else if op == 28 then
+      let owner = TrParty { kind = k, id = l }
+      in let mark = TrParty { kind = m, id = n }
+      in let evidence = TrEvidence { serial = j, present = f == 1, marked = h == 1, owner = owner, mark = mark, mark-revision = p }
+      in td-title-settled d a b (c == 1) evidence
+    else if op == 29 then td-land-settled d a b (c == 1) f
+    else if op == 30 then
+      let facts = TdReportFacts { verified = c == 1, account = entry.account, happened = entry.happened,
+        location = entry.location, wall-time = entry.wall-time, evidence = entry.evidence }
+      in td-escalate d a b facts
+    else tgi-hour g
+  tgi-apply : GovernmentCheckpoint, GovernmentInput -> Result Integer Text
+  tgi-apply (s) (e) =
+    if not (tgi-shape e) then Err "civic input shape invalid"
+    else if s.sequence >= ep-limit | e.sequence /= s.sequence + 1 | e.tick < s.tick then Err "civic input sequence or tick invalid"
+    else let result = tgi-execute s e
+    in if result /= e.expected then Err "civic input outcome mismatch; discard candidate"
+    else let sequence = __record-set s "sequence" e.sequence
+    in let tick = __record-set s "tick" e.tick
+    in Ok result
+  tgi-write-args : Integer, List Integer, Integer -> Integer
+  tgi-write-args (buf) (args) (i) = if i == 16 then 0
+    else let a = poke-qword buf (64 + i * 8) (list-at args i) in tgi-write-args buf args (i + 1)
+  tgi-read-args : Integer, List Integer, Integer -> Integer
+  tgi-read-args (buf) (args) (i) = if i == 16 then 0
+    else let a = list-set-at args i (peek-qword buf (64 + i * 8)) in tgi-read-args buf args (i + 1)
+  tgi-encode : GovernmentInput, Integer, Integer -> Result Integer Text
+  tgi-encode (e) (buf) (capacity) =
+    if capacity < tgi-bytes | not (tgi-shape e) then Err "civic input shape or destination invalid"
+    else let h0 = poke-qword buf 0 #31494754
+    in let h1 = poke-qword buf 8 1
+    in let h2 = poke-qword buf 16 tgi-bytes
+    in let h3 = poke-qword buf 24 e.operation
+    in let h4 = poke-qword buf 32 e.tick
+    in let h5 = poke-qword buf 40 e.sequence
+    in let h6 = poke-qword buf 48 0
+    in let h7 = poke-qword buf 56 e.expected
+    in let args = tgi-write-args buf e.args 0
+    in let account = ts-write-text buf 192 64 e.account
+    in let happened = ts-write-text buf 264 256 e.happened
+    in let location = ts-write-text buf 528 64 e.location
+    in let wall = ts-write-text buf 600 64 e.wall-time
+    in let evidence = ts-write-text buf 672 400 e.evidence
+    in let reserved = poke-qword buf 1080 0
+    in let checksum = poke-qword buf 48 (ws-hash buf tgi-bytes 0 2166136261)
+    in Ok tgi-bytes
+  tgi-decode : Integer, Integer -> Result GovernmentInput Text
+  tgi-decode (buf) (size) =
+    if size /= tgi-bytes then Err "civic input length invalid"
+    else if peek-qword buf 0 /= #31494754 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size | peek-qword buf 1080 /= 0 then Err "civic input format invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "civic input checksum invalid"
+    else if not (ts-text-valid buf 192 64 & ts-text-valid buf 264 256 & ts-text-valid buf 528 64 & ts-text-valid buf 600 64 & ts-text-valid buf 672 400) then Err "civic input text invalid"
+    else let e = tgi-new (peek-qword buf 40) (peek-qword buf 32) (peek-qword buf 24)
+    in let outcome = __record-set e "expected" (peek-qword buf 56)
+    in let args = tgi-read-args buf e.args 0
+    in let account = __record-set e "account" (ts-read-text buf 192)
+    in let happened = __record-set e "happened" (ts-read-text buf 264)
+    in let location = __record-set e "location" (ts-read-text buf 528)
+    in let wall = __record-set e "wall-time" (ts-read-text buf 600)
+    in let evidence = __record-set e "evidence" (ts-read-text buf 672)
+    in if not (tgi-shape e) then Err "civic input fields invalid" else Ok e
+  tgi-decode-record : Integer, Integer, Integer, Integer -> Result GovernmentInput Text
+  tgi-decode-record (buf) (size) (tick) (sequence) =
+    if size /= tgi-bytes then Err "civic input record length invalid"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "civic input record metadata mismatch"
+    else tgi-decode buf size
+  tgi-clone-civic : GovernmentCheckpoint, EpWorld, Maybe EuCurrency -> Result GovernmentCheckpoint Text
+  tgi-clone-civic (source) (economy) (currency) =
+    let queue = alloc-bytes ac-size
+    in let civic = alloc-bytes tgc-bytes
+    in when ac-encode source.disputes.admin source.tick source.sequence queue ac-size
+      is Err (e) -> Err e
+      is Ok (size) -> when ac-decode-record queue size source.tick source.sequence source.government.people source.disputes.admin.mind
+        is Err (e) -> Err e
+        is Ok (admin) -> when tgc-encode source civic tgc-bytes
+          is Err (e) -> Err e
+          is Ok (bytes) ->
+            let bindings = GovernmentBindings { people = source.government.people, economy = economy, currency = currency,
+              royal-actor = source.government.royal-actor, registry = source.disputes.registry, admin = admin }
+            in tgc-decode-record civic bytes source.tick source.sequence bindings
+  tgi-clone : GovernmentCheckpoint -> Result GovernmentCheckpoint Text
+  tgi-clone (source) = when source.government.currency
+    is None -> let buf = alloc-bytes (es-size source.government.economy)
+      in let checkpoint = EconomyCheckpoint { world = source.government.economy, tick = source.tick, sequence = source.sequence }
+      in when es-encode checkpoint buf (es-size source.government.economy)
+        is Err (e) -> Err e
+        is Ok (size) -> when es-decode buf size
+          is Err (e) -> Err e
+          is Ok (state) -> tgi-clone-civic source state.world None
+    is Just (x) -> let buf = alloc-bytes (euc-size x)
+      in let checkpoint = CurrencyCheckpoint { currency = x, tick = source.tick, sequence = source.sequence }
+      in when euc-encode checkpoint buf (euc-size x)
+        is Err (e) -> Err e
+        is Ok (size) -> when euc-decode buf size
+          is Err (e) -> Err e
+          is Ok (state) -> tgi-clone-civic source state.currency.world (Just state.currency)
+  tgi-replay-loop : GovernmentCheckpoint, Integer, Integer, Integer -> Result GovernmentCheckpoint Text
+  tgi-replay-loop (s) (buf) (count) (i) =
+    if i == count then if tgv-valid s.government s.works s.disputes then Ok s else Err "civic replay final state invalid"
+    else let mark = __heap-save
+    in when tgi-decode (buf + i * tgi-bytes) tgi-bytes
+      is Err (e) -> Err e
+      is Ok (entry) -> when tgi-apply s entry
+        is Err (e) -> Err e
+        is Ok (result) -> let restored = __heap-restore mark in tgi-replay-loop s buf count (i + 1)
+  tgi-replay : GovernmentCheckpoint, Integer, Integer -> Result GovernmentCheckpoint Text
+  tgi-replay (source) (buf) (bytes) =
+    if bytes < 0 | bytes > 512 * tgi-bytes | int-mod bytes tgi-bytes /= 0 then Err "civic replay extent invalid"
+    else when tgi-clone source
+      is Err (e) -> Err e
+      is Ok (state) -> tgi-replay-loop state buf (bytes / tgi-bytes) 0

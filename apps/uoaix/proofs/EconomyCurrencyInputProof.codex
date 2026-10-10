@@ -1,4 +1,5 @@
 Chapter: EconomyCurrencyInputProof
+  cites Uoaix chapter WorldDisk
   cites Uoaix chapter EconomyCurrencyInput
   cites Uoaix chapter EconomyCurrencyCodec
   cites Uoaix chapter EconomyCurrencyFixtures
@@ -12,12 +13,12 @@ Chapter: EconomyCurrencyInputProof
   euip-frames (s) (buf) (i) = if i == list-length s.entries then True
     else is-ok (eui-encode (list-at s.entries i) (buf + i * eui-frame-bytes) eui-frame-bytes) & euip-frames s buf (i + 1)
   euip-equal : Integer, Integer, Integer -> Boolean
-  euip-equal (a) (b) (i) = if i == euc-bytes then True
+  euip-equal (a) (b) (i) = if i >= peek-qword a 16 then True
     else if peek-qword a i /= peek-qword b i then False else euip-equal a b (i + 8)
   euip-recovered : CurrencyCheckpoint, CurrencyCheckpoint, Integer, Integer -> [Console] Nothing
   euip-recovered (source) (state) (one) (two) = act
-    a <- euc-encode source one euc-bytes
-    b <- euc-encode state two euc-bytes
+    a <- euc-encode source one us-max-payload
+    b <- euc-encode state two us-max-payload
     euip-check "ordered inputs reproduce complete direct state" (efi-valid state & is-ok a & is-ok b & euip-equal one two 0)
   end
   euip-corrupt : Integer, Integer, Integer -> Boolean
@@ -52,7 +53,7 @@ Chapter: EconomyCurrencyInputProof
     full <- eui-replay source frames (4096 * eui-frame-bytes)
     full-after <- __heap-save
     print-line-uni ("CURRENCY-REPLAY-BYTES " & show (full-after - full-before))
-    euip-check "maximum batch retains same heap as two inputs" (is-ok full & full-after - full-before == small-bytes & small-bytes < 8388608)
+    euip-check "maximum batch retains same heap as two inputs" (is-ok full & full-after - full-before == small-bytes & small-bytes < 8388608 * eg-cells source.currency.world.catalog / 129)
     when full
       is Err (e) -> print-line-uni ("FAIL full replay " & e)
       is Ok (s) -> euip-check "maximum batch advances all clocks without aliasing source" (s.sequence == 4096 & s.currency.world.hour == 4096 & s.currency.copper.hour == 4096 & s.currency.silver.hour == 4096 & source.sequence == 0 & source.currency.world.hour == 0)
@@ -65,8 +66,8 @@ Chapter: EconomyCurrencyInputProof
     print-line-uni ("CURRENCY-INPUTS " & show count & " CHECKPOINT " & show s.middle)
     euip-check "novice bootstrap and financial fixture valid" (s.failed == 0 & efi-valid s.state)
     frames <- alloc-bytes (count * eui-frame-bytes)
-    one <- alloc-bytes euc-bytes
-    two <- alloc-bytes euc-bytes
+    one <- alloc-bytes us-max-payload
+    two <- alloc-bytes us-max-payload
     written <- euip-frames s frames 0
     euip-check "all fixture inputs encode" written
     mark <- __heap-save

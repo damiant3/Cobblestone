@@ -732,15 +732,15 @@ function Start-VmRun {
     # data_len < 8, and -m stays under 4 GB.)
     #
     # -cpu max is required under TCG, whose default qemu64 model lacks
-    # features the seed uses, and is FATAL under WHPX, which passes the host
-    # model through already.
+    # features the seed uses, and is FATAL under WHPX. WHPX takes -cpu host:
+    # its default model has no RDRAND, so the guest prints 'no entropy'.
     #
     # kernel-irqchip=off is what WHPX needs. Under KVM the userspace-APIC
     # path it forces is deprecated and the guest dies before READY, while
     # the in-kernel irqchip boots clean -- so drop the flag exactly there.
     $ramBytes = [long]$MemMB * 1048576
     $platformArgs = @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
-    if ($script:FallbackAccel -notmatch 'whpx') { $platformArgs = @('-cpu', 'max') + $platformArgs }
+    if ($script:FallbackAccel -notmatch 'whpx') { $platformArgs = @('-cpu', 'max') + $platformArgs } else { $platformArgs = @('-cpu', 'host') + $platformArgs }
     $machineArgs = @('-machine', 'kernel-irqchip=off')
     if ($script:FallbackAccel -match 'kvm') { $machineArgs = @() }
     $stdoutFile = [System.IO.Path]::GetTempFileName()
@@ -1034,7 +1034,7 @@ function Start-PlugVm {
         $ramBytes = [long]$MemMB * 1048576
         $vmArgs = @($script:FallbackAccelFlags)
         if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }
-        if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') }
+        if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') } else { $vmArgs += @('-cpu', 'host') }
         $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
         $vmArgs += @('-kernel', $Kernel, '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56', '-display', 'none', '-no-reboot', '-m', "$MemMB", '-serial', "file:$ConsoleFile")
         # isa-debug-exit is what makes QEMU LEAVE. codex-vm exits when the guest
@@ -1097,7 +1097,7 @@ function Invoke-PlugVmFileSerial {
     $ramBytes = [long]$MemMB * 1048576
     $vmArgs = @($script:FallbackAccelFlags)
     if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }
-    if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') }
+    if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') } else { $vmArgs += @('-cpu', 'host') }
     $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))
     $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', "$MemMB", '-chardev', (Get-VmChardevData -Port $port), '-chardev', (Get-VmChardevCtrl -Port ($port + 1)), '-serial', 'chardev:ch0', '-serial', 'chardev:ch1', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')
     if ($DiskFile) { $vmArgs += @('-drive', "file=$DiskFile,format=raw,if=ide,index=0") }

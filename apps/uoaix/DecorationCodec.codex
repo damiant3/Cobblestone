@@ -8,7 +8,7 @@ Chapter: DecorationCodec
   wdc-size (state) = 24 + state.count
   wdc-bits : WdState, Integer, Integer -> Boolean
   wdc-bits (state) (buffer) (i) = if i == state.count then True else let bit = peek-byte buffer i
-    in if bit > 1 | (bit /= 0 & not (wd-is-door state i)) then False else wdc-bits state buffer (i + 1)
+    in if bit > 4 | (bit /= 0 & not (wd-is-door state i)) | (bit > 1 & bit < 4 & wd-field state i 7 /= 4) | (bit == 4 & wd-field state i 7 /= 1) then False else wdc-bits state buffer (i + 1)
   wdc-copy : Integer, Integer, Integer, Integer -> Integer
   wdc-copy (source) (destination) (i) (count) = if i == count then 0
     else let copied = poke-byte destination i (peek-byte source i) in wdc-copy source destination (i + 1) count
@@ -26,11 +26,9 @@ Chapter: DecorationCodec
     else let undo = alloc-bytes (max 1 state.count)
     in let saved = wdc-copy state.opened undo 0 state.count
     in let restored = wdc-copy (buffer + 24) state.opened 0 state.count
-    in let base = wd-copy state.base state.solids 0 (state.width * state.height * state.stride / 8)
+    in let base = wd-restore state
     in when wd-solids state (wd-lower state (state.map.x - 1) 0 state.count)
       is Err (e) -> let rollback = wdc-copy undo state.opened 0 state.count
-        in let reset = wd-copy state.base state.solids 0 (state.width * state.height * state.stride / 8)
+        in let reset = wd-restore state
         in let repaired = wd-solids state 0 in Err e
-      is Ok (_) -> let cleared = wd-zero state.visible 0 state.count
-        in let connection = __record-set state "connection" -1
-        in let cursor = __record-set state "cursor" 0 in Ok state.count
+      is Ok (_) -> let forgotten = wd-forget-all state in Ok state.count

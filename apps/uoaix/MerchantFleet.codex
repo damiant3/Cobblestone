@@ -1,0 +1,40 @@
+Chapter: MerchantFleet
+  cites Uoaix chapter Cities
+  cites Uoaix chapter GameVendorBuys
+
+ UOAIX-237, the merchant fleet (docs/Designs/Active/Apps/UoaixMerchantFleet.md), stage F1a: the lanes and the trade
+ rule. A ship buys a lot only when its ask here is at least mf-margin percent below the best bid at the lane's next
+ port, and sells only above what the lot cost it. Ports are ct-table cities; every lane leaves from and returns to
+ Britain (city 0). Nujel'm is a port of call, not the home port (Damian, 2026-10-10: "it has to be some kind of tangible
+ resource, something only found there"; its resource waits for his pick).
+  mf-ships : Integer = 3
+  mf-owner : Integer = 4800
+  mf-leg-hours : Integer = 6
+  mf-hold-lots : Integer = 8
+  mf-margin : Integer = 20
+  mf-home : Integer = 0
+  mf-lanes : Integer -> List (List Integer)
+  mf-lanes (unused) = [[0, 7, 2, 8], [0, 1, 9], [0, 12, 13, 14]]
+  mf-next : List Integer, Integer -> Integer
+  mf-next (lane) (leg) = list-at lane (int-mod (leg + 1) (list-length lane))
+ Vendor i's shop: Britain's for i below bb-shop-count, else city shop i - bb-shop-count. Its port is the city whose
+ rectangle holds the shop's centre, or -1.
+  mf-shop : List BbShop, Integer -> BbShop
+  mf-shop (cityshops) (i) = if i < bb-shop-count then list-at bb-shops i else list-at cityshops (i - bb-shop-count)
+  mf-port-of : List CtCity, List BbShop, Integer -> Integer
+  mf-port-of (cities) (cityshops) (i) = if i < 0 | i >= bb-shop-count + list-length cityshops then 0 - 1
+    else let s = mf-shop cityshops i in ct-city-at cities ((s.x1 + s.x2) / 2) ((s.y1 + s.y2) / 2) 0
+ The vendors trading at port city, in vendor order (bind once a boot: the shop lists are rebuilt at every mention).
+  mf-port-shops : List CtCity, List BbShop, Integer, Integer, List Integer -> List Integer
+  mf-port-shops (cities) (cityshops) (city) (i) (out) = if i >= bb-shop-count + list-length cityshops then out
+    else mf-port-shops cities cityshops city (i + 1) (if mf-port-of cities cityshops i == city then list-push out i else out)
+ The highest bid any of port's shops makes for item (gvb-bid-for, by each shop's Britain role and own stock).
+  mf-best-bid : EpWorld, List GvVendor, List Integer, Integer, Integer, Integer -> Integer
+  mf-best-bid (w) (vendors) (port) (item) (i) (best) = if i >= list-length port then best
+    else let k = list-at port i
+    in let bid = if k < 0 | k >= list-length vendors then 0 else gvb-bid-for w (ct-vendor-role k) (list-at vendors k).actor item
+    in mf-best-bid w vendors port item (i + 1) (max best bid)
+  mf-worth-buying : Integer, Integer -> Boolean
+  mf-worth-buying (ask) (bid) = ask >= 1 & bid >= 1 & ask * 100 <= bid * (100 - mf-margin)
+  mf-worth-selling : Integer, Integer -> Boolean
+  mf-worth-selling (bid) (cost) = bid >= 1 & bid > cost

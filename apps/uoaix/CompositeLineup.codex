@@ -1,19 +1,8 @@
 Chapter: CompositeLineup
   cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CharacterStylist
+  cites Uoaix chapter ShopStock
 
- The First Bank of Britain's front doors are at 1438-1439,1692 in its south
- wall; the lineup row stands two tiles south of them.
-  cgl-x : Integer = 1434
-  cgl-y : Integer = 1694
-  cgl-spot-at : WalkMap, Integer, Integer, Integer -> Result BbSpot Text
-  cgl-spot-at (map) (x) (y) (shift) = if shift == 2 then Err "bank lineup tile unwalkable"
-    else when walk-ground map x y
-      is Err (_) -> cgl-spot-at map x (y + 1) (shift + 1)
-      is Ok (ground) -> when bb-floor map x y ground 0
-        is Err (_) -> cgl-spot-at map x (y + 1) (shift + 1)
-        is Ok (z) -> Ok (BbSpot { x = x, y = y, z = z })
-  cgl-spot : WalkMap, Integer -> Result BbSpot Text
-  cgl-spot (map) (k) = cgl-spot-at map (cgl-x + k) cgl-y 0
 
   cgl-strip : WorldTable, Integer -> Result Integer Text
   cgl-strip (world) (serial) = let child = world-first-child world serial
@@ -43,74 +32,61 @@ Chapter: CompositeLineup
           is Err (e) -> Err e
           is Ok (_) -> cgl-remove-fixtures owner (i + 1)
 
-  cgl-vendors : CompositeGame, WalkMap, Integer -> Result Integer Text
-  cgl-vendors (owner) (map) (k) = if k == bb-shop-count then Ok 0
-    else when cgl-spot map k
-      is Err (e) -> Err e
-      is Ok (spot) -> when bb-populate-at owner.vendor owner.items (bb-shop-count + k) k spot
-        is Err (e) -> Err e
-        is Ok (_) -> cgl-vendors owner map (k + 1)
-  cgl-plain : CompositeGame, WalkMap, Integer -> Result Integer Text
-  cgl-plain (owner) (map) (k) = when cgl-spot map k
-    is Err (e) -> Err e
-    is Ok (spot) -> when world-create owner.checkpoint.game.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
-      is Err (e) -> Err e
-      is Ok (serial) -> when gmb-dress owner.items serial
-        is Err (e) -> Err e
-        is Ok (_) -> Ok serial
-  cgl-build : CompositeGame, WalkMap -> Result Integer Text
-  cgl-build (owner) (map) = if owner.vendor.vendor-count /= bb-shop-count then Ok 0
-    else when cgl-vendors owner map 0
-      is Err (e) -> Err e
-      is Ok (_) -> when cgl-plain owner map bb-shop-count
-        is Err (e) -> Err e
-        is Ok (_) -> when cgl-plain owner map (bb-shop-count + 1)
-          is Err (e) -> Err e
-          is Ok (_) -> if not (gvsc-valid owner.vendor) then Err "bank lineup stock provenance or currency census refused" else Ok 1
 
-  cgl-find-tile : CompositeGame, Integer -> Integer
-  cgl-find-tile (owner) (serial) = if serial == 0 then 0
-    else let game = owner.checkpoint.game
-    in when world-get game.world serial
-      is Err (_) -> cgl-find-tile owner (world-tile-next game.world serial)
-      is Ok (obj) -> if obj.kind == 1 & obj.graphic == 400 & gv-vendor owner.vendor serial 0 < 0 & gv-slot game serial 0 < 0 then serial
-        else cgl-find-tile owner (world-tile-next game.world serial)
-  cgl-find : CompositeGame, WalkMap, Integer -> Integer
-  cgl-find (owner) (map) (k) = when cgl-spot map k
-    is Err (_) -> 0
-    is Ok (spot) -> cgl-find-tile owner (world-tile-first owner.checkpoint.game.world spot.x spot.y)
-  cgl-immune : CompositeGame, Integer -> Integer
-  cgl-immune (owner) (serial) = if serial == 0 then 0
+  cgl-mortal : CompositeGame, Integer -> Integer
+  cgl-mortal (owner) (serial) = if serial == 0 then 0
     else when cb-ensure owner.combat owner.checkpoint.game serial
       is Err (_) -> -1
-      is Ok (actor) -> let immune = __record-set actor "immune" True in 0
-  cgl-bind-vendors : CompositeGame, Integer, Boolean -> Integer
-  cgl-bind-vendors (owner) (i) (created) = if i == owner.vendor.vendor-count then 0
-    else let serial = (list-at owner.vendor.vendors i).serial
-    in let banked = if created then gmb-add-banker owner.banks serial else 0
-    in if banked < 0 | cgl-immune owner serial < 0 then -1 else cgl-bind-vendors owner (i + 1) created
-  cgl-bind : CompositeGame, WalkMap, TownLive, Boolean -> Result Integer Text
-  cgl-bind (owner) (map) (town) (created) =
-    let banker = cgl-find owner map bb-shop-count
-    in let resident = cgl-find owner map (bb-shop-count + 1)
-    in if banker == 0 | resident == 0 | town.count < 1 then Err "bank lineup banker or resident missing"
-    else if cgl-bind-vendors owner bb-shop-count created < 0 | gmb-add-banker owner.banks banker < 0
-      | cgl-immune owner banker < 0 | cgl-immune owner resident < 0 then Err "bank lineup binding refused"
-    else let bound = __record-set owner "lineup" (Just (CglLineup { resident = resident, banker = banker,
-      person = (list-at town.residents 0).person, inside = 0, speaker = 0, last = 0 }))
-    in Ok 0
+      is Ok (actor) -> let mortal = __record-set actor "immune" False in 0
 
+ Shopkeepers are not immune (Damian, 2026-10-07, BritainShops.md); clearing the flag here also clears a saved world's.
+  cgl-mortal-vendors : CompositeGame, Integer -> Integer
+  cgl-mortal-vendors (owner) (i) = if i >= owner.vendor.vendor-count then 0
+    else if cgl-mortal owner (list-at owner.vendor.vendors i).serial < 0 then -1 else cgl-mortal-vendors owner (i + 1)
+ A shop's spawn region is its sales floor; 8 tiles around it reach the stations its staff work at (the Hammer And Anvil's
+ anvil stands 6 tiles south of its region).
+  cgl-counter-reach : Integer = 8
+  cgl-at-counter : Integer, WorldObject -> Boolean
+  cgl-at-counter (i) (m) = let shop = list-at bb-shops i
+    in m.kind == 1 & m.health > 0 & m.x >= shop.x1 - cgl-counter-reach & m.x <= shop.x2 + cgl-counter-reach
+    & m.y >= shop.y1 - cgl-counter-reach & m.y <= shop.y2 + cgl-counter-reach
+  cgl-resident-of : TownLive, Integer, Integer, Integer -> Boolean
+  cgl-resident-of (town) (i) (serial) (r) = if r >= town.count then False
+    else if tl-shop-of r == i & (tf-person town.people (list-at town.residents r).person).world-serial == serial then True
+    else cgl-resident-of town i serial (r + 1)
+  cgl-staff-of : CompositeGame, Integer, Integer -> Boolean
+  cgl-staff-of (owner) (i) (serial) = serial /= 0 & i < bb-shop-count & i < owner.vendor.vendor-count
+    & ((list-at owner.vendor.vendors i).serial == serial
+      | (when owner.town is None -> False is Just (town) -> cgl-resident-of town i serial 0))
+  cgl-staff : CompositeGame, Integer, Integer -> Integer
+  cgl-staff (owner) (i) (serial) = if not (cgl-staff-of owner i serial) then 0
+    else when world-get owner.vendor.game.world serial
+      is Err (_) -> 0
+      is Ok (m) -> if cgl-at-counter i m then 1 else 0
+  cgl-serving : CompositeGame, Integer, WorldObject, Integer -> Boolean
+  cgl-serving (owner) (i) (player) (serial) = cgl-staff-of owner i serial & (when world-get owner.vendor.game.world serial
+    is Err (_) -> False
+    is Ok (m) -> cgl-at-counter i m & gv-near player m)
+  cgl-serving-resident : CompositeGame, TownLive, Integer, WorldObject, Integer -> Boolean
+  cgl-serving-resident (owner) (town) (i) (player) (r) = if r >= town.count then False
+    else (tl-shop-of r == i & cgl-serving owner i player (tf-person town.people (list-at town.residents r).person).world-serial)
+      | cgl-serving-resident owner town i player (r + 1)
+  cgl-serves : CompositeGame, Integer, Integer -> Integer
+  cgl-serves (owner) (i) (player) = if i >= bb-shop-count | i >= owner.vendor.vendor-count then 0
+    else when world-get owner.vendor.game.world player
+      is Err (_) -> 0
+      is Ok (p) -> if cgl-serving owner i p (list-at owner.vendor.vendors i).serial
+          | (when owner.town is None -> False is Just (town) -> cgl-serving-resident owner town i p 0) then 1 else 0
   cgl-arrange : CompositeGame, Boolean -> Result Integer Text
   cgl-arrange (owner) (testing) =
     let quiet = if owner.combat.scene == 1 then __record-set owner.combat "scene" 2 else owner.combat
     in when cgl-remove-fixtures owner 0
       is Err (e) -> Err e
-      is Ok (_) -> if not testing then Ok 0
-        else when owner.town
-          is None -> Ok 0
-          is Just (town) -> when owner.town-map
-            is None -> Ok 0
-            is Just (map) -> when cgl-build owner map
-              is Err (e) -> Err e
-              is Ok (created) -> if owner.vendor.vendor-count /= 2 * bb-shop-count then Err "bank lineup vendor count"
-                else cgl-bind owner map town (created == 1)
+      is Ok (_) -> if cgl-mortal-vendors owner 0 < 0 then Err "shopkeeper combat binding refused"
+        else let stocked = ss-ensure owner.vendor owner.items owner.town-map 0
+        in let bound = __record-set owner.vendor "window" (ss-window owner.vendor)
+        in let staffed = __record-set owner.vendor "staff" (cgl-staff owner)
+        in let served = __record-set owner.vendor "serves" (cgl-serves owner)
+        in let returned = gv-window-all owner.vendor 0
+        in let woken = cg-rise-all owner 0
+        in let kept = cg-mark-corpses owner 0 in Ok 0

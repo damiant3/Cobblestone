@@ -23,13 +23,21 @@ Chapter: GameNet
   GameInput = record { wire : UoLoginWire, session : GameSession,
     mode : Integer, buffer : Integer, used : Integer, need : Integer, listed : Boolean,
     connection : Integer, raw : Integer, raw-next : Integer, raw-count : Integer, opcode : Integer,
-    opcodes : List GameOpcodeSpec }
+    opcodes : List GameOpcodeSpec, log : Integer }
   GameChunk = record { transport : TcpTransportState, close : Boolean }
 
-  gn-log : Text -> Text
-  gn-log (message) = let rate = hpet-ticks-per-second
+  gn-ms : Integer -> Text
+  gn-ms (unused) = let rate = hpet-ticks-per-second
     in let now = hpet-ticks
-    in message & " ms=" & show (if rate <= 0 then 0 else now / rate * 1000 + int-mod now rate * 1000 / rate)
+    in " ms=" & show (if rate <= 0 then 0 else now / rate * 1000 + int-mod now rate * 1000 / rate)
+  gn-log : Text -> Text
+  gn-log (message) = message & gn-ms 0
+  gn-say : Integer, Integer, Integer, Text -> [Console] Integer
+  gn-say (log) (subsystem) (level) (message) = if not (slg-on log subsystem level) then act 0 end
+    else act
+      print-line-uni (message & slg-tags subsystem level & gn-ms 0)
+      1
+    end
   gn-micros : Integer -> Integer
   gn-micros (ticks) = let rate = hpet-ticks-per-second
     in if rate <= 0 then 0 else ticks / rate * 1000000 + int-mod ticks rate * 1000000 / rate
@@ -40,7 +48,7 @@ Chapter: GameNet
   gn-input-with : List GameOpcodeSpec, Integer -> GameInput
   gn-input-with (specs) (number) = GameInput { wire = uo-wire-new 0, session = gs-session 0,
     mode = 0, buffer = alloc-bytes go-wire-limit, used = 0, need = 0, listed = False,
-    connection = number, raw = alloc-bytes 256, raw-next = 0, raw-count = 0, opcode = -1, opcodes = specs }
+    connection = number, raw = alloc-bytes 256, raw-next = 0, raw-count = 0, opcode = -1, opcodes = specs, log = 0 }
 
   gn-remember : GameInput, Integer -> Integer
   gn-remember (state) (byte) =
@@ -97,11 +105,12 @@ Chapter: GameNet
     in let b = gp-ascii (gp-put16 a 0) "UOAIX" 0 32
     in b & [0, 0, 1, 0, 0, 127]
 
+ 0x82 login denied: reason 2 is account blocked, 3 bad credentials (RunUO ALRReason Blocked, BadPass).
   gn-login : GameShard, GameInput, Integer, List Integer -> Result GameReply Text
   gn-login (shard) (state) (host-port) (packet) =
     let opcode = list-at packet 0
     in if opcode == 128 & not state.listed then when ga-admit shard.accounts packet 1 31
-      is Err (e) -> Ok (GameReply { packets = [[130, 3]], close = True, note = "login credentials refused: " & e })
+      is Err (e) -> Ok (GameReply { packets = [[130, (if e == ga-banned-text then 2 else 3)]], close = True, note = "login credentials refused: " & e })
       is Ok (_) ->
         let listed = __record-set state "listed" True
         in Ok (gs-reply [gn-shards (list-at packet 61)] "shard-list")
@@ -119,9 +128,9 @@ Chapter: GameNet
  waits exceed the transport's bounded retransmission ladder without spinning
  forever when traffic prevents a timer from advancing.
 
-  gn-send-wait-with : (TcpTransportState, List Integer, Integer, Integer -> [e] NetSendResult),
+  gn-send-wait-with : Integer, (TcpTransportState, List Integer, Integer, Integer -> [e] NetSendResult),
     TcpTransportState, List Integer, Integer, Integer -> [Console, e] NetSendResult
-  gn-send-wait-with (sender) (transport) (bytes) (offset) (waits) =
+  gn-send-wait-with (log) (sender) (transport) (bytes) (offset) (waits) =
     if net-io-conn-closed transport | transport-stale transport then
       NetSendResult { ns-transport = transport, ns-sent = offset, ns-complete = False }
     else act
@@ -129,8 +138,8 @@ Chapter: GameNet
       if sent.ns-complete | net-io-conn-closed sent.ns-transport | transport-stale sent.ns-transport
         | not (net-rexmit-full sent.ns-transport.session) | waits <= 1 then sent
       else act
-        print-line-uni ("WAIT game send offset=" & show sent.ns-sent & " remaining-drains=" & show (waits - 1))
-        gn-send-wait-with sender sent.ns-transport bytes sent.ns-sent (waits - 1)
+        waited <- slg-line log slg-network slg-debug ("WAIT game send offset=" & show sent.ns-sent & " remaining-drains=" & show (waits - 1))
+        gn-send-wait-with log sender sent.ns-transport bytes sent.ns-sent (waits - 1)
       end
     end
 
@@ -148,35 +157,35 @@ Chapter: GameNet
       is Ok (bytes) -> if list-length bytes > 65536 - list-length out then Err "game reply wire budget"
         else gn-wire-reply huffman compress packets (i + 1) (gn-wire-append bytes 0 out)
 
-  gn-send : TcpTransportState, Integer, Boolean, List (List Integer),
+  gn-send : Integer, TcpTransportState, Integer, Boolean, List (List Integer),
     Integer -> [Console, Network.Read, Network.Write] GameChunk
-  gn-send (transport) (huffman) (compress) (packets) (i) =
+  gn-send (log) (transport) (huffman) (compress) (packets) (i) =
     let started = hpet-ticks
     in when gn-wire-reply huffman compress packets i []
       is Err (e) -> act
-        print-line-uni (gn-log ("REFUSE " & e))
+        gn-say log slg-network slg-warn ("REFUSE " & e)
         GameChunk { transport = transport, close = True }
       end
-      is Ok (bytes) -> act
+      is Ok (bytes) -> if list-length bytes == 0 then act GameChunk { transport = transport, close = False } end else act
         encoded <- hpet-ticks
-        sent <- gn-send-wait-with net-io-send-chunk-checked transport bytes 0 6
+        sent <- gn-send-wait-with log net-io-send-chunk-checked transport bytes 0 6
         finished <- hpet-ticks
-        logged <- print-line-uni (gn-log ("SEND packets=" & show (list-length packets - i) & " bytes=" & show (list-length bytes) & " encode-us=" & show (gn-micros (encoded - started)) & " tx-us=" & show (gn-micros (finished - encoded))))
+        logged <- gn-say log slg-network slg-trace ("SEND packets=" & show (list-length packets - i) & " bytes=" & show (list-length bytes) & " encode-us=" & show (gn-micros (encoded - started)) & " tx-us=" & show (gn-micros (finished - encoded)))
         if not sent.ns-complete then act
-          print-line-uni (gn-log ("REFUSE game send incomplete " & show sent.ns-sent
+          gn-say log slg-network slg-warn ("REFUSE game send incomplete " & show sent.ns-sent
             & " queue=" & show (list-length sent.ns-transport.session.rexmit-queue)
             & " full=" & show (net-rexmit-full sent.ns-transport.session)
             & " closed=" & show (net-io-conn-closed sent.ns-transport)
-            & " stale=" & show (transport-stale sent.ns-transport)))
+            & " stale=" & show (transport-stale sent.ns-transport))
           GameChunk { transport = sent.ns-transport, close = True }
         end
         else GameChunk { transport = sent.ns-transport, close = False }
       end
 
-  gn-send-timed : NetIdleClock, TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk
-  gn-send-timed (clock) (transport) (huffman) (compress) (packets) (i) = act
+  gn-send-timed : Integer, NetIdleClock, TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk
+  gn-send-timed (log) (clock) (transport) (huffman) (compress) (packets) (i) = act
     received <- ni-wait transport clock False hpet-ticks __heap-save
-    gn-send (ni-stamp received clock hpet-ticks) huffman compress packets i
+    gn-send log (ni-stamp received clock hpet-ticks) huffman compress packets i
   end
 
   gn-chunk : TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
@@ -226,7 +235,7 @@ Chapter: GameNet
   gn-send-pulse : (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
     TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
   gn-send-pulse (pulse) (transport) (shard) (state) (map) (huffman) (host-port) = act
-    gn-send-pulse-via gn-send pulse transport shard state map huffman host-port
+    gn-send-pulse-via (gn-send shard.log) pulse transport shard state map huffman host-port
   end
 
   gn-send-pulse-via : (TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk),
@@ -242,7 +251,7 @@ Chapter: GameNet
       is Ok (maybe) -> when maybe
         is None -> GameChunk { transport = transport, close = False }
         is Just (reply) -> act
-          print-line-uni (gn-log ("PULSE " & reply.note & " connection=" & show state.connection))
+          gn-say shard.log slg-network slg-debug ("PULSE " & reply.note & " connection=" & show state.connection)
           sent <- sender transport huffman True reply.packets 0
           GameChunk { transport = sent.transport, close = reply.close | sent.close }
         end
@@ -252,7 +261,7 @@ Chapter: GameNet
     TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer,
     List Integer, Integer -> [Console, Network.Read, Network.Write, e] GameChunk
   gn-chunk-with (handler) (transport) (shard) (state) (map) (huffman) (host-port) (bytes) (i) =
-    gn-chunk-via gn-send handler transport shard state map huffman host-port bytes i
+    gn-chunk-via (gn-send shard.log) handler transport shard state map huffman host-port bytes i
 
   gn-chunk-via : (TcpTransportState, Integer, Boolean, List (List Integer), Integer -> [Console, Network.Read, Network.Write] GameChunk),
     (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
@@ -276,7 +285,7 @@ Chapter: GameNet
             GameChunk { transport = transport, close = True }
           end
           is Ok (reply) -> act
-            print-line-uni (gn-log ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show state.connection))
+            gn-say shard.log slg-network slg-debug ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show state.connection)
             positioned <- gn-position shard state.session
             sent <- sender transport huffman (state.mode == 2) reply.packets 0
             if reply.close | sent.close then act
@@ -291,11 +300,11 @@ Chapter: GameNet
     if session.phase /= 2 then 0
     else when world-get shard.world session.serial
       is Err (e) -> act
-        print-line-uni (gn-log ("REFUSE position " & e))
+        gn-say shard.log slg-world slg-warn ("REFUSE position " & e)
         1
       end
       is Ok (mobile) -> act
-        print-line-uni ("POSITION " & show mobile.serial & " " & show mobile.x & " " & show mobile.y & " " & show mobile.z)
+        slg-line shard.log slg-world slg-trace ("POSITION " & show mobile.serial & " " & show mobile.x & " " & show mobile.y & " " & show mobile.z)
         0
       end
 
@@ -324,7 +333,7 @@ Chapter: GameNet
     flushed <- disconnect shard state
     when flushed
       is Err (reason) -> act
-        print-line-uni (gn-log ("REFUSE disconnect flush connection=" & show state.connection & " reason=" & reason))
+        gn-say shard.log slg-store slg-error ("REFUSE disconnect flush connection=" & show state.connection & " reason=" & reason)
         1
       end
       is Ok (done) -> let gone = gs-disconnect shard state.session in 0
@@ -337,7 +346,7 @@ Chapter: GameNet
   gn-connection-hooks-with-disconnect (handler) (pulse) (disconnect) (transport) (shard) (state) (map) (huffman) (host-port) (mark) =
     when ni-clock transport (net-driver-frame-buffer net-driver-frame-cap)
       is Err (reason) -> act
-        print-line-uni (gn-log ("REFUSE " & reason))
+        gn-say shard.log slg-network slg-warn ("REFUSE " & reason)
         closed <- net-io-close transport
         ended <- gn-finish-disconnect disconnect shard state
         1
@@ -351,14 +360,14 @@ Chapter: GameNet
     TcpTransportState, GameShard, GameInput, WalkMap, Integer, Integer, NetIdleClock, Integer -> [Console, Network.Read, Network.Write, e] Integer
   gn-connection-idle-loop (handler) (pulse) (disconnect) (transport) (shard) (state) (map) (huffman) (host-port) (clock) (mark) = act
     recv <- ni-recv transport clock mark
-    processed <- if recv.has-data then gn-chunk-via (gn-send-timed clock) handler recv.transport shard state map huffman host-port recv.data 0
+    processed <- if recv.has-data then gn-chunk-via (gn-send-timed shard.log clock) handler recv.transport shard state map huffman host-port recv.data 0
       else if not (net-io-peer-finished recv.transport) & not (transport-stale recv.transport) then act GameChunk { transport = recv.transport, close = False } end
       else act
         diagnosed <- if state.used > 0 | ((state.wire).seed-count > 0 & (state.wire).seed-count < 4) then gn-refuse state "incomplete packet at EOF" else act 0 end
         GameChunk { transport = recv.transport, close = True }
       end
     result <- if processed.close then act processed end
-      else gn-send-pulse-via (gn-send-timed clock) pulse processed.transport shard state map huffman host-port
+      else gn-send-pulse-via (gn-send-timed shard.log clock) pulse processed.transport shard state map huffman host-port
     if result.close then act
       closed <- net-io-close result.transport
       gn-finish-disconnect disconnect shard state
@@ -393,8 +402,8 @@ Chapter: GameNet
   gn-refuse (state) (reason) =
     let mode = if state.mode == 0 then "seed-clear" else if state.mode == 1 then "login-xor" else "game-xor"
     in act
-      print-line-uni (gn-log ("REFUSE connection=" & show state.connection & " mode=" & mode & " opcode=" & show state.opcode & " reason=" & reason
-        & " raw-count=" & show state.raw-count & " raw=" & text-concat-list (gn-raw-pieces state 0 [])))
+      refused <- gn-say state.log slg-network slg-warn ("REFUSE connection=" & show state.connection & " mode=" & mode & " opcode=" & show state.opcode & " reason=" & reason
+        & " raw-count=" & show state.raw-count & " raw=" & text-concat-list (gn-raw-pieces state 0 []))
       0
     end
 
@@ -428,11 +437,12 @@ Chapter: GameNet
     in let rx = net-driver-frame-buffer net-driver-frame-cap
     in let accept-mark = __heap-save
     in act
-      print-line-uni (gn-log ("LISTEN game-server " & show number))
+      gn-say shard.log slg-network slg-info ("LISTEN game-server " & show number)
       accepted <- gn-accept transport 0 rx accept-mark
       when (accepted.session).conn.state
         is TcpEstablished ->
           let state = gn-input-with specs number
+          in let logged = __record-set state "log" shard.log
           in let connection-mark = __heap-save
           in act
             ended <- gn-connection-hooks-with-disconnect handler pulse disconnect accepted shard state map huffman host-port connection-mark
@@ -463,7 +473,7 @@ Chapter: GameNet
     Integer, Integer -> [Console, Network.Read, Network.Write, e] Integer
   game-server-with-disconnect (specs) (handler) (pulse) (disconnect) (host-port) (window-size) =
     if not (go-valid specs) then act
-      print-line-uni "REFUSE opcode registry"
+      slg-line (slg-new slg-trace) slg-server slg-error "REFUSE opcode registry"
       1
     end
     else act
@@ -475,12 +485,12 @@ Chapter: GameNet
       loaded <- wl-load 1408 1680 window-size window-size
       when loaded
         is Err (e) -> act
-          print-line-uni ("REFUSE preload " & e)
+          slg-line (slg-new slg-trace) slg-server slg-error ("REFUSE preload " & e)
           1
         end
         is Ok (map) -> when gs-new 0
           is Err (e) -> act
-            print-line-uni (gn-log ("REFUSE shard " & e))
+            gn-say (slg-new slg-trace) slg-server slg-error ("REFUSE shard " & e)
             1
           end
           is Ok (shard) -> gn-loop-hooks-with-disconnect specs handler pulse disconnect shard map huffman host-port 0

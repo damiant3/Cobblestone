@@ -4,6 +4,7 @@ Chapter: EconomyCurrencyProof
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyProduction
   cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyCurrencyValid
   cites Foreword chapter Result
 
   eup-check : Text, Boolean -> [Console] Nothing
@@ -65,7 +66,7 @@ Chapter: EconomyCurrencyProof
     loan-s <- eu-lend x True 1 player 2 20 0 48
     loan-g <- eu-lend x True 1 player 3 2 0 48
     tax <- eu-tax x True actor 1000
-    eup-check "loans retain denomination and common tax is logged" (loan-c == 1 & loan-s == 1 & loan-g == 1 & tax == 0 & x.copper.tax == 1000 & x.silver.tax == 1000 & w.money.tax == 1000)
+    eup-check "loans retain denomination and common tax is logged" (loan-c == 1 & loan-s == 1 & loan-g == 1 & tax == 0 & x.copper.tax == 0 & x.silver.tax == 0 & w.money.tax == 1000)
     before-pay <- __heap-save
     paid <- eu-pay x True player vendor 100 10 2
     after-pay <- __heap-save
@@ -88,6 +89,15 @@ Chapter: EconomyCurrencyProof
     gold-return <- eu-pay x True vendor player 0 0 2
     repaid <- eu-repay x True player 3 loan-g 2
     eup-check "gold debt repays as gold after repricing" (gold-return == 0 & repaid == 0 & (list-at w.money.loans 0).status == 2 & eu-census x)
+    loan-v <- eu-lend x True 1 player 3 1 0 48
+    crown-c <- (em-purse x.copper 1).coin
+    crown-s <- (em-purse x.silver 1).coin
+    partial <- eu-repay-value x True player 3 loan-v 50 0 0
+    valued <- eu-repay-value x True player 3 loan-v 100 10 0
+    v <- list-at x.events (x.count - 1)
+    eup-check "a gold debt repays at value in copper and silver, and a value that is not a whole gold refuses" (loan-v == 2 & partial == -1 & valued == 0
+      & (list-at w.money.loans 1).status == 2 & (list-at w.money.loans 1).paid == 1 & (em-purse x.copper player).coin == 0 & (em-purse x.silver player).coin == 0
+      & (em-purse x.copper 1).coin == crown-c + 100 & (em-purse x.silver 1).coin == crown-s + 10 & v.kind == 13 & v.reference == loan-v & eu-census x)
     heap-before <- __heap-save
     days <- eup-days x 0 720
     heap-after <- __heap-save
@@ -97,6 +107,37 @@ Chapter: EconomyCurrencyProof
     full-events <- __record-set x "count" em-rows
     eup-check "full currency history refuses mint before material loss" (second-copper == 1 & eu-strike x True actor mint 1 1 == -1 & ep-at p.stock 65 == 1 & x.copper.issued == 1000)
     restore-events <- __record-set x "count" saved-events
+    owner <- ep-admit w vendor 1
+    found-c <- ep-find w owner 65 1
+    vendor-c <- (em-purse x.copper vendor).coin
+    treasury-c <- (em-purse x.copper 1).coin
+    owned-c <- eu-strike x True owner mint 1 1
+    oe <- list-at x.events (x.count - 1)
+    eup-check "an owner has its own copper ingot struck at the Crown's mint, keeping 90%" (owner > 0 & found-c >= 0 & owned-c == 0 & (em-purse x.copper vendor).coin == vendor-c + 900 & (em-purse x.copper 1).coin == treasury-c + 100 & x.copper.issued == 2000 & oe.kind == 7 & oe.actor == owner & oe.party == vendor & eu-census x)
+    pocket <- (em-purse x.copper player).coin
+    till <- (em-purse x.copper vendor).coin
+    crown-t <- (em-purse x.copper 1).coin
+    replayed <- euv-valid x
+    taken <- eu-steal x vendor player 300 0 0
+    greedy <- eu-steal x vendor player (till - 299) 0 0
+    theft <- list-at x.events (x.count - 1)
+    eup-check "a theft moves copper purse to purse untaxed (currency kind 14, copper row kind 19), refuses more than the victim holds, and the ledgers still replay" (replayed & taken == 0 & greedy == -1 & till >= 300
+      & (em-purse x.copper vendor).coin == till - 300 & (em-purse x.copper player).coin == pocket + 300 & (em-purse x.copper 1).coin == crown-t
+      & theft.kind == 14 & theft.actor == vendor & theft.party == player & (list-at x.copper.ledger (x.copper.entry-count - 1)).kind == 19 & eu-census x & euv-valid x)
+    up-copper <- (em-purse x.copper player).coin
+    up-silver <- (em-purse x.silver player).coin
+    reserve-s <- (em-purse x.silver 1).coin
+    issued-s <- x.silver.issued
+    traded <- eu-exchange x player 1 30 2
+    up <- list-at x.events (x.count - 1)
+    ragged <- eu-exchange x player 1 25 2
+    broke <- eu-exchange x player 3 1 2
+    beyond-need <- 10 * ((em-purse x.silver 1).coin + 1)
+    enough <- (em-purse x.copper vendor).coin >= beyond-need
+    beyond <- eu-exchange x vendor 1 beyond-need 2
+    eup-check "trading copper up returns it to the treasury and pays silver from the reserve with no decree, refuses a ragged amount or one beyond the reserve, and replays (UOAIX-92)" (traded == 0 & ragged == -1 & broke == 0 & enough & beyond == -1
+      & (em-purse x.copper player).coin == up-copper - 30 & (em-purse x.silver player).coin == up-silver + 23 & (em-purse x.silver 1).coin == reserve-s - 23 & x.silver.issued == issued-s
+      & up.kind == 12 & up.actor == player & up.party == 0 & up.metal == 1 & up.silver == 3 & up.reference == 30 & eu-census x & euv-valid x)
     bypass-c <- em-open x.copper 2 99
     bypass-s <- em-open x.silver 2 99
     bypass-g <- em-open w.money 2 99

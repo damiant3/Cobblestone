@@ -1,0 +1,246 @@
+Chapter: GmOverlay
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter GmLand
+
+  GmoRow = record { connection : Integer, serial : Integer, flags : Integer, cx : Integer, cy : Integer,
+    ox : Integer, oy : Integer, cursor : Integer, stamp : Integer }
+  GmOverlay = record { rows : List GmoRow, clock : Integer }
+ A marker's serial is its kind's base + x * 4096 + y; x < 6144 keeps each kind below the next base and below
+ Ships' 0x7A000000, and every world serial is below 0x40000000 + world-max-objects.
+  gmo-guard-base : Integer = #70000000
+  gmo-spawn-base : Integer = #72000000
+  gmo-land-base : Integer = #74000000
+  gmo-span : Integer = 6144 * 4096
+  gmo-guards : Integer = 1
+  gmo-spawns : Integer = 2
+  gmo-land : Integer = 4
+  gmo-all : Integer = 7
+ 18 is the 1.25 client's view range (WorldDecoration's prune); a pulse sends at most 128 markers of about 20 bytes.
+  gmo-reach : Integer = 18
+  gmo-side : Integer = 2 * gmo-reach + 1
+  gmo-batch : Integer = 128
+ A recall rune, hued per kind.
+  gmo-art : Integer = #1F14
+  gmo-guard-hue : Integer = #0058
+  gmo-spawn-hue : Integer = #0026
+  gmo-land-hue : Integer = #0044
+ GameLinks serves at most 32 game links.
+  gmo-row-limit : Integer = 32
+  gmo-new : Integer -> GmOverlay
+  gmo-new (unused) = GmOverlay { rows = gmo-rows gmo-row-limit (__list-with-capacity gmo-row-limit), clock = 0 }
+  gmo-rows : Integer, List GmoRow -> List GmoRow
+  gmo-rows (left) (xs) = if left == 0 then xs
+    else gmo-rows (left - 1) (list-push xs (GmoRow { connection = -1, serial = 0, flags = 0, cx = -1, cy = -1,
+      ox = -1, oy = -1, cursor = -1, stamp = 0 }))
+  gmo-find : List GmoRow, Integer, Integer -> Integer
+  gmo-find (rows) (connection) (i) = if i == list-length rows then -1
+    else let r = list-at rows i in if r.flags /= 0 & r.connection == connection then i else gmo-find rows connection (i + 1)
+  gmo-oldest : List GmoRow, Integer, Integer -> Integer
+  gmo-oldest (rows) (i) (best) = if i == list-length rows then best
+    else let r = list-at rows i
+    in if r.flags == 0 then i
+    else gmo-oldest rows (i + 1) (if r.stamp < (list-at rows best).stamp then i else best)
+  gmo-on : GmOverlay, Integer -> Boolean
+  gmo-on (o) (connection) = gmo-find o.rows connection 0 >= 0
+  gmo-showing : GmOverlay, Integer, Integer -> Boolean
+  gmo-showing (o) (connection) (flag) = let i = gmo-find o.rows connection 0
+    in if i < 0 then False else bit-and (list-at o.rows i).flags flag /= 0
+  gmo-drop : GmOverlay, Integer -> Integer
+  gmo-drop (o) (connection) = let i = gmo-find o.rows connection 0
+    in if i < 0 then 0 else gmo-clear-row (list-at o.rows i)
+  gmo-clear-row : GmoRow -> Integer
+  gmo-clear-row (r) = let a = __record-set r "flags" 0 in let b = __record-set r "connection" -1
+    in let c = __record-set r "cursor" -1 in 1
+  gmo-show : GmOverlay, Integer, Integer, Integer -> Integer
+  gmo-show (o) (connection) (serial) (flag) = let found = gmo-find o.rows connection 0
+    in let i = if found >= 0 then found else gmo-oldest o.rows 0 0
+    in let r = list-at o.rows i
+    in let kept = if found >= 0 & r.serial == serial then r.flags else 0
+    in let tick = o.clock + 1
+    in let a = __record-set o "clock" tick
+    in let b = __record-set r "connection" connection
+    in let c = __record-set r "serial" serial
+    in let d = __record-set r "flags" (bit-or kept flag)
+    in let e = __record-set r "cx" -1
+    in let f = __record-set r "cy" -1
+    in let g = __record-set r "ox" -1
+    in let h = __record-set r "oy" -1
+    in let k = __record-set r "cursor" -1
+    in let s = __record-set r "stamp" tick in i
+ A guard hears a call from up to cv-earshot tiles in each axis (cg-in-earshot), so the zone is every tile whose
+ earshot square touches a living guard's patrol route; a segment touches a square when their boxes overlap and the
+ square's corners do not all lie on one side of the segment's line.
+  gmo-side-of : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gmo-side-of (ax) (ay) (dx) (dy) (px) (py) = cv-sign (dx * (py - ay) - dy * (px - ax))
+  gmo-touches : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gmo-touches (ax) (ay) (bx) (by) (x) (y) (r) =
+    if min ax bx > x + r | max ax bx < x - r | min ay by > y + r | max ay by < y - r then False
+    else let dx = bx - ax in let dy = by - ay
+    in let s = gmo-side-of ax ay dx dy (x - r) (y - r) + gmo-side-of ax ay dx dy (x + r) (y - r)
+      + gmo-side-of ax ay dx dy (x - r) (y + r) + gmo-side-of ax ay dx dy (x + r) (y + r)
+    in s /= 4 & s /= 0 - 4
+  gmo-segments : CivicLive, Integer, Integer, List Integer -> List Integer
+  gmo-segments (c) (i) (seen) (out) = if i >= list-length c.guards then out
+    else let p = list-at c.guards i
+    in let which = cv-which i
+    in let alive = if p.serial == 0 | bit-and seen (bit-shl 1 which) /= 0 | list-length p.route < 4 then False
+      else when world-get c.law.world p.serial is Err (_) -> False is Ok (m) -> m.health > 0
+    in if not alive then gmo-segments c (i + 1) seen out
+    else gmo-segments c (i + 1) (bit-or seen (bit-shl 1 which)) (gmo-route p.route which 0 out)
+  gmo-route : List BbSpot, Integer, Integer, List Integer -> List Integer
+  gmo-route (route) (which) (k) (out) = if k == 4 then out
+    else let a = list-at route k in let b = list-at route (int-mod (k + 1) 4)
+    in gmo-route route which (k + 1) (out & [a.x, a.y, b.x, b.y, which])
+  gmo-guarded : List Integer, Integer, Integer, Integer -> Integer
+  gmo-guarded (segs) (x) (y) (i) = if i >= list-length segs then 0
+    else if gmo-touches (list-at segs i) (list-at segs (i + 1)) (list-at segs (i + 2)) (list-at segs (i + 3)) x y cv-earshot
+      then list-at segs (i + 4) + 1
+    else gmo-guarded segs x y (i + 5)
+  gmo-guard-edge : List Integer, Integer, Integer -> Boolean
+  gmo-guard-edge (segs) (x) (y) = if gmo-guarded segs x y 0 == 0 then False
+    else if gmo-guarded segs (x - 1) y 0 == 0 then True
+    else if gmo-guarded segs (x + 1) y 0 == 0 then True
+    else if gmo-guarded segs x (y - 1) 0 == 0 then True
+    else gmo-guarded segs x (y + 1) 0 == 0
+  gmo-near-regions : List WsRegion, Integer, Integer, Integer, List Integer -> List Integer
+  gmo-near-regions (regions) (cx) (cy) (i) (out) = if i == list-length regions then out
+    else let a = (list-at regions i).area
+    in let kept = if a.x2 < cx - gmo-reach | a.x1 > cx + gmo-reach | a.y2 < cy - gmo-reach | a.y1 > cy + gmo-reach then out else out & [i]
+    in gmo-near-regions regions cx cy (i + 1) kept
+  gmo-spawn-edge : List WsRegion, List Integer, Integer, Integer, Integer -> Integer
+  gmo-spawn-edge (regions) (near) (x) (y) (i) = if i == list-length near then 0
+    else let k = list-at near i in let a = (list-at regions k).area
+    in if x >= a.x1 & x <= a.x2 & y >= a.y1 & y <= a.y2 & (x == a.x1 | x == a.x2 | y == a.y1 | y == a.y2) then k + 1
+    else gmo-spawn-edge regions near x y (i + 1)
+  gmo-serial : Integer, Integer, Integer -> Integer
+  gmo-serial (base) (x) (y) = base + x * 4096 + y
+  gmo-marker : WalkMap, Integer, Integer, Integer, Integer, Integer -> List Integer
+  gmo-marker (map) (serial) (hue) (x) (y) (z) = let ground = when walk-ground map x y is Err (_) -> z is Ok (h) -> h
+    in sip-ground (WorldObject { serial = serial, kind = 2, x = x, y = y, z = ground, graphic = gmo-art, hue = hue,
+      container = 0, amount = 1, health = 0 })
+  gmo-scan : GmoRow, List Integer, List WsRegion, List Integer, Maybe GmLand, WalkMap, Integer, Integer, List (List Integer) -> List (List Integer)
+  gmo-scan (r) (segs) (regions) (near) (land) (map) (z) (sent) (out) =
+    if r.cursor < 0 | sent >= gmo-batch then out
+    else if r.cursor >= gmo-side * gmo-side then let done = __record-set r "cursor" -1 in out
+    else let x = r.cx - gmo-reach + int-mod r.cursor gmo-side
+    in let y = r.cy - gmo-reach + r.cursor / gmo-side
+    in let next = __record-set r "cursor" (r.cursor + 1)
+    in let held = r.ox >= 0 & walk-abs (x - r.ox) <= gmo-reach & walk-abs (y - r.oy) <= gmo-reach
+    in if held | x < 1 | y < 1 | x >= 6143 | y >= 4095 then gmo-scan r segs regions near land map z sent out
+    else let guard = gmo-guard-edge segs x y
+    in let spawn = gmo-spawn-edge regions near x y 0 > 0
+    in let edit = when land is None -> -1 is Just (s) -> gld-find s x y
+    in let a = if guard then list-push out (gmo-marker map (gmo-serial gmo-guard-base x y) gmo-guard-hue x y z) else out
+    in let b = if spawn then list-push a (gmo-marker map (gmo-serial gmo-spawn-base x y) gmo-spawn-hue x y z) else a
+    in let c = if edit < 0 then b else when land is None -> b is Just (s) -> list-push b (gmo-land-marker (gmo-serial gmo-land-base x y) x y (gld-field s edit 3))
+    in gmo-scan r segs regions near land map z (sent + (if guard then 1 else 0) + (if spawn then 1 else 0) + (if edit < 0 then 0 else 1)) c
+  gmo-land-marker : Integer, Integer, Integer, Integer -> List Integer
+  gmo-land-marker (serial) (x) (y) (z) = sip-ground (WorldObject { serial = serial, kind = 2, x = x, y = y, z = z, graphic = gmo-art,
+    hue = gmo-land-hue, container = 0, amount = 1, health = 0 })
+  gmo-segs-for : Integer, Maybe CivicLive -> List Integer
+  gmo-segs-for (flags) (civic) = if bit-and flags gmo-guards == 0 then []
+    else when civic is None -> [] is Just (c) -> gmo-segments c 0 0 []
+  gmo-near-for : Integer, List WsRegion, Integer, Integer -> List Integer
+  gmo-near-for (flags) (regions) (cx) (cy) = if bit-and flags gmo-spawns == 0 then [] else gmo-near-regions regions cx cy 0 []
+  gmo-land-for : Integer, GmLand -> Maybe GmLand
+  gmo-land-for (flags) (land) = if bit-and flags gmo-land == 0 then None else Just land
+ A move starts a scan of the new window that skips the last fully sent window, which the client still holds.
+  gmo-view : GmOverlay, Maybe CivicLive, List WsRegion, GmLand, WalkMap, Integer, WorldObject -> List (List Integer)
+  gmo-view (o) (civic) (regions) (land) (map) (connection) (mobile) = let i = gmo-find o.rows connection 0
+    in if i < 0 then [] else let r = list-at o.rows i
+    in if r.serial /= mobile.serial then let gone = gmo-clear-row r in []
+    else let moved = if r.cx == mobile.x & r.cy == mobile.y then 0
+      else let kept = if r.cursor < 0 & r.cx >= 0 then gmo-keep r else 0
+      in let a = __record-set r "cx" mobile.x in let b = __record-set r "cy" mobile.y
+      in let c = __record-set r "cursor" 0 in 1
+    in if r.cursor < 0 then []
+    else gmo-scan r (gmo-segs-for r.flags civic) regions (gmo-near-for r.flags regions r.cx r.cy) (gmo-land-for r.flags land) map mobile.z 0 []
+  gmo-keep : GmoRow -> Integer
+  gmo-keep (r) = let a = __record-set r "ox" r.cx in let b = __record-set r "oy" r.cy in 1
+ After a land stroke the whole window is scanned again, so changed edits are redrawn.
+  gmo-refresh : GmOverlay, Integer -> Integer
+  gmo-refresh (o) (connection) = let i = gmo-find o.rows connection 0
+    in if i < 0 then 0 else let r = list-at o.rows i
+    in let a = __record-set r "ox" -1 in let b = __record-set r "oy" -1 in let c = __record-set r "cursor" 0 in 1
+  gmo-unmark : Integer, List Integer, List WsRegion, List Integer, GmLand, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  gmo-unmark (flag) (segs) (regions) (near) (land) (cx) (cy) (k) (out) = if k >= gmo-side * gmo-side then out
+    else let x = cx - gmo-reach + int-mod k gmo-side in let y = cy - gmo-reach + k / gmo-side
+    in let hit = if flag == gmo-guards then gmo-guard-edge segs x y
+      else if flag == gmo-spawns then gmo-spawn-edge regions near x y 0 > 0 else gld-find land x y >= 0
+    in let base = if flag == gmo-guards then gmo-guard-base else if flag == gmo-spawns then gmo-spawn-base else gmo-land-base
+    in let kept = if hit then list-push out (sip-remove (gmo-serial base x y)) else out
+    in gmo-unmark flag segs regions near land cx cy (k + 1) kept
+  gmo-hide : GmOverlay, Maybe CivicLive, List WsRegion, GmLand, Integer, WorldObject, Integer -> List (List Integer)
+  gmo-hide (o) (civic) (regions) (land) (connection) (mobile) (flag) = let i = gmo-find o.rows connection 0
+    in if i < 0 then [] else let r = list-at o.rows i
+    in let rest = bit-and r.flags (bit-xor flag gmo-all)
+    in let cleared = if rest == 0 then gmo-clear-row r else let a = __record-set r "flags" rest in 0
+    in gmo-unmark flag (gmo-segs-for flag civic) regions (gmo-near-for flag regions mobile.x mobile.y) land mobile.x mobile.y 0 []
+ The removals for a brush's tiles, sent when a stroke drops pending edits.
+  gmo-land-drop : Integer, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  gmo-land-drop (cx) (cy) (brush) (dx) (dy) (out) = if dy > brush then out
+    else if dx > brush then gmo-land-drop cx cy brush (0 - brush) (dy + 1) out
+    else let x = cx + dx in let y = cy + dy
+    in let kept = if x < 0 | y < 0 | x >= 6144 | y >= 4096 then out else list-push out (sip-remove (gmo-serial gmo-land-base x y))
+    in gmo-land-drop cx cy brush (dx + 1) dy kept
+  gmo-kind : Integer -> Integer
+  gmo-kind (serial) = if serial >= gmo-guard-base & serial < gmo-guard-base + gmo-span then gmo-guards
+    else if serial >= gmo-spawn-base & serial < gmo-spawn-base + gmo-span then gmo-spawns
+    else if serial >= gmo-land-base & serial < gmo-land-base + gmo-span then gmo-land else 0
+  gmo-base : Integer -> Integer
+  gmo-base (kind) = if kind == gmo-guards then gmo-guard-base else if kind == gmo-spawns then gmo-spawn-base else gmo-land-base
+  gmo-click : GmOverlay, Maybe CivicLive, Maybe GameWorldSpawn, GmLand, Integer, List Integer -> Maybe GameReply
+  gmo-click (o) (civic) (spawns) (land) (connection) (packet) = if list-length packet < 5 then None
+    else let op = list-at packet 0
+    in if op /= 6 & op /= 7 & op /= 9 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let kind = gmo-kind serial
+    in if kind == 0 | not (gmo-on o connection) then None
+    else if op == 7 then Just (gs-reply [sip-bounce 0] "overlay:immovable")
+    else if op == 6 then Just (gs-reply [] "overlay:use")
+    else let at = serial - gmo-base kind
+    in let x = at / 4096 in let y = int-mod at 4096
+    in let lines = if kind == gmo-guards then [gmo-guard-text civic x y]
+      else if kind == gmo-land then [gmo-land-text land x y]
+      else when spawns is None -> ["No spawn regions are loaded."] is Just (g) -> gmo-spawn-lines g x y 0 []
+    in Just (gs-reply (gmo-say serial lines 0 []) "overlay:name")
+  gmo-land-text : GmLand, Integer, Integer -> Text
+  gmo-land-text (land) (x) (y) = let row = gld-find land x y
+    in if row < 0 then "No land edit waits here."
+    else "Land edit at " & show x & "," & show y & ": " & gld-name-of gld-names (gld-field land row 2) 0 & " at height "
+      & show (gld-field land row 3) & "; it reaches the client's map at the next downtime bake."
+  gmo-say : Integer, List Text, Integer, List (List Integer) -> List (List Integer)
+  gmo-say (serial) (lines) (i) (out) = if i == list-length lines then out
+    else gmo-say serial lines (i + 1) (list-push out (sip-message serial gmo-art 6 (list-at lines i)))
+  gmo-patrol : Integer -> Text
+  gmo-patrol (which) = if which == 0 then "the south patrol (Britain guard post)" else if which == 1 then "the north patrol (Guard Post North)" else if which == 3 then "the north streets patrol (UOAIX-150)" else "the castle patrol (Castle Britain)"
+  gmo-guard-text : Maybe CivicLive, Integer, Integer -> Text
+  gmo-guard-text (civic) (x) (y) = let which = gmo-guarded (gmo-segs-for gmo-guards civic) x y 0
+    in if which == 0 then "Guard zone: no living guard patrols within earshot of here now."
+    else "Guard zone: within " & show cv-earshot & " tiles of " & gmo-patrol (which - 1) & "; a call carries along an open line."
+  gmo-spawn-lines : GameWorldSpawn, Integer, Integer, Integer, List Text -> List Text
+  gmo-spawn-lines (g) (x) (y) (i) (out) = if i == list-length g.catalog.regions then
+      (if list-length out == 0 then ["No spawn region edges here."] else out)
+    else let near = gmo-spawn-edge g.catalog.regions [i] x y 0
+    in gmo-spawn-lines g x y (i + 1) (if near == 0 | list-length out >= 4 then out else out & gmo-region-lines g i)
+  gmo-region-lines : GameWorldSpawn, Integer -> List Text
+  gmo-region-lines (g) (i) = let r = list-at g.catalog.regions i
+    in ["Spawn " & show r.id & " " & r.name & ": " & show (peek-qword g.populations (i * 8)) & " of " & show r.maximum
+      & " alive, " & show r.batch & " primal, a birth every " & show r.minimum-minutes & "-" & show r.maximum-minutes & " min",
+      gmo-creatures g r.group]
+  gmo-creatures : GameWorldSpawn, Integer -> Text
+  gmo-creatures (g) (group) = if group < 0 | group >= list-length g.catalog.groups then "No creature table."
+    else let choices = (list-at g.catalog.groups group).choices
+    in gmo-choices g choices 0 "Draws:"
+ Six choices fit one client message line.
+  gmo-choices : GameWorldSpawn, List WsChoice, Integer, Text -> Text
+  gmo-choices (g) (choices) (i) (text) = if i == list-length choices then text
+    else if i == 6 then text & " and " & show (list-length choices - 6) & " more"
+    else let c = list-at choices i
+    in let name = if c.group >= 0 & c.group < list-length g.catalog.groups then (list-at g.catalog.groups c.group).key
+      else if c.profile >= 0 & c.profile < list-length g.catalog.profiles then (list-at g.catalog.profiles c.profile).name else "?"
+    in gmo-choices g choices (i + 1) (text & (if i == 0 then " " else ", ") & name & " " & show c.weight)

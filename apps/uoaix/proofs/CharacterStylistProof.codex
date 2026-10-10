@@ -1,0 +1,64 @@
+Chapter: CharacterStylistProof
+  cites Uoaix chapter CharacterStylist
+
+  csp2-check : Text, Boolean -> [Console] Integer
+  csp2-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  csp2-same-rows : List CstRow, List CstRow, Integer -> Boolean
+  csp2-same-rows (a) (b) (i) = if i == list-length a then list-length a == list-length b
+    else i < list-length b & (list-at a i).graphic == (list-at b i).graphic & (list-at a i).hue == (list-at b i).hue
+      & (list-at a i).layer == (list-at b i).layer & csp2-same-rows a b (i + 1)
+  csp2-has : List CstRow, Integer, Integer, Integer -> Boolean
+  csp2-has (rows) (graphic) (layer) (i) = if i == list-length rows then False
+    else ((list-at rows i).graphic == graphic & (list-at rows i).layer == layer) | csp2-has rows graphic layer (i + 1)
+  csp2-row-valid : CstRow, Boolean -> Boolean
+  csp2-row-valid (r) (female) =
+    if r.layer == 11 then gs-hair-valid r.graphic False & r.hue >= 1102 & r.hue <= 1149
+    else if r.layer == 16 then not female & gs-hair-valid r.graphic True & r.hue >= 1102 & r.hue <= 1149
+    else r.layer >= 1 & r.layer <= 25 & r.hue >= 0 & r.hue <= 1001
+  csp2-rows-valid : List CstRow, Boolean, Integer -> Boolean
+  csp2-rows-valid (rows) (female) (i) = if i == list-length rows then True
+    else csp2-row-valid (list-at rows i) female & csp2-rows-valid rows female (i + 1)
+  csp2-valid : Integer, Integer, Integer -> Boolean
+  csp2-valid (role) (serial) (left) = if left == 0 then True
+    else let look = cst-look role serial
+    in let female = look.body == 401
+    in (look.body == 400 | look.body == 401) & look.skin >= 1002 & look.skin <= 1058 & csp2-rows-valid look.rows female 0
+      & csp2-valid role (serial + 7919) (left - 1)
+  csp2-count-female : Integer, Integer, Integer -> Integer
+  csp2-count-female (role) (serial) (left) = if left == 0 then 0
+    else (if (cst-look role serial).body == 401 then 1 else 0) + csp2-count-female role (serial + 7919) (left - 1)
+  csp2-layer-graphic : GsiState, Integer, Integer -> Integer
+  csp2-layer-graphic (items) (owner) (layer) = let s = gmb-layer items owner layer 0
+    in if s == 0 then 0 else when world-get items.world s is Err (_) -> -1 is Ok (o) -> o.graphic
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> csp2-check ("shard " & e) False
+    is Ok (shard) -> let items = gsi-new shard.world
+      in when world-create shard.world (gs-mobile 0 1420 1698 0 400 1002)
+        is Err (e) -> csp2-check ("mobile " & e) False
+        is Ok (npc) -> act
+          a <- csp2-check "the same role and serial give the same look" (let x = cst-look cst-smith 1073741900 in let y = cst-look cst-smith 1073741900
+            in x.body == y.body & x.skin == y.skin & csp2-same-rows x.rows y.rows 0)
+          b <- csp2-check "64 looks per role keep the client's ranges, and no female look has a beard" (csp2-valid cst-townsfolk 1073741825 64
+            & csp2-valid cst-shopkeeper 1073741825 64 & csp2-valid cst-smith 1073741825 64 & csp2-valid cst-banker 1073741825 64
+            & csp2-valid cst-fighter 1073741825 64 & csp2-valid cst-miner 1073741825 64)
+          females <- csp2-count-female cst-townsfolk 1073741825 64
+          c <- csp2-check "townsfolk vary in gender and skin; smiths and miners are men; the banker keeps body 400 and skin 1002" (females > 8 & females < 56
+            & (cst-look cst-townsfolk 1073741825).skin /= (cst-look cst-townsfolk 1073749744).skin
+            & csp2-count-female cst-smith 1073741825 64 == 0 & csp2-count-female cst-miner 1073741825 64 == 0
+            & csp2-count-female cst-banker 1073741825 64 == 0 & (cst-look cst-banker 1073741825).skin == 1002 & (cst-look cst-banker 1073749744).skin == 1002)
+          d <- csp2-check "a smith wears a half apron and holds a smith's hammer; a miner holds a pickaxe" (csp2-has (cst-look cst-smith npc).rows #153B 12 0
+            & csp2-has (cst-look cst-smith npc).rows #13E4 1 0 & csp2-has (cst-look cst-miner npc).rows #0E85 1 0)
+          dressed <- gmb-dress items npc
+          styled <- cst-style items npc cst-smith
+          look <- cst-look cst-smith npc
+          count <- world-count shard.world
+          again <- cst-style items npc cst-smith
+          e <- csp2-check "styling replaces the old fixed dress by layer, sets body and skin, and a second styling changes nothing" (is-ok dressed & is-ok styled & is-ok again
+            & csp2-layer-graphic items npc 5 == #1518 & csp2-layer-graphic items npc 12 == #153B & csp2-layer-graphic items npc 1 == #13E4
+            & csp2-layer-graphic items npc 11 > 0 & world-count shard.world == count
+            & (when world-get shard.world npc is Err (_) -> False is Ok (m) -> m.graphic == look.body & m.hue == look.skin))
+          a + b + c + d + e
+        end

@@ -66,9 +66,58 @@ Chapter: GameCheckpointProof
         in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
         in gcp-check "rehashed equipment kind refused" (is-err (gc-decode buf size))
         let encoded = gc-encode state game buf size
-        in let reserved = poke-byte buf 352 1
+        in let flagged = poke-byte buf 352 1
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "testing grant flag 1 decodes" (is-ok (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let reserved = poke-byte buf 352 2
         in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
         in gcp-check "rehashed slot padding refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let tired = poke-byte buf 353 (peek-byte buf 288)
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "stamina spent up to the dexterity decodes (UOAIX-59)" (is-ok (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let overspent = poke-byte buf 353 (peek-byte buf 288 + 1)
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "stamina spent past the dexterity is refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let stepping = poke-byte buf 354 15
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "a running-step count of 15 is refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let sated = poke-byte buf 358 21
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "slot byte 150 holds hunger 20 + 1 and decodes" (is-ok (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let overfed = poke-byte buf 358 22
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "slot byte 150 past hunger 20 is refused" (is-err (gc-decode buf size))
+        let encoded = gc-encode state game buf size
+        in let reserved = poke-byte buf 359 1
+        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in gcp-check "slot byte 151 stays reserved" (is-err (gc-decode buf size))
+        let row = game.characters
+        in let full = poke-byte row 145 0
+        in let steps = poke-byte row 146 14
+        in let start = poke-qword row 152 0
+        in let ran = gs-stamina row 1000 True
+        in let walked = gs-stamina row 1000 False
+        in gcp-check "the fifteenth running step spends a point of stamina; a walk spends none (UOX3 MAXSTAMINAMOVEMENTS=15)" (ran & not walked & peek-byte row 145 == 1 & peek-byte row 146 == 0)
+        let row = game.characters
+        in let tired = poke-byte row 145 5
+        in let stamp = poke-qword row 152 1000
+        in let partly = gs-stamina row (1000 + 3 * gs-stamina-period) False
+        in let two = peek-byte row 145
+        in let rested = gs-stamina row (1000 + 99 * gs-stamina-period) False
+        in let none = peek-byte row 145
+        in let topped = gs-stamina row (1000 + 199 * gs-stamina-period) False
+        in let zero = poke-qword row 152 0
+        in gcp-check "stamina returns a point every 2 s and stops at full (UOX3 STAMINAREGENTIMER=2)" (partly & two == 2 & rested & none == 0 & not topped)
+        let spent = poke-byte game.characters 145 5
+        in let shown = when world-get game.world (peek-qword game.characters 0) is Err (_) -> [] is Ok (m) -> gp-status m game.characters 0
+        in let rested = poke-byte game.characters 145 0
+        in gcp-check "the status bar shows stamina as the dexterity less what is spent" (list-length shown == 66 & gp-u16 shown 50 == peek-byte game.characters 80 - 5 & gp-u16 shown 52 == peek-byte game.characters 80)
         let encoded = gc-encode state game buf size
         in let duplicate = ws-copy (buf + 208) (buf + 368) 160 0
         in let slot = poke-byte buf 471 1
@@ -78,7 +127,7 @@ Chapter: GameCheckpointProof
         in let dirty = poke-byte buf 376 1
         in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
         in gcp-check "rehashed unused slot refused" (is-err (gc-decode buf size))
-        let wrong = GameShard { world = WorldTable { buffer = game.world.buffer, capacity = game.world.capacity - 1, index = 0 }, characters = game.characters, accounts = game.accounts, next-key = game.next-key, pending-key = 0, active = 0 }
+        let wrong = GameShard { world = (world-view game.world.buffer (game.world.capacity - 1)), characters = game.characters, accounts = game.accounts, next-key = game.next-key, pending-key = 0, active = 0, log = game.log, skills = game.skills }
         in gcp-check "shared buffer capacity mismatch refused" (is-err (gc-encode state wrong buf size))
         gcp-check "encode overlap refused" (is-err (gc-encode state game game.characters size) & is-err (gc-encode state game game.world.buffer size))
       end

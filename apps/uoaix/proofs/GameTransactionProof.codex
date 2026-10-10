@@ -15,9 +15,9 @@ Chapter: GameTransactionProof
   gtp-game (capacity) = when world-new capacity
     is Err (e) -> Err e
     is Ok (world) ->
-      let characters = alloc-bytes 800
-      in let cleared = gs-zero characters 0
-      in Ok (GameShard { world = world, characters = characters, accounts = ga-new ga-dev, next-key = 100, pending-key = 0, active = 0 })
+      let shard-accounts = ga-new ga-dev
+      in let characters = ga-working shard-accounts
+      in Ok (GameShard { world = world, characters = characters, accounts = shard-accounts, next-key = 100, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 })
 
   gtp-input : Integer, Integer -> GameInput
   gtp-input (mode) (phase) =
@@ -48,7 +48,7 @@ Chapter: GameTransactionProof
   gtp-move (game) (input) (map) =
     let size = gtp-size game
     in let before = alloc-bytes size
-    in let copied = ws-copy game.world.buffer before size 0
+    in let copied = ws-image-write game.world before
     in when gt-prepare game input map 2593 [2,2,0]
       is Err (e) -> print-line-uni ("FAIL turn " & e)
       is Ok (turn) -> act
@@ -60,7 +60,7 @@ Chapter: GameTransactionProof
             gtp-check "walk captures one world slot" (walk.undo.count == 1 & gt-changed walk.undo & (when world-get game.world 1 is Err (e) -> False is Ok (mobile) -> mobile.x == 1421))
             let restored = gt-rollback walk.undo
             in act
-              gtp-check "walk rollback restores bytes and sequence" (restored & gt-equal before game.world.buffer size 0 & input.session.direction == 2 & input.session.sequence == 1)
+              gtp-check "walk rollback restores bytes and sequence" (restored & ws-image-equal game.world before & input.session.direction == 2 & input.session.sequence == 1)
               when gt-prepare game input map 2593 [1,255,255,255,255]
                 is Err (e) -> print-line-uni ("FAIL logout " & e)
                 is Ok (logout) ->
@@ -76,14 +76,14 @@ Chapter: GameTransactionProof
     let input = gtp-input 2 1
     in let size = gtp-size game
     in let before = alloc-bytes size
-    in let copied = ws-copy game.world.buffer before size 0
+    in let copied = ws-image-write game.world before
     in when gt-prepare game input map 2593 (gtp-create 0)
       is Err (e) -> print-line-uni ("FAIL creation " & e)
       is Ok (prepared) -> act
         gtp-check "creation captures bounded mobile and equipment footprint" (prepared.undo.count == 5 & world-count game.world == 5 & gt-changed prepared.undo & peek-qword game.characters 0 == 1)
         let restored = gt-rollback prepared.undo
         in act
-          gtp-check "creation rollback restores free list generations and metadata" (restored & gt-equal before game.world.buffer size 0 & gt-equal (prepared.undo.bytes + 88) game.characters 800 0 & game.active == 0 & input.session.phase == 1 & input.session.serial == 0)
+          gtp-check "creation rollback restores free list generations and metadata" (restored & ws-image-equal game.world before & gt-equal (prepared.undo.bytes + 88) game.characters 800 0 & game.active == 0 & input.session.phase == 1 & input.session.serial == 0)
           gtp-check "closed undo cannot be reused" (not (gt-rollback prepared.undo) & not (gt-accept prepared.undo))
           when gt-prepare game input map 2593 (gtp-create 0)
             is Err (e) -> print-line-uni ("FAIL second creation " & e)
@@ -101,10 +101,10 @@ Chapter: GameTransactionProof
     let input = gtp-input 2 1
     in let size = gtp-size game
     in let before = alloc-bytes size
-    in let copied = ws-copy game.world.buffer before size 0
+    in let copied = ws-image-write game.world before
     in let failed = is-err (gt-prepare game input map 2593 (gtp-create 0))
     in act
-      gtp-check "partial creation refusal restores persistent bytes" (failed & gt-equal before game.world.buffer size 0 & peek-qword game.characters 0 == 0)
+      gtp-check "partial creation refusal restores persistent bytes" (failed & ws-image-equal game.world before & peek-qword game.characters 0 == 0)
       let bare = gtp-create 0
       in let hair-high = list-set-at bare 82 0
       in let hair-low = list-set-at bare 83 0
@@ -115,17 +115,17 @@ Chapter: GameTransactionProof
         is Ok (created) ->
           let serial = peek-qword game.characters 0
           in let restored = gt-rollback created.undo
-          in gtp-check "creation after partial refusal keeps original serial generation" (serial == 1 & restored & gt-equal before game.world.buffer size 0 & gt-equal (created.undo.bytes + 88) game.characters 800 0)
+          in gtp-check "creation after partial refusal keeps original serial generation" (serial == 1 & restored & ws-image-equal game.world before & gt-equal (created.undo.bytes + 88) game.characters 800 0)
       let pending = __record-set game "pending-key" 42
       in let phase = __record-set input.session "phase" 0
       in let key = __record-set input.session "key" 42
       in let packet = gp-zeros (gp-put32 (gp-start 145) 42) 60
       in let refused = is-err (gt-prepare game input map 2593 packet)
       in act
-        gtp-check "domain refusal still consumes a bad login relay key" (refused & game.pending-key == 0 & gt-equal before game.world.buffer size 0)
-        gtp-check "unknown packet profile refuses without mutation" (is-err (gt-prepare game input map 2593 [255]) & gt-equal before game.world.buffer size 0)
-        let cycle = poke-qword game.world.buffer 24 0
-        in gtp-check "cyclic free prefix refuses before mutation" (is-err (gt-prepare game input map 2593 (gtp-create 0)) & world-count game.world == 0 & peek-qword game.world.buffer 16 == 0)
+        gtp-check "domain refusal still consumes a bad login relay key" (refused & game.pending-key == 0 & ws-image-equal game.world before)
+        gtp-check "unknown packet profile refuses without mutation" (is-err (gt-prepare game input map 2593 [255]) & ws-image-equal game.world before)
+        let cycle = poke-qword (wi-object game.world.buffer 0) 8 0
+        in gtp-check "cyclic free prefix refuses before mutation" (is-err (gt-prepare game input map 2593 (gtp-create 0)) & world-count game.world == 0 & peek-qword (wi-object game.world.buffer 0) 0 == 0)
       end
     end
 
@@ -177,7 +177,7 @@ Chapter: GameTransactionProof
             is Ok (small) -> act
               gtp-relay small map
               let small-cost = gtp-budget small map
-              in when gtp-game world-max-objects
+              in when gtp-game 16384
                 is Err (e) -> print-line-uni ("FAIL large game " & e)
                 is Ok (large) -> let large-cost = gtp-budget large map
                   in gtp-check "capture heap is independent of world capacity" (small-cost > 0 & small-cost == large-cost & large-cost < 4096)

@@ -1,4 +1,5 @@
 Chapter: EconomyCurrencyCodecProof
+  cites Uoaix chapter WorldDisk
   cites Uoaix chapter EconomyCurrency
   cites Uoaix chapter EconomyCurrencyCodec
   cites Uoaix chapter EconomyCurrencyValid
@@ -18,27 +19,27 @@ Chapter: EconomyCurrencyCodecProof
   eucp-fill (x) (actor) = if x.count == em-rows then 0
     else if eu-rates x True actor 200 20 /= 0 then -1 else eucp-fill x actor
   eucp-equal : Integer, Integer, Integer -> Boolean
-  eucp-equal (a) (b) (i) = if i == euc-bytes then True
+  eucp-equal (a) (b) (i) = if i >= peek-qword a 16 then True
     else if peek-qword a i /= peek-qword b i then False else eucp-equal a b (i + 8)
   eucp-corrupt : Integer, Integer, Integer -> Boolean
   eucp-corrupt (buf) (at) (value) =
     let old = peek-qword buf at
     in let changed = poke-qword buf at value
-    in let hash = poke-qword buf 48 (ws-hash buf euc-bytes 0 2166136261)
+    in let hash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
     in let mark = __heap-save
-    in let refused = is-err (euc-decode buf euc-bytes)
+    in let refused = is-err (euc-decode buf (peek-qword buf 16))
     in let restored = __heap-restore mark
     in let original = poke-qword buf at old
-    in let rehash = poke-qword buf 48 (ws-hash buf euc-bytes 0 2166136261)
+    in let rehash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
     in refused
   eucp-roundtrip : CurrencyCheckpoint, Integer, Integer -> [Console] Nothing
   eucp-roundtrip (s) (buf) (copy) = act
     x <- s.currency
-    eucp-check "all denominations policies loans and material state recover" (s.tick == 400 & s.sequence == 17 & x.copper.issued == 1000 & x.silver.issued == 100 & x.world.money.issued == 10 & x.copper-rate == 200 & x.silver-rate == 20 & x.world.hour == 12 & x.copper.defaults == 1 & x.silver.defaults == 1 & x.world.money.defaults == 1 & (list-at x.world.money.loans 0).paid == 1 & eu-census x)
-    encoded <- euc-encode s copy euc-bytes
+    eucp-check "all denominations policies loans and material state recover" (s.tick == 400 & s.sequence == 17 & x.copper.issued == 2000 & x.silver.issued == 100 & x.world.money.issued == 20 & x.copper-rate == 200 & x.silver-rate == 20 & x.world.hour == 12 & x.copper.defaults == 1 & x.silver.defaults == 1 & x.world.money.defaults == 1 & (list-at x.world.money.loans 0).paid == 1 & eu-census x)
+    encoded <- euc-encode s copy us-max-payload
     eucp-check "canonical complete currency roundtrip" (is-ok encoded & eucp-equal buf copy 0)
     changed <- __record-set (em-purse x.copper 3) "coin" 999
-    eucp-check "decoded purse mutation cannot change source bytes" (eucp-equal buf copy 0 & is-err (euc-encode s copy euc-bytes))
+    eucp-check "decoded purse mutation cannot change source bytes" (eucp-equal buf copy 0 & is-err (euc-encode s copy us-max-payload))
   end
   eucp-run : EuCurrency -> [Console] Nothing
   eucp-run (x) = act
@@ -77,6 +78,12 @@ Chapter: EconomyCurrencyCodecProof
     mint-c <- eu-strike x True actor mint 1 1
     mint-s <- eu-strike x True actor mint 2 1
     mint-g <- eu-strike x True actor mint 3 1
+    owner <- ep-admit w vendor 1
+    found-c <- ep-find w owner 65 1
+    found-g <- ep-find w owner 32 1
+    own-c <- eu-strike x True owner mint 1 1
+    own-g <- eu-strike x True owner mint 3 1
+    eucp-check "an owner's own copper and gold strikes keep 10% for the Crown and replay from history" (owner > 0 & found-c >= 0 & found-g >= 0 & own-c == 0 & own-g == 0 & (em-purse x.copper vendor).coin == 900 & (em-purse w.money vendor).coin == 9 & euv-valid x)
     grant <- eu-grant x True actor crown 10 1 1
     loan-c <- eu-lend x True 1 player 1 200 10 10
     loan-s <- eu-lend x True 1 player 2 20 2 10
@@ -87,15 +94,15 @@ Chapter: EconomyCurrencyCodecProof
     advanced <- eucp-hours x 12
     repaid <- eu-repay x True player 3 loan-g 1
     eucp-check "fixture reconstructs mint transfer tax rates defaults and repayment" (mint-c == 0 & mint-s == 0 & mint-g == 0 & grant == 0 & loan-c == 1 & loan-s == 1 & loan-g == 1 & tax == 0 & payment == 0 & rates == 0 & advanced == 0 & repaid == 0 & euv-valid x)
-    buf <- alloc-bytes euc-bytes
-    copy <- alloc-bytes euc-bytes
+    buf <- alloc-bytes us-max-payload
+    copy <- alloc-bytes us-max-payload
     checkpoint <- CurrencyCheckpoint { currency = x, tick = 400, sequence = 17 }
-    encoded <- euc-encode checkpoint buf euc-bytes
-    print-line-uni ("CURRENCY-CHECKPOINT-BYTES " & show euc-bytes)
+    encoded <- euc-encode checkpoint buf us-max-payload
+    print-line-uni ("CURRENCY-CHECKPOINT-BYTES " & show (peek-qword buf 16))
     eucp-check "complete currency snapshot encodes" (is-ok encoded)
-    eucp-check "published component offsets locate complete payloads" (peek-qword buf 192 == #31434555 & peek-qword buf 1422400 == 4 & peek-qword buf 1894528 == 4 & peek-qword buf 2366656 == 1)
+    eucp-check "published component offsets locate complete payloads" (peek-qword buf 192 == #31434555 & peek-qword buf 1432880 == 4 & peek-qword buf 1905008 == 4 & peek-qword buf 2377136 == 1)
     before <- __heap-save
-    decoded <- euc-decode buf euc-bytes
+    decoded <- euc-decode buf (peek-qword buf 16)
     after <- __heap-save
     small-bytes <- after - before
     print-line-uni ("CURRENCY-DECODE-BYTES " & show small-bytes)
@@ -104,21 +111,21 @@ Chapter: EconomyCurrencyCodecProof
       is Err (reason) -> print-line-uni ("FAIL currency decode " & reason)
       is Ok (s) -> eucp-roundtrip s buf copy
     reclaimed <- __heap-restore before
-    eucp-check "wrong metadata truncation and legacy-only restore refuse" (is-err (euc-decode-record buf euc-bytes 401 17) & is-err (euc-decode buf (euc-bytes - 1)) & is-err (es-decode buf euc-bytes))
-    eucp-check "rehashed detached copper balance refuses" (eucp-corrupt buf (euc-copper-at + 64 + 2 * 24 + 16) 999)
+    eucp-check "wrong metadata truncation and legacy-only restore refuse" (is-err (euc-decode-record buf (peek-qword buf 16) 401 17) & is-err (euc-decode buf (peek-qword buf 16 - 1)) & is-err (es-decode buf (peek-qword buf 16)))
+    eucp-check "rehashed detached copper balance refuses" (eucp-corrupt buf (euc-part-at buf 0 - buf + 8 + 2 * 24 + 16) 999)
     eucp-check "rehashed policy and saved admission count refuse" (eucp-corrupt buf 72 300 & eucp-corrupt buf 160 5)
-    eucp-check "rehashed event sequence and historical rates refuse" (eucp-corrupt buf euc-events-at 2 & eucp-corrupt buf (euc-events-at + 80) 200)
-    eucp-check "rehashed cross-ledger sequence link refuses" (eucp-corrupt buf (euc-events-at + 112) 1)
-    eucp-check "rehashed spare event and header bytes refuse" (eucp-corrupt buf (euc-events-at + x.count * 120) 1 & eucp-corrupt buf 168 1)
-    eucp-check "rehashed oversized and negative table dimensions refuse" (eucp-corrupt buf 64 (em-rows + 1) & eucp-corrupt buf (euc-copper-at + 16) -1 & eucp-corrupt buf (euc-silver-at + 8) 129)
-    eucp-check "rehashed silver loan and ledger edits refuse" (eucp-corrupt buf (euc-silver-at + 64 + 256 * 24 + 40) 1 & eucp-corrupt buf (euc-silver-at + 64 + 256 * 24 + 128 * 56 + 32) 1)
+    eucp-check "rehashed event sequence and historical rates refuse" (eucp-corrupt buf (euc-events-from (peek-qword buf 184)) 2 & eucp-corrupt buf ((euc-events-from (peek-qword buf 184)) + 80) 200)
+    eucp-check "rehashed cross-ledger sequence link refuses" (eucp-corrupt buf ((euc-events-from (peek-qword buf 184)) + 112) 1)
+    eucp-check "rehashed spare event and header bytes refuse" (eucp-corrupt buf ((euc-events-from (peek-qword buf 184)) + x.count * 120) 1 & eucp-corrupt buf 168 1)
+    eucp-check "rehashed oversized and negative table dimensions refuse" (eucp-corrupt buf 64 (em-rows + 1) & eucp-corrupt buf ((euc-gold-at + peek-qword buf 184) + 16) -1 & eucp-corrupt buf ((euc-gold-at + peek-qword buf 184 + euc-money-bytes) + 8) 129)
+    eucp-check "rehashed silver loan and ledger edits refuse" (eucp-corrupt buf (euc-part-at buf 5 - buf + 40) 1 & eucp-corrupt buf ((euc-gold-at + peek-qword buf 184 + euc-money-bytes) + 64 + 32) 1)
     heap-before <- __heap-save
     filled <- eucp-fill x actor
     heap-after <- __heap-save
     eucp-check "full policy history retains no per-event heap" (filled == 0 & x.count == em-rows & heap-before == heap-after & eu-rates x True actor 100 10 == -1)
-    full <- euc-encode checkpoint buf euc-bytes
+    full <- euc-encode checkpoint buf us-max-payload
     full-before <- __heap-save
-    full-decoded <- euc-decode buf euc-bytes
+    full-decoded <- euc-decode buf (peek-qword buf 16)
     full-after <- __heap-save
     print-line-uni ("CURRENCY-FULL-DECODE-BYTES " & show (full-after - full-before))
     eucp-check "maximum history reconstructs with flat retained decode heap" (is-ok full & is-ok full-decoded & full-after - full-before == small-bytes)

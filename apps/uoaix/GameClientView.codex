@@ -9,23 +9,28 @@ Chapter: GameClientView
   GcvSeen = record { object : WorldObject, maximum : Integer, flags : Integer, direction : Integer, notoriety : Integer, listed : Boolean }
   GameClientView = record { seen : List GcvSeen, connection : Integer, actor : Integer,
     radius : Integer, season : Integer, light : Integer, season-enabled : Boolean,
-    sent-season : Integer, sent-light : Integer, status : Integer, status-ready : Boolean, visible : Integer, visible-count : Integer }
+    sent-season : Integer, sent-light : Integer, status : Integer, status-ready : Boolean, visible : Integer, visible-count : Integer, concealed : Integer, unseen-hook : (Integer, Integer -> Boolean), drawn : Integer, noto-hook : (Integer -> Integer) }
   gcv-rows : Integer, List GcvSeen -> List GcvSeen
   gcv-rows (left) (rows) = if left == 0 then rows else
     gcv-rows (left - 1) (list-push rows (GcvSeen { object = gs-item 0 0 0, maximum = 0, flags = 0, direction = 4, notoriety = 3, listed = False }))
+  gcv-grow : GameClientView, Integer -> Integer
+  gcv-grow (view) (capacity) = let from = list-length view.seen
+    in if capacity <= from then 0
+    else let a = sa-grow view.visible capacity
+    in let rows = __record-set view "seen" (gcv-rows (capacity - from) view.seen) in 0
   gcv-new : Integer, Integer, Boolean, Integer, Integer -> Result GameClientView Text
   gcv-new (capacity) (radius) (season-enabled) (season) (light) =
     if capacity < 1 | capacity > 65536 | radius < 1 | radius > 18 | season < 0 | season > 4 | light < 0 | light > 30 then Err "client view policy invalid"
     else Ok (GameClientView { seen = gcv-rows capacity (__list-with-capacity capacity), connection = -1, actor = 0,
       radius = radius, season = season, light = light, season-enabled = season-enabled,
       sent-season = -1, sent-light = -1, status = alloc-bytes 66, status-ready = False,
-      visible = alloc-bytes (capacity * 8), visible-count = 0 })
+      visible = sa-new 8 capacity, visible-count = 0, concealed = 0, unseen-hook = gcv-unseen-none, drawn = 0, noto-hook = gcv-noto-none })
   gcv-environment : GameClientView, Integer, Integer -> Result Integer Text
   gcv-environment (view) (season) (light) = if season < 0 | season > 4 | light < 0 | light > 30 then Err "client environment invalid"
     else let a = __record-set view "season" season in let b = __record-set view "light" light in Ok 0
   gcv-reset : GameClientView, Integer -> Integer
   gcv-reset (view) (i) = if i == view.visible-count then let count = __record-set view "visible-count" 0 in 0
-    else let row = list-at view.seen (peek-qword view.visible (i * 8))
+    else let row = list-at view.seen (peek-qword (sa-at view.visible i) 0)
     in let clear = __record-set row.object "serial" 0
     in let listed = __record-set row "listed" False
     in let direction = __record-set row "direction" 4
@@ -33,16 +38,26 @@ Chapter: GameClientView
     in let maximum = __record-set row "maximum" 0 in gcv-reset view (i + 1)
   gcv-track : GameClientView, GcvSeen, Integer -> Integer
   gcv-track (view) (row) (slot) = if row.listed then 0
-    else let saved = poke-qword view.visible (view.visible-count * 8) slot
+    else let saved = poke-qword (sa-at view.visible view.visible-count) 0 slot
     in let count = __record-set view "visible-count" (view.visible-count + 1)
     in let listed = __record-set row "listed" True in 0
   gcv-near : GameClientView, WorldObject, WorldObject -> Boolean
   gcv-near (view) (viewer) (mobile) = mobile.kind == 1 & mobile.container == 0 & mobile.serial /= viewer.serial
     & mobile.x >= viewer.x - view.radius & mobile.x <= viewer.x + view.radius
     & mobile.y >= viewer.y - view.radius & mobile.y <= viewer.y + view.radius
+  gcv-noto-none : Integer -> Integer
+  gcv-noto-none (serial) = 0
+  gcv-noto : GameClientView, Integer, Integer -> Integer
+  gcv-noto (view) (serial) (shown) = let o = view.noto-hook serial in if o > 0 then o else shown
+  gcv-unseen-none : Integer, Integer -> Boolean
+  gcv-unseen-none (viewer) (serial) = False
+  gcv-conceal : GameClientView, Integer -> Integer
+  gcv-conceal (view) (bytes) = let bound = __record-set view "concealed" bytes in 0
+  gcv-hidden : GameClientView, Integer -> Boolean
+  gcv-hidden (view) (slot) = if view.concealed == 0 | slot < 0 then False else peek-byte (sa-at view.concealed slot) 0 /= 0
   gcv-slot : GameClientView, Integer -> Integer
   gcv-slot (view) (serial) = let low = bit-and serial world-serial-mask
-    in if serial <= 0 | serial > #7FFFFFFF | low == 0 then -1 else int-mod (low - 1) (list-length view.seen)
+    in if serial <= 0 | serial > #7FFFFFFF | low == 0 | wi-low-slot low >= list-length view.seen then -1 else wi-low-slot low
   gcv-maximum : GameCombat, GcvSeen, WorldObject, Integer -> Integer
   gcv-maximum (combat) (row) (mobile) (slot) = let actor = list-at combat.actors slot
     in if actor.serial == mobile.serial then max 1 actor.maximum
@@ -58,28 +73,65 @@ Chapter: GameClientView
     list-at (gmb-reply items (gs-reply [cbp-mobile mobile row.direction flags row.notoriety] "view")).packets 0
   gcv-present-mobile : GsiState, Integer -> Boolean
   gcv-present-mobile (items) (serial) = let slot = world-slot items.world serial
-    in if slot < 0 then False else peek-qword items.world.buffer (24 + slot * 80) == 1 & peek-qword items.world.buffer (72 + slot * 80) == 0
+    in if slot < 0 then False else peek-qword (wi-object items.world.buffer slot) 8 == 1 & peek-qword (wi-object items.world.buffer slot) 56 == 0
+ Where a packet names a mobile by serial (UO protocol: 0x1C, 0xAE, 0x11 at 3; 0x6E, 0xAA, 0x88, 0xA1 at 1; 0x2F, 0x70,
+ 0xC0 source at 2 and target at 6; 0x2E the wearer at 9). A packet naming a mobile the viewer must not perceive is dropped.
+  gcv-named-offsets : Integer -> List Integer
+  gcv-named-offsets (op) = if op == #1C | op == #AE | op == #11 then [3]
+    else if op == #6E | op == #AA | op == #88 | op == #A1 then [1]
+    else if op == #2F | op == #70 | op == #C0 then [2, 6]
+    else if op == #2E then [9] else []
+  gcv-masked : GameClientView, GsiState, WorldObject, List Integer, List Integer, Integer -> Boolean
+  gcv-masked (view) (items) (viewer) (packet) (offsets) (i) = if i == list-length offsets then False
+    else let at = list-at offsets i
+    in let serial = if list-length packet < at + 4 then 0 else gp-u32 packet at
+    in if serial > 0 & serial /= viewer.serial & (gcv-hidden view (world-slot items.world serial) | view.unseen-hook viewer.serial serial) then True
+    else gcv-masked view items viewer packet offsets (i + 1)
+ A 0x54 sound names no serial, only the tile at 6 and 8, so one heard at a concealed mobile's tile (not the viewer's) is
+ dropped. The concealed bytes are read eight slots per qword, and only for 0x54 packets.
+  gcv-sound-hidden : GameClientView, GsiState, WorldObject, Integer, Integer, Integer -> Boolean
+  gcv-sound-hidden (view) (items) (viewer) (x) (y) (q) = if view.concealed == 0 | (viewer.x == x & viewer.y == y) then False
+    else if q * 8 >= items.world.capacity then False
+    else if peek-qword (sa-at view.concealed (q * 8)) 0 /= 0 & gcv-hidden-at view items x y (q * 8) 0 then True
+    else gcv-sound-hidden view items viewer x y (q + 1)
+  gcv-hidden-at : GameClientView, GsiState, Integer, Integer, Integer, Integer -> Boolean
+  gcv-hidden-at (view) (items) (x) (y) (base) (k) = if k == 8 | base + k >= items.world.capacity then False
+    else if peek-byte (sa-at view.concealed (base + k)) 0 == 0 then gcv-hidden-at view items x y base (k + 1)
+    else let o = world-read-slot items.world (base + k)
+    in if o.kind == 1 & o.x == x & o.y == y then True else gcv-hidden-at view items x y base (k + 1)
+ A sound at the tile of a mobile the viewer must not perceive (an unrevealed ghost) is dropped too; the tile index lists
+ only the objects standing there.
+  gcv-sound-unseen : GameClientView, GsiState, WorldObject, Integer, Integer, Integer -> Boolean
+  gcv-sound-unseen (view) (items) (viewer) (x) (y) (serial) = if serial == 0 | (viewer.x == x & viewer.y == y) then False
+    else if serial /= viewer.serial & view.unseen-hook viewer.serial serial then True
+    else gcv-sound-unseen view items viewer x y (world-tile-next items.world serial)
   gcv-filter : GameClientView, GameCombat, GsiState, WorldObject, List (List Integer), Integer, List (List Integer) -> List (List Integer)
   gcv-filter (view) (combat) (items) (viewer) (packets) (i) (out) = if i == list-length packets then out
     else let packet = list-at packets i
     in if list-length packet == 0 then gcv-filter view combat items viewer packets (i + 1) (list-push out packet)
     else let op = list-at packet 0
     in if op == #4F | op == #BC then gcv-filter view combat items viewer packets (i + 1) out
+    else if gcv-masked view items viewer packet (gcv-named-offsets op) 0 then gcv-filter view combat items viewer packets (i + 1) out
+    else if op == #54 & list-length packet >= 12 & (gcv-sound-hidden view items viewer (gp-u16 packet 6) (gp-u16 packet 8) 0
+      | gcv-sound-unseen view items viewer (gp-u16 packet 6) (gp-u16 packet 8) (world-tile-first items.world (gp-u16 packet 6) (gp-u16 packet 8))) then gcv-filter view combat items viewer packets (i + 1) out
     else if op == #11 & list-length packet >= 7 & gp-u32 packet 3 == viewer.serial then gcv-filter view combat items viewer packets (i + 1) out
     else if list-length packet == 9 & (op == #A1 | ((op == #A2 | op == #A3) & gp-u32 packet 1 == viewer.serial)) then gcv-filter view combat items viewer packets (i + 1) out
     else if (op == #78 & list-length packet >= 23) | (op == #77 & list-length packet == 17) then
       let serial = gp-u32 packet (if op == #78 then 3 else 1)
       in when world-get items.world serial
         is Err (_) -> gcv-filter view combat items viewer packets (i + 1) out
-        is Ok (mobile) -> if not (gcv-near view viewer mobile) then gcv-filter view combat items viewer packets (i + 1) out
+        is Ok (mobile) -> if not (gcv-near view viewer mobile) | gcv-hidden view (world-slot items.world serial) | view.unseen-hook viewer.serial serial then gcv-filter view combat items viewer packets (i + 1) out
           else let slot = world-slot items.world serial
           in let row = list-at view.seen slot
           in let fresh = row.object.serial /= serial
           in let direction = __record-set row "direction" (list-at packet (if op == #78 then 14 else 12))
-          in let notoriety = __record-set row "notoriety" (list-at packet (if op == #78 then 18 else 16))
+          in let at = if op == #78 then 18 else 16
+          in let noto = gcv-noto view serial (list-at packet at)
+          in let notoriety = __record-set row "notoriety" noto
+          in let marked = if list-at packet at == noto then packet else list-set-at packet at noto
           in let flags = gcv-flags combat mobile slot
           in let maximum = gcv-maximum combat row mobile slot
-          in let emitted = if op == #77 & fresh then gcv-draw items row mobile flags else packet
+          in let emitted = if op == #77 & fresh then gcv-draw items row mobile flags else marked
           in let without-old = if fresh & row.object.serial > 0 then list-push out (cbp-remove row.object.serial) else out
           in let with-mobile = list-push without-old emitted
           in let with-health = if fresh | row.object.health /= mobile.health | row.maximum /= maximum
@@ -98,32 +150,47 @@ Chapter: GameClientView
   gcv-prune : GameClientView, GsiState, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
   gcv-prune (view) (items) (viewer) (i) (kept) (out) = if i == view.visible-count then
       let count = __record-set view "visible-count" kept in out
-    else let slot = peek-qword view.visible (i * 8)
+    else let slot = peek-qword (sa-at view.visible i) 0
     in let row = list-at view.seen slot
     in let old = row.object.serial
     in let current = world-slot items.world old
-    in let near = if current < 0 then False else gcv-near view viewer (world-read-slot items.world current)
-    in if near then let saved = poke-qword view.visible (kept * 8) slot
+    in let hidden = gcv-hidden view current | view.unseen-hook viewer.serial old
+    in let item = current >= 0 & peek-qword (wi-object items.world.buffer current) 8 == 2
+    in let near = if current < 0 | hidden then False else if item then gcv-ground view items viewer current
+      else gcv-near view viewer (world-read-slot items.world current)
+    in if near then let saved = poke-qword (sa-at view.visible kept) 0 slot
       in gcv-prune view items viewer (i + 1) (kept + 1) out
     else let cleared = __record-set row.object "serial" 0
     in let listed = __record-set row "listed" False
-    in gcv-prune view items viewer (i + 1) kept (if old > 0 & not (gcv-present-mobile items old) then list-push out (cbp-remove old) else out)
+    in gcv-prune view items viewer (i + 1) kept (if item then out else if old > 0 & (hidden | not (gcv-present-mobile items old)) then list-push out (cbp-remove old) else out)
+  gcv-heading : Integer, Integer -> Integer
+  gcv-heading (dx) (dy) = if dx == 0 then (if dy < 0 then 0 else 4)
+    else if dy == 0 then (if dx > 0 then 2 else 6)
+    else if dx > 0 then (if dy < 0 then 1 else 3)
+    else if dy < 0 then 7 else 5
   gcv-slot-update : GameClientView, GameCombat, GsiState, WorldObject, Integer, List (List Integer) -> List (List Integer)
   gcv-slot-update (view) (combat) (items) (viewer) (i) (out) = let row = list-at view.seen i
-    in let current = peek-qword items.world.buffer (16 + i * 80)
+    in let current = peek-qword (wi-object items.world.buffer i) 0
     in let mobile = if current > 0 then world-read-slot items.world i else gs-item 0 0 0
-    in let near = current > 0 & gcv-near view viewer mobile
+    in let near = current > 0 & gcv-near view viewer mobile & not (gcv-hidden view i) & not (view.unseen-hook viewer.serial current)
     in let old = row.object.serial
     in let removed = if old > 0 & old /= current then list-push out (cbp-remove old) else out
     in if not near then removed
     else let maximum = gcv-maximum combat row mobile i
     in let flags = gcv-flags combat mobile i
     in let fresh = old /= current
-    in let heading = if fresh then let a = __record-set row "direction" 4 in let b = __record-set row "notoriety" 3 in 0 else 0
+    in let heading = if fresh then let a = __record-set row "direction" 4 in let b = __record-set row "notoriety" (gcv-noto view current 3) in 0 else 0
+    in let marked = gcv-noto view current row.notoriety
+    in let renamed = if fresh | marked == row.notoriety then False else let n = __record-set row "notoriety" marked in True
     in let changed = row.object.x /= mobile.x | row.object.y /= mobile.y | row.object.z /= mobile.z
-      | row.object.graphic /= mobile.graphic | row.object.hue /= mobile.hue | row.flags /= flags
-    in let moved = if fresh then list-push removed (gcv-draw items row mobile flags)
-      else if changed then list-push removed (cbp-move mobile row.direction flags row.notoriety) else removed
+      | row.object.graphic /= mobile.graphic | row.object.hue /= mobile.hue | row.flags /= flags | renamed
+    in let dx = mobile.x - row.object.x
+    in let dy = mobile.y - row.object.y
+    in let stepped = not fresh & (dx /= 0 | dy /= 0)
+    in let faced = if stepped then let d = __record-set row "direction" (gcv-heading dx dy) in 0 else 0
+    in let running = if stepped & max (walk-abs dx) (walk-abs dy) > 1 then #80 else 0
+    in let moved = if fresh | row.object.graphic /= mobile.graphic | row.object.hue /= mobile.hue then list-push removed (gcv-draw items row mobile flags)
+      else if changed then list-push removed (cbp-move mobile (bit-or row.direction running) flags row.notoriety) else removed
     in let health = if fresh | row.object.health /= mobile.health | row.maximum /= maximum
       then list-push moved (cbp-health mobile.serial mobile.health maximum False) else moved
     in let saved = gcv-remember row mobile maximum flags
@@ -132,9 +199,39 @@ Chapter: GameClientView
   gcv-occupants (view) (combat) (items) (viewer) (serial) (out) = if serial == 0 then out
     else let slot = world-slot items.world serial
     in let next = world-tile-next items.world serial
-    in let packets = if slot < 0 then out else if peek-qword items.world.buffer (24 + slot * 80) /= 1 then out
-      else gcv-slot-update view combat items viewer slot out
+    in let kind = if slot < 0 then 0 else peek-qword (wi-object items.world.buffer slot) 8
+    in let packets = if kind == 1 then gcv-slot-update view combat items viewer slot out
+      else if kind == 2 then gcv-item-update view items viewer slot out else out
     in gcv-occupants view combat items viewer next packets
+  gcv-held : List GsiActor, Integer, Integer -> Boolean
+  gcv-held (actors) (serial) (i) = if i == list-length actors then False
+    else (list-at actors i).holding == serial | gcv-held actors serial (i + 1)
+  gcv-ground : GameClientView, GsiState, WorldObject, Integer -> Boolean
+  gcv-ground (view) (items) (viewer) (slot) = let at = wi-object items.world.buffer slot
+    in let serial = peek-qword at 0
+    in let x = peek-qword at 16
+    in let y = peek-qword at 24
+    in serial > 0 & peek-qword at 8 == 2 & peek-qword at 56 == 0
+      & x >= viewer.x - view.radius & x <= viewer.x + view.radius & y >= viewer.y - view.radius & y <= viewer.y + view.radius
+      & gsi-known items serial & not (gcv-held items.actors serial 0)
+ A 0x1D for an item the client holds on its cursor or shows in a container erases it there, and the client drops objects
+ that leave its x/y range by itself, so an item row is forgotten without one. The client drops nothing by z, so ground
+ items are sent at any z, as ServUO and Source-X send them. At most 32 items are drawn a reply, as decoration
+ is, against the 65536-byte encoded reply budget (GameDispatch.md); the rest are drawn by the replies after.
+  gcv-item-limit : Integer = 32
+  gcv-item-update : GameClientView, GsiState, WorldObject, Integer, List (List Integer) -> List (List Integer)
+  gcv-item-update (view) (items) (viewer) (i) (out) = if view.drawn >= gcv-item-limit | not (gcv-ground view items viewer i) then out
+    else let row = list-at view.seen i
+    in let at = wi-object items.world.buffer i
+    in let same = row.object.serial == peek-qword at 0 & row.object.x == peek-qword at 16 & row.object.y == peek-qword at 24
+      & row.object.z == peek-qword at 32 & row.object.graphic == peek-qword at 40 & row.object.hue == peek-qword at 48
+      & row.object.amount == peek-qword at 64
+    in let tracked = gcv-track view row i
+    in if same then out
+    else let item = world-read-slot items.world i
+    in let saved = gcv-remember row item 0 0
+    in let counted = __record-set view "drawn" (view.drawn + 1)
+    in list-push out (sip-ground item)
   gcv-tiles : GameClientView, GameCombat, GsiState, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
   gcv-tiles (view) (combat) (items) (viewer) (x) (y) (out) =
     if y > min 4095 (viewer.y + view.radius) then out
@@ -190,6 +287,7 @@ Chapter: GameClientView
           in let d = __record-set view "sent-season" -1
           in let e = __record-set view "sent-light" -1 in 0
         in let filtered = gcv-filter view combat items viewer reply.packets 0 []
+        in let budget = __record-set view "drawn" 0
         in let departed = gcv-prune view items viewer 0 0 filtered
         in let mobiles = gcv-tiles view combat items viewer (max 0 (viewer.x - view.radius)) (max 0 (viewer.y - view.radius)) departed
         in let own = gcv-own view status (gcv-status-requested reply.packets viewer.serial 0) mobiles

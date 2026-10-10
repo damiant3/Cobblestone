@@ -1,0 +1,79 @@
+Chapter: CompositeIngotArtProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+ Two boots on one disk: boot 1 saves gold and iron ingot lots both drawn as iron's 0x1BF2, as smelting drew every
+ ingot before ingots took their metal's art; boot 2 reads gold as 0x1BEC named gold ingots and iron unchanged.
+  cia-check : Text, Boolean -> [Console] Integer
+  cia-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cia-fill : WalkMap, Integer -> Integer
+  cia-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cia-fill map (i + 1)
+  cia-create : Integer -> List Integer
+  cia-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Smelter" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cia-ingots : CompositeOwner, GameShard, Integer, Integer, Integer -> Integer
+  cia-ingots (store) (game) (player) (pack) (item) = when world-create game.world (WorldObject { serial = 0, kind = 2, x = 50, y = 60, z = 0,
+      graphic = #1BF2, hue = 0, container = pack, amount = 3, health = 0 })
+    is Err (_) -> 0
+    is Ok (serial) -> if gsi-register store.state.items serial 0 0 True True /= 0 then 0
+      else if cp-add-lot store player serial item 3 then serial else 0
+  cia-lot : GvWorld, Integer, Integer -> Integer
+  cia-lot (v) (item) (unused) = cia-lot-from v item (ep-lots-first v.currency.world.goods)
+  cia-lot-from : GvWorld, Integer, Integer -> Integer
+  cia-lot-from (v) (item) (serial) = if serial == 0 then 0
+    else if ep-lot-item v.currency.world.goods serial == item then serial else cia-lot-from v item (ep-lot-after v.currency.world.goods serial)
+  cia-object : GameShard, Integer -> WorldObject
+  cia-object (game) (serial) = when world-get game.world serial
+    is Err (_) -> WorldObject { serial = 0, kind = 0, x = 0, y = 0, z = 0, graphic = 0, hue = -1, container = 0, amount = 0, health = 0 }
+    is Ok (o) -> o
+  cia-first : CompositeOwner, List GameOpcodeSpec, WalkMap -> [Console, Device.Block] Integer
+  cia-first (store) (specs) (map) = let owner = store.state in act
+      input <- gn-input-with specs 1
+      mode <- __record-set input "mode" 2
+      phase <- __record-set input.session "phase" 1
+      game <- owner.checkpoint.game
+      entry <- cs-route store game input map 2593 (cia-create 0)
+      player <- input.session.serial
+      pack <- gsi-pack-find game.world player 0
+      gold <- cia-ingots store game player pack 32
+      iron <- cia-ingots store game player pack 31
+      a <- cia-check "a smelter saves 3 gold and 3 iron ingots as lots both drawn 0x1BF2" (is-ok entry & gold > 0 & iron > 0
+        & (cia-object game gold).graphic == #1BF2 & (cia-object game iron).graphic == #1BF2)
+      committed <- cs-commit store True
+      b <- cia-check "the world commits with both ingot lots" (is-ok committed)
+      a + b
+  end
+  cia-later : CompositeOwner -> [Console, Device.Block] Integer
+  cia-later (store) = let owner = store.state in act
+      game <- owner.checkpoint.game
+      gold <- cia-object game (cia-lot owner.vendor 32 0)
+      iron <- cia-object game (cia-lot owner.vendor 31 0)
+      print-line-uni ("INGOTS after load: gold " & show gold.graphic & " " & gsi-name owner.items gold & "; iron " & show iron.graphic)
+      cia-check "a restart draws the saved gold ingots 0x1BEC named gold ingots and leaves the iron at 0x1BF2" (gold.serial > 0
+        & gold.graphic == #1BEC & gsi-name owner.items gold == "gold ingots"
+        & iron.serial > 0 & iron.graphic == #1BF2 & gold.amount == 3)
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cia-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1392 1664 96 96
+     is Err (e) -> cia-check e False
+     is Ok (map) -> let filled = cia-fill map 0
+      in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cia-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) None None
+       when loaded
+        is Err (e) -> cia-check ("recovery " & e) False
+        is Ok (owner) -> if fresh then cia-first owner specs map else cia-later owner
+      end
+    end

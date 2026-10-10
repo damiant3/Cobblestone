@@ -1,0 +1,47 @@
+Chapter: ShopLotValueProof
+  cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter GameVendorCodec
+
+  slv-check : Text, Boolean -> [Console] Integer
+  slv-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  slv-fault : GvWorld -> Text
+  slv-fault (v) = gvsc-lot-fault v 0
+  slv-shop : GvWorld -> Integer
+  slv-shop (v) = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).actor
+  slv-lot : GvWorld -> Integer
+  slv-lot (v) = when world-create v.game.world (__record-set (gs-item 0 #1BF2 0) "amount" 2)
+    is Err (_) -> -1
+    is Ok (serial) -> gv-add-lot v serial (slv-shop v) 31 1000 32 0
+  slv-cheap : EpWorld, Integer -> Integer
+  slv-cheap (w) (shop) = let p = ep-actor w shop
+    in let a = ep-add p.stock 31 4
+    in let b = ep-add p.quality 31 400
+    in ep-add p.wear 31 128
+  slv-run : GvWorld -> [Console] Integer
+  slv-run (v) = act
+    found <- ep-find v.currency.world (slv-shop v) 31 2
+    lot <- slv-lot v
+    cheap <- slv-cheap v.currency.world (slv-shop v)
+    a <- slv-check "two ingots at quality 1000 list as one lot beside four unlisted at 100" (found >= 0 & lot >= 0 & slv-fault v == "none")
+    p <- ep-actor v.currency.world (slv-shop v)
+    stock <- ep-at p.stock 31
+    quality <- ep-at p.quality 31
+    unlisted <- quality - 2000
+    used <- ep-consume v.currency.world (slv-shop v) 31 3
+    after <- slv-fault v
+    print-line-uni ("census after the shop uses three ingots: " & after)
+    b <- slv-check "using three ingots takes the listed lot first at its own grade, then one unlisted at their average" (used >= 0 & gv-represented v (slv-shop v) 31 0 == 0 & ep-at p.stock 31 == stock - 3 & ep-at p.quality 31 == unlisted - unlisted / (stock - 2))
+    c <- slv-check "no lot claims more than the shop holds" (after == "none" & gv-represented v (slv-shop v) 31 1 <= ep-at p.quality 31 & gv-represented v (slv-shop v) 31 3 <= ep-at p.cost 31)
+    a + b + c
+  end
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> slv-check ("shard " & e) False
+    is Ok (shard) -> when gvd-economy 0
+      is Err (e) -> slv-check ("economy " & e) False
+      is Ok (currency) -> when gvd-world shard currency 0
+        is Err (e) -> slv-check ("vendor " & e) False
+        is Ok (v) -> slv-run v

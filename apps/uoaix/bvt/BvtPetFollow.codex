@@ -1,0 +1,72 @@
+Chapter: BvtPetFollow
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtDispelVortex
+  cites Uoaix chapter BvtCheck
+
+ Two horses owned by one master, the first sent at a foe. Answers a bit per check: 1 "all follow me" makes both follow
+ and drops the foe, 2 "<name> stay" orders only the named one, 4 "follow me" naming no pet orders none; -1 not built.
+  bpfo-mobile : GameShard, Integer -> Integer
+  bpfo-mobile (game) (x) = when world-create game.world (__record-set (gs-mobile 0 x 1700 0 400 0) "health" 50) is Err (_) -> 0 is Ok (s) -> s
+  bpfo-checks : Integer -> Integer
+  bpfo-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let master = bpfo-mobile game 1420
+        in let foe = bpfo-mobile game 1426
+        in let profile = gws-claim-profile g "horse" 0
+        in if master == 0 | foe == 0 | profile < 0 then -2
+        else when gws-summon g game profile 1421 1700 0 master (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (one) -> when gws-summon g game profile 1419 1700 0 master (g.combat.tick + gws-forever)
+            is Err (_) -> -4
+            is Ok (two) -> let s1 = list-at g.slots (gws-slot-of g one 0)
+              in let s2 = list-at g.slots (gws-slot-of g two 0)
+              in let a = __record-set s1 "foe" foe
+              in let b = __record-set s1 "order" gws-order-stay
+              in let c = __record-set s2 "order" gws-order-stay
+              in let all = cg-pet-order-each owner g game master "all follow me" gws-order-follow True 0
+              in let followed = all == 2 & s1.order == gws-order-follow & s2.order == gws-order-follow & s1.foe == 0
+              in let name = cg-as-pet-name owner one
+              in let named = cg-pet-order-each owner g game master (name & " stay") gws-order-stay False 0
+              in let stays = named >= 1 & s1.order == gws-order-stay
+              in let none = cg-pet-order-each owner g game master "follow me" gws-order-follow False 0
+              in (if followed then 1 else 0) + (if stays then 2 else 0) + (if none == 0 then 4 else 0)
+ A following horse 10 tiles from its master is paced at a run, one 2 tiles away at a walk. Answers the two step times
+ in ms as run * 10000 + walk, or -1 when not built.
+  bpfo-pace : Integer -> Integer
+  bpfo-pace (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> when walk-map-new 1408 1680 64 64
+        is Err (_) -> -1
+        is Ok (map) -> let game = owner.checkpoint.game
+          in let flat = bdv-land map 0
+          in let master = bpfo-mobile game 1420
+          in let profile = gws-claim-profile g "horse" 0
+          in if master == 0 | profile < 0 then -1
+          else when gws-summon g game profile 1430 1700 0 master (g.combat.tick + gws-forever)
+            is Err (_) -> -1
+            is Ok (far) -> when gws-summon g game profile 1422 1700 0 master (g.combat.tick + gws-forever)
+              is Err (_) -> -1
+              is Ok (near) -> let sf = list-at g.slots (gws-slot-of g far 0)
+                in let sn = list-at g.slots (gws-slot-of g near 0)
+                in let a = __record-set sf "due" 0
+                in let b = __record-set sn "due" 0
+                in let ran = when world-get game.world far is Err (_) -> False is Ok (m) -> gws-pet g game map sf m
+                in let walked = when world-get game.world near is Err (_) -> False is Ok (m) -> gws-pet g game map sn m
+                in (if sf.due - g.combat.tick == gm-ticks gws-run-ms then 200 else sf.due - g.combat.tick) * 10000
+                  + (if sn.due - g.combat.tick == gm-ticks gws-walk-ms then 400 else sn.due - g.combat.tick)
+  bvt-pet-follow : Integer -> [Console] Integer
+  bvt-pet-follow (unused) = act
+    p <- bpfo-pace 0
+    d <- bvt-check ("a follower more than 3 tiles behind runs to catch up (200 ms a step) and walks when close (400 ms) (Damian, 2026-10-09: \"make sure followers will run to catch up\"; got " & show p & ")") (p == 2000400)
+    n <- bpfo-checks 0
+    a <- bvt-check ("\"all follow me\" makes every pet follow its owner and drops the foe it was sent at (Damian, 2026-10-09; got " & show n & ")") (n >= 0 & int-mod n 2 == 1)
+    b <- bvt-check ("\"<name> stay\" orders the named pet (got " & show n & ")") (n >= 0 & int-mod (n / 2) 2 == 1)
+    c <- bvt-check ("\"follow me\" naming no pet orders none (got " & show n & ")") (n >= 0 & n / 4 == 1)
+    a + b + c + d
+  end

@@ -1,56 +1,97 @@
 Chapter: GameCraftState
   cites Uoaix chapter GameHarvestProduction
   cites Uoaix chapter GameHarvest
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter EconomyProduction
 
  Copyright 2026 SphereServer development team. Apache-2.0.
  Adapted Source-X PacketDisplayMenu/PacketMenuChoice and Skill_Menu.
  License: apps/uoaix/Sphere-LICENSE.txt.
 
   CraftRequest = record { serial : Integer, connection : Integer, tool : Integer,
-    menu : Integer, category : Integer, expires : Integer, next : Integer }
+    menu : Integer, category : Integer, expires : Integer, next : Integer, last : Integer }
   GameCraft = record { harvest : GameHarvest, requests : List CraftRequest, nonce : Integer }
   gcr-requests : Integer, List CraftRequest -> List CraftRequest
   gcr-requests (i) (out) = if i == 5 then out
     else let request = CraftRequest { serial = 0, connection = -1, tool = 0, menu = 0,
-      category = 0, expires = 0, next = 0 }
+      category = 0, expires = 0, next = 0, last = 0 }
     in gcr-requests (i + 1) (list-push out request)
   gcr-state : GameHarvest -> GameCraft
   gcr-state (harvest) = GameCraft { harvest = harvest, requests = gcr-requests 0 (__list-with-capacity 5), nonce = 1 }
   gcr-category : Integer, Integer -> Integer
   gcr-category (item) (graphic) =
     if item == 62 & (graphic == #13E3 | graphic == #13E4) then 1
+    else if item == 62 & graphic == #12B3 then 10
     else if item /= 42 then 0
     else if graphic == #0F9D then 2
-    else if graphic == #1034 | graphic == #1035 then 3
-    else if graphic == #1EB8 | graphic == #1EB9 then 4 else 0
+    else if graphic == #1034 | graphic == #1035 | graphic == #1028 | graphic == #1029 then 3
+    else if graphic == #1EB8 | graphic == #1EB9 then 4
+    else if graphic == #097F | graphic == #1043 then 5
+    else if graphic == #0FBB | graphic == #0FBC then 1
+    else if graphic == #102C | graphic == #102D | (graphic >= #1030 & graphic <= #1033) then 8
+    else if graphic == #102A | graphic == #102B then 9
+    else if (graphic >= #10E4 & graphic <= #10E7) | graphic == #102E | graphic == #102F then 7
+    else if graphic == #1022 | graphic == #1023 then 6 else 0
   gcr-recipes : EpWorld, Integer -> List Integer
   gcr-recipes (world) (category) =
     let britain = if list-length world.catalog.recipes < 43 | list-length world.catalog.items < 76 then False
       else (list-at world.catalog.items 68).name == "dagger" & (list-at world.catalog.recipes 35).item == 69
-    in if category == 1 then (if britain then [7,8,36,37,38] else [7,8,17,18,19])
+    in if category == 1 then (if britain then [36,37,38] else [17,18,19])
     else if category == 2 then (if britain then [39,40] else [22,24])
-    else if category == 3 then [16,25,26,27]
-    else if category == 4 then (if britain then [20,20,20,41] else [20,20,20,21]) else []
+    else if category == 3 then (if britain then [16,25] & gcr-recipes-of world 128 138 else [16,25,26,27])
+    else if category == 7 then (if britain then [26,27] & gcr-recipes-of world 77 77 else [26,27])
+    else if category == 8 then (if britain then gcr-recipes-of world 139 143 else [])
+    else if category == 9 then (if britain then gcr-recipes-of world 144 147 else [])
+    else if category == 10 then (if britain then gcr-recipes-of world 149 149 else [])
+    else if category == 4 then (if britain then [20,20,20,41,17] & gcr-recipes-of world 148 148 else [20,20,20,21,17])
+    else if category == 5 then [10,28,29]
+    else if category == 6 then [26,27] else []
+ Carpentry splits by tool (UOAIX-174, root 2026-10-09): a saw (3) cuts boards, furniture and containers (catalog items
+ 128 to 138); the drawknife, froe and inshave (7) shape bows, arrows and the shepherd's crook; the planes (8) finish
+ instruments and the dart board (139 to 143); the hammer (9) assembles the dress form, spinning wheel, training
+ dummy and loom deed (144 to 147). A mallet and chisel (a stone hammer, item 62, in ServUO MalletAndChisel's art 0x12B3)
+ opens Masonry (10), the stone block (149, UOAIX-122). A menu finds each item's recipe by item, so catalog order does not move it.
+  gcr-recipe-of : EpWorld, Integer, Integer -> Integer
+  gcr-recipe-of (world) (item) (i) = if i >= list-length world.catalog.recipes then 0
+    else if (list-at world.catalog.recipes i).item == item then i + 1 else gcr-recipe-of world item (i + 1)
+  gcr-recipes-of : EpWorld, Integer, Integer -> List Integer
+  gcr-recipes-of (world) (item) (last) = if item > last then []
+    else let id = gcr-recipe-of world item 0 in (if id > 0 then [id] else []) & gcr-recipes-of world (item + 1) last
+  gcr-no-chance : EpWorld, Integer, Integer -> Boolean
+  gcr-no-chance (world) (actor) (recipe) = let r = list-at world.catalog.recipes (recipe - 1)
+    in let range = ep-skill-range r.item
+    in let p = ep-actor world actor
+    in let skill = if r.station == 3 then 1 else r.skill
+    in let classic = ep-classic skill r.station r.item
+    in range > 0 & p.row /= 0 & classic >= 0 & ep-level p skill classic < range / 10000
   gcr-title : Integer -> Text
   gcr-title (category) = if category == 1 then "Blacksmithing" else if category == 2 then "Tailoring"
-    else if category == 3 then "Carpentry" else "Tinkering"
+    else if category == 3 | (category >= 7 & category <= 9) then "Carpentry" else if category == 5 then "Cooking" else if category == 6 then "Bowcraft and Fletching" else if category == 10 then "Masonry" else "Tinkering"
   gcr-graphic : Integer -> Integer
-  gcr-graphic (item) = if item == 31 | item == 32 then #1BF2 else if item == 38 then #1BD7 else if item == 39 then #102E
+  gcr-graphic (item) = if item == 31 | item == 32 then gh-output-graphic item else if item == 38 then #1BD7 else if item == 39 then #102E
     else if item == 40 then #0F5E else if item == 41 then #1415 else if item == 42 then #1EB8
     else if item == 43 then #108A else if item == 44 then #13CC else if item == 46 then #1517
     else if item == 47 then #0B2C else if item == 48 then #13B2 else if item == 49 then #0F3F
-    else if item == 69 then #0F51 else if item == 70 then #0F60 else if item == 71 then #1413
-    else if item == 72 then #1517 else if item == 73 then #152E else if item == 74 then #0F9E else 0
+    else if item == 120 then #0E87 else if item == 69 then #0F51 else if item == 70 then #0F60 else if item == 71 then #1413
+    else if item == 72 then #1517 else if item == 73 then #152E else if item == 74 then #0F9E
+    else if item == 34 then #103B else if item == 50 then #097B else if item == 77 then #0E81
+    else if item == 128 then #0B5E else if item == 129 then #0A2A else if item == 130 then #0B57 else if item == 131 then #0B2D
+    else if item == 132 then #0B4A else if item == 133 then #0B90 else if item == 134 then #09AA else if item == 135 then #09A9
+    else if item == 136 then #0E43 else if item == 137 then #0A9D else if item == 138 then #0A4F
+    else if item == 139 then #0EB2 else if item == 140 then #0E9C else if item == 141 then #0EB3 else if item == 142 then #0E9D
+    else if item == 143 then #1E2E else if item == 144 then #0EC6 else if item == 145 then #1019 else if item == 146 then #1074 else if item == 147 then #14F0 else if item == 148 then #1055 else if item == 149 then #1364 else 0
   gcr-layer : Integer -> Integer
   gcr-layer (item) = if item == 40 | item == 69 | item == 70 then 1
     else if item == 41 | item == 44 then 13 else if item == 46 | item == 72 then 5
     else if item == 73 then 4 else if item == 71 then 10 else if item == 48 then 2 else 0
   gcr-variant : Integer, Integer, Integer -> Integer
   gcr-variant (category) (choice) (item) = if category == 4 & item == 42 then
-    (if choice == 2 then #0F9D else if choice == 3 then #1034 else #1EB8) else gcr-graphic item
+    (if choice == 2 then #0F9D else if choice == 3 then #1034 else #1EB8)
+    else if category == 5 & choice == 2 then #09F2 else gcr-graphic item
   gcr-name : EgCatalog, Integer, Integer -> Text
   gcr-name (catalog) (item) (graphic) = if item == 42 then
     (if graphic == #0F9D then "Sewing kit" else if graphic == #1034 then "Saw" else "Tinker's tools")
+    else if item == 50 then (if graphic == #09F2 then "Cooked ribs" else "Cooked fish steak")
     else (list-at catalog.items (item - 1)).name
   gcr-menu-rows : EpWorld, List Integer, Integer, Integer, List Integer -> List Integer
   gcr-menu-rows (world) (recipes) (category) (i) (out) = if i == list-length recipes then sip-length out
@@ -67,8 +108,27 @@ Chapter: GameCraftState
     in let header = list-push (gp-put16 (gp-put32 [#7C,0,0] tool) context) (text-length title)
     in let caption = gp-ascii header title 0 (text-length title)
     in gcr-menu-rows world recipes category 0 (list-push caption (list-length recipes))
+ The craft gump's line for an item: what it makes and what it needs ("bread x4: 2 flour, 1 water, 1 logs").
+  gcr-needs : EgCatalog, Integer, Integer -> Text
+  gcr-needs (catalog) (item) (count) = if item < 1 | item > list-length catalog.items | count < 1 then "" else show count & " " & (list-at catalog.items (item - 1)).name
+  gcr-join : Text, Text -> Text
+  gcr-join (a) (b) = if b == "" then a else if a == "" then b else a & ", " & b
+  gcr-line : EpWorld, Integer, Integer, Integer -> Text
+  gcr-line (world) (category) (choice) (id) = let recipe = list-at world.catalog.recipes (id - 1)
+    in let name = gcr-name world.catalog recipe.item (gcr-variant category choice recipe.item)
+    in name & (if recipe.quantity > 1 then " x" & show recipe.quantity else "") & ": "
+      & gcr-join (gcr-join (gcr-needs world.catalog recipe.one recipe.one-count) (gcr-needs world.catalog recipe.two recipe.two-count)) (gcr-needs world.catalog recipe.three recipe.three-count)
+  gcr-lines : EpWorld, Integer, List Integer, Integer, List Text -> List Text
+  gcr-lines (world) (category) (recipes) (i) (out) = if i >= list-length recipes then out
+    else gcr-lines world category recipes (i + 1) (out & [gcr-line world category (i + 1) (list-at recipes i)])
+  gcr-cats : EpWorld, Integer, List Integer, Integer, List Integer -> List Integer
+  gcr-cats (world) (category) (recipes) (i) (out) = if i >= list-length recipes then out
+    else gcr-cats world category recipes (i + 1) (out & [crg-category category (list-at world.catalog.recipes (list-at recipes i - 1)).item])
+  gcr-gump : EpWorld, Integer, Integer, Integer, Text -> List Integer
+  gcr-gump (world) (tool) (context) (category) (status) = let recipes = gcr-recipes world category
+    in crg-gump tool context (gcr-title category) (crg-labels category) (gcr-lines world category recipes 0 []) (gcr-cats world category recipes 0 []) status
   gcr-skill : Integer -> Integer
-  gcr-skill (category) = if category == 1 then 7 else if category == 2 then 34 else if category == 3 then 11 else 37
+  gcr-skill (category) = if category == 1 then 7 else if category == 2 then 34 else if category == 3 | (category >= 7 & category <= 10) then 11 else 37
   gcr-session : GameCraft, GameInput, GvPlayer, Integer -> CraftRequest
   gcr-session (state) (input) (player) (slot) =
     let r = list-at state.requests slot
@@ -86,8 +146,8 @@ Chapter: GameCraftState
   gcr-opener (state) (player) (serial) = let h = state.harvest
     in let at = gv-lot h.vendor serial 0
     in if at < 0 then 0
-    else let lot = list-at h.vendor.lots at
-    in if lot.actor /= player.actor | lot.quantity /= 1 | lot.wear < 1
+    else let lot = ep-lot h.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | ep-amount h.vendor.currency.world.goods lot.serial /= 1 | lot.wear < 1
       | not (gsi-known h.items serial) | not (gv-owned h.items.world serial player.serial 65) then 0
     else when world-get h.items.world serial
       is Err (_) -> 0

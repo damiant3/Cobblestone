@@ -59,6 +59,25 @@ Chapter: WorldSpawnCatalogProof
   wsp-classic-orc (c) (i) = if i == list-length c.profiles then False
     else let p = list-at c.profiles i
     in if p.key == "orc" then p.body == 17 & p.ai == 2 else wsp-classic-orc c (i + 1)
+  wsp-low-choices : WsCatalog, List WsChoice, Integer -> Boolean
+  wsp-low-choices (c) (choices) (i) = if i == list-length choices then i > 0
+    else let choice = list-at choices i
+    in choice.profile >= 0 & (list-at c.profiles choice.profile).hits-high <= 100
+      & (list-at c.profiles choice.profile).damage-high <= 10 & wsp-low-choices c choices (i + 1)
+  wsp-low-undead : WsCatalog, Integer -> Integer
+  wsp-low-undead (c) (i) = if i == list-length c.regions then 0
+    else let r = list-at c.regions i
+    in (if (r.id == 5505 | r.id == 5506) & wsp-low-choices c (list-at c.groups r.group).choices 0 then 1 else 0) + wsp-low-undead c (i + 1)
+  wsp-digits : Text, Integer -> Boolean
+  wsp-digits (s) (i) = if i == text-length s then i > 0
+    else char-code-at s i >= char-code-at "0" 0 & char-code-at s i <= char-code-at "9" 0 & wsp-digits s (i + 1)
+  wsp-digit-names : WsCatalog, Integer -> Integer
+  wsp-digit-names (c) (i) = if i == list-length c.profiles then 0
+    else (if wsp-digits (list-at c.profiles i).name 0 then 1 else 0) + wsp-digit-names c (i + 1)
+  wsp-named : WsCatalog, Text, Text, Integer -> Boolean
+  wsp-named (c) (key) (name) (i) = if i == list-length c.profiles then False
+    else let p = list-at c.profiles i
+    in if p.key == key then p.name == name else wsp-named c key name (i + 1)
   opening : [Console] Nothing = act
     c <- wsd-catalog 0
     print-line-uni ("profiles=" & show (list-length c.profiles) & " groups=" & show (list-length c.groups) & " regions=" & show (list-length c.regions))
@@ -69,6 +88,10 @@ Chapter: WorldSpawnCatalogProof
     wsp-check "region identifiers are unique" (wsp-distinct c 0)
     wsp-check "Rat Valley child inherits rectangle and overrides population timers" (wsp-inherited c 0)
     wsp-check "classic GETUO resolves orc body and aggression" (wsp-classic-orc c 0)
+    wsp-check "both Britain Cemetery regions spawn only low-end undead" (wsp-low-undead c 0 == 2)
+    print-line-uni ("all-digit-names=" & show (wsp-digit-names c 0))
+    wsp-check "no profile name is an unresolved dictionary number" (wsp-digit-names c 0 == 0)
+    wsp-check "boneaxeman resolves dictionary 5123 to its label" (wsp-named c "boneaxeman" "a bone axeman" 0)
   end
 
 Page 1

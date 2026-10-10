@@ -11,7 +11,7 @@ Chapter: ShardStore
     in if store.fault /= 0 | checkpoint.tick /= store.tick | checkpoint.sequence /= store.sequence then act Err "shard checkpoint owner/store mismatch" end
     else if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects then act Err "shard world capacity invalid" end
     else let mark = __heap-save
-    in let size = shc-size checkpoint.world.capacity
+    in let size = shc-size-of state
     in let buf = alloc-bytes size
     in when shc-encode state buf size
       is Err (e) -> act Err e end
@@ -25,16 +25,20 @@ Chapter: ShardStore
   shard-store-restore : UoStore, Integer, Text, GmMemory -> [Device.Block] Result ShardCheckpoint Text
   shard-store-restore (store) (now) (actor) (gms) =
     if store.fault /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "shard recovery requires a committed checkpoint" end
-    else let capacity = shc-size world-max-objects
-    in let buf = alloc-bytes capacity
-    in act
-      read <- us-read store store.snapshot buf capacity
-      when read
+    else act
+      sized <- us-record-length store store.snapshot
+      when sized
         is Err (e) -> Err e
-        is Ok (row) ->
-          if row.kind /= 1 | row.next /= store.head then Err "shard suffix requires an encompassing input replay path"
-          else if row.tick /= store.tick | row.sequence /= store.sequence then Err "shard checkpoint disagrees with store head"
-          else shc-decode-record buf row.length row.tick row.sequence now actor gms
+        is Ok (capacity) -> let buf = alloc-bytes capacity
+          in act
+          read <- us-read store store.snapshot buf capacity
+          when read
+            is Err (e) -> Err e
+            is Ok (row) ->
+              if row.kind /= 1 | row.next /= store.head then Err "shard suffix requires an encompassing input replay path"
+              else if row.tick /= store.tick | row.sequence /= store.sequence then Err "shard checkpoint disagrees with store head"
+              else shc-decode-record buf row.length row.tick row.sequence now actor gms
+          end
     end
 
 Page 1

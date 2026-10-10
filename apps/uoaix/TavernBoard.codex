@@ -1,0 +1,476 @@
+Chapter: TavernBoard
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter TavernBackgammon
+  cites Games chapter Backgammon
+
+ The Blue Boar's backgammon board (UOAIX-178, Damian 2026-10-09): TILEDATA "backgammon board" 0x0E1C mid-way along the
+ tavern's long table (STATICS0.MUL table 0x0B76..0x0B75 at x 1497, y 1685 to 1689, z 20, height 6; benches at x 1496 and
+ 1498), a container the 1.25 client draws with gump 0x92E (282x210). Its checkers are white 0x3584 and black 0x358B
+ (ARTIDX), set out once in Backgammon.codex's opening position and then moved freely, as ServUO's boards are.
+  tbd-art : Integer = #0E1C
+  tbd-gump : Integer = #092E
+  tbd-white : Integer = #3584
+  tbd-black : Integer = #358B
+ Gump 0x92E's field spans x 43..240 in twelve points a half about 16.4 px wide (column c centred near 51 + c * 16.4),
+ the top points y 5..80 and the bottom y 130..203. Backgammon.codex's index 0 is White's 1-point, bottom right; 11 is
+ bottom left, 12 top left, 23 top right. A stack grows from the point's rim toward the bar, 12 px a checker.
+  tbd-x-at : Integer -> Integer
+  tbd-x-at (point) = let c = if point < 12 then 11 - point else point - 12 in 51 + c * 164 / 10 - 7
+  tbd-y-at : Integer, Integer -> Integer
+  tbd-y-at (point) (k) = if point < 12 then 188 - k * 12 else 8 + k * 12
+  tbd-find : WorldTable, Integer -> Integer
+  tbd-find (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == tbd-art & o.container == 0) then serial
+    else tbd-find world (world-tile-next world serial)
+  tbd-piece : GsiState, Integer, Integer, Integer, Integer -> Integer
+  tbd-piece (items) (board) (art) (x) (y) =
+    when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = art, hue = 0, container = board, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register items serial 0 0 True False /= 0 then 0 else 1
+  tbd-stack : GsiState, Integer, Integer, Integer, Integer, Integer -> Integer
+  tbd-stack (items) (board) (art) (point) (n) (k) = if k >= n then 0
+    else tbd-piece items board art (tbd-x-at point) (tbd-y-at point k) + tbd-stack items board art point n (k + 1)
+  tbd-points : GsiState, Integer, List Integer, Integer -> Integer
+  tbd-points (items) (board) (points) (i) = if i >= list-length points then 0
+    else let v = list-at points i
+    in let n = if v < 0 then 0 - v else v
+    in tbd-stack items board (if v > 0 then tbd-white else tbd-black) i n 0 + tbd-points items board points (i + 1)
+ A checker dropped inside the field lands on the nearest point, on top of that point's stack (at most the sixth slot,
+ where a taller stack overlaps); a drop on a side tray or the bar keeps the client's position.
+  tbd-point-at : Integer, Integer -> Integer
+  tbd-point-at (x) (y) = if x + 7 < 43 | x + 7 > 240 | (y + 7 > 88 & y + 7 < 122) then -1
+    else let c = min 11 (max 0 ((x + 7 - 43) * 10 / 164))
+    in if y + 7 <= 88 then 12 + c else 11 - c
+  tbd-stacked : WorldTable, Integer, Integer, Integer -> Integer
+  tbd-stacked (world) (serial) (x) (moving) = if serial == 0 then 0
+    else let here = when world-get world serial is Err (_) -> 0 is Ok (o) -> if o.serial /= moving & tbd-checker o.graphic & tbd-zone o.x o.y == x then 1 else 0
+    in here + tbd-stacked world (world-next-sibling world serial) x moving
+  tbd-checker : Integer -> Boolean
+  tbd-checker (art) = art == tbd-white | art == tbd-black
+  tbd-put16 : List Integer, Integer, Integer -> List Integer
+  tbd-put16 (p) (at) (v) = list-set-at (list-set-at p at (bit-and (bit-shr v 8) 255)) (at + 1) (bit-and v 255)
+  tbd-snap : GsiState, List Integer -> List Integer
+  tbd-snap (items) (packet) = if list-length packet /= 14 | list-at packet 0 /= 8 then packet
+    else let target = gp-u32 packet 10
+    in let moving = gp-u32 packet 1
+    in let board = when world-get items.world target is Err (_) -> False is Ok (b) -> b.kind == 2 & b.graphic == tbd-art
+    in let checker = when world-get items.world moving is Err (_) -> False is Ok (c) -> tbd-checker c.graphic
+    in let point = if board & checker then tbd-point-at (gp-u16 packet 5) (gp-u16 packet 7) else -1
+    in if point < 0 then packet
+    else let x = tbd-x-at point
+    in let k = min 5 (tbd-stacked items.world (world-first-child items.world target) point moving)
+    in tbd-put16 (tbd-put16 packet 5 x) 7 (tbd-y-at point k)
+ TILEDATA "dice and cup" 0x0FA7 stands at each end of the board, White's to the north and Black's to the south, and the
+ server rolls them.
+  tbd-dice-art : Integer = #0FA7
+ Every backgammon set in the world is a live table (UOAIX-178, Damian 2026-10-09: "fix up all the other backgammon sets
+ in the game too"): a board at x, y, z with a dice cup each side of it along dx, dy (White's at minus, Black's at plus).
+ The first is the Blue Boar's long table (STATICS0.MUL table x 1497, y 1685 to 1689, top z 26). The rest stand where
+ the decoration (britannia.dwd, ServUO Decoration) set a backgammon board 0x0E1C or folded game 0x0FAD, at the z of the
+ dice cup 0x0FA7 beside it, toward that cup; a set with no cup beside it takes dy 1. premises.cfg clears each scenery set.
+  TbdSet = record { x : Integer, y : Integer, z : Integer, dx : Integer, dy : Integer }
+  tbd-set : Integer, Integer, Integer, Integer, Integer -> TbdSet
+  tbd-set (x) (y) (z) (dx) (dy) = TbdSet { x = x, y = y, z = z, dx = dx, dy = dy }
+  tbd-sets : List TbdSet = [tbd-set 1497 1687 26 0 1, tbd-set 558 2188 4 0 -1, tbd-set 1402 1686 34 0 1, tbd-set 1440 3769 4 0 1,
+    tbd-set 1452 3779 4 0 1, tbd-set 1497 1678 24 0 1, tbd-set 1534 1431 59 -1 0, tbd-set 1540 1749 39 1 0, tbd-set 1550 1762 16 0 1,
+    tbd-set 1554 1763 14 0 1, tbd-set 1626 1587 4 0 -1, tbd-set 1807 2805 4 -1 0, tbd-set 1814 2806 24 0 -1, tbd-set 1933 2788 4 0 -1,
+    tbd-set 1985 2911 4 0 1, tbd-set 2043 2777 4 -1 0, tbd-set 2467 400 19 1 0, tbd-set 2486 398 19 0 -1, tbd-set 2674 2238 6 0 1,
+    tbd-set 2903 916 4 0 -1, tbd-set 3035 3346 37 0 1, tbd-set 3762 1223 4 0 1]
+  tbd-home : TbdSet = list-at tbd-sets 0
+  tbd-cup-x : TbdSet, Integer -> Integer
+  tbd-cup-x (s) (side) = if side == 0 then s.x - s.dx else s.x + s.dx
+  tbd-cup-y : TbdSet, Integer -> Integer
+  tbd-cup-y (s) (side) = if side == 0 then s.y - s.dy else s.y + s.dy
+  tbd-cup-of : WorldTable, TbdSet, Integer -> Integer
+  tbd-cup-of (world) (s) (side) = tbd-cup world (world-tile-first world (tbd-cup-x s side) (tbd-cup-y s side))
+  tbd-board : WorldTable, TbdSet -> Integer
+  tbd-board (world) (s) = tbd-find world (world-tile-first world s.x s.y)
+ The set whose cup (side 0 or 1, as cup * 2 + side) or whose board a serial is, or -1.
+  tbd-cup-set : WorldTable, Integer, Integer -> Integer
+  tbd-cup-set (world) (serial) (i) = tbd-cup-in tbd-sets world serial i
+ A list constant is built again at every mention (about 1 KB for tbd-sets), so each walk names it once.
+  tbd-cup-in : List TbdSet, WorldTable, Integer, Integer -> Integer
+  tbd-cup-in (sets) (world) (serial) (i) = if i >= list-length sets then -1
+    else let s = list-at sets i
+    in if tbd-cup-of world s 0 == serial then i * 2 else if tbd-cup-of world s 1 == serial then i * 2 + 1 else tbd-cup-in sets world serial (i + 1)
+  tbd-board-set : WorldTable, Integer, Integer -> Integer
+  tbd-board-set (world) (board) (i) = tbd-board-in tbd-sets world board i
+  tbd-board-in : List TbdSet, WorldTable, Integer, Integer -> Integer
+  tbd-board-in (sets) (world) (board) (i) = if i >= list-length sets | board == 0 then -1
+    else if tbd-board world (list-at sets i) == board then i else tbd-board-in sets world board (i + 1)
+  tbd-cup : WorldTable, Integer -> Integer
+  tbd-cup (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == tbd-dice-art & o.container == 0) then serial
+    else tbd-cup world (world-tile-next world serial)
+  tbd-install-cup : GsiState, TbdSet, Integer -> Integer
+  tbd-install-cup (items) (s) (side) = if tbd-cup-of items.world s side /= 0 | world-room items.world <= 0 then 0
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = tbd-cup-x s side, y = tbd-cup-y s side, z = s.z, graphic = tbd-dice-art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (cup) -> if gsi-register items cup 0 0 False False /= 0 then 0 else let touched = world-touch items.world in 1
+  tbd-die : Integer, Integer -> Integer
+  tbd-die (now) (salt) = 1 + int-mod (bit-and (mix-bits now salt) #7FFFFFFF) 6
+ Two players (UOAIX-178, Damian 2026-10-09: "the first two players to roll are the players, first rolls are for going
+ first, everyone else spectates after the second roller roll to go first. then the game is locked until a winner or
+ nobody plays a move for 5 minutes"). The first player to roll a cup takes that cup's side and rolls one die; the
+ second, at the other cup, rolls one, the higher goes first (a tie is rolled again by the server) and the table locks.
+ A seated player rolls two dice to start a turn: the first mover at once, the other once the mover's dice are spent or
+ cannot be played. The table frees after a winner, or tbd-idle-ticks with no roll or move (the next roll finds it free).
+ The seats and the tick of the last roll or move live in the owner's tavern buffer (an item's fields stop at 65535), three
+ qwords a set in tbd-sets order: White's serial, Black's serial (0 an empty seat), the tick. White's cup's health holds,
+ above its dice digits (base 7, under tbd-flag-unit), the phase (0 free, 1 opening rolls, 2 White to roll, 3 Black to roll,
+ 4 White moving, 5 Black moving). A restart frees every table.
+  tbd-index : TbdSet, Integer -> Integer
+  tbd-index (s) (i) = tbd-index-in tbd-sets s i
+  tbd-index-in : List TbdSet, TbdSet, Integer -> Integer
+  tbd-index-in (sets) (s) (i) = if i >= list-length sets then 0 else if (list-at sets i).x == s.x & (list-at sets i).y == s.y then i else tbd-index-in sets s (i + 1)
+  tbd-tavern-bytes : Integer = 24 * 22
+  tbd-idle-ticks : Integer = 300000
+  tbd-health : WorldTable, Integer -> Integer
+  tbd-health (world) (serial) = when world-get world serial is Err (_) -> 0 is Ok (o) -> o.health
+  tbd-set-health : WorldTable, Integer, Integer -> Integer
+  tbd-set-health (world) (serial) (h) = when world-get world serial
+    is Err (_) -> 0
+    is Ok (o) -> when world-update world (__record-set o "health" h) is Err (_) -> 0 is Ok (_) -> 1
+  tbd-seat : Integer, TbdSet, Integer -> Integer
+  tbd-seat (t) (s) (side) = peek-qword t (tbd-index s 0 * 24 + side * 8)
+  tbd-sit : Integer, TbdSet, Integer, Integer -> Integer
+  tbd-sit (t) (s) (side) (serial) = poke-qword t (tbd-index s 0 * 24 + side * 8) serial
+  tbd-phase : WorldTable, TbdSet -> Integer
+  tbd-phase (world) (s) = int-mod (tbd-health world (tbd-cup-of world s 0) / tbd-flag-unit) 8
+  tbd-last : Integer, TbdSet -> Integer
+  tbd-last (t) (s) = peek-qword t (tbd-index s 0 * 24 + 16)
+  tbd-stamp : Integer, TbdSet, Integer -> Integer
+  tbd-stamp (t) (s) (now) = poke-qword t (tbd-index s 0 * 24 + 16) now
+  tbd-set-phase : WorldTable, Integer, TbdSet, Integer, Integer -> Integer
+  tbd-set-phase (world) (t) (s) (phase) (now) = let cup = tbd-cup-of world s 0
+    in let stamped = tbd-stamp t s now
+    in tbd-set-health world cup (int-mod (tbd-health world cup) tbd-flag-unit + tbd-flag-unit * phase)
+  tbd-dice-of : WorldTable, TbdSet, Integer -> List Integer
+  tbd-dice-of (world) (s) (side) = tbd-decode (int-mod (tbd-health world (tbd-cup-of world s side)) tbd-flag-unit) []
+  tbd-mover : Integer -> Integer
+  tbd-mover (phase) = if phase == 4 then 0 else if phase == 5 then 1 else -1
+  tbd-stuck : WorldTable, TbdSet, Integer -> Boolean
+  tbd-stuck (world) (s) (side) = let dice = tbd-dice-of world s side
+    in let board = tbd-board world s
+    in list-length dice == 0 | board == 0 | bg-ai-pick (tbd-position world board side) dice < 0
+  tbd-colour : Integer -> Text
+  tbd-colour (side) = if side == 0 then "White" else "Black"
+  tbd-tell : Integer, Text -> Maybe GameReply
+  tbd-tell (cup) (text) = Just (gs-reply [sip-message cup tbd-dice-art 6 text] "tavern:refused")
+  tbd-say : Integer, Text -> Maybe GameReply
+  tbd-say (cup) (text) = Just (gs-reply [sip-message cup tbd-dice-art 6 text] "tavern:dice")
+ Clears both seats and both cups, and lays a fresh board.
+  tbd-reset : GsiState, Integer, TbdSet -> Integer
+  tbd-reset (items) (t) (s) = let world = items.world
+    in let board = tbd-board world s
+    in let cleared = if board == 0 then 0 else tbd-clear world (world-first-child world board)
+    in let start = backgammon-new
+    in let laid = if board == 0 then 0 else tbd-points items board start.points 0
+    in let a = tbd-sit t s 0 0 + tbd-sit t s 1 0 + tbd-stamp t s 0
+    in let b = tbd-set-health world (tbd-cup-of world s 0) 0
+    in let c = tbd-set-health world (tbd-cup-of world s 1) 0
+    in let touched = world-touch world in laid
+  tbd-dice : GvWorld, GsiState, Integer, GameShard, GameInput, List Integer, Integer -> Maybe GameReply
+  tbd-dice (v) (items) (t) (game) (input) (packet) (now) = if list-length packet /= 5 | list-at packet 0 /= 6 | input.mode /= 2 | input.session.phase /= 2 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let world = items.world
+    in if serial /= 0 & tbd-side-checker world serial tbd-white then tbd-bear v items t game input serial True now
+    else if serial /= 0 & tbd-side-checker world serial tbd-black then tbd-bear v items t game input serial False now
+    else let found = if serial == 0 then -1 else tbd-cup-set world serial 0
+    in if found < 0 then None
+    else let s = list-at tbd-sets (found / 2)
+    in let side = int-mod found 2
+    in when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (m) -> if walk-abs (m.x - tbd-cup-x s side) > 2 | walk-abs (m.y - tbd-cup-y s side) > 2 then Just (gsi-denied "That is too far away.")
+        else let idle = tbd-phase world s > 0 & now - tbd-last t s >= tbd-idle-ticks
+        in let freed = if idle then tbd-reset items t s else 0
+        in tbd-roll world t s serial side m.serial now idle
+  tbd-roll : WorldTable, Integer, TbdSet, Integer, Integer, Integer, Integer, Boolean -> Maybe GameReply
+  tbd-roll (world) (t) (s) (cup) (side) (player) (now) (idle) = let phase = tbd-phase world s
+    in let mine = tbd-seat t s side
+    in let theirs = tbd-seat t s (1 - side)
+    in let one = tbd-die now (cup + player)
+    in let two = tbd-die (now + 1) (cup + player * 3)
+    in let lead = if idle then "The table stood idle five minutes and is free again. " else ""
+    in if phase == 0 then
+      (let sat = tbd-sit t s side player
+      in let kept = tbd-keep world cup [one]
+      in let opened = tbd-set-phase world t s 1 now
+      in tbd-say cup (lead & tbd-colour side & " rolls " & show one & " to go first. The other cup's first roller plays " & tbd-colour (1 - side) & "."))
+    else if phase == 1 then
+      (if mine == player then tbd-tell cup "Wait for your opponent to roll the other cup."
+      else if theirs == player then tbd-tell cup "You have rolled; wait for your opponent."
+      else if mine /= 0 then tbd-tell cup "That side is taken; roll the other cup."
+      else let sat = tbd-sit t s side player
+      in let rolled = tbd-dice-of world s (1 - side)
+      in let other = if list-length rolled == 0 then 0 else list-at rolled 0
+      in let die = tbd-unequal one other now 0
+      in let first = if die > other then side else 1 - side
+      in let a = tbd-keep world (tbd-cup-of world s 0) []
+      in let b = tbd-keep world (tbd-cup-of world s 1) []
+      in let locked = tbd-set-phase world t s (if first == 0 then 2 else 3) now
+      in tbd-say cup (tbd-colour side & " rolls " & show die & (if die /= one then " after a tie" else "") & " against " & show other & ". "
+        & tbd-colour first & " goes first. The table is locked; everyone else watches."))
+    else if player /= tbd-seat t s 0 & player /= tbd-seat t s 1 then tbd-tell cup "This game is in play; you are watching."
+    else if mine /= player then tbd-tell cup "Roll your own cup."
+    else if tbd-mover phase == side then tbd-tell cup (if tbd-stuck world s side then "Your opponent rolls next." else "Play your roll first.")
+    else let opens = (phase == 2 & side == 0) | (phase == 3 & side == 1)
+    in let passes = tbd-mover phase == 1 - side & tbd-stuck world s (1 - side)
+    in if not (opens | passes) then tbd-tell cup (if tbd-mover phase >= 0 then "Your opponent has not played the roll." else "It is the other side's turn.")
+    else let dice = if one == two then [one, one, one, one] else [one, two]
+    in let cleared = tbd-keep world (tbd-cup-of world s (1 - side)) []
+    in let kept = tbd-keep world cup dice
+    in let moving = tbd-set-phase world t s (if side == 0 then 4 else 5) now
+    in tbd-say cup (tbd-colour side & " rolls " & show one & " and " & show two & ".")
+ An opening die equal to the other side's is rolled again (at most 16 times; then the next value up).
+  tbd-unequal : Integer, Integer, Integer, Integer -> Integer
+  tbd-unequal (die) (other) (now) (n) = if die /= other then die else if n >= 16 then int-mod other 6 + 1
+    else tbd-unequal (tbd-die (now + 2 + n) (n * 7 + other)) other now (n + 1)
+ The client keeps a drop inside gump 0x92E's container bounds, so a checker dropped toward a side tray lands on an edge
+ point and is refused; a double-click on a checker of the mover's side bears it off with the smallest die the rules allow.
+  tbd-side-checker : WorldTable, Integer, Integer -> Boolean
+  tbd-side-checker (world) (serial) (art) = when world-get world serial
+    is Err (_) -> False
+    is Ok (c) -> c.kind == 2 & c.graphic == art & (when world-get world c.container is Err (_) -> False is Ok (b) -> b.kind == 2 & b.graphic == tbd-art)
+ Why a seated player may not move side's checkers now, or "" when it may.
+  tbd-refusal : WorldTable, Integer, TbdSet, Integer, Integer -> Text
+  tbd-refusal (world) (t) (s) (side) (serial) = let phase = tbd-phase world s
+    in if phase < 2 then "Roll the dice first."
+    else if serial /= tbd-seat t s 0 & serial /= tbd-seat t s 1 then "This game is in play; you are watching."
+    else if tbd-seat t s side /= serial then "Those are your opponent's checkers."
+    else if tbd-mover phase /= side | list-length (tbd-dice-of world s side) == 0 then "Roll the dice first."
+    else ""
+  tbd-bear : GvWorld, GsiState, Integer, GameShard, GameInput, Integer, Boolean, Integer -> Maybe GameReply
+  tbd-bear (v) (items) (t) (game) (input) (serial) (white) (now) = when world-get items.world serial
+    is Err (_) -> None
+    is Ok (c) -> when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (m) -> let world = items.world
+        in let found = tbd-board-set world c.container 0
+        in if found < 0 then None
+        else let s = list-at tbd-sets found
+        in if walk-abs (m.x - s.x) > 2 | walk-abs (m.y - s.y) > 2 then Just (gsi-denied "That is too far away.")
+        else let side = if white then 0 else 1
+        in let refusal = tbd-refusal world t s side m.serial
+        in let from = tbd-zone c.x c.y
+        in if from == (0 - 3) then None
+        else if refusal /= "" then Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 refusal] "tavern:refused")
+        else let dice = tbd-dice-of world s side
+        in let die = if from < 0 then 0 else tbd-off-die (tbd-position world c.container side) dice from white 1
+        in if die < 1 then Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 "That checker cannot bear off with your roll."] "tavern:refused")
+        else let spent = tbd-keep world (tbd-cup-of world s side) (tbd-without dice die 0 False [])
+        in let stamped = tbd-stamp t s now
+        in let moved = tbd-move-to world c.container serial (0 - 3) (if white then tbd-white else tbd-black)
+        in Just (gs-reply (moved & tbd-settle v items t c.container) "tavern:off")
+  tbd-move-to : WorldTable, Integer, Integer, Integer, Integer -> List (List Integer)
+  tbd-move-to (world) (board) (serial) (zone) (art) = when world-get world serial
+    is Err (_) -> []
+    is Ok (c) -> let first = world-first-child world board
+      in let x = if zone >= 0 then tbd-x-at zone else if zone == (0 - 2) then (if art == tbd-white then 124 else 144) else (if art == tbd-white then 10 else 258)
+      in let k = if zone >= 0 then min 5 (tbd-stacked world first zone serial) else tbd-in-zone world first zone art
+      in let y = if zone >= 0 then tbd-y-at zone k else if zone == (0 - 2) then 98 + min 2 k * 4 else 10 + min 14 k * 12
+      in when world-update world (__record-set (__record-set c "x" x) "y" y)
+        is Err (_) -> []
+        is Ok (_) -> when world-get world serial is Err (_) -> [] is Ok (placed) -> [sip-item placed]
+  tbd-position : WorldTable, Integer, Integer -> BackgammonBoard
+  tbd-position (world) (board) (player) = let first = world-first-child world board
+    in BackgammonBoard { points = tbd-count world first (tbd-zeros 24 []),
+      bar-white = tbd-in-zone world first (0 - 2) tbd-white, bar-black = tbd-in-zone world first (0 - 2) tbd-black,
+      off-white = tbd-in-zone world first (0 - 3) tbd-white, off-black = tbd-in-zone world first (0 - 3) tbd-black,
+      current-player = player, cube = 1, cube-owner = (-1), offered = 0, dropped = (-1) }
+ The cup's health holds the dice still to play, one base-7 digit each (a double is four), so the board knows the roll.
+  tbd-encode : List Integer, Integer -> Integer
+  tbd-encode (dice) (i) = if i >= list-length dice then 0 else list-at dice i + 7 * tbd-encode dice (i + 1)
+  tbd-decode : Integer, List Integer -> List Integer
+  tbd-decode (code) (out) = if code <= 0 then out else tbd-decode (code / 7) (list-push out (int-mod code 7))
+  tbd-keep : WorldTable, Integer, List Integer -> Integer
+  tbd-keep (world) (cup) (dice) = when world-get world cup
+    is Err (_) -> 0
+    is Ok (o) -> when world-update world (__record-set o "health" (tbd-encode dice 0 + tbd-flag-unit * (o.health / tbd-flag-unit))) is Err (_) -> 0 is Ok (_) -> 1
+  tbd-flag-unit : Integer = 2401
+  tbd-without : List Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  tbd-without (dice) (die) (i) (gone) (out) = if i >= list-length dice then out
+    else if not gone & list-at dice i == die then tbd-without dice die (i + 1) True out
+    else tbd-without dice die (i + 1) gone (list-push out (list-at dice i))
+ Backgammon.codex's position is rebuilt from the checkers standing on points (positive White, negative Black); checkers
+ on the bar or a tray are not counted, so moves onto or off them are not refereed.
+  tbd-count : WorldTable, Integer, List Integer -> List Integer
+  tbd-count (world) (serial) (points) = if serial == 0 then points
+    else let next = world-next-sibling world serial
+    in when world-get world serial
+      is Err (_) -> tbd-count world next points
+      is Ok (c) -> let p = if tbd-checker c.graphic then tbd-point-at c.x c.y else -1
+        in if p < 0 then tbd-count world next points
+        else tbd-count world next (list-set-at points p (list-at points p + (if c.graphic == tbd-white then 1 else -1)))
+ A checker's zone on the gump: its point, -2 on the bar (the field's middle band), -3 on a side tray (borne off).
+  tbd-zone : Integer, Integer -> Integer
+  tbd-zone (x) (y) = if x + 7 < 43 | x + 7 > 240 then (0 - 3) else if y + 7 > 88 & y + 7 < 122 then (0 - 2) else tbd-point-at x y
+  tbd-in-zone : WorldTable, Integer, Integer, Integer -> Integer
+  tbd-in-zone (world) (serial) (zone) (art) = if serial == 0 then 0
+    else let here = when world-get world serial is Err (_) -> 0 is Ok (c) -> if c.graphic == art & tbd-zone c.x c.y == zone then 1 else 0
+    in here + tbd-in-zone world (world-next-sibling world serial) zone art
+  tbd-off-die : BackgammonBoard, List Integer, Integer, Boolean, Integer -> Integer
+  tbd-off-die (b) (dice) (from) (white) (d) = if d > 6 then 0
+    else if bg-has-die dice d 0 & (if white then from - d < 0 else from + d >= 24) & bg-legal b dice from d then d
+    else tbd-off-die b dice from white (d + 1)
+ A refereed move onto a point holding one opposing checker hits it: the server moves that checker onto the bar, White's
+ left of centre and Black's right, before the mover lands.
+  tbd-at : WorldTable, Integer, Integer, Integer -> Integer
+  tbd-at (world) (serial) (zone) (art) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (c) -> c.graphic == art & tbd-zone c.x c.y == zone) then serial
+    else tbd-at world (world-next-sibling world serial) zone art
+  tbd-hit : GsiState, List Integer -> List (List Integer)
+  tbd-hit (items) (packet) = if list-length packet /= 14 | list-at packet 0 /= 8 then []
+    else let board = gp-u32 packet 10
+    in let to = tbd-zone (gp-u16 packet 5) (gp-u16 packet 7)
+    in when world-get items.world (gp-u32 packet 1)
+      is Err (_) -> []
+      is Ok (c) -> let from = tbd-zone c.x c.y
+        in if to < 0 | c.container /= board | not (tbd-checker c.graphic) | (from < 0 & from /= (0 - 2)) | from == to then []
+        else let other = if c.graphic == tbd-white then tbd-black else tbd-white
+        in let first = world-first-child items.world board
+        in if tbd-in-zone items.world first to other /= 1 then []
+        else let hit = tbd-at items.world first to other
+        in let k = tbd-in-zone items.world first (0 - 2) other
+        in when world-get items.world hit
+          is Err (_) -> []
+          is Ok (h) -> let placed = __record-set (__record-set h "x" (if other == tbd-white then 124 else 144)) "y" (98 + min 2 k * 4)
+            in when world-update items.world placed is Err (_) -> [] is Ok (_) -> [sip-item placed]
+  tbd-zeros : Integer, List Integer -> List Integer
+  tbd-zeros (n) (out) = if n == 0 then out else tbd-zeros (n - 1) (list-push out 0)
+ A checker moved between two points on the board must use a die still in its side's cup: 0 lets an unrefereed drop
+ through, minus the die lets a legal move through, 1 refuses an illegal move (the bar and a tray are not drop targets),
+ 2 refuses a move before that side's roll, 3 a checker moved by a watcher, 4 a checker of the side not on turn, 5 the
+ opponent's checker.
+  tbd-referee : GsiState, Integer, List Integer, Integer -> Integer
+  tbd-referee (items) (t) (packet) (serial) = if list-length packet /= 14 | list-at packet 0 /= 8 then 0
+    else let board = gp-u32 packet 10
+    in let to = tbd-zone (gp-u16 packet 5) (gp-u16 packet 7)
+    in when world-get items.world (gp-u32 packet 1)
+      is Err (_) -> 0
+      is Ok (c) -> let from = if c.container == board & tbd-checker c.graphic then tbd-zone c.x c.y else (0 - 9)
+        in let isboard = when world-get items.world board is Err (_) -> False is Ok (b) -> b.graphic == tbd-art
+        in let found = tbd-board-set items.world board 0
+        in if not isboard | found < 0 | from == (0 - 9) | from == to then 0
+        else let world = items.world
+        in let s = list-at tbd-sets found
+        in let white = c.graphic == tbd-white
+        in let side = if white then 0 else 1
+        in let phase = tbd-phase world s
+        in if phase < 2 then 2
+        else if serial /= tbd-seat t s 0 & serial /= tbd-seat t s 1 then 3
+        else if tbd-seat t s side /= serial then 5
+        else if tbd-mover phase /= side then 4
+        else if from == (0 - 3) | to == (0 - 2) then 1
+        else let dice = tbd-dice-of world s side
+        in if list-length dice == 0 then 2
+        else let first = world-first-child items.world board
+        in let b = BackgammonBoard { points = tbd-count items.world first (tbd-zeros 24 []),
+          bar-white = tbd-in-zone items.world first (0 - 2) tbd-white, bar-black = tbd-in-zone items.world first (0 - 2) tbd-black,
+          off-white = tbd-in-zone items.world first (0 - 3) tbd-white, off-black = tbd-in-zone items.world first (0 - 3) tbd-black,
+          current-player = side, cube = 1, cube-owner = (-1), offered = 0, dropped = (-1) }
+        in let source = if from == (0 - 2) then bg-bar-from else from
+        in let die = if to == (0 - 3) then (if from < 0 then 0 else tbd-off-die b dice from white 1)
+          else if from == (0 - 2) then (if white then 24 - to else to + 1)
+          else if white then from - to else to - from
+        in if die < 1 | die > 6 | not (bg-legal b dice source die) then 1
+        else 0 - die
+ A refereed die is spent once the checker stands in the zone it was dropped on, so a drop the item layer refuses keeps
+ it; the move restarts the table's idle clock.
+  tbd-spend : GsiState, Integer, List Integer, Integer, Integer -> Integer
+  tbd-spend (items) (t) (packet) (die) (now) = when world-get items.world (gp-u32 packet 1)
+    is Err (_) -> 0
+    is Ok (c) -> if c.container /= gp-u32 packet 10 | tbd-zone c.x c.y /= tbd-zone (gp-u16 packet 5) (gp-u16 packet 7) then 0
+      else let found = tbd-board-set items.world c.container 0
+      in if found < 0 then 0
+      else let s = list-at tbd-sets found
+      in let side = if c.graphic == tbd-white then 0 else 1
+      in let dice = tbd-dice-of items.world s side
+      in let stamped = tbd-stamp t s now
+      in tbd-keep items.world (tbd-cup-of items.world s side) (tbd-without dice die 0 False [])
+  tbd-install : GsiState -> Integer
+  tbd-install (items) = tbd-install-from items 0
+  tbd-install-from : GsiState, Integer -> Integer
+  tbd-install-from (items) (i) = if i >= list-length tbd-sets then 0 else tbd-install-set items (list-at tbd-sets i) + tbd-install-from items (i + 1)
+  tbd-install-set : GsiState, TbdSet -> Integer
+  tbd-install-set (items) (s) = let cups = tbd-install-cup items s 0 + tbd-install-cup items s 1
+    in if tbd-board items.world s /= 0 | world-room items.world < 31 then cups
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = s.x, y = s.y, z = s.z, graphic = tbd-art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (board) -> if gsi-register items board 0 tbd-gump False False /= 0 then 0
+        else let start = backgammon-new
+        in let placed = tbd-points items board start.points 0
+        in let touched = world-touch items.world in cups + 1 + placed
+ Silas's house (the Sweet Dreams innkeeper, vendor 5 in bb-shops order) is paid for a round of drink.
+  tbd-house : Integer = 5
+  tbd-clear : WorldTable, Integer -> Integer
+  tbd-clear (world) (serial) = if serial == 0 then 0
+    else let next = world-next-sibling world serial
+    in let gone = when world-get world serial is Err (_) -> 0 is Ok (c) -> if tbd-checker c.graphic then (when world-delete world serial is Err (_) -> 0 is Ok (_) -> 1) else 0
+    in gone + tbd-clear world next
+ When either side has borne off all fifteen checkers the winner is named, and the table frees with a fresh board.
+  tbd-settle : GvWorld, GsiState, Integer, Integer -> List (List Integer)
+  tbd-settle (v) (items) (t) (board) = let found = tbd-board-set items.world board 0
+    in if found < 0 then []
+    else let s = list-at tbd-sets found
+    in let first = world-first-child items.world board
+    in let white = tbd-in-zone items.world first (0 - 3) tbd-white
+    in let black = tbd-in-zone items.world first (0 - 3) tbd-black
+    in if white < 15 & black < 15 then []
+    else let points = bg-points (tbd-position items.world board 0)
+    in let freed = tbd-reset items t s
+    in [sip-message board tbd-art 6 ((if white >= 15 then "White" else "Black") & " wins " & show (max 1 points) & (if points > 1 then " points." else " point.")),
+      sip-message board tbd-art 6 "The table is free; roll a cup to play."]
+ A fresh game (every checker on its opening point) offers the stake first: the first roll is the offer, and only the
+ roll after it, under turn flag 2, starts play.
+  tbd-same : List Integer, List Integer, Integer -> Boolean
+  tbd-same (a) (b) (i) = if i >= list-length a then True else list-at a i == list-at b i & tbd-same a b (i + 1)
+  tbd-fresh : WorldTable, Integer -> Boolean
+  tbd-fresh (world) (board) = let p = tbd-position world board 0
+    in let start = backgammon-new
+    in p.bar-white == 0 & p.bar-black == 0 & p.off-white == 0 & p.off-black == 0 & tbd-same p.points start.points 0
+ The patron is a gambler standing on the inn floor beside the board, a saved world mobile told apart by its hue, as the
+ Royal Minter is. His persona (TavernBackgammon.codex TbPatron) sets his play: he takes the engine's best move with
+ probability tb-strength / 1000 (skill less drink) and otherwise the first legal one (tb-first).
+  tbd-patron-x : Integer = 1497
+  tbd-patron-y : Integer = 1616
+  tbd-patron-z : Integer = 20
+  tbd-patron-hue : Integer = #0459
+  tbd-persona : TbPatron = TbPatron { identity = 1, purse = 0, npc = True, skill = 700, drink = 0, appetite = 600, wager-limit = 100 }
+  tbd-gambler : WorldTable, Integer -> Integer
+  tbd-gambler (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 1 & o.hue == tbd-patron-hue & o.container == 0) then serial
+    else tbd-gambler world (world-tile-next world serial)
+  tbd-name : GsiState, List Integer -> Maybe GameReply
+  tbd-name (items) (packet) = if list-length packet /= 5 | list-at packet 0 /= 9 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in if serial == 0 | tbd-gambler items.world (world-tile-first items.world tbd-patron-x tbd-patron-y) /= serial then None
+    else let cup = tbd-cup items.world (world-tile-first items.world (tbd-cup-x tbd-home 0) (tbd-cup-y tbd-home 0))
+    in let rounds = when world-get items.world cup is Err (_) -> 0 is Ok (o) -> o.health / tbd-drink-unit
+    in Just (gs-reply [sip-message serial 0 6 ("Silas the gambler" & (if rounds >= 3 then " (drunk)" else if rounds >= 1 then " (merry)" else ""))] "tavern:name")
+ Above the turn flag the cup's health holds Silas's drink, one level (250) per round bought, at most four; settling a
+ game clears it. Drink dulls his play (tb-strength) and warms him to a stake (tb-interest).
+  tbd-drink-unit : Integer = 9604
+  tbd-drunk : Integer -> TbPatron
+  tbd-drunk (health) = TbPatron { identity = 1, purse = 0, npc = True, skill = 700, drink = 250 * min 4 (health / tbd-drink-unit),
+    appetite = 600, wager-limit = 100 }
+  tbd-round-price : Integer = 5
+  tbd-round : GvWorld, GsiState, GameShard, GameInput, Integer -> Maybe GameReply
+  tbd-round (v) (items) (game) (input) (gambler) = when world-get game.world input.session.serial
+    is Err (_) -> None
+    is Ok (m) -> if walk-abs (m.x - tbd-patron-x) > 2 | walk-abs (m.y - tbd-patron-y) > 2 then Just (gsi-denied "That is too far away.")
+      else let cup = tbd-cup items.world (world-tile-first items.world (tbd-cup-x tbd-home 0) (tbd-cup-y tbd-home 0))
+      in let at = gv-player v input.session.serial 0
+      in if cup == 0 | at < 0 | tbd-house >= list-length v.vendors then None
+      else let health = when world-get items.world cup is Err (_) -> 0 is Ok (o) -> o.health
+      in if health / tbd-drink-unit >= 4 then Just (gs-reply [sip-message gambler 0 6 "Silas pushes the cup away. 'No more for me.'"] "tavern:round")
+      else let w = v.currency.world
+      in let paid = eu-pay v.currency True (ep-actor w (list-at v.players at).actor).purse (ep-actor w (list-at v.vendors tbd-house).actor).purse tbd-round-price 0 0
+      in if paid /= 0 then Just (gsi-denied ("A round costs " & show tbd-round-price & " copper."))
+      else when world-get items.world cup
+        is Err (_) -> None
+        is Ok (o) -> when world-update items.world (__record-set o "health" (o.health + tbd-drink-unit))
+          is Err (_) -> None
+          is Ok (_) -> Just (gs-reply [sip-message gambler 0 6 "Silas drains the ale. 'Your health!'"] "tavern:round")

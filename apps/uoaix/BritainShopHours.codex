@@ -1,0 +1,278 @@
+Chapter: BritainShopHours
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter ShopStock
+  cites Uoaix chapter MageryState
+  cites Uoaix chapter GameCombatPackets
+  cites Uoaix chapter KeeperLeisure
+
+ Shops trade from game hour 8 to 20 (root, 2026-10-07). The innkeeper (shop 5) lives at the inn, whose doors are the
+ shared lodging's and never bar. A door within 4 tiles of a shop's reference region is that shop's.
+  bsh-open-hour : Integer = 8
+  bsh-close-hour : Integer = 20
+  bsh-inn : Integer = 5
+  bsh-reach : Integer = 4
+  BshKeeper = record { home : BbSpot, work : BbSpot, tavern : BbSpot, concert : BbSpot, walk : RteWalk, next-step : Integer, goal : Integer, via-home : Integer, settled : Integer }
+ A keeper spends two hours at the Blue Boar after closing, then goes home (one role, val S2, BritainShops.md).
+  bsh-tavern-hour : Integer = 22
+  bsh-goal : Integer, Integer -> Integer
+  bsh-goal (i) (seconds) = let hour = int-mod (seconds / 3600) 24
+    in if bsh-never-closes i then 1
+    else if i == bb-musician then (if bsh-shop-open i seconds then 1 else 0)
+    else if bsh-open seconds then 1 else if hour >= bsh-close-hour & hour < bsh-tavern-hour then 2 else 0
+ Healers and taverns never close (Damian, 2026-10-10): the healer, the innkeeper and the tavern keeper trade at every hour,
+ in every city (ct-shop-roles). The Conservatory's musician plays from 18 to midnight (UOAIX-222).
+  bsh-healer : Integer = 4
+  bsh-never-closes : Integer -> Boolean
+  bsh-never-closes (i) = i == bsh-healer | i == bsh-inn | i == bb-tavern-keeper
+  bsh-concert-hour : Integer = 18
+  bsh-shop-open : Integer, Integer -> Boolean
+  bsh-shop-open (i) (seconds) = if bsh-never-closes i then True
+    else if i == bb-musician then int-mod (seconds / 3600) 24 >= bsh-concert-hour
+    else bsh-open seconds
+ A musician at its post plays a well-played lute (0x4C in the 1.25 SOUNDIDX.MUL) once a game minute, heard through the
+ event ring by every player in range (the town step's own packets are dropped by the timer drain).
+  bsh-lute-sound : Integer = #4C
+  bsh-play-seconds : Integer = 60
+  bsh-plays : Integer, Integer -> Boolean
+  bsh-plays (i) (goal) = i == bb-musician & goal == 1
+  BshStaff = record { keepers : List BshKeeper, door-rows : List Integer, door-shops : List Integer, door-nights : List Integer, phase : Integer, leisure : Integer }
+  bsh-open : Integer -> Boolean
+  bsh-open (seconds) = let hour = int-mod (seconds / 3600) 24 in hour >= bsh-open-hour & hour < bsh-close-hour
+ A night runs from one closing to the next opening; its number changes at each opening hour.
+  bsh-night : Integer -> Integer
+  bsh-night (seconds) = (seconds + (24 - bsh-open-hour) * 3600) / 86400
+  bsh-next-change : Integer -> Integer
+  bsh-next-change (seconds) = let day = seconds / 86400 * 86400
+    in let hour = int-mod (seconds / 3600) 24
+    in if hour < bsh-open-hour then day + bsh-open-hour * 3600
+    else if hour < bsh-close-hour then day + bsh-close-hour * 3600
+    else if hour < bsh-tavern-hour then day + bsh-tavern-hour * 3600
+    else day + 86400 + bsh-open-hour * 3600
+ UOAIX-224 (Damian, 2026-10-09: "Tinker Shop closed, till 8am (35 minutes)"). The real wait is the game wait at the
+ panel's day length, day-seconds real seconds a game day; 7200 is GameClock's default day, as in cg-game-ms.
+  bsh-row-shop : BshStaff, Integer, Integer -> Integer
+  bsh-row-shop (s) (row) (j) = if j == list-length s.door-rows then -1
+    else if list-at s.door-rows j == row then list-at s.door-shops j else bsh-row-shop s row (j + 1)
+  bsh-hour-text : Integer -> Text
+  bsh-hour-text (h) = if h == 0 then "12am" else if h < 12 then show h & "am" else if h == 12 then "12pm" else show (h - 12) & "pm"
+  bsh-count-text : Integer, Text -> Text
+  bsh-count-text (n) (noun) = show n & " " & noun & (if n == 1 then "" else "s")
+  bsh-wait-text : Integer -> Text
+  bsh-wait-text (minutes) = if minutes < 60 then bsh-count-text minutes "minute"
+    else if int-mod minutes 60 == 0 then bsh-count-text (minutes / 60) "hour"
+    else bsh-count-text (minutes / 60) "hour" & " " & bsh-count-text (int-mod minutes 60) "minute"
+  bsh-door-note : BshStaff, Integer, Integer, Integer, Integer -> Text
+  bsh-door-note (s) (row) (raw) (seconds) (day-seconds) = let shop = bsh-row-shop s row 0
+    in if shop < 0 | bit-and raw 4 == 0 then "" else bsh-closed-note shop seconds day-seconds
+ A closed shop's note for role shop ("" while open), said at its barred door and by its keeper (every city's shop speaks as
+ its Britain role).
+  bsh-closed-note : Integer, Integer, Integer -> Text
+  bsh-closed-note (shop) (seconds) (day-seconds) = if shop < 0 | shop >= bb-shop-count | bsh-shop-open shop seconds then ""
+    else let hour = if shop == bb-musician then bsh-concert-hour else bsh-open-hour
+    in let at = int-mod seconds 86400
+    in let opens = hour * 3600
+    in let wait = if at < opens then opens - at else 86400 - at + opens
+    in let real = wait * (if day-seconds > 0 then day-seconds else 7200) / 86400
+    in let minutes = if real < 60 then 1 else (real + 59) / 60
+    in let entry = list-at bb-shops shop
+    in (if shop == bb-musician then entry.premises else entry.title & " Shop") & " closed, till " & bsh-hour-text hour & " (" & bsh-wait-text minutes & ")"
+  bsh-mask : Integer -> Integer
+  bsh-mask (seconds) = bsh-mask-from seconds 0
+  bsh-mask-from : Integer, Integer -> Integer
+  bsh-mask-from (seconds) (i) = if i == bb-shop-count then 0
+    else (if bsh-shop-open i seconds then 0 else bit-shl 1 i) + bsh-mask-from seconds (i + 1)
+  bsh-inside : BbShop, Integer, Integer, Integer -> Boolean
+  bsh-inside (shop) (x) (y) (reach) = x >= shop.x1 - reach & x <= shop.x2 + reach & y >= shop.y1 - reach & y <= shop.y2 + reach
+  bsh-keepers : Integer, List BshKeeper -> List BshKeeper
+  bsh-keepers (i) (xs) = if i == bb-shop-count then xs
+    else bsh-keepers (i + 1) (list-push xs (BshKeeper { home = BbSpot { x = 0, y = 0, z = 0 }, work = BbSpot { x = 0, y = 0, z = 0 },
+      tavern = BbSpot { x = 0, y = 0, z = 0 }, concert = BbSpot { x = 0, y = 0, z = 0 }, walk = rte-walk 0, next-step = 0, goal = -1, via-home = 0, settled = 0 }))
+  bsh-tavern-taken : List BshKeeper, BbSpot, Integer, Integer -> Boolean
+  bsh-tavern-taken (keepers) (spot) (count) (i) = if i == count then False
+    else let h = (list-at keepers i).tavern
+    in if h.x == spot.x & h.y == spot.y & h.z == spot.z then True else bsh-tavern-taken keepers spot count (i + 1)
+  bsh-tavern : TownLive, WalkMap, List BshKeeper, Integer, Integer -> Result BbSpot Text
+  bsh-tavern (t) (map) (keepers) (count) (offset) = when bb-placement t.vendors.game.world map tl-tavern-region offset
+    is Err (e) -> Err e
+    is Ok (spot) -> if not (tl-tavern-used t spot 0) & not (bsh-tavern-taken keepers spot count 0) then Ok spot
+      else bsh-tavern t map keepers count ((spot.y - tl-tavern-region.y1) * (tl-tavern-region.x2 - tl-tavern-region.x1 + 1) + spot.x - tl-tavern-region.x1 + 1)
+  bsh-taken : List BshKeeper, BbSpot, Integer, Integer -> Boolean
+  bsh-taken (keepers) (spot) (count) (i) = if i == count then False
+    else let h = (list-at keepers i).home
+    in if h.x == spot.x & h.y == spot.y & h.z == spot.z then True else bsh-taken keepers spot count (i + 1)
+ A keeper's home is never a miner's, the gatherer's or the farmer's (reserved), so no two sleepers share a bed.
+  bsh-reserved : List BbSpot, BbSpot, Integer -> Boolean
+  bsh-reserved (reserved) (spot) (i) = if i == list-length reserved then False
+    else let r = list-at reserved i
+    in if r.x == spot.x & r.y == spot.y then True else bsh-reserved reserved spot (i + 1)
+  bsh-home : TownLive, WalkMap, List BshKeeper, List BbSpot, Integer, Integer -> Result BbSpot Text
+  bsh-home (t) (map) (keepers) (reserved) (count) (offset) = when bb-placement t.vendors.game.world map tl-home-region offset
+    is Err (e) -> Err e
+    is Ok (spot) -> if not (tl-spot-used t spot 0 0) & not (bsh-taken keepers spot count 0) & not (bsh-reserved reserved spot 0) then Ok spot
+      else bsh-home t map keepers reserved count ((spot.y - tl-home-region.y1) * (tl-home-region.x2 - tl-home-region.x1 + 1) + spot.x - tl-home-region.x1 + 1)
+  bsh-work : TownLive, WalkMap, WorldObject, BbShop -> Result BbSpot Text
+  bsh-work (t) (map) (npc) (shop) = if bsh-inside shop npc.x npc.y 0 then Ok (BbSpot { x = npc.x, y = npc.y, z = npc.z })
+    else bb-placement t.vendors.game.world map shop 0
+ A keeper the lodging cannot hold keeps its shop as its home.
+  bsh-fill : List BshKeeper, TownLive, WalkMap, List BbSpot, Integer -> Result Integer Text
+  bsh-fill (keepers) (t) (map) (reserved) (i) = if i == bb-shop-count then Ok 0
+    else let k = list-at keepers i
+    in when world-get t.vendors.game.world (list-at t.vendors.vendors i).serial
+      is Err (_) -> let idle = __record-set k "next-step" tl-max-seconds in bsh-fill keepers t map reserved (i + 1)
+      is Ok (npc) -> when bsh-work t map npc (list-at bb-shops i)
+        is Err (e) -> Err e
+        is Ok (work) -> let w = tl-copy-spot k.work work
+          in let home = if i == bsh-inn then work else (when bsh-home t map keepers reserved i 0 is Err (_) -> work is Ok (spot) -> spot)
+          in let h = tl-copy-spot k.home home
+          in let tavern = when bsh-tavern t map keepers i 0 is Err (_) -> home is Ok (spot) -> spot
+          in let v = tl-copy-spot k.tavern tavern
+          in let concert = when bsh-concert t map keepers i 0 is Err (_) -> tavern is Ok (spot) -> spot
+          in let c = tl-copy-spot k.concert concert
+          in bsh-fill keepers t map reserved (i + 1)
+ The door walks take the shops as a list bound once (bsh-new): a list constant is built again at every mention, and
+ naming bb-shops for each shop of each door row kept 27 MB at boot.
+  bsh-shop-of : List BbShop, WdState, Integer, Integer -> Integer
+  bsh-shop-of (shops) (doors) (row) (shop) = if shop == bb-shop-count then -1
+    else if shop /= bsh-inn & bsh-inside (list-at shops shop) (wd-field doors row 0) (wd-field doors row 1) bsh-reach then shop
+    else bsh-shop-of shops doors row (shop + 1)
+  bsh-door-rows : List BbShop, WdState, BbSpot, Integer, List Integer -> List Integer
+  bsh-door-rows (shops) (doors) (entrance) (i) (out) = if i == doors.count then out
+    else if wd-field doors i 7 /= 1 | (wd-field doors i 0 == entrance.x & wd-field doors i 1 == entrance.y) | bsh-shop-of shops doors i 0 < 0 then bsh-door-rows shops doors entrance (i + 1) out
+    else bsh-door-rows shops doors entrance (i + 1) (list-push out i)
+  bsh-door-shops : List BbShop, WdState, List Integer, Integer, List Integer -> List Integer
+  bsh-door-shops (shops) (doors) (rows) (i) (out) = if i == list-length rows then out
+    else bsh-door-shops shops doors rows (i + 1) (list-push out (bsh-shop-of shops doors (list-at rows i) 0))
+  bsh-nights : Integer, List Integer -> List Integer
+  bsh-nights (n) (out) = if n == 0 then out else bsh-nights (n - 1) (list-push out (0 - 1))
+  bsh-new : TownLive, WalkMap, Maybe WdState, List BbSpot, Integer -> Result BshStaff Text
+  bsh-new (t) (map) (optional) (reserved) (leisure) =
+    let keepers = bsh-keepers 0 (__list-with-capacity bb-shop-count)
+    in let catalog = bb-shops
+    in let rows = when optional is None -> [] is Just (doors) -> bsh-door-rows catalog doors t.entrance 0 []
+    in let shops = when optional is None -> [] is Just (doors) -> bsh-door-shops catalog doors rows 0 []
+    in if t.vendors.vendor-count < bb-shop-count then Err "Britain shop hours: keepers absent"
+    else when bsh-fill keepers t map reserved 0
+      is Err (e) -> Err e
+      is Ok (_) -> Ok (BshStaff { keepers = keepers, door-rows = rows, door-shops = shops, door-nights = bsh-nights (list-length rows) [], phase = 0 - 1, leisure = leisure })
+  bsh-away : TownLive, Integer -> Boolean
+  bsh-away (t) (i) = when world-get t.vendors.game.world (list-at t.vendors.vendors i).serial
+    is Err (_) -> True
+    is Ok (npc) -> npc.health <= 0 | not (bsh-inside (list-at bb-shops i) npc.x npc.y bsh-reach)
+ A closed shop's doors bar once each night, after its keeper has left; a picked bar stays open until the next night.
+  bsh-bar : BshStaff, TownLive, WdState, Integer, Integer, Integer -> Integer
+  bsh-bar (s) (t) (doors) (now) (j) (changed) = if j == list-length s.door-rows then changed
+    else let row = list-at s.door-rows j
+    in let raw = peek-byte doors.opened row
+    in let night = bsh-night now
+    in let moved = if bsh-shop-open (list-at s.door-shops j) now then (if bit-and raw 4 == 0 then 0 else let cleared = wd-unbar doors row in 1)
+      else if list-at s.door-nights j == night | raw /= 0 | not (bsh-away t (list-at s.door-shops j)) then 0
+      else let noted = list-set-at s.door-nights j night in wd-bar doors row
+    in bsh-bar s t doors now (j + 1) (changed + moved)
+  bsh-at-work : BshStaff, Integer -> Boolean
+  bsh-at-work (s) (i) = if i < 0 | i >= list-length s.keepers then True
+    else let k = list-at s.keepers i in k.goal == 1 & k.settled == 1
+  bsh-spot : BshKeeper, Integer -> BbSpot
+  bsh-spot (k) (goal) = if goal == 0 then k.home else if goal == 2 then k.tavern else if goal == 3 then k.concert else k.work
+ After closing a keeper goes where its leisure need sends it tonight (KeeperLeisure): the Blue Boar, the Conservatory or home.
+  bsh-goal-of : BshStaff, Integer, Integer -> Integer
+  bsh-goal-of (s) (i) (now) = let goal = bsh-goal i now in if goal == 2 then kl-choose s.leisure i (bsh-night now) else goal
+ A keeper's concert tile is a free tile in the Conservatory's audience no other keeper holds.
+  bsh-concert-taken : List BshKeeper, BbSpot, Integer, Integer -> Boolean
+  bsh-concert-taken (keepers) (spot) (count) (i) = if i == count then False
+    else let h = (list-at keepers i).concert
+    in if h.x == spot.x & h.y == spot.y & h.z == spot.z then True else bsh-concert-taken keepers spot count (i + 1)
+  bsh-concert : TownLive, WalkMap, List BshKeeper, Integer, Integer -> Result BbSpot Text
+  bsh-concert (t) (map) (keepers) (count) (offset) = when bb-placement t.vendors.game.world map kl-concert-region offset
+    is Err (e) -> Err e
+    is Ok (spot) -> if not (bsh-concert-taken keepers spot count 0) then Ok spot
+      else bsh-concert t map keepers count ((spot.y - kl-concert-region.y1) * (kl-concert-region.x2 - kl-concert-region.x1 + 1) + spot.x - kl-concert-region.x1 + 1)
+  bsh-keeper : BshStaff, TownLive, WalkMap, Maybe WdState, Integer, Integer -> Result (List (List Integer)) Text
+  bsh-keeper (s) (t) (map) (doors) (now) (i) =
+    let k = list-at s.keepers i
+    in let goal = bsh-goal-of s i now
+    in if k.next-step > now & k.goal == goal then Ok []
+    else when world-get t.vendors.game.world (list-at t.vendors.vendors i).serial
+      is Err (_) -> Ok []
+      is Ok (npc) -> if npc.kind /= 1 | npc.health <= 0 then Ok []
+        else let changed = if k.goal == goal then 0 else
+          let via = __record-set k "via-home" (if k.goal >= 0 & (goal == 0 | k.goal == 0) & not (tl-at npc (bsh-spot k goal)) then 1 else 0)
+          in let selected = __record-set k "goal" goal
+          in let unsettled = __record-set k "settled" 0
+          in rte-drop k.walk
+        in let target = if k.via-home == 1 then t.entrance else bsh-spot k k.goal
+        in if tl-at npc target | (k.via-home == 0 & k.goal == 0 & tl-in-lodging npc) then
+          (if k.via-home == 1 then let arrived = __record-set k "via-home" 0 in let cleared = rte-drop k.walk in Ok []
+          else if bsh-plays i k.goal then let rest = __record-set k "next-step" (now + bsh-play-seconds) in let arrived = __record-set k "settled" 1 in let cleared = rte-drop k.walk
+            in let heard = t.items.notice npc.x npc.y 0 0 0 (cbp-sound bsh-lute-sound npc) in Ok []
+          else let rest = __record-set k "next-step" (bsh-next-change now) in let arrived = __record-set k "settled" 1 in let cleared = rte-drop k.walk
+            in let paid = if k.goal == 2 | k.goal == 3 then kl-pay t.vendors s.leisure i (bsh-night now) k.goal else 0 in Ok [])
+        else let moves = k.walk.moves
+        in when rte-toward-budget t.nav t.vendors.game.world (Just t.vendors.game) map doors rte-any k.walk npc target.x target.y target.z bsh-plan-budget
+          is Err (e) -> Err e
+          is Ok (packets) -> let next = __record-set k "next-step" (now + (if k.walk.moves == moves then tl-retry-seconds else tl-move-seconds)) in Ok packets
+ UOAIX-216: at most bsh-plans keepers start a route plan in one step. A goal change at opening (8) or the Blue Boar's hour (12)
+ dropped every keeper's route and all of them planned in the same 100 ms step, about 19 ms of wall time a plan, 0.35 to 0.47 s in
+ all (trial 43336, TICK SLOW 13.14); the rest wait a step, so the town opens over about 1.3 s.
+  bsh-plans : Integer = 2
+ A keeper's plan expands at most 16384 cells, about a seventh of Britain's 432 x 272 map: a failed search costs that bound.
+  bsh-plan-budget : Integer = 16384
+  bsh-will-plan : BshKeeper, Integer, Integer -> Boolean
+  bsh-will-plan (k) (goal) (now) = not (k.next-step > now & k.goal == goal) & (k.walk.route < 0 | k.goal /= goal)
+  bsh-keepers-step : BshStaff, TownLive, WalkMap, Maybe WdState, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  bsh-keepers-step (s) (t) (map) (doors) (now) (i) (packets) = bsh-keepers-budget s t map doors now i packets bsh-plans (\stage -> 0)
+  bsh-keepers-budget : BshStaff, TownLive, WalkMap, Maybe WdState, Integer, Integer, List (List Integer), Integer, (Integer -> Integer) -> Result (List (List Integer)) Text
+  bsh-keepers-budget (s) (t) (map) (doors) (now) (i) (packets) (left) (mark) = if i == bb-shop-count then Ok packets
+    else let marked = mark (4 + i)
+    in let plans = bsh-will-plan (list-at s.keepers i) (bsh-goal-of s i now) now
+    in if plans & left <= 0 then bsh-keepers-budget s t map doors now (i + 1) packets left mark
+    else when bsh-keeper s t map doors now i
+      is Err (e) -> Err e
+      is Ok (moved) -> bsh-keepers-budget s t map doors now (i + 1) (packets & moved) (if plans then left - 1 else left) mark
+ ServUO Data/containers.cfg: the strong box 0x0E80 opens gump 0x4B and the crate 0x0E3C gump 0x44.
+  bsh-gump : Integer -> Integer
+  bsh-gump (art) = if art == ss-box-art then #004B else #0044
+  bsh-lock-box : GvWorld, Magery, Integer, Integer, Boolean -> Integer
+  bsh-lock-box (v) (magic) (i) (art) (locked) = let box = ss-box v i art
+    in if box == 0 then 0
+    else if gsi-register magic.items box 0 (bsh-gump art) False False /= 0 then 0
+    else when mgs-container magic box
+      is Err (_) -> 0
+      is Ok (_) -> let meta = list-at magic.definitions (world-slot magic.items.world box)
+        in let set = __record-set meta "locked" locked
+        in mgs-touch magic
+ The strong box stays locked; the crate locks at closing. Each opening and closing relocks a picked box.
+  bsh-locks : GvWorld, Magery, Boolean, Integer -> Integer
+  bsh-locks (v) (magic) (open) (i) = if i >= ss-shops v then 0
+    else let box = bsh-lock-box v magic i ss-box-art True
+    in let crate = bsh-lock-box v magic i ss-crate-art (not open)
+    in bsh-locks v magic open (i + 1)
+  bsh-turn : BshStaff, GvWorld, Maybe Magery, Integer -> Integer
+  bsh-turn (s) (v) (magic) (now) = let phase = if bsh-open now then 0 else 1
+    in if s.phase == phase then 0
+    else let turned = __record-set s "phase" phase
+    in let emptied = if phase == 1 then gv-window-all v 0 else 0
+    in when magic is None -> 1 is Just (m) -> let locked = bsh-locks v m (phase == 0) 0 in 1
+ A list constant is built again at every mention, so the roles are bound once a call: ct-vendor-role named ct-shop-roles
+ (about 150 entries) for each vendor of each 100 ms town step (UOAIX-216).
+  bsh-shut : GvWorld, Integer, Integer, Integer -> Integer
+  bsh-shut (v) (seconds) (i) (count) = bsh-shut-in v ct-shop-roles seconds i count
+  bsh-shut-in : GvWorld, List Integer, Integer, Integer, Integer -> Integer
+  bsh-shut-in (v) (roles) (seconds) (i) (count) = if i >= v.vendor-count then count
+    else let role = if i < bb-shop-count then i else if i - bb-shop-count < list-length roles then list-at roles (i - bb-shop-count) else -1
+    in let set = gv-set-shut v i (if role < 0 then False else not (bsh-shop-open role seconds))
+    in bsh-shut-in v roles seconds (i + 1) (count + set)
+  bsh-advance : BshStaff, TownLive, WalkMap, Maybe WdState, Maybe Magery, Integer -> Result (List (List Integer)) Text
+  bsh-advance (s) (t) (map) (doors) (magic) (now) = bsh-advance-marked s t map doors magic now (\stage -> 0)
+ UOAIX-216: mark names each stage as it starts (0 closing flags, 1 open/close turn, 2 door bars, 3 keepers, 4 + i keeper i), so the wheel's
+ accounting can time them (cg-town-move).
+  bsh-advance-marked : BshStaff, TownLive, WalkMap, Maybe WdState, Maybe Magery, Integer, (Integer -> Integer) -> Result (List (List Integer)) Text
+  bsh-advance-marked (s) (t) (map) (doors) (magic) (now) (mark) =
+    let m0 = mark 0
+    in let closed = __record-set t.vendors "closed" (bsh-shut t.vendors now 0 0)
+    in let m1 = mark 1
+    in let turned = bsh-turn s t.vendors magic now
+    in let m2 = mark 2
+    in let barred = when doors is None -> 0 is Just (state) -> bsh-bar s t state now 0 0
+    in let touched = if barred == 0 then 0 else world-item-touch t.vendors.game.world
+    in let m3 = mark 3
+    in bsh-keepers-budget s t map doors now 0 [] bsh-plans mark

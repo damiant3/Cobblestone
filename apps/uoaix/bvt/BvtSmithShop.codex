@@ -1,0 +1,64 @@
+Chapter: BvtSmithShop
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter KeeperLeisure
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvss-made : Result Integer Text -> Integer
+  bvss-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvss-vendor : GvWorld, Integer -> Integer
+  bvss-vendor (v) (i) =
+    let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 (1000 + i)) 100
+    in let npc = bvss-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bvss-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bvss-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bvss-made (world-create v.game.world (gs-item npc #0E75 0))
+    in gv-add-vendor v npc actor stock extra buys
+  bvss-lot : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  bvss-lot (v) (actor) (container) (graphic) (item) (amount) =
+    let serial = bvss-made (world-create v.game.world (__record-set (gs-item container graphic 0) "amount" amount))
+    in let found = ep-find v.currency.world actor item amount
+    in if serial == 0 | found < 0 then -1 else gv-add-lot v serial actor item 1000 32 0
+  bvss-offers : GvPlayer, Integer, Integer -> Boolean
+  bvss-offers (p) (item) (i) = if i >= p.count then False else (list-at p.offers i).item == item | bvss-offers p item (i + 1)
+  bvss-menu : GvWorld, GvPlayer, Integer -> Integer
+  bvss-menu (v) (p) (index) = let cleared = __record-set p "count" 0 in gv-fill v p (list-at v.vendors index) 1 0
+  bvss-keeper : Integer, Integer -> Boolean
+  bvss-keeper (goal) (settled) = let s = BshStaff { keepers = bsh-keepers 0 [], door-rows = [], door-shops = [], door-nights = [], phase = 0, leisure = kl-new 0 }
+    in let k = list-at s.keepers 1
+    in let g = __record-set k "goal" goal
+    in let t = __record-set k "settled" settled
+    in bsh-at-work s 1
+  bvt-smith-shop : Integer -> [Console] Integer
+  bvt-smith-shop (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("smith shop fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("smith shop fixture economy: " & e) False
+      is Ok (x) -> act
+        v <- gv-new shard x
+        v0 <- bvss-vendor v 0
+        v1 <- bvss-vendor v 1
+        v2 <- bvss-vendor v 2
+        smith <- list-at v.vendors 1
+        tailor <- list-at v.vendors 2
+        ingots <- bvss-lot v smith.actor smith.extra #1BF2 31 10
+        sword <- bvss-lot v smith.actor smith.extra #0F5E 40 1
+        gorget <- bvss-lot v smith.actor smith.stock #1413 71 1
+        cloth <- bvss-lot v tailor.actor tailor.stock #175D 37 4
+        who <- bvss-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+        pack <- bvss-made (world-create v.game.world (gs-item who #0E75 0))
+        bound <- gv-add-player v who 1 pack
+        p <- list-at v.players 0
+        smithy <- bvss-menu v p 1
+        smith-ingots <- bvss-offers p 31 0
+        smith-sword <- bvss-offers p 40 0
+        smith-gorget <- bvss-offers p 71 0
+        clothier <- bvss-menu v p 2
+        tailor-cloth <- bvss-offers p 37 0
+        a <- bvt-check "the smith's buy menu lists what it forged and a resold broadsword, never the ingots it bought (Damian, live main 40625)" (v1 == 1 & ingots >= 0 & sword >= 0 & gorget >= 0 & bound >= 0 & smith-gorget & smith-sword & not smith-ingots)
+        b <- bvt-check "a tailor still lists the cloth it made: only a shop's bought inputs are withheld" (v2 == 2 & cloth >= 0 & tailor-cloth)
+        c <- bvt-check "a station worker walks its keeper only once the keeper has reached its shop for the day" (bvss-keeper 1 1 & not (bvss-keeper 1 0) & not (bvss-keeper 0 1) & not (bvss-keeper 2 1))
+        a + b + c
+      end

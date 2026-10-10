@@ -15,14 +15,15 @@ already carry their complete catalog and retain their saved meanings.
 Copper and silver use the existing mining skill and stone pickaxe. The copper
 source yields up to four ore and regrows in 48 game hours; silver yields up to
 two and regrows in 72 game hours. These are simulation defaults. Each smelting
-recipe consumes two matching ore and one fallen branch at an owned smelter,
+recipe lists two matching ore and one fallen branch at an owned smelter; `ep-craft`
+spends no branch on a smelt and rolls Mining (UOAIX-108, Damian 2026-10-07),
 using metalworking practice. No stock or trained skill is granted at admission.
 
 All three coin edges require the royal mint and stone hammer. Their unit
 quantity proves material closure only. Generic production refuses station 12;
 this component cannot issue currency. Royal mint policy must set each actual
-yield and consume the matching ingot atomically with issuance. The ruling
-100 copper = 10 silver = 1 gold is an exchange rate, not a mint yield.
+yield and consume the matching ingot atomically with issuance. The exchange
+rate (EconomyCurrency.md, "Price scale") is not a mint yield.
 Denominated balances, tax, exchange-rate panel actions and physical coin
 graphics belong to the currency/world adapters and are not implemented here.
 

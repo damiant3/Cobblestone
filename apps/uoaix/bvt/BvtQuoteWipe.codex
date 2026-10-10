@@ -1,0 +1,79 @@
+Chapter: BvtQuoteWipe
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter GameVendor
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter GameHarvestState
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter GameCraft
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ UOAIX-229 (Damian, live 42731: "yeah all shopkeeps are broken to me"): every buy cart was refused "quote absent or
+ expired" because economy steps wipe every open quote; a cart on a wiped quote quotes again. Closed flags live on the
+ vendor rows, so a vendor past index 63 reads open (the 64-bit mask read every vendor >= 64 as closed).
+  bvqw-made : Result Integer Text -> Integer
+  bvqw-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvqw-vendor : GvWorld, Integer -> Integer
+  bvqw-vendor (v) (i) =
+    let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 (1000 + i)) 100
+    in let npc = bvqw-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bvqw-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bvqw-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bvqw-made (world-create v.game.world (gs-item npc #0E75 0))
+    in gv-add-vendor v npc actor stock extra buys
+  bvqw-offers : GvPlayer, Integer, Integer -> Boolean
+  bvqw-offers (p) (item) (i) = if i >= p.count then False else (list-at p.offers i).item == item | bvqw-offers p item (i + 1)
+  bvt-quote-wipe : Integer -> [Console] Integer
+  bvt-quote-wipe (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("quote wipe fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("quote wipe fixture economy: " & e) False
+      is Ok (x) -> act
+        v <- gv-new shard x
+        v0 <- bvqw-vendor v 0
+        v1 <- bvqw-vendor v 1
+        smith <- list-at v.vendors 1
+        made <- bvqw-made (world-create v.game.world (__record-set (gs-item smith.stock #0F5E 0) "amount" 1))
+        found <- ep-find v.currency.world smith.actor 40 1
+        sword <- if made == 0 | found < 0 then -1 else gv-add-lot v made smith.actor 40 1000 32 0
+        who <- bvqw-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+        pack <- bvqw-made (world-create v.game.world (gs-item who #0E75 0))
+        bound <- gv-add-player v who 1 pack
+        p <- list-at v.players 0
+        wiped <- gh-invalidate-quotes v 0
+        requoted <- gv-requote v p smith 1 7 100
+        offered <- bvqw-offers p 40 0
+        held <- p.vendor == smith.serial & p.side == 1 & p.connection == 7 & p.expires == 100 + gv-quote-ticks
+        refused <- gv-refuse p smith.serial "test"
+        again <- gv-requote v p smith 1 7 200
+        late <- gh-invalidate-quotes v 0
+        early <- gv-requote v p smith 1 7 (0 - 1)
+        print-line-uni ("QUOTEWIPE sword=" & show sword & " bound=" & show bound & " requoted=" & show requoted & " again=" & show again & " early=" & show early)
+        a <- bvt-check "a cart on a quote an economy step wiped quotes the vendor's goods again, bound to the vendor, side, connection and a fresh expiry (UOAIX-229)" (v1 == 1 & sword >= 0 & bound >= 0 & requoted > 0 & offered & held)
+        b <- bvt-check "a refused quote keeps its vendor and is not quoted again, nor is a cart with no clock (UOAIX-229)" (again == 0 & p.side == 0 & early == 0)
+        grown <- gv-grow-vendors v 64
+        far <- gv-set-shut v 65 True
+        near <- gv-set-shut v 1 False
+        c <- bvt-check "a vendor row past index 63 holds its own closed flag; its neighbours read open (UOAIX-229, reek: bit-shl 1 64)" (grown >= 66 & gv-shut v 65 & not (gv-shut v 64) & not (gv-shut v 1) & not (gv-shut v 9999) & not (gv-shut v (0 - 1)))
+        night <- bsh-shut v (22 * 3600) 0 0
+        shut <- gv-shut v 0 & gv-shut v 1
+        day <- bsh-shut v (10 * 3600) 0 0
+        d <- bvt-check "shop hours shut every Britain vendor at night and open them by day, counting the shut (UOAIX-229)" (night == 2 & shut & day == 0 & not (gv-shut v 0) & not (gv-shut v 1))
+        craft <- gcr-state (gh-state v (gsi-new shard.world))
+        known <- gsi-register craft.harvest.items made 0 0 True False
+        owner <- __record-set p "actor" smith.actor
+        stocked <- gcr-banked craft p made
+        box <- bvqw-made (world-create v.game.world (gs-item 0 #09B2 0))
+        moved <- when world-get v.game.world made is Err (_) -> False is Ok (o) -> is-ok (world-update v.game.world (__record-set o "container" box))
+        banked <- gcr-banked craft p made
+        other <- __record-set p "actor" 1
+        strange <- gcr-banked craft p made
+        e <- bvt-check "a player's craft tool inside a bank box answers that the tool must be on your person (UOAIX-229, Damian: the tinker tool in my bank starting gear)" (known == 0 & box > 0 & moved & banked)
+        f <- bvt-check "the same tool outside a bank, or another actor's tool in a bank, does not" (not stocked & not strange)
+        a + b + c + d + e + f
+      end

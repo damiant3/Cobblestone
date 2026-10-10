@@ -124,7 +124,7 @@ Section: Keywords and Sanitization
    "cx_text_contains", "cx_text_concat_list", "cx_list_set_at",
    "cx_text_to_integer", "cx_text_replace", "cx_text_split", "cx_cce_to_cp",
    "cx_cp_to_cce", "cx_cce_frame", "cx_cce_to_utf8", "cx_show_int",
-   "cx_print_line", "cx_print", "a", "A", "acc", "al", "alignment", "ascii",
+   "cx_print_line", "cx_print", "cx_raise", "cx_fail_msg", "cx_fail_exit", "cx_opening", "cx_m", "a", "A", "acc", "al", "alignment", "ascii",
    "b", "B", "b0", "base", "bits", "bot", "buf", "bytes", "c", "C",
    "cce_t1_code", "cce_t1_size", "cce_t1_uni", "cce_t2_size", "cce_t2_uni",
    "cce_table", "chunk", "code", "cp", "ctx", "cx_a", "cx_acc", "cx_ap",
@@ -786,7 +786,9 @@ Section: Constructor Map
    tvar-types : List CodexType,
    expected : CodexType,
    bound-names : List Text,
-   scope-tvars : List (Integer between 0 and 4294967295)
+   scope-tvars : List (Integer between 0 and 4294967295),
+   failing : List Text,
+   handler : Text
   }
 
  An empty list literal reaches the IR without a concrete element type,
@@ -1444,7 +1446,7 @@ Section: Builtin Emitter
      },
      ZigBuiltinEmitter {
        name = "fail",
-       emit = \args ctx d ty -> "@panic(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+       emit = \args ctx d ty -> "(if (cx_raise(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")) " & zig-fail-raise ctx & " else " & zig-fail-value ty ctx & ")"
      }
     ]
 
@@ -1514,8 +1516,8 @@ Section: Name Mapping
 
  __heap-save reads the bump frontier (cx_hp), which the buffer
  builtins and the object allocator share -- a buffer address minted by
- __heap-save must be one cx_buf_write_byte can dereference. The pointer boots at bare metal's own
- heap base (boot does mov r10, 6291456), because the absolute value is
+ __heap-save must be one cx_buf_write_byte can dereference. The pointer boots at 6291456, an emulated
+ base below bare metal's (0x1000000), because the absolute value is
  observable: the depot's arith-narrow-proven asserts __heap-save > 0 as a
  structural fact. The deck names call the prelude's real deck for the
  same reason -- deck position is observable, and the deck-*-contract
@@ -1596,7 +1598,9 @@ Section: Name Mapping
      tvar-types = ctx.tvar-types,
      expected = ctx.expected,
      bound-names = (ctx.bound-names) & [p.name],
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
     in zig-push-lambda-renames ctx2 params d (i + 1)
 
@@ -1618,7 +1622,7 @@ Section: Name Mapping
       in if boxed then "cx_new(" & base & "{ ." & zig-sanitize n & " = {} })"
       else base & "{ ." & zig-sanitize n & " = {} }"
     else if lookup-arity (ctx.arities) n == 0
-    then zig-sanitize n & "(" & zig-drop-trailing-sep (zig-call-type-args ctx n [] ty) & ")"
+    then zig-fail-catch ctx n (zig-sanitize n & "(" & zig-drop-trailing-sep (zig-call-type-args ctx n [] ty) & ")")
     else if lookup-arity (ctx.arities) n >= 1 & zig-fn-param-count ty >= 1
     then zig-closure-make n [] ctx d ty
     else if zig-name-known ctx n then zig-sanitize n
@@ -1998,7 +2002,7 @@ Section: Expression Emission
       in zig-label d & ": { const _r = " & emit-zig-expr rec ctx (d + 1) & "; _r." & zig-field-name field & " = " & stored & "; break :" & zig-label d & " _r; }"
      is IrFork (body) (ty) (sp) -> zig-label d & ": { const _fk" & integer-to-text d & " = " & emit-zig-expr body ctx (d + 1) & "; break :" & zig-label d & " _fk" & integer-to-text d & ".call(_fk" & integer-to-text d & ".ctx, {}); }"
      is IrAwait (task) (ty) (sp) -> emit-zig-expr task ctx (d + 1)
-     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-act body ctx d (zig-type-is-void ty)
+     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-zig-try max body fb fail-stmts ty ctx d
      is IrError (msg) (ty) (sp) -> "@panic(\"" & zig-escape-text msg & "\")"
 
  Text is CCE bytes on bare metal, and the faithful port keeps it that
@@ -2097,7 +2101,9 @@ Section: Lambda and List Helpers
      tvar-types = ctx.tvar-types,
      expected = ctx.expected,
      bound-names = (ctx.bound-names) & [n],
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
 
  Zig forbids a local from shadowing a top-level declaration or an
@@ -2200,7 +2206,9 @@ Section: Lambda and List Helpers
      tvar-types = ctx.tvar-types,
      expected = ctx.expected,
      bound-names = ctx.bound-names,
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
 
   zig-lambda-param-types : List IRParam, Integer, CodexType, ZigCtx -> Text
@@ -2226,7 +2234,7 @@ Section: Lambda and List Helpers
     in let caps = zig-captures ctx body params 0 []
     in let ret = emit-zig-type (zig-peel-return ty (list-length params)) (ctx.scope-tvars)
     in let captured = zig-push-capture-renames ctx caps 0 ev
-    in let inner = zig-push-lambda-renames captured params d 0
+    in let inner = zig-with-handler (zig-push-lambda-renames captured params d 0) "!"
     in let unpack = if list-length caps == 0 then "_ = " & cx & "; "
     else "const " & ev & ": *@This() = @ptrCast(@alignCast(" & cx & ")); "
     in let discards = zig-lambda-unused-discards params body d 0
@@ -2748,7 +2756,9 @@ Section: Match Emission
      tvar-types = ctx.tvar-types,
      expected = ctx.expected,
      bound-names = (ctx.bound-names) & names,
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
 
   emit-zig-chain-nested : IRPat, Text, IRExpr, IRExpr, ZigCtx, Integer, CodexType, ZigTail -> Text
@@ -2827,6 +2837,146 @@ Section: Match Emission
       "const " & zig-bind-name ctx binder d & " = _p" & integer-to-text d & "[" & integer-to-text i & "]; "
     in line & emit-zig-pat-unpack-g subs (i + 1) d body guard ctx
 
+Section: Failure
+
+ Zig has no unwinding, so `fail` is an error union. A definition that can let a
+ failure escape returns `anyerror!T`; every call to one catches, and `fail`
+ records its message (`cx_raise`) and leaves through the same handler. The
+ handler is the context's: "" returns the error from the function, "!" prints the
+ message and exits 1 (a lambda's body, whose fn type carries no error), and any
+ other text is the label of the `try` attempt to abandon. `cx_raise` is opaque to
+ zig, so code after a `fail` is not unreachable code.
+
+  zig-in-set : List Text, Text -> Boolean
+  zig-in-set (xs) (n) = zig-in-set-at xs n 0
+
+  zig-in-set-at : List Text, Text, Integer -> Boolean
+  zig-in-set-at (xs) (n) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == n then True
+    else zig-in-set-at xs n (i + 1)
+
+  zig-failing-set : List IRDef, List Text -> List Text
+  zig-failing-set (defs) (acc) =
+    let next = zig-failing-pass defs 0 acc
+    in if list-length next == list-length acc then acc else zig-failing-set defs next
+
+  zig-failing-pass : List IRDef, Integer, List Text -> List Text
+  zig-failing-pass (defs) (i) (acc) =
+    if i >= list-length defs then acc
+    else let d = list-at defs i
+    in if zig-in-set acc (d.name) | not (zig-fails (d.body) acc) then zig-failing-pass defs (i + 1) acc
+    else zig-failing-pass defs (i + 1) (acc & [d.name])
+
+  zig-fails : IRExpr, List Text -> Boolean
+  zig-fails (e) (set) =
+    when e
+     is IrName (n) (ty) (sp) -> n == "fail" | zig-in-set set n
+     is IrList (es) (ty) (sp) -> zig-fails-list es 0 set
+     is IrBinary (op) (l) (r) (ty) (sp) -> zig-fails l set | zig-fails r set
+     is IrNegate (o) (ty) (sp) -> zig-fails o set
+     is IrIf (c) (t) (el) (ty) (sp) -> zig-fails c set | zig-fails t set | zig-fails el set
+     is IrLet (m) (ty) (v) (b) (sp) -> zig-fails v set | zig-fails b set
+     is IrApply (f) (a) (ty) (sp) -> zig-fails f set | zig-fails a set
+     is IrMatch (s) (bs) (ty) (sp) -> zig-fails s set | zig-fails-branches bs 0 set
+     is IrAct (ss) (ty) (sp) -> zig-fails-stmts ss 0 set
+     is IrTry (mx) (b) (fb) (fs) (ty) (sp) ->
+      if list-length fb == 0 then zig-fails-stmts b 0 set
+      else zig-fails-stmts fb 0 set & (list-length fs == 0 | zig-fails-stmts fs 0 set)
+     is IrHandle (eff) (b) (cs) (ty) (sp) -> zig-fails b set
+     is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> zig-fails b set
+     is IrRecord (nm) (fs) (ty) (sp) -> zig-fails-fields fs 0 set
+     is IrFieldAccess (r) (f) (ty) (sp) -> zig-fails r set
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> zig-fails r set | zig-fails v set
+     is IrFork (b) (ty) (sp) -> zig-fails b set
+     is IrAwait (t) (ty) (sp) -> zig-fails t set
+     is otherwise -> False
+
+  zig-fails-list : List IRExpr, Integer, List Text -> Boolean
+  zig-fails-list (es) (i) (set) =
+    if i >= list-length es then False
+    else zig-fails (list-at es i) set | zig-fails-list es (i + 1) set
+
+  zig-fails-branches : List IRBranch, Integer, List Text -> Boolean
+  zig-fails-branches (bs) (i) (set) =
+    if i >= list-length bs then False
+    else let b = list-at bs i
+    in zig-fails (b.guard) set | zig-fails (b.body) set | zig-fails-branches bs (i + 1) set
+
+  zig-fails-stmts : List IRActStmt, Integer, List Text -> Boolean
+  zig-fails-stmts (ss) (i) (set) =
+    if i >= list-length ss then False
+    else (when (list-at ss i)
+     is IrDoBind (m) (ty) (v) (sp) -> zig-fails v set
+     is IrDoExec (x) (sp) -> zig-fails x set) | zig-fails-stmts ss (i + 1) set
+
+  zig-fails-fields : List IRFieldVal, Integer, List Text -> Boolean
+  zig-fails-fields (fs) (i) (set) =
+    if i >= list-length fs then False
+    else zig-fails ((list-at fs i).value) set | zig-fails-fields fs (i + 1) set
+
+  zig-with-handler : ZigCtx, Text -> ZigCtx
+  zig-with-handler (ctx) (h) =
+    ZigCtx {
+     arities = ctx.arities,
+     ctors = ctx.ctors,
+     typedefs = ctx.typedefs,
+     irdefs = ctx.irdefs,
+     renamed-from = ctx.renamed-from,
+     renamed-to = ctx.renamed-to,
+     tvar-ids = ctx.tvar-ids,
+     tvar-types = ctx.tvar-types,
+     expected = ctx.expected,
+     bound-names = ctx.bound-names,
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = h
+    }
+
+ Zig refuses to discard an error value, so only the function-level handler
+ captures one.
+
+  zig-fail-catch : ZigCtx, Text, Text -> Text
+  zig-fail-catch (ctx) (n) (call) =
+    if zig-in-set (ctx.failing) n == False then call
+    else if ctx.handler == "" then "(" & call & " catch |cx_e| return cx_e)"
+    else if ctx.handler == "!" then "(" & call & " catch cx_fail_exit())"
+    else "(" & call & " catch break :" & ctx.handler & ")"
+
+  zig-fail-raise : ZigCtx -> Text
+  zig-fail-raise (ctx) =
+    if ctx.handler == "" then "return error.CodexFail"
+    else if ctx.handler == "!" then "cx_fail_exit()"
+    else "break :" & ctx.handler
+
+  zig-fail-value : CodexType, ZigCtx -> Text
+  zig-fail-value (ty) (ctx) =
+    if zig-type-is-void ty then "{}" else "@as(" & emit-zig-type ty (ctx.scope-tvars) & ", undefined)"
+
+ A `try` whose body cannot fail is its body. Otherwise each attempt is a block the
+ body's failures break out of; the loop runs `max` attempts, then the fallback, the
+ `on failure` statements when the fallback fails, or the failure outward.
+
+  zig-try-give : Text, Boolean, Text -> Text
+  zig-try-give (top) (voidp) (t) =
+    if voidp then "_ = " & t & "; break :" & top & "; " else "break :" & top & " " & t & "; "
+
+  emit-zig-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, CodexType, ZigCtx, Integer -> Text
+  emit-zig-try (max) (body) (fb) (fs) (ty) (ctx) (d) =
+    let voidp = zig-type-is-void ty
+    in if list-length body > 0 & zig-fails-stmts body 0 (ctx.failing) == False then emit-zig-act body ctx d voidp
+    else let n = integer-to-text d
+    in let top = "cx_try" & n
+    in let att = "cx_att" & n
+    in let attempt = att & ": { " & zig-try-give top voidp (emit-zig-act body (zig-with-handler ctx att) (d + 1) voidp) & "} "
+    in let loop = "var cx_i" & n & ": i64 = 0; while (cx_i" & n & " < " & integer-to-text max & ") : (cx_i" & n & " += 1) { " & attempt & "} "
+    in let tail = if list-length fb == 0 then zig-fail-raise ctx & "; "
+      else if list-length fs == 0 | not (zig-fails-stmts fb 0 (ctx.failing)) then zig-try-give top voidp (emit-zig-act fb ctx (d + 1) voidp)
+      else let fbl = "cx_fb" & n
+      in fbl & ": { " & zig-try-give top voidp (emit-zig-act fb (zig-with-handler ctx fbl) (d + 1) voidp) & "} "
+        & zig-try-give top voidp (emit-zig-act fs ctx (d + 1) voidp)
+    in top & ": { " & loop & tail & "}"
+
 Section: Act Emission
 
  The block's value is its last executed statement. A void act ends with a
@@ -2893,8 +3043,9 @@ Section: Apply Emission
       else if list-length args < ar then zig-closure-make n args ctx d (zig-expr-type e)
       else if list-length args > ar then zig-over-apply n args ar ctx d (zig-expr-type e)
       else let atys = zig-arg-types args 0 []
-      in zig-sanitize n & "(" & zig-call-type-args ctx n atys (zig-expr-type e)
+      in let call = zig-sanitize n & "(" & zig-call-type-args ctx n atys (zig-expr-type e)
       & emit-zig-call-args n args (zig-call-ctx ctx n atys (zig-expr-type e)) d 0 & ")"
+      in zig-fail-catch ctx n call
      is otherwise -> emit-zig-expr-curried e ctx d
 
  Codex applies partially: a 4-argument function called with 2 yields
@@ -3105,7 +3256,9 @@ Section: Apply Emission
      tvar-types = ctx.tvar-types,
      expected = ty,
      bound-names = ctx.bound-names,
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
 
  Two map-list calls in one expression each bind map-list's OWN type
@@ -3143,7 +3296,9 @@ Section: Apply Emission
      tvar-types = (ctx.tvar-types) & [bound],
      expected = ctx.expected,
      bound-names = ctx.bound-names,
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
     in zig-bind-tvars ctx2 d ids (i + 1) actuals resty
 
@@ -3939,7 +4094,9 @@ Section: Tail Call Loops
      tvar-types = ctx.tvar-types,
      expected = ctx.expected,
      bound-names = ctx.bound-names,
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
     in zig-push-tail-renames ctx2 params (i + 1) vars
 
@@ -4068,7 +4225,9 @@ Section: Definition Emission
      tvar-types = ctx.tvar-types,
      expected = ctx.expected,
      bound-names = ctx.bound-names,
-     scope-tvars = ctx.scope-tvars
+     scope-tvars = ctx.scope-tvars,
+     failing = ctx.failing,
+     handler = ctx.handler
     }
     in zig-push-param-renames ctx2 params (i + 1)
 
@@ -4095,7 +4254,8 @@ Section: Definition Emission
     else let name = zig-sanitize (d.name)
     in let tvars = zig-def-tvar-ids d
     in let comptimes = zig-comptime-params tvars 0
-    in let ret = zig-def-return-text d tvars
+    in let fails = zig-in-set (ctx0.failing) (d.name)
+    in let ret = (if fails then "anyerror!" else "") & zig-def-return-text d tvars
     in let ctx = ZigCtx {
      arities = ctx0.arities,
      ctors = ctx0.ctors,
@@ -4107,7 +4267,9 @@ Section: Definition Emission
      tvar-types = ctx0.tvar-types,
      expected = zig-def-return-type d tvars,
      bound-names = [],
-     scope-tvars = tvars
+     scope-tvars = tvars,
+     failing = ctx0.failing,
+     handler = if fails then "" else "!"
     }
     in let params-text = emit-zig-def-params (d.params) 0 ctx
     in let all-params = if text-length params-text == 0
@@ -4369,10 +4531,12 @@ Section: Chapter Emission
  17's territory, named here rather than papered over. No depot program
  declares a unit-typed `opening`.
 
-  zig-main : Text, List IRDef -> Text
-  zig-main (entry) (defs) =
-    "fn cx_entry() void {\n"
-    & zig-entry-call (zig-sanitize entry) (zig-entry-return-type defs 0)
+  zig-main : Text, List IRDef, List Text -> Text
+  zig-main (entry) (defs) (failing) =
+    let fails = zig-in-set failing entry
+    in (if fails then zig-entry-wrapper (zig-sanitize entry) defs 0 else "")
+    & "fn cx_entry() void {\n"
+    & zig-entry-call (if fails then "cx_opening" else zig-sanitize entry) (zig-entry-return-type defs 0)
     & "}\n\n"
     & "comptime {\n"
     & "    if (@import(\"builtin\").mode == .ReleaseFast or @import(\"builtin\").mode == .ReleaseSmall) @compileError(\"emitted Codex traps on Integer overflow through zig's safety checks, and ReleaseFast and ReleaseSmall turn the trap into undefined behaviour; build with -O ReleaseSafe or -O Debug\");\n"
@@ -4382,6 +4546,17 @@ Section: Chapter Emission
     & "    const stack_bytes: usize = 512 * 1024 * 1024;\n"
     & "    const t = std.Thread.spawn(.{ .stack_size = stack_bytes }, cx_entry, .{}) catch @panic(\"spawn\");\n"
     & "    t.join();\n}\n"
+
+ An uncaught failure in `opening` prints its message and exits 1, as the native
+ targets print it and trap.
+
+  zig-entry-wrapper : Text, List IRDef, Integer -> Text
+  zig-entry-wrapper (name) (defs) (i) =
+    if i >= list-length defs then ""
+    else let d = list-at defs i
+    in if (d.name) == opening-entry-point then
+      "fn cx_opening() " & zig-def-return-text d (zig-def-tvar-ids d) & " {\n    return " & name & "() catch cx_fail_exit();\n}\n\n"
+    else zig-entry-wrapper name defs (i + 1)
 
   zig-entry-return-type : List IRDef, Integer -> CodexType
   zig-entry-return-type (defs) (i) =
@@ -5807,6 +5982,17 @@ Section: Chapter Emission
     ShakeLit "(s)});\n}\n"
   ]
 
+  zig-p-cx-raise : List ShakeFrag
+  zig-p-cx-raise = [
+    ShakeLit "var cx_fail_msg: []const u8 = \"\";\n\nfn ",
+    ShakeUse "cx_raise",
+    ShakeLit "(cx_m: []const u8) bool {\n    cx_fail_msg = cx_m;\n    return true;\n}\n\nfn cx_fail_exit() noreturn {\n    ",
+    ShakeUse "cx_print_line",
+    ShakeLit "(cx_fail_msg);\n    ",
+    ShakeUse "std",
+    ShakeLit ".process.exit(1);\n}\n"
+  ]
+
   zig-p-cx-print : List ShakeFrag
   zig-p-cx-print = [
     ShakeLit "fn ",
@@ -5936,7 +6122,8 @@ Section: Chapter Emission
      ShakePart { name = "cx_cce_to_utf8", frags = zig-p-cx-cce-to-utf8 },
      ShakePart { name = "cx_show_int", frags = zig-p-cx-show-int },
      ShakePart { name = "cx_print_line", frags = zig-p-cx-print-line },
-     ShakePart { name = "cx_print", frags = zig-p-cx-print }]
+     ShakePart { name = "cx_print", frags = zig-p-cx-print },
+     ShakePart { name = "cx_raise", frags = zig-p-cx-raise }]
 
  Every part name, and the roots for one emitted program.
 
@@ -6029,7 +6216,9 @@ Section: Chapter Emission
     tvar-types = [],
     expected = VoidTy,
     bound-names = [],
-    scope-tvars = []
+    scope-tvars = [],
+    failing = zig-failing-set (m.defs) [],
+    handler = ""
    }
 
   emit-zig-chapter-stream : IRChapter, List ATypeDef -> [Console] Nothing
@@ -6038,7 +6227,7 @@ Section: Chapter Emission
     in let ns = zig-prelude-part-names
     in let shared = shared-const-names (m.defs)
     in let types-text = emit-zig-type-defs type-defs 0
-    in let main-text = zig-main opening-entry-point (m.defs)
+    in let main-text = zig-main opening-entry-point (m.defs) (ctx.failing)
     in let m1 = bit-or (zig-mask-lo ns types-text) (zig-mask-lo ns main-text)
     in let m2 = bit-or (zig-mask-hi ns types-text) (zig-mask-hi ns main-text)
     in act

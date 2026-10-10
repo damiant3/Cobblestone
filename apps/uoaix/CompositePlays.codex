@@ -1,0 +1,242 @@
+Chapter: CompositePlays
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositeRemoval
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter PlayRun
+  cites Uoaix chapter PlayScript
+  cites Uoaix chapter PlayStories
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+  cites Encode chapter Json
+  cites Foreword chapter Result
+
+ Lord British's [play command (UoaixPlays.md stage 2): bytes 8 to 12 of the 0x03 are "[play", the subcommand starts
+ at byte 14.
+  cpy-word : List Integer = [91, 112, 108, 97, 121]
+  cpy-at : List Integer, List Integer, Integer, Integer -> Boolean
+  cpy-at (packet) (word) (from) (i) = if i >= list-length word then True
+    else if from + i >= list-length packet then False
+    else if list-at packet (from + i) /= list-at word i then False
+    else cpy-at packet word from (i + 1)
+  cpy-request : List Integer -> Boolean
+  cpy-request (packet) = if list-length packet < 14 then False
+    else if list-at packet 0 /= 3 | not (cpy-at packet cpy-word 8 0) then False
+    else list-at packet 13 == 0 | list-at packet 13 == 32
+ A subcommand word at byte 14, followed by a space or the text's end.
+  cpy-arg : List Integer, List Integer -> Boolean
+  cpy-arg (packet) (word) = let after = 14 + list-length word
+    in if not (cpy-at packet word 14 0) then False
+    else if after >= list-length packet then True
+    else list-at packet after == 32 | list-at packet after == 0
+  cpy-tail : List Integer, Integer, Integer, List Integer -> List Integer
+  cpy-tail (packet) (i) (stop) (out) = if i >= stop then out else cpy-tail packet (i + 1) stop (list-push out (list-at packet i))
+  cpy-run-name : Integer -> Text
+  cpy-run-name (run) = if run == plr-ready then "ready" else if run == plr-running then "running" else if run == plr-paused then "paused"
+    else if run == plr-finished then "finished" else "empty"
+  cpy-text : PlrStore, Integer, Integer, Integer -> Text
+  cpy-text (st) (slot) (off) (len) = utf8-bytes-to-text (plr-bytes [] (plr-script st slot + off) 0 len)
+  cpy-usage : Text
+  cpy-usage = "[play gump|select 1-4|new|line STATEMENT|mark NAME|sample|start|pause|resume|reset|show"
+
+  cpy-status : PlrStore -> Text
+  cpy-status (st) = let slot = plr-selected st
+    in let t = plr-table st slot
+    in let title = if plr-run st slot 12 == 1 then cpy-text st slot (pls-count t 8) (pls-count t 9) else "no compiled play"
+    in "Play " & show (slot + 1) & " of " & show plr-slots & ": " & title & ", " & cpy-run-name (plr-run st slot 0) & ", script " & show (plr-run st slot 1) & " bytes. " & cpy-usage
+  cpy-show : PlrStore, GameShard -> Text
+  cpy-show (st) (game) = let slot = plr-selected st
+    in if not (plr-on-stage st slot) then cpy-status st & cpy-cast-text st slot game
+    else let kind = plr-state st slot 2
+    in let named = if kind == pls-major then "major, waits for a player" else if kind == pls-end then "end" else "minor"
+    in let id = cpy-text st slot (plr-state st slot 0) (plr-state st slot 1)
+    in let at = show (plr-run st slot 3 - plr-state st slot 3) & " of " & show (plr-state st slot 4)
+    in "State " & id & " (" & named & "), action " & at & ", " & show (plr-state st slot 6) & " cues, " & cpy-run-name (plr-run st slot 0) & "." & cpy-cast-text st slot game
+ Each cast member's place for the director: on stage where it stands, else the mark it enters at when the play starts.
+  cpy-cast : PlrStore, Integer, GameShard, Integer, List Text -> List Text
+  cpy-cast (st) (slot) (game) (i) (out) = let t = plr-table st slot
+    in if plr-run st slot 12 /= 1 | i >= pls-count t 2 then out
+    else let name = cpy-text st slot (pls-get t pls-cast-at pls-cast-size i 2) (pls-get t pls-cast-at pls-cast-size i 3)
+    in let mark = pls-get t pls-cast-at pls-cast-size i 8
+    in let serial = plr-cast st slot i
+    in let line = if serial == 0 then name & " enters at " & show (plr-mark st slot mark 2) & " " & show (plr-mark st slot mark 3) & " when the play starts, day or night"
+      else when world-get game.world serial is Err (_) -> name & " is gone from the world" is Ok (m) -> name & " at " & show m.x & " " & show m.y & " " & show m.z
+    in cpy-cast st slot game (i + 1) (list-push out line)
+  cpy-cast-text : PlrStore, Integer, GameShard -> Text
+  cpy-cast-text (st) (slot) (game) = let lines = cpy-cast st slot game 0 []
+    in if list-length lines == 0 then "" else " Cast: " & text-join "; " lines & "."
+ [play sample and a started [play take the GM to the centre of the play's first scene (Damian 2026-10-09).
+  cpy-scene-spot : PlrStore, List Integer -> List Integer
+  cpy-scene-spot (st) (packet) = let slot = plr-selected st
+    in let wanted = (cpy-arg packet [115, 97, 109, 112, 108, 101] & plr-run st slot 12 == 1) | (cpy-arg packet [115, 116, 97, 114, 116] & plr-on-stage st slot)
+    in if not wanted | pls-count (plr-table st slot) 1 < 1 then []
+    else [(plr-scene st slot 0 2 + plr-scene st slot 0 4) / 2, (plr-scene st slot 0 3 + plr-scene st slot 0 5) / 2]
+  cpy-sample : Text
+  cpy-sample = text-concat-list ["play The Baker's Debt\n", "mark door 1452 1618 0\n", "mark boar 1475 1645 0\n", "story bakery\n", "scene market 1445 1610 1480 1650\n", "set market 0x0E7C 0 1453 1620 0\n",
+    "cast nell \"Nell\" \"the baker\" townsfolk female at door\n", "cast silas \"Silas\" \"the gambler\" townsfolk male at boar\n",
+    "state open minor\n", "  silas walk door\n", "  silas say \"Nell! Forty gold, by sundown.\"\n",
+    "  nell say \"I'll have it, I swear it on my oven.\"\n", "  after 30 -> plea\n", "  heard \"help\" \"pay\" -> offer\n",
+    "state plea major\n", "  nell emote \"wrings her hands\"\n", "  hint 90 nell say \"Will no one help a poor baker?\"\n",
+    "  hint 120 silas say \"Forty gold or the oven is mine. Give 40 gold, stranger, if you pity her.\"\n", "  given silas gold 40 -> paid\n", "  used silas -> paid\n", "  heard \"guard\" -> guards\n", "state offer minor\n",
+    "  nell say \"You would help me? Pay him, and I'll bake you bread for a week.\"\n", "  after 45 -> plea\n",
+    "state paid end\n", "  silas say \"Hmph. Paid in full.\"\n", "  nell say \"Bless you, stranger.\"\n",
+    "state guards end\n", "  silas say \"No need for guards! I'm going.\"\n", "  silas walk boar"]
+
+ The authoring gump ([play gump) holds one button a [play command. Its answer (0xB1: serial at 3, gump id at 7, button
+ at 11) is read as that command spoken, so it passes the same GM gate; speech type 0x47 marks it, and the gump comes back.
+  cpy-gump-id : Integer = #504C4159
+  cpy-gump-mark : Integer = #47
+  cpy-gump-commands : List Text = ["select 1", "select 2", "select 3", "select 4", "sample", "start", "pause", "resume", "reset", "show"]
+  cpy-gump-request : List Integer -> Boolean
+  cpy-gump-request (packet) = cpy-request packet & cpy-arg packet [103, 117, 109, 112]
+  cpy-gumped : List Integer -> Boolean
+  cpy-gumped (packet) = cpy-request packet & list-at packet 3 == cpy-gump-mark
+  cpy-gump-answer : List Integer -> List Integer
+  cpy-gump-answer (packet) = if list-length packet < 15 | list-at packet 0 /= #B1 | gp-u32 packet 7 /= cpy-gump-id then packet
+    else let b = gp-u32 packet 11
+    in if b < 1 | b > list-length cpy-gump-commands then packet
+    else let text = "[play " & list-at cpy-gump-commands (b - 1)
+    in gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) cpy-gump-mark) 0) 3) text 0 (text-length text + 1)
+  cpy-command : CompositeOwner, GameShard, Integer, List Integer -> Text
+  cpy-command (owner) (game) (serial) (packet) = let st = owner.state.plays
+    in let slot = plr-selected st
+    in if list-length packet <= 15 then cpy-status st
+    else if cpy-arg packet [115, 101, 108, 101, 99, 116] then cpy-select st packet
+    else if cpy-arg packet [110, 101, 119] then (when plr-clear st slot is Err (e) -> e is Ok (_) -> "Play " & show (slot + 1) & " cleared.")
+    else if cpy-arg packet [109, 97, 114, 107] then cpy-mark-here st slot game serial (utf8-bytes-to-text (cpy-tail packet 19 (list-length packet - 1) []))
+    else if cpy-arg packet [108, 105, 110, 101] then (when plr-append st slot (cpy-tail packet 19 (list-length packet - 1) []) is Err (e) -> e is Ok (n) -> "Script " & show n & " bytes.")
+    else if cpy-arg packet [115, 97, 109, 112, 108, 101] then cpy-load-sample st slot game
+    else if cpy-arg packet [115, 116, 97, 114, 116] then cpy-start owner game slot
+    else if cpy-arg packet [112, 97, 117, 115, 101] then (if plr-run st slot 0 /= plr-running then "The play is not running." else let a = plr-set st slot 0 plr-paused in "Paused.")
+    else if cpy-arg packet [114, 101, 115, 117, 109, 101] then (if plr-run st slot 0 /= plr-paused then "The play is not paused." else if plr-run st slot 12 /= 1 then "The play no longer compiles; [play reset it."
+      else let a = plr-set st slot 0 plr-running in let b = cg-play-arm owner.state slot in "Resumed.")
+    else if cpy-arg packet [114, 101, 115, 101, 116] then cpy-reset owner game slot
+    else if cpy-arg packet [115, 104, 111, 119] then cpy-show st game
+    else cpy-usage
+  cpy-mark-here : PlrStore, Integer, GameShard, Integer, Text -> Text
+  cpy-mark-here (st) (slot) (game) (serial) (name) = if text-length name < 1 | text-contains name " " then "[play mark NAME: one word, written at your feet."
+    else when world-get game.world serial
+      is Err (e) -> e
+      is Ok (m) -> let line = "mark " & name & " " & show m.x & " " & show m.y & " " & show m.z
+        in when plr-append st slot (text-to-utf8-bytes line) is Err (e) -> e is Ok (n) -> line & " (script " & show n & " bytes)."
+  cpy-select : PlrStore, List Integer -> Text
+  cpy-select (st) (packet) = let d = if list-length packet > 21 then list-at packet 21 - 48 else 0
+    in if d < 1 | d > plr-slots then "[play select 1-" & show plr-slots
+    else let a = plr-select st (d - 1) in cpy-status st
+  cpy-load-sample : PlrStore, Integer, GameShard -> Text
+  cpy-load-sample (st) (slot) (game) = when plr-clear st slot
+    is Err (e) -> e
+    is Ok (_) -> when plr-append st slot (text-to-utf8-bytes cpy-sample)
+      is Err (e) -> e
+      is Ok (n) -> when plr-compile st slot
+        is Err (e) -> "Sample play loaded, " & show n & " bytes; refused: " & e
+        is Ok (states) -> "Sample play loaded, " & show n & " bytes, " & show states & " states; [play start runs it." & cpy-cast-text st slot game
+  cpy-start : CompositeOwner, GameShard, Integer -> Text
+  cpy-start (owner) (game) (slot) = let st = owner.state.plays
+    in when plr-compile st slot
+      is Err (e) -> "Refused: " & e
+      is Ok (states) -> when plr-start st slot game owner.state.items owner.state.combat
+        is Err (e) -> "Start failed: " & e & "; [play reset clears the stage."
+        is Ok (cast) -> let armed = cg-play-arm owner.state slot
+          in "Play " & show (slot + 1) & " started: " & show cast & " cast, " & show states & " states." & cpy-cast-text st slot game
+  cpy-reset : CompositeOwner, GameShard, Integer -> Text
+  cpy-reset (owner) (game) (slot) = let st = owner.state.plays
+    in let removed = cpy-remove owner game (plr-serials st slot 0 []) 0 0
+    in let cleared = plr-cleared st slot
+    in let off = if plr-run st slot 14 == 0 then sty-switch st.stories owner.state.items (plr-run st slot 13) False else 0
+    in let stopped = plr-set st slot 2 0
+    in "Reset: " & show removed & " cast removed."
+  cpy-remove : CompositeOwner, GameShard, List Integer, Integer, Integer -> Integer
+  cpy-remove (owner) (game) (serials) (i) (n) = if i >= list-length serials then n
+    else let gone = when crm-delete owner.state.vendor game.world (list-at serials i) 64 is Err (_) -> 0 is Ok (_) -> 1
+    in cpy-remove owner game serials (i + 1) (n + gone)
+
+ Lord British's [story (UoaixPlays.md, Stories): list the stories, or switch one on or off by name.
+  cpy-story-word : List Integer = [91, 115, 116, 111, 114, 121]
+  cpy-story-request : List Integer -> Boolean
+  cpy-story-request (packet) = if list-length packet < 15 then False
+    else if list-at packet 0 /= 3 | not (cpy-at packet cpy-story-word 8 0) then False
+    else list-at packet 14 == 0 | list-at packet 14 == 32
+  cpy-story-command : CompositeOwner, List Integer -> Text
+  cpy-story-command (owner) (packet) = let st = owner.state.plays.stories
+    in let lines = sty-lines st 0 []
+    in if list-length packet <= 16 then (if list-length lines == 0 then "No stories. [story on|off NAME, [story gump" else text-join "; " lines & ". [story on|off NAME, [story gump")
+    else if cpy-story-arg packet [111, 110, 32] then cpy-story-switch owner packet 18 True
+    else if cpy-story-arg packet [111, 102, 102, 32] then cpy-story-switch owner packet 19 False
+    else "[story, [story on NAME, [story off NAME"
+  cpy-story-arg : List Integer, List Integer -> Boolean
+  cpy-story-arg (packet) (word) = cpy-at packet word 15 0
+  cpy-story-switch : CompositeOwner, List Integer, Integer, Boolean -> Text
+  cpy-story-switch (owner) (packet) (from-at) (on) = let st = owner.state.plays.stories
+    in let len = list-length packet - 1 - from-at
+    in let name = alloc-bytes (max 1 len)
+    in let copied = plr-poke name (cpy-tail packet from-at (list-length packet - 1) []) 0 len
+    in let story = sty-find-story st name 0 len 0
+    in if len < 1 | story < 0 then "No story by that name."
+    else if cpy-story-staged owner story 0 then "A play on stage dresses that story; [play reset it first."
+    else let moved = sty-switch st owner.state.items story on
+    in sty-story-name st story & (if on then " on: " else " off: ") & show moved & " items moved."
+  cpy-story-staged : CompositeOwner, Integer, Integer -> Boolean
+  cpy-story-staged (owner) (story) (slot) = if slot >= plr-slots then False
+    else if plr-on-stage owner.state.plays slot & plr-run owner.state.plays slot 13 == story then True
+    else cpy-story-staged owner story (slot + 1)
+
+ The admin page's Plays tab (UoaixPlays.md stage 6): op list (the plays, the stories and one play's script), script
+ (replace a play's script and compile it), start, pause, resume, reset, story-on and story-off. The panel logs every
+ op but list with the script's length and digest.
+  cpy-panel : CompositeOwner, GameShard, JsonValue -> Text
+  cpy-panel (owner) (game) (v) = let st = owner.state.plays
+    in let op = json-get-str v "op" "list"
+    in let slot = json-get-int v "slot" 1 - 1
+    in if slot < 0 | slot >= plr-slots then "{\"error\":\"play-slot\"}"
+    else if op == "list" then cpy-panel-list st slot
+    else let said = cpy-panel-op owner game v op slot
+    in "{\"ok\":" & (if text-starts-with said "!" then "false" else "true") & ",\"message\":" & json-quote (if text-starts-with said "!" then substring said 1 (text-length said - 1) else said) & "}"
+  cpy-panel-op : CompositeOwner, GameShard, JsonValue, Text, Integer -> Text
+  cpy-panel-op (owner) (game) (v) (op) (slot) = let st = owner.state.plays
+    in if op == "script" then cpy-panel-script st slot (json-get-str v "script" "")
+    else if op == "start" then cpy-mark (cpy-start owner game slot) "started"
+    else if op == "pause" then (if plr-run st slot 0 /= plr-running then "!The play is not running." else let a = plr-set st slot 0 plr-paused in "Paused.")
+    else if op == "resume" then (if plr-run st slot 0 /= plr-paused then "!The play is not paused." else if plr-run st slot 12 /= 1 then "!The play no longer compiles; reset it."
+      else let a = plr-set st slot 0 plr-running in let b = cg-play-arm owner.state slot in "Resumed.")
+    else if op == "reset" then cpy-reset owner game slot
+    else if op == "story-on" | op == "story-off" then cpy-mark (cpy-panel-story owner (json-get-str v "story" "") (op == "story-on")) " items moved."
+    else "!Unknown play operation."
+ A refusal is marked with a leading "!" unless its text carries the success word.
+  cpy-mark : Text, Text -> Text
+  cpy-mark (said) (success) = if text-contains said success then said else "!" & said
+  cpy-panel-script : PlrStore, Integer, Text -> Text
+  cpy-panel-script (st) (slot) (script) = when plr-clear st slot
+    is Err (e) -> "!" & e
+    is Ok (_) -> if text-length script == 0 then "Script cleared."
+      else when plr-append st slot (text-to-utf8-bytes script)
+        is Err (e) -> "!" & e
+        is Ok (n) -> when plr-compile st slot
+          is Err (e) -> "!Saved " & show n & " bytes; refused: " & e
+          is Ok (states) -> "Saved " & show n & " bytes; compiled to " & show states & " states."
+  cpy-panel-story : CompositeOwner, Text, Boolean -> Text
+  cpy-panel-story (owner) (name) (on) = let bytes = text-to-utf8-bytes name
+    in let len = list-length bytes
+    in let buf = alloc-bytes (max 1 len)
+    in let copied = plr-poke buf bytes 0 len
+    in let st = owner.state.plays.stories
+    in let story = sty-find-story st buf 0 len 0
+    in if len < 1 | story < 0 then "No story by that name."
+    else if cpy-story-staged owner story 0 then "A play on stage dresses that story; reset it first."
+    else let moved = sty-switch st owner.state.items story on
+    in sty-story-name st story & (if on then " on: " else " off: ") & show moved & " items moved."
+  cpy-panel-list : PlrStore, Integer -> Text
+  cpy-panel-list (st) (slot) = let rows = cpy-panel-rows st 0 []
+    in let stories = sty-lines st.stories 0 []
+    in let script = cpy-text st slot 0 (plr-run st slot 1)
+    in "{\"ok\":true,\"plays\":[" & text-join "," rows & "],\"stories\":[" & text-join "," (cpy-quoted stories 0 []) & "],\"slot\":" & show (slot + 1) & ",\"script\":" & json-quote script & "}"
+  cpy-quoted : List Text, Integer, List Text -> List Text
+  cpy-quoted (xs) (i) (out) = if i >= list-length xs then out else cpy-quoted xs (i + 1) (list-push out (json-quote (list-at xs i)))
+  cpy-panel-rows : PlrStore, Integer, List Text -> List Text
+  cpy-panel-rows (st) (slot) (out) = if slot >= plr-slots then out
+    else let t = plr-table st slot
+    in let compiled = plr-run st slot 12 == 1
+    in let title = if compiled then cpy-text st slot (pls-count t 8) (pls-count t 9) else ""
+    in let state = if plr-on-stage st slot then cpy-text st slot (plr-state st slot 0) (plr-state st slot 1) else ""
+    in let row = "{\"slot\":" & show (slot + 1) & ",\"title\":" & json-quote title & ",\"run\":" & json-quote (cpy-run-name (plr-run st slot 0)) & ",\"state\":" & json-quote state & ",\"bytes\":" & show (plr-run st slot 1) & "}"
+    in cpy-panel-rows st (slot + 1) (list-push out row)

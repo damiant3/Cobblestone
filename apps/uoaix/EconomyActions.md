@@ -117,14 +117,12 @@ transaction and replay contract before that binding. UEI1 records alone do not
 persist consent. Existing `EconomyInput` is a trusted recovery format, not this
 untrusted proposal admission boundary.
 
-Each book allocates fixed arrays once: 163920 native bytes measured under depot
-compiler `4228CD5103DC4523` on 2026-10-04, excluding the borrowed economy.
-Submission and queue draining allocate
-no new retained guest heap. Direct offer lookup and admission are constant work
+Each book allocates fixed arrays once, excluding the borrowed economy.
+Submission and queue draining allocate no new retained guest heap. Direct offer lookup and admission are constant work
 apart from existing economy primitives; a network queue contains at most ten
 items. Posting/cancellation allocate a temporary request record for logging;
 their caller may reclaim its scratch after the scalar result. The book and
-economy must remain below that mark. No compiler heap/time behavior changes.
+economy must remain below that mark.
 
 `proofs/EconomyActionsProof.codex` checks consent, principal binding, quantities,
 price limits, expiry, revocation, live location and canonical economy bytes on

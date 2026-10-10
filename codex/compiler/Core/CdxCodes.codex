@@ -42,6 +42,8 @@ Section: Infrastructure
 
   cdx-order-compare-on-text : Integer = 9012
 
+  cdx-image-overlaps-serial-ring : Integer = 9013
+
 Section: Lexer
   cdx-invalid-tab-escape : Integer = 5
 
@@ -309,6 +311,8 @@ Section: Hard Realtime
 
   cdx-call-census : Integer = 6014
 
+  cdx-cover-slot : Integer = 6015
+
 Section: Registry entry constructor
   mk-cdx : Integer between 0 and 65535, Text, Integer between 0 and 3, Integer between 0 and 15, Text -> CdxCodeInfo
   mk-cdx (code) (name) (sev) (phase) (summary) =
@@ -323,14 +327,21 @@ Section: Registry entry constructor
 Section: Registry
   cdx-registry : List CdxCodeInfo = [
     mk-cdx cdx-too-many-errors "TooManyErrors" sev-error phase-infrastructure "Error cap reached; further errors suppressed.",
-    mk-cdx cdx-invalid-tab-escape "InvalidTabEscape" sev-error phase-lexer "\\t escape is not valid in CCE; use spaces directly.",
-    mk-cdx cdx-invalid-carriage-return-escape "InvalidCarriageReturnEscape" sev-error phase-lexer "\\r escape is not valid in CCE; use \\n for newlines.",
-    mk-cdx cdx-expected-token-kind "ExpectedTokenKind" sev-error phase-parser "A specific token kind was required but a different one was found.",
-    mk-cdx cdx-reserved-keyword-as-identifier "ReservedKeywordAsIdentifier" sev-error phase-parser "A reserved keyword was used where an identifier was required; rename it.",
-    mk-cdx cdx-ir-error "IrError" sev-error phase-codegen "Codegen encountered an IrError node, indicating an earlier phase silently failed.",
+    let summary = "\\t escape is not valid in CCE; use spaces directly."
+    in mk-cdx cdx-invalid-tab-escape "InvalidTabEscape" sev-error phase-lexer summary,
+    let summary = "\\r escape is not valid in CCE; use \\n for newlines."
+    in mk-cdx cdx-invalid-carriage-return-escape "InvalidCarriageReturnEscape" sev-error phase-lexer summary,
+    let summary = "A specific token kind was required but a different one was found."
+    in mk-cdx cdx-expected-token-kind "ExpectedTokenKind" sev-error phase-parser summary,
+    let summary = "A reserved keyword was used where an identifier was required; rename it."
+    in mk-cdx cdx-reserved-keyword-as-identifier "ReservedKeywordAsIdentifier" sev-error phase-parser summary,
+    let summary = "Codegen encountered an IrError node, indicating an earlier phase silently failed."
+    in mk-cdx cdx-ir-error "IrError" sev-error phase-codegen summary,
     mk-cdx cdx-type-mismatch "TypeMismatch" sev-error phase-type-checker "Two types could not be unified.",
-    mk-cdx cdx-unknown-name "UnknownName" sev-error phase-type-checker "Name was not found in the type environment during checking.",
-    mk-cdx cdx-infinite-type "InfiniteType" sev-error phase-type-checker "Occurs check failed - unification would produce an infinite type.",
+    let summary = "Name was not found in the type environment during checking."
+    in mk-cdx cdx-unknown-name "UnknownName" sev-error phase-type-checker summary,
+    let summary = "Occurs check failed - unification would produce an infinite type."
+    in mk-cdx cdx-infinite-type "InfiniteType" sev-error phase-type-checker summary,
     mk-cdx cdx-effect-undeclared "EffectUndeclared" sev-error phase-type-checker "A function body performs effects not declared in its signature; add the missing effect label or handle the effect.",
     mk-cdx cdx-let-binds-effectful-value "LetBindsEffectfulValue" sev-error phase-type-checker "let-binding the result of an effectful call silently corrupts on bare metal; use act-bind (X <- expr) inside an act block.",
     mk-cdx cdx-unhandled-effect-op "UnhandledEffectOp" sev-error phase-codegen "A nullary effect operation is read but no handler in the program ever gives it a value; the read would silently yield zero.",
@@ -342,31 +353,40 @@ Section: Registry
     mk-cdx cdx-tco-shuffle-violation "TcoShuffleViolation" sev-error phase-codegen "The tree emitter's direct tail-argument shuffle failed its verifier. Either an argument the planner writes straight into its parameter has a shape tco-arg-reads cannot see through, so the write order was planned as though it read no parameters, or the planned order writes an argument after a parameter it reads has already been replaced. Both produce a wrong argument value with no fault and no other diagnostic; the build halts rather than emit it. Widening the direct shapes means teaching tco-arg-reads the new shape in the same change.",
     mk-cdx cdx-int-compare-on-float "IntCompareOnFloat" sev-error phase-codegen "The integer comparison emitter was handed a floating-point operand. A machine cmp on two IEEE-754 bit patterns orders correctly for two non-negatives and for mixed signs, because a double's sign bit lands where the integer sign bit lands, and REVERSES for two negatives. That is what Real < > <= >= did from the initial import until 2026-07-27: emit-binary-op routed all four ordering operators to the integer path without consulting the operand type, while IrEq and IrNotEq beside them already dispatched Real to ucomisd. This guard exists so the omission cannot be made again silently -- a comparison whose operand type the integer path cannot answer halts the build instead of emitting a reversed compare. Route the operand to emit-ord-comparison, which selects ucomisd or ucomiss with unsigned condition codes.",
     mk-cdx cdx-pow-on-float "PowOnFloat" sev-error phase-codegen "The exponentiation operator was given a floating-point operand, and the only exponentiation routine in the runtime is the integer one. Raising two IEEE-754 bit patterns by square-and-multiply computes nothing; the build halts rather than emit it. Multiply explicitly, or convert with real-to-int if an integer power is what was meant.",
-    mk-cdx cdx-emit-not-implemented "EmitNotImplemented" sev-error phase-codegen "The requested emit option is not implemented yet; compile aborted before machine-code emission.",
-    mk-cdx cdx-duplicate-definition "DuplicateDefinition" sev-error phase-name-resolver "The same name is introduced twice at chapter scope.",
-    mk-cdx cdx-undefined-name "UndefinedName" sev-error phase-name-resolver "A name was referenced but is not in any visible scope.",
+    let summary = "The requested emit option is not implemented yet; compile aborted before machine-code emission."
+    in mk-cdx cdx-emit-not-implemented "EmitNotImplemented" sev-error phase-codegen summary,
+    let summary = "The same name is introduced twice at chapter scope."
+    in mk-cdx cdx-duplicate-definition "DuplicateDefinition" sev-error phase-name-resolver summary,
+    let summary = "A name was referenced but is not in any visible scope."
+    in mk-cdx cdx-undefined-name "UndefinedName" sev-error phase-name-resolver summary,
     mk-cdx cdx-duplicate-cite "DuplicateCite" sev-error phase-name-resolver "Two cite declarations in the same chapter select the same name; the later cite would silently shadow the earlier.",
     mk-cdx cdx-ambiguous-chapter-name "AmbiguousChapterName" sev-error phase-name-resolver "A reference names a definition that two or more other chapters make and its own chapter does not; a selective cite must choose one.",
     mk-cdx cdx-shadows-builtin "ShadowsBuiltin" sev-warning phase-name-resolver "A definition has the same name as a builtin. Which one a call site gets is not uniform: where the builtin reaches the emit-builtin dispatch the definition displaces it silently for the whole compilation unit, and where the builtin is lowered to its own IR node the definition is bypassed instead. Measured: shadowing abs or int-mod substitutes the definition, shadowing text-length does not. Nothing in the source says which. A shadow with different COST is as dangerous as one with different semantics: Hamt once defined list-insert-at, in-place and amortised O(1) as a builtin, with a pure O(n) body, and citing Hamt into the compiler sent four modules quadratic until the heap walked into the stack.",
     mk-cdx cdx-collides-across-chapters "CollidesAcrossChapters" sev-warning phase-name-resolver "A definition has the same name as one in another chapter of the same compilation unit. ChapterScoper mangles both, so which one a mention resolves to depends on the chapter the mention sits in, and a chapter that defines neither must cite the one it means (CDX3027). Moving a body between the two chapters silently rebinds every such name in it. That happened in CL 8955 and was caught only because the two signatures were incompatible enough to raise CDX2001; a compatible pair would have compiled and emitted wrong code. Give one of them a chapter-specific prefix, or cite the definition you mean rather than copying it.",
     mk-cdx cdx-chapter-pagination "ChapterPagination" sev-error phase-parser "A chapter spans several files but its 'Page N of M' markers do not agree: a page is missing its marker, M does not equal the number of files, or two pages claim the same N. A chapter may legitimately span files, so a repeated chapter name is not itself an error -- but without coherent pagination an ACCIDENTAL duplicate name is indistinguishable from a deliberate page, and the two chapters merge silently under one slug.",
-    mk-cdx cdx-missing-cite "MissingCite" sev-error phase-name-resolver "A cited foreword chapter could not be found on disk; the chapter file is missing or the name is misspelled.",
+    let summary = "A cited foreword chapter could not be found on disk; the chapter file is missing or the name is misspelled."
+    in mk-cdx cdx-missing-cite "MissingCite" sev-error phase-name-resolver summary,
     mk-cdx cdx-class-shadows-derived "ClassShadowsDerived" sev-error phase-name-resolver "A class declaration uses the name of a derived class (Eq, Show or Ord). A constraint naming one of these is always compiled as the derived class, so the user class and its instances would never be consulted. Rename the class.",
     mk-cdx cdx-applied-local-is-builtin "AppliedLocalIsBuiltin" sev-error phase-name-resolver "A parameter, let, lambda or pattern binding with a builtin's name is applied as a function. The call does not say which one it means, and the backends disagreed with lexical scope: an applied parameter named abs called the builtin. A local with a builtin's name used as a value is not refused. Rename the local.",
     mk-cdx cdx-cite-not-in-unit "CiteNotInUnit" sev-warning phase-name-resolver "A cited chapter is not present in this compilation unit. The file may exist and resolve on disk; this unit was assembled without it, so nothing the cite selects can be reached. Include the chapter in the unit, or drop the cite.",
     mk-cdx cdx-undefined-type-name "UndefinedTypeName" sev-error phase-type-checker "A type name in an annotation is defined nowhere in the compilation unit. CDX3002 covers value names; until 2026-08-17 nothing covered type names, because CDX3002 is raised walking EXPRESSIONS and an annotation is type syntax that never enters that walk. lookup-type-def answers an unknown name by fabricating an opaque ConstructedTy, so the phantom unified with itself and the unit compiled clean, ran, and answered correctly around it: a subset build sailed through and the mistake surfaced somewhere else or never, while a monolithic build hid it entirely by always carrying every definition. Only an uppercase name absent from both the type-def map and the builtin set reaches here, so lowercase type variables, generic parameters and Vector's numeric argument are out of scope by construction. Found by Steve Howell as finding 9 of GitHub PR 66.",
-    mk-cdx cdx-quotation-missing "QuotationMissing" sev-error phase-name-resolver "A quoted work was not supplied. No definition with that content hash was offered to the compiler.",
+    let summary = "A quoted work was not supplied. No definition with that content hash was offered to the compiler."
+    in mk-cdx cdx-quotation-missing "QuotationMissing" sev-error phase-name-resolver summary,
     mk-cdx cdx-quotation-corrupt "QuotationCorrupt" sev-error phase-name-resolver "A quoted work does not hash to the digest it was quoted by. The content is not the content that was asked for.",
     mk-cdx cdx-quotation-unsigned "QuotationUnsigned" sev-error phase-name-resolver "A quoted work carries no signature. A hash says what a definition is; only a signature says who stands behind it.",
     mk-cdx cdx-quotation-unknown-signer "QuotationUnknownSigner" sev-error phase-name-resolver "A quoted work is signed by a key that is not in the trust manifest. We cannot check a signature from a stranger.",
-    mk-cdx cdx-quotation-forged "QuotationForged" sev-error phase-name-resolver "A quoted work's signature does not verify against its signer's key. The content and the signature disagree.",
+    let summary = "A quoted work's signature does not verify against its signer's key. The content and the signature disagree."
+    in mk-cdx cdx-quotation-forged "QuotationForged" sev-error phase-name-resolver summary,
     mk-cdx cdx-quotation-untrusted "QuotationUntrusted" sev-error phase-name-resolver "A quoted work is signed by a key the chapter does not trust enough. Its score is below the floor set by 'trusting above'.",
     mk-cdx cdx-quotation-no-floor "QuotationNoFloor" sev-error phase-name-resolver "A chapter that quotes a work declares no trust floor. Write 'trusting above N' so the chapter says how much trust a signer must clear; an absent floor would admit any pinned key at any score.",
-    mk-cdx cdx-type-arity "TypeArity" sev-error phase-type-checker "A type constructor was applied with the wrong number of type arguments.",
-    mk-cdx cdx-unterminated-text "UnterminatedText" sev-error phase-lexer "A text literal was not terminated before end of line.",
+    let summary = "A type constructor was applied with the wrong number of type arguments."
+    in mk-cdx cdx-type-arity "TypeArity" sev-error phase-type-checker summary,
+    let summary = "A text literal was not terminated before end of line."
+    in mk-cdx cdx-unterminated-text "UnterminatedText" sev-error phase-lexer summary,
     mk-cdx cdx-unterminated-char "UnterminatedChar" sev-error phase-lexer "A character literal was not terminated before end of line. Without the closing quote the scan takes whatever follows the opening one, a newline included, as the character.",
     mk-cdx cdx-resource-exhausted "ResourceExhausted" sev-error phase-infrastructure "Compiler recursion budget exhausted; the input was pathologically deep or a walker cycled. Bail rather than stack-overflow.",
-    mk-cdx cdx-deck-overflow "DeckOverflow" sev-error phase-infrastructure "Phase deck allocation exceeded its fixed floor; the input is too large for the arena layout.",
+    let summary = "Phase deck allocation exceeded its fixed floor; the input is too large for the arena layout."
+    in mk-cdx cdx-deck-overflow "DeckOverflow" sev-error phase-infrastructure summary,
     mk-cdx cdx-list-literal-too-large "ListLiteralTooLarge" sev-error phase-infrastructure "A list literal has more elements than max-list-literal-elems accepts. The emitter holds two locals per literal whatever its length, so the ceiling is a held bound rather than a cost, and the limit a large literal reaches first is now the code buffer. Split the data across several definitions and join them.",
     mk-cdx cdx-escape-violation "EscapeViolation" sev-warning phase-infrastructure "Deck pointer targets bivy address; data will be stale after phase-compact. The producing function allocated scratch into the deck.",
     mk-cdx cdx-narrowing-record-set-literal "NarrowingRecordSetLiteral" sev-error phase-type-checker "A bounded-Integer field is being assigned a literal value that does not fit the field's declared bound; the codegen narrow-store would silently truncate at runtime. Adjust the literal or widen the field bound.",
@@ -374,14 +394,18 @@ Section: Registry
     mk-cdx cdx-no-class-instance "NoClassInstance" sev-error phase-type-checker "A class operation (show, ==, compare) was applied to a type with no instance for it. Derive the class on the type (deriving Show/Eq/Ord) or use a manual conversion.",
     mk-cdx cdx-narrowing-proven "NarrowingProven" sev-info phase-type-checker "The value expression's proven range fits the bounded-Integer field's declared bound; the narrowing warning is elided. Checker-side analog of BoundsProven.",
     mk-cdx cdx-bounded-base-not-integer "BoundedBaseNotInteger" sev-error phase-type-checker "A range was written on a base type that cannot carry one. Only an integer base, or a unit wrapping one, is bounded; on anything else the range resolves to an error type that unifies with everything, so the declaration compiles and the bound is silently ignored.",
-    mk-cdx cdx-use-after-consume "UseAfterConsume" sev-error phase-type-checker "Mutable binding was already consumed (moved); use after consume is not permitted.",
+    let summary = "Mutable binding was already consumed (moved); use after consume is not permitted."
+    in mk-cdx cdx-use-after-consume "UseAfterConsume" sev-error phase-type-checker summary,
     mk-cdx cdx-stale-read-after-update "StaleReadAfterUpdate" sev-warning phase-type-checker "A field is read from a record after that record was updated in place by a call whose result was bound to a different name. __record-set mutates the record, so the original binding now aliases the updated one and the read sees the new value, not the old. Thread the updated binding, or capture the field into a let before the call.",
-    mk-cdx cdx-mutable-alias "MutableAlias" sev-error phase-type-checker "Mutable record cannot be aliased; exactly one binding may hold it at a time.",
-    mk-cdx cdx-linear-unused "LinearUnused" sev-error phase-type-checker "A linear value must be used exactly once, but this one is never used (linear leak).",
+    let summary = "Mutable record cannot be aliased; exactly one binding may hold it at a time."
+    in mk-cdx cdx-mutable-alias "MutableAlias" sev-error phase-type-checker summary,
+    let summary = "A linear value must be used exactly once, but this one is never used (linear leak)."
+    in mk-cdx cdx-linear-unused "LinearUnused" sev-error phase-type-checker summary,
     mk-cdx cdx-linear-escape "LinearEscape" sev-error phase-type-checker "A linear value moves into a callee only through a parameter declared linear; passing it to a plain parameter sheds the discipline. Use freeze to exit linearity deliberately.",
     mk-cdx cdx-linear-return "LinearReturn" sev-error phase-type-checker "A linear value is returned from a function whose return type is not declared linear; that is an unsanctioned freeze. Declare the return linear, or consume the value with freeze.",
     mk-cdx cdx-linear-capture "LinearCapture" sev-error phase-type-checker "A linear value is captured by a context that may run zero or many times (a handler clause, or a closure that escapes). A linear value may be captured only by a let-bound closure, which is then called exactly once.",
-    mk-cdx cdx-non-exhaustive-match "NonExhaustiveMatch" sev-error phase-type-checker "Match expression does not cover all constructors of the scrutinee type.",
+    let summary = "Match expression does not cover all constructors of the scrutinee type."
+    in mk-cdx cdx-non-exhaustive-match "NonExhaustiveMatch" sev-error phase-type-checker summary,
     mk-cdx cdx-unreachable-match-arm "UnreachableMatchArm" sev-error phase-type-checker "An arm follows an unguarded catch-all, so nothing can reach it. The catch-all matches every remaining value, and an arm written after it is either a mistake about the order or a case the author believed was still open.",
     mk-cdx cdx-int-literal-overflow "IntLiteralOverflow" sev-error phase-type-checker "An integer literal exceeds 64 bits (decimal max 9223372036854775807, hash form max 16 hex digits); the value would be silently truncated. Split the constant or compute it from smaller parts.",
     mk-cdx cdx-real-literal-overflow "RealLiteralOverflow" sev-error phase-type-checker "A Real literal carries more decimal digits than fit an i64. The parser accumulates every digit, on both sides of the point, into one wrapping i64 before it scales by the place count, so a literal past that width reads back as a different and often negative number with no fault. Split the constant or compute it from smaller parts.",
@@ -389,32 +413,44 @@ Section: Registry
     mk-cdx cdx-nothing-as-value "NothingAsValue" sev-error phase-type-checker "'Nothing' is a type, not a value. The empty Maybe value is 'None' (cite Foreword chapter Maybe); 'Nothing' is only the return type of effectful procedures such as [Console] Nothing.",
     mk-cdx cdx-leading-dot-continuation "LeadingDotContinuation" sev-error phase-parser "A line begins with '.', continuing a field access from the previous line. Field access must follow its receiver on the same line (receiver.field) or be bound with a let; otherwise the continuation is silently dropped.",
     mk-cdx cdx-binary-crosses-prose "BinaryCrossesProse" sev-warning phase-parser "A binary expression crosses a column-2 prose line. Parsing is unchanged; keep intended arithmetic together or indent every prose line at column 2.",
-    mk-cdx cdx-not-codex-operator "NotCodexOperator" sev-error phase-parser "An operator from another language: `++` is not Codex, and text concatenation is `&`.",
+    let summary = "An operator from another language: `++` is not Codex, and text concatenation is `&`."
+    in mk-cdx cdx-not-codex-operator "NotCodexOperator" sev-error phase-parser summary,
     mk-cdx cdx-ctor-field-comma "CtorFieldComma" sev-error phase-parser "A constructor field written (A, B) with no arrow; fields are separate parentheses, (A) (B), and a tuple field is ((A, B)).",
-    mk-cdx cdx-ctor-return-annotation-unsupported "CtorReturnAnnotationUnsupported" sev-error phase-parser "Explicit constructor return annotations are not supported and are rejected before type checking.",
+    let summary = "Explicit constructor return annotations are not supported and are rejected before type checking."
+    in mk-cdx cdx-ctor-return-annotation-unsupported "CtorReturnAnnotationUnsupported" sev-error phase-parser summary,
     mk-cdx cdx-signature-continuation-not-deeper "SignatureContinuationNotDeeper" sev-error phase-parser "A type line ending in a comma or an arrow continues only onto a line indented deeper than the signature's first line.",
     mk-cdx cdx-top-level-token-dropped "TopLevelTokenDropped" sev-error phase-parser "A token at column 3 begins no definition, so top-level recovery would drop it. A continuation belongs to the definition above only when it is indented past column 3.",
     mk-cdx cdx-body-tokens-left "BodyTokensLeft" sev-error phase-parser "A definition's expression ended and tokens remain inside its body; they are not part of the definition. Prose belongs at column 2.",
     mk-cdx cdx-discarded-literal-statement "DiscardedLiteralStatement" sev-error phase-parser "A bare literal is a statement of an act block other than the last, so its value is discarded and the line does nothing.",
     mk-cdx cdx-capability-not-granted "CapabilityNotGranted" sev-error phase-capability-checker "The opening function declares an effect outside the capability vocabulary, so no manifest entry, boot grant, or policy could ever cover it.",
-    mk-cdx cdx-scope-violation "ScopeViolation" sev-error phase-capability-checker "An effect operation's argument is outside the granted scope for that capability.",
-    mk-cdx cdx-bounds-proven "BoundsProven" sev-info phase-codegen "Value range fits within bounded-integer field range; runtime bounds check elided.",
+    let summary = "An effect operation's argument is outside the granted scope for that capability."
+    in mk-cdx cdx-scope-violation "ScopeViolation" sev-error phase-capability-checker summary,
+    let summary = "Value range fits within bounded-integer field range; runtime bounds check elided."
+    in mk-cdx cdx-bounds-proven "BoundsProven" sev-info phase-codegen summary,
     mk-cdx cdx-noalias-proven "NoAliasProven" sev-info phase-codegen "Memory access through a declared linear parameter, which the ownership discipline proves unaliased within this function. Only the proven case is reported: the absence of this note at a store means not proven, not unsafe.",
-    mk-cdx cdx-claim-recognized "ClaimRecognized" sev-info phase-parser "A claim declaration was recognized and its proposition recorded.",
+    let summary = "A claim declaration was recognized and its proposition recorded."
+    in mk-cdx cdx-claim-recognized "ClaimRecognized" sev-info phase-parser summary,
     mk-cdx cdx-axiom-assumed "AxiomAssumed" sev-warning phase-type-checker "A proof discharges its obligation with 'assume', which asserts an equality as an unproven axiom. The proof is trusted, not checked; the axiom is part of the trust trail.",
     mk-cdx cdx-induction-unverified "InductionUnverified" sev-warning phase-parser "An 'induction' proof is parsed and its obligation accepted as an unproven axiom. Structural subgoal checking is not yet implemented (proof-system Stage 5), so the proof is trusted, not verified.",
     mk-cdx cdx-circular-proof "CircularProof" sev-error phase-type-checker "A proof definition depends on itself, directly or through other proof definitions or cited lemmas. A proof term cannot assume its own conclusion; recursion in a proof is only sound through structural induction, and lemma chains must be acyclic. To assert an equality without proof, use 'assume' (CDX4021).",
     mk-cdx cdx-non-grammatical-proof "NonGrammaticalProof" sev-error phase-type-checker "A proof term used a disallowed expression form. A proof body may only be a proof builtin (Refl, sym, trans, cong, app-cong, assume), an inductive hypothesis, a cited claim, an 'induction' expression, or a let of proof terms. A proposition produced by an if, when, act, lambda, or other general expression is rejected, because such a form can launder a proof of a false proposition. To assert an equality without proof, use 'assume' (CDX4021).",
     mk-cdx cdx-proof-undecided "ProofUndecided" sev-error phase-type-checker "A definition's type nests more than 64 levels deep, so whether it states a proof could not be decided; the definition is refused rather than guessed. Name an inner type to shorten the nesting.",
-    mk-cdx cdx-prose-function-name-mismatch "ProseFunctionNameMismatch" sev-warning phase-parser "Prose function name does not match the notation definition below.",
-    mk-cdx cdx-prose-parameter-mismatch "ProseParameterMismatch" sev-warning phase-parser "Prose parameter does not match the notation parameter.",
-    mk-cdx cdx-prose-record-field-mismatch "ProseRecordFieldMismatch" sev-warning phase-parser "Prose record field does not match the notation record field.",
-    mk-cdx cdx-prose-variant-ctor-mismatch "ProseVariantCtorMismatch" sev-warning phase-parser "Prose variant constructor does not match the notation variant constructor.",
-    mk-cdx cdx-prose-banned-word "ProseBannedWord" sev-warning phase-parser "A banned word was used in load-bearing prose; replace it with the suggested substitute.",
+    let summary = "Prose function name does not match the notation definition below."
+    in mk-cdx cdx-prose-function-name-mismatch "ProseFunctionNameMismatch" sev-warning phase-parser summary,
+    let summary = "Prose parameter does not match the notation parameter."
+    in mk-cdx cdx-prose-parameter-mismatch "ProseParameterMismatch" sev-warning phase-parser summary,
+    let summary = "Prose record field does not match the notation record field."
+    in mk-cdx cdx-prose-record-field-mismatch "ProseRecordFieldMismatch" sev-warning phase-parser summary,
+    let summary = "Prose variant constructor does not match the notation variant constructor."
+    in mk-cdx cdx-prose-variant-ctor-mismatch "ProseVariantCtorMismatch" sev-warning phase-parser summary,
+    let summary = "A banned word was used in load-bearing prose; replace it with the suggested substitute."
+    in mk-cdx cdx-prose-banned-word "ProseBannedWord" sev-warning phase-parser summary,
     mk-cdx cdx-multiline-application "MultilineApplication" sev-error phase-parser "Application ends at newline but the next line, indented deeper than the line the application is on, begins with a literal, '(' or '['. A newline ends an application, so it is not an argument. Place all arguments on one line, or bind the value with a let.",
-    mk-cdx cdx-chained-arrow-type "ChainedArrowType" sev-error phase-parser "A type uses chained '->' (A -> B -> C); write multi-parameter types with commas: A, B -> C.",
+    let summary = "A type uses chained '->' (A -> B -> C); write multi-parameter types with commas: A, B -> C."
+    in mk-cdx cdx-chained-arrow-type "ChainedArrowType" sev-error phase-parser summary,
     mk-cdx cdx-wrapping-band-not-hw-width "WrappingBandNotHwWidth" sev-error phase-parser "A wrapping band is not exactly its hardware width. The store wraps at the width, not at the band, so a narrower band can hold a value outside its declared range while the bounds prover still trusts that range.",
-    mk-cdx cdx-row-two-tails "RowTwoTails" sev-error phase-parser "An effect row may name at most one row variable (lowercase identifier); a row like [e, f] is ill-formed.",
+    let summary = "An effect row may name at most one row variable (lowercase identifier); a row like [e, f] is ill-formed."
+    in mk-cdx cdx-row-two-tails "RowTwoTails" sev-error phase-parser summary,
     mk-cdx cdx-row-tail-decorated "RowTailDecorated" sev-error phase-parser "A row variable is a bare lowercase identifier; scopes and dotted sub-effects attach to concrete PascalCase effects only.",
     mk-cdx cdx-body-fixes-declared-var "BodyFixesDeclaredVar" sev-error phase-type-checker "A definition's body decided a type variable its own signature leaves to the caller. A signature variable is universally quantified: the caller chooses it, so the body must work for every choice. A body that answers one concrete type must declare that type.",
     mk-cdx cdx-list-pattern-shape "ListPatternShape" sev-error phase-type-checker "A Nil or Cons arm over the builtin List uses a shape the desugar does not support yet. Cons takes exactly a head and a tail, each a name or _; bind the tail and match it in a nested when, and move any guard test into the arm body.",
@@ -427,35 +463,48 @@ Section: Registry
     mk-cdx cdx-structural-eq-withheld "StructuralEqWithheld" sev-error phase-type-checker "== or /= was applied to a record or sum with a Real, Vector or SizedVec field, or an equality operator to a packed Vector, which has no structural equality; it compared the two values' addresses. Compare the fields or lanes you mean.",
     mk-cdx cdx-eq-on-type-variable "EqOnTypeVariable" sev-error phase-type-checker "== or /= was applied to a value whose type is, or holds, a type variable of the definition's own signature; the body cannot see the type, so it compared the two values' words, which for Text, a list, a vector or a record are their addresses. Take the comparison as a parameter or declare the concrete type.",
     mk-cdx cdx-field-on-unit-type "FieldOnUnitType" sev-error phase-type-checker "A field access or assignment names a field through a unit wrapper. The wrapper is a distinct type and has no fields, and a unit over a record has no accessor and is not accepted where the record is expected, so the field cannot be reached through it.",
-    mk-cdx cdx-rt-calls-unsafe "RtCallsUnsafe" sev-error phase-type-checker "A [HardRealtime] function calls a function that is not [HardRealtime]-safe.",
+    let summary = "A [HardRealtime] function calls a function that is not [HardRealtime]-safe."
+    in mk-cdx cdx-rt-calls-unsafe "RtCallsUnsafe" sev-error phase-type-checker summary,
     mk-cdx cdx-rt-heap-alloc "RtHeapAlloc" sev-error phase-type-checker "A [HardRealtime] function uses heap allocation.",
     mk-cdx cdx-rt-closure "RtClosure" sev-error phase-type-checker "A [HardRealtime] function uses a closure or lambda.",
-    mk-cdx cdx-rt-bare-io "RtBareIO" sev-error phase-type-checker "A [HardRealtime] function performs I/O without with-timeout.",
-    mk-cdx cdx-rt-unbounded-recursion "RtUnboundedRecursion" sev-error phase-type-checker "A [HardRealtime] function uses recursion that is not tail-call or fuel-bounded.",
+    let summary = "A [HardRealtime] function performs I/O without with-timeout."
+    in mk-cdx cdx-rt-bare-io "RtBareIO" sev-error phase-type-checker summary,
+    let summary = "A [HardRealtime] function uses recursion that is not tail-call or fuel-bounded."
+    in mk-cdx cdx-rt-unbounded-recursion "RtUnboundedRecursion" sev-error phase-type-checker summary,
     mk-cdx cdx-rt-wcet-report "RtWcetReport" sev-info phase-codegen "WCET report for a punctual function.",
-    mk-cdx cdx-rt-wcet-exceeded "RtWcetExceeded" sev-warning phase-codegen "A punctual function exceeds its WCET instruction budget.",
+    let summary = "A punctual function exceeds its WCET instruction budget."
+    in mk-cdx cdx-rt-wcet-exceeded "RtWcetExceeded" sev-warning phase-codegen summary,
     mk-cdx cdx-rt-wcet-opaque "RtWcetOpaque" sev-warning phase-codegen "A punctual function's instruction count is unavailable: the emitted bytes contain an encoding outside the WCET decode vocabulary.",
     mk-cdx cdx-rt-wcet-unchecked "RtWcetUnchecked" sev-warning phase-codegen "A punctual function declares an explicit WCET budget but emits no body, so no instruction count is taken and the budget is unchecked.",
     mk-cdx cdx-call-census "CallCensus" sev-info phase-codegen "Under the callcensus mode flag, one line per emitted definition: the emit path (lir, minimal or standard), the parameter count, and the instructions, pushes, pops, stack stores and calls decoded from its emitted bytes.",
+    mk-cdx cdx-cover-slot "CoverSlot" sev-info phase-codegen "Under the cover mode flag, one line per instrumented definition: its counter slot and name. The program prints COVER:<slot>:<count> for every entered slot at exit; build/coverage-report.ps1 joins the two.",
     mk-cdx cdx-mutation-in-constructor "MutationInConstructor" sev-warning phase-type-checker "A record constructor field calls __record-set, which mutates in place. Other fields reading the same record see the mutated value. Bind the mutation result to a let before the constructor.",
     mk-cdx cdx-bounded-exceeded "BoundedExceeded" sev-error phase-type-checker "A function declares a 'bounded' allocation ceiling that its inferred class exceeds, directly or through a callee. Cost Model 3.3: the lattice is none < fixed < budgeted < linear < growing and the refusal is transitive, so one callee inferred 'growing' breaks a 'bounded linear' promise at the declaration site.",
-    mk-cdx cdx-bounded-unknown-class "BoundedUnknownClass" sev-error phase-type-checker "A 'bounded' declaration names a class that is not one of none, fixed, budgeted, linear or growing.",
+    let summary = "A 'bounded' declaration names a class that is not one of none, fixed, budgeted, linear or growing."
+    in mk-cdx cdx-bounded-unknown-class "BoundedUnknownClass" sev-error phase-type-checker summary,
     mk-cdx cdx-cost-accumulator-growth "CostAccumulatorGrowth" sev-error phase-type-checker "A self-call passes its own accumulator parameter appended to, so the accumulator is copied once per iteration and the function allocates in proportion to the square of its trip count. Cost Model 3.3; raised only under the cost-report mode flag, which is off for every ordinary compile, while the check is scored against codex/test/cost/accumulator-corpus.",
-    mk-cdx cdx-if-no-then "IfNoThen" sev-error phase-parser "An if expression has no 'then'. Every if requires both then and else -- there is no dangling if.",
-    mk-cdx cdx-if-no-else "IfNoElse" sev-error phase-parser "An if expression has no 'else'. else is mandatory: an if with no else has no value on the false path.",
+    let summary = "An if expression has no 'then'. Every if requires both then and else -- there is no dangling if."
+    in mk-cdx cdx-if-no-then "IfNoThen" sev-error phase-parser summary,
+    let summary = "An if expression has no 'else'. else is mandatory: an if with no else has no value on the false path."
+    in mk-cdx cdx-if-no-else "IfNoElse" sev-error phase-parser summary,
     mk-cdx cdx-let-no-in "LetNoIn" sev-error phase-parser "A let has no 'in'. Bindings introduced by let are scoped over the expression after 'in'; without it the body is unbound.",
-    mk-cdx cdx-bad-field-syntax "BadFieldSyntax" sev-error phase-parser "A record literal or a revised-record expression expected a field name and found something else.",
-    mk-cdx cdx-list-no-close "ListNoClose" sev-error phase-parser "A list literal was not closed: ']' or a ',' separator was expected before the end of the input.",
+    let summary = "A record literal or a revised-record expression expected a field name and found something else."
+    in mk-cdx cdx-bad-field-syntax "BadFieldSyntax" sev-error phase-parser summary,
+    let summary = "A list literal was not closed: ']' or a ',' separator was expected before the end of the input."
+    in mk-cdx cdx-list-no-close "ListNoClose" sev-error phase-parser summary,
     mk-cdx cdx-match-no-arrow "MatchNoArrow" sev-error phase-parser "A when arm has no '->'. Every 'is <pattern>', and every guard, must be followed by an arrow before the arm body.",
     mk-cdx cdx-empty-act "EmptyAct" sev-error phase-parser "An act block contains no statements ('act end' is empty), or a trying-expression clause is missing its keyword. An act block must contain at least one statement.",
-    mk-cdx cdx-arithmetic-requires-numeric "ArithmeticRequiresNumeric" sev-error phase-type-checker "An arithmetic operator (+ - * / ^) was applied to a non-numeric operand; both sides must be Integer or Real.",
-    mk-cdx cdx-unknown-record-field "UnknownRecordField" sev-error phase-type-checker "A field access or field assignment names a field the record type does not have.",
+    let summary = "An arithmetic operator (+ - * / ^) was applied to a non-numeric operand; both sides must be Integer or Real."
+    in mk-cdx cdx-arithmetic-requires-numeric "ArithmeticRequiresNumeric" sev-error phase-type-checker summary,
+    let summary = "A field access or field assignment names a field the record type does not have."
+    in mk-cdx cdx-unknown-record-field "UnknownRecordField" sev-error phase-type-checker summary,
     mk-cdx cdx-missing-record-field "MissingRecordField" sev-error phase-type-checker "A record literal is built without a value for one of the type's fields. A field left out of a literal is not left alone -- it is zero.",
     mk-cdx cdx-field-assign-immutable "FieldAssignImmutable" sev-error phase-type-checker "A field assignment (r.f = v) targets a record whose type is not declared mutable. Prefix the record type with 'mutable', or build a new record with the constructor.",
     mk-cdx cdx-field-assign-unobservable "FieldAssignUnobservable" sev-error phase-type-checker "A field assignment targets a name that resolves to a definition, not a binding, so each mention rebuilds the record and the write is discarded. Bind the record with a let and thread it, or pass it as a parameter.",
     mk-cdx cdx-real-equality-banned "RealEqualityBanned" sev-error phase-type-checker "== or /= was applied to a Real value; floating-point equality is not safe. Use ~ (approximately equal, 4 ULP tolerance) or ~0 (bitwise exact).",
     mk-cdx cdx-text-ordering-banned "TextOrderingBanned" sev-error phase-type-checker "< > <= >= was applied to a Text or character operand. Encoding order is not collation and neither is a pointer: on Text these compared the operands by address. Use text-collate for alphabetical order, or text-compare for code-point order; for a character compare char-code c as an Integer.",
     mk-cdx cdx-order-compare-on-text "OrderCompareOnText" sev-error phase-codegen "The ordering comparator was handed a Text or character operand. On Text a machine cmp compares ADDRESSES, so the answer depends on allocation order and not on content; the build halts rather than emit it.",
+    mk-cdx cdx-image-overlaps-serial-ring "ImageOverlapsSerialRing" sev-error phase-codegen "A bare-metal program's code and rodata, loaded at bare-metal-load-addr, reach serial-ring-buf-addr. The host preloads input there and the serial interrupt writes there, so code past that address is overwritten at the first input byte; the build halts rather than emit it.",
     mk-cdx cdx-vec-lane-out-of-range "VecLaneOutOfRange" sev-error phase-type-checker "A literal lane index is outside the vector. vec-extract takes a Vector 2 and vec4-extract a Vector 4, so the lane count is fixed by the builtin's own type and the index is decidable here rather than at runtime."
   ]
 

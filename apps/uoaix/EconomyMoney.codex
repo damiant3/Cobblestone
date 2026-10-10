@@ -8,16 +8,86 @@ Chapter: EconomyMoney
   EmMoney = record { purses : List EmPurse, loans : List EmLoan,
     ledger : List EmEntry, purse-count : Integer, loan-count : Integer,
     entry-count : Integer, sequence : Integer, hour : Integer,
-    tax : Integer, issued : Integer, defaults : Integer }
+    tax : Integer, issued : Integer, defaults : Integer, opening : Integer }
 
   em-limit : Integer = 1000000000000
   em-rows : Integer = 8192
+ A sealed segment's carried state (UOAIX-50), in 64-bit cells: purse balances by purse id (1..256), then three cells
+ per loan (lent before the seal, paid at the seal, defaulted before the seal), then the scalars below, then the
+ kind-1 coin each purse had received by the seal.
+  em-open-loan : Integer = 257
+  em-open-action : Integer = 641
+  em-open-hour : Integer = 642
+  em-open-tax : Integer = 643
+  em-open-issued : Integer = 644
+  em-open-defaults : Integer = 645
+  em-open-mint-purse : Integer = 646
+  em-open-mint-rate : Integer = 647
+  em-open-ingots : Integer = 648
+  em-open-received : Integer = 649
+  em-open-cells : Integer = 906
+  em-open-zero : Integer, Integer -> Integer
+  em-open-zero (buf) (i) = if i == em-open-cells then buf else let a = poke-qword buf (i * 8) 0 in em-open-zero buf (i + 1)
+  em-open-new : Integer -> Integer
+  em-open-new (unused) = em-open-zero (alloc-bytes (em-open-cells * 8)) 0
+  em-opening : EmMoney, Integer -> Integer
+  em-opening (w) (cell) = peek-qword w.opening (cell * 8)
+  em-open-set : EmMoney, Integer, Integer -> Integer
+  em-open-set (w) (cell) (value) = poke-qword w.opening (cell * 8) value
 
+  em-purse-block : Integer = 256
+  em-loan-block : Integer = 128
+ Purses and loans past their first blocks keep their opening cells after em-open-cells, five to an extra index j:
+ purse 257 + j's balance and received coin, then loan 129 + j's lent, paid and defaulted cells.
+  em-open-purse : Integer -> Integer
+  em-open-purse (id) = if id <= em-purse-block then id else em-open-cells + 5 * (id - em-purse-block - 1)
+  em-open-gained : Integer -> Integer
+  em-open-gained (id) = if id <= em-purse-block then em-open-received + id else em-open-cells + 5 * (id - em-purse-block - 1) + 1
+  em-open-loan-at : Integer -> Integer
+  em-open-loan-at (id) = if id <= em-loan-block then em-open-loan + (id - 1) * 3 else em-open-cells + 5 * (id - em-loan-block - 1) + 2
+  em-open-extra : Integer, Integer -> Integer
+  em-open-extra (purses) (loans) = 5 * max 0 (max (purses - em-purse-block) (loans - em-loan-block))
+  em-open-used : EmMoney -> Integer
+  em-open-used (w) = em-open-extra w.purse-count w.loan-count
+  em-open-held : EmMoney -> Integer
+  em-open-held (w) = em-open-extra (list-length w.purses) (list-length w.loans)
+  em-open-fill : Integer, Integer, Integer -> Integer
+  em-open-fill (buf) (i) (stop) = if i >= stop then buf else let a = poke-qword buf (i * 8) 0 in em-open-fill buf (i + 1) stop
+  em-open-copy : Integer, Integer, Integer, Integer -> Integer
+  em-open-copy (from) (to) (i) (stop) = if i >= stop then 0 else let a = poke-qword to (i * 8) (peek-qword from (i * 8)) in em-open-copy from to (i + 1) stop
+ The purse table grows a block at a time, and its opening cells with it; the heap it takes must be kept
+ (UoaixDynamicTables.md stage 4).
+  em-grow-purses : EmMoney, Integer -> Integer
+  em-grow-purses (w) (left) = if left <= 0 then list-length w.purses
+    else let before = em-open-cells + em-open-held w
+    in let pushed = em-push-purses w left
+    in let widened = em-open-widen w before
+    in list-length w.purses
+  em-open-widen : EmMoney, Integer -> Integer
+  em-open-widen (w) (before) = let after = em-open-cells + em-open-held w
+    in if w.opening == 0 | after <= before then 0
+    else let fresh = em-open-fill (alloc-bytes (after * 8)) before after
+    in let copied = em-open-copy w.opening fresh 0 before
+    in let set = __record-set w "opening" fresh in 0
+  em-grow-loans : EmMoney, Integer -> Integer
+  em-grow-loans (w) (left) = if left <= 0 then list-length w.loans
+    else let before = em-open-cells + em-open-held w
+    in let pushed = em-push-loans w left
+    in let widened = em-open-widen w before
+    in list-length w.loans
+  em-loan-new : Integer -> EmLoan
+  em-loan-new (unused) = EmLoan { lender = 0, borrower = 0, principal = 0, interest = 0, due = 0, paid = 0, status = 0 }
+  em-push-loans : EmMoney, Integer -> Integer
+  em-push-loans (w) (left) = if left <= 0 then 0
+    else let grown = __record-set w "loans" (list-push w.loans (em-loan-new 0)) in em-push-loans w (left - 1)
+  em-push-purses : EmMoney, Integer -> Integer
+  em-push-purses (w) (left) = if left <= 0 then 0
+    else let grown = __record-set w "purses" (list-push w.purses (EmPurse { kind = 0, owner = 0, coin = 0 })) in em-push-purses w (left - 1)
   em-purses : Integer, List EmPurse -> List EmPurse
-  em-purses (i) (xs) = if i == 256 then xs else
+  em-purses (i) (xs) = if i == em-purse-block then xs else
     em-purses (i + 1) (list-push xs (EmPurse { kind = 0, owner = 0, coin = 0 }))
   em-loans : Integer, List EmLoan -> List EmLoan
-  em-loans (i) (xs) = if i == 128 then xs else
+  em-loans (i) (xs) = if i == em-loan-block then xs else
     em-loans (i + 1) (list-push xs (EmLoan { lender = 0, borrower = 0,
       principal = 0, interest = 0, due = 0, paid = 0, status = 0 }))
   em-entries : Integer, List EmEntry -> List EmEntry
@@ -29,11 +99,46 @@ Chapter: EconomyMoney
   em-new (unused) =
     let w = EmMoney { purses = em-purses 0 [], loans = em-loans 0 [],
       ledger = em-entries 0 [], purse-count = 1, loan-count = 0,
-      entry-count = 0, sequence = 0, hour = 0, tax = 0, issued = 0, defaults = 0 }
+      entry-count = 0, sequence = 0, hour = 0, tax = 0, issued = 0, defaults = 0, opening = em-open-new 0 }
     in let treasury = list-at w.purses 0
     in let a = __record-set treasury "kind" 1
     in w
 
+  em-bare : Integer -> EmMoney
+  em-bare (unused) = EmMoney { purses = em-purses 0 [], loans = em-loans 0 [], ledger = [], purse-count = 1, loan-count = 0,
+    entry-count = 0, sequence = 0, hour = 0, tax = 0, issued = 0, defaults = 0, opening = 0 }
+  em-copy-purses : EmMoney, EmMoney, Integer -> Integer
+  em-copy-purses (from) (to) (i) = if i >= list-length from.purses then 0
+    else if i >= list-length to.purses then let grown = em-grow-purses to (list-length from.purses - list-length to.purses) in em-copy-purses from to i
+    else let a = list-at from.purses i
+    in let b = list-at to.purses i
+    in let c = __record-set b "kind" a.kind
+    in let d = __record-set b "owner" a.owner
+    in let e = __record-set b "coin" a.coin
+    in em-copy-purses from to (i + 1)
+  em-copy-loans : EmMoney, EmMoney, Integer -> Integer
+  em-copy-loans (from) (to) (i) = if i >= list-length from.loans then 0
+    else if i >= list-length to.loans then let grown = em-grow-loans to (list-length from.loans - list-length to.loans) in em-copy-loans from to i
+    else let a = list-at from.loans i
+    in let b = list-at to.loans i
+    in let c = __record-set b "lender" a.lender
+    in let d = __record-set b "borrower" a.borrower
+    in let e = __record-set b "principal" a.principal
+    in let f = __record-set b "interest" a.interest
+    in let g = __record-set b "due" a.due
+    in let h = __record-set b "paid" a.paid
+    in let j = __record-set b "status" a.status
+    in em-copy-loans from to (i + 1)
+  em-copy-table : EmMoney, EmMoney -> Integer
+  em-copy-table (from) (to) = let a = em-copy-purses from to 0
+    in let b = em-copy-loans from to 0
+    in let c = __record-set to "purse-count" from.purse-count
+    in let d = __record-set to "loan-count" from.loan-count
+    in let e = __record-set to "sequence" from.sequence
+    in let f = __record-set to "hour" from.hour
+    in let g = __record-set to "tax" from.tax
+    in let h = __record-set to "issued" from.issued
+    in let j = __record-set to "defaults" from.defaults in 0
   em-valid-purse : EmMoney, Integer -> Boolean
   em-valid-purse (w) (id) = id > 0 & id <= w.purse-count
   em-purse : EmMoney, Integer -> EmPurse
@@ -45,7 +150,7 @@ Chapter: EconomyMoney
     in if p.kind == kind & p.owner == owner then i else em-find w kind owner (i + 1)
   em-open : EmMoney, Integer, Integer -> Integer
   em-open (w) (kind) (owner) =
-    if kind < 2 | kind > 5 | owner <= 0 | w.purse-count == 256 then -1
+    if kind < 2 | kind > 5 | owner <= 0 | w.purse-count >= list-length w.purses then -1
     else if em-find w kind owner 1 /= 0 then -1
     else let id = w.purse-count + 1
     in let p = list-at w.purses w.purse-count
@@ -83,28 +188,37 @@ Chapter: EconomyMoney
     if not (em-valid-purse w payer) | not (em-valid-purse w payee) | payer == payee | amount <= 0 | amount > em-limit then False
     else (em-purse w payer).coin >= amount & (em-purse w payee).coin <= em-limit - amount
 
+ The `-at` forms take the rate: one tax rate governs every metal, and a currency holds it once (its gold table's).
+  em-tax-at : Integer, Integer, Integer, Integer -> Integer
+  em-tax-at (rate) (payer) (payee) (gross) = if payer == 1 | payee == 1 then 0 else gross * rate / 10000
   em-tax : EmMoney, Integer, Integer, Integer -> Integer
-  em-tax (w) (payer) (payee) (gross) = if payer == 1 | payee == 1 then 0 else gross * w.tax / 10000
+  em-tax (w) (payer) (payee) (gross) = em-tax-at w.tax payer payee gross
 
   em-can-pay : EmMoney, Integer, Integer, Integer -> Boolean
-  em-can-pay (w) (payer) (payee) (gross) =
+  em-can-pay (w) (payer) (payee) (gross) = em-can-pay-at w w.tax payer payee gross
+  em-can-pay-at : EmMoney, Integer, Integer, Integer, Integer -> Boolean
+  em-can-pay-at (w) (rate) (payer) (payee) (gross) =
     if not (em-valid-purse w payer) | not (em-valid-purse w payee) | payer == payee | gross <= 0 | gross > em-limit then False
-    else let tax = em-tax w payer payee gross
+    else let tax = em-tax-at rate payer payee gross
     in (em-purse w payer).coin >= gross
       & (em-purse w payee).coin <= em-limit - (gross - tax)
       & (tax == 0 | (em-purse w 1).coin <= em-limit - tax)
       & em-room w (if tax > 0 then 2 else 1)
 
   em-pay-rows : EmMoney, Integer, Integer, Integer, Integer, Integer -> Integer
-  em-pay-rows (w) (payer) (payee) (gross) (kind) (reference) =
-    let tax = em-tax w payer payee gross
+  em-pay-rows (w) (payer) (payee) (gross) (kind) (reference) = em-pay-rows-at w w.tax payer payee gross kind reference
+  em-pay-rows-at : EmMoney, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  em-pay-rows-at (w) (rate) (payer) (payee) (gross) (kind) (reference) =
+    let tax = em-tax-at rate payer payee gross
     in let a = em-move w payer payee (gross - tax) kind reference
     in if tax > 0 then em-move w payer 1 tax 2 reference else 0
 
   em-pay : EmMoney, Integer, Integer, Integer -> Integer
-  em-pay (w) (payer) (payee) (gross) =
-    if payer == 1 | not (em-can-pay w payer payee gross) then -1
-    else let a = em-begin w in em-pay-rows w payer payee gross 1 0
+  em-pay (w) (payer) (payee) (gross) = em-pay-at w w.tax payer payee gross
+  em-pay-at : EmMoney, Integer, Integer, Integer, Integer -> Integer
+  em-pay-at (w) (rate) (payer) (payee) (gross) =
+    if payer == 1 | not (em-can-pay-at w rate payer payee gross) then -1
+    else let a = em-begin w in em-pay-rows-at w rate payer payee gross 1 0
 
   em-set-tax : EmMoney, Boolean, Integer -> Integer
   em-set-tax (w) (authorized) (rate) =
@@ -138,6 +252,23 @@ Chapter: EconomyMoney
     in let b = __record-set treasury "coin" (treasury.coin + amount)
     in let c = __record-set w "issued" (w.issued + amount)
     in em-row w 0 1 amount 16 0
+ Money row kind 20 retires treasury coin to be recoined (issued falls); kind 21 strikes the recoined value in this metal.
+  em-retire : EmMoney, Integer -> Integer
+  em-retire (w) (amount) =
+    if amount <= 0 | not (em-room w 1) | (em-purse w 1).coin < amount | w.issued < amount then -1
+    else let a = em-begin w
+    in let treasury = em-purse w 1
+    in let b = __record-set treasury "coin" (treasury.coin - amount)
+    in let c = __record-set w "issued" (w.issued - amount)
+    in em-row w 1 0 amount 20 0
+  em-recoin : EmMoney, Integer -> Integer
+  em-recoin (w) (amount) =
+    if amount <= 0 | not (em-room w 1) | w.issued > em-limit - amount | (em-purse w 1).coin > em-limit - amount then -1
+    else let a = em-begin w
+    in let treasury = em-purse w 1
+    in let b = __record-set treasury "coin" (treasury.coin + amount)
+    in let c = __record-set w "issued" (w.issued + amount)
+    in em-row w 0 1 amount 21 0
   em-payout : EmMoney, Integer, Integer -> Integer
   em-payout (w) (payee) (amount) =
     if payee <= 1 | not (em-valid-purse w payee) | not (em-can-move w 1 payee amount) | not (em-room w 1) then -1
@@ -147,6 +278,17 @@ Chapter: EconomyMoney
     if not (em-can-move w payer 1 amount) | not (em-room w 1) then -1
     else let a = em-begin w in em-move w payer 1 amount 6 0
 
+ Money row kind 19 is a theft: coin moves between two private purses with no tax.
+  em-steal : EmMoney, Integer, Integer, Integer -> Integer
+  em-steal (w) (victim) (thief) (amount) =
+    if victim <= 1 | thief <= 1 | not (em-can-move w victim thief amount) | not (em-room w 1) then -1
+    else let a = em-begin w in em-move w victim thief amount 19 0
+ Money row kind 22 is escrow: coin moves untaxed from a private purse to another purse or the treasury, the reference
+ naming the bid it is held for.
+  em-escrow : EmMoney, Integer, Integer, Integer, Integer -> Integer
+  em-escrow (w) (payer) (payee) (amount) (reference) =
+    if payer <= 1 | payee < 1 | reference < 1 | not (em-can-move w payer payee amount) | not (em-room w 1) then -1
+    else let a = em-begin w in em-move w payer payee amount 22 reference
   em-town-grant : EmMoney, Boolean, Integer, Integer -> Integer
   em-town-grant (w) (authorized) (purse) (amount) =
     if not authorized | not (em-valid-purse w purse) then -1
@@ -154,13 +296,15 @@ Chapter: EconomyMoney
     else let a = em-begin w in em-move w 1 purse amount 13 (em-purse w purse).owner
 
   em-lend : EmMoney, Integer, Integer, Integer, Integer, Integer -> Integer
-  em-lend (w) (lender) (borrower) (principal) (interest) (due) =
-    if w.loan-count == 128 | interest < 0 | interest > em-limit | principal <= 0 | principal > em-limit - interest | due <= w.hour | due > em-limit then -1
-    else if not (em-can-pay w lender borrower principal) then -1
+  em-lend (w) (lender) (borrower) (principal) (interest) (due) = em-lend-at w w.tax lender borrower principal interest due
+  em-lend-at : EmMoney, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  em-lend-at (w) (rate) (lender) (borrower) (principal) (interest) (due) =
+    if w.loan-count >= list-length w.loans | interest < 0 | interest > em-limit | principal <= 0 | principal > em-limit - interest | due <= w.hour | due > em-limit then -1
+    else if not (em-can-pay-at w rate lender borrower principal) then -1
     else let id = w.loan-count + 1
     in let loan = list-at w.loans w.loan-count
     in let a = em-begin w
-    in let b = em-pay-rows w lender borrower principal 7 id
+    in let b = em-pay-rows-at w rate lender borrower principal 7 id
     in let c = __record-set loan "lender" lender
     in let d = __record-set loan "borrower" borrower
     in let e = __record-set loan "principal" principal
@@ -171,17 +315,24 @@ Chapter: EconomyMoney
     in id
 
   em-repay : EmMoney, Integer, Integer, Integer -> Integer
-  em-repay (w) (borrower) (id) (amount) =
+  em-repay (w) (borrower) (id) (amount) = em-repay-at w w.tax borrower id amount
+  em-repay-at : EmMoney, Integer, Integer, Integer, Integer -> Integer
+  em-repay-at (w) (rate) (borrower) (id) (amount) =
     if id <= 0 | id > w.loan-count then -1
     else let loan = list-at w.loans (id - 1)
     in if loan.borrower /= borrower | loan.status == 2 | amount > loan.principal + loan.interest - loan.paid then -1
-    else if not (em-can-pay w borrower loan.lender amount) then -1
+    else if not (em-can-pay-at w rate borrower loan.lender amount) then -1
     else let a = em-begin w
-    in let b = em-pay-rows w borrower loan.lender amount 8 id
+    in let b = em-pay-rows-at w rate borrower loan.lender amount 8 id
     in let c = __record-set loan "paid" (loan.paid + amount)
     in let d = if loan.paid == loan.principal + loan.interest then __record-set loan "status" 2 else loan
     in 0
 
+ A repayment at value credits a loan with units paid in any coin: row kind 18 names no purse, so it moves no coin, and its
+ amount is the loan units, which the loan audit counts as repaid.
+  em-credit : EmMoney, Integer, Integer -> Integer
+  em-credit (w) (id) (units) = if id <= 0 | id > w.loan-count | units <= 0 | units > em-limit | not (em-room w 1) then -1
+    else let a = em-begin w in em-row w 0 0 units 18 id
   em-due-count : EmMoney, Integer, Integer -> Integer
   em-due-count (w) (hour) (i) =
     if i == w.loan-count then 0 else let loan = list-at w.loans i
@@ -213,4 +364,42 @@ Chapter: EconomyMoney
     in em-ledger-balance w purse (i + 1) (balance + (if e.payee == purse then e.amount else 0) - (if e.payer == purse then e.amount else 0))
   em-balanced : EmMoney, Integer -> Boolean
   em-balanced (w) (id) = if id > w.purse-count then em-total w 1 == w.issued
-    else (em-purse w id).coin == em-ledger-balance w id 0 0 & em-balanced w (id + 1)
+    else (em-purse w id).coin == em-ledger-balance w id 0 (em-opening w (em-open-purse id)) & em-balanced w (id + 1)
+  em-received : EmMoney, Integer, Integer, Integer -> Integer
+  em-received (w) (purse) (i) (sum) = if i == w.entry-count then sum
+    else let e = list-at w.ledger i
+    in em-received w purse (i + 1) (sum + (if e.kind == 1 & e.payee == purse then e.amount else 0))
+  em-seal-purses : EmMoney, Integer -> Integer
+  em-seal-purses (w) (id) = if id > max em-purse-block (list-length w.purses) then 0
+    else let received = em-open-set w (em-open-gained id) (em-opening w (em-open-gained id) + (if id <= w.purse-count then em-received w id 0 0 else 0))
+    in let balance = em-open-set w (em-open-purse id) (if id <= w.purse-count then (em-purse w id).coin else 0)
+    in em-seal-purses w (id + 1)
+  em-seal-loans : EmMoney, Integer -> Integer
+  em-seal-loans (w) (i) = if i >= max em-loan-block (list-length w.loans) then 0
+    else let l = list-at w.loans i
+    in let at = em-open-loan-at (i + 1)
+    in let a = em-open-set w at (if i < w.loan-count then 1 else 0)
+    in let b = em-open-set w (at + 1) (if i < w.loan-count then l.paid else 0)
+    in let c = em-open-set w (at + 2) (if i < w.loan-count & l.status == 3 then 1 else 0)
+    in em-seal-loans w (i + 1)
+  em-clear-rows : EmMoney, Integer -> Integer
+  em-clear-rows (w) (i) = if i == w.entry-count then 0
+    else let e = list-at w.ledger i
+    in let a = __record-set e "action" 0
+    in let b = __record-set e "hour" 0
+    in let c = __record-set e "payer" 0
+    in let d = __record-set e "payee" 0
+    in let f = __record-set e "amount" 0
+    in let g = __record-set e "kind" 0
+    in let h = __record-set e "reference" 0
+    in em-clear-rows w (i + 1)
+  em-seal : EmMoney -> Integer
+  em-seal (w) = let purses = em-seal-purses w 1
+    in let loans = em-seal-loans w 0
+    in let a = em-open-set w em-open-action w.sequence
+    in let b = em-open-set w em-open-hour w.hour
+    in let c = em-open-set w em-open-tax w.tax
+    in let d = em-open-set w em-open-issued w.issued
+    in let f = em-open-set w em-open-defaults w.defaults
+    in let cleared = em-clear-rows w 0
+    in let g = __record-set w "entry-count" 0 in 0

@@ -1,0 +1,44 @@
+Chapter: BvtBuilders
+  cites Uoaix chapter Construction
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvbd-made : Result Integer Text -> Integer
+  bvbd-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvbd-vendors : GvWorld, Integer -> Integer
+  bvbd-vendors (v) (i) = if i >= 8 then v.vendor-count
+    else let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 (1000 + i)) 100
+    in let npc = bvbd-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bvbd-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bvbd-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bvbd-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let added = gv-add-vendor v npc actor stock extra buys
+    in bvbd-vendors v (i + 1)
+  bvt-builders : Integer -> [Console] Integer
+  bvt-builders (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("builders fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("builders fixture economy: " & e) False
+      is Ok (x) -> act
+        v <- gv-new shard x
+        shops <- bvbd-vendors v 0
+        a <- bvt-check "the builders buy boards from the carpenter, nails and hinges from the tinker, stone blocks from the provisioner; iron ingots and wheat from no shop" (shops == 8 & cn-seller v 38 0 == 7 & cn-seller v 39 0 == 6 & cn-seller v 148 0 == 6 & cn-seller v 149 0 == 0 & cn-seller v 31 0 == -1 & cn-seller v 13 0 == -1)
+        minted <- bb-founding-stock x
+        holder <- eu-open x 4 1
+        granted <- eu-grant x True 1 holder 200 0 0
+        shop <- (ep-actor x.world (list-at v.vendors 7).actor).purse
+        paid <- cn-tender x holder shop 150
+        b <- bvt-check "the holder pays the shop's asking price from its purse; the shop keeps it less the Crown's 10% tax" (is-ok minted & granted == 0 & paid == 0 & (em-purse x.copper holder).coin == 50 & (em-purse x.copper shop).coin == 135)
+        refused <- cn-tender x holder shop 1000
+        c <- bvt-check "a price the purse cannot meet is refused and moves nothing" (refused /= 0 & (em-purse x.copper holder).coin == 50 & (em-purse x.copper shop).coin == 135)
+        miner <- ep-admit x.world (eu-open x 2 3001) 100
+        idle <- ep-admit x.world (eu-open x 2 3002) 100
+        none <- cn-gatherer x.world [idle, miner] 31 0
+        ingot <- bvbd-made (world-create v.game.world (__record-set (gs-item 0 #1BF2 0) "amount" 5))
+        found <- ep-find x.world miner 31 5
+        lot <- gv-add-lot v ingot miner 31 1000 32 0
+        d <- bvt-check "an item no shop lists comes from the first gatherer holding a lot of it; one with none, or none at all, is passed over" (none == -1 & ingot > 0 & found == 0 & lot >= 0 & cn-gatherer x.world [idle, miner] 31 0 == miner & cn-gatherer x.world [idle] 31 0 == -1 & cn-gatherer x.world [] 31 0 == -1)
+        a + b + c + d
+      end

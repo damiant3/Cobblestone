@@ -224,7 +224,8 @@ Section: Checked Origins
     else let cd = list-at cds i
     in let out = if method-class-valid cd tds then acc
     else
-      list-push acc (make-error cdx-type-mismatch ("Invalid method-template class origin or binder scope: " & cd.name.value) (cd.span))
+      let message = "Invalid method-template class origin or binder scope: " & cd.name.value
+      in list-push acc (make-error cdx-type-mismatch message (cd.span))
     in method-origin-classes cds (i + 1) tds out
 
   method-origin-instances : List AInstanceDef, Integer, List ADef, List AClassDef, List Diagnostic -> List Diagnostic
@@ -233,7 +234,8 @@ Section: Checked Origins
     else let inst = list-at ids i
     in let out = if method-instance-valid inst defs classes then acc
     else
-      list-push acc (make-error cdx-type-mismatch ("Invalid method-template constructor origin: " & inst.constructor-name) (inst.span))
+      let message = "Invalid method-template constructor origin: " & inst.constructor-name
+      in list-push acc (make-error cdx-type-mismatch message (inst.span))
     in method-origin-instances ids (i + 1) defs classes out
 
   method-capture-inputs : AChapter, List TypeBinding, List RenameEntry, Integer -> MethodInputs
@@ -277,17 +279,29 @@ Section: Original Type Schemes
   method-atype-parts (t) (acc) =
     when t
      is ANamedType (n) (s) -> list-push acc ("(a-named " & ir-quote (n.value) & ")")
-     is AFunType (p) (r) (s) -> list-push (method-atype-parts r (list-push (method-atype-parts p (list-push acc "(a-fun ")) " ")) ")"
-     is AAppType (h) (args) (s) -> list-push (method-atypes-parts args 0 (list-push (method-atype-parts h (list-push acc "(a-app ")) " (args")) "))"
+     is AFunType (p) (r) (s) ->
+      let fun-p = method-atype-parts p (list-push acc "(a-fun ")
+      in list-push (method-atype-parts r (list-push fun-p " ")) ")"
+     is AAppType (h) (args) (s) ->
+      let app-h = method-atype-parts h (list-push acc "(a-app ")
+      in list-push (method-atypes-parts args 0 (list-push app-h " (args")) "))"
      is AEffectType (es) (ss) (tail) (r) (s) ->
-      let a = list-push acc ("(a-eff (effs" & method-names-wire es & ") (scopes" & method-texts-wire ss & ") (tail" & method-names-wire tail & ") ")
+      let eff0 = "(a-eff (effs" & method-names-wire es & ") (scopes" & method-texts-wire ss
+      in let a = list-push acc (eff0 & ") (tail" & method-names-wire tail & ") ")
       in list-push (method-atype-parts r a) ")"
      is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
-      list-push (method-atype-parts b (list-push acc "(a-bounded ")) (" " & safe-int-text lo & " " & safe-int-text hi & " " & integer-to-text (variant-tag mode) & ")")
-     is APropEqType (l) (r) (s) -> list-push (method-atype-parts r (list-push (method-atype-parts l (list-push acc "(a-propeq ")) " ")) ")"
-     is AConstrainedType (cn) (cv) (b) (s) -> list-push (method-atype-parts b (list-push acc ("(a-constrained " & ir-quote (cn.value) & " " & ir-quote (cv.value) & " "))) ")"
+      let bounded-b = method-atype-parts b (list-push acc "(a-bounded ")
+      in list-push bounded-b (" " & safe-int-text lo & " " & safe-int-text hi & " " & integer-to-text (variant-tag mode) & ")")
+     is APropEqType (l) (r) (s) ->
+      let eq-l = method-atype-parts l (list-push acc "(a-propeq ")
+      in list-push (method-atype-parts r (list-push eq-l " ")) ")"
+     is AConstrainedType (cn) (cv) (b) (s) ->
+      let con-head = "(a-constrained " & ir-quote (cn.value) & " " & ir-quote (cv.value) & " "
+      in list-push (method-atype-parts b (list-push acc con-head)) ")"
      is ALinearType (b) (s) -> list-push (method-atype-parts b (list-push acc "(a-linear ")) ")"
-     is AForallType (v) (vt) (p) (s) -> list-push (method-atype-parts p (list-push (method-atype-parts vt (list-push acc ("(a-forall " & ir-quote (v.value) & " "))) " ")) ")"
+     is AForallType (v) (vt) (p) (s) ->
+      let all-vt = method-atype-parts vt (list-push acc ("(a-forall " & ir-quote (v.value) & " "))
+      in list-push (method-atype-parts p (list-push all-vt " ")) ")"
 
   method-atypes-parts : List ATypeExpr, Integer, List Text -> List Text
   method-atypes-parts (ts) (i) (acc) =
@@ -305,8 +319,10 @@ Section: Original Type Schemes
   method-schema-wire (td) =
     when td
      is ARecordTypeDef (n) (ps) (fs) (mut) (sp) ->
-      "(rec-def " & ir-quote (n.value) & " (tparams" & method-names-wire ps & ") (fields"
-       & text-concat-list (for f in fs -> " (rec-field " & ir-quote (f.name.value) & " " & method-atype-wire (f.type-expr) & ")") & ") " & (if mut then "(mutable)" else "(immutable)") & ")"
+      let rec-head = "(rec-def " & ir-quote (n.value) & " (tparams" & method-names-wire ps & ") (fields"
+      in let rec-fields = text-concat-list (for f in fs -> let field-name = ir-quote (f.name.value)
+        in " (rec-field " & field-name & " " & method-atype-wire (f.type-expr) & ")")
+      in rec-head & rec-fields & ") " & (if mut then "(mutable)" else "(immutable)") & ")"
      is AVariantTypeDef (n) (ps) (cs) (sp) ->
       "(var-def " & ir-quote (n.value) & " (tparams" & method-names-wire ps & ") (ctors"
        & text-concat-list (for c in cs -> let ctor-fields = text-concat-list (method-atypes-parts (c.fields) 0 [])
@@ -324,30 +340,52 @@ Section: Checked Source Constructor Recipes
     when e
      is ALitExpr (t) (k) (s) -> list-push acc ("(lit " & integer-to-text (variant-tag k) & " " & ir-quote t & ")")
      is ANameExpr (n) (s) -> list-push acc ("(name " & ir-quote (n.value) & ")")
-     is AApplyExpr (f) (a) (s) -> list-push (method-aexpr-parts a (list-push (method-aexpr-parts f (list-push acc "(apply ")) " ")) ")"
-     is ABinaryExpr (l) (op) (r) (s) -> list-push (method-aexpr-parts r (list-push (method-aexpr-parts l (list-push acc ("(binary " & integer-to-text (variant-tag op) & " "))) " ")) ")"
+     is AApplyExpr (f) (a) (s) ->
+      let apply-f = method-aexpr-parts f (list-push acc "(apply ")
+      in list-push (method-aexpr-parts a (list-push apply-f " ")) ")"
+     is ABinaryExpr (l) (op) (r) (s) ->
+      let bin-l = method-aexpr-parts l (list-push acc ("(binary " & integer-to-text (variant-tag op) & " "))
+      in list-push (method-aexpr-parts r (list-push bin-l " ")) ")"
      is AUnaryExpr (x) (s) -> list-push (method-aexpr-parts x (list-push acc "(negate ")) ")"
-     is AIfExpr (c) (t) (f) (s) -> list-push (method-aexpr-parts f (list-push (method-aexpr-parts t (list-push (method-aexpr-parts c (list-push acc "(if ")) " ")) " ")) ")"
-     is ALetExpr (bs) (b) (s) -> list-push (method-aexpr-parts b (list-push (method-alets-parts bs 0 (list-push acc "(let (binds")) ") ")) ")"
-     is ALambdaExpr (ps) (b) (s) -> list-push (method-aexpr-parts b (list-push acc ("(lambda (params" & method-names-wire ps & ") "))) ")"
-     is AMatchExpr (x) (arms) (s) -> list-push (method-aarms-parts arms 0 (list-push (method-aexpr-parts x (list-push acc "(match ")) " (arms")) "))"
+     is AIfExpr (c) (t) (f) (s) ->
+      let if-c = method-aexpr-parts c (list-push acc "(if ")
+      in let if-t = method-aexpr-parts t (list-push if-c " ")
+      in list-push (method-aexpr-parts f (list-push if-t " ")) ")"
+     is ALetExpr (bs) (b) (s) ->
+      let let-bs = method-alets-parts bs 0 (list-push acc "(let (binds")
+      in list-push (method-aexpr-parts b (list-push let-bs ") ")) ")"
+     is ALambdaExpr (ps) (b) (s) ->
+      let lam-head = "(lambda (params" & method-names-wire ps & ") "
+      in list-push (method-aexpr-parts b (list-push acc lam-head)) ")"
+     is AMatchExpr (x) (arms) (s) ->
+      let match-x = method-aexpr-parts x (list-push acc "(match ")
+      in list-push (method-aarms-parts arms 0 (list-push match-x " (arms")) "))"
      is AListExpr (xs) (s) -> list-push (method-aexprs-parts xs 0 (list-push acc "(list")) ")"
-     is ARecordExpr (n) (fs) (s) -> list-push (method-afields-parts fs 0 (list-push acc ("(record " & ir-quote (n.value) & " (fields"))) "))"
+     is ARecordExpr (n) (fs) (s) ->
+      let rec-head = "(record " & ir-quote (n.value) & " (fields"
+      in list-push (method-afields-parts fs 0 (list-push acc rec-head)) "))"
      is AFieldAccess (r) (n) (s) -> list-push (method-aexpr-parts r (list-push acc "(field ")) (" " & ir-quote (n.value) & ")")
      is AActExpr (ss) (s) -> list-push (method-astmts-parts ss 0 (list-push acc "(act")) ")"
-     is AHandleExpr (n) (b) (cs) (s) -> list-push (method-aclauses-parts cs 0 (list-push (method-aexpr-parts b (list-push acc ("(handle " & ir-quote (n.value) & " "))) " (clauses")) "))"
+     is AHandleExpr (n) (b) (cs) (s) ->
+      let handle-b = method-aexpr-parts b (list-push acc ("(handle " & ir-quote (n.value) & " "))
+      in list-push (method-aclauses-parts cs 0 (list-push handle-b " (clauses")) "))"
      is AWithTimeoutExpr (secs) (effs) (scopes) (b) (s) ->
-       let to0 = "(timeout " & ir-quote secs & " (effects" & method-names-wire effs & ") (scopes" & method-texts-wire scopes & ") "
+       let to-effs = "(timeout " & ir-quote secs & " (effects" & method-names-wire effs
+       in let to0 = to-effs & ") (scopes" & method-texts-wire scopes & ") "
        in list-push (method-aexpr-parts b (list-push acc to0)) ")"
      is ATryExpr (n) (b) (f) (fin) (s) ->
        let try-b = method-astmts-parts b 0 (list-push acc ("(try " & safe-int-text n & " (body"))
        in let try-f = method-astmts-parts f 0 (list-push try-b ") (fallback")
        in let try-fin = method-astmts-parts fin 0 (list-push try-f ") (finally")
        in list-push try-fin "))"
-     is AFieldAssignExpr (r) (n) (v) (s) -> list-push (method-aexpr-parts v (list-push (method-aexpr-parts r (list-push acc "(store ")) (" " & ir-quote (n.value) & " "))) ")"
+     is AFieldAssignExpr (r) (n) (v) (s) ->
+      let store-r = method-aexpr-parts r (list-push acc "(store ")
+      in list-push (method-aexpr-parts v (list-push store-r (" " & ir-quote (n.value) & " "))) ")"
      is ALazyExpr (b) (s) -> list-push (method-aexpr-parts b (list-push acc "(lazy ")) ")"
      is AErrorExpr (msg) (s) -> list-push acc ("(error " & ir-quote msg & ")")
-     is AInductionExpr (x) (arms) (s) -> list-push (method-aarms-parts arms 0 (list-push (method-aexpr-parts x (list-push acc "(induction ")) " (arms")) "))"
+     is AInductionExpr (x) (arms) (s) ->
+      let ind-x = method-aexpr-parts x (list-push acc "(induction ")
+      in list-push (method-aarms-parts arms 0 (list-push ind-x " (arms")) "))"
 
   method-aexprs-parts : List AExpr, Integer, List Text -> List Text
   method-aexprs-parts (xs) (i) (acc) =
@@ -359,13 +397,15 @@ Section: Checked Source Constructor Recipes
   method-alets-parts (bs) (i) (acc) =
     if i >= list-length bs then acc
     else let b = list-at bs i
-    in method-alets-parts bs (i + 1) (list-push (method-aexpr-parts (b.value) (list-push acc (" (bind " & ir-quote (b.name.value) & " "))) ")")
+    in let bound = method-aexpr-parts (b.value) (list-push acc (" (bind " & ir-quote (b.name.value) & " "))
+    in method-alets-parts bs (i + 1) (list-push bound ")")
 
   method-afields-parts : List AFieldExpr, Integer, List Text -> List Text
   method-afields-parts (fs) (i) (acc) =
     if i >= list-length fs then acc
     else let f = list-at fs i
-    in method-afields-parts fs (i + 1) (list-push (method-aexpr-parts (f.value) (list-push acc (" (field " & ir-quote (f.name.value) & " "))) ")")
+    in let fielded = method-aexpr-parts (f.value) (list-push acc (" (field " & ir-quote (f.name.value) & " "))
+    in method-afields-parts fs (i + 1) (list-push fielded ")")
 
   method-astmts-parts : List AActStmt, Integer, List Text -> List Text
   method-astmts-parts (ss) (i) (acc) =
@@ -402,7 +442,8 @@ Section: Checked Source Constructor Recipes
   method-aclauses-parts (cs) (i) (acc) =
     if i >= list-length cs then acc
     else let c = list-at cs i
-    in let a = list-push acc (" (clause " & ir-quote (c.op-name.value) & " (params" & method-names-wire (c.params) & ") " & ir-quote (c.resume-name.value) & " ")
+    in let clause-head = " (clause " & ir-quote (c.op-name.value) & " (params" & method-names-wire (c.params)
+    in let a = list-push acc (clause-head & ") " & ir-quote (c.resume-name.value) & " ")
     in method-aclauses-parts cs (i + 1) (list-push (method-aexpr-parts (c.body) a) ")")
 
 Section: Input-Derived Bounds
@@ -440,9 +481,13 @@ Section: Input-Derived Bounds
        in method-budget-add (method-atype-cost r (depth + 1)) (method-budget-add (method-names-cost es 0) eff-rest)
      is ABoundedIntType (b) (lo) (hi) (mode) (s) -> method-atype-cost b (depth + 1)
      is APropEqType (l) (r) (s) -> method-budget-add (method-atype-cost l (depth + 1)) (method-atype-cost r (depth + 1))
-     is AConstrainedType (cn) (cv) (b) (s) -> method-budget-add (method-atype-cost b (depth + 1)) (method-budget-add (method-text-cost (cn.value)) (method-text-cost (cv.value)))
+     is AConstrainedType (cn) (cv) (b) (s) ->
+       let con-b = method-atype-cost b (depth + 1)
+       in method-budget-add con-b (method-budget-add (method-text-cost (cn.value)) (method-text-cost (cv.value)))
      is ALinearType (b) (s) -> method-atype-cost b (depth + 1)
-     is AForallType (v) (vt) (p) (s) -> method-budget-add (method-text-cost (v.value)) (method-budget-add (method-atype-cost vt (depth + 1)) (method-atype-cost p (depth + 1))))
+     is AForallType (v) (vt) (p) (s) ->
+       let all-v = method-text-cost (v.value)
+       in method-budget-add all-v (method-budget-add (method-atype-cost vt (depth + 1)) (method-atype-cost p (depth + 1))))
 
   method-atypes-cost : List ATypeExpr, Integer, Integer -> Integer
   method-atypes-cost (ts) (i) (depth) =
@@ -460,20 +505,32 @@ Section: Input-Derived Bounds
      is AApplyExpr (f) (a) (s) -> method-budget-add (method-aexpr-cost f (depth + 1)) (method-aexpr-cost a (depth + 1))
      is ABinaryExpr (l) (op) (r) (s) -> method-budget-add (method-aexpr-cost l (depth + 1)) (method-aexpr-cost r (depth + 1))
      is AUnaryExpr (x) (s) -> method-aexpr-cost x (depth + 1)
-     is AIfExpr (c) (t) (f) (s) -> method-budget-add (method-aexpr-cost c (depth + 1)) (method-budget-add (method-aexpr-cost t (depth + 1)) (method-aexpr-cost f (depth + 1)))
+     is AIfExpr (c) (t) (f) (s) ->
+       let if-c = method-aexpr-cost c (depth + 1)
+       in method-budget-add if-c (method-budget-add (method-aexpr-cost t (depth + 1)) (method-aexpr-cost f (depth + 1)))
      is ALetExpr (bs) (b) (s) -> method-budget-add (method-alets-cost bs 0 (depth + 1)) (method-aexpr-cost b (depth + 1))
      is ALambdaExpr (ps) (b) (s) -> method-budget-add (method-names-cost ps 0) (method-aexpr-cost b (depth + 1))
-     is AMatchExpr (x) (arms) (s) | AInductionExpr (x) (arms) (s) -> method-budget-add (method-aexpr-cost x (depth + 1)) (method-aarms-cost arms 0 (depth + 1))
+     is AMatchExpr (x) (arms) (s) | AInductionExpr (x) (arms) (s) ->
+       let match-x = method-aexpr-cost x (depth + 1)
+       in method-budget-add match-x (method-aarms-cost arms 0 (depth + 1))
      is AListExpr (xs) (s) -> method-aexprs-cost xs 0 (depth + 1)
      is ARecordExpr (n) (fs) (s) -> method-budget-add (method-text-cost (n.value)) (method-afields-cost fs 0 (depth + 1))
      is AFieldAccess (r) (n) (s) -> method-budget-add (method-aexpr-cost r (depth + 1)) (method-text-cost (n.value))
      is AActExpr (ss) (s) -> method-astmts-cost ss 0 (depth + 1)
-     is AHandleExpr (n) (b) (cs) (s) -> method-budget-add (method-text-cost (n.value)) (method-budget-add (method-aexpr-cost b (depth + 1)) (method-aclauses-cost cs 0 (depth + 1)))
+     is AHandleExpr (n) (b) (cs) (s) ->
+       let handle-n = method-text-cost (n.value)
+       in let handle-b = method-aexpr-cost b (depth + 1)
+       in method-budget-add handle-n (method-budget-add handle-b (method-aclauses-cost cs 0 (depth + 1)))
      is AWithTimeoutExpr (secs) (effs) (scopes) (b) (s) ->
        let wt-rest = method-budget-add (method-texts-cost scopes 0) (method-aexpr-cost b (depth + 1))
        in method-budget-add (method-text-cost secs) (method-budget-add (method-names-cost effs 0) wt-rest)
-     is ATryExpr (n) (b) (f) (fin) (s) -> method-budget-add (method-astmts-cost b 0 (depth + 1)) (method-budget-add (method-astmts-cost f 0 (depth + 1)) (method-astmts-cost fin 0 (depth + 1)))
-     is AFieldAssignExpr (r) (n) (v) (s) -> method-budget-add (method-text-cost (n.value)) (method-budget-add (method-aexpr-cost r (depth + 1)) (method-aexpr-cost v (depth + 1)))
+     is ATryExpr (n) (b) (f) (fin) (s) ->
+       let try-b = method-astmts-cost b 0 (depth + 1)
+       in let try-f = method-astmts-cost f 0 (depth + 1)
+       in method-budget-add try-b (method-budget-add try-f (method-astmts-cost fin 0 (depth + 1)))
+     is AFieldAssignExpr (r) (n) (v) (s) ->
+       let store-n = method-text-cost (n.value)
+       in method-budget-add store-n (method-budget-add (method-aexpr-cost r (depth + 1)) (method-aexpr-cost v (depth + 1)))
      is ALazyExpr (b) (s) -> method-aexpr-cost b (depth + 1)
      is AErrorExpr (msg) (s) -> method-text-cost msg)
 
@@ -487,13 +544,15 @@ Section: Input-Derived Bounds
   method-alets-cost (xs) (i) (d) =
     if i >= list-length xs then 0
     else let b = list-at xs i
-    in method-budget-add (method-budget-add (method-text-cost (b.name.value)) (method-aexpr-cost (b.value) d)) (method-alets-cost xs (i + 1) d)
+    in let bind-cost = method-budget-add (method-text-cost (b.name.value)) (method-aexpr-cost (b.value) d)
+    in method-budget-add bind-cost (method-alets-cost xs (i + 1) d)
 
   method-afields-cost : List AFieldExpr, Integer, Integer -> Integer
   method-afields-cost (xs) (i) (d) =
     if i >= list-length xs then 0
     else let f = list-at xs i
-    in method-budget-add (method-budget-add (method-text-cost (f.name.value)) (method-aexpr-cost (f.value) d)) (method-afields-cost xs (i + 1) d)
+    in let field-cost = method-budget-add (method-text-cost (f.name.value)) (method-aexpr-cost (f.value) d)
+    in method-budget-add field-cost (method-afields-cost xs (i + 1) d)
 
   method-astmts-cost : List AActStmt, Integer, Integer -> Integer
   method-astmts-cost (xs) (i) (d) =
@@ -523,14 +582,18 @@ Section: Input-Derived Bounds
   method-aarms-cost (xs) (i) (d) =
     if i >= list-length xs then 0
     else let a = list-at xs i
-    in method-budget-add (method-budget-add (method-apat-cost (a.pattern) d) (method-budget-add (method-aexpr-cost (a.guard) d) (method-aexpr-cost (a.body) d))) (method-aarms-cost xs (i + 1) d)
+    in let pat-cost = method-apat-cost (a.pattern) d
+    in let guard-cost = method-aexpr-cost (a.guard) d
+    in let arm-cost = method-budget-add pat-cost (method-budget-add guard-cost (method-aexpr-cost (a.body) d))
+    in method-budget-add arm-cost (method-aarms-cost xs (i + 1) d)
 
   method-aclauses-cost : List AHandleClause, Integer, Integer -> Integer
   method-aclauses-cost (xs) (i) (d) =
     if i >= list-length xs then 0
     else let c = list-at xs i
     in let cl-rest = method-budget-add (method-text-cost (c.resume-name.value)) (method-aexpr-cost (c.body) d)
-    in let cl-cost = method-budget-add (method-text-cost (c.op-name.value)) (method-budget-add (method-names-cost (c.params) 0) cl-rest)
+    in let cl-op = method-text-cost (c.op-name.value)
+    in let cl-cost = method-budget-add cl-op (method-budget-add (method-names-cost (c.params) 0) cl-rest)
     in method-budget-add cl-cost (method-aclauses-cost xs (i + 1) d)
 
 Section: Structural Closed Types
@@ -580,8 +643,12 @@ Section: Structural Closed Types
       let b1 = method-charge-type b (method-budget-add (method-text-cost (row.tail-name)) (method-row-cost (row.labels) 0))
       in method-measure-type (method-measure-type b1 p (d + 1)) r (d + 1)
      is ListTy (e) | LinkedListTy (e) | LinearTy (e) | ForAllTy (id) (e) | ForAllEff (id) (e) -> method-measure-type b e (d + 1)
-     is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) -> method-measure-types (method-charge-type b (method-text-cost (n.value))) args 0 (d + 1)
-     is EffectfulTy (es) (ss) (r) -> method-measure-type (method-charge-type b (method-budget-add (method-names-cost es 0) (method-texts-cost ss 0))) r (d + 1)
+     is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) ->
+      let named = method-charge-type b (method-text-cost (n.value))
+      in method-measure-types named args 0 (d + 1)
+     is EffectfulTy (es) (ss) (r) ->
+      let eff-cost = method-budget-add (method-names-cost es 0) (method-texts-cost ss 0)
+      in method-measure-type (method-charge-type b eff-cost) r (d + 1)
      is UnitTy (n) (e) -> method-measure-type (method-charge-type b (method-text-cost (n.value))) e (d + 1)
      is PropEqTy (l) (r) | TypeApply (l) (r) -> method-measure-type (method-measure-type b l (d + 1)) r (d + 1)
      is VectorTy (n) (e) | SizedVecTy (n) (e) -> method-measure-type b e (d + 1)
@@ -603,7 +670,9 @@ Section: Structural Closed Types
   method-row-cost (ls) (i) =
     if i >= list-length ls then 0
     else let l = list-at ls i
-    in method-budget-add (method-budget-add 2048 (method-budget-add (method-text-cost (l.name.value)) (method-text-cost (l.scope)))) (method-row-cost ls (i + 1))
+    in let label-name = method-text-cost (l.name.value)
+    in let label-cost = method-budget-add 2048 (method-budget-add label-name (method-text-cost (l.scope)))
+    in method-budget-add label-cost (method-row-cost ls (i + 1))
 
   method-type-key : CodexType -> Text
   method-type-key (t) = text-concat-list (method-key-parts t [])
@@ -611,16 +680,22 @@ Section: Structural Closed Types
   method-key-parts : CodexType, List Text -> List Text
   method-key-parts (t) (acc) =
     when t
-     is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) -> list-push (method-keys-parts args 0 (list-push acc ("(nominal " & ir-quote (n.value)))) ")"
+     is ConstructedTy (n) (args) | SumTy (n) (args) (cs) | RecordTy (n) (args) (fs) ->
+      let nominal = method-keys-parts args 0 (list-push acc ("(nominal " & ir-quote (n.value)))
+      in list-push nominal ")"
      is FunTy (p) (row) (r) ->
       let parts = method-key-parts r (list-push (method-key-parts p (list-push acc "(function ")) " ")
-      in list-push parts (" (effects" & text-concat-list (for l in (row.labels) -> " (label " & ir-quote (l.name.value) & " " & ir-quote (l.scope) & ")") & "))")
+      in let labels = text-concat-list (for l in (row.labels) -> let label-name = ir-quote (l.name.value)
+        in " (label " & label-name & " " & ir-quote (l.scope) & ")")
+      in list-push parts (" (effects" & labels & "))")
      is ListTy (e) -> list-push (method-key-parts e (list-push acc "(list ")) ")"
      is LinkedListTy (e) -> list-push (method-key-parts e (list-push acc "(linked-list ")) ")"
      is LinearTy (e) -> list-push (method-key-parts e (list-push acc "(linear ")) ")"
      is UnitTy (n) (b) -> list-push (method-key-parts b (list-push acc ("(unit " & ir-quote (n.value) & " "))) ")"
      is PropEqTy (l) (r) -> list-push (method-key-parts r (list-push (method-key-parts l (list-push acc "(propeq ")) " ")) ")"
-     is TypeApply (l) (r) -> list-push (method-key-parts r (list-push (method-key-parts l (list-push acc "(type-apply ")) " ")) ")"
+     is TypeApply (l) (r) ->
+      let apply-l = method-key-parts l (list-push acc "(type-apply ")
+      in list-push (method-key-parts r (list-push apply-l " ")) ")"
      is VectorTy (n) (e) -> list-push (method-key-parts e (list-push acc ("(vector " & safe-int-text n & " "))) ")"
      is SizedVecTy (n) (e) -> list-push (method-key-parts e (list-push acc ("(sized-vec " & safe-int-text n & " "))) ")"
      is otherwise -> list-push acc (ir-emit-type t)
@@ -671,7 +746,10 @@ Section: Runtime Field Types
       else if row.tail-id >= 0 | text-length (row.tail-name) > 0 then []
       else let ret = if list-length (row.labels) == 0 then list-at rs 0
       else
-        deck-record (AEffectType (for l in (row.labels) -> l.name) (for l in (row.labels) -> l.scope) [] (list-at rs 0) synthetic-span)
+        deck-record (
+          let eff-names = for l in (row.labels) -> l.name
+          in AEffectType eff-names (for l in (row.labels) -> l.scope) [] (list-at rs 0) synthetic-span
+        )
       in [deck-record (AFunType (list-at ps 0) ret synthetic-span)]
      is EffectfulTy (es) (ss) (r) ->
       let rs = method-type-to-ast r
@@ -808,10 +886,19 @@ Section: Runtime Field Types
   method-substitute-ast (t) (names) (types) =
     when t
      is ANamedType (n) (s) -> method-substitute-name t (n.value) names types 0
-     is AFunType (p) (r) (s) -> deck-record (AFunType (method-substitute-ast p names types) (method-substitute-ast r names types) s)
-     is AAppType (h) (args) (s) -> deck-record (AAppType (method-substitute-ast h names types) (for a in args -> method-substitute-ast a names types) s)
+     is AFunType (p) (r) (s) -> deck-record (
+       let sub-p = method-substitute-ast p names types
+       in AFunType sub-p (method-substitute-ast r names types) s
+     )
+     is AAppType (h) (args) (s) -> deck-record (
+       let sub-h = method-substitute-ast h names types
+       in AAppType sub-h (for a in args -> method-substitute-ast a names types) s
+     )
      is AEffectType (es) (ss) (tail) (r) (s) -> deck-record (AEffectType es ss tail (method-substitute-ast r names types) s)
-     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> deck-record (ABoundedIntType (method-substitute-ast b names types) lo hi mode s)
+     is ABoundedIntType (b) (lo) (hi) (mode) (s) -> deck-record (
+       let sub-b = method-substitute-ast b names types
+       in ABoundedIntType sub-b lo hi mode s
+     )
      is ALinearType (b) (s) -> deck-record (ALinearType (method-substitute-ast b names types) s)
      is otherwise -> t
 
@@ -919,7 +1006,9 @@ Section: Finite Existing-Use Scan
   method-open-type-detail : CodexType -> Text
   method-open-type-detail (t) =
     when t
-     is FunTy (p) (row) (r) -> "fn[" & show (row.tail-id) & "," & row.tail-name & "](" & method-open-type-detail p & "," & method-open-type-detail r & ")"
+     is FunTy (p) (row) (r) ->
+      let fn-head = "fn[" & show (row.tail-id) & "," & row.tail-name & "](" & method-open-type-detail p
+      in fn-head & "," & method-open-type-detail r & ")"
      is otherwise -> ir-emit-type t
 
   method-declared-use-type : ATypeExpr, CodexType, Integer -> CodexType
@@ -1108,7 +1197,8 @@ Section: Template Plans
     else if list-length (list-at (cd.method-binders) mi) == 0 then
       method-make-targets cd inst renames (i + 1) acc
     else
-      method-make-targets cd inst renames (i + 1) (method-target-group (list-at (inst.method-targets) i) mi ((list-at (cd.methods) mi).type-expr) renames 0 acc)
+      let grouped = method-target-group (list-at (inst.method-targets) i) mi ((list-at (cd.methods) mi).type-expr) renames 0 acc
+      in method-make-targets cd inst renames (i + 1) grouped
 
   method-target-group : List Text, Integer, ATypeExpr, List RenameEntry, Integer, List MethodTarget -> List MethodTarget
   method-target-group (names) (mi) (declared) (renames) (i) (acc) =
@@ -1133,7 +1223,8 @@ Section: Template Plans
      is ANamedType (n) (s) -> n.value == name
      is AFunType (p) (r) (s) -> method-atype-refers p name | method-atype-refers r name
      is AAppType (h) (args) (s) -> method-atype-refers h name | method-atypes-refer args name 0
-     is AEffectType (es) (ss) (tail) (r) (s) | ABoundedIntType (r) (lo) (hi) (mode) (s) | ALinearType (r) (s) -> method-atype-refers r name
+     is AEffectType (es) (ss) (tail) (r) (s) -> method-atype-refers r name
+     is ABoundedIntType (r) (lo) (hi) (mode) (s) | ALinearType (r) (s) -> method-atype-refers r name
      is APropEqType (l) (r) (s) -> method-atype-refers l name | method-atype-refers r name
      is AConstrainedType (cn) (cv) (b) (s) -> method-atype-refers b name
      is AForallType (v) (vt) (p) (s) -> method-atype-refers vt name | method-atype-refers p name
@@ -1215,22 +1306,28 @@ Section: Template Plans
   method-record-schema-cost (fs) (i) =
     if i >= list-length fs then 0
     else let f = list-at fs i
-    in method-budget-add (method-budget-add (method-text-cost (f.name.value)) (method-atype-cost (f.type-expr) 0)) (method-record-schema-cost fs (i + 1))
+    in let field-cost = method-budget-add (method-text-cost (f.name.value)) (method-atype-cost (f.type-expr) 0)
+    in method-budget-add field-cost (method-record-schema-cost fs (i + 1))
 
   method-instances-cost : List AInstanceDef, Integer -> Integer
   method-instances-cost (ids) (i) =
     if i >= list-length ids then 0
     else let inst = list-at ids i
     in let body-cost = method-aexprs-cost (inst.constructor-body) 0 0
-    in let types-cost = method-budget-add (method-atypes-cost (inst.constructor-type) 0 0) (method-atype-cost (inst.head-type) 0)
-    in let names-cost = method-budget-add (method-text-cost (inst.constructor-name)) (method-impls-cost (inst.methods) (inst.method-targets) 0)
-    in method-budget-add (method-budget-add 16384 (method-budget-add body-cost (method-budget-add types-cost names-cost))) (method-instances-cost ids (i + 1))
+    in let ctor-cost = method-atypes-cost (inst.constructor-type) 0 0
+    in let types-cost = method-budget-add ctor-cost (method-atype-cost (inst.head-type) 0)
+    in let ctor-name-cost = method-text-cost (inst.constructor-name)
+    in let names-cost = method-budget-add ctor-name-cost (method-impls-cost (inst.methods) (inst.method-targets) 0)
+    in let inst-cost = method-budget-add 16384 (method-budget-add body-cost (method-budget-add types-cost names-cost))
+    in method-budget-add inst-cost (method-instances-cost ids (i + 1))
 
   method-impls-cost : List AInstanceMethodDef, List (List Text), Integer -> Integer
   method-impls-cost (ms) (targets) (i) =
     if i >= list-length ms then 0
     else let m = list-at ms i
-    in let cost = method-budget-add 8192 (method-budget-add (method-text-cost (m.name.value)) (method-budget-add (method-names-cost (m.params) 0) (method-texts-cost (list-at targets i) 0)))
+    in let impl-name = method-text-cost (m.name.value)
+    in let impl-rest = method-budget-add (method-names-cost (m.params) 0) (method-texts-cost (list-at targets i) 0)
+    in let cost = method-budget-add 8192 (method-budget-add impl-name impl-rest)
     in method-budget-add cost (method-impls-cost ms targets (i + 1))
 
   method-constructor-head : CodexType -> List CodexType
@@ -1356,7 +1453,9 @@ Section: Logical Accounting and Publication
   method-instance-id (inst) = method-origin-id "instance" (inst.class-name.value & "/" & inst.type-name.value) (inst.span)
 
   method-implementation-id : AInstanceDef, AInstanceMethodDef -> Text
-  method-implementation-id (inst) (m) = method-origin-id "implementation" (inst.class-name.value & "/" & inst.type-name.value & "/" & m.name.value) (m.span)
+  method-implementation-id (inst) (m) =
+    let impl-key = inst.class-name.value & "/" & inst.type-name.value & "/" & m.name.value
+    in method-origin-id "implementation" impl-key (m.span)
 
   method-logical-ids : MethodInputs -> List Text
   method-logical-ids (input) =
@@ -1414,7 +1513,8 @@ Section: Logical Accounting and Publication
      is AFunType (p) (r) (s) -> method-row-binders r (method-row-binders p acc)
      is AAppType (h) (args) (s) -> method-row-binders-list args 0 (method-row-binders h acc)
      is AEffectType (es) (ss) (tail) (r) (s) -> method-row-binders r (method-row-names tail 0 acc)
-     is ABoundedIntType (b) (lo) (hi) (mode) (s) | ALinearType (b) (s) | AConstrainedType (cn) (cv) (b) (s) -> method-row-binders b acc
+     is ABoundedIntType (b) (lo) (hi) (mode) (s) | ALinearType (b) (s) -> method-row-binders b acc
+     is AConstrainedType (cn) (cv) (b) (s) -> method-row-binders b acc
      is APropEqType (l) (r) (s) -> method-row-binders r (method-row-binders l acc)
      is AForallType (v) (vt) (p) (s) -> method-row-binders p (method-row-binders vt acc)
      is otherwise -> acc
@@ -1435,8 +1535,9 @@ Section: Logical Accounting and Publication
   method-declarations-wire (cd) (i) (acc) =
     if i >= list-length (cd.methods) then acc
     else let m = list-at (cd.methods) i
-    in let item = " (method " & ir-quote (method-declaration-id cd m) & " " & ir-quote (m.name.value)
-      & " (binders" & method-texts-wire (list-at (cd.method-binders) i) & ") (row-binders" & method-texts-wire (method-row-binders (m.type-expr) [])
+    in let decl-head = " (method " & ir-quote (method-declaration-id cd m) & " " & ir-quote (m.name.value)
+      & " (binders" & method-texts-wire (list-at (cd.method-binders) i)
+    in let item = decl-head & ") (row-binders" & method-texts-wire (method-row-binders (m.type-expr) [])
       & ") (declared " & method-atype-wire (m.type-expr) & ") " & method-source-span-wire (m.span) & ")"
     in method-declarations-wire cd (i + 1) (list-push acc item)
 
@@ -1446,7 +1547,8 @@ Section: Logical Accounting and Publication
     else let source = list-at targets i
     in let runtime = rename-lookup (input.renames) source
     in let t = env-lookup-in (input.checked-types) runtime
-    in method-checked-targets-wire targets input (i + 1) (list-push acc (" (target " & ir-quote source & " " & ir-quote runtime & " " & ir-emit-type t & ")"))
+    in let target = " (target " & ir-quote source & " " & ir-quote runtime & " " & ir-emit-type t & ")"
+    in method-checked-targets-wire targets input (i + 1) (list-push acc target)
 
   method-implementations-wire : AClassDef, AInstanceDef, MethodInputs, Integer, List Text -> List Text
   method-implementations-wire (cd) (inst) (input) (i) (acc) =
@@ -1458,9 +1560,11 @@ Section: Logical Accounting and Publication
       "(missing-declaration)"
     else
       method-atype-wire (instance-specialize-type ((list-at (cd.methods) mi).type-expr) (inst.head-type) 0)
-    in let item = " (implementation " & ir-quote (method-implementation-id inst m) & " (method " & ir-quote declaration & ") (params"
-       & method-names-wire (m.params) & ") (checked-signature " & signature & ") (recipe-field " & ir-quote (m.name.value & "-impl")
-       & ") (targets" & text-concat-list (method-checked-targets-wire (list-at (inst.method-targets) i) input 0 []) & ") " & method-source-span-wire (m.span) & ")"
+    in let impl-head = " (implementation " & ir-quote (method-implementation-id inst m) & " (method " & ir-quote declaration
+    in let impl-sig = impl-head & ") (params" & method-names-wire (m.params) & ") (checked-signature " & signature
+    in let impl-recipe = impl-sig & ") (recipe-field " & ir-quote (m.name.value & "-impl") & ") (targets"
+    in let impl-targets = text-concat-list (method-checked-targets-wire (list-at (inst.method-targets) i) input 0 [])
+    in let item = impl-recipe & impl-targets & ") " & method-source-span-wire (m.span) & ")"
     in method-implementations-wire cd inst input (i + 1) (list-push acc item)
 
   method-instances-wire : AClassDef, List AInstanceDef, MethodInputs, List ATypeDef, Integer, List Text -> List Text
@@ -1469,8 +1573,9 @@ Section: Logical Accounting and Publication
     else let inst = list-at ids i
     in let ctor-type = text-concat-list (for t in (inst.constructor-type) -> " " & method-atype-wire t)
     in let ctor-body = text-concat-list (for e in (inst.constructor-body) -> " " & method-aexpr-wire e)
-    in let item = " (instance " & ir-quote (method-instance-id inst) & " (head " & method-atype-wire (inst.head-type)
-       & ") (binders" & method-texts-wire (method-free-vars (inst.head-type) tds [] []) & ") (constructor " & ir-quote (inst.constructor-name)
+    in let inst-head = " (instance " & ir-quote (method-instance-id inst) & " (head " & method-atype-wire (inst.head-type)
+    in let inst-binders = inst-head & ") (binders" & method-texts-wire (method-free-vars (inst.head-type) tds [] [])
+    in let item = inst-binders & ") (constructor " & ir-quote (inst.constructor-name)
        & " (declared" & ctor-type & ") (recipe" & ctor-body & ")) (implementations"
        & text-concat-list (method-implementations-wire cd inst input 0 []) & ") " & method-source-span-wire (inst.span) & ")"
     in method-instances-wire cd ids input tds (i + 1) (list-push acc item)
@@ -1481,19 +1586,23 @@ Section: Logical Accounting and Publication
     else let slot = list-at (plan.slots) i
     in let cd = plan.source
     in let m = list-at (cd.methods) (slot.method-index)
-    in let item = " (slot " & ir-quote (slot.name) & " (method " & ir-quote (method-declaration-id cd m) & ") (key " & ir-quote (slot.key)
-       & ") (arguments" & text-concat-list (for t in (slot.substitutions) -> " " & ir-emit-type t) & ") (type " & method-atype-wire (slot.type-expr) & "))"
+    in let slot-key = " (slot " & ir-quote (slot.name) & " (method " & ir-quote (method-declaration-id cd m)
+       & ") (key " & ir-quote (slot.key) & ") (arguments"
+    in let slot-args = text-concat-list (for t in (slot.substitutions) -> " " & ir-emit-type t)
+    in let item = slot-key & slot-args & ") (type " & method-atype-wire (slot.type-expr) & "))"
     in method-slots-wire plan (i + 1) (list-push acc item)
 
   method-plan-wire : MethodPlan, MethodInputs, List ATypeDef -> Text
   method-plan-wire (plan) (input) (tds) =
     let cd = plan.source
-    in " (template " & ir-quote (method-class-id cd) & " (name " & ir-quote (cd.name.value) & ") (class-binders \"a\") (schema "
+    in let plan-head = " (template " & ir-quote (method-class-id cd) & " (name " & ir-quote (cd.name.value)
+       & ") (class-binders \"a\") (schema "
        & method-schema-wire (list-at (cd.dict-schema) 0) & ") (methods" & text-concat-list (method-declarations-wire cd 0 [])
        & ") (instances" & text-concat-list (method-instances-wire cd (plan.instances) input tds 0 []) & ") (state "
-       & plan.state & " " & ir-quote (plan.reason) & ") (uses " & (if plan.state == "ineligible" then "ungraded" else safe-int-text (plan.uses))
-       & ") (cloned-bodies 0) (byte-bound " & safe-int-text (plan.byte-bound) & ") (slots" & text-concat-list (method-slots-wire plan 0 [])
-       & ") " & method-source-span-wire (cd.span) & ")"
+       & plan.state & " " & ir-quote (plan.reason) & ") (uses "
+    in let uses = if plan.state == "ineligible" then "ungraded" else safe-int-text (plan.uses)
+    in plan-head & uses & ") (cloned-bodies 0) (byte-bound " & safe-int-text (plan.byte-bound) & ") (slots"
+       & text-concat-list (method-slots-wire plan 0 []) & ") " & method-source-span-wire (cd.span) & ")"
 
   method-plans-build : MethodInputs, IRChapter, List ATypeDef, Integer, Integer, List MethodPlan -> List MethodPlan
   method-plans-build (input) (ir) (tds) (ceiling) (i) (acc) =

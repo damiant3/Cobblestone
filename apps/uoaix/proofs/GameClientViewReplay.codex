@@ -87,6 +87,18 @@ Chapter: GameClientViewReplay
     changed <- gcv-apply view combat items game input status (gs-reply [] "season")
     env <- gcvr-packets changed
     j <- gcvr-check "season change precedes forced light refresh" (list-length env == 2 & list-at (list-at env 0) 0 == #BC & list-at (list-at env 0) 1 == 3 & list-at (list-at env 1) 0 == #4F)
+    skinned <- when world-get game.world 2 is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set m "hue" 1050)
+    redrawn <- gcv-apply view combat items game input status (gs-reply [] "restyle")
+    full <- gcvr-find (gcvr-packets redrawn) #78 0
+    restyled <- gcvr-check "a skin change redraws the mobile with its equipment, not a bare move" (is-ok skinned & list-length full == 46 & gp-u32 full 3 == 2 & gp-u16 full 15 == 1050 & list-length (gcvr-find (gcvr-packets redrawn) #77 0) == 0)
+    stepped <- when world-get game.world 2 is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set m "x" (m.x + 1))
+    east <- gcv-apply view combat items game input status (gs-reply [] "npc step")
+    step <- gcvr-find (gcvr-packets east) #77 0
+    leapt <- when world-get game.world 2 is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" (m.x - 2)) "y" (m.y + 2))
+    southwest <- gcv-apply view combat items game input status (gs-reply [] "npc run")
+    run <- gcvr-find (gcvr-packets southwest) #77 0
+    print-line-uni ("FACING step=" & show (list-length step) & "," & (if list-length step == 17 then show (list-at step 12) else "-") & " run=" & show (list-length run) & "," & (if list-length run == 17 then show (list-at run 12) else "-"))
+    facing <- gcvr-check "a mobile moved without its own 0x77 is sent one facing its step: east walking, south-west running" (is-ok stepped & is-ok leapt & list-length step == 17 & list-at step 12 == 2 & list-length run == 17 & list-at run 12 == #85)
     reconnect <- __record-set input "connection" 10
     fresh <- gcv-apply view combat items game input status (gs-reply [] "reconnect")
     k <- gcvr-check "reconnect rebuilds transient view and status" (list-length (gcvr-find (gcvr-packets fresh) #78 0) > 0 & list-length (gcvr-find (gcvr-packets fresh) #11 0) == 66)
@@ -94,7 +106,7 @@ Chapter: GameClientViewReplay
     ghost <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "death")
     l <- gcvr-check "ghost receives desolate season and bright light" (list-at (gcvr-find (gcvr-packets ghost) #BC 0) 1 == 4 & list-at (gcvr-find (gcvr-packets ghost) #4F 0) 1 == 0)
     canonical <- game.world
-    readonly <- WorldTable { buffer = canonical.buffer, capacity = canonical.capacity, index = 0 }
+    readonly <- (world-view canonical.buffer canonical.capacity)
     shadow <- __record-set game "world" readonly
     refused <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "unindexed")
     restored <- __record-set game "world" canonical
@@ -106,7 +118,7 @@ Chapter: GameClientViewReplay
     deleted <- world-delete game.world extra-serial
     gone <- gcv-apply view combat items game input (gcvr-status game) (gs-reply [] "delete")
     deletion <- gcvr-check "actual world deletion still emits removal" (is-ok extra & is-ok extra-view & is-ok deleted & list-length (gcvr-packets gone) == 1 & gp-u32 (gcvr-find (gcvr-packets gone) #1D 0) 1 == extra-serial)
-    a+b+c+retained+query+d+e+f+g+h+j+k+l+missing+scale+deletion
+    a+b+c+retained+query+d+e+f+g+h+j+restyled+facing+k+l+missing+scale+deletion
   end
   opening : [Console] Integer = when gs-new 0
     is Err (e) -> act

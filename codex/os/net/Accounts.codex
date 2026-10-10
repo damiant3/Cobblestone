@@ -4,8 +4,10 @@ Chapter: Accounts
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
- Passwords are stored as salted SHA-256 digests; a session token is SHA-256 of
- (handle | server nonce), and the nonce is a counter, not a CSPRNG.
+ A session token is SHA-256 of (secret | handle | nonce), where the secret is
+ drawn from the boot's device seed by `auth-serve`; with no secret, login
+ refuses. Sessions hold the token's digest, so a lookup compares digests and an
+ early exit on `==` leaks nothing about a live token.
 
  We say:
 
@@ -17,12 +19,17 @@ Section: Model
     accounts : List Account,
     sessions : List Session,
     next-id : Integer,
-    nonce : Integer
+    nonce : Integer,
+    secret : Text
   }
   AuthStep = record { astate : AuthState, resp : Text }
 
   auth-empty : AuthState
-  auth-empty = AuthState { accounts = [], sessions = [], next-id = 1, nonce = 1 }
+  auth-empty = AuthState { accounts = [], sessions = [], next-id = 1, nonce = 1, secret = "" }
+
+  auth-keyed : AuthState, List Integer -> AuthState
+  auth-keyed (s) (seeds) = AuthState { accounts = s.accounts, sessions = s.sessions, next-id = s.next-id, nonce = s.nonce,
+    secret = digest (show (list-at seeds 0) & ":" & show (list-at seeds 1) & ":" & show (list-at seeds 2) & ":" & show (list-at seeds 3)) }
 
 Section: Hashing
 
@@ -73,7 +80,7 @@ Section: Lookups
   whoami : AuthState, Text -> Maybe Account
   whoami (s) (tok) =
     if text-length tok == 0 then None
-    else let uid = find-token (s.sessions) 0 (list-length (s.sessions)) tok
+    else let uid = find-token (s.sessions) 0 (list-length (s.sessions)) (digest tok)
     in if uid < 0 then None else find-id (s.accounts) 0 (list-length (s.accounts)) uid
 
 Section: Operations
@@ -94,7 +101,8 @@ Section: Operations
           accounts = list-push (s.accounts) acc,
           sessions = s.sessions,
           next-id = id + 1,
-          nonce = s.nonce + 1
+          nonce = s.nonce + 1,
+          secret = s.secret
         }
         in act
           sv <- accounts-save s2
@@ -103,29 +111,32 @@ Section: Operations
 
   auth-login : AuthState, Text, Text -> AuthStep
   auth-login (s) (h) (pw) =
-    when find-handle (s.accounts) 0 (list-length (s.accounts)) h
+    if text-length (s.secret) == 0 then AuthStep { astate = s, resp = err-json "server has no session secret" }
+    else when find-handle (s.accounts) 0 (list-length (s.accounts)) h
       is None -> AuthStep { astate = s, resp = err-json "invalid credentials" }
       is Just (a) ->
-        if hash-pw (salt-for (a.acc-id)) pw == a.pwhash
-        then let tok = digest (h & "|" & show (s.nonce))
-        in let sess = Session { token = tok, sess-uid = a.acc-id }
+        if digest (hash-pw (salt-for (a.acc-id)) pw) == digest (a.pwhash)
+        then let tok = digest (s.secret & "|" & h & "|" & show (s.nonce))
+        in let sess = Session { token = digest tok, sess-uid = a.acc-id }
         in let s2 = AuthState {
           accounts = s.accounts,
           sessions = list-push (s.sessions) sess,
           next-id = s.next-id,
-          nonce = s.nonce + 1
+          nonce = s.nonce + 1,
+          secret = s.secret
         }
         in AuthStep { astate = s2, resp = "{\"token\":" & jstr tok & ",\"handle\":" & jstr h & "}" }
         else AuthStep { astate = s, resp = err-json "invalid credentials" }
 
   auth-logout : AuthState, Text -> AuthStep
   auth-logout (s) (tok) =
-    let kept = drop-token (s.sessions) 0 (list-length (s.sessions)) tok []
+    let kept = drop-token (s.sessions) 0 (list-length (s.sessions)) (digest tok) []
     in let s2 = AuthState {
       accounts = s.accounts,
       sessions = kept,
       next-id = s.next-id,
-      nonce = s.nonce
+      nonce = s.nonce,
+      secret = s.secret
     }
     in AuthStep { astate = s2, resp = "{\"ok\":true}" }
 
@@ -239,7 +250,7 @@ Section: Durability
     buf <- block-read-sector acct-sector
     let raw = ar-u16 buf 0
     in let n = if raw > 3 then 0 else raw
-    in AuthState { accounts = ar-accts buf 0 n [], sessions = [], next-id = n + 1, nonce = 1 }
+    in AuthState { accounts = ar-accts buf 0 n [], sessions = [], next-id = n + 1, nonce = 1, secret = "" }
   end
 
 Section: Routing + Serve Loop
@@ -278,13 +289,18 @@ Section: Routing + Serve Loop
     end
   end
 
-  auth-serve : (Maybe Account, Text -> [Device.Block] Text) -> [Console, Device.Block, Network.Read, Network.Write] Integer
+  auth-serve : (Maybe Account, Text -> [Device.Block] Text) -> [Console, Device.Block, Network.Read, Network.Write, Identity] Integer
   auth-serve (app) =
     let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
     in let ts = transport-new sess
     in act
+      s0 <- device-seed 0
+      s1 <- device-seed 1
+      s2 <- device-seed 2
+      s3 <- device-seed 3
       ts1 <- net-io-connect ts
-      auth-loop app (AuthLoop { astate = accounts-load 0, transport = ts1 })
+      loaded <- accounts-load 0
+      auth-loop app (AuthLoop { astate = auth-keyed loaded [s0, s1, s2, s3], transport = ts1 })
     end
 
 Page 1

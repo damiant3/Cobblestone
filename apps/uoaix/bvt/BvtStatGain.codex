@@ -1,0 +1,36 @@
+Chapter: BvtStatGain
+  cites Uoaix chapter SkillCurve
+  cites Uoaix chapter BvtCheck
+
+  bsg-zero : Integer, Integer, Integer -> Integer
+  bsg-zero (buf) (at) (stop) = if at >= stop then buf else let a = poke-qword buf at 0 in bsg-zero buf (at + 8) stop
+  bsg-card : Integer, Integer, Integer -> Integer
+  bsg-card (strength) (dexterity) (intelligence) = let card = bsg-zero (alloc-bytes 160) 0 160
+    in let a = poke-byte card 79 strength in let b = poke-byte card 80 dexterity in let c = poke-byte card 81 intelligence in card
+  bsg-rolls : Integer, Integer, Integer -> Integer
+  bsg-rolls (card) (skill) (left) = if left == 0 then 0
+    else let rolled = skc-stat-gain card skill (left * 7919) in bsg-rolls card skill (left - 1)
+  bsg-fill : Integer, Integer, Integer -> Integer
+  bsg-fill (cells) (i) (stop) = if i == stop then cells else let a = poke-qword cells (i * 8) 1000 in bsg-fill cells (i + 1) stop
+  bvt-stat-gain : Integer -> [Console] Integer
+  bvt-stat-gain (unused) = act
+    miner <- bsg-card 50 50 50
+    mined <- bsg-rolls miner 45 1000
+    a <- bvt-check "UOAIX-179: 1000 Mining gains raise strength (ServUO StrGain 2.0) and never dexterity or intelligence" (skc-stat miner 0 > 50 & skc-stat miner 1 == 50 & skc-stat miner 2 == 50)
+    strong <- bsg-card 100 50 50
+    capped <- bsg-rolls strong 45 1000
+    b <- bvt-check "UOAIX-179: a stat at 100 does not rise" (skc-stat strong 0 == 100 & peek-byte strong 147 == 0)
+    full <- bsg-card 90 70 65
+    totalled <- bsg-rolls full 7 1000
+    c <- bvt-check "UOAIX-179: no stat rises at the 225 total" (skc-stat full 0 == 90 & skc-stat full 1 == 70 & skc-stat full 2 == 65)
+    fighter <- bsg-card 50 50 50
+    tactical <- bsg-rolls fighter 27 1000
+    d <- bvt-check "UOAIX-179: Tactics carries no stat gain (ServUO 0, 0, 0)" (peek-byte fighter 147 + peek-byte fighter 148 + peek-byte fighter 149 == 0)
+    fresh <- bsg-zero (alloc-bytes 368) 0 368
+    trained <- skc-train fresh 5 3
+    e <- bvt-check "UOAIX-179: a gain under the 700.0 total raises the skill by 0.1" (trained == 1 & peek-qword fresh 40 == 1 & skc-total-cells fresh 0 == 1)
+    master <- bsg-fill (bsg-zero (alloc-bytes 368) 0 368) 0 7
+    kept <- skc-train master 10 3
+    f <- bvt-check "UOAIX-179: a gain at the 700.0 total lowers another skill and keeps the total" (kept == 1 & peek-qword master 80 == 1 & skc-total-cells master 0 == 7000)
+    a + b + c + d + e + f
+  end

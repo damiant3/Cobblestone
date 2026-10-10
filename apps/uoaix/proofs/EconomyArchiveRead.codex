@@ -1,0 +1,70 @@
+Chapter: EconomyArchiveRead
+  cites Uoaix chapter EconomyArchive
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldBlock
+  cites Foreword chapter Result
+
+  ear-say : Text, Integer -> [Console] Integer
+  ear-say (text) (result) = act
+    print-line-uni text
+    result
+  end
+  ear-load : Integer, Integer, Integer, Integer -> [Device.Block] Boolean
+  ear-load (sector) (buf) (count) (i) = if i == count then act True end
+    else act
+      read <- us-device-read UoIde (sector + i)
+      when read
+        is Err (_) -> False
+        is Ok (block) -> let copied = ws-copy block (buf + i * 512) 512 0 in ear-load sector buf count (i + 1)
+    end
+  ear-check : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ear-check (base) (next) (at) (seen) (previous) (buf) (bytes) =
+    let count = (bytes + 511) / 512
+    in act
+      loaded <- ear-load (base + at) buf count 0
+      if not loaded then ear-say "FAIL archive payload read" -1
+      else if peek-qword buf 48 /= eu-seg-hash buf bytes 0 2166136261 then ear-say ("FAIL archive segment " & show (peek-qword buf 24) & " checksum") -1
+      else if peek-qword buf 24 /= seen + 1 | peek-qword buf 88 /= previous then ear-say ("FAIL archive segment " & show (peek-qword buf 24) & " chain") -1
+      else act
+        said <- ear-say ("SEGMENT " & show (peek-qword buf 24) & " bytes=" & show bytes & " events=" & show (peek-qword buf 40) & " gold-rows=" & show (peek-qword buf 72)) 0
+        ear-walk base next (at + count) (seen + 1) (peek-qword buf 48) buf
+      end
+    end
+  ear-purse-rows : Integer = 3 * 4096
+  ear-width-room : Integer = 4096
+  ear-walk : Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ear-walk (base) (next) (at) (seen) (previous) (buf) = if at == next then act seen end
+    else act
+      first <- us-device-read UoIde (base + at)
+      when first
+        is Err (e) -> ear-say ("FAIL archive read " & e) -1
+        is Ok (head) -> let bytes = peek-qword head 16
+          in if peek-qword head 0 /= #31474553 | peek-qword head 120 < 1 | peek-qword head 120 > ear-width-room | bytes < eu-seg-rows-from (peek-qword head 120) | peek-qword head 96 < 0 | peek-qword head 96 > ear-purse-rows | peek-qword head 104 < 0 | peek-qword head 104 > 5 * ear-purse-rows | peek-qword head 112 < 0 | peek-qword head 112 > ear-purse-rows
+            | bytes > eu-seg-max-from (peek-qword head 120) + peek-qword head 96 * 24 + peek-qword head 104 * 8 + peek-qword head 112 * 56 | at + (bytes + 511) / 512 > next then ear-say ("FAIL archive segment header at sector " & show at) -1
+          else ear-check base next at seen previous buf bytes
+    end
+  ear-region : Integer, Integer -> [Console, Device.Block] Integer
+  ear-region (region) (capacity) = act
+    arc <- us-device-read UoIde (wmc-start + region)
+    when arc
+      is Err (e) -> ear-say ("FAIL archive header " & e) 1
+      is Ok (h) -> if peek-qword h 0 == 0 & peek-qword h 48 == 0 then ear-say ("ARCHIVE region=" & show region & " capacity=" & show capacity & " segments=0 next=1") 0
+        else if peek-qword h 0 /= ea-magic | peek-qword h 48 /= ea-hash h then ear-say "FAIL archive header checksum" 1
+        else let segments = peek-qword h 16
+        in let next = peek-qword h 24
+        in act
+          said <- ear-say ("ARCHIVE region=" & show region & " capacity=" & show capacity & " segments=" & show segments & " next=" & show next) 0
+          walked <- ear-walk (wmc-start + region) next 1 0 0 (alloc-bytes (eu-seg-max-from ear-width-room + 512 + ear-purse-rows * 120))
+          if walked == segments & segments > 0 then ear-say ("PASS every archived segment reads back with its checksum and chain: " & show walked) 0
+          else ear-say ("FAIL archive walk found " & show walked & " of " & show segments) 1
+        end
+  end
+  opening : [Console, Device.Block] Integer = act
+    read <- us-device-read UoIde wmc-start
+    when read
+      is Err (e) -> ear-say ("FAIL map header " & e) 1
+      is Ok (header) -> if peek-qword header 304 <= 0 then ear-say "ARCHIVE none" 0
+        else ear-region (peek-qword header 304) (peek-qword header 312)
+  end

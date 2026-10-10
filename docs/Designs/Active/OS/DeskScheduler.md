@@ -1015,7 +1015,7 @@ The blocked parent creates the workers and waits for the designated worker's
 window to finish. The parent does not compete during measurement. Yield
 cases set all child slices to zero and explicitly yield; timer cases seed
 the normal scheduling slices and never yield in a worker. This separates
-selection mechanisms without relying on the VM's ineffective PIC mask.
+selection mechanisms without relying on a PIC mask.
 The explicit slice setup isolates selection from runtime initialization;
 the separate slice-initialization fixture below grades that contract.
 
@@ -1144,13 +1144,10 @@ runs; child completion is not a measurement of one second elapsed.
 These tests establish initialization and single-core timer return, not
 multicore fairness, physical latency or safe render-worker ownership.
 
-The separate PIC-mask control exposes a codex-vm limitation: the busy PIT
-path calls `pic_master_can_deliver(0)`, which checks ISR state but not the
-mask. The owning VM-host gap is `codex/plugs/plugs-backlog.md`, 1.73 residue;
-its original evidence remains in
+codex-vm holds a masked IRQ0 as the 8259 does (`codex/test/ops/pic-mask-pit`), so
+the separate PIC-mask control can now grade native preemption in both beds; it
+has not been re-run on that codex-vm. Its earlier evidence is in
 `D:/Projects/Cobblestone-fester/build-output/desk-cpu-20260930/`.
-The `CODEX_VM_NO_TIMER=1` attempt in that evidence timed out before fixture
-output and establishes no scheduling result.
 
 ## Cost and arithmetic evidence
 

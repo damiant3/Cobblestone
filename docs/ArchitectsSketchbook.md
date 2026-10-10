@@ -24,10 +24,10 @@ Address              Size       Region
 0x00015000 (84 KB)    32 KB     IST stacks (ist-stacks-base, 16 x 2048)
 0x0001D000 (118 KB)   12 KB     Free hole -- xhci-diag lives at its head
 0x00020000 (128 KB)  256 KB     AP idle stacks (ap-stacks-base, 16 x 16 KB)
-0x00100000 (1 MB)     4 MB      Binary code segment (bare-metal-load-addr)
-                                  Current seed: ~2.3 MB of 4 MB headroom
-0x00500000 (5 MB)     1 MB      Serial ring buffer (serial-ring-buf-addr)
-0x00600000 (6 MB)     ────      Heap base (bare-metal-heap-base, R10 init)
+0x00100000 (1 MB)    14 MB      Binary code + rodata (bare-metal-load-addr)
+                                  CDX9013 refuses code + rodata reaching the ring
+0x00F00000 (15 MB)    1 MB      Serial ring buffer (serial-ring-buf-addr)
+0x01000000 (16 MB)    ────      Heap base (bare-metal-heap-base, R10 init)
      │                           Heap grows UP ──►
      │                           (phase decks + bivy, ~150-200 MB for selfhost)
      │
@@ -175,7 +175,6 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 33048 | nic-rx-len-addr | 8 | Length of that frame |
 | 33056 | nic-rx-buf-addr | 1536 | NIC receive buffer |
 | 34592 | nic-tx-buf-addr | 1536 | NIC transmit buffer |
-| 36128 | try-fail-flag-addr | 8 | Try/fail exception flag |
 | 36136 | prof-enabled-addr | 8 | Profiler on |
 | 36144 | prof-cursor-addr | 8 | Profiler write cursor into `prof-buf-addr` (393216) |
 | 36200 | **ap-dispatch-count-addr** | 8 | Processes claimed by a core whose id is not zero. Only `__idle_dispatch` writes it, and the BSP's id is always zero, so a value above zero is evidence an application processor took a process out of the table and ran it. Read by `codex/test/smp-dispatch.codex` |
@@ -245,7 +244,7 @@ Defined in `codex/compiler/Emit/X86_64State.codex`:
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | bare-metal-load-addr | 0x100000 (1 MB) | Binary load address |
-| bare-metal-heap-base | 0x600000 (6 MB) | R10 initial value |
+| bare-metal-heap-base | 0x1000000 (16 MB) | R10 initial value |
 | bare-metal-ram-size | 0x0C0000000 (3 GB) | Total physical memory |
 | bare-metal-stack-top | 0x0C0000000 (3 GB) | RSP initial value (dynamic via GPA 0xFE8) |
 
@@ -446,7 +445,7 @@ Bivy is used for scratch data within a phase.
 1. `phase-start`: Records `bivy-origin` (R10) and `deck-origin`
    (`__deck-pos`) at the start of a phase.
 2. The phase runs, allocating via bivy (scratch) and deck (persistent).
-3. `phase-measure`: Captures `bivy-hwm` for diagnostics.
+3. `phase-measure`: Captures `bivy-close`, the heap cursor at phase close (not the phase's peak), for diagnostics.
 4. `phase-compact`: Restores R10 to the current deck position,
    reclaiming all bivy scratch from the phase.
 
@@ -500,6 +499,10 @@ lands in the bivy above the phase's reservation, and until the change below
 nothing reclaimed it before the phase compact.
 
 ### Per-definition reclamation (2026-09-01, red)
+
+A deck saving can buy guest headroom and no host RAM, because the host's
+physical peak is the union of the pages ever touched. Claim a saving only
+from the host peak measured head against candidate (`-Measure`).
 
 Measured on the compiler's own unit (3,052,663 bytes) against seed
 `D3A0C75A`, host peak working set of the codex-vm process, which is what a
@@ -760,7 +763,7 @@ Heap (after desugar boundary compact, CDX selfhost)
 
 base     Reservation-copy pattern means dead decks are reclaimed.
 (R10) ──►┌──────────────────────────────────────┐
-0x600000  │  init-phase-allocator (mountain base)│
+0x1000000 │  init-phase-allocator (mountain base)│
           ├──────────────────────────────────────┤
           │  Frontend keep deck      ~25 MB      │  Copied survivors:
           │  Floor: 192 MB                       │  AChapter, assignments,
@@ -1388,11 +1391,14 @@ value. The default VM memory is 3072 MB (`-mem 3072`), reduced from
 
 ### Code Buffer Ceiling
 
-The compiler's own code segment is approximately 2.1 MB. The code
-buffer (`code-buffer-size`) is 8 MB with roughly 5.9 MB headroom. The
-serial ring buffer at 0x500000 (5 MB) sits between the code and heap,
-providing a hard upper bound on code size at the current layout (4 MB
-for the binary, starting at 0x100000).
+The compiler's own payload is 3,875,272 bytes (2026-10-07). The code
+buffer (`code-buffer-size`) is 8 MB. Code and rodata load at 0x100000 and
+must end below the serial ring at 0xF00000, a 14 MB bound the emitter
+enforces (CDX9013, `ImageOverlapsSerialRing`). The capability, effect and
+debug-map sections after rodata are not bounded: nothing in the guest reads
+them, and the ring and heap overwrite them harmlessly. codex-vm reads the
+ring address per kernel from the CDX heap field (ring = heap base - 1 MB),
+so a CDX built before COMPILER-127 still boots with its ring at 0x500000.
 
 ### Stack Size
 

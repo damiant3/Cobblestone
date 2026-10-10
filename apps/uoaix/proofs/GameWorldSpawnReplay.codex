@@ -7,7 +7,7 @@ Chapter: GameWorldSpawnReplay
   profile (name) (body) (ai) = WsProfile { key = name, name = name, body = body, hue = 0, hue-high = 0, water = False,
     strength-low = 30, strength-high = 30, dex-low = 40, dex-high = 40,
     hits-low = 30, hits-high = 30, damage-low = 2, damage-high = 5,
-    skill-low = 300, skill-high = 300, tactics-low = 300, tactics-high = 300, ai = ai }
+    skill-low = 300, skill-high = 300, tactics-low = 300, tactics-high = 300, ai = ai, taming = 0 }
   catalog : Integer -> WsCatalog
   catalog (unused) = WsCatalog { revision = 1234,
     profiles = [profile "Orc" 17 2, profile "Deer" 237 12],
@@ -39,6 +39,22 @@ Chapter: GameWorldSpawnReplay
   opcode (reply) (op) = when reply
     is Err (_) -> False
     is Ok (maybe) -> when maybe is None -> False is Just (r) -> opcode-in r.packets op 0
+  moved-in : List (List Integer), Integer, Integer -> Boolean
+  moved-in (packets) (serial) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-at p 0 == 119 & gp-u32 p 1 == serial) | moved-in packets serial (i + 1)
+  moved : Result (Maybe GameReply) Text, Integer -> Boolean
+  moved (reply) (serial) = when reply
+    is Err (_) -> False
+    is Ok (maybe) -> when maybe is None -> False is Just (r) -> moved-in r.packets serial 0
+  removed-in : List (List Integer), Integer, Integer -> Boolean
+  removed-in (packets) (serial) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-at p 0 == #1D & gp-u32 p 1 == serial) | removed-in packets serial (i + 1)
+  removed : Result (Maybe GameReply) Text, Integer -> Boolean
+  removed (reply) (serial) = when reply
+    is Err (_) -> False
+    is Ok (maybe) -> when maybe is None -> False is Just (r) -> removed-in r.packets serial 0
   pulse : GameWorldSpawn, GameShard, GameInput, WalkMap, Integer -> Result (Maybe GameReply) Text
   pulse (g) (shard) (input) (map) (tick) = gws-after gws-ground g shard input map tick (Ok None)
   codec : GameWorldSpawn, GameShard -> [Console] Nothing
@@ -49,13 +65,15 @@ Chapter: GameWorldSpawnReplay
     when gws-new g.catalog g.combat 3
       is Err (e) -> print-line-uni ("FAIL restored state " & e)
       is Ok (restored) -> act
+        stale-link <- list-set-at restored.links 0 5
+        stale-seen <- __record-set (list-at restored.slots 0) "seen" 3
         decoded <- gwsc-decode restored shard.world 10000 buf bytes
         check "restart restores slots populations and rebased timers" (is-ok encoded & is-ok decoded
           & (list-at restored.slots 0).serial == (list-at g.slots 0).serial
           & peek-qword restored.populations 0 == 1 & peek-qword restored.populations 8 == 1
           & peek-qword restored.deadlines 0 == 16000 & restored.due == 10100)
-        check "restart clears visibility connection and preserves catalog identity" (restored.connection == -1
-          & not (list-at restored.slots 0).visible & peek-qword buf 16 == g.catalog.revision)
+        check "restart clears visibility connection and preserves catalog identity" (list-at restored.links 0 == 0 - 1
+          & (list-at restored.slots 0).seen == 0 & peek-qword buf 16 == g.catalog.revision)
         row <- gwsc-row g buf 2
         corrupt <- poke-qword row 32 (gm-ticks 5000 + 1)
         refused <- gwsc-decode restored shard.world 20000 buf bytes
@@ -75,8 +93,155 @@ Chapter: GameWorldSpawnReplay
         stale <- world-delete shard.world saved
         rebound <- gwsc-decode restored shard.world 20000 buf bytes
         check "stale world serial refuses" (is-ok stale & is-err rebound)
+        fresh <- alloc-bytes bytes
+        dead <- gwsc-encode g shard.world 6000 fresh bytes
+        vacant <- gwsc-row g fresh 1
+        reread <- gwsc-decode restored shard.world 20000 fresh bytes
+        check "a slot whose monster died since the last spawn pass saves as vacant, so the save is not refused (soak5)" (is-ok dead & peek-qword vacant 0 == 0 & peek-qword vacant 8 == 0 - 1 & peek-qword vacant 16 == 0 - 1 & is-ok reread)
       end
   end
+  regrow : GameWorldSpawn, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> Integer
+  regrow (g) (shard) (input) (map) (serial) (tick) (left) = if left == 0 then -1
+    else let reply = pulse g shard input map tick
+    in when world-get shard.world serial
+      is Err (_) -> -1
+      is Ok (m) -> if m.graphic == #00CF then tick else regrow g shard input map serial (tick + 4000) (left - 1)
+  shorn : GameWorldSpawn, GameShard, GameInput, WalkMap -> [Console] Nothing
+  shorn (g) (shard) (input) (map) = act
+    serial <- (list-at g.slots 0).serial
+    sheep <- __record-set (list-at g.catalog.profiles 0) "body" #00CF
+    clipped <- (when world-get shard.world serial is Err (e) -> Err e is Ok (m) -> world-update shard.world (__record-set m "graphic" #00DF))
+    tick <- regrow g shard input map serial 30000 400
+    check "a shorn sheep's wool regrows to 0xCF on the spawn tick, as UOX3 sheepshearing.js" (is-ok clipped & tick > 30000)
+    sheared <- (when world-get shard.world serial is Err (e) -> Err e is Ok (m) -> world-update shard.world (__record-set m "graphic" #00DF))
+    bytes <- gwsc-size g
+    buf <- alloc-bytes bytes
+    kept <- gwsc-encode g shard.world tick buf bytes
+    orc <- __record-set (list-at g.catalog.profiles 0) "body" 17
+    refused <- gwsc-encode g shard.world tick buf bytes
+    check "the spawn codec keeps a shorn sheep (0xDF under a 0xCF profile) and refuses 0xDF under any other" (is-ok sheared & is-ok kept & is-err refused)
+  end
+  herd-walk : GameWorldSpawn, GameShard, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer -> Boolean
+  herd-walk (g) (shard) (input) (map) (serial) (x) (y) (tick) (left) = when world-get shard.world serial
+    is Err (_) -> False
+    is Ok (m) -> if m.x == x & m.y == y then True else if left == 0 then False
+      else let reply = pulse g shard input map tick in herd-walk g shard input map serial x y (tick + gm-ticks 1000) (left - 1)
+  herd-slot : GameWorldSpawn, Integer -> Integer
+  herd-slot (g) (i) = if i == list-length g.slots then -1
+    else let s = list-at g.slots i in if s.serial > 0 & s.profile == 1 then i else herd-slot g (i + 1)
+ The deer (profile 1) is herded: the orc (profile 0) is hostile and chases its viewer, and has no TOTAME to herd.
+  herded : GameWorldSpawn, GameShard, GameInput, WalkMap -> [Console] Nothing
+  herded (g) (shard) (input) (map) = act
+    i <- herd-slot g 0
+    serial <- if i < 0 then 0 else (list-at g.slots i).serial
+    at <- when world-get shard.world serial is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y]
+    sent <- gws-herd g serial (list-at at 0 + 3) (list-at at 1)
+    arrived <- herd-walk g shard input map serial (list-at at 0 + 3) (list-at at 1) g.due 40
+    check "a herded deer walks to the place it was sent (UOX3 herding.js WalkTo)" (i >= 0 & sent & arrived & (list-at g.slots (max 0 i)).goal-steps == 0)
+  end
+  indexed : GameWorldSpawn, GameShard, GameInput, WalkMap -> [Console] Nothing
+  indexed (g) (shard) (input) (map) = act
+    slot <- list-at g.slots 1
+    serial <- slot.serial
+    calm <- serial > 0 & not (gws-at-war g shard serial)
+    drawn <- pulse g shard input map (g.due - 1)
+    seen <- gws-slot-seen g slot
+    away <- (when world-get shard.world serial is Err (e) -> Err e is Ok (m) -> world-update shard.world (__record-set m "x" (m.x + 300)))
+    refiled <- gws-refile g shard.world 1
+    gone <- pulse g shard input map (g.due - 1)
+    unseen <- not (gws-slot-seen g slot)
+    quiet <- pulse g shard input map (g.due - 1)
+    skipped <- slot.visit /= g.stamp
+    swept <- pulse g shard input map g.due
+    reached <- slot.visit >= g.stamp - 1
+    check "a drawn spawn that leaves the view is removed, then no pulse visits it until the spawn pass (UOAIX-42)" (calm & is-ok drawn & seen & is-ok away & refiled == 1
+      & removed gone serial & unseen & is-ok quiet & skipped & is-ok swept & reached)
+  end
+  apart : GameShard, Integer, Integer -> Integer
+  apart (shard) (a) (b) = when world-get shard.world a
+    is Err (_) -> -1
+    is Ok (m) -> when world-get shard.world b is Err (_) -> -1 is Ok (n) -> max (walk-abs (m.x - n.x)) (walk-abs (m.y - n.y))
+  follow-walk : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, Integer, Integer -> Integer
+  follow-walk (g) (shard) (map) (slot) (viewer) (left) = if left == 0 then 0
+    else let ready = __record-set slot "due" 0
+    in let stepped = when world-get shard.world slot.serial
+      is Err (_) -> False
+      is Ok (m) -> when world-get shard.world viewer is Err (_) -> False is Ok (v) -> gws-act g shard map slot m v
+    in follow-walk g shard map slot viewer (left - 1)
+  enticed : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, Integer -> [Console] Nothing
+  enticed (g) (shard) (map) (slot) (viewer) = act
+    moved <- when world-get shard.world slot.serial is Err (_) -> False is Ok (m) -> is-ok (world-update shard.world (__record-set (__record-set m "x" 1431) "y" 1709))
+    refiled <- gws-refile g shard.world 1
+    before <- apart shard slot.serial viewer
+    player <- gws-lure g viewer (0 - 1)
+    lured <- gws-lure g slot.serial viewer
+    walked <- follow-walk g shard map slot viewer 30
+    held <- slot.follow == viewer & apart shard slot.serial viewer == 1
+    released <- __record-set slot "follow" 0
+    check "an enticed creature walks to its leader and stops beside it; a player is no spawn to lure" (moved & before > 5 & not player & lured & held)
+  end
+ UOAIX-81 summons, stage 1: a summoned creature takes a free slot with no region and the summoner as owner, counts
+ against no population, is dismissed at its tick, dies with no corpse, and keeps its summoning across a restart; a
+ version 2 frame still loads.
+  corpses-at : WorldTable, Integer, Integer -> Integer
+  corpses-at (world) (serial) (n) = if serial == 0 then n
+    else corpses-at world (world-tile-next world serial) (when world-get world serial is Err (_) -> n is Ok (o) -> if o.kind == 2 & o.graphic == 8198 then n + 1 else n)
+  summons : GameShard, GameInput, WalkMap, GameCombat -> [Console] Nothing
+  summons (shard) (input) (map) (combat) = when gws-new (gws-with-summons (catalog 0)) combat 3
+    is Err (e) -> print-line-uni ("FAIL summon state " & e)
+    is Ok (g) -> when world-get shard.world input.session.serial
+      is Err (e) -> print-line-uni ("FAIL summoner " & e)
+      is Ok (viewer) -> act
+        spirit <- gws-profile-key g "bladespirit" 0
+        bear <- gws-profile-key g "blackbear" 0
+        vortex <- gws-profile-key g "energyvortex" 0
+        drawn <- list-at g.catalog.profiles (max 0 vortex)
+        check "summon-only profiles follow the generated catalog, the vortex drawn as body 13 at hue 20 (Body.def)" (spirit == 2 & vortex == 3 & bear == 4 & drawn.body == 13 & drawn.hue == 20 & g.catalog.revision == 1234)
+        before <- world-count shard.world
+        until <- combat.tick + gm-ticks 5000
+        summoned <- gws-summon g shard bear 1425 1700 0 viewer.serial until
+        serial <- when summoned is Err (_) -> 0 is Ok (s) -> s
+        slot <- list-at g.slots (max 0 (gws-slot-of g serial 0))
+        check "a summoned bear takes a slot with no region, follows its summoner and counts against no population" (serial > 0 & world-count shard.world == before + 1
+          & slot.region == -1 & slot.owner == viewer.serial & slot.summoned == until & gws-summoned g serial & peek-qword g.populations 0 == 0 & peek-qword g.populations 8 == 0)
+        early <- __record-set combat "tick" (until - 1)
+        kept <- gws-visit g shard map viewer (gws-slot-of g serial 0) True []
+        held <- is-ok (world-get shard.world serial)
+        late <- __record-set combat "tick" until
+        dismissed <- gws-visit g shard map viewer (gws-slot-of g serial 0) True []
+        check "the summoning holds one tick before its end, then the creature is dismissed and its slot freed" (is-ok kept & held & is-ok dismissed & is-err (world-get shard.world serial) & slot.serial == 0 & slot.summoned == 0 & world-count shard.world == before)
+        blade <- gws-summon g shard spirit 1425 1700 0 0 (combat.tick + gm-ticks 5000)
+        doomed <- when blade is Err (_) -> 0 is Ok (s) -> s
+        vanish <- __record-set combat "vanish-hook" (gws-summoned g)
+        killed <- when world-get shard.world doomed
+          is Err (e) -> Err e
+          is Ok (m) -> cb-die combat shard input viewer.serial (list-at combat.actors (world-slot shard.world doomed)) m
+        quiet <- __record-set combat "vanish-hook" cb-vanish-none
+        check "a summoned blade spirit that dies leaves no corpse" (doomed > 0 & is-ok killed & is-err (world-get shard.world doomed) & corpses-at shard.world (world-tile-first shard.world 1425 1700) 0 == 0 & world-count shard.world == before)
+        swept <- gws-visit g shard map viewer (max 0 (gws-slot-of g doomed 0)) True []
+        t0 <- combat.tick
+        lasting <- gws-summon g shard bear 1425 1700 0 viewer.serial (t0 + gm-ticks 5000)
+        keeper <- when lasting is Err (_) -> 0 is Ok (s) -> s
+        bytes <- gwsc-size g
+        buf <- alloc-bytes bytes
+        encoded <- gwsc-encode g shard.world t0 buf bytes
+        when gws-new g.catalog combat 3
+          is Err (e) -> print-line-uni ("FAIL summon restore " & e)
+          is Ok (restored) -> act
+            decoded <- gwsc-decode restored shard.world (t0 + 100) buf bytes
+            back <- list-at restored.slots (max 0 (gws-slot-of restored keeper 0))
+            check "a restart keeps the summoned bear's owner and the rest of its summoning (UWS1 version 3)" (keeper > 0 & is-ok encoded & peek-qword buf 8 == 3 & is-ok decoded
+              & back.serial == keeper & back.owner == viewer.serial & back.region == -1 & back.summoned == t0 + 100 + gm-ticks 5000)
+            truncated <- gwsc-decode restored shard.world combat.tick buf (bytes - 8)
+            gone <- gws-dismiss g shard keeper
+            cleared <- gws-visit g shard map viewer (max 0 (gws-slot-of g keeper 0)) True []
+            plain <- alloc-bytes bytes
+            written <- gwsc-encode g shard.world combat.tick plain bytes
+            old <- poke-qword plain 8 2
+            two <- gwsc-decode restored shard.world combat.tick plain (gwsc-v2-size g)
+            check "a version 3 frame cut short refuses, and a version 2 frame (no summoning tail) still loads" (is-err truncated & is-ok gone & is-ok written & is-ok two)
+          end
+      end
   run : GameShard, WalkMap -> [Console] Nothing
   run (shard) (map) = act
     combat <- cb-new shard 104729
@@ -106,11 +271,11 @@ Chapter: GameWorldSpawnReplay
               is Err (e) -> print-line-uni ("FAIL mobile " & e)
               is Ok (m) -> act
                 check "spawn honors exclusion and tile index occupancy" (m.x /= 1421 & gws-occupied shard.world m.x m.y)
-                excluded <- gws-step g shard map first m 6
+                excluded <- gws-step g shard map first m 6 False
                 check "exclusion prevents west step at border" (if m.x == 1422 then not excluded else True)
               end
             early <- pulse g shard input map 99
-            check "movement waits for PIT deadline" (is-ok early & not (opcode early 119))
+            check "wildlife movement waits for PIT deadline" (is-ok early & not (moved early second.serial))
             active <- pulse g shard input map 100
             attacker <- list-at combat.actors (world-slot shard.world serial)
             animal <- list-at combat.actors (world-slot shard.world second.serial)
@@ -129,6 +294,7 @@ Chapter: GameWorldSpawnReplay
                     check "neutral wildlife retains admitted retaliation" (retaliated & animal.target == own.serial)
                   end
             peaceful <- cb-stop combat animal
+            enticed g shard map second input.session.serial
             scared <- __record-set (list-at g.catalog.profiles 1) "ai" 12
             unknown <- __record-set (list-at (list-at g.catalog.groups 0).choices 0) "profile" -1
             check "unresolved source choice yields no replacement type" (gws-pick g 0 0 == -1)
@@ -142,6 +308,10 @@ Chapter: GameWorldSpawnReplay
             replacement <- pulse g shard input map 6000
             check "region replacement uses fresh serial at timer" (is-ok replacement & first.serial > 0 & first.serial /= serial & world-count shard.world == 5)
             codec g shard
+            shorn g shard input map
+            herded g shard input map
+            indexed g shard input map
+            summons shard input map combat
           end
       end
   end

@@ -1,0 +1,29 @@
+Chapter: BvtCardWatch
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-230: a card table's watchers see a read-only view that follows the seats' play.
+  bcw-hand : List Text, Integer -> Boolean
+  bcw-hand (lines) (i) = if i >= list-length lines then False else if text-starts-with (list-at lines i) "Your hand" then True else bcw-hand lines (i + 1)
+  bvt-card-watch : Integer -> [Console] Integer
+  bvt-card-watch (unused) = let buf = cb-zeroed tcd-bytes
+    in let a0 = tcd-put buf 0 1 11 in let b0 = tcd-put buf 0 2 22 in let c0 = tcd-put buf 0 3 2 in let d0 = tcd-put buf 0 4 0
+    in let stored = tcd-store buf 0 (ce-init 5 2)
+    in let added = tcd-watch-add buf 0 33 + tcd-watch-add buf 0 44 + tcd-watch-add buf 0 33
+    in let watching = tcd-watching buf 0 0 []
+    in let lines = tcd-watch-lines buf 0
+    in let view = tcd-watch-gump buf 0 33
+    in let played = tcd-watch-out buf 0 11 (tcd-answer buf 11 tcd-draw 2)
+    in let seen = when played is None -> [] is Just (o) -> o.watchers
+    in let table = when played is None -> -1 is Just (o) -> o.table
+    in let refreshed = tcd-watch-packets buf 0 33
+    in let closed = tcd-answer buf 33 0 3
+    in let after = tcd-watching buf 0 0 []
+    in let freed = tcd-reset buf 0
+    in let none = tcd-watching buf 0 0 []
+    in act
+      a <- bvt-check "two watchers are kept once each, and a watcher's view is a whole 0xB0 that shows no seat's hand (UOAIX-230)" (list-length watching == 2 & list-at watching 0 == 33 & list-at watching 1 == 44 & list-at view 0 == #B0 & list-at view 1 * 256 + list-at view 2 == list-length view & not (bcw-hand lines 0) & text-starts-with (list-at lines 0) "Crazy Eights")
+      b <- bvt-check "a seat's play names the table and its watchers, who get the new view" (table == 0 & list-length seen == 2 & list-at seen 1 == 44 & list-length refreshed == 1 & list-at (list-at refreshed 0) 0 == #B0)
+      c <- bvt-check "a watcher closing the view stops watching; a freed table forgets every watcher" (list-length after == 1 & list-at after 0 == 44 & list-length none == 0)
+      a + b + c
+    end

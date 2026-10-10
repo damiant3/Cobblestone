@@ -23,7 +23,42 @@ Chapter: GameAccounts
 
   ga-params : PbkdfParams = PbkdfParams { pb-iterations = ga-iterations, pb-hash-length = 32 }
   ga-at : Integer, Integer -> Integer
-  ga-at (table) (index) = table + 64 + index * ga-record
+  ga-at (table) (index) = if index < ga-capacity then table + 64 + index * ga-record else ga-more table + 8 + (index - ga-capacity) * ga-record
+ Accounts past ga-capacity live in an overflow block (its record count, then the records) that the cell after the table's
+ ga-bytes points to; the growth point makes it larger (UoaixDynamicTables.md stage 5). The codec saves the table's ga-bytes;
+ the overflow records travel in the composite's tail.
+  ga-more : Integer -> Integer
+  ga-more (table) = peek-qword table ga-bytes
+  ga-room : Integer -> Integer
+  ga-room (table) = ga-capacity + (if ga-more table == 0 then 0 else peek-qword (ga-more table) 0)
+  ga-due : Integer -> Boolean
+  ga-due (table) = ga-room table - ga-count table < ga-capacity / 4
+  ga-grow : Integer, Integer -> Integer
+  ga-grow (table) (block) = let old = ga-more table
+    in let had = if old == 0 then 0 else peek-qword old 0
+    in let fresh = alloc-bytes (8 + (had + block) * ga-record)
+    in let cleared = ga-zero fresh (8 + (had + block) * ga-record) 0
+    in let copied = if had == 0 then 0 else ws-copy (old + 8) (fresh + 8) (had * ga-record) 0
+    in let counted = poke-qword fresh 0 (had + block)
+    in let set = poke-qword table ga-bytes fresh in had + block
+  ga-tail-size : Integer -> Integer
+  ga-tail-size (table) = 8 + max 0 (ga-count table - ga-capacity) * ga-record
+  ga-write-tail : Integer, Integer -> Integer
+  ga-write-tail (table) (at) = let extra = max 0 (ga-count table - ga-capacity)
+    in let counted = poke-qword at 0 extra
+    in if extra == 0 then at + 8 else let copied = ws-copy (ga-more table + 8) (at + 8) (extra * ga-record) 0 in at + 8 + extra * ga-record
+ A tail of size bytes holds the overflow records a decoded table counts; -1 refuses it.
+  ga-read-tail : Integer, Integer, Integer -> Integer
+  ga-read-tail (table) (at) (size) = if size < 8 then -1
+    else let extra = peek-qword at 0
+    in if extra < 0 | size /= 8 + extra * ga-record | extra /= max 0 (ga-count table - ga-capacity) then -1
+    else if extra == 0 then 0
+    else let grown = ga-grow table extra
+    in let copied = ws-copy (at + 8) (ga-more table + 8) (extra * ga-record) 0
+    in let mark = __heap-save
+    in let valid = ga-records-valid table ga-capacity
+    in let restored = __heap-restore mark
+    in if valid then 0 else -1
   ga-slots : Integer, Integer -> Integer
   ga-slots (table) (index) = ga-at table index + 80
   ga-count : Integer -> Integer
@@ -47,8 +82,8 @@ Chapter: GameAccounts
     else ga-be64 value (shift - 8) (list-push out (bit-and (bit-shru value shift) 255))
 
   ga-new : Integer -> Integer
-  ga-new (mode) = let table = alloc-bytes ga-bytes
-    in let cleared = ga-zero table ga-bytes 0
+  ga-new (mode) = let table = alloc-bytes (ga-bytes + 8)
+    in let cleared = ga-zero table (ga-bytes + 8) 0
     in let moded = poke-qword table 16 mode
     in let british = ga-create table ga-british-name ga-british-password
     in table
@@ -63,8 +98,10 @@ Section: Names and passwords
 
  Account names are 1..30 ASCII letters and digits ending at the first NUL;
  the 1.25 client leaves earlier keystrokes after it. Lookup folds case, so
- "british" cannot be registered beside "British". Passwords arrive as each
- character minus 13 and are 1..30 printable ASCII characters.
+ "british" cannot be registered beside "British". Passwords are 1..30
+ printable ASCII characters. The 1.25 client has been captured sending them
+ both as plain bytes (2026-10-06, play-head8b) and as each character minus 13
+ (WireCapture.md, 2026-10-04), so a login is verified under both readings.
 
   ga-name-byte : Integer -> Boolean
   ga-name-byte (b) = (b >= 48 & b <= 57) | (b >= 65 & b <= 90) | (b >= 97 & b <= 122)
@@ -82,11 +119,21 @@ Section: Names and passwords
   ga-packet-password (packet) (at) (i) (out) =
     let byte = if i >= 30 then 0 else list-at packet (at + i)
     in if byte == 0 then (if list-length out == 0 then Err "account password empty" else Ok out)
-    else if byte < 19 | byte > 113 then Err "account password holds a non-printable character"
-    else ga-packet-password packet at (i + 1) (list-push out (byte + 13))
+    else if byte < 19 | byte > 126 then Err "account password holds a non-printable character"
+    else ga-packet-password packet at (i + 1) (list-push out byte)
+  ga-plain : List Integer, Integer -> List Integer
+  ga-plain (raw) (i) = if i == list-length raw then raw
+    else if list-at raw i < 32 then [] else ga-plain raw (i + 1)
+  ga-shifted : List Integer, Integer, List Integer -> List Integer
+  ga-shifted (raw) (i) (out) = if i == list-length raw then out
+    else if list-at raw i > 113 then [] else ga-shifted raw (i + 1) (list-push out (list-at raw i + 13))
+  ga-verify-either : Integer, Integer, List Integer -> Boolean
+  ga-verify-either (table) (index) (raw) = let plain = ga-plain raw 0
+    in (list-length plain > 0 & ga-verify table index plain)
+      | (let shifted = ga-shifted raw 0 (__list-with-capacity 30) in list-length shifted > 0 & ga-verify table index shifted)
 
   ga-name-is : Integer, List Integer, Integer -> Boolean
-  ga-name-is (at) (name) (i) = if i >= 32 then True
+  ga-name-is (at) (name) (i) = if i >= 30 then True
     else let wanted = if i < list-length name then list-at name i else 0
     in if ga-fold (peek-byte at i) /= ga-fold wanted then False
     else ga-name-is at name (i + 1)
@@ -132,13 +179,26 @@ Section: Hashes
   ga-create : Integer, List Integer, List Integer -> Result Integer Text
   ga-create (table) (name) (password) =
     let count = ga-count table
-    in if count >= ga-capacity then Err "account capacity"
+    in if count >= ga-room table then Err "account capacity"
     else if list-length name < 1 | list-length name > 30 then Err "account name length"
     else if ga-find table name 0 >= 0 then Err "account exists"
     else let named = ga-put (ga-at table count) name 0
     in let counted = poke-qword table 0 (count + 1)
     in ga-write-hash table count password
 
+ Record byte 31 is the ban flag: a name is at most 30 bytes, so its two padding bytes were always zero and an older
+ save reads every account as unbanned.
+  ga-ban-at : Integer = 31
+  ga-banned-text : Text = "account banned"
+  ga-banned : Integer, Integer -> Boolean
+  ga-banned (table) (index) = index >= 0 & index < ga-count table & peek-byte (ga-at table index) ga-ban-at == 1
+  ga-set-ban : Integer, Integer, Boolean -> Integer
+  ga-set-ban (table) (index) (on) = if index < 0 | index >= ga-count table then 0 else poke-byte (ga-at table index) ga-ban-at (if on then 1 else 0)
+ The account whose character slots hold serial, or -1.
+  ga-owner : Integer, Integer, Integer -> Integer
+  ga-owner (table) (serial) (k) = if serial == 0 | k >= ga-count table * 5 then 0 - 1
+    else if peek-qword (ga-slots table (k / 5)) (int-mod k 5 * 160) == serial then k / 5
+    else ga-owner table serial (k + 1)
   ga-british : Integer -> Integer
   ga-british (table) = ga-find table ga-british-name 0
   ga-is-british : Integer -> Boolean
@@ -158,10 +218,9 @@ Section: Login
 
  0x80 admits a name and password without creating anything: an unknown
  name is admitted only in development mode with a free record. 0x91 then
- creates that account and binds its five slots into the shard's working
- slots. A fresh table is bound to British, so an account always owns the
- working slots. The bound account's record is stale while bound; `ga-sync`
- writes the working slots back before every encode.
+ creates that account and binds it. A fresh table is bound to British, so an
+ account always owns the working slots, and the working slots are that
+ account's own record (`ga-working`), never a copy of it.
 
   ga-credentials : List Integer, Integer, Integer -> Result (List (List Integer)) Text
   ga-credentials (packet) (name-at) (password-at) = when ga-packet-name packet name-at 0 []
@@ -174,9 +233,9 @@ Section: Login
   ga-admit (table) (packet) (name-at) (password-at) = when ga-credentials packet name-at password-at
     is Err (e) -> Err e
     is Ok (pair) -> let index = ga-find table (list-at pair 0) 0
-      in if index >= 0 then (if ga-verify table index (list-at pair 1) then Ok index else Err "account password refused")
+      in if index >= 0 then (if not (ga-verify-either table index (list-at pair 1)) then Err "account password refused" else if ga-banned table index then Err ga-banned-text else Ok index)
       else if ga-mode table /= ga-dev then Err "unknown account: public mode creates no account at login"
-      else if ga-count table >= ga-capacity then Err "account capacity"
+      else if ga-count table >= ga-room table then Err "account capacity"
       else Ok (0 - 1)
 
   ga-login : Integer, List Integer, Integer, Integer -> Result Integer Text
@@ -185,17 +244,11 @@ Section: Login
     is Ok (index) -> if index >= 0 then Ok index
       else when ga-credentials packet name-at password-at
         is Err (e) -> Err e
-        is Ok (pair) -> ga-create table (list-at pair 0) (list-at pair 1)
+        is Ok (pair) -> let plain = ga-plain (list-at pair 1) 0
+          in ga-create table (list-at pair 0) (if list-length plain > 0 then plain else ga-shifted (list-at pair 1) 0 (__list-with-capacity 30))
 
-  ga-sync : Integer, Integer -> Integer
-  ga-sync (table) (characters) = ws-copy characters (ga-slots table (ga-bound table)) 800 0
-
-  ga-bind : Integer, Integer, Integer -> Boolean
-  ga-bind (table) (characters) (index) = if ga-bound table == index then False
-    else let saved = ga-sync table characters
-    in let loaded = ws-copy (ga-slots table index) characters 800 0
-    in let bound = poke-qword table 8 index
-    in True
+  ga-working : Integer -> Integer
+  ga-working (table) = ga-slots table (ga-bound table)
 
 Section: Codec
 
@@ -204,10 +257,9 @@ Section: Codec
  never authenticated is never British. The encoded section is the live table
  with the mode, the RDRAND words and the login flag zeroed: none survives a boot.
 
-  ga-encode : Integer, Integer, Integer -> Integer
-  ga-encode (table) (characters) (buf) =
-    let synced = ga-sync table characters
-    in let copied = ws-copy table buf ga-bytes 0
+  ga-encode : Integer, Integer -> Integer
+  ga-encode (table) (buf) =
+    let copied = ws-copy table buf ga-bytes 0
     in let cleared = ga-zero (buf + 16) 8 0
     in ga-zero (buf + 32) 32 0
 
@@ -217,12 +269,14 @@ Section: Codec
     else ga-zero-from buf (at + 8) stop
 
   ga-records-valid : Integer, Integer -> Boolean
-  ga-records-valid (buf) (i) = if i >= peek-qword buf 0 then True
+  ga-records-valid (buf) (i) = ga-records-valid-to buf i (peek-qword buf 0)
+  ga-records-valid-to : Integer, Integer, Integer -> Boolean
+  ga-records-valid-to (buf) (i) (stop) = if i >= stop then True
     else let at = ga-at buf i
     in let name = ga-record-name at 0 []
-    in if list-length name == 0 | not (ga-name-bytes name 0) | not (ga-name-is at name 0) then False
+    in if list-length name == 0 | not (ga-name-bytes name 0) | not (ga-name-is at name 0) | peek-byte at 30 /= 0 | peek-byte at ga-ban-at > 1 then False
     else if ga-find-before buf name i 0 then False
-    else ga-records-valid buf (i + 1)
+    else ga-records-valid-to buf (i + 1) stop
   ga-name-bytes : List Integer, Integer -> Boolean
   ga-name-bytes (name) (i) = if i >= list-length name then True
     else if not (ga-name-byte (list-at name i)) then False
@@ -235,16 +289,17 @@ Section: Codec
   ga-decode-valid : Integer -> Boolean
   ga-decode-valid (buf) = let count = peek-qword buf 0
     in let bound = peek-qword buf 8
-    in if count < 1 | count > ga-capacity | bound < 0 | bound >= count then False
+    in if count < 1 | bound < 0 | bound >= count then False
     else if peek-qword buf 16 /= 0 | peek-qword buf 24 < count | not (ga-zero-from buf 32 64) then False
-    else if not (ga-zero-from buf (64 + count * ga-record) ga-bytes) then False
+    else if not (ga-zero-from buf (64 + min count ga-capacity * ga-record) ga-bytes) then False
     else let mark = __heap-save
-    in let valid = ga-records-valid buf 0
+    in let valid = ga-records-valid-to buf 0 (min count ga-capacity)
     in let restored = __heap-restore mark
     in valid
 
   ga-decode : Integer -> Integer
-  ga-decode (buf) = let table = alloc-bytes ga-bytes
+  ga-decode (buf) = let table = alloc-bytes (ga-bytes + 8)
+    in let cleared = poke-qword table ga-bytes 0
     in let copied = ws-copy buf table ga-bytes 0
     in table
 

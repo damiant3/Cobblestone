@@ -45,17 +45,17 @@ Chapter: GameTransaction
     else if undo.count >= gt-max-slots | gt-has-slot undo slot 0 then Err "game transaction duplicate slot or budget"
     else let at = gt-slot-at + undo.count * gt-entry-bytes
     in let index = poke-qword undo.bytes at slot
-    in let copied = ws-copy (undo.game.world.buffer + 16 + slot * 80) (undo.bytes + at + 8) 80 0
+    in let copied = ws-copy (wi-object undo.game.world.buffer slot) (undo.bytes + at + 8) 80 0
     in let counted = __record-set undo "count" (undo.count + 1)
     in Ok slot
 
   gt-capture-free : GameUndo, Integer, Integer -> Result Integer Text
   gt-capture-free (undo) (slot) (left) = if slot == -1 then Ok undo.count
     else if slot < 0 | slot >= undo.game.world.capacity then Err "game transaction free chain outside world"
-    else if peek-qword undo.game.world.buffer (16 + slot * 80) > 0 then Err "game transaction free chain contains live object"
+    else if peek-qword (wi-object undo.game.world.buffer slot) 0 > 0 then Err "game transaction free chain contains live object"
     else if gt-has-slot undo slot 0 then Err "game transaction free chain cycles"
     else if left == 0 then Ok undo.count
-    else let next = peek-qword undo.game.world.buffer (24 + slot * 80)
+    else let next = peek-qword (wi-object undo.game.world.buffer slot) 8
     in when gt-capture-slot undo slot
       is Err (e) -> Err e
       is Ok (n) -> gt-capture-free undo next (left - 1)
@@ -90,7 +90,7 @@ Chapter: GameTransaction
   gt-restore-slots (undo) (i) = if i >= undo.count then 0
     else let at = gt-slot-at + i * gt-entry-bytes
     in let slot = peek-qword undo.bytes at
-    in let copied = ws-copy (undo.bytes + at + 8) (undo.game.world.buffer + 16 + slot * 80) 80 0
+    in let copied = ws-copy (undo.bytes + at + 8) (wi-object undo.game.world.buffer slot) 80 0
     in gt-restore-slots undo (i + 1)
 
   gt-restore-persistent : GameUndo -> Integer
@@ -122,7 +122,7 @@ Chapter: GameTransaction
   gt-slots-equal (undo) (i) = if i >= undo.count then True
     else let at = gt-slot-at + i * gt-entry-bytes
     in let slot = peek-qword undo.bytes at
-    in gt-equal (undo.bytes + at + 8) (undo.game.world.buffer + 16 + slot * 80) 80 0 & gt-slots-equal undo (i + 1)
+    in gt-equal (undo.bytes + at + 8) (wi-object undo.game.world.buffer slot) 80 0 & gt-slots-equal undo (i + 1)
 
   gt-changed : GameUndo -> Boolean
   gt-changed (undo) = undo.game.next-key /= peek-qword undo.bytes 0

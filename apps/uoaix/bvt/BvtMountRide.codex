@@ -1,0 +1,88 @@
+Chapter: BvtMountRide
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bmt-mobile : GameShard, Integer, Integer -> Integer
+  bmt-mobile (game) (x) (y) = when world-create game.world (__record-set (gs-mobile 0 x y 0 400 0) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bmt-input : Integer -> GameInput
+  bmt-input (serial) = let input = gn-input 7
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let who = __record-set input.session "serial" serial in input
+  bmt-click : Integer -> List Integer
+  bmt-click (serial) = gp-put32 [6] serial
+  bmt-note : Maybe GameReply -> Text
+  bmt-note (r) = when r is None -> "" is Just (reply) -> reply.note
+  bmt-claim : GameWorldSpawn, GameShard, Text, Integer, Integer, Integer -> Integer
+  bmt-claim (g) (game) (key) (x) (y) (master) = let profile = gws-claim-profile g key 0
+    in if profile < 0 then 0 else when gws-summon g game profile x y 0 master (g.combat.tick + gws-forever)
+      is Err (_) -> 0
+      is Ok (serial) -> serial
+  bmt-art : CompositeGame, Integer -> Integer
+  bmt-art (owner) (rider) = let worn = gmb-layer owner.items rider cg-mount-layer 0
+    in if worn == 0 then 0 else when world-get owner.checkpoint.game.world worn is Err (_) -> 0 is Ok (i) -> i.graphic
+  bmt-owned : GameWorldSpawn, GameShard, Integer, Integer, Integer -> Boolean
+  bmt-owned (g) (game) (master) (body) (i) = if i == list-length g.slots then False
+    else let s = list-at g.slots i
+    in let here = s.serial /= 0 & s.owner == master & (when world-get game.world s.serial is Err (_) -> False is Ok (m) -> m.graphic == body)
+    in here | bmt-owned g game master body (i + 1)
+ UOAIX-183: answers a bit per check: 1 the owner rides his brown horse beside him (it leaves the world, art 0x3E9F on layer
+ 25), 2 a double-click on himself sets it down, his again at body 0xC8, and the layer is free, 4 a stranger's double-click
+ on another's horse is not a mount, 8 a horse three tiles off is refused, 16 a llama rides as 0x3EA6, 32 its rider's death
+ (the death hook, before the corpse) removes the item and leaves the llama his; 63 is all.
+  bmt-checks : Integer -> Integer
+  bmt-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let rider = bmt-mobile game 1420 1700
+        in let stranger = bmt-mobile game 1430 1700
+        in let horse = bmt-claim g game "brownhorse" 1421 1700 rider
+        in let far = bmt-claim g game "brownhorse" 1435 1700 stranger
+        in if rider == 0 | stranger == 0 | horse == 0 | far == 0 then -2
+        else let rode = cg-mount owner game (bmt-input rider) (bmt-click horse)
+        in let ride = bmt-note rode == "mount:ride" & bmt-art owner rider == #3E9F & is-err (world-get game.world horse)
+        in let down = cg-mount owner game (bmt-input rider) (bmt-click rider)
+        in let dismount = bmt-note down == "mount:dismount" & bmt-art owner rider == 0 & bmt-owned g game rider #00C8 0
+        in let foreign = bmt-note (cg-mount owner game (bmt-input rider) (bmt-click far)) == ""
+        in let distant = bmt-note (cg-mount owner game (bmt-input stranger) (bmt-click far)) == "mount:refused" & is-ok (world-get game.world far)
+        in let other = bmt-mobile game 1440 1700
+        in let llama = bmt-claim g game "llama" 1441 1700 other
+        in let llamaed = llama /= 0 & bmt-note (cg-mount owner game (bmt-input other) (bmt-click llama)) == "mount:ride" & bmt-art owner other == #3EA6
+        in let killed = cg-deaths owner g 0 other
+        in let fallen = llamaed & bmt-art owner other == 0 & bmt-owned g game other #00DC 0
+        in (if ride then 1 else 0) + (if dismount then 2 else 0) + (if foreign then 4 else 0) + (if distant then 8 else 0) + (if llamaed then 16 else 0) + (if fallen then 32 else 0)
+ Slephnir (Damian, 2026-10-09): answers 1 the word is heard in any case and inside a line, and a near miss is not, 2 the
+ first call puts 0x3EA8 on layer 25 with no creature, 4 the second takes it off, 8 a rider on a real horse is ignored and
+ keeps his horse, 16 a double-click on himself takes Slephnir off; 31 is all.
+  bmt-slephnir : Integer -> Integer
+  bmt-slephnir (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let lord = bmt-mobile game 1420 1700
+        in let squire = bmt-mobile game 1430 1700
+        in let horse = bmt-claim g game "darkhorse" 1431 1700 squire
+        in if lord == 0 | squire == 0 | horse == 0 then -2
+        else let heard = cg-slephnir-said "Come, SLEPHNIR!" & cg-slephnir-said "slephnir" & not (cg-slephnir-said "sleipnir")
+        in let slots = gws-used g 0
+        in let on = bmt-note (cg-slephnir-toggle owner game lord) == "mount:slephnir" & bmt-art owner lord == #3EA8 & gws-used g 0 == slots
+        in let off = bmt-note (cg-slephnir-toggle owner game lord) == "mount:slephnir-off" & bmt-art owner lord == 0
+        in let rides = bmt-note (cg-mount owner game (bmt-input squire) (bmt-click horse)) == "mount:ride"
+        in let ignored = rides & bmt-note (cg-slephnir-toggle owner game squire) == "" & bmt-art owner squire == #3EA2
+        in let again = cg-slephnir-toggle owner game lord
+        in let clicked = bmt-note (cg-mount owner game (bmt-input lord) (bmt-click lord)) == "mount:dismount" & bmt-art owner lord == 0
+        in (if heard then 1 else 0) + (if on then 2 else 0) + (if off then 4 else 0) + (if ignored then 8 else 0) + (if clicked then 16 else 0)
+  bvt-mount-ride : Integer -> [Console] Integer
+  bvt-mount-ride (unused) = act
+    s <- bmt-slephnir 0
+    l <- bvt-check ("Lord British's Slephnir is toggled by its name, with no creature, and ignored while he rides a real horse (UOAIX-183, code " & show s & ")") (s == 31)
+    n <- bmt-checks 0
+    m <- bvt-check ("an owner rides and sets down a claimed horse or llama by double-click, a stranger's or a distant one is not ridden, and a rider's death sets the mount down (UOAIX-183, code " & show n & ")") (n == 63)
+    l + m
+  end

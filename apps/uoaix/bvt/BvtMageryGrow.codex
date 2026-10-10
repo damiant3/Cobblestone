@@ -1,0 +1,75 @@
+Chapter: BvtMageryGrow
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-142: magery saved in a world grown in play past 1024 slots reads back into a new magery over the same world (a
+ restart), with a spellbook, a marked rune and a mobile's mana in the grown slots; a row whose object went away after
+ the save is dropped and named, not a refusal of the whole restore.
+  bmg-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  bmg-cover (map) (x) (y) (z) = act
+    Ok map
+  end
+  bmg-grow : CompositeGame, Integer -> Integer
+  bmg-grow (owner) (left) = if left <= 0 | owner.items.world.capacity > 1024 then owner.items.world.capacity
+    else when cg-grow owner is Err (_) -> -1 is Ok (_) -> bmg-grow owner (left - 1)
+ Ground items until one lands at slot 1024 or above; its serial, or 0.
+  bmg-high : WorldTable, Integer -> Integer
+  bmg-high (world) (left) = if left <= 0 then 0
+    else when world-create world (gs-item 0 #0EED 0)
+      is Err (_) -> 0
+      is Ok (serial) -> if world-slot world serial >= 1024 then serial else bmg-high world (left - 1)
+  BmgFixture = record { owner : CompositeGame, magic : Magery, map : WalkMap, decoration : WdState, book : Integer, rune : Integer, mobile : Integer }
+  bmg-fixture : Integer -> Result BmgFixture Text
+  bmg-fixture (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> let filled = bwd-fill map 0
+      in when wd-read (bwd-data 0) 240 map map.stride
+        is Err (e) -> Err e
+        is Ok (decoration) -> when cg-new 0
+          is Err (e) -> Err e
+          is Ok (owner) -> let grown = bmg-grow owner 8
+            in let world = owner.items.world
+            in if grown <= 1024 then Err ("world did not grow past 1024: " & show grown)
+            else let first = bmg-high world 2048
+            in if first == 0 then Err "no object reached a grown slot"
+            else when world-create world (gs-item 0 #0EFA 0)
+              is Err (e) -> Err e
+              is Ok (book) -> when world-create world (gs-item 0 #1F14 0)
+                is Err (e) -> Err e
+                is Ok (rune) -> when world-create world (gs-mobile 0 1420 1700 0 400 1002)
+                  is Err (e) -> Err e
+                  is Ok (mobile) -> let magic = mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (bmg-cover map)
+                    in Ok (BmgFixture { owner = owner, magic = magic, map = map, decoration = decoration, book = book, rune = rune, mobile = mobile })
+  bmg-fresh : BmgFixture -> Magery
+  bmg-fresh (f) = mgs-new f.owner.items f.owner.banks f.owner.combat f.decoration (Just f.owner.vendor) (bmg-cover f.map)
+  bmg-meta : Magery, Integer -> MgItem
+  bmg-meta (magic) (serial) = list-at magic.definitions (world-slot magic.items.world serial)
+  bvt-magery-grow : Integer -> [Console] Integer
+  bvt-magery-grow (unused) = when bmg-fixture 0
+    is Err (e) -> bvt-check ("magery grow fixture: " & e) False
+    is Ok (f) -> let game = f.owner.checkpoint.game
+      in let world = f.owner.items.world
+      in let booked = mgs-book f.magic f.book #3F
+      in let marked = mgs-rune f.magic f.rune 1430 1705 0
+      in let fought = cb-ensure f.owner.combat game f.mobile
+      in let mage = mgs-ensure f.magic game f.mobile
+      in let spent = when mage is Err (_) -> 0 is Ok (a) -> let m = __record-set a "mana" 7 in 1
+      in let size = mgc-size f.magic
+      in let saved = alloc-bytes size
+      in let written = mgc-write f.magic saved size 1000
+      in let restarted = bmg-fresh f
+      in let clean = mgc-faults restarted saved 0 0 ""
+      in let read = mgc-read restarted saved size 1000
+      in let slots = world-slot world f.book >= 1024 & world-slot world f.rune >= 1024 & world-slot world f.mobile >= 1024
+      in let actor = list-at restarted.actors (world-slot world f.mobile)
+      in let kept = is-ok read & (bmg-meta restarted f.book).spells == #3F & (bmg-meta restarted f.rune).rune & (bmg-meta restarted f.rune).x == 1430 & actor.serial == f.mobile & actor.mana == 7
+      in let gone = world-delete world f.rune
+      in let later = bmg-fresh f
+      in let stale = mgc-faults later saved 0 0 ""
+      in let reread = mgc-read later saved size 1000 in act
+      print-line-uni ("MAGERYGROW capacity=" & show world.capacity & " slots=" & show (world-slot world f.book) & "," & show (world-slot world f.mobile) & " clean=[" & clean & "] stale=[" & stale & "]" & (when read is Err (e) -> " read=" & e is Ok (_) -> ""))
+      a <- bvt-check "magery written in a world grown past 1024 slots reads back into a new magery with every row bound (UOAIX-142)" (slots & is-ok booked & is-ok marked & is-ok fought & spent == 1 & is-ok written & clean == "" & is-ok read)
+      b <- bvt-check "the restart keeps the grown-slot spellbook's spells, the rune's mark and the mobile's spent mana" kept
+      c <- bvt-check "a row whose object went away after the save is dropped and named, and the rest of the restore stands" (is-ok gone & stale /= "" & is-ok reread & (bmg-meta later f.book).spells == #3F)
+      a + b + c
+    end

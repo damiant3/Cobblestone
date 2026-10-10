@@ -60,7 +60,7 @@ function ConvertFrom-CodexEscapes([string]$s) {
 # ShakeLit and ShakeUse alike, because ShakeUse is text that is ALSO an edge.
 function Get-ShakeParts([string]$src) {
     $frag = @{}
-    foreach ($m in [regex]::Matches($src, '(?m)^  (zig-p-[a-z0-9-]+) = \[(.*)\]\s*$')) {
+    foreach ($m in [regex]::Matches($src, '(?ms)^  (zig-p-[a-z0-9-]+) = \[(.*?)\]\s*$')) {
         $sb = New-Object System.Text.StringBuilder
         foreach ($f in [regex]::Matches($m.Groups[2].Value, 'Shake(?:Lit|Use) "((?:\\.|[^"\\])*)"')) {
             [void]$sb.Append((ConvertFrom-CodexEscapes $f.Groups[1].Value))

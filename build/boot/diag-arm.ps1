@@ -305,7 +305,12 @@
 #              syn-sent shape, and CLOSE_WAIT is measured COMPLETE rather than
 #              short (codex/test/apps/net-send-capped, `close-wait
 #              complete=True sent=3`).
-#   b3-record  THE LAST SITTING'S INSTRUMENT (HardwareSitting "THE LAST
+#   b3-flood   b3-short's flood with codex-vm's packet trace off, so the NAT
+#              ACKs as fast as the guest sends and the retransmit queue never
+#              fills: all 8192 repeats complete (sent=N/N) and b3=no-reply. A
+#              repeat costs about 16 KB, so a send loop that does not compact
+#              runs the heap into the stack before END.
+#   b3-record THE LAST SITTING'S INSTRUMENT (HardwareSitting "THE LAST
 #              SITTING", item 1). The echo peer appends every byte it is sent
 #              to a raw file. After the passive stages and before the first
 #              bank write the ladder brings the driver up, resolves the hop,
@@ -960,6 +965,7 @@ $expected = [ordered]@{
     'nic-kills-msc' = 'bank=none write refused with -usb-bot-die-on-nic, record=peer lost=0 and stage=b3 state=ok beside it: the medium stops answering at the first bulk write after the NIC is brought up, which since the record channel is the bank''s own open, so the bank never forms, the peer holds the whole trail, and the TCP conversation over that same NIC completes. Armed by RCTL.EN, the channel''s bring-up, and every b3 step note reads banked=-1. Its control is b3-pass, the same run with the lever removed, which banks the full trail. NOTE the row it does NOT reproduce: sitting 11 lost the bank at b3''s rings-link with nicinit banked whole, so metal''s FIRST bring-up did not kill the medium'
     'b3-record' = 'the peer holds the whole record: the channel opens after the passive stages and before the first bank write (record=peer opened ... on the bank row), the passive record is the first thing in the peer''s file, every bank step ships live over a fresh connection (record entering ship ... state=ok on serial, one per step), b3 finds the channel open, the file equals DIAG.TXT row for row, and the summary row carries record=peer ... lost=0. THE LAST SITTING''S INSTRUMENT: a stick that dies keeps nothing and the dev box still holds every banked line'
     'b3-noreply' = 'b3=no-reply: the peer accepts and never answers, so the handshake is up and the exchange is not. The one arm that separates our stack from the far end'
+    'b3-flood' = 'b3=no-reply with sendx=8192 and every repeat sent (sent=N/N) while the NAT ACKs at full speed: the send loop holds its heap bounded instead of running out of memory at exchange'
     'b3-short' = 'b3=short with sendx=8192 against a peer that accepts and never reads: its socket buffer fills, the NAT stops acking, our retransmit queue fills and the send stops part way (measured sent=23686/106496). THE FALSIFIER FOR THE SEND SIDE -- every other b3 arm reports a complete send, and a sent= that has only ever matched what was asked for cannot tell a real send from an intended one'
     'b3-refused' = 'b3=refused: nothing is listening on the port, so no SYN-ACK ever arrives and the stage says the handshake, not the exchange, is what failed'
     'b3-nopart' = 'b3=no-part: a peer IS named and there is no card, which is the only arm that reaches the part check past the no-peer short circuit'
@@ -1776,8 +1782,30 @@ $(1540 + $ChainShiftMs):83
             $k = New-Variant 'b3-short' '' $cfg
             if (-not $k) { $actual['b3-short'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
-                $lines = Invoke-Vm 'b3-short' $k $k @('-e1000', '-e1000-nat') 180
+                # Calibrated on the NAT's slower ACK path; codex-vm 35609 made the trace opt-in.
+                $prevTrace = $env:CODEX_VM_NET_TRACE; $env:CODEX_VM_NET_TRACE = '1'
+                try { $lines = Invoke-Vm 'b3-short' $k $k @('-e1000', '-e1000-nat') 180 } finally { $env:CODEX_VM_NET_TRACE = $prevTrace }
                 $actual['b3-short'] = Judge-Vm 'b3-short' $lines $k $true '' @{ b3 = 'short' }
+            }
+            Stop-Peer $job
+        }
+        'b3-flood' {
+            $port = Get-FreePort
+            $job = Start-Peer $port 'silent'
+            $cfg = Join-Path $Work 'b3-flood.cfg'
+            Set-Content $cfg "b3 peer=10.0.2.2:$port ip=10.0.2.15 sendx=8192 record=off`n" -NoNewline
+            $k = New-Variant 'b3-flood' '' $cfg
+            if (-not $k) { $actual['b3-flood'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
+            else {
+                $prevTrace = $env:CODEX_VM_NET_TRACE; $env:CODEX_VM_NET_TRACE = $null
+                try { $lines = Invoke-Vm 'b3-flood' $k $k @('-e1000', '-e1000-nat') 180 } finally { $env:CODEX_VM_NET_TRACE = $prevTrace }
+                $v = Judge-Vm 'b3-flood' $lines $k $true '' @{ b3 = 'no-reply' }
+                $pe = @($lines | Where-Object { $_ -match '^\s+pe=.* sent=(\d+)/(\d+) ' } | Select-Object -First 1)
+                if ($v -eq $expected['b3-flood']) {
+                    if ($pe.Count -eq 0) { $v = '(no b3 pe= detail row)' }
+                    elseif ($pe[0] -notmatch ' sent=(\d+)/(\d+) ' -or $Matches[1] -ne $Matches[2] -or [int]$Matches[2] -lt 106496) { $v = "b3 detail is [$($pe[0].Trim())], wanted every repeat sent" }
+                }
+                $actual['b3-flood'] = $v
             }
             Stop-Peer $job
         }

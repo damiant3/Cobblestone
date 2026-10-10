@@ -1,0 +1,104 @@
+Chapter: CompositeHelpProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  hpp-check : Text, Boolean -> [Console] Integer
+  hpp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  hpp-fill : WalkMap, Integer -> Integer
+  hpp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in hpp-fill map (i + 1)
+  hpp-create : Integer -> List Integer
+  hpp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Pager" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  hpp-say : Text -> List Integer
+  hpp-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
+  hpp-help : Integer -> List Integer
+  hpp-help (size) = gp-zeros [#9B] (size - 1)
+  hpp-note : Result GameReply Text, Text, Integer -> Boolean
+  hpp-note (r) (note) (packets) = when r is Err (_) -> False is Ok (v) -> v.note == note & list-length v.packets == packets
+  hpp-fill-ring : HelpPages, Integer, Integer -> Integer
+  hpp-fill-ring (h) (serial) (left) = if left == 0 then 0
+    else let id = hp-add h serial 1 2 3 0 in hpp-fill-ring h (serial + 1) (left - 1)
+  hpp-ids : HelpPages, Integer, List Integer -> List Integer
+  hpp-ids (h) (i) (acc) = if i == h.count then acc else hpp-ids h (i + 1) (list-push acc (list-at h.pages i).id)
+  hpp-same : HelpPages, HelpPages, Integer -> Boolean
+  hpp-same (a) (b) (i) = if i == a.count then a.count == b.count & a.sequence == b.sequence
+    else let x = list-at a.pages i
+    in let y = list-at b.pages i
+    in x.id == y.id & x.serial == y.serial & x.x == y.x & x.y == y.y & x.z == y.z & x.at == y.at & hpp-same a b (i + 1)
+  hpp-wears : CompositeGame, Integer, Integer, Integer -> Boolean
+  hpp-wears (owner) (serial) (layer) (graphic) = let s = gmb-layer owner.items serial layer 0
+    in s > 0 & (graphic == 0 | (when world-get owner.checkpoint.game.world s is Err (_) -> False is Ok (o) -> o.graphic == graphic))
+  hpp-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  hpp-run (store) (map) (specs) = let owner = store.state in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (hpp-create 0)
+    a <- hpp-check "0x9B is recognised only at its 258-byte client length" (is-ok entry & ch-page-request (hpp-help 258) & not (ch-page-request (hpp-help 257)))
+    paged <- ch-page store owner.checkpoint.game input
+    b <- hpp-check "a page queues with a sysmessage reply" (hpp-note paged "help" 1 & store.pages.count == 1 & (list-at store.pages.pages 0).serial == input.session.serial & (list-at store.pages.pages 0).id == 1)
+    again <- ch-page store owner.checkpoint.game input
+    c <- hpp-check "a second page from the same character keeps one entry" (hpp-note again "help" 1 & store.pages.count == 1 & store.pages.sequence == 1)
+    d <- hpp-check "British commands are told apart" (ch-pages-request (hpp-say "[pages") & not (ch-ack-request (hpp-say "[pages"))
+      & ch-ack-request (hpp-say "[pageack 1") & not (ch-pages-request (hpp-say "[pageack 1")) & not (ch-pages-request (hpp-say "[page")))
+    e <- hpp-check "[pages lists every pending page" (let listed = ch-pages store input in listed.note == "british:pages" & list-length listed.packets == 1)
+    filled <- hpp-fill-ring store.pages 1000 40
+    full <- hp-add store.pages 5000 1 2 3 0
+    f <- hpp-check "the ring holds 32 and refuses the 33rd" (store.pages.count == 32 & full == -1 & store.pages.sequence == 32)
+    middle <- hp-ack store.pages 5
+    ids <- hpp-ids store.pages 0 []
+    g <- hpp-check "acknowledging a middle page keeps the others in order" (middle & store.pages.count == 31 & list-at ids 3 == 4 & list-at ids 4 == 6 & list-at ids 30 == 32 & not (hp-ack store.pages 5))
+    closed <- ch-ack store input (hpp-say "[pageack 1")
+    bad <- ch-ack store input (hpp-say "[pageack x")
+    h <- hpp-check "[pageack closes a page and refuses a missing id" (hpp-note closed "help" 1 & store.pages.count == 30 & hp-by-id store.pages 1 0 == -1 & hpp-note bad "help" 1 & store.pages.count == 30)
+    reopened <- ch-page store owner.checkpoint.game input
+    i <- hpp-check "a closed character can page again with a new id" (hpp-note reopened "help" 1 & store.pages.count == 31 & (list-at store.pages.pages 30).id == 33)
+    saved <- cs-commit store True
+    decoded <- cc-decode store.saved (cc-size owner.checkpoint.game.world.capacity) store.store.sequence store.store.tick
+    j <- hpp-check "pending pages survive a commit and decode with ids, order, places and sequence" (is-ok saved & store.pages.count == 31
+      & (when decoded is Err (_) -> False is Ok (g) -> hpp-same store.pages g.pages 0))
+    scratch <- alloc-bytes hp-bytes
+    written <- hp-encode store.pages scratch
+    swapped <- poke-qword scratch (24 + 48) 1
+    fresh <- hp-new 0
+    refused <- hp-decode fresh scratch
+    k <- hpp-check "a help ring whose ids are out of order is refused and leaves the ring empty" (is-err refused & fresh.count == 0 & fresh.sequence == 0)
+    vendor <- (list-at owner.vendor.vendors 0).serial
+    l <- hpp-check "a vendor is dressed by the stylist as a shopkeeper: hair, the stylist's shirt and an apron" (hpp-wears owner vendor 11 0 & hpp-wears owner vendor 5 #1518 & hpp-wears owner vendor 12 #153B)
+    banker <- list-at owner.banks.bankers 0
+    m <- hpp-check "the banker is dressed by the stylist: hair, a fancy shirt and a doublet, body 400 and skin 1002 kept" (hpp-wears owner banker 11 0 & hpp-wears owner banker 5 #1EFE & hpp-wears owner banker 17 #1F7C
+      & (when world-get owner.checkpoint.game.world banker is Err (_) -> False is Ok (o) -> o.graphic == 400 & o.hue == 1002))
+    a + b + c + d + e + f + g + h + i + j + k + l + m
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> hpp-check e False
+     is Ok (map) -> let filled = hpp-fill map 0 in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> act
+        print-line-uni ("FAIL store " & e)
+        1
+      end
+      is Ok (store) -> act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None })
+       when loaded
+        is Err (e) -> act
+          print-line-uni ("FAIL recovery " & e)
+          1
+        end
+        is Ok (owner) -> hpp-run owner map specs
+      end
+    end

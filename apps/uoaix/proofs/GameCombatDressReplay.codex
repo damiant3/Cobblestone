@@ -31,6 +31,15 @@ Chapter: GameCombatDressReplay
     in let name = gp-ascii (gp-ascii header "Combatant" 0 30) "" 0 30
     in let stats = name & [0,45,10,10,43,50,27,50,1,0]
     in gp-put32 (gp-zeros (gp-put16 stats 1002) 14) 0
+  cbr-row-bytes : List CstRow, Integer -> Integer
+  cbr-row-bytes (rows) (i) = if i == list-length rows then 4
+    else (if (list-at rows i).hue == 0 then 7 else 9) + cbr-row-bytes rows (i + 1)
+  cbr-drawn : GsiState, List Integer -> Boolean
+  cbr-drawn (items) (packet) = list-length packet > 19 & (let look = cst-look cst-fighter (gp-u32 packet 3)
+    in gp-u16 packet 7 == look.body & gp-u16 packet 15 == look.skin & list-length packet == 19 + cbr-row-bytes look.rows 0
+      & cst-styled items (gp-u32 packet 3) cst-fighter)
+  cbr-worn : List Integer -> Integer
+  cbr-worn (packet) = if list-length packet < 7 then 0 else list-length (cst-look cst-fighter (gp-u32 packet 3)).rows
   cbr-hits : GameShard, Integer -> Integer
   cbr-hits (shard) (serial) = when world-get shard.world serial
     is Err (_) -> -1 is Ok (m) -> m.health
@@ -50,13 +59,13 @@ Chapter: GameCombatDressReplay
         intro <- cbd-pulse c items shard input map 2593 0
         first <- cbr-packet intro 0
         second <- cbr-packet intro 1
-        cbr-check "both fixtures draw human body skin and equipment" (is-ok intro & list-length first == 46 & list-length second == 46 & gp-u16 first 7 == 400 & gp-u16 first 15 == 1002 & gp-u16 second 15 == 1002)
+        cbr-check "both fixtures draw the fighter look's body, skin and every garment on their first draw" (is-ok intro & cbr-drawn items first & cbr-drawn items second)
         shirt <- gmb-layer items 4 5 0
         pants <- gmb-layer items 4 4 0
         shoes <- gmb-layer items 4 3 0
-        cbr-check "garments are registered world children" (shirt > 0 & pants > 0 & shoes > 0 & world-count shard.world == 11 & gp-u32 first 19 == shirt & list-at first 25 == 5)
+        cbr-check "garments are registered world children" (shirt > 0 & pants > 0 & shoes > 0 & world-count shard.world == 5 + cbr-worn first + cbr-worn second & gp-u32 first 19 == shirt & list-at first 25 == 5)
         again <- cbd-pulse c items shard input map 2593 1
-        cbr-check "repeated pulse does not create duplicate garments" (is-ok again & world-count shard.world == 11)
+        cbr-check "repeated pulse does not create duplicate garments" (is-ok again & world-count shard.world == 5 + cbr-worn first + cbr-worn second)
         war <- cbd-handler c items shard input map 2593 [114,1,0,50,0]
         cbr-check "war mode does not repeat the scene draw" (list-length (cbr-packets war) == 1 & cbr-opcode war 114 0)
         when cb-ensure c shard 4
@@ -64,7 +73,7 @@ Chapter: GameCombatDressReplay
           is Ok (actor) -> when world-get shard.world 4
             is Err (e) -> print-line-uni ("FAIL opponent " & e)
             is Ok (mobile) -> act
-              dead <- cb-die c shard input actor mobile
+              dead <- cb-die c shard input 0 actor mobile
               cbr-check "dressed opponent still dies with corpse" (is-ok dead & is-err (world-get shard.world 4))
               cbr-check "clothing follows corpse custody" (when world-get shard.world shirt is Err (_) -> False is Ok (item) -> item.container == actor.corpse & item.container /= 0)
             end
@@ -79,7 +88,7 @@ Chapter: GameCombatDressReplay
             is Ok (own) -> when cb-ensure c shard 5
               is Err (e) -> print-line-uni ("FAIL veteran " & e)
               is Ok (veteran) -> act
-                weak <- __record-set own "skill" 0
+                weak <- (if own.npc then __record-set own "skill" 0 else let w = gs-skill-set shard own.serial 43 0 in own)
                 strong <- cb-profile c shard 5 "Veteran opponent" 100 100 100 1000
                 selected <- cb-select c shard veteran own
                 killed <- cbd-pulse c items shard input map 2593 veteran.due

@@ -1,0 +1,105 @@
+Chapter: GameSmelt
+  cites Uoaix chapter GameHarvestProduction
+
+ ServUO Scripts/Items/Resource/Ore.cs: a player uses ore on a forge (IsForge: art 0x0FB1 or 0x197A to 0x19A9) and
+ the whole pile is smelted on one roll, cliloc 501971 (the prompt), 501987 (too little ore), 501988 (smelted) and 501990
+ (a failure burns away half). No fuel is spent (Damian, 2026-10-07). Two ore make one ingot, the catalog's smelting
+ ratio: iron ore 5 to ingot 31, gold 6 to 32, copper 63 to 65, silver 64 to 66. The roll and the gain are Mining (category 1,
+ client skill 45), not Blacksmithy (Damian, 2026-10-07: "it should not be a smithy skill, it is mining").
+  gsm-forge-art : Integer -> Boolean
+  gsm-forge-art (g) = g == #0FB1 | (g >= #197A & g <= #19A9)
+  gsm-ingot : Integer -> Integer
+  gsm-ingot (ore) = if ore == 5 then 31 else if ore == 6 then 32 else if ore == 63 then 65 else if ore == 64 then 66 else 0
+  gsm-ore : GameHarvest, GvPlayer, Integer -> Integer
+  gsm-ore (state) (player) (serial) = let at = if serial == 0 then -1 else gv-lot state.vendor serial 0
+    in if at < 0 then -1
+    else let lot = ep-lot state.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | gsm-ingot lot.item == 0 then -1
+    else when world-get state.items.world serial
+      is Err (_) -> -1
+      is Ok (ore) -> if ore.kind /= 2 | ore.graphic < #19B7 | ore.graphic > #19BA then -1 else at
+  gsm-begin : GameHarvest, GvPlayer, GhRequest, Integer, Integer -> Result (Maybe GameReply) Text
+  gsm-begin (state) (player) (request) (serial) (now) =
+    if not (gv-owned state.items.world serial player.serial 65) then gh-denied "This has to be in your backpack before you can use it."
+    else if state.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+    else let target = #48410000 + state.nonce
+    in let nonce = __record-set state "nonce" (state.nonce + 1)
+    in let context = __record-set request "target" target
+    in let selected = __record-set request "tool" serial
+    in let expires = __record-set request "expires" (now + gh-ticks 10000)
+    in Ok (Just (gs-reply [sip-target target, sip-message #FFFFFFFF #FFFF 6 "Select the forge on which to smelt the ore, or another pile of ore with which to combine it."] "smelt target"))
+  gsm-smelt : GameHarvest, GvPlayer, Integer, Integer -> Result (Maybe GameReply) Text
+  gsm-smelt (state) (player) (at) (now) =
+    let v = state.vendor
+    in let w = v.currency.world
+    in let p = ep-actor w player.actor
+    in let lot = ep-lot v.currency.world.goods at
+    in let ore = lot.item
+    in let ingot = gsm-ingot ore
+    in let serial = lot.serial
+    in let held = ep-amount v.currency.world.goods serial
+    in let pairs = min (held / 2) 500
+    in if pairs < 1 then gh-denied "There is not enough metal-bearing ore in this pile to make an ingot."
+    else if ep-at p.stock ore < held | ep-at p.quality ore < lot.quality * held | ep-at p.wear ore < lot.wear * held then gh-denied "Smelting inventory binding refused."
+    else if not (ep-room p ingot pairs) | ep-at w.crafted ingot > ep-limit - pairs | not (ep-lot-room v.currency.world.goods 1)
+      | world-room state.items.world <= 0 then gh-denied "You cannot hold the ingots."
+    else let bound = gh-row v player
+    in let level = ep-level p 1 (ep-classic 1 0 0)
+    in let smelted = ep-practice p 1
+    in let used = if smelted then pairs * 2 else max 1 (pairs * 2 / 2)
+    in let cost = lot.basis * used / held
+    in when ep-take w lot.actor ore used serial
+      is Err (e) -> Err e
+      is Ok (_) -> let gone = ep-add w.consumed ore used
+        in let invalidated = gh-invalidate-quotes v 0
+        in let rest = when world-get state.items.world serial is Err (_) -> [sip-remove serial] is Ok (o) -> [sip-item o]
+        in if not smelted then Ok (Just (gs-reply (rest & [sip-message #FFFFFFFF #FFFF 6 "You burn away the impurities but are left with less useable metal."]) "smelt burnt"))
+        else let quality = 100 + level * 9 / 10
+        in let a = ep-add p.stock ingot pairs
+        in let b = ep-add p.cost ingot cost
+        in let c = ep-add p.quality ingot (quality * pairs)
+        in let d = ep-add p.wear ingot (32 * pairs)
+        in let e = ep-add w.crafted ingot pairs
+        in when gh-place state player ingot pairs (gh-grade quality) cost now
+          is Err (err) -> Err err
+          is Ok (made) -> Ok (Just (gs-reply (rest & [made, sip-message #FFFFFFFF #FFFF 6 "You smelt the ore removing the impurities and put the metal in your backpack."]) "smelt smelted"))
+  gsm-target : (Integer, Integer, Integer, Integer, Integer -> Boolean), GameHarvest, GvPlayer, GhRequest, List Integer, Integer -> Result (Maybe GameReply) Text
+  gsm-target (art-at) (state) (player) (request) (packet) (now) =
+    let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in let z = (if list-at packet 16 > 127 then list-at packet 16 - 256 else list-at packet 16)
+    in let graphic = gp-u16 packet 17
+    in let clear = __record-set request "target" 0
+    in if x == 65535 | y == 65535 then Ok (Just (gs-reply [] "smelt cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else let at = gsm-ore state player request.tool
+    in if at < 0 | not (gv-owned state.items.world request.tool player.serial 65) then gh-denied "This has to be in your backpack before you can use it."
+    else if not (gsm-forge-art graphic) | not (art-at x y z graphic serial) then gh-denied "You can only smelt ore on a forge."
+    else when world-get state.items.world player.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if me.x > x + 2 | me.x < x - 2 | me.y > y + 2 | me.y < y - 2 then gh-denied "The forge is too far away."
+        else if now < request.next then gh-denied "You are already smelting."
+        else let next = __record-set request "next" (now + gh-ticks 3000)
+        in gsm-smelt state player at now
+  gsm-handler-at : (Integer, Integer, Integer, Integer, Integer -> Boolean), GameHarvest, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  gsm-handler-at (art-at) (state) (shard) (input) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if (op /= 6 | list-length packet /= 5) & (op /= #6C | list-length packet /= 19) then Ok None
+    else if not (gs-byte-range packet 0) then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
+      | state.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player state.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 10000 then Ok None
+    else let player = list-at state.vendor.players at
+    in if not (ep-valid-actor state.vendor.currency.world player.actor) then Ok None
+    else let request = gh-session state input player slot
+    in if op == 6 then (if gsm-ore state player (bit-and (gp-u32 packet 1) #7FFFFFFF) < 0 then Ok None
+      else gsm-begin state player request (bit-and (gp-u32 packet 1) #7FFFFFFF) now)
+    else if request.target == 0 | request.target /= gp-u32 packet 2 | gsm-ore state player request.tool < 0 then Ok None
+    else gsm-target art-at state player request packet now
+
+Page 1

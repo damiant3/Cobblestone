@@ -1,0 +1,72 @@
+Chapter: ActiveSkillsPoisoning
+  cites Uoaix chapter ActiveSkillsHiding
+  cites Uoaix chapter ActiveSkillsForensics
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameHunger
+
+ UOX3 js/skill/poisoning.js, pre-UOR, and dictionary.ENG 869, 918, 919, 920, 1613, 1648, 1649, 6020, 6310 and 6315;
+ GPL-2.0-or-later, ports/UOX3-LICENSE.txt. The first cursor takes a poison potion (0x0F0A; its health is the strength 1
+ to 4, 0 read as 1) in the poisoner's pack, the second a sword or fencing weapon the poisoner holds. The check runs over
+ the strength's range (0-50.0, 15.1-65.1, 55.1-105.1, 90.1-100.0) as ActiveSkillsForensics reads CheckSkill. Success
+ marks the weapon (item health strength * 256 + 18 - 2 * strength charges) unless it already holds that strength (6020);
+ failure says 1649 and, below 80.0 Poisoning, one time in 20 poisons the poisoner at the weapon's strength less two
+ (Magery level), at least Lesser. Either way the potion is spent for an empty bottle, with sound 0x247. Food (GameHunger
+ gh-fill) takes the strength with no charges, and whoever eats it is poisoned at the strength less one (cg-eat, gh-venom).
+ Anything else is refused with 1648.
+  as-poison-low : Integer -> Integer
+  as-poison-low (strength) = if strength == 1 then 0 else if strength == 2 then 151 else if strength == 3 then 551 else 901
+  as-poison-high : Integer -> Integer
+  as-poison-high (strength) = if strength == 1 then 500 else if strength == 2 then 651 else if strength == 3 then 1051 else 1000
+  as-poison-mark : Boolean, Integer -> Integer
+  as-poison-mark (edible) (strength) = if edible then strength * 256 else strength * 256 + 18 - 2 * strength
+  as-poison-strength : WorldObject -> Integer
+  as-poison-strength (potion) = min 4 (max 1 potion.health)
+  as-poison-first : ActiveSkills, AsActor, WorldObject, WorldObject, Integer -> GameReply
+  as-poison-first (s) (a) (player) (obj) (now) =
+    if obj.kind /= 2 | obj.graphic /= #0F0A | not (gv-owned s.items.world obj.serial player.serial 65) then gsi-denied "That is not a valid poison!"
+    else let first = __record-set a "provoked" obj.serial
+    in let cursor = as-target s a 30 now
+    in gs-reply ([as-say "What item do you want to poison?"] & cursor.packets) "skills:poison-first"
+  as-poison-spend : ActiveSkills, WorldObject, WorldObject -> List (List Integer)
+  as-poison-spend (s) (player) (potion) = let emptied = if potion.amount > 1 then as-poison-split s player potion
+      else when world-update s.items.world (__record-set (__record-set potion "graphic" #0F0E) "health" 0)
+        is Err (_) -> []
+        is Ok (_) -> when world-get s.items.world potion.serial is Err (_) -> [] is Ok (bottle) -> [sip-item bottle]
+    in emptied & [cbp-sound #0247 player]
+ One potion split from a stack leaves one bottle; a single potion becomes its own bottle (ItemOrigins.md).
+  as-poison-split : ActiveSkills, WorldObject, WorldObject -> List (List Integer)
+  as-poison-split (s) (player) (potion) = let pack = gsi-pack-find s.items.world player.serial 0
+    in let gone = when world-update s.items.world (__record-set potion "amount" (potion.amount - 1))
+      is Err (_) -> []
+      is Ok (_) -> when world-get s.items.world potion.serial is Err (_) -> [] is Ok (left) -> [sip-item left]
+    in let bottle = if pack == 0 | list-length gone == 0 then [] else when world-create s.items.world (__record-set (__record-set (gs-item pack #0F0E 0) "x" 60) "y" 80)
+      is Err (_) -> []
+      is Ok (serial) -> if gsi-register s.items serial 0 0 True False /= 0 then [] else when world-get s.items.world serial
+        is Err (_) -> []
+        is Ok (made) -> [sip-item made]
+    in gone & bottle
+  as-poison-apply : AsServices, ActiveSkills, AsActor, WorldObject, WorldObject -> GameReply
+  as-poison-apply (services) (s) (a) (player) (obj) = let first = a.provoked
+    in let cleared = __record-set a "provoked" 0
+    in when world-get s.items.world first
+      is Err (_) -> gsi-denied "That is not a valid poison!"
+      is Ok (potion) -> if potion.graphic /= #0F0A | not (gv-owned s.items.world first player.serial 65) then gsi-denied "That is not a valid poison!"
+        else if obj.kind /= 2 | not (gv-owned s.items.world obj.serial player.serial 65) then gsi-denied "You can't poison that item."
+        else let w = wpn-stats obj.graphic
+        in let edible = gh-fill obj.graphic > 0
+        in if w == 0 & not edible then gsi-denied "You can only poison weapons and food"
+        else if not edible & wpn-skill w /= 40 & wpn-skill w /= 42 then gsi-denied "You cannot poison that! You can only poison bladed or piercing weapons, food or drink."
+        else let strength = as-poison-strength potion
+        in let held = obj.health / 256
+        in if as-check-range s a 30 (as-poison-low strength) (as-poison-high strength) then
+          (if held >= strength then gsi-denied "That item is already poisoned!"
+          else let marked = world-update s.items.world (__record-set obj "health" (as-poison-mark edible strength))
+          in let spent = as-poison-spend s player potion
+          in gs-reply (spent & [as-say "You successfully poison that item."]) "skills:poisoned")
+        else let spent = as-poison-spend s player potion
+        in let mistake = as-level a 30 < 800 & skc-random a.skills 20 == 0
+        in let sick = if mistake then services.envenom player.serial (max 0 (held - 2)) player.serial else False
+        in let grave = if sick then [as-say "You make a grave mistake while applying the poison."] else []
+        in gs-reply (spent & [as-say "You fail to apply the poison."] & grave) "skills:poison-failed"
+
+Page 1

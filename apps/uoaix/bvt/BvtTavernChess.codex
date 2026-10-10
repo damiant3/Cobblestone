@@ -1,0 +1,113 @@
+Chapter: BvtTavernChess
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-188 (Damian, 2026-10-09): chess and checkers on the decoration's game boards, refereed, two players. On a founded
+ fixture town; answers a bit per check: 1 the Blue Boar's chess board and the last checker board stand in their opening
+ positions, 2 e2-e4 seats its mover as White, 4 that player's Black move is refused (9), 8 a second player's e7-e5 seats
+ Black, 16 a third player watches (3), 32 an illegal knight move is refused (1), 64 a pawn dropped off its board is
+ refused (7), 128 Fool's mate ends the game and frees both seats, 256 the next drop on the finished board is answered by
+ a new game (8) in the opening position, 512 checkers seats Black first, refuses a slide when a jump is open (12) and
+ the jump moves the jumped man off the board to the trough (UOAIX-230); 1023 is all.
+  btg-fill : WalkMap, Integer -> Integer
+  btg-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in btg-fill map (i + 1)
+  btg-data : Integer -> Integer
+  btg-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  btg-founded : Integer -> Result CompositeGame Text
+  btg-founded (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> Err e
+      is Ok (britain) -> let filled = btg-fill map 0
+        in let town-filled = btg-fill britain 0
+        in when cg-britain britain
+          is Err (e) -> Err e
+          is Ok (owner) -> when wd-read (btg-data 0) 240 map map.stride
+            is Err (e) -> Err e
+            is Ok (decoration) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner
+  btg-drag : Integer, Integer, Integer, Integer -> List Integer
+  btg-drag (piece) (x) (y) (target) = [8, piece / 16777216, int-mod (piece / 65536) 256, int-mod (piece / 256) 256, int-mod piece 256,
+    x / 256, int-mod x 256, y / 256, int-mod y 256, 0, target / 16777216, int-mod (target / 65536) 256, int-mod (target / 256) 256, int-mod target 256]
+  btg-at : WorldTable, TchSet, Integer, Integer -> Integer
+  btg-at (world) (s) (serial) (sq) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> tch-piece o.graphic & tch-square s o.graphic o.x o.y == sq) then serial
+    else btg-at world s (world-next-sibling world serial) sq
+ One drop as the item layer answers it: refereed, the piece set on its square when the move is legal, then the
+ move's consequences. Answers the referee's verdict; said holds what was said over the board.
+  btg-play : GsiState, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  btg-play (items) (t) (i) (from) (to) (player) (now) = let s = list-at tch-sets i
+    in let board = tch-board items.world s
+    in let piece = btg-at items.world s (world-first-child items.world board) from
+    in let art = when world-get items.world piece is Err (_) -> 0 is Ok (o) -> o.graphic
+    in let packet = btg-drag piece (tch-at-x s to) (tch-at-y s art to) board
+    in let verdict = tch-referee items t packet player now
+    in if verdict >= 0 then verdict
+    else let placed = when world-get items.world piece is Err (_) -> [] is Ok (o) -> tch-place items.world o (tch-at-x s to) (tch-at-y s art to)
+    in let after = tch-after items t packet verdict player now in verdict
+  btg-checks : CompositeGame -> Integer
+  btg-checks (owner) = let items = owner.production.harvest.items
+    in let w = items.world
+    in let t = owner.tavern
+    in let home = list-at tch-sets 0
+    in let last = list-at tch-sets (list-length tch-sets - 1)
+    in let standing = if tch-opening w home (tch-board w home) & tch-opening w last (tch-board w last) then 1 else 0
+    in let e4 = btg-play items t 0 52 36 101 1000
+    in let white = if e4 < 0 & tch-get t 0 0 == 101 & tch-get t 0 3 == 1 then 2 else 0
+    in let both = btg-play items t 0 12 28 101 1100
+    in let single = if both == 9 then 4 else 0
+    in let e5 = btg-play items t 0 12 28 202 1200
+    in let black = if e5 < 0 & tch-get t 0 1 == 202 & tch-get t 0 3 == 0 then 8 else 0
+    in let third = btg-play items t 0 51 35 303 1300
+    in let watching = if third == 3 then 16 else 0
+    in let knight = btg-play items t 0 62 38 101 1400
+    in let illegal = if knight == 1 then 32 else 0
+    in let pawn = btg-at w home (world-first-child w (tch-board w home)) 51
+    in let off = tch-referee items t (btg-drag pawn 20 20 #FFFFFFFF) 101 1500
+    in let kept = if off == 7 then 64 else 0
+    in let fresh = tch-reset items t 0
+    in let f3 = btg-play items t 0 53 45 101 2000
+    in let e5b = btg-play items t 0 12 28 202 2100
+    in let g4 = btg-play items t 0 54 38 101 2200
+    in let mate = btg-play items t 0 3 39 202 2300
+    in let mated = if f3 < 0 & e5b < 0 & g4 < 0 & mate < 0 & tch-get t 0 7 == 1 & tch-get t 0 0 == 0 & tch-get t 0 1 == 0 then 128 else 0
+    in let again = btg-play items t 0 52 36 101 2400
+    in let reset = if again == 8 then tch-reset items t 0 else []
+    in let renewed = if again == 8 & tch-opening w home (tch-board w home) & tch-get t 0 7 == 0 then 256 else 0
+    in let ci = list-length tch-sets - 8
+    in let cs = list-at tch-sets ci
+    in let a = btg-play items t ci 40 33 101 3000
+    in let b = btg-play items t ci 19 26 202 3100
+    in let slide = btg-play items t ci 42 35 101 3200
+    in let jump = btg-play items t ci 33 19 101 3300
+    in let cboard = tch-board w cs
+    in let jumped = if a < 0 & tch-get t ci 1 == 101 & b < 0 & slide == 12 & jump < 0 & tch-count w (world-first-child w cboard) 0 == 24 & tch-trough-count w (world-first-child w cboard) (tch-trough-x 0) 0 == 1
+      & btg-at w cs (world-first-child w cboard) 26 == 0 then 512 else 0
+    in standing + white + single + black + watching + illegal + kept + mated + renewed + jumped
+  bvt-tavern-chess : Integer -> [Console] Integer
+  bvt-tavern-chess (unused) = when btg-founded 0
+    is Err (e) -> bvt-check ("tavern chess fixture: " & e) False
+    is Ok (owner) -> act
+      n <- btg-checks owner
+      a <- bvt-check ("chess and checkers are refereed for two players and watched by the rest (UOAIX-188, code " & show n & ")") (n == 1023)
+      a
+    end

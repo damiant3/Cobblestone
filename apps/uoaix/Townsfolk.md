@@ -1,6 +1,6 @@
 # UOAIX layer 1 townsfolk
 
-`Townsfolk.codex` implements the deterministic simulation for UOAIX stage 3.
+`Townsfolk.codex` implements the deterministic layer 1 simulation.
 `TownClock.codex` is the separate acceptance entry point. The simulation has
 no model, socket, account or disciplinary operations.
 
@@ -31,7 +31,8 @@ are explicit world setup, never a purchase or a model proposal.
 Each `tf-step world` advances exactly one game hour. The caller maps wall
 ticks to game hours; repeated wall ticks must not each advance an hour.
 The simulation selects a destination identifier at the schedule boundary;
-walking, map collision and visible mobile movement belong to stages 1 and 2.
+walking, map collision and visible mobile movement belong to the world adapter
+(`TownLive.md`).
 The step processes residents, market transfers, midnight aging, deaths,
 births, and crop growth in that order. Births join the next hour's schedule.
 Residents are visited in serial order. That order determines who receives
@@ -49,19 +50,15 @@ does not increment `sequence`. The monotonically increasing sequence identifies 
 16-entry memory ring. `memory-next` names the next overwrite position;
 `memory-count` saturates at 16. The ring intentionally retains recent indexes,
 not an unbounded history. The consumer must persist events before acknowledging
-them if crash recovery is required. Stage 3 supplies no durable store.
+them if crash recovery is required.
 
-The stage 2 persistence adapter must serialize field values, not heap
-pointers: all `TfWorld`, town and person fields, schedule and memory entries,
-and the pending event prefix. Restore dead records and unused slot defaults
-as well as living residents, preserving `used`, clock and sequence. Log the
-ordered external admissions, family commands, purchases and trusted stock
-changes with their arguments and game hour, plus clock advances. Lifecycle
-notifications alone cannot replay those inputs. Commit a snapshot with its
-input-log position and acknowledged event sequence together; on restart,
-restore that snapshot and replay later inputs in order. Deduplicate delivered
-notifications by sequence. Snapshot encoding and atomic storage are stage 2
-work, not acceptance claims of the clock harness.
+Persistence is TSC1 ([TownStateCodec.md](TownStateCodec.md)), which serializes
+every field value, dead record, unused slot and the pending event prefix, plus
+ordered inputs ([TownInput.md](TownInput.md)): admissions, family commands,
+purchases, trusted stock changes and clock advances. Lifecycle notifications
+alone cannot replay those inputs. Commit a snapshot with its input-log position
+and acknowledged event sequence together; on restart, restore that snapshot and
+replay later inputs in order. Deduplicate delivered notifications by sequence.
 
 Return codes are 0 success, -1 invalid request, -2 capacity or clock budget,
 -3 unconsumed/full event storage, -4 insufficient stock, -5 insufficient
@@ -130,24 +127,12 @@ An hour is O(N + T), including midnight; relationships use direct serial
 lookups. Construction is O(capacity). No per-hour record, list or text
 allocation is intended. The acceptance run measures construction and every
 day's retained heap, including births. The clock driver allocates report text
-outside the measured step interval.
+outside the measured step interval, and clock advancement, births included,
+retains nothing per day.
 
-Measured 2026-10-04 with kernel `9752080A0276505E`, using the clock's
-`__heap-save` readings (`build-output/uoaix/registered-plain/result.json` and `clock.out`):
-
-| Allocation | Bytes | Budget |
-|---|---:|---|
-| One `TfPerson` with its schedule and memory arrays | 576 | 128 lifetime slots |
-| One `TfTown` | 192 | 4 slots |
-| `TfWorld` construction, all preallocated slots and event storage, plus the two-town fixture setup | 109536 | one world |
-| Clock advancement, including births | 0 retained per day | all 30 measured days |
-
-The person record stores 28 machine-word fields (224 bytes); schedule and
-memory arrays include their headers in the measured 576 bytes. The town
-record stores 24 fields. The world wrapper stores eight fields (64 bytes),
-included in the construction measurement. Initialization includes temporary
-list growth; 109536 is retained construction allocation, not only reachable
-payload. Caller-owned name text is additional when dynamically allocated;
+The person record stores 28 machine-word fields (224 bytes) plus its schedule
+and memory arrays, the town record 24 fields, and the world wrapper eight
+fields (64 bytes). Caller-owned name text is additional when dynamically allocated;
 names must remain valid for the world's lifetime and are capped at 64 CCE
 characters by admission. Name storage is not copied by admission.
 

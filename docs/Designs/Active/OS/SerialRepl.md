@@ -51,7 +51,7 @@ return; Restart is the way out.
    empty: `X86_64Boot.codex` puts the profiler buffer at 0x60000 and the
    allocation trace from 0x70000, both written only when enabled, so the page
    goes above the trace buffer's end. The copy's target [0x100000, ~0x44B8D0)
-   ends below the serial ring (0x500000) and the compiler's heap base.
+   ends below the serial ring (0xF00000) and the compiler's heap base.
 3. **Quiesce, then jump to the trampoline.** Before the jump GopBoot halts
    every controller it started that masters memory (the xHCI's Run/Stop, at
    least), because GopBoot's heap is about to be reused by nobody who knows

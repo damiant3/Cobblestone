@@ -1,0 +1,41 @@
+Chapter: CrownMintProof
+  cites Uoaix chapter BritainProduction
+  cmp-check : Text, Boolean -> [Console] Nothing
+  cmp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  cmp-give : EpWorld, EpActor, Integer, Integer -> Integer
+  cmp-give (w) (p) (item) (quantity) = eh-add-yield w p item quantity 100
+  cmp-run : EuCurrency -> [Console] Nothing
+  cmp-run (x) = act
+    w <- x.world
+    crown <- ep-actor w w.mint-owner
+    copper <- (em-purse x.copper 1).coin
+    silver <- (em-purse x.silver 1).coin
+    idle <- bb-crown-mint x
+    cmp-check "with no ore the crown mints nothing" (idle == 0 & (em-purse x.copper 1).coin == copper)
+    given <- cmp-give w crown 63 5
+    gave <- cmp-give w crown 64 2
+    struck <- bb-crown-mint x
+    print-line-uni ("MINT struck=" & show struck & " copper=" & show ((em-purse x.copper 1).coin - copper) & " silver=" & show ((em-purse x.silver 1).coin - silver))
+    cmp-check "the crown smelts four copper ore into two ingots and strikes both into the treasury" (ep-at crown.stock 63 == 1 & ep-at crown.stock 65 == 0 & (em-purse x.copper 1).coin == copper + 2 * bb-placeholder-copper-yield)
+    cmp-check "the crown smelts two silver ore and strikes the ingot" (ep-at crown.stock 64 == 0 & ep-at crown.stock 66 == 0 & (em-purse x.silver 1).coin == silver + bb-placeholder-silver-yield)
+    cmp-check "a single ore waits for a second" (struck == 3 & bb-crown-mint x == 0 & ep-at crown.stock 63 == 1)
+    purse <- eu-open x 2 77
+    owner <- ep-admit w purse (ep-actor w w.mint-owner).place
+    o <- ep-actor w owner
+    skilled <- ep-set o.skills 8 1000
+    ore-c <- cmp-give w o 63 4
+    ore-s <- cmp-give w o 64 2
+    fuel <- cmp-give w o 2 3
+    treasury-c <- (em-purse x.copper 1).coin
+    treasury-s <- (em-purse x.silver 1).coin
+    own-s <- bb-coin x owner 2 16
+    own-c <- bb-coin x owner 1 16
+    print-line-uni ("OWNER struck=" & show (own-s + own-c) & " copper=" & show (em-purse x.copper purse).coin & " silver=" & show (em-purse x.silver purse).coin & " treasury copper+" & show ((em-purse x.copper 1).coin - treasury-c) & " silver+" & show ((em-purse x.silver 1).coin - treasury-s))
+    cmp-check "an owner smelts its own ore with its own fuel and has each ingot struck, keeping 90% while the Crown keeps 10%" (own-s == 1 & own-c == 2 & ep-at o.stock 63 == 0 & ep-at o.stock 64 == 0 & (em-purse x.copper purse).coin == 1800 & (em-purse x.silver purse).coin == 90 & (em-purse x.copper 1).coin == treasury-c + 200 & (em-purse x.silver 1).coin == treasury-s + 10)
+    cmp-check "the production census holds" (ep-census w 1)
+  end
+  opening : [Console] Nothing = act
+    when bb-economy 0
+      is Err (e) -> print-line-uni ("FAIL economy " & e)
+      is Ok (x) -> cmp-run x
+  end

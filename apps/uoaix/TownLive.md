@@ -4,13 +4,23 @@
 Jorin the smith and Mira the tailor. Shopkeepers remain at their shops.
 Residents follow the existing persona schedules between shared lodging,
 workplaces and the Blue Boar. Nell works at Good Eats, Jorin at the Hammer
-And Anvil, and Mira at the Lords Clothiers.
+And Anvil, and Mira at the Lords Clothiers. A work tile is a free tile within two of the
+resident's station (`wks-trade-spot`, `WorkStations.codex`): the Good Eats oven, the anvil beside
+the forge, the Lords Clothiers loom; `tl-resettle` re-places a saved work tile that is not.
 
 Sweet Dreams Inn supplies one shared building assignment, a common entrance
 and three distinct sleeping tiles. The initializer accepts a keeper capacity
 of 3 through 128; this bounded installation adds exactly three residents.
 The initializer refuses insufficient capacity. Construction and expansion
 of the resident set are outside this adapter.
+
+Home is the whole building (Damian, 2026-10-07: "lets make the whole building
+"home" for them, they can be happy in any room."): the Sweet Dreams Inn's
+footprint on every floor, `tl-inn-building` (ServUO `Data/Regions.xml`, 1492,1602
+8x19). A resident, shopkeeper, gatherer, miner or farmer bound home has arrived
+anywhere inside it (`tl-in-lodging`) and is reported resting there; the sleeping
+tile is only where the walk aims. Keepers' tiles never take a worker's
+(`bsh-reserved`).
 
 ## Composite entry
 
@@ -19,7 +29,8 @@ and persists TLC1 in UCC1; `proofs/CompositeBritainWorld.codex` grades the
 fresh build, walking, naming, greeting and the restart. Each composite pulse
 with a player in game advances the composite town clock (12 game seconds per
 real second, persisted beside TLC1), calls `tl-advance` with budget 8 over the
-Britain map, then `tl-pulse`; `tl-handler` precedes the other 09 handlers.
+Britain map, then `tl-pulse`; `cg-trade-click` (the trade label, below) precedes
+`tl-handler`, which precedes the other 09 handlers.
 Movement persists with the composite's timed save, like player walking.
 
 After `bb-populate`, on a fresh private installation candidate:
@@ -52,7 +63,7 @@ Movement takes 12 game seconds per adjacent tile; blocked paths retry after
 
 `tl-pulse state` is the per-viewer approach-speech callback with the standard
 GameDispatch pulse signature. Bind the pulse after advancement. A living
-player entering a resident's three-tile radius receives one short canned
+player entering a resident's three-tile radius in its sight (`tl-sight`, UOAIX-68) receives one short canned
 line. The persona stub logs the model-unavailable fallback. The ten-game-minute
 per-player cooldown survives reconnect and restore. Persona call and audit
 budgets also apply; exhausting either suppresses further greetings.
@@ -62,12 +73,52 @@ GameClientView owns mobile and equipped-item visibility. Feed movement's
 movement and speech can mutate durable state; commit before publishing
 replies. The adapter performs no raw network sends.
 
+## What a player sees (`TownLiveShow`)
+
+The composite calls `tls-show` after `tl-pulse` (`cg-town-show`) and appends
+`tls-status` to a resident's 09 reply (`cg-town-status`). For a viewer within
+18 tiles that the resident can see (`tl-sight`):
+
+- a resident is labelled "Nell the baker" (name and trade, from its job) to every character on a click, the
+  0x11 status, the paperdoll and the name field of every line it says; "name" in earshot answers
+  "I am Nell the baker." (UOAIX-56, `cg-trade-label`). The bank lineup's resident copy is the same person;
+- a click answers the resident's goal: busy at or on the way to work, at or
+  off to the Blue Boar, resting at or heading home to the Sweet Dreams Inn;
+- a resident standing on its work tile during work shows it once per 60 game
+  seconds: Jorin swings (0x6E action 9) with the anvil sound 0x2A, Mira plays
+  the tailoring sound 0x248, Nell calls out;
+- completed purchases, sales and meals in the TownNetworkLive audit book are
+  said overhead, at most 3 lines per pulse, read newest first by sequence
+  because `cg-rotate` moves rows. A viewer starts at the book's current
+  sequence, so the backlog is not replayed.
+
+The 160-byte viewer table (`CompositeGame.shows`) is volatile and is not
+persisted.
+
 ## Movement and persistence
 
-The path search uses Chebyshev A*, a fixed heap, at most 4096 expansions and
-256 saved directions. Living-mobile collision uses the world tile index.
+The path search uses Chebyshev A*, a fixed heap, at most 8192 expansions and
+256 saved directions (the bound covers Jorin's forge-to-Blue Boar route, the
+longest resident route on the real map). A step
+costs 8 and a change of direction 1 more, so among equally short paths the
+walk keeps its heading (a diagonal run, then a straight run) instead of a
+staircase. Once the decoration overlay
+is laid on the town map (`cg-town-doors`), any home, work or tavern spot and the
+lodging entrance without a standing surface is re-placed in its region
+(`tl-resettle`). Living-mobile collision uses the world tile index.
 Each actual adjacent step rechecks terrain, decorations and occupancy.
 An unreachable or occupied target causes a retry, never a teleport.
+
+Shared routes (`TownRoutes.codex`) are a flyweight over the same planner: the town's `TlPath` holds
+64 routes, each its endpoints (from x, y, z, to x, y, z), step count, generation and 256 step bytes,
+and a walker holds only a `RteWalk` (route id, generation, step, the tile it expects to stand on, and
+its back-off). `rte-toward` reuses the route whose endpoints match the walker's tile and target, plans
+and stores one otherwise (a full table takes its oldest slot and bumps the generation, so a walker
+holding the old id replans), retries a blocked step up to 8 times before replanning from where it stands,
+and never stores a failed plan. Routes are not persisted. Every NPC walker uses them: residents, guards,
+the blacksmith, the gatherer and miners on the town planner, the fighter and British on their own route-window
+planners. TLC1 and the guards' record keep their 256-byte path slots and step counters, written as zeros and
+ignored on load, so a saved world of any earlier version loads and its walkers replan.
 The search retains one height per map cell and is intended for ground-floor
 town routes, not stacked-floor routing.
 
@@ -114,11 +165,11 @@ UOX3 commit `4560ae841bac898817143d7aa95ce59f47ab98e0`,
 tavern schedules, step budgets, occupied destinations, speech suppression and
 fallback logging, door probes, clock rescaling and TLC1 recovery/refusal.
 The replay uses a synthetic walk map. Actual map reachability, visible dress,
-speech and movement are graded by root in fester's complete composite.
+speech and movement are graded on the complete composite.
 
 Retained navigation memory is 48 bytes per cached map cell plus three
 256-byte paths, fixed resident/viewer records and existing bounded Tf/Tm
-tables. Search costs O(E log C) heap work for E <= 4096 and C map cells,
+tables. Search costs O(E log C) heap work for E <= 8192 and C map cells,
 plus eight collision probes per expansion. Tile probes visit only indexed
 occupants; door lookup uses the sorted decoration x range. A door probe
 includes WorldDecoration's cell rebuild cost, which can scan the decoration

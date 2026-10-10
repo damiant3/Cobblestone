@@ -1,0 +1,41 @@
+Chapter: Ed25519CallersSmallOrderTest
+  cites Verify chapter CdxBinary
+  cites Trust chapter Handshake
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Ed25519
+
+ SignatureSlippage part B. The two callers whose message is their input
+ verbatim, under a key the input itself supplies: a CDX header's stored
+ content hash under its own header key, and a handshake nonce under the
+ peer's claimed key. A = R = 32 zero bytes and S = 0 (red's
+ ed25519-small-order vectors); a message of byte b then 31 zeros puts h mod 4
+ at 0, 1, 2, 3 for b = 1, 0, 8, 4, and a verifier with no small-order check
+ accepts b = 4.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  so-zeros : Integer -> List Integer
+  so-zeros (n) = if n == 0 then [] else [0] & so-zeros (n - 1)
+
+  so-msg : Integer -> List Integer
+  so-msg (b) = [b] & so-zeros 31
+
+  so-header : Integer -> List Integer
+  so-header (b) = so-zeros 8 & so-msg b & so-zeros 32 & so-zeros 64
+
+  so-row : Integer, Integer -> Text
+  so-row (cls) (b) =
+    let cdx = cdx-verify-signature (so-header b)
+    in let hs = hs-receive-prove (so-msg b) (so-zeros 32) (so-zeros 64) lattice-empty
+    in "h mod 4 = " & show cls & ": cdx-signature accepted=" & show-bool cdx
+      & " handshake failed=" & show-bool (hs-is-failed (hs.state))
+
+Section: Body
+  opening : [Console] Nothing = act
+    print-line-uni (so-row 0 1)
+    print-line-uni (so-row 1 0)
+    print-line-uni (so-row 2 8)
+    print-line-uni (so-row 3 4)
+  end

@@ -51,29 +51,69 @@ Chapter: CompositeMageryRestart
     else when world-get world serial
       is Err (_) -> cmr-find world (world-next-sibling world serial) graphic
       is Ok (item) -> if item.graphic == graphic then serial else cmr-find world (world-next-sibling world serial) graphic
-  cmr-state : Magery, CompositeGame, Integer -> Boolean
-  cmr-state (magic) (owner) (mana) = let player = list-at owner.vendor.players 0
+  cmr-own-book : Magery, WorldTable, Integer, Integer -> Integer
+  cmr-own-book (magic) (world) (serial) (mask) = if serial == 0 then 0
+    else let meta = list-at magic.definitions (world-slot world serial)
+    in if meta.serial == serial & meta.spells == mask then serial
+    else cmr-own-book magic world (world-next-sibling world serial) mask
+ The testing entry in boot1 fills every carried spellbook with every working spell (cg-books), so the restored book
+ holds mgs-working rather than the #3F it was registered with.
+  cmr-state : Magery, CompositeGame, Integer, Integer -> Boolean
+  cmr-state (magic) (owner) (mana) (mask) = let player = list-at owner.vendor.players 0
     in let game = owner.checkpoint.game
     in let actor = list-at magic.actors (world-slot game.world player.serial)
-    in let book = cmr-find game.world (world-first-child game.world player.pack) #0EFA
-    in let rune = cmr-find game.world (world-first-child game.world player.pack) #1F14
-    in let book-meta = list-at magic.definitions (world-slot game.world book)
-    in let rune-meta = list-at magic.definitions (world-slot game.world rune)
+    in let book = cmr-own-book magic game.world (world-first-child game.world player.pack) mask
+    in let rune = cmr-marked magic game.world (world-first-child game.world player.pack)
     in book > 0 & rune > 0 & actor.serial == player.serial & actor.mana == mana
-      & book-meta.serial == book & book-meta.spells == #3F
-      & rune-meta.serial == rune & rune-meta.rune & rune-meta.x == 1430 & rune-meta.y == 1705 & rune-meta.z == 0
+  cmr-marked : Magery, WorldTable, Integer -> Integer
+  cmr-marked (magic) (world) (serial) = if serial == 0 then 0
+    else let meta = list-at magic.definitions (world-slot world serial)
+    in if meta.serial == serial & meta.rune & meta.x == 1430 & meta.y == 1705 & meta.z == 0 then serial
+    else cmr-marked magic world (world-next-sibling world serial)
 
+  cmr-doll : Magery, Integer -> List Integer
+  cmr-doll (magic) (serial) = mgp-rewrite magic (list-push (sip-field (gp-put32 (gp-start #88) serial) [77,97,103,101] 60 0) 0)
+  cmr-named : List Integer, List Integer, Integer -> Boolean
+  cmr-named (packet) (name) (i) = if i == list-length name then list-at packet (5 + i) == 0
+    else list-at packet (5 + i) == list-at name i & cmr-named packet name (i + 1)
+  cmr-hair : WorldTable, Integer -> WorldObject
+  cmr-hair (world) (serial) = let hair = world-layer-serial world serial 11
+    in if hair == 0 then gs-item 0 0 0 else when world-get world hair is Err (_) -> gs-item 0 0 0 is Ok (o) -> o
+  cmr-disguised : Magery, GameShard, Integer -> Boolean
+  cmr-disguised (magic) (game) (serial) = let actor = list-at magic.actors (world-slot game.world serial)
+    in let hair = cmr-hair game.world serial
+    in actor.serial == serial & actor.incognito > magic.tick & actor.inc-hue == 1002 & actor.inc-hair == #203C & actor.inc-hair-hue == 1110
+      & actor.inc-name > 0 & cmr-named (cmr-doll magic serial) (text-to-utf8-bytes (mgi-name actor)) 0
+      & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.hue >= 1002 & m.hue <= 1058)
+      & hair.serial > 0 & (hair.graphic /= #203C | hair.hue /= 1110)
+  cmr-plain : Magery, GameShard, Integer -> Boolean
+  cmr-plain (magic) (game) (serial) = let actor = list-at magic.actors (world-slot game.world serial)
+    in let hair = cmr-hair game.world serial
+    in actor.incognito == 0 & actor.inc-name == 0 & cmr-named (cmr-doll magic serial) [77,97,103,101] 0
+      & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.hue == 1002)
+      & hair.graphic == #203C & hair.hue == 1110
+  cmr-marked-at : Magery, WorldTable, Integer, Integer, Integer -> Integer
+  cmr-marked-at (magic) (world) (serial) (x) (y) = if serial == 0 then 0
+    else let meta = list-at magic.definitions (world-slot world serial)
+    in if meta.serial == serial & meta.rune & meta.x == x & meta.y == y then serial
+    else cmr-marked-at magic world (world-next-sibling world serial) x y
   cmr-kit : Magery, CompositeGame -> Boolean
   cmr-kit (magic) (owner) = let game = owner.checkpoint.game
     in let player = list-at owner.vendor.players 0
     in let pack = gsi-pack-find game.world player.serial 0
-    in let bag = gsi-child-art game.world (world-first-child game.world pack) #0E76 0
-    in let rune = gsi-child-art game.world (world-first-child game.world bag) #1F14 0
+    in let rune = cmr-kit-rune magic game.world (world-first-child game.world pack)
     in if rune <= 0 then False
     else let meta = list-at magic.definitions (world-slot game.world rune)
-    in when world-get game.world player.serial
-      is Err (_) -> False
-      is Ok (m) -> meta.serial == rune & meta.rune & meta.x == m.x & meta.y == m.y & meta.z == m.z
+    in meta.serial == rune & meta.rune & meta.x == 1420 & meta.y == 1698 & meta.z == 0
+  cmr-kit-rune : Magery, WorldTable, Integer -> Integer
+  cmr-kit-rune (magic) (world) (serial) = if serial == 0 then 0
+    else let meta = list-at magic.definitions (world-slot world serial)
+    in if meta.serial == serial & meta.rune & meta.x == 1420 & meta.y == 1698 then serial
+    else cmr-kit-rune magic world (world-next-sibling world serial)
+  cmr-blank : CompositeGame, Integer -> Result Integer Text
+  cmr-blank (owner) (pack) = when world-create owner.checkpoint.game.world (gs-item pack #1F14 0)
+    is Err (e) -> Err e
+    is Ok (serial) -> if gsi-register owner.items serial 0 0 True False /= 0 then Err "blank rune registration" else Ok serial
   cmr-first : CompositeOwner, Magery, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
   cmr-first (store) (magic) (map) (specs) = let owner = store.state in act
     input <- gn-input-with specs 1
@@ -97,30 +137,69 @@ Chapter: CompositeMageryRestart
       is Ok (a) -> let spent = __record-set a "mana" 7
         in let touched = mgs-touch magic in Ok a.mana
     committed <- cs-commit store True
-    a <- cmr-check "boot1 entry, spellbook, marked rune and spent mana commit" (is-ok entry & is-ok marked & is-ok drained & is-ok committed & cmr-state magic owner 7)
+    a <- cmr-check "boot1 entry, spellbook, marked rune and spent mana commit" (is-ok entry & is-ok marked & is-ok drained & is-ok committed & cmr-state magic owner 7 #3F)
     unmarked <- not (cmr-kit magic owner)
+    away <- when world-get game.world player.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set m "x" 1440) "y" 1712)
+    blank <- cmr-blank owner player.pack
     enabled <- __record-set owner "testing" True
-    stocked <- cg-entry owner game input (gs-reply [] "testing entry")
+    stocked <- cg-entry owner game input map (gs-reply [] "testing entry")
     kit-saved <- cs-commit store True
-    b <- cmr-check "boot1 testing kit rune is marked at the entry position" (unmarked & is-ok stocked & is-ok kit-saved & cmr-kit magic owner)
-    a + b
+    b <- cmr-check "boot1 testing kit rune is marked at 1420,1698, not where the character entered" (unmarked & is-ok away & is-ok stocked & is-ok kit-saved & cmr-kit magic owner)
+    later <- cmr-blank owner player.pack
+    again <- cg-entry owner game input map (gs-reply [] "testing re-entry")
+    c <- cmr-check "boot1 a blank rune held at grant and one picked up later both stay unmarked" (is-ok again & cmr-kit magic owner
+      & (when blank is Err (_) -> False is Ok (s) -> not (mgs-known magic s))
+      & (when later is Err (_) -> False is Ok (s) -> not (mgs-known magic s)))
+    haired <- gmb-clothe owner.items player.serial #203C 1110 11
+    caster <- mgs-ensure magic game player.serial
+    cast <- when caster
+      is Err (e) -> Err e
+      is Ok (a) -> when world-get game.world player.serial
+        is Err (e) -> Err e
+        is Ok (m) -> mgi-begin magic game a m 1000
+    disguise-saved <- cs-commit store True
+    disguised <- (when cast is Err (_) -> False is Ok (n) -> n == 121) & is-ok haired & is-ok disguise-saved & cmr-disguised magic game player.serial
+    d <- cmr-check "boot1 Incognito disguises skin, hair and name for 121 seconds and commits" disguised
+    to-mark <- cmr-blank owner player.pack
+    mark-made <- when to-mark
+      is Err (e) -> Err e
+      is Ok (r) -> when world-get game.world player.serial
+        is Err (e) -> Err e
+        is Ok (m) -> when world-get game.world r
+          is Err (e) -> Err e
+          is Ok (blank) -> mga-mark magic m blank
+    mark-saved <- cs-commit store True
+    e <- cmr-check "boot1 Mark records the caster's place on a blank pack rune and commits" (is-ok mark-made & is-ok mark-saved & cmr-marked-at magic game.world (world-first-child game.world player.pack) 1440 1712 > 0)
+    a + b + c + d + e
   end
   cmr-later : CompositeOwner, WdState, WalkMap -> [Console, Device.Block] Integer
   cmr-later (store) (decoration) (map) = let held = store.state.magic-held in act
     early <- cs-commit store True
     when cmr-attach store decoration map
       is Err (e) -> cmr-check ("restore " & e) False
-      is Ok (magic) -> if cmr-state magic store.state 9 then
+      is Ok (magic) -> if cmr-state magic store.state 9 mgs-working then
           cmr-check "boot3 a commit before attach kept MGM1 and the later mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & store.state.magic-held == 0 & cmr-kit magic store.state)
         else act
-          restored <- cmr-check "boot2 restart restores spellbook mask, rune destination and mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & cmr-state magic store.state 7 & cmr-kit magic store.state)
+          restored <- cmr-check "boot2 restart restores spellbook mask, rune destination and mana" (held == cc-magic-bytes store.state.checkpoint.game.world.capacity & is-ok early & cmr-state magic store.state 7 mgs-working & cmr-kit magic store.state)
           player <- list-at store.state.vendor.players 0
           actor <- list-at magic.actors (world-slot store.state.checkpoint.game.world player.serial)
+          kept <- cmr-check "boot2 restart mid-spell keeps the Incognito look, its timer and its name" (cmr-disguised magic store.state.checkpoint.game player.serial)
+          input <- gn-input 1
+          caster <- __record-set input.session "serial" player.serial
+          late <- __record-set magic "tick" (actor.incognito + 1)
+          ended <- mgt-incognito magic store.state.checkpoint.game input actor
+          back <- cmr-check "boot2 at expiry the original skin, hair and name return" (is-ok ended & cmr-plain magic store.state.checkpoint.game player.serial)
+          world <- store.state.checkpoint.game.world
+          rune <- cmr-marked-at magic world (world-first-child world player.pack) 1440 1712
+          moved <- when world-get world player.serial is Err (e) -> Err e is Ok (m) -> world-update world (__record-set (__record-set m "x" 1430) "y" 1705)
+          recalled <- when world-get world player.serial is Err (e) -> Err e is Ok (m) -> mga-travel magic store.state.checkpoint.game input m (mga-point 1440 1712 0)
+          there <- (when world-get world player.serial is Err (_) -> False is Ok (m) -> m.x == 1440 & m.y == 1712)
+          home <- cmr-check "boot2 the rune Mark recorded survives the restart and Recall on it returns the caster there" (rune > 0 & is-ok moved & is-ok recalled & there)
           spent <- __record-set actor "mana" 9
           touched <- mgs-touch magic
-          committed <- cs-commit store True
-          saved <- cmr-check "boot2 changed mana commits through the live section" (is-ok committed)
-          restored + saved
+          committed <- cs-commit store False
+          saved <- cmr-check "boot2 a mana-only change is dirty and commits through the live section" (when committed is Err (_) -> False is Ok (n) -> n == 1)
+          restored + kept + back + home + saved
         end
   end
 

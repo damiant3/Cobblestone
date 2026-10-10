@@ -1,4 +1,5 @@
 Chapter: GameVendorReplay
+  cites Uoaix chapter WorldDisk
   cites Uoaix chapter GameVendorDemo
   cites Uoaix chapter EconomyCurrencyCodec
   cites Uoaix chapter GameVendorCodec
@@ -43,7 +44,7 @@ Chapter: GameVendorReplay
   gvr-refusals (v) (s) =
     let p = list-at v.players 0
     in let npc = list-at v.vendors 0
-    in let source = (list-at v.lots 0).serial
+    in let source = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial
     in let baseline = v.sale-count
     in let menu = gv-handle-at v v.game s (gvr-say "buy") 80000
     in let undo = gvu-save v 1 2 1
@@ -54,7 +55,7 @@ Chapter: GameVendorReplay
     in let refused = gv-handle-at v v.game s (gvr-buy npc.serial source 1) 80001
     in let restored = gvu-restore v undo
     in act
-      gvr-check "insufficient funds moves zero items" (drained == 0 & gvr-reply refused & v.sale-count == baseline & (list-at v.lots 0).quantity == 2 & (em-purse v.currency.world.money 2).coin == cash & (em-purse v.currency.copper 2).coin == cash-c & euv-valid v.currency)
+      gvr-check "insufficient funds moves zero items" (drained == 0 & gvr-reply refused & v.sale-count == baseline & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)) == 2 & (em-purse v.currency.world.money 2).coin == cash & (em-purse v.currency.copper 2).coin == cash-c & euv-valid v.currency)
       when world-get v.game.world p.serial
         is Err (e) -> print-line-uni ("FAIL range fixture " & e)
         is Ok (mobile) ->
@@ -81,7 +82,7 @@ Chapter: GameVendorReplay
     in let bound = gvd-bind v serial
     in let p = list-at v.players 0
     in let npc = list-at v.vendors 0
-    in let source = (list-at v.lots 0).serial
+    in let source = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial
     in let menu = gv-handle-at v v.game s (gvr-say "buy") 100
     in let price = (list-at p.offers 0).price
     in let buy = gvr-buy npc.serial source 2
@@ -91,18 +92,18 @@ Chapter: GameVendorReplay
       gvr-check "classic buy contents prices and gump order" (gvr-menu-ok menu & price >= 1 & price <= 50)
       let forged = gv-handle-at v v.game s (gvr-buy npc.serial 1073741887 1) 101
       in act
-        gvr-check "forged serial changes no items or money" (gvr-reply forged & v.sale-count == 0 & v.currency.world.money.sequence == before-sequence & (list-at v.lots 0).quantity == 4)
+        gvr-check "forged serial changes no items or money" (gvr-reply forged & v.sale-count == 0 & v.currency.world.money.sequence == before-sequence & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)) == 4)
         let reopen = gv-handle-at v v.game s (gvr-say "buy") 200
         in let too-many = gv-handle-at v v.game s (gvr-buy npc.serial source 5) 201
         in act
-          gvr-check "excess quantity refused" (gvr-reply too-many & v.sale-count == 0 & v.lot-count == 1)
+          gvr-check "excess quantity refused" (gvr-reply too-many & v.sale-count == 0 & (ep-lot-count v.currency.world.goods) == 1)
           let again = gv-handle-at v v.game s (gvr-say "buy") 300
           in let bought = gv-handle-at v v.game s buy 301
           in let delivered = (list-at v.sales 0).delivered
           in act
-            gvr-check "buy splits selected serial" (gvr-reply bought & v.sale-count == 1 & delivered /= source & (list-at v.lots 0).quantity == 2 & (list-at v.lots 1).quantity == 2 & gv-owned v.game.world delivered serial 65)
-            gvr-check "buy exact quality wear and conserved taxed coin" ((list-at v.lots 1).quality == 1000 & (list-at v.lots 1).wear == 32 & (em-purse v.currency.copper 2).coin == 100 - 2 * price & (em-purse v.currency.copper 3).coin == 2 * price - 2 * price / 10 & (em-purse v.currency.copper 1).coin == 2 * price / 10 & (em-purse v.currency.world.money 2).coin == 99 & euv-valid v.currency)
-            gvr-check "a gold-only buyer breaks coin with the crown, which decrees the silver and copper it lacks" (gvr-decrees v.currency 0 0 == 110 & (em-purse v.currency.silver 1).coin == 10 & (em-purse v.currency.world.money 1).coin == 701)
+            gvr-check "buy splits selected serial" (gvr-reply bought & v.sale-count == 1 & delivered /= source & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)) == 2 & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 1)) == 2 & gv-owned v.game.world delivered serial 65)
+            gvr-check "buy exact quality wear and conserved taxed coin" ((ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 1)).quality == 1000 & (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 1)).wear == 32 & (em-purse v.currency.copper 2).coin == 10 - gvr-r price & (em-purse v.currency.silver 2).coin == 9 - gvr-q price & (em-purse v.currency.copper 3).coin == gvr-r price & (em-purse v.currency.silver 3).coin == gvr-q price & (em-purse v.currency.copper 1).coin == 0 & (em-purse v.currency.world.money 2).coin == 99 & euv-valid v.currency)
+            gvr-check "a gold-only buyer breaks one coin a step with the crown, which recoins the gold and then the silver handed in rather than decreeing (UOAIX-213)" (gvr-decrees v.currency 0 0 == 0 & (em-purse v.currency.silver 1).coin == 0 & (em-purse v.currency.world.money 1).coin == 700)
             let duplicate = gv-handle-at v v.game s buy 302
             in act
               gvr-check "consumed quote cannot replay" (gvr-reply duplicate & v.sale-count == 1)
@@ -110,8 +111,8 @@ Chapter: GameVendorReplay
               in let bid = (list-at p.offers 0).price
               in let sold = gv-handle-at v v.game s (gvr-sell npc.serial delivered 2) 401
               in act
-                gvr-check "sell retains serial and stock" (gvr-reply sellmenu & gvr-reply sold & bid == price / 2 & v.sale-count == 2 & gv-owned v.game.world delivered npc.serial 65 & (list-at v.lots 1).quantity == 2)
-                gvr-check "sell coordinator and item census" ((em-purse v.currency.copper 2).coin == 100 - 2 * price + 2 * bid & (em-purse v.currency.copper 3).coin == 2 * price - 2 * price / 10 - 2 * bid & ep-at (ep-actor v.currency.world 2).stock 2 == 4 & euv-valid v.currency)
+                gvr-check "sell retains serial and stock" (gvr-reply sellmenu & gvr-reply sold & bid == price / 2 & v.sale-count == 2 & gv-owned v.game.world delivered npc.serial 65 & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 1)) == 2)
+                gvr-check "sell coordinator and item census" ((em-purse v.currency.copper 2).coin == 10 - gvr-r price + gvr-r bid & (em-purse v.currency.silver 2).coin == 9 - gvr-q price + gvr-q bid & (em-purse v.currency.copper 3).coin == gvr-r price - gvr-r bid & (em-purse v.currency.silver 3).coin == gvr-q price - gvr-q bid & ep-at (ep-actor v.currency.world 2).stock (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).item == 4 & euv-valid v.currency)
                 let expiry-menu = gv-handle-at v v.game s (gvr-say "buy") 500
                 in let expired = gv-handle-at v v.game s buy (500 + gv-quote-ticks)
                 in act
@@ -122,11 +123,11 @@ Chapter: GameVendorReplay
                   in act
                     gvr-check "connection-bound quote refused" (gvr-reply reconnect & v.sale-count == 2)
                     let undo = gvu-save v 1 2 1
-                    in let line = GvLine { lot = 0, quantity = 1, price = 7, delivered = source, basis = 0, copper = 7, silver = 0, gold = 0 }
+                    in let line = GvLine { lot = ep-lot-nth v.currency.world.goods 0, quantity = 2, price = 7, delivered = source, basis = 0, copper = 4, silver = 1, gold = 0 }
                     in let paid = gv-pay-line v line 1 2
                     in let restored = gvu-restore v undo
                     in act
-                      gvr-check "currency metadata and append rollback" (paid == 0 & v.sale-count == 2 & v.currency.world.trade-count == 2 & (list-at v.lots 0).actor == 2 & (list-at v.lots 0).quantity == 2 & (em-purse v.currency.copper 2).coin == 100 - 2 * price + 2 * (price / 2) & euv-valid v.currency)
+                      gvr-check "currency metadata and append rollback" (paid == 0 & v.sale-count == 2 & v.currency.world.trade-count == 2 & (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).actor == 2 & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)) == 2 & (em-purse v.currency.copper 2).coin == 10 - gvr-r price + gvr-r (price / 2) & (em-purse v.currency.silver 2).coin == 9 - gvr-q price + gvr-q (price / 2) & euv-valid v.currency)
                       gvr-check "source and delivery serial audit" ((list-at v.sales 0).source == source & (list-at v.sales 0).delivered == delivered & (list-at v.sales 1).source == delivered & (list-at v.sales 1).delivered == delivered)
                       gvr-refusals v s
                     end
@@ -154,62 +155,71 @@ Chapter: GameVendorReplay
     else if peek-qword a at /= peek-qword b at then False else gvr-equal a b size (at + 8)
   gvr-mixed-undo : GvWorld -> [Console] Nothing
   gvr-mixed-undo (v) =
-    let one = alloc-bytes euc-bytes
-    in let two = alloc-bytes euc-bytes
+    let one = alloc-bytes us-max-payload
+    in let two = alloc-bytes us-max-payload
     in let checkpoint = CurrencyCheckpoint { currency = v.currency, tick = 0, sequence = 0 }
-    in let before = euc-encode checkpoint one euc-bytes
+    in let before = euc-encode checkpoint one us-max-payload
     in let undo = gvu-save v 1 2 2
     in let grant = eu-grant v.currency True 1 2 200 40 0
-    in let line = GvLine { lot = 0, quantity = 1, price = 700, delivered = (list-at v.lots 0).serial,
-      basis = 0, copper = 200, silver = 40, gold = 1 }
+    in let line = GvLine { lot = ep-lot-nth v.currency.world.goods 0, quantity = 3, price = 300, delivered = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial,
+      basis = 0, copper = 300, silver = 50, gold = 1 }
     in let paid = gv-pay-line v line 1 2
     in let restored = gvu-restore v undo
-    in let after = euc-encode checkpoint two euc-bytes
+    in let after = euc-encode checkpoint two us-max-payload
     in act
-      gvr-check "mixed rollback restores all three ledgers byte for byte" (grant == 0 & paid == 0 & is-ok before & is-ok after & gvr-equal one two euc-bytes 0 & v.sale-count == 2)
-      when euc-decode one euc-bytes
+      gvr-check "mixed rollback restores all three ledgers byte for byte" (grant == 0 & paid == 0 & is-ok before & is-ok after & gvr-equal one two (peek-qword one 16) 0 & v.sale-count == 2)
+      when euc-decode one (peek-qword one 16)
         is Err (e) -> print-line-uni ("FAIL mixed currency checkpoint " & e)
-        is Ok (loaded) -> let encoded = euc-encode loaded two euc-bytes
-          in gvr-check "mixed sale EUC1 roundtrip retains tender and valuation" (is-ok encoded & gvr-equal one two euc-bytes 0 & euv-valid loaded.currency)
+        is Ok (loaded) -> let encoded = euc-encode loaded two us-max-payload
+          in gvr-check "mixed sale EUC1 roundtrip retains tender and valuation" (is-ok encoded & gvr-equal one two (peek-qword one 16) 0 & euv-valid loaded.currency)
     end
   gvr-vendor-codec : GvWorld, GameInput -> [Console] Nothing
   gvr-vendor-codec (v) (s) =
     let opened = gv-handle-at v v.game s (gvr-say "buy") 1000
-    in let buf = alloc-bytes gvsc-bytes
-    in let copy = alloc-bytes gvsc-bytes
-    in let currency-bytes = alloc-bytes euc-bytes
-    in let saved-currency = euc-encode (CurrencyCheckpoint { currency = v.currency, tick = 0, sequence = 0 }) currency-bytes euc-bytes
-    in let encoded = gvsc-encode v buf gvsc-bytes
+    in let cap = gvsc-bytes + gvsc-tail-size v
+    in let buf = alloc-bytes cap
+    in let copy = alloc-bytes cap
+    in let currency-bytes = alloc-bytes us-max-payload
+    in let saved-currency = euc-encode (CurrencyCheckpoint { currency = v.currency, tick = 0, sequence = 0 }) currency-bytes us-max-payload
+    in let encoded = gvsc-encode v buf cap
+    in let size = peek-qword buf 16
     in act
-      gvr-check "vendor codec fits encompassing checkpoint budget" (is-ok encoded & is-ok saved-currency & gvsc-bytes + euc-bytes < 4194304)
-      when euc-decode currency-bytes euc-bytes
+      gvr-check "vendor codec fits encompassing checkpoint budget" (is-ok encoded & is-ok saved-currency & size + peek-qword currency-bytes 16 < 4194304)
+      when euc-decode currency-bytes (peek-qword currency-bytes 16)
         is Err (e) -> print-line-uni ("FAIL codec currency anchor " & e)
-        is Ok (currency) -> when gvsc-decode buf gvsc-bytes v.game currency.currency
+        is Ok (currency) -> when gvsc-decode buf size v.game currency.currency
           is Err (e) -> print-line-uni ("FAIL vendor codec " & e)
           is Ok (loaded) ->
             let p = list-at loaded.players 0
             in let price = ep-at (list-at loaded.vendors 0).prices 2
-            in let same = gvsc-encode loaded copy gvsc-bytes
-            in let changed = poke-qword buf (gvsc-vendors-at + 40 + 2 * 8) (price + 1)
+            in let same = gvsc-encode loaded copy cap
+            in let changed = poke-qword (gvsc-tail-prices-at (buf + gvsc-bytes)) (16 + 2 * 8) (price + 1)
             in let independent = ep-at (list-at loaded.vendors 0).prices 2 == price
-            in let original = poke-qword buf (gvsc-vendors-at + 40 + 2 * 8) price
+            in let original = poke-qword (gvsc-tail-prices-at (buf + gvsc-bytes)) (16 + 2 * 8) price
             in act
-              gvr-check "vendor codec roundtrip binds supplied world and currency" (is-ok same & loaded.sale-count == v.sale-count & loaded.sequence == v.sequence & gvr-equal buf copy gvsc-bytes 0 & loaded.game.world.buffer == v.game.world.buffer)
+              gvr-check "vendor codec roundtrip binds supplied world and currency" (is-ok same & loaded.sale-count == v.sale-count & loaded.sequence == v.sequence & gvr-equal buf copy size 0 & loaded.game.world.buffer == v.game.world.buffer)
               gvr-check "vendor reload clears quotes and copies price buffers" (p.side == 0 & p.count == 0 & p.connection == -1 & p.expires == 0 & independent & (list-at v.players 0).side == 1)
               let serial = peek-qword buf gvsc-lots-at
               in let forged = poke-qword buf gvsc-lots-at (list-at v.vendors 0).stock
               in let checksum = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
-              in let rejected = not (is-ok (gvsc-decode buf gvsc-bytes v.game currency.currency))
+              in let rejected = not (is-ok (gvsc-decode buf size v.game currency.currency))
               in let restored = poke-qword buf gvsc-lots-at serial
               in let event = peek-qword buf (gvsc-sales-at + 72)
               in let bogus = poke-qword buf (gvsc-sales-at + 72) 1
               in let checksum2 = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
-              in let history = not (is-ok (gvsc-decode buf gvsc-bytes v.game currency.currency))
+              in let history = not (is-ok (gvsc-decode buf size v.game currency.currency))
               in act
-                gvr-check "vendor codec rejects serial and payment rebinding" (rejected & history & (list-at v.lots 0).serial == serial & euv-valid v.currency)
+                gvr-check "vendor codec rejects serial and payment rebinding" (rejected & history & (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial == serial & euv-valid v.currency)
               end
             end
     end
+ A buy of 2 at price p tenders 2p / 10 silver and 2p mod 10 copper once the buyer's gold is broken one coin a step
+ (gv-change): one gold into 10 silver, then one silver into 10 copper when 2p is not a multiple of 10; below 10 of a metal
+ no tax is due. The arms assume 2p below 100 and not a multiple of 10, as this fixture's price is.
+  gvr-q : Integer -> Integer
+  gvr-q (price) = 2 * price / 10
+  gvr-r : Integer -> Integer
+  gvr-r (price) = int-mod (2 * price) 10
   gvr-decrees : EuCurrency, Integer, Integer -> Integer
   gvr-decrees (x) (i) (sum) = if i == x.count then sum
     else let e = list-at x.events i in gvr-decrees x (i + 1) (if e.kind == 12 then sum + e.party else sum)
@@ -232,7 +242,7 @@ Chapter: GameVendorReplay
     in let bound = gvd-bind v serial
     in let p = list-at v.players 0
     in let npc = list-at v.vendors 0
-    in let source = (list-at v.lots 0).serial
+    in let source = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial
     in let menu = gv-handle-at v v.game s (gvr-say "buy") 100
     in let status = gv-status-packet v p
     in let bought = gv-handle-at v v.game s (gvr-buy npc.serial source 1) 101

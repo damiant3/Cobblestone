@@ -1,0 +1,50 @@
+Chapter: BvtWorkshop
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter CompositeStation
+  cites Uoaix chapter WorldFlora
+  cites Uoaix chapter BvtCheck
+
+ Two FLR1 rows in the Merchants' Guild's block (1470,1594: block 183 * 512 + 199): row 0 of the given kind, row 1 other flora.
+  bvw-block : Integer = 93895
+  bvw-dir : Integer, Integer, Integer -> Integer
+  bvw-dir (data) (i) (count) = if i > 393216 then 0 else let put = poke-32 data (64 + i * 4) (if i > bvw-block then count else 0) in bvw-dir data (i + 1) count
+  bvw-row : Integer, Integer, Integer, Integer -> Integer
+  bvw-row (at) (x) (art) (kind) = let a = poke-byte at 0 (bit-and x 255)
+    in let b = poke-byte at 1 (x / 256)
+    in let c = poke-byte at 2 (bit-and 1594 255)
+    in let d = poke-byte at 3 (1594 / 256)
+    in let e = poke-byte at 4 (bit-and art 255)
+    in let f = poke-byte at 5 (art / 256)
+    in let g = poke-byte at 6 0
+    in let h = poke-byte at 7 0
+    in let i = poke-byte at 8 20
+    in let j = poke-byte at 9 kind
+    in let k = poke-byte at 10 0
+    in poke-byte at 11 0
+  bvw-table : Integer -> Integer
+  bvw-table (kind) = let rows = 64 + 393217 * 4
+    in let data = alloc-bytes (rows + 24)
+    in let a = poke-qword data 0 #31524C46
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 16 2
+    in let d = poke-qword data 24 393216
+    in let e = poke-qword data 32 64
+    in let f = poke-qword data 40 rows
+    in let g = poke-qword data 48 12
+    in let h = poke-qword data 56 0
+    in let i = bvw-dir data 0 2
+    in let j = bvw-row (data + rows) 1470 #0B73 kind
+    in let k = bvw-row (data + rows + 12) 1471 #0C83 2
+    in data
+  bvw-hidden : Integer -> Integer
+  bvw-hidden (kind) = when wf-read (bvw-table kind) (64 + 393217 * 4 + 24)
+    is Err (_) -> 0 - 1
+    is Ok (s) -> wf-code s 0 * 10 + wf-code s 1
+  bvt-workshop : Integer -> [Console] Integer
+  bvt-workshop (unused) = act
+    a <- bvt-check "the glassblower's shop is the Merchants' Guild room and its furnace stands inside it" (let s = list-at bb-shops bb-glassblower in s.premises == "Merchants' Guild" & wks-glass-furnace.x >= s.x1 & wks-glass-furnace.x <= s.x2 & wks-glass-furnace.y >= s.y1 & wks-glass-furnace.y <= s.y2)
+    b <- bvt-check "the glassblower works at the glass furnace, not the smithy's forge" (let w = csn-glassblower 0 in w.station-a.x == wks-glass-furnace.x & w.station-a.y == wks-glass-furnace.y & (w.station-b.x /= wks-forge.x | w.station-b.y /= wks-forge.y))
+    c <- bvt-check "a stripped furnishing (FLR1 kind 3) loads and is never drawn; flora beside it still draws" (bvw-hidden 3 == 30)
+    d <- bvt-check "an FLR1 row of kind 4 is refused" (bvw-hidden 4 == 0 - 1)
+    a + b + c + d
+  end

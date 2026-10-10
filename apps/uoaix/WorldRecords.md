@@ -54,14 +54,16 @@ owner. `world-revision` and `world-item-revision` are volatile change counters,
 not durable journal sequence numbers.
 
 Create/update/delete maintain child counts, sibling lists, subtree heights,
-layer bindings and tile occupancy. Serial, child-count, visible-layer and
-tile-head queries are O(1); iteration is O(children or occupants). Parent
+layer bindings and tile occupancy. Serial, child-count and tile-head
+queries are O(1); a layer query walks the mobile's children (its equipment)
+and answers the lowest slot on that layer, and layers 1-25 answer 0 on a
+parent that is not a mobile; iteration is O(children or occupants). Parent
 admission checks at most64 ancestors plus the stored subtree height. Height
 reduction may scan affected direct children; ordinary movement does not scan
 capacity. Tile pages come from a reserved free pool and are recycled when
 empty. There is no retained allocation per movement or lookup.
 
-The runtime index reserves `128 + 1572864 + capacity * 576` bytes, including
+The runtime index reserves `128 + 1572864 + capacity * 376` bytes, including
 the fixed block directory, per-slot arrays and bounded tile-page pool.
 Construction is linear in that reserved storage. Rebuilding is O(capacity
 times the64-ancestor bound), without a capacity-squared child search.
@@ -79,7 +81,6 @@ explicit depot kernel and compare its entire filtered output against
 `proofs/WorldRecordsProof.expected`, removing CR only. The proof fills an
 8192-slot table with no retained transient heap between inserts, and grades
 capacity, namespaces, generation reuse, references, cycles and refusals.
-The population is synthetic storage acceptance, not a populated Britain
-or stage-2 gameplay acceptance. `WorldIndexProof.codex` adds layer, child and
+`WorldIndexProof.codex` adds layer, child and
 tile maintenance, page recycling, snapshot rebuild and rollback checks.
 The table alone is volatile; WorldDisk and the encompassing codecs own storage.

@@ -1,0 +1,50 @@
+Chapter: BvtPlayScript
+  cites Uoaix chapter PlayScript
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter CCE
+  cites Foreword chapter Result
+
+  bpl-poke : Integer, List Integer, Integer, Integer -> Integer
+  bpl-poke (s) (bytes) (i) (n) = if i >= n then 0 else let b = poke-byte s i (list-at bytes i) in bpl-poke s bytes (i + 1) n
+  bpl-compile : Text -> Result Integer Text
+  bpl-compile (src) = let bytes = text-to-utf8-bytes src
+    in let n = list-length bytes
+    in let s = alloc-bytes (max 1 n)
+    in let copied = bpl-poke s bytes 0 n
+    in pls-compile s n (alloc-bytes pls-table-bytes)
+  bpl-states : Text, Integer -> Boolean
+  bpl-states (src) (want) = when bpl-compile src is Ok (n) -> n == want is Err (_) -> False
+  bpl-refuses : Text, Text -> Boolean
+  bpl-refuses (src) (needle) = when bpl-compile src is Ok (_) -> False is Err (e) -> text-contains e needle
+
+  bpl-head : Text
+  bpl-head = text-concat-list ["play The Baker's Debt\n", "mark door 1452 1618 0\n", "mark boar 1475 1645 0\n", "scene market 1445 1610 1465 1650\n",
+    "cast nell \"Nell\" \"the baker\" townsfolk female at door\n", "cast silas \"Silas\" \"the gambler\" townsfolk male at boar\n",
+    "set market 0x0E7C 0 1453 1620 0\n"]
+  bpl-sample : Text
+  bpl-sample = text-concat-list [bpl-head, "state open minor\n", "  silas walk door\n", "  silas say \"Nell! Forty gold, by sundown.\"\n",
+    "  nell say \"I'll have it, I swear it on my oven.\"\n", "  after 30 -> plea\n", "  heard \"help\" \"pay\" -> offer\n",
+    "state plea major\n", "  nell emote \"wrings her hands\"\n", "  hint 90 nell say \"Will no one help a poor baker?\"\n",
+    "  given silas gold 40 -> paid\n", "  heard \"guard\" -> guards\n", "state offer minor\n",
+    "  nell say \"You would help me? Pay him, and I'll bake you bread for a week.\"\n", "  after 45 -> plea\n",
+    "state paid end\n", "  silas say \"Hmph. Paid in full.\"\n", "state guards end\n", "  silas walk boar\n"]
+
+  bvt-play-script : Integer -> [Console] Integer
+  bvt-play-script (unused) = act
+    a <- bvt-check "the sample play compiles to its 5 states (pls-compile)" (bpl-states bpl-sample 5)
+    gt <- bvt-check "give and take of a catalog item and of coin compile; a missing count is refused (pls-action)" (bpl-states (bpl-head & "state open minor\n  silas take 32 2\n  silas give 32 1\n  after 5 -> done\nstate done end\n") 2 & bpl-states (bpl-head & "state open minor\n  silas give gold 40\n  silas take silver 3\n  after 5 -> done\nstate done end\n") 2 & bpl-refuses (bpl-head & "state open minor\n  silas give 32\n  after 5 -> done\nstate done end\n") "ACTOR give|take gold|silver|copper|ITEM N")
+    b <- bvt-check "a minor state with no after cue is refused at its line" (bpl-refuses (bpl-head & "state open minor\n  silas say \"Hm.\"\n  near -> done\nstate done end\n") "line 8: a minor state needs an after cue")
+    c <- bvt-check "a major state with an after cue is refused" (bpl-refuses (bpl-head & "state open major\n  hint 60 nell say \"Help?\"\n  after 5 -> done\nstate done end\n") "a major state waits for a player")
+    d <- bvt-check "a major state with no hint is refused" (bpl-refuses (bpl-head & "state open major\n  near -> done\nstate done end\n") "a major state needs a hint")
+    e <- bvt-check "an end state with a cue is refused" (bpl-refuses (bpl-head & "state open minor\n  after 5 -> done\nstate done end\n  near -> open\n") "an end state has no cues")
+    f <- bvt-check "a walk to an undeclared mark is refused at its line" (bpl-refuses (bpl-head & "state open minor\n  nell walk well\n  after 5 -> done\nstate done end\n") "line 9: unknown mark")
+    g <- bvt-check "a state no cue reaches is refused" (bpl-refuses (bpl-head & "state open minor\n  after 5 -> done\nstate lost end\nstate done end\n") "line 10: this state cannot be reached")
+    h <- bvt-check "a script without its play line is refused" (bpl-refuses "state open end\n" "starts with play")
+    i <- bvt-check "a set piece outside its scene is refused at its line" (bpl-refuses (bpl-head & "set market 0x0E7C 0 1400 1620 0\nstate open end\n") "line 8: a set piece lies inside its scene")
+    j <- bvt-check "a scene whose corners run east to west is refused" (bpl-refuses (bpl-head & "scene back 1470 1610 1460 1620\nstate open end\n") "line 8: a scene runs from its west")
+    k <- bvt-check "a story statement with stay compiles" (bpl-states (bpl-head & "story bakery stay\nstate open end\n") 1)
+    l <- bvt-check "give of something neither coin nor a catalog item is refused at its line" (bpl-refuses (bpl-head & "state open minor\n  nell give ruby 5\n  after 5 -> done\nstate done end\n") "line 9: ACTOR give|take gold|silver|copper|ITEM N")
+    m <- bvt-check "a given cue takes coin only" (bpl-refuses (bpl-head & "state open major\n  hint 60 nell say \"Help?\"\n  given silas bread 1 -> done\nstate done end\n") "line 10: given ACTOR gold|silver|copper|ITEM N")
+    n <- bvt-check "a play with no scene is refused" (bpl-refuses "play T\nstate open end\n" "a play has at least one scene")
+    a + gt + b + c + d + e + f + g + h + i + j + k + l + m + n
+  end

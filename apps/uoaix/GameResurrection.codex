@@ -6,10 +6,30 @@ Chapter: GameResurrection
  License: apps/uoaix/Sphere-LICENSE.txt.
 
   GameResurrection = record { combat : GameCombat, items : GsiState,
-    shrine : Integer, other : Integer, connection : Integer, actor : Integer, health : Integer, visible : Boolean }
+    shrine : Integer, other : Integer, views : List GrView, dress-hook : (Integer -> Integer) }
+  GrView = record { connection : Integer, actor : Integer, health : Integer, visible : Boolean, raised : Boolean }
+ GameLinks serves at most 32 game links.
+  gr-view-limit : Integer = 32
+  gr-views : Integer, List GrView -> List GrView
+  gr-views (i) (xs) = if i == gr-view-limit then xs
+    else gr-views (i + 1) (list-push xs (GrView { connection = -1, actor = 0, health = -1, visible = False, raised = False }))
+  gr-view-at : List GrView, Integer, Integer, Integer -> Integer
+  gr-view-at (views) (connection) (i) (best) = if i == list-length views then best
+    else if (list-at views i).connection == connection then i
+    else gr-view-at views connection (i + 1) (if (list-at views i).connection < (list-at views best).connection then i else best)
+  gr-views-clear : List GrView, Integer -> Integer
+  gr-views-clear (views) (i) = if i == list-length views then 0
+    else let v = list-at views i
+    in let a = __record-set v "connection" -1
+    in let b = __record-set v "actor" 0
+    in let c = __record-set v "health" -1
+    in let d = __record-set v "visible" False
+    in let e = __record-set v "raised" False in gr-views-clear views (i + 1)
   gr-new : GameCombat, GsiState -> GameResurrection
   gr-new (combat) (items) = GameResurrection { combat = combat, items = items,
-    shrine = 0, other = 0, connection = -1, actor = 0, health = -1, visible = False }
+    shrine = 0, other = 0, views = gr-views 0 (__list-with-capacity gr-view-limit), dress-hook = gr-no-dress }
+  gr-no-dress : Integer -> Integer
+  gr-no-dress (serial) = 0
   gr-shrine-valid : GsiState, Integer, Integer -> Boolean
   gr-shrine-valid (items) (serial) (graphic) = when world-get items.world serial
     is Err (_) -> False
@@ -20,7 +40,7 @@ Chapter: GameResurrection
   gr-install (state) (x) (y) (z) =
     if state.shrine /= 0 | state.other /= 0 then Err "resurrection shrine already bound"
     else if x < 0 | x > 6143 | y < 0 | y >= 4095 | z < -128 | z > 127
-      | state.items.world.capacity - world-count state.items.world < 2 then Err "resurrection shrine placement"
+      | world-room state.items.world < 2 then Err "resurrection shrine placement"
     else let item = WorldObject { serial = 0, kind = 2, x = x, y = y + 1, z = z,
       graphic = 2, hue = 0, container = 0, amount = 1, health = 0 }
     in when world-create state.items.world item
@@ -37,10 +57,10 @@ Chapter: GameResurrection
           in Ok a
   gr-corpses : GsiState, Integer -> Integer
   gr-corpses (items) (i) = if i == items.world.capacity then 0
-    else let at = 16 + i * 80
-    in let serial = peek-qword items.world.buffer at
-    in let register = if serial > 0 & peek-qword items.world.buffer (at + 8) == 2
-      & peek-qword items.world.buffer (at + 40) == #2006 then
+    else let at = wi-object items.world.buffer i
+    in let serial = peek-qword at 0
+    in let register = if serial > 0 & peek-qword at 8 == 2
+      & peek-qword at 40 == #2006 then
         gsi-register items serial 0 #0009 False False else 0
     in gr-corpses items (i + 1)
   gr-corpse-serial : List Integer -> Integer
@@ -57,8 +77,31 @@ Chapter: GameResurrection
         is Err (_) -> 0
         is Ok (item) -> if item.kind == 2 & item.graphic == #2006 then gsi-register items item.serial 0 9 False False else 0
     in gr-corpse-packets items packets (i + 1)
+ A ghost raised from another connection (a bandage, UOAIX-52) gets the resurrection redraw on its own next pulse.
   gr-after : GameResurrection, GameShard, GameInput, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
-  gr-after (state) (shard) (input) (result) = when result
+  gr-after (state) (shard) (input) (result) = gr-sync state shard input (gr-pending state shard input result)
+  gr-pending : GameResurrection, GameShard, GameInput, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
+  gr-pending (state) (shard) (input) (result) = when result
+    is Err (e) -> Err e
+    is Ok (reply) -> if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial then Ok reply
+      else let view = list-at state.views (gr-view-at state.views input.connection 0 0)
+      in if not view.raised | view.connection /= input.connection | view.actor /= input.session.serial then Ok reply
+      else when world-get shard.world input.session.serial
+        is Err (e) -> Err e
+        is Ok (m) -> if m.health <= 0 then Ok reply
+          else let cleared = __record-set view "raised" False
+          in let redraw = gr-redraw state input m
+          in Ok (Just (when reply is None -> gs-reply redraw "resurrected" is Just (r) -> GameReply { packets = redraw & r.packets, close = r.close, note = r.note }))
+  gr-redraw : GameResurrection, GameInput, WorldObject -> List (List Integer)
+  gr-redraw (state) (input) (living) = [cbp-war False, cbp-target 0, cbp-player living input.session.direction 0,
+    gmb-mobile state.items living, [85], sip-message living.serial living.graphic 6 "You are alive again."]
+  gr-mark-raised : List GrView, Integer, Integer -> Integer
+  gr-mark-raised (views) (serial) (i) = if i == list-length views then 0
+    else let v = list-at views i
+    in let marked = if v.actor == serial & v.connection >= 0 then __record-set v "raised" True else v
+    in gr-mark-raised views serial (i + 1)
+  gr-sync : GameResurrection, GameShard, GameInput, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
+  gr-sync (state) (shard) (input) (result) = when result
     is Err (e) -> Err e
     is Ok (reply) ->
       if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial then Ok reply
@@ -66,15 +109,16 @@ Chapter: GameResurrection
       else when world-get shard.world input.session.serial
         is Err (e) -> Err e
         is Ok (m) ->
-          let entered = state.connection /= input.connection | state.actor /= m.serial
-          in let changed = entered | state.health /= m.health
+          let view = list-at state.views (gr-view-at state.views input.connection 0 0)
+          in let entered = view.connection /= input.connection | view.actor /= m.serial
+          in let changed = entered | view.health /= m.health
           in let packets = when reply is None -> [] is Just (r) -> r.packets
           in let corpses = if entered then gr-corpses state.items 0 else gr-corpse-packets state.items packets 0
           in let near = when world-get state.items.world state.shrine
             is Err (_) -> False
             is Ok (item) -> item.x >= m.x - 18 & item.x <= m.x + 18 & item.y >= m.y - 18 & item.y <= m.y + 18
-          in let shrine = if near & (entered | not state.visible) then gr-view state packets
-            else if not near & state.visible then packets & [cbp-remove state.shrine, cbp-remove state.other] else packets
+          in let shrine = if near & (entered | not view.visible) then gr-view state packets
+            else if not near & view.visible then packets & [cbp-remove state.shrine, cbp-remove state.other] else packets
           in when (if changed then gs-status shard input.session 0 else Ok (gs-reply [] "health unchanged"))
             is Err (e) -> Err e
             is Ok (status) ->
@@ -83,14 +127,27 @@ Chapter: GameResurrection
                 is Err (_) -> sync
                 is Ok (a) -> list-push sync (cbp-health m.serial m.health a.maximum True)
                 else sync
-              in let link = __record-set state "connection" input.connection
-              in let actor = __record-set state "actor" m.serial
-              in let hp = __record-set state "health" m.health
-              in let visible = __record-set state "visible" near
-              in if list-length complete == 0 then Ok None
-              else Ok (Just (GameReply { packets = complete,
-                close = when reply is None -> False is Just (r) -> r.close,
-                note = "death/health hp=" & show m.health }))
+              in when (if m.health == 0 & changed then gr-robe state m.serial else Ok [])
+                is Err (e) -> Err e
+                is Ok (robe) ->
+                  let robed = complete & robe
+                  in let link = __record-set view "connection" input.connection
+                  in let actor = __record-set view "actor" m.serial
+                  in let hp = __record-set view "health" m.health
+                  in let visible = __record-set view "visible" near
+                  in if list-length robed == 0 then Ok None
+                  else Ok (Just (GameReply { packets = robed,
+                    close = when reply is None -> False is Just (r) -> r.close,
+                    note = "death/health hp=" & show m.health }))
+ ServUO Mobile.Kill: the ghost wears a death robe, art 0x204E on layer 22 (outer torso), and
+ resurrection leaves it worn.
+  gr-robe : GameResurrection, Integer -> Result (List (List Integer)) Text
+  gr-robe (state) (ghost) = when gmb-clothe state.items ghost #204E 0 22
+    is Err (e) -> Err e
+    is Ok (serial) -> let movable = gsi-register state.items serial 22 0 True False
+      in when world-get state.items.world serial
+      is Err (e) -> Err e
+      is Ok (robe) -> Ok [gp-equip robe 22]
   gr-view-one : GsiState, Integer, List (List Integer) -> List (List Integer)
   gr-view-one (items) (serial) (packets) = when world-get items.world serial
     is Err (_) -> packets
@@ -103,7 +160,11 @@ Chapter: GameResurrection
   gr-denied : Text -> Result (Maybe GameReply) Text
   gr-denied (message) = Ok (Just (gsi-denied message))
   gr-raise : GameResurrection, GameShard, GameInput, WorldObject, Integer -> Result (Maybe GameReply) Text
-  gr-raise (state) (shard) (input) (ghost) (slot) = when cb-ensure state.combat shard ghost.serial
+  gr-raise (state) (shard) (input) (ghost) (slot) = when gr-raise-world state shard ghost slot
+    is Err (e) -> Err e
+    is Ok (living) -> gr-after state shard input (Ok (Just (gs-reply (gr-redraw state input living) "resurrected")))
+  gr-raise-world : GameResurrection, GameShard, WorldObject, Integer -> Result WorldObject Text
+  gr-raise-world (state) (shard) (ghost) (slot) = when cb-ensure state.combat shard ghost.serial
     is Err (e) -> Err e
     is Ok (a) ->
       let base = slot * 160 + 88
@@ -116,9 +177,8 @@ Chapter: GameResurrection
           in let target = cb-stop state.combat a
           in let due = __record-set a "due" 0
           in let cleared = cb-clear-target state.combat a.serial 0
-          in let redraw = gs-reply [cbp-war False, cbp-target 0, cbp-player living input.session.direction 0,
-            gmb-mobile state.items living, [85], sip-message living.serial living.graphic 6 "You are alive again."] "resurrected"
-          in gr-after state shard input (Ok (Just redraw))
+          in let dressed = state.dress-hook ghost.serial
+          in world-get shard.world ghost.serial
   gr-handler : GameResurrection, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   gr-handler (state) (shard) (input) (map) (port) (packet) =
     if list-length packet == 0 then Ok None
@@ -169,10 +229,7 @@ Chapter: GameResurrection
     else let first = __record-set state "shrine" a
     in let second = __record-set state "other" b
     in let oriented = gr-orient state.items.world a b
-    in let connection = __record-set state "connection" -1
-    in let actor = __record-set state "actor" 0
-    in let health = __record-set state "health" -1
-    in let visible = __record-set state "visible" False
+    in let cleared = gr-views-clear state.views 0
     in Ok 32
 
 Page 1

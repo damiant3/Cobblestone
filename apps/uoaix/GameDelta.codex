@@ -22,7 +22,7 @@ Chapter: GameDelta
   gd-disjoint : GameShard, Integer, Integer -> Boolean
   gd-disjoint (game) (buf) (size) =
     not (gd-overlaps buf size game.characters 800)
-      & not (gd-overlaps buf size game.world.buffer (16 + game.world.capacity * 80))
+      & not (world-overlaps game.world buf size)
 
   gd-index-seen : Integer, Integer, Integer, Integer -> Boolean
   gd-index-seen (buf) (index) (stop) (i) = if i >= stop then False
@@ -57,7 +57,7 @@ Chapter: GameDelta
       & peek-qword after 56 == peek-qword old 56
       & gd-slot-transition game buf count (i + 1) head created
     else if serial < -2147483647 | index /= head then False
-    else let low = if serial == 0 then index + 1 else bit-and (0 - serial) world-serial-mask + game.world.capacity
+    else let low = wi-next-low serial index
     in let expected = low + (if peek-qword after 8 == 2 then world-item-bit else 0)
     in low > 0 & low <= world-serial-mask & peek-qword after 0 == expected
       & gd-slot-transition game buf count (i + 1) (peek-qword old 8) (created + 1)
@@ -79,7 +79,7 @@ Chapter: GameDelta
     in let at = gd-entries + i * gd-entry-bytes
     in let key = poke-qword buf at index
     in let before = ws-copy (undo.bytes + source + 8) (buf + at + 8) 80 0
-    in let after = ws-copy (undo.game.world.buffer + 16 + index * 80) (buf + at + 88) 80 0
+    in let after = ws-copy (wi-object undo.game.world.buffer index) (buf + at + 88) 80 0
     in gd-write-entries undo buf (i + 1)
 
   gd-undo-indices : GameUndo, Integer -> Boolean
@@ -118,7 +118,7 @@ Chapter: GameDelta
   gd-before-slots (game) (buf) (count) (i) = if i >= count then True
     else let at = gd-entries + i * gd-entry-bytes
     in let index = peek-qword buf at
-    in gt-equal (buf + at + 8) (game.world.buffer + 16 + index * 80) 80 0 & gd-before-slots game buf count (i + 1)
+    in gt-equal (buf + at + 8) (wi-object game.world.buffer index) 80 0 & gd-before-slots game buf count (i + 1)
 
   gd-copy-image : GameShard, Integer, Integer, Boolean, Integer -> Integer
   gd-copy-image (game) (buf) (count) (after) (i) = if i >= count then
@@ -128,7 +128,7 @@ Chapter: GameDelta
       in let chars = ws-copy (buf + at + 24) game.characters 800 0 in 0
     else let at = gd-entries + i * gd-entry-bytes
     in let index = peek-qword buf at
-    in let copied = ws-copy (buf + at + (if after then 88 else 8)) (game.world.buffer + 16 + index * 80) 80 0
+    in let copied = ws-copy (buf + at + (if after then 88 else 8)) (wi-object game.world.buffer index) 80 0
     in gd-copy-image game buf count after (i + 1)
 
   gd-apply : WorldCheckpoint, GameShard, Integer, Integer -> Result Integer Text

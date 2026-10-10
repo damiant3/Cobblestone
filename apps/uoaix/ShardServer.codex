@@ -71,6 +71,7 @@ Chapter: ShardServer
     in let game = gn-input number
     in let back = __heap-restore outer
     in let saved = __record-set protocol "game" game
+    in let logged = __record-set game "log" server.game.log
     in let epoch = __record-set protocol "epoch" slot.epoch
     in let closing = __record-set protocol "closing" 0
     in let connected = __record-set protocol "disconnected" False
@@ -143,7 +144,7 @@ Chapter: ShardServer
               is Ok (bytes) -> when stx-enqueue slot.tx bytes
                 is Err (e) -> ss-refuse protocol e
                 is Ok (n) -> act
-                  print-line-uni ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show state.connection)
+                  slg-line server.game.log slg-network slg-debug ("PACKET " & show (list-at packet 0) & " " & reply.note & " connection=" & show state.connection)
                   positioned <- gn-position server.game state.session
                   diagnosed <- if reply.close & list-at packet 0 /= 160 & list-at packet 0 /= 1 then gn-refuse state reply.note else act 0 end
                   let close = if reply.close then __record-set protocol "closing" 1 else protocol
@@ -168,12 +169,12 @@ Chapter: ShardServer
       handled <- handler request
       when handled
         is Err (e) -> act
-          print-line-uni ("REFUSE admin handler " & e)
+          slg-line server.game.log slg-admin slg-warn ("REFUSE admin handler " & e)
           let failed = __record-set protocol "closing" 2 in 0
         end
         is Ok (response) -> when stx-enqueue slot.tx (http-encode response)
           is Err (e) -> act
-            print-line-uni ("REFUSE admin response " & e)
+            slg-line server.game.log slg-admin slg-warn ("REFUSE admin response " & e)
             let failed = __record-set protocol "closing" 2 in 0
           end
           is Ok (n) -> 1
@@ -216,7 +217,7 @@ Chapter: ShardServer
     in let closing = if protocol.closing == 0 then Ok False else sl-close server.links i (protocol.closing == 2)
     in when closing
       is Err (e) -> act
-        print-line-uni ("FAIL shard close " & e)
+        slg-line server.game.log slg-network slg-error ("FAIL shard close " & e)
         0 - 1
       end
       is Ok (began) ->
@@ -251,7 +252,7 @@ Chapter: ShardServer
         flushed-tick <- sl-flush server.links 0
         when ticked
           is Err (e) -> act
-            print-line-uni ("FAIL shard timer " & e)
+            slg-line server.game.log slg-network slg-error ("FAIL shard timer " & e)
             0 - 1
           end
           is Ok (n) ->
@@ -259,7 +260,7 @@ Chapter: ShardServer
             else let compacted = if __heap-save - server.links.mark > 1048576 then sl-compact server.links else Ok 0
             in when compacted
               is Err (e) -> act
-                print-line-uni ("FAIL shard compaction " & e)
+                slg-line server.game.log slg-network slg-error ("FAIL shard compaction " & e)
                 0 - 1
               end
               is Ok (n) -> received + progress

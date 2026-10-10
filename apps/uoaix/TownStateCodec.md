@@ -1,7 +1,7 @@
 # Combined world, townsfolk and mind checkpoint
 
 `TownStateCodec.codex` serializes `TownState { checkpoint, townsfolk, mind }`.
-The embedded `WorldCheckpoint` retains fester's object table, allocator
+The embedded `WorldCheckpoint` retains the world object table, allocator
 generations/free-list, tick and input-log sequence. `TfWorld` retains every
 town/person field, unused slots, schedules, memory arrays and the entire event
 buffer. `TmMind` retains personas, budgets, replay guards, counters and the
@@ -110,9 +110,8 @@ Validation/encoding/decoding are linear in the fixed state body and world
 capacity, plus the existing world's bounded container validation. Text decoding
 uses byte lists only for the bounded strings, not for the checkpoint payload.
 Caller-owned output storage is excluded from decoder allocation. The three
-`TownState` references occupy 24 native bytes. Under kernel `C1D0003E5F380465`,
-the maximum-capacity/maximum-text fixture retained 2317727 bytes
-during decode (2026-10-04); the proof refuses above 8 MiB.
+`TownState` references occupy 24 native bytes. The proof refuses a
+maximum-capacity/maximum-text decode that retains more than 8 MiB.
 
 `proofs/TownStateProof.codex` grades every declared TfWorld/TmMind field,
 independent wire cells, detached ownership, allocator generations, request

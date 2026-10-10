@@ -10,16 +10,35 @@ Chapter: TownNetworkLiveCodec
   tnlc-event-bytes : Integer = 136
   tnlc-size : TownNetworkLive -> Integer
   tnlc-size (n) = tnlc-offers-at + n.actions.book.offer-count * 72 + n.actions.book.event-count * tnlc-event-bytes
-
+  tnlc-offers-due : GameLiveActions -> Boolean
+  tnlc-offers-due (g) = list-length g.book.offers - g.book.offer-count < 64
+  tnlc-push-offers : EaWorld, Integer -> Integer
+  tnlc-push-offers (book) (count) = if list-length book.offers >= count then 0
+    else let grown = __record-set book "offers" (ea-offers 0 book.offers) in tnlc-push-offers book count
+  tnlc-grow-offers : GameLiveActions, Integer -> Integer
+  tnlc-grow-offers (g) (count) = let old = list-length g.book.offers
+    in let pushed = tnlc-push-offers g.book count
+    in let n = list-length g.book.offers
+    in if n == old then 0
+    else let copper = ep-buffer n
+    in let silver = ep-buffer n
+    in let a = ep-seal-cells g.copper copper old 0
+    in let b = ep-seal-cells g.silver silver old 0
+    in let c = __record-set g "copper" copper
+    in let d = __record-set g "silver" silver in n
+ TNL1 stores no copy of a value it can bind or derive (StateUnification C4): person and actor come from the
+ resident, total is the sum of the hours, count is the number of positive outputs, the proposal's actor is the
+ agent's, prepared is a flag over the proposal kind, and a home, work or tavern control's goal, place and target
+ follow from its action and resident. Those slots are written as zero and never read.
   tnlc-agent-fields : TnvAgent, Integer, Boolean -> Integer
   tnlc-agent-fields (r) (buf) (read) =
-    let f0 = if read then let loaded = __record-set r "person" (peek-qword buf 0) in 0 else poke-qword buf 0 r.person
-    in let f1 = if read then let loaded = __record-set r "actor" (peek-qword buf 8) in 0 else poke-qword buf 8 r.actor
+    let f0 = if read then 0 else poke-qword buf 0 0
+    in let f1 = if read then 0 else poke-qword buf 8 0
     in let f2 = if read then let loaded = __record-set r "item" (peek-qword buf 16) in 0 else poke-qword buf 16 r.item
     in let f3 = if read then let loaded = __record-set r "role" (peek-qword buf 24) in 0 else poke-qword buf 24 r.role
     in let f4 = if read then let loaded = __record-set r "goal" (peek-qword buf 32) in 0 else poke-qword buf 32 r.goal
     in let f5 = if read then let loaded = __record-set r "serial" (peek-qword buf 40) in 0 else poke-qword buf 40 r.serial
-    in let f6 = if read then let loaded = __record-set r "prepared" (peek-qword buf 48) in 0 else poke-qword buf 48 r.prepared
+    in let f6 = if read then let loaded = __record-set r "prepared" (peek-qword buf 48) in 0 else poke-qword buf 48 (if r.prepared == 0 then 0 else 1)
     in let f7 = if read then let loaded = __record-set r "next" (peek-qword buf 56) in 0 else poke-qword buf 56 r.next
     in let f8 = if read then let loaded = __record-set r "think-at" (peek-qword buf 64) in 0 else poke-qword buf 64 r.think-at
     in let f9 = if read then let loaded = __record-set r "travel" (peek-qword buf 72) in 0 else poke-qword buf 72 r.travel
@@ -27,14 +46,14 @@ Chapter: TownNetworkLiveCodec
     in let f11 = if read then let loaded = __record-set r "result" (peek-qword buf 88) in 0 else poke-qword buf 88 r.result
     in let f12 = if read then let loaded = __record-set r "town" (peek-qword buf 96) in 0 else poke-qword buf 96 r.town
     in let f13 = if read then let loaded = __record-set r "at" (peek-qword buf 104) in 0 else poke-qword buf 104 r.at
-    in let f14 = if read then let loaded = __record-set r "total" (peek-qword buf 112) in 0 else poke-qword buf 112 r.total
+    in let f14 = if read then 0 else poke-qword buf 112 0
     in let f15 = if read then let loaded = __record-set r.state "head" (peek-qword buf 120) in 0 else poke-qword buf 120 r.state.head
-    in let f16 = if read then let loaded = __record-set r.state "count" (peek-qword buf 128) in 0 else poke-qword buf 128 r.state.count
+    in let f16 = if read then 0 else poke-qword buf 128 0
     in 0
 
   tnlc-proposal-fields : EaProposal, Integer, Boolean -> Integer
   tnlc-proposal-fields (r) (buf) (read) =
-    let f0 = if read then let loaded = __record-set r "actor" (peek-qword buf 0) in 0 else poke-qword buf 0 r.actor
+    let f0 = if read then 0 else poke-qword buf 0 0
     in let f1 = if read then let loaded = __record-set r "kind" (peek-qword buf 8) in 0 else poke-qword buf 8 r.kind
     in let f2 = if read then let loaded = __record-set r "target" (peek-qword buf 16) in 0 else poke-qword buf 16 r.target
     in let f3 = if read then let loaded = __record-set r "item" (peek-qword buf 24) in 0 else poke-qword buf 24 r.item
@@ -103,8 +122,40 @@ Chapter: TownNetworkLiveCodec
     in let outputs = tnlc-list buf (at + 560) r.state.outputs read
     in let queue = tnlc-list buf (at + 672) r.state.queue read
     in let proposal = tnlc-proposal-fields r.proposal (buf + at + 752) read
-    in let control = if read then 0 else tnlc-control-fields (list-at n.actions.town.residents i).control (buf + at + 832) False
+    in let control = if read then 0 else tnlc-control-write (list-at n.actions.town.residents i).control (buf + at + 832)
     in tnlc-agents n buf read (i + 1)
+  tnlc-derived-control : TlControl -> Boolean
+  tnlc-derived-control (c) = c.expires /= 0 & (c.action == 0 | c.action == 1 | c.action == 4)
+  tnlc-control-write : TlControl, Integer -> Integer
+  tnlc-control-write (c) (buf) = let written = tnlc-control-fields c buf False
+    in if not (tnlc-derived-control c) then written
+    else let a = poke-qword buf 8 0
+    in let b = poke-qword buf 16 0
+    in let x = poke-qword buf 40 0
+    in let y = poke-qword buf 48 0
+    in poke-qword buf 56 0
+  tnlc-control-derive : TownLive, TlResident -> Integer
+  tnlc-control-derive (t) (r) = let c = r.control
+    in if not (tnlc-derived-control c) then 0
+    else let p = tf-person t.people r.person
+    in let spot = if c.action == 0 then r.home else if c.action == 1 then r.work else r.tavern
+    in let goal = __record-set c "goal" (if c.action == 0 then 0 else if c.action == 1 then 1 else 2)
+    in let place = __record-set c "place" (tf-place p (tf-town t.people p.town) c.action)
+    in tl-copy-spot c.target spot
+  tnlc-sum : List Integer, Integer, Integer -> Integer
+  tnlc-sum (xs) (i) (sum) = if i == list-length xs then sum else tnlc-sum xs (i + 1) (sum + list-at xs i)
+  tnlc-positives : List Integer, Integer, Integer -> Integer
+  tnlc-positives (xs) (i) (count) = if i == 10 then count
+    else tnlc-positives xs (i + 1) (if list-at xs i > 0 then count + 1 else count)
+  tnlc-derive : TownNetworkLive, TownLive, Integer -> Integer
+  tnlc-derive (n) (t) (i) = if i == 3 then 0
+    else let r = list-at n.agents i
+    in let total = __record-set r "total" (tnlc-sum r.hours 0 0)
+    in let count = __record-set r.state "count" (tnlc-positives r.state.outputs 0 0)
+    in let actor = __record-set r.proposal "actor" r.actor
+    in let prepared = __record-set r "prepared" (if r.prepared == 0 then 0 else r.proposal.kind)
+    in let control = tnlc-control-derive t (list-at t.residents i)
+    in tnlc-derive n t (i + 1)
   tnlc-controls : TownLive, Integer, Integer -> Integer
   tnlc-controls (t) (buf) (i) = if i == 3 then 0
     else let loaded = tnlc-control-fields (list-at t.residents i).control (buf + tnlc-agent-at + i * tnlc-agent-bytes + 832) True
@@ -127,7 +178,7 @@ Chapter: TownNetworkLiveCodec
   tnlc-cells (buf) (count) (low) (high) (i) = if i == count then True
     else tnlc-range buf (i * 8) low high & tnlc-cells buf count low high (i + 1)
   tnlc-history : TownLive, Integer, Integer, Integer, Integer -> Boolean
-  tnlc-history (t) (buf) (row) (i) (sum) = if i == 4 then sum == peek-qword row 112
+  tnlc-history (t) (buf) (row) (i) (sum) = if i == 4 then True
     else let hours = peek-qword row (144 + i * 8)
     in if hours < 0 | hours > ep-limit - sum then False
     else if hours > 0 & (i >= t.people.town-count | peek-qword buf (128 + i * 8) /= 1) then False
@@ -151,35 +202,23 @@ Chapter: TownNetworkLiveCodec
         & tnlc-range buf 32 0 tl-max-seconds & tnlc-range buf 40 0 6143
         & tnlc-range buf 48 0 4095 & tnlc-range buf 56 -128 127) then False
     else if peek-qword buf 32 == 0 then True
+    else if action /= 3 then vendor == 0
     else if walk-cell map (peek-qword buf 40) (peek-qword buf 48) < 0 then False
-    else let r = list-at t.residents i
-    in let p = tf-person t.people r.person
-    in if action /= 3 then
-      let target = if action == 0 then r.home else if action == 1 then r.work else r.tavern
-      in vendor == 0 & peek-qword buf 8 == (if action == 0 then 0 else if action == 1 then 1 else 2)
-        & peek-qword buf 16 == tf-place p (tf-town t.people p.town) action
-        & peek-qword buf 40 == target.x & peek-qword buf 48 == target.y & peek-qword buf 56 == target.z
-    else let at = gv-vendor t.vendors vendor 0
-    in if at < 0 | peek-qword buf 8 /= 1 then False
-    else when world-get t.vendors.game.world vendor
-      is Err (_) -> False
-      is Ok (m) -> peek-qword buf 16 == (ep-actor t.vendors.currency.world (list-at t.vendors.vendors at).actor).place
-        & walk-abs (peek-qword buf 40 - m.x) <= 4 & walk-abs (peek-qword buf 48 - m.y) <= 4
-        & walk-abs (peek-qword buf 56 - m.z) <= 16
+    else gv-vendor t.vendors vendor 0 >= 0 & peek-qword buf 8 == 1 & (when world-get t.vendors.game.world vendor is Err (_) -> False is Ok (_) -> True)
   tnlc-proposal-valid : TownLive, Integer, Integer -> Boolean
   tnlc-proposal-valid (t) (buf) (row) = let p = row + 752
-    in peek-qword p 0 == peek-qword row 8 & tnlc-range p 8 0 10
+    in tnlc-range p 8 0 10
       & tnlc-range p 16 0 t.vendors.currency.world.actor-count
       & tnlc-range p 24 0 (list-length t.vendors.currency.world.catalog.items)
       & tnlc-range p 32 0 ep-stock-limit & tnlc-range p 40 0 (peek-qword buf 56)
       & tnlc-range p 48 0 1000000 & peek-qword p 56 == 0 & peek-qword p 64 == 0 & peek-qword p 72 == 0
-      & (peek-qword row 48 == 0 | peek-qword p 8 == peek-qword row 48)
   tnlc-agents-valid : TownLive, WalkMap, Integer, Integer -> Boolean
   tnlc-agents-valid (t) (map) (buf) (i) = if i == 3 then True
     else let row = buf + tnlc-agent-at + i * tnlc-agent-bytes
     in let r = list-at t.residents i
     in let maximum = tn-hidden-count * tn-hidden-bound * tn-weight-bound / tn-scale + tn-weight-bound
-    in if peek-qword row 0 /= r.person | peek-qword row 8 /= r.actor | not (tl-controlled t r.person r.actor)
+    in let count = tnlc-positive row 0
+    in if ((tf-person t.people r.person).alive == 1 & not (tl-controlled t r.person r.actor))
       | peek-qword row 16 /= (if i == 0 then 34 else if i == 1 then 69 else 72)
       | peek-qword row 24 /= (if i == 1 then 1 else 0)
       | not (eg-id t.vendors.currency.world.catalog (peek-qword row 32))
@@ -187,8 +226,7 @@ Chapter: TownNetworkLiveCodec
         & tnlc-range row 56 0 tl-max-seconds & tnlc-range row 64 0 tl-max-seconds
         & tnlc-range row 72 0 tl-max-seconds & tnlc-range row 80 0 ep-limit
         & tnlc-range row 88 -20 1 & tnlc-range row 96 1 t.people.town-count
-        & tnlc-range row 104 0 t.vendors.currency.world.hour & tnlc-range row 112 0 ep-limit
-        & tnlc-range row 128 0 10 & tnlc-range row 120 0 (peek-qword row 128))
+        & tnlc-range row 104 0 t.vendors.currency.world.hour & tnlc-range row 120 0 count)
       | peek-qword row 136 /= 0 then False
     else if peek-qword row 96 /= (tf-person t.people r.person).town
       | peek-qword buf (128 + (peek-qword row 96 - 1) * 8) /= 1
@@ -197,16 +235,12 @@ Chapter: TownNetworkLiveCodec
         & tnlc-cells (row + 432) 16 0 4000 0 & tnlc-cells (row + 560) 10 (0 - maximum) maximum 0
         & tnlc-cells (row + 640) 2 0 1000 0 & tnlc-cells (row + 656) 2 -1000 1000 0
         & tnlc-cells (row + 672) 10 0 9 0) then False
-    else let count = peek-qword row 128
-    in let head = peek-qword row 120
-    in let prepared = peek-qword row 48
-    in if count /= tnlc-positive row 0 | not (tnlc-queue row count 0)
+    else let head = peek-qword row 120
+    in let prepared = if peek-qword row 48 == 0 then 0 else peek-qword row 760
+    in if not (tnlc-queue row count 0)
       | (prepared > 0 & (head == count | (if head >= count then True else peek-qword row (672 + head * 8) + 1 /= prepared)))
-      | not (tnlc-proposal-valid t buf row & tnlc-control-valid t map row i) then False
-    else let serial = (tf-person t.people r.person).world-serial
-    in let owner = gv-owner t.vendors serial 0
-    in owner >= 0 & (if owner < 0 then False else (list-at t.vendors.owners owner).actor == r.actor)
-      & tnlc-agents-valid t map buf (i + 1)
+      | ((tf-person t.people r.person).alive == 1 & not (tnlc-proposal-valid t buf row & tnlc-control-valid t map row i)) then False
+    else tnlc-agents-valid t map buf (i + 1)
   tnlc-offers-valid : TownLive, Integer, Integer -> Boolean
   tnlc-offers-valid (t) (buf) (i) = if i == peek-qword buf 56 then True
     else let row = buf + tnlc-offers-at + i * 72
@@ -231,6 +265,25 @@ Chapter: TownNetworkLiveCodec
   tnlc-body-valid (t) (map) (buf) = tnlc-cells (buf + 128) 4 0 1 0
     & tnlc-cells (buf + 160) 4 -1000 1000 0
     & tnlc-agents-valid t map buf 0 & tnlc-offers-valid t buf 0 & tnlc-events-valid t buf 0
+  tnlc-agent-why : TownLive, WalkMap, Integer, Integer -> Text
+  tnlc-agent-why (t) (map) (buf) (i) = let row = buf + tnlc-agent-at + i * tnlc-agent-bytes
+    in let r = list-at t.residents i
+    in let p = tf-person t.people r.person
+    in let control = row + 832
+    in let tag = "agent " & show i & " alive " & show p.alive & " "
+    in if p.alive == 1 & not (tl-controlled t r.person r.actor) then tag & "uncontrolled"
+    else if p.alive == 1 & not (tnlc-proposal-valid t buf row) then tag & "proposal"
+    else if p.alive == 1 & not (tnlc-control-valid t map row i) then tag & "control action " & show (peek-qword control 0)
+      & " vendor " & show (peek-qword control 24) & " at " & show (peek-qword control 40) & "," & show (peek-qword control 48)
+    else tag & "fields"
+  tnlc-agent-fault : TownLive, WalkMap, Integer, Integer -> Text
+  tnlc-agent-fault (t) (map) (buf) (i) = if i >= 2 | tnlc-agents-valid t map buf (i + 1) then tnlc-agent-why t map buf i
+    else tnlc-agent-fault t map buf (i + 1)
+  tnlc-fault : TownLive, WalkMap, Integer -> Text
+  tnlc-fault (t) (map) (buf) = if not (tnlc-cells (buf + 128) 4 0 1 0 & tnlc-cells (buf + 160) 4 -1000 1000 0) then "culture"
+    else if not (tnlc-agents-valid t map buf 0) then tnlc-agent-fault t map buf 0
+    else if not (tnlc-offers-valid t buf 0) then "offers"
+    else if not (tnlc-events-valid t buf 0) then "events" else "none"
   tnlc-shapes : TownNetworkLive, Integer -> Boolean
   tnlc-shapes (n) (i) = if i == 3 then True
     else let r = list-at n.agents i
@@ -240,11 +293,11 @@ Chapter: TownNetworkLiveCodec
   tnlc-encode : TownNetworkLive, WalkMap, Integer, Integer -> Result Integer Text
   tnlc-encode (n) (map) (buf) (capacity) =
     if list-length n.agents /= 3 | n.actions.town.count /= 3
-      | not (ev-range n.actions.book.offer-count 256 & ev-range n.actions.book.event-count 1024
+      | not (ev-range n.actions.book.offer-count (list-length n.actions.book.offers) & ev-range n.actions.book.event-count 1024
         & ev-range n.actions.book.sequence ep-limit & ev-range n.cursor 2)
       | n.actions.book.sequence < n.actions.book.event-count then Err "live network codec state extent"
     else if list-length n.culture.trade /= 4 | list-length n.culture.known /= 4
-      | list-length n.actions.book.offers /= 256 | list-length n.actions.book.events /= 1024
+      | list-length n.actions.book.offers < 256 | list-length n.actions.book.events /= 1024
       | not (tnlc-shapes n 0) | n.model-id /= tnv-model-id n.model then Err "live network codec model or buffers"
     else let size = tnlc-size n
     in if capacity < size then Err "live network codec destination"
@@ -263,14 +316,27 @@ Chapter: TownNetworkLiveCodec
     in let agents = tnlc-agents n buf False 0
     in let offers = tnlc-offers n.actions buf False 0
     in let events = tnlc-events n.actions buf False 0
-    in if not (tnlc-body-valid n.actions.town map buf) then Err "live network codec binding"
-    else let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261) in Ok size
+    in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261) in Ok size
+  tnlc-check : TownNetworkLive, WalkMap -> Integer
+  tnlc-check (n) (map) = let mark = __heap-save
+    in let size = tnlc-size n
+    in let buf = alloc-bytes size
+    in let bad = when tnlc-encode n map buf size
+      is Err (_) -> 1
+      is Ok (_) -> if tnlc-body-valid n.actions.town map buf then 0 else 1
+    in let restored = __heap-restore mark in bad
+  tnlc-check-text : TownNetworkLive, WalkMap -> Text
+  tnlc-check-text (n) (map) = let size = tnlc-size n
+    in let buf = alloc-bytes size
+    in when tnlc-encode n map buf size
+      is Err (e) -> e
+      is Ok (_) -> "live network codec binding: " & tnlc-fault n.actions.town map buf
   tnlc-decode : Integer, Integer, TownLive, WalkMap -> Result TownNetworkLive Text
   tnlc-decode (buf) (size) (t) (map) =
-    if size < tnlc-offers-at | size > tnlc-offers-at + 256 * 72 + 1024 * tnlc-event-bytes
+    if size < tnlc-offers-at
       | t.count /= 3 | list-length t.residents /= 3 then Err "live network codec extent"
     else if peek-qword buf 0 /= #314C4E54 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size
-      | peek-qword buf 32 /= 3 | not (tnlc-range buf 40 0 2 & tnlc-range buf 56 0 256
+      | peek-qword buf 32 /= 3 | not (tnlc-range buf 40 0 2 & tnlc-range buf 56 0 (size / 72)
         & tnlc-range buf 64 0 1024 & tnlc-range buf 72 (peek-qword buf 64) ep-limit)
       | not (es-zero-range buf 80 128) then Err "live network codec header"
     else if size /= tnlc-offers-at + peek-qword buf 56 * 72 + peek-qword buf 64 * tnlc-event-bytes
@@ -283,6 +349,7 @@ Chapter: TownNetworkLiveCodec
           is Err (e) -> Err e
           is Ok (n) ->
             let cursor = __record-set n "cursor" (peek-qword buf 40)
+            in let fitted = tnlc-grow-offers n.actions (peek-qword buf 56)
             in let oc = __record-set n.actions.book "offer-count" (peek-qword buf 56)
             in let ec = __record-set n.actions.book "event-count" (peek-qword buf 64)
             in let seq = __record-set n.actions.book "sequence" (peek-qword buf 72)
@@ -291,6 +358,8 @@ Chapter: TownNetworkLiveCodec
             in let agents = tnlc-agents n buf True 0
             in let offers = tnlc-offers n.actions buf True 0
             in let events = tnlc-events n.actions buf True 0
-            in let controls = tnlc-controls t buf 0 in Ok n
+            in let controls = tnlc-controls t buf 0
+            in let derived = tnlc-derive n t 0
+            in let felt = tnv-feel n 0 in Ok n
 
 Page 1

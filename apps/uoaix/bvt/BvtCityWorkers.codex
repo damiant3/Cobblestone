@@ -1,0 +1,87 @@
+Chapter: BvtCityWorkers
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Maybe
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter EconomyGatherer
+  cites Uoaix chapter EconomyHarvest
+
+  bvcw-skara : Integer -> CgCity
+  bvcw-skara (unused) = cw-skara (ct-table 0) (ct-city-shops 0) ct-shop-roles
+  bvcw-magincia : Integer -> CgCity
+  bvcw-magincia (unused) = cw-magincia (ct-table 0) (ct-city-shops 0) ct-shop-roles
+  bvcw-ocllo : Integer -> CgCity
+  bvcw-ocllo (unused) = cw-ocllo (ct-table 0) (ct-city-shops 0) ct-shop-roles
+ A bit per check: 1 a Skara Brae lumberjack whose log node is spent moves to the next ready one at its place, 2 Britain's
+ does not though a second ready node stands at its place, 4 cw-grow-nodes tops the city's place up to cw-spots; -9 is a
+ fixture that did not build.
+  bvcw-renode : Integer -> Integer
+  bvcw-renode (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let w = x.world
+      in let r = cgg-resource-of w 15 0
+      in let place = cgg-lumber-place + 5000
+      in when egg-new-for x 3700 place r 0
+        is Err (_) -> -9
+        is Ok (g) -> when egg-new-for x 3701 cgg-lumber-place r 0
+          is Err (_) -> -9
+          is Ok (b) -> let grown = cw-grow-nodes w r place (cw-spots - cw-count-nodes w r place 0 0)
+            in let spare = cw-grow-nodes w r cgg-lumber-place 1
+            in let six = if cw-count-nodes w r place 0 0 == cw-spots then 4 else 0
+            in let spot = BbSpot { x = 546, y = 2136, z = 0 }
+            in let c = cgg-make-in (bvcw-skara 0) g 0 spot spot 0 0 0 0
+            in let first = c.gatherer.node
+            in let spent = __record-set (list-at w.nodes (first - 1)) "stage" 0
+            in let moved = if cgg-renode c == 1 & c.gatherer.node /= first then 1 else 0
+            in let d = cgg-make-in cgg-britain b 0 spot spot 0 0 0 0
+            in let held = d.gatherer.node
+            in let bspent = __record-set (list-at w.nodes (held - 1)) "stage" 0
+            in let kept = if spare == 1 & cgg-renode d == 0 & d.gatherer.node == held then 2 else 0
+            in moved + kept + six
+ A held tail of n rows whose first row names city, in room bytes; the held buffer, 0 or -1.
+  bvcw-hold : Integer, Integer, Integer -> Integer
+  bvcw-hold (n) (city) (room) = let buf = alloc-bytes (8 + 2 * cw-row-bytes)
+    in let a = poke-qword buf 0 n
+    in let b = poke-qword buf 8 city
+    in cw-hold buf room
+  bvt-city-workers : Integer -> [Console] Integer
+  bvt-city-workers (unused) = act
+    c <- bvcw-skara 0
+    s <- bb-shop-count
+    own <- cw-vendor c bb-fishmonger == s + 21 & cw-vendor c bb-herbalist == s + 18 & cw-vendor c 7 == s + 17 & cw-vendor c 0 == s + 12
+    a <- bvt-check "Skara Brae's workers sell to its own keepers: the fishmonger on the docks, the herbalist at Mystic Treasures, the carpenter at Builders' Delight and the provisioner at Sundry Supplies (UOAIX-217 W2)" own
+    b <- bvt-check "a role Skara Brae has no keeper of (baker, jeweler, tavern keeper) has no vendor there" (cw-vendor c 3 == -1 & cw-vendor c bb-jeweler == -1 & cw-vendor c bb-tavern-keeper == -1 & cw-vendor c 99 == -1)
+    wanted <- cw-wants c cgg-fish-place & cw-wants c cgg-lumber-place & cw-wants c cgg-herb-farm
+    unwanted <- cw-wants c (cgg-place + 1) | cw-wants c cgg-stone-place | cw-wants c cgg-root-farm | cw-wants c cgg-farm-place | cw-wants c cgg-wool-place
+    d <- bvt-check "Skara Brae founds a fisherman, a lumberjack and a herb farmer, and no miner, quarrier, field farmer or shepherd: the island holds no mountain, field or pasture" (wanted & not unwanted)
+    e <- bvt-check "only cities with surveyed workers build a worker city: Skara Brae (5), Ocllo (6) and Jhelom (9), not Britain (0), whose workers are its own" (is-just (cw-city (ct-table 0) (ct-city-shops 0) ct-shop-roles 5) & is-just (cw-city (ct-table 0) (ct-city-shops 0) ct-shop-roles 6) & is-just (cw-city (ct-table 0) (ct-city-shops 0) ct-shop-roles 9) & not (is-just (cw-city (ct-table 0) (ct-city-shops 0) ct-shop-roles 0)))
+    o <- bvcw-ocllo 0
+    ocllo-wants <- cw-wants o cgg-herb-farm & not (cw-wants o cgg-fish-place | cw-wants o cgg-lumber-place | cw-wants o cgg-farm-place | cw-wants o cgg-wool-place | cw-wants o cgg-root-farm | cw-wants o (cgg-place + 1))
+    h <- bvt-check "Ocllo founds only a herb farmer, selling to the Sorcerers' Guild's herbalist: it has no fishmonger, carpenter, field, pasture or mountain" (ocllo-wants & cw-vendor o bb-herbalist == s + 29 & cw-vendor o 5 == s + 27 & cw-vendor o bb-fishmonger == -1)
+    one <- bvcw-hold 1 5 (8 + cw-row-bytes)
+    f <- bvt-check "the city worker tail (composite tail 20) holds a counted row with its city, and reads an empty tail as none" (one > 0 & cw-held-rows one == 1 & peek-qword one 8 == 5 & bvcw-hold 0 5 8 == 0)
+    g <- bvt-check "a city worker tail whose count overruns its room, or is negative, is refused" (bvcw-hold 2 5 (8 + cw-row-bytes) == -1 & bvcw-hold -1 5 (8 + cw-row-bytes) == -1 & bvcw-hold 1 5 4 == -1)
+    mg <- bvcw-magincia 0
+    magincia-wants <- cw-wants mg cgg-fish-place & not (cw-wants mg cgg-herb-farm | cw-wants mg cgg-lumber-place | cw-wants mg cgg-farm-place | cw-wants mg (cgg-place + 1))
+    i <- bvt-check "Magincia founds only a fisherman, selling to the Fishermen's Guild & Supplies, and lodges it in the guild hall" (magincia-wants & cw-vendor mg bb-fishmonger == s + 41 & list-length mg.houses == 1)
+    nodes <- bvcw-renode 0
+    j <- bvt-check ("a city lumberjack works its woods' six log nodes and moves on when one is spent; Britain's keeps its own (trial 43215, code " & show nodes & ")") (nodes == 7)
+    tr <- cw-trinsic (ct-table 0) (ct-city-shops 0) ct-shop-roles
+    trinsic-wants <- cw-wants tr cgg-lumber-place & cw-wants tr cgg-herb-farm & not (cw-wants tr cgg-fish-place | cw-wants tr cgg-farm-place | cw-wants tr cgg-wool-place | cw-wants tr (cgg-place + 1) | cw-wants tr cgg-stone-place)
+    k <- bvt-check "Trinsic founds a lumberjack and a herb farmer, selling to its own carpenter and herbalist; no fisherman, field farmer, shepherd, miner or quarrier" (trinsic-wants & cw-vendor tr 7 == s + 7 & cw-vendor tr bb-herbalist == s + 8 & cw-vendor tr bb-fishmonger == -1)
+    jh <- cw-jhelom (ct-table 0) (ct-city-shops 0) ct-shop-roles
+    jhelom-wants <- cw-wants jh cgg-herb-farm & not (cw-wants jh cgg-lumber-place | cw-wants jh cgg-fish-place | cw-wants jh cgg-farm-place | cw-wants jh (cgg-place + 1))
+    l <- bvt-check "Jhelom founds only a herb farmer, selling to its own herbalist: no woods, fishmonger, field or mountain" (jhelom-wants & cw-vendor jh bb-herbalist == s + 56 & cw-vendor jh 7 == s + 55)
+    sh <- cw-serpents (ct-table 0) (ct-city-shops 0) ct-shop-roles
+    serpents-wants <- cw-wants sh cgg-herb-farm & not (cw-wants sh cgg-lumber-place | cw-wants sh cgg-fish-place | cw-wants sh cgg-farm-place | cw-wants sh (cgg-place + 1))
+    m <- bvt-check "Serpent's Hold founds only a herb farmer, selling to its own herbalist: no woods, fishmonger, field or mountain" (serpents-wants & cw-vendor sh bb-herbalist == s + 65 & cw-vendor sh 7 == -1)
+    sd <- cw-door 10
+    n <- bvt-check "Serpent's Hold's entrance is the innkeeper's tile at z 15, the tile its farmer plans out from, not UOX3's door (no route back in trials 43315 and 43340)" (sd.x == 2964 & sd.y == 3405 & sd.z == 15)
+    mi <- cw-minoc (ct-table 0) (ct-city-shops 0) ct-shop-roles
+    co <- cw-cove (ct-table 0) (ct-city-shops 0) ct-shop-roles
+    bu <- cw-bucc (ct-table 0) (ct-city-shops 0) ct-shop-roles
+    boxes <- mi.ore.x1 == 2560 & mi.ore.y1 == 480 & co.ore.x1 == 2208 & co.ore.y1 == 1112 & bu.ore.x1 == 2760 & bu.ore.y1 == 2080
+    mined <- cw-wants mi (cgg-place + 1) & cw-wants mi cgg-stone-place & cw-wants co (cgg-place + 1) & cw-wants bu (cgg-place + 1)
+    o2 <- bvt-check "Minoc's, Cove's and Buccaneer's Den's ore boxes are the rock faces their entrances walk to (live 43347 founded no miner on boxes set on the mountain), and each still founds its miner" (boxes & mined)
+    a + b + d + e + f + g + h + i + j + k + l + m + n + o2
+  end

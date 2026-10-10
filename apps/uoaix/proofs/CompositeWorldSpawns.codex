@@ -1,0 +1,341 @@
+Chapter: CompositeWorldSpawns
+  cites Uoaix chapter CompositeStore
+  cites Foreword chapter StringUtils
+  cites Uoaix chapter CompositeFighter
+  cites Uoaix chapter EconomyCurrencyValid
+
+  cws-check : Text, Boolean -> [Console] Integer
+  cws-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cws-fill : WalkMap, Integer -> Integer
+  cws-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cws-fill map (i + 1)
+  cws-create : Integer -> List Integer
+  cws-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Ranger" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cws-choices-ok : WsCatalog, List WsChoice, Integer -> Boolean
+  cws-choices-ok (c) (choices) (i) = if i == list-length choices then i > 0
+    else let choice = list-at choices i
+    in choice.group < 0 & choice.profile >= 0 & choice.weight > 0 & gws-supported (list-at c.profiles choice.profile) & cws-choices-ok c choices (i + 1)
+  cws-region : WsCatalog, Integer -> Integer
+  cws-region (c) (i) = if i == list-length c.regions then -1
+    else let r = list-at c.regions i
+    in if r.group >= 0 & r.area.x2 - r.area.x1 >= 8 & r.area.y2 - r.area.y1 >= 8 & r.fixed-height < -128 & r.maximum > 0
+      & cws-choices-ok c (list-at c.groups r.group).choices 0 then i
+    else cws-region c (i + 1)
+  cws-slot : GameWorldSpawn, Integer -> Integer
+  cws-slot (g) (i) = if i == list-length g.slots then 0 else if (list-at g.slots i).serial > 0 then (list-at g.slots i).serial else cws-slot g (i + 1)
+  cws-drawn : Result (Maybe GameReply) Text, Integer -> Boolean
+  cws-drawn (result) (serial) = when result
+    is Err (_) -> False
+    is Ok (None) -> False
+    is Ok (Just (r)) -> cws-has r.packets serial 0
+  cws-has : List (List Integer), Integer, Integer -> Boolean
+  cws-has (packets) (serial) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p > 7 & list-at p 0 == #78 & bit-and (gp-u32 p 3) #7FFFFFFF == serial) | cws-has packets serial (i + 1)
+  cws-view : GameWorldSpawn, GameShard, WorldObject, Result (Maybe GameReply) Text, Integer, Integer -> Integer
+  cws-view (g) (game) (viewer) (pulsed) (i) (near) = if i == list-length g.slots then near
+    else let serial = (list-at g.slots i).serial
+    in if serial == 0 then cws-view g game viewer pulsed (i + 1) near
+    else when world-get game.world serial
+      is Err (_) -> -1
+      is Ok (m) -> let close = gm-near m.x m.y viewer.x viewer.y 18
+        in if close /= cws-drawn pulsed serial then -1
+        else cws-view g game viewer pulsed (i + 1) (if close then near + 1 else near)
+  cws-zombie : WsCatalog, Integer -> Integer
+  cws-zombie (c) (i) = if i == list-length c.profiles then -1 else if (list-at c.profiles i).key == "zombie" then i else cws-zombie c (i + 1)
+  cws-terrain : WsCatalog, Integer -> [Console] Integer
+  cws-terrain (c) (region) = when walk-map-new 100 100 8 8
+    is Err (e) -> cws-check e False
+    is Ok (map) -> let filled = cws-fill map 0
+      in let outside = WsRegion { id = 0, name = "outside", area = WsRect { x1 = 100, y1 = 100, x2 = 107, y2 = 107 },
+        maximum = 1, batch = 1, minimum-minutes = 1, maximum-minutes = 1, group = 0, preferred-height = 0,
+        fixed-height = -1000, outside = True, exclusions = [] }
+      in let p = list-at c.profiles 0
+      in let open = cg-spawn-terrain map outside p 102 102
+      in let roof = walk-add-solid map 103 103 20 0 512
+      in let covered = cg-spawn-terrain map outside p 103 103
+      in cws-check "an outside-only region admits an open tile and refuses one under a roof" (is-ok open & is-ok roof & is-err covered)
+
+  cws-inside : GameWorldSpawn, GameShard, WsRegion, Integer, Integer -> Integer
+  cws-inside (g) (game) (r) (i) (count) = if i == list-length g.slots then count
+    else let serial = (list-at g.slots i).serial
+    in let here = if serial == 0 then False else when world-get game.world serial is Err (_) -> False is Ok (m) -> gws-in r.area m.x m.y
+    in cws-inside g game r (i + 1) (if here then count + 1 else count)
+  cws-ticks : CompositeGame, GameShard, WalkMap, Integer, Integer, Integer -> Result Integer Text
+  cws-ticks (owner) (game) (map) (watcher) (tick) (left) = if left == 0 then Ok 0
+    else when cg-world-tick owner game map watcher tick
+      is Err (e) -> Err e
+      is Ok (_) -> cws-ticks owner game map watcher (tick + gm-ticks 1000) (left - 1)
+  cws-health : GameShard, Integer -> Integer
+  cws-health (game) (serial) = when world-get game.world serial is Err (_) -> 0 is Ok (m) -> m.health
+  cws-fight : CompositeGame, GameShard, GameWorldSpawn, Integer -> [Console] Integer
+  cws-fight (owner) (game) (spawns) (region) = let r = list-at spawns.catalog.regions (max 0 region)
+    in let monster = cws-slot spawns 0
+    in when world-get game.world monster
+      is Err (e) -> cws-check ("fight monster " & e) False
+      is Ok (m) -> when walk-map-new (m.x - 32) (m.y - 32) 64 64
+        is Err (e) -> cws-check e False
+        is Ok (map) -> let filled = cws-fill map 0
+          in let placed = world-update game.world (__record-set m "z" 0)
+          in let fighter = __record-set (gs-mobile 0 (m.x + 1) m.y 0 400 1002) "health" 50
+          in when world-create game.world fighter
+            is Err (e) -> cws-check e False
+            is Ok (watcher) -> when cb-ensure owner.combat game monster
+              is Err (e) -> cws-check e False
+              is Ok (a) -> when cb-ensure owner.combat game watcher
+                is Err (e) -> cws-check e False
+                is Ok (w) -> let monster-hp = cws-health game monster
+                  in let aimed = cb-select owner.combat game a w
+                  in let fought = cws-ticks owner game map watcher (get-ticks + gm-ticks 1000) 20
+                  in act
+                    print-line-uni ("FIGHT fighter " & show (cws-health game watcher) & "/50 monster " & show (cws-health game monster) & "/" & show monster-hp)
+                    cws-check "with no client, the world tick runs combat between a spawned monster and an NPC" (aimed & is-ok fought
+                      & (cws-health game watcher < 50 | cws-health game monster < monster-hp))
+                  end
+  cws-headless : CompositeGame, GameShard, GameWorldSpawn, Integer -> [Console] Integer
+  cws-headless (owner) (game) (spawns) (region) = if region < 0 then cws-check "a second supported land region exists" False
+    else let r = list-at spawns.catalog.regions region
+    in let cx = (r.area.x1 + r.area.x2) / 2
+    in let cy = (r.area.y1 + r.area.y2) / 2
+    in when walk-map-new (cx - 32) (cy - 32) 64 64
+      is Err (e) -> cws-check e False
+      is Ok (map) -> let filled = cws-fill map 0
+        in let npc = __record-set (gs-mobile 0 cx cy 0 400 1002) "health" 50
+        in when world-create game.world npc
+          is Err (e) -> cws-check e False
+          is Ok (watcher) -> let before = cws-inside spawns game r 0 0
+            in let aimed = __record-set spawns "cursor" region
+            in let due = __record-set spawns "due" 0
+            in let ticked = cg-world-tick owner game map watcher get-ticks
+            in let after = cws-inside spawns game r 0 0
+            in act
+              print-line-uni ("HEADLESS " & r.name & " before " & show before & " after " & show after)
+              cws-check "with no client, a world tick around an NPC spawns that region's monsters" ((when ticked is Err (_) -> False is Ok (n) -> n == 1) & before == 0 & after > 0)
+            end
+  cws-hp : GameShard, Integer, Integer -> Integer
+  cws-hp (game) (serial) (health) = when world-get game.world serial
+    is Err (_) -> -1
+    is Ok (m) -> when world-update game.world (__record-set m "health" health) is Err (_) -> -1 is Ok (_) -> health
+  cws-regen : CompositeOwner, GameShard, GameInput, WalkMap -> [Console, Device.Block] Integer
+  cws-regen (store) (game) (input) (map) = let owner = store.state
+    in let player = input.session.serial
+    in when cb-ensure owner.combat game player
+      is Err (e) -> cws-check ("regen actor " & e) False
+      is Ok (a) -> let c = owner.combat
+        in let wounded = cws-hp game player 1
+        in let fresh = __record-set a "regen" 0
+        in let unarmed = __record-set a "armed" False
+        in act
+          pulsed <- cs-pulse store game input map 2593 get-ticks
+          one <- cws-health game player
+          again <- cb-regen c game a
+          same <- cws-health game player
+          due <- a.regen
+          later <- __record-set c "tick" due
+          second <- cb-regen c game a
+          two <- cws-health game player
+          dead <- cws-hp game player 0
+          ghost <- __record-set a "regen" 0
+          third <- cb-regen c game a
+          none <- cws-health game player
+          restored <- cws-hp game player a.maximum
+          print-line-uni ("REGEN maximum " & show a.maximum & " hits " & show one & " " & show same & " " & show two & " dead " & show none)
+          cws-check "a pulse regenerates the player one hit point per 40 seconds up to the maximum, and never the dead" (is-ok pulsed & a.maximum > 3 & due > 0
+            & one == 2 & same == 2 & two == 3 & none == 0)
+        end
+  cws-seen : CompositeGame, GameWorldSpawn, GameShard, Integer -> Integer
+  cws-seen (owner) (g) (game) (i) = if i == list-length g.slots then 0
+    else let serial = (list-at g.slots i).serial
+    in let slot = if serial == 0 then -1 else world-slot game.world serial
+    in if slot >= 0 & (list-at owner.view.seen slot).object.serial == serial then serial
+    else cws-seen owner g game (i + 1)
+  cws-kill : CompositeOwner, GameShard, GameInput, GameWorldSpawn -> [Console] Integer
+  cws-kill (store) (game) (input) (spawns) = let owner = store.state
+    in let player = input.session.serial
+    in let monster = cws-seen owner spawns game 0
+    in let emptied = cb-events-clear owner.combat
+    in when world-get game.world player
+      is Err (e) -> cws-check ("kill player " & e) False
+      is Ok (p) -> when world-create game.world (__record-set (gs-mobile 0 (p.x + 40) p.y 0 400 1002) "health" 10)
+        is Err (e) -> cws-check ("kill control " & e) False
+        is Ok (far) -> when world-get game.world far
+          is Err (e) -> cws-check ("kill control " & e) False
+          is Ok (unseen) -> when cb-ensure owner.combat game monster
+            is Err (e) -> cws-check ("kill monster " & e) False
+            is Ok (a) -> when cb-ensure owner.combat game player
+              is Err (e) -> cws-check ("kill victim " & e) False
+              is Ok (v) -> when world-get game.world monster
+                is Err (e) -> cws-check ("kill monster " & e) False
+                is Ok (m) -> let control = cb-event owner.combat unseen 0 cb-cause-melee p 3 True
+                  in let wounded = cws-hp game player 1
+                  in when world-get game.world player
+                    is Err (e) -> cws-check ("kill victim " & e) False
+                    is Ok (target) -> let hit = cb-apply-hit owner.combat game input a v m target 7 []
+                      in let count = owner.combat.event-count
+                      in let far-line = cs-event-line store game "DAMAGE" owner.combat.events player
+                      in let struck = cs-event-line store game "DAMAGE" (owner.combat.events + cb-event-bytes) player
+                      in let died = cs-event-line store game "DEATH" (owner.combat.events + cb-event-bytes) player
+                      in act
+                        printed <- cs-events store game player 0
+                        cws-check "melee damage to a player logs DAMAGE and the lethal blow logs DEATH, naming source, cause, amount, hit points, distance and whether the client was sent the source" (is-ok hit & count == 2
+                          & cws-health game player == 0 & owner.combat.event-count == 0
+                          & text-contains far-line " cause=melee damage=3 hp=30->27 " & text-ends-with far-line " distance=40 sent=no"
+                          & text-starts-with struck ("DAMAGE victim=" & show player & " cause=melee damage=7 hp=1->0 source=" & show monster & " name=\"")
+                          & text-ends-with struck " sent=yes"
+                          & text-starts-with died ("DEATH victim=" & show player & " cause=melee damage=7 hp=1->0 source=" & show monster))
+                      end
+  cws-alive : GameWorldSpawn, GameShard, Integer, Integer -> Integer
+  cws-alive (g) (game) (i) (skip) = if i == list-length g.slots then 0
+    else let serial = (list-at g.slots i).serial
+    in if serial > 0 & serial /= skip & cws-health game serial > 0 then serial else cws-alive g game (i + 1) skip
+  cws-hit : CompositeGame, GameShard, GameInput, Integer, Integer -> Boolean
+  cws-hit (owner) (game) (input) (source) (victim) = let weak = cws-hp game victim 1
+    in when cb-ensure owner.combat game source
+      is Err (_) -> False
+      is Ok (a) -> when cb-ensure owner.combat game victim
+        is Err (_) -> False
+        is Ok (v) -> when world-get game.world source
+          is Err (_) -> False
+          is Ok (s) -> when world-get game.world victim
+            is Err (_) -> False
+            is Ok (t) -> is-ok (cb-apply-hit owner.combat game input a v s t 5 [])
+  cws-loot : CompositeGame, GameShard, GameInput, GameWorldSpawn -> [Console] Integer
+  cws-loot (owner) (game) (input) (spawns) = let x = owner.vendor.currency
+    in when ef-new x 3002 200
+      is Err (e) -> cws-check ("fighter " & e) False
+      is Ok (f) -> let first = cws-alive spawns game 0 0
+        in when world-get game.world first
+          is Err (e) -> cws-check ("loot victim " & e) False
+          is Ok (m) -> when world-create game.world (__record-set (gs-mobile 0 (m.x + 1) m.y m.z 400 1002) "health" 50)
+            is Err (e) -> cws-check ("fighter mobile " & e) False
+            is Ok (serial) -> let zombie = __record-set (list-at spawns.slots (gws-slot-of spawns first 0)) "profile" (cws-zombie spawns.catalog 0)
+              in let c = cgf-new f serial (BbSpot { x = m.x + 1, y = m.y, z = m.z })
+              in let bound = cgf-bind c spawns owner.vendor
+              in let other = cws-alive spawns game 0 first
+              in let control = cws-hit owner game input first other
+              in let after-control = c.kills
+              in let killed = cws-hit owner game input serial first
+              in let held = ep-at (ep-actor x.world f.producer.actor).stock 6
+              in let unbound = __record-set owner.combat "death-hook" cb-death-none
+              in act
+                print-line-uni ("LOOT kills=" & show c.kills & " gold=" & show c.gold & " kept=" & show f.looted & " taxed=" & show f.taxed & " held=" & show held)
+                cws-check "a spawn killed by the fighter counts its kill and makes no ore from nothing (UOAIX-140); a kill by anyone else counts nothing" (control & killed
+                  & after-control == 0 & c.kills == 1 & c.gold == 0 & f.looted == 0 & f.taxed == 0 & held == 0
+                  & cws-health game first == 0 & euv-valid x & ep-census x.world 1)
+              end
+  cws-first : CompositeOwner, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cws-first (store) (specs) = let owner = store.state in act
+    attached <- cg-spawn-attach owner
+    a <- cws-check "a fresh world attaches the spawn controller" (when attached is Err (_) -> False is Ok (n) -> n == 0)
+    when owner.spawns
+      is None -> cws-check "spawn controller absent" False
+      is Just (spawns) -> act
+        region <- cws-region spawns.catalog 0
+        b <- cws-check "the catalog has a supported land region" (region >= 0)
+        r <- list-at spawns.catalog.regions (max 0 region)
+        cx <- (r.area.x1 + r.area.x2) / 2
+        cy <- (r.area.y1 + r.area.y2) / 2
+        print-line-uni ("REGION " & show region & " " & r.name & " at " & show cx & "," & show cy & " outside " & (if r.outside then "yes" else "no") & " batch " & show r.batch & " max " & show r.maximum)
+        when walk-map-new (cx - 32) (cy - 32) 64 64
+          is Err (e) -> cws-check e False
+          is Ok (map) -> act
+            filled <- cws-fill map 0
+            input <- gn-input-with specs 1
+            mode <- __record-set input "mode" 2
+            phase <- __record-set input.session "phase" 1
+            game <- owner.checkpoint.game
+            britain <- walk-map-new 1408 1680 64 64
+            entry <- when britain is Err (e) -> Err e is Ok (start) -> let landed = cws-fill start 0 in cs-route store game input start 2593 (cws-create 0)
+            moved <- when world-get game.world input.session.serial is Err (e) -> Err e is Ok (m) -> world-update game.world (__record-set (__record-set (__record-set m "x" cx) "y" cy) "z" 0)
+            aimed <- __record-set spawns "cursor" region
+            pulsed <- cs-pulse store game input map 2593 get-ticks
+            serial <- cws-slot spawns 0
+            print-line-uni ("SPAWNED " & show serial & " population " & show (peek-qword spawns.populations (region * 8)))
+            c <- cws-check "a pulse spawns region monsters as world mobiles and draws exactly those within 18 tiles" (is-ok entry & is-ok moved & is-ok pulsed & serial > 0
+              & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.kind == 1 & m.health > 0)
+              & (when world-get game.world input.session.serial is Err (_) -> False is Ok (viewer) -> cws-view spawns game viewer pulsed 0 0 > 0))
+            d <- cws-terrain spawns.catalog region
+            f <- cws-headless owner game spawns (cws-region spawns.catalog (region + 1))
+            committed <- cs-commit store True
+            e <- cws-check "spawn state commits" (is-ok committed)
+            g <- cws-fight owner game spawns region
+            h <- cws-regen store game input map
+            i <- cws-kill store game input spawns
+            k <- cws-loot owner game input spawns
+            l <- cws-summons owner game input.session.serial spawns cx cy
+            a + b + c + d + f + e + g + h + i + k + l
+          end
+      end
+  end
+ UOAIX-81: Magery's summon-hook and followers-hook reach the spawn controller: a summoned daemon follows its summoner
+ and takes 5 of the summoner's followers, and a blade spirit (a profile appended after the catalog) answers to nobody.
+  cws-summons : CompositeGame, GameShard, Integer, GameWorldSpawn, Integer, Integer -> [Console] Integer
+  cws-summons (owner) (game) (caster) (spawns) (cx) (cy) = let daemon = cg-summon owner caster "daemon" (cx + 2) cy 0 True 400000
+    in let blade = cg-summon owner caster "bladespirit" (cx - 2) cy 0 False 90000
+    in let d = list-at spawns.slots (max 0 (gws-slot-of spawns daemon 0))
+    in let b = list-at spawns.slots (max 0 (gws-slot-of spawns blade 0))
+    in let ok = (daemon > 0 & blade > 0 & d.owner == caster & d.summoned > spawns.combat.tick & b.owner == 0 & b.summoned > 0 & cg-followers owner caster == 5
+        & (when world-get game.world daemon is Err (_) -> False is Ok (m) -> m.graphic == (list-at spawns.catalog.profiles (gws-profile-key spawns "daemon" 0)).body))
+    in let keyed = cg-summon-key owner daemon == "daemon" & cg-summon-key owner caster == "" & not (cg-dismiss owner caster)
+    in let gone = cg-dismiss owner blade & is-err (world-get game.world blade)
+    in cws-check ("UOAIX-81: the summon-hook places a daemon that follows its summoner and costs 5 followers (" & show (cg-followers owner caster) & "), and a blade spirit that answers to nobody; the summoned-hook names only a summoned creature and the dismiss-hook removes one") (ok & keyed & gone)
+  cws-live : GameWorldSpawn, Integer -> Integer
+  cws-live (g) (i) = if i == list-length g.slots then 0
+    else (if (list-at g.slots i).serial > 0 then 1 else 0) + cws-live g (i + 1)
+  cws-gone : GameWorldSpawn, WorldTable, Integer -> Boolean
+  cws-gone (g) (world) (i) = if i == list-length g.slots then True
+    else let serial = (list-at g.slots i).serial
+    in (serial == 0 | is-err (world-get world serial)) & cws-gone g world (i + 1)
+  cws-retired : CompositeGame, GameWorldSpawn -> [Console] Integer
+  cws-retired (owner) (old) = act
+    world <- owner.checkpoint.game.world
+    bytes <- gwsc-size old
+    buf <- alloc-bytes bytes
+    encoded <- gwsc-encode old world get-ticks buf bytes
+    live <- cws-live old 0
+    before <- world-count world
+    stamped <- poke-qword buf 16 (old.catalog.revision + 1)
+    hold <- __record-set owner "spawn-hold" buf
+    held <- __record-set owner "spawn-held" bytes
+    attached <- cg-spawn-attach owner
+    fresh <- when owner.spawns is None -> -1 is Just (g) -> cws-live g 0
+    print-line-uni ("RETIRED live " & show live & " world " & show before & " -> " & show (world-count world) & " attach " & (when attached is Err (e) -> e is Ok (n) -> show n))
+    cws-check "a UWS1 from a changed catalog removes exactly its spawned mobiles and attaches fresh" (is-ok encoded & live > 0
+      & (when attached is Err (_) -> False is Ok (n) -> n == 2 + live)
+      & world-count world == before - live & cws-gone old world 0 & fresh == 0 & owner.spawn-held == 0)
+  end
+  cws-later : CompositeOwner -> [Console] Integer
+  cws-later (store) = let owner = store.state in act
+    attached <- cg-spawn-attach owner
+    when owner.spawns
+      is None -> cws-check "spawn controller absent after restart" False
+      is Just (spawns) -> act
+        serial <- cws-slot spawns 0
+        a <- cws-check "restart restores the spawned monster through UWS1" ((when attached is Err (_) -> False is Ok (n) -> n == 1) & serial > 0
+          & (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.kind == 1 & m.health > 0))
+        b <- cws-retired owner spawns
+        a + b
+      end
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> cws-check ("registry " & e) False
+    is Ok (specs) -> act
+      opened <- us-open 0 131072
+      when opened
+        is Err (e) -> cws-check ("store " & e) False
+        is Ok (store) -> let fresh = store.head == 0 in act
+          loaded <- cs-load store 0
+          when loaded
+            is Err (e) -> cws-check ("recovery " & e) False
+            is Ok (owner) -> if fresh then cws-first owner specs else cws-later owner
+          end
+    end

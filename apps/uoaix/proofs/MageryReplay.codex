@@ -11,6 +11,12 @@ Chapter: MageryReplay
   mr-cover (map) (x) (y) (z) = act
     if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
   end
+  mr-casts : Magery, GameShard, Integer, Integer, Integer -> Integer
+  mr-casts (magic) (game) (spell) (left) (ok) = if left == 0 then ok
+    else mr-casts magic game spell (left - 1) (if mgr-cast-skill magic game 1 (mgd-circle spell) then ok + 1 else ok)
+  mr-resists : Magery, GameShard, Integer, Integer -> Integer
+  mr-resists (magic) (game) (left) (held) = if left == 0 then held
+    else mr-resists magic game (left - 1) (if mge-resisted magic game 1 1 then held + 1 else held)
   MrEnv = record { game : GameShard, map : WalkMap, magic : Magery, input : GameInput, actor : MgActor }
   mr-land : WalkMap, Integer -> Integer
   mr-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
@@ -54,7 +60,7 @@ Chapter: MageryReplay
             in let banker = gmb-add-banker bank 12
             in let combat = cb-new game 42
             in let magic = mgs-new items bank combat decoration None (mr-cover map)
-            in let book-def = mgs-book magic #40000003 #80FFFFFF
+            in let book-def = mgs-book magic #40000003 #100480FFFFFF
             in let box-def = mgs-container magic #4000000D
             in let rune-def = mgs-rune magic #4000000E 1424 1698 0
             in let input = gn-input-with (gsi-specs 0) 1
@@ -111,7 +117,7 @@ Chapter: MageryReplay
         in let trap = if spell == 14 | spell == 21 then let a = __record-set box "trapped" True in let b = __record-set box "trapper" 1 in 0 else 0
         in let lock = if spell == 23 then let a = __record-set box "locked" True in 0 else 0
         in let poisoned = if spell == 11 then let a = __record-set npc "poison" 0 in let b = __record-set npc "poison-left" 10 in 0 else 0
-        in let target = if spell == 32 then #4000000E else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then #4000000D
+        in let target = if spell == 32 | spell == 45 then #4000000E else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then #4000000D
           else if spell == 22 | spell == 24 then 0 else if spell == 1 | spell == 3 | spell == 5 | spell == 8 | spell == 11 | spell == 12 | spell == 18 | spell == 20 then 12 else 1
         in act
           reply <- mr-cast env spell target 1000
@@ -137,6 +143,8 @@ Chapter: MageryReplay
             else if spell == 20 then npc.poison >= 0
             else if spell == 23 then not box.locked
             else if spell == 24 then world-count env.game.world == 17 & is-err (walk-height env.map 1424 1701 0)
+            else if spell == 35 then env.actor.incognito > env.magic.tick & env.actor.inc-name > 0
+            else if spell == 45 then (let rune = list-at env.magic.definitions (world-slot env.game.world #4000000E) in when source is Err (_) -> False is Ok (m) -> rune.rune & rune.x == m.x & rune.y == m.y & rune.z == m.z)
             else when source is Err (_) -> False is Ok (m) -> m.x == 1424 & m.y == (if spell == 32 then 1698 else 1701)
           mr-check ("spell " & show spell & " applies effect and consumes exact pack reagents/mana") (effect-ok & env.actor.stage == 0 & env.actor.mana == 20 - mgd-mana spell & mr-costs env spell 0 & list-length reply.packets > 0)
         end
@@ -145,13 +153,530 @@ Chapter: MageryReplay
       mark <- __heap-save
       last <- mr-effect-case 32
       restored <- __heap-restore mark
-      failures + last
+      disguised <- mr-effect-case 35
+      marked <- mr-effect-case 45
+      failures + last + disguised + marked
     end
     else act
       mark <- __heap-save
       result <- mr-effect-case spell
       restored <- __heap-restore mark
       mr-effects (spell + 1) (failures + result)
+    end
+  mr-hp : MrEnv, Integer, Integer -> Integer
+  mr-hp (env) (serial) (health) = when world-get env.game.world serial
+    is Err (_) -> -1
+    is Ok (m) -> when world-update env.game.world (__record-set m "health" health) is Err (_) -> -1 is Ok (_) -> health
+  mr-row : MrEnv, Integer, Integer, Integer -> Boolean
+  mr-row (env) (source) (victim) (cause) = let c = env.magic.combat
+    in c.event-count >= 1 & peek-qword c.events 0 == source & peek-qword c.events 8 == victim & peek-qword c.events 16 == cause
+      & peek-qword c.events 24 > 0
+  mr-death-mark : Integer, Integer, Integer -> Integer
+  mr-death-mark (buf) (source) (victim) = let a = poke-qword buf 0 victim in let b = poke-qword buf 8 source in 0
+  mr-damage-case : Integer -> [Console, Device.Block] Integer
+  mr-damage-case (path) = when mr-env 0
+    is Err (e) -> mr-check ("damage fixture " & e) False
+    is Ok (env) -> let emptied = cb-events-clear env.magic.combat
+      in if path == 1 then act
+        weak <- mr-hp env 12 1
+        mark <- alloc-bytes 16
+        cleared <- poke-qword mark 0 0
+        hooked <- __record-set env.magic.combat "death-hook" (mr-death-mark mark)
+        reply <- mr-cast env 5 12 1000
+        mr-check "a lethal spell logs a death with cause spell, caster and victim, and calls the death hook" (mr-row env 1 12 cb-cause-spell & peek-byte env.magic.combat.events 126 == 0 & peek-qword mark 0 == 12 & peek-qword mark 8 == 1)
+      end
+      else if path == 2 then act
+        box <- list-at env.magic.definitions (world-slot env.game.world #4000000D)
+        trapped <- __record-set box "trapped" True
+        trapper <- __record-set box "trapper" 12
+        reply <- mr-cast env 21 #4000000D 1000
+        mr-check "a trap that harms the opener logs DAMAGE with cause trap and the trapper as source" (mr-row env 12 1 cb-cause-trap & peek-byte env.magic.combat.events 126 == 1)
+      end
+      else if path == 3 then act
+        shield <- __record-set env.actor "absorb" 50
+        weak <- mr-hp env 12 1
+        hit <- env.magic.combat.damage-hook env.game env.input 12 1 10
+        mr-check "a reflected blow that kills its attacker logs a death with cause reflect" (is-ok hit & mr-row env 1 12 cb-cause-reflect)
+      end
+      else act
+        poisoned <- __record-set env.actor "poison" 0
+        left <- __record-set env.actor "poison-left" 3
+        due <- __record-set env.actor "poison-due" 0
+        poisoner <- __record-set env.actor "poisoner" 12
+        tracked <- mgs-track env.magic env.actor
+        pulse <- mg-pulse env.magic env.game env.input env.map 2593 5000
+        mr-check "a poison tick on the player logs DAMAGE with cause poison and the poisoner as source" (is-ok pulse & mr-row env 12 1 cb-cause-poison & peek-byte env.magic.combat.events 126 == 1)
+      end
+ UOAIX-81: Paralyze freezes for (7 + 20% of Magery) seconds, damage thaws, and a frozen player neither walks nor casts.
+  mr-frozen : MrEnv, Integer -> Integer
+  mr-frozen (env) (serial) = (list-at env.magic.combat.actors (world-slot env.game.world serial)).frozen
+  mr-paralyze : Integer -> [Console, Device.Block] Integer
+  mr-paralyze (unused) = when mr-env 0
+    is Err (e) -> mr-check ("paralyze fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-shl 1 37))
+      reply <- mr-cast env 38 12 1000
+      now <- max env.magic.tick env.magic.combat.tick
+      held <- mr-frozen env 12
+      a <- mr-check ("UOAIX-81: Paralyze at GM Magery on a creature with no Resisting Spells freezes it for 27 seconds and costs its reagents and 14 mana (frozen until tick " & show held & ")") (held > now & held - now <= mgd-ticks 27000 & held - now > mgd-ticks 26000 & env.actor.mana == 20 - 14 & mr-costs env 38 0 & list-length reply.packets > 0)
+      hit <- env.magic.combat.damage-hook env.game env.input 1 12 1
+      b <- mr-check "UOAIX-81: a point of damage frees the paralysed creature" (is-ok hit & mr-frozen env 12 == 0)
+      ensured <- cb-ensure env.magic.combat env.game 1
+      self <- list-at env.magic.combat.actors (world-slot env.game.world 1)
+      froze <- __record-set self "frozen" (now + mgd-ticks 60000)
+      walked <- mg-handle-at env.magic env.game env.input env.map 2593 [2,0,0,0,0,0,0] (now + 1)
+      cast <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 5) (now + 2)
+      thawed <- __record-set self "frozen" 0
+      free <- mg-handle-at env.magic env.game env.input env.map 2593 [2,0,0,0,0,0,0] (now + 3)
+      c <- mr-check "UOAIX-81: a frozen player's walk is refused and a cast answers that the player is frozen; thawed, the walk passes Magery by" ((mr-reply walked).note == "magery:frozen walk" & (mr-reply cast).note == "magery:frozen cast" & (mr-reply free).note == "NONE")
+      d <- mr-check "UOAIX-81: Paralyze is harmful, so it takes the UOAIX-77 resist roll, and its scroll and words are 'An Ex Por'" (mgd-harmful 38 & mgd-supported 38 & mgd-words 38 == "An Ex Por" & mgd-scroll-spell (mgd-scroll 38) == 38)
+      a + b + c + d
+    end
+ UOAIX-81 slice 2: Curse, Mana Drain, Mass Curse and Mana Vampire on a creature with no Resisting Spells (whole share).
+  mr-slice2 : Integer -> [Console, Device.Block] Integer
+  mr-slice2 (spell) = when mr-env 0
+    is Err (e) -> mr-check ("slice 2 fixture " & e) False
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> mr-check ("slice 2 target " & e) False
+      is Ok (npc) -> act
+        gm <- gs-skill-set env.game 1 25 1000
+        book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+        learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-or (bit-or (bit-shl 1 26) (bit-shl 1 30)) (bit-or (bit-shl 1 45) (bit-shl 1 52))) (bit-or (bit-or (bit-shl 1 29) (bit-shl 1 36)) (bit-or (bit-shl 1 41) (bit-or (bit-shl 1 42) (bit-shl 1 50))))))
+        wise <- if spell == 53 | spell == 51 then __record-set env.actor "intelligence" 100 else env.actor
+        full <- if spell == 53 | spell == 51 then __record-set env.actor "mana" 100 else env.actor
+        stored <- __record-set npc "mana" 30
+        moved <- if spell == 46 then (when world-get env.game.world 12 is Err (_) -> -1 is Ok (m) -> when world-update env.game.world (__record-set (__record-set m "x" 1423) "y" 1700) is Err (_) -> -1 is Ok (_) -> 0) else 0
+        reply <- mr-cast env spell (if spell == 46 then 0 else 12) 1000
+        lowered <- mgs-stat npc 0 < npc.strength & mgs-stat npc 1 < npc.dexterity & mgs-stat npc 2 < npc.intelligence
+        ok <- if spell == 27 | spell == 46 then lowered & moved == 0
+          else if spell == 31 then npc.mana < 30 & npc.mana >= 0
+          else if spell == 30 | spell == 37 | spell == 42 | spell == 43 | spell == 51 then (when world-get env.game.world 12 is Err (_) -> False is Ok (m) -> m.health < 30) & (spell /= 51 | env.actor.mana == 100 - 40)
+          else npc.mana == 0 & env.actor.mana == 100 - 40 + 30
+        mr-check ("UOAIX-81: spell " & show spell & " (" & mgd-words spell & ") " & (if spell == 27 then "lowers all three stats" else if spell == 31 then "drains the target's mana" else if spell == 46 then "curses a creature within 2 tiles of the point" else if spell /= 53 then "damages the target" else "moves all of the target's mana to the caster") & " and costs its reagents and " & show (mgd-mana spell) & " mana") (ok & mr-costs env spell 0 & (spell == 53 | spell == 51 | env.actor.mana == 20 - mgd-mana spell) & list-length reply.packets > 0)
+      end
+ UOAIX-81: Explosion's 2.5 s fuse (Damian, 2026-10-07: "the delay was key so you could land corp por at the same time").
+ An Energy Bolt begun when the Explosion's 0.75 s recovery ends takes the sixth circle's 1.75 s, so it lands on the
+ fuse's own tick.
+  mr-health : MrEnv, Integer -> Integer
+  mr-health (env) (serial) = when world-get env.game.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  mr-explosion : Integer -> [Console, Device.Block] Integer
+  mr-explosion (unused) = when mr-env 0
+    is Err (e) -> mr-check ("explosion fixture " & e) False
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> mr-check ("explosion target " & e) False
+      is Ok (npc) -> act
+        gm <- gs-skill-set env.game 1 25 1000
+        book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+        learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-shl 1 41) (bit-shl 1 42)))
+        wise <- __record-set env.actor "intelligence" 100
+        full <- __record-set env.actor "mana" 100
+        sturdy <- mr-hp env 12 250
+        lit <- mr-cast env 43 12 1000
+        quiet <- mr-health env 12
+        fuse <- npc.fuse
+        start <- 1000 + mgd-delay 43 + mgd-ticks 750
+        bolt <- mr-cast env 42 12 start
+        landed <- start + mgd-delay 42 + 1
+        bolted <- mr-health env 12
+        pending <- npc.fuse
+        boom <- mg-pulse env.magic env.game env.input env.map 2593 fuse
+        after <- mr-health env 12
+        mr-check ("UOAIX-81: Explosion lands nothing at its cast and detonates 2.5 s later; an Energy Bolt begun as the Explosion's recovery ends lands on the fuse's tick (" & show landed & " = " & show fuse & "), so both land together (health 250, then " & show bolted & " after the bolt, then " & show after & " after the blast)") (sturdy == 250 & quiet == 250 & fuse == 1000 + mgd-delay 43 + 1 + mgd-ticks 2500 & landed == fuse & bolted < 250 & pending == fuse & is-ok boom & after < bolted & npc.fuse == 0 & list-length bolt.packets > 0)
+      end
+ UOAIX-81 slice 4: Greater Heal on the wounded caster, and the area spells on a creature moved within reach of the point.
+  mr-slice4 : Integer -> [Console, Device.Block] Integer
+  mr-slice4 (spell) = when mr-env 0
+    is Err (e) -> mr-check ("slice 4 fixture " & e) False
+    is Ok (env) -> when mgs-ensure env.magic env.game 12
+      is Err (e) -> mr-check ("slice 4 target " & e) False
+      is Ok (npc) -> act
+        gm <- gs-skill-set env.game 1 25 1000
+        book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+        learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-or (bit-shl 1 24) (bit-shl 1 25)) (bit-or (bit-shl 1 28) (bit-or (bit-shl 1 48) (bit-or (bit-shl 1 54) (bit-or (bit-shl 1 56) (bit-or (bit-shl 1 49) (bit-or (bit-shl 1 27) (bit-or (bit-shl 1 38) (bit-shl 1 46))))))))))
+        big <- spell == 49 | spell == 50 | spell == 55 | spell == 57
+        wise <- if big then __record-set env.actor "intelligence" 100 else env.actor
+        full <- if big then __record-set env.actor "mana" 100 else env.actor
+        poisoned <- if spell == 25 then (let a = __record-set npc "poison" 0 in let b = __record-set npc "poison-left" 10 in 0) else 0
+        moved <- if spell == 25 | spell == 26 | spell == 49 | spell == 55 then (when world-get env.game.world 12 is Err (_) -> -1 is Ok (m) -> when world-update env.game.world (__record-set (__record-set m "x" 1423) "y" 1700) is Err (_) -> -1 is Ok (_) -> 0) else 0
+        fielded <- if spell == 28 | spell == 39 | spell == 47 then (when world-get env.game.world 12 is Err (_) -> -1 is Ok (m) -> when world-update env.game.world (__record-set (__record-set m "x" 1424) "y" 1701) is Err (_) -> -1 is Ok (_) -> 0) else 0
+        reply <- mr-cast env spell (if spell == 29 then 1 else if spell == 57 then 1 else 0) 1000
+        stood <- if spell == 28 | spell == 39 | spell == 47 then mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-delay spell + 2) else Ok None
+        hurt <- mr-health env 12
+        healed <- mr-health env 1
+        ok <- if spell == 28 then hurt < 30 & fielded == 0 & is-ok stood & is-ok (walk-height env.map 1424 1701 0)
+          else if spell == 39 then npc.poison >= 0 & fielded == 0 & is-ok stood
+          else if spell == 47 then (list-at env.magic.combat.actors (world-slot env.game.world 12)).frozen > env.magic.tick & fielded == 0 & is-ok stood
+          else if spell == 29 then healed > 10 else if spell == 50 then world-count env.game.world == 19 & is-err (walk-height env.map 1424 1701 0) else if spell == 25 then npc.poison == -1 else if spell == 26 then npc.protected-until > env.magic.tick
+          else hurt < 30
+        mr-check ("UOAIX-81: spell " & show spell & " (" & mgd-words spell & ") " & (if spell == 29 then "heals the caster" else if spell == 25 then "cures a creature within 2 tiles" else if spell == 26 then "protects a creature within 3 tiles" else if spell == 50 then "raises five impassable field tiles" else if spell == 28 then "burns a creature standing in it and stays passable" else if spell == 39 then "poisons a creature standing in it" else if spell == 47 then "freezes a creature standing in it" else "damages a creature in its area") & " and costs its reagents and " & show (mgd-mana spell) & " mana") (ok & moved == 0 & mr-costs env spell 0 & env.actor.mana == (if big then 100 else 20) - mgd-mana spell & list-length reply.packets > 0)
+      end
+ UOAIX-81: Magic Reflection stores 8 circles at GM Magery without Inscription; a Magic Arrow (first circle) at a creature
+ holding 8 returns to its caster and leaves 7.
+  mr-reflect : Integer -> [Console, Device.Block] Integer
+  mr-reflect (unused) = when mr-env 0
+    is Err (e) -> mr-check ("reflect fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-shl 1 35))
+      reply <- mr-cast env 36 1 1000
+      a <- mr-check ("UOAIX-81: spell 36 (In Jux Sanct) stores " & show env.actor.reflect & " circles of reflection and costs its reagents and 14 mana") (env.actor.reflect == 8 & env.actor.mana == 20 - 14 & mr-costs env 36 0 & list-length reply.packets > 0)
+      b <- when mr-env 0
+        is Err (e) -> mr-check ("reflect fixture " & e) False
+        is Ok (other) -> when mgs-ensure other.magic other.game 12
+          is Err (e) -> mr-check ("reflect target " & e) False
+          is Ok (npc) -> act
+            charged <- __record-set npc "reflect" 8
+            arrow <- mr-cast other 5 12 1000
+            mr-check ("UOAIX-81: a Magic Arrow at a creature holding 8 reflection circles returns to its caster (caster " & show (mr-health other 1) & " of 10, creature " & show (mr-health other 12) & " of 30) and leaves " & show npc.reflect) (mr-health other 12 == 30 & mr-health other 1 < 10 & npc.reflect == 7)
+          end
+      a + b
+    end
+ UOAIX-81: Invisibility hides its target for Magery x 120 ms and unhides it at expiry; Reveal uncovers a hidden player
+ within 1 + Magery/20 tiles and leaves a hidden creature hidden. The hooks stand in for ActiveSkills' concealed bytes.
+  mr-hide : Integer, WorldTable, Integer, Boolean -> Integer
+  mr-hide (bytes) (world) (serial) (hidden) = let slot = world-slot world serial
+    in if slot < 0 then 0 else poke-byte bytes slot (if hidden then 1 else 0)
+  mr-hidden : Integer, WorldTable, Integer -> Boolean
+  mr-hidden (bytes) (world) (serial) = let slot = world-slot world serial in slot >= 0 & peek-byte bytes slot == 1
+  mr-self-flag : List (List Integer), Integer -> Integer
+  mr-self-flag (packets) (i) = if i == list-length packets then -1
+    else let p = list-at packets i
+    in if list-length p > 10 & list-at p 0 == #20 then bit-and (list-at p 10) 128 else mr-self-flag packets (i + 1)
+  mr-hooked : MrEnv -> Integer
+  mr-hooked (env) = let bytes = alloc-bytes env.game.world.capacity
+    in let cleared = mgs-zero bytes 0 ((env.game.world.capacity + 7) / 8)
+    in let a = __record-set env.magic "hide-hook" (mr-hide bytes env.game.world)
+    in let b = __record-set env.magic "hidden-hook" (mr-hidden bytes env.game.world) in 0
+  mr-invisibility : Integer -> [Console, Device.Block] Integer
+  mr-invisibility (unused) = when mr-env 0
+    is Err (e) -> mr-check ("invisibility fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-shl 1 43) (bit-shl 1 47)))
+      hooked <- mr-hooked env
+      reply <- mr-cast env 44 1 1000
+      until <- env.actor.invisible
+      a <- mr-check ("UOAIX-81: spell 44 (An Lor Xen) hides the caster for 120 s at GM Magery, draws its own body hidden, and costs its reagents and 20 mana (until tick " & show until & ")") (env.magic.hidden-hook 1 & until > env.magic.tick & until - env.magic.tick <= mgd-ticks 120000 & until - env.magic.tick > mgd-ticks 119000 & mr-self-flag reply.packets 0 == 128 & env.actor.mana == 20 - 20 & mr-costs env 44 0)
+      early <- mg-pulse env.magic env.game env.input env.map 2593 (until - 1)
+      b <- mr-check "UOAIX-81: Invisibility still holds one tick before it runs out" (is-ok early & env.magic.hidden-hook 1 & env.actor.invisible == until)
+      expired <- mg-pulse env.magic env.game env.input env.map 2593 until
+      shown <- when expired is Err (_) -> -1 is Ok (m) -> when m is None -> -1 is Just (r) -> mr-self-flag r.packets 0
+      c <- mr-check ("UOAIX-81: at expiry Invisibility unhides its holder and redraws the body unhidden (flag " & show shown & ")") (not (env.magic.hidden-hook 1) & env.actor.invisible == 0 & shown == 0)
+      d <- mr-check "UOAIX-81: Invisibility is beneficial, not harmful, so it takes no resist roll; Reveal is a ground spell; words 'An Lor Xen' and 'Wis Quas'" (mgd-beneficial 44 & not (mgd-harmful 44) & mgd-ground 48 & not (mgd-harmful 48) & mgd-supported 44 & mgd-supported 48 & mgd-words 44 == "An Lor Xen" & mgd-words 48 == "Wis Quas")
+      e <- when mr-env 0
+        is Err (x) -> mr-check ("reveal fixture " & x) False
+        is Ok (other) -> act
+          gm2 <- gs-skill-set other.game 1 25 1000
+          book2 <- list-at other.magic.definitions (world-slot other.game.world #40000003)
+          learned2 <- __record-set book2 "spells" (bit-or book2.spells (bit-shl 1 47))
+          hooked2 <- mr-hooked other
+          player <- other.magic.hide-hook 1 True
+          creature <- other.magic.hide-hook 12 True
+          revealed <- mr-cast other 48 0 1000
+          mr-check ("UOAIX-81: spell 48 (Wis Quas) reveals the hidden player within 6 tiles of its point, leaves the hidden creature hidden, and costs its reagents and 20 mana") (not (other.magic.hidden-hook 1) & other.magic.hidden-hook 12 & other.actor.mana == 20 - 20 & mr-costs other 48 0 & list-length revealed.packets > 0)
+        end
+      a + b + c + d + e
+    end
+ UOAIX-81: Dispel Field removes the one field tile it targets at the next pulse and leaves the rest of the field.
+  mr-first-wall : MrEnv, Integer -> Integer
+  mr-first-wall (env) (i) = if i == 32 then 0 else let w = list-at env.magic.walls i
+    in if w.serial /= 0 then w.serial else mr-first-wall env (i + 1)
+  mr-costs2 : MrEnv, Integer, Integer, Integer -> Boolean
+  mr-costs2 (env) (first) (second) (i) = if i == 8 then True
+    else let used = (if bit-and (mgd-reagents first) (bit-shl 1 i) /= 0 then 1 else 0) + (if bit-and (mgd-reagents second) (bit-shl 1 i) /= 0 then 1 else 0)
+    in if mr-amount env i /= 5 - used then False else mr-costs2 env first second (i + 1)
+  mr-dispel-field : Integer -> [Console, Device.Block] Integer
+  mr-dispel-field (unused) = when mr-env 0
+    is Err (e) -> mr-check ("dispel field fixture " & e) False
+    is Ok (env) -> act
+      gm <- gs-skill-set env.game 1 25 1000
+      book <- list-at env.magic.definitions (world-slot env.game.world #40000003)
+      learned <- __record-set book "spells" (bit-or book.spells (bit-or (bit-shl 1 27) (bit-shl 1 33)))
+      wise <- __record-set env.actor "intelligence" 100
+      full <- __record-set env.actor "mana" 100
+      field <- mr-cast env 28 0 1000
+      raised <- world-count env.game.world
+      tile <- mr-first-wall env 0
+      start <- 1000 + mgd-delay 28 + mgd-ticks 750 + 2
+      dispel <- mr-cast env 34 tile start
+      pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (start + mgd-delay 34 + 2)
+      gone <- is-err (world-get env.game.world tile)
+      mr-check ("UOAIX-81: spell 34 (An Grav) removes the targeted field tile at the next pulse and leaves the other four (" & show raised & " objects, then " & show (world-count env.game.world) & "), and costs its reagents and 14 mana") (tile /= 0 & gone & world-count env.game.world == raised - 1 & is-ok pulsed & mr-costs2 env 28 34 0 & env.actor.mana <= 100 - 11 - 14 + 2 & env.actor.mana >= 100 - 11 - 14 & list-length dispel.packets > 0)
+    end
+ UOAIX-81: Gate Travel opens a linked pair of gates for 30 s; walking onto one arrives on the other, a caster is
+ refused, a dispelled twin is reported, and a world load deletes the pair while it keeps a live field.
+  mr-live : Magery, Integer, Integer, Integer -> Integer
+  mr-live (magic) (kind) (i) (n) = if i == 32 then n else let w = list-at magic.walls i
+    in mr-live magic kind (i + 1) (if w.serial /= 0 & w.until > magic.tick & (when world-get magic.items.world w.serial is Err (_) -> False is Ok (item) -> mga-field-kind item.graphic == kind) then n + 1 else n)
+  mr-gate-serial : MrEnv, Integer, Integer -> Integer
+  mr-gate-serial (env) (x) (i) = if i == 32 then 0 else let w = list-at env.magic.walls i
+    in if w.serial /= 0 & (when world-get env.game.world w.serial is Err (_) -> False is Ok (item) -> item.graphic == #0F6C & item.x == x) then w.serial
+    else mr-gate-serial env x (i + 1)
+  mr-at : MrEnv, Integer, Integer -> Boolean
+  mr-at (env) (x) (y) = when world-get env.game.world 1 is Err (_) -> False is Ok (m) -> m.x == x & m.y == y
+  mr-step : MrEnv, Integer, Integer -> [Device.Block] GameReply
+  mr-step (env) (x) (y) = when world-get env.game.world 1
+    is Err (e) -> act gs-reply [] ("ERROR " & e) end
+    is Ok (m) -> act
+      moved <- world-update env.game.world (ia-copy m m.serial 1 0 x y m.z)
+      walked <- mg-gate-walk env.magic env.game env.input (Ok m) (gs-reply [] "walk")
+      when walked
+        is Err (e) -> gs-reply [] ("ERROR " & e)
+        is Ok (reply) -> reply
+    end
+  mr-gate-book : MrEnv, Integer -> Integer
+  mr-gate-book (env) (bits) = let book = list-at env.magic.definitions (world-slot env.game.world #40000003)
+    in let learned = __record-set book "spells" (bit-or book.spells bits)
+    in let wise = __record-set env.actor "intelligence" 100
+    in let full = __record-set env.actor "mana" 100
+    in gs-skill-set env.game 1 25 1000
+  mr-gate-travel : Integer -> [Console, Device.Block] Integer
+  mr-gate-travel (unused) = when mr-env 0
+    is Err (e) -> mr-check ("gate travel fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-or (bit-shl 1 51) (bit-shl 1 33))
+      before <- world-count env.game.world
+      opened <- mr-cast env 52 #4000000E 1000
+      a <- mr-check ("UOAIX-81: spell 52 (Vas Rel Por) opens a gate on the caster's tile and one at the rune's place, leaves the caster where it stood, and costs its reagents and 40 mana (" & show (mr-live env.magic 52 0 0) & " gates)") (mr-live env.magic 52 0 0 == 2 & world-count env.game.world == before + 2 & mr-at env 1421 1698 & env.actor.mana == 60 & mr-costs env 52 0 & opened.note == "magery:cast spell=52")
+      counted <- __record-set env.input.session "sequence" 5
+      off <- mr-step env 1420 1698
+      on <- mr-step env 1421 1698
+      b <- mr-check "UOAIX-81: a player who walks onto the gate arrives on its twin at the rune's place, and the walk sequence goes back to 0" (mr-at env 1424 1698 & env.input.session.sequence == 0 & mr-opcode on.packets #20 0 & not (mr-opcode off.packets #20 0))
+      out <- mr-step env 1425 1698
+      back <- mr-step env 1424 1698
+      returned <- mr-at env 1421 1698
+      busy <- __record-set env.actor "stage" 1
+      aside <- mr-step env 1420 1698
+      refused <- mr-step env 1421 1698
+      idle <- __record-set env.actor "stage" 0
+      c <- mr-check "UOAIX-81: the twin leads back, and a player who is casting is refused at the gate and stays" (returned & mr-at env 1421 1698 & mr-opcode refused.packets #1C 0 & not (mr-opcode refused.packets #20 0))
+      twin <- mr-gate-serial env 1424 0
+      dispel <- mr-cast env 34 twin (1000 + mgd-delay 52 + mgd-ticks 750 + 2)
+      left <- mr-step env 1420 1698
+      lone <- mr-step env 1421 1698
+      d <- mr-check "UOAIX-81: Dispel Field on one gate leaves its twin leading nowhere: the walker is told and stays" (twin /= 0 & mr-at env 1421 1698 & mr-opcode lone.packets #1C 0 & not (mr-opcode lone.packets #20 0) & mr-costs2 env 52 34 0)
+      expired <- mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-ticks 40000)
+      e <- mr-check "UOAIX-81: the gates close after 30 s" (is-ok expired & mr-live env.magic 52 0 0 == 0 & world-count env.game.world == before)
+      a + b + c + d + e
+    end
+  mr-gate-codec : Integer -> [Console, Device.Block] Integer
+  mr-gate-codec (unused) = when mr-env 0
+    is Err (e) -> mr-check ("gate codec fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-or (bit-shl 1 51) (bit-shl 1 27))
+      field <- mr-cast env 28 0 1000
+      opened <- mr-cast env 52 #4000000E (1000 + mgd-delay 28 + mgd-ticks 750 + 2)
+      now <- env.magic.tick
+      buffer <- alloc-bytes (mgc-size env.magic)
+      encoded <- mgc-write env.magic buffer (mgc-size env.magic) now
+      fresh <- mgs-new env.magic.items env.magic.bank env.magic.combat env.magic.decoration None (mr-cover env.map)
+      decoded <- mgc-read fresh buffer (mgc-size fresh) now
+      mr-check ("UOAIX-81: a world saved with a live fire field and a gate pair loads with the field live and the gates closed (" & show (mr-live env.magic 28 0 0) & " and " & show (mr-live env.magic 52 0 0) & " saved, " & show (mr-live fresh 28 0 0) & " and " & show (mr-live fresh 52 0 0) & " live after)") (mr-live env.magic 28 0 0 == 5 & mr-live env.magic 52 0 0 == 2 & is-ok encoded & is-ok decoded & mr-live fresh 28 0 0 == 5 & mr-live fresh 52 0 0 == 0)
+    end
+ UOAIX-81: Polymorph offers its 18 forms as a 0x7C menu, casts the chosen one, refuses a second cast and Incognito
+ while it holds, survives a restart, returns the original body and hue at expiry and at death, and gives a human form a
+ skin hue.
+  mr-answer : Integer, Integer -> List Integer
+  mr-answer (dialog) (choice) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] dialog) #A020) choice) 0) 0
+  mr-body : MrEnv -> WorldObject
+  mr-body (env) = when world-get env.game.world 1 is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  mr-polymorph : Integer -> [Console, Device.Block] Integer
+  mr-polymorph (unused) = when mr-env 0
+    is Err (e) -> mr-check ("polymorph fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-shl 1 55)
+      menu <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 56) 1000)
+      shown <- if list-length menu.packets == 1 then list-at menu.packets 0 else []
+      a <- mr-check ("UOAIX-81: spell 56 (Vas Ylem Rel) first offers its 18 forms as a 0x7C menu (" & show (list-length shown) & " bytes) and begins nothing") (menu.note == "magery:polymorph-menu" & list-length shown == 253 & list-at shown 0 == #7C & gp-u16 shown 1 == 253 & gp-u32 shown 3 == 1 & gp-u16 shown 7 == #A020 & list-at shown 34 == 18 & gp-u16 shown 35 == 8401 & env.actor.stage == 0 & env.actor.mana == 100)
+      forged <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-answer #4000000E 2) 1001)
+      b <- mr-check "UOAIX-81: an answer naming an item that is no Polymorph scroll is refused and begins nothing" (forged.note == "That must be in your pack for you to use it." & env.actor.stage == 0)
+      begun <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-answer 1 2) 1002)
+      pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (1002 + mgd-delay 56)
+      dog <- mr-body env
+      c <- mr-check ("UOAIX-81: choosing Dog casts the spell: the caster takes body 0xD9 with hue 0 for 100 s at GM Magery, at its reagents and 40 mana (body " & show dog.graphic & ")") (begun.note == "magery:casting spell=56" & is-ok pulsed & dog.graphic == #D9 & dog.hue == 0 & env.actor.poly - env.magic.tick == mgd-ticks 100000 & env.actor.poly-body == 400 & env.actor.poly-hue == 1002 & env.actor.mana == 60 & mr-costs env 56 0)
+      again <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 56) (1003 + mgd-delay 56 + mgd-ticks 750))
+      disguise <- mr-cast env 35 1 (1004 + mgd-delay 56 + mgd-ticks 750)
+      d <- mr-check "UOAIX-81: while the form holds, a second Polymorph is already in effect and Incognito cannot begin" (again.note == "This spell is already in effect." & env.actor.incognito == 0 & (mr-body env).graphic == #D9)
+      buffer <- alloc-bytes (mgc-size env.magic)
+      encoded <- mgc-write env.magic buffer (mgc-size env.magic) env.magic.tick
+      fresh <- mgs-new env.magic.items env.magic.bank env.magic.combat env.magic.decoration None (mr-cover env.map)
+      decoded <- mgc-read fresh buffer (mgc-size fresh) env.magic.tick
+      kept <- list-at fresh.actors 0
+      rebound <- mge-bind env.magic
+      e <- mr-check ("UOAIX-81: a restart mid-form keeps the form's time left and the original body and hue (" & (when decoded is Err (x) -> x is Ok (_) -> "loaded") & ", body " & show kept.poly-body & ", hue " & show kept.poly-hue & ")") (is-ok encoded & is-ok decoded & kept.poly == env.actor.poly & kept.poly-body == 400 & kept.poly-hue == 1002)
+      early <- mg-pulse env.magic env.game env.input env.map 2593 (env.actor.poly - 1)
+      held <- (mr-body env).graphic
+      ended <- mg-pulse env.magic env.game env.input env.map 2593 env.actor.poly
+      back <- mr-body env
+      f <- mr-check "UOAIX-81: the form holds one tick before it runs out, then the original body 400 and hue 1002 return" (is-ok early & held == #D9 & is-ok ended & back.graphic == 400 & back.hue == 1002 & env.actor.poly == 0)
+      start <- env.magic.tick + mgd-ticks 1000
+      woman <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-answer 1 10) start
+      formed <- mg-pulse env.magic env.game env.input env.map 2593 (start + mgd-delay 56)
+      human <- mr-body env
+      hit <- env.magic.combat.damage-hook env.game env.input 12 1 50
+      dead <- mr-body env
+      g <- mr-check ("UOAIX-81: a human form gets a skin hue (" & show human.hue & "), and a lethal blow returns the original body and hue") (human.graphic == #191 & human.hue >= 1002 & human.hue <= 1058 & is-ok hit & dead.graphic == 400 & dead.hue == 1002 & env.actor.poly == 0)
+      a + b + c + d + e + f + g
+    end
+ UOAIX-81: Resurrection raises a player's ghost within 1 tile through the owner's raise-hook, and refuses a creature,
+ the caster itself and a ghost out of reach without spending anything.
+  mr-raise : WorldTable, Integer, Integer -> Boolean
+  mr-raise (world) (healer) (patient) = when world-get world patient
+    is Err (_) -> False
+    is Ok (m) -> is-ok (world-update world (__record-set m "health" 10))
+  mr-health-of : MrEnv, Integer -> Integer
+  mr-health-of (env) (serial) = when world-get env.game.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  mr-resurrection : Integer -> [Console, Device.Block] Integer
+  mr-resurrection (unused) = when mr-env 0
+    is Err (e) -> mr-check ("resurrection fixture " & e) False
+    is Ok (env) -> act
+      taught <- mr-gate-book env (bit-shl 1 58)
+      hooked <- __record-set env.magic "raise-hook" (mr-raise env.game.world)
+      made <- world-create env.game.world (__record-set (gs-mobile 0 1424 1698 0 400 1002) "health" 0)
+      ghost <- when made is Err (_) -> 0 is Ok (serial) -> serial
+      seated <- poke-qword env.game.characters 160 ghost
+      step <- mgd-delay 59 + mgd-ticks 750 + 2
+      creature <- mr-cast env 59 12 1000
+      self <- mr-cast env 59 1 (1000 + step)
+      far <- mr-cast env 59 ghost (1000 + 2 * step)
+      a <- mr-check "UOAIX-81: Resurrection refuses a creature, the caster itself and a ghost 3 tiles off, and spends nothing" (creature.note == "Target is not a being." & self.note == "Thou can not resurrect thyself." & far.note == "Target is not close enough." & mr-unchanged-at env 100 & mr-health-of env ghost == 0)
+      near <- when world-get env.game.world ghost is Err (e) -> Err e is Ok (m) -> world-update env.game.world (ia-copy m m.serial 1 0 1422 1699 0)
+      raised <- mr-cast env 59 ghost (1000 + 3 * step)
+      b <- mr-check ("UOAIX-81: spell 59 (An Corp) raises the player's ghost beside the caster (hits " & show (mr-health-of env ghost) & ") with sound 0x214, at its reagents and 50 mana") (ghost > 0 & is-ok near & mr-health-of env ghost == 10 & mr-opcode raised.packets #54 0 & env.actor.mana == 50 & mr-costs env 59 0 & raised.note == "magery:cast spell=59")
+      a + b
+    end
+  mr-unchanged-at : MrEnv, Integer -> Boolean
+  mr-unchanged-at (env) (mana) = env.actor.mana == mana & mr-costs env 0 0
+ UOAIX-81 summons, stage 2: each summon spell asks the owner's summon-hook for its creature, place, master and time;
+ a caster without the followers free is refused before any cost, and a taken place answers 501942.
+  MrSummon = record { key : Text, x : Integer, y : Integer, controlled : Boolean, ms : Integer, calls : Integer, followers : Integer }
+  mr-summon-hook : MrSummon, WorldTable, Integer, Text, Integer, Integer, Integer, Boolean, Integer -> Integer
+  mr-summon-hook (log) (world) (caster) (key) (x) (y) (z) (controlled) (ms) = let a = __record-set log "key" key
+    in let b = __record-set log "x" x
+    in let c = __record-set log "y" y
+    in let d = __record-set log "controlled" controlled
+    in let e = __record-set log "ms" ms
+    in let f = __record-set log "calls" (log.calls + 1)
+    in when world-create world (gs-mobile 0 x y z 13 0) is Err (_) -> 0 is Ok (serial) -> serial
+  mr-followers-hook : MrSummon, Integer -> Integer
+  mr-followers-hook (log) (caster) = log.followers
+  mr-summon-env : MrEnv, Integer -> MrSummon
+  mr-summon-env (env) (followers) = let log = MrSummon { key = "", x = 0, y = 0, controlled = False, ms = 0, calls = 0, followers = followers }
+    in let a = __record-set env.magic "summon-hook" (mr-summon-hook log env.game.world)
+    in let b = __record-set env.magic "followers-hook" (mr-followers-hook log)
+    in let taught = mr-gate-book env (bit-or (bit-or (bit-shl 1 32) (bit-shl 1 39)) (bit-or (bit-shl 1 57) (bit-or (bit-shl 1 59) (bit-shl 1 60))))
+    in log
+  mr-animal : Text, Integer -> Boolean
+  mr-animal (key) (i) = if i == 18 then False else mgd-summon-key 40 i == key | mr-animal key (i + 1)
+  mr-summons : Integer -> [Console, Device.Block] Integer
+  mr-summons (unused) = act
+    first <- mr-env 0
+    a <- when first
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 0
+        reply <- mr-cast env 60 0 1000
+        ok <- (log.calls == 1 & log.key == "airele" & log.controlled & log.ms == 400000 & walk-abs (log.x - 1421) <= 1 & walk-abs (log.y - 1698) <= 1 & not (log.x == 1421 & log.y == 1698)
+            & mr-opcode reply.packets #54 0 & env.actor.mana == 50 & mr-costs env 60 0)
+        mr-check ("UOAIX-81: spell 60 (Kal Vas Xen Hur) summons an air elemental beside the caster that follows it for 400 s at GM Magery, with sound 0x217, at its reagents and 50 mana (" & log.key & " at " & show log.x & "," & show log.y & ")") ok
+      end
+    second <- mr-env 0
+    b <- when second
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 0
+        reply <- mr-cast env 33 0 1000
+        ok <- (mgd-delay 33 == mgd-ticks 7500 & log.calls == 1 & log.key == "bladespirit" & not log.controlled & log.ms >= 80000 & log.ms < 120000 & log.x == 1424 & log.y == 1701 & mr-costs env 33 0)
+        mr-check ("UOAIX-81: spell 33 (In Jux Hur Ylem) takes 6 s more to cast and summons, at the targeted place, a blade spirit that answers to nobody for 80 to 119 s (" & show log.ms & " ms)") ok
+      end
+    third <- mr-env 0
+    c <- when third
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 4
+        daemon <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 61) 1000)
+        air <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 60) 1001)
+        freed <- __record-set log "followers" 3
+        allowed <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 60) 1002)
+        ok <- (daemon.note == "You have too many followers to summon that creature." & air.note == daemon.note & allowed.note == "magery:casting spell=60" & log.calls == 0)
+        mr-check "UOAIX-81: with 4 of 5 followers taken, Summon Daemon (5) and Air Elemental (2) are refused before any cost; with 3 taken the air elemental begins" ok
+      end
+    fourth <- mr-env 0
+    d <- when fourth
+      is Err (e) -> mr-check ("summon fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-summon-env env 0
+        reply <- mr-cast env 40 0 1000
+        started <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-command 58) (1000 + mgd-delay 40 + mgd-ticks 750 + 2)
+        pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-delay 40 + mgd-ticks 750 + 2 + mgd-delay 58)
+        blocked <- mr-reply (mg-handle-at env.magic env.game env.input env.map 2593 (mr-target env.actor.cursor 0 1422 1698 0) (1000 + mgd-delay 40 + mgd-ticks 750 + 3 + mgd-delay 58))
+        ok <- (mr-animal log.key 0 & log.controlled & log.ms == 400000 & log.calls == 1 & mr-opcode blocked.packets #1C 0)
+        mr-check ("UOAIX-81: spell 40 (Kal Xen) summons one of ServUO's 18 creatures (" & log.key & ") that follows its caster for 400 s, and an energy vortex aimed at a creature's tile answers that the location is blocked") ok
+      end
+    a + b + c + d
+  end
+ UOAIX-81 summons, stage 3: Dispel removes a summoned creature its roll beats and calls any other undispellable; Mass
+ Dispel rolls for every summoned creature within 8 tiles and leaves the rest.
+  MrDispel = record { key : Text, extra : Integer, dismissed : Integer }
+  mr-summoned-hook : MrDispel, Integer -> Text
+  mr-summoned-hook (log) (serial) = if serial == 12 | serial == log.extra then log.key else ""
+  mr-dismiss-hook : MrDispel, WorldTable, Integer -> Boolean
+  mr-dismiss-hook (log) (world) (serial) = let a = __record-set log "dismissed" (log.dismissed + 1) in is-ok (world-delete world serial)
+  mr-dispel-env : MrEnv, Text -> MrDispel
+  mr-dispel-env (env) (key) = let log = MrDispel { key = key, extra = 0, dismissed = 0 }
+    in let a = __record-set env.magic "summoned-hook" (mr-summoned-hook log)
+    in let b = __record-set env.magic "dismiss-hook" (mr-dismiss-hook log env.game.world)
+    in let taught = mr-gate-book env (bit-or (bit-shl 1 40) (bit-shl 1 53))
+    in log
+  mr-mobile-at : MrEnv, Integer, Integer -> Integer
+  mr-mobile-at (env) (x) (y) = when world-create env.game.world (gs-mobile 0 x y 0 13 0) is Err (_) -> 0 is Ok (serial) -> serial
+  mr-dispels : Integer -> [Console, Device.Block] Integer
+  mr-dispels (unused) = act
+    first <- mr-env 0
+    a <- when first
+      is Err (e) -> mr-check ("dispel fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-dispel-env env "bladespirit"
+        reply <- mr-cast env 41 12 1000
+        ok <- (log.dismissed == 1 & is-err (world-get env.game.world 12) & mr-opcode reply.packets #54 0 & env.actor.mana == 80 & mr-costs env 41 0)
+        mr-check "UOAIX-81: spell 41 (An Ort) dispels a summoned blade spirit at GM Magery with sound 0x201, at its reagents and 20 mana" ok
+      end
+    second <- mr-env 0
+    b <- when second
+      is Err (e) -> mr-check ("dispel fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-dispel-env env ""
+        reply <- mr-cast env 41 12 1000
+        ok <- (log.dismissed == 0 & is-ok (world-get env.game.world 12) & mr-opcode reply.packets #1C 0)
+        mr-check "UOAIX-81: Dispel on a creature nobody summoned answers that it cannot be dispelled and leaves it" ok
+      end
+    table <- (mgd-dispel-chance "daemon" 1000 == 223 & mgd-dispel-chance "airele" 1000 == 306 & mgd-dispel-chance "energyvortex" 1000 == 1000 & mgd-dispel-chance "bladespirit" 0 == 500)
+    c <- mr-check ("UOAIX-81: the dispel chance follows ServUO's DispelDifficulty and DispelFocus: GM Magery against a daemon " & show (mgd-dispel-chance "daemon" 1000) & ", an elemental " & show (mgd-dispel-chance "airele" 1000) & ", a vortex " & show (mgd-dispel-chance "energyvortex" 1000) & " per thousand") table
+    fourth <- mr-env 0
+    d <- when fourth
+      is Err (e) -> mr-check ("dispel fixture " & e) False
+      is Ok (env) -> act
+        log <- mr-dispel-env env "bladespirit"
+        other <- mr-mobile-at env 1426 1701
+        marked <- __record-set log "extra" other
+        bystander <- mr-mobile-at env 1423 1703
+        reply <- mr-cast env 54 0 1000
+        ok <- (other > 0 & bystander > 0 & log.dismissed == 2 & is-err (world-get env.game.world 12) & is-err (world-get env.game.world other) & is-ok (world-get env.game.world bystander) & env.actor.mana == 60 & mr-costs env 54 0)
+        mr-check "UOAIX-81: spell 54 (Vas An Ort) dispels both summoned blade spirits within 8 tiles and leaves the creature nobody summoned, at its reagents and 40 mana" ok
+      end
+    a + b + c + d
+  end
+  mr-damage-paths : Integer, Integer -> [Console, Device.Block] Integer
+  mr-damage-paths (path) (failures) = if path == 5 then act failures end
+    else act
+      mark <- __heap-save
+      result <- mr-damage-case path
+      restored <- __heap-restore mark
+      mr-damage-paths (path + 1) (failures + result)
     end
   mr-unchanged : MrEnv, Integer -> Boolean
   mr-unchanged (env) (i) = if i == 8 then env.actor.mana == 20
@@ -210,6 +735,7 @@ Chapter: MageryReplay
     tracked <- mgs-track env.magic env.actor
     cast <- __record-set env.actor "stage" 2
     cursor <- __record-set env.actor "cursor" #4D470123
+    keyed <- __record-set (list-at env.magic.definitions (world-slot env.game.world #4000000D)) "key" 77
     buffer <- alloc-bytes (mgc-size env.magic)
     encoded <- mgc-write env.magic buffer (mgc-size env.magic) 1000
     fresh <- mgs-new env.magic.items env.magic.bank env.magic.combat env.magic.decoration None (mr-cover env.map)
@@ -223,18 +749,56 @@ Chapter: MageryReplay
     refused <- mgc-read fresh buffer (mgc-size fresh) 20000
     c <- mr-check "MGM1 refuses excess mana before mutating restored state" (is-err refused & actor.mana == 7 & fresh.tick == 10000)
     book <- list-at fresh.definitions 2
-    d <- mr-check "MGM1 restores spellbook definition" (book.serial == #40000003 & book.spells == #80FFFFFF)
-    a+b+c+d
+    d <- mr-check "MGM1 restores spellbook definition" (book.serial == #40000003 & book.spells == #100480FFFFFF)
+    box <- list-at fresh.definitions (world-slot env.game.world #4000000D)
+    e <- mr-check "MGM2 restores a lockable container's key id" (box.serial == #4000000D & box.lockable & box.key == 77)
+    a+b+c+d+e
+  end
+  mr-book-working : MrEnv -> [Console, Device.Block] Integer
+  mr-book-working (env) = act
+    full <- mgs-book env.magic #40000003 (0 - 1)
+    shown <- mg-book-open env.magic env.game env.input #40000003
+    rows <- list-at shown.packets 2
+    mr-check "a spellbook holding every spell lists all 64 Magery spells (UOAIX-81)" (is-ok full & list-length shown.packets == 3 & gp-u16 rows 3 == 64 & list-length rows == 1221 & gp-u16 rows 12 == 1 & gp-u16 rows 601 == 32 & gp-u16 rows 772 == 41 & gp-u16 rows 1019 == 54 & gp-u16 rows 1209 == 64)
+  end
+  mr-quiver : MrEnv -> [Console, Device.Block] Integer
+  mr-quiver (env) = act
+    made <- world-create env.game.world (__record-set (gs-item #40000002 #0F3F 0) "amount" 3)
+    arrows <- when made is Err (_) -> 0 is Ok (serial) -> serial
+    meta <- gsi-register env.magic.items arrows 0 0 True True
+    first <- mgr-ammo env.magic 1 #0F3F
+    left <- when world-get env.game.world arrows is Err (_) -> -1 is Ok (item) -> item.amount
+    second <- mgr-ammo env.magic 1 #0F3F
+    third <- mgr-ammo env.magic 1 #0F3F
+    gone <- world-slot env.game.world arrows < 0
+    empty <- mgr-ammo env.magic 1 #0F3F
+    bolts <- mgr-ammo env.magic 1 #1BFB
+    mr-check "a shot spends one arrow from the pack stack and an empty quiver refuses (UOAIX-44)" (arrows > 0 & is-ok first & left == 2 & is-ok second & is-ok third & gone & is-err empty & is-err bolts)
+  end
+  mr-opcode : List (List Integer), Integer, Integer -> Boolean
+  mr-opcode (packets) (op) (i) = if i >= list-length packets then False
+    else if list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op then True else mr-opcode packets op (i + 1)
+  mr-telekinesis : MrEnv -> [Console, Device.Block] Integer
+  mr-telekinesis (env) = act
+    refused <- mr-cast env 21 #4000000E 1000
+    a <- mr-check "telekinesis on an item that is no container or door answers ServUO's refusal and costs nothing" (refused.note == "This spell won't work on that!" & env.actor.stage == 0 & mr-unchanged env 0)
+    pack <- mr-cast env 21 #40000002 3000
+    b <- mr-check "telekinesis on an unlocked container plays the effect and sound and opens nothing" (mr-opcode pack.packets #70 0 & mr-opcode pack.packets #54 0 & not (mr-opcode pack.packets #24 0) & mr-costs env 21 0)
+    box <- list-at env.magic.definitions (world-slot env.game.world #4000000D)
+    locked <- __record-set box "locked" True
+    shut <- mr-cast env 21 #4000000D 5000
+    c <- mr-check "telekinesis on a locked container says it appears to be locked, with the effect and sound" (mr-opcode shut.packets #1C 0 & mr-opcode shut.packets #70 0 & not (mr-opcode shut.packets #24 0) & box.locked)
+    a+b+c
   end
   mr-bytes : Integer, Integer, Integer, Integer -> Boolean
   mr-bytes (a) (b) (i) (length) = if i == length then True
     else if peek-byte a i /= peek-byte b i then False else mr-bytes a b (i + 1) length
   mr-regressions : Integer, Integer -> [Console, Device.Block] Integer
-  mr-regressions (i) (failures) = if i == 4 then act failures end else let mark = __heap-save
+  mr-regressions (i) (failures) = if i == 7 then act failures end else let mark = __heap-save
     in act
       result <- when mr-env 0
         is Err (e) -> mr-check e False
-        is Ok (env) -> if i == 0 then mr-guards env else if i == 1 then mr-interruption env else if i == 2 then mr-codec env else mr-lots env
+        is Ok (env) -> if i == 0 then mr-guards env else if i == 1 then mr-interruption env else if i == 2 then mr-codec env else if i == 3 then mr-lots env else if i == 4 then mr-book-working env else if i == 5 then mr-telekinesis env else mr-quiver env
       restored <- __heap-restore mark
       mr-regressions (i + 1) (failures + result)
     end
@@ -265,10 +829,15 @@ Chapter: MageryReplay
         in let ready = mgr-ready env.magic 1 128 0
         in let first = mgr-consume env.magic 1 128 0 []
         in act
-          a <- mr-check "tracked whole-stack reagent debits quantity quality wear and proportional basis" (player == 0 & lot == 0 & ready & is-ok first & mr-amount env 7 == 4 & ep-at actor.stock 24 == 4 & ep-at actor.quality 24 == 2000 & ep-at actor.wear 24 == 8 & ep-at actor.cost 24 == 14 & (list-at vendor.lots 0).basis == 14 & ep-at economy.consumed 24 == 1 & (list-at vendor.players 0).side == 0 & ep-census economy 1)
+          a <- mr-check "tracked whole-stack reagent debits quantity quality wear and proportional basis" (player == 0 & lot == #4000000B & ready & is-ok first & mr-amount env 7 == 4 & ep-at actor.stock 24 == 4 & ep-at actor.quality 24 == 2000 & ep-at actor.wear 24 == 8 & ep-at actor.cost 24 == 14 & (ep-lot vendor.currency.world.goods (ep-lot-nth vendor.currency.world.goods 0)).basis == 14 & ep-at economy.consumed 24 == 1 & (list-at vendor.players 0).side == 0 & ep-census economy 1)
           rest <- mr-consume-lot env.magic 4
-          b <- mr-check "last reagent retires physical lot and leaves exact zero basis with conserved census" (rest & world-slot env.game.world #4000000B < 0 & vendor.lot-count == 0 & ep-at actor.stock 24 == 0 & ep-at actor.quality 24 == 0 & ep-at actor.wear 24 == 0 & ep-at actor.cost 24 == 0 & ep-at economy.consumed 24 == 5 & ep-census economy 1)
-          a+b
+          b <- mr-check "last reagent retires physical lot and leaves exact zero basis with conserved census" (rest & world-slot env.game.world #4000000B < 0 & (ep-lot-count vendor.currency.world.goods) == 0 & ep-at actor.stock 24 == 0 & ep-at actor.quality 24 == 0 & ep-at actor.wear 24 == 0 & ep-at actor.cost 24 == 0 & ep-at economy.consumed 24 == 5 & ep-census economy 1)
+          fell <- mgr-drop-ammo env.magic 1 #40000002 #0F8C
+          ground <- (ep-lot-count vendor.currency.world.goods)
+          c <- mr-check "a spent unit that falls is booked back: consumed down one, the shooter's stock up one, a ground lot the shooter owns, census conserved (ruling A)" (fell == 1 & ground == 1 & (ep-lot vendor.currency.world.goods (ep-lot-nth vendor.currency.world.goods 0)).actor == admitted & ep-at economy.consumed 24 == 4 & ep-at actor.stock 24 == 1 & ep-census economy 1)
+          stray <- mgr-drop-ammo env.magic 999 #40000002 #0F8C
+          d <- mr-check "a shooter with no economy actor drops nothing, so no unit appears from nothing" (stray == 0 & (ep-lot-count vendor.currency.world.goods) == 1 & ep-at economy.consumed 24 == 4)
+          a+b+c+d
         end
   mr-decoration : WalkMap -> Result WdState Text
   mr-decoration (map) = let data = alloc-bytes 64
@@ -279,6 +848,49 @@ Chapter: MageryReplay
     in let d = poke-qword data 32 map.width
     in let e = poke-qword data 40 map.height
     in wd-read data 64 map 200
+  mr-scroll-item : MrEnv, Integer, Integer -> Integer
+  mr-scroll-item (env) (container) (graphic) = let item = gs-item container graphic 0
+    in let x = __record-set item "x" (if container == 0 then 1421 else 40)
+    in let y = __record-set item "y" (if container == 0 then 1698 else 60)
+    in when world-create env.game.world item
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register env.magic.items serial 0 0 True True /= 0 then 0 else serial
+  mr-lift : Integer -> List Integer
+  mr-lift (serial) = gp-put16 (gp-put32 [#07] serial) 1
+  mr-drop : Integer, Integer -> List Integer
+  mr-drop (serial) (container) = gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [#08] serial) #FFFF) #FFFF) 0) container
+  mr-scroll-case : Integer -> [Console, Device.Block] Integer
+  mr-scroll-case (unused) = when mr-env 0
+    is Err (e) -> act
+      print-line-uni ("FAIL scroll fixture " & e)
+      1
+    end
+    is Ok (env) -> act
+      heal <- mr-scroll-item env #40000002 #1F31
+      started <- mg-handle-at env.magic env.game env.input env.map 2593 (gp-put32 [6] heal) 1000
+      pulsed <- mg-pulse env.magic env.game env.input env.map 2593 (1000 + mgd-delay 4)
+      cast <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-target env.actor.cursor 1 1424 1701 0) (1000 + mgd-delay 4 + 1)
+      healed <- when world-get env.game.world 1 is Err (_) -> 0 is Ok (m) -> m.health
+      a <- mr-check "a Heal scroll in the pack casts with no reagents and is used up (ServUO SpellScroll)" (heal > 0 & (mr-reply started).note == "magery:casting spell=4"
+        & (mr-reply cast).note == "magery:cast spell=4" & healed > 10 & mr-costs env 0 0 & not (is-ok (world-get env.game.world heal)))
+      ground <- mr-scroll-item env 0 #1F31
+      refused <- mg-handle-at env.magic env.game env.input env.map 2593 (gp-put32 [6] ground) 20000
+      b <- mr-check "a scroll outside the pack is refused (ServUO 1042001)" (ground > 0 & (mr-reply refused).note == "That must be in your pack for you to use it."
+        & is-ok (world-get env.game.world ground))
+      without <- mgs-book env.magic #40000003 #100480FFFFF7
+      second <- mr-scroll-item env #40000002 #1F31
+      lifted <- gsi-handle-at env.magic.items env.game env.input env.map 2593 (mr-lift second) 100000
+      dropped <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-drop second #40000003) 21000
+      c <- mr-check "a Heal scroll dropped on a book without Heal writes it in and is used up (ServUO Spellbook.OnDragDrop)" (is-ok without & second > 0
+        & (mr-reply lifted).note == "items:lift" & (mr-reply dropped).note == "magery:book-scribed" & mgs-spells env.magic #40000003 == #100480FFFFFF
+        & not (is-ok (world-get env.game.world second)))
+      third <- mr-scroll-item env #40000002 #1F31
+      relifted <- gsi-handle-at env.magic.items env.game env.input env.map 2593 (mr-lift third) 200000
+      again <- mg-handle-at env.magic env.game env.input env.map 2593 (mr-drop third #40000003) 22000
+      d <- mr-check "a scroll dropped on a book that holds its spell answers 500179 and stays" (third > 0 & (mr-reply relifted).note == "items:lift"
+        & (mr-reply again).note == "magery:book-has" & is-ok (world-get env.game.world third))
+      a + b + c + d
+    end
   mr-run : GameShard, WalkMap, WdState -> [Console, Device.Block] Integer
   mr-run (game) (map) (decoration) = act
     mobile <- world-create game.world (gs-mobile 0 1421 1698 0 400 1002)
@@ -312,7 +924,30 @@ Chapter: MageryReplay
         mana <- mgp-mana actor
         c <- mr-check "mana packet sends maximum before current" (list-length mana == 9 & list-at mana 0 == #A2 & gp-u32 mana 1 == 1 & gp-u16 mana 5 == 20 & gp-u16 mana 7 == 20)
         d <- mr-check "classic costs delay and healing reagent set" (mgd-mana 4 == 4 & mgd-mana 12 == 6 & mgd-mana 18 == 9 & mgd-mana 32 == 11 & mgd-delay 4 == mgd-ticks 500 & mgd-reagents 4 == mgd-three 2 3 6)
-        a+b+c+d
+        lowered <- gs-skill-set game 1 25 0
+        weak <- mr-casts magic game 25 40 0
+        e <- mr-check "the cast check reads Magery from the skill table, not the creation record (50.0 there, about 68% for a fourth-circle spell): at 0.0 spell 25 succeeds 0 of 40" (lowered == 0 & weak == 0)
+        forgotten <- poke-byte game.characters 83 0
+        raised <- gs-skill-set game 1 25 1000
+        sure <- mr-casts magic game 1 40 0 + mr-casts magic game 9 40 0 + mr-casts magic game 18 40 0
+        f <- mr-check "with the creation record at 0.0, after [skill magery 100 (the table's one write) circles 1 to 3 never fizzle: 120 of 120" (raised == 0 & sure == 120)
+        middle <- gs-skill-set game 1 25 300
+        practised <- mr-casts magic game 9 200 0
+        g <- mr-check "casting practises Magery in the skill table" (gs-skill game 1 25 > 300)
+        gm-magery <- gs-skill-set game 1 25 1000
+        gm-resist <- gs-skill-set game 1 26 1000
+        gm-eval <- gs-skill-set game 1 16 1000
+        held <- mr-resists magic game 400 0
+        h <- mr-check ("UOAIX-77: GM Resisting Spells and Eval Int against a GM mage with GM Eval Int resist more often than not, " & show held & " of 400, and an unresisted spell lands a tenth") (held > 200 & held < 260 & mge-share game 1 1 == 100)
+        no-resist <- gs-skill-set game 1 26 0
+        whole <- mge-share game 1 1
+        bare <- mr-resists magic game 1 0
+        i <- mr-check "UOAIX-77: with no Resisting Spells nothing resists and the whole spell lands" (bare == 0 & whole == 1000 & mge-resist-chance 1000 0 == 0)
+        j <- mr-check "UOAIX-77: a defence leading the attack resists more, to 95%; a defence trailing it resists its share of 55%" (mge-resist-chance 1000 1000 == 550 & mge-resist-chance 500 1000 == 750 & mge-resist-chance 0 2000 == 950 & mge-resist-chance 1000 500 == 275 & mge-landed 1000 500 == 500 & mge-landed 1000 950 == 100)
+        green <- gs-skill-set game 1 26 300
+        trained <- mr-resists magic game 300 0
+        k <- mr-check "UOAIX-77: the resist roll practises Resisting Spells in the skill table" (gs-skill game 1 26 > 300)
+        a+b+c+d+e+f+g+h+i+j+k
       end
   end
   opening : [Console, Device.Block] Integer = when gs-new 0
@@ -334,6 +969,10 @@ Chapter: MageryReplay
           failures <- mr-run game map decoration
           effects <- mr-effects 1 0
           regressions <- mr-regressions 0 0
-          print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions))
-          failures + effects + regressions
+          killed <- mr-damage-paths 1 0
+          scrolls <- mr-scroll-case 0
+          paralysed <- mr-paralyze 0
+          cursed <- mr-slice2 27 + mr-slice2 31 + mr-slice2 46 + mr-slice2 53 + mr-slice2 30 + mr-slice2 37 + mr-slice2 42 + mr-slice2 51 + mr-explosion 0 + mr-slice4 29 + mr-slice4 25 + mr-slice4 26 + mr-slice4 49 + mr-slice4 55 + mr-slice4 57 + mr-slice4 50 + mr-slice4 28 + mr-slice4 39 + mr-slice4 47 + mr-reflect 0 + mr-invisibility 0 + mr-dispel-field 0 + mr-gate-travel 0 + mr-gate-codec 0 + mr-polymorph 0 + mr-resurrection 0 + mr-summons 0 + mr-dispels 0
+          print-line-uni ("MAGERY REPLAY failures=" & show (failures + effects + regressions + killed + scrolls + paralysed + cursed))
+          failures + effects + regressions + killed + scrolls + paralysed + cursed
         end

@@ -19,6 +19,15 @@ Chapter: GameAccountsProof
     else gap-text text shift (i + 1) (list-push out (if i < text-length text then to-unicode (char-code (char-at text i)) - shift else 0))
   gap-login : Text, Text -> List Integer
   gap-login (name) (password) = list-push (gap-text password 13 0 (gap-text name 0 0 [128])) 0
+  gap-zeros : Integer, List Integer -> List Integer
+  gap-zeros (left) (out) = if left == 0 then out else gap-zeros (left - 1) (list-push out 0)
+ The decrypted 0x80 that play-head8b refused at ms 651400 (2026-10-06): a stale
+ 't' after the name's NUL, the password in plain bytes, trailer 5D.
+  gap-captured : List Integer
+  gap-captured = gap-zeros 21 [128, 66, 114, 105, 116, 105, 115, 104, 0, 116]
+    & gap-zeros 21 [65, 115, 116, 114, 111, 110, 97, 117, 116] & [93]
+  gap-login-plain : Text, Text -> List Integer
+  gap-login-plain (name) (password) = list-push (gap-text password 0 0 (gap-text name 0 0 [128])) 0
   gap-game : Text, Text -> List Integer
   gap-game (name) (password) = gap-text password 13 0 (gap-text name 0 0 [145, 0, 0, 0, 1])
 
@@ -36,6 +45,8 @@ Chapter: GameAccountsProof
     gap-check "British keeps the default password" (ga-british-default table)
     gap-check "British admits Astronaut" (gap-index (ga-admit table (gap-login "British" "Astronaut") 1 31) == 0)
     gap-check "British refuses another password" (is-err (ga-admit table (gap-login "British" "astronaut") 1 31))
+    gap-check "the captured 62-byte plain-password login admits British" (list-length gap-captured == 62 & gap-index (ga-admit table gap-captured 1 31) == 0)
+    gap-check "British refuses another password sent as plain bytes" (is-err (ga-admit table (gap-login-plain "British" "astronaut") 1 31))
     gap-check "development admits an unknown name without creating it" (gap-index (ga-admit table (gap-login "uoaixtest" "uoaixtest") 1 31) == 0 - 1 & ga-count table == 1)
     gap-check "game login creates the unknown account" (gap-index (ga-login table (gap-game "uoaixtest" "uoaixtest") 5 35) == 1 & ga-count table == 2)
     gap-check "a second game login finds the same account" (gap-index (ga-login table (gap-game "uoaixtest" "uoaixtest") 5 35) == 1 & ga-count table == 2)
@@ -59,9 +70,11 @@ Chapter: GameAccountsProof
 
   gap-slots : GameShard, Integer, Integer -> [Console] Nothing
   gap-slots (game) (mobile) (other) = act
-    gap-check "binding an account loads its empty slots" (ga-bind game.accounts game.characters 1 & ga-bound game.accounts == 1 & gs-free-slot game.characters 0 == 0)
+    gap-check "binding an account loads its empty slots" (gs-bind game 1 & ga-bound game.accounts == 1 & gs-free-slot game.characters 0 == 0)
     let a = poke-qword game.characters 0 mobile
-    in gap-check "first free slot skips an occupied slot" (gs-free-slot game.characters 0 == 1)
+    in gap-check "a write to the working slots is already in the bound account's record, with nothing to sync" (peek-qword (ga-slots game.accounts 1) 0 == mobile
+      & game.characters == ga-slots game.accounts 1 & chs-record game.characters game.accounts mobile == ga-slots game.accounts 1)
+    gap-check "first free slot skips an occupied slot" (gs-free-slot game.characters 0 == 1)
     let b = poke-qword game.characters 160 other
     in let c = poke-qword game.characters 320 other
     in let d = poke-qword game.characters 480 other
@@ -71,21 +84,21 @@ Chapter: GameAccountsProof
     in let g = poke-qword game.characters 320 0
     in let h = poke-qword game.characters 480 0
     in let i = poke-qword game.characters 640 0
-    in gap-check "rebinding saves the working slots into the account" (ga-bind game.accounts game.characters 2 & peek-qword (ga-slots game.accounts 1) 0 == mobile & peek-qword game.characters 0 == 0)
-    gap-check "binding back restores the account's slots" (ga-bind game.accounts game.characters 1 & peek-qword game.characters 0 == mobile)
-    gap-check "binding the bound account changes nothing" (not (ga-bind game.accounts game.characters 1))
+    in gap-check "the working slots are the bound account's own record, kept there on rebind" (gs-bind game 2 & peek-qword (ga-slots game.accounts 1) 0 == mobile & peek-qword game.characters 0 == 0)
+    gap-check "binding back restores the account's slots" (gs-bind game 1 & peek-qword game.characters 0 == mobile & game.characters == ga-slots game.accounts 1)
+    gap-check "binding the bound account changes nothing" (not (gs-bind game 1))
   end
 
   gap-british : GameShard -> [Console] Nothing
   gap-british (game) = let accounts = ga-new ga-dev
     in let unlogged = not (ga-is-british accounts)
     in let created = gs-store-create game.characters 0 gap-packet 0
-    in let bound = ga-bind accounts game.characters 0
+    in let bound = poke-qword accounts 8 0
     in let logged = ga-logged accounts
     in let lord = ga-is-british accounts
     in let doll = sip-paperdoll-titled game.characters 0 7 lord
     in let made = ga-login accounts (gap-game "uoaixtest" "uoaixtest") 5 35
-    in let other = ga-bind accounts game.characters (gap-index made)
+    in let other = poke-qword accounts 8 (gap-index made)
     in act
       gap-check "British powers need a login as British" (unlogged & lord & not (ga-is-british accounts))
       gap-check "British's paperdoll carries the Lord title" (list-at doll 5 == 76 & list-at doll 6 == 111 & list-at doll 7 == 114 & list-at doll 8 == 100 & list-at doll 9 == 32 & list-at doll 10 == 65 & list-length doll == 66)

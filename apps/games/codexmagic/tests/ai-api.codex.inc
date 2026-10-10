@@ -2224,7 +2224,7 @@ Chapter: ApiCheck
   api-j-auth : Boolean
   api-j-auth =
     let display = "café\"\\Ω中"
-    in let created = handle-register magic-store-new ("GET /api/auth/register?u=json-user&d=" & display & "&p=dummy-pass HTTP/1.1")
+    in let created = handle-register (magic-store-keyed magic-store-new [1, 2, 3, 4]) ("GET /api/auth/register?u=json-user&d=" & display & "&p=dummy-pass HTTP/1.1")
     in let registered = api-j-value (created.resp)
     in let logged = api-j-value ((handle-login (created.store) "GET /api/auth/login?u=json-user&p=dummy-pass HTTP/1.1").resp)
     in json-get-str registered "display" "" == display & json-get-bool registered "admin" False

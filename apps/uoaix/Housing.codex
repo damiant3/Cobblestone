@@ -1,0 +1,252 @@
+Chapter: Housing
+  cites Uoaix chapter HouseData
+  cites Uoaix chapter Construction
+  cites Uoaix chapter BankCommands
+  cites Uoaix chapter Cities
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter MageryState
+
+  HsState = record { rows : Integer, plots : Integer, bids : Integer, room : Integer, count : Integer, next : Integer, asks : Integer, ask : Integer, escrow : Integer }
+ A bid row: id, house, bidder serial, bidder purse, copper, silver, gold, the town second it was placed.
+  hs-bid-bytes : Integer = 64
+  hs-block : Integer = 32
+  hs-ceiling : Integer = 65536
+ A sign click arms a bid for a game hour; the ring keeps the last 64 clicks (serial, house plus 1, the second it lapses).
+  hs-ask-rows : Integer = 64
+  hs-ask-seconds : Integer = 3600
+  hs-reach : Integer = 3
+ The escrow purse is a crown purse (kind 5) under a label no shop, resident, worker or spawn uses.
+  hs-escrow-owner : Integer = 8000000
+  hs-zero : Integer, Integer, Integer -> Integer
+  hs-zero (buf) (i) (n) = if i >= n then 0 else let z = poke-qword buf (i * 8) 0 in hs-zero buf (i + 1) n
+  hs-fill : Integer, List Integer, Integer -> Integer
+  hs-fill (buf) (xs) (i) = if i >= list-length xs then 0 else let a = poke-qword buf (i * 8) (list-at xs i) in hs-fill buf xs (i + 1)
+  hs-new : Integer -> HsState
+  hs-new (unused) = let rows = alloc-bytes (hd-count * hd-row-cells * 8)
+    in let filled = hs-fill rows (hd-rows 0) 0
+    in let plots = alloc-bytes (hd-count * 8)
+    in let a = hs-zero plots 0 hd-count
+    in let bids = alloc-bytes (hs-block * hs-bid-bytes)
+    in let b = hs-zero bids 0 (hs-block * hs-bid-bytes / 8)
+    in let asks = alloc-bytes (hs-ask-rows * 24)
+    in let c = hs-zero asks 0 (hs-ask-rows * 3)
+    in HsState { rows = rows, plots = plots, bids = bids, room = hs-block, count = 0, next = 1, asks = asks, ask = 0, escrow = 0 }
+  hs-cell : HsState, Integer, Integer -> Integer
+  hs-cell (s) (h) (k) = peek-qword s.rows ((h * hd-row-cells + k) * 8)
+  hs-bid : HsState, Integer, Integer -> Integer
+  hs-bid (s) (i) (k) = peek-qword s.bids (i * hs-bid-bytes + k * 8)
+  hs-house-at-sign : HsState, Integer, Integer, Integer -> Integer
+  hs-house-at-sign (s) (x) (y) (h) = if h >= hd-count then -1
+    else if hs-cell s h 0 == x & hs-cell s h 1 == y then h else hs-house-at-sign s x y (h + 1)
+  hs-plot : HsState, Integer -> Integer
+  hs-plot (s) (h) = peek-qword s.plots (h * 8)
+ The house's holder, 0 while the crown sells it; a forfeited plot (holder 0) puts it back on sale.
+  hs-holder : HsState, CnState, Integer -> Integer
+  hs-holder (s) (land) (h) = let p = hs-plot s h in if p < 1 | p > cn-plots land then 0 else cn-plot land (p - 1) 4
+  hs-where : HsState, Integer -> Text
+  hs-where (s) (h) = let x = hs-cell s h 3 in let y = hs-cell s h 4
+    in let cities = ct-table 0
+    in let c = ct-city-at cities x y 0
+    in "house " & show (h + 1) & (if c < 0 then "" else " in " & (list-at cities c).name) & " (" & show x & ", " & show y & ")"
+  hs-coin : Integer, Integer, Integer -> Text
+  hs-coin (copper) (silver) (gold) = if gold > 0 then show gold & " gold" else if silver > 0 then show silver & " silver" else show copper & " copper"
+  hs-row-coin : HsState, Integer -> Text
+  hs-row-coin (s) (i) = hs-coin (hs-bid s i 4) (hs-bid s i 5) (hs-bid s i 6)
+
+Section: Growth
+
+  hs-due : HsState -> Boolean
+  hs-due (s) = s.escrow == 0 | (s.room - s.count < s.room / 4 & s.room < hs-ceiling)
+  hs-grow-to : HsState, Integer -> Integer
+  hs-grow-to (s) (room) = if room <= s.room then 0
+    else let fresh = alloc-bytes (room * hs-bid-bytes)
+    in let cleared = hs-zero fresh 0 (room * hs-bid-bytes / 8)
+    in let copied = ws-copy s.bids fresh (s.count * hs-bid-bytes) 0
+    in let a = __record-set s "bids" fresh
+    in let b = __record-set s "room" room in 0
+ The growth point opens the escrow purse (or finds the one a save holds), once a boot: a purse table that refuses it
+ leaves bidding closed (-1). The bid table doubles once under a quarter is free.
+  hs-grow : HsState, EuCurrency -> Integer
+  hs-grow (s) (x) = let found = if s.escrow > 0 then s.escrow else em-find x.world.money 5 hs-escrow-owner 1
+    in let purse = if found > 0 then found else eu-open x 5 hs-escrow-owner
+    in let a = __record-set s "escrow" (if purse > 0 then purse else 0 - 1)
+    in if s.room - s.count < s.room / 4 then hs-grow-to s (min hs-ceiling (s.room * 2)) else 0
+
+Section: Bids
+
+  hs-asked : HsState, Integer, Integer, Integer -> Integer
+  hs-asked (s) (serial) (now) (i) = if i >= hs-ask-rows then -1
+    else let at = s.asks + i * 24
+    in if peek-qword at 0 == serial & peek-qword at 16 > now then peek-qword at 8 - 1 else hs-asked s serial now (i + 1)
+  hs-arm : HsState, Integer, Integer, Integer -> Integer
+  hs-arm (s) (serial) (h) (now) = let at = s.asks + s.ask * 24
+    in let a = poke-qword at 0 serial
+    in let b = poke-qword at 8 (h + 1)
+    in let c = poke-qword at 16 (now + hs-ask-seconds)
+    in let d = __record-set s "ask" (int-mod (s.ask + 1) hs-ask-rows) in 0
+  hs-bid-of : HsState, Integer, Integer, Integer -> Integer
+  hs-bid-of (s) (h) (serial) (i) = if i >= s.count then -1
+    else if hs-bid s i 1 == h & hs-bid s i 2 == serial then i else hs-bid-of s h serial (i + 1)
+  hs-bid-id : HsState, Integer, Integer -> Integer
+  hs-bid-id (s) (id) (i) = if i >= s.count then -1 else if hs-bid s i 0 == id then i else hs-bid-id s id (i + 1)
+  hs-open-bids : HsState, Integer, Integer -> Integer
+  hs-open-bids (s) (h) (i) = if i >= s.count then 0 else (if hs-bid s i 1 == h then 1 else 0) + hs-open-bids s h (i + 1)
+  hs-drop : HsState, Integer -> Integer
+  hs-drop (s) (i) = let last = s.count - 1
+    in let moved = if i == last then 0 else ws-copy (s.bids + last * hs-bid-bytes) (s.bids + i * hs-bid-bytes) hs-bid-bytes 0
+    in let cleared = hs-zero (s.bids + last * hs-bid-bytes) 0 (hs-bid-bytes / 8)
+    in let a = __record-set s "count" last in 0
+  hs-player-purse : GvWorld, Integer -> Integer
+  hs-player-purse (v) (serial) = let at = gv-player v serial 0
+    in if at < 0 then 0 else (ep-actor v.currency.world (list-at v.players at).actor).purse
+  hs-metal : List Integer -> Integer
+  hs-metal (word) = if bc-same word [99,111,112,112,101,114] then 1 else if bc-same word [115,105,108,118,101,114] then 2
+    else if bc-same word [103,111,108,100] then 3 else 0
+  hs-tell : Text -> GameReply
+  hs-tell (text) = gs-reply [sip-message #FFFFFFFF #FFFF 6 text] "housing"
+  hs-near-sign : HsState, Integer, WorldObject -> Boolean
+  hs-near-sign (s) (h) (me) = walk-abs (me.x - hs-cell s h 0) <= hs-reach & walk-abs (me.y - hs-cell s h 1) <= hs-reach
+ A double-click on house h's sign: the house's state, and for a house on sale the bid armed for this player.
+  hs-sign : HsState, CnState, GameShard, GameInput, Integer, Integer, (Integer -> Text) -> GameReply
+  hs-sign (s) (land) (game) (input) (h) (now) (name) = let holder = hs-holder s land h
+    in when world-get game.world input.session.serial
+      is Err (_) -> hs-tell "You are nowhere."
+      is Ok (me) -> if not (hs-near-sign s h me) then gsi-denied "That is out of reach."
+        else if holder == input.session.serial then hs-tell ("This is your home, " & hs-where s h & ".")
+        else if holder > 0 then hs-tell ("This house belongs to " & name holder & ".")
+        else let armed = hs-arm s input.session.serial h now
+        in let mine = hs-bid-of s h input.session.serial 0
+        in hs-tell ("The crown sells " & hs-where s h & "." & (if mine >= 0 then " Your bid of " & hs-row-coin s mine & " awaits Lord British." else " To bid, say bid and a sum here, as: bid 5000 gold. The coin is held until Lord British grants or rejects the bid."))
+ "bid N [gold|silver|copper]" by a player who clicked a house's sign within the hour and stands by it: the sum moves from
+ the player's purse into escrow untaxed, under the bid's id.
+  hs-said : HsState, CnState, GvWorld, GameShard, GameInput, List Integer, Integer -> Maybe GameReply
+  hs-said (s) (land) (v) (game) (input) (packet) (now) = if list-length packet <= 9 | list-at packet 0 /= 3 | input.mode /= 2 | input.session.phase /= 2 then None
+    else let words = bc-words (bc-said packet 8 []) 0 [] []
+    in if list-length words < 2 | not (bc-same (list-at words 0) [98,105,100]) then None
+    else let h = hs-asked s input.session.serial now 0
+    in if h < 0 then Just (hs-tell "Double-click a house's sign first, then say your bid beside it.")
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (me) -> Just (hs-place s land v game input me h (bc-number (list-at words 1) 0 0) (if list-length words < 3 then 3 else hs-metal (list-at words 2)) now)
+  hs-place : HsState, CnState, GvWorld, GameShard, GameInput, WorldObject, Integer, Integer, Integer, Integer -> GameReply
+  hs-place (s) (land) (v) (game) (input) (me) (h) (amount) (metal) (now) = let purse = hs-player-purse v input.session.serial
+    in if not (hs-near-sign s h me) then hs-tell "Stand by the house's sign to bid."
+    else if hs-holder s land h > 0 then hs-tell "That house is no longer for sale."
+    else if amount < 1 | metal == 0 then hs-tell "Say bid and a sum, as: bid 5000 gold, bid 300 silver or bid 900 copper."
+    else if hs-bid-of s h input.session.serial 0 >= 0 then hs-tell "You have bid on this house already; Lord British will answer that bid."
+    else if s.escrow < 1 | s.count >= s.room then hs-tell "The crown's clerk is busy; say your bid again in a moment."
+    else if purse < 2 then hs-tell "You hold no purse to bid from."
+    else let c = if metal == 1 then amount else 0
+    in let sv = if metal == 2 then amount else 0
+    in let g = if metal == 3 then amount else 0
+    in let id = hs-enter s v.currency purse input.session.serial h c sv g now
+    in if id < 0 then hs-tell ("Your purse cannot give " & hs-coin c sv g & ".")
+    else let touched = world-touch game.world
+    in hs-tell ("Bid " & show id & ": " & hs-coin c sv g & " for " & hs-where s h & " is held in escrow until Lord British grants or rejects it.")
+ The bid's coin moves into escrow and its row is written; answers the bid id, or -1 with nothing moved.
+  hs-enter : HsState, EuCurrency, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  hs-enter (s) (x) (purse) (serial) (h) (c) (sv) (g) (now) = let id = s.next
+    in if s.escrow < 1 | s.count >= s.room | h < 0 | h >= hd-count then -1
+    else if eu-escrow x purse s.escrow c sv g id < 0 then -1
+    else let at = s.bids + s.count * hs-bid-bytes
+    in let a = poke-qword at 0 id
+    in let b = poke-qword at 8 h
+    in let d = poke-qword at 16 serial
+    in let e = poke-qword at 24 purse
+    in let f = poke-qword at 32 c
+    in let i = poke-qword at 40 sv
+    in let j = poke-qword at 48 g
+    in let k = poke-qword at 56 now
+    in let n = __record-set s "count" (s.count + 1)
+    in let m = __record-set s "next" (id + 1) in id
+
+Section: Grants
+
+  hs-refund : HsState, EuCurrency, Integer -> Integer
+  hs-refund (s) (x) (i) = eu-escrow x s.escrow (hs-bid s i 3) (hs-bid s i 4) (hs-bid s i 5) (hs-bid s i 6) (hs-bid s i 0)
+ A reject returns the escrow in full and closes the bid.
+  hs-reject : HsState, EuCurrency, Integer -> Result Text Text
+  hs-reject (s) (x) (id) = let i = hs-bid-id s id 0
+    in if i < 0 then Err ("No open bid " & show id & ".")
+    else let h = hs-bid s i 1
+    in let bidder = hs-bid s i 2
+    in let coin = hs-row-coin s i
+    in if hs-refund s x i < 0 then Err ("Bid " & show id & " cannot be returned from escrow.")
+    else let dropped = hs-drop s i
+    in Ok ("Bid " & show id & " rejected: " & coin & " returned to " & show bidder & " for " & hs-where s h & ".")
+  hs-refund-house : HsState, EuCurrency, Integer, Integer -> Integer
+  hs-refund-house (s) (x) (h) (i) = if i >= s.count then 0
+    else if hs-bid s i 1 /= h then hs-refund-house s x h (i + 1)
+    else if hs-refund s x i < 0 then 1 + hs-refund-house s x h (i + 1)
+    else let dropped = hs-drop s i in hs-refund-house s x h i
+ A grant pays the escrow to the treasury, holds the house's floor and walls as the bidder's plot (so what stands inside
+ is kept), and returns every other open bid on the house. Answers the bidder and the house, or the refusal.
+  hs-grant : HsState, CnState, EuCurrency, Integer, Integer -> Result (List Integer) Text
+  hs-grant (s) (land) (x) (id) (day) = let i = hs-bid-id s id 0
+    in if i < 0 then Err ("No open bid " & show id & ".")
+    else let h = hs-bid s i 1
+    in let bidder = hs-bid s i 2
+    in if hs-holder s land h > 0 then Err ("House " & show (h + 1) & " is held already; reject the bid.")
+    else if cn-plots land >= land.plot-room then Err "Every plot is taken until the next growth point; grant again in a moment."
+    else if eu-escrow x s.escrow 1 (hs-bid s i 4) (hs-bid s i 5) (hs-bid s i 6) id < 0 then Err ("Bid " & show id & " cannot be paid from escrow.")
+    else when cn-hold land bidder (hs-cell s h 6 - 1) (hs-cell s h 7 - 1) (hs-cell s h 8 + 1) (hs-cell s h 9 + 1) day
+      is Err (e) -> Err e
+      is Ok (plot) -> let held = poke-qword s.plots (h * 8) plot
+        in let dropped = hs-drop s i
+        in let stuck = hs-refund-house s x h 0
+        in Ok [bidder, h, stuck]
+ Mark inside a held house is its holder's alone (ServUO SpellHelper.CheckTravel, Mark); a house the crown sells is open.
+  hs-may-mark : HsState, CnState, Integer, Integer, Integer, Integer -> Boolean
+  hs-may-mark (s) (land) (caster) (x) (y) (h) = if h >= hd-count then True
+    else if x >= hs-cell s h 6 - 1 & x <= hs-cell s h 8 + 1 & y >= hs-cell s h 7 - 1 & y <= hs-cell s h 9 + 1 then
+      (let holder = hs-holder s land h in holder == 0 | holder == caster)
+    else hs-may-mark s land caster x y (h + 1)
+ A grant deletes every rune marked inside the house (Damian, 2026-10-10: "all previously marked runes inside it are
+ deleted"); answers how many.
+  hs-unmark : Magery, HsState, Integer, Integer, Integer -> Integer
+  hs-unmark (magic) (s) (h) (i) (n) = if i >= list-length magic.definitions then n
+    else let d = list-at magic.definitions i
+    in if not d.rune | d.serial == 0 | d.x < hs-cell s h 6 - 1 | d.x > hs-cell s h 8 + 1 | d.y < hs-cell s h 7 - 1 | d.y > hs-cell s h 9 + 1 then hs-unmark magic s h (i + 1) n
+    else when world-delete magic.items.world d.serial
+      is Err (_) -> hs-unmark magic s h (i + 1) n
+      is Ok (_) -> let cleared = __record-set d "rune" False in hs-unmark magic s h (i + 1) (n + 1)
+  hs-lines : HsState, CnState, (Integer -> Text), Integer, List Text -> List Text
+  hs-lines (s) (land) (name) (i) (out) = if i >= s.count then out
+    else hs-lines s land name (i + 1) (list-push out ("Bid " & show (hs-bid s i 0) & ": " & hs-row-coin s i & " for " & hs-where s (hs-bid s i 1) & " by " & name (hs-bid s i 2) & "."))
+
+Section: Codec
+
+ The persisted housing (codec tail 21): the house count, the bid count, the next bid id, a plot reference per house,
+ then the bid rows.
+  hs-tail-size : HsState -> Integer
+  hs-tail-size (s) = 24 + hd-count * 8 + s.count * hs-bid-bytes
+  hs-write-tail : HsState, Integer -> Integer
+  hs-write-tail (s) (at) = let a = poke-qword at 0 hd-count
+    in let b = poke-qword at 8 s.count
+    in let c = poke-qword at 16 s.next
+    in let d = ws-copy s.plots (at + 24) (hd-count * 8) 0
+    in let e = ws-copy s.bids (at + 24 + hd-count * 8) (s.count * hs-bid-bytes) 0 in at + hs-tail-size s
+ A saved table of another house count is refused: the census changed, which needs a fresh world.
+  hs-read-tail : HsState, Integer, Integer -> Integer
+  hs-read-tail (s) (at) (room) = if room < 24 | peek-qword at 0 /= hd-count | peek-qword at 8 < 0 | peek-qword at 8 > hs-ceiling | peek-qword at 16 < 1 then -1
+    else let n = peek-qword at 8
+    in if 24 + hd-count * 8 + n * hs-bid-bytes > room | not (hs-rows-valid (at + 24 + hd-count * 8) n 0) then -1
+    else let grown = hs-grow-to s (max s.room (n + n / 2 + hs-block))
+    in let a = ws-copy (at + 24) s.plots (hd-count * 8) 0
+    in let b = ws-copy (at + 24 + hd-count * 8) s.bids (n * hs-bid-bytes) 0
+    in let c = __record-set s "count" n
+    in let d = __record-set s "next" (peek-qword at 16) in n
+  hs-rows-valid : Integer, Integer, Integer -> Boolean
+  hs-rows-valid (at) (n) (i) = if i >= n then True
+    else let row = at + i * hs-bid-bytes
+    in peek-qword row 0 >= 1 & peek-qword row 8 >= 0 & peek-qword row 8 < hd-count & peek-qword row 16 > 0 & peek-qword row 24 > 1
+      & peek-qword row 32 >= 0 & peek-qword row 40 >= 0 & peek-qword row 48 >= 0 & hs-rows-valid at n (i + 1)

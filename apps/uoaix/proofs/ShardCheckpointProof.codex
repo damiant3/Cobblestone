@@ -20,14 +20,14 @@ Chapter: ShardCheckpointProof
 
   shcp-run : ShardCheckpoint -> [Console] Nothing
   shcp-run (source) =
-    let size = shc-size source.game.game.world.capacity
+    let size = shc-size-of source
     in let buf = alloc-bytes (size + 8)
     in let guard = poke-qword buf size 1234567
     in let gms = gm-memory-new 0
     in when shc-encode source buf size
       is Err (e) -> print-line-uni ("FAIL composite encode " & e)
       is Ok (written) -> act
-        shcp-check "composite extent and guard" (written == size & peek-qword buf size == 1234567 & shc-size world-max-objects < 4194304)
+        shcp-check "composite extent and guard" (written == size & peek-qword buf size == 1234567 & shc-size 16384 < 4194304)
         when shc-decode-record buf size 50 5 7 "After boot" gms
           is Err (e) -> print-line-uni ("FAIL composite decode " & e)
           is Ok (state) -> act
@@ -60,7 +60,7 @@ Chapter: ShardCheckpointProof
         let encoded = shc-encode source buf size
         in let inner = 96 + gc-size source.game.game.world.capacity
         in let tick = poke-qword buf (inner + 32) 51
-        in let inner-hash = poke-qword buf (inner + 48) (ws-hash (buf + inner) es-bytes 0 2166136261)
+        in let inner-hash = poke-qword buf (inner + 48) (ws-hash (buf + inner) (peek-qword (buf + inner) 16) 0 2166136261)
         in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
         in shcp-check "rehashed component clock disagreement refused" (is-err (shc-decode buf size 7 "Owner" gms))
         let wrong = __record-set source.game.state.townsfolk "hour" 1

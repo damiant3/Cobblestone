@@ -1,0 +1,494 @@
+Chapter: PlayRun
+  cites Uoaix chapter PlayScript
+  cites Uoaix chapter PlayStories
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter TownLiveShow
+  cites Uoaix chapter CharacterStylist
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter GameMonster
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter CCE
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+ Content cap: 4 plays a world (ServerLimits.md). A play's line ring holds the last 64 lines spoken by any play; the
+ viewer table holds 32 connections (a game link each, 32 by default).
+  plr-slots : Integer = 4
+  plr-script-bytes : Integer = 65536
+  plr-run-bytes : Integer = 640
+  plr-lines : Integer = 64
+  plr-line-bytes : Integer = 48
+  plr-viewers : Integer = 32
+  plr-kind : Integer = 18
+  plr-empty : Integer = 0
+  plr-ready : Integer = 1
+  plr-running : Integer = 2
+  plr-paused : Integer = 3
+  plr-finished : Integer = 4
+
+ Run qwords per play: 0 run state, 1 script length, 2 state, 3 next action, 5 game second the state's actions finished
+ (-1 while they run), 6 next hint second, 7 pending cue target (-1 none), 8 failed walk steps, 9 a player stood in a
+ scene since the last fire, 10 wait-until second, 11 hint turn, 12 compiled, 13 its story's registry row, 14 the story
+ stays; 16 on, the cast's mobile serials.
+ Header qwords: 0 the selected play, 1 the last line's sequence.
+  PlrStore = record { scripts : Integer, tables : Integer, runs : Integer, walks : List RteWalk, lines : Integer, viewers : Integer, header : Integer, stories : StyStore, trade : (Integer, Integer, Integer, Integer, Integer -> Integer) }
+  plr-zero : Integer, Integer, Integer -> Integer
+  plr-zero (b) (i) (n) = if i >= n then 0 else let z = poke-qword b (i * 8) 0 in plr-zero b (i + 1) n
+  plr-walks : Integer, List RteWalk -> List RteWalk
+  plr-walks (n) (out) = if n == 0 then out else plr-walks (n - 1) (list-push out (rte-walk 0))
+  plr-new : Integer -> PlrStore
+  plr-new (unused) = let runs = alloc-bytes (plr-slots * plr-run-bytes)
+    in let a = plr-zero runs 0 (plr-slots * plr-run-bytes / 8)
+    in let lines = alloc-bytes (plr-lines * plr-line-bytes)
+    in let b = plr-zero lines 0 (plr-lines * plr-line-bytes / 8)
+    in let viewers = alloc-bytes (plr-viewers * 16)
+    in let c = plr-zero viewers 0 (plr-viewers * 2)
+    in let header = alloc-bytes 64
+    in let d = plr-zero header 0 8
+    in PlrStore { scripts = alloc-bytes (plr-slots * plr-script-bytes), tables = alloc-bytes (plr-slots * pls-table-bytes), runs = runs,
+      walks = plr-walks (plr-slots * pls-max-cast) [], lines = lines, viewers = viewers, header = header, stories = sty-new 0, trade = plr-trade-none }
+
+  plr-trade-none : Integer, Integer, Integer, Integer, Integer -> Integer
+  plr-trade-none (slot) (cast) (kind) (item) (n) = 0 - 1
+  plr-run : PlrStore, Integer, Integer -> Integer
+  plr-run (st) (slot) (f) = peek-qword st.runs (slot * plr-run-bytes + f * 8)
+  plr-set : PlrStore, Integer, Integer, Integer -> Integer
+  plr-set (st) (slot) (f) (v) = poke-qword st.runs (slot * plr-run-bytes + f * 8) v
+  plr-script : PlrStore, Integer -> Integer
+  plr-script (st) (slot) = st.scripts + slot * plr-script-bytes
+  plr-table : PlrStore, Integer -> Integer
+  plr-table (st) (slot) = st.tables + slot * pls-table-bytes
+  plr-cast : PlrStore, Integer, Integer -> Integer
+  plr-cast (st) (slot) (i) = plr-run st slot (16 + i)
+  plr-selected : PlrStore -> Integer
+  plr-selected (st) = peek-qword st.header 0
+  plr-select : PlrStore, Integer -> Integer
+  plr-select (st) (slot) = poke-qword st.header 0 slot
+
+ Script editing, refused while the play's cast is on stage.
+  plr-on-stage : PlrStore, Integer -> Boolean
+  plr-on-stage (st) (slot) = plr-run st slot 0 == plr-running | plr-run st slot 0 == plr-paused
+  plr-clear : PlrStore, Integer -> Result Integer Text
+  plr-clear (st) (slot) = if plr-on-stage st slot then Err "reset the play before editing it"
+    else let a = plr-set st slot 1 0 in let b = plr-set st slot 12 0 in let c = plr-set st slot 0 plr-empty in Ok 0
+  plr-poke : Integer, List Integer, Integer, Integer -> Integer
+  plr-poke (s) (bytes) (i) (n) = if i >= n then 0 else let b = poke-byte s i (list-at bytes i) in plr-poke s bytes (i + 1) n
+  plr-append : PlrStore, Integer, List Integer -> Result Integer Text
+  plr-append (st) (slot) (bytes) = let n = plr-run st slot 1
+    in let count = list-length bytes
+    in if plr-on-stage st slot then Err "reset the play before editing it"
+    else if n + count + 1 > plr-script-bytes then Err "a play script is at most 65536 bytes"
+    else let copied = plr-poke (plr-script st slot + n) bytes 0 count
+    in let ended = poke-byte (plr-script st slot) (n + count) 10
+    in let a = plr-set st slot 1 (n + count + 1)
+    in let b = plr-set st slot 12 0
+    in let c = plr-set st slot 0 plr-empty in Ok (n + count + 1)
+  plr-compile : PlrStore, Integer -> Result Integer Text
+  plr-compile (st) (slot) = if plr-on-stage st slot then Err "the play is on stage"
+    else when pls-compile (plr-script st slot) (plr-run st slot 1) (plr-table st slot)
+      is Err (e) -> let a = plr-set st slot 12 0 in Err e
+      is Ok (states) -> when plr-dress st slot
+        is Err (e) -> let a = plr-set st slot 12 0 in Err e
+        is Ok (_) -> let a = plr-set st slot 12 1 in let b = plr-set st slot 0 plr-ready in Ok states
+ A compiled play registers its story: the story named by its story statement (else its title), each scene a set with
+ the scene's rectangle, each set piece a member (account 0). Every overlap with another story's set is refused before
+ anything changes; the story must be off, because its pieces are replaced.
+  plr-dress : PlrStore, Integer -> Result Integer Text
+  plr-dress (st) (slot) = let t = plr-table st slot
+    in let s = plr-script st slot
+    in let named = pls-count t 12 > 0
+    in let off = if named then pls-count t 11 else pls-count t 8
+    in let len = if named then pls-count t 12 else min 30 (pls-count t 9)
+    in let story = sty-story-of st.stories s off len
+    in if story < 0 then Err "the story table is full (64 stories)"
+    else if sty-on st.stories story then Err "its story is on: [story off it before compiling"
+    else when plr-clear-scenes st slot story 0
+      is Err (e) -> Err e
+      is Ok (_) -> let dropped = sty-drop-play st.stories story 0
+        in let a = plr-set st slot 13 story
+        in let b = plr-set st slot 14 (pls-count t 13)
+        in when plr-define st slot story 0
+          is Err (e) -> Err e
+          is Ok (_) -> plr-pieces st slot 0
+  plr-scene : PlrStore, Integer, Integer, Integer -> Integer
+  plr-scene (st) (slot) (i) (f) = pls-get (plr-table st slot) pls-scenes-at pls-scene-size i f
+  plr-clear-scenes : PlrStore, Integer, Integer, Integer -> Result Integer Text
+  plr-clear-scenes (st) (slot) (story) (i) = if i >= pls-count (plr-table st slot) 1 then Ok 0
+    else let other = sty-overlap st.stories story (plr-scene st slot i 2) (plr-scene st slot i 3) (plr-scene st slot i 4) (plr-scene st slot i 5) 0
+    in if other >= 0 then Err ("scene " & plr-text st slot (plr-scene st slot i 0) (plr-scene st slot i 1) & ": " & sty-conflict st.stories other 0)
+    else plr-clear-scenes st slot story (i + 1)
+  plr-define : PlrStore, Integer, Integer, Integer -> Result Integer Text
+  plr-define (st) (slot) (story) (i) = if i >= pls-count (plr-table st slot) 1 then Ok 0
+    else when sty-define st.stories story (plr-script st slot) (plr-scene st slot i 0) (plr-scene st slot i 1) (plr-scene st slot i 2) (plr-scene st slot i 3) (plr-scene st slot i 4) (plr-scene st slot i 5)
+      is Err (e) -> Err e
+      is Ok (set) -> let kept = pls-put (plr-table st slot) pls-scenes-at pls-scene-size i 6 set in plr-define st slot story (i + 1)
+  plr-pieces : PlrStore, Integer, Integer -> Result Integer Text
+  plr-pieces (st) (slot) (i) = let t = plr-table st slot
+    in if i >= pls-count t 3 then Ok i
+    else let set = plr-scene st slot (pls-get t pls-sets-at pls-set-size i 0) 6
+    in when sty-add-member st.stories set (pls-get t pls-sets-at pls-set-size i 2) (pls-get t pls-sets-at pls-set-size i 3) (pls-get t pls-sets-at pls-set-size i 4) (pls-get t pls-sets-at pls-set-size i 5) (pls-get t pls-sets-at pls-set-size i 6) 0 0
+      is Err (e) -> Err e
+      is Ok (_) -> plr-pieces st slot (i + 1)
+  plr-text : PlrStore, Integer, Integer, Integer -> Text
+  plr-text (st) (slot) (off) (len) = utf8-bytes-to-text (plr-bytes [] (plr-script st slot + off) 0 len)
+  plr-mark : PlrStore, Integer, Integer, Integer -> Integer
+  plr-mark (st) (slot) (mark) (f) = pls-get (plr-table st slot) pls-marks-at pls-mark-size mark f
+  plr-state : PlrStore, Integer, Integer -> Integer
+  plr-state (st) (slot) (f) = pls-get (plr-table st slot) pls-states-at pls-state-size (plr-run st slot 2) f
+  plr-action : PlrStore, Integer, Integer, Integer -> Integer
+  plr-action (st) (slot) (a) (f) = pls-get (plr-table st slot) pls-actions-at pls-action-size a f
+  plr-cue : PlrStore, Integer, Integer, Integer -> Integer
+  plr-cue (st) (slot) (c) (f) = pls-get (plr-table st slot) pls-cues-at pls-cue-size c f
+
+ A cast member's 30-byte combat name: its name, then its title when both fit ("Nell the baker").
+  plr-name : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  plr-name (target) (s) (noff) (nlen) (toff) (tlen) (i) = if i >= 30 then 0
+    else let titled = nlen + 1 + tlen <= 30
+    in let b = if i < nlen then peek-byte s (noff + i) else if titled & i == nlen then 32
+      else if titled & i > nlen & i <= nlen + tlen then peek-byte s (toff + i - nlen - 1) else 0
+    in let put = poke-byte target i b in plr-name target s noff nlen toff tlen (i + 1)
+
+ The cast enters at its marks: a human NPC dressed by its role's look, the script's sex for its body, named, immune.
+  plr-spawn : PlrStore, Integer, GameShard, GsiState, GameCombat, Integer -> Result Integer Text
+  plr-spawn (st) (slot) (game) (items) (combat) (i) = let t = plr-table st slot
+    in if i >= pls-count t 2 then Ok i
+    else let mark = pls-get t pls-cast-at pls-cast-size i 8
+    in let x = plr-mark st slot mark 2
+    in let y = plr-mark st slot mark 3
+    in let z = plr-mark st slot mark 4
+    in let body = if pls-get t pls-cast-at pls-cast-size i 7 == 1 then 401 else 400
+    in if world-room game.world < 1 + cst-most-rows then Err "play cast world budget"
+    else when world-create game.world (gs-mobile 0 x y z body 1002)
+      is Err (e) -> Err e
+      is Ok (serial) -> let kept = plr-set st slot (16 + i) serial
+        in when cst-style items serial (pls-get t pls-cast-at pls-cast-size i 6)
+          is Err (e) -> Err e
+          is Ok (_) -> when plr-body game serial body
+            is Err (e) -> Err e
+            is Ok (_) -> when cb-ensure combat game serial
+              is Err (e) -> Err e
+              is Ok (actor) -> let named = plr-name actor.name (plr-script st slot) (pls-get t pls-cast-at pls-cast-size i 2) (pls-get t pls-cast-at pls-cast-size i 3) (pls-get t pls-cast-at pls-cast-size i 4) (pls-get t pls-cast-at pls-cast-size i 5) 0
+                in let immune = __record-set actor "immune" True
+                in let walker = list-set-at st.walks (slot * pls-max-cast + i) (rte-walk 0)
+                in plr-spawn st slot game items combat (i + 1)
+  plr-body : GameShard, Integer, Integer -> Result Integer Text
+  plr-body (game) (serial) (body) = when world-get game.world serial
+    is Err (e) -> Err e
+    is Ok (m) -> if m.graphic == body then Ok 0 else let set = __record-set m "graphic" body in world-update game.world m
+
+  plr-enter : PlrStore, Integer, Integer -> Integer
+  plr-enter (st) (slot) (s) = let a = plr-set st slot 2 s
+    in let b = plr-set st slot 3 (pls-get (plr-table st slot) pls-states-at pls-state-size s 3)
+    in let c = plr-set st slot 5 (0 - 1)
+    in let d = plr-set st slot 6 0
+    in let e = plr-set st slot 7 (0 - 1)
+    in let f = plr-set st slot 8 0
+    in let g = plr-set st slot 9 0
+    in let h = plr-set st slot 10 0
+    in let k = plr-set st slot 11 0 in 1
+  plr-start : PlrStore, Integer, GameShard, GsiState, GameCombat -> Result Integer Text
+  plr-start (st) (slot) (game) (items) (combat) = if plr-run st slot 12 /= 1 then Err "compile the play first"
+    else if plr-on-stage st slot then Err "the play is already on stage"
+    else let cleared = plr-zero (st.runs + slot * plr-run-bytes + 128) 0 pls-max-cast
+    in when plr-spawn st slot game items combat 0
+      is Err (e) -> let a = plr-set st slot 0 plr-paused in Err e
+      is Ok (cast) -> let entered = plr-enter st slot 0 in let a = plr-set st slot 0 plr-running in let on = sty-switch st.stories items (plr-run st slot 13) True in Ok cast
+ The serials a reset removes; the caller deletes them and then calls plr-cleared.
+  plr-serials : PlrStore, Integer, Integer, List Integer -> List Integer
+  plr-serials (st) (slot) (i) (out) = if i >= pls-max-cast then out
+    else let s = plr-cast st slot i in plr-serials st slot (i + 1) (if s == 0 then out else list-push out s)
+  plr-cleared : PlrStore, Integer -> Integer
+  plr-cleared (st) (slot) = let a = plr-zero (st.runs + slot * plr-run-bytes + 128) 0 pls-max-cast
+    in plr-set st slot 0 (if plr-run st slot 12 == 1 then plr-ready else plr-empty)
+
+ One fire of a running play: a pending player cue enters its state; otherwise the next action runs; once the actions
+ are done the state's bot cues are checked and a major state hints. The answer is the delay to the next fire in PIT
+ ticks, or -1 when the play stops; a play never fails the world tick.
+  plr-fire : PlrStore, Integer, GameShard, GsiState, TlPath, WalkMap, Maybe WdState, Integer -> Integer
+  plr-fire (st) (slot) (game) (items) (nav) (map) (doors) (seconds) = let delay = plr-fire-in st slot game nav map doors seconds
+    in if delay < 0 & plr-run st slot 0 == plr-finished & plr-run st slot 14 == 0 then let off = sty-switch st.stories items (plr-run st slot 13) False in delay
+    else delay
+  plr-fire-in : PlrStore, Integer, GameShard, TlPath, WalkMap, Maybe WdState, Integer -> Integer
+  plr-fire-in (st) (slot) (game) (nav) (map) (doors) (seconds) = if plr-run st slot 0 /= plr-running then 0 - 1
+    else if plr-run st slot 7 >= 0 then plr-enter st slot (plr-run st slot 7)
+    else let a = plr-run st slot 3
+    in if a < plr-state st slot 3 + plr-state st slot 4 then plr-act st slot game nav map doors a seconds
+    else plr-settle st slot seconds
+  plr-next : PlrStore, Integer, Integer, Integer -> Integer
+  plr-next (st) (slot) (a) (delay) = let b = plr-set st slot 3 (a + 1) in let c = plr-set st slot 8 0 in delay
+  plr-act : PlrStore, Integer, GameShard, TlPath, WalkMap, Maybe WdState, Integer, Integer -> Integer
+  plr-act (st) (slot) (game) (nav) (map) (doors) (a) (seconds) = let kind = plr-action st slot a 0
+    in if kind == pls-say | kind == pls-yell | kind == pls-emote then
+      let said = plr-line st slot (plr-cast st slot (plr-action st slot a 1)) kind (plr-action st slot a 3) (plr-action st slot a 4)
+      in plr-next st slot a (gm-ticks (1500 + 40 * plr-action st slot a 4))
+    else if kind == pls-wait then plr-wait st slot a seconds
+    else if kind == pls-walk then plr-walk st slot game nav map doors a
+    else if kind == pls-give | kind == pls-take then let traded = st.trade slot (plr-action st slot a 1) kind (plr-action st slot a 3) (plr-action st slot a 4) in plr-next st slot a (gm-ticks 1000)
+    else plr-next st slot a 1
+  plr-wait : PlrStore, Integer, Integer, Integer -> Integer
+  plr-wait (st) (slot) (a) (seconds) = let until = plr-run st slot 10
+    in if until == 0 then let b = plr-set st slot 10 (seconds + plr-action st slot a 3) in gm-ticks 1000
+    else if seconds >= until then let c = plr-set st slot 10 0 in plr-next st slot a 1
+    else gm-ticks 1000
+ A walk takes one tile a fire on the town planner and completes on the mark; 40 blocked fires give it up, and the
+ actor stays where it stands.
+  plr-walk : PlrStore, Integer, GameShard, TlPath, WalkMap, Maybe WdState, Integer -> Integer
+  plr-walk (st) (slot) (game) (nav) (map) (doors) (a) = let actor = plr-action st slot a 1
+    in let mark = plr-action st slot a 3
+    in let x = plr-mark st slot mark 2
+    in let y = plr-mark st slot mark 3
+    in let z = plr-mark st slot mark 4
+    in when world-get game.world (plr-cast st slot actor)
+      is Err (_) -> plr-next st slot a 1
+      is Ok (m) -> if m.x == x & m.y == y then plr-next st slot a 1
+        else let w = list-at st.walks (slot * pls-max-cast + actor)
+        in let before = w.moves
+        in let stepped = rte-toward nav game map doors w m x y z
+        in let fails = if w.moves == before then plr-run st slot 8 + 1 else 0
+        in if fails > 40 then plr-next st slot a 1
+        else let kept = plr-set st slot 8 fails in gm-ticks 400
+  plr-settle : PlrStore, Integer, Integer -> Integer
+  plr-settle (st) (slot) (seconds) = let done = plr-run st slot 5
+    in if done < 0 then let a = plr-set st slot 5 seconds in let b = plr-set st slot 6 (seconds + plr-hint-period st slot 0) in 1
+    else if plr-state st slot 2 == pls-end then let f = plr-set st slot 0 plr-finished in 0 - 1
+    else let cue = plr-state st slot 5
+    in let target = plr-bot-cue st slot cue (cue + plr-state st slot 6) seconds done
+    in let near = plr-set st slot 9 0
+    in if target >= 0 then plr-enter st slot target
+    else if plr-state st slot 2 == pls-major & seconds >= plr-run st slot 6 then plr-hint st slot seconds
+    else gm-ticks 1000
+  plr-bot-cue : PlrStore, Integer, Integer, Integer, Integer, Integer -> Integer
+  plr-bot-cue (st) (slot) (c) (stop) (seconds) (done) = if c >= stop then 0 - 1
+    else let kind = plr-cue st slot c 0
+    in if kind == pls-after & seconds >= done + plr-cue st slot c 3 then plr-cue st slot c 1
+    else if kind == pls-near & plr-run st slot 9 /= 0 then plr-cue st slot c 1
+    else plr-bot-cue st slot (c + 1) stop seconds done
+
+ Hints are the state's hint actions in order, spoken in turn.
+  plr-nth-hint : PlrStore, Integer, Integer, Integer, Integer -> Integer
+  plr-nth-hint (st) (slot) (a) (stop) (n) = if a >= stop then 0 - 1
+    else if plr-action st slot a 0 /= pls-hint then plr-nth-hint st slot (a + 1) stop n
+    else if n == 0 then a else plr-nth-hint st slot (a + 1) stop (n - 1)
+  plr-hints : PlrStore, Integer -> Integer
+  plr-hints (st) (slot) = let first = plr-state st slot 3 in plr-count-hints st slot first (first + plr-state st slot 4) 0
+  plr-count-hints : PlrStore, Integer, Integer, Integer, Integer -> Integer
+  plr-count-hints (st) (slot) (a) (stop) (n) = if a >= stop then n else plr-count-hints st slot (a + 1) stop (if plr-action st slot a 0 == pls-hint then n + 1 else n)
+  plr-hint-period : PlrStore, Integer, Integer -> Integer
+  plr-hint-period (st) (slot) (n) = let first = plr-state st slot 3
+    in let a = plr-nth-hint st slot first (first + plr-state st slot 4) n
+    in if a < 0 then 0 else plr-action st slot a 5
+  plr-hint : PlrStore, Integer, Integer -> Integer
+  plr-hint (st) (slot) (seconds) = let count = plr-hints st slot
+    in let turn = int-mod (plr-run st slot 11) (max 1 count)
+    in let first = plr-state st slot 3
+    in let a = plr-nth-hint st slot first (first + plr-state st slot 4) turn
+    in if a < 0 then gm-ticks 1000
+    else let said = plr-line st slot (plr-cast st slot (plr-action st slot a 1)) (plr-action st slot a 7) (plr-action st slot a 3) (plr-action st slot a 4)
+    in let b = plr-set st slot 11 (turn + 1)
+    in let c = plr-set st slot 6 (seconds + plr-action st slot a 5) in gm-ticks 1000
+
+ Line ring rows: sequence, speaker serial, kind (1 say, 2 yell, 3 emote), play, text offset, text length.
+  plr-line : PlrStore, Integer, Integer, Integer, Integer, Integer -> Integer
+  plr-line (st) (slot) (speaker) (kind) (off) (len) = let seq = peek-qword st.header 8 + 1
+    in let at = st.lines + int-mod seq plr-lines * plr-line-bytes
+    in let a = poke-qword at 0 seq
+    in let b = poke-qword at 8 speaker
+    in let c = poke-qword at 16 kind
+    in let d = poke-qword at 24 slot
+    in let e = poke-qword at 32 off
+    in let f = poke-qword at 40 len
+    in poke-qword st.header 8 seq
+
+  plr-in-scene : PlrStore, Integer, WorldObject, Integer -> Boolean
+  plr-in-scene (st) (slot) (m) (i) = if i >= pls-count (plr-table st slot) 1 then False
+    else if m.x >= plr-scene st slot i 2 & m.x <= plr-scene st slot i 4 & m.y >= plr-scene st slot i 3 & m.y <= plr-scene st slot i 5 then True
+    else plr-in-scene st slot m (i + 1)
+ The 1.25 client's 0x1C speech, from the script's bytes: say is mode 0, yell 9, emote 2 between asterisks; hue 0x3B2,
+ font 3, the 30-byte name.
+  plr-bytes : List Integer, Integer, Integer, Integer -> List Integer
+  plr-bytes (out) (s) (i) (n) = if i >= n then out else plr-bytes (list-push out (peek-byte s i)) s (i + 1) n
+  plr-speech : WorldObject, Integer, Integer, Integer, Integer -> List Integer
+  plr-speech (npc) (name) (kind) (text) (len) = let emote = kind == pls-emote
+    in let p = gp-put16 (gp-start 28) (45 + len + (if emote then 2 else 0))
+    in let a = list-push (gp-put16 (gp-put32 p npc.serial) npc.graphic) (if kind == pls-yell then 9 else if emote then 2 else 0)
+    in let b = plr-bytes (gp-put16 (gp-put16 a 946) 3) name 0 30
+    in let c = if emote then list-push b 42 else b
+    in let d = plr-bytes c text 0 len
+    in list-push (if emote then list-push d 42 else d) 0
+
+ Per viewer: a play whose scene holds the viewer notes a player near; lines spoken since the viewer's last pulse by a
+ cast member within 18 tiles in its sight are sent. A new connection starts at the ring's newest line.
+  plr-row : PlrStore, Integer, Integer, Integer -> Integer
+  plr-row (st) (key) (i) (best) = if i == plr-viewers then best
+    else if peek-qword st.viewers (i * 16) == key then i
+    else plr-row st key (i + 1) (if peek-qword st.viewers (i * 16) < peek-qword st.viewers (best * 16) then i else best)
+  plr-pulse : PlrStore, GameShard, GameCombat, WalkMap, WorldObject, Integer -> List (List Integer)
+  plr-pulse (st) (game) (combat) (map) (viewer) (connection) = let near = plr-near st viewer 0
+    in let key = connection + 1
+    in let row = plr-row st key 0 0
+    in let latest = peek-qword st.header 8
+    in if peek-qword st.viewers (row * 16) /= key then let a = poke-qword st.viewers (row * 16) key in let b = poke-qword st.viewers (row * 16 + 8) latest in []
+    else let seen = max (peek-qword st.viewers (row * 16 + 8)) (latest - plr-lines)
+    in let c = poke-qword st.viewers (row * 16 + 8) latest
+    in plr-heard-lines st game combat map viewer (seen + 1) latest []
+  plr-near : PlrStore, WorldObject, Integer -> Integer
+  plr-near (st) (viewer) (slot) = if slot >= plr-slots then 0
+    else let marked = if viewer.health > 0 & plr-run st slot 0 == plr-running & plr-in-scene st slot viewer 0 then plr-set st slot 9 1 else 0
+    in plr-near st viewer (slot + 1)
+  plr-heard-lines : PlrStore, GameShard, GameCombat, WalkMap, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
+  plr-heard-lines (st) (game) (combat) (map) (viewer) (seq) (latest) (out) = if seq > latest then out
+    else let at = st.lines + int-mod seq plr-lines * plr-line-bytes
+    in let slot = peek-qword at 24
+    in let said = when world-get game.world (peek-qword at 8)
+      is Err (_) -> out
+      is Ok (npc) -> if not (tls-near map viewer npc) then out
+        else when cb-ensure combat game npc.serial
+          is Err (_) -> out
+          is Ok (actor) -> list-push out (plr-speech npc actor.name (peek-qword at 16) (plr-script st slot + peek-qword at 32) (peek-qword at 40))
+    in plr-heard-lines st game combat map viewer (seq + 1) latest said
+
+ Player cues, observed after the usual handling: speech heard by a running play whose scene holds the speaker, and a
+ double-click on a cast member. The first matching cue of the current state wins; a cue already pending is kept.
+  plr-observe : PlrStore, GameShard, Integer, List Integer -> Integer
+  plr-observe (st) (game) (serial) (packet) = if list-length packet == 0 then 0
+    else when world-get game.world serial
+      is Err (_) -> 0
+      is Ok (m) -> if m.health == 0 then 0
+        else if list-at packet 0 == 3 & list-length packet > 9 then plr-observe-all st m packet 0 0
+        else if list-at packet 0 == 6 & list-length packet == 5 then plr-observe-all st m packet (bit-and (gp-u32 packet 1) #7FFFFFFF) 0
+        else 0
+  plr-observe-all : PlrStore, WorldObject, List Integer, Integer, Integer -> Integer
+  plr-observe-all (st) (m) (packet) (clicked) (slot) = if slot >= plr-slots then 0
+    else let cued = if plr-run st slot 0 /= plr-running | plr-run st slot 7 >= 0 | not (plr-in-scene st slot m 0) then 0
+      else let c = plr-state st slot 5
+      in plr-player-cue st slot packet clicked c (c + plr-state st slot 6)
+    in plr-observe-all st m packet clicked (slot + 1)
+  plr-player-cue : PlrStore, Integer, List Integer, Integer, Integer, Integer -> Integer
+  plr-player-cue (st) (slot) (packet) (clicked) (c) (stop) = if c >= stop then 0
+    else let kind = plr-cue st slot c 0
+    in let hit = if kind == pls-heard & clicked == 0 then plr-said st slot packet (plr-cue st slot c 3) (plr-cue st slot c 4)
+      else if kind == pls-used & clicked /= 0 then plr-cast st slot (plr-cue st slot c 3) == clicked
+      else False
+    in if hit then plr-set st slot 7 (plr-cue st slot c 1) else plr-player-cue st slot packet clicked (c + 1) stop
+ Words match case-free at word bounds (NpcSpeech's rule) in the 0x03 text, bytes 8 to the packet's last but one.
+  plr-said : PlrStore, Integer, List Integer, Integer, Integer -> Boolean
+  plr-said (st) (slot) (packet) (w) (count) = if count <= 0 then False
+    else let t = plr-table st slot
+    in let off = peek-qword t (pls-words-at + w * pls-word-size)
+    in let len = peek-qword t (pls-words-at + w * pls-word-size + 8)
+    in if plr-find-word packet 8 (list-length packet - 1) (plr-script st slot + off) len then True
+    else plr-said st slot packet (w + 1) (count - 1)
+  plr-lower : Integer -> Integer
+  plr-lower (c) = if c >= 65 & c <= 90 then c + 32 else c
+  plr-alnum : Integer -> Boolean
+  plr-alnum (c) = (c >= 48 & c <= 57) | (c >= 65 & c <= 90) | (c >= 97 & c <= 122)
+  plr-find-word : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  plr-find-word (packet) (p) (stop) (word) (len) = if p + len > stop then False
+    else if (p == 8 | not (plr-alnum (list-at packet (p - 1)))) & (p + len == stop | not (plr-alnum (list-at packet (p + len)))) & plr-word-at packet p word len 0 then True
+    else plr-find-word packet (p + 1) stop word len
+  plr-word-at : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  plr-word-at (packet) (p) (word) (len) (i) = if i >= len then True
+    else if plr-lower (list-at packet (p + i)) /= plr-lower (peek-byte word i) then False
+    else plr-word-at packet p word len (i + 1)
+
+ PLY1, the composite's sixteenth save section: magic, version 1, the story registry's rows, then for each play its run
+ qwords and its script bytes. The compiled tables, walkers, viewers and lines are not saved: a restore recompiles each
+ compiled script and binds its scenes to their sets by name; a play that no longer compiles, or whose cursor does not
+ fit its tables, comes back paused at its first state for [play reset.
+  plr-ply1 : Integer = #31594C50
+  plr-registry-bytes : Integer = sty-max-stories * sty-story-size + sty-max-sets * sty-set-size + sty-max-members * sty-member-size
+  plr-tail-size : Integer -> Integer
+  plr-tail-size (unused) = 16 + plr-registry-bytes + plr-slots * (plr-run-bytes + plr-script-bytes)
+  plr-copy : Integer, Integer, Integer, Integer -> Integer
+  plr-copy (from) (to) (i) (n) = if i >= n then 0 else let q = poke-qword to (i * 8) (peek-qword from (i * 8)) in plr-copy from to (i + 1) n
+  plr-registry : PlrStore, Integer, Boolean -> Integer
+  plr-registry (st) (at) (out) = let a = sty-max-stories * sty-story-size
+    in let b = sty-max-sets * sty-set-size
+    in let c = sty-max-members * sty-member-size
+    in if out then (let x = plr-copy st.stories.stories at 0 (a / 8) in let y = plr-copy st.stories.sets (at + a) 0 (b / 8) in plr-copy st.stories.members (at + a + b) 0 (c / 8))
+    else let x = plr-copy at st.stories.stories 0 (a / 8) in let y = plr-copy (at + a) st.stories.sets 0 (b / 8) in plr-copy (at + a + b) st.stories.members 0 (c / 8)
+  plr-write-tail : PlrStore, Integer -> Integer
+  plr-write-tail (st) (at) = let a = poke-qword at 0 plr-ply1
+    in let b = poke-qword at 8 1
+    in let r = plr-registry st (at + 16) True
+    in let runs = plr-copy st.runs (at + 16 + plr-registry-bytes) 0 (plr-slots * plr-run-bytes / 8)
+    in let scripts = plr-copy st.scripts (at + 16 + plr-registry-bytes + plr-slots * plr-run-bytes) 0 (plr-slots * plr-script-bytes / 8)
+    in at + plr-tail-size 0
+  plr-read-tail : PlrStore, Integer, Integer -> Result Integer Text
+  plr-read-tail (st) (at) (length) = if length /= plr-tail-size 0 | peek-qword at 0 /= plr-ply1 | peek-qword at 8 /= 1 then Err "PLY1 header"
+    else let r = plr-registry st (at + 16) False
+    in let runs = plr-copy (at + 16 + plr-registry-bytes) st.runs 0 (plr-slots * plr-run-bytes / 8)
+    in let scripts = plr-copy (at + 16 + plr-registry-bytes + plr-slots * plr-run-bytes) st.scripts 0 (plr-slots * plr-script-bytes / 8)
+    in Ok (plr-restore st 0 0)
+  plr-restore : PlrStore, Integer, Integer -> Integer
+  plr-restore (st) (slot) (n) = if slot >= plr-slots then n
+    else let length = plr-run st slot 1
+    in let kept = if length < 0 | length > plr-script-bytes then plr-set st slot 1 0 else 0
+    in let ready = plr-run st slot 12 == 1 & is-ok (pls-compile (plr-script st slot) (plr-run st slot 1) (plr-table st slot))
+    in let bound = if ready then plr-rebind st slot 0 else plr-set st slot 12 0
+    in let sane = plr-sane st slot ready
+    in plr-restore st (slot + 1) (if ready then n + 1 else n)
+  plr-rebind : PlrStore, Integer, Integer -> Integer
+  plr-rebind (st) (slot) (i) = let t = plr-table st slot
+    in if i >= pls-count t 1 then 0
+    else let set = sty-find-set st.stories (plr-run st slot 13) (plr-script st slot) (plr-scene st slot i 0) (plr-scene st slot i 1) 0
+    in let kept = pls-put t pls-scenes-at pls-scene-size i 6 set in plr-rebind st slot (i + 1)
+  plr-sane : PlrStore, Integer, Boolean -> Integer
+  plr-sane (st) (slot) (ready) = let run = plr-run st slot 0
+    in let staged = run == plr-running | run == plr-paused
+    in let t = plr-table st slot
+    in let state = plr-run st slot 2
+    in let fits = ready & state >= 0 & state < pls-count t 4 & plr-run st slot 13 >= 0 & plr-run st slot 13 < sty-max-stories
+    in if not staged then (if run < plr-empty | run > plr-finished | (run /= plr-empty & not ready) then let a = plr-set st slot 12 0 in plr-set st slot 0 plr-empty else 0)
+    else if fits then plr-sane-cursor st slot
+    else let a = plr-set st slot 0 plr-paused in let b = plr-set st slot 2 0 in plr-set st slot 3 0
+  plr-sane-cursor : PlrStore, Integer -> Integer
+  plr-sane-cursor (st) (slot) = let first = plr-state st slot 3
+    in let a = plr-run st slot 3
+    in if a < first | a > first + plr-state st slot 4 then plr-enter st slot (plr-run st slot 2) else 0
+
+ A spoken coin gift (the mayor's form, "give N gold"): the first running play whose current state has a given cue for
+ that metal and at most that amount, from a speaker in its scene within 4 tiles of the cue's actor. The answer is the
+ play's slot times 65536 plus the cue's target state, or -1; the caller moves the coin and then calls plr-cue-taken.
+  plr-given : PlrStore, GameShard, WorldObject, Integer, Integer -> Integer
+  plr-given (st) (game) (m) (metal) (amount) = plr-given-in st game m metal amount 0
+  plr-given-in : PlrStore, GameShard, WorldObject, Integer, Integer, Integer -> Integer
+  plr-given-in (st) (game) (m) (metal) (amount) (slot) = if slot >= plr-slots then 0 - 1
+    else let found = if plr-run st slot 0 /= plr-running | plr-run st slot 7 >= 0 | not (plr-in-scene st slot m 0) then 0 - 1
+      else let c = plr-state st slot 5 in plr-given-cue st slot game m metal amount c (c + plr-state st slot 6)
+    in if found >= 0 then slot * 65536 + found else plr-given-in st game m metal amount (slot + 1)
+  plr-given-cue : PlrStore, Integer, GameShard, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  plr-given-cue (st) (slot) (game) (m) (metal) (amount) (c) (stop) = if c >= stop then 0 - 1
+    else if plr-cue st slot c 0 /= pls-given | plr-cue st slot c 5 /= metal | amount < plr-cue st slot c 6 then plr-given-cue st slot game m metal amount (c + 1) stop
+    else when world-get game.world (plr-cast st slot (plr-cue st slot c 3))
+      is Err (_) -> plr-given-cue st slot game m metal amount (c + 1) stop
+      is Ok (npc) -> if walk-abs (npc.x - m.x) <= 4 & walk-abs (npc.y - m.y) <= 4 then plr-cue st slot c 1 else plr-given-cue st slot game m metal amount (c + 1) stop
+  plr-cue-taken : PlrStore, Integer -> Integer
+  plr-cue-taken (st) (code) = plr-set st (code / 65536) 7 (int-mod code 65536)
+ A given cue's goods field is the coin's metal (1 to 3) or the catalog item negated. A player who drops at least N of
+ the item on the cue's actor, from inside the scene, cues it; the caller hands the item back, so the play only sees
+ it (the economy is untouched). The answer is as plr-given's.
+  plr-given-item : PlrStore, WorldObject, Integer, Integer, Integer -> Integer
+  plr-given-item (st) (m) (npc) (item) (amount) = plr-given-item-in st m npc item amount 0
+  plr-given-item-in : PlrStore, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  plr-given-item-in (st) (m) (npc) (item) (amount) (slot) = if slot >= plr-slots then 0 - 1
+    else let found = if plr-run st slot 0 /= plr-running | plr-run st slot 7 >= 0 | not (plr-in-scene st slot m 0) then 0 - 1
+      else let c = plr-state st slot 5 in plr-item-cue st slot npc item amount c (c + plr-state st slot 6)
+    in if found >= 0 then slot * 65536 + found else plr-given-item-in st m npc item amount (slot + 1)
+  plr-item-cue : PlrStore, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  plr-item-cue (st) (slot) (npc) (item) (amount) (c) (stop) = if c >= stop then 0 - 1
+    else if plr-cue st slot c 0 == pls-given & plr-cue st slot c 5 == 0 - item & amount >= plr-cue st slot c 6 & plr-cast st slot (plr-cue st slot c 3) == npc then plr-cue st slot c 1
+    else plr-item-cue st slot npc item amount (c + 1) stop
+ Whether a serial is a cast member of a play on stage.
+  plr-is-cast : PlrStore, Integer, Integer, Integer -> Boolean
+  plr-is-cast (st) (serial) (slot) (i) = if slot >= plr-slots then False
+    else if i >= pls-max-cast then plr-is-cast st serial (slot + 1) 0
+    else if plr-on-stage st slot & plr-cast st slot i == serial & serial /= 0 then True
+    else plr-is-cast st serial slot (i + 1)

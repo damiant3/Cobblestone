@@ -177,6 +177,17 @@ knowing on its own: if you get a GO for a CL you no longer intend to land, do
 not gate it to be polite. Releasing immediately is what the queue behind you
 needs.
 
+**Under a grant you meant to use, `build-complete` comes after `p4 describe`
+shows the copy-up's files on main.** A merge-down done before the grant can
+be overtaken; then `p4 copy` brings fewer files than the CL holds and the
+submit says "No files to submit", and a release written on the reported
+success lands nothing.
+
+**Before taking a register row on a standing GO, read every lane's `claim`**
+in `<coordinationDir>\..\<lane>\status.json`: a row can be free in the
+register and held in a claim (`codex/plugs/riscv` held by one lane for the
+very row another took).
+
 ## How to wait (Damian, 2026-08-17)
 
 Everything AgentGrid and the fleet send you arrives as a line TYPED INTO

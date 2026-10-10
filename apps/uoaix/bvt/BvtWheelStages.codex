@@ -1,0 +1,35 @@
+Chapter: BvtWheelStages
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ The timing wheel's stages 2 to 4 (UoaixTimingWheel.md) on the worker-day fixture: the shop stations, shop trades and
+ townsfolk walk (cgs-kind), the spawn and NPC combat rounds (cgr-kind), and the save and store reports (cgd-kind) are
+ wheel entries that re-arm themselves when they fire, and nothing else re-arms one that is cleared.
+  bws-armed : CompositeGame, Integer, Integer, Integer -> Boolean
+  bws-armed (owner) (kind) (key) (last) = if key > last then True
+    else wtm-find owner.timers kind key >= 0 & bws-armed owner kind (key + 1) last
+  bws-all : CompositeGame -> Boolean
+  bws-all (owner) = bws-armed owner cgs-kind 0 cgs-cobbler & bws-armed owner cgr-kind 0 1 & bws-armed owner cgd-kind 0 1
+  bvt-wheel-stages : Integer -> [Console] Integer
+  bvt-wheel-stages (unused) = when bwd-founded 0
+    is Err (e) -> bvt-check ("wheel stages fixture: " & e) False
+    is Ok (owner) -> act
+      founded <- bws-all owner
+      fresh <- owner.store-due
+      early <- bwd-run owner 0 3
+      reported <- owner.store-due
+      fired <- owner.timers.fired
+      late <- bwd-run owner 3 200
+      saved <- owner.store-due
+      rearmed <- bws-all owner
+      more <- owner.timers.fired - fired
+      cleared <- wtm-clear owner.timers cgs-kind cgs-trades
+      after <- bwd-run owner 200 210
+      print-line-uni ("WHEELSTAGES early=" & show early & " late=" & show late & " after=" & show after & " due=" & show fresh & "," & show reported & "," & show saved & " fired=" & show more)
+      a <- bvt-check "founding arms the shop stations, the shop trades and the townsfolk walk, the spawn and combat rounds, and the save and store reports on the wheel (UoaixTimingWheel.md stages 2-4)" founded
+      b <- bvt-check "after 200 steps every one of those entries is still on the wheel: each fire re-arms itself" (late == 200 & rearmed & more > 0)
+      c <- bvt-check "the store reports fall due within the first steps and the save does not (cgd-kind keys 1 and 0)" (fresh == 0 & early == 3 & bit-and reported 2 /= 0 & bit-and reported 1 == 0)
+      d <- bvt-check "the save falls due once its 60 seconds pass on the wheel (80 seconds of steps)" (bit-and saved 1 /= 0)
+      e <- bvt-check "a cleared shop-trades entry stays off the wheel: no tick polls it back" (after == 210 & wtm-find owner.timers cgs-kind cgs-trades < 0 & wtm-find owner.timers cgs-kind cgs-town >= 0)
+      a + b + c + d + e
+    end

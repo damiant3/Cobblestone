@@ -1,0 +1,128 @@
+Chapter: CharacterSkills
+  cites Uoaix chapter GameAccounts
+
+ One row per character serial: the serial, then 46 levels in tenths in the 0x3A skill order, then fame (cell 46,
+ 0 to 10000) and karma (cell 47, -10000 to 10000). 320 rows hold every character of 64 accounts with five slots
+ each. A character record is 160 bytes, serial first, its three creation skill pairs (id, whole points) at 82.
+
+  chs-rows : Integer = 320
+  chs-cells : Integer = 46
+  chs-fame : Integer = 46
+  chs-karma : Integer = 47
+  chs-row-bytes : Integer = 392
+  chs-bytes : Integer = 125440
+  chs-zero : Integer, Integer, Integer -> Integer
+  chs-zero (buf) (at) (stop) = if at >= stop then 0 else let a = poke-qword buf at 0 in chs-zero buf (at + 8) stop
+  chs-new : Integer -> Integer
+  chs-new (unused) = let table = alloc-bytes chs-bytes in let cleared = chs-zero table 0 chs-bytes in table
+  chs-find : Integer, Integer, Integer -> Integer
+  chs-find (table) (serial) (i) = if i == chs-rows then -1
+    else if peek-qword table (i * chs-row-bytes) == serial then i else chs-find table serial (i + 1)
+  chs-slot-record : Integer, Integer, Integer -> Integer
+  chs-slot-record (slots) (serial) (i) = if i == 5 then 0
+    else if peek-qword slots (i * 160) == serial then slots + i * 160 else chs-slot-record slots serial (i + 1)
+  chs-account-record : Integer, Integer, Integer -> Integer
+  chs-account-record (accounts) (serial) (a) = if a >= ga-count accounts then 0
+    else let found = chs-slot-record (ga-slots accounts a) serial 0
+    in if found /= 0 then found else chs-account-record accounts serial (a + 1)
+ The character record of a serial, from the account slots (the bound account's slots are the working slots);
+ a shard with no account table has only its working slots. 0 when it is no character.
+  chs-record : Integer, Integer, Integer -> Integer
+  chs-record (characters) (accounts) (serial) = if serial <= 0 then 0
+    else if accounts == 0 then chs-slot-record characters serial 0
+    else chs-account-record accounts serial 0
+  chs-creation : Integer, Integer, Integer -> Integer
+  chs-creation (card) (skill) (i) = if i == 3 then 0
+    else if peek-byte card (82 + i * 2) == skill then peek-byte card (83 + i * 2) * 10
+    else chs-creation card skill (i + 1)
+  chs-seed : Integer, Integer, Integer -> Integer
+  chs-seed (cells) (card) (skill) = if skill == chs-cells then 0
+    else let a = poke-qword cells (skill * 8) (chs-creation card skill 0) in chs-seed cells card (skill + 1)
+  chs-free : Integer, Integer, Integer, Integer -> Integer
+  chs-free (table) (characters) (accounts) (i) = if i == chs-rows then -1
+    else let serial = peek-qword table (i * chs-row-bytes)
+    in if serial == 0 | chs-record characters accounts serial == 0 then i else chs-free table characters accounts (i + 1)
+ A character's row cells, claimed and seeded from its creation skills on first use; 0 for a serial that is no character.
+  chs-row : Integer, Integer, Integer, Integer -> Integer
+  chs-row (table) (characters) (accounts) (serial) = if table == 0 | serial <= 0 then 0
+    else let i = chs-find table serial 0
+    in if i >= 0 then table + i * chs-row-bytes + 8
+    else let card = chs-record characters accounts serial
+    in if card == 0 then 0
+    else let j = chs-free table characters accounts 0
+    in if j < 0 then 0
+    else let at = table + j * chs-row-bytes
+    in let named = poke-qword at 0 serial
+    in let seeded = chs-seed (at + 8) card 0 in at + 8
+  chs-level : Integer, Integer, Integer, Integer, Integer -> Integer
+  chs-level (table) (characters) (accounts) (serial) (skill) = if skill < 0 | skill >= chs-cells | serial <= 0 then 0
+    else let i = if table == 0 then -1 else chs-find table serial 0
+    in if i >= 0 then peek-qword table (i * chs-row-bytes + 8 + skill * 8)
+    else let card = chs-record characters accounts serial
+    in if card == 0 then 0 else chs-creation card skill 0
+  chs-set : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  chs-set (table) (characters) (accounts) (serial) (skill) (value) = if skill < 0 | skill >= chs-cells | value < 0 | value > 1000 then -1
+    else let cells = chs-row table characters accounts serial
+    in if cells == 0 then -1 else let a = poke-qword cells (skill * 8) value in 0
+  chs-valid : Integer, Integer -> Boolean
+  chs-valid (table) (at) = if at >= chs-bytes then True
+    else let cell = int-mod at chs-row-bytes / 8 - 1
+    in let v = peek-qword table at
+    in if cell == chs-fame & (v < 0 | v > 10000) then False
+    else if cell == chs-karma & (v < 0 - 10000 | v > 10000) then False
+    else if cell >= 0 & cell < chs-cells & (v < 0 | v > 1000) then False
+    else chs-valid table (at + 8)
+ A character's fame or karma (cell 46 or 47); 0 for a serial with no row yet.
+  chs-rep : Integer, Integer, Integer -> Integer
+  chs-rep (table) (serial) (cell) = let i = if table == 0 | serial <= 0 then -1 else chs-find table serial 0
+    in if i < 0 then 0 else peek-qword table (i * chs-row-bytes + 8 + cell * 8)
+  chs-rep-set : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  chs-rep-set (table) (characters) (accounts) (serial) (cell) (value) = let cells = chs-row table characters accounts serial
+    in if cells == 0 then -1 else let a = poke-qword cells (cell * 8) value in 0
+ UOX3 npcs.cpp Karma and Fame. A kill moves the killer's karma toward the negated karma of the dead: up by 1/75 of the
+ gap when that target is above it and positive, down by 1/50 of the gap when below it and the dead's karma is
+ positive. Fame rises by 1/75 of the gap toward the dead's fame when that is higher, to 10000; a dying character
+ loses 1/25 of its fame.
+  chs-karma-after : Integer, Integer -> Integer
+  chs-karma-after (current) (dead) = let cur = max (0 - 10000) (min 10000 current)
+    in let target = 0 - dead
+    in if cur < target & target > 0 then min 10000 (cur + (target - cur) / 75)
+    else if cur > target & dead > 0 then max (0 - 10000) (cur - (cur - target) / 50)
+    else cur
+  chs-fame-after : Integer, Integer -> Integer
+  chs-fame-after (current) (dead) = if current <= dead then min 10000 (current + (dead - current) / 75) else current
+  chs-fame-dying : Integer -> Integer
+  chs-fame-dying (current) = if current <= 0 then 0 else current - current / 25
+ UOX3 dictionary 1367 to 1378: the line for a change of reputation, by its size.
+  chs-rep-said : Integer, Integer, Text -> Text
+  chs-rep-said (before) (after) (word) = let change = if after > before then after - before else before - after
+    in let size = if change <= 25 then "a little " else if change <= 50 then "some " else "a lot of "
+    in "You have " & (if after > before then "gained " else "lost ") & size & word & "."
+ UOX3 GetFameTitle and titles.dfn [FAME]: the fame title by karma band (rows) and fame band (columns).
+  chs-titles : List Text = ["Glorious", "Great", "Estimable", "Trustworthy", "Illustrious", "Famed", "Commendable", "Honest",
+    "Noble", "Admirable", "Honorable", "Good", "Eminent", "Proper", "Respectable", "Kind", "Distinguished", "Reputable",
+    "Upstanding", "Fair", "Renowned", "Prominent", "Notable", "", "Rude", "Disreputable", "Notorious", "Imfamous",
+    "Dishonored", "Unsavory", "Dishonorable", "Ignoble", "Sinister", "Scoundrel", "Malicious", "Vile", "Villainous", "Dark",
+    "Despicable", "Dastardly", "Wicked", "Evil", "Outcast", "Wretched", "Nefarious", "Dread"]
+  chs-band : Integer, Integer, Integer, Integer -> Integer
+  chs-band (f) (high) (mid) (low) = if f >= high then 0 else if f >= mid then 1 else if f >= low then 2 else 3
+  chs-title-index : Integer, Integer -> Integer
+  chs-title-index (k) (f) = if k >= 10000 then chs-band f 5000 2500 1250
+    else if k >= 5000 then 4 + chs-band f 5000 2500 1250
+    else if k >= 2500 then 8 + chs-band f 5000 2500 1250
+    else if k >= 1250 then 12 + chs-band f 5000 2500 1250
+    else if k >= 625 then 16 + chs-band f 5000 1000 500
+    else if k > 0 - 625 then 20 + chs-band f 5000 2500 1250
+    else if k > 0 - 1250 then (if f >= 10000 then 28 else 27 - chs-band f 5000 2500 1250)
+    else if k > 0 - 2500 then 32 - chs-band f 5000 2500 1250
+    else if k > 0 - 5000 then (if f >= 10000 then 37 else 36 - chs-band f 5000 2500 1250)
+    else if k > 0 - 10000 then 41 - chs-band f 5000 2500 1250
+    else 45 - chs-band f 5000 2500 1250
+ The paperdoll title before the name: "The <title> Lord " or "Lady " at fame 10000, else "The <title> ", else nothing.
+  chs-fame-title : Integer, Integer, Boolean -> Text
+  chs-fame-title (k) (f) (female) = let title = list-at chs-titles (chs-title-index k f)
+    in let spaced = if text-length title == 0 then "" else title & " "
+    in if f >= 10000 then "The " & spaced & (if female then "Lady " else "Lord ")
+    else if text-length title == 0 then "" else "The " & spaced
+
+Page 1

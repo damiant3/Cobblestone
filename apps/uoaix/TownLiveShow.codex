@@ -1,0 +1,106 @@
+Chapter: TownLiveShow
+  cites Uoaix chapter TownLive
+  cites Uoaix chapter EconomyActions
+
+ ServUO Services/Craft DefBlacksmithy and DefTailoring PlayCraftEffect: the
+ anvil sound 0x2A with the hammer swing (action 9), the tailoring sound
+ 0x248; DefCooking plays nothing, so the baker calls out instead. Viewer rows
+ are volatile: 32 bytes per connection, eight for GameLinks' links (serial,
+ connection, last narrated audit sequence, next work show in game seconds).
+
+  tls-rows : Integer = 8
+  tls-bytes : Integer = tls-rows * 32
+  tls-row : Integer, Integer, Integer, Integer -> Integer
+  tls-row (rows) (connection) (i) (best) = if i == tls-rows then best
+    else if peek-qword rows (i * 32 + 8) == connection then i
+    else tls-row rows connection (i + 1) (if peek-qword rows (i * 32 + 8) < peek-qword rows (best * 32 + 8) then i else best)
+  tls-show-seconds : Integer = 60
+  tls-lines : Integer = 3
+  tls-near : WalkMap, WorldObject, WorldObject -> Boolean
+  tls-near (map) (viewer) (npc) = walk-abs (viewer.x - npc.x) <= 18 & walk-abs (viewer.y - npc.y) <= 18 & tl-sight map npc viewer
+  tls-npc : TownLive, Integer -> Result WorldObject Text
+  tls-npc (t) (i) = world-get t.vendors.game.world (tf-person t.people (list-at t.residents i).person).world-serial
+  tls-name : TownLive, Integer -> Text
+  tls-name (t) (i) = (tf-person t.people (list-at t.residents i).person).name
+  tls-work : TownLive, Integer, WorldObject -> List (List Integer)
+  tls-work (t) (i) (npc) = if i == 1 then [cbp-animation npc.serial 9] & gsi-sound-at t.items npc.serial #002A
+    else if i == 2 then gsi-sound-at t.items npc.serial #0248
+    else if world-announce t.vendors.game.world npc.serial (tl-state-key t.now (if gv-shut t.vendors (tl-shop-of i) then 2 else 1)) then [gvp-speech npc (tls-name t i) "Fresh bread, warm from the oven!"] else []
+  tls-working : TownLive, WalkMap, WorldObject, Integer, List (List Integer) -> List (List Integer)
+  tls-working (t) (map) (viewer) (i) (packets) = if i == t.count then packets
+    else let r = list-at t.residents i
+    in when tls-npc t i
+      is Err (_) -> tls-working t map viewer (i + 1) packets
+      is Ok (npc) -> let working = r.goal == 1 & tl-at npc r.work & npc.health > 0
+        in let away = if working then 0 else world-state-clear t.vendors.game.world npc.serial
+        in let shown = if working & tls-near map viewer npc then packets & tls-work t i npc else packets
+        in tls-working t map viewer (i + 1) shown
+  tls-resident : TownLive, Integer, Integer -> Integer
+  tls-resident (t) (actor) (i) = if i == t.count then -1 else if (list-at t.residents i).actor == actor then i else tls-resident t actor (i + 1)
+  tls-item : EaWorld, Integer -> Text
+  tls-item (e) (item) = let items = e.world.catalog.items
+    in if item < 1 | item > list-length items then "goods" else (list-at items (item - 1)).name
+ A resident remarks on one work event (a harvest or a craft) in four; its trades and meals are always told.
+  tls-work-odds : Integer = 4
+  tls-told : EaEvent -> Boolean
+  tls-told (row) = row.result >= 0 & (row.kind == 2 | row.kind == 3 | row.kind == 4 | (row.kind == 1 & int-mod row.sequence tls-work-odds == 0))
+ An economic remark naming its goods (NpcSpeech.md ruling): kind 1 a harvest, 2 an item made, 3 a purchase, 4 a sale;
+ price is copper apiece, 0 when unknown.
+  tls-say : Integer, Integer, Text, Integer, Integer -> Text
+  tls-say (kind) (pick) (item) (quantity) (price) = if kind == 1 then (if pick == 0 then "Oh, a nice pile of " & item & "!" else "Good " & item & " here today.")
+    else if kind == 2 then (if pick == 0 then "That " & item & " is one of my best!" else "Fine " & item & ", if I say so myself.")
+    else if price < 1 then (if kind == 3 then "Bought " else "Sold ") & show quantity & " " & item & "."
+    else if kind == 3 then (if pick == 0 then "That " & item & " cost me " & show price & " copper. I shall have to raise my prices." else "Bought " & show quantity & " " & item & " at " & show price & " copper apiece.")
+    else if pick == 0 then "Sold " & show quantity & " " & item & " for " & show price & " copper apiece."
+    else "My " & item & " fetched " & show price & " copper apiece. A fair price."
+  tls-made : EaWorld, EaEvent -> Integer
+  tls-made (e) (row) = let w = e.world
+    in if row.node > 0 then (if not (eh-valid-node w row.node) then 0
+      else let r = (list-at w.nodes (row.node - 1)).resource
+      in if r < 1 | r > list-length w.catalog.resources then 0 else (list-at w.catalog.resources (r - 1)).item)
+    else if row.recipe < 1 | row.recipe > list-length w.catalog.recipes then 0 else (list-at w.catalog.recipes (row.recipe - 1)).item
+  tls-line : EaWorld, EaEvent -> Text
+  tls-line (e) (row) = let pick = int-mod row.sequence 2
+    in if row.kind == 4 then "*eats some " & tls-item e row.item & "*"
+    else if row.kind == 1 then tls-say (if row.node > 0 then 1 else 2) pick (tls-item e (tls-made e row)) 1 0
+    else tls-say (row.kind + 1) pick (tls-item e row.item) row.quantity row.price
+  tls-said : TownLive, EaWorld, WalkMap, WorldObject, EaEvent -> List (List Integer)
+  tls-said (t) (e) (map) (viewer) (row) = if not (tls-told row) then []
+    else let i = tls-resident t row.actor 0
+    in if i < 0 then [] else when tls-npc t i
+      is Err (_) -> []
+      is Ok (npc) -> if not (tls-near map viewer npc) then [] else [gvp-speech npc (tls-name t i) (tls-line e row)]
+ Rows are read newest first by sequence, because cg-rotate moves them.
+  tls-goods : TownLive, EaWorld, WalkMap, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
+  tls-goods (t) (e) (map) (viewer) (seen) (row) (lines) = if row < 0 | list-length lines >= tls-lines then lines
+    else let event = list-at e.events row
+    in if event.sequence <= seen then lines
+    else tls-goods t e map viewer seen (row - 1) (tls-said t e map viewer event & lines)
+  tls-show : TownLive, WalkMap, Maybe EaWorld, Integer, Integer, WorldObject, Integer -> List (List Integer)
+  tls-show (t) (map) (book) (rows) (slot) (viewer) (connection) = if slot < 0 | slot >= 5 then []
+    else let at = rows + tls-row rows connection 0 0 * 32
+    in let latest = when book is None -> 0 is Just (e) -> e.sequence
+    in let fresh = peek-qword rows at /= viewer.serial | peek-qword rows (at + 8) /= connection
+    in let bound = if not fresh then 0 else let a = poke-qword rows at viewer.serial
+      in let b = poke-qword rows (at + 8) connection
+      in let c = poke-qword rows (at + 16) latest in poke-qword rows (at + 24) 0
+    in let goods = when book
+      is None -> []
+      is Just (e) -> let lines = tls-goods t e map viewer (peek-qword rows (at + 16)) (e.event-count - 1) []
+        in let read = poke-qword rows (at + 16) latest in lines
+    in if viewer.health <= 0 | t.now < peek-qword rows (at + 24) then goods
+    else let next = poke-qword rows (at + 24) (t.now + tls-show-seconds)
+    in goods & tls-working t map viewer 0 []
+  tls-doing : TownLive, Integer, WorldObject -> Text
+  tls-doing (t) (i) (npc) = let r = list-at t.residents i
+    in let shop = if i == 0 then "Good Eats" else if i == 1 then "the Hammer And Anvil" else "the Lords Clothiers"
+    in if r.goal == 1 then (if tl-at npc r.work then "Busy at " & shop & "." else "On my way to work at " & shop & ".")
+    else if r.goal == 2 then (if tl-at npc r.tavern then "Having a pint at the Blue Boar." else "Off to the Blue Boar.")
+    else if tl-at npc r.home | tl-in-lodging npc then "Resting at the Sweet Dreams Inn." else "Heading home to the Sweet Dreams Inn."
+  tls-status : TownLive, Integer -> List (List Integer)
+  tls-status (t) (serial) = tls-status-at t serial 0
+  tls-status-at : TownLive, Integer, Integer -> List (List Integer)
+  tls-status-at (t) (serial) (i) = if i == t.count then []
+    else when tls-npc t i
+      is Err (_) -> tls-status-at t serial (i + 1)
+      is Ok (npc) -> if npc.serial /= serial then tls-status-at t serial (i + 1) else [gvp-speech npc (tls-name t i) (tls-doing t i npc)]

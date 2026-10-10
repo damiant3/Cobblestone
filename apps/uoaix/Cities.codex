@@ -1,0 +1,311 @@
+Chapter: Cities
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter BritainWindow
+  cites Uoaix chapter BritainCatalog
+
+  CtCity = record { name : Text, x1 : Integer, y1 : Integer, x2 : Integer, y2 : Integer }
+ A city's rectangle spans its UOX3 keeper and townsfolk spawn regions (data/dfndata/spawn/felucca/spawn_felucca_town_<city>.dfn);
+ its walk window widens that to whole 8-tile blocks with at least a tile beside every edge. City 0 is Britain, whose window
+ is BritainWindow's and whose map is the town map. A city's index is its place in this table; a new city is appended.
+  ct-table : Integer -> List CtCity
+  ct-table (unused) = [CtCity { name = "Britain", x1 = bwn-x1, y1 = bwn-y1, x2 = bwn-x2, y2 = bwn-y2 },
+    CtCity { name = "Trinsic", x1 = 1811, y1 = 2643, x2 = 2075, y2 = 2912 },
+    CtCity { name = "Moonglow", x1 = 4374, y1 = 1041, x2 = 4529, y2 = 1176 },
+    CtCity { name = "Yew", x1 = 497, y1 = 769, x2 = 696, y2 = 1250 },
+    CtCity { name = "Wind", x1 = 5146, y1 = 19, x2 = 5351, y2 = 191 },
+    CtCity { name = "Skara Brae", x1 = 545, y1 = 2120, x2 = 671, y2 = 2285 },
+    CtCity { name = "Ocllo", x1 = 3600, y1 = 2470, x2 = 3694, y2 = 2665 },
+    CtCity { name = "Magincia", x1 = 3657, y1 = 2122, x2 = 3766, y2 = 2269 },
+    CtCity { name = "Nujel'm", x1 = 3544, y1 = 1166, x2 = 3773, y2 = 1400 },
+    CtCity { name = "Jhelom", x1 = 1305, y1 = 3672, x2 = 1534, y2 = 4061 },
+    CtCity { name = "Serpent's Hold", x1 = 2860, y1 = 3338, x2 = 3067, y2 = 3527 },
+    CtCity { name = "Buccaneer's Den", x1 = 2622, y1 = 2070, x2 = 2764, y2 = 2266 },
+    CtCity { name = "Vesper", x1 = 2738, y1 = 618, x2 = 3040, y2 = 1003 },
+    CtCity { name = "Minoc", x1 = 2417, y1 = 337, x2 = 2573, y2 = 679 },
+    CtCity { name = "Cove", x1 = 2208, y1 = 1112, x2 = 2286, y2 = 1234 }]
+  ct-x : CtCity -> Integer
+  ct-x (c) = (c.x1 - 1) / 8 * 8
+  ct-y : CtCity -> Integer
+  ct-y (c) = (c.y1 - 1) / 8 * 8
+  ct-width : CtCity -> Integer
+  ct-width (c) = ((c.x2 + 1) / 8 + 1) * 8 - ct-x c
+  ct-height : CtCity -> Integer
+  ct-height (c) = ((c.y2 + 1) / 8 + 1) * 8 - ct-y c
+ The city whose rectangle holds x, y, or -1.
+  ct-city-at : List CtCity, Integer, Integer, Integer -> Integer
+  ct-city-at (cities) (x) (y) (i) = if i >= list-length cities then -1
+    else let c = list-at cities i
+    in if x >= c.x1 & x <= c.x2 & y >= c.y1 & y <= c.y2 then i else ct-city-at cities x y (i + 1)
+  ct-map-of : List WalkMap, Integer -> Maybe WalkMap
+  ct-map-of (maps) (i) = if i < 0 | i >= list-length maps then None else Just (list-at maps i)
+ The map of the city holding x, y, or None.
+  ct-map-at : List CtCity, List WalkMap, Integer, Integer -> Maybe WalkMap
+  ct-map-at (cities) (maps) (x) (y) = ct-map-of maps (ct-city-at cities x y 0)
+ Every city's map in table order: city 0 is the Britain map already loaded; each other window is sized by its own busiest
+ cell (wmc-window-colliders) and filled from the map cache.
+  ct-load : MapCacheState, MapInstallData, List CtCity, WalkMap, Integer, List WalkMap -> [Device.Block] Result (List WalkMap) Text
+  ct-load (cache) (installed) (cities) (britain) (i) (maps) = if i >= list-length cities then act Ok maps end
+    else if i == 0 then ct-load cache installed cities britain 1 (maps & [britain])
+    else let c = list-at cities i
+    in act
+      counted <- wmc-window-colliders cache (ct-x c) (ct-y c) (ct-width c) (ct-height c) installed
+      when counted
+        is Err (e) -> Err (c.name & " window: " & e)
+        is Ok (colliders) -> when walk-map-sized (ct-x c) (ct-y c) (ct-width c) (ct-height c) (max 1 colliders)
+          is Err (e) -> act Err (c.name & " window: " & e) end
+          is Ok (map) -> act
+            filled <- wmc-fill cache map 0
+            when filled
+              is Err (e) -> Err (c.name & " window: " & e)
+              is Ok (_) -> ct-load cache installed cities britain (i + 1) (maps & [map])
+          end
+    end
+  ct-said : List CtCity, List WalkMap, Integer, Text -> Text
+  ct-said (cities) (maps) (i) (acc) = if i >= list-length maps | i >= list-length cities then acc
+    else let m = list-at maps i
+    in ct-said cities maps (i + 1) (acc & " " & (list-at cities i).name & " " & show m.width & "x" & show m.height & " stride=" & show m.stride)
+
+ Every other city's shops follow Britain's in the vendor table: city shop k is vendor bb-shop-count + k and sells the
+ goods of the Britain shop ct-shop-roles names (its index in bb-shops). Each row is a Britain BbShop: the role's title,
+ the premises, and the keeper's UOX3 spawn region (spawn_felucca_town_<city>.dfn), in which the keeper stands. A city
+ appends its rows to ct-city-shops and its roles to ct-shop-roles in the same order.
+  ct-shops-trinsic : Integer -> List BbShop
+  ct-shops-trinsic (unused) = [
+    BbShop { title = "Provisioner", premises = "Trinsic Provisioner", x1 = 1846, y1 = 2795, x2 = 1848, y2 = 2797 },
+    BbShop { title = "Blacksmith", premises = "Trinsic Blacksmith", x1 = 1885, y1 = 2650, x2 = 1887, y2 = 2657 },
+    BbShop { title = "Tailor", premises = "Trinsic Tailor", x1 = 1985, y1 = 2839, x2 = 1989, y2 = 2843 },
+    BbShop { title = "Baker", premises = "Trinsic Baker", x1 = 1879, y1 = 2807, x2 = 1881, y2 = 2810 },
+    BbShop { title = "Healer", premises = "Trinsic Healer", x1 = 1919, y1 = 2807, x2 = 1921, y2 = 2811 },
+    BbShop { title = "Innkeeper", premises = "Trinsic Inn", x1 = 2019, y1 = 2803, x2 = 2021, y2 = 2805 },
+    BbShop { title = "Tinker", premises = "Trinsic Tinker", x1 = 1842, y1 = 2674, x2 = 1845, y2 = 2677 },
+    BbShop { title = "Carpenter", premises = "Trinsic Carpenter", x1 = 1851, y1 = 2789, x2 = 1857, y2 = 2794 },
+    BbShop { title = "Herbalist", premises = "Trinsic Herbalist", x1 = 1840, y1 = 2702, x2 = 1841, y2 = 2707 },
+    BbShop { title = "Tanner", premises = "Trinsic Tannery", x1 = 1985, y1 = 2870, x2 = 1994, y2 = 2875 },
+    BbShop { title = "Leatherworker", premises = "Trinsic Leatherworker", x1 = 1986, y1 = 2866, x2 = 1987, y2 = 2868 },
+    BbShop { title = "Cobbler", premises = "Trinsic Cobbler", x1 = 1851, y1 = 2789, x2 = 1857, y2 = 2794 }]
+ Skara Brae's island town (its mainland farms and rangers lie outside the window); the alchemist's shop sells the herbalist's goods.
+  ct-shops-skara : Integer -> List BbShop
+  ct-shops-skara (unused) = [
+    BbShop { title = "Provisioner", premises = "Sundry Supplies", x1 = 579, y1 = 2225, x2 = 580, y2 = 2229 },
+    BbShop { title = "Blacksmith", premises = "On Guard Armory", x1 = 625, y1 = 2192, x2 = 627, y2 = 2195 },
+    BbShop { title = "Tailor", premises = "Shear Pleasure", x1 = 649, y1 = 2179, x2 = 652, y2 = 2180 },
+    BbShop { title = "Healer", premises = "Healer of Skara Brae", x1 = 617, y1 = 2216, x2 = 619, y2 = 2219 },
+    BbShop { title = "Innkeeper", premises = "The Falconer's Inn", x1 = 601, y1 = 2233, x2 = 602, y2 = 2236 },
+    BbShop { title = "Carpenter", premises = "Builders' Delight", x1 = 626, y1 = 2162, x2 = 628, y2 = 2166 },
+    BbShop { title = "Herbalist", premises = "Mystic Treasures", x1 = 666, y1 = 2137, x2 = 668, y2 = 2140 },
+    BbShop { title = "Bowyer", premises = "Bloody Bowyer", x1 = 596, y1 = 2201, x2 = 598, y2 = 2205 },
+    BbShop { title = "Cobbler", premises = "Sundry Supplies", x1 = 587, y1 = 2224, x2 = 590, y2 = 2225 },
+    BbShop { title = "Fishmonger", premises = "Skara Brae docks", x1 = 644, y1 = 2234, x2 = 666, y2 = 2238 }]
+ Ocllo's town (its eastern farms lie outside the window); the Sorcerers' Guild's herbalist sells the herbalist's goods.
+  ct-shops-ocllo : Integer -> List BbShop
+  ct-shops-ocllo (unused) = [
+    BbShop { title = "Provisioner", premises = "Last Chance Provisioners", x1 = 3633, y1 = 2569, x2 = 3636, y2 = 2570 },
+    BbShop { title = "Blacksmith", premises = "Hammer & Steel Smithy", x1 = 3642, y1 = 2600, x2 = 3646, y2 = 2602 },
+    BbShop { title = "Tailor", premises = "A Stitch In Time", x1 = 3665, y1 = 2585, x2 = 3669, y2 = 2589 },
+    BbShop { title = "Baker", premises = "Now You're Cookin'", x1 = 3600, y1 = 2571, x2 = 3604, y2 = 2574 },
+    BbShop { title = "Healer", premises = "Healer Of Ocllo", x1 = 3625, y1 = 2604, x2 = 3628, y2 = 2607 },
+    BbShop { title = "Innkeeper", premises = "The Bountiful Harvest", x1 = 3667, y1 = 2618, x2 = 3671, y2 = 2619 },
+    BbShop { title = "Scribe", premises = "Ocllo Public Library", x1 = 3609, y1 = 2470, x2 = 3621, y2 = 2477 },
+    BbShop { title = "Herbalist", premises = "Sorcerers' Guild", x1 = 3627, y1 = 2536, x2 = 3629, y2 = 2539 },
+    BbShop { title = "Tanner", premises = "Better Leather Tannery", x1 = 3601, y1 = 2606, x2 = 3605, y2 = 2622 },
+    BbShop { title = "Leatherworker", premises = "Better Leather Tannery", x1 = 3601, y1 = 2601, x2 = 3604, y2 = 2604 },
+    BbShop { title = "Cobbler", premises = "Last Chance Provisioners", x1 = 3628, y1 = 2571, x2 = 3630, y2 = 2573 }]
+ Magincia as it stood in 1998 (UOX3 felucca_magincia_original.jsdata signs; no reference spawns its keepers): each keeper
+ region lies inside its signed building on the 1.25 client's statics, floor z 20.
+  ct-shops-magincia : Integer -> List BbShop
+  ct-shops-magincia (unused) = [
+    BbShop { title = "Healer", premises = "Healer of Magincia", x1 = 3685, y1 = 2227, x2 = 3688, y2 = 2229 },
+    BbShop { title = "Innkeeper", premises = "Great Horns Tavern", x1 = 3731, y1 = 2226, x2 = 3734, y2 = 2229 },
+    BbShop { title = "Baker", premises = "The Bread Baker", x1 = 3681, y1 = 2172, x2 = 3684, y2 = 2174 },
+    BbShop { title = "Baker", premises = "Baker's Dozen", x1 = 3753, y1 = 2228, x2 = 3756, y2 = 2230 },
+    BbShop { title = "Tailor", premises = "Stitchin' Time", x1 = 3667, y1 = 2231, x2 = 3670, y2 = 2233 },
+    BbShop { title = "Tinker", premises = "The Tic-Toc Shop", x1 = 3713, y1 = 2132, x2 = 3716, y2 = 2134 },
+    BbShop { title = "Glassblower", premises = "Merchants' Guild", x1 = 3707, y1 = 2243, x2 = 3710, y2 = 2246 },
+    BbShop { title = "Paper miller", premises = "Magincia Miner's Guild", x1 = 3667, y1 = 2134, x2 = 3670, y2 = 2137 },
+    BbShop { title = "Fishmonger", premises = "Fishermen's Guild & Supplies", x1 = 3681, y1 = 2257, x2 = 3684, y2 = 2259 }]
+ Nujel'm keeps the keepers of Britain's roles; its butcher, jeweler, shipwright, bard and taverns have no Britain role.
+  ct-shops-nujelm : Integer -> List BbShop
+  ct-shops-nujelm (unused) = [
+    BbShop { title = "Blacksmith", premises = "Nujel'm Public Smithing", x1 = 3552, y1 = 1202, x2 = 3556, y2 = 1206 },
+    BbShop { title = "Tailor", premises = "Tailor of the Isle", x1 = 3761, y1 = 1269, x2 = 3764, y2 = 1270 },
+    BbShop { title = "Innkeeper", premises = "Restful Slumber", x1 = 3731, y1 = 1320, x2 = 3732, y2 = 1322 },
+    BbShop { title = "Bowyer", premises = "Nujel'm Bowry", x1 = 3545, y1 = 1193, x2 = 3548, y2 = 1198 },
+    BbShop { title = "Tanner", premises = "Nujel'm Tannery", x1 = 3545, y1 = 1177, x2 = 3549, y2 = 1181 },
+    BbShop { title = "Leatherworker", premises = "Nujel'm Tannery", x1 = 3544, y1 = 1176, x2 = 3550, y2 = 1182 }]
+  ct-shops-jhelom : Integer -> List BbShop
+  ct-shops-jhelom (unused) = [
+    BbShop { title = "Provisioner", premises = "Jhelom Provisioner", x1 = 1441, y1 = 3801, x2 = 1446, y2 = 3805 },
+    BbShop { title = "Blacksmith", premises = "Jhelom Blacksmith", x1 = 1419, y1 = 3850, x2 = 1422, y2 = 3859 },
+    BbShop { title = "Tailor", premises = "Jhelom Tailor", x1 = 1360, y1 = 3778, x2 = 1366, y2 = 3782 },
+    BbShop { title = "Baker", premises = "Jhelom Baker", x1 = 1353, y1 = 3729, x2 = 1357, y2 = 3732 },
+    BbShop { title = "Healer", premises = "Jhelom Healer", x1 = 1409, y1 = 3770, x2 = 1415, y2 = 3774 },
+    BbShop { title = "Innkeeper", premises = "Jhelom Inn", x1 = 1369, y1 = 3809, x2 = 1374, y2 = 3811 },
+    BbShop { title = "Tinker", premises = "Jhelom Tinker", x1 = 1403, y1 = 3800, x2 = 1406, y2 = 3805 },
+    BbShop { title = "Carpenter", premises = "Jhelom Carpenter", x1 = 1433, y1 = 3825, x2 = 1438, y2 = 3830 },
+    BbShop { title = "Herbalist", premises = "Jhelom Herbalist", x1 = 1425, y1 = 3979, x2 = 1430, y2 = 3984 },
+    BbShop { title = "Cobbler", premises = "Jhelom Cobbler", x1 = 1433, y1 = 3795, x2 = 1443, y2 = 3796 }]
+  ct-shops-serpents : Integer -> List BbShop
+  ct-shops-serpents (unused) = [
+    BbShop { title = "Provisioner", premises = "Serpent's Hold Provisioner", x1 = 3004, y1 = 3385, x2 = 3006, y2 = 3388 },
+    BbShop { title = "Blacksmith", premises = "Serpent's Hold Blacksmith", x1 = 3001, y1 = 3405, x2 = 3006, y2 = 3409 },
+    BbShop { title = "Tailor", premises = "Serpent's Hold Tailor", x1 = 2874, y1 = 3508, x2 = 2877, y2 = 3510 },
+    BbShop { title = "Baker", premises = "Serpent's Hold Baker", x1 = 2973, y1 = 3353, x2 = 2976, y2 = 3354 },
+    BbShop { title = "Healer", premises = "Serpent's Hold Healer", x1 = 3000, y1 = 3346, x2 = 3003, y2 = 3350 },
+    BbShop { title = "Innkeeper", premises = "Serpent's Hold Inn", x1 = 2962, y1 = 3405, x2 = 2964, y2 = 3410 },
+    BbShop { title = "Tinker", premises = "Serpent's Hold Tinker", x1 = 2931, y1 = 3504, x2 = 2934, y2 = 3505 },
+    BbShop { title = "Herbalist", premises = "Serpent's Hold Herbalist", x1 = 3009, y1 = 3352, x2 = 3014, y2 = 3358 },
+    BbShop { title = "Bowyer", premises = "Serpent's Hold Bowyer", x1 = 3050, y1 = 3369, x2 = 3053, y2 = 3372 }]
+ Buccaneer's Den keeps the keepers of Britain's roles; it has no guards (the reference town is unguarded).
+  ct-shops-bucc : Integer -> List BbShop
+  ct-shops-bucc (unused) = [
+    BbShop { title = "Provisioner", premises = "The Pirate's Provision", x1 = 2731, y1 = 2250, x2 = 2742, y2 = 2254 },
+    BbShop { title = "Blacksmith", premises = "Cutlass Smithing", x1 = 2633, y1 = 2081, x2 = 2638, y2 = 2085 },
+    BbShop { title = "Healer", premises = "Healer of Buccaneer's Den", x1 = 2705, y1 = 2144, x2 = 2709, y2 = 2148 },
+    BbShop { title = "Innkeeper", premises = "The Peg Leg Inn", x1 = 2713, y1 = 2097, x2 = 2718, y2 = 2102 },
+    BbShop { title = "Carpenter", premises = "Violente Woodworks", x1 = 2624, y1 = 2097, x2 = 2629, y2 = 2102 },
+    BbShop { title = "Tanner", premises = "Buccaneer's Den Leatherworks", x1 = 2705, y1 = 2177, x2 = 2710, y2 = 2182 },
+    BbShop { title = "Leatherworker", premises = "Buccaneer's Den Leatherworks", x1 = 2705, y1 = 2177, x2 = 2710, y2 = 2182 },
+    BbShop { title = "Cobbler", premises = "The Pirate's Provision", x1 = 2731, y1 = 2250, x2 = 2742, y2 = 2254 }]
+ Vesper's keepers of Britain's roles, one per role, from its UOX3 keeper regions (spawn_felucca_town_vesper.dfn).
+  ct-shops-vesper : Integer -> List BbShop
+  ct-shops-vesper (unused) = [
+    BbShop { title = "Healer", premises = "Healer of Vesper", x1 = 2914, y1 = 851, x2 = 2916, y2 = 853 },
+    BbShop { title = "Innkeeper", premises = "The Ironwood Inn", x1 = 2775, y1 = 964, x2 = 2779, y2 = 968 },
+    BbShop { title = "Leatherworker", premises = "Tanner's Shop", x1 = 2857, y1 = 992, x2 = 2860, y2 = 996 },
+    BbShop { title = "Provisioner", premises = "The Adventurer's Friend", x1 = 2843, y1 = 865, x2 = 2845, y2 = 868 },
+    BbShop { title = "Tailor", premises = "The Spinning Wheel (Center)", x1 = 2841, y1 = 882, x2 = 2844, y2 = 885 },
+    BbShop { title = "Blacksmith", premises = "The Ironworks", x1 = 2865, y1 = 849, x2 = 2867, y2 = 852 },
+    BbShop { title = "Bowyer", premises = "The Ranger's Tool", x1 = 2864, y1 = 810, x2 = 2866, y2 = 812 },
+    BbShop { title = "Tinker", premises = "The Gadget's Corner", x1 = 2897, y1 = 786, x2 = 2900, y2 = 788 },
+    BbShop { title = "Carpenter", premises = "The Hammer and Nail", x1 = 2913, y1 = 798, x2 = 2915, y2 = 800 },
+    BbShop { title = "Baker", premises = "The Twisted Baker", x1 = 2994, y1 = 761, x2 = 2996, y2 = 764 },
+    BbShop { title = "Tanner", premises = "Tanner's Shop", x1 = 2857, y1 = 999, x2 = 2861, y2 = 1003 },
+    BbShop { title = "Cobbler", premises = "The Adventurer's Friend", x1 = 2835, y1 = 867, x2 = 2841, y2 = 870 },
+    BbShop { title = "Herbalist", premises = "The Magician's Friend", x1 = 2993, y1 = 839, x2 = 2998, y2 = 846 },
+    BbShop { title = "Fishmonger", premises = "Fisherman's Wharf", x1 = 3016, y1 = 779, x2 = 3018, y2 = 781 }]
+ Minoc's keepers of Britain's roles, one per role, from its UOX3 keeper regions (spawn_felucca_town_minoc.dfn), except the
+ fishmonger: its region (Docks 1) is open sea and cliff on the 1.25 map, so it keeps the west landing of the river bridge.
+  ct-shops-minoc : Integer -> List BbShop
+  ct-shops-minoc (unused) = [
+    BbShop { title = "Carpenter", premises = "The Oak Throne", x1 = 2507, y1 = 475, x2 = 2511, y2 = 477 },
+    BbShop { title = "Tinker", premises = "Gears and Gadgets", x1 = 2459, y1 = 451, x2 = 2461, y2 = 453 },
+    BbShop { title = "Blacksmith", premises = "The Forgery", x1 = 2467, y1 = 559, x2 = 2471, y2 = 561 },
+    BbShop { title = "Healer", premises = "The Healing Hand", x1 = 2571, y1 = 588, x2 = 2573, y2 = 590 },
+    BbShop { title = "Tailor", premises = "Survival Threads", x1 = 2525, y1 = 546, x2 = 2527, y2 = 549 },
+    BbShop { title = "Leatherworker", premises = "The Stretched Hide", x1 = 2518, y1 = 522, x2 = 2519, y2 = 525 },
+    BbShop { title = "Provisioner", premises = "The Old Miner's Supplies", x1 = 2449, y1 = 427, x2 = 2451, y2 = 429 },
+    BbShop { title = "Cobbler", premises = "The Survival Shop", x1 = 2529, y1 = 550, x2 = 2532, y2 = 552 },
+    BbShop { title = "Tanner", premises = "The Stretched Hide", x1 = 2521, y1 = 520, x2 = 2523, y2 = 525 },
+    BbShop { title = "Fishmonger", premises = "Minoc river bridge", x1 = 2528, y1 = 499, x2 = 2530, y2 = 502 }]
+ Moonglow's mage, alchemist, butcher, farmer, artist, banker, spinner and weaver have no Britain role yet.
+  ct-shops-moonglow : Integer -> List BbShop
+  ct-shops-moonglow (unused) = [
+    BbShop { title = "Provisioner", premises = "The Scholar's Goods", x1 = 4409, y1 = 1057, x2 = 4414, y2 = 1059 },
+    BbShop { title = "Blacksmith", premises = "The Mighty Axe", x1 = 4385, y1 = 1104, x2 = 4390, y2 = 1109 },
+    BbShop { title = "Blacksmith", premises = "Second Defense Armory", x1 = 4437, y1 = 1153, x2 = 4441, y2 = 1157 },
+    BbShop { title = "Tailor", premises = "Scholar's Cut", x1 = 4457, y1 = 1058, x2 = 4460, y2 = 1061 },
+    BbShop { title = "Baker", premises = "Mage's Bread", x1 = 4385, y1 = 1058, x2 = 4390, y2 = 1065 },
+    BbShop { title = "Healer", premises = "Moonglow Healer", x1 = 4385, y1 = 1081, x2 = 4391, y2 = 1084 },
+    BbShop { title = "Innkeeper", premises = "The Scholar's Inn", x1 = 4400, y1 = 1160, x2 = 4403, y2 = 1162 },
+    BbShop { title = "Innkeeper", premises = "Moonglow Student Hostel", x1 = 4480, y1 = 1065, x2 = 4481, y2 = 1069 },
+    BbShop { title = "Tinker", premises = "Moonglow Bank And Tinkersguild", x1 = 4468, y1 = 1156, x2 = 4473, y2 = 1158 },
+    BbShop { title = "Carpenter", premises = "Moonglow Carpenter", x1 = 4409, y1 = 1090, x2 = 4411, y2 = 1093 },
+    BbShop { title = "Herbalist", premises = "Herbal Splendor", x1 = 4409, y1 = 1137, x2 = 4414, y2 = 1139 },
+    BbShop { title = "Cobbler", premises = "The Scholar's Goods", x1 = 4413, y1 = 1062, x2 = 4416, y2 = 1065 }]
+ Yew's shops inside its window (the healer at 329,1243 lies west of it); Empath Abbey's keepers stand on its ground floor.
+ Yew's butcher, architect, mapmaker, shipwright, farmers, bankers, mages and alchemist have no Britain role yet.
+  ct-shops-yew : Integer -> List BbShop
+  ct-shops-yew (unused) = [
+    BbShop { title = "Baker", premises = "The Jolly Baker", x1 = 553, y1 = 985, x2 = 554, y2 = 987 },
+    BbShop { title = "Baker", premises = "Yew Mill", x1 = 549, y1 = 824, x2 = 554, y2 = 826 },
+    BbShop { title = "Healer", premises = "Healer of Yew", x1 = 531, y1 = 969, x2 = 533, y2 = 971 },
+    BbShop { title = "Healer", premises = "Deep Forest Healing", x1 = 642, y1 = 1081, x2 = 646, y2 = 1086 },
+    BbShop { title = "Healer", premises = "Empath Abbey", x1 = 632, y1 = 816, x2 = 638, y2 = 822 },
+    BbShop { title = "Innkeeper", premises = "Empath Abbey", x1 = 608, y1 = 808, x2 = 614, y2 = 822 },
+    BbShop { title = "Carpenter", premises = "Bloody Thumb Woodworks", x1 = 563, y1 = 1009, x2 = 565, y2 = 1012 },
+    BbShop { title = "Scribe", premises = "Empath Abbey", x1 = 640, y1 = 848, x2 = 646, y2 = 854 },
+    BbShop { title = "Scribe", premises = "Empath Abbey", x1 = 624, y1 = 848, x2 = 630, y2 = 854 },
+    BbShop { title = "Herbalist", premises = "Empath Abbey", x1 = 625, y1 = 843, x2 = 627, y2 = 854 },
+    BbShop { title = "Bowyer", premises = "The Sturdy Bow", x1 = 561, y1 = 962, x2 = 563, y2 = 964 },
+    BbShop { title = "Bowyer", premises = "Great Oak Bowyer", x1 = 617, y1 = 1144, x2 = 623, y2 = 1147 },
+    BbShop { title = "Tanner", premises = "The Tanned Hide", x1 = 512, y1 = 986, x2 = 516, y2 = 987 },
+    BbShop { title = "Leatherworker", premises = "The Tanned Hide", x1 = 513, y1 = 989, x2 = 514, y2 = 991 }]
+ Wind's shops (the first inn is unsigned); its alchemists and mages have no Britain role yet.
+  ct-shops-wind : Integer -> List BbShop
+  ct-shops-wind (unused) = [
+    BbShop { title = "Provisioner", premises = "Mages's Things", x1 = 5152, y1 = 95, x2 = 5165, y2 = 99 },
+    BbShop { title = "Tailor", premises = "Windy Clothes", x1 = 5200, y1 = 87, x2 = 5204, y2 = 93 },
+    BbShop { title = "Baker", premises = "Mage's Appetite", x1 = 5346, y1 = 52, x2 = 5351, y2 = 59 },
+    BbShop { title = "Healer", premises = "Wind Healer", x1 = 5260, y1 = 126, x2 = 5265, y2 = 135 },
+    BbShop { title = "Innkeeper", premises = "Wind Inn", x1 = 5306, y1 = 31, x2 = 5316, y2 = 40 },
+    BbShop { title = "Innkeeper", premises = "Windy Inn", x1 = 5217, y1 = 173, x2 = 5226, y2 = 179 },
+    BbShop { title = "Innkeeper", premises = "Seeker's Inn", x1 = 5163, y1 = 19, x2 = 5179, y2 = 22 },
+    BbShop { title = "Herbalist", premises = "Magical Supplies", x1 = 5212, y1 = 114, x2 = 5217, y2 = 120 },
+    BbShop { title = "Herbalist", premises = "Wind Alchemy", x1 = 5146, y1 = 56, x2 = 5157, y2 = 65 }]
+ The jewelers (role 20; Damian, 2026-10-09: "we need a jeweler in the jewelry shops"), appended so no city shop before them
+ moves: the keeper regions UOX3 spawns a jeweler in (spawn_felucca_town_<city>.dfn regions 1107, 301, 502, 714 and 1219),
+ then Magincia's The Family Jewels (sign 3672,2183 on the north wall of the building at x 3663-3671, y 2183-2191).
+  ct-shops-jewelers : Integer -> List BbShop
+  ct-shops-jewelers (unused) = [
+    BbShop { title = "Jeweler", premises = "Trinsic Jeweler", x1 = 1897, y1 = 2804, x2 = 1899, y2 = 2806 },
+    BbShop { title = "Jeweler", premises = "Jhelom Jeweler", x1 = 1312, y1 = 3778, x2 = 1318, y2 = 3782 },
+    BbShop { title = "Jeweler", premises = "The Matewan", x1 = 2453, y1 = 489, x2 = 2457, y2 = 497 },
+    BbShop { title = "Jeweler", premises = "Jewel of the Isle", x1 = 3768, y1 = 1166, x2 = 3771, y2 = 1167 },
+    BbShop { title = "Jeweler", premises = "The Shimmering Jewel", x1 = 2874, y1 = 721, x2 = 2876, y2 = 723 },
+    BbShop { title = "Jeweler", premises = "The Family Jewels", x1 = 3665, y1 = 2186, x2 = 3669, y2 = 2188 }]
+ Cove's keepers of Britain's roles, one per role, from its UOX3 keeper regions (spawn_felucca_town_cove.dfn).
+  ct-shops-cove : Integer -> List BbShop
+  ct-shops-cove (unused) = [
+    BbShop { title = "Healer", premises = "The Healing Hand", x1 = 2240, y1 = 1227, x2 = 2242, y2 = 1230 },
+    BbShop { title = "Bowyer", premises = "The Warrior's Supplies", x1 = 2214, y1 = 1165, x2 = 2219, y2 = 1170 },
+    BbShop { title = "Provisioner", premises = "Farmers Market", x1 = 2215, y1 = 1187, x2 = 2217, y2 = 1190 },
+    BbShop { title = "Cobbler", premises = "Farmers Market", x1 = 2215, y1 = 1187, x2 = 2217, y2 = 1190 },
+    BbShop { title = "Blacksmith", premises = "The Warrior's Supplies", x1 = 2210, y1 = 1164, x2 = 2212, y2 = 1170 },
+    BbShop { title = "Fishmonger", premises = "Docks", x1 = 2248, y1 = 1185, x2 = 2263, y2 = 1192 }]
+  ct-city-shops : Integer -> List BbShop
+  ct-city-shops (unused) = ct-shops-trinsic 0 & ct-shops-skara 0 & ct-shops-ocllo 0 & ct-shops-magincia 0 & ct-shops-nujelm 0 & ct-shops-jhelom 0 & ct-shops-serpents 0 & ct-shops-bucc 0 & ct-shops-vesper 0 & ct-shops-minoc 0 & ct-shops-moonglow 0 & ct-shops-yew 0 & ct-shops-wind 0 & ct-shops-jewelers 0 & ct-shops-cove 0
+  ct-shop-roles : List Integer = [0, 1, 2, 3, 4, 5, 6, 7, 12, 14, 15, 16, 0, 1, 2, 4, 5, 7, 12, 13, 16, 17, 0, 1, 2, 3, 4, 5, 9, 12, 14, 15, 16, 4, 5, 3, 3, 2, 6, 10, 8, 17, 1, 2, 5, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 12, 16, 0, 1, 2, 3, 4, 5, 6, 12, 13, 0, 1, 4, 5, 7, 14, 15, 16, 4, 5, 15, 0, 2, 1, 13, 6, 7, 3, 14, 16, 12, 17, 7, 6, 1, 4, 2, 15, 0, 16, 14, 17,
+    0, 1, 1, 2, 3, 4, 5, 5, 6, 7, 12, 16,
+    3, 3, 4, 4, 4, 5, 7, 9, 9, 12, 13, 13, 14, 15,
+    0, 2, 3, 4, 5, 5, 5, 12, 12, 20, 20, 20, 20, 20, 20, 4, 13, 0, 16, 1, 17]
+ The Britain shop whose goods vendor i sells: itself for a Britain shop, its role for a city shop, -1 past the table.
+  ct-vendor-role : Integer -> Integer
+  ct-vendor-role (i) = if i < 0 then -1 else if i < bb-shop-count then i
+    else if i - bb-shop-count < list-length ct-shop-roles then list-at ct-shop-roles (i - bb-shop-count) else -1
+
+ A city's foot guards walk patrols of four waypoints between its UOX3 guard posts (spawn_felucca_town_<city>.dfn guard
+ regions); a guard founded for patrol k starts at its first waypoint. A city appends its patrols to ct-city-patrols.
+  CtPatrol = record { city : Integer, xs : List Integer, ys : List Integer }
+  ct-patrols-trinsic : Integer -> List CtPatrol
+  ct-patrols-trinsic (unused) = [
+    CtPatrol { city = 1, xs = [1825, 1866, 1866, 1825], ys = [2676, 2644, 2676, 2676] },
+    CtPatrol { city = 1, xs = [1825, 1990, 2046, 1825], ys = [2827, 2910, 2778, 2827] }]
+  ct-city-patrols : Integer -> List CtPatrol
+  ct-city-patrols (unused) = ct-patrols-trinsic 0 & ct-patrols-nujelm 0 & ct-patrols-red 0 & ct-patrols-vesper-cove 0
+ Vesper's one guard region (UOX3 spawn_felucca_town_vesper.dfn 1201, 2738..2741,986..989) keeps a guard standing at its post;
+ Cove's three (spawn_felucca_town_cove.dfn 201 2274..2278,1196..1202; 202 2282..2286,1224..1230; 207 2208..2214,1112..1118)
+ walk as one loop of three posts.
+  ct-patrols-vesper-cove : Integer -> List CtPatrol
+  ct-patrols-vesper-cove (unused) = [
+    CtPatrol { city = 12, xs = [2739, 2739, 2739, 2739], ys = [987, 987, 987, 987] },
+    CtPatrol { city = 14, xs = [2276, 2284, 2211, 2276], ys = [1199, 1227, 1115, 1199] }]
+ Serpent's Hold's guard regions (UOX3 spawn_felucca_town_serpents_hold.dfn 900, 910, 915, 917, 922, 923) walk as two loops
+ of three posts; Jhelom's one region (spawn_felucca_town_jhelom.dfn 305, 1378..1382,3792..3798) keeps a guard standing at
+ its post, four waypoints on the one tile.
+  ct-patrols-red : Integer -> List CtPatrol
+  ct-patrols-red (unused) = [
+    CtPatrol { city = 10, xs = [2943, 3063, 2958, 2943], ys = [3374, 3340, 3445, 3374] },
+    CtPatrol { city = 10, xs = [2959, 2878, 3010, 2959], ys = [3486, 3471, 3525, 3486] },
+    CtPatrol { city = 9, xs = [1380, 1380, 1380, 1380], ys = [3795, 3795, 3795, 3795] }]
+ Nujel'm's guard regions (UOX3 spawn_felucca_town_nujelm.dfn, reek's survey): three at the Court 3715..3722,1395..1400
+ and one each at 3656..3662,1219..1222; 3648..3654,1235..1238; 3656..3660,1186..1190; 3681..3685,1186..1189;
+ 3696..3701,1178..1181.
+  ct-patrols-nujelm : Integer -> List CtPatrol
+  ct-patrols-nujelm (unused) = [
+    CtPatrol { city = 8, xs = [3718, 3651, 3659, 3718], ys = [1397, 1236, 1220, 1397] },
+    CtPatrol { city = 8, xs = [3658, 3683, 3698, 3658], ys = [1188, 1187, 1179, 1188] }]
+ A patrol's waypoints all lie in its city's rectangle.
+  ct-patrol-ok : List CtCity, CtPatrol, Integer -> Boolean
+  ct-patrol-ok (cities) (p) (i) = if p.city < 1 | p.city >= list-length cities | list-length p.xs /= 4 | list-length p.ys /= 4 then False
+    else if i >= 4 then True
+    else ct-city-at cities (list-at p.xs i) (list-at p.ys i) 0 == p.city & ct-patrol-ok cities p (i + 1)

@@ -22,6 +22,7 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp);
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <intrin.h>
 
 #pragma comment(lib, "WinHvPlatform.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -525,6 +526,13 @@ static unsigned short pit_latched[3] = {0};
 static unsigned char pit_latch_valid[3] = {0};
 #define PIT_HZ 1193182.0
 
+/* -clock-scale N runs guest time N times faster (UOAIX-82, soaks only): the PIT
+   tick period shrinks by N, and the LAPIC timer clock (now_ms_for_timer) and the
+   HPET counter multiply elapsed host time by N, so the tick counter and every
+   timer built on it or on the HPET run N times faster. The RTC keeps wall time.
+   1 is real time. */
+static int clock_scale = 1;
+
 static unsigned int pit_divisor(int ch) {
     return pit_reload[ch] ? (unsigned int)pit_reload[ch] : 65536u;
 }
@@ -532,7 +540,7 @@ static unsigned int pit_divisor(int ch) {
 /* Core 0's tick period in seconds: channel 0's programmed divisor over the
    input clock, 54.9 ms before the guest programs it. */
 static double pit0_period(void) {
-    return (double)pit_divisor(0) / PIT_HZ;
+    return (double)pit_divisor(0) / PIT_HZ / (double)clock_scale;
 }
 
 static double now_ms_for_timer(void);   /* defined with the LAPIC timer */
@@ -3442,6 +3450,7 @@ static int hpet_allones = 0;
    HPET_HZ overflows 64 bits on a long run. */
 #define HPET_HZ 14318180ULL
 
+
 /* Defined here rather than beside the RTC because hpet_now reads them; the
    comment explaining the flag is at the RTC device. */
 static int rtc_fixed = 0;
@@ -3454,7 +3463,7 @@ static unsigned long long hpet_raw(void) {
     unsigned long long delta;
     if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&pc);
-    delta = (unsigned long long)(pc.QuadPart - hpet_epoch.QuadPart);
+    delta = (unsigned long long)(pc.QuadPart - hpet_epoch.QuadPart) * (unsigned long long)clock_scale;
     return (delta / (unsigned long long)freq.QuadPart) * HPET_HZ
          + ((delta % (unsigned long long)freq.QuadPart) * HPET_HZ)
            / (unsigned long long)freq.QuadPart;
@@ -3805,7 +3814,7 @@ static double now_ms_for_timer(void) {
     LARGE_INTEGER pc;
     if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&pc);
-    return (double)pc.QuadPart * 1000.0 / (double)freq.QuadPart;
+    return (double)pc.QuadPart * 1000.0 * (double)clock_scale / (double)freq.QuadPart;
 }
 
 static void lapic_write_cpu(int cpu, unsigned long long offset, unsigned int val) {
@@ -7443,16 +7452,19 @@ static void vga_start(void) {
 #define UEFI_MAP_MAX_GB 64
 #define MAX_MEM         (16ULL*1024*1024*1024)
 
-/* Memory-mapped I/O.
-   Input: pre-loaded at 0x500000 (2 MB). Output: guest writes to ring
-   buffer at 0x700000 (2 MB) via mmio; VM drains on doorbell or exit.
-   Legacy serial (COM1 OUT) is also captured for old-seed compat.
-
-   Layout:  0x100000  Code (4 MB)
-            0x500000  Input ring buffer (2 MB)
-            0x700000  Output ring buffer (2 MB)
-            0x900000  Heap                                             */
+/* Input is pre-loaded into the guest's serial ring (input_buf_addr). Output
+   leaves by the blit doorbell or the per-byte COM1 path. */
 #define INPUT_BUF_ADDR        0x500000
+/* The ring sits directly below the guest heap, and a CDX states its heap as
+   bare-metal-ram-size (3 GB) minus the heap base at header offset 212. Every
+   CDX before COMPILER-127 has its heap at 0x600000 and its ring at 0x500000;
+   later ones moved both up so code and rodata can pass 4 MB. Read per kernel
+   so one codex-vm boots either layout. */
+static unsigned long long input_buf_addr = INPUT_BUF_ADDR;
+/* Initial RSP for the multiboot/CDX path. __start pushes five registers
+   before it loads its own stack from ram-size-addr, so this must lie outside
+   any image: heap in both layouts, inside the 32 MB committed up front. */
+#define CDX_BOOT_STACK_TOP    0x17FFE00
 /* The input ceiling is host-side policy, not a guest constraint: only the
    first GUEST_RING_SIZE bytes land in guest RAM, the rest sits in the
    malloc'd drip-feed overflow. 16 MB refused a wide-citation program's IR
@@ -10369,7 +10381,7 @@ static void load_input_file(const char *path) {
     fseek(f, 0, SEEK_SET);
     if (sz > INPUT_BUF_MAX) { fprintf(stderr, "ERROR: input too large (%zu > %d)\n", sz, INPUT_BUF_MAX); fclose(f); return; }
 
-    unsigned char *ring = (unsigned char *)guest_mem + INPUT_BUF_ADDR;
+    unsigned char *ring = (unsigned char *)guest_mem + input_buf_addr;
     size_t initial = sz < GUEST_RING_SIZE ? sz : GUEST_RING_SIZE;
     fread(ring, 1, initial, f);
     input_total_written = initial;
@@ -10384,8 +10396,8 @@ static void load_input_file(const char *path) {
 
     *(unsigned long long *)((unsigned char *)guest_mem + 28704) = (unsigned long long)initial;
     *(unsigned long long *)((unsigned char *)guest_mem + 28712) = 0ULL;
-    fprintf(stderr, "Input: %s (%zu bytes) -> ring buffer at 0x500000 (initial %zu, overflow %zu)\n",
-            path, sz, initial, input_overflow_len);
+    fprintf(stderr, "Input: %s (%zu bytes) -> ring buffer at 0x%llx (initial %zu, overflow %zu)\n",
+            path, sz, input_buf_addr, initial, input_overflow_len);
 }
 
 /* Drip-feed: called periodically from the main loop. When the guest has
@@ -10406,7 +10418,7 @@ static void input_drip_feed(void) {
     size_t free_space = GUEST_RING_SIZE - (size_t)used;
     size_t remaining = input_overflow_len - input_overflow_pos;
     size_t to_copy = free_space < remaining ? free_space : remaining;
-    unsigned char *ring = (unsigned char *)guest_mem + INPUT_BUF_ADDR;
+    unsigned char *ring = (unsigned char *)guest_mem + input_buf_addr;
     for (size_t i = 0; i < to_copy; i++) {
         ring[(wpos + i) & GUEST_RING_MASK] = input_overflow[input_overflow_pos + i];
     }
@@ -11008,10 +11020,10 @@ static void pic_handle_out(PicState *p, int port_is_data, int val) {
     }
 }
 
-/* The 8259's fully nested priority: IRQ n is held while n or any
-   higher-priority (lower-numbered) IRQ is in service. */
+/* The 8259 holds IRQ n while its OCW1 mask bit is set, and, by fully nested
+   priority, while n or any higher-priority (lower-numbered) IRQ is in service. */
 static int pic_master_can_deliver(int irq) {
-    return (pic_master.isr & ((2 << irq) - 1)) == 0;
+    return !(pic_master.mask & (1 << irq)) && (pic_master.isr & ((2 << irq) - 1)) == 0;
 }
 
 static int pic_handle_in(PicState *p, int port_is_data) {
@@ -11338,6 +11350,15 @@ static void load_kernel(const char *path) {
         if (sz > 224 && buf[0] == 'C' && buf[1] == 'D' && buf[2] == 'X') {
             skip = 224;
             fprintf(stderr, "CDX header detected, skipping %zu bytes\n", skip);
+            unsigned long long heap_field = *(unsigned int*)(buf + 212);
+            if (heap_field > 0 && heap_field < 0xC0000000ULL) {
+                unsigned long long ring = 0xC0000000ULL - heap_field - GUEST_RING_SIZE;
+                if (ring >= INPUT_BUF_ADDR && (ring & GUEST_RING_MASK) == 0 && ring + GUEST_RING_SIZE <= 0x2000000ULL)
+                    input_buf_addr = ring;
+                else
+                    fprintf(stderr, "WARNING: CDX heap field 0x%llx gives ring 0x%llx; using 0x%x\n",
+                            heap_field, ring, INPUT_BUF_ADDR);
+            }
         }
         size_t payload = sz - skip;
         /* The ELF and PE paths bounds-check their copies; this one did not, so an
@@ -11661,7 +11682,7 @@ static void set_initial_regs(void) {
         /* Multiboot/CDX: start in 32-bit protected mode */
         unsigned int mb_entry = *(unsigned int*)((unsigned char*)guest_mem + 0x500);
         vals[0].Reg64 = mb_entry ? mb_entry : LOAD_ADDR;
-        vals[1].Reg64 = STACK_TOP;
+        vals[1].Reg64 = CDX_BOOT_STACK_TOP;
         vals[2].Reg64 = 0x2;
 
         vals[3].Reg64 = 0x11;  /* CR0: PE + ET */
@@ -14727,6 +14748,12 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
        (27), the last mirroring this processor's CR4.OSXSAVE (bit 18). */
     else if (leaf == 1) {
         unsigned long long ecx = 0x80000000ULL;
+        /* RDRAND (bit 30) executes natively under WHP whatever CPUID says, so
+           the bit is the host's: a guest that checks it before RDRAND must
+           see the generator it is actually given. */
+        int host[4];
+        __cpuid(host, 1);
+        if (host[2] & (1 << 30)) ecx |= (1ULL << 30);
         if (vm_avx) {
             ecx |= (1ULL << 26) | (1ULL << 28);
             if (state[0].Reg64 & (1ULL << 18)) ecx |= (1ULL << 27);
@@ -16518,6 +16545,13 @@ int main(int argc, char **argv) {
             conout_fp = fopen(argv[++i], "wb");
             if (!conout_fp) { fprintf(stderr, "codex-vm: -conout: cannot open %s\n", argv[i]); return 1; }
         }
+        else if (!strcmp(argv[i], "-clock-scale") && i+1 < argc) {
+            clock_scale = atoi(argv[++i]);
+            if (clock_scale < 1 || clock_scale > 100) {
+                fprintf(stderr, "-clock-scale: expected 1..100, got '%s'\n", argv[i]);
+                return 1;
+            }
+        }
         else if (!strcmp(argv[i], "-no-hpet")) hpet_absent = 1;
         else if (!strcmp(argv[i], "-hpet-frozen")) hpet_allones = 1;
         else if (!strcmp(argv[i], "-no-smbios")) uefi_no_smbios = 1;
@@ -17689,7 +17723,7 @@ int main(int argc, char **argv) {
                         pending_irq = vec;  /* timer tick */
                         pending_pic_irq = 0;
                     } else {
-                        Sleep(10);  /* IRQ0 still in service: nothing can wake this guest */
+                        Sleep(10);  /* IRQ0 masked or still in service: nothing can wake this guest */
                     }
                 } else {
                     DWORD ms = (DWORD)((period - elapsed) * 1000.0);

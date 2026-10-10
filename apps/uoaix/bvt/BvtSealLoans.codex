@@ -1,0 +1,76 @@
+Chapter: BvtSealLoans
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-138 seal soak: the Britain economy lends past one loan block (128) with its tables grown at the growth point, as
+ CompositeStore grows them, then seals, and the sealed currency saves and restores byte for byte. Answers a bit per
+ check: 1 more than 128 loans open and the start tables kept as long as the live ones, 2 valid before the seal, 4 the
+ seal taken and valid after it, 8 the save (after a second seal) restores byte for byte, 16 the restored currency valid,
+ 32 the second seal's segment holds every start-table loan row with its lender (41193 left them zero); -9 a fixture that
+  bsl-lend : EuCurrency, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bsl-lend (x) (metal) (lender) (borrower) (left) (made) (hour) = if left == 0 then made
+    else let m = eu-money x metal
+    in let grown = if list-length m.loans - m.loan-count < em-loan-block / 4 then eu-grow-loans x else 0
+    in let fitted = if eu-start-short x then eu-fit-start x else 0
+    in let loan = eu-lend x True lender borrower metal 1 0 hour
+    in bsl-lend x metal lender borrower (left - 1) (made + (if loan > 0 then 1 else 0)) hour
+  bsl-rich : EmMoney, Integer, Integer -> Integer
+  bsl-rich (m) (p) (best) = if p > m.purse-count then best else bsl-rich m (p + 1) (if (em-purse m p).coin > (if best == 0 then 0 else (em-purse m best).coin) then p else best)
+  bsl-metal : EuCurrency, Integer -> Integer
+  bsl-metal (x) (metal) = if metal > 3 then -1 else let r = bsl-rich (eu-money x metal) 1 0 in if r > 0 & (em-purse (eu-money x metal) r).coin >= 140 then metal else bsl-metal x (metal + 1)
+  bsl-equal : Integer, Integer, Integer -> Boolean
+  bsl-equal (a) (b) (i) = if i >= peek-qword a 16 then True else if peek-qword a i /= peek-qword b i then False else bsl-equal a b (i + 8)
+  bsl-trip : EuCurrency -> Integer
+  bsl-trip (x) = let buf = alloc-bytes us-max-payload
+    in let copy = alloc-bytes us-max-payload
+    in when euc-encode (CurrencyCheckpoint { currency = x, tick = x.world.hour, sequence = 1 }) buf us-max-payload
+      is Err (_) -> 0
+      is Ok (_) -> when euc-decode buf (peek-qword buf 16)
+        is Err (_) -> 0
+        is Ok (s) -> let valid = if euv-valid s.currency then 16 else 0
+          in when euc-encode s copy us-max-payload
+            is Err (_) -> valid
+            is Ok (_) -> valid + (if bsl-equal buf copy 0 then 8 else 0)
+ The live opening strike (cg-open-treasury, UOAIX-148), on the bare currency: one gold ingot at the Royal Mint, then
+ copper and silver enough to change it.
+  bsl-open : EuCurrency -> Integer
+  bsl-open (x) = let crown = x.world.mint-owner
+    in if crown <= 0 | not (ep-valid-actor x.world crown) then -1
+    else when bb-require (bb-producer x crown) 62 1
+      is Err (_) -> -2
+      is Ok (_) -> let station = bb-station x.world crown 12 0
+        in if station < 1 | ep-find x.world crown 32 1 < 0 then -3
+        else if eu-strike x True crown station 3 1 /= 0 then -4
+        else let gold = (em-purse x.world.money 1).coin
+        in let copper = cg-open-change x crown station 1 (gold * x.copper-rate)
+        in let silver = cg-open-change x crown station 2 (gold * x.silver-rate) in gold
+  bsl-lenders : Integer, Integer, Integer -> Boolean
+  bsl-lenders (at) (rows) (i) = if i >= rows then True else if peek-qword at (i * 56) <= 0 then False else bsl-lenders at rows (i + 1)
+  bsl-run : Integer -> Integer
+  bsl-run (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let opened = bsl-open x
+      in let metal = bsl-metal x 1
+      in if metal < 0 then -7
+      else let lender = bsl-rich (eu-money x metal) 1 0
+      in let lent = bsl-lend x metal lender (if lender == 1 then 2 else 1) 140 0 (x.world.hour + 100)
+      in let m = eu-money x metal
+      in let start = if metal == 1 then x.start.copper else if metal == 2 then x.start.silver else x.start.gold
+      in let past = if lent == 140 & m.loan-count > em-loan-block & list-length start.loans >= list-length m.loans then 1 else 0
+      in let before = if euv-valid x then 2 else 0
+      in let sealed = eu-seal x
+      in let after = if sealed == 0 & euv-valid x then 4 else 0
+      in let second = eu-seal x
+      in let seg = x.start.archive
+      in let rows = if seg == 0 then 0 else peek-qword seg 112
+      in let filled = if second == 0 & rows >= 140 & bsl-lenders (seg + peek-qword seg 16 - rows * 56) rows 0 then 32 else 0
+      in past + before + after + filled + bsl-trip x
+  bvt-seal-loans : Integer -> [Console] Integer
+  bvt-seal-loans (unused) = act
+    n <- bsl-run 0
+    a <- bvt-check ("a world past 128 loans seals and saves after the seal (UOAIX-138, code " & show n & ")") (n == 63)
+    a
+  end

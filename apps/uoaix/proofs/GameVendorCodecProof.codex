@@ -1,6 +1,8 @@
 Chapter: GameVendorCodecProof
   cites Uoaix chapter GameVendorCodec
   cites Uoaix chapter GameVendorDemo
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter GameHarvestProduction
 
   gvc-check : Text, Boolean -> [Console] Nothing
   gvc-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
@@ -10,14 +12,18 @@ Chapter: GameVendorCodecProof
   gvc-move (v) (serial) (parent) = when world-get v.game.world serial
     is Err (e) -> Err e
     is Ok (obj) -> let moved = __record-set obj "container" parent in world-update v.game.world obj
+  gvc-cap : GvWorld -> Integer
+  gvc-cap (v) = gvsc-bytes + gvsc-tail-size v
+  gvc-size : Integer -> Integer
+  gvc-size (buf) = peek-qword buf 16
   gvc-roundtrip : GvWorld -> Boolean
-  gvc-roundtrip (v) = let buf = alloc-bytes gvsc-bytes
-    in let again = alloc-bytes gvsc-bytes
-    in when gvsc-encode v buf gvsc-bytes
+  gvc-roundtrip (v) = let buf = alloc-bytes (gvc-cap v)
+    in let again = alloc-bytes (gvc-cap v)
+    in when gvsc-encode v buf (gvc-cap v)
       is Err (e) -> False
       is Ok (size) -> when gvsc-decode buf size v.game v.currency
         is Err (e) -> False
-        is Ok (loaded) -> let encoded = gvsc-encode loaded again gvsc-bytes
+        is Ok (loaded) -> let encoded = gvsc-encode loaded again (gvc-cap loaded)
           in let p = list-at loaded.players 0
           in is-ok encoded & peek-qword buf 48 == peek-qword again 48
             & loaded.sequence == v.sequence & loaded.sale-count == v.sale-count
@@ -34,33 +40,38 @@ Chapter: GameVendorCodecProof
             in let stored = world-update v.game.world mobile
             in act
               gvc-check "legacy GVS1 recovers with empty controlled-owner table" (gvc-legacy v)
-              gvc-check "version 2 GVS1 decodes, re-encodes as version 3, and refuses a version 3 label" (gvc-legacy-v2 v)
+              gvc-check "version 2 GVS1 decodes, re-encodes as the current version, and refuses a version 3 label" (gvc-legacy-v2 v)
+              gvc-check "version 3 GVS1 decodes, re-encodes as the current version, and refuses a version 4 label" (gvc-legacy-v3 v)
               gvc-check "a nonzero spare lot slot past 64 refuses" (gvc-spare-lot v)
-              gvc-check "corpse backpack and lot preserve ledger attribution" (is-ok pack & is-ok stored & gvc-roundtrip v & (list-at v.lots 1).actor == p.actor)
+              gvc-check "corpse backpack and lot preserve ledger attribution" (is-ok pack & is-ok stored & gvc-roundtrip v & (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 1)).actor == p.actor)
               let ground = gvc-move v item 0
               in act
-                gvc-check "ground lot roundtrip preserves quantity and actor" (is-ok ground & gvc-roundtrip v & (list-at v.lots 1).quantity == 1 & euv-valid v.currency)
-                let buf = alloc-bytes gvsc-bytes
-                in let encoded = gvsc-encode v buf gvsc-bytes
+                gvc-check "ground lot roundtrip preserves quantity and actor" (is-ok ground & gvc-roundtrip v & (ep-lot-amount v.currency.world.goods (ep-lot-nth v.currency.world.goods 1)) == 1 & euv-valid v.currency)
+                let buf = alloc-bytes (gvc-cap v)
+                in let encoded = gvsc-encode v buf (gvc-cap v)
                 in let forged = poke-qword buf gvsc-lots-at (list-at v.vendors 0).stock
                 in let hash = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
-                in let bad-lot = not (is-ok (gvsc-decode buf gvsc-bytes v.game v.currency))
-                in let reset = gvsc-encode v buf gvsc-bytes
+                in let bad-lot = not (is-ok (gvsc-decode buf (gvc-size buf) v.game v.currency))
+                in let reset = gvsc-encode v buf (gvc-cap v)
                 in let event = poke-qword buf (gvsc-sales-at + 72) 1
                 in let hash2 = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
-                in let bad-event = not (is-ok (gvsc-decode buf gvsc-bytes v.game v.currency))
-                in let reset2 = gvsc-encode v buf gvsc-bytes
+                in let bad-event = not (is-ok (gvsc-decode buf (gvc-size buf) v.game v.currency))
+                in let reset2 = gvsc-encode v buf (gvc-cap v)
                 in let unused = poke-qword buf (gvsc-sales-at + v.sale-count * 96) 1
                 in let hash3 = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
                 in act
-                  gvc-check "codec rejects forged lot payment and unused history" (bad-lot & bad-event & not (is-ok (gvsc-decode buf gvsc-bytes v.game v.currency)) & euv-valid v.currency)
+                  gvc-check "codec rejects forged lot payment and unused history" (bad-lot & bad-event & not (is-ok (gvsc-decode buf (gvc-size buf) v.game v.currency)) & euv-valid v.currency)
                   print-line-uni ("vendor-codec bytes=" & show gvsc-bytes)
+                  gvc-check "eight players roundtrip past the five in-place rows and a spare tail row refuses" (gvc-many v)
+                  many-lots <- gvc-many-lots v
+                  gvc-check ("140 more lots carry the table past 128 and survive a restart: " & many-lots) (many-lots == "ok")
+                  gvc-check "a lot retired from the middle leaves the later lots in creation order" (gvc-retire-order v)
                 end
               end
             end
   gvc-legacy : GvWorld -> Boolean
-  gvc-legacy (v) = let buf = alloc-bytes gvsc-bytes
-    in when gvsc-encode v buf gvsc-bytes
+  gvc-legacy (v) = let buf = alloc-bytes (gvc-cap v)
+    in when gvsc-encode v buf (gvc-cap v)
       is Err (_) -> False
       is Ok (_) -> let version = poke-qword buf 8 1
         in let size = poke-qword buf 16 gvsc-owners-at
@@ -69,9 +80,9 @@ Chapter: GameVendorCodecProof
           is Err (_) -> False
           is Ok (loaded) -> loaded.owner-count == 0 & gvsc-valid loaded
   gvc-legacy-v2 : GvWorld -> Boolean
-  gvc-legacy-v2 (v) = let buf = alloc-bytes gvsc-bytes
-    in let again = alloc-bytes gvsc-bytes
-    in when gvsc-encode v buf gvsc-bytes
+  gvc-legacy-v2 (v) = let buf = alloc-bytes (gvc-cap v)
+    in let again = alloc-bytes (gvc-cap v)
+    in when gvsc-encode v buf (gvc-cap v)
       is Err (_) -> False
       is Ok (_) -> let tail = es-zero-range buf gvsc-v2-bytes gvsc-bytes
         in let old-hash = peek-qword buf 48
@@ -83,17 +94,93 @@ Chapter: GameVendorCodecProof
         in let rehash = poke-qword buf 48 (ws-hash buf gvsc-v2-bytes 0 2166136261)
         in let refused = is-err (gvsc-decode buf gvsc-v2-bytes v.game v.currency)
         in let current = poke-qword buf 16 gvsc-bytes
+        in let relabeled = poke-qword buf 8 7
         in let restored = poke-qword buf 48 old-hash
         in when decoded
           is Err (_) -> False
-          is Ok (loaded) -> tail & refused & is-ok (gvsc-encode loaded again gvsc-bytes) & peek-qword buf 48 == peek-qword again 48
+          is Ok (loaded) -> tail & refused & is-ok (gvsc-encode loaded again (gvc-cap loaded)) & peek-qword buf 48 == peek-qword again 48
+  gvc-legacy-v3 : GvWorld -> Boolean
+  gvc-legacy-v3 (v) = let buf = alloc-bytes (gvc-cap v)
+    in let again = alloc-bytes (gvc-cap v)
+    in when gvsc-encode v buf (gvc-cap v)
+      is Err (_) -> False
+      is Ok (_) -> let tail = es-zero-range buf gvsc-v3-bytes gvsc-bytes & peek-qword buf 8 == 10
+        in let old-hash = peek-qword buf 48
+        in let version = poke-qword buf 8 3
+        in let size = poke-qword buf 16 gvsc-v3-bytes
+        in let hash = poke-qword buf 48 (ws-hash buf gvsc-v3-bytes 0 2166136261)
+        in let decoded = gvsc-decode buf gvsc-v3-bytes v.game v.currency
+        in let mislabeled = poke-qword buf 8 4
+        in let rehash = poke-qword buf 48 (ws-hash buf gvsc-v3-bytes 0 2166136261)
+        in let refused = is-err (gvsc-decode buf gvsc-v3-bytes v.game v.currency)
+        in let current = poke-qword buf 16 gvsc-bytes
+        in let relabeled = poke-qword buf 8 7
+        in let restored = poke-qword buf 48 old-hash
+        in when decoded
+          is Err (_) -> False
+          is Ok (loaded) -> tail & refused & is-ok (gvsc-encode loaded again (gvc-cap loaded)) & peek-qword buf 48 == peek-qword again 48
+  gvc-add-players : GvWorld, Integer -> Integer
+  gvc-add-players (v) (left) = if left == 0 then 0
+    else when world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002)
+      is Err (_) -> -1
+      is Ok (mobile) -> when world-create v.game.world (gs-item mobile 3701 0)
+        is Err (_) -> -1
+        is Ok (pack) -> let purse = eu-open v.currency 3 mobile
+          in let actor = if purse < 1 then -1 else ep-admit v.currency.world purse 100
+          in if actor < 1 | gv-add-player v mobile actor pack < 0 then -1 else gvc-add-players v (left - 1)
+  gvc-many : GvWorld -> Boolean
+  gvc-many (v) = let added = gvc-add-players v 7
+    in let buf = alloc-bytes (gvc-cap v)
+    in when gvsc-encode v buf (gvc-cap v)
+      is Err (_) -> False
+      is Ok (size) -> when gvsc-decode buf size v.game v.currency
+        is Err (_) -> False
+        is Ok (loaded) -> let spare = poke-qword buf (gvsc-player-at 20) 1
+          in let hash = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
+          in added == 0 & v.player-count == 8 & loaded.player-count == 8
+            & (list-at loaded.players 7).serial == (list-at v.players 7).serial
+            & (list-at loaded.players 5).actor == (list-at v.players 5).actor
+            & is-err (gvsc-decode buf (gvc-size buf) v.game v.currency)
+  gvc-add-lots : GvWorld, Integer, Integer -> Integer
+  gvc-add-lots (v) (pack) (left) = if left == 0 then 0
+    else when world-create v.game.world (gs-item pack #0DF9 0)
+      is Err (_) -> -1
+      is Ok (serial) -> if gv-add-lot v serial (list-at v.players 0).actor 10 500 32 1 < 0 then -2 else gvc-add-lots v pack (left - 1)
+  gvc-many-lots : GvWorld -> Text
+  gvc-many-lots (v) = let p = list-at v.players 0
+    in let yielded = eh-add-yield v.currency.world (ep-actor v.currency.world p.actor) 10 140 500
+    in let added = gvc-add-lots v p.pack 140
+    in let buf = alloc-bytes (gvc-cap v)
+    in let again = alloc-bytes (gvc-cap v)
+    in if added /= 0 | (ep-lot-count v.currency.world.goods) <= 128 then "setup lots=" & show (ep-lot-count v.currency.world.goods) & " added=" & show added & " objects=" & show (world-count v.game.world) & "/" & show v.game.world.capacity
+    else let count = (ep-lot-count v.currency.world.goods)
+    in let last = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods (count - 1))).serial
+    in when gvsc-encode v buf (gvc-cap v)
+      is Err (e) -> "encode " & e
+      is Ok (size) -> when gvsc-decode buf size v.game v.currency
+        is Err (e) -> "decode " & e
+        is Ok (loaded) -> if (ep-lot-count loaded.currency.world.goods) /= count | (ep-lot loaded.currency.world.goods (ep-lot-nth loaded.currency.world.goods (count - 1))).serial /= last then "lots differ"
+          else if not (is-ok (gvsc-encode loaded again (gvc-cap loaded))) | peek-qword buf 48 /= peek-qword again 48 then "re-encode differs"
+          else "ok"
+  gvc-retire-order : GvWorld -> Boolean
+  gvc-retire-order (v) = let g = v.currency.world.goods
+    in let count = ep-lot-count g
+    in let after = ep-lot-nth g 6
+    in let tail = ep-lot-nth g (count - 1)
+    in let retired = gh-retire-lot v (ep-lot-nth g 5)
+    in count > 8 & ep-lot-count g == count - 1 & ep-lot-nth g 5 == after & ep-lot-nth g (count - 2) == tail
   gvc-spare-lot : GvWorld -> Boolean
-  gvc-spare-lot (v) = let buf = alloc-bytes gvsc-bytes
-    in when gvsc-encode v buf gvsc-bytes
+  gvc-spare-lot (v) = let buf = alloc-bytes (gvc-cap v)
+    in when gvsc-encode v buf (gvc-cap v)
       is Err (_) -> False
       is Ok (_) -> let spare = poke-qword buf (gvsc-lot-at 100) 1
         in let hash = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
-        in is-err (gvsc-decode buf gvsc-bytes v.game v.currency)
+        in let low = is-err (gvsc-decode buf (gvc-size buf) v.game v.currency)
+        in let cleared = poke-qword buf (gvsc-lot-at 100) 0
+        in let high = poke-qword buf (gvsc-lot-at 500) 1
+        in let rehash = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
+        in low & is-err (gvsc-decode buf (gvc-size buf) v.game v.currency)
+          & gv-lot-limit == 1024 & gvsc-lot-at 128 == gvsc-v4-bytes & gvsc-lot-at 1023 + 56 == gvsc-v5-bytes
   gvc-bank : GvWorld, GameInput, Integer, Integer -> [Console] Nothing
   gvc-bank (v) (s) (item) (bank) =
     let p = list-at v.players 0
@@ -109,7 +196,7 @@ Chapter: GameVendorCodecProof
       in let redeposit = gvc-move v item bank
       in let sell = gp-put16 (gp-put32 (gp-put16 (gp-put32 [159,0,15] npc.serial) 1) item) 1
       in let denied = gv-handle-at v v.game s sell 301
-      in let line = GvLine { lot = 1, quantity = 1, price = 3, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+      in let line = GvLine { lot = ep-lot-nth v.currency.world.goods 1, quantity = 1, price = 3, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
       in let direct = gv-checkout v [line] npc.actor p.actor p.serial npc.extra p.serial
       in act
         gvc-check "quote then bank deposit refuses sale without payment" (count == 1 & is-ok denied & not (is-ok direct) & v.sale-count == 1 & eu-value v.currency (em-purse v.currency.copper 2).coin (em-purse v.currency.silver 2).coin (em-purse v.currency.world.money 2).coin == worth & gv-under v.game.world item bank 65)
@@ -121,14 +208,95 @@ Chapter: GameVendorCodecProof
         end
       end
     end
+  gvc-vendor-lot : GvWorld, Integer, Integer -> Integer
+  gvc-vendor-lot (v) (actor) (unused) = gvc-vendor-lot-from v (ep-lot-first v.currency.world.goods actor)
+  gvc-vendor-lot-from : GvWorld, Integer -> Integer
+  gvc-vendor-lot-from (v) (serial) = if serial == 0 then 0
+    else if ep-lot-amount v.currency.world.goods serial > 1 then serial else gvc-vendor-lot-from v (ep-lot-next v.currency.world.goods serial)
+  gvc-sealed : GvWorld, GameInput -> [Console] Nothing
+  gvc-sealed (v) (s) =
+    let npc = list-at v.vendors 0
+    in let item = gvc-vendor-lot v npc.actor 0
+    in let sales = v.sale-count
+    in let menu = gv-handle-at v v.game s (gvc-say "buy") 500
+    in let sealed = eu-seal v.currency
+    in let rolled = gv-roll-sales v
+    in let buy = gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] npc.serial) 2) 26) item) 1
+    in let bought = gv-handle-at v v.game s buy 501
+    in act
+      gvc-check ("a quote taken before a currency seal and a sale rollover is bought after them (item " & show item & ")") (item > 0 & sealed == 0 & rolled == 1 & v.sale-base == sales & v.currency.start.sealed == 1 & is-ok bought & v.sale-count == 1 & euv-valid v.currency & gvsc-valid v)
+      gvc-check "a rolled-over vendor world roundtrips" (gvc-roundtrip v)
+    end
   gvc-unindexed : GvWorld, GameInput -> Boolean
   gvc-unindexed (v) (input) =
-    let raw = WorldTable { buffer = v.game.world.buffer, capacity = v.game.world.capacity, index = 0 }
+    let raw = (world-view v.game.world.buffer v.game.world.capacity)
     in let game = GameShard { world = raw, characters = v.game.characters, accounts = v.game.accounts,
-      next-key = v.game.next-key, pending-key = 0, active = input.session.serial }
+      next-key = v.game.next-key, pending-key = 0, active = input.session.serial, log = slg-new slg-trace, skills = v.game.skills }
     in let view = gv-new game v.currency
     in not (gvsc-valid view) & not (is-ok (gv-handle-at view game input (gvc-say "buy") 0))
       & not (gv-check-lots view [] 2 1 input.session.serial 0)
+  gvc-sealed-run : GvWorld, Integer -> [Console] Nothing
+  gvc-sealed-run (v) (serial) =
+    let s = gn-input-with gv-specs 41
+    in let mode = __record-set s "mode" 2
+    in let phase = __record-set s.session "phase" 2
+    in let who = __record-set s.session "serial" serial
+    in let active = __record-set v.game "active" serial
+    in let metadata = poke-qword v.game.characters 0 serial
+    in let bound = gvd-bind v serial
+    in let npc = list-at v.vendors 0
+    in let item = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial
+    in let menu = gv-handle-at v v.game s (gvc-say "buy") 100
+    in let buy = gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] npc.serial) 2) 26) item) 1
+    in let bought = gv-handle-at v v.game s buy 101
+    in if not (is-ok bought) | v.sale-count /= 1 then print-line-uni "FAIL sealed fixture first sale" else gvc-sealed v s
+  gvc-currency-apart : GvWorld -> Boolean
+  gvc-currency-apart (v) = let purse = em-purse v.currency.copper 2
+    in let was = purse.coin
+    in let bumped = __record-set purse "coin" (was + 1)
+    in let broken = not (euv-valid v.currency)
+    in let buf = alloc-bytes (gvc-cap v)
+    in let saved = is-ok (gvsc-encode v buf (gvc-cap v))
+    in let restored = __record-set purse "coin" was
+    in broken & saved & euv-valid v.currency
+  gvc-goods-pair : GvWorld -> Text
+  gvc-goods-pair (v) = let p = list-at v.players 0
+    in let w = v.currency.world
+    in let actor = p.actor
+    in let item = 12
+    in let a = ep-actor w actor
+    in if ep-at a.stock item /= 0 then "setup stock " & show (ep-at a.stock item)
+    else let yielded = eh-add-yield w a item 3 500
+    in when world-create v.game.world (gs-item p.pack #0DF9 0)
+      is Err (e) -> "setup pile one " & e
+      is Ok (one) -> when world-create v.game.world (gs-item p.pack #0DF9 0)
+        is Err (e) -> "setup pile two " & e
+        is Ok (two) -> if gv-add-lot v one actor item 300 32 0 < 0 | gv-add-lot v two actor item 900 32 0 < 0 then "setup lots"
+          else let quality = ep-at a.quality item
+          in when ep-take w actor item 1 0
+            is Err (e) -> "take one " & e
+            is Ok (_) -> if ep-at a.quality item /= quality - 300 | gv-lot v one 0 >= 0 | gv-lot v two 0 < 0 | is-ok (world-get v.game.world one) then "older lot not taken at its grade, quality " & show (ep-at a.quality item)
+              else when ep-take w actor item 2 0
+                is Err (e) -> "take two " & e
+                is Ok (_) -> if ep-at a.stock item /= 0 | ep-at a.quality item /= 0 | gv-lot v two 0 >= 0 | is-ok (world-get v.game.world two) then "remainder not taken at its average, stock " & show (ep-at a.stock item) & " quality " & show (ep-at a.quality item)
+                  else let used = ep-add w.consumed item 3 in gvc-goods-put v actor item
+  gvc-goods-put : GvWorld, Integer, Integer -> Text
+  gvc-goods-put (v) (actor) (item) = let w = v.currency.world
+    in let a = ep-actor w actor
+    in let p = list-at v.players 0
+    in when world-create v.game.world (gs-item p.pack #0DF9 0)
+      is Err (e) -> "setup pile three " & e
+      is Ok (three) -> when ep-put w actor item 1 700 32 0 three
+        is Err (e) -> "put new " & e
+        is Ok (_) -> when ep-put w actor item 1 300 32 0 three
+          is Err (e) -> "put again " & e
+          is Ok (_) -> let found = ep-add w.found item 2
+            in let at = gv-lot v three 0
+            in let amount = when world-get v.game.world three is Err (_) -> 0 is Ok (obj) -> obj.amount
+            in if at < 0 then "put registered no lot"
+            else let l = ep-lot w.goods at
+            in if amount /= 2 | (ep-amount w.goods l.serial) /= 2 | l.quality /= 500 | ep-at a.stock item /= 2 | ep-at a.quality item /= 1000 then "put pile " & show amount & " lot " & show (ep-amount w.goods l.serial) & " grade " & show l.quality & " stock " & show (ep-at a.stock item)
+            else "ok"
   gvc-run : GvWorld, Integer -> [Console] Nothing
   gvc-run (v) (serial) =
     let s = gn-input-with gv-specs 41
@@ -139,23 +307,34 @@ Chapter: GameVendorCodecProof
     in let metadata = poke-qword v.game.characters 0 serial
     in let bound = gvd-bind v serial
     in let npc = list-at v.vendors 0
-    in let item = (list-at v.lots 0).serial
+    in let item = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).serial
     in let menu = gv-handle-at v v.game s (gvc-say "buy") 100
     in let buy = gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] npc.serial) 2) 26) item) 1
     in let bought = gv-handle-at v v.game s buy 101
     in act
       gvc-check "codec fixture buys a physical serial through handler" (is-ok bought & v.sale-count == 1 & euv-valid v.currency)
+      gvc-check "GVS1 saves a world whose currency fails its replay: EUC1 alone judges currency" (gvc-currency-apart v)
+      goods <- gvc-goods-pair v
+      gvc-check ("ep-take takes the oldest lot at its own grade, then the remainder at its average; ep-put grows a pile and merges its grade: " & goods) (goods == "ok")
       gvc-check "vendor admission and codec refuse an unavailable world index" (gvc-unindexed v s)
       when world-create v.game.world (gs-item serial 2475 0)
         is Err (e) -> print-line-uni ("FAIL bank setup " & e)
         is Ok (bank) -> gvc-bank v s (list-at v.sales 0).delivered bank
     end
-  opening : [Console] Nothing = when gvd-economy 0
+  opening : [Console] Nothing = act
+    gvc-fixture False
+    gvc-fixture True
+  end
+  gvc-fixture : Boolean -> [Console] Nothing
+  gvc-fixture (sealed) = when gvd-economy 0
     is Err (e) -> print-line-uni ("FAIL " & e)
     is Ok (currency) -> when gs-new 0
       is Err (e) -> print-line-uni ("FAIL " & e)
-      is Ok (game) -> when gvd-world game currency 0
+      is Ok (game) -> when world-new 512
         is Err (e) -> print-line-uni ("FAIL " & e)
-        is Ok (v) -> when world-create game.world (gs-mobile 0 1420 1698 0 400 1002)
-          is Err (e) -> print-line-uni ("FAIL " & e)
-          is Ok (serial) -> gvc-run v serial
+        is Ok (roomy) -> let wide = __record-set game "world" roomy
+          in when gvd-world game currency 0
+            is Err (e) -> print-line-uni ("FAIL " & e)
+            is Ok (v) -> when world-create game.world (gs-mobile 0 1420 1698 0 400 1002)
+              is Err (e) -> print-line-uni ("FAIL " & e)
+              is Ok (serial) -> if sealed then gvc-sealed-run v serial else gvc-run v serial

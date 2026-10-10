@@ -45,10 +45,8 @@ Planning retains only bounded object lookups and at most two events in
 request scratch. Parent walks are bounded by depth 64; occupied-container
 checks scan the existing world capacity. Applying the batch retains the
 WorldRecords costs described in WorldAction. There is no world-sized copy
-or per-item persistent allocation in this layer. Compiler heap/time behavior
-is unchanged.
+or per-item persistent allocation in this layer.
 
 `proofs/ItemActionsProof.codex` exercises quantity conservation, stable and
 retired serials, split/merge rollback, container movement, inaccessible
 inventory, range, cycle, amount, admission and world-capacity refusals.
-These native checks do not prove durable commit or client rendering.

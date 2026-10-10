@@ -7,15 +7,28 @@ Chapter: GameVendorCodec
  world and EUC1 currency state. Quotes are transient and never serialized.
 
   gvsc-vendors-at : Integer = 80
-  gvsc-vendor-bytes : Integer = 40 + 129 * 8
+  gvsc-vendor-bytes : Integer = 40
   gvsc-players-at : Integer = gvsc-vendors-at + 16 * gvsc-vendor-bytes
   gvsc-lots-at : Integer = gvsc-players-at + 5 * 24
   gvsc-sales-at : Integer = gvsc-lots-at + 64 * 56
   gvsc-owners-at : Integer = gvsc-sales-at + 1024 * 96
   gvsc-v2-bytes : Integer = gvsc-owners-at + 128 * 16
-  gvsc-bytes : Integer = gvsc-v2-bytes + (gv-lot-limit - 64) * 56
+ Version 3 grew the lot table from 64 to 128, version 4 the player table, and version 5 the lot table to gv-lot-limit,
+ each appended after the last, so every earlier image keeps its offsets.
+  gvsc-v3-bytes : Integer = gvsc-v2-bytes + (128 - 64) * 56
+  gvsc-v4-bytes : Integer = gvsc-v3-bytes + (gv-player-limit - 5) * 24
+  gvsc-v5-bytes : Integer = gvsc-v4-bytes + (gv-lot-limit - 128) * 56
+ Version 6 appended the sale base (8 bytes); version 7 appends the vendor rows past 16 (gv-vendor-limit, sized from the
+ shop list).
+  gvsc-v6-bytes : Integer = gvsc-v5-bytes + 8
+  gvsc-bytes : Integer = gvsc-v6-bytes + max 0 (gv-vendor-limit - 16) * gvsc-vendor-bytes
+  gvsc-vendor-at : Integer -> Integer
+  gvsc-vendor-at (i) = if i < 16 then gvsc-vendors-at + i * gvsc-vendor-bytes else gvsc-v6-bytes + (i - 16) * gvsc-vendor-bytes
   gvsc-lot-at : Integer -> Integer
-  gvsc-lot-at (i) = if i < 64 then gvsc-lots-at + i * 56 else gvsc-v2-bytes + (i - 64) * 56
+  gvsc-lot-at (i) = if i < 64 then gvsc-lots-at + i * 56 else if i < 128 then gvsc-v2-bytes + (i - 64) * 56
+    else gvsc-v4-bytes + (i - 128) * 56
+  gvsc-player-at : Integer -> Integer
+  gvsc-player-at (i) = if i < 5 then gvsc-players-at + i * 24 else gvsc-v3-bytes + (i - 5) * 24
   gvsc-mobile : WorldTable, Integer -> Boolean
   gvsc-mobile (w) (serial) = when world-get w serial
     is Err (e) -> False
@@ -29,7 +42,7 @@ Chapter: GameVendorCodec
     is Err (e) -> False
     is Ok (obj) -> obj.kind == 2
   gvsc-prices : GvWorld, GvVendor, Integer -> Boolean
-  gvsc-prices (v) (p) (i) = if i == 129 then True
+  gvsc-prices (v) (p) (i) = if i == eg-cells v.currency.world.catalog then True
     else ev-range (ep-at p.prices i) (if eg-id v.currency.world.catalog i then 1000000 else 0) & gvsc-prices v p (i + 1)
   gvsc-actor-owner : GvWorld, Integer, Integer, Integer -> Integer
   gvsc-actor-owner (v) (actor) (i) (found) =
@@ -53,6 +66,18 @@ Chapter: GameVendorCodec
       & gvsc-actor-owner v p.actor 0 0 == p.serial
       & (em-purse v.currency.world.money (ep-actor v.currency.world p.actor).purse).kind == 2
       & gvsc-owners-valid v (i + 1)
+ The first owner row gvsc-owners-valid refuses, and the condition, for the save check's log line.
+  gvsc-owner-fault : GvWorld, Integer -> Text
+  gvsc-owner-fault (v) (i) = if i == v.owner-count then "none"
+    else let p = list-at v.owners i
+    in let tag = "row " & show i & " serial " & show p.serial & " actor " & show p.actor & ": "
+    in if not (ep-valid-actor v.currency.world p.actor) then tag & "actor invalid"
+    else if not (gvsc-mobile v.game.world p.serial) then tag & "mobile missing"
+    else if gv-owner v p.serial 0 /= i then tag & "serial listed twice"
+    else if gv-vendor v p.serial 0 >= 0 | gv-player v p.serial 0 >= 0 then tag & "serial also a vendor or player"
+    else if gvsc-actor-owner v p.actor 0 0 /= p.serial then tag & "actor bound to " & show (gvsc-actor-owner v p.actor 0 0)
+    else if (em-purse v.currency.world.money (ep-actor v.currency.world p.actor).purse).kind /= 2 then tag & "purse kind " & show (em-purse v.currency.world.money (ep-actor v.currency.world p.actor).purse).kind
+    else gvsc-owner-fault v (i + 1)
   gvsc-vendors-valid : GvWorld, Integer -> Boolean
   gvsc-vendors-valid (v) (i) = if i == v.vendor-count then True
     else let p = list-at v.vendors i
@@ -68,22 +93,17 @@ Chapter: GameVendorCodec
       & gvsc-mobile v.game.world p.serial & gvsc-item v.game.world p.pack
       & gvsc-actor-owner v p.actor 0 0 == p.serial & gvsc-players-valid v (i + 1)
   gvsc-lots-valid : GvWorld, Integer -> Boolean
-  gvsc-lots-valid (v) (i) = if i == v.lot-count then True
-    else let l = list-at v.lots i
+  gvsc-lots-valid (v) (serial) = if serial == 0 then True
+    else let l = ep-lot v.currency.world.goods serial
     in if not (ep-valid-actor v.currency.world l.actor) | not (eg-id v.currency.world.catalog l.item)
-      | gv-lot v l.serial 0 /= i | l.quantity <= 0 | l.quantity > ep-stock-limit
+      | ep-amount v.currency.world.goods serial <= 0 | ep-amount v.currency.world.goods serial > ep-stock-limit
       | not (ev-range l.quality 1000) | not (ev-range l.wear 32) | not (ev-range l.basis ep-limit) then False
     else let owner = gvsc-actor-owner v l.actor 0 0
-    in if owner <= 0 then False
-    else when world-get v.game.world l.serial
+    in if owner < 0 | (owner == 0 & not (v.keeps l.actor)) then False
+    else when world-get v.game.world serial
       is Err (e) -> False
-      is Ok (obj) -> let p = ep-actor v.currency.world l.actor
-        in obj.kind == 2 & obj.amount == l.quantity
-          & world-child-count v.game.world l.serial == 0
-          & gv-represented v l.actor l.item 0 0 <= ep-at p.stock l.item
-          & gv-represented v l.actor l.item 1 0 <= ep-at p.quality l.item
-          & gv-represented v l.actor l.item 2 0 <= ep-at p.wear l.item
-          & gv-represented v l.actor l.item 3 0 <= ep-at p.cost l.item & gvsc-lots-valid v (i + 1)
+      is Ok (obj) -> obj.kind == 2
+          & world-child-count v.game.world serial == 0 & gvsc-lots-valid v (ep-lot-after v.currency.world.goods serial)
   gvsc-find-trade : EpWorld, Integer, Integer, Integer -> Integer
   gvsc-find-trade (w) (action) (low) (high) = if low >= high then low
     else let middle = low + (high - low) / 2
@@ -92,14 +112,15 @@ Chapter: GameVendorCodec
   gvsc-sales-valid : GvWorld, Integer, Integer, Integer -> Boolean
   gvsc-sales-valid (v) (i) (previous) (hour) = if i == v.sale-count then True
     else let s = list-at v.sales i
-    in if s.currency-event <= previous | s.currency-event > v.currency.count
+    in if s.currency-event <= previous | s.currency-event > v.currency.base + v.currency.count
       | s.hour < hour | s.hour > v.currency.world.hour | not (ep-valid-actor v.currency.world s.buyer)
       | not (ep-valid-actor v.currency.world s.seller) | s.buyer == s.seller
       | s.source <= world-item-bit | s.source > 2147483647 | s.delivered <= world-item-bit | s.delivered > 2147483647
       | not (eg-id v.currency.world.catalog s.item) | s.quantity <= 0 | s.quantity > ep-stock-limit
       | not (ev-range s.quality (s.quantity * 1000)) | not (ev-range s.wear (s.quantity * 32))
       | s.gross <= 0 | s.gross > ep-limit then False
-    else let e = list-at v.currency.events (s.currency-event - 1)
+    else if s.currency-event <= v.currency.base then gvsc-sales-valid v (i + 1) s.currency-event s.hour
+    else let e = list-at v.currency.events (s.currency-event - 1 - v.currency.base)
     in let at = gvsc-find-trade v.currency.world s.gold-action 0 v.currency.world.trade-count
     in if at == v.currency.world.trade-count then False
     else let t = list-at v.currency.world.trades at
@@ -113,101 +134,307 @@ Chapter: GameVendorCodec
   gvsc-valid-body : GvWorld -> Boolean
   gvsc-valid-body (v) =
     if not (world-indexed v.game.world) then False
-    else if not (ev-range v.vendor-count 16) | not (ev-range v.player-count 5)
-      | not (ev-range v.lot-count gv-lot-limit) | not (ev-range v.sale-count 1024)
-      | not (ev-range v.owner-count 128) | list-length v.owners /= 128
-      | not (ev-range v.sequence v.sale-count) | (v.sequence == 0) /= (v.sale-count == 0)
-      | list-length v.vendors /= 16 | list-length v.players /= 5 | list-length v.lots /= gv-lot-limit | list-length v.sales /= 1024 then False
-    else euv-valid v.currency & gvsc-vendors-valid v 0 & gvsc-players-valid v 0 & gvsc-owners-valid v 0
-      & gvsc-lots-valid v 0 & gvsc-sales-valid v 0 0 0
+    else if not (ev-range v.vendor-count (list-length v.vendors)) | not (ev-range v.player-count (list-length v.players))
+      | not (ev-range (ep-lot-count v.currency.world.goods) v.game.world.capacity) | not (ev-range v.sale-count 1024)
+      | not (ev-range v.owner-count (list-length v.owners)) | list-length v.owners < gv-owner-block
+      | not (ev-range v.sequence (v.sale-base + v.sale-count)) | (v.sequence == 0) /= (v.sale-base + v.sale-count == 0)
+      | list-length v.vendors < gv-vendor-limit | list-length v.players < gv-player-limit | list-length v.sales /= 1024 then False
+    else if not (ev-range v.currency.count em-rows) | list-length v.currency.events /= em-rows then False
+    else gvsc-vendors-valid v 0 & gvsc-players-valid v 0 & gvsc-owners-valid v 0
+      & gvsc-lots-valid v (ep-lots-first v.currency.world.goods) & gvsc-sales-valid v 0 0 0
   gvsc-valid : GvWorld -> Boolean
   gvsc-valid (v) = let mark = __heap-save
     in let valid = gvsc-valid-body v
     in let restored = __heap-restore mark in valid
+  gvsc-purse : GvWorld, Integer -> EmPurse
+  gvsc-purse (v) (actor) = let purse = (ep-actor v.currency.world actor).purse
+    in if em-valid-purse v.currency.world.money purse then em-purse v.currency.world.money purse else EmPurse { kind = 0, owner = 0, coin = 0 }
+  gvsc-bindings : GvWorld, Integer, Integer, Text -> Text
+  gvsc-bindings (v) (actor) (i) (out) = if i >= v.vendor-count + v.player-count + v.owner-count then out
+    else let row = if i < v.vendor-count then (let p = list-at v.vendors i in if p.actor == actor then "vendor " & show p.serial else "")
+      else if i < v.vendor-count + v.player-count then (let p = list-at v.players (i - v.vendor-count) in if p.actor == actor then "player " & show p.serial else "")
+      else (let p = list-at v.owners (i - v.vendor-count - v.player-count) in if p.actor == actor then "owner row " & show p.serial else "")
+    in gvsc-bindings v actor (i + 1) (if row == "" then out else if out == "" then row else out & ", " & row)
+  gvsc-lot-fault : GvWorld, Integer -> Text
+  gvsc-lot-fault (v) (serial) = if serial == 0 then "none"
+    else let l = ep-lot v.currency.world.goods serial
+    in let tag = "lot serial " & show l.serial & " actor " & show l.actor & " item " & show l.item & ": "
+    in if not (ep-valid-actor v.currency.world l.actor) then tag & "actor" else if not (eg-id v.currency.world.catalog l.item) then tag & "item"
+    else if ep-amount v.currency.world.goods l.serial <= 0 | ep-amount v.currency.world.goods l.serial > ep-stock-limit then tag & "quantity " & show (ep-amount v.currency.world.goods l.serial)
+    else if not (ev-range l.quality 1000) | not (ev-range l.wear 32) | not (ev-range l.basis ep-limit) then tag & "quality, wear or basis"
+    else if gvsc-actor-owner v l.actor 0 0 < 0 then tag & "owner twice: " & gvsc-bindings v l.actor 0 ""
+    else if gvsc-actor-owner v l.actor 0 0 == 0 & not (v.keeps l.actor) then tag & "no owner (purse " & show (ep-actor v.currency.world l.actor).purse
+      & " kind " & show (gvsc-purse v l.actor).kind & " owner " & show (gvsc-purse v l.actor).owner & ")"
+    else when world-get v.game.world l.serial
+      is Err (_) -> tag & "item gone"
+      is Ok (obj) -> if obj.kind /= 2 then tag & "kind"
+        else if world-child-count v.game.world l.serial /= 0 then tag & "children"
+        else gvsc-lot-fault v (ep-lot-after v.currency.world.goods serial)
+  gvsc-invalid-part : GvWorld -> Text
+  gvsc-invalid-part (v) = let mark = __heap-save
+    in let part = if not (ev-range v.currency.count em-rows) | list-length v.currency.events /= em-rows then "currency extent"
+      else if not (gvsc-vendors-valid v 0) then "vendors"
+      else if not (gvsc-players-valid v 0) then "players" else if not (gvsc-owners-valid v 0) then "owners: " & gvsc-owner-fault v 0
+      else if not (gvsc-lots-valid v (ep-lots-first v.currency.world.goods)) then "lots: " & gvsc-lot-fault v (ep-lots-first v.currency.world.goods) else if not (gvsc-sales-valid v 0 0 0) then "sales" else "counts"
+    in let restored = __heap-restore mark in part
+  gvsc-vendor-io : GvVendor, Integer, Boolean -> Integer
+  gvsc-vendor-io (p) (at) (read) =
+    let f0 = if read then __record-set p "serial" (peek-qword at 0) else let saved = poke-qword at 0 p.serial in p
+    in let f1 = if read then __record-set p "actor" (peek-qword at 8) else let saved = poke-qword at 8 p.actor in p
+    in let f2 = if read then __record-set p "stock" (peek-qword at 16) else let saved = poke-qword at 16 p.stock in p
+    in let f3 = if read then __record-set p "extra" (peek-qword at 24) else let saved = poke-qword at 24 p.extra in p
+    in let f4 = if read then __record-set p "buys" (peek-qword at 32) else let saved = poke-qword at 32 p.buys in p
+    in 0
+  gvsc-player-io : GvPlayer, Integer, Boolean -> Integer
+  gvsc-player-io (p) (at) (read) =
+    let f0 = if read then __record-set p "serial" (peek-qword at 0) else let saved = poke-qword at 0 p.serial in p
+    in let f1 = if read then __record-set p "actor" (peek-qword at 8) else let saved = poke-qword at 8 p.actor in p
+    in let f2 = if read then __record-set p "pack" (peek-qword at 16) else let saved = poke-qword at 16 p.pack in p
+    in 0
   gvsc-vendors : GvWorld, Integer, Boolean, Integer -> Integer
-  gvsc-vendors (v) (buf) (read) (i) = if i == v.vendor-count then 0
-    else let p = list-at v.vendors i
-    in let at = gvsc-vendors-at + i * gvsc-vendor-bytes
-    in let f0 = if read then __record-set p "serial" (peek-qword buf (at + 0)) else let saved = poke-qword buf (at + 0) p.serial in p
-    in let f1 = if read then __record-set p "actor" (peek-qword buf (at + 8)) else let saved = poke-qword buf (at + 8) p.actor in p
-    in let f2 = if read then __record-set p "stock" (peek-qword buf (at + 16)) else let saved = poke-qword buf (at + 16) p.stock in p
-    in let f3 = if read then __record-set p "extra" (peek-qword buf (at + 24)) else let saved = poke-qword buf (at + 24) p.extra in p
-    in let f4 = if read then __record-set p "buys" (peek-qword buf (at + 32)) else let saved = poke-qword buf (at + 32) p.buys in p
-    in let prices = if read then ws-copy (buf + at + 40) p.prices 1032 0 else ws-copy p.prices (buf + at + 40) 1032 0
+  gvsc-vendors (v) (buf) (read) (i) = if i >= min v.vendor-count gv-vendor-limit then 0
+    else let done = gvsc-vendor-io (list-at v.vendors i) (buf + gvsc-vendor-at i) read
     in gvsc-vendors v buf read (i + 1)
   gvsc-players : GvWorld, Integer, Boolean, Integer -> Integer
-  gvsc-players (v) (buf) (read) (i) = if i == v.player-count then 0
-    else let p = list-at v.players i
-    in let at = gvsc-players-at + i * 24
-    in let f0 = if read then __record-set p "serial" (peek-qword buf (at + 0)) else let saved = poke-qword buf (at + 0) p.serial in p
-    in let f1 = if read then __record-set p "actor" (peek-qword buf (at + 8)) else let saved = poke-qword buf (at + 8) p.actor in p
-    in let f2 = if read then __record-set p "pack" (peek-qword buf (at + 16)) else let saved = poke-qword buf (at + 16) p.pack in p
+  gvsc-players (v) (buf) (read) (i) = if i >= min v.player-count gv-player-limit then 0
+    else let done = gvsc-player-io (list-at v.players i) (buf + gvsc-player-at i) read
     in gvsc-players v buf read (i + 1)
-  gvsc-lots : GvWorld, Integer, Boolean, Integer -> Integer
-  gvsc-lots (v) (buf) (read) (i) = if i == v.lot-count then 0
+ Version 8's tail holds the rows past each first block (vendors past gv-vendor-limit, players past gv-player-limit, owners
+ past gv-owner-block): the three extra counts, then those vendor, player and owner rows. Standalone it follows the fixed
+ image; the composite closes its image with it after the currency. Version 10 closes the tail with the price width, the
+ vendor count and each vendor's prices (the vendor rows keep none).
+  gvsc-extra : Integer, Integer -> Integer
+  gvsc-extra (count) (block) = max 0 (count - block)
+  gvsc-kept : GvWorld, List Integer, Integer, Integer -> Integer
+  gvsc-kept (v) (omit) (i) (k) = if i >= v.owner-count then k
+    else gvsc-kept v omit (i + 1) (if gvsc-has omit (list-at v.owners i).serial 0 then k else k + 1)
+  gvsc-tail-size-with : GvWorld, List Integer -> Integer
+  gvsc-tail-size-with (v) (omit) = 32 + gvsc-extra v.vendor-count gv-vendor-limit * gvsc-vendor-bytes
+    + gvsc-extra v.player-count gv-player-limit * 24 + gvsc-extra (gvsc-kept v omit 0 0) gv-owner-block * 16
+    + gvsc-extra (ep-lot-count v.currency.world.goods) gv-lot-limit * 56 + 16 + v.vendor-count * eg-bytes v.currency.world.catalog
+  gvsc-tail-length : Integer, Integer -> Integer
+  gvsc-tail-length (tail) (room) = if room < 32 | peek-qword tail 0 < 0 | peek-qword tail 8 < 0 | peek-qword tail 16 < 0 | peek-qword tail 24 < 0
+      | peek-qword tail 0 > room / gvsc-vendor-bytes | peek-qword tail 8 > room / 24 | peek-qword tail 16 > room / 16 | peek-qword tail 24 > room / 56 then -1
+    else gvsc-tail-priced tail room (gvsc-tail-prices-at tail - tail)
+  gvsc-tail-prices-at : Integer -> Integer
+  gvsc-tail-prices-at (tail) = tail + 32 + peek-qword tail 0 * gvsc-vendor-bytes + peek-qword tail 8 * 24 + peek-qword tail 16 * 16 + peek-qword tail 24 * 56
+  gvsc-tail-priced : Integer, Integer, Integer -> Integer
+  gvsc-tail-priced (tail) (room) (base) = if base + 16 > room then -1
+    else let width = peek-qword tail base
+    in let count = peek-qword tail (base + 8)
+    in if width < 1 | count < 0 | count > (room - base - 16) / 8 / width then -1 else base + 16 + count * width * 8
+  gvsc-price-rows : GvWorld, Integer, Integer, Boolean, Integer -> Integer
+  gvsc-price-rows (v) (at) (bytes) (read) (i) = if i >= v.vendor-count then 0
+    else let p = list-at v.vendors i
+    in let done = if read then ws-copy (at + i * bytes) p.prices bytes 0 else ws-copy p.prices (at + i * bytes) bytes 0
+    in gvsc-price-rows v at bytes read (i + 1)
+  gvsc-write-prices : GvWorld, Integer -> Integer
+  gvsc-write-prices (v) (at) = let width = eg-cells v.currency.world.catalog
+    in let a = poke-qword at 0 width
+    in let b = poke-qword at 8 v.vendor-count
+    in gvsc-price-rows v (at + 16) (width * 8) False 0
+  gvsc-read-prices : GvWorld, Integer, Integer -> Integer
+  gvsc-read-prices (v) (at) (lots) = if lots < 0 | peek-qword at 0 /= eg-cells v.currency.world.catalog | peek-qword at 8 /= v.vendor-count then -1
+    else gvsc-price-rows v (at + 16) (peek-qword at 0 * 8) True 0
+  gvsc-tail-size : GvWorld -> Integer
+  gvsc-tail-size (v) = gvsc-tail-size-with v []
+  gvsc-tail-owners-at : GvWorld, Integer -> Integer
+  gvsc-tail-owners-at (v) (tail) = tail + 32 + gvsc-extra v.vendor-count gv-vendor-limit * gvsc-vendor-bytes + gvsc-extra v.player-count gv-player-limit * 24
+  gvsc-tail-vendors : GvWorld, Integer, Boolean, Integer -> Integer
+  gvsc-tail-vendors (v) (at) (read) (i) = if gv-vendor-limit + i >= v.vendor-count then 0
+    else let done = gvsc-vendor-io (list-at v.vendors (gv-vendor-limit + i)) (at + i * gvsc-vendor-bytes) read
+    in gvsc-tail-vendors v at read (i + 1)
+  gvsc-tail-players : GvWorld, Integer, Boolean, Integer -> Integer
+  gvsc-tail-players (v) (at) (read) (i) = if gv-player-limit + i >= v.player-count then 0
+    else let done = gvsc-player-io (list-at v.players (gv-player-limit + i)) (at + i * 24) read
+    in gvsc-tail-players v at read (i + 1)
+  gvsc-write-tail : GvWorld, Integer, List Integer -> Integer
+  gvsc-write-tail (v) (tail) (omit) = let ve = gvsc-extra v.vendor-count gv-vendor-limit
+    in let pe = gvsc-extra v.player-count gv-player-limit
+    in let a = poke-qword tail 0 ve
+    in let b = poke-qword tail 8 pe
+    in let c = poke-qword tail 16 (gvsc-extra (gvsc-kept v omit 0 0) gv-owner-block)
+    in let l = poke-qword tail 24 (gvsc-extra (ep-lot-count v.currency.world.goods) gv-lot-limit)
+    in let d = gvsc-tail-vendors v (tail + 32) False 0
+    in let p = gvsc-tail-players v (tail + 32 + ve * gvsc-vendor-bytes) False 0
+    in gvsc-write-prices v (gvsc-tail-prices-at tail)
+  gvsc-tail-owners-read : GvWorld, Integer, Integer, Integer -> Integer
+  gvsc-tail-owners-read (v) (at) (count) (i) = if i >= count then 0
+    else let p = list-at v.owners (gv-owner-block + i)
+    in let a = __record-set p "serial" (peek-qword at (i * 16))
+    in let b = __record-set p "actor" (peek-qword at (i * 16 + 8))
+    in gvsc-tail-owners-read v at count (i + 1)
+ Reads a tail of tail-size bytes into a decoded image whose fixed counts are full blocks; -1 refuses it.
+  gvsc-read-tail : GvWorld, Integer, Integer -> Integer
+  gvsc-read-tail (v) (tail) (size) = if size < 48 | gvsc-tail-length tail size /= size then -1
+    else let ve = peek-qword tail 0
+    in let pe = peek-qword tail 8
+    in let oe = peek-qword tail 16
+    in let le = peek-qword tail 24
+    in if (ve > 0 & v.vendor-count /= gv-vendor-limit) | (pe > 0 & v.player-count /= gv-player-limit) | (oe > 0 & v.owner-count /= gv-owner-block)
+      | (le > 0 & ep-lot-count v.currency.world.goods /= gv-lot-limit) then -1
+    else let gv = gv-grow-vendors v (gv-vendor-limit + ve - list-length v.vendors)
+    in let gp = gv-grow-players v (gv-player-limit + pe - list-length v.players)
+    in let go = gv-grow-owners v (gv-owner-block + oe - list-length v.owners)
+    in let cv = __record-set v "vendor-count" (v.vendor-count + ve)
+    in let cp = __record-set v "player-count" (v.player-count + pe)
+    in let co = __record-set v "owner-count" (v.owner-count + oe)
+    in let rv = gvsc-tail-vendors v (tail + 32) True 0
+    in let rp = gvsc-tail-players v (tail + 32 + ve * gvsc-vendor-bytes) True 0
+    in let ro = gvsc-tail-owners-read v (tail + 32 + ve * gvsc-vendor-bytes + pe * 24) oe 0
+    in let rl = gvsc-tail-lots-read v.currency.world.goods (tail + 32 + ve * gvsc-vendor-bytes + pe * 24 + oe * 16) le 0
+    in gvsc-read-prices v (gvsc-tail-prices-at tail) rl
+  gvsc-tail-lots-read : EpGoods, Integer, Integer, Integer -> Integer
+  gvsc-tail-lots-read (g) (base) (count) (i) = if i >= count then 0
+    else if not (ep-lot-key g (peek-qword base (i * 56)) (peek-qword base (i * 56 + 8))) then -1
+    else let made = gvu-read-lot g base (i * 56) in gvsc-tail-lots-read g base count (i + 1)
+  gvsc-write-lots : EpGoods, Integer, Integer, Integer, Integer -> Integer
+  gvsc-write-lots (g) (buf) (tail-lots) (serial) (i) = if serial == 0 then i
+    else let done = if i < gv-lot-limit then gvu-write-lot buf (gvsc-lot-at i) (ep-lot g serial) (ep-amount g serial)
+      else gvu-write-lot tail-lots ((i - gv-lot-limit) * 56) (ep-lot g serial) (ep-amount g serial)
+    in gvsc-write-lots g buf tail-lots (ep-lot-after g serial) (i + 1)
+ A record whose serial or actor cannot take a row refuses the image (-1).
+  gvsc-read-lots : EpGoods, Integer, Integer, Integer -> Integer
+  gvsc-read-lots (g) (buf) (count) (i) = if i == count then 0
     else let at = gvsc-lot-at i
-    in let done = if read then gvu-read-lot buf at (list-at v.lots i) else gvu-write-lot buf at (list-at v.lots i)
-    in gvsc-lots v buf read (i + 1)
+    in if not (ep-lot-key g (peek-qword buf at) (peek-qword buf (at + 8))) then -1
+    else let made = gvu-read-lot g buf at in gvsc-read-lots g buf count (i + 1)
   gvsc-sales : GvWorld, Integer, Boolean, Integer -> Integer
   gvsc-sales (v) (buf) (read) (i) = if i == v.sale-count then 0
     else let at = gvsc-sales-at + i * 96
     in let done = if read then gvu-read-sale buf at (list-at v.sales i) else gvu-write-sale buf at (list-at v.sales i)
     in gvsc-sales v buf read (i + 1)
   gvsc-owners : GvWorld, Integer, Boolean, Integer -> Integer
-  gvsc-owners (v) (buf) (read) (i) = if i == v.owner-count then 0
+  gvsc-owners (v) (buf) (read) (i) = if i >= min v.owner-count gv-owner-block then 0
     else let p = list-at v.owners i
     in let at = gvsc-owners-at + i * 16
     in let a = if read then __record-set p "serial" (peek-qword buf at) else let saved = poke-qword buf at p.serial in p
     in let b = if read then __record-set p "actor" (peek-qword buf (at + 8)) else let saved = poke-qword buf (at + 8) p.actor in p
     in gvsc-owners v buf read (i + 1)
   gvsc-encode : GvWorld, Integer, Integer -> Result Integer Text
-  gvsc-encode (v) (buf) (capacity) = if capacity < gvsc-bytes then Err "vendor destination too short"
-    else if not (gvsc-valid v) then Err "vendor state binding invalid"
+  gvsc-encode (v) (buf) (capacity) = if capacity < gvsc-bytes + gvsc-tail-size v then Err "vendor destination too short"
+    else if not (gvsc-valid v) then Err ("vendor state binding invalid: " & gvsc-invalid-part v)
+    else gvsc-write v buf capacity
+ gvsc-write and gvsc-decode-any skip the binding check: the composite owner always saves and loads, and logs the failing
+ part (gvsc-invalid-part) instead.
+  gvsc-has : List Integer, Integer, Integer -> Boolean
+  gvsc-has (xs) (x) (i) = if i == list-length xs then False else if list-at xs i == x then True else gvsc-has xs x (i + 1)
+ Owner rows kept (not omitted) fill the fixed block first, then the tail's owner rows.
+  gvsc-owner-rows : GvWorld, Integer, Integer, List Integer, Integer, Integer -> Integer
+  gvsc-owner-rows (v) (buf) (tail-owners) (omit) (i) (k) = if i >= v.owner-count then k
+    else let p = list-at v.owners i
+    in if gvsc-has omit p.serial 0 then gvsc-owner-rows v buf tail-owners omit (i + 1) k
+    else let at = if k < gv-owner-block then buf + gvsc-owners-at + k * 16 else tail-owners + (k - gv-owner-block) * 16
+    in let a = poke-qword at 0 p.serial
+    in let b = poke-qword at 8 p.actor
+    in gvsc-owner-rows v buf tail-owners omit (i + 1) (k + 1)
+ The composite omits the owner rows its live residents bind at load (gla-register), so GVS1 holds no copy of them, and
+ places the tail where it says (after its currency).
+  gvsc-write-without : GvWorld, Integer, Integer, List Integer, Integer -> Result Integer Text
+  gvsc-write-without (v) (buf) (capacity) (omit) (tail) = gvsc-write-parts v buf capacity omit tail
+  gvsc-write : GvWorld, Integer, Integer -> Result Integer Text
+  gvsc-write (v) (buf) (capacity) = if capacity < gvsc-bytes + gvsc-tail-size v then Err "vendor destination too short"
+    else when gvsc-write-parts v buf capacity [] (buf + gvsc-bytes)
+      is Err (e) -> Err e
+      is Ok (size) -> let whole = poke-qword buf 16 (gvsc-bytes + gvsc-tail-size v)
+        in let hash = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
+        in Ok (gvsc-bytes + gvsc-tail-size v)
+  gvsc-write-parts : GvWorld, Integer, Integer, List Integer, Integer -> Result Integer Text
+  gvsc-write-parts (v) (buf) (capacity) (omit) (tail) = if capacity < gvsc-bytes then Err "vendor destination too short"
     else let cleared = ts-zero buf gvsc-bytes 0
+    in let kept = gvsc-kept v omit 0 0
     in let a = poke-qword buf 0 #31535647
-    in let b = poke-qword buf 8 3
+    in let b = poke-qword buf 8 10
+    in let based = poke-qword buf gvsc-v5-bytes v.sale-base
     in let c = poke-qword buf 16 gvsc-bytes
-    in let d = poke-qword buf 24 v.vendor-count
-    in let e = poke-qword buf 32 v.player-count
-    in let f = poke-qword buf 40 v.lot-count
+    in let d = poke-qword buf 24 (min v.vendor-count gv-vendor-limit)
+    in let e = poke-qword buf 32 (min v.player-count gv-player-limit)
     in let g = poke-qword buf 56 v.sale-count
     in let h = poke-qword buf 64 v.sequence
-    in let owners-count = poke-qword buf 72 v.owner-count
+    in let owners-count = poke-qword buf 72 (min kept gv-owner-block)
     in let vendors = gvsc-vendors v buf False 0
     in let players = gvsc-players v buf False 0
-    in let lots = gvsc-lots v buf False 0
+    in let tail-lots = gvsc-tail-owners-at v tail + gvsc-extra kept gv-owner-block * 16
+    in let lots = gvsc-write-lots v.currency.world.goods buf tail-lots (ep-lots-first v.currency.world.goods) 0
+    in let f = poke-qword buf 40 (min lots gv-lot-limit)
     in let sales = gvsc-sales v buf False 0
-    in let owners = gvsc-owners v buf False 0
+    in let tailed = gvsc-write-tail v tail omit
+    in let owners = gvsc-owner-rows v buf (gvsc-tail-owners-at v tail) omit 0 0
     in let hash = poke-qword buf 48 (ws-hash buf gvsc-bytes 0 2166136261)
     in Ok gvsc-bytes
   gvsc-decode : Integer, Integer, GameShard, EuCurrency -> Result GvWorld Text
-  gvsc-decode (buf) (size) (game) (currency) =
-    if size /= gvsc-bytes & size /= gvsc-v2-bytes & size /= gvsc-owners-at then Err "vendor checkpoint length invalid"
+  gvsc-decode (buf) (size) (game) (currency) = let held = currency.world.goods
+    in when gvsc-decode-raw buf size game currency
+      is Err (e) -> let restored = __record-set currency.world "goods" held in Err e
+      is Ok (v) -> if gvsc-valid v then Ok (gvsc-adopt v held)
+        else let restored = __record-set currency.world "goods" held in Err "vendor checkpoint binding or history invalid"
+  gvsc-decode-any : Integer, Integer, GameShard, EuCurrency -> Result GvWorld Text
+  gvsc-decode-any (buf) (size) (game) (currency) = let held = currency.world.goods
+    in when gvsc-decode-raw buf size game currency
+      is Err (e) -> let restored = __record-set currency.world "goods" held in Err e
+      is Ok (v) -> Ok (gvsc-adopt v held)
+ The decoded lots move into the goods the caller already holds, whose rows sit below the caller's heap mark.
+  gvsc-clear-goods : EpGoods, Integer -> Integer
+  gvsc-clear-goods (g) (serial) = if serial == 0 then 0
+    else let next = ep-lot-after g serial
+    in let dropped = ep-drop-row g serial
+    in gvsc-clear-goods g next
+  gvsc-copy-lots : EpGoods, EpGoods, Integer -> Integer
+  gvsc-copy-lots (from) (into) (serial) = if serial == 0 then 0
+    else let l = ep-lot from serial
+    in let made = ep-occupy into serial l.actor l.item l.quality l.wear l.basis
+    in gvsc-copy-lots from into (ep-lot-after from serial)
+  gvsc-adopt : GvWorld, EpGoods -> GvWorld
+  gvsc-adopt (v) (held) = let fresh = v.currency.world.goods
+    in let cleared = gvsc-clear-goods held (ep-lots-first held)
+    in let copied = gvsc-copy-lots fresh held (ep-lots-first fresh)
+    in let back = __record-set v.currency.world "goods" held in v
+ Fresh goods start with one actor block of lot heads; the currency restored before them may hold more actors (a world
+ founding every city's shops passes the first block), and a lot of an actor past the heads is refused as a bad key.
+  gvsc-fresh-goods : EpWorld -> Integer
+  gvsc-fresh-goods (w) = let installed = __record-set w "goods" (ep-goods-new 0)
+    in sa-grow w.goods.heads (list-length w.actors + 1)
+  gvsc-decode-raw : Integer, Integer, GameShard, EuCurrency -> Result GvWorld Text
+  gvsc-decode-raw (buf) (size) (game) (currency) =
+    if size < gvsc-bytes & size /= gvsc-v6-bytes & size /= gvsc-v5-bytes & size /= gvsc-v4-bytes & size /= gvsc-v3-bytes & size /= gvsc-v2-bytes & size /= gvsc-owners-at then Err "vendor checkpoint length invalid"
     else if peek-qword buf 0 /= #31535647 | peek-qword buf 16 /= size
       | not ((peek-qword buf 8 == 1 & size == gvsc-owners-at & peek-qword buf 72 == 0)
         | (peek-qword buf 8 == 2 & size == gvsc-v2-bytes & ev-range (peek-qword buf 72) 128)
-        | (peek-qword buf 8 == 3 & size == gvsc-bytes & ev-range (peek-qword buf 72) 128)) then Err "vendor checkpoint format invalid"
+        | (peek-qword buf 8 == 3 & size == gvsc-v3-bytes & ev-range (peek-qword buf 72) 128)
+        | (peek-qword buf 8 == 4 & size == gvsc-v4-bytes & ev-range (peek-qword buf 72) 128)
+        | (peek-qword buf 8 == 5 & size == gvsc-v5-bytes & ev-range (peek-qword buf 72) 128)
+        | (peek-qword buf 8 == 6 & size == gvsc-v6-bytes & ev-range (peek-qword buf 72) 128 & ev-range (peek-qword buf gvsc-v5-bytes) ep-limit)
+        | (peek-qword buf 8 == 7 & size == gvsc-bytes & ev-range (peek-qword buf 72) 128 & ev-range (peek-qword buf gvsc-v5-bytes) ep-limit)
+        | (peek-qword buf 8 == 10 & size >= gvsc-bytes & ev-range (peek-qword buf 72) gv-owner-block & ev-range (peek-qword buf gvsc-v5-bytes) ep-limit)) then Err "vendor checkpoint format invalid"
     else let lots = peek-qword buf 40
-    in if not (ev-range (peek-qword buf 24) 16) | not (ev-range (peek-qword buf 32) 5)
-      | not (ev-range lots (if size == gvsc-bytes then gv-lot-limit else 64)) | not (ev-range (peek-qword buf 56) 1024)
-      | not (ev-range (peek-qword buf 64) (peek-qword buf 56)) then Err "vendor checkpoint count invalid"
-    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "vendor checkpoint checksum invalid"
-    else if not (es-zero-range buf (gvsc-vendors-at + peek-qword buf 24 * gvsc-vendor-bytes) gvsc-players-at)
-      | not (es-zero-range buf (gvsc-players-at + peek-qword buf 32 * 24) gvsc-lots-at)
+    in let players = peek-qword buf 32
+    in if not (ev-range (peek-qword buf 24) (if peek-qword buf 8 >= 7 then gv-vendor-limit else 16)) | not (ev-range players (if size >= gvsc-v4-bytes then gv-player-limit else 5))
+      | not (ev-range lots (if size >= gvsc-v5-bytes then gv-lot-limit else if size >= gvsc-v3-bytes then 128 else 64)) | not (ev-range (peek-qword buf 56) 1024)
+      | not (ev-range (peek-qword buf 64) (peek-qword buf 56 + (if size >= gvsc-v6-bytes then peek-qword buf gvsc-v5-bytes else 0))) then Err "vendor checkpoint count invalid"
+    else if peek-qword buf 48 /= ws-hash buf (min size gvsc-bytes) 0 2166136261 then Err "vendor checkpoint checksum invalid"
+    else if not (es-zero-range buf (gvsc-vendors-at + min (peek-qword buf 24) 16 * gvsc-vendor-bytes) gvsc-players-at)
+      | (peek-qword buf 8 >= 7 & not (es-zero-range buf (gvsc-vendor-at (max (peek-qword buf 24) 16)) gvsc-bytes))
+      | not (es-zero-range buf (gvsc-players-at + min players 5 * 24) gvsc-lots-at)
+      | (size >= gvsc-v4-bytes & not (es-zero-range buf (gvsc-player-at (max players 5)) gvsc-v4-bytes))
       | not (es-zero-range buf (gvsc-lots-at + min lots 64 * 56) gvsc-sales-at)
       | not (es-zero-range buf (gvsc-sales-at + peek-qword buf 56 * 96) gvsc-owners-at)
       | (size /= gvsc-owners-at & not (es-zero-range buf (gvsc-owners-at + peek-qword buf 72 * 16) gvsc-v2-bytes))
-      | (size == gvsc-bytes & not (es-zero-range buf (gvsc-lot-at (max lots 64)) size)) then Err "vendor spare records nonzero"
+      | (size >= gvsc-v3-bytes & not (es-zero-range buf (gvsc-v2-bytes + (min 128 (max lots 64) - 64) * 56) gvsc-v3-bytes))
+      | (size >= gvsc-v5-bytes & not (es-zero-range buf (gvsc-lot-at (max lots 128)) gvsc-v5-bytes)) then Err "vendor spare records nonzero"
     else let v = gv-new game currency
+    in let installed = gvsc-fresh-goods currency.world
+    in let rebound = ep-bind-goods currency.world game.world
     in let a = __record-set v "vendor-count" (peek-qword buf 24)
     in let b = __record-set v "player-count" (peek-qword buf 32)
-    in let c = __record-set v "lot-count" (peek-qword buf 40)
     in let d = __record-set v "sale-count" (peek-qword buf 56)
     in let e = __record-set v "sequence" (peek-qword buf 64)
     in let owner-count = __record-set v "owner-count" (peek-qword buf 72)
+    in let sale-base = __record-set v "sale-base" (if size >= gvsc-v6-bytes then peek-qword buf gvsc-v5-bytes else 0)
     in let vendors = gvsc-vendors v buf True 0
     in let players = gvsc-players v buf True 0
-    in let lots = gvsc-lots v buf True 0
+    in let lots = gvsc-read-lots v.currency.world.goods buf (peek-qword buf 40) 0
     in let sales = gvsc-sales v buf True 0
     in let owners = gvsc-owners v buf True 0
-    in if gvsc-valid v then Ok v else Err "vendor checkpoint binding or history invalid"
+    in if lots < 0 | ep-lot-count v.currency.world.goods /= peek-qword buf 40 then Err "vendor lot record invalid"
+    else if size > gvsc-bytes & gvsc-read-tail v (buf + gvsc-bytes) (size - gvsc-bytes) < 0 then Err "vendor tail invalid"
+    else Ok v

@@ -1,0 +1,150 @@
+Chapter: CompositeLaborProof
+  cites Uoaix chapter CompositeStore
+
+  clp-check : Text, Boolean -> [Console] Integer
+  clp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  clp-fill : WalkMap, Integer -> Integer
+  clp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in clp-fill map (i + 1)
+  clp-data : Integer -> Integer
+  clp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+ A game day is 7200 world ticks 100 PIT ticks apart: 12 game seconds per real second.
+  clp-ticks : CompositeGame, WalkMap, Integer, Integer, Integer, Integer -> Integer
+  clp-ticks (owner) (map) (watcher) (tick) (left) (seen) = if left == 0 then tick
+    else when cg-world-tick owner owner.checkpoint.game map watcher tick
+      is Err (_) -> -1
+      is Ok (_) -> clp-ticks owner map watcher (tick + 100) (left - 1) seen
+  clp-purse : CompositeGame, Integer -> Integer
+  clp-purse (owner) (actor) = (ep-actor owner.vendor.currency.world actor).purse
+  clp-wages : EuCurrency, Integer, Integer, Integer, Integer -> Integer
+  clp-wages (x) (shop) (worker) (i) (stop) = if i >= stop then 0
+    else let ev = list-at x.events i
+    in (if ev.kind == 4 & ev.actor == shop & ev.party == worker then ev.copper else 0) + clp-wages x shop worker (i + 1) stop
+  clp-acts : EaWorld, Integer, Integer, Integer, Integer -> Integer
+  clp-acts (book) (actor) (kind) (after) (i) = if i == book.event-count then 0
+    else let ev = list-at book.events i
+    in (if ev.sequence > after & ev.actor == actor & ev.kind == kind & ev.result == 0 then 1 else 0) + clp-acts book actor kind after (i + 1)
+  clp-food : EaWorld, Integer -> Integer
+  clp-food (book) (i) = if i == book.offer-count then 0
+    else let o = list-at book.offers i
+    in (if o.kind == 3 & o.item == 34 & o.remaining > 0 then o.remaining else 0) + clp-food book (i + 1)
+  clp-resident : CompositeGame, TownLive, EaWorld, Integer, Integer, Integer, Integer, Integer -> [Console] Integer
+  clp-resident (owner) (t) (book) (day) (events) (sequence) (food) (i) = if i == t.count then act 0 end
+    else let r = list-at t.residents i
+    in let x = owner.vendor.currency
+    in let shop = clp-purse owner (list-at owner.vendor.vendors (clb-employer i)).actor
+    in let wages = clp-wages x shop (clp-purse owner r.actor) events x.count
+    in let bought = clp-acts book r.actor 2 sequence 0
+    in let ate = clp-acts book r.actor 4 sequence 0
+    in act
+      print-line-uni ("LABOR day " & show day & " " & (tf-person t.people r.person).name & " wages=" & show wages & " bought=" & show bought & " ate=" & show ate
+        & " coin=" & show (eu-value x (em-purse x.copper (clp-purse owner r.actor)).coin (em-purse x.silver (clp-purse owner r.actor)).coin (em-purse x.world.money (clp-purse owner r.actor)).coin))
+      ok <- clp-check ("day " & show day & ": " & (tf-person t.people r.person).name & " works a paid shift, buys and eats (the farmer, the miller and the baker restock the town's food)") (wages > 0 & bought > 0 & ate > 0)
+      hours <- clp-check ("day " & show day & ": " & (tf-person t.people r.person).name & " is paid for at least 7 hours at work") (wages >= 7)
+      rest <- clp-resident owner t book day events sequence food (i + 1)
+      ok + hours + rest
+    end
+  clp-pile : TownLive, Integer -> Integer
+  clp-pile (t) (i) = let world = t.vendors.game.world
+    in let pack = gsi-pack-find world (tf-person t.people (list-at t.residents i).person).world-serial 0
+    in let pile = if pack == 0 then 0 else gsi-child-art world (world-first-child world pack) (tl-coin-art 1) 0
+    in if pile == 0 then 0 else when world-get world pile is Err (_) -> 0 is Ok (o) -> o.amount
+  clp-piles : TownLive, Integer -> Integer
+  clp-piles (t) (i) = if i == t.count then 0 else clp-pile t i + clp-piles t (i + 1)
+  clp-quarter : TownLive, Integer -> Boolean
+  clp-quarter (t) (i) = if i == t.count then True
+    else let refreshed = tl-coins t i 1
+    in let x = t.vendors.currency
+    in clp-pile t i == (em-purse x.copper (ep-actor x.world (list-at t.residents i).actor).purse).coin / tl-coin-share & clp-quarter t (i + 1)
+  clp-day : CompositeGame, WalkMap, Integer, Integer -> [Console] Integer
+  clp-day (owner) (map) (tick) (day) = when owner.town
+    is None -> clp-check "townsfolk bound" False
+    is Just (t) -> when owner.network
+      is None -> clp-check "town network bound" False
+      is Just (n) -> let events = owner.vendor.currency.count
+        in let sequence = n.actions.book.sequence
+        in let food = clp-food n.actions.book 0
+        in let ended = clp-ticks owner map (list-at owner.vendor.vendors 0).serial tick 7200 0
+        in act
+          print-line-uni ("LABOR day " & show day & " clock=" & show owner.town-seconds & " economy-hour=" & show owner.vendor.currency.world.hour & " currency-rows=" & show owner.vendor.currency.count & " book=" & show n.actions.book.sequence)
+          ran <- clp-check ("day " & show day & " runs headless") (ended > 0)
+          print-line-uni ("LABOR day " & show day & " food offered at dawn=" & show food & " survival overrides=" & show n.guards)
+          each <- clp-resident owner t n.actions.book day events sequence food 0
+          coins <- clp-check ("day " & show day & ": the shifts put coin piles in the residents' packs, each a quarter of its purse's copper") (clp-piles t 0 > 0 & clp-quarter t 0)
+          census <- clp-check ("day " & show day & ": currency and material census valid") (euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1 & gvsc-valid owner.vendor)
+          ran + each + coins + census
+        end
+ 300 world ticks are one game hour.
+  clp-idle : CompositeGame, WalkMap -> [Console] Integer
+  clp-idle (owner) (map) = when owner.network
+    is None -> act clp-check "town network bound" False end
+    is Just (n) -> let x = owner.vendor.currency
+      in let rows = x.count
+      in let hour = x.world.hour
+      in let book = n.actions.book.sequence
+      in let ore = ep-at x.world.gathered 6
+      in let ended = clp-ticks owner map (list-at owner.vendor.vendors 0).serial 100 300 0
+      in act
+        print-line-uni ("LABOR unseeded mint-ingots=" & show x.world.mint-ingots & " economy-hour=" & show x.world.hour & " currency-rows=" & show x.count & " book=" & show n.actions.book.sequence & " ore=" & show (ep-at x.world.gathered 6))
+        closed <- clp-check "a fresh world with founding gold but no king's strike: no NPC works, earns, trades or mines for a game hour" (ended > 0 & not (cg-seeded owner) & x.world.mint-ingots > 0 & not owner.labor & x.count == rows & x.world.hour == hour & n.actions.book.sequence == book & ep-at x.world.gathered 6 == ore)
+        seeded <- clp-check "the king's struck gold opens the economy" (cg-seed-gold owner == 1 & cg-seeded owner)
+        closed + seeded
+      end
+  clp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  clp-first (store) (map) = let owner = store.state in act
+    idle <- clp-idle owner map
+    one <- clp-day owner map 30100 1
+    two <- clp-day owner map (30100 + 720000) 2
+    committed <- cs-commit store True
+    saved <- clp-check "two working days commit" (is-ok committed)
+    idle + one + two + saved
+  end
+  clp-later : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  clp-later (store) (map) = let owner = store.state in act
+    restored <- clp-check "restart restores the residents with their wages, and the opened economy stays open" (cg-seeded owner & (when owner.town is None -> False is Just (t) -> t.count == 3))
+    three <- clp-day owner map 100 3
+    restored + three
+  end
+
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> clp-check e False
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+     is Err (e) -> clp-check e False
+     is Ok (britain) -> let filled = clp-fill map 0
+      in let town-filled = clp-fill britain 0
+      in let data = clp-data 0
+      in when wd-read data 240 map map.stride
+       is Err (e) -> clp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> clp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+       when loaded
+        is Err (e) -> clp-check ("recovery " & e) False
+        is Ok (owner) -> when cg-town-doors owner.state data 240
+         is Err (e) -> clp-check ("town doors " & e) False
+         is Ok (_) -> if fresh then clp-first owner map else clp-later owner map
+      end
+    end

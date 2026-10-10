@@ -1,0 +1,41 @@
+Chapter: BvtCraftGump
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter GameInscription
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-185: the craft gump is a well-formed 0xB0 to the tool under the craft tag, shows only categories that hold an
+ item, and its answers become the craft handler's 0x7D choice; another gump's answer passes through.
+  bcrg-answer : Integer, Integer, Integer -> List Integer
+  bcrg-answer (tool) (gump) (button) = gp-put32 (gp-put32 (gp-put32 (gp-put32 (gp-put16 [#B1] 23) tool) gump) button) 0
+ Whether the bytes hold "9999" (Make Last's answer) anywhere in the layout.
+  bcrg-last : List Integer, Integer -> Boolean
+  bcrg-last (p) (i) = if i + 3 >= list-length p then False
+    else if list-at p i == 57 & list-at p (i + 1) == 57 & list-at p (i + 2) == 57 & list-at p (i + 3) == 57 then True else bcrg-last p (i + 1)
+ Whether the bytes hold seq (ASCII codes) from some place on.
+  bcrg-seq : List Integer, List Integer, Integer -> Boolean
+  bcrg-seq (p) (seq) (i) = if i + list-length seq > list-length p then False else if bcrg-at p seq i 0 then True else bcrg-seq p seq (i + 1)
+  bcrg-at : List Integer, List Integer, Integer, Integer -> Boolean
+  bcrg-at (p) (seq) (i) (k) = if k >= list-length seq then True else if list-at p (i + k) /= list-at seq k then False else bcrg-at p seq i (k + 1)
+  bvt-craft-gump-two : Integer -> [Console] Integer
+  bvt-craft-gump-two (unused) = let heal = gal-gump 4242 #0F85 [1, 2]
+    in let smith = crg-gump 4242 #4005 "Blacksmithing" (crg-labels 1) ["dagger: 1 iron ingots"] [3] "" in act
+      f <- bvt-check "the Alchemy gump answers on the heal menu id and shows no Make Last; the smith's shows it (gal-gump, crg-gump-ids)" (list-at heal 0 == #B0 & gp-u32 heal 7 == crg-tag + #A010 & not (bcrg-last heal 21) & bcrg-last smith 21)
+      g <- bvt-check "an Alchemy line names the tier, the reagent count and the bottle; poison is Toxic (gal-lines, gal-cats)" (list-at (gal-lines #0F85 [1, 2] 0 []) 1 == "Heal potion: 3 ginseng, 1 empty bottle" & gal-cats #0F88 [1] 0 [] == [2] & gal-cats #0F84 [1] 0 [] == [0])
+      h <- bvt-check "an Inscription button answers circle x 100 + its place: the third circle's spells 301, 302, 303 (ins-gump-fill)" (ins-gump-fill 2 3 1 True [] == [301, 302, 303] & ins-gump-fill 2 3 1 False [] == [2, 2, 2])
+      i <- bvt-check "an Inscription line names the blank scroll and each reagent of the spell (ins-needs)" (ins-needs (mgd-reagents 5) 0 "" == ", 1 sulfurous ash" & ins-needs (mgd-reagents 4) 0 "" == ", 1 garlic, 1 ginseng, 1 spiders' silk")
+      f + g + h + i
+    end
+  bvt-craft-gump : Integer -> [Console] Integer
+  bvt-craft-gump (unused) = let gump = crg-gump 4242 #4005 "Blacksmithing" (crg-labels 1) ["dagger: 1 iron ingots", "plate gorget: 3 iron ingots"] [3, 0] ""
+    in let made = crg-answer (bcrg-answer 4242 (crg-tag + #4005) 2)
+    in let again = crg-answer (bcrg-answer 4242 (crg-tag + #4005) crg-make-last)
+    in let shut = crg-answer (bcrg-answer 4242 (crg-tag + #4005) 0)
+    in let other = bcrg-answer 4242 #504C4159 2 in act
+      a <- bvt-check "the craft gump is a 0xB0 to the tool under the craft tag, its length field its length (crg-gump)" (list-at gump 0 == #B0 & list-at gump 1 * 256 + list-at gump 2 == list-length gump & gp-u32 gump 3 == 4242 & gp-u32 gump 7 == crg-tag + #4005)
+      b <- bvt-check "only categories holding an item are shown, in label order: Metal Armor then Bladed (crg-used)" (crg-used [3, 0] 7 0 [] == [0, 3] & crg-used [] 7 0 [] == [])
+      c <- bvt-check "an item button, Make Last and Exit answer as the 13-byte 0x7D choice on the tool and context (crg-answer)" (list-length made == 13 & list-at made 0 == #7D & gp-u32 made 1 == 4242 & gp-u16 made 5 == #4005 & gp-u16 made 7 == 2 & gp-u16 again 7 == crg-make-last & gp-u16 shut 7 == 0)
+      d <- bvt-check "another gump's answer passes through unchanged (crg-answer)" (crg-answer other == other)
+      e <- bvt-check "ServUO's categories: dagger Bladed, gorget Metal Armor, shirt Shirts and Pants, nails Parts, bread Baking, arrows Ammunition for the fletcher (crg-category)" (crg-category 1 69 == 3 & crg-category 1 71 == 0 & crg-category 2 72 == 1 & crg-category 4 39 == 2 & crg-category 5 34 == 2 & crg-category 6 49 == 1 & list-at (crg-labels 6) 1 == "Ammunition")
+      f <- bvt-check "the craft gump's text lies inside the 2600 frame: headings at x 52, y 80, nothing at x 30 or on the top border (UOAIX-230)" (bcrg-seq gump [123, 32, 116, 101, 120, 116, 32, 53, 50, 32, 56, 48] 0 & not (bcrg-seq gump [123, 32, 116, 101, 120, 116, 32, 51, 48, 32] 0) & not (bcrg-seq gump [123, 32, 116, 101, 120, 116, 32, 49, 57, 48, 32] 0))
+      a + b + c + d + e + f
+    end

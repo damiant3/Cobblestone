@@ -1,0 +1,33 @@
+Chapter: BvtCropPickers
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CompositeCodec
+  cites Uoaix chapter GameVendorBuys
+  cites Uoaix chapter NpcLines
+  cites Uoaix chapter BvtCheck
+
+ The root and vegetable farmers (places 409, 410) work the twelve edible crops between them, each crop once.
+  bvcr-tool : Integer, Integer -> Integer
+  bvcr-tool (item) (i) = let rs = (bb-catalog 0).resources
+    in if i >= list-length rs then -1 else if (list-at rs i).item == item then (list-at rs i).tool else bvcr-tool item (i + 1)
+  bvcr-trades : Integer -> Boolean
+  bvcr-trades (k) = if k >= list-length cgg-crop-items then True
+    else let item = list-at cgg-crop-items k
+    in let root = cgg-index-of cgg-root-items item 0 >= 0
+    in let veg = cgg-index-of cgg-veg-items item 0 >= 0
+    in let t = cgg-crop-trade (if root then cgg-root-farm else cgg-veg-farm) item
+    in (root /= veg) & t.raw == item & t.product == item & t.buyer == 5 & ep-food item & gvb-material 5 item
+      & t.region.x1 == cgg-field-region.x1 & t.art == list-at cgg-crop-arts k & t.tool == bvcr-tool item 0 & t.tool == (if root then 25 else 0) & bvcr-trades (k + 1)
+  bvcr-has-line : List NlLine, Text, Integer -> Boolean
+  bvcr-has-line (xs) (role) (i) = if i >= list-length xs then False else if (list-at xs i).role == role then True else bvcr-has-line xs role (i + 1)
+  bvcr-lines : List Text, Integer -> Boolean
+  bvcr-lines (roles) (i) = if i >= list-length roles then True else bvcr-has-line (nl-library 0).lines (list-at roles i) 0 & bvcr-lines roles (i + 1)
+  bvcr-in : List Integer, Integer, Integer -> Boolean
+  bvcr-in (xs) (x) (i) = if i >= list-length xs then False else if list-at xs i == x then True else bvcr-in xs x (i + 1)
+  bvt-crop-pickers : Integer -> [Console] Integer
+  bvt-crop-pickers (unused) = act
+    a <- bvt-check "the root farmer digs carrots, onions and turnips and the vegetable farmer picks the other nine crops (grapes and pears among them) by hand, each crop once, each a food the inn buys" (list-length cgg-crop-items == 12 & list-length cgg-root-items + list-length cgg-veg-items == 12 & bvcr-trades 0)
+    b <- bvt-check "the farmers are named by tool: herb, root, vegetable, grain (wheat and flax, the pitchfork) and fiber farmer (hand-picked cotton), each with its own lines" (cg-place-word cgg-herb-farm == "herb farmer" & cg-place-word cgg-root-farm == "root farmer" & cg-place-word cgg-veg-farm == "vegetable farmer" & cg-place-word cgg-farm-place == "grain farmer" & cg-place-word cgg-flax-place == "grain farmer" & cg-place-word cgg-cotton-place == "fiber farmer" & cg-role-key "root farmer" == "farmer" & bvcr-lines ["grain farmer", "fiber farmer", "herb farmer", "root farmer", "vegetable farmer"] 0)
+    c <- bvt-check "hops have no farmer and the inn buys none; places 411-420 found no one" (not (gvb-material 5 100) & cgg-index-of cgg-veg-items 100 0 < 0 & not (bvcr-in cg-founders 411 0) & not (bvcr-in cg-founders 420 0))
+    d <- bvt-check "the root and vegetable farmers are founders (GVS1 worker room)" (bvcr-in cg-founders cgg-root-farm 0 & bvcr-in cg-founders cgg-veg-farm 0 & cc-worker-room == list-length cg-founders)
+    a + b + c + d
+  end

@@ -52,7 +52,9 @@ try{
     & pwsh -NoProfile -File (Join-Path $repo 'build/test-run.ps1') -Kernel (Join-Path $OutDir "$coreName.cdx") -OutFile (Join-Path $OutDir 'core.actual') -DiskFile $fixture
     if($LASTEXITCODE -ne 0){throw 'Core guest failed'}
     $expected=[IO.File]::ReadAllText((Join-Path $PSScriptRoot "$coreName.expected"))-replace "`r",''
-    if([IO.File]::ReadAllText((Join-Path $OutDir 'core.actual')) -cne $expected){throw 'Core exact oracle mismatch'}
+    # gn-log stamps every PACKET/REFUSE/SEND line with HPET milliseconds; the oracle holds the text without them.
+    $actual=([IO.File]::ReadAllText((Join-Path $OutDir 'core.actual'))-replace "`r",'')-replace '(?m) ms=[0-9]+$',''
+    if($actual -cne $expected){throw 'Core exact oracle mismatch'}
     Write-Output 'PASS dispatch core'
     Compile $serverName
     $port=Port;$mulPort=Port

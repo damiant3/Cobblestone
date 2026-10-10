@@ -81,7 +81,21 @@ corpus retains less than 10000 bytes; that is not a transient-peak measure.
 
 `TownNetworkOutcomes` builds the standard `EconomyClock` fixture and runs
 96 game hours. Four existing economic roles are sampled at hour 96 and
-hour 108, each under two trade preferences: 16 cases. Setup and trial
+hour 108, each under two trade preferences: 16 base rows, each in nine
+variants (144 cases): as found; a raid in sight (safety input 0); fed, after the
+actor buys and eats food on sale until its hunger is under 10 (up to four
+meals, `tno-feed`, real fixture trades that later rows inherit); fed with a raid
+in sight; fed, buying the goal from the dearest stocked seller (`tno-dearest`);
+fed, buying from the cheapest seller with that seller's cost basis for the goal
+raised to 3/2 and to 2 (`tno-marked-up`, restored after the row); fed, with the
+day's opening demand seal for the actor's own produced item raised by 800 and by
+3200 and `w.sales` recomputed from it by the validator's `ev-sales`
+(`tno-demand-row`, both restored after the row). The cost-basis variants put
+each smith's ingot quote at four prices (slot 7 at 535, 610, 760 and 990 on the
+2026-10-09 fixture). The demand variants raise a seller's own quote (slot 9);
+the fixture's ore producers carry a cost basis of 0 and `ep-unit` 1, so their
+quote moves only through scarcity and demand (a producer's slot 9 at -80, 180
+and 400). Setup and trial
 purchases use real stock, purses and the existing fixture's consenting
 market. Coin/stock provenance is the resource bootstrap in `EconomyClock`;
 its test mint terms are not production mint policy.
@@ -97,7 +111,7 @@ not a live actor-authentication or trade-consent service.
 
 For an admitted trial, utility is the following sum, clipped to -1000..1000:
 
-- Coin change times 10, weighted by `(1000 + tradePreference / 2) / 1000`.
+- Coin change times 2, weighted by `(1000 + tradePreference / 2) / 1000`.
 - Hunger reduction times starting hunger, divided by 3.
 - Food inventory change times 100, including acquisitions, sales and consumption.
 - One fifth of progress toward the current food/tool/input goal; progress
@@ -115,9 +129,10 @@ remain byte-identical.
 
 The affect targets describe this limited economy opportunity model:
 happiness is `clamp(500 + best nonnegative action utility / 2, 0, 1000)`;
-alarm is `clamp(starting hunger * 10 - positive eat utility, 0, 1000)`;
-opinion 0 averages buy/sell utility; opinion 1 is work utility. They do not
-grade raid response, general emotional realism or social-history effects.
+alarm is `clamp(starting hunger * 10 - positive eat utility + 1000 - safety, 0, 1000)`,
+so a raid in sight (safety 0) adds 1000;
+opinion 0 averages buy/sell utility, so a dearer goal lowers it; opinion 1 is
+work utility. They do not grade general emotional realism or social-history effects.
 
 The two preferences are duration-weighted mixtures of fixture cultures
 with trade values +800 and -800, using residence ratios 12:4 and 4:12.
@@ -128,8 +143,9 @@ uses its declared fixture histories. Active input slots are:
 
 | Slots | Meaning |
 |---|---|
-| 0, 2, 3 | Hunger times 10; coin times 10 capped at 1000; fixture safety 1000 |
+| 0, 2, 3 | Hunger times 10; coin times 10 capped at 1000; safety 1000, or 0 with a raid in sight |
 | 4, 5, 6 | Owned meal availability; goal fraction; produced-item stock times 250 |
+| 7 | Goal quote in gold times 5, capped at 1000; 1000 when the goal has no stocked seller or there is no goal, so "cannot buy" sits at the dear end (0 read as free and taught the network that a dearer goal meant a better trade) |
 | 9 | Produced-item quote centred at 10 coins, times 20 |
 | 10..13 | Miner/producer, smith, farmer and armourer indicators |
 | 21..23 | Fixture work, meal and market time indicators |
@@ -158,11 +174,24 @@ as an export candidate. Module generation needs the existing PTX plug CDX.
 
 Initialization and mutation use the recorded 32-bit LCG in
 `TownNetworkHillSeed`; coordinate and direction selection use higher bits.
-The recorded run uses seed 104729, step 50 and 20000 proposals. Score rises
-from -26209708 to 9594886 with 2477 accepted proposals. The CUDA census records
-102482 kernel launches and zero live buffers at exit. The observed host run
-took 20.993 seconds including corpus construction and VM overhead; it is not
-a latency or scaling guarantee. `proofs/TownNetworkHillModelProof.codex`
+The recorded run (blu, 2026-10-09, compiler seed 8264163DB8E24012) uses seed
+104729, step 50 and 20000 proposals on the 144-case corpus (checksum 884696177).
+Score rises from -228261391 to 45362625 with 2771 accepted proposals in 23 s; the
+CUDA census records zero live buffers at exit.
+
+`proofs/TownNetworkGateProbe` gates the trained model's intent on the corpus
+rows, in two arms: the corpus targets (the control, which must pass) and the
+model. Each check grades only rows where the targets express it:
+
+| Check | Bound | Model (2026-10-09) |
+|---|---|---|
+| Raid alarm minus the same row's calm alarm, fed or unfed, hunger input at most 100 | at least 300 | 553 |
+| Calm fed alarm at safety 1000, hunger input at most 100 | at most 200 | 198 |
+| Fed alarm below unfed alarm, on every row the meals fed (hunger input down 200 or more) | 4 of 4 rows | 4 of 4 |
+| Trade opinion non-increasing across the cheapest, dearest, 3/2 and 2 rows, and lower at 2 than at the cheapest, on every row whose target falls | 4 of 4 rows | 4 of 4 |
+| Trade opinion non-decreasing across the fed and two demand rows, and higher at the second, on every row whose slot 9 and target rise | 10 of 10 rows | 10 of 10 |
+| Outputs pinned at a bound on every case where the target is not | 0 | 0 |
+`proofs/TownNetworkHillModelProof.codex`
 recomputes initial/final scores on CPU and compares selected measured utility.
 
 `TownNetworkHillProof` grades exact GPU/CPU integer parity, aggregate score,

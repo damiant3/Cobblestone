@@ -1,0 +1,31 @@
+Chapter: BvtBuild
+  cites Uoaix chapter Decorator
+  cites Uoaix chapter CompositePaging
+  cites Uoaix chapter BvtCheck
+
+ Building pieces (UoaixDecorator.md item 6). A run from 100,100 to 105,102 is 6 tiles ending on the picked tile, a run
+ to its own tile is 1, and a fill from 100,100 to 102,101 is the 6 tiles of the 3 by 2 rectangle.
+  bbd-has : List Integer, Integer, Integer -> Boolean
+  bbd-has (xs) (v) (i) = if i >= list-length xs then False else if list-at xs i == v then True else bbd-has xs v (i + 1)
+  bbd-shapes : Integer -> Integer
+  bbd-shapes (unused) = let run = cp-build-line 100 100 105 102 5 0 []
+    in let one = cp-build-line 100 100 100 100 0 0 []
+    in let fill = cp-build-rect 100 100 102 101 100 100 []
+    in (if list-length run == 6 & list-at run 0 == 100 * 4096 + 100 & list-at run 5 == 105 * 4096 + 102 then 1 else 0)
+      + (if list-length one == 1 then 2 else 0)
+      + (if list-length fill == 6 & bbd-has fill (102 * 4096 + 101) 0 & bbd-has fill (100 * 4096 + 101) 0 & not (bbd-has fill (103 * 4096 + 100) 0) then 4 else 0)
+ A multi is placed as one item of art 0x4000 + its id (the 1.25 client draws it whole); art past 0x7FFF is refused.
+  bbd-multi : Integer -> Integer
+  bbd-multi (unused) = when cg-game 512
+    is Err (_) -> -1
+    is Ok (game) -> let items = gsi-new game.world
+      in let s = dc-new 0
+      in let placed = when dc-create s items (#4000 + #6A) 0 1500 1500 0 1 is Err (_) -> 0 is Ok (serial) -> (when world-get game.world serial is Err (_) -> 0 is Ok (o) -> if o.graphic == #406A then 1 else 0)
+      in let refused = when dc-create s items #8000 0 1500 1501 0 1 is Err (_) -> 2 is Ok (_) -> 0
+      in placed + refused
+  bvt-build : Integer -> [Console] Integer
+  bvt-build (unused) = act
+    a <- bvt-check ("decorator building: a run ends on the picked tile and a fill covers the rectangle (code " & show (bbd-shapes 0) & ")") (bbd-shapes 0 == 7)
+    b <- bvt-check ("decorator building: a multi places as art 0x4000 + id and art past 0x7FFF is refused (code " & show (bbd-multi 0) & ")") (bbd-multi 0 == 3)
+    a + b
+  end

@@ -483,7 +483,11 @@ Section: Try
 
   emit-js-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry, Integer -> Text
   emit-js-try (max) (body) (fb) (fail) (arities) (indent) =
-    "(() => {\n" & html-indent (indent + 1) & "for (let _try = 0; _try < " & show max & "; _try++) {\n" & html-indent (indent + 2) & "try {\n" & emit-js-act-stmts body arities (indent + 3) 0 & html-indent (indent + 2) & "} catch (_e) { continue; }\n" & html-indent (indent + 1) & "}\n" & emit-js-act-stmts fail arities (indent + 1) 0 & html-indent indent & "})()"
+    let fb-text = emit-js-act fb arities (indent + 1)
+    in let tail = if list-length fb == 0 then "throw _try_err;"
+      else if list-length fail == 0 then "return " & fb-text & ";"
+      else "try { return " & fb-text & "; } catch (_e) { return " & emit-js-act fail arities (indent + 1) & "; }"
+    in "(() => {\n" & html-indent (indent + 1) & "let _try_ok = false; let _try_result; let _try_err;\n" & html-indent (indent + 1) & "for (let _try = 0; _try < " & show max & "; _try++) {\n" & html-indent (indent + 2) & "try { _try_result = " & emit-js-act body arities (indent + 2) & "; _try_ok = true; break; } catch (_e) { _try_err = _e; }\n" & html-indent (indent + 1) & "}\n" & html-indent (indent + 1) & "if (_try_ok) return _try_result;\n" & html-indent (indent + 1) & tail & "\n" & html-indent indent & "})()"
 
 Section: Type Definitions
 
@@ -565,6 +569,15 @@ Section: Definition Emission
     else if n == "inject-theme-css" then True
     else if n == "fetch-then" then True
     else if n == "fetch-get-then" then True
+    else if n == "crypto-ready" then True
+    else if n == "crypto-random-hex" then True
+    else if n == "crypto-hmac-then" then True
+    else if n == "crypto-hmac-verify-then" then True
+    else if n == "crypto-seal-then" then True
+    else if n == "crypto-open-then" then True
+    else if n == "frame-mount" then True
+    else if n == "frame-serve" then True
+    else if n == "host-request-then" then True
     else if n == "fetch-with-then" then True
     else if n == "page-data" then True
     else if n == "location-hash" then True
@@ -788,13 +801,15 @@ Section: Chapter Emission
   emit-html-chapter (m) (meta) (type-defs) =
     let arities = build-arity-map (m.defs) 0 []
     in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(__u2c(s.codePointAt(Number(i)))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { xs.push(x); return xs; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { xs.push(x); return xs; }\nfunction list_set_at(xs, i, x) { const k = Number(i); if (k < 0 || k >= xs.length) { throw new Error(\"CODEX_TRAP_index_out_of_bounds\"); } xs[k] = x; return xs; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(typeof c === 'string' ? __u2c(c.codePointAt(0)) : c); }\nfunction code_to_char(cp) { return String.fromCodePoint(__c2u(Number(cp))); }\nfunction char_encode(c) { return c; }\nfunction text_concat_list(xs) { return xs.join(''); }\nfunction __list_with_capacity(n) { return []; }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\nfunction __TC(f, a) { this.f = f; this.a = a; }\nfunction __real(b) { return new Float64Array(new BigInt64Array([b]).buffer)[0]; }\nfunction real_from_int(n) { return Number(n); }\nfunction real_to_int(x) { return BigInt(Math.trunc(x)); }\nfunction real_to_bits(x) { return new BigInt64Array(new Float64Array([x]).buffer)[0]; }\nfunction bits_to_real(b) { return __real(BigInt.asIntN(64, b)); }\nfunction text_to_double_bits(t) { return real_to_bits(parseFloat(t)); }\nfunction __pa(f, n, got) { return (...more) => { const all = got.concat(more); if (all.length < n) { return __pa(f, n, all); } const r = f(...all.slice(0, n)); return all.length > n && typeof r === 'function' ? r(...all.slice(n)) : r; }; }\n\n"
+    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction fail(m) { throw new Error(m); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(__u2c(s.codePointAt(Number(i)))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { xs.push(x); return xs; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { xs.push(x); return xs; }\nfunction list_set_at(xs, i, x) { const k = Number(i); if (k < 0 || k >= xs.length) { throw new Error(\"CODEX_TRAP_index_out_of_bounds\"); } xs[k] = x; return xs; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(typeof c === 'string' ? __u2c(c.codePointAt(0)) : c); }\nfunction code_to_char(cp) { return String.fromCodePoint(__c2u(Number(cp))); }\nfunction char_encode(c) { return c; }\nfunction text_concat_list(xs) { return xs.join(''); }\nfunction __list_with_capacity(n) { return []; }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\nfunction __TC(f, a) { this.f = f; this.a = a; }\nfunction __real(b) { return new Float64Array(new BigInt64Array([b]).buffer)[0]; }\nfunction real_from_int(n) { return Number(n); }\nfunction real_to_int(x) { return BigInt(Math.trunc(x)); }\nfunction real_to_bits(x) { return new BigInt64Array(new Float64Array([x]).buffer)[0]; }\nfunction bits_to_real(b) { return __real(BigInt.asIntN(64, b)); }\nfunction text_to_double_bits(t) { return real_to_bits(parseFloat(t)); }\nfunction __pa(f, n, got) { return (...more) => { const all = got.concat(more); if (all.length < n) { return __pa(f, n, all); } const r = f(...all.slice(0, n)); return all.length > n && typeof r === 'function' ? r(...all.slice(n)) : r; }; }\n\n"
     in let types-text = emit-js-type-defs type-defs 0
     in let defs-text = emit-js-defs (m.defs) 0 arities
     in let entry = if lookup-arity arities "opening" >= 0 then
-      "// Entry\ntry { opening(); } catch(e) { console.error(e); }\n"
+      "// Entry\ntry { opening(); } catch(e) { console.error(e); print_line_uni(e instanceof Error ? e.message : String(e)); }\n"
     else "// Entry: this chapter declares no opening\n"
     in let dom-bi = emit-dom-builtins & (if html-uses-gpu-bridge (m.defs) 0 then emit-dom-gpu-bridge else "") & (if html-uses-byte-heap defs-text then emit-dom-byte-heap else "")
+      & (if text-contains defs-text "crypto_" then emit-dom-crypto else "")
+      & (if text-contains defs-text "frame_mount(" | text-contains defs-text "frame_serve(" | text-contains defs-text "host_request_then(" then emit-dom-frame else "")
     in let wraps = "function __int(v) { return typeof v === 'number' ? BigInt(Math.trunc(v)) : v; }\n" & html-int-wraps (m.defs) 0 ""
     in let js = html-cce-runtime & builtins & dom-bi & wraps & types-text & defs-text & entry
     in emit-html-page title (emit-default-css) js
@@ -989,6 +1004,34 @@ Section: Chapter Emission
     & "var i=a.info||{};o.vendor=i.vendor||'';o.architecture=i.architecture||'';o.device=i.device||'';o.description=i.description||'';o.fallback=!!(a.isFallbackAdapter||i.isFallbackAdapter);"
     & "o.maxBufferSize=Number(a.limits.maxBufferSize);o.maxStorageBufferBindingSize=Number(a.limits.maxStorageBufferBindingSize);o.f16=a.features.has('shader-f16');"
     & "return a.requestDevice().then(function(d){return _gpuGemm(d,ms,o)})}).then(fin,function(e){o.err=String(e&&e.message||e);fin()});return 0}\n"
+
+ WebCrypto (W3C Web Cryptography API): keys, tags, nonces and ciphertext travel as lowercase hex, text as UTF-8;
+ AES-GCM takes a 12-byte nonce and a 128-bit tag, sealed as cipher hex, LF, tag hex. A refusal answers "!" and the
+ reason; a failed verification answers "0".
+  emit-dom-crypto : Text
+  emit-dom-crypto = "// crypto\n"
+    & "function _cx(h){h=String(h);if(h.length%2||!/^[0-9a-fA-F]*$/.test(h))throw Error('invalid hex');var b=new Uint8Array(h.length/2);for(var i=0;i<b.length;i++)b[i]=parseInt(h.substr(2*i,2),16);return b}\n"
+    & "function _ch(a){var b=new Uint8Array(a),s='';for(var i=0;i<b.length;i++)s+=(b[i]<16?'0':'')+b[i].toString(16);return s}\n"
+    & "function _ct(t){return new TextEncoder().encode(String(t))}\n"
+    & "function _cr(p,cb){p.then(function(r){cb(r)},function(e){cb('!'+String(e&&e.message||e))});return 0}\n"
+    & "function crypto_ready(){return (typeof window!=='undefined'&&window.isSecureContext&&typeof crypto!=='undefined'&&crypto.subtle)?1:0}\n"
+    & "function crypto_random_hex(n){return _ch(crypto.getRandomValues(new Uint8Array(Number(n))))}\n"
+    & "function crypto_hmac_then(k,t,cb){return _cr((async function(){var key=await crypto.subtle.importKey('raw',_cx(k),{name:'HMAC',hash:'SHA-256'},false,['sign']);return _ch(await crypto.subtle.sign('HMAC',key,_ct(t)))})(),cb)}\n"
+    & "function crypto_hmac_verify_then(k,g,t,cb){(async function(){var key=await crypto.subtle.importKey('raw',_cx(k),{name:'HMAC',hash:'SHA-256'},false,['verify']);return (await crypto.subtle.verify('HMAC',key,_cx(g),_ct(t)))?'1':'0'})().then(function(r){cb(r)},function(){cb('0')});return 0}\n"
+    & "function crypto_seal_then(k,n,a,p,cb){return _cr((async function(){var key=await crypto.subtle.importKey('raw',_cx(k),'AES-GCM',false,['encrypt']);var s=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:_cx(n),additionalData:_ct(a),tagLength:128},key,_ct(p)));return _ch(s.slice(0,-16))+'\\n'+_ch(s.slice(-16))})(),cb)}\n"
+    & "function crypto_open_then(k,n,a,c,g,cb){return _cr((async function(){var key=await crypto.subtle.importKey('raw',_cx(k),'AES-GCM',false,['decrypt']);var x=_cx(c),y=_cx(g),m=new Uint8Array(x.length+y.length);m.set(x);m.set(y,x.length);return new TextDecoder('utf-8',{fatal:true}).decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:_cx(n),additionalData:_ct(a),tagLength:128},key,m))})(),cb)}\n"
+    & "// crypto end\n"
+ A framed page (HTML Living Standard: iframe srcdoc and sandbox, window.postMessage): frame-mount puts html in an iframe
+ sandboxed to scripts alone (an opaque origin), frame-serve answers that frame's messages, and the framed page's
+ host-request-then posts a request to its parent and hands the reply with the same id to its callback. Messages from
+ any other window are ignored.
+  emit-dom-frame : Text
+  emit-dom-frame = "// frame\n"
+    & "var _gframe=null,_ghostq={},_ghostn=0;\n"
+    & "function frame_mount(id,html){var host=document.getElementById(String(id));if(!host)return 0;var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.setAttribute('title','panel');f.style.width='100%';f.style.border='0';f.style.minHeight='85vh';f.srcdoc=String(html);host.replaceChildren(f);_gframe=f;return 0}\n"
+    & "function frame_serve(handler){window.addEventListener('message',function(e){if(!_gframe||e.source!==_gframe.contentWindow)return;var d=e.data;if(!d||typeof d.id!=='number'||typeof d.body!=='string')return;var src=e.source;handler(d.body,function(r){src.postMessage({id:d.id,body:String(r)},'*');return 0n})});return 0}\n"
+    & "function host_request_then(body,cb){var id=++_ghostn;_ghostq[id]=cb;if(id===1)window.addEventListener('message',function(e){if(e.source!==window.parent)return;var d=e.data;if(!d||typeof d.id!=='number'||typeof d.body!=='string'||!_ghostq[d.id])return;var k=_ghostq[d.id];delete _ghostq[d.id];k(d.body)});window.parent.postMessage({id:id,body:String(body)},'*');return 0}\n"
+    & "// frame end\n"
 
   html-uses-gpu-bridge : List IRDef, Integer -> Boolean
   html-uses-gpu-bridge (defs) (i) =

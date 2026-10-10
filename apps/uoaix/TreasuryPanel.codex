@@ -2,7 +2,9 @@ Chapter: TreasuryPanel
   cites Uoaix chapter EconomyProduction
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyHarvest
   cites Foreword chapter Maybe
+  cites Foreword chapter Format
   cites Encode chapter Json
 
   TreasuryBinding = record { world : EpWorld, currency : Maybe EuCurrency, actor : Integer }
@@ -56,8 +58,136 @@ Chapter: TreasuryPanel
     let world = binding.world
     in "{\"available\":true,\"writable\":" & (if enabled then "true" else "false") & ",\"backend\":" & json-quote (tr-backend binding) & tr-metals binding
     & ",\"balance\":" & show (em-purse world.money 1).coin & ",\"tax_basis_points\":" & show world.money.tax
-    & ",\"game_hour\":" & show world.hour & ",\"businesses\":" & tr-businesses binding 1 []
+    & ",\"game_hour\":" & show world.hour & ",\"gold_ore_taxed\":" & show (ep-at world.taxed 6) & ",\"silver_ore_taxed\":" & show (ep-at world.taxed 64) & ",\"copper_ore_taxed\":" & show (ep-at world.taxed 63) & ",\"mining_tax_basis_points\":" & show eh-mining-tax & ",\"businesses\":" & tr-businesses binding 1 []
     & ",\"chains\":" & tr-chains world 1 [] & "}"
+
+ The Crown ledger reads each metal's money rows still in memory (a sealed segment's rows have left them): kind 2 a trade
+ tax to purse 1, 6 a reclaim, 7 a loan the Crown gave, 8 a repayment it received, and the minting fee, which is the
+ strike's issue (the kind 4 row before its kind 12) less the payout to the owner (the kind 17 row after it).
+  tr-kind-name : Integer -> Text
+  tr-kind-name (kind) = if kind == 2 then "trade tax" else if kind == 12 then "minting fee" else if kind == 6 then "reclaimed"
+    else if kind == 7 then "loan given" else if kind == 8 then "repayment received" else "other"
+  tr-mint-fee : EmMoney, Integer -> Integer
+  tr-mint-fee (m) (i) = if i < 1 | i + 1 >= m.entry-count then -1
+    else let issued = list-at m.ledger (i - 1)
+    in let paid = list-at m.ledger (i + 1)
+    in if issued.kind /= 4 | paid.kind /= 17 | paid.payee /= (list-at m.ledger i).payer then -1
+    else issued.amount - paid.amount
+  tr-crown-amount : EmMoney, Integer -> Integer
+  tr-crown-amount (m) (i) = let e = list-at m.ledger i
+    in if (e.kind == 2 | e.kind == 6 | e.kind == 8) & e.payee == 1 then e.amount
+    else if e.kind == 7 & e.payer == 1 then e.amount
+    else if e.kind == 12 then tr-mint-fee m i
+    else -1
+  tr-purse-actor : EpWorld, Integer, Integer -> Integer
+  tr-purse-actor (w) (purse) (a) = if a > w.actor-count then 0
+    else if ep-valid-actor w a & (ep-actor w a).purse == purse then a
+    else tr-purse-actor w purse (a + 1)
+  tr-who : EpWorld, (Integer -> Text), Integer -> Text
+  tr-who (w) (names) (purse) = if purse == 1 then "the Crown"
+    else if not (em-valid-purse w.money purse) then "purse " & show purse
+    else if (em-purse w.money purse).kind == 5 then tr-shop w names purse
+    else let actor = tr-purse-actor w purse 1
+    in let named = if actor > 0 then names actor else ""
+    in if named /= "" then named else if actor > 0 then "actor " & show actor else "purse " & show purse
+ A shop is its business purse (kind 5), which outlives the vendor who keeps it; the page names it by the actor whose own
+ purse shares its owner, the vendor keeping it now.
+  tr-shop : EpWorld, (Integer -> Text), Integer -> Text
+  tr-shop (w) (names) (purse) = let owner = (em-purse w.money purse).owner
+    in let actor = tr-owner-actor w owner 1
+    in let named = if actor > 0 then names actor else ""
+    in "shop " & show owner & (if named /= "" then " (" & named & ")" else "")
+  tr-owner-actor : EpWorld, Integer, Integer -> Integer
+  tr-owner-actor (w) (owner) (a) = if a > w.actor-count then 0
+    else if not (ep-valid-actor w a) then tr-owner-actor w owner (a + 1)
+    else let purse = (ep-actor w a).purse
+    in if not (em-valid-purse w.money purse) then tr-owner-actor w owner (a + 1)
+    else if (em-purse w.money purse).kind == 2 & (em-purse w.money purse).owner == owner then a
+    else tr-owner-actor w owner (a + 1)
+  tr-row-kind : Integer -> Text
+  tr-row-kind (kind) = if kind == 1 then "payment" else if kind == 2 then "trade tax" else if kind == 3 then "tax rate set" else if kind == 4 then "coin issued"
+    else if kind == 5 then "crown grant" else if kind == 6 then "reclaimed" else if kind == 7 then "loan" else if kind == 8 then "repayment"
+    else if kind == 9 then "loan defaulted" else if kind == 11 then "mint configured" else if kind == 12 then "ingots struck" else if kind == 13 then "town grant"
+    else if kind == 16 then "decree" else if kind == 17 then "mint payout" else if kind == 18 then "repaid at value" else if kind == 19 then "theft"
+    else if kind == 20 then "recoined from" else if kind == 21 then "recoined to" else "row " & show kind
+  tr-purse-rows : EpWorld, (Integer -> Text), EmMoney, Integer, Integer, Integer, Integer, List Text -> List Text
+  tr-purse-rows (w) (names) (m) (metal) (purse) (i) (left) (parts) = if i < 0 | left <= 0 then parts
+    else let e = list-at m.ledger i
+    in if e.payer /= purse & e.payee /= purse then tr-purse-rows w names m metal purse (i - 1) left parts
+    else let other = if e.payer == purse then e.payee else e.payer
+    in let row = "{\"kind\":" & json-quote (tr-row-kind e.kind) & ",\"metal\":" & show metal & ",\"direction\":" & json-quote (if e.payer == purse then "out" else "in")
+      & ",\"other\":" & json-quote (if other <= 0 then "" else tr-who w names other) & ",\"amount\":" & show e.amount & ",\"hour\":" & show e.hour & ",\"action\":" & show e.action & "}"
+    in tr-purse-rows w names m metal purse (i - 1) (left - 1) (list-push parts row)
+  tr-item-name : EpWorld, Integer -> Text
+  tr-item-name (w) (item) = if item < 1 | item > list-length w.catalog.items then "item " & show item else (list-at w.catalog.items (item - 1)).name
+  tr-trade-rows : EpWorld, (Integer -> Text), Integer, Integer, Integer, List Text -> List Text
+  tr-trade-rows (w) (names) (actor) (i) (left) (parts) = if i < 0 | left <= 0 | actor <= 0 then parts
+    else let t = list-at w.trades i
+    in if t.buyer /= actor & t.seller /= actor then tr-trade-rows w names actor (i - 1) left parts
+    else let other = if t.buyer == actor then t.seller else t.buyer
+    in let named = if other > 0 then names other else ""
+    in let row = "{\"kind\":" & json-quote (if t.buyer == actor then "bought" else "sold") & ",\"item\":" & json-quote (tr-item-name w t.item)
+      & ",\"quantity\":" & show t.quantity & ",\"gross\":" & show t.gross & ",\"other\":" & json-quote (if named /= "" then named else if other > 0 then "actor " & show other else "")
+      & ",\"hour\":" & show t.hour & "}"
+    in tr-trade-rows w names actor (i - 1) (left - 1) (list-push parts row)
+  tr-account-list : EpWorld, (Integer -> Text), Integer, List Text -> List Text
+  tr-account-list (w) (names) (id) (parts) = if id > w.money.purse-count then parts
+    else let p = em-purse w.money id
+    in tr-account-list w names (id + 1) (list-push parts ("{\"purse\":" & show id & ",\"kind\":" & show p.kind & ",\"owner\":" & show p.owner
+      & ",\"who\":" & json-quote (tr-who w names id) & ",\"gold\":" & show p.coin & "}"))
+  tr-accounts : TreasuryBinding, (Integer -> Text) -> Text
+  tr-accounts (binding) (names) = "{\"available\":true,\"accounts\":[" & fmt-join (tr-account-list binding.world names 1 []) "," & "]}"
+  tr-account : TreasuryBinding, (Integer -> Text), Integer -> Text
+  tr-account (binding) (names) (purse) = let w = binding.world
+    in if not (em-valid-purse w.money purse) then "{\"error\":\"purse\"}"
+    else let gold = tr-purse-rows w names w.money 3 purse (w.money.entry-count - 1) 300 []
+    in let money = when binding.currency
+      is None -> gold
+      is Just (x) -> tr-purse-rows w names x.silver 2 purse (x.silver.entry-count - 1) 300 (tr-purse-rows w names x.copper 1 purse (x.copper.entry-count - 1) 300 gold)
+    in let actor = tr-purse-actor w purse 1
+    in let trader = if actor > 0 then actor else tr-owner-actor w (em-purse w.money purse).owner 1
+    in "{\"available\":true,\"purse\":" & show purse & ",\"who\":" & json-quote (tr-who w names purse) & ",\"game_hour\":" & show w.hour
+      & ",\"money\":[" & fmt-join money "," & "],\"trades\":[" & fmt-join (tr-trade-rows w names trader (w.trade-count - 1) 300 []) "," & "]}"
+  tr-ledger-rows : EpWorld, (Integer -> Text), EmMoney, Integer, Integer, Integer, List Text -> List Text
+  tr-ledger-rows (w) (names) (m) (metal) (i) (left) (parts) = if i < 0 | left <= 0 then parts
+    else let amount = tr-crown-amount m i
+    in if amount <= 0 then tr-ledger-rows w names m metal (i - 1) left parts
+    else let e = list-at m.ledger i
+    in let purse = if e.kind == 7 then e.payee else e.payer
+    in let row = "{\"kind\":" & json-quote (tr-kind-name e.kind) & ",\"metal\":" & show metal & ",\"purse\":" & show purse
+      & ",\"who\":" & json-quote (tr-who w names purse) & ",\"amount\":" & show amount & ",\"hour\":" & show e.hour & ",\"action\":" & show e.action & "}"
+    in tr-ledger-rows w names m metal (i - 1) (left - 1) (list-push parts row)
+  tr-total : EmMoney, Integer, Integer, Integer -> Integer
+  tr-total (m) (kind) (i) (sum) = if i >= m.entry-count then sum
+    else let amount = if (list-at m.ledger i).kind == kind then tr-crown-amount m i else 0
+    in tr-total m kind (i + 1) (if amount > 0 then sum + amount else sum)
+  tr-totals : EmMoney, Integer, List Integer, Integer, List Text -> List Text
+  tr-totals (m) (metal) (kinds) (k) (parts) = if k >= list-length kinds then parts
+    else let kind = list-at kinds k
+    in tr-totals m metal kinds (k + 1) (list-push parts ("{\"kind\":" & json-quote (tr-kind-name kind) & ",\"metal\":" & show metal & ",\"amount\":" & show (tr-total m kind 0 0) & "}"))
+  tr-levy-rows : EpWorld, (Integer -> Text), Integer, Integer, List Text -> List Text
+  tr-levy-rows (w) (names) (k) (left) (parts) = if k < 0 | k < peek-qword w.levies 0 - ep-levy-rows | left <= 0 then parts
+    else let at = 8 + int-mod k ep-levy-rows * 32
+    in let actor = peek-qword w.levies (at + 8)
+    in let named = names actor
+    in let row = "{\"kind\":\"mining tax\",\"item\":" & show (peek-qword w.levies (at + 16)) & ",\"who\":" & json-quote (if named /= "" then named else "actor " & show actor)
+      & ",\"amount\":" & show (peek-qword w.levies (at + 24)) & ",\"hour\":" & show (peek-qword w.levies at) & "}"
+    in tr-levy-rows w names (k - 1) (left - 1) (list-push parts row)
+  tr-kinds : List Integer = [2, 12, 8, 6, 7]
+  tr-ledger : TreasuryBinding, (Integer -> Text), Text -> Text
+  tr-ledger (binding) (names) (extra) = let w = binding.world
+    in let gold = tr-ledger-rows w names w.money 3 (w.money.entry-count - 1) 200 []
+    in let totals = tr-totals w.money 3 tr-kinds 0 []
+    in let money = when binding.currency
+      is None -> gold
+      is Just (x) -> tr-ledger-rows w names x.silver 2 (x.silver.entry-count - 1) 200 (tr-ledger-rows w names x.copper 1 (x.copper.entry-count - 1) 200 gold)
+    in let counted = when binding.currency
+      is None -> totals
+      is Just (x) -> tr-totals x.silver 2 tr-kinds 0 (tr-totals x.copper 1 tr-kinds 0 totals)
+    in "{\"available\":true,\"game_hour\":" & show w.hour & ",\"rows\":[" & fmt-join money ","
+      & "],\"levies\":[" & fmt-join (tr-levy-rows w names (peek-qword w.levies 0 - 1) 200 []) ","
+      & "],\"levy_count\":" & show (peek-qword w.levies 0) & ",\"totals\":[" & fmt-join counted ","
+      & "],\"ore_taxed\":{\"gold\":" & show (ep-at w.taxed 6) & ",\"silver\":" & show (ep-at w.taxed 64) & ",\"copper\":" & show (ep-at w.taxed 63) & "}" & extra & "}"
 
   tr-apply : TreasuryBinding, Text, Integer, Integer, Integer -> Integer
   tr-apply (binding) (action) (business) (amount) (metal) =

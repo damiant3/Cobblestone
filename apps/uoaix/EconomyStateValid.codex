@@ -2,6 +2,8 @@ Chapter: EconomyStateValid
   cites Uoaix chapter EconomyCatalog
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyMint
 
   EvAudit = record { action : Integer, hour : Integer, tax : Integer,
     mint-purse : Integer, mint-rate : Integer, issued : Integer,
@@ -16,21 +18,30 @@ Chapter: EconomyStateValid
     else let other = list-at m.purses i
     in (p.kind /= other.kind | p.owner /= other.owner) & ev-purse-unique m p (i + 1)
   ev-purses : EmMoney, Integer -> Boolean
-  ev-purses (m) (i) = if i == 256 then True else let p = list-at m.purses i
+  ev-purses (m) (i) = if i >= list-length m.purses then True else let p = list-at m.purses i
     in if i >= m.purse-count then p.kind == 0 & p.owner == 0 & p.coin == 0 & ev-purses m (i + 1)
     else if not (ev-range p.coin em-limit) then False
     else if i == 0 then p.kind == 1 & p.owner == 0 & ev-purses m 1
     else p.kind >= 2 & p.kind <= 5 & p.owner > 0 & ev-purse-unique m p (i + 1) & ev-purses m (i + 1)
   ev-loans : EmMoney, Integer -> Boolean
-  ev-loans (m) (i) = if i == 128 then True else let l = list-at m.loans i
-    in if i >= m.loan-count then l.lender == 0 & l.borrower == 0 & l.principal == 0 & l.interest == 0 & l.due == 0 & l.paid == 0 & l.status == 0 & ev-loans m (i + 1)
+  ev-loans (m) (i) = if i >= list-length m.loans then True else if not (ev-loan-ok m i) then False else ev-loans m (i + 1)
+  ev-loan-ok : EmMoney, Integer -> Boolean
+  ev-loan-ok (m) (i) = let l = list-at m.loans i
+    in if i >= m.loan-count then l.lender == 0 & l.borrower == 0 & l.principal == 0 & l.interest == 0 & l.due == 0 & l.paid == 0 & l.status == 0
     else if not (em-valid-purse m l.lender) | not (em-valid-purse m l.borrower) | l.lender == l.borrower then False
     else if l.principal <= 0 | not (ev-range l.interest em-limit) | l.principal > em-limit - l.interest | l.due <= 0 | l.due > em-limit | not (ev-range l.paid (l.principal + l.interest)) then False
-    else ((l.status == 1 & l.paid < l.principal + l.interest & l.due > m.hour)
+    else (l.status == 1 & l.paid < l.principal + l.interest & l.due > m.hour)
       | (l.status == 2 & l.paid == l.principal + l.interest)
-      | (l.status == 3 & l.paid < l.principal + l.interest & l.due <= m.hour)) & ev-loans m (i + 1)
+      | (l.status == 3 & l.paid < l.principal + l.interest & l.due <= m.hour)
+ The first loan ev-loan-ok refuses, every field it reads, for the save log (UOAIX-191).
+  ev-bad-loan : EmMoney, Integer -> Text
+  ev-bad-loan (m) (i) = if i >= list-length m.loans then "" else if ev-loan-ok m i then ev-bad-loan m (i + 1)
+    else let l = list-at m.loans i
+    in " id=" & show (i + 1) & " count=" & show m.loan-count & " lender=" & show l.lender & " borrower=" & show l.borrower
+      & " purses=" & show m.purse-count & " principal=" & show l.principal & " interest=" & show l.interest & " due=" & show l.due
+      & " paid=" & show l.paid & " status=" & show l.status & " hour=" & show m.hour
   ev-actor-items : EpWorld, EpActor, Integer, Boolean -> Boolean
-  ev-actor-items (w) (p) (item) (used) = if item == 129 then True
+  ev-actor-items (w) (p) (item) (used) = if item == eg-cells w.catalog then True
     else let stock = ep-at p.stock item
     in let quality = ep-at p.quality item
     in let cost = ep-at p.cost item
@@ -44,36 +55,53 @@ Chapter: EconomyStateValid
   ev-actor-unique (w) (purse) (i) = if i == w.actor-count then True
     else (list-at w.actors i).purse /= purse & ev-actor-unique w purse (i + 1)
   ev-actors : EpWorld, Integer -> Boolean
-  ev-actors (w) (i) = if i == 128 then True else let p = list-at w.actors i
+  ev-actors (w) (i) = if i == list-length w.actors then True else let p = list-at w.actors i
     in if i >= w.actor-count then p.purse == 0 & p.place == 0 & p.hunger == 0 & p.attempts == 0
-      & ev-cells p.skills 11 0 0 & ev-actor-items w p 0 False & ev-actors w (i + 1)
+      & ev-cells p.skills ep-skill-cells 0 0 & ev-actor-items w p 0 False & ev-actors w (i + 1)
     else p.purse > 1 & em-valid-purse w.money p.purse & p.place > 0
       & ev-range p.hunger 100 & ev-range p.attempts ep-limit & ep-at p.skills 0 == 0
-      & ev-cells p.skills 11 1000 0 & ev-actor-items w p 0 True
+      & ev-cells p.skills ep-skill-cells 1000 0 & ev-actor-items w p 0 True
       & ev-actor-unique w p.purse (i + 1) & ev-actors w (i + 1)
   ev-stations : EpWorld, Integer -> Boolean
-  ev-stations (w) (i) = if i == ep-station-limit then True else let s = list-at w.stations i
+  ev-stations (w) (i) = if i >= list-length w.stations then True else let s = list-at w.stations i
     in if i >= w.station-count then s.kind == 0 & s.place == 0 & s.owner == 0 & s.enabled == 0 & ev-stations w (i + 1)
-    else s.kind >= 1 & s.kind <= 12 & s.place > 0 & ep-valid-actor w s.owner
+    else s.kind >= 1 & s.kind <= eg-station-kinds & s.place > 0 & ep-valid-actor w s.owner
       & ev-range s.enabled 1 & ev-stations w (i + 1)
   ev-nodes : EpWorld, Integer -> Boolean
-  ev-nodes (w) (i) = if i == ep-node-limit then True else let n = list-at w.nodes i
+  ev-nodes (w) (i) = if i >= list-length w.nodes then True else if not (ev-node-ok w i) then False else ev-nodes w (i + 1)
+  ev-node-ok : EpWorld, Integer -> Boolean
+  ev-node-ok (w) (i) = let n = list-at w.nodes i
     in if i >= w.node-count then n.resource == 0 & n.place == 0 & n.owner == 0 & n.ground == 0
-      & n.planted == 0 & n.stage == 0 & n.ready == 0 & n.water == 0 & n.tended == 0 & ev-nodes w (i + 1)
+      & n.planted == 0 & n.stage == 0 & n.ready == 0 & n.water == 0 & n.tended == 0
     else if n.place <= 0 | not (ev-range n.owner w.actor-count) | not (ev-range n.ground 2)
       | not (ev-range n.planted 1) | not (ev-range n.stage 3) | not (ev-range n.ready ep-limit)
       | not (ev-range n.water 1) | not (ev-range n.tended 1) then False
-    else if n.resource == 0 then n.owner > 0 & n.ground > 0 & n.planted == 0 & n.stage == 0 & n.ready == 0 & n.water == 0 & n.tended == 0 & ev-nodes w (i + 1)
+    else if n.resource == 0 then n.owner > 0 & n.ground > 0 & n.planted == 0 & n.stage == 0 & n.ready == 0 & n.water == 0 & n.tended == 0
     else if n.resource < 1 | n.resource > list-length w.catalog.resources then False
     else let r = list-at w.catalog.resources (n.resource - 1)
     in n.ground == r.ground & ((n.planted == 0 & n.owner == 0 & n.stage /= 3 & n.water == 0 & n.tended == 0) | (n.planted == 1 & n.owner > 0 & r.seed > 0))
-      & (n.stage >= 2 | n.ready > w.hour) & (n.stage /= 2 | n.ready <= w.hour)
-      & ev-nodes w (i + 1)
+      & (n.stage >= 2 | n.ready > w.hour) & (n.stage /= 2 | n.ready <= w.hour | eh-orchard n)
+ The save keeps its fault text in long-lived state past the step's heap restore, so every name here is a literal.
+  ev-bad-node : EpWorld, Integer -> Text
+  ev-bad-node (w) (i) = if i >= list-length w.nodes then "" else if ev-node-ok w i then ev-bad-node w (i + 1)
+    else let n = list-at w.nodes i
+    in if i >= w.node-count then ": an unused slot holds data"
+    else if n.place <= 0 | not (ev-range n.owner w.actor-count) | not (ev-range n.ground 2) | not (ev-range n.planted 1) | not (ev-range n.stage 3)
+      | not (ev-range n.ready ep-limit) | not (ev-range n.water 1) | not (ev-range n.tended 1) then ": a field out of range"
+    else if n.resource == 0 then ": a bare plot"
+    else if n.resource < 1 | n.resource > list-length w.catalog.resources then ": a resource past the catalog"
+    else let r = list-at w.catalog.resources (n.resource - 1)
+    in if n.ground /= r.ground then ": ground differs from its resource"
+    else if not ((n.planted == 0 & n.owner == 0 & n.stage /= 3 & n.water == 0 & n.tended == 0) | (n.planted == 1 & n.owner > 0 & r.seed > 0)) then
+      (if n.planted == 0 & n.owner /= 0 then ": a wild node with an owner" else if n.planted == 0 then ": a wild node in stage 3, watered or tended" else ": a planted node with no owner or seed")
+    else if not (n.stage >= 2 | n.ready > w.hour) then ": a growing node whose ready hour has passed"
+    else ": a ripe node not yet ready"
   ev-counters : EpWorld, Integer -> Boolean
-  ev-counters (w) (item) = if item == 129 then True
+  ev-counters (w) (item) = if item == eg-cells w.catalog then True
     else let active = item > 0 & item <= list-length w.catalog.items
     in ev-range (ep-at w.gathered item) (if active then ep-limit else 0)
       & ev-range (ep-at w.found item) (if active then ep-limit else 0)
+      & ev-range (ep-at w.taxed item) (if active & (item == 6 | item == 63 | item == 64) then ep-at w.gathered item + ep-at w.found item else 0)
       & ev-range (ep-at w.crafted item) (if active then ep-limit else 0)
       & ev-range (ep-at w.consumed item) (if active then ep-limit * 2 else 0)
       & ev-range (ep-at w.sales item) (if active then ep-limit else 0)
@@ -88,6 +116,14 @@ Chapter: EconomyStateValid
     else let e = list-at m.ledger i
     in let n = list-at m.ledger (i + 1)
     in n.action == e.action & n.hour == e.hour & n.kind == kind
+ An owner's strike (EconomyMint) issues, records the ingots, then pays the owner the coin less the Crown's fee as the next action.
+  ev-mint-paid : EmMoney, Integer, Integer -> Boolean
+  ev-mint-paid (m) (i) (paid) = let n = list-at m.ledger (i + 1)
+    in if n.payer <= 1 | not (em-valid-purse m n.payer) then False
+    else if paid <= 0 then True
+    else if i + 2 >= m.entry-count then False
+    else let o = list-at m.ledger (i + 2)
+    in o.kind == 17 & o.action == n.action + 1 & o.hour == n.hour & o.payer == 1 & o.payee == n.payer & o.amount == paid
   ev-gross : EmMoney, Integer -> Integer
   ev-gross (m) (i) = let e = list-at m.ledger i
     in if not (ev-next m i 2) then e.amount
@@ -117,7 +153,8 @@ Chapter: EconomyStateValid
     else if e.kind == 4 then
       if e.payer /= 0 | e.payee /= 1 | e.amount <= 0 | e.reference /= 2 | a.mint-rate == 0 | not (ev-next m i 12) then False
       else let n = list-at m.ledger (i + 1)
-      in n.payer == a.mint-purse & n.payee == 1 & n.amount == 0 & n.reference > 0 & n.reference <= 1000 & e.amount == n.reference * a.mint-rate
+      in n.payee == 1 & n.amount == 0 & n.reference > 0 & n.reference <= 1000 & e.amount == n.reference * a.mint-rate
+        & (n.payer == a.mint-purse | ev-mint-paid m i (emi-paid e.amount False))
     else if e.kind == 5 then if not (em-valid-purse m e.payee) then False else e.payer == 1 & e.payee > 1 & (em-purse m e.payee).kind == 5 & e.amount > 0 & e.reference == 0
     else if e.kind == 6 then e.payer > 1 & em-valid-purse m e.payer & e.payee == 1 & e.amount > 0 & e.reference == 0
     else if e.kind == 7 | e.kind == 8 then ev-loan-row m e & ev-transfer m a i
@@ -126,8 +163,12 @@ Chapter: EconomyStateValid
     else if e.kind == 11 then if not (em-valid-purse m e.payee) then False else e.payer == 0 & e.payee > 1 & (em-purse m e.payee).kind == 5 & e.amount == 0 & ev-range e.reference 1000000000
     else if e.kind == 12 then if i == 0 then False else (list-at m.ledger (i - 1)).action == e.action & (list-at m.ledger (i - 1)).kind == 4
     else if e.kind == 13 then if not (em-valid-purse m e.payee) then False else e.payer == 1 & e.payee > 1 & (em-purse m e.payee).kind == 4 & e.amount > 0 & e.reference == (em-purse m e.payee).owner
-    else if e.kind == 16 then e.payer == 0 & e.payee == 1 & e.amount > 0 & e.reference == 0
+    else if e.kind == 16 | e.kind == 21 then e.payer == 0 & e.payee == 1 & e.amount > 0 & e.reference == 0
+    else if e.kind == 20 then e.payer == 1 & e.payee == 0 & e.amount > 0 & e.reference == 0
+    else if e.kind == 18 then e.payer == 0 & e.payee == 0 & e.amount > 0 & e.reference >= 1 & e.reference <= m.loan-count
     else if e.kind == 17 then if not (em-valid-purse m e.payee) then False else e.payer == 1 & e.payee > 1 & e.amount > 0 & e.reference == 0
+    else if e.kind == 19 then e.payer > 1 & e.payee > 1 & e.payer /= e.payee & e.amount > 0 & e.reference == 0
+    else if e.kind == 22 then e.payer > 1 & e.payee >= 1 & e.payer /= e.payee & e.amount > 0 & e.reference > 0
     else if e.kind == 15 then e.amount == 0 & e.reference > 0 & e.reference <= ep-limit
       & e.payer > 1 & e.payee > 1 & e.payer /= e.payee & ep-purse-used w e.payer 0 & ep-purse-used w e.payee 0
       & list-length w.catalog.items >= 68
@@ -139,7 +180,8 @@ Chapter: EconomyStateValid
     else let debit = if e.payer > 0 then ep-add a.balances e.payer (0 - e.amount) else 0
     in let credit = if e.payee > 0 then ep-add a.balances e.payee e.amount else 0
     in let tax = if e.kind == 3 then __record-set a "tax" e.reference else a
-    in let source = if e.kind == 4 | e.kind == 16 then __record-set a "issued" (a.issued + e.amount) else a
+    in let source = if e.kind == 4 | e.kind == 16 | e.kind == 21 then __record-set a "issued" (a.issued + e.amount)
+      else if e.kind == 20 then __record-set a "issued" (a.issued - e.amount) else a
     in let time = if e.kind == 10 then __record-set a "hour" e.hour else a
     in let owner = if e.kind == 11 then __record-set a "mint-purse" e.payee else a
     in let rate = if e.kind == 11 then __record-set a "mint-rate" e.reference else a
@@ -168,12 +210,14 @@ Chapter: EconomyStateValid
     in if e.reference /= id then ev-loan-history m id (i + 1) lent paid defaults
     else if e.kind == 7 then ev-gross m i == (list-at m.loans (id - 1)).principal & ev-loan-history m id (i + 1) (lent + 1) paid defaults
     else if e.kind == 8 then lent == 1 & ev-loan-history m id (i + 1) lent (paid + ev-gross m i) defaults
+    else if e.kind == 18 then lent == 1 & ev-loan-history m id (i + 1) lent (paid + e.amount) defaults
     else if e.kind == 9 then let l = list-at m.loans (id - 1)
       in lent == 1 & defaults == 0 & paid < l.principal + l.interest & ev-loan-history m id (i + 1) lent paid (defaults + 1)
     else ev-loan-history m id (i + 1) lent paid defaults
   ev-loan-histories : EmMoney, Integer -> Boolean
   ev-loan-histories (m) (id) = if id > m.loan-count then True
-    else ev-loan-history m id 0 0 0 0 & ev-loan-histories m (id + 1)
+    else let at = em-open-loan-at id
+    in ev-loan-history m id 0 (em-opening m at) (em-opening m (at + 1)) (em-opening m (at + 2)) & ev-loan-histories m (id + 1)
 
   ev-find-action : EmMoney, Integer, Integer, Integer -> Integer
   ev-find-action (m) (action) (low) (high) = if low >= high then low
@@ -181,7 +225,7 @@ Chapter: EconomyStateValid
     in if (list-at m.ledger middle).action < action then ev-find-action m action (middle + 1) high
     else ev-find-action m action low middle
   ev-trades : EpWorld, Integer, Integer -> Boolean
-  ev-trades (w) (i) (previous) = if i == ep-trade-limit then True else let t = list-at w.trades i
+  ev-trades (w) (i) (previous) = if i >= list-length w.trades then True else let t = list-at w.trades i
     in if i >= w.trade-count then t.action == 0 & t.hour == 0 & t.buyer == 0 & t.seller == 0 & t.item == 0 & t.quantity == 0 & t.gross == 0 & t.quality == 0 & t.durability == 0 & ev-trades w (i + 1) previous
     else if t.action <= previous | t.action > w.money.sequence | not (ev-range t.hour w.hour) | not (eg-id w.catalog t.item) | t.quantity <= 0 | t.quantity > ep-stock-limit | t.gross <= 0 | t.gross > ep-limit then False
     else if not (ev-range t.quality (t.quantity * 1000)) | not (ev-range t.durability (t.quantity * 32)) | not (ep-purse-used w t.buyer 0) | not (ep-purse-used w t.seller 0) then False
@@ -197,8 +241,8 @@ Chapter: EconomyStateValid
     in ev-turnover w chain (i + 1) crown (sum + (if matches then t.gross else 0))
   ev-turnovers : EpWorld, Integer -> Boolean
   ev-turnovers (w) (chain) = if chain == 8 then True
-    else ep-at w.turnover chain == ev-turnover w chain 0 False 0
-      & ep-at w.crown-turnover chain == ev-turnover w chain 0 True 0 & ev-turnovers w (chain + 1)
+    else ep-at w.turnover chain == ev-turnover w chain 0 False (ep-at w.opening chain)
+      & ep-at w.crown-turnover chain == ev-turnover w chain 0 True (ep-at w.opening (ep-open-crown + chain)) & ev-turnovers w (chain + 1)
   ev-decay : Integer, Integer -> Integer
   ev-decay (value) (days) = if days >= 40 then 0 else if days == 0 then value else ev-decay (value / 2) (days - 1)
   ev-sales : EpWorld, Integer, Integer, Integer, Integer -> Integer
@@ -208,12 +252,18 @@ Chapter: EconomyStateValid
     else ev-sales w item (i + 1) (t.hour / 24) (ev-decay value (t.hour / 24 - day) + t.quantity)
   ev-all-sales : EpWorld, Integer -> Boolean
   ev-all-sales (w) (item) = if item > list-length w.catalog.items then True
-    else ep-at w.sales item == ev-sales w item 0 0 0 & ev-all-sales w (item + 1)
+    else ep-at w.sales item == ev-sales w item 0 (ep-at w.opening ep-open-day) (ep-at w.opening (ep-open-sales + item)) & ev-all-sales w (item + 1)
+  ev-open-balances : EmMoney, Integer, Integer -> Integer
+  ev-open-balances (m) (balances) (id) = if id > max em-purse-block m.purse-count then 0
+    else let a = ep-set balances id (em-opening m (em-open-purse id)) in ev-open-balances m balances (id + 1)
   ev-audit : EpWorld -> Boolean
   ev-audit (w) =
     let mark = __heap-save
-    in let a = EvAudit { action = 0, hour = 0, tax = 0, mint-purse = 0,
-      mint-rate = 0, issued = 0, ingots = 0, defaults = 0, balances = ep-buffer 257 }
+    in let m = w.money
+    in let a = EvAudit { action = em-opening m em-open-action, hour = em-opening m em-open-hour, tax = em-opening m em-open-tax,
+      mint-purse = em-opening m em-open-mint-purse, mint-rate = em-opening m em-open-mint-rate, issued = em-opening m em-open-issued,
+      ingots = em-opening m em-open-ingots, defaults = em-opening m em-open-defaults, balances = ep-buffer (max em-purse-block m.purse-count + 1) }
+    in let opened = ev-open-balances m a.balances 1
     in let rows = ev-ledger w a 0
     in let owner = if w.mint-owner == 0 then 0 else (ep-actor w w.mint-owner).purse
     in let valid = rows & a.action == w.money.sequence & a.hour == w.hour
@@ -225,9 +275,22 @@ Chapter: EconomyStateValid
   ev-valid : EpWorld -> Boolean
   ev-valid (w) = let m = w.money
     in if eg-validate w.catalog /= 0 | not (ep-core-items w.catalog) then False
-    else if m.purse-count < 1 | m.purse-count > 256 | not (ev-range m.loan-count 128) | not (ev-range m.entry-count em-rows) | not (ev-range m.sequence m.entry-count) | not (ev-range m.hour em-limit) | not (ev-range m.tax 10000) | not (ev-range m.issued em-limit) | not (ev-range m.defaults m.loan-count) then False
-    else if not (ev-range w.actor-count 128) | not (ev-range w.station-count ep-station-limit) | not (ev-range w.node-count ep-node-limit) | w.hour /= m.hour | not (ev-range w.trade-count ep-trade-limit) | not (ev-range w.mint-owner w.actor-count) | not (ev-range w.mint-rate 1000000000) | not (ev-range w.mint-ingots ep-limit) then False
-    else if list-length m.purses /= 256 | list-length m.loans /= 128 | list-length m.ledger /= em-rows | list-length w.actors /= 128 | list-length w.stations /= ep-station-limit | list-length w.nodes /= ep-node-limit | list-length w.trades /= ep-trade-limit then False
+    else if m.purse-count < 1 | m.purse-count > list-length m.purses | not (ev-range m.loan-count (list-length m.loans)) | not (ev-range m.entry-count em-rows) | not (ev-range (m.sequence - em-opening m em-open-action) m.entry-count) | not (ev-range m.hour em-limit) | not (ev-range m.tax 10000) | not (ev-range m.issued em-limit) | not (ev-range m.defaults m.loan-count) then False
+    else if not (ev-range w.actor-count (list-length w.actors)) | not (ev-range w.station-count (list-length w.stations)) | not (ev-range w.node-count (list-length w.nodes)) | w.hour /= m.hour | not (ev-range w.trade-count (list-length w.trades)) | not (ev-range w.mint-owner w.actor-count) | not (ev-range w.mint-rate 1000000000) | not (ev-range w.mint-ingots ep-limit) then False
+    else if list-length m.purses < em-purse-block | list-length m.loans < em-loan-block | list-length m.ledger /= em-rows | list-length w.actors < ep-actor-block | list-length w.stations < ep-station-limit | list-length w.nodes < ep-node-limit | list-length w.nodes > ep-node-ceiling | list-length w.trades < ep-trade-limit then False
     else if not (ev-purses m 0) | not (ev-loans m 0) | not (ev-actors w 0) | not (ev-stations w 0) | not (ev-nodes w 0) | not (ev-counters w 0) | not (ev-chains w 0) then False
     else if not (ev-audit w) | not (ev-loan-histories m 1) | not (ev-trades w 0 0) then False
     else ev-turnovers w 1 & ev-all-sales w 1 & ep-census w 1 & em-total m 1 == m.issued & ep-at w.consumed 32 >= w.mint-ingots
+ The first check ev-valid fails, named for the save log.
+  ev-invalid-part : EpWorld -> Text
+  ev-invalid-part (w) = let m = w.money
+    in if eg-validate w.catalog /= 0 | not (ep-core-items w.catalog) then "catalog"
+    else if m.purse-count < 1 | m.purse-count > list-length m.purses | not (ev-range m.loan-count (list-length m.loans)) | not (ev-range m.entry-count em-rows) | not (ev-range (m.sequence - em-opening m em-open-action) m.entry-count) | not (ev-range m.hour em-limit) | not (ev-range m.tax 10000) | not (ev-range m.issued em-limit) | not (ev-range m.defaults m.loan-count) then "money bounds"
+    else if not (ev-range w.actor-count (list-length w.actors)) | not (ev-range w.station-count (list-length w.stations)) | not (ev-range w.node-count (list-length w.nodes)) | w.hour /= m.hour | not (ev-range w.trade-count (list-length w.trades)) | not (ev-range w.mint-owner w.actor-count) | not (ev-range w.mint-rate 1000000000) | not (ev-range w.mint-ingots ep-limit) then "world bounds"
+    else if list-length m.purses < em-purse-block | list-length m.loans < em-loan-block | list-length m.ledger /= em-rows | list-length w.actors < ep-actor-block | list-length w.stations < ep-station-limit | list-length w.nodes < ep-node-limit | list-length w.nodes > ep-node-ceiling | list-length w.trades < ep-trade-limit then "table sizes"
+    else if not (ev-purses m 0) then "purses" else if not (ev-loans m 0) then "loans" & ev-bad-loan m 0 else if not (ev-actors w 0) then "actors"
+    else if not (ev-stations w 0) then "stations" else if not (ev-nodes w 0) then "nodes" & ev-bad-node w 0 else if not (ev-counters w 0) then "counters"
+    else if not (ev-chains w 0) then "chains" else if not (ev-audit w) then "ledger audit" else if not (ev-loan-histories m 1) then "loan histories"
+    else if not (ev-trades w 0 0) then "trades" else if not (ev-turnovers w 1) then "turnovers" else if not (ev-all-sales w 1) then "sales"
+    else if not (ep-census w 1) then "census" else if em-total m 1 /= m.issued then "issued total"
+    else if ep-at w.consumed 32 < w.mint-ingots then "mint ingots" else ""

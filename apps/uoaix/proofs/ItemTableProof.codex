@@ -22,6 +22,38 @@ Chapter: ItemTableProof
     in when world-create world item
       is Err (_) -> 0
       is Ok (serial) -> let placed = if layer > 0 then world-set-layer world serial layer else 0 in serial
+  itp-zero : Integer, Integer, Integer -> Integer
+  itp-zero (tiles) (i) (n) = if i == n then tiles else let z = poke-qword tiles (i * 8) 0 in itp-zero tiles (i + 1) n
+  itp-ascii : Text -> List Integer
+  itp-ascii (t) = text-to-unicode-bytes t
+  itp-find : Integer, Text -> Integer
+  itp-find (tiles) (query) = let q = itp-ascii query
+    in let buf = it-find-new 0
+    in let found = it-find tiles q 0 (list-length q) buf 0 in buf
+  itp-names : Integer -> [Console] Integer
+  itp-names (tiles) = let s1 = itp-tile tiles #0F60 5 [108,111,110,103,115,119,111,114,100]
+    in let s2 = itp-tile tiles #0F61 5 [108,111,110,103,115,119,111,114,100]
+    in let s3 = itp-tile tiles #13B9 6 [118,105,107,105,110,103,32,115,119,111,114,100]
+    in let s4 = itp-tile tiles #0F5E 6 [98,114,111,97,100,115,119,111,114,100]
+    in let s5 = itp-tile tiles #1401 4 [107,114,121,115,115]
+    in let long = itp-find tiles "LongSword"
+    in let sword = itp-find tiles "sword"
+    in let kryss = itp-find tiles "kryss"
+    in let bread = itp-find tiles "bread loaf"
+    in let none = itp-find tiles "dragon"
+    in let buf = it-find-new 0
+    in let q = itp-ascii "sword"
+    in let before = __heap-save
+    in let scanned = it-find tiles q 0 5 buf 0
+    in let retained = __heap-save - before
+    in act
+      a <- itp-check "a name matches every exact entry in art order, case-insensitive" (peek-qword long 0 == 2 & peek-qword long 8 == 0 & peek-qword long 16 == #0F60 & peek-qword long 24 == #0F61)
+      b <- itp-check "a part of a name lists every entry holding it" (peek-qword sword 0 == 0 & peek-qword sword 8 == 4 & peek-qword sword 80 == #0F5E & peek-qword sword 88 == #0F60 & peek-qword sword 96 == #0F61 & peek-qword sword 104 == #13B9)
+      c <- itp-check "a single name and a plural-markup name match exactly, an unknown name matches nothing" (peek-qword kryss 0 == 1 & peek-qword kryss 16 == #1401 & peek-qword bread 0 == 1 & peek-qword bread 16 == #103B & peek-qword none 0 + peek-qword none 8 == 0)
+      print-line-uni ("NAME SCAN retained=" & show retained & " matches=" & show scanned)
+      d <- itp-check "a full name scan retains no heap" (retained == 0 & scanned == 4)
+      a + b + c + d
+    end
   itp-status : Integer -> List Integer
   itp-status (serial) = gp-zeros (gp-put32 (gp-put16 (gp-start 17) 66) serial) 59
 
@@ -33,7 +65,7 @@ Chapter: ItemTableProof
       end
       is Ok (shard) -> act
         let world = shard.world
-        in let tiles = alloc-bytes 608256
+        in let tiles = itp-zero (alloc-bytes 608256) 0 76032
         in let t1 = itp-tile tiles #0E75 3 [98,97,99,107,112,97,99,107]
         in let t2 = itp-tile tiles #103B 1 [98,114,101,97,100,32,108,111,97,37,118,101,115,47,102,37]
         in let t3 = itp-tile tiles #13E3 8 [115,109,105,116,104]
@@ -74,8 +106,9 @@ Chapter: ItemTableProof
               e <- itp-check "without the table only gold weighs and names fall back" (gp-u16 bare 64 == 3 & gp-u32 bare 58 == 120 & it-name 0 #103B 1 == "")
               f <- itp-check "other serials are not rewritten" (let other = itp-status (mobile + 1) in let r = it-status world tiles mobile 0 0 other in gp-u32 other 58 == 0)
               g <- itp-check "a held item from the ground weighs at once, one already carried does not double" (gp-u16 lifting 64 == 27 & gp-u16 own 64 == 19)
-              print-line-uni ("ITEM TABLE PROOF failures=" & show (a + b + c + d + e + f + g))
-              a + b + c + d + e + f + g
+              h <- itp-names tiles
+              print-line-uni ("ITEM TABLE PROOF failures=" & show (a + b + c + d + e + f + g + h))
+              a + b + c + d + e + f + g + h
             end
       end
   end

@@ -70,12 +70,14 @@ Chapter: CivicLiveReplay
         in let first = cv-advance s map None 0 1
         in act
           cvr-check "mayor and two guards wear real production-backed equipment" (s.law.guard-count == 2 & s.cloth-count == 11 & cvc-valid s map & euv-valid town.vendors.currency & gmb-layer town.items s.mayor 5 0 > 0 & gmb-layer town.items (list-at s.guards 0).serial 1 0 > 0)
+          cvr-check "the mayor wears the mayor's look and both guards the guard's, over their production lots" (cst-styled town.items s.mayor cst-mayor & cst-styled town.items (list-at s.guards 0).serial cst-guard & cst-styled town.items (list-at s.guards 1).serial cst-guard & cvc-valid s map)
           cvr-check "bounded patrol uses indexed adjacent movement" (is-ok first & (when world-get s.law.world before.serial is Err (_) -> False is Ok (after) -> walk-abs (after.x - x) <= 1 & walk-abs (after.y - y) <= 1 & (after.x /= x | after.y /= y)))
           cvr-client s map
         end
   cvr-populate : GameShard, WalkMap, EuCurrency -> [Console] Nothing
   cvr-populate (game) (map) (currency) = let v = gv-new game currency
     in let items = gsi-new game.world
+    in let growing = bb-fixture-grow v items
     in when bb-populate v items map
       is Err (e) -> print-line-uni ("FAIL shops " & e)
       is Ok (_) -> when tl-populate v items map None 0 3
@@ -83,11 +85,11 @@ Chapter: CivicLiveReplay
         is Ok (town) -> cvr-run town map
   opening : [Console] Nothing = when bb-economy 0
     is Err (e) -> print-line-uni ("FAIL economy " & e)
-    is Ok (currency) -> when world-new 128
+    is Ok (currency) -> when world-new 256
       is Err (e) -> print-line-uni ("FAIL world " & e)
-      is Ok (world) -> let chars = alloc-bytes 800
-        in let zero = gs-zero chars 0
-        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0 }
-        in when walk-map-new 1408 1536 128 192
+      is Ok (world) -> let shard-accounts = ga-new ga-dev
+        in let chars = ga-working shard-accounts
+        in let game = GameShard { world = world, characters = chars, accounts = shard-accounts, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+        in when walk-map-new 1408 1536 128 224
           is Err (e) -> print-line-uni ("FAIL map " & e)
           is Ok (map) -> let filled = cvr-fill map 0 in if filled then cvr-populate game map currency else print-line-uni "FAIL terrain"

@@ -93,9 +93,7 @@ account. Misconduct and unresolved judgement remain for the human keeper.
 
 ## Cost and evidence
 
-Cases contain 16 scalar fields, events six. Construction retained 35064 bytes
-under seed `4228CD5103DC4523` on 2026-10-04, excluding the existing government,
-registry, economy and queue. Duplicate filing scans at most 128 cases. Debt
+Cases contain 16 scalar fields, events six. Duplicate filing scans at most 128 cases. Debt
 settlement is constant work; item settlement scans at most 128 titles. Report
 work is linear in the bounded text/JSON size. Filing, settlement and escalation
 retain no per-action heap; report/parser and detached title-query scratch is

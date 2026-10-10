@@ -38,7 +38,7 @@ fact, not a port of the archived implementation.
 Replies ported from [Source-X](https://github.com/Sphereserver/Source-X/blob/master/src/network/send.cpp):
 24 container-open is 7 bytes, followed by 3C contents (5 + 19 per item).
 25 single contained item is 20 bytes. 2E equipment is 15 bytes. 1D removal
-is 5 bytes. 27 bounce is 2 bytes; reasons0..5 follow Source-X. 29 is a KR
+is 5 bytes. 27 bounce is 2 bytes; reasons0..5 follow Source-X. The 1.25 client prints its own text for reason 1 ("That is too far away."); a refusal that says its own reason bounces with 5, ServUO's LRReason.Inspecific, which the client answers silently. 29 is a KR
 drop acknowledgement and is not sent here. Paperdoll 88 is 66 bytes.
 Ground item 1A uses optional amount/hue flags and a computed length.
 The Codex adaptation sends reason5 before re-emitting the original placement
@@ -47,7 +47,7 @@ when the atomic drop planner refuses; an unloaded ground cell uses reason1.
 ## Owner interface
 
 The family supplies opcode bounds and a retained context captured by its
-handler. Reek owns registry, authentication and framing. The handler returns
+handler. The handler returns
 `Result (Maybe GameReply) Text`, never sends raw bytes, and returns None for
 unclaimed shared selectors. Its records and registered item metadata must be
 allocated below the receive loop scratch boundary. Packet/reply objects are
@@ -66,7 +66,7 @@ transaction owns the durable sequence and commit.
 `GameSkillsItemsServer` entry. A composed server can instead chain the family
 callback and apply the entry hook once. Entry can create one backpack object;
 compose the vendor 06 handler before this general items handler.
-item moves can change the four existing character equipment cells. Include
+Item moves can change the four existing character equipment cells. Include
 that footprint in the surrounding transaction capture. Re-register item
 metadata from authoritative definitions after recovery; cursors are volatile.
 
@@ -88,9 +88,6 @@ a bounce. World item batches use the existing prepare/rollback primitive;
 the live owner must include family metadata and character equipment changes
 in its encompassing durable transaction before publication.
 
-The packet-family grade is one replay and root's real 1.25.32 client run.
-Source agreement is not client acceptance.
-
 Retained storage is one metadata row per world slot and five cursor records;
 no packet or reply list is retained. Contents and unregistered backpack lookup
 walk direct children; registered backpack lookup uses layer21. Ground entry
@@ -98,4 +95,4 @@ queries only the25 tiles within the existing two-tile access range and their
 occupants. Only emitted objects allocate value records. Access walks are
 bounded by container depth, and item batches contain at most
 two world events. Transient lookup, undo and reply allocations use the caller's
-request scratch boundary. Compiler heap/time behavior is unchanged.
+request scratch boundary.

@@ -8,12 +8,25 @@ left.**
 
 ## Standing hazards
 
-### EVIDENCE-JSON -- preserve SBOM string values
+### HTML-CRYPTO -- WebCrypto primitives (red, UOAIX-173)
 
-| Source | Gap |
-|---|---|
-| `evidence/EvidencePackage.codex:498` | `ev-json-str` deletes quotation marks and omits backslash/control escaping. CycloneDX product/file text can be altered or produce invalid JSON. Use complete string serialization and test decoded-value preservation. Source census 2026-10-01, main 33668. |
+`crypto-ready`, `crypto-random-hex`, `crypto-hmac-then` (HMAC-SHA256), `crypto-hmac-verify-then`, `crypto-seal-then`
+and `crypto-open-then` (AES-GCM, 12-byte nonce, 128-bit tag) bind the W3C Web Cryptography API; the runtime is
+emitted only into a page that calls one (`emit-dom-crypto`). Keys, tags, nonces and ciphertext are lowercase hex,
+text is UTF-8; a refusal answers `!` and the reason, a failed verification `0`. A key held as hex text cannot be
+zeroed (JavaScript strings are immutable), where the hand-written admin page filled its `Uint8Array`; a page that
+must wipe key bytes needs a handle-based primitive instead. `node codex/plugs/html/arms/crypto.mjs` builds
+`CryptoArm.codex` and grades HMAC against RFC 4231 case 1, verification both ways, the seal shape, the open round
+trip and a tampered tag's refusal (6 checks, 2026-10-09, under Node's WebCrypto, no browser).
+### HTML-FRAME -- a sandboxed framed page (red, UOAIX-173)
 
+`frame-mount id html` puts a page in an iframe sandboxed to `allow-scripts` alone (an opaque origin: no storage, no
+cookies, no reach into the parent); `frame-serve handler` answers that frame's `postMessage` requests, the handler
+taking the request text and a reply callback; the framed page's `host-request-then text cb` posts to its parent and
+hands `cb` the reply carrying its id. Messages from any other window are ignored. A framed page has no
+`localStorage` (it throws in an opaque origin), so the pages it runs must not call the storage primitives.
+`fetch-get-then` parses JSON; fetch page text with `fetch-with-then`. `node codex/plugs/html/arms/frame.mjs` grades the
+round trip, the sandbox and the ignored foreign message in headless Edge (4 checks, 2026-10-09).
 ### HTML-NOISE-BANK -- exact words and job-local worker ownership
 
 Main 33680 adds `gpu-noise-bank-then`, which runs the packaged `sdxl-noise`
@@ -223,27 +236,7 @@ records.
 
 Rows keep their original identifiers.
 
-**WGSL-BOOL-HELPER -- OPEN (unowned): Boolean helper parameters become i32.**
-`WgslEmitter.codex`'s `wgsl-ty-text` maps non-real helper types to `i32`, but a
-direct Boolean conditional emits that integer as `select`'s condition. The
-shader is invalid. MusicGen uses an Integer flag compared with 1. Evidence:
-red `build-output/musicgen-stage3/lm-norm.wgsl` and refused `medium-norm` run;
-`lm-norm2.wgsl` with the comparison runs. The consumer constraint is also in
-`docs/Designs/Active/Apps/InBrowserDiffusion.md`.
-
-**WGSL-HELPER-BUFFERS -- OPEN (unowned): repeated helper calls lose distinct buffer bindings.**
-Calling one Device dot helper with `a/b` and then `c/d` in one kernel emits
-both calls against a helper reading `a/b`. The metadata still names `c/d`,
-and WebGPU rejects binding 3 because the active layout omits the unused
-buffers. Evidence: red `build-output/browser-lycoris/lora-helper-binding-bad.wgsl`
-and `layout.err` (2026-10-01, compiler `CC3FC5222D726096`). Hada and sum2
-consumer kernels use a distinct right-dot helper as a workaround. The plug
-must specialize helpers for each buffer mapping or issue a named refusal;
-silently reusing the first mapping is incorrect. The LoRA grader now runs
-every emitted kernel's layout with zero elements before image generation.
-
-**Takeable now, no ruling or toolchain needed:** 1.73 (nothing left to run),
-2.17, 2.38, 2.53.
+**Takeable now, no ruling or toolchain needed:** 2.38 (the WGSL runner check).
 **Parked:** 2.73 (red).
 
 **WE DO NOT DO TOOLCHAINS** (Damian, 2026-09-07, in those words). This is not
@@ -255,7 +248,7 @@ subjects".
 
 **Latent, taken on their trigger:** 1.48 (red), 1.54, 1.72, 2.01, 2.07.
 **Deferred, not to be reopened without the ruler:** 1.1, 2.08, 2.09, 2.57 (Damian).
-**Standing notes, not work:** 2.11 (ruled not built), 2.14, 2.16, 2.39, 2.66.
+**Standing notes, not work:** 1.73, 2.11 (ruled not built), 2.14, 2.16, 2.17, 2.39, 2.53 (root 2026-10-09: playable path first), 2.66.
 
 **Another's, or blocked:** 1.3 (Damian's battery call), 1.96's
 upstream half (COMPILER-30), 2.02 (Steve Howell's), 2.13 (a representation
@@ -401,18 +394,6 @@ plugs it runs. What is measured, kept apart from what is not:
 - **The codex-vm serial-drop check (`output buffer growth failed`, exit 10) has
   no QEMU counterpart**, so on that host a short console is not detected. Say
   so rather than read its silence as agreement (L-FALSIF).
-- **codex-vm delivers PIT interrupts despite the master PIC mask.** Measured
-  2026-09-30 by the PIC-masked arm in `DeskScheduler.md`, "Single-core
-  preemption evidence": OVMF reports zero tick advance and no preemption;
-  codex-vm reports three ticks and preemption. `tools/codex-vm.c` busy PIT
-  delivery checks `pic_master_can_deliver(0)`, whose implementation checks
-  ISR state but not `pic_master.mask`; keyboard delivery checks its mask
-  separately. The masked timer control cannot grade native preemption until
-  PIT delivery honors the mask. Keep the slice-zero control as a distinct
-  native scheduling check, not a timer-disable claim.
-- `produced nothing` and `differs` should not read alike in the failure text:
-  the first is a statement about the host, the second about the subject, and
-  only the second is ever a plug finding.
 
 **babbage is SHELVED** (Damian, 2026-08-21): vanity work. Its open items are in
 `codex/plugs/babbage/babbage-backlog.md`. Do not add babbage items here.
@@ -672,39 +653,16 @@ They sit in `wasm-run-baseline.txt` under this row, so a wasm run cannot tell a
 layout change in them from a regression.
 
 
-## 2.17 -- every wasm verdict published before 2026-09-01 was graded against a broken control
+## 2.17 -- STANDING: wasm verdicts published before 2026-09-01 are not evidence
 
-`emit-hosted-start` set `rbp = rsp` and reserved NOTHING, so every local the
-entry code spilled sat BELOW the stack pointer, where the next push or call
-overwrote it. The prologue now patches a placeholder with
-`align-16 (peak-spill * 8 + 64)` once the entry body is emitted, sized the way
-`emit-function-standard` has always sized a frame, with `reset-func-scratch`
-first so `peak-spill` counts the ENTRY's spills.
+The x86-64 control those runs graded against mis-rendered every constructor
+name (`emit-hosted-start` reserved no frame for the entry's spills; fixed
+2026-09-01). Quote no wasm number from a run before that date.
 
-**One cause, both symptoms:** the truncation was the print loop's exit test
-re-reading a corrupted length (`Zebra 7` printing `Z 7` on Windows and looping
-forever on Linux), and the 0xC0000005 was the same corruption landing on a
-pointer. Only the entry sum printer was affected because it is the one place
-with enough live values to SPILL; in user code the same printer's locals stay in
-registers. The x86-64 control over `ops/*` is 40 pass 0 fail, so
-`ops/real-mode-fields` closes and 2.16's "red on both arms" row is retired.
-
-**THE STANDING CONSEQUENCE, and it is why this row is kept rather than
-deleted: every wasm verdict this campaign published before 2026-09-01 was
-graded against an arm that mis-rendered any constructor name.** The control is
-correct now and the wasm gaps can be trusted as wasm gaps, but a number quoted
-from an earlier run of this campaign cannot.
-
-**One item is still open under this row:**
-
-- **`__self-type-defs` is a compiler-wide question, not a wasm one, and is NOT
-  taken.** wasm emits an empty list; arm64 and RISC-V emit integer `0`, which
-  hands back a null where a `List TypeBinding` is expected, so wasm's answer is
-  strictly better than theirs. Only x86-64 builds the real table. Porting it
-  means about 250 lines from `X86_64Compound.codex` plus tracking `CodexType`'s
-  28 constructors forever, and every consumer is inside that same file. A
-  decision for Damian if it is ever wanted.
-
+`__self-type-defs` is a real table on x86-64 only; every plug answers an empty
+list (arm64, riscv, wasm, zig, csharp). Porting the table (about 250 lines from
+`X86_64Compound.codex`, every consumer inside that file) is a decision for
+Damian if it is ever wanted, not open work.
 
 ## 2.16 -- STANDING: how the release gate grades the wasm plug
 
@@ -774,22 +732,15 @@ routed: it is fixed on OUR side, `$f64_to_text` in `WasmEmitter.codex` at head
 
 ## 2.38 -- OPEN: the undefined-callee check covers the six text plugs whose toolchain is on the box; the rest need an analyzer or a toolchain
 
-WGSL also needs the check: a device helper using `int-mod at 4` emits an
-`int_mod(at, 4)` call without a definition or refusal marker, and `run.ps1`
-reports success (red, 2026-10-01, compiler `CC3FC5222D726096`). The invalid
-module then prevents its other kernels from running. `BrowserLoraKernels`
-uses `at - at / 4 * 4` for nonnegative byte offsets to avoid that call.
-The plug must lower the remainder or refuse the unresolved callee before
-reporting a successful shader build.
-
-PTX has the same gap: `int-mod` in a device helper produces an unresolved
-`int_mod` call while `ptx/run.ps1` reports success. CUDA JIT then refuses the
-whole module with `Unknown symbol 'int_mod'` and a missing call prototype
-(2026-10-04, compiler `4228CD5103DC4523`, PTX plug `7D8A1742B48C4132`).
-`apps/uoaix/TownNetworkHillKernels.codex` uses division and subtraction for its
-nonnegative row/column indexes. Grade a fix with a device helper that uses
-`int-mod`: either lower and run it through CUDA, or refuse the unresolved
-callee during generation. A successful text emission is not that grade.
+WGSL needs the check: `codex/plugs/wgsl/run.ps1` reports success for a module
+that calls a function it never defines, which WebGPU then refuses whole
+("unresolved call target"). `int-mod` lowers now (`codex/plugs/wgsl/arms/int-mod.mjs`),
+so the case that found the gap is gone; the next unhandled builtin takes the
+same path. WGSL's own builtins (`abs`, `select`, `bitcast`, the type
+constructors) carry no `fn` declaration, so the runner check needs that list,
+or the emitter refuses a callee that is neither a definition nor a lowered
+builtin. `codex/plugs/ptx/run.ps1` holds the PTX form of the check (a call to
+an undeclared function, or a `CODEX_REFUSED_` marker, exits 6).
 
 `build/check-plug-callees.ps1` reads the source `plug-oracle-test.ps1 -KeepArtifacts`
 leaves in `build-output/plug-oracle` and fails on a name that is called, bound

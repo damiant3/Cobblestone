@@ -16,7 +16,7 @@ function Memory-Bar { $free=(Get-CimInstance Win32_OperatingSystem).FreePhysical
 try {
     & pwsh -NoProfile -File apps/uoaix/build-admin-page.ps1 -Check
     if($LASTEXITCODE -ne 0){throw 'Page source parity failed'}
-    foreach($unit in @('AdminPanelProof','GmProof','GameClockProof','ReportSubjectProof','TreasuryProof','AdminPanelServeProof')){
+    foreach($unit in @('AdminPanelProof','GmProof','GameClockProof','ReportSubjectProof','TreasuryProof','PanelLogLevelsProof','AdminPanelServeProof')){
         $receipt["freeBefore$unit"]=Memory-Bar
         $arguments=@('-NoProfile','-File','build/compile.ps1','-Src',"apps/uoaix/proofs/$unit.codex",'-Out',"$OutDir/$unit.cdx",'-Log',"$OutDir/$unit.log",'-Kernel',$Kernel)
         if($Poison){$arguments+='-Poison'}
@@ -30,7 +30,7 @@ try {
             if($LASTEXITCODE -ne 0){throw 'Core guest failed'}
             $text=[IO.File]::ReadAllText("$OutDir/$unit.out")
             Write-Output $text
-            $verdict=if($unit -eq 'GmProof'){'UOAIX GM STAND-IN failures=0'}elseif($unit -eq 'GameClockProof'){'UOAIX GAME CLOCK failures=0'}elseif($unit -eq 'ReportSubjectProof'){'UOAIX REPORT SUBJECT failures=0'}elseif($unit -eq 'TreasuryProof'){'UOAIX TREASURY failures=0'}else{'UOAIX PANEL CORE failures=0'}
+            $verdict=if($unit -eq 'GmProof'){'UOAIX GM STAND-IN failures=0'}elseif($unit -eq 'GameClockProof'){'UOAIX GAME CLOCK failures=0'}elseif($unit -eq 'ReportSubjectProof'){'UOAIX REPORT SUBJECT failures=0'}elseif($unit -eq 'TreasuryProof'){'UOAIX TREASURY failures=0'}elseif($unit -eq 'PanelLogLevelsProof'){'UOAIX PANEL LOG LEVELS failures=0'}else{'UOAIX PANEL CORE failures=0'}
             if(-not $text.Contains($verdict) -or $text -match '\bFAIL\b|!EXC|OUT OF MEMORY'){throw "Core assertion failed: $unit"}
         }
     }

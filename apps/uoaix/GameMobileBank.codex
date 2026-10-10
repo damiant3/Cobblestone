@@ -13,10 +13,18 @@ Chapter: GameMobileBank
   gmb-new : GsiState, Integer -> GmbState
   gmb-new (items) (gump) = GmbState { items = items, bankers = gp-zeros [] 16, count = 0, leases = gmb-leases 5 [], gump = gump }
   gmb-add-banker : GmbState, Integer -> Integer
-  gmb-add-banker (state) (serial) = if state.count == 16 then -1 else when world-get state.items.world serial
+  gmb-add-banker (state) (serial) = if gmb-is-banker state serial 0 then 0
+    else if state.count == 16 then -1 else when world-get state.items.world serial
     is Err (e) -> -1
     is Ok (npc) -> if npc.kind /= 1 then -1 else let saved = list-set-at state.bankers state.count serial
       in let next = __record-set state "count" (state.count + 1) in 0
+  gmb-drop-banker : GmbState, Integer, Integer -> Integer
+  gmb-drop-banker (state) (serial) (i) = if i >= state.count then 0
+    else if list-at state.bankers i /= serial then gmb-drop-banker state serial (i + 1)
+    else let last = state.count - 1
+    in let moved = list-set-at state.bankers i (list-at state.bankers last)
+    in let cleared = list-set-at state.bankers last 0
+    in let n = __record-set state "count" last in 1
   gmb-layer : GsiState, Integer, Integer, Integer -> Integer
   gmb-layer (state) (owner) (layer) (i) = world-layer-serial state.world owner layer
   gmb-clothe : GsiState, Integer, Integer, Integer, Integer -> Result Integer Text
@@ -28,7 +36,7 @@ Chapter: GameMobileBank
           is Err (e) -> Err e
           is Ok (serial) -> let registered = gsi-register state serial layer 0 False False in Ok serial
   gmb-dress : GsiState, Integer -> Result Integer Text
-  gmb-dress (state) (owner) = if state.world.capacity - world-count state.world < 3 then Err "clothing capacity"
+  gmb-dress (state) (owner) = if world-room state.world < 3 then Err "clothing capacity"
     else when gmb-clothe state owner #1517 #035F 5
       is Err (e) -> Err e
       is Ok (shirt) -> when gmb-clothe state owner #152E 0 4
@@ -55,9 +63,9 @@ Chapter: GameMobileBank
     else let serial = list-at items i
     in let slot = world-slot state.world serial
     in let layer = (gsi-meta state serial).layer
-    in let at = 16 + slot * 80
-    in let graphic = peek-qword state.world.buffer (at + 40)
-    in let hue = peek-qword state.world.buffer (at + 48)
+    in let at = wi-object state.world.buffer slot
+    in let graphic = peek-qword at 40
+    in let hue = peek-qword at 48
     in let row = list-push (gp-put16 (gp-put32 out serial) (bit-or (bit-and graphic #7FFF) (if hue == 0 then 0 else #8000))) layer
     in gmb-equipment-rows state items (i + 1) (if hue == 0 then row else gp-put16 row hue)
   gmb-mobile : GsiState, WorldObject -> List Integer
@@ -72,7 +80,34 @@ Chapter: GameMobileBank
       else when world-get state.world (gp-u32 packet 3)
         is Err (e) -> packet
         is Ok (mobile) -> if mobile.kind /= 1 then packet else sip-length (gmb-equipment state mobile.serial 0 0 (gmb-header packet 0 []))
-    in gmb-rewrite state packets (i + 1) (list-push out next)
+    in let corpse = gmb-corpse-serial packet
+    in if corpse == 0 then gmb-rewrite state packets (i + 1) (list-push out next)
+    else let owned = gmb-corpse-own state (world-first-child state.world corpse) 2
+    in gmb-rewrite state packets (i + 1) (list-push (list-push (list-push out next) (gmb-corpse-equip state corpse)) (gsi-contents state corpse 0 [#3C,0,0,0,0] 0))
+ A corpse is 0x1A art 0x2006 (cbp-corpse). What it holds lifts and drops like any container's contents, a container in it opens
+ (the backpack's gump 0x3C), and 0x89 lists its worn layers so the client draws the body clothed (RunUO CorpseEquip).
+  gmb-corpse-serial : List Integer -> Integer
+  gmb-corpse-serial (packet) = if list-length packet < 14 | list-at packet 0 /= #1A | gp-u16 packet 7 /= #2006 then 0
+    else bit-and (gp-u32 packet 3) #7FFFFFFF
+  gmb-corpse-own : GsiState, Integer, Integer -> Integer
+  gmb-corpse-own (state) (serial) (depth) = if serial == 0 | depth == 0 then 0
+    else let next = world-next-sibling state.world serial
+    in when world-get state.world serial
+      is Err (_) -> gmb-corpse-own state next depth
+      is Ok (item) -> if item.kind /= 2 then gmb-corpse-own state next depth
+        else let meta = if gsi-known state serial then gsi-meta state serial else GsiItem { serial = serial, layer = 0, gump = 0, movable = True, stackable = item.amount > 1 }
+        in let gump = if meta.gump == 0 & item.graphic == #0E75 then #003C else meta.gump
+        in let registered = gsi-register state serial meta.layer gump True (meta.stackable & meta.layer == 0 & gump == 0)
+        in let inner = if gump == 0 then 0 else gmb-corpse-own state (world-first-child state.world serial) (depth - 1)
+        in gmb-corpse-own state next depth
+  gmb-corpse-equip : GsiState, Integer -> List Integer
+  gmb-corpse-equip (state) (corpse) = sip-length (list-push (gmb-corpse-rows state (world-first-child state.world corpse) (gp-put32 [#89,0,0] corpse)) 0)
+  gmb-corpse-rows : GsiState, Integer, List Integer -> List Integer
+  gmb-corpse-rows (state) (serial) (out) = if serial == 0 then out
+    else let next = world-next-sibling state.world serial
+    in let layer = if gsi-known state serial then (gsi-meta state serial).layer else 0
+    in if layer < 1 | layer > 25 | layer == 21 then gmb-corpse-rows state next out
+    else gmb-corpse-rows state next (gp-put32 (list-push out layer) serial)
   gmb-reply : GsiState, GameReply -> GameReply
   gmb-reply (state) (reply) = GameReply { packets = gmb-rewrite state reply.packets 0 [], close = reply.close, note = reply.note }
   gmb-near-banker : GmbState, WorldObject, Integer -> Boolean

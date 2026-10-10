@@ -84,7 +84,7 @@ Chapter: TitleRegistry
     in seq
   tr-register : TrRegistry, Boolean, Integer, TrParty, TrEvidence, Integer -> Integer
   tr-register (r) (verified) (registrar) (actor) (e) (hour) =
-    if not verified | registrar < 0 | registrar > r.towns | not (tr-party-valid actor) | not (tr-evidence-valid e) | not (tr-room r hour) | r.used == 128 then -1
+    if not verified | registrar < 0 | registrar > r.towns | not (tr-party-valid actor) | not (tr-evidence-valid e) | not (tr-room r hour) | r.used >= list-length r.titles then -1
     else if not (tr-same actor e.owner.kind e.owner.id) | not (tr-same e.mark actor.kind actor.id) | tr-find r e.serial 0 /= 0 then -1
     else let t = list-at r.titles r.used
     in let id = r.used + 1
@@ -202,7 +202,7 @@ Chapter: TitleRegistry
   tr-derive : TrRegistry, Boolean, Integer, TrEvidence, Integer -> Integer
   tr-derive (r) (verified) (parent) (e) (hour) =
     let id = tr-find r parent 0
-    in if not verified | id == 0 | r.used == 128 | not (tr-room r hour) | not (tr-evidence-valid e) | tr-find r e.serial 0 /= 0 then -1
+    in if not verified | id == 0 | r.used >= list-length r.titles | not (tr-room r hour) | not (tr-evidence-valid e) | tr-find r e.serial 0 /= 0 then -1
     else let source = list-at r.titles (id - 1)
     in if source.status /= 1 | not (tr-same e.owner source.owner-kind source.owner-id) | not (tr-same e.mark source.mark-kind source.mark-id) | e.mark-revision /= source.mark-revision then -1
     else let t = list-at r.titles r.used
@@ -343,7 +343,7 @@ Chapter: TitleRegistry
     if r.busy /= 0 then Err "registry already has a prepared action"
     else if c.kind < 1 | c.kind > 11 | not (tr-room r c.hour) then Err "registry command or history admission refused"
     else let id = tr-find r c.evidence.serial 0
-    in if id == 0 & (r.used == 128 | (c.kind /= 1 & c.kind /= 8)) then Err "registry action target absent"
+    in if id == 0 & (r.used >= list-length r.titles | (c.kind /= 1 & c.kind /= 8)) then Err "registry action target absent"
     else let slot = if id == 0 then r.used else id - 1
     in let undo = TrUndo { registry = r, before = tr-copy-title (list-at r.titles slot),
       slot = slot, serial = c.evidence.serial, used = r.used, count = r.count,
@@ -355,7 +355,7 @@ Chapter: TitleRegistry
     in Ok undo
   tr-undo-valid : TrUndo -> Boolean
   tr-undo-valid (u) =
-    u.open == 1 & u.slot >= 0 & u.slot < 128 & u.count >= 0 & u.count < 4096
+    u.open == 1 & u.slot >= 0 & u.slot < list-length u.registry.titles & u.count >= 0 & u.count < 4096
       & u.registry.busy == 1 & u.registry.count == u.count + 1
       & u.registry.sequence == u.sequence + 1
       & u.registry.used == u.used + (if u.before.serial == 0 then 1 else 0)

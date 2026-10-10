@@ -1,5 +1,8 @@
 Chapter: MageryResources
   cites Uoaix chapter MageryPackets
+  cites Uoaix chapter SkillCurve
+  cites Uoaix chapter GameHunger
+  cites Uoaix chapter GameVendorBuys
 
  ServUO Spell.ConsumeReagents consumes one of each listed reagent through
  Backpack.ConsumeTotal. This port walks indexed pack descendants, never bank
@@ -10,7 +13,7 @@ Chapter: MageryResources
     else let next = world-next-sibling magic.items.world serial
     in let found = if mgs-known magic serial then
         let meta = list-at magic.definitions (world-slot magic.items.world serial)
-        in if peek-qword magic.items.world.buffer (56 + world-slot magic.items.world serial * 80) == #0EFA
+        in if peek-qword (wi-object magic.items.world.buffer (world-slot magic.items.world serial)) 40 == #0EFA
           & (spell == 0 | bit-and meta.spells (bit-shl 1 (max 1 spell - 1)) /= 0) then serial else 0
       else 0
     in if found /= 0 then found else
@@ -19,15 +22,15 @@ Chapter: MageryResources
   mgr-book : Magery, Integer, Integer -> Integer
   mgr-book (magic) (owner) (spell) = let held = world-layer-serial magic.items.world owner 1
     in let ready = if not (mgs-known magic held) then False else let meta = list-at magic.definitions (world-slot magic.items.world held)
-      in peek-qword magic.items.world.buffer (56 + world-slot magic.items.world held * 80) == #0EFA
+      in peek-qword (wi-object magic.items.world.buffer (world-slot magic.items.world held)) 40 == #0EFA
         & (spell == 0 | bit-and meta.spells (bit-shl 1 (max 1 spell - 1)) /= 0)
     in if ready then held else let pack = gsi-pack-find magic.items.world owner 0
     in if pack == 0 then 0 else mgr-book-child magic (world-first-child magic.items.world pack) spell 64
   mgr-find : Magery, Integer, Integer, Integer -> Integer
   mgr-find (magic) (serial) (graphic) (left) = if serial == 0 | left == 0 then 0 else let slot = world-slot magic.items.world serial
-    in if slot < 0 then 0 else let at = 16 + slot * 80
+    in if slot < 0 then 0 else let at = wi-object magic.items.world.buffer slot
     in let next = world-next-sibling magic.items.world serial
-    in if peek-qword magic.items.world.buffer (at + 40) == graphic & peek-qword magic.items.world.buffer (at + 48) == 0
+    in if peek-qword at 40 == graphic & peek-qword at 48 == 0
       & gsi-known magic.items serial & (gsi-meta magic.items serial).movable
       & (gsi-meta magic.items serial).layer == 0 & (gsi-meta magic.items serial).gump == 0
       & world-child-count magic.items.world serial == 0 then serial
@@ -37,17 +40,19 @@ Chapter: MageryResources
   mgr-resource (magic) (owner) (kind) = let pack = gsi-pack-find magic.items.world owner 0
     in if pack == 0 then 0 else mgr-find magic (world-first-child magic.items.world pack) (mgd-reagent kind) 64
   mgr-lot-ready : Magery, Integer, Integer -> Boolean
-  mgr-lot-ready (magic) (owner) (serial) = when magic.vendor
+  mgr-lot-ready (magic) (owner) (serial) = mgr-vendor-ready magic.vendor owner serial
+  mgr-vendor-ready : Maybe GvWorld, Integer, Integer -> Boolean
+  mgr-vendor-ready (market) (owner) (serial) = when market
     is None -> True
     is Just (vendor) -> let lot = gv-lot vendor serial 0
       in if lot < 0 then True else let player = gv-player vendor owner 0
-      in if player < 0 then False else let row = list-at vendor.lots lot
+      in if player < 0 then False else let row = ep-lot vendor.currency.world.goods lot
       in let slot = world-slot vendor.game.world serial
-      in if slot < 0 | row.actor /= (list-at vendor.players player).actor | row.quantity < 1 then False
+      in let held = if slot < 0 then 0 else peek-qword (wi-object vendor.game.world.buffer slot) 64
+      in if slot < 0 | row.actor /= (list-at vendor.players player).actor | held < 1 then False
       else let actor = ep-actor vendor.currency.world row.actor
-      in peek-qword vendor.game.world.buffer (80 + slot * 80) == row.quantity
-        & ep-at actor.stock row.item >= 1 & ep-at actor.quality row.item >= row.quality
-        & ep-at actor.wear row.item >= row.wear & ep-at actor.cost row.item >= row.basis / row.quantity
+      in ep-at actor.stock row.item >= 1 & ep-at actor.quality row.item >= row.quality
+        & ep-at actor.wear row.item >= row.wear & ep-at actor.cost row.item >= row.basis / held
         & ep-at vendor.currency.world.consumed row.item < ep-limit
   mgr-invalidate : GvWorld, Integer -> Integer
   mgr-invalidate (vendor) (i) = if i == vendor.player-count then 0 else let player = list-at vendor.players i
@@ -55,25 +60,24 @@ Chapter: MageryResources
     in let b = __record-set player "count" 0
     in let c = __record-set player "expires" 0 in mgr-invalidate vendor (i + 1)
   mgr-debit : Magery, Integer, Integer -> Result Integer Text
-  mgr-debit (magic) (owner) (serial) = if not (mgr-lot-ready magic owner serial) then Err "reagent lot admission changed"
-    else when magic.vendor
+  mgr-debit (magic) (owner) (serial) = mgr-vendor-debit magic.vendor owner serial
+  mgr-vendor-debit : Maybe GvWorld, Integer, Integer -> Result Integer Text
+  mgr-vendor-debit (market) (owner) (serial) = if not (mgr-vendor-ready market owner serial) then Err "reagent lot admission changed"
+    else when market
       is None -> Ok 0
       is Just (vendor) -> let at = gv-lot vendor serial 0
-        in if at < 0 then Ok 0 else let lot = list-at vendor.lots at
-        in let actor = ep-actor vendor.currency.world lot.actor
-        in let basis = lot.basis / lot.quantity
-        in let a = ep-add actor.stock lot.item -1
-        in let b = ep-add actor.quality lot.item (0 - lot.quality)
-        in let c = ep-add actor.wear lot.item (0 - lot.wear)
-        in let d = ep-add actor.cost lot.item (0 - basis)
-        in let e = ep-add vendor.currency.world.consumed lot.item 1
-        in let f = __record-set lot "basis" (lot.basis - basis)
-        in let g = __record-set lot "quantity" (lot.quantity - 1)
-        in let retired = if lot.quantity /= 0 then 0 else let last = vendor.lot-count - 1
-          in let moved = list-set-at vendor.lots at (list-at vendor.lots last)
-          in let cleared = list-set-at vendor.lots last lot
-          in let count = __record-set vendor "lot-count" last in 0
-        in let invalidated = mgr-invalidate vendor 0 in Ok 0
+        in if at < 0 then Ok 0
+        else let w = vendor.currency.world
+        in let lot = ep-lot w.goods at
+        in let item = lot.item
+        in when ep-take w lot.actor item 1 serial
+          is Err (e) -> Err e
+          is Ok (_) -> let used = ep-add w.consumed item 1
+            in let invalidated = mgr-invalidate vendor 0 in Ok 1
+  mgr-pile : WorldTable, Integer -> List Integer
+  mgr-pile (world) (serial) = when world-get world serial
+    is Err (_) -> sip-remove serial
+    is Ok (left) -> sip-item left
   mgr-ready : Magery, Integer, Integer, Integer -> Boolean
   mgr-ready (magic) (owner) (mask) (i) = if i == 8 then True
     else if bit-and mask (bit-shl 1 i) == 0 then mgr-ready magic owner mask (i + 1)
@@ -85,7 +89,8 @@ Chapter: MageryResources
     else let serial = mgr-resource magic owner i
     in when mgr-debit magic owner serial
       is Err (e) -> Err e
-      is Ok (_) -> mgr-consume-item magic owner mask i serial packets
+      is Ok (written) -> if written == 1 then mgr-consume magic owner mask (i + 1) (list-push packets (mgr-pile magic.items.world serial))
+        else mgr-consume-item magic owner mask i serial packets
   mgr-consume-item : Magery, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
   mgr-consume-item (magic) (owner) (mask) (i) (serial) (packets) = when world-get magic.items.world serial
       is Err (e) -> Err e
@@ -96,15 +101,84 @@ Chapter: MageryResources
       in when world-update magic.items.world reduced
         is Err (e) -> Err e
         is Ok (_) -> mgr-consume magic owner mask (i + 1) (list-push packets (sip-item reduced))
+ UOX3 CHandleCombat DeleteItemAmount: a player's shot spends one arrow or bolt from the pack, through its economy lot
+ as a reagent is spent.
+  mgr-ammo : Magery, Integer, Integer -> Result (List (List Integer)) Text
+  mgr-ammo (magic) (owner) (graphic) = let pack = gsi-pack-find magic.items.world owner 0
+    in let serial = if pack == 0 then 0 else mgr-find magic (world-first-child magic.items.world pack) graphic 64
+    in if serial == 0 then Err "no ammunition"
+    else if not (mgr-lot-ready magic owner serial) then Err "ammunition lot admission changed"
+    else when mgr-debit magic owner serial
+      is Err (e) -> Err e
+      is Ok (written) -> if written == 1 then Ok [mgr-pile magic.items.world serial] else mgr-consume-item magic owner 0 7 serial []
+ A missed arrow that falls is the spent arrow (root's ruling A, 2026-10-08): the shot booked its unit consumed through the
+ shooter's lot (mgr-ammo), so the fall books it back, consumed down one and the shooter's stock up one at the shooter's
+ average quality, as a ground lot the shooter still owns; a shooter with no economy actor drops nothing.
+  mgr-drop-ammo : Magery, Integer, Integer, Integer -> Integer
+  mgr-drop-ammo (magic) (shooter) (target) (graphic) = when magic.vendor
+    is None -> 0
+    is Just (v) -> mgr-drop-lot magic.items v shooter target graphic
+  mgr-drop-lot : GsiState, GvWorld, Integer, Integer, Integer -> Integer
+  mgr-drop-lot (items) (v) (shooter) (target) (graphic) =
+    let w = v.currency.world
+    in let at = gv-player v shooter 0
+    in let item = gvb-item-of graphic
+    in if at < 0 | item <= 0 | ep-at w.consumed item < 1 | world-room items.world <= 0 | not (ep-lot-room w.goods 1) then 0
+    else let actor = (list-at v.players at).actor
+    in let p = ep-actor w actor
+    in if not (ep-room p item 1) then 0
+    else let held = ep-at p.stock item
+    in let quality = if held > 0 then ep-at p.quality item / held else 1000
+    in let wear = if held > 0 then ep-at p.wear item / held else 32
+    in when world-get items.world target
+      is Err (_) -> 0
+      is Ok (m) -> when world-create items.world (WorldObject { serial = 0, kind = 2, x = m.x, y = m.y, z = m.z, graphic = graphic, hue = 0, container = 0, amount = 1, health = 0 })
+        is Err (_) -> 0
+        is Ok (serial) -> let known = gsi-register items serial 0 0 True True
+          in let unspent = ep-add w.consumed item (0 - 1)
+          in let a = ep-add p.stock item 1
+          in let b = ep-add p.quality item quality
+          in let c = ep-add p.wear item wear
+          in if gv-add-lot v serial actor item quality wear 0 < 0 then 0 else 1
   mgr-carried : Magery, Integer, Integer -> Boolean
   mgr-carried (magic) (owner) (serial) = let pack = gsi-pack-find magic.items.world owner 0
     in if pack == 0 then False else mgs-under magic.items.world serial pack 65
   mgr-cast-skill : Magery, GameShard, Integer, Integer -> Boolean
-  mgr-cast-skill (magic) (shard) (owner) (spell) = let skill = mgs-skill shard owner 25
-    in let low = mgd-circle spell * 1000 / 7 - 200
-    in if skill >= low + 400 then True else if skill < low then False else mgs-random magic 400 < skill - low
+  mgr-cast-skill (magic) (shard) (owner) (circle) = let skill = mgs-skill shard owner 25
+    in let low = circle * 1000 / 7 - 200
+    in let success = if skill >= low + 400 then True else if skill < low then False else mgs-random magic 400 < skill - low
+    in let gained = if skill >= 1000 | mgs-random magic 1000 >= skc-gain-at 100 skill (low + 200) success then 0 else gs-skill-gain shard owner 25 (mgs-random magic 1000000000)
+    in success
+ ServUO SpellScroll and Spell.CheckSequence: a scroll stays a pack descendant of its caster until the cast lands, and a
+ successful cast consumes one from the stack.
+  mgr-scroll-ready : Magery, Integer, Integer, Integer -> Boolean
+  mgr-scroll-ready (magic) (owner) (serial) (spell) = if not (mgr-carried magic owner serial) then False
+    else when world-get magic.items.world serial
+      is Err (_) -> False
+      is Ok (item) -> item.kind == 2 & item.amount > 0 & mgd-scroll-spell item.graphic == spell
+  mgr-spend : Magery, Integer -> Result (List (List Integer)) Text
+  mgr-spend (magic) (serial) = when world-get magic.items.world serial
+    is Err (e) -> Err e
+    is Ok (item) -> if item.amount <= 1 then (when world-delete magic.items.world serial is Err (e) -> Err e is Ok (_) -> Ok [sip-remove serial])
+      else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
+      in when world-update magic.items.world reduced
+        is Err (e) -> Err e
+        is Ok (_) -> Ok [sip-item reduced]
+ Mana returns 3 times as fast as the curve below (Damian, 2026-10-09: "mana regen is too slow, it should be much
+ faster, maybe 3x").
+  mgr-regen-speed : Integer = 3
+ A Mana Drain or Mana Vampire victim regains mana 3 times as slowly for a minute after the cast (UOAIX-202, Damian
+ 2026-10-09: "mana drain and mana vamp need to be more consequential too. both should affect regen rate for a minute
+ after casting"), which takes back the speed-up above for that minute.
+  mgr-drained-slow : Integer = 3
+  mgr-drained-delay : Integer, Integer, Integer -> Integer
+  mgr-drained-delay (tick) (until) (ticks) = if tick < until then ticks * mgr-drained-slow else ticks
+  mgr-regen-due : Magery, GameShard, MgActor -> Integer
+  mgr-regen-due (magic) (shard) (actor) = mgr-drained-delay magic.tick actor.drained-until (mgr-regen-delay shard actor)
   mgr-regen-delay : GameShard, MgActor -> Integer
   mgr-regen-delay (shard) (actor) = let points = mgs-stat actor 2 * 10 + mgs-skill shard actor.serial 46
     in let millis = if points <= 0 then 7000 else if points <= 2000 then 7000 - 239 * points / 48 + 19 * points * points / 19200
       else if points < 2400 then 1000 else 750
-    in mgd-ticks (max 500 (min 7000 millis))
+    in let ticks = max 1 (mgd-ticks (max 250 (min (min 7000 millis) (cb-regen-full-ms / max 1 (mgs-stat actor 2)))) / mgr-regen-speed)
+    in let slot = gs-char-slot shard.characters actor.serial 0
+    in if slot < 0 then ticks else gh-interval (shard.characters + slot * 160) ticks

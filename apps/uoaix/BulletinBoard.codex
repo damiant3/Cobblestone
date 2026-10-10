@@ -1,0 +1,212 @@
+Chapter: BulletinBoard
+  cites Uoaix chapter GameSkillsItems
+
+ The 1.25 client's bulletin board, packet 0x71 (ServUO Engines/BulletinBoard/BulletinBoards.cs, GPL-2.0). Server to client:
+ subcommand 0 shows the board (board serial, a 30-byte name); 1 is a message header (board, message, thread, then poster,
+ subject and time, each a length byte counting its terminating zero, the bytes and the zero); 2 is the message (board,
+ message, poster, subject, time, body 16 bits, hue 16 bits, an equipment count and pairs, a line count and the lines as
+ the same strings). Client to server: 3 asks for a message, 4 for a header (board, message), 5 posts (board, the thread
+ it answers, the subject string, a line count and the line strings), 6 removes (board, message). A message is an item
+ 0x0EB0 inside the board's container, which the client asks a header for once the board's contents arrive.
+  bbs-art : Integer = #1E5E
+  bbs-message-art : Integer = #0EB0
+ The board faces the street on the Britain bank's front wall (Damian, 2026-10-09: "the bulletin board at the brit bank is
+ behind the front all and invisible. it needs to be moved about 1 tile south and 10 tiles west to fit on the front wall"):
+ the 1.25 statics put that wall on row 1692 (brick 0x0034, x 1424 to 1441, windows at 1427 and 1434), and the board art
+ 0x1E5E leans as the wall does, so it hangs from the tile in front of the plain wall at 1431. It stood at 1441,1692, inside
+ the wall's east corner; a world that holds it there moves it at boot.
+  bbs-x : Integer = 1431
+  bbs-y : Integer = 1693
+  bbs-z : Integer = 0
+  bbs-old-x : Integer = 1441
+  bbs-old-y : Integer = 1692
+  bbs-limit : Integer = 32
+  bbs-line-limit : Integer = 16
+ The posts live in one buffer allocated at boot, because a request's own allocations are reclaimed after the route: the
+ post count, then bbs-limit rows of serial, poster, thread, line count, then name (32 bytes), subject (64), time (32)
+ and bbs-line-limit lines of 96 bytes, each text a length byte and its bytes, cut to fit. BBS1 (composite format 28) is
+ this buffer.
+  bbs-row-bytes : Integer = 32 + 32 + 64 + 32 + 8 + 16 * 96
+  bbs-codec-bytes : Integer = 8 + bbs-limit * bbs-row-bytes
+  BbsState = record { buf : Integer, room : Integer }
+  bbs-clear : Integer, Integer, Integer -> Integer
+  bbs-clear (buf) (i) (n) = if i >= n then 0 else let z = poke-qword buf (i * 8) 0 in bbs-clear buf (i + 1) n
+  bbs-new : Integer -> BbsState
+  bbs-new (unused) = let buf = alloc-bytes bbs-codec-bytes in let cleared = bbs-clear buf 0 (bbs-codec-bytes / 8) in BbsState { buf = buf, room = bbs-limit }
+ The board grows (room doubles at the growth point once under a quarter is free); BBS1 keeps the first bbs-limit posts
+ and the rest travel in the board tail: the extra count, then their rows.
+  bbs-due : BbsState -> Boolean
+  bbs-due (s) = s.room - bbs-count s < s.room / 4
+  bbs-grow : BbsState -> Integer
+  bbs-grow (s) = bbs-grow-to s (s.room * 2)
+  bbs-grow-to : BbsState, Integer -> Integer
+  bbs-grow-to (s) (room) = if room <= s.room then s.room
+    else let fresh = alloc-bytes (8 + room * bbs-row-bytes)
+    in let cleared = bbs-clear fresh 0 ((8 + room * bbs-row-bytes) / 8)
+    in let copied = ws-copy s.buf fresh (8 + bbs-count s * bbs-row-bytes) 0
+    in let a = __record-set s "buf" fresh in let b = __record-set s "room" room in room
+  bbs-tail-size : BbsState -> Integer
+  bbs-tail-size (s) = 8 + max 0 (bbs-count s - bbs-limit) * bbs-row-bytes
+  bbs-write-tail : BbsState, Integer -> Integer
+  bbs-write-tail (s) (at) = let n = max 0 (bbs-count s - bbs-limit)
+    in let a = poke-qword at 0 n in let b = ws-copy (s.buf + bbs-row bbs-limit) (at + 8) (n * bbs-row-bytes) 0 in at + 8 + n * bbs-row-bytes
+  bbs-tail-length : Integer, Integer -> Integer
+  bbs-tail-length (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > room / bbs-row-bytes then -1 else 8 + peek-qword at 0 * bbs-row-bytes
+  bbs-read-tail : BbsState, Integer, Integer -> Integer
+  bbs-read-tail (s) (at) (size) = if size == 0 then 0
+    else if bbs-tail-length at size /= size then -1
+    else let n = peek-qword at 0
+    in if n > 0 & bbs-count s /= bbs-limit then -1
+    else let grown = bbs-grow-to s (bbs-limit + n)
+    in let copied = ws-copy (at + 8) (s.buf + bbs-row bbs-limit) (n * bbs-row-bytes) 0
+    in poke-qword s.buf 0 (bbs-limit + n)
+  bbs-count : BbsState -> Integer
+  bbs-count (s) = peek-qword s.buf 0
+  bbs-row : Integer -> Integer
+  bbs-row (i) = 8 + i * bbs-row-bytes
+  bbs-serial : BbsState, Integer -> Integer
+  bbs-serial (s) (i) = peek-qword s.buf (bbs-row i)
+  bbs-poster : BbsState, Integer -> Integer
+  bbs-poster (s) (i) = peek-qword s.buf (bbs-row i + 8)
+  bbs-thread : BbsState, Integer -> Integer
+  bbs-thread (s) (i) = peek-qword s.buf (bbs-row i + 16)
+  bbs-line-count : BbsState, Integer -> Integer
+  bbs-line-count (s) (i) = min bbs-line-limit (max 0 (peek-qword s.buf (bbs-row i + 24)))
+  bbs-find : WorldTable, Integer -> Integer
+  bbs-find (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == bbs-art & o.container == 0) then serial
+    else bbs-find world (world-tile-next world serial)
+  bbs-board : WorldTable -> Integer
+  bbs-board (world) = bbs-find world (world-tile-first world bbs-x bbs-y)
+  bbs-install : GsiState -> Integer
+  bbs-install (items) = if bbs-board items.world /= 0 then 0
+    else let old = bbs-find items.world (world-tile-first items.world bbs-old-x bbs-old-y)
+    in if old /= 0 then bbs-move items old
+    else if world-room items.world <= 0 then 0
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = bbs-x, y = bbs-y, z = bbs-z, graphic = bbs-art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register items serial 0 0 False False /= 0 then 0 else let touched = world-touch items.world in 1
+  bbs-move : GsiState, Integer -> Integer
+  bbs-move (items) (serial) = when world-get items.world serial
+    is Err (_) -> 0
+    is Ok (o) -> let a = __record-set o "x" bbs-x
+      in let b = __record-set o "y" bbs-y
+      in let d = __record-set o "z" bbs-z
+      in when world-update items.world o is Err (_) -> 0 is Ok (_) -> let touched = world-touch items.world in 1
+  bbs-at : BbsState, Integer, Integer -> Integer
+  bbs-at (s) (serial) (i) = if i >= bbs-count s then -1 else if bbs-serial s i == serial then i else bbs-at s serial (i + 1)
+  bbs-bytes : Text, Integer, Integer, List Integer -> List Integer
+  bbs-bytes (t) (i) (limit) (out) = if i >= text-length t | i >= limit then out
+    else bbs-bytes t (i + 1) limit (list-push out (to-unicode (char-code (char-at t i))))
+  bbs-put-bytes : Integer, Integer, List Integer, Integer -> Integer
+  bbs-put-bytes (buf) (at) (b) (i) = if i >= list-length b then 0 else let c = poke-byte buf (at + i) (list-at b i) in bbs-put-bytes buf at b (i + 1)
+  bbs-put-text : Integer, Integer, Text, Integer -> Integer
+  bbs-put-text (buf) (at) (t) (width) = let b = bbs-bytes t 0 (width - 1) []
+    in let n = poke-byte buf at (list-length b) in bbs-put-bytes buf (at + 1) b 0
+  bbs-get-bytes : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bbs-get-bytes (buf) (at) (n) (i) (out) = if i >= n then out else bbs-get-bytes buf at n (i + 1) (list-push out (peek-byte buf (at + i)))
+  bbs-field : Integer, Integer, Integer -> List Integer
+  bbs-field (buf) (at) (width) = bbs-get-bytes buf (at + 1) (min (width - 1) (peek-byte buf at)) 0 []
+ A 0x71 string is a length byte counting its terminating zero, the bytes and the zero.
+  bbs-string : List Integer, List Integer -> List Integer
+  bbs-string (out) (b) = (list-push out (list-length b + 1) & b) & [0]
+  bbs-name : BbsState, Integer -> List Integer
+  bbs-name (s) (i) = bbs-field s.buf (bbs-row i + 32) 32
+  bbs-subject : BbsState, Integer -> List Integer
+  bbs-subject (s) (i) = bbs-field s.buf (bbs-row i + 64) 64
+  bbs-time : BbsState, Integer -> List Integer
+  bbs-time (s) (i) = bbs-field s.buf (bbs-row i + 128) 32
+  bbs-head : Integer, Integer, Integer -> List Integer
+  bbs-head (sub) (board) (message) = gp-put32 (gp-put32 [#71, 0, 0, sub] board) message
+  bbs-display : Integer -> List Integer
+  bbs-display (board) = let named = bbs-bytes "Britain Bulletin Board" 0 29 (gp-put32 [#71, 0, 0, 0] board)
+    in sip-length (gp-zeros named (38 - list-length named))
+  bbs-header : BbsState, Integer, Integer -> List Integer
+  bbs-header (s) (board) (i) = sip-length (bbs-string (bbs-string (bbs-string (gp-put32 (bbs-head 1 board (bbs-serial s i)) (bbs-thread s i)) (bbs-name s i)) (bbs-subject s i)) (bbs-time s i))
+  bbs-lines : BbsState, Integer, List Integer, Integer -> List Integer
+  bbs-lines (s) (i) (out) (k) = if k >= bbs-line-count s i then out
+    else bbs-lines s i (bbs-string out (bbs-field s.buf (bbs-row i + 160 + k * 96) 96)) (k + 1)
+  bbs-content : BbsState, Integer, Integer -> List Integer
+  bbs-content (s) (board) (i) = let strings = bbs-string (bbs-string (bbs-string (bbs-head 2 board (bbs-serial s i)) (bbs-name s i)) (bbs-subject s i)) (bbs-time s i)
+    in sip-length (bbs-lines s i (list-push (gp-put16 (gp-put16 strings #0190) #83EA) 0 & [bbs-line-count s i]) 0)
+  bbs-open : BbsState, GsiState, Integer -> List (List Integer)
+  bbs-open (s) (items) (board) = [bbs-display board, gsi-contents items board 0 [#3C, 0, 0, 0, 0] 0]
+ A client string is copied straight from the packet into the post's row, cut at its first zero and at the field width.
+  bbs-copy : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  bbs-copy (buf) (at) (packet) (from) (left) (width) = let n = bbs-zero packet from (min left (width - 1)) 0
+    in let a = poke-byte buf at n in bbs-put-bytes buf (at + 1) (bbs-slice packet from n 0 []) 0
+  bbs-zero : List Integer, Integer, Integer, Integer -> Integer
+  bbs-zero (packet) (from) (left) (n) = if n >= left | from + n >= list-length packet | list-at packet (from + n) == 0 then n else bbs-zero packet from left (n + 1)
+  bbs-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bbs-slice (packet) (from) (n) (i) (out) = if i >= n then out else bbs-slice packet from n (i + 1) (list-push out (list-at packet (from + i)))
+  bbs-copy-lines : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  bbs-copy-lines (buf) (row) (packet) (at) (left) (k) = if left <= 0 | k >= bbs-line-limit | at >= list-length packet then k
+    else let n = list-at packet at
+    in let copied = bbs-copy buf (row + 160 + k * 96) packet (at + 1) n 96
+    in bbs-copy-lines buf row packet (at + 1 + n) (left - 1) (k + 1)
+  bbs-post : BbsState, GsiState, Integer, Integer, Text, Text, List Integer -> List (List Integer)
+  bbs-post (s) (items) (board) (poster) (name) (time) (packet) = let i = bbs-count s
+    in if i >= s.room | list-length packet < 14 then [gs-system "The board is full."]
+    else let thread = gp-u32 packet 8
+    in let subject-length = list-at packet 12
+    in let at = 13 + subject-length
+    in when world-create items.world (WorldObject { serial = 0, kind = 2, x = 40 + int-mod i 8 * 10, y = 60, z = 0, graphic = bbs-message-art, hue = 0, container = board, amount = 1, health = 0 })
+      is Err (_) -> [gs-system "The board is full."]
+      is Ok (serial) -> let known = gsi-register items serial 0 0 False False
+        in let row = bbs-row i
+        in let cleared = bbs-clear (s.buf + row) 0 (bbs-row-bytes / 8)
+        in let a = poke-qword s.buf row serial
+        in let b = poke-qword s.buf (row + 8) poster
+        in let c = poke-qword s.buf (row + 16) (if bbs-at s thread 0 >= 0 then thread else 0)
+        in let d = bbs-put-text s.buf (row + 32) name 32
+        in let e = bbs-copy s.buf (row + 64) packet 13 subject-length 64
+        in let f = bbs-put-text s.buf (row + 128) time 32
+        in let lines = if at >= list-length packet then 0 else bbs-copy-lines s.buf row packet (at + 1) (list-at packet at) 0
+        in let g = poke-qword s.buf (row + 24) lines
+        in let counted = poke-qword s.buf 0 (i + 1)
+        in let touched = world-touch items.world
+        in when world-get items.world serial
+          is Err (_) -> []
+          is Ok (o) -> [sip-item o, bbs-header s board i]
+  bbs-drop : BbsState, Integer -> Integer
+  bbs-drop (s) (i) = let n = bbs-count s
+    in if i + 1 >= n then let cleared = bbs-clear (s.buf + bbs-row i) 0 (bbs-row-bytes / 8) in poke-qword s.buf 0 (n - 1)
+    else let moved = ws-copy (s.buf + bbs-row (i + 1)) (s.buf + bbs-row i) bbs-row-bytes 0 in bbs-drop s (i + 1)
+  bbs-remove : BbsState, GsiState, Integer, Integer -> List (List Integer)
+  bbs-remove (s) (items) (player) (message) = let i = bbs-at s message 0
+    in if i < 0 then []
+    else if bbs-poster s i /= player then [gs-system "Thou canst remove only thine own messages."]
+    else when world-delete items.world message
+      is Err (_) -> []
+      is Ok (_) -> let dropped = bbs-drop s i in let touched = world-touch items.world in [sip-remove message]
+ bbs-handler answers a double-click on the board and every 0x71 request; the caller supplies the player's name and the
+ game time it shows on a post.
+  bbs-handler : BbsState, GsiState, GameShard, GameInput, List Integer, Text, Text -> Maybe GameReply
+  bbs-handler (s) (items) (game) (input) (packet) (name) (time) =
+    if list-length packet < 5 | input.mode /= 2 | input.session.phase /= 2 then None
+    else let op = list-at packet 0
+    in let board = bbs-board items.world
+    in if board == 0 then None
+    else if op == 6 then (if bit-and (gp-u32 packet 1) #7FFFFFFF /= board then None
+      else when world-get game.world input.session.serial
+        is Err (_) -> None
+        is Ok (me) -> if walk-abs (me.x - bbs-x) > 2 | walk-abs (me.y - bbs-y) > 2 then Just (gsi-denied "That is too far away.")
+          else Just (gs-reply (bbs-open s items board) "board:open"))
+    else if op /= #71 | list-length packet < 12 | gp-u32 packet 4 /= board then None
+    else let sub = list-at packet 3
+    in let message = gp-u32 packet 8
+    in if sub == 3 | sub == 4 then (let i = bbs-at s message 0
+        in if i < 0 then Just (gs-reply [] "board:missing")
+        else Just (gs-reply [(if sub == 3 then bbs-content s board i else bbs-header s board i)] "board:read"))
+    else if sub == 5 then Just (gs-reply (bbs-post s items board input.session.serial name time packet) "board:post")
+    else if sub == 6 then Just (gs-reply (bbs-remove s items input.session.serial message) "board:remove")
+    else None
+  bbs-specs : List GameOpcodeSpec = [GameOpcodeSpec { opcode = 113, size = 0, minimum = 12, maximum = 2048 }]
+  bbs-encode : BbsState, Integer -> Integer
+  bbs-encode (s) (buf) = let copied = ws-copy s.buf buf (8 + min (bbs-count s) bbs-limit * bbs-row-bytes) 0
+    in let rest = bbs-clear (buf + 8 + min (bbs-count s) bbs-limit * bbs-row-bytes) 0 ((bbs-limit - min (bbs-count s) bbs-limit) * bbs-row-bytes / 8)
+    in poke-qword buf 0 (min (bbs-count s) bbs-limit)
+  bbs-decode : BbsState, Integer -> Result Integer Text
+  bbs-decode (s) (buf) = let n = peek-qword buf 0
+    in if n < 0 | n > bbs-limit then Err "bulletin board extent"
+    else Ok (ws-copy buf s.buf bbs-codec-bytes 0)

@@ -1,0 +1,76 @@
+Chapter: KeeperLeisure
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyProduction
+
+ UOAIX-222 (Damian, 2026-10-09: "npcs should have a need for leisure, and go to a tavern or the go to the conservatory to
+ watch musicians play"). One row per Britain shop's keeper: 0 need, 8 happiness, 16 the night it chose (night + 1),
+ 24 its choice (0 home, 2 the Blue Boar, 3 the Conservatory), 32 the night it paid (night + 1), 40 the night it was
+ reported (night + 1). A day's work (12 hours at 4) raises need by 48; at 60 or more the keeper goes out, which spends 70,
+ so a keeper goes out on about two evenings in three. Each night costs 5 happiness and a paid evening gives 15.
+  kl-row-bytes : Integer = 48
+  kl-work-need : Integer = 48
+  kl-want : Integer = 60
+  kl-spend : Integer = 70
+  kl-cheer : Integer = 15
+  kl-gloom : Integer = 5
+  kl-start-happiness : Integer = 50
+ A round at the Blue Boar costs what a player's round costs (tbd-round-price); a concert ticket 3 copper.
+  kl-drink-price : Integer = 5
+  kl-ticket-price : Integer = 3
+ The Conservatory's audience stands in the hall's east part, the musician's post being its west part (BritainShops.md).
+  kl-concert-region : BbShop = BbShop { title = "Audience", premises = "Lord British's Conservatory of Music", x1 = 1455, y1 = 1554, x2 = 1461, y2 = 1558 }
+  kl-new : Integer -> Integer
+  kl-new (unused) = let rows = alloc-bytes (bb-shop-count * kl-row-bytes) in kl-init rows 0
+  kl-init : Integer, Integer -> Integer
+  kl-init (rows) (i) = if i == bb-shop-count then rows
+    else let at = rows + i * kl-row-bytes
+    in let a = poke-qword at 0 0 in let b = poke-qword at 8 kl-start-happiness in let c = poke-qword at 16 0
+    in let d = poke-qword at 24 0 in let e = poke-qword at 32 0 in let f = poke-qword at 40 0 in kl-init rows (i + 1)
+  kl-field : Integer, Integer, Integer -> Integer
+  kl-field (rows) (i) (offset) = if i < 0 | i >= bb-shop-count then 0 else peek-qword rows (i * kl-row-bytes + offset)
+  kl-out : Integer, Integer -> Integer
+  kl-out (i) (night) = if int-mod (i + night) 2 == 0 then 2 else 3
+ Tonight's place for keeper i once its shop has closed: chosen once per night and kept.
+  kl-choose : Integer, Integer, Integer -> Integer
+  kl-choose (rows) (i) (night) = if i < 0 | i >= bb-shop-count | i == bb-tavern-keeper | i == bb-musician then 0
+    else let at = rows + i * kl-row-bytes
+    in if peek-qword at 16 == night + 1 then peek-qword at 24
+    else let need = min 100 (peek-qword at 0 + kl-work-need)
+    in let choice = if need >= kl-want then kl-out i night else 0
+    in let a = poke-qword at 0 (if choice > 0 then max 0 (need - kl-spend) else need)
+    in let b = poke-qword at 8 (max 0 (peek-qword at 8 - kl-gloom))
+    in let c = poke-qword at 16 (night + 1)
+    in let d = poke-qword at 24 choice in choice
+ A keeper arrived at its evening place pays the tavern keeper a round or the musician a ticket, once a night; a paid
+ evening lifts its happiness. A purse that cannot pay leaves it no happier.
+  kl-payee : Integer -> Integer
+  kl-payee (choice) = if choice == 2 then bb-tavern-keeper else if choice == 3 then bb-musician else -1
+  kl-price : Integer -> Integer
+  kl-price (choice) = if choice == 2 then kl-drink-price else kl-ticket-price
+  kl-pay : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  kl-pay (v) (rows) (i) (night) (choice) = let payee = kl-payee choice
+    in if i < 0 | i >= bb-shop-count | i >= v.vendor-count | payee < 0 | payee >= v.vendor-count then 0
+    else let at = rows + i * kl-row-bytes
+    in if peek-qword at 32 == night + 1 then 0
+    else let marked = poke-qword at 32 (night + 1)
+    in let w = v.currency.world
+    in if eu-pay v.currency True (ep-actor w (list-at v.vendors i).actor).purse (ep-actor w (list-at v.vendors payee).actor).purse (kl-price choice) 0 0 /= 0 then 0
+    else let lifted = poke-qword at 8 (min 100 (peek-qword at 8 + kl-cheer)) in 1
+ The persisted rows (codec tail 18): the row count, then the rows.
+  kl-tail-size : Integer -> Integer
+  kl-tail-size (unused) = 8 + bb-shop-count * kl-row-bytes
+  kl-write-tail : Integer, Integer -> Integer
+  kl-write-tail (rows) (at) = let n = poke-qword at 0 bb-shop-count in let copied = ws-copy rows (at + 8) (bb-shop-count * kl-row-bytes) 0 in at + kl-tail-size 0
+ A saved table of another shop count is read as far as both reach; a value outside 0..100 is refused.
+  kl-read-tail : Integer, Integer, Integer -> Integer
+  kl-read-tail (rows) (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 * kl-row-bytes > room - 8 then -1
+    else let n = min bb-shop-count (peek-qword at 0)
+    in if not (kl-rows-valid (at + 8) n 0) then -1
+    else let copied = ws-copy (at + 8) rows (n * kl-row-bytes) 0 in n
+  kl-rows-valid : Integer, Integer, Integer -> Boolean
+  kl-rows-valid (at) (n) (i) = if i >= n then True
+    else let row = at + i * kl-row-bytes
+    in peek-qword row 0 >= 0 & peek-qword row 0 <= 100 & peek-qword row 8 >= 0 & peek-qword row 8 <= 100 & kl-rows-valid at n (i + 1)

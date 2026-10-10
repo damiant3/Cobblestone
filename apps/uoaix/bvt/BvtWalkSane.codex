@@ -1,0 +1,34 @@
+Chapter: BvtWalkSane
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ The garbage entry is live 41202's trap operand (UOAIX-141, RDI 0x6a09a470c5f9cd3e).
+  bwk-land : WalkMap, Integer -> Integer
+  bwk-land (map) (i) = if i >= 16 then 0
+    else let set = walk-set-land map (int-mod i 4) (i / 4) 0 0 in bwk-land map (i + 1)
+  bwk-map : Integer -> WalkMap
+  bwk-map (unused) = when walk-map-new 0 0 4 4
+    is Err (_) -> WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+    is Ok (map) -> let landed = bwk-land map 0 in map
+  bwk-spoil : WalkMap, Integer -> Integer
+  bwk-spoil (map) (cell) = let at = cell * map.stride
+    in let a = poke-qword map.solids (at + 8) #6A09A470C5F9CD3E
+    in let b = poke-qword map.solids (at + 16) #6A09A470C5F9CD3E
+    in let c = poke-qword map.solids (at + 24) 1536
+    in poke-qword map.solids at 1
+  bwk-spoiled : Integer -> WalkMap
+  bwk-spoiled (cell) = let map = bwk-map 0 in let spoiled = bwk-spoil map cell in map
+  bwk-steps : WalkMap -> Boolean
+  bwk-steps (map) = when walk-step map 1 1 0 2 is Ok (z) -> z == 0 is Err (_) -> False
+  bwk-refused : WalkMap -> Boolean
+  bwk-refused (map) = when walk-step map 1 1 0 2 is Ok (_) -> False is Err (e) -> e == "walk collider invalid"
+
+  bvt-walk-sane : Integer -> [Console] Integer
+  bvt-walk-sane (unused) = act
+    a <- bvt-check "a walker steps east over clean land (walk-step)" (bwk-steps (bwk-map 0))
+    b <- bvt-check "a garbage collider in the target cell refuses the step instead of trapping (UOAIX-141)" (bwk-refused (bwk-spoiled 6))
+    c <- bvt-check "a garbage collider under the walker refuses the step instead of trapping in walk-climb (UOAIX-141)" (bwk-refused (bwk-spoiled 5))
+    d <- bvt-check "the map check names the spoiled cell (walk-solids-sane)" (walk-solids-sane (bwk-map 0) 6 0 & not (walk-solids-sane (bwk-spoiled 6) 6 0))
+    a + b + c + d
+  end

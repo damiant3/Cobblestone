@@ -1,0 +1,64 @@
+Chapter: BvtWorldGrow
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter BvtCheck
+
+ Item i stands alone in its own 8x8 block, so every item also takes one tile page from the index pool.
+  bwg-item : Integer -> WorldObject
+  bwg-item (i) = WorldObject { serial = 0, kind = 2, x = 8 + int-mod i 600 * 8, y = 8 + i / 600 * 8, z = 0, graphic = #0EED, hue = 0, container = 0, amount = 1, health = 0 }
+  bwg-fill : WorldTable, Integer, Integer -> Integer
+  bwg-fill (world) (i) (stop) = if i >= stop then i
+    else when world-create world (bwg-item i) is Err (_) -> i is Ok (_) -> bwg-fill world (i + 1) stop
+ A full page refuses the next object; one growth admits a second page of objects, each found on its own tile.
+  bwg-full-page : Integer -> Boolean
+  bwg-full-page (unused) = when world-new 256
+    is Err (_) -> False
+    is Ok (w) -> let first = bwg-fill w 0 256
+      in let refused = is-err (world-create w (bwg-item 256))
+      in when world-grow w
+        is Err (_) -> False
+        is Ok (cap) -> let second = bwg-fill w 256 512
+          in let last = world-tile-first w (bwg-item 511).x (bwg-item 511).y
+          in first == 256 & refused & cap == 512 & w.capacity == 512 & second == 512 & world-count w == 512
+            & world-slot w last == 511 & is-err (world-create w (bwg-item 512)) & ws-table-valid w
+ A table of 100 slots grows first to its page's end without a new page, then by a page.
+  bwg-partial : Integer -> Boolean
+  bwg-partial (unused) = when world-new 100
+    is Err (_) -> False
+    is Ok (w) -> let first = bwg-fill w 0 100
+      in when world-grow w
+        is Err (_) -> False
+        is Ok (a) -> let second = bwg-fill w 100 256
+          in when world-grow w
+            is Err (_) -> False
+            is Ok (b) -> let third = bwg-fill w 256 300
+              in a == 256 & b == 512 & third == 300 & world-count w == 300 & ws-table-valid w
+  bwg-ceiling : Integer -> Boolean
+  bwg-ceiling (unused) = let w = world-view 0 world-max-objects
+    in is-err (world-grow w) & w.capacity == world-max-objects & world-max-objects == wi-slot-space & is-err (world-new (world-max-objects + 1))
+ The announce ledger has a cell for every slot a growth can reach: objects in a grown page announce without writing
+ into the block allocated just after the table.
+  bwg-guard-zero : Integer, Integer -> Boolean
+  bwg-guard-zero (guard) (at) = if at >= 4096 then True else if peek-qword guard at /= 0 then False else bwg-guard-zero guard (at + 8)
+  bwg-announce : WorldTable, Integer, Integer -> Integer
+  bwg-announce (w) (slot) (stop) = if slot >= stop then 0
+    else let said = world-announce w (peek-qword (wi-object w.buffer slot) 0) 7
+    in bwg-announce w (slot + 1) stop
+  bwg-ledger : Integer -> Boolean
+  bwg-ledger (unused) = when world-new 256
+    is Err (_) -> False
+    is Ok (w) -> let guard = alloc-bytes 4096
+      in let cleared = wi-zero guard 4096 0
+      in let first = bwg-fill w 0 256
+      in when world-grow w
+        is Err (_) -> False
+        is Ok (_) -> let second = bwg-fill w 256 512
+          in let said = bwg-announce w 256 512
+          in second == 512 & bwg-guard-zero guard 0 & not (world-announce w (peek-qword (wi-object w.buffer 511) 0) 7)
+  bvt-world-grow : Integer -> [Console] Integer
+  bvt-world-grow (unused) = act
+    a <- bvt-check "a full 256-slot world refuses the 257th object, grows a page, and admits 256 more on their own tiles" (bwg-full-page 0)
+    b <- bvt-check "a 100-slot world grows to its page's end, then by a page, and stays valid" (bwg-partial 0)
+    c <- bvt-check "a world at world-max-objects refuses to grow" (bwg-ceiling 0)
+    d <- bvt-check "a grown page's objects announce within the ledger, not into the next allocation" (bwg-ledger 0)
+    a + b + c + d
+  end

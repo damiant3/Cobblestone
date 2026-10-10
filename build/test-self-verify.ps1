@@ -40,9 +40,20 @@ if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernel
 
 $headerBytes = $seedBytes[0..223]
 $headerLiteral = (($headerBytes | ForEach-Object { $_.ToString() }) -join ',')
+$signerFile = (Join-Path $PSScriptRoot '..\seed\signer.pub')
+$signerHex = ''
+if ((Test-Path -PathType Leaf $signerFile)) {
+    $signerHex = ([System.IO.File]::ReadAllText($signerFile)).Trim()
+}
+$headerKeyHex = (($seedBytes[40..71] | ForEach-Object { $_.ToString('x2') }) -join '')
+if (($signerHex -eq $headerKeyHex)) {
+    Write-Host 'SIGNER-FILE: seed/signer.pub matches the seed header key'
+} else {
+    Write-Host ([string]([string]([string]'SIGNER-FILE: MISMATCH, seed/signer.pub ''' + $signerHex) + ''', seed header ') + $headerKeyHex)
+}
 
 
-$src = (@('Chapter: SelfVerifySeed', '  cites Verify chapter CdxBinary', '  cites Foreword chapter Ed25519', '  cites Foreword chapter Sha256', '  cites Foreword chapter Sha512', '  cites Foreword chapter Maybe', '', 'Section: Body', '', '  opening : [Console] Nothing = act', ([string]([string]'    let header = [' + $headerLiteral) + ']'), '    in let magic-ok = cdx-verify-magic header', '    in let pub-key = list-slice header 40 72', '    in let sig = list-slice header 72 136', '    in let content-hash = cdx-read-content-hash header', '    in let sig-valid = ed25519-verify pub-key content-hash sig', '    in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43', '    in act', ([string]([string]'      print-line-uni ("SIZE: ' + $seedLen) + '")'), '      print-line-uni ("MAGIC: " & show magic-ok)', '      print-line-uni ("SIGNATURE: " & show sig-valid)', '      print-line-uni ("AUTHOR-KEY-PRESENT: " & show (has-author > 0))', '      if magic-ok then if sig-valid then', '        print-line-uni "THE SEED VERIFIES ITSELF"', '      else print-line-uni "SIGNATURE INVALID"', '      else print-line-uni "BAD MAGIC"', '    end', '  end') -join "`n")
+$src = (@('Chapter: SelfVerifySeed', '  cites Verify chapter CdxBinary', '  cites Foreword chapter Ed25519', '  cites Foreword chapter Sha256', '  cites Foreword chapter Sha512', '  cites Foreword chapter Maybe', '', 'Section: Body', '', '  opening : [Console] Nothing = act', ([string]([string]'    let header = [' + $headerLiteral) + ']'), '    in let magic-ok = cdx-verify-magic header', '    in let pub-key = list-slice header 40 72', '    in let sig = list-slice header 72 136', '    in let content-hash = cdx-read-content-hash header', '    in let sig-valid = ed25519-verify pub-key content-hash sig', '    in let pinned = cdx-signed-by-project header', '    in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43', '    in act', ([string]([string]'      print-line-uni ("SIZE: ' + $seedLen) + '")'), '      print-line-uni ("MAGIC: " & show magic-ok)', '      print-line-uni ("SIGNATURE: " & show sig-valid)', '      print-line-uni ("AUTHOR-KEY-PRESENT: " & show (has-author > 0))', '      print-line-uni ("SIGNER-PINNED: " & show pinned)', '      if magic-ok then if pinned then', '        print-line-uni "THE SEED VERIFIES ITSELF"', '      else if sig-valid then print-line-uni "SIGNED BY A KEY THAT IS NOT THE PROJECT SIGNER"', '      else print-line-uni "SIGNATURE INVALID"', '      else print-line-uni "BAD MAGIC"', '    end', '  end') -join "`n")
 
 
 $tmpSrc = ([string]([System.IO.Path]::GetTempFileName()) + '.codex')

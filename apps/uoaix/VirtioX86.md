@@ -90,10 +90,8 @@ host check compares every written byte; the reboot reads the pattern before
 writing again. The read-only arm requires an unchanged image hash.
 The proof creates synthetic data only and retains hashes, PIDs and exits.
 
-Measured 2026-10-04 with kernel `C1D0003E5F380465`, QEMU 11.0.0 under TCG:
-seven native queue checks and all five device boots passed, including
-negotiated FLUSH and persistence into the next VM process. Receipt:
-`build-output/uoaix/virtio-proof-2/result.json`.
+The proof runs seven native queue checks and five device boots under QEMU TCG,
+including negotiated FLUSH and persistence into the next VM process.
 WorldDisk's virtio binding and storage-component proof are described in
 [WorldDisk.md](WorldDisk.md). Booting the actual UEFI shard image,
 NIC integration, port/authentication acceptance,

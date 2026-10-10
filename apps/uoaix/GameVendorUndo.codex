@@ -14,26 +14,21 @@ Chapter: GameVendorUndo
   gvu-restore-buffers : List GvSaved, Integer -> Integer
   gvu-restore-buffers (xs) (i) = if i == list-length xs then 0 else let row = list-at xs i
     in let copied = ws-copy row.bytes row.target row.size 0 in gvu-restore-buffers xs (i + 1)
-  gvu-write-lot : Integer, Integer, GvLot -> Integer
-  gvu-write-lot (buf) (at) (p) =
+  gvu-write-lot : Integer, Integer, EpLot, Integer -> Integer
+  gvu-write-lot (buf) (at) (p) (amount) =
     let f0 = poke-qword buf (at + 0) p.serial
     in let f1 = poke-qword buf (at + 8) p.actor
     in let f2 = poke-qword buf (at + 16) p.item
-    in let f3 = poke-qword buf (at + 24) p.quantity
+    in let f3 = poke-qword buf (at + 24) amount
     in let f4 = poke-qword buf (at + 32) p.quality
     in let f5 = poke-qword buf (at + 40) p.wear
     in let f6 = poke-qword buf (at + 48) p.basis
     in 0
-  gvu-read-lot : Integer, Integer, GvLot -> Integer
-  gvu-read-lot (buf) (at) (p) =
-    let f0 = __record-set p "serial" (peek-qword buf (at + 0))
-    in let f1 = __record-set p "actor" (peek-qword buf (at + 8))
-    in let f2 = __record-set p "item" (peek-qword buf (at + 16))
-    in let f3 = __record-set p "quantity" (peek-qword buf (at + 24))
-    in let f4 = __record-set p "quality" (peek-qword buf (at + 32))
-    in let f5 = __record-set p "wear" (peek-qword buf (at + 40))
-    in let f6 = __record-set p "basis" (peek-qword buf (at + 48))
-    in 0
+  gvu-read-lot : EpGoods, Integer, Integer -> Integer
+  gvu-read-lot (g) (buf) (at) = let quality = peek-qword buf (at + 32)
+    in let wear = peek-qword buf (at + 40)
+    in let basis = peek-qword buf (at + 48)
+    in ep-occupy g (peek-qword buf (at + 0)) (peek-qword buf (at + 8)) (peek-qword buf (at + 16)) quality wear basis
   gvu-write-sale : Integer, Integer, GvSale -> Integer
   gvu-write-sale (buf) (at) (p) =
     let f0 = poke-qword buf (at + 0) p.source
@@ -64,14 +59,37 @@ Chapter: GameVendorUndo
     in let f10 = __record-set p "gold-action" (peek-qword buf (at + 80))
     in let f11 = __record-set p "hour" (peek-qword buf (at + 88))
     in 0
-  gvu-lots : GvWorld, Integer, Boolean, Integer -> Integer
-  gvu-lots (v) (buf) (restore) (i) = if i == gv-lot-limit then 0
-    else let done = if restore then gvu-read-lot buf (512 + i * 56) (list-at v.lots i)
-      else gvu-write-lot buf (512 + i * 56) (list-at v.lots i)
-    in gvu-lots v buf restore (i + 1)
+ The undo image: 512 bytes of money, every lot's 80-byte row in creation order, the whole chain's head and the buyer's
+ and seller's (16 bytes each), then 680 bytes a cart line.
+  gvu-heads-at : Integer -> Integer
+  gvu-heads-at (lots) = 512 + lots * ep-row-bytes
+  gvu-tail-at : Integer -> Integer
+  gvu-tail-at (lots) = gvu-heads-at lots + 48
+  gvu-cells : Integer, Integer, Integer, Integer -> Integer
+  gvu-cells (from) (to) (cells) (i) = if i == cells then 0
+    else let a = poke-qword to (i * 8) (peek-qword from (i * 8)) in gvu-cells from to cells (i + 1)
+  gvu-save-lots : EpGoods, Integer, Integer, Integer -> Integer
+  gvu-save-lots (g) (buf) (serial) (i) = if serial == 0 then i
+    else let copied = gvu-cells (ep-row g serial) (buf + 512 + i * ep-row-bytes) 10 0
+    in gvu-save-lots g buf (ep-lot-after g serial) (i + 1)
+  gvu-clear-lots : EpGoods, Integer -> Integer
+  gvu-clear-lots (g) (serial) = if serial == 0 then 0
+    else let next = ep-lot-after g serial
+    in let cleared = ep-clear-row (ep-row g serial) 0
+    in gvu-clear-lots g next
+  gvu-load-lots : EpGoods, Integer, Integer, Integer -> Integer
+  gvu-load-lots (g) (buf) (count) (i) = if i == count then 0
+    else let at = buf + 512 + i * ep-row-bytes
+    in let copied = gvu-cells at (ep-row g (peek-qword at 0)) 10 0
+    in gvu-load-lots g buf count (i + 1)
+  gvu-heads : EpGoods, Integer, Integer, Integer, Integer, Boolean -> Integer
+  gvu-heads (g) (buf) (lots) (buyer) (seller) (restore) = let at = buf + gvu-heads-at lots
+    in let a = if restore then gvu-cells at (ep-head g 0) 2 0 else gvu-cells (ep-head g 0) at 2 0
+    in let b = if restore then gvu-cells (at + 16) (ep-head g buyer) 2 0 else gvu-cells (ep-head g buyer) (at + 16) 2 0
+    in if restore then gvu-cells (at + 32) (ep-head g seller) 2 0 else gvu-cells (ep-head g seller) (at + 32) 2 0
   gvu-tail : GvWorld, GvUndo, Boolean, Integer -> Integer
   gvu-tail (v) (u) (restore) (i) = if i == u.count then 0
-    else let at = 512 + gv-lot-limit * 56 + i * 680
+    else let at = gvu-tail-at u.lots + i * 680
     in let x = v.currency
     in let w = x.world
     in let a = if restore then euf-read-event u.bytes at (list-at x.events (u.events + i))
@@ -108,7 +126,7 @@ Chapter: GameVendorUndo
     in let w = x.world
     in let b = ep-actor w buyer
     in let s = ep-actor w seller
-    in let bytes = alloc-bytes (512 + gv-lot-limit * 56 + count * 680)
+    in let bytes = alloc-bytes (gvu-tail-at (ep-lot-count w.goods) + count * 680)
     in let p = euf-write-policy bytes 0 x
     in let m = gvu-money bytes 104 w.money b.purse s.purse False
     in let cm = gvu-money bytes 240 x.copper b.purse s.purse False
@@ -116,13 +134,13 @@ Chapter: GameVendorUndo
     in let u = GvUndo { bytes = bytes, buyer = buyer, seller = seller,
       entries = w.money.entry-count, copper-entries = x.copper.entry-count, silver-entries = x.silver.entry-count,
       events = x.count, trades = w.trade-count,
-      lots = v.lot-count, sales = v.sale-count, sequence = v.sequence, count = count,
-      buffers = [gvu-save-buffer b.stock 1032, gvu-save-buffer b.quality 1032,
-        gvu-save-buffer b.wear 1032, gvu-save-buffer b.cost 1032,
-        gvu-save-buffer s.stock 1032, gvu-save-buffer s.quality 1032,
-        gvu-save-buffer s.wear 1032, gvu-save-buffer s.cost 1032,
-        gvu-save-buffer w.sales 1032, gvu-save-buffer w.turnover 64, gvu-save-buffer w.crown-turnover 64] }
-    in let lots = gvu-lots v bytes False 0
+      lots = gvu-save-lots w.goods bytes (ep-lots-first w.goods) 0, sales = v.sale-count, sequence = v.sequence, count = count,
+      buffers = [gvu-save-buffer b.stock (eg-bytes w.catalog), gvu-save-buffer b.quality (eg-bytes w.catalog),
+        gvu-save-buffer b.wear (eg-bytes w.catalog), gvu-save-buffer b.cost (eg-bytes w.catalog),
+        gvu-save-buffer s.stock (eg-bytes w.catalog), gvu-save-buffer s.quality (eg-bytes w.catalog),
+        gvu-save-buffer s.wear (eg-bytes w.catalog), gvu-save-buffer s.cost (eg-bytes w.catalog),
+        gvu-save-buffer w.sales (eg-bytes w.catalog), gvu-save-buffer w.turnover 64, gvu-save-buffer w.crown-turnover 64] }
+    in let heads = gvu-heads w.goods bytes u.lots buyer seller False
     in let tail = gvu-tail v u False 0
     in u
   gvu-restore : GvWorld, GvUndo -> Integer
@@ -135,17 +153,20 @@ Chapter: GameVendorUndo
     in let m = gvu-money u.bytes 104 w.money buyer seller True
     in let cm = gvu-money u.bytes 240 v.currency.copper buyer seller True
     in let sm = gvu-money u.bytes 376 v.currency.silver buyer seller True
-    in let lots = gvu-lots v u.bytes True 0
+    in let cleared = gvu-clear-lots w.goods (ep-lots-first w.goods)
+    in let lots = gvu-load-lots w.goods u.bytes u.lots 0
+    in let heads = gvu-heads w.goods u.bytes u.lots u.buyer u.seller True
     in let tail = gvu-tail v u True 0
-    in let a = __record-set v "lot-count" u.lots
     in let b = __record-set v "sale-count" u.sales
     in let c = __record-set v "sequence" u.sequence
     in let d = __record-set w "trade-count" u.trades
     in 0
   gv-checkout : GvWorld, List GvLine, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
   gv-checkout (v) (lines) (buyer) (seller) (owner) (destination) (actor) =
-    if not (gv-check-lots v lines seller buyer owner 0) then Err "vendor stock or ownership changed"
+    if gv-gone-actor v buyer 0 | gv-gone-actor v seller 0 then Err "vendor removed"
+    else if not (gv-check-lots v lines seller buyer owner 0) then Err "vendor stock or ownership changed"
     else let changed = gv-change v lines buyer 0
+    in let rolled = gv-seal-sales v
     in if not (gv-can-pay v lines buyer seller) then Err "vendor funds or capacity refused"
     else when gv-world-plan v lines destination (peek-qword v.game.world.buffer 8) 0 []
       is Err (e) -> Err e

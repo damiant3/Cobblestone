@@ -1,0 +1,52 @@
+Chapter: BvtCarpentry
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter BvtCheck
+
+ ServUO DefCarpentry's board counts for the saw's furniture and containers, in catalog order 128 to 138, then the
+ planes' lap harp, drum, lute, tambourine and dart board (139 to 143) and the hammer's dress form, spinning wheel and
+ training dummy and loom deed (144 to 147), with their cloth (item 37).
+  bcp-boards : List Integer = [9, 9, 13, 17, 17, 27, 10, 8, 20, 25, 35, 20, 20, 25, 15, 5, 25, 75, 55, 85]
+  bcp-cloth : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 0, 10, 25, 60, 25]
+  bcp-recipe : EgCatalog, Integer, Integer -> Integer
+  bcp-recipe (c) (item) (i) = if i >= list-length c.recipes then -1
+    else let r = list-at c.recipes i
+    in if r.item == item then r.one-count * 1000 + r.one + (if r.station == 8 then 0 else 1000000) + (if r.two-count == 0 | r.two == 37 then r.two-count * 10000000 else 1) else bcp-recipe c item (i + 1)
+  bcp-made : EgCatalog, Integer -> Boolean
+  bcp-made (c) (k) = if k >= list-length bcp-boards then True
+    else bcp-recipe c (128 + k) 0 == list-at bcp-boards k * 1000 + 38 + list-at bcp-cloth k * 10000000 & gcr-graphic (128 + k) > 0 & bcp-made c (k + 1)
+  bcp-items : EpWorld, Integer -> List Integer
+  bcp-items (w) (category) = bcp-items-of w (gcr-recipes w category) 0 []
+  bcp-items-of : EpWorld, List Integer, Integer, List Integer -> List Integer
+  bcp-items-of (w) (ids) (i) (out) = if i >= list-length ids then out else bcp-items-of w ids (i + 1) (out & [(list-at w.catalog.recipes (list-at ids i - 1)).item])
+  bcp-has : List Integer, Integer, Integer -> Boolean
+  bcp-has (xs) (item) (i) = if i >= list-length xs then False else list-at xs i == item | bcp-has xs item (i + 1)
+  bcp-same : List Integer, List Integer, Integer -> Boolean
+  bcp-same (xs) (ys) (i) = if list-length xs /= list-length ys then False else if i >= list-length xs then True
+    else list-at xs i == list-at ys i & bcp-same xs ys (i + 1)
+  bcp-menus : Integer -> Boolean
+  bcp-menus (unused) = when bb-economy 0
+    is Err (_) -> False
+    is Ok (x) -> let planes = bcp-items x.world 8
+      in let hammer = bcp-items x.world 9
+      in bcp-same planes [139, 140, 141, 142, 143] 0 & bcp-same hammer [144, 145, 146, 147] 0
+        & not (bcp-has (bcp-items x.world 3) 139 0) & not (bcp-has (bcp-items x.world 7) 144 0) & bcp-has (bcp-items x.world 7) 77 0
+  bvt-carpentry : Integer -> [Console] Integer
+  bvt-carpentry (unused) = let c = bb-catalog 0
+    in let saws = gcr-category 42 #1034 == 3 & gcr-category 42 #1035 == 3 & gcr-category 42 #1028 == 3 & gcr-category 42 #1029 == 3
+    in let shapers = gcr-category 42 #10E4 == 7 & gcr-category 42 #10E5 == 7 & gcr-category 42 #10E6 == 7
+    in let planes = gcr-category 42 #102C == 8 & gcr-category 42 #102D == 8 & gcr-category 42 #1030 == 8 & gcr-category 42 #1033 == 8
+    in let hammers = gcr-category 42 #102A == 9 & gcr-category 42 #102B == 9 & gcr-title 8 == "Carpentry" & gcr-title 9 == "Carpentry" & gcr-skill 8 == 11 & gcr-skill 9 == 11
+    in let others = gcr-category 42 #0F9D == 2 & gcr-category 42 #1022 == 6 & gcr-category 62 #13E3 == 1 & gcr-category 42 #0FFF == 0
+    in let named = (list-at c.items 127).name == "foot stool" & (list-at c.items 137).name == "armoire" & (list-at c.items 138).name == "lap harp" & (list-at c.items 145).name == "training dummy" & (list-at c.items 146).name == "loom deed" & list-length c.items >= 151
+      & crg-category 3 128 == 1 & crg-category 3 133 == 1 & crg-category 3 134 == 2 & crg-category 3 138 == 2 & crg-category 7 77 == 3 & crg-category 7 48 == 3
+      & crg-category 8 139 == 5 & crg-category 8 142 == 5 & crg-category 8 143 == 6 & crg-category 9 144 == 7 & crg-category 9 145 == 7 & crg-category 9 146 == 9 & crg-category 9 147 == 7
+      & list-length (crg-labels 7) == list-length (crg-labels 3) & list-length (crg-labels 9) == list-length (crg-labels 3)
+    in act
+      a <- bvt-check "a saw or dovetail saw opens the saw's carpentry (3); the drawknife, froe and inshave the shaping menu (7); the planes (8) and the hammer (9) their own, all Carpentry" (saws & shapers & planes & hammers)
+      b <- bvt-check "sewing, fletching and smithing tools keep their own menus and an unknown art opens none" others
+      c2 <- bvt-check "items 128 to 147 are the foot stool to the loom deed, each made from ServUO's boards and cloth at the Saw Horse, drawn with its own art, under val's gump categories" (named & bcp-made c 0)
+      d <- bvt-check "the planes' menu holds exactly the lap harp, drum, lute, tambourine and dart board, the hammer's the dress form, spinning wheel, training dummy and loom deed, and neither shows on the saw's or the shaping menu" (bcp-menus 0)
+      a + b + c2 + d
+    end

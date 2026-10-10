@@ -1,0 +1,44 @@
+Chapter: BvtResidentFall
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-143 (trial 42626): a resident killed by a monster kept its vendor owner row until its own step, and the save check
+ named "mobile missing". A founded composite on open land; resident 0 dies at the blow (cg-residents-fall).
+  brf-fill : WalkMap, Integer -> Integer
+  brf-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in brf-fill map (i + 1)
+  brf-founded : Integer -> Result CompositeGame Text
+  brf-founded (unused) = when walk-map-new 1408 1520 96 240
+    is Err (e) -> Err e
+    is Ok (britain) -> let filled = brf-fill britain 0
+      in when cg-britain britain
+        is Err (e) -> Err e
+        is Ok (owner) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None })
+          is Err (e) -> Err e
+          is Ok (_) -> Ok owner
+ Answers a bit per check: 1 resident 0 holds an owner row before, 2 an unknown serial settles nobody and changes no row,
+ 4 the resident settles once, 8 its row is gone and every other row stays; 15 is all.
+  brf-checks : Integer -> Integer
+  brf-checks (unused) = when brf-founded 0
+    is Err (_) -> 0 - 1
+    is Ok (owner) -> when owner.town
+      is None -> 0 - 2
+      is Just (t) -> if t.count < 1 then 0 - 3
+        else let r = list-at t.residents 0
+        in let serial = (tf-person t.people r.person).world-serial
+        in let v = owner.vendor
+        in let rows = v.owner-count
+        in let held = gv-owner v serial 0 >= 0
+        in let stranger = cg-residents-fall t 999999999 0
+        in let same = v.owner-count == rows
+        in let fell = cg-residents-fall t serial 0
+        in (if held then 1 else 0) + (if stranger == 0 & same then 2 else 0) + (if fell == 1 then 4 else 0)
+          + (if gv-owner v serial 0 < 0 & v.owner-count == rows - 1 then 8 else 0)
+  bvt-resident-fall : Integer -> [Console] Integer
+  bvt-resident-fall (unused) = act
+    n <- brf-checks 0
+    a <- bvt-check ("a resident killed at the blow loses its owner row, and no other row moves (cg-residents-fall, code " & show n & ")") (n == 15)
+    a
+  end

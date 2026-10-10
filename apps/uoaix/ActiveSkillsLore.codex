@@ -1,0 +1,47 @@
+Chapter: ActiveSkillsLore
+  cites Uoaix chapter ActiveSkillsState
+
+ Source-X CClientTarg.cpp OnSkill_Anatomy/EvalInt/AnimalLore/ArmsLore/ItemID.
+ Skill-scaled error follows ServUO Skills/Anatomy.cs and EvalInt.cs.
+ Attribution: Sphere-LICENSE.txt and ports/ServUO-LICENSE.txt.
+
+  as-strength : List Text = ["extremely weak", "rather weak", "somewhat weak", "of average strength", "somewhat strong", "rather strong", "very strong", "extremely strong", "extraordinarily strong", "as strong as an ogre", "superhumanly strong"]
+  as-dexterity : List Text = ["extremely clumsy", "rather clumsy", "somewhat clumsy", "of average dexterity", "somewhat agile", "rather agile", "very agile", "extremely agile", "extraordinarily agile", "as agile as a cat", "superhumanly agile"]
+  as-intelligence : List Text = ["slightly less intelligent than a rock", "rather unintelligent", "somewhat unintelligent", "of average intelligence", "somewhat intelligent", "rather intelligent", "very intelligent", "extremely intelligent", "extraordinarily intelligent", "a formidable intellect", "a superhuman intellect"]
+  as-fuzzy : AsActor, Integer, Integer, Integer -> Integer
+  as-fuzzy (a) (stat) (skill) (base) = let margin = max 0 (base - as-level a skill / (if base == 25 then 40 else 50))
+    in let error = skc-random a.skills (margin * 2 + 1) - margin
+    in max 0 (min 10 ((stat + error) / 10))
+  as-info-reply : WorldObject, Text -> GameReply
+  as-info-reply (obj) (text) = gs-reply [sip-message obj.serial obj.graphic 6 text] "skills:lore"
+  as-item-access : ActiveSkills, GameInput, WorldObject, WorldObject, Integer -> Boolean
+  as-item-access (s) (input) (player) (item) (slot) =
+    gsi-known s.items item.serial & gmb-access s.banks input slot item.serial
+      & (if item.container == 0 then as-near player item 8 else gv-owned s.items.world item.serial player.serial 65)
+  as-lore-item : ActiveSkills, AsServices, AsActor, GameInput, WorldObject, WorldObject, Integer -> GameReply
+  as-lore-item (s) (services) (a) (input) (player) (obj) (slot) =
+    if obj.kind /= 2 | not (as-item-access s input player obj slot) then gsi-denied "You cannot inspect that item from here."
+    else let at = gv-lot s.vendor obj.serial 0
+    in let item = if at < 0 then 0 else (ep-lot s.vendor.currency.world.goods at).item
+    in if a.skill == 4 & item /= 40 & item /= 41 & item /= 44 & item /= 48 & item /= 69 & item /= 70 & item /= 71 then gsi-denied "That is neither a weapon nor armor."
+    else let name = if at < 0 then services.item-name obj.serial else (list-at s.vendor.currency.world.catalog.items (item - 1)).name
+    in if text-length name == 0 then gsi-denied "You cannot establish what that item is."
+    else if not (as-roll s a a.skill (skc-random a.skills 600)) then gsi-denied "You cannot quite judge that item."
+    else if a.skill == 3 then as-info-reply obj ("You identify " & name & ".")
+    else let lot = ep-lot s.vendor.currency.world.goods at
+    in as-info-reply obj (name & " is " & (if lot.wear >= 24 then "in good repair" else if lot.wear >= 12 then "worn" else "close to wearing out")
+      & " and of " & (if lot.quality >= 800 then "excellent" else if lot.quality >= 500 then "sound" else "modest") & " workmanship.")
+  as-lore : ActiveSkills, AsServices, AsActor, GameShard, GameInput, WorldObject, WorldObject, Integer -> GameReply
+  as-lore (s) (services) (a) (game) (input) (player) (obj) (slot) =
+    if a.skill == 3 | a.skill == 4 then as-lore-item s services a input player obj slot
+    else if obj.kind /= 1 | obj.health <= 0 | not (as-near player obj 8) | not (as-visible s player.serial obj.serial) then gsi-denied "You must examine a living being within sight."
+    else if a.skill == 2 & gsi-slot game obj.serial 0 >= 0 then gsi-denied "People are capable of more than animal behavior. Usually."
+    else if a.skill == 2 & not (services.animal obj.serial) then gsi-denied "That is not an animal you can study."
+    else when cb-ensure s.combat game obj.serial
+      is Err (e) -> gsi-denied e
+      is Ok (target) -> let intelligence = if a.skill == 16 then services.intelligence obj.serial else 0
+        in if intelligence < 0 then gsi-denied "You cannot judge that mind."
+        else if not (as-roll s a a.skill (if obj.serial == player.serial then 20 else skc-random a.skills 600)) then gsi-denied "You cannot quite judge that being."
+        else if a.skill == 1 then as-info-reply obj ("That being looks " & list-at as-strength (as-fuzzy a target.strength 1 25) & " and " & list-at as-dexterity (as-fuzzy a target.dexterity 1 25) & ".")
+        else if a.skill == 16 then as-info-reply obj ("That being seems " & list-at as-intelligence (as-fuzzy a intelligence 16 20) & ".")
+        else as-info-reply obj ("The animal looks " & (if obj.health * 4 >= target.maximum * 3 then "healthy" else if obj.health * 2 >= target.maximum then "wounded" else "badly hurt") & " and " & (if target.war then "agitated" else "calm") & ".")

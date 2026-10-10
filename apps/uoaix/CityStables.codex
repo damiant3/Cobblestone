@@ -1,0 +1,123 @@
+Chapter: CityStables
+  cites Uoaix chapter CompositeMinter
+  cites Uoaix chapter GameWorldSpawn
+
+ A stablemaster keeps each city stable (Damian, 2026-10-10: "add stablemasters to all the stable shops, i didn't see one
+ in trin"). The stables are UOX3's animal-trainer regions (data/dfndata/spawn/felucca/spawn_felucca_town_*.dfn) in the
+ cities UOAIX hosts, and each keeper stands on ServUO's AnimalTrainer spawner (Spawns/felucca.xml), whose z it takes;
+ Vesper's has no ServUO spawner and stands at its UOX3 region's centre. Castle British Stables is the royal stableman's
+ (RoyalStable). A stablemaster is a saved world mobile told apart by his skin 1005 on his tile.
+  csm-hue : Integer = 1005
+  csm-reach : Integer = 8
+  csm-spots : Integer -> List BbSpot
+  csm-spots (unused) = [BbSpot { x = 1510, y = 1543, z = 25 }, BbSpot { x = 1296, y = 1759, z = 10 },
+    BbSpot { x = 2010, y = 2804, z = 0 }, BbSpot { x = 1822, y = 2739, z = 0 },
+    BbSpot { x = 3036, y = 3464, z = 15 }, BbSpot { x = 2905, y = 3517, z = 10 },
+    BbSpot { x = 2526, y = 375, z = 23 }, BbSpot { x = 570, y = 2121, z = 0 }, BbSpot { x = 2874, y = 661, z = 0 }]
+  csm-find : WorldTable, Integer -> Integer
+  csm-find (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 1 & o.hue == csm-hue & o.container == 0) then serial
+    else csm-find world (world-tile-next world serial)
+  csm-serial : WorldTable, BbSpot -> Integer
+  csm-serial (world) (spot) = csm-find world (world-tile-first world spot.x spot.y)
+  csm-install-at : GsiState, List BbSpot, Integer -> Integer
+  csm-install-at (items) (spots) (i) = if i == list-length spots then 0
+    else let spot = list-at spots i
+    in let made = if csm-serial items.world spot /= 0 | world-room items.world <= 0 then 0
+      else when world-create items.world (gs-mobile 0 spot.x spot.y spot.z 400 csm-hue) is Err (_) -> 0 is Ok (_) -> 1
+    in made + csm-install-at items spots (i + 1)
+ Boot installs a stablemaster at every stable that has none; a second install adds none.
+  csm-install : GsiState -> Integer
+  csm-install (items) = let made = csm-install-at items (csm-spots 0) 0 in if made == 0 then 0 else let touched = world-touch items.world in made
+  csm-serials : WorldTable, List BbSpot, Integer, List Integer -> List Integer
+  csm-serials (world) (spots) (i) (out) = if i == list-length spots then out
+    else let serial = csm-serial world (list-at spots i) in csm-serials world spots (i + 1) (if serial == 0 then out else list-push out serial)
+ The stablemaster within csm-reach of the speaker, or 0.
+  csm-near-in : WorldTable, WorldObject, List BbSpot, Integer -> Integer
+  csm-near-in (world) (m) (spots) (i) = if i == list-length spots then 0
+    else let spot = list-at spots i
+    in if walk-abs (m.x - spot.x) <= csm-reach & walk-abs (m.y - spot.y) <= csm-reach & csm-serial world spot /= 0 then csm-serial world spot
+    else csm-near-in world m spots (i + 1)
+  csm-near : WorldTable, Integer -> Integer
+  csm-near (world) (speaker) = when world-get world speaker
+    is Err (_) -> 0
+    is Ok (m) -> csm-near-in world m (csm-spots 0) 0
+  csm-label : WorldTable, List Integer -> Maybe GameReply
+  csm-label (world) (packet) = if list-length packet /= 5 | list-at packet 0 /= 9 then None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in when world-get world serial
+      is Err (_) -> None
+      is Ok (o) -> if o.kind /= 1 | o.hue /= csm-hue | o.container /= 0 | csm-serial world (BbSpot { x = o.x, y = o.y, z = o.z }) /= serial then None
+        else Just (gs-reply [sip-message serial 0 6 "the stablemaster"] "stable:name")
+ A stabled pet leaves the world for the pen, a strip of the map's south-east corner no player reaches, one tile a spawn
+ slot, and its owner is kept negated: a pet whose owner is no mobile idles (gws-pet), answers no order or aim, counts
+ against no follower limit and carries no rider, and a claim restores the owner. A summoned creature with an end stays out.
+  csm-pen-x : Integer = 6080
+  csm-pen-y : Integer = 4032
+  csm-pen : Integer -> List Integer
+  csm-pen (i) = [csm-pen-x + int-mod i 64, csm-pen-y + int-mod (i / 64) 64, 0]
+  csm-stablable : WorldSpawnSlot -> Boolean
+  csm-stablable (slot) = slot.summoned == 0 | slot.summoned >= gws-forever
+  csm-stable-each : GameWorldSpawn, WorldTable, Integer, WorldObject, Integer, List Integer -> List Integer
+  csm-stable-each (g) (world) (master) (keeper) (i) (out) = if i >= list-length g.slots then out
+    else let slot = list-at g.slots i
+    in if slot.serial == 0 | slot.owner /= master | not (csm-stablable slot) then csm-stable-each g world master keeper (i + 1) out
+    else when world-get world slot.serial
+      is Err (_) -> csm-stable-each g world master keeper (i + 1) out
+      is Ok (pet) -> if pet.container /= 0 | walk-abs (pet.x - keeper.x) > csm-reach | walk-abs (pet.y - keeper.y) > csm-reach then csm-stable-each g world master keeper (i + 1) out
+        else let pen = csm-pen i
+        in let at = world-slot world slot.serial
+        in let calmed = if at < 0 then 0 else let a = list-at g.combat.actors at in if a.serial /= slot.serial then 0 else let stopped = cb-stop g.combat a in let peace = __record-set a "war" False in 0
+        in let spared = cb-clear-target g.combat slot.serial 0
+        in let a = __record-set pet "x" (list-at pen 0)
+        in let b = __record-set pet "y" (list-at pen 1)
+        in let c = __record-set pet "z" (list-at pen 2)
+        in when world-update world pet
+          is Err (_) -> csm-stable-each g world master keeper (i + 1) out
+          is Ok (_) -> let kept = __record-set slot "owner" (0 - master)
+            in let stayed = __record-set slot "order" gws-order-stay
+            in let cleared = gws-uncommand slot
+            in let filed = gws-refile g world i
+            in csm-stable-each g world master keeper (i + 1) (list-push out slot.serial)
+ Stables every pet of master standing within csm-reach of the stablemaster keeper; answers the serials stabled.
+  csm-stable : GameWorldSpawn, WorldTable, Integer, Integer -> List Integer
+  csm-stable (g) (world) (master) (keeper) = when world-get world keeper
+    is Err (_) -> []
+    is Ok (k) -> csm-stable-each g world master k 0 []
+ Brings every pet master stabled to the spots placed beside him (spot i, or the last one), following him again.
+  csm-claim-each : GameWorldSpawn, WorldTable, Integer, List (List Integer), Integer, List Integer -> List Integer
+  csm-claim-each (g) (world) (master) (spots) (i) (out) = if i >= list-length g.slots | list-length spots == 0 then out
+    else let slot = list-at g.slots i
+    in if slot.serial == 0 | master <= 0 | slot.owner /= 0 - master then csm-claim-each g world master spots (i + 1) out
+    else when world-get world slot.serial
+      is Err (_) -> csm-claim-each g world master spots (i + 1) out
+      is Ok (pet) -> let spot = list-at spots (min (list-length out) (list-length spots - 1))
+        in let a = __record-set pet "x" (list-at spot 0)
+        in let b = __record-set pet "y" (list-at spot 1)
+        in let c = __record-set pet "z" (list-at spot 2)
+        in when world-update world pet
+          is Err (_) -> csm-claim-each g world master spots (i + 1) out
+          is Ok (_) -> let owned = __record-set slot "owner" master
+            in let followed = __record-set slot "order" gws-order-follow
+            in let due = __record-set slot "due" g.combat.tick
+            in let filed = gws-refile g world i
+            in csm-claim-each g world master spots (i + 1) (list-push out slot.serial)
+  csm-claim : GameWorldSpawn, WorldTable, Integer, List (List Integer) -> List Integer
+  csm-claim (g) (world) (master) (spots) = csm-claim-each g world master spots 0 []
+ ServUO SBAnimalTrainer: the stablemaster sells these, each at its price in gold pieces, paid here in copper value (100
+ copper to the gold coin), to the crown. A bought animal is the buyer's at once, following him, as a royal claim is.
+  csm-key : Text -> Text
+  csm-key (name) = if name == "pack horse" then "packhorse" else if name == "pack llama" then "packllama"
+    else if name == "brown bear" then "brownbear" else if name == "grizzly bear" then "grizbear" else if name == "timber wolf" then "timberwolf"
+    else if name == "cat" | name == "dog" | name == "horse" | name == "rabbit" | name == "eagle" | name == "panther" | name == "rat" then name else ""
+  csm-price : Text -> Integer
+  csm-price (name) = let key = csm-key name
+    in if key == "cat" then 132 else if key == "dog" then 170 else if key == "horse" then 550 else if key == "packhorse" then 631
+    else if key == "packllama" then 565 else if key == "rabbit" then 106 else if key == "eagle" then 402 else if key == "brownbear" then 855
+    else if key == "grizbear" then 1767 else if key == "panther" then 1271 else if key == "timberwolf" then 768 else if key == "rat" then 107 else 0 - 1
+  csm-goods-text : Text = "I sell a cat (132), dog (170), horse (550), pack horse (631), pack llama (565), rabbit (106), eagle (402), brown bear (855), grizzly bear (1767), panther (1271), timber wolf (768) or rat (107). Say buy and its name."
+ ServUO Mobile.FollowersMax: a player keeps at most 5 followers' control slots.
+  csm-followers-max : Integer = 5
+  csm-stabled : GameWorldSpawn, Integer, Integer -> Integer
+  csm-stabled (g) (master) (i) = if i >= list-length g.slots then 0
+    else (if master > 0 & (list-at g.slots i).serial /= 0 & (list-at g.slots i).owner == 0 - master then 1 else 0) + csm-stabled g master (i + 1)

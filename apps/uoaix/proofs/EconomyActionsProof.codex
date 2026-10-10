@@ -1,4 +1,5 @@
 Chapter: EconomyActionsProof
+  cites Uoaix chapter WorldDisk
   cites Uoaix chapter EconomyActions
   cites Uoaix chapter EconomyInputFixtures
   cites Uoaix chapter EconomyCurrencyFixtures
@@ -9,15 +10,15 @@ Chapter: EconomyActionsProof
   eap-check : Text, Boolean -> [Console] Nothing
   eap-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
   eap-equal : Integer, Integer, Integer -> Boolean
-  eap-equal (a) (b) (i) = if i == es-bytes then True
+  eap-equal (a) (b) (i) = if i >= peek-qword a 16 then True
     else peek-qword a i == peek-qword b i & eap-equal a b (i + 8)
   eap-refuse : EaWorld, Integer, Integer, EaProposal, Integer, Integer, Integer -> Boolean
   eap-refuse (e) (actor) (kind) (p) (expected) (before) (after) =
     let checkpoint = EconomyCheckpoint { world = e.world, tick = e.world.hour, sequence = 0 }
     in let count = e.event-count
-    in let one = is-ok (es-encode checkpoint before es-bytes)
+    in let one = is-ok (es-encode checkpoint before us-max-payload)
     in let result = ea-submit e actor kind p
-    in let two = is-ok (es-encode checkpoint after es-bytes)
+    in let two = is-ok (es-encode checkpoint after us-max-payload)
     in one & two & result == expected & eap-equal before after 0
       & e.event-count == count + 1 & (list-at e.events count).result == expected
   eap-trade : Integer, Integer, Integer, Integer, Integer, Integer -> EaProposal
@@ -26,7 +27,7 @@ Chapter: EconomyActionsProof
       quantity = quantity, offer = offer, limit = if kind == 2 then 1000000 else 1,
       recipe = 0, station = 0, node = 0 }
   eap-currency-equal : Integer, Integer, Integer -> Boolean
-  eap-currency-equal (a) (b) (i) = if i == euc-bytes then True
+  eap-currency-equal (a) (b) (i) = if i >= peek-qword a 16 then True
     else peek-qword a i == peek-qword b i & eap-currency-equal a b (i + 8)
   eap-currency : CurrencyCheckpoint -> [Console] Nothing
   eap-currency (checkpoint) = act
@@ -37,15 +38,15 @@ Chapter: EconomyActionsProof
     actor-two <- ep-admit x.world two 100
     node <- eh-source x.world 1 100
     e <- ea-new x.world
-    before <- alloc-bytes euc-bytes
-    after <- alloc-bytes euc-bytes
-    encoded <- euc-encode checkpoint before euc-bytes
+    before <- alloc-bytes us-max-payload
+    after <- alloc-bytes us-max-payload
+    encoded <- euc-encode checkpoint before us-max-payload
     posted <- ea-post e actor-one 3 actor-two 1 1 1 10
     buy <- eap-trade actor-two 2 actor-one 1 1 1
     sell <- eap-trade actor-one 3 actor-two 1 1 1
     bought <- ea-submit e actor-two 2 buy
     sold <- ea-submit e actor-one 3 sell
-    compared <- euc-encode checkpoint after euc-bytes
+    compared <- euc-encode checkpoint after us-max-payload
     eap-check "denominated trades refuse without bypassing currency" (is-ok encoded & is-ok compared & posted == -17 & bought == -17 & sold == -17 & e.offer-count == 0 & e.event-count == 2 & eap-currency-equal before after 0)
     work <- ea-request actor-two 1
     selected <- __record-set work "node" node
@@ -57,8 +58,8 @@ Chapter: EconomyActionsProof
     start <- __heap-save
     e <- ea-new w
     built <- __heap-save
-    before <- alloc-bytes es-bytes
-    after <- alloc-bytes es-bytes
+    before <- alloc-bytes us-max-payload
+    after <- alloc-bytes us-max-payload
     p <- eap-trade 2 2 1 4 1 999
     eap-check "no standing consent refuses with canonical economy bytes" (eap-refuse e 2 2 p -12 before after)
     sell <- ea-post e 1 3 2 4 3 1 (w.hour + 5)
@@ -127,7 +128,7 @@ Chapter: EconomyActionsProof
     failed-work <- ea-request 2 1
     failed-node <- __record-set failed-work "node" ore
     failed <- ea-submit e 2 1 failed-work
-    eap-check "skill failure is admitted practice and wear" (failed == -2 & ep-at (ep-actor w 2).skills 1 == 1 & ep-at (ep-actor w 2).wear 25 == charges - 1 & (list-at e.events (e.event-count - 1)).result == -2)
+    eap-check "skill failure is admitted practice and wear" (failed == -2 & (ep-actor w 2).attempts == 2 & ep-at (ep-actor w 2).wear 25 == charges - 1 & (list-at e.events (e.event-count - 1)).result == -2)
     unsupported <- ea-request 2 5
     eap-check "unsupported actions refuse and log" (eap-refuse e 2 5 unsupported -11 before after)
     eat <- ea-request 2 4
@@ -138,19 +139,26 @@ Chapter: EconomyActionsProof
     vegetables <- eh-harvest w 2 garden
     hunger <- (ep-actor w 2).hunger
     eaten <- ea-submit e 2 4 eat
-    eap-check "eat consumes owned food" (vegetables == 4 & eaten == 0 & ep-at (ep-actor w 2).stock 14 == 3 & (ep-actor w 2).hunger == hunger - 30)
+    eap-check "eat consumes owned food" (vegetables > 1 & eaten == 0 & ep-at (ep-actor w 2).stock 14 == vegetables - 1 & (ep-actor w 2).hunger == hunger - 30)
     growth-start <- __heap-save
     denied <- ea-submit e 2 5 unsupported
     growth-end <- __heap-save
     eap-check "proposal execution retains no new heap" (denied == -11 & growth-start == growth-end)
     full <- __record-set e "event-count" 1024
     sequence <- e.sequence
-    eap-check "audit capacity refuses before world mutation" (ea-submit e 2 4 eat == -14 & ep-at (ep-actor w 2).stock 14 == 3 & e.sequence == sequence)
+    eap-check "audit capacity refuses before world mutation" (ea-submit e 2 4 eat == -14 & ep-at (ep-actor w 2).stock 14 == vegetables - 1 & e.sequence == sequence)
     acknowledged <- ea-ack e
     eap-check "acknowledgement retains monotonic sequence" (acknowledged == 0 & e.event-count == 0 & e.sequence == sequence)
     eap-check "all material and coin checks remain valid" (ep-census w 1 & em-balanced w.money 1 & ev-valid w)
     print-line-uni ("BOUNDARY-BYTES " & show (built - start))
+    learner <- ep-actor w 2
+    fresh <- ep-set learner.skills 2 0
+    practised <- eap-practise learner 2 1000
+    print-line-uni ("PRACTICE 1000 economy uses from 0.0 reach " & show (ep-at learner.skills 2) & " tenths")
+    eap-check "a thousand economy uses from 0.0 follow the log curve with the success bonus (SkillCurve), above the 84 tenths it reaches without the bonus and far below a tenth per use" (ep-at learner.skills 2 >= 100 & ep-at learner.skills 2 <= 300)
   end
+  eap-practise : EpActor, Integer, Integer -> Integer
+  eap-practise (p) (skill) (left) = if left == 0 then 0 else let used = ep-practice p skill in eap-practise p skill (left - 1)
   opening : [Console] Nothing = act
     when eif-source 0
       is Err (message) -> print-line-uni ("FAIL fixture " & message)

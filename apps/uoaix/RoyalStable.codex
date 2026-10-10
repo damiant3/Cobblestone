@@ -1,0 +1,35 @@
+Chapter: RoyalStable
+  cites Uoaix chapter CompositeMinter
+
+ The royal stableman keeps The Stables, the barn south of Castle Britain's east gate (ServUO Data/Common.map "The
+ Stables" 1385,1658; 1.25 statics: wooden walls at x 1383 and 1393 and y 1663, the south door at x 1387-1388, land z
+ 30). He stands in the aisle inside the door, a saved world mobile told apart by his skin 1004 (the minter wears 1003,
+ bankers 1002, townsfolk 1015 and up). Lord British naming a tameable creature within rst-reach of him gets it free,
+ without limit (Damian, 2026-10-09: "the king never pays for his steed from the royal stableman").
+  rst-x : Integer = 1388
+  rst-y : Integer = 1661
+  rst-z : Integer = 30
+  rst-hue : Integer = 1004
+  rst-reach : Integer = 8
+  rst-find : WorldTable, Integer -> Integer
+  rst-find (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 1 & o.hue == rst-hue & o.container == 0) then serial
+    else rst-find world (world-tile-next world serial)
+  rst-serial : WorldTable -> Integer
+  rst-serial (world) = rst-find world (world-tile-first world rst-x rst-y)
+  rst-install : GsiState -> Integer
+  rst-install (items) = if rst-serial items.world /= 0 | world-room items.world <= 0 then 0
+    else when world-create items.world (gs-mobile 0 rst-x rst-y rst-z 400 rst-hue)
+      is Err (_) -> 0
+      is Ok (serial) -> let touched = world-touch items.world in 1
+  rst-near : WorldTable, Integer -> Boolean
+  rst-near (world) (speaker) = let keeper = rst-serial world
+    in if keeper == 0 then False
+    else when world-get world speaker
+      is Err (_) -> False
+      is Ok (m) -> walk-abs (m.x - rst-x) <= rst-reach & walk-abs (m.y - rst-y) <= rst-reach
+  rst-label : WorldTable, List Integer -> Maybe GameReply
+  rst-label (world) (packet) = if list-length packet /= 5 | list-at packet 0 /= 9 then None
+    else let keeper = rst-serial world
+    in if keeper == 0 | bit-and (gp-u32 packet 1) #7FFFFFFF /= keeper then None
+    else Just (gs-reply [sip-message keeper 0 6 "the royal stableman"] "stable:name")

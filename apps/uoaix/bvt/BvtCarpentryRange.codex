@@ -1,0 +1,35 @@
+Chapter: BvtCarpentryRange
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-174 slice 3: a player's carpentry of a ranged item rolls ServUO's chance. Carpentry is client skill 11 and
+ economy skill 6; the row is the character's 46 skills, one 8-byte cell each.
+  bcr-row : Integer -> Integer
+  bcr-row (level) = let row = alloc-bytes (46 * 8) in let cleared = bcr-zero row 0 in let set = poke-qword row (11 * 8) level in row
+  bcr-zero : Integer, Integer -> Integer
+  bcr-zero (row) (i) = if i >= 46 then 0 else let z = poke-qword row (i * 8) 0 in bcr-zero row (i + 1)
+  bcr-actor : Integer -> EpActor
+  bcr-actor (row) = EpActor { purse = 0, place = 0, hunger = 0, attempts = 0, stock = ep-buffer 147, quality = ep-buffer 147,
+    cost = ep-buffer 147, wear = ep-buffer 147, skills = ep-buffer 11, row = row, card = 0 }
+  bcr-tries : EpActor, Integer, Integer, Integer -> Integer
+  bcr-tries (p) (range) (left) (ok) = if left == 0 then ok else bcr-tries p range (left - 1) (if ep-practice-in p 6 11 range then ok + 1 else ok)
+  bcr-ranged : Integer, Integer -> Boolean
+  bcr-ranged (item) (last) = if item > last then True else ep-skill-range item > 0 & bcr-ranged (item + 1) last
+  bvt-carpentry-range : Integer -> [Console] Integer
+  bvt-carpentry-range (unused) = let row = bcr-row 500
+    in let player = bcr-actor row
+    in let table = bcr-tries player (ep-skill-range 133) 200 0
+    in let after = peek-qword row (11 * 8)
+    in let stool = bcr-tries player (ep-skill-range 128) 200 0
+    in let npc = bcr-actor 0
+    in let worker = bcr-tries npc (ep-skill-range 133) 200 0
+    in let math = ep-range-chance 1000 842 1092 == 632 & ep-range-chance 842 842 1092 == 0 & ep-range-chance 841 842 1092 == 0 & ep-range-chance 1092 842 1092 == 1000
+    in let table-set = bcr-ranged 128 147 & ep-skill-range 77 == 7891039 & ep-skill-range 133 == 8421092 & ep-skill-range 38 == 0 & ep-skill-range 47 == 0 & ep-skill-range 48 == 0 & ep-skill-range 49 == 0
+    in act
+      a <- bvt-check ("ServUO's chance is (level - low) / (high - low), none below low, certain at high: a large table at Carpentry 100.0 is 632 in 1000") math
+      b <- bvt-check ("a player at Carpentry 50.0 never makes a large table (84.2 to 109.2) and gains nothing from trying: " & show table & " of 200, skill " & show after) (table == 0 & after == 500)
+      c <- bvt-check ("the same player always makes a foot stool (11.0 to 36.0): " & show stool & " of 200") (stool == 200)
+      d <- bvt-check ("an NPC carpenter keeps 100 + 9/10 of its own skill, so the range does not stop it: " & show worker & " of 200") (worker > 0)
+      e <- bvt-check "every carpentry item 128 to 147 and the shepherd's crook carry a ServUO range; boards, furniture 47, bows and arrows carry none" table-set
+      a + b + c + d + e
+    end

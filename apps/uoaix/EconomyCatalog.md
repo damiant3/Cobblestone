@@ -89,8 +89,7 @@ catalog alone grants no harvesting or crafting authority and moves no items.
 
 Limits are 128 items, 64 resources and 128 recipes. Native item records have
 2 fields (16 bytes), resources 7 (56 bytes), recipes 11 (88 bytes), and the
-catalog 3 (24 bytes), plus list and text storage. The standard fixture retained
-6072 bytes under kernel `EF9466BEF7CB5FDA` on 2026-10-04. Closure uses a
+catalog 3 (24 bytes), plus list and text storage. Closure uses a
 129-byte scratch flag array, reclaimed before returning even when an item is
 unreachable. Malformed tables are rejected before indexing the flag array.
 
@@ -106,3 +105,22 @@ tables, capacity refusal and a maximum reversed chain. Compile normally and
 poisoned with an explicit depot kernel and compare the complete output with
 `proofs/EconomyCatalogProof.expected`. Runtime provenance and the 30-day stage E
 census remain unproved by this static catalog check.
+
+## Crop tools
+
+Damian, 2026-10-07: "I am imagining a small hand tool, one handed gardening
+shovel. maybe that is a trowel. in any event, that thing for doing the little
+crops, shovels for like digging up turnips and carrots". A planted crop's
+resource `tool` decides how it is harvested (`cpl-need`, `cpl-dig-with`):
+
+| Tool | Crops |
+|---|---|
+| by hand, double-click (0) | cotton, cabbage, lettuce, corn, pumpkins, squash, honeydew, watermelons, gourds, hops, grapes, fruit trees |
+| trowel, item 28 (art 0x10E7) | ginseng, garlic, mandrake, nightshade |
+| shovel, item 25 | carrots, onions, turnips |
+| pitchfork, item 120 (art 0x0E87) | wheat, flax (Damian, 2026-10-07: "pitchfork is perfect tool"; the 1.25 client has no scythe or sickle) |
+| hatchet, item 26 | timber trees |
+
+A saved catalog takes the shovel rows on load (`ep-crop-tools`). The pitchfork (item 120) is a Tinkering recipe
+(an iron ingot and a board at station 9); the tinker sells it, the testing kit carries one, and the farmer and the
+flax picker make their own at founding.

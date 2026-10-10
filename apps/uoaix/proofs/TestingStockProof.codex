@@ -1,6 +1,9 @@
 Chapter: TestingStockProof
   cites Uoaix chapter CompositeStore
 
+  tsp-tools-bag : WorldTable, Integer -> Integer
+  tsp-tools-bag (world) (serial) = if serial == 0 then 0
+    else if cts-holds world (world-first-child world serial) #1057 0 > 0 then serial else tsp-tools-bag world (world-next-sibling world serial)
   tsp-check : Text, Boolean -> [Console] Integer
   tsp-check (name) (ok) = act
     print-line-uni ((if ok then "PASS " else "FAIL ") & name)
@@ -29,6 +32,36 @@ Chapter: TestingStockProof
   tsp-contents (items) (parent) (count) = let packet = gsi-contents items parent 0 [#3C,0,0,0,0] 0
     in list-length packet == 5 + count * 19 & gp-u16 packet 1 == list-length packet & gp-u16 packet 3 == count
       & tsp-rows packet parent (gsi-meta items parent).gump count 0
+  tsp-at : List Integer, Integer -> Integer
+  tsp-at (packet) (i) = gp-u16 packet (5 + i * 19 + 9) * 65536 + gp-u16 packet (5 + i * 19 + 11)
+  tsp-unique : List Integer, Integer, Integer, Integer -> Integer
+  tsp-unique (packet) (count) (i) (found) = if i == count then found
+    else let earlier = tsp-seen packet (tsp-at packet i) 0 i
+    in tsp-unique packet count (i + 1) (if earlier then found else found + 1)
+  tsp-seen : List Integer, Integer, Integer, Integer -> Boolean
+  tsp-seen (packet) (at) (j) (limit) = if j == limit then False else tsp-at packet j == at | tsp-seen packet at (j + 1) limit
+  tsp-spread : GsiState, Integer -> [Console] Integer
+  tsp-spread (items) (parent) = let packet = gsi-contents items parent 0 [#3C,0,0,0,0] 0
+    in let count = gp-u16 packet 3
+    in let unique = tsp-unique packet count 0 0
+    in act
+      print-line-uni ("SPREAD " & show parent & " rows " & show count & " positions " & show unique)
+      if unique == count then 0 else 1
+    end
+  tsp-row : List Integer, Integer, Integer, Integer -> Integer
+  tsp-row (packet) (serial) (i) (count) = if i == count then -1 else if gp-u32 packet (5 + i * 19) == serial then i else tsp-row packet serial (i + 1) count
+  tsp-covered : List Integer, Integer, Integer, Integer -> Boolean
+  tsp-covered (packet) (i) (j) (count) = if j == count then False
+    else let dx = gp-u16 packet (5 + j * 19 + 9) - gp-u16 packet (5 + i * 19 + 9)
+    in let dy = gp-u16 packet (5 + j * 19 + 11) - gp-u16 packet (5 + i * 19 + 11)
+    in (dx > -20 & dx < 20 & dy > -20 & dy < 20) | tsp-covered packet i (j + 1) count
+  tsp-clear : GsiState, Integer -> Boolean
+  tsp-clear (items) (serial) = when world-get items.world serial
+    is Err (_) -> False
+    is Ok (item) -> let packet = gsi-contents items item.container 0 [#3C,0,0,0,0] 0
+      in let count = gp-u16 packet 3
+      in let i = tsp-row packet serial 0 count
+      in i >= 0 & not (tsp-covered packet i (i + 1) count)
   tsp-zero-position : WorldTable, Integer -> Result Integer Text
   tsp-zero-position (world) (serial) = when world-get world serial
     is Err (e) -> Err e
@@ -41,32 +74,64 @@ Chapter: TestingStockProof
     in act
       created <- cs-route owner game input map 2593 (tsp-create 0)
       serial <- input.session.serial
-      normal <- tsp-check "normal entry grants no testing supplies" (is-ok created & peek-qword owner.state.test-grants 0 == 0 & gmb-bank-find owner.state.items serial 0 == 0)
+      normal <- tsp-check "normal entry grants no testing supplies" (is-ok created & peek-byte game.characters 144 == 0 & gmb-bank-find owner.state.items serial 0 == 0)
       enabled <- __record-set owner.state "testing" True
-      entry <- cg-entry owner.state game input (gs-reply [] "testing entry")
+      entry <- cg-entry owner.state game input map (gs-reply [] "testing entry")
       pack <- gsi-pack-find game.world serial 0
-      bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+      bank-first <- gmb-bank-find owner.state.items serial 0
+      bag <- tsp-tools-bag game.world (world-first-child game.world bank-first)
       bank <- gmb-bank-find owner.state.items serial 0
       coin <- gsi-child-art game.world (world-first-child game.world bank) #0EED 0
-      book <- gsi-child-art game.world (world-first-child game.world bag) #0EFA 0
+      reagents <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+      book <- gsi-child-art game.world (world-first-child game.world pack) #0EFA 0
+      rune <- gsi-child-art game.world (world-first-child game.world pack) #1F14 0
       amount <- when world-get game.world coin is Err (_) -> 0 is Ok (item) -> item.amount
-      stocked <- tsp-check "testing entry creates tools spell kit and bank stock" (is-ok entry & bag > 0 & bank > 0 & book > 0 & amount == 10000 & world-child-count game.world bag == list-length cts-tools + list-length cts-reagents + 3 & world-child-count game.world bank == list-length cts-materials + 1 & peek-qword owner.state.test-grants 0 == serial)
-      visible <- tsp-check "3C lists correct parents counts and visible gump coordinates" (tsp-contents owner.state.items pack 1 & tsp-contents owner.state.items bag 31 & tsp-contents owner.state.items bank 9)
+      shield <- gsi-child-art game.world (world-first-child game.world pack) cts-shield 0
+      crook <- gsi-child-art game.world (world-first-child game.world pack) cts-crook 0
+      stocked <- tsp-check "testing entry keeps the pack light (spell kit, chests and key, shield, crook, deed) and stocks the bank: the tools bag, the coins and 13 profession bags, no loose materials" (is-ok entry & bag > 0 & reagents > 0 & bank > 0 & book > 0 & rune > 0 & shield > 0 & crook > 0 & amount == 10000 & world-child-count game.world bag == list-length cts-tools & world-child-count game.world reagents == list-length cts-reagents + 1 & world-child-count game.world bank == 15 & peek-byte game.characters 144 == 1)
+      visible <- tsp-check "3C lists correct parents counts and visible gump coordinates" (tsp-contents owner.state.items pack 9 & tsp-contents owner.state.items bag (list-length cts-tools) & tsp-contents owner.state.items reagents (list-length cts-reagents + 1) & tsp-contents owner.state.items bank 15)
+      pack-spread <- tsp-spread owner.state.items pack
+      bag-spread <- tsp-spread owner.state.items bag
+      reagent-spread <- tsp-spread owner.state.items reagents
+      bank-spread <- tsp-spread owner.state.items bank
+      kit-book <- if book > 0 then book else gsi-child-art game.world (world-first-child game.world bag) #0EFA 0
+      kit-rune <- if rune > 0 then rune else gsi-child-art game.world (world-first-child game.world bag) #1F14 0
+      clear <- tsp-check "no later row covers the spellbook or the rune" (kit-book > 0 & kit-rune > 0 & tsp-clear owner.state.items kit-book & tsp-clear owner.state.items kit-rune)
+      spread <- tsp-check "every pack, bag and bank row has its own position" (pack-spread + bag-spread + reagent-spread + bank-spread == 0)
       committed <- cs-commit owner False
       count <- world-count game.world
-      repeated <- cg-entry owner.state game input (gs-reply [] "repeat")
+      repeated <- cg-entry owner.state game input map (gs-reply [] "repeat")
       once <- tsp-check "repeat entry does not duplicate supplies" (is-ok committed & is-ok repeated & world-count game.world == count)
       old-bag <- tsp-zero-position game.world bag
-      old-book <- tsp-zero-position game.world book
-      repaired <- cg-entry owner.state game input (gs-reply [] "repair old positions")
-      repair <- tsp-check "legacy zero-coordinate contents repaired without restocking" (is-ok old-bag & is-ok old-book & is-ok repaired & world-count game.world == count & tsp-contents owner.state.items pack 1 & tsp-contents owner.state.items bag 31)
+      old-book <- tsp-zero-position game.world kit-book
+      repaired <- cg-entry owner.state game input map (gs-reply [] "repair old positions")
+      repair <- tsp-check "legacy zero-coordinate contents repaired without restocking" (is-ok old-bag & is-ok old-book & is-ok repaired & world-count game.world == count & tsp-contents owner.state.items pack 9 & tsp-contents owner.state.items bag (list-length cts-tools))
       consumed <- world-delete game.world coin
       saved <- cs-commit owner False
       durable <- tsp-check "spent testing coin and grant marker commit together" (is-ok consumed & is-ok saved)
-      normal + stocked + visible + once + repair + durable
+      other <- ga-create game.accounts [79,116,104,101,114] [112,119]
+      first-account <- ga-bound game.accounts
+      switched <- when other is Err (_) -> False is Ok (index) -> gs-bind game index
+      left <- __record-set game "active" 0
+      second <- gn-input 3
+      second-mode <- __record-set second "mode" 2
+      second-phase <- __record-set second.session "phase" 1
+      created2 <- cs-route owner game second map 2593 (tsp-create 0)
+      serial2 <- second.session.serial
+      stocked2 <- gmb-bank-find owner.state.items serial2 0 > 0 & peek-byte game.characters 144 == 1 & peek-qword game.characters 0 == serial2
+      count2 <- world-count game.world
+      left2 <- __record-set game "active" 0
+      back <- gs-bind game first-account
+      returned <- __record-set game "active" serial
+      again <- cg-entry owner.state game input map (gs-reply [] "first account again")
+      settled <- cs-commit owner False
+      print-line-uni ("ACCOUNTS objects after second account " & show count2 & ", after the first returns " & show (world-count game.world))
+      accounts <- tsp-check "another account in the same slot is stocked once and the first is not restocked" (switched & is-ok created2 & stocked2 & back
+        & peek-qword game.characters 0 == serial & peek-byte game.characters 144 == 1 & is-ok again & world-count game.world == count2 & is-ok settled)
+      normal + stocked + visible + clear + spread + once + repair + durable + accounts
     end
-  tsp-restored : CompositeOwner -> [Console] Integer
-  tsp-restored (owner) = let game = owner.state.checkpoint.game
+  tsp-restored : CompositeOwner, WalkMap -> [Console] Integer
+  tsp-restored (owner) (map) = let game = owner.state.checkpoint.game
     in let serial = peek-qword game.characters 0
     in let input = gn-input 2
     in let mode = __record-set input "mode" 2
@@ -75,15 +140,16 @@ Chapter: TestingStockProof
     in let active = __record-set game "active" serial
     in let count = world-count game.world
     in act
-      normal <- tsp-check "restart disables mode but preserves per-character grant" (not owner.state.testing & peek-qword owner.state.test-grants 0 == serial)
+      normal <- tsp-check "restart disables mode but preserves per-character grant" (not owner.state.testing & peek-byte game.characters 144 == 1)
       enabled <- __record-set owner.state "testing" True
-      entered <- cg-entry owner.state game input (gs-reply [] "restart")
+      entered <- cg-entry owner.state game input map (gs-reply [] "restart")
       bank <- gmb-bank-find owner.state.items serial 0
       coin <- gsi-child-art game.world (world-first-child game.world bank) #0EED 0
       once <- tsp-check "restart cannot refill spent testing supplies" (is-ok entered & world-count game.world == count & coin == 0)
       pack <- gsi-pack-find game.world serial 0
-      bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
-      visible <- tsp-check "restored packet contents retain visible positions" (tsp-contents owner.state.items pack 1 & tsp-contents owner.state.items bag 31 & tsp-contents owner.state.items bank 8)
+      bank-first <- gmb-bank-find owner.state.items serial 0
+      bag <- tsp-tools-bag game.world (world-first-child game.world bank-first)
+      visible <- tsp-check "restored packet contents retain visible positions" (tsp-contents owner.state.items pack 9 & tsp-contents owner.state.items bag (list-length cts-tools) & tsp-contents owner.state.items bank 7)
       normal + once + visible
     end
   opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
@@ -96,6 +162,6 @@ Chapter: TestingStockProof
           loaded <- cs-load store 0
           when loaded
             is Err (e) -> tsp-check e False
-            is Ok (owner) -> if fresh then tsp-run owner map else tsp-restored owner
+            is Ok (owner) -> if fresh then tsp-run owner map else tsp-restored owner map
         end
     end

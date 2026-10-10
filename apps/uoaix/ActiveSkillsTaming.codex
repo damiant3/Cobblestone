@@ -1,0 +1,64 @@
+Chapter: ActiveSkillsTaming
+  cites Uoaix chapter ActiveSkillsHiding
+
+ UOX3 data/js/skill/taming.js, GPL-2.0-or-later; ports/UOX3-LICENSE.txt. A tame starts within 3 tiles of a creature
+ whose TOTAME the tamer's Animal Taming (35) meets. Every 3 seconds the tamer says one of four lines and rolls 35
+ against TOTAME, three times at most, and stops when the creature is more than 8 tiles away, the tamer dies or
+ another tamer takes it.
+
+  as-tame-bare : Text -> Text
+  as-tame-bare (name) = if text-length name > 3 & substring name 0 3 == "an " then substring name 3 (text-length name - 3)
+    else if text-length name > 2 & substring name 0 2 == "a " then substring name 2 (text-length name - 2) else name
+  as-tame-line : Integer, Text -> Text
+  as-tame-line (roll) (name) = if roll == 0 then "I've always wanted a pet like you." else if roll == 1 then "Will you be my friend?"
+    else if roll == 2 then "Here " & as-tame-bare name & "." else "Good " & as-tame-bare name & "."
+  as-tame-begin : AsServices, ActiveSkills, AsActor, WorldObject, WorldObject, Integer -> GameReply
+  as-tame-begin (services) (s) (a) (player) (creature) (now) =
+    if creature.kind /= 1 then gsi-denied "You can't tame that!"
+    else let master = services.master creature.serial
+    in let taming = services.taming creature.serial
+    in if master < 0 | taming <= 0 then gsi-denied "You can't tame that creature."
+    else if master == player.serial then gsi-denied "You already control that creature!"
+    else if master > 0 then gsi-denied "That creature is already controlled by another!"
+    else if as-level a 35 < taming then gsi-denied "You are not skilled enough to tame that creature."
+    else if not (as-near player creature 3) then gsi-denied "That is out of range."
+    else let bound = __record-set a "tame" creature.serial
+    in let step = __record-set a "tame-step" 0
+    in let due = __record-set a "tame-due" (now + gh-ticks 3000)
+    in gs-reply [as-say "You start to tame the creature."] "skills:tame-begun"
+  as-tame-stop : AsActor, List (List Integer), Text -> GameReply
+  as-tame-stop (a) (packets) (note) = let t = __record-set a "tame" 0
+    in let d = __record-set a "tame-due" 0
+    in let k = __record-set a "tame-step" 0 in gs-reply packets note
+  as-tame-try : AsServices, ActiveSkills, AsActor, WorldObject, WorldObject, Integer -> GameReply
+  as-tame-try (services) (s) (a) (player) (creature) (now) =
+    let said = sip-message player.serial player.graphic 0 (as-tame-line (skc-random a.skills 4) (services.pet-name creature.serial))
+    in let step = __record-set a "tame-step" (a.tame-step + 1)
+    in if as-roll s a 35 (services.taming creature.serial) then
+      (if services.tame creature.serial player.serial then as-tame-stop a [said, sip-message creature.serial creature.graphic 0 "It seems to accept you as master."] "skills:tamed"
+      else as-tame-stop a [said, as-say "You can't tame that creature."] "skills:tame-refused")
+    else if a.tame-step >= 3 then as-tame-stop a [said, as-say "You were unable to tame it."] "skills:tame-failed"
+    else let due = __record-set a "tame-due" (now + gh-ticks 3000) in gs-reply [said] "skills:tame-try"
+  as-tame-finish : AsServices, ActiveSkills, AsActor, GameShard, GameInput, WorldObject, Integer -> GameReply
+  as-tame-finish (services) (s) (a) (game) (input) (player) (now) =
+    if player.health <= 0 then as-tame-stop a [as-say "You are dead, and cannot continue taming."] "skills:tame-interrupted"
+    else if a.connection /= input.connection then as-tame-stop a [] "skills:tame-interrupted"
+    else when world-get game.world a.tame
+      is Err (_) -> as-tame-stop a [as-say "You were unable to tame it."] "skills:tame-interrupted"
+      is Ok (creature) -> if creature.kind /= 1 | creature.health <= 0 then as-tame-stop a [as-say "You were unable to tame it."] "skills:tame-interrupted"
+        else if not (as-near player creature 8) then as-tame-stop a [sip-message player.serial player.graphic 0 "You are too far away to continue taming."] "skills:tame-interrupted"
+        else if services.master creature.serial /= 0 then as-tame-stop a [as-say "That creature is already controlled by another!"] "skills:tame-interrupted"
+        else as-tame-try services s a player creature now
+  as-tame-pulse : AsServices, ActiveSkills, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  as-tame-pulse (services) (s) (game) (input) (now) =
+    if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | s.items.world.buffer /= game.world.buffer then Ok None
+    else let slot = gsi-slot game input.session.serial 0
+    in if slot < 0 then Ok None else let a = list-at s.actors slot
+    in if a.serial /= input.session.serial | a.tame-due == 0 | now < a.tame-due then Ok None
+    else when world-get game.world a.serial
+      is Err (e) -> Err e
+      is Ok (player) -> let before = as-level a 35
+        in let reply = as-tame-finish services s a game input player now
+        in Ok (Just (if as-level a 35 == before then reply else gs-reply (list-push reply.packets (as-skills a)) (reply.note & "; skills:gain")))
+
+Page 1

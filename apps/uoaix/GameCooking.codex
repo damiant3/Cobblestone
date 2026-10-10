@@ -1,0 +1,123 @@
+Chapter: GameCooking
+  cites Uoaix chapter GameHarvestProduction
+
+ UOX3 js/skill/cooking/cooking.js, heatsources.js, dough.js RangeCheck and dictionary.ENG 393, 6022, 6063,
+ 6093, 6094, 6095, 6097: raw fish steaks (0x097A) in the cook's backpack, used on an oven, fireplace or fire
+ within 3 tiles and 10 z, roll Cooking (skill 9) and become one cooked fish steak (0x097B) or burn; UOX3 cooks
+ after a 5 s timer, which a 5 s cooldown stands in for. The steaks are fish (item 9) and the cooked steak is
+ cooked food (item 50), so the census moves one fish into one crafted cooked food.
+  gco-heat-art : Integer -> Boolean
+  gco-heat-art (g) = (g >= #0461 & g <= #0480) | (g >= #092B & g <= #0933) | (g >= #0937 & g <= #0942)
+    | (g >= #0945 & g <= #0950) | (g >= #0953 & g <= #095E) | (g >= #0961 & g <= #096C) | (g >= #0DE3 & g <= #0DE8) | g == #0FAC
+  gco-raw : GameHarvest, GvPlayer, Integer -> Integer
+  gco-raw (state) (player) (serial) = let at = if serial == 0 then -1 else gv-lot state.vendor serial 0
+    in if at < 0 then -1
+    else let lot = ep-lot state.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | lot.item /= 9 then -1
+    else when world-get state.items.world serial
+      is Err (_) -> -1
+      is Ok (food) -> if food.kind /= 2 | food.graphic /= #097A then -1 else at
+  gco-pan : GameHarvest, GvPlayer, Integer -> Integer
+  gco-pan (state) (player) (serial) = let at = if serial == 0 then -1 else gv-lot state.vendor serial 0
+    in if at < 0 then -1
+    else let lot = ep-lot state.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | lot.item /= 42 then -1
+    else when world-get state.items.world serial
+      is Err (_) -> -1
+      is Ok (pan) -> if pan.kind /= 2 | (pan.graphic /= #097F & pan.graphic /= #1043) then -1 else at
+  gco-heat-target : (Integer, Integer, Integer, Integer, Integer -> Boolean), GameHarvest, GvPlayer, GhRequest, List Integer, Integer -> Result (Maybe GameReply) Text
+  gco-heat-target (heat) (state) (player) (request) (packet) (now) =
+    let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in let z = (if list-at packet 16 > 127 then list-at packet 16 - 256 else list-at packet 16)
+    in let graphic = gp-u16 packet 17
+    in let clear = __record-set request "target" 0
+    in if x == 65535 | y == 65535 then Ok (Just (gs-reply [] "cooking cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else if not (gv-owned state.items.world request.tool player.serial 65) then gh-denied "This has to be in your backpack before you can use it."
+    else if not (gco-heat-art graphic) | not (heat x y z graphic serial) then gh-denied "You cannot cook your food on that."
+    else when world-get state.items.world player.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if me.x > x + 3 | me.x < x - 3 | me.y > y + 3 | me.y < y - 3 | me.z > z + 10 | me.z < z - 10 then gh-denied "That is too far away."
+        else Ok (Just (gs-reply [] "cooking heat"))
+  gco-begin : GameHarvest, GvPlayer, GhRequest, Integer, Integer -> Result (Maybe GameReply) Text
+  gco-begin (state) (player) (request) (serial) (now) =
+    if not (gv-owned state.items.world serial player.serial 65) then gh-denied "This has to be in your backpack before you can use it."
+    else if state.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+    else let target = #48410000 + state.nonce
+    in let nonce = __record-set state "nonce" (state.nonce + 1)
+    in let context = __record-set request "target" target
+    in let selected = __record-set request "tool" serial
+    in let expires = __record-set request "expires" (now + gh-ticks 10000)
+    in Ok (Just (gs-reply [sip-target target, sip-message #FFFFFFFF #FFFF 6 "What do you want to cook this on?"] "cooking target"))
+  gco-cook : GameHarvest, GvPlayer, Integer, WorldObject, Integer -> Result (Maybe GameReply) Text
+  gco-cook (state) (player) (at) (me) (now) =
+    let v = state.vendor
+    in let w = v.currency.world
+    in let p = ep-actor w player.actor
+    in let lot = ep-lot v.currency.world.goods at
+    in let serial = lot.serial
+    in if ep-at p.stock 9 < 1 | ep-at p.quality 9 < lot.quality | ep-at p.wear 9 < lot.wear then gh-denied "Cooking inventory binding refused."
+    else if not (ep-room p 50 1) | ep-at w.crafted 50 > ep-limit - 1 | not (ep-lot-room v.currency.world.goods 1)
+      | world-room state.items.world <= 0 then gh-denied "You cannot hold the cooked food."
+    else let bound = gh-row v player
+    in let level = ep-level p 9 (ep-classic 9 0 0)
+    in let cost = lot.basis / max 1 (ep-amount v.currency.world.goods lot.serial)
+    in let cooked = ep-practice p 9
+    in when ep-take w lot.actor 9 1 serial
+      is Err (e) -> Err e
+      is Ok (_) -> let used = ep-add w.consumed 9 1
+        in let invalidated = gh-invalidate-quotes v 0
+        in let rest = when world-get state.items.world serial is Err (_) -> [sip-remove serial] is Ok (o) -> [sip-item o]
+        in if not cooked then Ok (Just (gs-reply (rest & [sip-message #FFFFFFFF #FFFF 6 "You burn the raw fish steak to a crisp! It's ruined."]) "cooking burnt"))
+        else let quality = 100 + level * 9 / 10
+        in let a = ep-add p.stock 50 1
+        in let b = ep-add p.cost 50 cost
+        in let c = ep-add p.quality 50 quality
+        in let d = ep-add p.wear 50 32
+        in let e = ep-add w.crafted 50 1
+        in when gh-place state player 50 1 (gh-grade quality) cost now
+          is Err (err) -> Err err
+          is Ok (made) -> Ok (Just (gs-reply (rest & [made] & gsi-sound-at state.items player.serial #0057
+            & [sip-message #FFFFFFFF #FFFF 6 "You cook a fish steak."]) "cooking cooked"))
+  gco-target : (Integer, Integer, Integer, Integer, Integer -> Boolean), GameHarvest, GvPlayer, GhRequest, List Integer, Integer -> Result (Maybe GameReply) Text
+  gco-target (heat) (state) (player) (request) (packet) (now) =
+    let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in let x = gp-u16 packet 11
+    in let y = gp-u16 packet 13
+    in let z = (if list-at packet 16 > 127 then list-at packet 16 - 256 else list-at packet 16)
+    in let graphic = gp-u16 packet 17
+    in let clear = __record-set request "target" 0
+    in if x == 65535 | y == 65535 then Ok (Just (gs-reply [] "cooking cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else let at = gco-raw state player request.tool
+    in if at < 0 | not (gv-owned state.items.world request.tool player.serial 65) then gh-denied "This has to be in your backpack before you can use it."
+    else if not (gco-heat-art graphic) | not (heat x y z graphic serial) then gh-denied "You cannot cook your raw fish steak on that."
+    else when world-get state.items.world player.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if me.x > x + 3 | me.x < x - 3 | me.y > y + 3 | me.y < y - 3 | me.z > z + 10 | me.z < z - 10 then gh-denied "That is too far away."
+        else if now < request.next then gh-denied "You are already cooking something."
+        else let next = __record-set request "next" (now + gh-ticks 5000)
+        in gco-cook state player at me now
+  gco-handler-at : (Integer, Integer, Integer, Integer, Integer -> Boolean), GameHarvest, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  gco-handler-at (heat) (state) (shard) (input) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if (op /= 6 | list-length packet /= 5) & (op /= #6C | list-length packet /= 19) then Ok None
+    else if not (gs-byte-range packet 0) then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
+      | state.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player state.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 10000 then Ok None
+    else let player = list-at state.vendor.players at
+    in if not (ep-valid-actor state.vendor.currency.world player.actor) then Ok None
+    else let request = gh-session state input player slot
+    in if op == 6 then (if gco-raw state player (bit-and (gp-u32 packet 1) #7FFFFFFF) < 0 & gco-pan state player (bit-and (gp-u32 packet 1) #7FFFFFFF) < 0 then Ok None
+      else gco-begin state player request (bit-and (gp-u32 packet 1) #7FFFFFFF) now)
+    else if request.target == 0 | request.target /= gp-u32 packet 2 then Ok None
+    else if gco-pan state player request.tool >= 0 then gco-heat-target heat state player request packet now
+    else if gco-raw state player request.tool < 0 then Ok None
+    else gco-target heat state player request packet now

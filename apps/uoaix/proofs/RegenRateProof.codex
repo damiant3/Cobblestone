@@ -1,0 +1,62 @@
+Chapter: RegenRateProof
+  cites Uoaix chapter MageryCodec
+
+  rrp-check : Text, Boolean -> [Console] Nothing
+  rrp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  rrp-hp : GameShard, Integer -> Integer
+  rrp-hp (shard) (serial) = when world-get shard.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  rrp-run : GameCombat, GameShard, CombatActor, Integer -> Integer
+  rrp-run (c) (shard) (a) (left) = if left == 0 then 0
+    else let tick = __record-set c "tick" (c.tick + 1)
+    in let regen = cb-regen c shard a
+    in rrp-run c shard a (left - 1)
+  rrp-hits : Integer -> Result Integer Text
+  rrp-hits (fed) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (shard) -> when world-create shard.world (__record-set (gs-mobile 0 1421 1698 0 400 0) "health" 50)
+      is Err (e) -> Err e
+      is Ok (serial) -> let slot = poke-qword shard.characters 0 serial
+        in let hunger = gh-set shard.characters fed
+        in let c = cb-new shard 42
+        in when cb-ensure c shard serial
+          is Err (e) -> Err e
+          is Ok (a) -> let full = __record-set a "maximum" 100
+            in let started = __record-set c "tick" 1000
+            in let armed = __record-set a "regen" 1000
+            in let ran = rrp-run c shard a (mgd-ticks 12000)
+            in Ok (rrp-hp shard serial - 50)
+  rrp-mana : Integer -> Result Integer Text
+  rrp-mana (fed) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (shard) -> when world-create shard.world (gs-mobile 0 1421 1698 0 400 0)
+      is Err (e) -> Err e
+      is Ok (serial) -> let slot = poke-qword shard.characters 0 serial
+        in let hunger = gh-set shard.characters fed
+        in let actor = list-at (mgs-actors 1 []) 0
+        in let a = __record-set actor "serial" serial
+        in let b = __record-set actor "intelligence" 100
+        in Ok (mgr-regen-delay shard actor)
+  rrp-near : Integer, Integer -> Boolean
+  rrp-near (got) (want) = got >= want - 1 & got <= want + 1
+
+  opening : [Console] Nothing = when rrp-hits 10
+    is Err (e) -> print-line-uni ("FAIL hits fixture " & e)
+    is Ok (normal) -> when rrp-hits 18
+      is Err (e) -> print-line-uni ("FAIL hits fixture " & e)
+      is Ok (fed) -> when rrp-hits 2
+        is Err (e) -> print-line-uni ("FAIL hits fixture " & e)
+        is Ok (starving) -> when rrp-mana 10
+          is Err (e) -> print-line-uni ("FAIL mana fixture " & e)
+          is Ok (m-normal) -> when rrp-mana 18
+            is Err (e) -> print-line-uni ("FAIL mana fixture " & e)
+            is Ok (m-fed) -> when rrp-mana 2
+              is Err (e) -> print-line-uni ("FAIL mana fixture " & e)
+              is Ok (m-starving) -> act
+                print-line-uni ("hits in 12 s of a 100 bar: normal=" & show normal & " well-fed=" & show fed & " starving=" & show starving
+                  & "; mana ticks per point at intelligence 100: normal=" & show m-normal & " well-fed=" & show m-fed & " starving=" & show m-starving & " (1.2 s = " & show (mgd-ticks 1200) & ")")
+                rrp-check "a player's hits refill a 100 bar in about 120 s at normal hunger (10 in 12 s), 1.5x well fed, half starving" (rrp-near normal 10 & rrp-near fed 15 & rrp-near starving 5)
+                rrp-check "mana regenerates one point per 1.2 s at intelligence 100 and normal hunger, 2/3 of that well fed, twice starving" (rrp-near m-normal (mgd-ticks 1200) & rrp-near m-fed (mgd-ticks 1200 * 2 / 3) & rrp-near m-starving (mgd-ticks 1200 * 2))
+                rrp-check "an NPC keeps Source-X's one hit point per 40 s" (cb-regen-ticks 0 == mgd-ticks 40000)
+              end
+
+Page 1

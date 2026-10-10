@@ -1,0 +1,29 @@
+Chapter: BvtAnvilReach
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ Damian, 2026-10-10: "smith hammer should work near an anvil, not in a workshop". An anvil item on the ground counts
+ within 2 tiles and 16 z (cpr-anvil-item), and smithing's refusal names the anvil (gcr-away-text).
+  bar-made : Result Integer Text -> Integer
+  bar-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bar-recipe : EpWorld, Integer, Integer -> Integer
+  bar-recipe (w) (kind) (i) = if i >= list-length w.catalog.recipes then 0
+    else if (list-at w.catalog.recipes i).station == kind then i + 1 else bar-recipe w kind (i + 1)
+  bar-other : EpWorld, Integer -> Integer
+  bar-other (w) (i) = if i >= list-length w.catalog.recipes then 0
+    else let kind = (list-at w.catalog.recipes i).station in if kind > 1 & kind /= 3 & kind /= 9 then i + 1 else bar-other w (i + 1)
+  bvt-anvil-reach : Integer -> [Console] Integer
+  bvt-anvil-reach (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("anvil reach fixture: " & e) False
+    is Ok (owner) -> let world = owner.items.world
+      in let anvil = bar-made (world-create world (__record-set (__record-set (gs-item 0 #0FAF 0) "x" 1421) "y" 1700))
+      in let beside = gs-mobile 0 1420 1700 0 400 1015
+      in let far = gs-mobile 0 1424 1700 0 400 1015
+      in let high = gs-mobile 0 1420 1700 40 400 1015
+      in let w = owner.vendor.currency.world
+      in let smith = bar-recipe w 3 0
+      in let other = bar-other w 0 in act
+      a <- bvt-check "an anvil item within 2 tiles lets a smith hammer work; 3 tiles off or 40 above it does not" (anvil > 0 & cpr-anvil-item world beside 0 & not (cpr-anvil-item world far 0) & not (cpr-anvil-item world high 0))
+      b <- bvt-check "away from an anvil smithing says so, and another craft still names its workshop" (smith > 0 & other > 0 & gcr-away-text w smith "x" == "You must be within 2 tiles of an anvil." & gcr-away-text w other "x" == "x")
+      a + b
+    end

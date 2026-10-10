@@ -1,0 +1,34 @@
+Chapter: BvtMerchantFleet
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter MerchantFleet
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-237 stage F1a: the lanes, the ports' shops and the trade rule (MerchantFleet).
+  bmf-lane-ok : List Integer, Integer -> Boolean
+  bmf-lane-ok (lane) (i) = if i >= list-length lane then True
+    else let c = list-at lane i in c >= 0 & c < list-length (ct-table 0) & (i == 0 | c /= mf-home) & bmf-lane-ok lane (i + 1)
+  bmf-lanes-ok : List (List Integer), Integer -> Boolean
+  bmf-lanes-ok (lanes) (i) = if i >= list-length lanes then True
+    else let lane = list-at lanes i in list-at lane 0 == mf-home & list-length lane >= 3 & bmf-lane-ok lane 0 & mf-next lane (list-length lane - 1) == mf-home & bmf-lanes-ok lanes (i + 1)
+  bmf-roles : List Integer, Integer, Integer -> Boolean
+  bmf-roles (port) (role) (i) = if i >= list-length port then False else ct-vendor-role (list-at port i) == role | bmf-roles port role (i + 1)
+  bmf-at-most : EpWorld, List GvVendor, List Integer, Integer, Integer, Integer -> Boolean
+  bmf-at-most (w) (vendors) (port) (item) (best) (i) = if i >= list-length port then True
+    else let k = list-at port i in gvb-bid-for w (ct-vendor-role k) (list-at vendors k).actor item <= best & bmf-at-most w vendors port item best (i + 1)
+  bvt-merchant-fleet : Integer -> [Console] Integer
+  bvt-merchant-fleet (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("merchant fleet fixture: " & e) False
+    is Ok (owner) -> let cities = ct-table 0
+      in let cityshops = ct-city-shops 0
+      in let nujelm = mf-port-shops cities cityshops 8 0 []
+      in let britain = mf-port-shops cities cityshops 0 0 []
+      in let v = owner.vendor
+      in let w = v.currency.world
+      in let best = mf-best-bid w v.vendors britain 5 0 0 in act
+      print-line-uni ("FLEET nujelm-shops=" & show (list-length nujelm) & " britain-shops=" & show (list-length britain) & " best-bid-item5=" & show best)
+      a <- bvt-check "every lane leaves from Britain, visits only ct-table cities, and its last leg sails home" (bmf-lanes-ok (mf-lanes 0) 0 & list-length (mf-lanes 0) == mf-ships)
+      b <- bvt-check "Nujel'm's port holds its innkeeper, tanner and leatherworker and no Britain shop; Britain's holds the 21 Britain shops" (list-length nujelm >= 6 & bmf-roles nujelm 5 0 & bmf-roles nujelm 14 0 & bmf-roles nujelm 15 0 & list-at nujelm 0 >= bb-shop-count & list-length britain >= bb-shop-count & list-at britain 0 == 0 & mf-port-of cities cityshops (0 - 1) < 0)
+      c <- bvt-check "the best bid at a port is no lower than any of its shops' bids" (bmf-at-most w v.vendors britain 5 best 0 & best >= 0)
+      d <- bvt-check "a ship buys 20% under the next port's bid and no closer, never at no price, and sells only above its cost" (mf-worth-buying 80 100 & not (mf-worth-buying 81 100) & not (mf-worth-buying 0 100) & not (mf-worth-buying 10 0) & mf-worth-selling 11 10 & not (mf-worth-selling 10 10) & not (mf-worth-selling 0 0))
+      a + b + c + d
+    end

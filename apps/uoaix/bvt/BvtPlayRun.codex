@@ -1,0 +1,63 @@
+Chapter: BvtPlayRun
+  cites Uoaix chapter PlayRun
+  cites Uoaix chapter PlayScript
+  cites Uoaix chapter PlayStories
+  cites Foreword chapter Result
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter CCE
+
+  bpr-buffer : Text -> Integer
+  bpr-buffer (src) = let bytes = text-to-utf8-bytes src
+    in let s = alloc-bytes (max 1 (list-length bytes))
+    in let copied = plr-poke s bytes 0 (list-length bytes) in s
+ A client 0x03: opcode, length, mode, hue, font, then the text and its NUL from byte 8.
+  bpr-said : Text -> List Integer
+  bpr-said (line) = [3, 0, 0, 0, 0, 0, 0, 0] & text-to-utf8-bytes line & [0]
+  bpr-finds : Text, Text -> Boolean
+  bpr-finds (line) (word) = let p = bpr-said line in plr-find-word p 8 (list-length p - 1) (bpr-buffer word) (text-length word)
+
+  bvt-play-run : Integer -> [Console] Integer
+  bvt-play-run (unused) = act
+    a <- bvt-check "a heard word matches case-free at word bounds (plr-find-word)" (bpr-finds "Please HELP me!" "help" & bpr-finds "help" "help")
+    b <- bvt-check "a heard word inside a longer word does not match" (not (bpr-finds "how helpful" "help") & not (bpr-finds "self-helper" "help"))
+    c <- bvt-check "an emote line is 0x1C mode 2 between asterisks, 45 + text + 2 bytes (plr-speech)" (bpr-emote 0)
+    d <- bvt-check "a set overlapping another story's set is refused naming that set and story (sty-define)" (bpr-conflict 0)
+    e <- bvt-check "sets of one story may overlap; another story's set still refuses" (bpr-own-overlap 0)
+    f <- bvt-check "a member outside its set's area is refused (sty-add-member)" (bpr-outside 0)
+    g <- bvt-check "PLY1 carries a compiled play, its story and its scene's set into a fresh store; a bad length is refused" (bpr-roundtrip 0)
+    a + b + c + d + e + f + g
+  end
+  bpr-emote : Integer -> Boolean
+  bpr-emote (unused) = let p = plr-speech (gs-mobile 5 0 0 0 401 1002) (alloc-bytes 30) pls-emote (bpr-buffer "sighs") 5
+    in list-length p == 52 & list-at p 0 == 28 & list-at p 2 == 52 & list-at p 9 == 2 & list-at p 44 == 42 & list-at p 50 == 42 & list-at p 51 == 0
+  bpr-define : StyStore, Text, Text, Integer, Integer, Integer, Integer -> Result Integer Text
+  bpr-define (st) (story) (set) (x1) (y1) (x2) (y2) = let s = sty-story-of st (bpr-buffer story) 0 (text-length story)
+    in sty-define st s (bpr-buffer set) 0 (text-length set) x1 y1 x2 y2
+  bpr-conflict : Integer -> Boolean
+  bpr-conflict (unused) = let st = sty-new 0
+    in let first = bpr-define st "one" "hall" 10 10 20 20
+    in when bpr-define st "two" "yard" 15 15 30 30 is Ok (_) -> False is Err (e) -> text-contains e "overlaps set hall of story one"
+  bpr-own-overlap : Integer -> Boolean
+  bpr-own-overlap (unused) = let st = sty-new 0
+    in let first = bpr-define st "one" "hall" 10 10 20 20
+    in let apart = is-ok (bpr-define st "two" "yard" 21 21 30 30)
+    in let refused = not (is-ok (bpr-define st "one" "porch" 15 15 25 25))
+    in let shared = is-ok (bpr-define st "one" "porch" 15 15 20 20)
+    in apart & refused & shared
+  bpr-outside : Integer -> Boolean
+  bpr-outside (unused) = let st = sty-new 0
+    in when bpr-define st "one" "hall" 10 10 20 20
+      is Err (_) -> False
+      is Ok (set) -> let outside = is-err (sty-add-member st set #0E7C 0 50 50 0 0 0)
+        in outside & is-ok (sty-add-member st set #0E7C 0 12 12 0 0 0)
+  bpr-roundtrip : Integer -> Boolean
+  bpr-roundtrip (unused) = let st = plr-new 0
+    in let appended = plr-append st 0 (text-to-utf8-bytes "play T\nscene a 10 10 20 20\nset a 0x0E7C 0 12 12 0\nstate s end\n")
+    in let compiled = is-ok (plr-compile st 0)
+    in let buf = alloc-bytes (plr-tail-size 0)
+    in let written = plr-write-tail st buf
+    in let back = plr-new 0
+    in let read = when plr-read-tail back buf (plr-tail-size 0) is Ok (n) -> n == 1 is Err (_) -> False
+    in let same = plr-run back 0 12 == 1 & plr-scene back 0 0 6 == plr-scene st 0 0 6 & sty-count-members back.stories (plr-run back 0 13) 0 0 == 1
+    in compiled & read & same & is-err (plr-read-tail (plr-new 0) buf 5)

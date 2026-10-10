@@ -1,0 +1,139 @@
+Chapter: FloraReplay
+  cites Uoaix chapter WorldFlora
+
+  frp-check : Text, Boolean -> [Console] Integer
+  frp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+ One flora row on every tile of x 960..1039, y 984..1015 (blocks 120..129 by 123..126), written in block order.
+  frp-row : Integer, Integer, Integer, Integer -> Integer
+  frp-row (rows) (i) (x) (y) = let at = i * 12
+    in let a = poke-byte rows at (bit-and x 255)
+    in let b = poke-byte rows (at + 1) (x / 256)
+    in let c = poke-byte rows (at + 2) (bit-and y 255)
+    in let d = poke-byte rows (at + 3) (y / 256)
+    in let e = poke-byte rows (at + 4) #CD
+    in let f = poke-byte rows (at + 5) #0C
+    in let g = poke-byte rows (at + 6) 0
+    in let h = poke-byte rows (at + 7) 0
+    in let k = poke-byte rows (at + 8) 5
+    in let m = poke-byte rows (at + 9) 0
+    in let n = poke-byte rows (at + 10) (int-mod i 64)
+    in poke-byte rows (at + 11) 0
+  frp-fill : Integer, Integer, Integer, Integer -> Integer
+  frp-fill (directory) (rows) (block) (i) = if block == 393217 then i
+    else let set = poke-32 directory (block * 4) i
+    in let bx = block / 512
+    in let by = int-mod block 512
+    in if block == 393216 | bx < 120 | bx > 129 | by < 123 | by > 126 then frp-fill directory rows (block + 1) i
+    else frp-fill directory rows (block + 1) (frp-cells rows i (bx * 8) (by * 8) 0)
+  frp-cells : Integer, Integer, Integer, Integer, Integer -> Integer
+  frp-cells (rows) (i) (x0) (y0) (cell) = if cell == 64 then i
+    else let written = frp-row rows i (x0 + int-mod cell 8) (y0 + cell / 8) in frp-cells rows (i + 1) x0 y0 (cell + 1)
+  frp-table : Integer -> Integer
+  frp-table (count) = let size = 64 + 393217 * 4 + count * 12
+    in let data = alloc-bytes size
+    in let a = poke-qword data 0 #31524C46
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 16 count
+    in let d = poke-qword data 24 393216
+    in let e = poke-qword data 32 64
+    in let f = poke-qword data 40 (64 + 393217 * 4)
+    in let g = poke-qword data 48 12
+    in let h = poke-qword data 56 0
+    in let filled = frp-fill (data + 64) (data + 64 + 393217 * 4) 0 0 in data
+  frp-size : Integer -> Integer
+  frp-size (count) = 64 + 393217 * 4 + count * 12
+ Pulses a viewer until its scan finishes; counts packets, the most in one pulse and rows sent twice or out of reach.
+  FrpRun = record { packets : Integer, most : Integer, pulses : Integer, wrong : Integer }
+  frp-pulses : WfState, Integer, Integer, Integer, FrpRun, Integer -> FrpRun
+  frp-pulses (s) (connection) (x) (y) (run) (left) = if left == 0 then run
+    else let out = wf-view s connection x y
+    in let n = list-length out
+    in if n == 0 then run
+    else let a = __record-set run "packets" (run.packets + n)
+    in let b = __record-set run "most" (max run.most n)
+    in let c = __record-set run "pulses" (run.pulses + 1)
+    in let d = __record-set run "wrong" (run.wrong + frp-wrong s out x y 0 0)
+    in frp-pulses s connection x y run (left - 1)
+  frp-wrong : WfState, List (List Integer), Integer, Integer, Integer, Integer -> Integer
+  frp-wrong (s) (out) (x) (y) (i) (bad) = if i == list-length out then bad
+    else let p = list-at out i
+    in let row = (gp-u32 p 3 - wf-serial-base) - 1
+    in let ok = list-at p 0 == #1A & row >= 0 & row < s.count & wf-near s row x y
+    in frp-wrong s out x y (i + 1) (bad + (if ok then 0 else 1))
+  frp-at : WfState, List Integer -> Integer
+  frp-at (s) (p) = let row = (gp-u32 p 3 - wf-serial-base) - 1 in wf-x s row * 4096 + wf-y s row
+ The tree art 0CCD gets TILEDATA flags 0x40 (impassable) and height 20; the cell also holds a 0x200 collider at z 30.
+  frp-solids : WalkMap -> Integer
+  frp-solids (map) = peek-qword map.solids (walk-cell map 1000 1000 * map.stride)
+  frp-ground : WfState -> [Console] Integer
+  frp-ground (s) = let tiles = alloc-bytes 608256
+    in let cleared = wf-zero tiles 0 608256
+    in let at = wf-tile-at #0CCD
+    in let flagged = poke-byte tiles at #40
+    in let tall = poke-byte tiles (at + 16) 20
+    in when walk-map-new 992 992 16 16
+      is Err (e) -> frp-check ("walk map " & e) False
+      is Ok (map) -> let tree = walk-add-solid map 1000 1000 5 20 #40
+        in let other = walk-add-solid map 1000 1000 30 5 #200
+        in let before = frp-solids map
+        in let felled = wf-ground s tiles map 1000 1000 False
+        in let after-fell = frp-solids map
+        in let still = wf-ground s tiles map 1000 1000 False
+        in let after-again = frp-solids map
+        in let left = peek-qword map.solids (walk-cell map 1000 1000 * map.stride + 8)
+        in let grown = wf-ground s tiles map 1000 1000 True
+        in let after-grow = frp-solids map
+        in let twice = wf-ground s tiles map 1000 1000 True
+        in frp-check "a felled cell drops only the tree's collider (z 5, height 20, 0x40) and keeps the other; maturing restores it once" (before == 2 & after-fell == 1 & after-again == 1 & left == 30 & after-grow == 2 & frp-solids map == 2)
+  frp-run : Integer -> FrpRun
+  frp-run (unused) = FrpRun { packets = 0, most = 0, pulses = 0, wrong = 0 }
+  opening : [Console] Integer =
+    let count = 2560
+    in let data = frp-table count
+    in when wf-read data (frp-size count)
+      is Err (e) -> frp-check ("FLR1 table loads: " & e) False
+      is Ok (s) -> act
+        a <- frp-check "a 2560-row FLR1 table loads and validates" (s.count == 2560)
+        first <- frp-pulses s 1 1000 1000 (frp-run 0) 200
+        b <- frp-check "a viewer at 1000,1000 receives exactly the 1184 rows within 18 tiles, each once, 32 a pulse" (first.packets == 1184 & first.wrong == 0 & first.most == 32 & first.pulses == 37)
+        still <- list-length (wf-view s 1 1000 1000)
+        c <- frp-check "a stationary finished view sends nothing" (still == 0)
+        moved <- frp-pulses s 1 1010 1000 (frp-run 0) 200
+        d <- frp-check "moving 10 tiles east sends only the 320 rows that came into reach" (moved.packets == 320 & moved.wrong == 0)
+        other <- frp-pulses s 2 1000 1000 (frp-run 0) 200
+        e <- frp-check "a second connection gets its own full view" (other.packets == 1184 & other.wrong == 0)
+        back <- frp-pulses s 1 1000 1000 (frp-run 0) 200
+        f <- frp-check "returning resends only the 320 rows that left reach" (back.packets == 320 & back.wrong == 0)
+        felled <- wf-site-sync s 0 1000 1000 0
+        stump <- wf-view s 1 1000 1000
+        m <- frp-check "felling the tree at 1000,1000 redraws that row as a stump (0E56) for a still viewer, and nothing else" (list-length stump == 1 & frp-at s (list-at stump 0) == 1000 * 4096 + 1000 & gp-u16 (list-at stump 0) 7 == #0E56)
+        again <- wf-site-sync s 0 1000 1000 0
+        quiet <- wf-view s 1 1000 1000
+        n <- frp-check "the same stage again redraws nothing" (again == 0 & list-length quiet == 0)
+        growing <- wf-site-sync s 0 1000 1000 1
+        sapling <- wf-view s 1 1000 1000
+        mature <- wf-site-sync s 0 1000 1000 2
+        tree <- wf-view s 1 1000 1000
+        o <- frp-check "a growing node draws a sapling (0CE9), a mature one the tree's own art (0CCD)" (list-length sapling == 1 & gp-u16 (list-at sapling 0) 7 == #0CE9 & list-length tree == 1 & gp-u16 (list-at tree 0) 7 == #0CCD)
+        hidden <- poke-byte s.show 1409 3
+        touched <- wf-touch s 1409 0
+        removed <- wf-view s 1 1000 1000
+        q <- frp-check "a row no longer drawn (1001,1000) reaches a viewer that drew it as a 1D removal of its serial" (wf-x s 1409 == 1001 & wf-y s 1409 == 1000 & list-length removed == 1 & list-at (list-at removed 0) 0 == #1D & gp-u32 (list-at removed 0) 1 == #7C000582)
+        aimed <- wf-target-packet s [#6C,1,#48,#41,0,1,0,#7C,0,0,1,0,0,0,0,0,0,0,0]
+        r <- frp-check "a hatchet aimed at flora row 0 becomes the static target 960,984 z 5 art 0CCD" (gp-u32 aimed 7 == 0 & gp-u16 aimed 11 == 960 & gp-u16 aimed 13 == 984 & list-at aimed 16 == 5 & gp-u16 aimed 17 == #0CCD & list-length aimed == 19)
+        plain <- wf-target-packet s [#6C,1,#48,#41,0,1,0,0,0,0,0,3,232,3,232,0,0,0,0]
+        t <- frp-check "a target with no flora serial passes unchanged" (gp-u16 plain 11 == 1000 & gp-u32 plain 7 == 0)
+        ground <- frp-ground s
+        packet <- wf-packet s 0
+        g <- frp-check "a flora row draws as a 1A world item: serial 7C000001, art 0CCD at 960,984 z 5" (list-at packet 0 == #1A & gp-u32 packet 3 == #7C000001 & list-length packet == 14 & list-at packet 13 == 5)
+        bad-magic <- poke-qword data 0 0
+        h <- frp-check "a table without the FLR1 magic is refused" (is-err (wf-read data (frp-size count)))
+        fixed <- poke-qword data 0 #31524C46
+        moved-row <- poke-byte data (64 + 393217 * 4 + 12 * 70) 200
+        k <- frp-check "a row outside its directory block is refused" (is-err (wf-read data (frp-size count)))
+        print-line-uni ("FLORA refused=" & show s.refused & " first=" & show first.packets & "/" & show first.pulses & " moved=" & show moved.packets & " back=" & show back.packets)
+        a + b + c + d + e + f + g + h + k + m + n + o + q + r + t + ground
+      end

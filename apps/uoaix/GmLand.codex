@@ -1,0 +1,229 @@
+Chapter: GmLand
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+
+  GldTool = record { connection : Integer, serial : Integer, op : Integer, value : Integer, brush : Integer, stamp : Integer }
+  GldName = record { name : Text, art : Integer }
+  GmLand = record { rows : Integer, count : Integer, room : Integer, index : Integer, slots : Integer,
+    tools : List GldTool, clock : Integer }
+ A row is x, y, art, z and the decorator's account index, 8 bytes each. Art -1 keeps the client's art (the server
+ holds no land art: the walk map and the map cache keep only height and flags); -2 marks a row for the next sweep.
+  gld-row-bytes : Integer = 40
+  gld-keep : Integer = 0 - 1
+  gld-gone : Integer = 0 - 2
+  gld-block : Integer = 1024
+ A brush covers at most 17 x 17 tiles; the table grows at the growth point while fewer than two strokes of rows are
+ free, so one stroke always fits.
+  gld-brush-max : Integer = 8
+  gld-stroke : Integer = (2 * gld-brush-max + 1) * (2 * gld-brush-max + 1)
+ GameLinks serves at most 32 game links.
+  gld-tool-limit : Integer = 32
+ Land art ids are the first TILEDATA land entry of each name in the 1.25.32 client's tiledata.mul (measured 2026-10-09).
+  gld-names : List GldName = [GldName { name = "grass", art = #0003 }, GldName { name = "furrows", art = #0009 },
+    GldName { name = "sand", art = #0016 }, GldName { name = "dirt", art = #0071 }, GldName { name = "water", art = #00A8 },
+    GldName { name = "jungle", art = #00AC }, GldName { name = "forest", art = #00C4 }, GldName { name = "rock", art = #00E4 },
+    GldName { name = "snow", art = #010C }, GldName { name = "lava", art = #01F4 }, GldName { name = "tile", art = #0200 },
+    GldName { name = "flagstone", art = #0201 }, GldName { name = "cave", art = #0245 }, GldName { name = "planks", art = #0296 },
+    GldName { name = "cobblestones", art = #03E9 }, GldName { name = "stone", art = #0436 }, GldName { name = "brick", art = #047A },
+    GldName { name = "marble", art = #0486 }]
+  gld-new : Integer -> GmLand
+  gld-new (unused) = GmLand { rows = gld-zeroed (gld-block * gld-row-bytes), count = 0, room = gld-block,
+    index = gld-zeroed (gld-block * 16), slots = gld-block * 2, tools = gld-tools gld-tool-limit (__list-with-capacity gld-tool-limit), clock = 0 }
+  gld-tools : Integer, List GldTool -> List GldTool
+  gld-tools (left) (xs) = if left == 0 then xs
+    else gld-tools (left - 1) (list-push xs (GldTool { connection = -1, serial = 0, op = 0, value = 0, brush = 0, stamp = 0 }))
+  gld-zeroed : Integer -> Integer
+  gld-zeroed (bytes) = let b = alloc-bytes bytes in let z = gld-zero b 0 (bytes / 8) in b
+  gld-zero : Integer, Integer, Integer -> Integer
+  gld-zero (b) (i) (n) = if i >= n then 0 else let z = poke-qword b (i * 8) 0 in gld-zero b (i + 1) n
+  gld-copy : Integer, Integer, Integer, Integer -> Integer
+  gld-copy (from) (to) (i) (n) = if i >= n then 0 else let c = poke-qword to (i * 8) (peek-qword from (i * 8)) in gld-copy from to (i + 1) n
+  gld-field : GmLand, Integer, Integer -> Integer
+  gld-field (s) (row) (k) = peek-qword s.rows (row * gld-row-bytes + k * 8)
+  gld-put : GmLand, Integer, Integer, Integer -> Integer
+  gld-put (s) (row) (k) (v) = poke-qword s.rows (row * gld-row-bytes + k * 8) v
+  gld-hash : Integer, Integer, Integer -> Integer
+  gld-hash (x) (y) (slots) = bit-and ((x * 4096 + y) * 40503) (slots - 1)
+  gld-find : GmLand, Integer, Integer -> Integer
+  gld-find (s) (x) (y) = gld-probe s x y (gld-hash x y s.slots) 0
+  gld-probe : GmLand, Integer, Integer, Integer, Integer -> Integer
+  gld-probe (s) (x) (y) (at) (n) = if n >= s.slots then -1
+    else let held = peek-qword s.index (at * 8)
+    in if held == 0 then -1
+    else if gld-field s (held - 1) 0 == x & gld-field s (held - 1) 1 == y then held - 1
+    else gld-probe s x y (bit-and (at + 1) (s.slots - 1)) (n + 1)
+ Slots are twice the rows, so an empty slot always exists.
+  gld-slot : GmLand, Integer -> Integer
+  gld-slot (s) (at) = if peek-qword s.index (at * 8) == 0 then at else gld-slot s (bit-and (at + 1) (s.slots - 1))
+  gld-set : GmLand, Integer, Integer, Integer, Integer, Integer -> Boolean
+  gld-set (s) (x) (y) (art) (z) (account) = let found = gld-find s x y
+    in if found < 0 & s.count >= s.room then False
+    else let row = if found >= 0 then found else gld-append s x y
+    in let a = gld-put s row 2 art in let b = gld-put s row 3 z in let c = gld-put s row 4 account in True
+  gld-append : GmLand, Integer, Integer -> Integer
+  gld-append (s) (x) (y) = let row = s.count
+    in let a = gld-put s row 0 x in let b = gld-put s row 1 y
+    in let slot = poke-qword s.index (gld-slot s (gld-hash x y s.slots) * 8) (row + 1)
+    in let n = __record-set s "count" (row + 1) in row
+  gld-mark : GmLand, Integer, Integer -> Integer
+  gld-mark (s) (x) (y) = let row = gld-find s x y in if row < 0 then 0 else let a = gld-put s row 2 gld-gone in 1
+  gld-sweep : GmLand -> Integer
+  gld-sweep (s) = let kept = gld-compact s 0 0
+    in let removed = s.count - kept
+    in let n = __record-set s "count" kept
+    in let r = gld-reindex s in removed
+  gld-compact : GmLand, Integer, Integer -> Integer
+  gld-compact (s) (i) (kept) = if i >= s.count then kept
+    else if gld-field s i 2 == gld-gone then gld-compact s (i + 1) kept
+    else let moved = if i == kept then 0 else gld-copy (s.rows + i * gld-row-bytes) (s.rows + kept * gld-row-bytes) 0 5
+    in gld-compact s (i + 1) (kept + 1)
+  gld-reindex : GmLand -> Integer
+  gld-reindex (s) = let z = gld-zero s.index 0 s.slots in gld-index s 0
+  gld-index : GmLand, Integer -> Integer
+  gld-index (s) (i) = if i >= s.count then 0
+    else let slot = poke-qword s.index (gld-slot s (gld-hash (gld-field s i 0) (gld-field s i 1) s.slots) * 8) (i + 1)
+    in gld-index s (i + 1)
+  gld-due : GmLand -> Boolean
+  gld-due (s) = s.room - s.count < 2 * gld-stroke
+  gld-grow : GmLand -> Integer
+  gld-grow (s) = let room = s.room * 2
+    in let rows = gld-zeroed (room * gld-row-bytes)
+    in let copied = gld-copy s.rows rows 0 (s.count * 5)
+    in let a = __record-set s "rows" rows
+    in let b = __record-set s "room" room
+    in let c = __record-set s "index" (gld-zeroed (room * 16))
+    in let d = __record-set s "slots" (room * 2)
+    in let r = gld-index s 0 in room
+  gld-tool-find : List GldTool, Integer, Integer -> Integer
+  gld-tool-find (tools) (connection) (i) = if i == list-length tools then -1
+    else if (list-at tools i).connection == connection then i else gld-tool-find tools connection (i + 1)
+  gld-tool-oldest : List GldTool, Integer, Integer -> Integer
+  gld-tool-oldest (tools) (i) (best) = if i == list-length tools then best
+    else gld-tool-oldest tools (i + 1) (if (list-at tools i).stamp < (list-at tools best).stamp then i else best)
+  gld-tool : GmLand, Integer, Integer -> GldTool
+  gld-tool (s) (connection) (serial) = let found = gld-tool-find s.tools connection 0
+    in let i = if found >= 0 then found else gld-tool-oldest s.tools 0 0
+    in let t = list-at s.tools i
+    in let fresh = if found >= 0 & t.serial == serial then 0
+      else let a = __record-set t "op" 0 in let b = __record-set t "value" 0 in let c = __record-set t "brush" 0 in 1
+    in let tick = s.clock + 1
+    in let d = __record-set s "clock" tick
+    in let e = __record-set t "connection" connection
+    in let f = __record-set t "serial" serial
+    in let g = __record-set t "stamp" tick in t
+  gld-art-named : List GldName, Text, Integer -> Integer
+  gld-art-named (names) (word) (i) = if i == list-length names then -1
+    else if (list-at names i).name == word then (list-at names i).art else gld-art-named names word (i + 1)
+  gld-name-of : List GldName, Integer, Integer -> Text
+  gld-name-of (names) (art) (i) = if art == gld-keep then "its own art"
+    else if i == list-length names then "land 0x" & gld-hex art
+    else if (list-at names i).art == art then (list-at names i).name else gld-name-of names art (i + 1)
+  gld-hex : Integer -> Text
+  gld-hex (n) = gld-hex-digits n 4 ""
+  gld-hex-digits : Integer, Integer, Text -> Text
+  gld-hex-digits (n) (left) (acc) = if left == 0 then acc
+    else gld-hex-digits (n / 16) (left - 1) (substring "0123456789ABCDEF" (int-mod n 16) 1 & acc)
+ An art given in hex is at most four digits, an optional 0x before them, and inside TILEDATA's 0x4000 land entries.
+  gld-art : Text -> Integer
+  gld-art (word) = let named = gld-art-named gld-names word 0
+    in if named >= 0 then named
+    else let digits = if text-starts-with word "0x" then substring word 2 (text-length word - 2) else word
+    in if text-length digits < 1 | text-length digits > 4 | not (gld-hexish digits 0) then -1
+    else let art = parse-hex digits 0 in if art < 0 | art > #3FFF then -1 else art
+  gld-hexish : Text, Integer -> Boolean
+  gld-hexish (t) (i) = if i >= text-length t then True
+    else text-contains "0123456789abcdefABCDEF" (substring t i 1) & gld-hexish t (i + 1)
+  gld-ground : GmLand, WalkMap, Integer, Integer, Integer -> Integer
+  gld-ground (s) (map) (x) (y) (fallback) = let row = gld-find s x y
+    in if row >= 0 then gld-field s row 3 else if walk-ready map x y then walk-z map x y else fallback
+  gld-clamp : Integer -> Integer
+  gld-clamp (z) = max (0 - 128) (min 127 z)
+ Ops: 1 paints art at the tile's height, 2 raises by value (lowers when negative), 3 flattens to the centre's height, 4
+ drops the pending edits. Returns the tiles changed; a stroke stops at the table's room, which gld-due keeps above one.
+  gld-apply : GmLand, WalkMap, GldTool, Integer, Integer, Integer, Integer -> Integer
+  gld-apply (s) (map) (t) (account) (x) (y) (z) = let level = gld-ground s map x y z
+    in let n = gld-stroke-at s map t account x y level (0 - t.brush) (0 - t.brush) 0
+    in if t.op == 4 then gld-sweep s else n
+  gld-stroke-at : GmLand, WalkMap, GldTool, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gld-stroke-at (s) (map) (t) (account) (cx) (cy) (level) (dx) (dy) (n) = if dy > t.brush then n
+    else if dx > t.brush then gld-stroke-at s map t account cx cy level (0 - t.brush) (dy + 1) n
+    else let x = cx + dx in let y = cy + dy
+    in let done = if x < 0 | y < 0 | x >= 6144 | y >= 4096 then 0 else gld-tile s map t account x y level
+    in gld-stroke-at s map t account cx cy level (dx + 1) dy (n + done)
+  gld-tile : GmLand, WalkMap, GldTool, Integer, Integer, Integer, Integer -> Integer
+  gld-tile (s) (map) (t) (account) (x) (y) (level) = if t.op == 4 then gld-mark s x y
+    else let row = gld-find s x y
+    in let art = if t.op == 1 then t.value else if row >= 0 then gld-field s row 2 else gld-keep
+    in let z = if t.op == 2 then gld-clamp (gld-ground s map x y level + t.value) else if t.op == 3 then level else gld-ground s map x y level
+    in if gld-set s x y art z account then 1 else 0
+  gld-line : Integer, Text -> List Integer
+  gld-line (serial) (text) = sip-message serial #FFFF 6 text
+ The cursor id carries "LD" in its high word and the op in its low word; the answer carries x at 11, y at 13 and z at
+ 16, and x = FFFF on cancel.
+  gld-cursor-tag : Integer = #4C440000
+  gld-cursor : Integer, Integer, Text -> GameReply
+  gld-cursor (serial) (op) (text) = gs-reply [gld-line serial text, gp-zeros (list-push (gp-put32 [#6C, 1] (gld-cursor-tag + op)) 0) 12] "decor:land-cursor"
+  gld-answer : List Integer -> Boolean
+  gld-answer (packet) = list-length packet == 19 & list-at packet 0 == #6C & bit-and (gp-u32 packet 2) #FFFF0000 == gld-cursor-tag
+  gld-words : List Text = ["[land", "[raise", "[lower", "[flatten", "[brush", "[landclear"]
+  gld-word : List Integer -> Text
+  gld-word (packet) = if list-length packet < 10 | list-at packet 0 /= 3 | list-at packet 8 /= 91 then ""
+    else let said = text-split (gp-speech-text packet) " "
+    in if list-length said == 0 then "" else let first = list-at said 0
+    in if gld-known gld-words first 0 then first else ""
+  gld-known : List Text, Text, Integer -> Boolean
+  gld-known (words) (word) (i) = if i == list-length words then False else if list-at words i == word then True else gld-known words word (i + 1)
+  gld-arg : List Integer -> Text
+  gld-arg (packet) = let said = text-split (gp-speech-text packet) " " in if list-length said < 2 then "" else list-at said 1
+  gld-usage : List Text = ["[land <name|hex>: pick a tile to paint with that land art, at its height, under the brush.",
+    "Names: grass furrows sand dirt water jungle forest rock snow lava tile flagstone cave planks cobblestones stone brick marble",
+    "[raise <1-127>, [lower <1-127>: pick a tile to move the ground under the brush; [flatten: level it to the picked tile.",
+    "[brush <0-8>: the brush reaches that many tiles each way; [landclear: drop the pending edits under the brush.",
+    "[landshow: show or hide pending edits as runes. Edits reach the client's map at the next downtime bake."]
+  gld-say-lines : Integer, List Text, Integer, List (List Integer) -> List (List Integer)
+  gld-say-lines (serial) (lines) (i) (out) = if i == list-length lines then out
+    else gld-say-lines serial lines (i + 1) (list-push out (gld-line serial (list-at lines i)))
+ A spoken command from a decorator: the reply, which for a tool is its cursor.
+  gld-command : GmLand, GameInput, List Integer -> GameReply
+  gld-command (s) (input) (packet) = let serial = input.session.serial
+    in let word = gld-word packet
+    in let arg = gld-arg packet
+    in let t = gld-tool s input.connection serial
+    in if word == "[land" & arg == "" then gs-reply (gld-say-lines serial gld-usage 0 []) "decor:land-help"
+    else if word == "[land" then (let art = gld-art arg
+      in if art < 0 then gs-reply [gld-line serial ("Unknown land: " & arg & ". Say [land for the names.")] "decor:land-refused"
+      else let a = __record-set t "op" 1 in let b = __record-set t "value" art
+      in gld-cursor serial 1 ("Paint " & gld-name-of gld-names art 0 & " where? Brush " & show t.brush & "."))
+    else if word == "[raise" | word == "[lower" then (let n = text-to-int arg
+      in if n < 1 | n > 127 then gs-reply [gld-line serial (word & " <1-127>: how far to move the ground.")] "decor:land-refused"
+      else let a = __record-set t "op" 2 in let b = __record-set t "value" (if word == "[raise" then n else 0 - n)
+      in gld-cursor serial 2 ((if word == "[raise" then "Raise" else "Lower") & " the ground by " & show n & " where? Brush " & show t.brush & "."))
+    else if word == "[flatten" then let a = __record-set t "op" 3 in gld-cursor serial 3 ("Flatten to which tile's height? Brush " & show t.brush & ".")
+    else if word == "[landclear" then let a = __record-set t "op" 4 in gld-cursor serial 4 ("Drop the pending land edits where? Brush " & show t.brush & ".")
+    else let n = text-to-int arg
+    in if arg == "" | n < 0 | n > gld-brush-max then gs-reply [gld-line serial ("[brush <0-" & show gld-brush-max & ">: tiles each way; now " & show t.brush & ".")] "decor:land-refused"
+    else let a = __record-set t "brush" n in gs-reply [gld-line serial ("The brush covers " & show (2 * n + 1) & " by " & show (2 * n + 1) & " tiles.")] "decor:land-brush"
+ The cursor's answer: the op in the cursor id must match the connection's tool, so a stale cursor does nothing.
+  gld-target : GmLand, WalkMap, GameInput, Integer, List Integer -> GameReply
+  gld-target (s) (map) (input) (account) (packet) = let serial = input.session.serial
+    in let op = bit-and (gp-u32 packet 2) #FFFF
+    in let x = gp-u16 packet 11 in let y = gp-u16 packet 13
+    in let raw = list-at packet 16 in let z = if raw >= 128 then raw - 256 else raw
+    in let found = gld-tool-find s.tools input.connection 0
+    in if x == 65535 then gs-reply [gld-line serial "Cancelled."] "decor:land-cancel"
+    else if found < 0 | (list-at s.tools found).op /= op | (list-at s.tools found).serial /= serial then gs-reply [gld-line serial "That land tool is no longer active."] "decor:land-refused"
+    else if x >= 6144 | y >= 4096 then gs-reply [gld-line serial "That is off the map."] "decor:land-refused"
+    else let t = list-at s.tools found
+    in let changed = gld-apply s map t account x y z
+    in gs-reply [gld-line serial ((if op == 4 then "Dropped " else "Set ") & show changed & " tiles; " & show s.count & " land edits wait for the bake.")] "decor:land"
+ decor-land-baked's tiles, "x,y;x,y": each named tile's pending edit is dropped; returns how many were.
+  gld-baked : GmLand, Text -> Integer
+  gld-baked (s) (tiles) = let marked = gld-mark-all s (text-split tiles ";") 0 0 in let swept = gld-sweep s in marked
+  gld-mark-all : GmLand, List Text, Integer, Integer -> Integer
+  gld-mark-all (s) (pairs) (i) (n) = if i >= list-length pairs then n
+    else let xy = text-split (list-at pairs i) ","
+    in let hit = if list-length xy /= 2 then 0 else gld-mark s (text-to-int (list-at xy 0)) (text-to-int (list-at xy 1))
+    in gld-mark-all s pairs (i + 1) (n + hit)

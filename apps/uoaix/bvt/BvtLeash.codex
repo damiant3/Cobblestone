@@ -1,0 +1,62 @@
+Chapter: BvtLeash
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+  blh-owner : Integer -> Result CompositeGame Text
+  blh-owner (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> when cg-founded game vendor (gsi-new game.world)
+          is Err (e) -> Err e
+          is Ok (owner) -> when cg-spawn-attach owner
+            is Err (e) -> Err e
+            is Ok (_) -> Ok owner
+ The Britain mine region (1445..1457, 1526..1534) is the last cg-ore-ground appends. An earth elemental bound to slot 0
+ there at 1450,1530: answers a bit per check, 1 the elemental holds a target inside its region, 2 it refuses one at the
+ gatherer's home 1475,1518, 4 a home 3 tiles from it is threatened, 8 a home 30 tiles away is not; 15 is all.
+  blh-checks : Integer -> Integer
+  blh-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 then -2
+        else let p = list-at g.catalog.profiles profile
+        in when world-create owner.checkpoint.game.world (gs-mobile 0 1450 1530 0 14 0)
+          is Err (_) -> -1
+          is Ok (serial) -> let slot = list-at g.slots 0
+            in let a = __record-set slot "serial" serial
+            in let b = __record-set slot "region" region
+            in let c = __record-set slot "profile" profile
+            in let d = __record-set slot "owner" 0
+            in let inside = if gws-held g slot p 1452 1531 then 1 else 0
+            in let outside = if gws-held g slot p 1475 1518 then 0 else 2
+            in let near = if cg-home-threatened owner (BbSpot { x = 1453, y = 1530, z = 0 }) then 4 else 0
+            in let far = if cg-home-threatened owner (BbSpot { x = 1480, y = 1530, z = 0 }) then 0 else 8
+            in if p.ai /= 2 & p.ai /= 11 then -3 else inside + outside + near + far
+ On the founded town: 1 the spawns spare the gatherer, 2 the first miner-list worker, 4 they do not spare the first
+ shopkeeper; 7 is all, -1 when the scenario cannot be built.
+  blh-spared : Integer -> Integer
+  blh-spared (unused) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> let attached = when owner.spawns is Just (_) -> Ok 0 is None -> cg-spawn-attach owner
+      in when owner.spawns
+        is None -> -1
+        is Just (g) -> let gatherer = when owner.gatherer is None -> 0 is Just (c) -> c.serial
+          in let miner = if list-length owner.miners == 0 then 0 else (list-at owner.miners 0).serial
+          in let keeper = (list-at owner.vendor.vendors 0).serial
+          in if gatherer == 0 | miner == 0 then -1
+          else (if g.spared gatherer then 1 else 0) + (if g.spared miner then 2 else 0) + (if g.spared keeper then 0 else 4)
+  bvt-leash : Integer -> [Console] Integer
+  bvt-leash (unused) = act
+    n <- blh-checks 0
+    a <- bvt-check ("a wild creature fights only inside its home region, and a dead worker does not rise beside a hostile creature (UOAIX-150, code " & show n & ")") (n == 15)
+    s <- blh-spared 0
+    b <- bvt-check ("a wild creature spares the town workers and still takes a shopkeeper (code " & show s & ")") (s == 7)
+    a + b
+  end

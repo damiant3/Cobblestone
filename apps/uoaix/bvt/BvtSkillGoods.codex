@@ -1,0 +1,29 @@
+Chapter: BvtSkillGoods
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BvtCheck
+
+  bvsg-name : Integer -> Text
+  bvsg-name (item) = (list-at (bb-catalog 0).items (item - 1)).name
+  bvsg-made : Integer, Integer, Integer -> Boolean
+  bvsg-made (item) (input) (station) = let c = bb-catalog 0 in let k = bb-recipe c item 0
+    in k > 0 & (list-at c.recipes (k - 1)).station == station & (list-at c.recipes (k - 1)).one == input
+  bvsg-lists : Integer, Integer, Integer, Integer -> Boolean
+  bvsg-lists (shop) (item) (art) (i) = if i >= list-length (bb-goods shop) then False
+    else let g = list-at (bb-goods shop) i in (g.item == item & g.graphic == art) | bvsg-lists shop item art (i + 1)
+  bvsg-holds : Integer, Integer, Integer -> Boolean
+  bvsg-holds (input) (count) (item) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (_) -> False
+    is Ok (w) -> let actor = ep-admit w (em-open w.money 2 1007) 100
+      in if actor < 1 then False
+      else let held = ep-set (ep-actor w actor).stock input count in bb-from-bought w actor item
+  bvt-skill-goods : Integer -> [Console] Integer
+  bvt-skill-goods (unused) = act
+    a <- bvt-check "the Britain catalog names blank map, mapmaker's pen and kindling as items 117 to 119" (bvsg-name 117 == "blank map" & bvsg-name 118 == "mapmaker's pen" & bvsg-name 119 == "kindling")
+    b <- bvt-check "a blank map is milled from pulp (station 14), a pen forged from an ingot (station 9), kindling cut from a board (station 8)" (bvsg-made 117 105 14 & bvsg-made 118 31 9 & bvsg-made 119 38 8)
+    c <- bvt-check "the paper miller lists blank maps (0x14EC), the tinker mapmaker's pens (0x0FBF), the carpenter kindling (0x0DE1)" (bvsg-lists 8 117 #14EC 0 & bvsg-lists 6 118 #0FBF 0 & bvsg-lists 7 119 #0DE1 0)
+    d <- bvt-check "a bought log or pulp makes blank maps, a bought ingot a pen, a bought board kindling" (bvsg-holds 15 1 117 & bvsg-holds 105 1 117 & bvsg-holds 31 1 118 & bvsg-holds 38 1 119)
+    e <- bvt-check "with nothing bought no blank map, pen or kindling is made" (not (bvsg-holds 15 0 117) & not (bvsg-holds 31 0 118) & not (bvsg-holds 38 0 119) & not (bvsg-holds 15 1 119))
+    f <- bvt-check "the catalog with the skill goods validates, and drops them only past its items" (eg-validate (bb-catalog 0) == 0 & eg-validate (EgCatalog { items = (bb-catalog 0).items, resources = (bb-catalog 0).resources, recipes = (bb-catalog 0).recipes & [eg-recipe (list-length (bb-catalog 0).items + 1) 1 38 1 0 0 0 0 8 26 6] }) /= 0)
+    a + b + c + d + e + f
+  end

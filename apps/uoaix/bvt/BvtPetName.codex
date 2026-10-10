@@ -1,0 +1,55 @@
+Chapter: BvtPetName
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-175: a 0x75 rename from a tamed creature's owner writes its combat name; a stranger and a name with a digit are
+ refused and leave the name. Answers a bit per check: 1 the owner renames it to Dobbin and gets its status with the
+ rename flag, 2 a stranger is refused, 4 a digit is refused, 8 the status bar's rename flag shows for the owner only;
+ 15 is all, -1 when the scenario cannot be built.
+  bpn-packet : Integer, List Integer -> List Integer
+  bpn-packet (serial) (name) = bpn-pad (gp-put32 [#75] serial & name)
+  bpn-pad : List Integer -> List Integer
+  bpn-pad (p) = if list-length p >= 35 then p else bpn-pad (list-push p 0)
+  bpn-note : Maybe GameReply -> Text
+  bpn-note (r) = when r is None -> "" is Just (g) -> g.note
+  bpn-flag : Maybe GameReply -> Integer
+  bpn-flag (r) = when r is None -> -1 is Just (g) -> if list-length g.packets == 0 then -1 else list-at (list-at g.packets 0) 41
+  bpn-checks : Integer -> Integer
+  bpn-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in when world-create game.world (gs-mobile 0 1420 1700 0 400 0)
+          is Err (_) -> -1
+          is Ok (player) -> when world-create game.world (gs-mobile 0 1421 1700 0 #00CC 0)
+            is Err (_) -> -1
+            is Ok (horse) -> when world-create game.world (gs-mobile 0 1422 1700 0 401 0)
+             is Err (_) -> -1
+             is Ok (stranger) -> let bound = cb-profile owner.combat game horse "a horse" 20 1 2 0
+              in let slot = list-at g.slots 0
+              in let a = __record-set slot "serial" horse
+              in let b = __record-set slot "profile" 0
+              in let c = __record-set slot "owner" player
+              in let refused = cg-pet-rename owner game stranger (bpn-packet horse [68, 111, 98, 98, 105, 110])
+              in let kept = cg-as-pet-name owner horse
+              in let renamed = cg-pet-rename owner game player (bpn-packet horse [68, 111, 98, 98, 105, 110])
+              in let named = cg-as-pet-name owner horse
+              in let digit = cg-pet-rename owner game player (bpn-packet horse [68, 48, 98, 98, 105, 110])
+              in let still = cg-as-pet-name owner horse
+              in when world-get game.world horse
+                is Err (_) -> -1
+                is Ok (m) -> let buf = (list-at owner.combat.actors (world-slot game.world horse)).name
+                  in let mine = cg-pet-flag owner player (cbp-status m buf 10)
+                  in let theirs = cg-pet-flag owner stranger (cbp-status m buf 10)
+                  in if bound /= 0 then -2
+                  else (if bpn-note renamed == "pet renamed" & bpn-flag renamed == 1 & named == "Dobbin" then 1 else 0)
+                    + (if bpn-note refused == "You cannot rename this." & kept == "a horse" then 2 else 0)
+                    + (if bpn-note digit == "That name is unacceptable." & still == "Dobbin" then 4 else 0)
+                    + (if list-at mine 41 == 1 & list-at theirs 41 == 0 then 8 else 0)
+  bvt-pet-name : Integer -> [Console] Integer
+  bvt-pet-name (unused) = act
+    n <- bpn-checks 0
+    bvt-check ("a tamed creature's owner renames it by 0x75, a stranger and a bad name are refused (UOAIX-175, code " & show n & ")") (n == 15)
+  end

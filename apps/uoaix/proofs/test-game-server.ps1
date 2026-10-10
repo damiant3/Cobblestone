@@ -228,7 +228,7 @@ for($attempt=0;$attempt -lt 20;$attempt++){
     Start-Sleep -Milliseconds 100
 }
 foreach($expected in $script:refusals){
-    $pattern='(?m)^REFUSE connection='+$expected.connection+' mode=game-xor opcode='+$expected.opcode+' reason=(.*?) raw-count='+$expected.rawCount+' raw='+$expected.raw+'\r?$'
+    $pattern='(?m)^REFUSE connection='+$expected.connection+' mode=game-xor opcode='+$expected.opcode+' reason=(.*?) raw-count='+$expected.rawCount+' raw='+$expected.raw+'(?: level=\S+ sys=\S+)?( ms=[0-9]+)?\r?$'
     $match=[regex]::Match($log,$pattern)
     Check "bounded refusal diagnostic $($expected.connection)" $match.Success
     if($expected.partial){Check 'truncated EOF names incomplete packet' ($match.Groups[1].Value -eq 'incomplete packet at EOF')}

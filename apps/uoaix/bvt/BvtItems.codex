@@ -1,0 +1,33 @@
+Chapter: BvtItems
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter BvtCheck
+
+  bvt-items-pad : Integer, List EgItem -> List EgItem
+  bvt-items-pad (n) (xs) = if list-length xs >= n then xs else bvt-items-pad n (list-push xs (eg-item ("filler " & show (list-length xs)) 1))
+  bvt-items-recipes : Integer, Integer, List EgRecipe -> List EgRecipe
+  bvt-items-recipes (from) (to) (xs) = if from > to then xs else bvt-items-recipes (from + 1) to (list-push xs (eg-recipe from 1 1 1 0 0 0 0 1 0 0))
+  bvt-items-with : Integer -> EgCatalog
+  bvt-items-with (n) = let c = bb-catalog 0 in EgCatalog { items = bvt-items-pad n (c.items & []), resources = c.resources, recipes = bvt-items-recipes (list-length c.items + 1) n (c.recipes & []) }
+  bvt-items-past : Integer -> EgCatalog
+  bvt-items-past (n) = let c = bvt-items-with n in EgCatalog { items = c.items, resources = c.resources, recipes = list-push (c.recipes & []) (eg-recipe (n + 1) 1 1 1 0 0 0 0 1 0 0) }
+  bvt-items-decoded : Integer, Integer, Integer -> Boolean
+  bvt-items-decoded (n) (buf) (size) = when es-decode buf size
+    is Err (e) -> False
+    is Ok (back) -> list-length back.world.catalog.items == n & eg-cells back.world.catalog == n + 1
+  bvt-items-saved : Integer, EpWorld -> Boolean
+  bvt-items-saved (n) (w) = let buf = alloc-bytes (es-max-size w)
+    in when es-encode (EconomyCheckpoint { world = w, tick = 1, sequence = 1 }) buf (es-max-size w)
+      is Err (e) -> False
+      is Ok (size) -> bvt-items-decoded n buf size
+  bvt-items-round : Integer -> Boolean
+  bvt-items-round (n) = when ep-new (bvt-items-with n) (em-new 0)
+    is Err (e) -> False
+    is Ok (w) -> bvt-items-saved n w
+  bvt-items : Integer -> [Console] Integer
+  bvt-items (unused) = act
+    a <- bvt-check "a catalog of 300 items validates: the catalog has no fixed item cap" (eg-validate (bvt-items-with 300) == 0)
+    b <- bvt-check "a recipe naming an item past the catalog is refused" (eg-validate (bvt-items-past 300) /= 0)
+    c <- bvt-check "a world of 300 items saves and decodes with arrays as wide as its catalog" (bvt-items-round 300)
+    a + b + c
+  end

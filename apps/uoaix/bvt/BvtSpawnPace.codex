@@ -1,0 +1,142 @@
+Chapter: BvtSpawnPace
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bpc-land : WalkMap, Integer, Integer -> Integer
+  bpc-land (map) (i) (n) = if i >= n then 0
+    else let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0 in bpc-land map (i + 1) n
+  bpc-map : Integer -> WalkMap
+  bpc-map (unused) = when walk-map-new 1440 1520 24 32
+    is Err (_) -> WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+    is Ok (map) -> let landed = bpc-land map 0 (24 * 32) in map
+  bpc-mobile : CompositeGame, Integer, Integer -> Integer
+  bpc-mobile (owner) (x) (y) = when world-create owner.checkpoint.game.world (__record-set (gs-mobile 0 x y 0 400 0) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bpc-bind : CompositeGame, GameWorldSpawn, Integer, Integer, Integer, Integer -> Integer
+  bpc-bind (owner) (g) (i) (region) (profile) (serial) =
+    let slot = list-at g.slots i
+    in let a = __record-set slot "serial" serial
+    in let b = __record-set slot "region" region
+    in let c = __record-set slot "profile" profile
+    in let d = __record-set slot "owner" 0
+    in let e = __record-set slot "due" (g.combat.tick + gm-ticks 5000)
+    in let f = gws-slot-mark g slot True
+    in gws-profile g owner.checkpoint.game serial (list-at g.catalog.profiles profile)
+ The Britain mine region is 1445..1457 by 1526..1534 (BvtLeash). Answers a bit per check: 1 an earth elemental woken
+ early by a viewer 6 tiles south of its region neither steps nor moves its timer (UOAIX-161), 2 the same early wake with
+ the viewer inside the region still chases one tile east, 4 that step counts one step and no fast one, 8 a second step
+ at the same tick counts as fast; 15 is all, negative when the scenario cannot be built.
+  bpc-checks : Integer -> Integer
+  bpc-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in let map = bpc-map 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 | map.width == 0 then -2
+        else let clock = __record-set g.combat "tick" (gm-ticks 1000000)
+        in let roamer = bpc-mobile owner 1450 1540
+        in let chaser = bpc-mobile owner 1450 1530
+        in let outside = bpc-mobile owner 1450 1546
+        in let inside = bpc-mobile owner 1453 1530
+        in if roamer == 0 | chaser == 0 | outside == 0 | inside == 0 then -3
+        else if bpc-bind owner g 0 region profile roamer /= 0 | bpc-bind owner g 1 region profile chaser /= 0 then -4
+        else let held = (list-at g.slots 0).due
+        in let viewed = world-get owner.checkpoint.game.world outside
+        in let near = world-get owner.checkpoint.game.world inside
+        in when viewed
+          is Err (_) -> -5
+          is Ok (v) -> when near
+            is Err (_) -> -5
+            is Ok (w) -> when world-get owner.checkpoint.game.world roamer
+              is Err (_) -> -5
+              is Ok (r) -> when world-get owner.checkpoint.game.world chaser
+                is Err (_) -> -5
+                is Ok (c) ->
+                  let still = not (gws-wild g owner.checkpoint.game map (list-at g.slots 0) r v)
+                  in let kept = when world-get owner.checkpoint.game.world roamer is Err (_) -> False is Ok (r2) -> r2.x == 1450 & r2.y == 1540
+                  in let paced = (list-at g.slots 0).due == held
+                  in let counted = __record-set g "steps" 0
+                  in let zeroed = __record-set g "fast" 0
+                  in let chased = gws-wild g owner.checkpoint.game map (list-at g.slots 1) c w
+                  in let moved = when world-get owner.checkpoint.game.world chaser is Err (_) -> False is Ok (c2) -> c2.x == 1451 & c2.y == 1530
+                  in let one = g.steps == 1 & g.fast == 0
+                  in let again = when world-get owner.checkpoint.game.world chaser is Err (_) -> False is Ok (c3) -> gws-step g owner.checkpoint.game map (list-at g.slots 1) c3 2 True
+                  in let raced = again & g.steps == 2 & g.fast == 1
+                  in (if still & kept & paced then 1 else 0) + (if chased & moved then 2 else 0) + (if one then 4 else 0) + (if raced then 8 else 0)
+ An earth elemental in the Britain mine region and a player 8 tiles south, outside it. Struck, the elemental is at war
+ with the player; answers 1 when after its step it still fights that player, 0 when it fights no one, negative when the
+ scenario cannot be built (UOAIX-172).
+  bpc-retaliates : Boolean -> Integer
+  bpc-retaliates (struck) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in let map = bpc-map 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 | map.width == 0 then -2
+        else let clock = __record-set g.combat "tick" (gm-ticks 1000000)
+        in let beast = bpc-mobile owner 1450 1532
+        in let player = bpc-mobile owner 1450 1540
+        in if beast == 0 | player == 0 then -3
+        else if bpc-bind owner g 0 region profile beast /= 0 then -4
+        else let slot = list-at g.slots 0
+        in let now = __record-set slot "due" 0
+        in let a = list-at g.combat.actors (world-slot owner.checkpoint.game.world beast)
+        in let fought = if struck then (let w = __record-set a "war" True in let t = __record-set a "target" player in 1) else 0
+        in when world-get owner.checkpoint.game.world beast
+          is Err (_) -> -5
+          is Ok (m) -> when world-get owner.checkpoint.game.world player
+            is Err (_) -> -5
+            is Ok (v) -> let stepped = gws-wild g owner.checkpoint.game map slot m v
+              in if a.war & a.target == player then 1 else if not a.war | a.target == 0 then 0 else -6
+ UOAIX-172: the same elemental at war with the player, visited during a bystander's pass (shard.active is the bystander,
+ not the foe), keeps its foe; a dead foe is dropped. Answers 1 when it fights the player after the visit, 0 when not.
+  bpc-other : Boolean -> Integer
+  bpc-other (dead) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in let map = bpc-map 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 | map.width == 0 then -2
+        else let clock = __record-set g.combat "tick" (gm-ticks 1000000)
+        in let beast = bpc-mobile owner 1450 1532
+        in let player = bpc-mobile owner 1450 1534
+        in let bystander = bpc-mobile owner 1450 1546
+        in if beast == 0 | player == 0 | bystander == 0 then -3
+        else if bpc-bind owner g 0 region profile beast /= 0 then -4
+        else let slot = list-at g.slots 0
+        in let now = __record-set slot "due" 0
+        in let a = list-at g.combat.actors (world-slot owner.checkpoint.game.world beast)
+        in let w = __record-set a "war" True
+        in let t = __record-set a "target" player
+        in let active = __record-set owner.checkpoint.game "active" bystander
+        in let killed = if dead then (when world-get owner.checkpoint.game.world player is Err (_) -> 0 is Ok (p) -> (when world-update owner.checkpoint.game.world (__record-set p "health" 0) is Err (_) -> 0 is Ok (_) -> 1)) else 0
+        in when world-get owner.checkpoint.game.world beast
+          is Err (_) -> -5
+          is Ok (m) -> when world-get owner.checkpoint.game.world bystander
+            is Err (_) -> -5
+            is Ok (v) -> let stepped = gws-wild g owner.checkpoint.game map slot m v
+              in if a.war & a.target == player then 1 else 0
+  bvt-spawn-pace : Integer -> [Console] Integer
+  bvt-spawn-pace (unused) = act
+    n <- bpc-checks 0
+    a <- bvt-check ("a wild creature woken early by a viewer it will not fight keeps its pace, and the step counters see a fast step (UOAIX-161, code " & show n & ")") (n == 15)
+    s <- bpc-retaliates True
+    b <- bvt-check ("a creature struck by a player outside its home region fights back (Damian, 2026-10-09: 'the troll wont aggro on me, even though i hit him in melee and flamestruck him'; UOAIX-172, code " & show s & ")") (s == 1)
+    q <- bpc-retaliates False
+    c <- bvt-check ("the same player, not having struck it, draws no fight from outside its region (the leash, UOAIX-150; code " & show q & ")") (q == 0)
+    o1 <- bpc-other False
+    d <- bvt-check ("a creature at war with a player keeps that foe when it is stepped during another player's pass (UOAIX-172, the shape of 42434; code " & show o1 & ")") (o1 == 1)
+    o2 <- bpc-other True
+    e <- bvt-check ("a dead foe is still dropped on that visit (code " & show o2 & ")") (o2 == 0)
+    a + b + c + d + e
+  end

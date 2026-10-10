@@ -1,0 +1,151 @@
+Chapter: ActiveSkillsStealing
+  cites Uoaix chapter ActiveSkillsHiding
+  cites Uoaix chapter ActiveSkillsForensics
+  cites Uoaix chapter GameArmor
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameHarvestProduction
+
+ UOX3 js/skill/stealing.js, pre-UOR (targeting factor 1), and dictionary.ENG 863, 873, 874, 875, 877, 880, 881, 886,
+ 1551, 9188, 9189, 9190, 9193 and 9198; GPL-2.0-or-later, ports/UOX3-LICENSE.txt. The cursor takes an item in an NPC's
+ backpack, or the NPC itself for a random item from the pack. Both hands must be free; a player victim needs the thieves'
+ guild, which the shard has not, and an immune NPC (banker, vendor) refuses. Weight is in hundredths of a stone (a
+ weightless pile item weighs 0.1): an item heavier than Stealing in tenths is too heavy, and from a pile the thief takes
+ half to all of Stealing / weight. Success is 100 - weight * amount * 20 / (100 + Stealing) in 100, cut by up to 97.5 per
+ cent for worn armor ((AR - 1) / 40), against 0 to 100; practice checks from the total weight to 10.0 above it. Every
+ attempt that reaches the roll is a theft (theft-hook, the composite's law). A theft spends 10 s of skill delay.
+  as-steal-owner : WorldTable, Integer, Integer -> Integer
+  as-steal-owner (world) (serial) (left) = if left == 0 | serial == 0 then 0 else when world-get world serial
+    is Err (_) -> 0
+    is Ok (o) -> if o.kind == 1 then o.serial else as-steal-owner world o.container (left - 1)
+  as-steal-count : WorldTable, Integer, Integer -> Integer
+  as-steal-count (world) (serial) (n) = if serial == 0 then n else as-steal-count world (world-next-sibling world serial) (n + 1)
+  as-steal-nth : WorldTable, Integer, Integer -> Integer
+  as-steal-nth (world) (serial) (n) = if serial == 0 | n == 0 then serial else as-steal-nth world (world-next-sibling world serial) (n - 1)
+  as-steal-weight : ActiveSkills, Integer -> Integer
+  as-steal-weight (s) (graphic) = let w = it-weight s.items.tiles graphic in if w > 0 then w * 100 else 10
+  as-steal : ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
+  as-steal (s) (a) (game) (player) (obj) (now) =
+    if world-layer-serial s.items.world player.serial 1 /= 0 | world-layer-serial s.items.world player.serial 2 /= 0 then gsi-denied "Both hands must be free to steal."
+    else if obj.serial == player.serial then gsi-denied "You catch yourself red handed."
+    else if obj.kind == 1 then
+      (let pack = gsi-pack-find s.items.world obj.serial 0
+      in if pack == 0 then gsi-denied "Bad luck, your victim doesn't have a backpack."
+      else let first = world-first-child s.items.world pack
+      in let count = as-steal-count s.items.world first 0
+      in if count == 0 then gsi-denied "You reach into the backpack... but find it's empty."
+      else when world-get s.items.world (as-steal-nth s.items.world first (skc-random a.skills count))
+        is Err (_) -> gsi-denied "You cannot steal that."
+        is Ok (item) -> as-steal-item s a game player obj.serial 0 item now)
+    else if obj.kind /= 2 then gsi-denied "You cannot steal that."
+    else let owner = as-steal-owner s.items.world obj.container 64
+    in if owner /= 0 then as-steal-item s a game player owner 0 obj now
+    else let box = as-steal-root s.items.world obj.container 64
+    in as-steal-item s a game player (as-steal-keeper s box) box obj now
+  as-steal-root : WorldTable, Integer, Integer -> Integer
+  as-steal-root (world) (serial) (left) = if left == 0 | serial == 0 then 0 else when world-get world serial
+    is Err (_) -> 0
+    is Ok (o) -> if o.container == 0 then o.serial else as-steal-root world o.container (left - 1)
+  as-steal-keeper : ActiveSkills, Integer -> Integer
+  as-steal-keeper (s) (box) = if box == 0 then 0 else when world-get s.items.world box
+    is Err (_) -> 0
+    is Ok (o) -> let i = o.health - gv-shop-tag 0
+      in if o.kind /= 2 | not (gv-shop-art o.graphic) | i < 0 | i >= s.vendor.vendor-count then 0 else (list-at s.vendor.vendors i).serial
+  as-steal-item : ActiveSkills, AsActor, GameShard, WorldObject, Integer, Integer, WorldObject, Integer -> GameReply
+  as-steal-item (s) (a) (game) (player) (owner) (box) (item) (now) =
+    if owner == 0 then gsi-denied "You cannot steal that."
+    else if owner == player.serial then gsi-denied "You catch yourself red handed."
+    else if item.container == owner then gsi-denied "You cannot steal items which are equipped."
+    else when cb-ensure s.combat game owner
+      is Err (_) -> gsi-denied "You cannot steal that."
+      is Ok (victim) -> when world-get s.items.world owner
+        is Err (_) -> gsi-denied "You cannot steal that."
+        is Ok (mark) -> let spot = if box == 0 then mark else (when world-get s.items.world box is Err (_) -> mark is Ok (o) -> o)
+          in if not victim.npc then gsi-denied "You must be in the thieves guild to steal from other players."
+          else if victim.immune then gsi-denied "You can't steal from this."
+          else if not (as-near player spot 1) then gsi-denied "You are too far away to steal that item."
+          else if box == 0 & not (as-visible s player.serial owner) then gsi-denied "You cannot see that"
+          else let level = as-level a 33
+          in let weight = as-steal-weight s item.graphic
+          in let pile = gsi-known s.items item.serial & (gsi-meta s.items item.serial).stackable & item.amount > 1
+          in if not pile & weight > level then gsi-denied "That is too heavy"
+          else let most = if not pile then 1 else max 1 (min item.amount ((2 * level + weight) / (2 * weight)))
+          in let least = (most + 1) / 2
+          in let take = least + skc-random a.skills (most - least + 1)
+          in let total = weight * take
+          in let practised = as-check-range s a 33 total (total + 100)
+          in let armor = gar-class s.items player.serial
+          in let impact = min 975 (max 0 ((armor - 1) * 1000 / 40))
+          in let chance = (100 - total * 20 / (100 + level)) * (1000 - impact) / 1000
+          in let paced = __record-set a "next" (now + gh-ticks 10000)
+          in let reach = as-say (if box == 0 then "You reach into " & as-mobile-name s game owner & "'s pack and try to take something..." else "You reach into the container and try to take something...")
+          in let attempted = s.theft-hook player.serial owner
+          in if chance < skc-random a.skills 101 then gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+          else let pack = gsi-pack-find s.items.world player.serial 0
+          in let thief = as-steal-thief s player.serial
+          in if pack == 0 | not (as-steal-ready s thief item.serial take) then gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+          else if as-coin-metal item.graphic > 0 & as-steal-purse s item.container > 1 then as-steal-coin s reach item thief take
+          else if take == item.amount then
+            (when world-update s.items.world (__record-set (__record-set (__record-set item "container" pack) "x" 60) "y" 80)
+              is Err (_) -> gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+              is Ok (_) -> as-stolen s reach item.serial [] (as-steal-lot s thief item.serial 0 take))
+          else when world-update s.items.world (__record-set item "amount" (item.amount - take))
+            is Err (_) -> gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+            is Ok (_) -> when world-create s.items.world (__record-set (__record-set (__record-set (gs-item pack item.graphic item.hue) "amount" take) "x" 60) "y" 80)
+              is Err (_) -> gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+              is Ok (made) -> let known = gsi-register s.items made 0 0 True True
+                in let ledger = as-steal-lot s thief item.serial made take
+                in when world-get s.items.world item.serial
+                  is Err (_) -> as-stolen s reach made [] ledger
+                  is Ok (left) -> as-stolen s reach made [gsi-placement s.items left] ledger
+ A stolen economy lot changes owner (the economy contract's theft transfer): the units leave the victim's actor and
+ join the thief's at the lot's own per-unit quality and wear and its share of basis, with no payment, so every census
+ holds. A whole stack keeps its lot under the thief; a part of a pile takes a new lot. The reply note records it.
+  as-steal-thief : ActiveSkills, Integer -> Integer
+  as-steal-thief (s) (serial) = let at = gv-player s.vendor serial 0 in if at < 0 then 0 else (list-at s.vendor.players at).actor
+  as-steal-ready : ActiveSkills, Integer, Integer, Integer -> Boolean
+  as-steal-ready (s) (thief) (serial) (take) = let at = gv-lot s.vendor serial 0
+    in if at < 0 then True
+    else let lot = ep-lot s.vendor.currency.world.goods at
+    in let w = s.vendor.currency.world
+    in thief > 0 & thief /= lot.actor & take >= 1 & take <= ep-amount w.goods lot.serial & ep-at (ep-actor w lot.actor).stock lot.item >= take
+      & ep-room (ep-actor w thief) lot.item take
+  as-steal-lot : ActiveSkills, Integer, Integer, Integer, Integer -> Text
+  as-steal-lot (s) (thief) (serial) (made) (take) = let at = gv-lot s.vendor serial 0
+    in if at < 0 then ""
+    else let lot = ep-lot s.vendor.currency.world.goods at
+    in let robbed = lot.actor
+    in let moved = ep-hand s.vendor.currency.world at thief take (if made == 0 then lot.serial else made) (0 - 1)
+    in let invalidated = gh-invalidate-quotes s.vendor 0
+    in "; theft item=" & show lot.item & " quantity=" & show take & " from-actor=" & show robbed & " to-actor=" & show thief
+ A coin pile in an economy actor's pack (tl-coins) is a share of that actor's purse: the coins move purse to purse as a
+ currency theft (eu-steal) and the pile shrinks, so no unbacked coin enters the world.
+  as-coin-metal : Integer -> Integer
+  as-coin-metal (graphic) = if graphic == #0EEA then 1 else if graphic == #0EF0 then 2 else if graphic == #0EED then 3 else 0
+  as-steal-purse : ActiveSkills, Integer -> Integer
+  as-steal-purse (s) (pack) = let at = gv-lot s.vendor pack 0
+    in if at < 0 then 0
+    else let w = s.vendor.currency.world
+    in let actor = (ep-lot s.vendor.currency.world.goods at).actor
+    in if not (ep-valid-actor w actor) then 0 else (ep-actor w actor).purse
+  as-steal-coin : ActiveSkills, List Integer, WorldObject, Integer, Integer -> GameReply
+  as-steal-coin (s) (reach) (item) (thief) (take) = let x = s.vendor.currency
+    in let metal = as-coin-metal item.graphic
+    in let victim = as-steal-purse s item.container
+    in let robber = if thief > 0 & ep-valid-actor x.world thief then (ep-actor x.world thief).purse else 0
+    in let held = (em-purse (if metal == 1 then x.copper else if metal == 2 then x.silver else x.world.money) victim).coin
+    in let amount = min take held
+    in if robber <= 1 | amount < 1
+      | eu-steal x victim robber (if metal == 1 then amount else 0) (if metal == 2 then amount else 0) (if metal == 3 then amount else 0) < 0 then
+      gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+    else let shown = if amount >= item.amount then (when world-delete s.items.world item.serial is Err (_) -> [] is Ok (_) -> [sip-remove item.serial])
+      else when world-update s.items.world (__record-set item "amount" (item.amount - amount))
+        is Err (_) -> []
+        is Ok (_) -> when world-get s.items.world item.serial is Err (_) -> [] is Ok (left) -> [gsi-placement s.items left]
+    in let note = "skills:stolen; theft coin metal=" & show metal & " quantity=" & show amount & " from-purse=" & show victim & " to-purse=" & show robber
+    in gs-reply ([reach] & shown & [as-say "You successfully steal the item!"]) note
+  as-stolen : ActiveSkills, List Integer, Integer, List (List Integer), Text -> GameReply
+  as-stolen (s) (reach) (serial) (shown) (ledger) = when world-get s.items.world serial
+    is Err (_) -> gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
+    is Ok (got) -> gs-reply ([reach] & shown & [gsi-placement s.items got, as-say "You successfully steal the item!"]) ("skills:stolen" & ledger)
+
+Page 1

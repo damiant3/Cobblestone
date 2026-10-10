@@ -1,0 +1,59 @@
+Chapter: BvtSpawnLook
+  cites Uoaix chapter WorldSpawnData
+  cites Uoaix chapter WorldSpawnIntData
+  cites Uoaix chapter WorldSpawnOutfitData
+  cites Uoaix chapter GameCombatPackets
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWildThemes
+  cites Uoaix chapter BvtCheck
+
+  bsk-index : List WsProfile, Text, Integer -> Integer
+  bsk-index (ps) (key) (i) = if i >= list-length ps then -1 else if (list-at ps i).key == key then i else bsk-index ps key (i + 1)
+  bsk-layer : List CstRow, Integer, Integer -> Integer
+  bsk-layer (rows) (layer) (i) = if i >= list-length rows then -1 else if (list-at rows i).layer == layer then i else bsk-layer rows layer (i + 1)
+  bsk-hue-of : List CstRow, Integer -> Integer
+  bsk-hue-of (rows) (layer) = let i = bsk-layer rows layer 0 in if i < 0 then -1 else (list-at rows i).hue
+  bsk-beard-matches : List CstRow -> Boolean
+  bsk-beard-matches (rows) = bsk-layer rows 16 0 < 0 | bsk-hue-of rows 16 == bsk-hue-of rows 11
+  bsk-dressed : List CstRow -> Boolean
+  bsk-dressed (rows) = bsk-hue-of rows 11 >= 1102 & bsk-hue-of rows 11 <= 1148 & bsk-layer rows 13 0 >= 0 & bsk-layer rows 2 0 >= 0 & bsk-beard-matches rows
+  bsk-all-dressed : Integer, Integer, Integer -> Boolean
+  bsk-all-dressed (profile) (serial) (left) = if left == 0 then True
+    else bsk-dressed (wso-rows profile serial) & bsk-all-dressed profile (serial + 7919) (left - 1)
+  bvt-spawn-look : Integer -> [Console] Integer
+  bvt-spawn-look (unused) = let c = wsd-catalog 0
+    in let ps = c.profiles
+    in let brigand = bsk-index ps "m_brigand" 0
+    in let lady = bsk-index ps "f_brigand" 0
+    in let thief = bsk-index ps "m_thief_guildmaster" 0
+    in let spectre = bsk-index ps "spectre" 0
+    in let rat = bsk-index ps "giantrat" 0
+    in let pb = list-at ps (max 0 brigand)
+    in let pl = list-at ps (max 0 lady)
+    in let pt = list-at ps (max 0 thief)
+    in let ghost = cbp-mobile (gs-mobile 77 10 10 0 26 (list-at ps (max 0 spectre)).hue) 3 64 3
+    in let plain = cbp-mobile (gs-mobile 78 10 10 0 400 1130) 3 64 3
+    in act
+      a <- bvt-check "a UOX3 NAMELIST human keeps its title and a skin, and is named by serial: the brigand" (brigand >= 0 & pb.name == "the Brigand" & pb.hue == 1002 & pb.hue-high == 1058 & text-length (cg-spawn-name pb 4242) > 12 & substring (cg-spawn-name pb 4242) (text-length (cg-spawn-name pb 4242) - 12) 12 == " the Brigand")
+      b <- bvt-check "the female brigand has no UOX3 title and is named by her first name alone; the thief guildmaster keeps his" (lady >= 0 & pl.name == "" & text-length (cg-spawn-name pl 4242) > 0 & thief >= 0 & pt.name == "the Thief Guildmaster")
+      d <- bvt-check "a brigand is a murderer (notoriety 6), the thief guildmaster innocent (1), a giant rat neutral (3)" (wsi-notoriety brigand == 6 & wsi-notoriety lady == 6 & wsi-notoriety thief == 1 & rat >= 0 & wsi-notoriety rat == 3)
+      e <- bvt-check "every brigand wears UOX3's outfit: hair in a creation hue, a leather tunic, a spear, a beard dyed as the hair (40 serials)" (bsk-all-dressed brigand 1 40)
+      f <- bvt-check "a spectre is the translucent class: drawn with status flag 0x80 and its hue bit cleared" (spectre >= 0 & (list-at ps spectre).hue == #4000 & list-at ghost 17 == 64 + 128 & gp-u16 ghost 15 == 0)
+      g <- bvt-check "an ordinary hue draws as itself with no translucent flag" (list-at plain 17 == 64 & gp-u16 plain 15 == 1130 & cbp-hue 1130 == 1130 & cbp-shade 1130 0 == 0)
+      a + b + d + e + f + g
+    end
+  bsk-region : List WsRegion, Integer, Integer -> Integer
+  bsk-region (rs) (id) (i) = if i >= list-length rs then -1 else if (list-at rs i).id == id then i else bsk-region rs id (i + 1)
+  bsk-at : WsCatalog, Integer -> WsRegion
+  bsk-at (c) (id) = list-at c.regions (max 0 (bsk-region c.regions id 0))
+  bvt-authored-spawns : Integer -> [Console] Integer
+  bvt-authored-spawns (unused) = let c = wsd-catalog 0
+    in act
+      a <- bvt-check "the Trinsic peninsula spawns harts, hinds and sheep, 89 at most, and not on Trinsic's shore (Damian 2026-10-10)" (bsk-region c.regions 9401 0 >= 0 & bwth-in c "region-9401" "hart" & bwth-in c "region-9401" "hind" & bwth-in c "region-9401" "sheep" & (bsk-at c 9401).maximum == 89 & list-length (bsk-at c 9401).exclusions == 2)
+      b <- bvt-check "liches in the ruin at 845,1547, one daemon in each half of the labyrinth at 1141,2236" (bwth-in c "region-9402" "lich" & (bsk-at c 9402).area.x1 <= 845 & (bsk-at c 9402).area.x2 >= 845 & bwth-in c "region-9403" "daemon" & bwth-in c "region-9404" "daemon" & (bsk-at c 9403).maximum == 1 & (bsk-at c 9404).maximum == 1 & (bsk-at c 9404).area.x1 <= 1146)
+      d <- bvt-check "skeletons in the Nujel'm and both Trinsic graveyards; scorpions on Nujel'm under the open sky" (bwth-in c "region-9405" "skeleton" & bwth-in c "region-9406" "skeleton" & bwth-in c "region-9407" "skeleton" & bwth-in c "region-9408" "scorpion" & (bsk-at c 9408).outside & (bsk-at c 9408).area.x1 <= 3742 & (bsk-at c 9408).area.y2 >= 1307)
+      e <- bvt-check "orc lords and orc mages join the orc fort at the palisade; its UOX3 lists and maximum stay" (bwth-in c "region-5511" "orclord" & bwth-in c "region-5511" "orcmage" & bwth-in c "region-5511" "npclist weakorc" & (bsk-at c 5511).maximum == 12 & not (bwth-in c "region-5512" "orclord"))
+      a + b + d + e
+    end
+
+Page 1

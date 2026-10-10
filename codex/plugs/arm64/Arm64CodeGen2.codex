@@ -834,46 +834,118 @@ Section: Targeted Expression Emission
       in let st2 = a64-bind-local st1 name (loc.reg)
       in a64-emit-act-loop st2 stmts (i + 1) (loc.reg)
 
+ A `try` frame is 16 spill slots of the function holding the `try`, because
+ this lane addresses spills from SP and SP cannot move inside a function:
+ 0 previous head, 8 SP, 16 x29, 24..88 x19..x27, 96 x28, 104 deck-bound
+ counter, 112 handler address, 120 message. The callee-saved registers are
+ in it because an unwind skips every epilogue between the `fail` and the
+ `try`, and the `try` function's locals live in them. The chain's head is
+ the running process's table entry at offset 48, as on x86-64.
+
+  a64-try-frame-slots : Integer = 16
+
+  a64-try-head-offset : Integer = 48
+
+  a64-enc-adr : Integer, Integer -> List Integer
+  a64-enc-adr (rd) (offset) =
+    arm64-encode (bit-or (bit-or (bit-or #10000000 (bit-shl (bit-and offset 3) 29)) (bit-shl (bit-and (offset / 4) #7FFFF) 5)) rd)
+
+  a64-enc-udf : List Integer
+  a64-enc-udf = arm64-encode 0
+
+  a64-try-frame-alloc : A64State -> A64EmitResult
+  a64-try-frame-alloc (st) =
+    let base = st.spill-count
+    in let st0 = if base + a64-try-frame-slots > a64-spill-limit then a64-refuse-spill st else st
+    in A64EmitResult { state = __record-set st0 "spill-count" (base + a64-try-frame-slots), reg = a64-spill-base + base }
+
+  a64-try-frame-addr : A64State, Integer -> A64State
+  a64-try-frame-addr (st) (slot) =
+    let st1 = a64-emit st (arm64-add-imm 17 a64-sp 0)
+    in let st2 = a64-emit-li st1 16 ((slot - a64-spill-base) * 8 + 96)
+    in a64-emit st2 (arm64-add 17 17 16)
+
+  a64-emit-try-push-frame : A64State, Integer -> A64State
+  a64-emit-try-push-frame (st) (slot) =
+    let st1 = a64-emit st (a64-enc-adr 10 0)
+    in let st2 = a64-try-frame-addr st1 slot
+    in let st3 = a64-emit (a64-emit (a64-emit st2 (arm64-str 10 17 112)) (arm64-str a64-fp 17 16)) (arm64-str a64-x19 17 24)
+    in let st4 = a64-emit (a64-emit (a64-emit (a64-emit st3 (arm64-str a64-x20 17 32)) (arm64-str a64-x21 17 40)) (arm64-str a64-x22 17 48)) (arm64-str a64-x23 17 56)
+    in let st5 = a64-emit (a64-emit (a64-emit (a64-emit st4 (arm64-str a64-x24 17 64)) (arm64-str a64-x25 17 72)) (arm64-str a64-x26 17 80)) (arm64-str a64-x27 17 88)
+    in let st6 = a64-emit (a64-emit (a64-emit st5 (arm64-str a64-heap-reg 17 96)) (arm64-add-imm 9 a64-sp 0)) (arm64-str 9 17 8)
+    in let st7 = a64-emit (a64-emit-li st6 9 a64-deck-bound-counter-addr) (arm64-ldr 9 9 0)
+    in let st8 = a64-emit (a64-emit st7 (arm64-str 9 17 104)) (arm64-str a64-xzr 17 120)
+    in let st9 = a64-emit-current-entry st8 11
+    in a64-emit (a64-emit (a64-emit st9 (arm64-ldr 9 11 a64-try-head-offset)) (arm64-str 9 17 0)) (arm64-str 17 11 a64-try-head-offset)
+
+ Pops the frame in `slot`. x0 is preserved: it carries the `try`'s value.
+
+  a64-emit-try-pop-frame : A64State, Integer -> A64State
+  a64-emit-try-pop-frame (st) (slot) =
+    let st1 = a64-emit-current-entry (a64-try-frame-addr st slot) 11
+    in a64-emit (a64-emit st1 (arm64-ldr 9 17 0)) (arm64-str 9 11 a64-try-head-offset)
+
+  a64-emit-try-take-message : A64State, Integer, Integer -> A64State
+  a64-emit-try-take-message (st) (slot) (msg-loc) =
+    let st1 = a64-emit (a64-try-frame-addr st slot) (arm64-ldr a64-x0 17 120)
+    in a64-store-local (a64-emit-try-pop-frame st1 slot) msg-loc a64-x0
+
+ With no frame the message is printed and the program stops. With one, the
+ deck is put back first: when the frame was built outside every deck and the
+ unwind leaves from inside one, x28 is the deck cursor, so it is written back
+ to the deck before x28 returns to the bivy.
+
+  a64-emit-fail-raise : A64State, Integer -> A64State
+  a64-emit-fail-raise (st) (msg-reg) =
+    let st1 = a64-emit-current-entry (a64-emit st (arm64-mov a64-x0 msg-reg)) 11
+    in let st2 = a64-emit st1 (arm64-ldr 17 11 a64-try-head-offset)
+    in let have-idx = st2.insn-count
+    in let st3 = a64-emit (a64-emit-call-to (a64-emit st2 arm64-nop) "print-line-uni") a64-enc-udf
+    in let st4 = a64-patch-insn st3 have-idx (arm64-cbnz 17 ((st3.insn-count - have-idx) * 4))
+    in let st5 = a64-emit (a64-emit (a64-emit st4 (arm64-str a64-x0 17 120)) (arm64-ldr a64-fp 17 16)) (arm64-ldr a64-x19 17 24)
+    in let st6 = a64-emit (a64-emit (a64-emit (a64-emit st5 (arm64-ldr a64-x20 17 32)) (arm64-ldr a64-x21 17 40)) (arm64-ldr a64-x22 17 48)) (arm64-ldr a64-x23 17 56)
+    in let st7 = a64-emit (a64-emit (a64-emit (a64-emit st6 (arm64-ldr a64-x24 17 64)) (arm64-ldr a64-x25 17 72)) (arm64-ldr a64-x26 17 80)) (arm64-ldr a64-x27 17 88)
+    in let st8 = a64-emit (a64-emit (a64-emit-li st7 9 a64-deck-bound-counter-addr) (arm64-ldr 10 9 0)) (arm64-ldr 11 17 104)
+    in let st9 = a64-emit st8 (arm64-cmp 10 11)
+    in let skip1 = st9.insn-count
+    in let st10 = a64-emit (a64-emit st9 arm64-nop) arm64-nop
+    in let st11 = a64-emit (a64-emit-li st10 9 a64-deck-pos-addr) (arm64-str a64-heap-reg 9 0)
+    in let skip = st11.insn-count
+    in let st12 = a64-patch-insn (a64-patch-insn st11 skip1 (arm64-b-cond 13 ((skip - skip1) * 4))) (skip1 + 1) (arm64-cbnz 11 ((skip - (skip1 + 1)) * 4))
+    in let st13 = a64-emit (a64-emit-li st12 9 a64-deck-bound-counter-addr) (arm64-str 11 9 0)
+    in let st14 = a64-emit (a64-emit (a64-emit st13 (arm64-ldr a64-heap-reg 17 96)) (arm64-ldr 9 17 8)) (arm64-add-imm a64-sp 9 0)
+    in a64-emit (a64-emit st14 (arm64-ldr 9 17 112)) (arm64-br 9)
+
   a64-emit-fail : A64State, List IRExpr -> A64EmitResult
   a64-emit-fail (st) (args) =
     let msg-r = a64-emit-expr (a64-set-tail-pos st False) (list-at args 0)
-    in let tr = a64-alloc-temp (msg-r.state)
-    in let st1 = a64-emit-li (tr.state) a64-x9 a64-try-fail-flag-addr
-    in let st2 = a64-emit-li st1 a64-x10 1
-    in let st3 = a64-emit st2 (arm64-str a64-x10 a64-x9 0)
-    in let st4 = a64-emit-li st3 (tr.reg) 0
-    in A64EmitResult { state = st4, reg = tr.reg }
+    in let tr = a64-alloc-temp (a64-emit-fail-raise (msg-r.state) (msg-r.reg))
+    in A64EmitResult { state = a64-emit-li (tr.state) (tr.reg) 0, reg = tr.reg }
 
-  a64-try-check-flag : A64State, Integer -> A64State
-  a64-try-check-flag (st) (body-failed-idx) =
-    let st1 = a64-emit-li st a64-x9 a64-try-fail-flag-addr
-    in let st2 = a64-emit st1 (arm64-ldr a64-x9 a64-x9 0)
-    in let cbnz-idx = st2.insn-count
-    in let st3 = a64-emit st2 arm64-nop
-    in a64-patch-insn st3 cbnz-idx (arm64-cbnz a64-x9 ((body-failed-idx - cbnz-idx) * 4))
+  a64-emit-try-refail : A64State, Integer -> A64State
+  a64-emit-try-refail (st) (msg-loc) =
+    let ld = a64-load-local st msg-loc
+    in a64-emit-fail-raise (ld.state) (ld.reg)
 
-  a64-try-clear-flag : A64State -> A64State
-  a64-try-clear-flag (st) =
-    let st1 = a64-emit-li st a64-x9 a64-try-fail-flag-addr
-    in let st2 = a64-emit-li st1 a64-x10 0
-    in a64-emit st2 (arm64-str a64-x10 a64-x9 0)
-
-  a64-emit-try-body-stmts : A64State, List IRActStmt, Integer, Integer, Integer -> A64EmitResult
-  a64-emit-try-body-stmts (st) (stmts) (i) (len) (body-failed-idx) =
+  a64-emit-try-body-stmts : A64State, List IRActStmt, Integer, Integer -> A64EmitResult
+  a64-emit-try-body-stmts (st) (stmts) (i) (len) =
     if i == len then A64EmitResult { state = st, reg = a64-x0 }
     else when list-at stmts i
      is IrDoBind (name) (ty) (expr) (s) ->
       let er = a64-emit-expr (a64-set-tail-pos st False) expr
       in let loc = a64-alloc-local (er.state)
       in let st1 = a64-store-local (loc.state) (loc.reg) (er.reg)
-      in let st2 = a64-bind-local st1 name (loc.reg)
-      in let st3 = a64-try-check-flag st2 body-failed-idx
-      in a64-emit-try-body-stmts st3 stmts (i + 1) len body-failed-idx
+      in a64-emit-try-body-stmts (a64-bind-local st1 name (loc.reg)) stmts (i + 1) len
      is IrDoExec (expr) (s) ->
       let r = a64-emit-expr (a64-set-tail-pos st False) expr
-      in let st1 = a64-try-check-flag (r.state) body-failed-idx
-      in if i == len - 1 then A64EmitResult { state = st1, reg = r.reg }
-      else a64-emit-try-body-stmts st1 stmts (i + 1) len body-failed-idx
+      in if i == len - 1 then r
+      else a64-emit-try-body-stmts (r.state) stmts (i + 1) len
+
+  A64TryTail = record {
+   state : A64State,
+   has-jmp : Boolean,
+   jmp-idx : Integer
+  }
 
   a64-emit-try : A64State, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> A64EmitResult
   a64-emit-try (st) (max) (body) (fb) (fail) =
@@ -883,13 +955,20 @@ Section: Targeted Expression Emission
     in let heap-loc = a64-alloc-local st2
     in let st3 = a64-emit (heap-loc.state) (arm64-mov a64-x0 a64-heap-reg)
     in let st4 = a64-store-local st3 (heap-loc.reg) a64-x0
-    in let retry-idx = st4.insn-count
-    in let st5 = a64-try-clear-flag st4
+    in let msg-loc = a64-alloc-local st4
+    in let st4m = a64-store-local (msg-loc.state) (msg-loc.reg) a64-x0
+    in let body-frame = a64-try-frame-alloc st4m
+    in let fb-frame = a64-try-frame-alloc (body-frame.state)
+    in let st5 = fb-frame.state
+    in let retry-idx = st5.insn-count
     in let ld-heap = a64-load-local st5 (heap-loc.reg)
     in let st6 = a64-emit (ld-heap.state) (arm64-mov a64-heap-reg (ld-heap.reg))
-    in let jmp-over-idx = st6.insn-count
-    in let st7 = a64-emit st6 arm64-nop
-    in let body-failed-idx = st7.insn-count
+    in let body-adr-idx = st6.insn-count
+    in let st6f = a64-emit-try-push-frame st6 (body-frame.reg)
+    in let jmp-over-idx = st6f.insn-count
+    in let st7m = a64-emit st6f arm64-nop
+    in let body-failed-idx = st7m.insn-count
+    in let st7 = a64-emit-try-take-message st7m (body-frame.reg) (msg-loc.reg)
     in let ld-ctr = a64-load-local st7 (counter-loc.reg)
     in let st8 = a64-emit (ld-ctr.state) (arm64-add-imm (ld-ctr.reg) (ld-ctr.reg) 1)
     in let st9 = a64-store-local st8 (counter-loc.reg) (ld-ctr.reg)
@@ -901,40 +980,35 @@ Section: Targeted Expression Emission
     in let st12 = a64-emit st11 arm64-nop
     in let body-start-idx = st12.insn-count
     in let st13 = a64-patch-insn st12 jmp-over-idx (arm64-b ((body-start-idx - jmp-over-idx) * 4))
-    in let st14 = a64-patch-insn st13 blt-retry-idx (arm64-b-cond 11 ((retry-idx - blt-retry-idx) * 4))
+    in let st13a = a64-patch-insn st13 body-adr-idx (a64-enc-adr 10 ((body-failed-idx - body-adr-idx) * 4))
+    in let st14 = a64-patch-insn st13a blt-retry-idx (arm64-b-cond 11 ((retry-idx - blt-retry-idx) * 4))
     in let try-locals = list-length (st14.locals)
-    in let body-result = a64-emit-try-body-stmts st14 body 0 (list-length body) body-failed-idx
-    in let jmp-success-idx = (body-result.state).insn-count
-    in let st15 = a64-emit (a64-restore-locals (body-result.state) try-locals) arm64-nop
+    in let body-result = a64-emit-try-body-stmts st14 body 0 (list-length body)
+    in let st14b = a64-emit (body-result.state) (arm64-mov a64-x0 (body-result.reg))
+    in let st14c = a64-emit-try-pop-frame st14b (body-frame.reg)
+    in let jmp-success-idx = st14c.insn-count
+    in let st15 = a64-emit (a64-restore-locals st14c try-locals) arm64-nop
     in let exhaust-idx = st15.insn-count
     in let st16 = a64-patch-insn st15 jmp-exhaust-idx (arm64-b ((exhaust-idx - jmp-exhaust-idx) * 4))
-    in let st-fb = if list-length fb > 0
-      then let fb-clear = a64-try-clear-flag st16
-      in let fb-result = a64-emit-act-loop fb-clear fb 0 a64-xzr
-      in let st-fc = a64-emit-li (a64-restore-locals (fb-result.state) try-locals) a64-x9 a64-try-fail-flag-addr
-      in let st-fl = a64-emit st-fc (arm64-ldr a64-x9 a64-x9 0)
-      in let cbnz-fail-idx = st-fl.insn-count
-      in let st-fj = a64-emit st-fl arm64-nop
-      in A64EmitResult { state = st-fj, reg = fb-result.reg }
-    else A64EmitResult { state = st16, reg = a64-x0 }
-    in let jmp-end-fb-idx = (st-fb.state).insn-count
-    in let st17 = a64-emit (st-fb.state) arm64-nop
-    in let st-fail = if list-length fail > 0
-      then let fail-idx = st17.insn-count
-      in let st-pfb = if list-length fb > 0 then
-        a64-patch-insn st17 (jmp-end-fb-idx - 1) (arm64-cbnz a64-x9 ((fail-idx - (jmp-end-fb-idx - 1)) * 4))
-      else st17
-      in let fail-clear = a64-try-clear-flag st-pfb
-      in let fail-result = a64-emit-act-loop fail-clear fail 0 a64-xzr
-      in A64EmitResult {
-        state = a64-restore-locals (fail-result.state) try-locals,
-        reg = fail-result.reg
-      }
-    else st-fb
-    in let end-idx = (st-fail.state).insn-count
-    in let st18 = a64-patch-insn (st-fail.state) jmp-success-idx (arm64-b ((end-idx - jmp-success-idx) * 4))
-    in let st19 = a64-patch-insn st18 jmp-end-fb-idx (arm64-b ((end-idx - jmp-end-fb-idx) * 4))
-    in A64EmitResult { state = st19, reg = st-fail.reg }
+    in let tail = if list-length fb > 0 then
+      let fb-adr-idx = st16.insn-count
+      in let s1 = a64-emit-try-push-frame st16 (fb-frame.reg)
+      in let fb-result = a64-emit-act-loop s1 fb 0 a64-xzr
+      in let s2 = a64-emit-try-pop-frame (a64-emit (fb-result.state) (arm64-mov a64-x0 (fb-result.reg))) (fb-frame.reg)
+      in let fb-jmp-idx = s2.insn-count
+      in let s3 = a64-emit (a64-restore-locals s2 try-locals) arm64-nop
+      in let s3a = a64-patch-insn s3 fb-adr-idx (a64-enc-adr 10 ((s3.insn-count - fb-adr-idx) * 4))
+      in let s4 = a64-emit-try-take-message s3a (fb-frame.reg) (msg-loc.reg)
+      in if list-length fail > 0 then
+        let fail-result = a64-emit-act-loop s4 fail 0 a64-xzr
+        in let s5 = a64-emit (fail-result.state) (arm64-mov a64-x0 (fail-result.reg))
+        in A64TryTail { state = a64-restore-locals s5 try-locals, has-jmp = True, jmp-idx = fb-jmp-idx }
+      else A64TryTail { state = a64-emit-try-refail s4 (msg-loc.reg), has-jmp = True, jmp-idx = fb-jmp-idx }
+    else A64TryTail { state = a64-emit-try-refail st16 (msg-loc.reg), has-jmp = False, jmp-idx = 0 }
+    in let end-idx = (tail.state).insn-count
+    in let st18 = a64-patch-insn (tail.state) jmp-success-idx (arm64-b ((end-idx - jmp-success-idx) * 4))
+    in let st19 = if tail.has-jmp then a64-patch-insn st18 (tail.jmp-idx) (arm64-b ((end-idx - tail.jmp-idx) * 4)) else st18
+    in A64EmitResult { state = st19, reg = a64-x0 }
 
   a64-known-arity : Text -> Integer
   a64-known-arity (name) =

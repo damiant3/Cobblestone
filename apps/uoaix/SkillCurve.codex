@@ -1,0 +1,69 @@
+Chapter: SkillCurve
+
+ Gain (Damian, 2026-10-06, ActiveSkills.md "Gain curve"): skill is the log of
+ uses, so the uses per 0.1 grow exponentially, 10 * 80^(level/1000): 10 at 0.0
+ and 800 at 100.0, for every character alike. skc-root is 80^(1/1000) at the
+ 2^20 fixed point, rounded. Below 50.0 a failure gains a normal gain; from
+ 50.0 a failure gains a tenth of one, and a success gains fully on a
+ difficulty within 10.0 of the level or above, falling to nothing 20.0 below
+ (Skill_Experience's gain radius). Success bonus (Damian, 2026-10-06): a success
+ gains skc-bonus tenths of that: 10x below 50.0, tapering linearly to 1x at
+ 100.0, which takes one fisher from 0.0 to 50.0 in 4,215 uses, inside the
+ 4,800 a 3 s cooldown allows in 4 hours.
+
+  skc-root : Integer = 1053181
+  skc-bonus : Integer -> Integer
+  skc-bonus (level) = if level < 500 then 100 else 100 - 90 * (min 1000 level - 500) / 500
+  skc-pow : Integer, Integer, Integer -> Integer
+  skc-pow (base) (n) (acc) = if n == 0 then acc
+    else skc-pow (base * base / 1048576) (n / 2) (if int-mod n 2 == 1 then acc * base / 1048576 else acc)
+  skc-uses : Integer -> Integer
+  skc-uses (level) = (10 * skc-pow skc-root (max 0 (min 1000 level)) 1048576 + 524288) / 1048576
+  skc-gain-at : Integer, Integer, Integer, Boolean -> Integer
+  skc-gain-at (rate) (level) (difficulty) (success) = let base = min 1000 (rate * 10 / skc-uses level)
+    in let full = if success then min 1000 (base * skc-bonus level / 10) else base
+    in if difficulty + 200 < level then 0
+    else if level < 500 then full
+    else if not success then base / 10
+    else if difficulty + 100 >= level then full
+    else full * (difficulty + 200 - level) / 100
+ A play gain of 0.1 on a character's 46 skill cells. At the 700.0 total another skill, searched from the draw, gives up
+ 0.1 (ClassicSkills' rule); with none above 0 there is no gain. 1 when the skill rose.
+  skc-total-cells : Integer, Integer -> Integer
+  skc-total-cells (cells) (i) = if i == 46 then 0 else peek-qword cells (i * 8) + skc-total-cells cells (i + 1)
+  skc-lower : Integer, Integer, Integer, Integer -> Boolean
+  skc-lower (cells) (skill) (at) (left) = if left == 0 then False
+    else let i = int-mod at 46
+    in if i /= skill & peek-qword cells (i * 8) > 0 then let lowered = poke-qword cells (i * 8) (peek-qword cells (i * 8) - 1) in True
+    else skc-lower cells skill (at + 1) (left - 1)
+  skc-train : Integer, Integer, Integer -> Integer
+  skc-train (cells) (skill) (draw) = if cells == 0 | skill < 0 | skill >= 46 then 0
+    else let level = peek-qword cells (skill * 8)
+    in if level >= 1000 then 0
+    else if skc-total-cells cells 0 < 7000 then let raised = poke-qword cells (skill * 8) (level + 1) in 1
+    else if skc-lower cells skill (int-mod (bit-and draw #7FFFFFFF) 46) 46 then let raised = poke-qword cells (skill * 8) (level + 1) in 1
+    else 0
+ ServUO Server/Skills.cs SkillInfo StrGain, DexGain, IntGain in hundredths, skill-id order; SkillCheck.cs's pre-ML
+ rule raises strength, else dexterity, else intelligence, each with chance gain / 33.3. A stat stops at 100 (Damian,
+ 2026-10-07, CompositeSkillCommand) and the three at 225 (ServUO StatCap). The character record holds a raised stat at
+ byte 147 + stat over its creation stat at 79 + stat.
+  skc-stat-gains : List Integer = [0, 50, 50, 15, 15, 70, 0, 0, 100, 0, 0, 100, 75, 15, 10, 75, 25, 0, 0, 0, 0, 100, 0, 0,
+    60, 160, 0, 0, 0, 0, 200, 150, 150, 200, 50, 0, 0, 75, 75, 0, 200, 300, 0, 40, 60, 0, 25, 25, 0, 0, 100, 60, 60, 80,
+    50, 50, 0, 0, 20, 80, 163, 63, 25, 0, 80, 20, 0, 45, 5, 0, 20, 80, 0, 200, 0, 0, 0, 150, 25, 25, 50, 0, 0, 0,
+    0, 250, 0, 0, 80, 20, 0, 40, 160, 25, 75, 0, 0, 0, 100, 0, 100, 0, 38, 163, 50, 140, 20, 40, 20, 0, 80, 50, 20, 30,
+    0, 125, 125, 80, 40, 80, 75, 25, 0, 90, 10, 0, 45, 55, 0, 90, 10, 0, 200, 0, 0, 200, 0, 0]
+  skc-stat : Integer, Integer -> Integer
+  skc-stat (card) (stat) = let set = peek-byte card (147 + stat) in if set > 0 then set else peek-byte card (79 + stat)
+  skc-next : Integer -> Integer
+  skc-next (x) = int-mod (bit-and x #FFFFFFFF * 1664525 + 1013904223) 4294967296
+  skc-stat-roll : Integer, Integer, Integer, Integer -> Integer
+  skc-stat-roll (card) (skill) (stat) (x) = if stat == 3 then -1
+    else let next = skc-next x
+    in let room = skc-stat card stat < 100 & skc-stat card 0 + skc-stat card 1 + skc-stat card 2 < 225
+    in if room & int-mod (bit-shru next 8) 3330 < list-at skc-stat-gains (skill * 3 + stat) then let raised = poke-byte card (147 + stat) (skc-stat card stat + 1) in stat
+    else skc-stat-roll card skill (stat + 1) next
+ The stat a skill gain raised (0 to 2), or -1.
+  skc-stat-gain : Integer, Integer, Integer -> Integer
+  skc-stat-gain (card) (skill) (draw) = if card == 0 | skill < 0 | skill >= 46 then -1 else skc-stat-roll card skill 0 draw
+
+Page 1

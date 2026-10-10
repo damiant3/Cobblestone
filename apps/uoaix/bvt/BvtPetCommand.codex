@@ -1,0 +1,58 @@
+Chapter: BvtPetCommand
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-203: a pet marked to attack takes the cursor's target as its foe (gws-command, gws-pet-foe); one marked to
+ defend guards the chosen mobile and fights its attacker; a command at its owner or at nothing sets nothing. Answers
+ a bit per check: 1 attack, 2 defend, 4 the owner and an empty cursor refused; 7 is all, -1 when it cannot be built.
+  bpc-mobile : GameShard, Integer, Integer -> Integer
+  bpc-mobile (game) (x) (body) = when world-create game.world (__record-set (gs-mobile 0 x 1700 0 body 0) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bpc-checks : Integer -> Integer
+  bpc-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let master = bpc-mobile game 1420 400
+        in let foe = bpc-mobile game 1424 400
+        in let friend = bpc-mobile game 1419 400
+        in let raider = bpc-mobile game 1418 400
+        in let profile = gws-claim-profile g "horse" 0
+        in if master == 0 | foe == 0 | friend == 0 | raider == 0 | profile < 0 then -2
+        else let bound = cb-profile g.combat game master "Master" 20 1 2 0 + cb-profile g.combat game foe "Foe" 20 1 2 0
+          + cb-profile g.combat game friend "Friend" 20 1 2 0 + cb-profile g.combat game raider "Raider" 20 1 2 0
+        in when gws-summon g game profile 1421 1700 0 master (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (pet) -> let slot = list-at g.slots (gws-slot-of g pet 0)
+            in when world-get game.world master
+              is Err (_) -> -4
+              is Ok (m) -> when cb-ensure g.combat game pet
+                is Err (_) -> -5
+                is Ok (p) -> when cb-ensure g.combat game raider
+                  is Err (_) -> -6
+                  is Ok (r) -> when cb-ensure g.combat game friend
+                    is Err (_) -> -7
+                    is Ok (fr) -> let a1 = __record-set slot "aim" 1
+                      in let sent = gws-command g master 1 foe 0
+                      in let attacks = sent == 1 & slot.foe == foe & slot.aim == 0 & gws-pet-foe g game slot p m == foe
+                      in let cleared = gws-uncommand slot
+                      in let a2 = __record-set slot "aim" 2
+                      in let guarded = gws-command g master 2 friend 0
+                      in let struck = cb-select g.combat game r fr
+                      in let defends = guarded == 1 & slot.ward == friend & slot.order == gws-order-guard & gws-pet-foe g game slot p m == raider
+                      in let calm = cb-stop g.combat r
+                      in let peace = __record-set r "war" False
+                      in let a3 = __record-set slot "aim" 1
+                      in let own = gws-command g master 1 master 0
+                      in let a4 = __record-set slot "aim" 1
+                      in let none = gws-command g master 1 0 0
+                      in let refused = own == 0 & none == 0 & slot.foe == 0 & slot.aim == 0
+                      in if bound /= 0 then -8 else (if attacks then 1 else 0) + (if defends then 2 else 0) + (if refused then 4 else 0)
+  bvt-pet-command : Integer -> [Console] Integer
+  bvt-pet-command (unused) = act
+    n <- bpc-checks 0
+    bvt-check ("a pet attacks the target its owner names and defends the mobile its owner chooses (UOAIX-203, code " & show n & ")") (n == 7)
+  end

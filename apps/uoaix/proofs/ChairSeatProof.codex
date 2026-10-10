@@ -1,0 +1,60 @@
+Chapter: ChairSeatProof
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter DecorationCodec
+
+ Britain seats from the 1.25 statics as x, y, z: the castle throne's two
+ halves (0x1526 flagged impassable, 0x1527 not), both impassable loom benches
+ (0x1049), and two ordinary chairs.
+  cs-seats : List Integer = [1323, 1625, 55, 1323, 1624, 55, 1392, 1604, 30, 1546, 1661, 26, 1327, 1675, 30, 1326, 1673, 30]
+
+  cs-check : Text, Boolean -> [Console] Integer
+  cs-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cs-from : WalkMap, Integer, Integer, Integer, Integer -> Boolean
+  cs-from (map) (x) (y) (z) (d) = if d == 8 then False
+    else let nx = x - walk-dx d
+    in let ny = y - walk-dy d
+    in let entered = when walk-height map nx ny z
+      is Err (_) -> False
+      is Ok (from) -> when walk-step map nx ny from d is Err (_) -> False is Ok (to) -> to == z
+    in entered | cs-from map x y z (d + 1)
+  cs-seat : MapCacheState, WdState, Integer, Integer, Integer -> [Device.Block] Boolean
+  cs-seat (cache) (decoration) (x) (y) (z) = act
+    loaded <- wmc-cover cache x y
+    when loaded
+      is Err (_) -> False
+      is Ok (map) -> when wd-rebind decoration map map.stride
+        is Err (_) -> False
+        is Ok (_) -> (when walk-height map x y z is Err (_) -> False is Ok (h) -> h == z) & cs-from map x y z 0
+  end
+  cs-all : MapCacheState, WdState, Integer, Integer -> [Console, Device.Block] Integer
+  cs-all (cache) (decoration) (i) (failed) = if i == list-length cs-seats then act
+      print-line-uni ("SEATS " & show (list-length cs-seats / 3) & " refused " & show failed)
+      failed
+    end
+    else let x = list-at cs-seats i
+    in let y = list-at cs-seats (i + 1)
+    in let z = list-at cs-seats (i + 2)
+    in act
+      seated <- cs-seat cache decoration x y z
+      checked <- cs-check ("seat at " & show x & "," & show y & "," & show z & " admits a step onto it") seated
+      cs-all cache decoration (i + 3) (failed + checked)
+    end
+  opening : [Console, Device.Block] Integer = act
+    opened <- wmc-open UoIde
+    when opened
+      is Err (e) -> cs-check e False
+      is Ok (cache) -> act
+        covered <- wmc-cover cache 1420 1698
+        data <- wmc-decoration cache
+        when covered
+          is Err (e) -> cs-check e False
+          is Ok (map) -> when data
+            is Err (e) -> cs-check e False
+            is Ok (installed) -> when wd-read installed.data installed.size map map.stride
+              is Err (e) -> cs-check e False
+              is Ok (decoration) -> cs-all cache decoration 0 0
+      end
+  end

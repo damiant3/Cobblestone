@@ -1,0 +1,49 @@
+Chapter: BvtInnCook
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ The innkeeper's batch of fish steaks (bb-cook). The cooking roll is (attempts * 137 + 37) mod 1000 against
+ 100 + level * 9 / 10 (ep-practice-as): 7 attempts roll 996 and fail, none rolls 37 and succeeds.
+  bvic-made : Result Integer Text -> Integer
+  bvic-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvic-vendor : GvWorld, Integer -> Integer
+  bvic-vendor (v) (i) = let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 (1000 + i)) 100
+    in let npc = bvic-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bvic-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bvic-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bvic-made (world-create v.game.world (gs-item npc #0E75 0))
+    in gv-add-vendor v npc actor stock extra buys
+  bvic-vendors : GvWorld, Integer -> Integer
+  bvic-vendors (v) (i) = if i > bb-inn then 0 else let added = bvic-vendor v i in bvic-vendors v (i + 1)
+ The cook's answer times 100 plus the objects it created; -1 is a refusal, -9 a fixture that did not build.
+  bvic-run : Integer -> Integer
+  bvic-run (attempts) = when gs-new 0
+    is Err (_) -> -9
+    is Ok (shard) -> when bb-economy 0
+      is Err (_) -> -9
+      is Ok (x) -> let v = gv-new shard x
+        in let items = gsi-new shard.world
+        in let added = bvic-vendors v 0
+        in let inn = list-at v.vendors bb-inn
+        in let a = ep-actor x.world inn.actor
+        in let fish = ep-find x.world inn.actor 9 3
+        in let water = ep-find x.world inn.actor 4 3
+        in let logs = ep-find x.world inn.actor 15 3
+        in let lot = bvic-made (world-create shard.world (__record-set (gs-item inn.extra #09CC 0) "amount" 3))
+        in let listed = gv-add-lot v lot inn.actor 9 1000 32 0
+        in let tried = __record-set a "attempts" attempts
+        in let before = world-count shard.world
+        in if v.vendor-count <= bb-inn then -8 else if lot == 0 then -7 else if listed < 0 then -6
+        else when bb-cook v items
+          is Err (_) -> -1
+          is Ok (n) -> n * 100 + world-count shard.world - before
+  bvt-inn-cook : Integer -> [Console] Integer
+  bvt-inn-cook (unused) = act
+    failed <- bvic-run 7
+    cooked <- bvic-run 0
+    a <- bvt-check ("an innkeeper whose cooking roll fails makes nothing and creates no empty stack (world tick 'fields invalid', amount=0): " & show failed) (failed == 0)
+    b <- bvt-check ("an innkeeper whose cooking roll succeeds shelves one stack of fish steaks: " & show cooked) (cooked == 101)
+    a + b
+  end

@@ -1,0 +1,143 @@
+Chapter: CharacterStylist
+  cites Uoaix chapter GameMobileBank
+  cites Foreword chapter Random
+
+ Art and wear layers are the 1.25 client's tiledata.mul entries (CharacterStylist.md); skin 1002-1058, hair hue
+ 1102-1149, hair 8251-8253 and 8260-8266, beard 8254-8257 and 8267-8269 are the ranges the 1.25 client offers
+ at character creation (gs-hair-valid, GameSession.codex). Clothing dyes stay within the creation range 0-1001.
+
+  CstRow = record { graphic : Integer, hue : Integer, layer : Integer }
+  CstLook = record { body : Integer, skin : Integer, rows : List CstRow }
+  cst-townsfolk : Integer = 0
+  cst-shopkeeper : Integer = 1
+  cst-smith : Integer = 2
+  cst-banker : Integer = 3
+  cst-fighter : Integer = 4
+  cst-miner : Integer = 5
+  cst-guard : Integer = 6
+  cst-mayor : Integer = 7
+  cst-farmer : Integer = 8
+  cst-picker : Integer = 9
+  cst-shepherd : Integer = 10
+  cst-lumberjack : Integer = 11
+  cst-fisher : Integer = 12
+ Profession tools in the hand layer tiledata.mul names: pitchfork 0x0E87, shepherd's crook 0x0E81, hatchet 0x0F44 and
+ fishing pole 0x0DC0 on layer 2; the miner's pickaxe 0x0E85 and the smith's hammer 0x13E4 on layer 1.
+  cst-tool : Integer -> List CstRow
+  cst-tool (role) = if role == cst-farmer | role == cst-picker then [cst-row #0E87 0 2]
+    else if role == cst-shepherd then [cst-row #0E81 0 2]
+    else if role == cst-lumberjack then [cst-row #0F44 0 2]
+    else if role == cst-fisher then [cst-row #0DC0 0 2]
+    else []
+ Guards keep the guard hue 035F and the mayor 0016 on the lot shirt and its outer layer (CivicLiveState cv-outfit).
+ Lord British is the human body 400 wearing art 0x2042 on layer 22, whose animation 990 draws his armor and crowned head over
+  cst-british-body : Integer = 400
+  cst-british-robe : Integer = #2042
+  cst-british-layer : Integer = 22
+  cst-guard-hue : Integer = #035F
+  cst-mayor-hue : Integer = #0016
+ The smith wears the most rows: shirt, legs, feet, apron, hammer, hair and beard.
+  cst-most-rows : Integer = 7
+  cst-pick : Integer, Integer, Integer -> Integer
+  cst-pick (serial) (salt) (n) = int-mod (bit-and (mix-bits serial salt) #7FFFFFFF) n
+  cst-hair-art : Integer -> Integer
+  cst-hair-art (i) = if i < 3 then 8251 + i else 8260 + (i - 3)
+  cst-beard-art : Integer -> Integer
+  cst-beard-art (i) = if i < 4 then 8254 + i else 8267 + (i - 4)
+  cst-dye : Integer, Integer -> Integer
+  cst-dye (serial) (salt) = 2 + cst-pick serial salt 1000
+  cst-female : Integer, Integer -> Boolean
+  cst-female (role) (serial) = (role == cst-townsfolk | role == cst-shopkeeper) & cst-pick serial 1 2 == 1
+ gmb-find-banker recognises the banker by body 400 and skin 1002 on its tile (GameMobileBank.codex), so a banker keeps both.
+  cst-row : Integer, Integer, Integer -> CstRow
+  cst-row (graphic) (hue) (layer) = CstRow { graphic = graphic, hue = hue, layer = layer }
+  cst-head : Integer, Boolean, List CstRow -> List CstRow
+  cst-head (serial) (female) (rows) =
+    let hair = list-push rows (cst-row (cst-hair-art (cst-pick serial 2 10)) (1102 + cst-pick serial 3 48) 11)
+    in if female | cst-pick serial 4 2 == 0 then hair
+    else list-push hair (cst-row (cst-beard-art (cst-pick serial 5 7)) (1102 + cst-pick serial 3 48) 16)
+  cst-legs : Integer, Boolean -> CstRow
+  cst-legs (serial) (female) = if female then (if cst-pick serial 6 2 == 0 then cst-row #1531 (cst-dye serial 7) 23 else cst-row #1F01 (cst-dye serial 7) 22)
+    else if cst-pick serial 6 2 == 0 then cst-row #1539 (cst-dye serial 7) 4 else cst-row #152F (cst-dye serial 7) 4
+  cst-feet : Integer -> CstRow
+  cst-feet (serial) = let k = cst-pick serial 8 3
+    in if k == 0 then cst-row #170F 0 3 else if k == 1 then cst-row #170E 0 3 else cst-row #170B 0 3
+  cst-clothes : Integer, Integer, Boolean -> List CstRow
+  cst-clothes (role) (serial) (female) = if role == cst-guard then
+      [cst-row #1518 cst-guard-hue 5, cst-row #1539 0 4, cst-row #170B 0 3, cst-row #1FFD cst-guard-hue 17, cst-row #0F60 0 1]
+    else if role == cst-mayor then
+      [cst-row #1EFE cst-mayor-hue 5, cst-row #1539 (cst-dye serial 7) 4, cst-row #170B 0 3, cst-row #1F7C cst-mayor-hue 17, cst-row #171A (cst-dye serial 10) 6]
+    else cst-civilian role serial female
+  cst-civilian : Integer, Integer, Boolean -> List CstRow
+  cst-civilian (role) (serial) (female) =
+    let shirt = if role == cst-banker then cst-row #1EFE (cst-dye serial 9) 5 else cst-row #1518 (cst-dye serial 9) 5
+    in let base = [shirt, cst-legs serial female, cst-feet serial]
+    in if role == cst-smith then base & [cst-row #153B 0 12, cst-row #13E4 0 1]
+    else if role == cst-miner then base & [cst-row #0E85 0 1]
+    else if role == cst-banker then base & [cst-row #1F7C (cst-dye serial 10) 17]
+    else if role == cst-shopkeeper then base & [cst-row #153B (cst-dye serial 11) 12]
+    else if role == cst-townsfolk & cst-pick serial 12 3 == 0 then base & [cst-row #1717 0 6]
+    else if role == cst-farmer | role == cst-picker then base & [cst-row #1717 0 6] & cst-tool role
+    else base & cst-tool role
+  cst-spawn-rows : Text, Integer -> List CstRow
+  cst-spawn-rows (key) (serial) = if key == "evilmage" | key == "evilmagelord" | key == "jukamage" then
+      [cst-row #1F04 (cst-dye serial 9) 22, cst-row #1718 (cst-dye serial 9) 6, cst-row #170E 0 3]
+    else [cst-row #1518 (cst-dye serial 9) 5, cst-row #1539 (cst-dye serial 7) 4, cst-row #170B 0 3]
+  cst-look : Integer, Integer -> CstLook
+  cst-look (role) (serial) = cst-look-sex role serial (cst-female role serial)
+  cst-look-sex : Integer, Integer, Boolean -> CstLook
+  cst-look-sex (role) (serial) (female) =
+    CstLook { body = if female then 401 else 400, skin = if role == cst-banker then 1002 else 1002 + cst-pick serial 13 57,
+      rows = cst-head serial female (cst-clothes role serial female) }
+  cst-wear : GsiState, Integer, CstRow -> Result Integer Text
+  cst-wear (items) (owner) (row) = let found = gmb-layer items owner row.layer 0
+    in if found == 0 then gmb-clothe items owner row.graphic row.hue row.layer
+    else when world-get items.world found
+      is Err (e) -> Err e
+      is Ok (item) -> if item.graphic == row.graphic & item.hue == row.hue then Ok found
+        else when world-update items.world (WorldObject { serial = item.serial, kind = item.kind, x = item.x, y = item.y, z = item.z,
+          graphic = row.graphic, hue = row.hue, container = item.container, amount = item.amount, health = item.health })
+          is Err (e) -> Err e
+          is Ok (_) -> Ok found
+  cst-wear-all : GsiState, Integer, List CstRow, Integer -> Result Integer Text
+  cst-wear-all (items) (owner) (rows) (i) = if i == list-length rows then Ok i
+    else when cst-wear items owner (list-at rows i)
+      is Err (e) -> Err e
+      is Ok (_) -> cst-wear-all items owner rows (i + 1)
+  cst-apply : GsiState, Integer, CstLook -> Result Integer Text
+  cst-apply (items) (owner) (look) = if world-room items.world < list-length look.rows then Err "stylist clothing capacity"
+    else when world-get items.world owner
+      is Err (e) -> Err e
+      is Ok (m) -> if m.kind /= 1 then Err "stylist owner is not a mobile"
+        else if m.graphic == look.body & m.hue == look.skin then cst-dress items owner look.rows
+        else when world-update items.world (WorldObject { serial = m.serial, kind = m.kind, x = m.x, y = m.y, z = m.z,
+          graphic = look.body, hue = look.skin, container = m.container, amount = m.amount, health = m.health })
+          is Err (e) -> Err e
+          is Ok (_) -> cst-dress items owner look.rows
+  cst-dress : GsiState, Integer, List CstRow -> Result Integer Text
+  cst-dress (items) (owner) (rows) = let stripped = cst-strip items owner rows 0 in cst-wear-all items owner rows 0
+ The garments only one sex wears: the beard (16), the dress (22) and the skirt (23). A worn one the new look leaves
+ empty comes off, so a townswoman restyled as a miner loses her dress. No economy lot sits on these layers: a vendor's
+ outfit lots are on 3, 4 and 5 (bb-outfit) and stock lots on 1, 4, 5 and 10 (bb-layer), and the census refuses a
+ deleted lot.
+  cst-layers : List Integer = [16, 22, 23]
+  cst-strip : GsiState, Integer, List CstRow, Integer -> Integer
+  cst-strip (items) (owner) (rows) (i) = if i == list-length cst-layers then 0
+    else let layer = list-at cst-layers i
+    in let worn = gmb-layer items owner layer 0
+    in let gone = if worn == 0 | cst-names rows layer 0 then 0 else when world-delete items.world worn is Err (_) -> 0 is Ok (_) -> 1
+    in gone + cst-strip items owner rows (i + 1)
+  cst-names : List CstRow, Integer, Integer -> Boolean
+  cst-names (rows) (layer) (i) = if i == list-length rows then False else (list-at rows i).layer == layer | cst-names rows layer (i + 1)
+  cst-style : GsiState, Integer, Integer -> Result Integer Text
+  cst-style (items) (owner) (role) = cst-apply items owner (cst-look role owner)
+  cst-wears : GsiState, Integer, List CstRow, Integer -> Boolean
+  cst-wears (items) (owner) (rows) (i) = if i == list-length rows then True
+    else let row = list-at rows i
+    in let worn = gmb-layer items owner row.layer 0
+    in worn > 0 & (when world-get items.world worn is Err (_) -> False is Ok (o) -> o.graphic == row.graphic & o.hue == row.hue)
+      & cst-wears items owner rows (i + 1)
+  cst-styled : GsiState, Integer, Integer -> Boolean
+  cst-styled (items) (owner) (role) = let look = cst-look role owner
+    in owner > 0 & (when world-get items.world owner is Err (_) -> False is Ok (m) -> m.graphic == look.body & m.hue == look.skin)
+      & cst-wears items owner look.rows 0

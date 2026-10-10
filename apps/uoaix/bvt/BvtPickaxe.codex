@@ -1,0 +1,45 @@
+Chapter: BvtPickaxe
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ Damian, 2026-10-09: Lord British carries a pickaxe. A mobile with a backpack (layer 21, as GameLocks makes an NPC's):
+ answers a bit per check, 1 the first boot makes one pickaxe in the pack, 2 a second boot makes none, 4 its art is
+ economy item 25 (cpr-kit-item), 8 a mobile with no pack gets none; 15 is all.
+  bpx-checks : Integer -> Integer
+  bpx-checks (unused) = when cg-game 512
+    is Err (_) -> -1
+    is Ok (game) -> let items = gsi-new game.world
+      in when world-create game.world (gs-mobile 0 1500 1600 0 400 1002)
+        is Err (_) -> -2
+        is Ok (lord) -> when world-create game.world (gs-item lord #0E75 0)
+          is Err (_) -> -3
+          is Ok (pack) -> let worn = gsi-register items pack 21 #003C False False
+            in let first = cg-give-pickaxe items lord
+            in let second = cg-give-pickaxe items lord
+            in let child = world-first-child game.world pack
+            in let art = when world-get game.world child is Err (_) -> 0 is Ok (o) -> o.graphic
+            in let bare = when world-create game.world (gs-mobile 0 1502 1600 0 400 1002) is Err (_) -> -1 is Ok (other) -> cg-give-pickaxe items other
+            in (if first == 1 & world-child-count game.world pack == 1 then 1 else 0) + (if second == 0 & world-child-count game.world pack == 1 then 2 else 0)
+              + (if cpr-kit-item art == 25 then 4 else 0) + (if bare == 0 then 8 else 0)
+ A fresh world has no British at boot, so his entry gives his tools (cg-lord-tools, cg-entry): 2 for the master key and
+ the pickaxe in an empty pack, 0 on the next entry, 0 for a mobile with no pack.
+  bpx-entry : Integer -> Boolean
+  bpx-entry (unused) = when cg-game 512
+    is Err (_) -> False
+    is Ok (game) -> let items = gsi-new game.world
+      in when world-create game.world (gs-mobile 0 1500 1600 0 400 1002)
+        is Err (_) -> False
+        is Ok (lord) -> when world-create game.world (gs-item lord #0E75 0)
+          is Err (_) -> False
+          is Ok (pack) -> let worn = gsi-register items pack 21 #003C False False
+            in let first = cg-lord-tools items lord
+            in let second = cg-lord-tools items lord
+            in let bare = when world-create game.world (gs-mobile 0 1502 1600 0 400 1002) is Err (_) -> -1 is Ok (other) -> cg-lord-tools items other
+            in first == 2 & second == 0 & bare == 0 & world-child-count game.world pack == 2
+  bvt-pickaxe : Integer -> [Console] Integer
+  bvt-pickaxe (unused) = act
+    n <- bpx-checks 0
+    a <- bvt-check ("Lord British's boot pickaxe: made once in his pack as item 25, none without a pack (code " & show n & ")") (n == 15)
+    b <- bvt-check "Lord British's entry gives the master key and pickaxe once, none without a pack (cg-lord-tools)" (bpx-entry 0)
+    a + b
+  end

@@ -1,0 +1,79 @@
+Chapter: TownGovernmentBundle
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+  GovernmentAnchors = record { people : TfWorld, mind : TmMind,
+    registry : TrRegistry, royal-actor : Integer }
+  tgb-civic-at : Integer = 64
+  tgb-queue-at : Integer = tgb-civic-at + tgc-bytes
+  tgb-money-at : Integer = tgb-queue-at + ac-size
+  tgb-size : GovernmentCheckpoint -> Integer
+  tgb-size (s) = tgb-money-at + tgb-money-bytes s.government
+  tgb-money-bytes : TgWorld -> Integer
+  tgb-money-bytes (g) = when g.currency
+    is None -> es-size g.economy
+    is Just (x) -> euc-size x
+  tgb-write-money : GovernmentCheckpoint, Integer, Integer -> Result Integer Text
+  tgb-write-money (s) (buf) (bytes) = when s.government.currency
+    is None -> let checkpoint = EconomyCheckpoint { world = s.government.economy, tick = s.tick, sequence = s.sequence }
+      in es-encode checkpoint buf bytes
+    is Just (x) -> let checkpoint = CurrencyCheckpoint { currency = x, tick = s.tick, sequence = s.sequence }
+      in euc-encode checkpoint buf bytes
+  tgb-encode : GovernmentCheckpoint, Integer, Integer -> Result Integer Text
+  tgb-encode (s) (buf) (capacity) =
+    let money-bytes = tgb-money-bytes s.government
+    in let size = tgb-money-at + money-bytes
+    in if capacity < size | not (ev-range s.tick ep-limit) | not (ev-range s.sequence ep-limit) then Err "civic bundle destination or metadata invalid"
+    else when tgc-encode s (buf + tgb-civic-at) tgc-bytes
+      is Err (e) -> Err e
+      is Ok (civic) -> when ac-encode s.disputes.admin s.tick s.sequence (buf + tgb-queue-at) ac-size
+        is Err (e) -> Err e
+        is Ok (queue) -> when tgb-write-money s (buf + tgb-money-at) money-bytes
+          is Err (e) -> Err e
+          is Ok (money) ->
+            let h0 = poke-qword buf 0 #31424754
+            in let h1 = poke-qword buf 8 1
+            in let h2 = poke-qword buf 16 size
+            in let h3 = poke-qword buf 24 money-bytes
+            in let h4 = poke-qword buf 32 s.tick
+            in let h5 = poke-qword buf 40 s.sequence
+            in let h6 = poke-qword buf 48 0
+            in let h7 = poke-qword buf 56 0
+            in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+            in Ok size
+  tgb-read-civic : Integer, GovernmentAnchors, EpWorld, Maybe EuCurrency -> Result GovernmentCheckpoint Text
+  tgb-read-civic (buf) (anchors) (economy) (currency) =
+    when ac-decode-record (buf + tgb-queue-at) ac-size (peek-qword buf 32) (peek-qword buf 40) anchors.people anchors.mind
+      is Err (e) -> Err e
+      is Ok (admin) ->
+        let bindings = GovernmentBindings { people = anchors.people, economy = economy, currency = currency,
+          royal-actor = anchors.royal-actor, registry = anchors.registry, admin = admin }
+        in tgc-decode-record (buf + tgb-civic-at) tgc-bytes (peek-qword buf 32) (peek-qword buf 40) bindings
+  tgb-decode : Integer, Integer, GovernmentAnchors -> Result GovernmentCheckpoint Text
+  tgb-decode (buf) (size) (anchors) =
+    if size < tgb-money-at + es-bytes + 8 then Err "civic bundle length invalid"
+    else if peek-qword buf 0 /= #31424754 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size | peek-qword buf 56 /= 0 then Err "civic bundle format invalid"
+    else if peek-qword buf 24 /= size - tgb-money-at | not (ev-range (peek-qword buf 32) ep-limit) | not (ev-range (peek-qword buf 40) ep-limit) then Err "civic bundle metadata invalid"
+    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "civic bundle checksum invalid"
+    else if peek-qword buf tgb-money-at == #31434555 then
+      when es-decode-record (buf + tgb-money-at) (size - tgb-money-at) (peek-qword buf 32) (peek-qword buf 40)
+        is Err (e) -> Err e
+        is Ok (state) -> tgb-read-civic buf anchors state.world None
+    else when euc-decode-record (buf + tgb-money-at) (size - tgb-money-at) (peek-qword buf 32) (peek-qword buf 40)
+      is Err (e) -> Err e
+      is Ok (state) -> tgb-read-civic buf anchors state.currency.world (Just state.currency)
+  tgb-decode-record : Integer, Integer, Integer, Integer, GovernmentAnchors -> Result GovernmentCheckpoint Text
+  tgb-decode-record (buf) (size) (tick) (sequence) (anchors) =
+    if size < tgb-money-at + es-bytes + 8 then Err "civic bundle record length invalid"
+    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "civic bundle record metadata mismatch"
+    else tgb-decode buf size anchors

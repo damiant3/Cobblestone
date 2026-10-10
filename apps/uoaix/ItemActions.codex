@@ -22,7 +22,11 @@ Chapter: ItemActions
     else if obj.container == 0 then ia-near actor obj
     else when world-get world obj.container
       is Err (e) -> False
-      is Ok (parent) -> ia-access world actor parent (left - 1)
+      is Ok (parent) -> if ia-shop-box parent then False else ia-access world actor parent (left - 1)
+ A shop's strong box (0x0E80) or crate (0x0E3C) carries health #5300 plus its vendor's index (ShopStock). The box opens
+ and takes a lockpick by hand; what is in it leaves only by Stealing.
+  ia-shop-box : WorldObject -> Boolean
+  ia-shop-box (obj) = obj.kind == 2 & (obj.graphic == #0E80 | obj.graphic == #0E3C) & obj.health >= #5300 & obj.health < #5310
 
   ia-copy : WorldObject, Integer, Integer, Integer, Integer, Integer, Integer -> WorldObject
   ia-copy (obj) (serial) (amount) (parent) (x) (y) (z) = WorldObject {
@@ -36,8 +40,8 @@ Chapter: ItemActions
   ia-next-item (world) =
     let slot = peek-qword world.buffer 8
     in if slot < 0 then Err "item split exceeds world capacity"
-    else let old = peek-qword world.buffer (16 + slot * 80)
-    in let low = if old == 0 then slot + 1 else bit-and (0 - old) world-serial-mask + world.capacity
+    else let old = peek-qword (wi-object world.buffer slot) 0
+    in let low = wi-next-low old slot
     in if low > world-serial-mask then Err "item split serial generation exhausted"
     else Ok (world-item-bit + low)
 

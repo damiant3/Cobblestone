@@ -21,21 +21,264 @@ Chapter: CompositeReplay
   cr-op (reply) (op) = when reply
     is Err (_) -> False
     is Ok (value) -> list-length value.packets > 0 & list-at (list-at value.packets 0) 0 == op
+  cr-peace : Result GameReply Text -> Boolean
+  cr-peace (reply) = when reply
+    is Err (_) -> False
+    is Ok (value) -> cr-peace-at value.packets 0
+  cr-peace-at : List (List Integer), Integer -> Boolean
+  cr-peace-at (packets) (i) = if i == list-length packets then False
+    else if list-length (list-at packets i) == 5 & list-at (list-at packets i) 0 == #72 & list-at (list-at packets i) 1 == 0 then True
+    else cr-peace-at packets (i + 1)
   cr-has-op : List (List Integer), Integer, Integer -> Boolean
   cr-has-op (packets) (op) (i) = if i == list-length packets then False
     else (list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op) | cr-has-op packets op (i + 1)
   cr-count : List (List Integer), Integer, Integer, Integer -> Integer
   cr-count (packets) (op) (i) (n) = if i == list-length packets then n
     else cr-count packets op (i + 1) (if list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op then n + 1 else n)
+  cr-robe : List (List Integer), Integer -> Boolean
+  cr-robe (packets) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p == 15 & list-at p 0 == #2E & gp-u16 p 5 == #204E & list-at p 8 == 22) | cr-robe packets (i + 1)
+  cr-ghost-no : CompositeOwner, GameShard, GameInput, WalkMap, Text, List Integer -> [Console, Device.Block] Integer
+  cr-ghost-no (store) (game) (input) (map) (name) (packet) = act
+    r <- cs-route store game input map 2593 packet
+    cr-check ("a ghost cannot " & name) (cr-noted r "ghost:denied")
+  end
+  cr-ghost-yes : CompositeOwner, GameShard, GameInput, WalkMap, Text, List Integer -> [Console, Device.Block] Integer
+  cr-ghost-yes (store) (game) (input) (map) (name) (packet) = act
+    r <- cs-route store game input map 2593 packet
+    cr-check ("a ghost can " & name & (when r is Err (e) -> ": " & e is Ok (v) -> if v.note == "ghost:denied" then ": denied" else "")) (is-ok r & not (cr-noted r "ghost:denied"))
+  end
+  cr-speech-only : List (List Integer), Integer, Integer -> Boolean
+  cr-speech-only (packets) (speaker) (i) = if i == list-length packets then True
+    else let p = list-at packets i
+    in (list-length p < 8 | (list-at p 0 /= #1C & list-at p 0 /= #AE) | gp-u32 p 3 == speaker) & cr-speech-only packets speaker (i + 1)
+  cr-ghostly-text : List Integer, Integer -> Boolean
+  cr-ghostly-text (p) (i) = if i >= list-length p then True
+    else let b = list-at p i
+    in (b == 0 | b == 32 | b == 79 | b == 111) & cr-ghostly-text p (i + 1)
+  cr-ghostly : List (List Integer), Integer -> Boolean
+  cr-ghostly (packets) (i) = if i == list-length packets then i > 0
+    else cr-ghostly-text (list-at packets i) 44 & cr-ghostly packets (i + 1)
+  cr-has-byte : List Integer, Integer, Integer -> Boolean
+  cr-has-byte (p) (b) (i) = if i >= list-length p then False else list-at p i == b | cr-has-byte p b (i + 1)
   cr-say : Text -> List Integer
   cr-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
   cr-noted : Result GameReply Text, Text -> Boolean
   cr-noted (r) (note) = when r is Err (_) -> False is Ok (v) -> v.note == note
+  cr-summoned-lot : GvWorld, Integer, Integer, Integer -> Integer
+  cr-summoned-lot (v) (serial) (graphic) (amount) = if serial == 0 then -1
+    else when world-get v.game.world serial
+      is Err (_) -> -1
+      is Ok (item) -> if item.graphic == graphic & item.amount == amount & gv-lot v serial 0 >= 0 then gv-lot v serial 0
+        else cr-summoned-lot v (world-next-sibling v.game.world serial) graphic amount
   cr-child : WorldTable, Integer, Integer, Integer -> Boolean
   cr-child (world) (serial) (graphic) (amount) = if serial == 0 then False
     else when world-get world serial
       is Err (_) -> False
       is Ok (item) -> if item.graphic == graphic & item.amount == amount then True else cr-child world (world-next-sibling world serial) graphic amount
+  cr-packet : Result GameReply Text, Integer -> List Integer
+  cr-packet (r) (i) = when r is Err (_) -> [] is Ok (v) -> if i >= list-length v.packets then [] else list-at v.packets i
+  cr-target : Integer, Integer, Integer, Integer -> List Integer
+  cr-target (context) (serial) (x) (y) = gp-zeros (gp-put16 (gp-put16 (gp-put32 (list-push (gp-put32 [#6C, 0] (#4C420000 + context)) 0) serial) x) y) 4
+  cr-mobile-at : WorldTable, Integer, Integer -> Integer
+  cr-mobile-at (world) (serial) (graphic) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 1 & o.graphic == graphic then serial else cr-mobile-at world (world-tile-next world serial) graphic
+  cr-british : CompositeOwner, WalkMap, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-british (store) (map) (input) (before) = let owner = store.state in let game = owner.checkpoint.game in act
+    me <- input.session.serial
+    hidden <- cp-british map store game input (cr-say "[invisible")
+    a <- cr-check "British turns invisible: hidden flag drawn and monsters blind" (cr-noted hidden "british:invisible" & owner.hidden == me & owner.monsters.unseen == me & list-at (cr-packet hidden 0) 10 == #80)
+    shown <- cp-british map store game input (cr-say "[invisible")
+    b <- cr-check "British turns visible again" (cr-noted shown "british:invisible" & owner.hidden == 0 & owner.monsters.unseen == 0 & list-at (cr-packet shown 0) 10 == 0)
+    count <- world-count game.world
+    summoned <- cp-british map store game input (cr-say "[summon 11")
+    at <- (when world-get game.world me is Err (_) -> 0 is Ok (m) -> cr-mobile-at game.world (world-tile-first game.world (m.x + 1) m.y) #11)
+    c <- cr-check "British summons a creature beside him and it commits" (cr-noted summoned "british:summon" & world-count game.world == count + 1 & at > 0 & store.store.sequence > before)
+    looked <- cp-british map store game input (cr-target 1 at 0 0)
+    d <- cr-check "British inspects the creature" (cr-noted looked "british:inspect" & list-length (cr-packet looked 1) > 0)
+    cancel <- cp-british map store game input (cr-target 1 0 65535 65535)
+    e <- cr-check "a cancelled cursor answers cancelled" (cr-noted cancel "british:cancel")
+    pack <- cp-british map store game input (cr-target 2 (gsi-pack-find game.world me 0) 0 0)
+    self <- cp-british map store game input (cr-target 2 me 0 0)
+    f <- cr-check "move refuses a contained item and a character" (cr-noted pack "british:refused" & cr-noted self "british:refused" & owner.moving == 0)
+    begun <- cp-british map store game input (cr-say "[move")
+    picked <- cp-british map store game input (cr-target 2 at 0 0)
+    g <- cr-check "move picks the creature and asks for a place" (cr-noted begun "british:cursor" & gp-u32 (cr-packet begun 1) 2 == #4C420002 & cr-noted picked "british:cursor" & gp-u32 (cr-packet picked 1) 2 == #4C420003 & list-at (cr-packet picked 1) 1 == 1 & owner.moving == at)
+    sequence <- store.store.sequence
+    there <- (when world-get game.world me is Err (_) -> 0 is Ok (m) -> m.x + 3)
+    row <- (when world-get game.world me is Err (_) -> 0 is Ok (m) -> m.y)
+    placed <- cp-british map store game input (cr-target 3 0 there row)
+    h <- cr-check "move places the creature and it commits" (cr-noted placed "british:move" & owner.moving == 0 & store.store.sequence == sequence + 1 & (when world-get game.world at is Err (_) -> False is Ok (o) -> o.x == there & o.y == row))
+    stale <- cp-british map store game input (cr-target 3 0 there row)
+    j <- cr-check "a place with nothing picked is refused" (cr-noted stale "british:refused")
+    fought <- cr-fight store map input 0
+    slow <- cr-fight store map input 1000
+    k <- cr-skills store map input
+    a + b + c + d + e + f + g + h + j + fought + slow + k
+  end
+  cr-swings : CompositeOwner, GameShard, GameInput, WalkMap, Integer, Integer, Integer -> [Console, Device.Block] Boolean
+  cr-swings (store) (game) (input) (map) (ghoul) (tick) (left) = if left == 0 then act False end
+    else act
+      pulsed <- cs-pulse store game input map 2593 tick
+      hit <- (when pulsed is Ok (Just (r)) -> cr-has-op r.packets #2F 0 is Ok (None) -> False is Err (_) -> False)
+      hurt <- (when world-get game.world ghoul is Err (_) -> True is Ok (m) -> m.health < 30)
+      if hit | hurt then True else cr-swings store game input map ghoul (tick + 20) (left - 1)
+    end
+  cr-fight : CompositeOwner, WalkMap, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-fight (store) (map) (input) (skew) = let owner = store.state in let game = owner.checkpoint.game in act
+    me <- input.session.serial
+    summoned <- cp-british map store game input (cr-say "[summon 1A")
+    ghoul <- (when world-get game.world me is Err (_) -> 0 is Ok (m) -> cr-mobile-at game.world (world-tile-first game.world (m.x + 1) m.y) #1A)
+    skewed <- __record-set owner.combat "tick" (owner.combat.tick + skew)
+    warred <- cs-route store game input map 2593 [114,1,0,50,0]
+    attacked <- cs-route store game input map 2593 (gp-put32 [5] ghoul)
+    active <- game.active
+    idle <- __record-set game "active" 0
+    headless <- cb-swings owner.combat game (gn-input 0) map 0 []
+    back <- __record-set game "active" active
+    swung <- cr-swings store game input map ghoul (max 1000 owner.combat.tick) 40
+    print-line-uni ("FIGHT ghoul=" & show ghoul & " attack=" & (when attacked is Err (e) -> e is Ok (r) -> r.note & " target=" & show (when cb-ensure owner.combat game me is Err (_) -> -1 is Ok (a) -> a.target)) & " swung=" & (if swung then "1" else "0"))
+    peace <- cs-route store game input map 2593 [114,0,0,50,0]
+    removed <- world-delete game.world ghoul
+    cr-check ((if skew > 0 then "with the combat clock " & show skew & " ticks ahead (a slow boot), " else "") & "British attacks a summoned ghoul beside him and, after a headless world-tick swing round, still swings at it within 8 seconds") (ghoul > 0 & is-ok headless & swung)
+  end
+  cr-replied : Result GameReply Text, Integer -> Boolean
+  cr-replied (r) (op) = when r is Err (_) -> False is Ok (v) -> cr-has-op v.packets op 0
+  cr-levels : AsActor, Integer, Integer -> Boolean
+  cr-levels (a) (value) (i) = if i == 46 then True else as-level a i == value & cr-levels a value (i + 1)
+  cr-econ : CompositeGame, Integer, Integer -> Integer
+  cr-econ (owner) (serial) (skill) = let player = gv-player owner.vendor serial 0
+    in if player < 0 then -1 else gs-skill owner.checkpoint.game serial (if skill == 1 then 45 else skill)
+  cr-skills : CompositeOwner, WalkMap, GameInput -> [Console, Device.Block] Integer
+  cr-skills (store) (map) (input) = let owner = store.state in let game = owner.checkpoint.game in act
+    me <- input.session.serial
+    was <- owner.testing
+    off <- __record-set owner "testing" False
+    locked <- cp-british map store game input (cr-say "[skill mining 90")
+    on <- __record-set owner "testing" True
+    mined <- cp-british map store game input (cr-say "[skill mining 90")
+    slot <- gsi-slot game me 0
+    a <- cr-check "[skill refuses outside testing mode; in testing mode Mining 90 reaches the character's skill row, which the session and the economy read, and a 0x3A list" (cr-noted locked "british:refused"
+      & cr-noted mined "british:skill" & cr-replied mined #3A & as-level (list-at owner.active.actors slot) 45 == 900 & cr-econ owner me 1 == 900)
+    all <- cp-british map store game input (cr-say "[skill all 50")
+    b <- cr-check "[skill all 50 sets all 46 skills" (cr-noted all "british:skill" & cr-levels (list-at owner.active.actors slot) 500 0 & cr-econ owner me 1 == 500)
+    wrestled <- cp-british map store game input (cr-say "[skill wres 75.5")
+    fighter <- cb-ensure owner.combat game me
+    c <- cr-check "[skill wres 75.5 reaches Wrestling, the live combat skill" (cr-noted wrestled "british:skill" & as-level (list-at owner.active.actors slot) 43 == 755
+      & (when fighter is Err (_) -> False is Ok (f) -> cb-skill-for game f 0 == 755))
+    vague <- cp-british map store game input (cr-say "[skill a 50")
+    over <- cp-british map store game input (cr-say "[skill mining 100.1")
+    d <- cr-check "[skill refuses an ambiguous name and a value past 100.0" (cr-noted vague "british:refused" & cr-noted over "british:refused" & cr-econ owner me 1 == 500)
+    asked <- cp-british map store game input (cr-say "[skill tactics 60 target")
+    aimed <- cp-british map store game input (cr-target (16 + 27 * 1001 + 600) me 0 0)
+    e <- cr-check "[skill tactics 60 target opens a cursor and sets the picked character's Tactics" (cr-noted asked "british:cursor"
+      & gp-u32 (cr-packet asked 1) 2 == #4C420000 + 16 + 27 * 1001 + 600 & cr-noted aimed "british:skill" & as-level (list-at owner.active.actors slot) 27 == 600)
+    covered <- cp-british map store game input (cr-say "[cover")
+    f <- cr-check "[cover dumps the coverage counts and answers how many slots (0 outside a cover build)" (cr-noted covered "testing:cover" & list-length (cr-packet covered 0) > 0)
+    attr <- cr-attr store map input slot
+    saved <- cs-commit store True
+    g <- cr-check "the world saves after [skill all, a single skill, a targeted set and every [attr (the character record stays a valid creation packet)" (is-ok saved)
+    restored <- __record-set owner "testing" was
+    a + b + c + d + e + f + g + attr
+  end
+ The 0x11 status word at a byte offset (37 hits, 39 maximum, 44 strength, 46 dexterity, 48 intelligence, 50 stamina).
+  cr-status : Result GameReply Text, Integer -> Integer
+  cr-status (r) (at) = when r is Err (_) -> -1 is Ok (v) -> cr-status-in v.packets at 0
+  cr-status-in : List (List Integer), Integer, Integer -> Integer
+  cr-status-in (packets) (at) (i) = if i == list-length packets then -1
+    else let p = list-at packets i in if list-length p == 66 & list-at p 0 == #11 then gp-u16 p at else cr-status-in packets at (i + 1)
+  cr-hits : GameShard, Integer -> Integer
+  cr-hits (game) (serial) = when world-get game.world serial is Err (_) -> -1 is Ok (m) -> m.health
+  cr-heal : GameShard, Integer, Integer -> Integer
+  cr-heal (game) (serial) (hits) = when world-get game.world serial
+    is Err (_) -> -1
+    is Ok (m) -> let h = __record-set m "health" hits in when world-update game.world m is Err (_) -> -1 is Ok (_) -> 0
+  cr-has-text : List (List Integer), List Integer, Integer -> Boolean
+  cr-has-text (packets) (word) (i) = if i == list-length packets then False else cr-in (list-at packets i) word 0 | cr-has-text packets word (i + 1)
+  cr-in : List Integer, List Integer, Integer -> Boolean
+  cr-in (p) (word) (at) = if at + list-length word > list-length p then False else cr-at p word at 0 | cr-in p word (at + 1)
+  cr-at : List Integer, List Integer, Integer, Integer -> Boolean
+  cr-at (p) (word) (at) (i) = if i == list-length word then True else list-at p (at + i) == list-at word i & cr-at p word at (i + 1)
+ [attr on the speaker and by cursor; the stats, hits and stamina it moved are put back for the later boots.
+  cr-attr : CompositeOwner, WalkMap, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-attr (store) (map) (input) (slot) = let owner = store.state in let game = owner.checkpoint.game in act
+    me <- input.session.serial
+    row <- game.characters + slot * 160
+    str0 <- gp-stat row 0
+    dex0 <- gp-stat row 1
+    int0 <- gp-stat row 2
+    hits0 <- cr-hits game me
+    spent0 <- peek-byte row 145
+    off <- __record-set owner "testing" False
+    shut <- cp-british map store game input (cr-say "[attr str 90")
+    on <- __record-set owner "testing" True
+    strong <- cp-british map store game input (cr-say "[attr str 90")
+    fighter <- cb-ensure owner.combat game me
+    a <- cr-check "[attr refuses outside testing mode; [attr str 90 reaches the record, the combat maximum and strength, and a 0x11 status of strength and maximum 90" (cr-noted shut "british:refused" & cr-noted strong "british:attr" & peek-byte row 147 == 90 & gp-stat row 0 == 90 & cr-status strong 44 == 90 & cr-status strong 39 == 90
+      & (when fighter is Err (_) -> False is Ok (f) -> f.maximum == 90 & f.strength == 90))
+    tired <- poke-byte row 145 (min 20 (gp-stat row 1))
+    nimble <- cp-british map store game input (cr-say "[attr dex 7")
+    b <- cr-check "[attr dex 7 caps 7 or more stamina spent at 7, so the status shows dexterity 7 and stamina 0" (cr-noted nimble "british:attr" & gp-stat row 1 == 7
+      & peek-byte row 145 == 7 & cr-status nimble 46 == 7 & cr-status nimble 50 == 0)
+    wise <- cp-british map store game input (cr-say "[attr int 60")
+    c <- cr-check "[attr int 60 reaches the intelligence the skills read and the 0x11 status" (cr-noted wise "british:attr" & cg-as-intelligence owner me == 60 & cr-status wise 48 == 60)
+    healed <- cr-heal game me 30
+    weak <- cp-british map store game input (cr-say "[attr str 25")
+    d <- cr-check "[attr str 25 lowers 30 held hits to 25" (healed == 0 & cr-noted weak "british:attr" & cr-hits game me == 25 & cr-status weak 37 == 25 & cr-status weak 39 == 25)
+    zero <- cp-british map store game input (cr-say "[attr all 0")
+    over <- cp-british map store game input (cr-say "[attr str 101")
+    luck <- cp-british map store game input (cr-say "[attr luck 50")
+    e <- cr-check "[attr refuses a value of 0, a stat past 100 and an unknown stat" (cr-noted zero "british:refused" & cr-noted over "british:refused" & cr-noted luck "british:refused" & gp-stat row 0 == 25)
+    asked <- cp-british map store game input (cr-say "[attr dex 40 target")
+    aimed <- cp-british map store game input (cr-target (cat-base + 256 + 40) me 0 0)
+    f <- cr-check "[attr dex 40 target opens a cursor and sets the picked character's dexterity" (cr-noted asked "british:cursor"
+      & gp-u32 (cr-packet asked 1) 2 == #4C420000 + cat-base + 256 + 40 & cr-noted aimed "british:attr" & gp-stat row 1 == 40)
+    hurt <- cp-british map store game input (cr-say "[attr hits 10")
+    full <- cp-british map store game input (cr-say "[attr hits 99")
+    i <- cr-check "[attr hits 10 sets the hits and the 0x11 status; [attr hits 99 stops at strength 25" (cr-noted hurt "british:attr" & cr-status hurt 37 == 10 & cr-noted full "british:attr" & cr-hits game me == 25 & cr-status full 37 == 25)
+    winded <- cp-british map store game input (cr-say "[attr stam 15")
+    fresh <- cp-british map store game input (cr-say "[attr stam 99")
+    j <- cr-check "[attr stam 15 leaves 25 of dexterity 40 spent; [attr stam 99 stops at dexterity 40" (cr-noted winded "british:attr" & cr-status winded 50 == 15 & cr-noted fresh "british:attr" & peek-byte row 145 == 0 & cr-status fresh 50 == 40)
+    dead <- cp-british map store game input (cr-say "[attr hits 0")
+    huge <- cp-british map store game input (cr-say "[attr stam 101")
+    bare <- cp-british map store game input (cr-say "[attr mana 5")
+    l <- cr-check "[attr refuses hits 0, a pool past 100, and mana on a shard without magery" (cr-noted dead "british:refused" & cr-noted huge "british:refused" & cr-noted bare "british:refused" & cr-hits game me == 25)
+    k <- cr-attr-mana store map input me
+    helped <- cp-british map store game input (cr-say "[help")
+    g <- cr-check "[help lists the British commands, [attr and [skill among them" (cr-noted helped "british:help" & cr-has-text (when helped is Err (_) -> [] is Ok (v) -> v.packets) [91, 97, 116, 116, 114] 0
+      & cr-has-text (when helped is Err (_) -> [] is Ok (v) -> v.packets) [91, 115, 107, 105, 108, 108] 0)
+    back-s <- cp-british map store game input (cr-say ("[attr str " & show str0))
+    back-d <- cp-british map store game input (cr-say ("[attr dex " & show dex0))
+    back-i <- cp-british map store game input (cr-say ("[attr int " & show int0))
+    rested <- poke-byte row 145 spent0
+    rehealed <- cr-heal game me hits0
+    h <- cr-check "[attr puts the stats back for the later boots" (cr-noted back-s "british:attr" & cr-noted back-d "british:attr" & cr-noted back-i "british:attr" & rehealed == 0
+      & gp-stat row 0 == str0 & gp-stat row 1 == dex0 & gp-stat row 2 == int0)
+    a + b + c + d + e + f + g + h + i + j + k + l
+  end
+ The live server attaches magery (CompositeGameServer); the mana arms attach it the same way and detach it after.
+  cr-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  cr-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  cr-attr-mana : CompositeOwner, WalkMap, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-attr-mana (store) (map) (input) (me) = let owner = store.state in let game = owner.checkpoint.game in when cr-decoration map
+    is Err (e) -> cr-check ("[attr mana decoration " & e) False
+    is Ok (decoration) -> act
+      magic <- mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (cr-cover map)
+      attached <- __record-set owner "magic" (Just magic)
+      drained <- cp-british map store game input (cr-say "[attr mana 0")
+      brimming <- cp-british map store game input (cr-say "[attr mana 99")
+      k <- cr-check "[attr mana 0 empties the mana in the 0x11 status; [attr mana 99 stops at intelligence 60" (cr-noted drained "british:attr" & cr-status drained 54 == 0 & cr-noted brimming "british:attr" & cr-status brimming 54 == 60)
+      aimed <- cp-british map store game input (cr-target (cat-base + 6 * 256 + 5) me 0 0)
+      m <- cr-check "[attr mana 5 by cursor sets the picked character's mana to 5" (cr-noted aimed "british:attr" & cr-status aimed 54 == 5)
+      refilled <- cp-british map store game input (cr-say "[attr mana 99")
+      detached <- __record-set owner "magic" None
+      k + m
+    end
   cr-decoration : WalkMap -> Result WdState Text
   cr-decoration (map) = let data = alloc-bytes 240
     in let clear = wd-zero data 0 240
@@ -58,16 +301,34 @@ Chapter: CompositeReplay
   cbw-fixture-count (c) (i) (n) = if i == list-length c.actors then n
     else let a = list-at c.actors i
     in cbw-fixture-count c (i + 1) (if a.serial /= 0 & a.npc & (cbd-name a.name "Sparring partner" 0 | cbd-name a.name "Veteran opponent" 0) then n + 1 else n)
+  cr-farm-in : WorldTable, List (List Integer), Integer -> Integer
+  cr-farm-in (world) (pieces) (i) = if i == list-length pieces then 0
+    else let piece = list-at pieces i
+    in (if cpl-farm-at world (world-tile-first world (list-at piece 1) (list-at piece 2)) (list-at piece 0) then 1 else 0) + cr-farm-in world pieces (i + 1)
+  cr-farm : WorldTable -> Integer
+  cr-farm (world) = cr-farm-in world cpl-farm-furniture 0 + cr-farm-in world cpl-mint-furniture 0 + (if cmr-serial world == 0 then 0 else cr-tree world (cmr-serial world)) + (if cpr-gate-at world (world-tile-first world cpr-royal-gate-x cpr-royal-gate-y) then 1 else 0) + cr-mill world
+ The farmer (UOAIX-55) is a mobile with its backpack and dress: count its whole container tree.
+  cr-farmer : CompositeGame -> Integer
+  cr-farmer (owner) = when owner.farmer is None -> 0 is Just (f) -> if f.serial == 0 then 0 else cr-tree owner.checkpoint.game.world f.serial
+  cr-tree : WorldTable, Integer -> Integer
+  cr-tree (world) (serial) = 1 + cr-kids world (world-first-child world serial)
+  cr-kids : WorldTable, Integer -> Integer
+  cr-kids (world) (serial) = if serial == 0 then 0 else cr-tree world serial + cr-kids world (world-next-sibling world serial)
+  cr-mill : WorldTable -> Integer
+  cr-mill (world) = cr-piece world 0 + cr-piece world 1 + cr-piece world 2
+  cr-piece : WorldTable, Integer -> Integer
+  cr-piece (world) (i) = if cpr-art-at world (world-tile-first world (wks-mill.x - 1 + i) wks-mill.y) (list-at wks-mill-art i) then 1 else 0
   cr-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
   cr-run (store) (map) (specs) = let owner = store.state in act
     input <- gn-input-with specs 1
     mode <- __record-set input "mode" 2
     phase <- __record-set input.session "phase" 1
     entry <- cs-route store owner.checkpoint.game input map 2593 (cr-create 0)
-    a <- cr-check "composite entry shares one backpack" (is-ok entry & owner.vendor.player-count == 1 & world-count owner.checkpoint.game.world == 18)
+    a <- cr-check "composite entry shares one backpack" (is-ok entry & owner.vendor.player-count == 1 & world-count owner.checkpoint.game.world == 23 + cr-farm owner.checkpoint.game.world + cr-farmer owner)
+    peaceful <- cr-check "a login tells the client peace mode" (cr-peace entry)
     pulse <- cs-pulse store owner.checkpoint.game input map 2593 100
-    print-line-uni ("REPLAY objects=" & show (world-count owner.checkpoint.game.world) & " fixtures=" & show (cbw-fixture-count owner.combat 0 0))
-    b <- cr-check "vendor combat and monsters share dressed world without sparring fixtures" (is-ok pulse & world-count owner.checkpoint.game.world == 21 & cbw-fixture-count owner.combat 0 0 == 0 & (list-at owner.monsters.slots 0).serial > 0)
+    print-line-uni ("REPLAY objects=" & show (world-count owner.checkpoint.game.world) & " fixtures=" & show (cbw-fixture-count owner.combat 0 0) & " farm=" & show (cr-farm owner.checkpoint.game.world))
+    b <- cr-check "vendor combat and monsters share dressed world without sparring fixtures" (is-ok pulse & world-count owner.checkpoint.game.world == 26 + cr-farm owner.checkpoint.game.world + cr-farmer owner & cbw-fixture-count owner.combat 0 0 == 0 & (list-at owner.monsters.slots 0).serial > 0)
     safe <- cr-check "monster home excludes new player from hunt radius" (not (gm-near 1420 1698 owner.monsters.x owner.monsters.y owner.monsters.radius))
     old-x <- __record-set owner.monsters "x" 1426
     old-y <- __record-set owner.monsters "y" 1700
@@ -85,9 +346,13 @@ Chapter: CompositeReplay
     f <- cr-check "backpack06 falls through to items" (cr-op pack #24)
     war <- cs-route store owner.checkpoint.game input map 2593 [#72,1,0,50,0]
     g <- cr-check "combat war reply composed" (cr-op war #72)
-    buy-packet <- gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] (list-at owner.vendor.vendors 0).serial) 2) 26) (list-at owner.vendor.lots 0).serial) 1
+    fighter <- list-at owner.combat.actors (world-slot owner.checkpoint.game.world input.session.serial)
+    warred <- fighter.war
+    relog <- cg-peace owner owner.checkpoint.game input (gs-reply [] "relog")
+    relogged <- cr-check "a relogin in war mode starts in peace" (warred & not fighter.war & cr-peace (Ok relog))
+    buy-packet <- gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] (list-at owner.vendor.vendors 0).serial) 2) 26) (ep-lot owner.vendor.currency.world.goods (ep-lot-nth owner.vendor.currency.world.goods 0)).serial) 1
     bought <- cs-route store owner.checkpoint.game input map 2593 buy-packet
-    h <- cr-check "vendor checkout commits currency and split lot together" (is-ok bought & owner.vendor.sale-count == 1 & owner.vendor.lot-count == 2)
+    h <- cr-check "vendor checkout commits currency and split lot together" (is-ok bought & owner.vendor.sale-count == 1 & (ep-lot-count owner.vendor.currency.world.goods) == 2)
     shirt <- peek-qword owner.checkpoint.game.characters 112
     lifted <- cs-route store owner.checkpoint.game input map 2593 (gp-put16 (gp-put32 [7] shirt) 1)
     dropped <- cs-route store owner.checkpoint.game input map 2593 (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] shirt) 20) 20) 0) (list-at owner.vendor.players 0).pack)
@@ -106,6 +371,7 @@ Chapter: CompositeReplay
     early <- cs-timer store (store.last-save + 59 * hpet-ticks-per-second)
     m <- cr-check "timer does not save before sixty seconds" (is-ok early & store.store.sequence == before-walk)
     saved <- cs-timer store (store.last-save + 60 * hpet-ticks-per-second)
+    landed <- cs-flight-drain store
     n <- cr-check "timer commits pending position" (is-ok saved & store.store.sequence == before-walk + 1)
     moved <- cs-route store owner.checkpoint.game input map 2593 [2,2,2]
     quit <- cs-route store owner.checkpoint.game input map 2593 [1,0,0,0,0]
@@ -120,7 +386,65 @@ Chapter: CompositeReplay
     added <- cp-add store owner.checkpoint.game input (cr-say "[add 1BF2 5")
     holder <- gsi-pack-find owner.checkpoint.game.world (list-at owner.vendor.players 0).serial 0
     summoned <- cr-check "British summons an item stack into the backpack and it commits" (cr-noted added "british:add" & cr-child owner.checkpoint.game.world (world-first-child owner.checkpoint.game.world holder) #1BF2 5 & store.store.sequence > before-walk + 3)
-    a + b + safe + migration + door-check + c + d + e + f + g + h + j + bank-check + k + l + m + n + p + q + summoned
+    summon-lot <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #1BF2 5
+    lotted <- cr-check "the summoned ingots are a found economy lot of 5 for British and the census balances (UOAIX-85)" (summon-lot >= 0
+      & (ep-lot owner.vendor.currency.world.goods (max 0 summon-lot)).item == 31 & (ep-lot-amount owner.vendor.currency.world.goods (max 0 summon-lot)) == 5 & euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1)
+    split <- cr-lot-moves store map input holder summon-lot
+    ore-added <- cp-add store owner.checkpoint.game input (cr-say "[add 19B9 3")
+    ore-lot <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #19B9 3
+    staled <- (if ore-lot < 0 then -1 else gsi-register owner.items (ep-lot owner.vendor.currency.world.goods ore-lot).serial 0 0 True False)
+    ore-old <- cr-check "summoned iron ore is a resource lot, here registered non-stackable as a world saved before UOAIX-103 holds it" (cr-noted ore-added "british:add" & ore-lot >= 0 & staled >= 0
+      & not (gsi-meta owner.items (ep-lot owner.vendor.currency.world.goods (max 0 ore-lot)).serial).stackable)
+    named <- cr-named store input holder
+    british <- cr-british store map input before-walk
+    a + peaceful + b + safe + migration + door-check + c + d + e + f + g + relogged + h + j + bank-check + k + l + m + n + p + q + summoned + split + ore-old + named + british
+  end
+  cr-lot-moves : CompositeOwner, WalkMap, GameInput, Integer, Integer -> [Console, Device.Block] Integer
+  cr-lot-moves (store) (map) (input) (holder) (lot) = let owner = store.state in act
+    ingot <- (ep-lot owner.vendor.currency.world.goods (max 0 lot)).serial
+    lots <- (ep-lot-count owner.vendor.currency.world.goods)
+    slot <- gsi-slot owner.checkpoint.game input.session.serial 0
+    ready <- __record-set (list-at owner.items.actors (max 0 slot)) "next-lift" 0
+    lifted <- cs-route store owner.checkpoint.game input map 2593 (gp-put16 (gp-put32 [7] ingot) 2)
+    dropped <- cs-route store owner.checkpoint.game input map 2593 (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] ingot) 30) 30) 0) holder)
+    piece <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #1BF2 2
+    piece-serial <- (ep-lot owner.vendor.currency.world.goods (max 0 piece)).serial
+    split <- cr-check "a part lifted from a lot stack takes its own lot and the stack's lot keeps the rest, so the vendor state still saves (UOAIX-99)" (is-ok lifted & is-ok dropped & lot >= 0 & piece >= 0 & piece-serial /= ingot
+      & (ep-lot-amount owner.vendor.currency.world.goods lot) == 3 & (ep-lot-amount owner.vendor.currency.world.goods piece) == 2 & (ep-lot-count owner.vendor.currency.world.goods) == lots + 1 & gvsc-valid owner.vendor)
+    graded <- if piece < 0 then 0 else poke-qword (ep-row owner.vendor.currency.world.goods piece) 24 500
+    again <- __record-set (list-at owner.items.actors (max 0 slot)) "next-lift" 0
+    relifted <- cs-route store owner.checkpoint.game input map 2593 (gp-put16 (gp-put32 [7] piece-serial) 2)
+    stacked <- cs-route store owner.checkpoint.game input map 2593 (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] piece-serial) 65535) 65535) 0) ingot)
+    merged <- cr-check "stacking a part of another grade back onto the stack folds its lot into the stack's lot at the averaged quality (UOAIX-99, UOAIX-103)" (is-ok relifted & is-ok stacked & gv-lot owner.vendor piece-serial 0 < 0
+      & gv-lot owner.vendor ingot 0 >= 0 & (ep-lot-amount owner.vendor.currency.world.goods (max 0 (gv-lot owner.vendor ingot 0))) == 5
+      & (ep-lot owner.vendor.currency.world.goods (max 0 (gv-lot owner.vendor ingot 0))).quality == 800 & (ep-lot-count owner.vendor.currency.world.goods) == lots & gvsc-valid owner.vendor)
+    split + merged
+  end
+  cr-tile : Integer, Integer, Text -> Integer
+  cr-tile (tiles) (graphic) (name) = let bytes = text-to-unicode-bytes name
+    in cr-poke tiles (it-entry tiles graphic + 17) bytes 0
+  cr-poke : Integer, Integer, List Integer, Integer -> Integer
+  cr-poke (tiles) (at) (bytes) (i) = if i >= list-length bytes then 0 else let p = poke-byte tiles (at + i) (list-at bytes i) in cr-poke tiles at bytes (i + 1)
+  cr-zero : Integer, Integer, Integer -> Integer
+  cr-zero (tiles) (i) (n) = if i == n then tiles else let z = poke-qword tiles (i * 8) 0 in cr-zero tiles (i + 1) n
+  cr-named : CompositeOwner, GameInput, Integer -> [Console, Device.Block] Integer
+  cr-named (store) (input) (holder) = let owner = store.state in act
+    kept <- owner.items.tiles
+    tiles <- cr-zero (alloc-bytes 608256) 0 76032
+    s1 <- cr-tile tiles #0F60 "longsword"
+    s2 <- cr-tile tiles #0F61 "longsword"
+    s3 <- cr-tile tiles #0F5E "broadsword"
+    installed <- __record-set owner.items "tiles" tiles
+    world <- owner.checkpoint.game.world
+    objects <- world-count world
+    long <- cp-add store owner.checkpoint.game input (cr-say "[add LongSword 2")
+    added <- world-count world
+    vague <- cp-add store owner.checkpoint.game input (cr-say "[add sword")
+    unknown <- cp-add store owner.checkpoint.game input (cr-say "[add dragon")
+    after <- world-count world
+    restored <- __record-set owner.items "tiles" kept
+    cr-check "[add by item name summons the first exact art with its count; a partial name lists its matches and an unknown name refuses, adding nothing" (cr-noted long "british:add" & cr-child world (world-first-child world holder) #0F60 2 & added == objects + 1
+      & cr-noted vague "testing:go" & cr-noted unknown "testing:go" & after == added)
   end
   cr-delta : Integer -> [Console] Integer
   cr-delta (unused) = let before = alloc-bytes 128
@@ -141,13 +465,18 @@ Chapter: CompositeReplay
   cr-restored (store) = let owner = store.state
     in let game = owner.checkpoint.game
     in let player = list-at owner.vendor.players 0
+    in let holder = gsi-pack-find game.world player.serial 0
     in act
-      a <- cr-check "restart restores vendor sale and physical lot" (owner.vendor.sale-count == 1 & owner.vendor.lot-count == 2 & world-count game.world == 24)
+      a <- cr-check "restart restores vendor sale and physical lot, the summoned ingot lot (UOAIX-85) and the summoned longswords (UOAIX-69)" (owner.vendor.sale-count == 1 & (ep-lot-count owner.vendor.currency.world.goods) == 4
+        & cr-summoned-lot owner.vendor (world-first-child game.world holder) #1BF2 5 >= 0 & cr-child game.world (world-first-child game.world holder) #0F60 2
+        & world-count game.world == 32 + cr-farm game.world)
       b <- cr-check "restart clears quote and live authority" (player.side == 0 & player.connection == -1 & game.active == 0 & game.pending-key == 0)
       c <- cr-check "restart preserves character position and moved equipment" (peek-qword game.characters 112 == 0 & (when world-get game.world player.serial is Err (_) -> False is Ok (m) -> m.x == 1423))
       d <- cr-check "restart preserves definitions and currency census" (gsi-known owner.items player.pack & euv-valid owner.vendor.currency & owner.combat.scene == 0 & cbw-fixture-count owner.combat 0 0 == 0)
+      ore <- cr-check "a resource pile saved non-stackable is stackable after the restart (UOAIX-103 load repair)" (cr-summoned-lot owner.vendor (world-first-child game.world holder) #19B9 3 >= 0
+        & (gsi-meta owner.items (ep-lot owner.vendor.currency.world.goods (max 0 (cr-summoned-lot owner.vendor (world-first-child game.world holder) #19B9 3))).serial).stackable)
       e <- cr-check "restart preserves monsters shrine and door" ((list-at owner.monsters.slots 0).serial > 0 & owner.resurrection.shrine > 0 & (when owner.decoration is None -> False is Just (state) -> peek-byte state.opened 0 == 1))
-      a + b + c + d + e
+      a + b + c + d + e + ore
     end
   cr-death : CompositeOwner -> [Console, Device.Block] Integer
   cr-death (store) = let owner = store.state
@@ -162,32 +491,40 @@ Chapter: CompositeReplay
       is Err (e) -> cr-check e False
       is Ok (mobile) -> when cb-ensure owner.combat game player.serial
         is Err (e) -> cr-check e False
-        is Ok (actor) -> let banks = cbd-banks owner.items game 0 []
-          in when cb-die owner.combat game input actor mobile
+        is Ok (actor) -> when cb-die owner.combat game input 0 actor mobile
           is Err (e) -> cr-check e False
           is Ok (packets) -> let corpses = gr-corpse-packets owner.items packets 0
-            in when cbd-bank-restore owner.items banks 0
-            is Err (e) -> cr-check e False
-            is Ok (_) -> let registered = cg-items owner 0 in act
+            in let registered = cg-items owner 0 in act
               committed <- cs-commit store False
               delivery <- cr-check "own death omits observer AF and registers corpse from1A" (not (cr-has-op packets #AF 0) & cr-has-op packets #1A 0 & cr-has-op packets #2C 0 & gsi-known owner.items actor.corpse)
               durable <- cr-check "corpse backpack and vendor ledger commit together" (is-ok committed)
               delivery + durable
             end
-  cr-dead-restored : CompositeOwner -> [Console] Integer
-  cr-dead-restored (store) = let owner = store.state
+  cr-dead-restored : CompositeOwner, WalkMap -> [Console] Integer
+  cr-dead-restored (store) (map) = let owner = store.state
     in let game = owner.checkpoint.game
     in let player = list-at owner.vendor.players 0
     in let actor = list-at owner.combat.actors (world-slot game.world player.serial)
     in let count = world-count game.world
     in let input = gn-input 3
-    in let serial = __record-set input.session "serial" player.serial
-    in let entered = cg-entry owner game input (gs-reply [] "ghost reconnect")
-    in cr-check "restart restores ghost corpse inventory and ledger" (actor.corpse > 0 & gsi-known owner.items actor.corpse
+    in let mode = __record-set input "mode" 2
+    in let login = gs-enter game input.session (cb-slot game player.serial 0)
+    in let ghost = when world-get game.world player.serial is Err (_) -> 0 is Ok (m) -> m.graphic
+    in let paper = gsi-handle owner.items game input map 2593 (gp-put32 [6] (bit-or player.serial #80000000))
+    in let left = __record-set game "active" 0
+    in let entered = cg-entry owner game input map (gs-reply [] "ghost reconnect")
+    in act
+      drawn <- cr-check "a ghost logs in as the ghost body, with no living clothes drawn over it" ((ghost == 402 | ghost == 403)
+        & cr-op login 27 & gp-u16 (cr-packet login 0) 9 == ghost & gp-u16 (cr-packet login 1) 5 == ghost & (when login is Err (_) -> True is Ok (r) -> not (cr-has-op r.packets #2E 0)))
+      doll <- cr-check "a ghost's own paperdoll request answers 88" (when paper is Ok (Just (r)) -> cr-has-op r.packets #88 0 is Ok (None) -> False is Err (_) -> False)
+      kept <- cr-check "restart restores ghost corpse inventory and ledger" (actor.corpse > 0 & gsi-known owner.items actor.corpse
       & owner.vendor.sale-count == 1 & euv-valid owner.vendor.currency
       & is-ok entered & world-count game.world == count
       & gmb-bank-find owner.items player.serial 0 > 0
-      & (when world-get game.world player.pack is Err (_) -> False is Ok (pack) -> pack.container == actor.corpse))
+      & world-child-count game.world actor.corpse > 0
+      & (when world-get game.world player.pack is Err (_) -> False is Ok (pack) -> pack.container == player.serial))
+      drawn + doll + kept
+    end
   cr-resurrect : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
   cr-resurrect (store) (map) = let owner = store.state
     in let game = owner.checkpoint.game
@@ -214,10 +551,45 @@ Chapter: CompositeReplay
           ghost <- cr-check "death answer re-enters with fresh views and walk sequence" (cr-op answered 27 & input.connection < 0 & input.session.sequence == 0
             & (when answered is Err (_) -> False is Ok (r) -> cr-count r.packets #78 0 0 >= 1)
             & (when redrawn is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> cr-count r.packets #1A 0 0 >= 2))
+          robe <- world-layer-serial game.world player.serial 22
+          robed <- cr-check "the re-entered ghost wears the death robe and the redraw draws it" (robe > 0
+            & (when world-get game.world robe is Err (_) -> False is Ok (r) -> r.graphic == #204E)
+            & ((when redrawn is Ok (Just (r)) -> cr-robe r.packets 0 is Ok (None) -> False is Err (_) -> False)
+              | (when primed is Ok (Just (r)) -> cr-robe r.packets 0 is Ok (None) -> False is Err (_) -> False)))
+          vendor <- (list-at owner.vendor.vendors 0).serial
+          item <- world-first-child game.world corpse
+          door <- when owner.decoration is None -> -1 is Just (state) -> peek-byte state.opened 0
+          g1 <- cr-ghost-no store game input map "open a door" (gp-put32 [6] (wd-serial-base + 1))
+          g2 <- cr-check "a ghost's door attempt leaves the door as it was" (door >= 0 & (when owner.decoration is None -> False is Just (state) -> peek-byte state.opened 0 == door))
+          g3 <- cr-ghost-no store game input map "use an NPC" (gp-put32 [6] vendor)
+          g4 <- cr-ghost-no store game input map "lift an item" (gp-put16 (gp-put32 [7] item) 1)
+          g5 <- cr-ghost-no store game input map "drop an item" (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] item) 1418) 1699) 0) #FFFFFFFF)
+          g6 <- cr-ghost-no store game input map "equip an item" (gp-put32 (list-push (gp-put32 [#13] item) 1) player.serial)
+          g7 <- cr-ghost-no store game input map "attack" (gp-put32 [5] vendor)
+          g8 <- cr-ghost-no store game input map "use a skill" [#12,0,7,#24,49,55,0]
+          g9 <- cr-ghost-no store game input map "answer a target cursor" (gp-zeros [#6C] 18)
+          g10 <- cr-ghost-no store game input map "buy" (gp-put32 [59,0,8] vendor & [0])
+          g11 <- cr-ghost-no store game input map "sell" (gp-put32 [159,0,9] vendor & [0,0])
+          g12 <- cr-ghost-no store game input map "answer a menu" (gp-zeros [#7D] 12)
+          g13 <- cr-ghost-yes store game input map "single-click an NPC" (gp-put32 [9] vendor)
+          g14 <- cr-ghost-yes store game input map "ask its status" (gp-put32 (list-push (gp-put32 [#34] #EDEDEDED) 4) player.serial)
+          g15 <- cr-ghost-yes store game input map "enter war mode" [114,1,0,50,0]
+          g16 <- cr-ghost-yes store game input map "leave war mode" [114,0,0,50,0]
+          g17 <- cr-ghost-yes store game input map "open its own paperdoll" (gp-put32 [6] (bit-or player.serial #80000000))
+          g18 <- cr-ghost-yes store game input map "walk" [2,0,input.session.sequence]
+          returned <- when world-get game.world player.serial is Err (_) -> Err "ghost gone" is Ok (m) -> world-update game.world (__record-set (__record-set m "x" 1418) "y" 1699)
+          said <- cs-route store game input map 2593 (cr-say "vendor buy")
+          g19 <- cr-check "a ghost speaks: no NPC answers, others hear o and O, and the ghost's own copy keeps its words" (when said
+            is Err (_) -> False
+            is Ok (r) -> r.note /= "ghost:denied" & cr-speech-only r.packets player.serial 0 & cr-has-op r.packets #1C 0
+              & cr-ghostly (ce-ghostly (ce-speech r.packets player.serial 0 []) 0 []) 0 & cr-has-byte (list-at (ce-speech r.packets player.serial 0 []) 0) 118 44)
+          loot <- world-child-count game.world corpse
           reply <- cs-route store game input map 2593 (gp-put32 [6] owner.resurrection.shrine)
-          cr-check "ankh commits life and new pack without reclaiming corpse loot" (is-ok reply & player.pack /= old-pack
+          raised <- cr-check "ankh commits life, keeps the ghost's pack and robe and leaves the corpse loot in the corpse" (is-ok reply & player.pack == old-pack & loot > 0
             & (when world-get game.world player.serial is Err (_) -> False is Ok (m) -> m.health == 3 & m.graphic == 400)
-            & (when world-get game.world old-pack is Err (_) -> False is Ok (pack) -> pack.container == corpse))
+            & (when world-get game.world old-pack is Err (_) -> False is Ok (pack) -> pack.container == player.serial)
+            & world-child-count game.world corpse == loot & robe > 0 & world-layer-serial game.world player.serial 22 == robe)
+          ghost + robed + raised + g1 + g2 + g3 + g4 + g5 + g6 + g7 + g8 + g9 + g10 + g11 + g12 + g13 + g14 + g15 + g16 + g17 + g18 + g19
         end
   cr-life-restored : CompositeOwner -> [Console] Integer
   cr-life-restored (store) = let owner = store.state
@@ -255,7 +627,7 @@ Chapter: CompositeReplay
             is Err (e) -> cr-check e False
             is Ok (mobile) -> if mobile.health == 3 then cr-life-restored owner
              else if mobile.health == 0 then act
-              before <- cr-dead-restored owner
+              before <- cr-dead-restored owner map
               raised <- cr-resurrect owner map
               before + raised
              end else act

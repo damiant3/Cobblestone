@@ -16,16 +16,60 @@ Chapter: WorldSnapshot
   ws-copy : Integer, Integer, Integer, Integer -> Integer
   ws-copy (src) (dst) (bytes) (i) =
     if i >= bytes then 0
+    else if bytes - i >= 8 & (dst <= src | dst >= src + bytes) then let copied = poke-qword dst i (peek-qword src i) in ws-copy src dst bytes (i + 8)
     else let copied = poke-byte dst i (peek-byte src i)
     in ws-copy src dst bytes (i + 1)
 
+ FNV-1a over the bytes in memory order; eight at a time from one qword read, low byte first (little-endian), the
+ same digest as one at a time.
+  ws-hash-word : Integer, Integer, Integer -> Integer
+  ws-hash-word (q) (k) (hash) = if k == 8 then hash
+    else ws-hash-word q (k + 1) (bit-and ((bit-xor hash (bit-and (bit-shr q (k * 8)) 255)) * 16777619) 4294967295)
   ws-hash : Integer, Integer, Integer, Integer -> Integer
   ws-hash (buf) (size) (i) (hash) =
     if i >= size then hash
     else if i == 48 then ws-hash buf size 56 hash
+    else if size - i >= 8 & (i >= 56 | i + 8 <= 48) then ws-hash buf size (i + 8) (ws-hash-word (peek-qword buf i) 0 hash)
     else let mixed = bit-xor hash (peek-byte buf i)
     in ws-hash buf size (i + 1) (bit-and (mixed * 16777619) 4294967295)
 
+ A world's image is its 16-byte header and then its rows in slot order: the layout UWS1 saves, and what a whole-table
+ copy, comparison or hash reads.
+  ws-image-bytes : Integer -> Integer
+  ws-image-bytes (capacity) = 16 + capacity * 80
+  ws-image-write : WorldTable, Integer -> Integer
+  ws-image-write (world) (out) = let header = ws-copy world.buffer out 16 0 in ws-rows-out world out 0
+  ws-rows-out : WorldTable, Integer, Integer -> Integer
+  ws-rows-out (world) (out) (slot) = if slot >= world.capacity then 0
+    else let copied = ws-copy (wi-object world.buffer slot) (out + 16 + slot * 80) 80 0 in ws-rows-out world out (slot + 1)
+  ws-image-restore : WorldTable, Integer -> Integer
+  ws-image-restore (world) (image) = let header = ws-copy image world.buffer 16 0 in ws-rows-in world image 0
+  ws-rows-in : WorldTable, Integer, Integer -> Integer
+  ws-rows-in (world) (image) (slot) = if slot >= world.capacity then 0
+    else let copied = ws-copy (image + 16 + slot * 80) (wi-object world.buffer slot) 80 0 in ws-rows-in world image (slot + 1)
+  ws-same : Integer, Integer, Integer, Integer -> Boolean
+  ws-same (a) (b) (bytes) (i) = if i >= bytes then True else if peek-byte a i /= peek-byte b i then False else ws-same a b bytes (i + 1)
+  ws-image-equal : WorldTable, Integer -> Boolean
+  ws-image-equal (world) (image) = ws-same world.buffer image 16 0 & ws-rows-equal world image 0
+  ws-rows-equal : WorldTable, Integer, Integer -> Boolean
+  ws-rows-equal (world) (image) (slot) = if slot >= world.capacity then True
+    else if not (ws-same (wi-object world.buffer slot) (image + 16 + slot * 80) 80 0) then False else ws-rows-equal world image (slot + 1)
+  ws-world-equal : WorldTable, WorldTable -> Boolean
+  ws-world-equal (a) (b) = a.capacity == b.capacity & ws-same a.buffer b.buffer 16 0 & ws-pair-rows a b 0
+  ws-pair-rows : WorldTable, WorldTable, Integer -> Boolean
+  ws-pair-rows (a) (b) (slot) = if slot >= a.capacity then True
+    else if not (ws-same (wi-object a.buffer slot) (wi-object b.buffer slot) 80 0) then False else ws-pair-rows a b (slot + 1)
+  ws-pair-copy : WorldTable, WorldTable, Integer -> Integer
+  ws-pair-copy (from) (to) (slot) = let header = if slot == 0 then ws-copy from.buffer to.buffer 16 0 else 0
+    in if slot >= from.capacity then 0
+    else let copied = ws-copy (wi-object from.buffer slot) (wi-object to.buffer slot) 80 0 in ws-pair-copy from to (slot + 1)
+ The image's FNV hash; the scratch image is dropped at the caller's heap level.
+  ws-image-hash : WorldTable -> Integer
+  ws-image-hash (world) = let mark = __heap-save
+    in let image = alloc-bytes (ws-image-bytes world.capacity)
+    in let written = ws-image-write world image
+    in let hash = ws-hash image (ws-image-bytes world.capacity) 0 2166136261
+    in let restored = __heap-restore mark in hash
   ws-encode : WorldCheckpoint, Integer, Integer -> Result Integer Text
   ws-encode (checkpoint) (out) (capacity) =
     let world = checkpoint.world
@@ -41,18 +85,18 @@ Chapter: WorldSnapshot
     in let f = poke-qword out 40 (size - 64)
     in let g = poke-qword out 48 0
     in let h = poke-qword out 56 0
-    in let copied = ws-copy world.buffer (out + 64) (size - 64) 0
+    in let copied = ws-image-write world (out + 64)
     in let checksum = poke-qword out 48 (ws-hash out size 0 2166136261)
     in Ok size
 
   ws-slot-valid : WorldTable, Integer -> Boolean
   ws-slot-valid (world) (slot) =
-    let serial = peek-qword world.buffer (16 + slot * 80)
+    let serial = peek-qword (wi-object world.buffer slot) 0
     in if serial == 0 then True
     else if serial < -2147483647 | serial > 2147483647 then False
     else let low = bit-and (if serial < 0 then 0 - serial else serial) world-serial-mask
     in if low == 0 then False
-    else if int-mod (low - 1) world.capacity /= slot then False
+    else if wi-low-slot low /= slot then False
     else if serial < 0 then True
     else let obj = world-read-slot world slot
     in world-fields-valid obj
@@ -64,7 +108,7 @@ Chapter: WorldSnapshot
     if slot >= world.capacity then count
     else let mark = __heap-save
     in let valid = ws-slot-valid world slot
-    in let active = if peek-qword world.buffer (16 + slot * 80) > 0 then 1 else 0
+    in let active = if peek-qword (wi-object world.buffer slot) 0 > 0 then 1 else 0
     in let restored = __heap-restore mark
     in if not valid then -1 else ws-active-count world (slot + 1) (count + active)
 
@@ -72,15 +116,23 @@ Chapter: WorldSnapshot
   ws-free-count (world) (slot) (count) =
     if slot == -1 then count
     else if slot < 0 | slot >= world.capacity | count >= world.capacity then -1
-    else if peek-qword world.buffer (16 + slot * 80) > 0 then -1
-    else ws-free-count world (peek-qword world.buffer (24 + slot * 80)) (count + 1)
+    else if peek-qword (wi-object world.buffer slot) 0 > 0 | wi-retired (peek-qword (wi-object world.buffer slot) 0) slot then -1
+    else ws-free-count world (peek-qword (wi-object world.buffer slot) 8) (count + 1)
 
   ws-table-valid : WorldTable -> Boolean
   ws-table-valid (world) =
     let count = world-count world
     in if count < 0 | count > world.capacity then False
     else if ws-active-count world 0 0 /= count then False
-    else ws-free-count world (peek-qword world.buffer 8) 0 == world.capacity - count
+    else ws-free-count world (peek-qword world.buffer 8) 0 == world.capacity - count - ws-retired-count world 0 0
+ A world is short of slots when fewer than a tenth of its capacity are neither live nor retired.
+  ws-slots-low : WorldTable -> Boolean
+  ws-slots-low (world) = (world.capacity - world-count world - ws-retired-count world 0 0) * 10 < world.capacity
+  ws-slots-text : WorldTable -> Text
+  ws-slots-text (world) = "live=" & show (world-count world) & " retired=" & show (ws-retired-count world 0 0) & " capacity=" & show world.capacity
+  ws-retired-count : WorldTable, Integer, Integer -> Integer
+  ws-retired-count (world) (slot) (count) = if slot >= world.capacity then count
+    else ws-retired-count world (slot + 1) (if wi-retired (peek-qword (wi-object world.buffer slot) 0) slot then count + 1 else count)
 
   ws-decode : Integer, Integer -> Result WorldCheckpoint Text
   ws-decode (buf) (size) =
@@ -91,12 +143,11 @@ Chapter: WorldSnapshot
     else if size /= ws-size capacity | peek-qword buf 40 /= size - 64 then Err "checkpoint length invalid"
     else if peek-qword buf 24 < 0 | peek-qword buf 32 < 0 | peek-qword buf 56 /= 0 then Err "checkpoint metadata invalid"
     else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "checkpoint checksum invalid"
-    else let view = WorldTable { buffer = buf + 64, capacity = capacity, index = 0 }
-    in if not (ws-table-valid view) then Err "checkpoint object or free-list invariant invalid"
-    else let memory = alloc-bytes (size - 64)
-    in let copied = ws-copy (buf + 64) memory (size - 64) 0
-    in let world = WorldTable { buffer = memory, capacity = capacity, index = 0 }
-    in if not (world-reindex world) then Err "checkpoint index rebuild failed"
-    else Ok (WorldCheckpoint { world = world, tick = peek-qword buf 24, sequence = peek-qword buf 32 })
+    else when world-new capacity
+      is Err (e) -> Err e
+      is Ok (world) -> let restored = ws-image-restore world (buf + 64)
+        in if not (ws-table-valid world) then Err "checkpoint object or free-list invariant invalid"
+        else if not (world-reindex world) then Err "checkpoint index rebuild failed"
+        else Ok (WorldCheckpoint { world = world, tick = peek-qword buf 24, sequence = peek-qword buf 32 })
 
 Page 1

@@ -7,8 +7,11 @@ Chapter: TownNetworkLive
     goal : Integer, state : TnState, proposal : EaProposal, serial : Integer, prepared : Integer,
     next : Integer, think-at : Integer, travel : Integer, thoughts : Integer, result : Integer,
     hours : List Integer, town : Integer, at : Integer, total : Integer }
+  TnvWorker = record { actor : Integer, item : Integer, serial : Integer, state : TnState, think-at : Integer, thoughts : Integer }
   TownNetworkLive = record { actions : GameLiveActions, model : TnModel,
-    culture : TnlCulture, agents : List TnvAgent, cursor : Integer, model-id : Integer }
+    culture : TnlCulture, agents : List TnvAgent, cursor : Integer, model-id : Integer,
+    guards : Integer, guard-person : Integer, guard-hunger : Integer, guard-coin : Integer, guard-logged : Integer,
+    workers : List TnvWorker, people : List TnState, people-at : List Integer, people-cursor : Integer, people-bytes : Integer, raid-sight : (Integer -> Boolean) }
   tnv-hash : List Integer, Integer, Integer -> Integer
   tnv-hash (xs) (i) (hash) = if i == list-length xs then hash
     else tnv-hash xs (i + 1) (bit-and ((bit-xor hash (bit-and (list-at xs i) #FFFFFFFF)) * 16777619) #FFFFFFFF)
@@ -36,7 +39,8 @@ Chapter: TownNetworkLive
           let culture = tnl-culture t.people
           in let neutral = tnl-town culture True 1 0
           in Ok (TownNetworkLive { actions = actions, model = model, culture = culture,
-            agents = tnv-agents t 0 (__list-with-capacity 3), cursor = 0, model-id = tnv-model-id model })
+            agents = tnv-agents t 0 (__list-with-capacity 3), cursor = 0, model-id = tnv-model-id model,
+            guards = 0, guard-person = 0, guard-hunger = 0, guard-coin = 0, guard-logged = 0, workers = [], people = [], people-at = [], people-cursor = 0, people-bytes = 0, raid-sight = tnv-unseen })
   tnv-culture-value : TownNetworkLive, TnvAgent, Integer, Integer -> Integer
   tnv-culture-value (n) (r) (i) (sum) = if i == 4 then
       if r.total == 0 then list-at n.culture.trade (r.town - 1) else sum / r.total
@@ -56,20 +60,39 @@ Chapter: TownNetworkLive
     in let total = __record-set r "total" (r.total + elapsed)
     in let sampled = __record-set r "at" w.hour
     in let frame = tnf-frame w r.actor r.item r.role goal 1 (tnv-culture-value n r 0 0) r.state.inputs 0
-    in if frame /= 0 then frame else tn-input r.state 2 (tn-clip (gla-funds g.town.vendors.currency r.actor * 10 / g.town.vendors.currency.copper-rate) -1000 1000)
+    in if frame /= 0 then frame
+    else let funded = tn-input r.state 2 (tn-clip (gla-funds g.town.vendors.currency r.actor * 10 / g.town.vendors.currency.copper-rate) -1000 1000)
+    in let offer = tnv-offer g r.actor 2 goal 0 0 0
+    in let price = if offer == 0 then -1 else ep-price-gold w (list-at g.book.offers (offer - 1)).owner goal
+    in let priced = tn-input r.state 7 (if price < 0 then 1000 else tn-clip (price * 5) 0 1000)
+    in if n.raid-sight (tf-person g.town.people r.person).world-serial then tn-input r.state 3 0 else funded
+  tnv-unseen : Integer -> Boolean
+  tnv-unseen (serial) = False
+  tnv-feel : TownNetworkLive, Integer -> Integer
+  tnv-feel (n) (i) = if i == list-length n.agents | i == n.actions.town.count then 0
+    else let s = (list-at n.agents i).state
+    in let t = n.actions.town
+    in let a = list-set-at t.feel (i * 3) (tn-opinion s 0)
+    in let b = list-set-at t.feel (i * 3 + 1) (tn-opinion s 1)
+    in let c = list-set-at t.feel (i * 3 + 2) (tn-alarm s)
+    in tnv-feel n (i + 1)
   tnv-infer : TownNetworkLive, TnvAgent -> Integer
   tnv-infer (n) (r) = if not (ea-room n.actions.book 10) | r.thoughts == ep-limit then -14
     else if tnv-frame n r /= 0 then -16
-    else let count = tn-step n.model r.state
+    else let stepped = tn-step n.model r.state
+    in let count = if tnv-guard n r then 1 else stepped
     in let thought = __record-set r "thoughts" (r.thoughts + 1)
     in let next = __record-set r "think-at" (n.actions.town.now + 900)
     in let prepared = __record-set r "prepared" 0
     in let affect = gla-affect n.actions r.person r.actor (tn-happiness r.state) (tn-alarm r.state)
+    in let felt = tnv-feel n 0
     in if affect /= 0 then affect else count
   tnv-lot : GameLiveActions, Integer, Integer, Integer, Integer -> Integer
-  tnv-lot (g) (actor) (owner) (item) (i) = if i == g.town.vendors.lot-count then -1
-    else let l = list-at g.town.vendors.lots i
-    in if l.item == item & gla-lot-valid g i actor owner then i else tnv-lot g actor owner item (i + 1)
+  tnv-lot (g) (actor) (owner) (item) (unused) = tnv-lot-from g actor owner item (ep-lot-first g.town.vendors.currency.world.goods actor)
+  tnv-lot-from : GameLiveActions, Integer, Integer, Integer, Integer -> Integer
+  tnv-lot-from (g) (actor) (owner) (item) (serial) = if serial == 0 then -1
+    else if ep-lot-item g.town.vendors.currency.world.goods serial == item & gla-lot-valid g serial actor owner then serial
+    else tnv-lot-from g actor owner item (ep-lot-next g.town.vendors.currency.world.goods serial)
   tnv-offer : GameLiveActions, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   tnv-offer (g) (actor) (kind) (item) (i) (best) (price) = if i == g.book.offer-count then best
     else let o = list-at g.book.offers i
@@ -88,16 +111,21 @@ Chapter: TownNetworkLive
     in let improved = quoted > 0 & admitted & backed & (best == 0 | (if kind == 2 then quoted < price else quoted > price))
     in tnv-offer g actor kind item (i + 1) (if improved then i + 1 else best) (if improved then quoted else price)
   tnv-sale-lot : GameLiveActions, TnvAgent, Boolean, Integer -> Integer
-  tnv-sale-lot (g) (r) (preferred) (i) = if i == g.town.vendors.lot-count then -1
-    else let l = list-at g.town.vendors.lots i
+  tnv-sale-lot (g) (r) (preferred) (unused) = tnv-sale-from g r preferred (ep-lot-first g.town.vendors.currency.world.goods r.actor)
+  tnv-sale-from : GameLiveActions, TnvAgent, Boolean, Integer -> Integer
+  tnv-sale-from (g) (r) (preferred) (serial) = if serial == 0 then -1
+    else let l = ep-lot g.town.vendors.currency.world.goods serial
+    in let next = ep-lot-next g.town.vendors.currency.world.goods serial
     in let owner = (tf-person g.town.people r.person).world-serial
-    in if (if preferred then l.item /= r.item else ep-food l.item) | not (gla-lot-valid g i r.actor owner) then tnv-sale-lot g r preferred (i + 1)
-    else if tnv-offer g r.actor 3 l.item 0 0 0 > 0 then i else tnv-sale-lot g r preferred (i + 1)
+    in if (if preferred then l.item /= r.item else ep-food l.item) | not (gla-lot-valid g serial r.actor owner) then tnv-sale-from g r preferred next
+    else if tnv-offer g r.actor 3 l.item 0 0 0 > 0 then serial else tnv-sale-from g r preferred next
   tnv-food-lot : GameLiveActions, TnvAgent, Integer -> Integer
-  tnv-food-lot (g) (r) (i) = if i == g.town.vendors.lot-count then -1
-    else let l = list-at g.town.vendors.lots i
-    in let owner = (tf-person g.town.people r.person).world-serial
-    in if ep-food l.item & gla-lot-valid g i r.actor owner then i else tnv-food-lot g r (i + 1)
+  tnv-food-lot (g) (r) (unused) = tnv-food-from g r (ep-lot-first g.town.vendors.currency.world.goods r.actor)
+  tnv-food-from : GameLiveActions, TnvAgent, Integer -> Integer
+  tnv-food-from (g) (r) (serial) = if serial == 0 then -1
+    else let owner = (tf-person g.town.people r.person).world-serial
+    in if ep-food (ep-lot-item g.town.vendors.currency.world.goods serial) & gla-lot-valid g serial r.actor owner then serial
+    else tnv-food-from g r (ep-lot-next g.town.vendors.currency.world.goods serial)
   tnv-clear : TnvAgent, Integer -> Integer
   tnv-clear (r) (kind) = let p = r.proposal
     in let a = __record-set p "actor" r.actor
@@ -117,7 +145,7 @@ Chapter: TownNetworkLive
     in let v = g.town.vendors
     in let preferred = if kind == 3 then tnv-sale-lot g r True 0 else -1
     in let lot = if kind == 2 then -1 else if preferred >= 0 then preferred else tnv-sale-lot g r False 0
-    in let item = if kind == 2 then r.goal else if lot < 0 then r.item else (list-at v.lots lot).item
+    in let item = if kind == 2 then r.goal else if lot < 0 then r.item else (ep-lot v.currency.world.goods lot).item
     in let offer = tnv-offer g r.actor kind item 0 0 0
     in if offer == 0 then 0
     else let o = list-at g.book.offers (offer - 1)
@@ -129,14 +157,14 @@ Chapter: TownNetworkLive
     in let c = __record-set r.proposal "quantity" 1
     in let d = __record-set r.proposal "offer" offer
     in let e = __record-set r.proposal "limit" (gla-price g kind offer)
-    in let serial = __record-set r "serial" (list-at v.lots source).serial in 0
+    in let serial = __record-set r "serial" (ep-lot v.currency.world.goods source).serial in 0
   tnv-resolve : TownNetworkLive, TnvAgent, Integer -> Integer
   tnv-resolve (n) (r) (kind) = let cleared = tnv-clear r kind
     in if kind == 2 | kind == 3 then tnv-resolve-trade n r kind
     else if kind /= 4 then 0
     else let lot = tnv-food-lot n.actions r 0
     in if lot < 0 then 0
-    else let source = list-at n.actions.town.vendors.lots lot
+    else let source = ep-lot n.actions.town.vendors.currency.world.goods lot
     in let item = __record-set r.proposal "item" source.item
     in let amount = __record-set r.proposal "quantity" 1
     in let serial = __record-set r "serial" source.serial in 0
@@ -147,6 +175,21 @@ Chapter: TownNetworkLive
     in let reset = tl-reset-path route
     in let ready = __record-set route "next-step" n.actions.town.now
     in ea-log n.actions.book r.actor kind r.proposal -18 0
+  tnv-top : List Integer, Integer, Integer -> Integer
+  tnv-top (outputs) (i) (best) = if i == tn-action-count then best else tnv-top outputs (i + 1) (max best (list-at outputs i))
+  tnv-guard : TownNetworkLive, TnvAgent -> Boolean
+  tnv-guard (n) (r) = let g = n.actions
+    in let a = ep-actor g.book.world r.actor
+    in if a.hunger < 30 | tnf-food-count a > 0 | tnv-offer g r.actor 2 34 0 0 0 <= 0 then False
+    else if r.state.head < r.state.count & list-at r.state.queue r.state.head == 1 then False
+    else let raised = list-set-at r.state.outputs 1 (max 1 (tnv-top r.state.outputs 0 0))
+    in let emptied = __record-set r.state "count" 0
+    in let start = __record-set r.state "head" 0
+    in let ordered = tn-order r.state 0
+    in let counted = __record-set n "guards" (n.guards + 1)
+    in let who = __record-set n "guard-person" r.person
+    in let hungry = __record-set n "guard-hunger" a.hunger
+    in let coin = __record-set n "guard-coin" (gla-funds g.town.vendors.currency r.actor) in True
   tnv-act : TownNetworkLive, TnvAgent, WalkMap, Maybe WdState -> Integer
   tnv-act (n) (r) (map) (doors) = let s = r.state
     in let now = n.actions.town.now
@@ -171,12 +214,63 @@ Chapter: TownNetworkLive
   tnv-round (n) (map) (doors) (budget) (seen) (done) = if seen == list-length n.agents | done == budget then done
     else let r = list-at n.agents n.cursor
     in let cursor = __record-set n "cursor" (int-mod (n.cursor + 1) (list-length n.agents))
-    in if r.next > n.actions.town.now then tnv-round n map doors budget (seen + 1) done
+    in if r.next > n.actions.town.now | (tf-person n.actions.town.people r.person).alive == 0 then tnv-round n map doors budget (seen + 1) done
     else let inferred = if r.state.head == r.state.count then tnv-infer n r else 0
     in if inferred == -14 then tnv-round n map doors budget (seen + 1) done
     else if inferred < 0 then inferred
     else let result = tnv-act n r map doors
     in if result < 0 then result else tnv-round n map doors budget (seen + 1) (done + 1)
+  tnv-worker-role : Integer = 2
+  tnv-worker-think : TownNetworkLive, TnvWorker -> Integer
+  tnv-worker-think (n) (k) = let g = n.actions
+    in if g.town.now < k.think-at | not (eu-ready g.town.vendors.currency) then 0
+    else if tnf-frame g.book.world k.actor k.item tnv-worker-role 0 1 0 k.state.inputs 0 /= 0 then 0
+    else let funds = tn-input k.state 2 (tn-clip (gla-funds g.town.vendors.currency k.actor * 10 / g.town.vendors.currency.copper-rate) -1000 1000)
+    in let raided = if n.raid-sight k.serial then tn-input k.state 3 0 else 0
+    in let stepped = tn-step n.model k.state
+    in let next = __record-set k "think-at" (g.town.now + 900)
+    in let thought = __record-set k "thoughts" (k.thoughts + 1) in 1
+  tnv-workers-think : TownNetworkLive, Integer, Integer -> Integer
+  tnv-workers-think (n) (i) (done) = if i >= list-length n.workers then done
+    else tnv-workers-think n (i + 1) (done + tnv-worker-think n (list-at n.workers i))
+  tnv-person-frame : Integer, TfPerson, TnState -> Integer
+  tnv-person-frame (hour) (p) (s) = let h = int-mod hour 24
+    in let cleared = tnf-zero s.inputs 0 0
+    in let a0 = tnf-set s.inputs 0 0 (p.hunger * 10)
+    in let a2 = tnf-set s.inputs 0 2 (p.coin * 10)
+    in let a3 = tnf-set s.inputs 0 3 1000
+    in let a4 = tnf-set s.inputs 0 4 (p.bread * 1000)
+    in let a6 = tnf-set s.inputs 0 6 (p.goods * 250)
+    in let a21 = tnf-set s.inputs 0 21 (if h >= 8 & h <= 17 then 1000 else 0)
+    in let a22 = tnf-set s.inputs 0 22 (if h == 18 then 1000 else 0)
+    in let a23 = tnf-set s.inputs 0 23 (if h == 19 then 1000 else 0)
+    in let a29 = tnf-set s.inputs 0 29 (if p.goods < 4 then 1000 else 0) in 0
+  tnv-states : Integer, List TnState -> List TnState
+  tnv-states (left) (xs) = if left == 0 then xs else tnv-states (left - 1) (list-push xs (tn-new 0))
+  tnv-bind-people : TownNetworkLive -> Integer
+  tnv-bind-people (n) = let count = list-length n.actions.town.people.people
+    in if list-length n.people == count then 0
+    else let before = __heap-save
+    in let states = tnv-states count (__list-with-capacity count)
+    in let after = __heap-save
+    in let a = __record-set n "people" states
+    in let b = __record-set n "people-at" (tn-zeros count)
+    in let c = __record-set n "people-bytes" ((after - before) / count) in count
+  tnv-agent-person : List TnvAgent, Integer, Integer -> Boolean
+  tnv-agent-person (xs) (person) (i) = if i >= list-length xs then False else (list-at xs i).person == person | tnv-agent-person xs person (i + 1)
+  tnv-people-scan : Integer = 16
+  tnv-people-think : TownNetworkLive, Integer, Integer -> Integer
+  tnv-people-think (n) (left) (done) = let count = min (list-length n.people) n.actions.town.people.used
+    in if left == 0 | count == 0 then done
+    else let i = int-mod n.people-cursor count
+    in let moved = __record-set n "people-cursor" (i + 1)
+    in let p = list-at n.actions.town.people.people i
+    in if p.alive == 0 | list-at n.people-at i > n.actions.town.now | tnv-agent-person n.agents (i + 1) 0 then tnv-people-think n (left - 1) done
+    else let framed = tnv-person-frame n.actions.book.world.hour p (list-at n.people i)
+    in let raided = if n.raid-sight p.world-serial then tn-input (list-at n.people i) 3 0 else 0
+    in let stepped = tn-step n.model (list-at n.people i)
+    in let next = list-set-at n.people-at i (n.actions.town.now + 900)
+    in tnv-people-think n (left - 1) (done + 1)
   tnv-advance : TownNetworkLive, WalkMap, Maybe WdState, Integer, Integer, Integer -> Result GameReply Text
   tnv-advance (n) (map) (doors) (seconds) (decisions) (steps) =
     let t = n.actions.town
@@ -189,7 +283,9 @@ Chapter: TownNetworkLive
       in world-touch t.vendors.game.world
     in let count = tnv-round n map doors decisions 0 0
     in if count < 0 then Err ("live network refusal=" & show count)
-    else when tl-advance t map doors seconds steps
+    else let minds = tnv-workers-think n 0 0
+    in let folk = tnv-people-think n tnv-people-scan 0
+    in when tl-advance t map doors seconds steps
       is Err (e) -> Err e
       is Ok (reply) -> Ok (__record-set reply "note" ("town network decisions=" & show count))
 

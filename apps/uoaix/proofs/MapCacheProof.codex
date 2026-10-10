@@ -2,6 +2,8 @@ Chapter: MapCacheProof
   cites Uoaix chapter MapCache
   cites Kernel chapter Hpet
   cites Uoaix chapter DecorationCodec
+  cites Uoaix chapter MiningTiles
+  cites Uoaix chapter WorldFlora
 
   mcp-overlay : MapCacheState -> [Console, Device.Block] Integer
   mcp-overlay (cache) = act
@@ -35,6 +37,48 @@ Chapter: MapCacheProof
         end
   end
 
+  mcp-flora-sent : WfState, Integer, Integer, Integer, Integer -> Integer
+  mcp-flora-sent (s) (x) (y) (total) (left) = if left == 0 then total
+    else let n = list-length (wf-view s 1 x y) in if n == 0 then total else mcp-flora-sent s x y (total + n) (left - 1)
+  mcp-flora : MapCacheState -> [Console, Device.Block] Integer
+  mcp-flora (cache) = act
+    started <- hpet-ticks
+    loaded <- wmc-flora cache
+    when loaded
+      is Err (e) -> act
+        print-line-uni ("FAIL installed flora " & e)
+        1
+      end
+      is Ok (installed) -> if installed.size == 0 then act
+          print-line-uni "FAIL installed flora: the cache holds no flora table"
+          1
+        end
+        else when wf-read installed.data installed.size
+          is Err (e) -> act
+            print-line-uni ("FAIL installed flora " & e)
+            1
+          end
+          is Ok (s) -> act
+            read <- hpet-ticks
+            print-line-uni ("PASS installed flora rows=" & show s.count & " load-us=" & show ((read - started) * 1000000 / max 1 hpet-ticks-per-second)
+              & " near-1420-1698=" & show (mcp-flora-sent s 1420 1698 0 1000))
+            0
+          end
+  end
+  mcp-tile : MapCacheState, Integer, Integer, Boolean -> [Console, Device.Block] Integer
+  mcp-tile (cache) (x) (y) (mountain) = act
+    paged <- wmc-cover cache x y
+    when paged
+      is Err (e) -> act
+        print-line-uni ("FAIL land tile page " & e)
+        1
+      end
+      is Ok (map) -> act
+        marked <- bit-and (peek-qword map.land (walk-cell map x y * 24 + 16)) mt-mountain-flag /= 0
+        print-line-uni ((if marked == mountain then "PASS " else "FAIL ") & "land at " & show x & "," & show y & (if marked then " is " else " is not ") & "marked mountain")
+        if marked == mountain then 0 else 1
+      end
+  end
   mcp-hash : WalkMap, Integer, Integer -> Integer
   mcp-hash (map) (i) (hash) = if i == map.width * map.height then hash
     else let land = us-hash (map.land + i * 24) 24 0 hash
@@ -93,7 +137,11 @@ Chapter: MapCacheProof
         when edge is Err (e) -> print-line-uni ("FAIL edge page " & e) is Ok (map) -> print-line-uni "PASS map edge page"
         refused <- wmc-cover cache 6144 4090
         print-line-uni (if is-err refused then "PASS outside map refused" else "FAIL outside map admitted")
+        side <- mcp-tile cache 1404 1534 True
+        mine <- mcp-tile cache 1451 1528 True
+        smith <- mcp-tile cache 1418 1547 False
         overlay <- mcp-overlay cache
-        sampled + overlay
+        flora <- mcp-flora cache
+        sampled + overlay + side + mine + smith + flora
       end
   end

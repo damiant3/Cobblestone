@@ -33,3 +33,26 @@ Chapter: WorldBlock
       if status == 0 then Ok 0 else Err "IDE block write failed"
     end
     is UoVirtio (state) -> act vbx-write state sector buf end
+
+ Count sectors (at most vbx-max-sectors) from buf in one transfer on virtio; IDE writes them one at a time.
+  us-device-write-many : UoDevice, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-device-write-many (device) (sector) (buf) (count) = when device
+    is UoIde -> us-ide-write-each sector buf count 0
+    is UoVirtio (state) -> act vbx-write-many state sector buf count end
+  us-ide-write-each : Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-ide-write-each (sector) (buf) (count) (i) = if i >= count then act Ok 0 end
+    else act
+      status <- block-write-sector (sector + i) (buf + i * 512)
+      if status /= 0 then Err "IDE block write failed" else us-ide-write-each sector buf count (i + 1)
+    end
+  us-device-read-many : UoDevice, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-device-read-many (device) (sector) (out) (count) = when device
+    is UoIde -> us-ide-read-each sector out count 0
+    is UoVirtio (state) -> act vbx-read-many state sector out count end
+  us-ide-read-each : Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  us-ide-read-each (sector) (out) (count) (i) = if i >= count then act Ok (count * 512) end
+    else act
+      buf <- block-read-sector (sector + i)
+      if buf <= 0 then Err "IDE block read failed"
+      else let copied = vbx-copy-qwords buf (out + i * 512) 512 0 in us-ide-read-each sector out count (i + 1)
+    end

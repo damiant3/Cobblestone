@@ -983,6 +983,39 @@ Section: Builtin Emission
     reg = rd.reg
   }
 
+  emit-stack-save-builtin : CodegenState -> EmitResult
+  emit-stack-save-builtin (st) =
+    let rd = alloc-temp st
+    in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rsp),
+    reg = rd.reg
+  }
+
+  emit-cover-dump-builtin : CodegenState -> EmitResult
+  emit-cover-dump-builtin (st) =
+    if not st.cover then
+      let rd = alloc-temp st
+      in EmitResult { state = st-append-code (rd.state) (li (rd.reg) 0), reg = rd.reg }
+    else let called = emit-call-to (fc-evict-reg st reg-rax) "__cover_dump"
+    in let rd = alloc-temp called
+    in EmitResult { state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax), reg = rd.reg }
+
+  cover-arm-literal : IRExpr -> Integer
+  cover-arm-literal (e) =
+    when e
+     is IrIntLit (v) (sp) -> v
+     is otherwise -> 0 - 1
+
+  emit-cover-arm-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-cover-arm-builtin (st) (args) =
+    let k = cover-arm-slot (st.cover-arm-map) (cover-arm-literal (list-at args 0))
+    in let saved = if st.cover & k >= 0 then st-append-code (fc-evict-reg st reg-r11) (push-r reg-r11) else st
+    in let arm-disp = (st.cover-arms + k) * 8
+    in let st0 = if st.cover & k >= 0 then st-append-code (emit-cover-base saved reg-r11 arm-disp) ([73, 255, 3] & pop-r reg-r11)
+      else st
+    in let rd = alloc-temp st0
+    in EmitResult { state = st-append-code (rd.state) (li (rd.reg) 0), reg = rd.reg }
+
   emit-heap-restore-builtin : CodegenState, List IRExpr -> EmitResult
   emit-heap-restore-builtin (st) (args) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -996,11 +1029,9 @@ Section: Builtin Emission
   emit-fail-builtin : CodegenState, List IRExpr -> EmitResult
   emit-fail-builtin (st) (args) =
     let msg-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
-    in let rd = alloc-temp (msg-result.state)
-    in let fail-set = li reg-rdi (st-cell (rd.state) try-fail-flag-addr) & li reg-rsi 1
-    in let fail-code = fail-set & mov-store reg-rdi reg-rsi 0 & li (rd.reg) 0
+    in let rd = alloc-temp (emit-fail-raise (msg-result.state) (msg-result.reg))
     in EmitResult {
-    state = st-append-code (rd.state) fail-code,
+    state = st-append-code (rd.state) (li (rd.reg) 0),
     reg = rd.reg
   }
 
@@ -1304,7 +1335,7 @@ Section: Builtin Emission
     in let st2 = st-append-code (r1.state) (mov-rr reg-rcx (r1.reg))
     in let ld0 = load-local st2 (loc0.reg)
     in let st3 = if int-mod ((ld0.state).next-temp) 6 == 1 then
-      __record-set (ld0.state) "next-temp" ((ld0.state).next-temp + 1)
+      __record-set (ld0.state) "next-temp" (temp-step ((ld0.state).next-temp))
     else ld0.state
     in let rd = alloc-temp st3
     in EmitResult {

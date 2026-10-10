@@ -1,28 +1,31 @@
 Chapter: WorldTimers
 
- Entry fields by qword index: 0 deadline, 1 kind (0 when free), 2 key, 3 next, 4 prev.
+ Entry fields by qword index: 0 deadline, 1 kind (0 when free), 2 key, 3 next, 4 prev, 5 the next entry in its key bucket.
 
-  WorldTimers = record { pool : Integer, heads : Integer, capacity : Integer, slots : Integer,
-    free : Integer, used : Integer, now : Integer, limit : Integer, kind : Integer, key : Integer }
+  WorldTimers = record { pool : Integer, heads : Integer, capacity : Integer, slots : Integer, index : Integer, buckets : Integer,
+    free : Integer, used : Integer, now : Integer, limit : Integer, kind : Integer, key : Integer, fired : Integer, peak : Integer }
   wtm-get : WorldTimers, Integer, Integer -> Integer
-  wtm-get (w) (e) (field) = peek-qword w.pool (e * 40 + field * 8)
+  wtm-get (w) (e) (field) = peek-qword w.pool (e * 48 + field * 8)
   wtm-put : WorldTimers, Integer, Integer, Integer -> Integer
-  wtm-put (w) (e) (field) (value) = poke-qword w.pool (e * 40 + field * 8) value
+  wtm-put (w) (e) (field) (value) = poke-qword w.pool (e * 48 + field * 8) value
   wtm-slot : WorldTimers, Integer -> Integer
   wtm-slot (w) (tick) = int-mod tick w.slots
-  wtm-init : WorldTimers, Integer -> Integer
-  wtm-init (w) (e) = if e == w.capacity then 0
+  wtm-bucket : WorldTimers, Integer, Integer -> Integer
+  wtm-bucket (w) (kind) (key) = int-mod (int-mod key w.buckets + kind) w.buckets
+  wtm-chain : WorldTimers, Integer, Integer, Integer -> Integer
+  wtm-chain (w) (e) (last) (tail) = if e == last then 0
     else let a = wtm-put w e 1 0
-    in let b = wtm-put w e 3 (if e + 1 == w.capacity then -1 else e + 1)
-    in wtm-init w (e + 1)
+    in let b = wtm-put w e 3 (if e + 1 == last then tail else e + 1)
+    in wtm-chain w (e + 1) last tail
   wtm-empty : Integer, Integer, Integer -> Integer
   wtm-empty (heads) (i) (n) = if i == n then 0 else let h = poke-qword heads (i * 8) -1 in wtm-empty heads (i + 1) n
   wtm-new : Integer, Integer, Integer -> Result WorldTimers Text
   wtm-new (capacity) (slots) (now) = if capacity < 1 | capacity > 65536 | slots < 1 | slots > 4096 | now < 0 then Err "world timer bounds"
-    else let w = WorldTimers { pool = alloc-bytes (capacity * 40), heads = alloc-bytes (slots * 8), capacity = capacity, slots = slots,
-      free = 0, used = 0, now = now, limit = now, kind = 0, key = 0 }
-    in let entries = wtm-init w 0
+    else let w = WorldTimers { pool = alloc-bytes (capacity * 48), heads = alloc-bytes (slots * 8), capacity = capacity, slots = slots,
+      index = alloc-bytes (capacity * 8), buckets = capacity, free = 0, used = 0, now = now, limit = now, kind = 0, key = 0, fired = 0, peak = 0 }
+    in let entries = wtm-chain w 0 capacity -1
     in let buckets = wtm-empty w.heads 0 slots
+    in let keyed = wtm-empty w.index 0 capacity
     in Ok w
 
   wtm-link : WorldTimers, Integer, Integer -> Integer
@@ -31,8 +34,20 @@ Chapter: WorldTimers
     in let b = wtm-put w e 4 -1
     in let c = if head < 0 then 0 else wtm-put w head 4 e
     in poke-qword w.heads (slot * 8) e
+  wtm-index-link : WorldTimers, Integer -> Integer
+  wtm-index-link (w) (e) = let b = wtm-bucket w (wtm-get w e 1) (wtm-get w e 2)
+    in let a = wtm-put w e 5 (peek-qword w.index (b * 8))
+    in poke-qword w.index (b * 8) e
+  wtm-index-after : WorldTimers, Integer, Integer -> Integer
+  wtm-index-after (w) (prev) (e) = let n = wtm-get w prev 5
+    in if n < 0 then 0 else if n == e then wtm-put w prev 5 (wtm-get w e 5) else wtm-index-after w n e
+  wtm-index-drop : WorldTimers, Integer -> Integer
+  wtm-index-drop (w) (e) = let b = wtm-bucket w (wtm-get w e 1) (wtm-get w e 2)
+    in let head = peek-qword w.index (b * 8)
+    in if head == e then poke-qword w.index (b * 8) (wtm-get w e 5) else if head < 0 then 0 else wtm-index-after w head e
   wtm-unlink : WorldTimers, Integer -> Integer
-  wtm-unlink (w) (e) = let next = wtm-get w e 3
+  wtm-unlink (w) (e) = let keyed = wtm-index-drop w e
+    in let next = wtm-get w e 3
     in let prev = wtm-get w e 4
     in let a = if next < 0 then 0 else wtm-put w next 4 prev
     in let b = if prev < 0 then poke-qword w.heads (wtm-slot w (wtm-get w e 0) * 8) next else wtm-put w prev 3 next
@@ -49,17 +64,47 @@ Chapter: WorldTimers
     in let b = wtm-put w e 1 kind
     in let c = wtm-put w e 2 key
     in let d = wtm-link w e (wtm-slot w due)
-    in let u = __record-set w "used" (w.used + 1) in e
-  wtm-find : WorldTimers, Integer, Integer, Integer -> Integer
-  wtm-find (w) (kind) (key) (e) = if e == w.capacity then -1
+    in let keyed = wtm-index-link w e
+    in let u = __record-set w "used" (w.used + 1)
+    in let p = if w.used > w.peak then __record-set w "peak" w.used else w in e
+  wtm-seek : WorldTimers, Integer, Integer, Integer -> Integer
+  wtm-seek (w) (kind) (key) (e) = if e < 0 then -1
     else if wtm-get w e 1 == kind & wtm-get w e 2 == key then e
-    else wtm-find w kind key (e + 1)
+    else wtm-seek w kind key (wtm-get w e 5)
+  wtm-find : WorldTimers, Integer, Integer -> Integer
+  wtm-find (w) (kind) (key) = wtm-seek w kind key (peek-qword w.index (wtm-bucket w kind key * 8))
   wtm-clear : WorldTimers, Integer, Integer -> Integer
   wtm-clear (w) (kind) (key) = if kind < 1 then 0
-    else let e = wtm-find w kind key 0
+    else let e = wtm-find w kind key
     in if e < 0 then 0 else let removed = wtm-unlink w e in 1
   wtm-set : WorldTimers, Integer, Integer, Integer -> Integer
   wtm-set (w) (deadline) (kind) (key) = let cleared = wtm-clear w kind key in wtm-add w deadline kind key
+
+ The pool doubles at the round's growth point (cs-grow), after the heap is compacted and before the mark is raised over
+ it (L-BELOWMARK), once fewer than a quarter of its entries are free. Entries keep their numbers, so the wheel's links
+ carry over as copied and only the key buckets are rebuilt. 1048576 entries (48 MiB) is the ceiling.
+  wtm-most : Integer = 1048576
+  wtm-tight : WorldTimers -> Boolean
+  wtm-tight (w) = w.capacity < wtm-most & w.capacity - w.used < w.capacity / 4 + 1
+  wtm-copy : Integer, Integer, Integer, Integer -> Integer
+  wtm-copy (from) (to) (i) (n) = if i == n then 0 else let a = poke-qword to (i * 8) (peek-qword from (i * 8)) in wtm-copy from to (i + 1) n
+  wtm-rehash : WorldTimers, Integer, Integer -> Integer
+  wtm-rehash (w) (e) (n) = if e == n then 0 else let linked = if wtm-get w e 1 == 0 then 0 else wtm-index-link w e in wtm-rehash w (e + 1) n
+  wtm-grow : WorldTimers -> Integer
+  wtm-grow (w) = let old = w.capacity
+    in let n = min wtm-most (old * 2)
+    in if n <= old then -1
+    else let pool = alloc-bytes (n * 48)
+    in let copied = wtm-copy w.pool pool 0 (old * 6)
+    in let index = alloc-bytes (n * 8)
+    in let cleared = wtm-empty index 0 n
+    in let a = __record-set w "pool" pool
+    in let b = __record-set w "index" index
+    in let c = __record-set w "buckets" n
+    in let d = __record-set w "capacity" n
+    in let chained = wtm-chain w old n w.free
+    in let f = __record-set w "free" old
+    in let rehashed = wtm-rehash w 0 old in n
 
   wtm-due : WorldTimers, Integer, Integer -> Integer
   wtm-due (w) (e) (tick) = if e < 0 then -1 else if wtm-get w e 0 <= tick then e else wtm-due w (wtm-get w e 3) tick
@@ -71,6 +116,7 @@ Chapter: WorldTimers
     in if found < 0 then let moved = __record-set w "now" t in wtm-scan w
     else let k = __record-set w "kind" (wtm-get w found 1)
     in let y = __record-set w "key" (wtm-get w found 2)
-    in let removed = wtm-unlink w found in found
+    in let removed = wtm-unlink w found
+    in let counted = __record-set w "fired" (w.fired + 1) in found
   wtm-next : WorldTimers, Integer -> Integer
   wtm-next (w) (tick) = let raised = if tick > w.limit then __record-set w "limit" tick else w in wtm-scan w

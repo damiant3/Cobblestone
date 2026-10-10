@@ -1,6 +1,6 @@
 Chapter: X86-64 Boot Infrastructure
   cites Foreword chapter Capability
-  cites Emit chapter X86-64 Code Generator (and-ri, cmp-ri, emit-out-byte, reg-rdi, st-append-code)
+  cites Emit chapter X86-64 Code Generator (and-ri, bare-metal-heap-base, cmp-ri, emit-out-byte, reg-rdi, st-append-code)
 
 Section: Memory Address Map
 
@@ -71,7 +71,6 @@ Section: Memory Address Map
   nic-rx-len-addr : Integer = 33048
   nic-rx-buf-addr : Integer = 33056
   nic-tx-buf-addr : Integer = 34592
-  try-fail-flag-addr : Integer = 36128
   prof-enabled-addr : Integer = 36136
   prof-cursor-addr : Integer = 36144
 
@@ -91,7 +90,7 @@ Section: Memory Address Map
   trace-cursor-addr : Integer = 458760
   trace-buf-addr : Integer = 458768
   trace-max-entries : Integer = 12000
-  serial-ring-buf-addr : Integer = 5242880
+  serial-ring-buf-addr : Integer = 15728640
 
  A hosted build cannot keep the runtime cells where bare metal keeps them,
  and the two systems refuse them for DIFFERENT reasons -- which matters,
@@ -720,7 +719,7 @@ Section: Size and Threshold Constants
     in let legacy2 = s1.code-len
     in let s2 = st-append-code s1 (jcc cc-b 0 & mov-load-u32 reg-rax reg-rdi 12 & cmp-ri reg-rax 256)
     in let short = s2.code-len
-    in let s3 = st-append-code s2 (jcc cc-b 0 & mov-load reg-rdx reg-rdi 224 & cmp-ri reg-rdx 6291456)
+    in let s3 = st-append-code s2 (jcc cc-b 0 & mov-load reg-rdx reg-rdi 224 & cmp-ri reg-rdx bare-metal-heap-base)
     in let low = s3.code-len
     in let s4 = st-append-code s3 (jcc cc-b 0 & mov-rr reg-rax reg-rdx & and-ri reg-rax 4095 & test-rr reg-rax reg-rax)
     in let align = s4.code-len
@@ -846,6 +845,13 @@ Section: Process Table Layout
  owner points into memory that owner no longer holds.
 
   proc-net-pool-offset : Integer = 40
+
+ The head of the process's chain of `try` frames, 0 when no `try` is active.
+ It is per process because a `fail` unwinds onto the stack the frame names,
+ and a stack belongs to one process. Offset 48 is the last free slot in the
+ reserved gap [24, 56); spawn zeroes it.
+
+  try-frame-head-offset : Integer = 48
   proc-cap-offset : Integer = 56
   proc-scope-offset : Integer = 64
   proc-saved-rsp-offset : Integer = 72
@@ -1353,7 +1359,7 @@ Section: Page Fault Handler
  the faulting stack. That is a double fault, delivered on the TSS IST1 stack,
  and it produces an !EXC dump rather than the OUT OF MEMORY line.
 
-  demand-heap-lo-page : Integer = 6291456 / 2097152
+  demand-heap-lo-page : Integer = bare-metal-heap-base / 2097152
 
   demand-heap-hi-page : Integer = 2147483648 / 2097152
 
@@ -3027,6 +3033,28 @@ Section: Process Management
     else st2
     in emit-fill-pds st3 pml4-addr (i + 1)
 
+ The image's code runs past bare-metal-nx-boundary once a program outgrows it, so the pages from the boundary
+ to the code end are made executable again. The code end is the rodata base (rodata offset 0, patched at link
+ time), rounded up to a 2 MB page; clearing bit 63 is a shift left and right by one.
+
+  emit-exec-code-pages : CodegenState, Integer -> CodegenState
+  emit-exec-code-pages (st) (pml4-addr) =
+    let patch = st.code-len + 2
+    in let st1 = st-append-code st (mov-ri64 reg-rcx 0)
+    in let rf-p = list-push (st1.rf-poffsets) patch
+    in let rf-r = list-push (st1.rf-roffsets) 0
+    in let st2 = __record-set (__record-set st1 "rf-poffsets" rf-p) "rf-roffsets" rf-r
+    in let st3 = st-append-code st2 (add-ri reg-rcx 2097151 & shr-ri reg-rcx 21 & li reg-rax bare-metal-nx-boundary
+      & li reg-rdi (pml4-addr + 8192 + bare-metal-nx-boundary * 8))
+    in let loop-start = st3.code-len
+    in let st4 = st-append-code st3 (cmp-rr reg-rax reg-rcx)
+    in let exit-pos = st4.code-len
+    in let st5 = st-append-code st4 (jcc cc-ae 0 & mov-load reg-r11 reg-rdi 0 & shl-ri reg-r11 1 & shr-ri reg-r11 1
+      & mov-store reg-rdi reg-r11 0 & add-ri reg-rdi 8 & add-ri reg-rax 1)
+    in let cur = st5.code-len
+    in let st6 = st-append-code st5 (jmp (loop-start - (cur + 5)))
+    in patch-jcc-at st6 exit-pos st6.code-len
+
   emit-build-process-page-tables : CodegenState, Integer, Integer -> CodegenState
   emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =
     let zero-qwords = (2 + bare-metal-total-pd-count) * 512
@@ -3037,7 +3065,8 @@ Section: Process Management
     in let pdpt-addr = pml4-addr + 4096
     in let st5 = emit-pdpt-entries st4 pdpt-addr pml4-addr 0
     in let st6 = emit-fill-pds st5 pml4-addr 0
-    in emit-fill-device-pd st6 pml4-addr
+    in let st7 = emit-exec-code-pages st6 pml4-addr
+    in emit-fill-device-pd st7 pml4-addr
 
   emit-create-process : CodegenState, Integer, Integer, Integer, Integer -> CodegenState
   emit-create-process (st) (proc-index) (state-val) (cr3-val) (heap-base) =
@@ -3102,18 +3131,18 @@ Section: Process Management
     in let dvv1 = st-append-code dvv0 (li reg-rax 0)
     in let dvv2 = st-append-code dvv1 (mov-store reg-rdi reg-rax 0)
     in let slt8 = emit-slice-table-init dvv2
-    in let st5 = emit-build-process-page-tables slt8 32768 6291456
+    in let st5 = emit-build-process-page-tables slt8 32768 bare-metal-heap-base
     in let st5u = emit-demand-unmap st5
     in let saff0 = st-append-code st5u (li reg-rdi spawn-affinity-addr)
     in let saff1 = st-append-code saff0 (li reg-rax (-1))
     in let saff2 = st-append-code saff1 (mov-store reg-rdi reg-rax 0)
-    in let st6 = emit-create-process saff2 0 proc-state-running 32768 6291456
+    in let st6 = emit-create-process saff2 0 proc-state-running 32768 bare-metal-heap-base
     in let p0aff0 = st-append-code st6 (li reg-rdi (proc-table-base + proc-affinity-offset))
     in let p0aff1 = st-append-code p0aff0 (li reg-rax 0)
     in let p0aff2 = st-append-code p0aff1 (mov-store reg-rdi reg-rax 0)
     in let st7 = st-append-code p0aff2 (li reg-rax 32768)
     in let st8 = st-append-code st7 [15, 34, 216]
-    in st-append-code st8 (li reg-r10 6291456)
+    in st-append-code st8 (li reg-r10 bare-metal-heap-base)
 
   emit-slice-table-init : CodegenState -> CodegenState
   emit-slice-table-init (st) =
@@ -3134,14 +3163,34 @@ Section: Device Seed
     in let st1 = emit-rdrand-store st0 0
     in let st2 = emit-rdrand-store st1 8
     in let st3 = emit-rdrand-store st2 16
-    in emit-rdrand-store st3 24
+    in let st4 = emit-rdrand-store st3 24
+    in let z0 = emit-seed-word-zero st4 0
+    in let z1 = emit-seed-word-zero (z0.state) 8
+    in let z2 = emit-seed-word-zero (z1.state) 16
+    in let z3 = emit-seed-word-zero (z2.state) 24
+    in let drawn = z3.state
+    in let present = drawn.code-len
+    in let st5 = st-append-code drawn (jmp 0)
+    in let absent = st5.code-len
+    in let st6 = emit-serial-string st5 [110, 111, 32, 101, 110, 116, 114, 111, 112, 121, 10]
+    in let done = st6.code-len
+    in let p0 = patch-jcc-at st6 (z0.deny-offset) absent
+    in let p1 = patch-jcc-at p0 (z1.deny-offset) absent
+    in let p2 = patch-jcc-at p1 (z2.deny-offset) absent
+    in let p3 = patch-jcc-at p2 (z3.deny-offset) absent
+    in patch-jmp-at p3 present done
 
   emit-rdrand-store : CodegenState, Integer -> CodegenState
   emit-rdrand-store (st) (offset) =
-    let retry = st.code-len
-    in let st1 = st-append-code st [72, 15, 199, 240]
-    in let st2 = st-append-code st1 (jcc cc-ae (retry - (st1.code-len + 6)))
-    in st-append-code st2 (mov-store reg-rdi reg-rax offset)
+    st-append-code (emit-rdrand-bounded st) (mov-store reg-rdi reg-rax offset)
+
+  emit-seed-word-zero : CodegenState, Integer -> CheckExpiryResult
+  emit-seed-word-zero (st) (offset) =
+    let st1 = st-append-code st (mov-load reg-rax reg-rdi offset)
+    in let st2 = st-append-code st1 (test-rr reg-rax reg-rax)
+    in let at = st2.code-len
+    in let st3 = st-append-code st2 (jcc cc-e 0)
+    in CheckExpiryResult { state = st3, deny-offset = at }
 
 Section: Capabilities
 

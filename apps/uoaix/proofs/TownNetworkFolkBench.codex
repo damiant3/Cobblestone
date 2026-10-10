@@ -1,0 +1,33 @@
+Chapter: TownNetworkFolkBench
+  cites Uoaix chapter TownNetworkLive
+
+  fb-round : TnModel, TfWorld, List TnState, Integer, Integer -> Integer
+  fb-round (m) (w) (states) (hour) (i) = if i == list-length states then 0
+    else let p = list-at w.people i
+    in let f = tnv-person-frame hour p (list-at states i)
+    in let a = tn-step m (list-at states i) in fb-round m w states hour (i + 1)
+  fb-repeat : TnModel, TfWorld, List TnState, Integer -> Integer
+  fb-repeat (m) (w) (states) (n) = if n == 0 then 0 else let a = fb-round m w states n 0 in fb-repeat m w states (n - 1)
+  fb-main : Integer -> [Console] Nothing
+  fb-main (rounds) = act
+    when tn-trained-model 0
+      is Err (e) -> print-line-uni ("FAIL model " & e)
+      is Ok (m) -> act
+        w <- tf-new 0
+        before <- __heap-save
+        states <- tnv-states (list-length w.people) (__list-with-capacity (list-length w.people))
+        after <- __heap-save
+        print-line-uni ("NPCS " & show (list-length states) & " BYTES-PER-STATE " & show ((after - before) / list-length states))
+        warm <- fb-round m w states 12 0
+        mark <- __heap-save
+        ran <- fb-repeat m w states rounds
+        done <- __heap-save
+        print-line-uni ("ROUNDS " & show rounds & " RETAINED " & show (done - mark) & " ALARM0 " & show (tn-alarm (list-at states 0)))
+      end
+  end
+  opening : [Console] Nothing = act
+    line <- read-line
+    when line
+      is None -> print-line-uni "FAIL missing round count"
+      is Just (text) -> fb-main (text-to-integer text)
+  end

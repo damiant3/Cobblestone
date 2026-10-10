@@ -1,0 +1,162 @@
+Chapter: Ships
+  cites Uoaix chapter Construction
+
+ Stage S (UOAIX.md, the sea): Britain's fishing boat sails a lane south from the harbour on a daily schedule and draws to
+ every player within 24 tiles as a virtual multi. MAP0.MUL land is water (0xA8..0xAB) across the whole lane x 1458..1462,
+ y 1761..1860, at z -5; the boat moors at y 1766 and fishes at y 1850.
+  shp-serial : Integer = #7A000001
+  shp-lane-x : Integer = 1460
+  shp-dock-y : Integer = 1766
+  shp-sea-y : Integer = 1850
+  shp-z : Integer = -5
+  shp-reach : Integer = 24
+ ServUO Multis/Boats/SmallBoat.cs: NorthID 0x0, SouthID 0x2; the 0x1A item draws the multi with 0x4000 set.
+  shp-north : Integer = #4000
+  shp-south : Integer = #4002
+ Game seconds of the day: the boat puts out at 05:00 and turns for home at 15:00, one tile per 24 game seconds (two real).
+  shp-out : Integer = 18000
+  shp-home : Integer = 54000
+  shp-pace : Integer = 24
+  ShpViewer = record { connection : Integer, y : Integer, art : Integer, py : Integer, ny : Integer, nart : Integer }
+  ShpState = record { viewers : List ShpViewer, patrol : Integer, haven : Integer, day : Integer }
+  shp-viewers : Integer, List ShpViewer -> List ShpViewer
+  shp-viewers (left) (xs) = if left == 0 then xs else shp-viewers (left - 1) (list-push xs (ShpViewer { connection = -1, y = 0, art = 0, py = 0, ny = 0, nart = 0 }))
+  shp-new : Integer -> ShpState
+  shp-new (unused) = ShpState { viewers = shp-viewers 8 [], patrol = 0, haven = 2, day = 0 }
+  shp-y : Integer -> Integer
+  shp-y (t) = let run = (shp-sea-y - shp-dock-y) * shp-pace
+    in if t < shp-out then shp-dock-y
+    else if t < shp-out + run then shp-dock-y + (t - shp-out) / shp-pace
+    else if t < shp-home then shp-sea-y
+    else if t < shp-home + run then shp-sea-y - (t - shp-home) / shp-pace
+    else shp-dock-y
+  shp-art : Integer -> Integer
+  shp-art (t) = if t >= shp-home | t < shp-out then shp-north else shp-south
+  shp-find : List ShpViewer, Integer, Integer -> Integer
+  shp-find (viewers) (connection) (i) = if i >= list-length viewers then -1
+    else if (list-at viewers i).connection == connection then i else shp-find viewers connection (i + 1)
+  shp-viewer : ShpState, Integer -> ShpViewer
+  shp-viewer (s) (connection) = let found = shp-find s.viewers connection 0
+    in if found >= 0 then list-at s.viewers found
+    else let free = shp-find s.viewers -1 0
+    in let v = list-at s.viewers (if free >= 0 then free else int-mod connection (list-length s.viewers))
+    in let a = __record-set v "connection" connection
+    in let b = __record-set v "y" 0
+    in let c = __record-set v "art" 0
+    in let d = __record-set v "py" 0
+    in let e = __record-set v "ny" 0
+    in let f = __record-set v "nart" 0 in v
+ The catch: in the game hour after the boat moors, the fisherman's actor fishes each of four sea grounds at place 401
+ still ready today (resource 9 regrows in 24 economy hours, one game day) with his own rod, and lands and sells the catch
+ (CompositeGatherer cgg-land).
+  shp-place : Integer = 401
+  shp-grounds : Integer = 4
+  shp-fish-resource : Integer = 9
+  shp-catch : EpWorld, Integer, Integer, ShpState -> Integer
+  shp-catch (w) (actor) (seconds) (s) = let t = int-mod seconds 86400
+    in let moored = shp-home + (shp-sea-y - shp-dock-y) * shp-pace
+    in if t < moored | t >= moored + 3600 | not (ep-valid-actor w actor) then 0
+    else let home = (ep-actor w actor).place
+    in let at-sea = ep-place w actor shp-place
+    in let caught = shp-fish w actor 0 0
+    in let taken = if caught > 0 & shp-raid-day s.haven (seconds / 86400) & not (shp-patrol-day s.patrol (seconds / 86400)) then ep-consume w actor shp-fish-resource caught else 0
+    in let back = ep-place w actor home in caught
+  shp-fish : EpWorld, Integer, Integer, Integer -> Integer
+  shp-fish (w) (actor) (i) (seen) = if seen >= shp-grounds then 0
+    else if i >= w.node-count then (if not (ep-node-room w) | eh-source w shp-fish-resource shp-place < 0 then 0 else shp-fish w actor i seen)
+    else let n = list-at w.nodes i
+    in if n.resource /= shp-fish-resource | n.place /= shp-place then shp-fish w actor (i + 1) seen
+    else (if n.stage == 2 then max 0 (eh-harvest w actor (i + 1)) else 0) + shp-fish w actor (i + 1) (seen + 1)
+ Pirates (UOAIX.md, the sea): on one game day in four a pirate ship sails onto the grounds at 10:00, lies off the
+ fishing boat until it turns for home, and takes the day's catch: the fish are caught and consumed, so the loss shows in
+ the economy census and the fish stall gets none. The ship lies at x 1472, inside the water lanes x 1462..1490 at
+ y 1775..1854 (MAP0.MUL); ServUO Multis/Boats/LargeBoat.cs NorthID 0x8.
+  shp-pirate-serial : Integer = #7A000002
+  shp-pirate-x : Integer = 1472
+  shp-pirate-art : Integer = #4008
+  shp-pirate-in : Integer = 36000
+  shp-pirate-y : Integer = 1840
+  shp-pirate-run : Integer = 14
+  shp-raid-day : Integer, Integer -> Boolean
+  shp-raid-day (haven) (day) = int-mod (bit-and (mix-bits day 7919) #7FFFFFFF) 8 < haven
+ The pirate haven is a population of 0 to 8 ships: a raid day falls on haven days in eight. Each game day a patrol meets
+ a raid the navy sinks two ships; otherwise the haven gains one every third day. Days missed while the server was down
+ are caught up, at most 30.
+  shp-haven-max : Integer = 8
+  shp-season : ShpState, Integer -> Integer
+  shp-season (s) (seconds) = let today = seconds / 86400
+    in if s.day == 0 then let set = __record-set s "day" today in 0
+    else shp-age s (max s.day (today - 30)) today
+  shp-age : ShpState, Integer, Integer -> Integer
+  shp-age (s) (d) (today) = if d >= today then let set = __record-set s "day" today in 0
+    else let met = shp-raid-day s.haven d & shp-patrol-day s.patrol d
+    in let grown = if met then max 0 (s.haven - 2) else if int-mod d 3 == 0 then min shp-haven-max (s.haven + 1) else s.haven
+    in let set = __record-set s "haven" grown in shp-age s (d + 1) today
+  shp-py : Integer, Integer, Integer, Integer -> Integer
+  shp-py (ordered) (haven) (day) (t) = let run = shp-pirate-run * shp-pace
+    in let turn = if shp-patrol-day ordered day then shp-pirate-in + run else shp-home
+    in if not (shp-raid-day haven day) | t < shp-pirate-in | t >= turn + run then 0
+    else if t < shp-pirate-in + run then shp-pirate-y + shp-pirate-run - (t - shp-pirate-in) / shp-pace
+    else if t < turn then shp-pirate-y
+    else shp-pirate-y + (t - turn) / shp-pace
+ The royal navy (UOAIX.md, the sea) patrols one game day in three: its ship puts out at 07:00 and holds the grounds until
+ 16:00 on the lane x 1484 (water y 1775..1855, MAP0.MUL). A pirate ship that meets a patrol turns back as soon as it
+ reaches the grounds and takes nothing. ServUO Multis/Boats/MediumBoat.cs NorthID 0x4, SouthID 0x6.
+  shp-navy-serial : Integer = #7A000003
+  shp-navy-x : Integer = 1484
+  shp-navy-base : Integer = 1778
+  shp-navy-out : Integer = 25200
+  shp-navy-home : Integer = 57600
+  shp-navy-north : Integer = #4004
+  shp-navy-south : Integer = #4006
+  shp-patrol-day : Integer, Integer -> Boolean
+  shp-patrol-day (ordered) (day) = ordered == 1 | int-mod (bit-and (mix-bits day 104729) #7FFFFFFF) 3 == 0
+ The navy is paid from the king's treasury: in the first game hour of a patrol (07:00), the crown grants the navy's purse
+ (kind 5, owner 3; owner 1 is the crown and 2 a business in the treasury proofs) 20 gold, once an economy day.
+  shp-navy-owner : Integer = 3
+  shp-navy-wage : Integer = 20
+  shp-paid-today : EmMoney, Integer, Integer, Integer -> Boolean
+  shp-paid-today (m) (purse) (day) (i) = if i < 0 then False
+    else let e = list-at m.ledger i
+    in if e.hour / 24 < day then False
+    else e.payee == purse | shp-paid-today m purse day (i - 1)
+  shp-pay-navy : EuCurrency, Integer, Integer -> Integer
+  shp-pay-navy (x) (seconds) (ordered) = let t = int-mod seconds 86400
+    in if not (shp-patrol-day ordered (seconds / 86400)) | t < shp-navy-out | t >= shp-navy-out + 3600 then 0
+    else let found = em-find x.world.money 5 shp-navy-owner 1
+    in let purse = if found > 0 then found else eu-open x 5 shp-navy-owner
+    in if purse < 1 | shp-paid-today x.world.money purse (x.world.hour / 24) (x.world.money.entry-count - 1) then 0
+    else eu-grant x True 1 purse 0 0 shp-navy-wage
+  shp-ny : Integer, Integer, Integer -> Integer
+  shp-ny (ordered) (day) (t) = let run = (shp-pirate-y - shp-navy-base) * shp-pace
+    in if not (shp-patrol-day ordered day) then 0
+    else if t < shp-navy-out then shp-navy-base
+    else if t < shp-navy-out + run then shp-navy-base + (t - shp-navy-out) / shp-pace
+    else if t < shp-navy-home then shp-pirate-y
+    else if t < shp-navy-home + run then shp-pirate-y - (t - shp-navy-home) / shp-pace
+    else shp-navy-base
+  shp-navy-view : ShpViewer, Integer, Integer, Integer, Integer, Integer -> List (List Integer)
+  shp-navy-view (v) (x) (y) (ordered) (day) (t) = let ny = shp-ny ordered day t
+    in let art = if t >= shp-navy-out & t < shp-navy-home then shp-navy-south else shp-navy-north
+    in let near = ny > 0 & walk-abs (x - shp-navy-x) <= shp-reach & walk-abs (y - ny) <= shp-reach
+    in if not near then (if v.ny == 0 then [] else let gone = __record-set v "ny" 0 in [sip-remove shp-navy-serial])
+    else if v.ny == ny & v.nart == art then []
+    else let a = __record-set v "ny" ny
+    in let b = __record-set v "nart" art in [cn-item shp-navy-serial art shp-navy-x ny shp-z]
+  shp-pirate-view : ShpViewer, Integer, Integer, Integer, Integer, Integer, Integer -> List (List Integer)
+  shp-pirate-view (v) (x) (y) (ordered) (haven) (day) (t) = let py = shp-py ordered haven day t
+    in let near = py > 0 & walk-abs (x - shp-pirate-x) <= shp-reach & walk-abs (y - py) <= shp-reach
+    in if not near then (if v.py == 0 then [] else let gone = __record-set v "py" 0 in [sip-remove shp-pirate-serial])
+    else if v.py == py then []
+    else let a = __record-set v "py" py in [cn-item shp-pirate-serial shp-pirate-art shp-pirate-x py shp-z]
+  shp-view : ShpState, Integer, Integer, Integer, Integer -> List (List Integer)
+  shp-view (s) (connection) (x) (y) (seconds) = let t = int-mod seconds 86400
+    in let by = shp-y t
+    in let art = shp-art t
+    in let near = walk-abs (x - shp-lane-x) <= shp-reach & walk-abs (y - by) <= shp-reach
+    in let v = shp-viewer s connection
+    in let pirate = shp-pirate-view v x y s.patrol s.haven (seconds / 86400) t & shp-navy-view v x y s.patrol (seconds / 86400) t
+    in if not near then (if v.y == 0 then pirate else let gone = __record-set v "y" 0 in [sip-remove shp-serial] & pirate)
+    else if v.y == by & v.art == art then pirate
+    else let a = __record-set v "y" by
+    in let b = __record-set v "art" art in [cn-item shp-serial art shp-lane-x by shp-z] & pirate

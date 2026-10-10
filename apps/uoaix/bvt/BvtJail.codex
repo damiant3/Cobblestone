@@ -1,0 +1,29 @@
+Chapter: BvtJail
+  cites Uoaix chapter LawStateCodec
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-jail-made : Result Integer Text -> Integer
+  bvt-jail-made (r) = when r
+    is Ok (serial) -> serial
+    is Err (_) -> 0
+  bvt-jail : Integer -> [Console] Integer
+  bvt-jail (unused) = when world-new 64
+    is Err (e) -> bvt-check ("jail fixture world: " & e) False
+    is Ok (world) -> act
+      w <- lw-new world
+      prisoner <- bvt-jail-made (world-create world (__record-set (gs-mobile 0 1430 1690 0 400 1002) "health" 50))
+      ghost <- bvt-jail-made (world-create world (__record-set (gs-mobile 0 1431 1690 0 400 1002) "health" 0))
+      cell <- lw-jail-set w True 1 1452 1580
+      id <- lw-confine w True prisoner 1 6
+      buf <- alloc-bytes lsc-bytes
+      saved <- lsc-encode w buf lsc-bytes
+      back <- lsc-decode buf lsc-bytes world
+      a <- bvt-check "a GM jail order is a jailed kind-4 case with no guard, saved and restored by LSC1 version 2 (stage A jail)" (id == 1 & lw-held w prisoner 0 & (lw-case w id).kind == 4 & (lw-case w id).due == w.hour + 6
+        & is-ok saved & peek-qword buf 8 == 2 & (when back is Ok (r) -> lw-held r prisoner 0 is Err (_) -> False))
+      twice <- lw-confine w True prisoner 1 6
+      freed <- lw-free w prisoner 0
+      b <- bvt-check "a dead character is not jailed, a jailed one not twice, and a release serves the order" (lw-confine w True ghost 1 6 < 0 & twice < 0 & freed == 1 & not (lw-held w prisoner 0) & (lw-case w id).status == 5)
+      a + b
+    end

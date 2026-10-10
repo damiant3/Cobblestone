@@ -1,0 +1,34 @@
+Chapter: BvtWheat
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-wheat-made : Result Integer Text -> Integer
+  bvt-wheat-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvt-wheat : Integer -> [Console] Integer
+  bvt-wheat (unused) = when cg-game 256
+    is Err (e) -> bvt-check ("wheat fixture game: " & e) False
+    is Ok (game) -> when bb-economy 0
+      is Err (e) -> bvt-check ("wheat fixture economy: " & e) False
+      is Ok (x) -> when egg-new-for x cgg-farm-owner cgg-farm-place cgg-wheat 0
+        is Err (e) -> bvt-check ("wheat fixture farmer: " & e) False
+        is Ok (g) -> let v = gv-new game x
+          in let items = gsi-new game.world
+          in let serial = bvt-wheat-made (world-create game.world (gs-mobile 0 1410 1660 0 400 1002))
+          in let owned = gv-add-owner v serial g.producer.actor
+          in let pack = bvt-wheat-made (bb-container v items g.producer serial 21)
+          in let spot = BbSpot { x = 1410, y = 1660, z = 0 }
+          in let c = cgg-make g serial spot spot 0 0 0 0
+          in let packed = __record-set c "pack" pack
+          in act
+            three <- ep-find x.world g.producer.actor cgg-wheat 3
+            short <- not (cgg-wheat-due c v)
+            four <- ep-find x.world g.producer.actor cgg-wheat 1
+            due <- cgg-wheat-due c v
+            a <- bvt-check "the farmer bags wheat for players only while it holds 4 or more (row 22)" (serial > 0 & owned >= 0 & pack > 0 & three >= 0 & four >= 0 & short & due)
+            bagged <- cgg-wheat-lot c v items
+            b <- bvt-check "the farmer's wheat lot holds 2 wheat in its pack, and it bags no second lot" (is-ok bagged & cgg-lotted v g.producer.actor cgg-wheat 0 0 == 2 & not (cgg-wheat-due c v))
+            c2 <- bvt-check "wheat in the lot is not counted for milling or harvest: 2 of 4 are free" (cgg-free c v cgg-wheat == 2 & cgg-held c cgg-wheat == 4)
+            d <- bvt-check "the vendor ledger's stock census holds with the wheat lot" (gvsc-valid v)
+            a + b + c2 + d
+          end

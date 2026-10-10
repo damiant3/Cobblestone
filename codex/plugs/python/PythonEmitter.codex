@@ -440,7 +440,10 @@ Section: Expression Emission
     let body-text = emit-py-act body ctx
     in let fb-text = emit-py-act fb ctx
     in let fail-text = emit-py-act fail-stmts ctx
-    in "(lambda _b=(lambda: " & body-text & "), _fb=(lambda: " & fb-text & "), _fx=(lambda: " & fail-text & "): (lambda _ns: (exec('_r=None\\nfor _ in range(" & integer-to-text max & "):\\n    try:\\n        _r=_b()\\n        break\\n    except:\\n        pass\\nelse:\\n    try:\\n        _r=_fb()\\n    except:\\n        _r=_fx()',_ns),_ns[\"_r\"])[-1])({\"_b\":_b,\"_fb\":_fb,\"_fx\":_fx}))()"
+    in let tail = if list-length fb == 0 then "\\n    raise _e"
+      else if list-length fail-stmts == 0 then "\\n    _r=_fb()"
+      else "\\n    try:\\n        _r=_fb()\\n    except Exception:\\n        _r=_fx()"
+    in "(lambda _b=(lambda: " & body-text & "), _fb=(lambda: " & fb-text & "), _fx=(lambda: " & fail-text & "): (lambda _ns: (exec('_r=None\\n_e=None\\nfor _ in range(" & integer-to-text max & "):\\n    try:\\n        _r=_b()\\n        break\\n    except Exception as _x:\\n        _e=_x\\nelse:" & tail & "',_ns),_ns[\"_r\"])[-1])({\"_b\":_b,\"_fb\":_fb,\"_fx\":_fx}))()"
 
   emit-py-act : List IRActStmt, PyCtx -> Text
   emit-py-act (stmts) (ctx) =
@@ -547,6 +550,10 @@ Section: Builtin Dispatch
    PyBuiltinEmitter {
      name = "print-line-uni",
      emit = \args ctx -> "print(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "fail",
+     emit = \args ctx -> "(_ for _ in ()).throw(Exception(" & emit-py-expr (list-at args 0) ctx & "))"
    },
    PyBuiltinEmitter {
      name = "print-error-uni",

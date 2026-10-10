@@ -1,0 +1,37 @@
+Chapter: BvtSpawnSpill
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter BvtSpawnPace (bpc-map, bpc-mobile, bpc-bind)
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bsx-steps : GameWorldSpawn, CompositeGame, WalkMap, Integer, WorldObject, Integer -> Integer
+  bsx-steps (g) (owner) (map) (serial) (viewer) (left) = if left == 0 then 0
+    else let slot = list-at g.slots 0
+    in let now = __record-set slot "due" 0
+    in let south = __record-set slot "direction" 4
+    in let stepped = when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> gws-wild g owner.checkpoint.game map slot m viewer
+    in bsx-steps g owner map serial viewer (left - 1)
+ UOAIX-150 (trial 43060): an earth elemental of the full Britain mine region (1445..1457 by 1526..1534), standing 14 tiles
+ south of it with no one in sight and facing south, away from home, still walks back toward it. Answers the rows it closed in 30 steps, negative when not buildable.
+  bsx-closed : Integer -> Integer
+  bsx-closed (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in let map = bpc-map 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 | map.width == 0 then -2
+        else let clock = __record-set g.combat "tick" (gm-ticks 1000000)
+        in let beast = bpc-mobile owner 1450 1548
+        in if beast == 0 | bpc-bind owner g 0 region profile beast /= 0 then -3
+        else let full = poke-qword g.populations (region * 8) (list-at g.catalog.regions region).maximum
+        in let nobody = WorldObject { serial = 0, kind = 1, x = 0, y = 0, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 0 }
+        in let walked = bsx-steps g owner map beast nobody 30
+        in when world-get owner.checkpoint.game.world beast is Err (_) -> -4 is Ok (m) -> 1548 - m.y
+  bvt-spawn-spill : Integer -> [Console] Integer
+  bvt-spawn-spill (unused) = act
+    n <- bsx-closed 0
+    bvt-check ("a full region's creature 14 tiles from home walks back instead of roaming (UOAIX-150, a mine elemental reached Britain; closed " & show n & " rows)") (n >= 5)
+  end

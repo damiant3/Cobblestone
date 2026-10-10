@@ -177,7 +177,7 @@ Section: Compile Flags
   pipeline-of : Text -> List Text
   pipeline-of (mode) =
     let v = mode-flag-text mode "passes="
-    in if v == "" then default-ir-pipeline
+    in if v == "" then (if has-mode-flag mode "cover" then ["fold-constants", "cover-arms"] else default-ir-pipeline)
     else if v == "none" then []
     else if v == "text-plug" then text-plug-ir-pipeline
     else if text-starts-with v "+" then
@@ -404,10 +404,11 @@ Section: Frontend
 
   check-escape-invariant : PhaseMetrics, Text -> DiagnosticBag
   check-escape-invariant (m) (phase-name) =
-    let violations = scan-deck-dangling (m.deck-origin) (m.deck-end) (m.bivy-origin) (m.bivy-hwm) 0
+    let violations = scan-deck-dangling (m.deck-origin) (m.deck-end) (m.bivy-origin) (m.bivy-close) 0
     in if violations > 0 then
-      bag-from-list [
-        make-warning cdx-escape-violation ("Escape invariant: " & show violations & " deck pointer(s) target bivy in " & phase-name) synthetic-span
+      let ev-msg = "Escape invariant: " & show violations & " deck pointer(s) target bivy in " & phase-name
+      in bag-from-list [
+        make-warning cdx-escape-violation ev-msg synthetic-span
       ]
     else bag-from-list []
 
@@ -419,10 +420,12 @@ Section: Frontend
   precise-escape-bag : Boolean, Integer, Text, PhaseMetrics, Text -> DiagnosticBag
   precise-escape-bag (enabled) (root-addr) (type-name) (m) (phase-name) =
     if enabled then
-      let escaped = pmap-escape-count root-addr type-name (m.bivy-origin) (m.bivy-hwm)
+      let escaped = pmap-escape-count root-addr type-name (m.bivy-origin) (m.bivy-close)
       in let reached = pmap-escape-reached root-addr type-name
+      in let pe-head = "PRECISE escape (" & phase-name & "/" & type-name & "): " & show escaped
+      in let pe-msg = pe-head & " ptr(s) into bivy, reach " & show reached
       in bag-from-list [
-        make-warning cdx-escape-violation ("PRECISE escape (" & phase-name & "/" & type-name & "): " & show escaped & " ptr(s) into bivy, reach " & show reached) synthetic-span
+        make-warning cdx-escape-violation pe-msg synthetic-span
       ]
     else bag-from-list []
 
@@ -461,12 +464,14 @@ Section: Frontend
   pmap-selftest-result (r) =
     if r == 3 then bag-from-list []
     else if r == 0 - 2 then
-      bag-from-list [
-        make-warning cdx-escape-violation "pmap-walk self-test SKIPPED: this host has no self type table, so there is no pointer map to walk" synthetic-span
+      let st-msg = "pmap-walk self-test SKIPPED: this host has no self type table, so there is no pointer map to walk"
+      in bag-from-list [
+        make-warning cdx-escape-violation st-msg synthetic-span
       ]
     else if r == 0 - 3 then
-      bag-from-list [
-        make-warning cdx-escape-violation "pmap-walk self-test FAILED: the walk allocated, so every escape walk writes onto the deck it measures" synthetic-span
+      let st-msg = "pmap-walk self-test FAILED: the walk allocated, so every escape walk writes onto the deck it measures"
+      in bag-from-list [
+        make-warning cdx-escape-violation st-msg synthetic-span
       ]
     else
       bag-from-list [
@@ -542,7 +547,8 @@ Section: Frontend
     in let entry-dup-bag = bag-from-list (check-entry-point-duplicate assignments-s)
     in let bset = deck-record (skip-list-text-from-list builtin-names)
     in let shadow-bag = bag-from-list (check-shadowed-builtins (scan.def-headers) bset 0 (list-length (scan.def-headers)) [])
-    in let collide-bag = bag-from-list (check-cross-chapter-collisions (scan.def-headers) colliding-s assignments-s 0 (list-length (scan.def-headers)) [])
+    in let hdrs = scan.def-headers
+    in let collide-bag = bag-from-list (check-cross-chapter-collisions hdrs colliding-s assignments-s 0 (list-length hdrs) [])
     in let doc = parse-document (make-parse-state tokens source) scratch-ceiling
     in let prose-diags = if flags.prose then
       check-prose-consistency doc & check-prose-banned doc
@@ -587,22 +593,23 @@ Section: Frontend
     in let parse-metrics-d = deck-record (PhaseMetrics {
      label = parse-metrics.label,
      bivy-origin = parse-metrics.bivy-origin,
-     bivy-hwm = parse-metrics.bivy-hwm,
+     bivy-close = parse-metrics.bivy-close,
      deck-origin = parse-metrics.deck-origin,
      deck-end = parse-metrics.deck-end
     })
-    in let scratch-top = if parse-metrics.deck-end > parse-metrics.bivy-hwm then
+    in let scratch-top = if parse-metrics.deck-end > parse-metrics.bivy-close then
       parse-metrics.deck-end
-    else parse-metrics.bivy-hwm
+    else parse-metrics.bivy-close
     in let keep-esc-metrics = PhaseMetrics {
      label = keep-metrics.label,
      bivy-origin = parse-metrics.deck-origin,
-     bivy-hwm = scratch-top,
+     bivy-close = scratch-top,
      deck-origin = keep-metrics.deck-origin,
      deck-end = keep-metrics.deck-end
     }
     in let keep-esc-bag = deck-record (escape-check-bag (flags.escape-check) keep-esc-metrics "PARSE")
-    in let parse-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of doc2) "Document" keep-esc-metrics "PARSE")
+    in let pp-root = address-of doc2
+    in let parse-precise-bag = deck-record (precise-escape-bag (flags.escape-check) pp-root "Document" keep-esc-metrics "PARSE")
     in let parse-ov-bag = if parse-ov == 1 | parse-sat == 1 then
       deck-overflow-bag "PARSE"
     else no-overflow-bag
@@ -619,7 +626,7 @@ Section: Frontend
     in let keep-metrics-d = deck-record (PhaseMetrics {
      label = keep-metrics.label,
      bivy-origin = keep-metrics.bivy-origin,
-     bivy-hwm = keep-metrics.bivy-hwm,
+     bivy-close = keep-metrics.bivy-close,
      deck-origin = keep-metrics.deck-origin,
      deck-end = keep-metrics.deck-end
     })
@@ -664,14 +671,14 @@ Section: Frontend
     in let desugar-metrics-d = deck-record (PhaseMetrics {
       label = desugar-metrics.label,
       bivy-origin = desugar-metrics.bivy-origin,
-      bivy-hwm = desugar-metrics.bivy-hwm,
+      bivy-close = desugar-metrics.bivy-close,
       deck-origin = desugar-metrics.deck-origin,
       deck-end = desugar-metrics.deck-end
     })
     in let phase-metrics-d = deck-record (for m in (pr.phase-metrics) -> deck-record (PhaseMetrics {
       label = m.label,
       bivy-origin = m.bivy-origin,
-      bivy-hwm = m.bivy-hwm,
+      bivy-close = m.bivy-close,
       deck-origin = m.deck-origin,
       deck-end = m.deck-end
     }))
@@ -684,14 +691,16 @@ Section: Frontend
         in let msg2 = msg1 & " end=" & show (keep-metrics.deck-end)
         in let msg3 = msg2 & " used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin)
         in let msg4 = msg3 & " desugar-deck=" & show (desugar-metrics.deck-end - desugar-metrics.deck-origin)
-        in let msg5 = msg4 & " desugar-bivy=" & show (desugar-metrics.bivy-hwm - desugar-metrics.bivy-origin)
+        in let msg5 = msg4 & " desugar-bivy=" & show (desugar-metrics.bivy-close - desugar-metrics.bivy-origin)
         in let msg6 = msg5 & " escapes-above-keep=" & show keep-escapes
         in let note = make-warning cdx-escape-violation msg6 synthetic-span
         in bag-from-list [note]
       else no-overflow-bag
     )
-    in let desugar-ov-bag = deck-record (if desugar-ov == 1 | dr.dr-sat == 1 then deck-overflow-bag "DESUGAR" else no-overflow-bag)
-    in let keep-ov-bag = deck-record (if keep-ov == 1 | fkcopy.sat == 1 then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
+    in let desugar-full = desugar-ov == 1 | dr.dr-sat == 1
+    in let desugar-ov-bag = deck-record (if desugar-full then deck-overflow-bag "DESUGAR" else no-overflow-bag)
+    in let keep-full = keep-ov == 1 | fkcopy.sat == 1
+    in let keep-ov-bag = deck-record (if keep-full then deck-overflow-bag "DESUGAR-KEEP" else no-overflow-bag)
     in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
     in let desugar-sealed = compact-phase flags poison-desugar
     in let h5 = __heap-save
@@ -721,7 +730,8 @@ Section: Frontend
     in let scope-ov = check-deck-overflow (scope-end - scope-origin) scope-deck-height
     in let scope-ov-bag = deck-record (if scope-ov == 1 | scope-sat == 1 then deck-overflow-bag "SCOPE" else no-overflow-bag)
     in let scope-esc-bag = deck-record (escape-check-bag (flags.escape-check) scope-metrics "SCOPE")
-    in let scope-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of scoped) "AChapter" scope-metrics "SCOPE")
+    in let sp-root = address-of scoped
+    in let scope-precise-bag = deck-record (precise-escape-bag (flags.escape-check) sp-root "AChapter" scope-metrics "SCOPE")
     in let resolve-bag2 = deck-record (bag-merge-all [
       resolve-bag,
       scope-ov-bag,
@@ -853,9 +863,14 @@ Section: Frontend
     in let keep-phase = phase-start
     in let tail-bivy = __heap-save
     in let acc-all = deck-record (__list-with-capacity (list-length pre-sorted))
-    in let (sorted-all, kc-all) = tail-resolve-bindings (check-result.state) pre-sorted 0 (list-length pre-sorted) acc-all mc tail-scratch tail-bivy __deck-pos
+    in let tr-state = check-result.state
+    in let n-sorted = list-length pre-sorted
+    in let dp-all = __deck-pos
+    in let (sorted-all, kc-all) = tail-resolve-bindings tr-state pre-sorted 0 n-sorted acc-all mc tail-scratch tail-bivy dp-all
     in let acc-et = deck-record (__list-with-capacity (list-length pre-et))
-    in let (sorted-et, kc-et) = tail-resolve-expr-types (check-result.state) pre-et 0 (list-length pre-et) acc-et mc tail-scratch tail-bivy __deck-pos
+    in let n-et = list-length pre-et
+    in let dpos-et = __deck-pos
+    in let (sorted-et, kc-et) = tail-resolve-expr-types tr-state pre-et 0 n-et acc-et mc tail-scratch tail-bivy dpos-et
     in let acc-fid = if flags.fidelity then
       deck-record (__list-with-capacity (list-length pre-fid))
     else []
@@ -879,7 +894,7 @@ Section: Frontend
     in let kept-metrics = deck-record (for m in all-phase-metrics -> deck-record (PhaseMetrics {
       label = m.label,
       bivy-origin = m.bivy-origin,
-      bivy-hwm = m.bivy-hwm,
+      bivy-close = m.bivy-close,
       deck-origin = m.deck-origin,
       deck-end = m.deck-end
     }))
@@ -899,7 +914,8 @@ Section: Frontend
     else no-overflow-bag
     in let keep-stat-bag = if flags.escape-check then
       deck-record (bag-from-list [
-        let ks0 = "KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin) & " ty=" & show (list-length (mc.mc-ty))
+        let ks0a = "KEEP-STAT used=" & show (keep-metrics.deck-end - keep-metrics.deck-origin)
+        in let ks0 = ks0a & " ty=" & show (list-length (mc.mc-ty))
         in let ks1 = ks0 & " text=" & show (list-length (mc.mc-text)) & " name=" & show (list-length (mc.mc-name))
         in let ks2 = ks1 & " row=" & show (list-length (mc.mc-row)) & " tylists=" & show (list-length (mc.mc-tylist))
         in let ks3 = ks2 & "/" & show (sum-tylist-lens (mc.mc-tylist) 0 (list-length (mc.mc-tylist)) 0)
@@ -909,7 +925,8 @@ Section: Frontend
         in let ks7 = ks6 & "/" & show (sum-ctorlist-lens (mc.mc-ctorlist) 0 (list-length (mc.mc-ctorlist)) 0)
         in let ks8 = ks7 & " labellists=" & show (list-length (mc.mc-labellist))
         in let ks9 = ks8 & "/" & show (sum-labellist-lens (mc.mc-labellist) 0 (list-length (mc.mc-labellist)) 0)
-        in let ks10 = ks9 & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et) & " binds=" & show (list-length sorted-all)
+        in let ks10a = ks9 & " subs=" & show (list-length kept-subs) & " et=" & show (list-length sorted-et)
+        in let ks10 = ks10a & " binds=" & show (list-length sorted-all)
         in make-warning cdx-escape-violation ks10 synthetic-span
       ])
     else bag-from-list []
@@ -949,17 +966,19 @@ Section: Frontend
      heap-marks = kept-marks,
      phase-metrics = kept-metrics
     })
-    in let check-scratch-top = if check-metrics.deck-end > check-metrics.bivy-hwm then
+    in let check-scratch-top = if check-metrics.deck-end > check-metrics.bivy-close then
       check-metrics.deck-end
-    else check-metrics.bivy-hwm
+    else check-metrics.bivy-close
     in let check-esc-metrics = PhaseMetrics {
      label = keep-metrics.label,
      bivy-origin = check-metrics.deck-origin,
-     bivy-hwm = check-scratch-top,
+     bivy-close = check-scratch-top,
      deck-origin = keep-metrics.deck-origin,
      deck-end = keep-metrics.deck-end
     }
-    in let check-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of result0) "CompileChecked" check-esc-metrics "CHECK")
+    in let cp-root = address-of result0
+    in let cp-esc = flags.escape-check
+    in let check-precise-bag = deck-record (precise-escape-bag cp-esc cp-root "CompileChecked" check-esc-metrics "CHECK")
     in let result = __record-set result0 "bag" (deck-record (bag-merge-all [
       final-bag,
       check-precise-bag
@@ -1017,7 +1036,8 @@ Section: Frontend
     in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
     in let lower-keep-bag = deck-record (
       if flags.phase-trace then
-        let lk-msg = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height
+        let lk-used = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base)
+        in let lk-msg = lk-used & " of " & integer-to-text lower-keep-height
         in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
       else no-overflow-bag
     )
@@ -1042,7 +1062,8 @@ Section: Frontend
     else 0
     in let lower-metrics = phase-measure lower-phase "LOWER"
     in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
-    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
+    in let lp-root = address-of ir
+    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) lp-root "IRChapter" lower-metrics "LOWER")
     in let blank-ir = IRChapter {
       name = ir.name,
       defs = [],
@@ -1054,13 +1075,17 @@ Section: Frontend
       deck-overflow-bag "LOWER"
     else if lower-keep-sat then deck-overflow-bag "LOWER-KEEP" else no-overflow-bag
     in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
-    in let fe-bag = deck-record (frontend-bag-with-passes (checked.bag) (bag-merge-all [lower-ov-bag, lower-keep-bag]) lower-esc-bag lower-precise-bag passed)
+    in let fe-bag = deck-record (
+      let lower-bags = bag-merge-all [lower-ov-bag, lower-keep-bag]
+      in frontend-bag-with-passes (checked.bag) lower-bags lower-esc-bag lower-precise-bag passed
+    )
     in let lower-sealed = compact-phase flags poison-lower
     in let resolved-defs = if run-passes then
       let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
       in let resolve-base = build resolve-deck-height
       in let resolve-ceiling = resolve-base + resolve-deck-height
-      in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
+      in let scoped-tds = checked.scoped.type-defs
+      in let type-map = deck-record (build-type-def-map scoped-tds 0 (list-length scoped-tds) [])
       in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
       in deck-record (rewrite-ir-defs stds (ir.defs) resolve-ceiling)
     else ir.defs
@@ -1102,7 +1127,8 @@ Section: Frontend
     in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
     in let lower-keep-bag = deck-record (
       if flags.phase-trace then
-        let lk-msg = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base) & " of " & integer-to-text lower-keep-height
+        let lk-used = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base)
+        in let lk-msg = lk-used & " of " & integer-to-text lower-keep-height
         in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
       else no-overflow-bag
     )
@@ -1116,7 +1142,8 @@ Section: Frontend
     else 0
     in let lower-metrics = phase-measure lower-phase "LOWER"
     in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
-    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) (address-of ir) "IRChapter" lower-metrics "LOWER")
+    in let lp-root = address-of ir
+    in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) lp-root "IRChapter" lower-metrics "LOWER")
     in let lower-sealed = compact-phase flags poison-lower
     in let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
     in let resolve-base = build resolve-deck-height
@@ -1179,26 +1206,42 @@ Section: Frontend
         in let m-check = list-at (checked.phase-metrics) 4
         in let ir-root = address-of cdx-chapter
         in let stds-root = address-of stds
+        in let lex-o = m-lex.deck-origin
+        in let scope-o = m-scope.deck-origin
+        in let scope-e = m-scope.deck-end
+        in let scope-h = m-scope.bivy-close
+        in let check-o = m-check.deck-origin
+        in let check-e = m-check.deck-end
+        in let check-h = m-check.bivy-close
+        in let lower-o = lower-metrics.deck-origin
+        in let lower-e = lower-metrics.deck-end
+        in let lower-h = lower-metrics.bivy-close
         in deck-record (bag-merge-all [
-         deck-live-warn "cdx-ir" "pre-scope" (pmap-escape-count-quiet ir-root "IRChapter" (m-lex.deck-origin) (m-scope.deck-origin)),
-         deck-live-warn "cdx-ir" "scope" (pmap-escape-count-quiet ir-root "IRChapter" (m-scope.deck-origin) (m-scope.deck-end)),
-         deck-live-warn "cdx-ir" "check" (pmap-escape-count-quiet ir-root "IRChapter" (m-check.deck-origin) (m-check.deck-end)),
-         deck-live-warn "cdx-ir" "lower" (pmap-escape-count-quiet ir-root "IRChapter" (lower-metrics.deck-origin) (lower-metrics.deck-end)),
-         deck-live-warn "stds" "pre-scope" (pmap-escape-list-quiet stds-root "TypeBinding" (m-lex.deck-origin) (m-scope.deck-origin)),
-         deck-live-warn "stds" "scope" (pmap-escape-list-quiet stds-root "TypeBinding" (m-scope.deck-origin) (m-scope.deck-end)),
-         deck-live-warn "stds" "check" (pmap-escape-list-quiet stds-root "TypeBinding" (m-check.deck-origin) (m-check.deck-end)),
-         deck-live-warn "stds" "lower" (pmap-escape-list-quiet stds-root "TypeBinding" (lower-metrics.deck-origin) (lower-metrics.deck-end)),
-         deck-live-warn "cdx-ir" "scope-scratch" (pmap-escape-count-quiet ir-root "IRChapter" (m-scope.deck-end) (m-scope.bivy-hwm)),
-         deck-live-warn "cdx-ir" "check-scratch" (pmap-escape-count-quiet ir-root "IRChapter" (m-check.deck-end) (m-check.bivy-hwm)),
-         deck-live-warn "cdx-ir" "lower-scratch" (pmap-escape-count-quiet ir-root "IRChapter" (lower-metrics.deck-end) (lower-metrics.bivy-hwm)),
-         deck-live-warn "stds" "scope-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (m-scope.deck-end) (m-scope.bivy-hwm)),
-         deck-live-warn "stds" "check-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (m-check.deck-end) (m-check.bivy-hwm)),
-         deck-live-warn "stds" "lower-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" (lower-metrics.deck-end) (lower-metrics.bivy-hwm))])
+         deck-live-warn "cdx-ir" "pre-scope" (pmap-escape-count-quiet ir-root "IRChapter" lex-o scope-o),
+         deck-live-warn "cdx-ir" "scope" (pmap-escape-count-quiet ir-root "IRChapter" scope-o scope-e),
+         deck-live-warn "cdx-ir" "check" (pmap-escape-count-quiet ir-root "IRChapter" check-o check-e),
+         deck-live-warn "cdx-ir" "lower" (pmap-escape-count-quiet ir-root "IRChapter" lower-o lower-e),
+         deck-live-warn "stds" "pre-scope" (pmap-escape-list-quiet stds-root "TypeBinding" lex-o scope-o),
+         deck-live-warn "stds" "scope" (pmap-escape-list-quiet stds-root "TypeBinding" scope-o scope-e),
+         deck-live-warn "stds" "check" (pmap-escape-list-quiet stds-root "TypeBinding" check-o check-e),
+         deck-live-warn "stds" "lower" (pmap-escape-list-quiet stds-root "TypeBinding" lower-o lower-e),
+         deck-live-warn "cdx-ir" "scope-scratch" (pmap-escape-count-quiet ir-root "IRChapter" scope-e scope-h),
+         deck-live-warn "cdx-ir" "check-scratch" (pmap-escape-count-quiet ir-root "IRChapter" check-e check-h),
+         deck-live-warn "cdx-ir" "lower-scratch" (pmap-escape-count-quiet ir-root "IRChapter" lower-e lower-h),
+         deck-live-warn "stds" "scope-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" scope-e scope-h),
+         deck-live-warn "stds" "check-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" check-e check-h),
+         deck-live-warn "stds" "lower-scratch" (pmap-escape-list-quiet stds-root "TypeBinding" lower-e lower-h)])
       else bag-from-list []
     else bag-from-list []
     in let lir-report-bag = deck-record (occ-info-bag (lir-report-if lir-target-x86 (flags.pipeline) cdx-chapter))
-    in let lir-probe-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-a64-shape "A64" "lir-dump-a64" (flags.pipeline) cdx-chapter))
-    in let lir-narrow-bag = deck-record (occ-info-bag (lir-alloc-probe-if lir-target-narrow-shape "NARROW" "lir-dump-a64" (flags.pipeline) cdx-chapter))
+    in let lir-probe-bag = deck-record (
+      let a64-probe = lir-alloc-probe-if lir-target-a64-shape "A64" "lir-dump-a64" (flags.pipeline) cdx-chapter
+      in occ-info-bag a64-probe
+    )
+    in let lir-narrow-bag = deck-record (
+      let narrow-probe = lir-alloc-probe-if lir-target-narrow-shape "NARROW" "lir-dump-a64" (flags.pipeline) cdx-chapter
+      in occ-info-bag narrow-probe
+    )
     in let fe-bag = deck-record (bag-merge-all [
       checked.bag,
       ir-check-bag,
@@ -1314,7 +1357,8 @@ Section: Disk Foreword Loading
     in when fat16-read-source vol path
       is Just (content) ->
         let deps = disk-extract-cites content ceiling
-        in let st2 = disk-load-cites-list vol (DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }) deps 0 (list-length deps) ceiling
+        in let st-in = DiskLoadState { dls-seen = seen2, dls-chunks = st.dls-chunks }
+        in let st2 = disk-load-cites-list vol st-in deps 0 (list-length deps) ceiling
         in let renamed = text-replace content ("Chapter: " & name) ("Chapter: " & quire & "--" & name)
         in DiskLoadState {
           dls-seen = st2.dls-seen,
@@ -1338,7 +1382,8 @@ Section: Disk Foreword Loading
     in let scan-base = build scan-height
     in let ceiling = scan-base + scan-height
     in let cite-list = disk-extract-cites source ceiling
-    in let st = disk-load-cites-list vol (DiskLoadState { dls-seen = [], dls-chunks = [] }) cite-list 0 (list-length cite-list) ceiling
+    in let st0 = DiskLoadState { dls-seen = [], dls-chunks = [] }
+    in let st = disk-load-cites-list vol st0 cite-list 0 (list-length cite-list) ceiling
     in let joined = deck-record (text-concat-list (st.dls-chunks))
     in let compacted = phase-compact
     in joined
@@ -1553,14 +1598,17 @@ Section: Refusing A Quotation
    is ImportOk (f) -> ""
    is ImportMissing -> "Quoted work '" & q.chapter-name & "' was not supplied; nothing offered has hash " & q.content-hash
    is ImportCorrupt -> "Quoted work '" & q.chapter-name & "' does not hash to " & q.content-hash
-   is ImportUnsigned -> "Quoted work '" & q.chapter-name & "' carries no signature; a hash says what a definition is, only a signature says who stands behind it"
+   is ImportUnsigned ->
+     let qu-head = "Quoted work '" & q.chapter-name
+     in qu-head & "' carries no signature; a hash says what a definition is, only a signature says who stands behind it"
    is ImportUnknownSigner -> "Quoted work '" & q.chapter-name & "' is signed by a key that is not in the trust manifest"
    is ImportForged -> "Quoted work '" & q.chapter-name & "' has a signature that does not verify against its signer's key"
    is ImportUntrusted (score) -> quotation-untrusted-message q score
 
   quotation-untrusted-message : CitesDecl, Integer -> Text
   quotation-untrusted-message (q) (score) =
-    "Quoted work '" & q.chapter-name & "' is signed by a key scoring " & show score & ", below the floor of " & show (q.trust-floor)
+    let qt-head = "Quoted work '" & q.chapter-name & "' is signed by a key scoring " & show score
+    in qt-head & ", below the floor of " & show (q.trust-floor)
 
   quotation-diag : CitesDecl, ImportOutcome -> Diagnostic
   quotation-diag (q) (o) =
@@ -1644,7 +1692,7 @@ Section: Text Compilation
 Section: Binary Compilation
 
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False False
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False False False
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1668,11 +1716,13 @@ Section: Binary Compilation
  rather than anything at this line.
 
   ir-emit-roots : List Text
-  ir-emit-roots = ["opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto", "fat16-servicer-read", "fat16-servicer-write"]
+  ir-emit-roots = [
+    "opening", "vb-capacity-auto", "vb-read-auto", "vb-write-auto", "fat16-servicer-read", "fat16-servicer-write"
+  ]
 
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode,
-    Integer between 0 and 2, Boolean, Boolean -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) (census) =
+    Integer between 0 and 2, Boolean, Boolean, Boolean -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) (census) (cover) =
     if bag-has-errors (fe.bag) then
       EmitChapterResult {
         header-bytes = [],
@@ -1690,7 +1740,7 @@ Section: Binary Compilation
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
     in let emit-input = ir-chapter-with-proofs pruned proofs
     in let emit-result = if list-length (fe.method-inputs.classes) == 0 then
-      x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local census
+      x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover
     else let scan-copy = IRChapter {
       name = emit-input.name,
       defs = emit-input.defs,
@@ -1709,7 +1759,7 @@ Section: Binary Compilation
         symbol-map = []
       }
     else
-      x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local census
+      x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -1741,9 +1791,10 @@ Section: Measurement
     else let m = list-at metrics i
     in let name = if i < list-length names then list-at names i else "?"
     in let deck-usage = m.deck-end - m.deck-origin
-    in let bivy-usage = m.bivy-hwm - m.bivy-origin
-    in let line0 = "WD:PM-" & name & ":deck-origin=" & integer-to-text (m.deck-origin) & ",deck-end=" & integer-to-text (m.deck-end)
-    in let line1 = line0 & ",deck-usage=" & integer-to-text deck-usage & ",bivy-hwm=" & integer-to-text (m.bivy-hwm)
+    in let bivy-usage = m.bivy-close - m.bivy-origin
+    in let line0a = "WD:PM-" & name & ":deck-origin=" & integer-to-text (m.deck-origin)
+    in let line0 = line0a & ",deck-end=" & integer-to-text (m.deck-end)
+    in let line1 = line0 & ",deck-usage=" & integer-to-text deck-usage & ",bivy-close=" & integer-to-text (m.bivy-close)
     in let line = line1 & ",bivy-usage=" & integer-to-text bivy-usage & "\n"
     in format-phase-metrics-loop metrics names (i + 1) len (acc & line)
 
@@ -1766,7 +1817,8 @@ Section: Measurement
   format-heap-marks-prefix (marks) (labels) (pfx) (i) (len) (acc) =
     if i == len then acc
     else let label = if i < list-length labels then list-at labels i else "h?"
-    in format-heap-marks-prefix marks labels pfx (i + 1) len (list-push acc (pfx & label & ":" & integer-to-text (list-at marks i) & "\n"))
+    in let mark-line = pfx & label & ":" & integer-to-text (list-at marks i) & "\n"
+    in format-heap-marks-prefix marks labels pfx (i + 1) len (list-push acc mark-line)
 
 Section: Expr-Type Pre-Resolution
 
@@ -1968,7 +2020,10 @@ Section: Entry Point
        dbg-print-def-names (fe.cdx-ir.defs) 0 (list-length (fe.cdx-ir.defs))
       end
       else print-line-uni ""
-      let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target (has-mode-flag mode "avx-local") (has-mode-flag mode "callcensus")
+      let cm-avx = has-mode-flag mode "avx-local"
+      in let cm-census = has-mode-flag mode "callcensus"
+      in let cm-cover = has-mode-flag mode "cover"
+      in let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target cm-avx cm-census cm-cover
       in act
        if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
        else print-line-uni ""
@@ -2285,8 +2340,8 @@ Section: Entry Point
     else let m = list-at ms i
     in let dk0 = acc & "DECK-" & integer-to-text i & ":phase=" & (m.label) & " origin=" & integer-to-text (m.deck-origin)
     in let dk1 = dk0 & " end=" & integer-to-text (m.deck-end) & " used=" & integer-to-text (m.deck-end - m.deck-origin)
-    in let dk2 = dk1 & " bivy-origin=" & integer-to-text (m.bivy-origin) & " bivy-hwm=" & integer-to-text (m.bivy-hwm)
-    in format-phase-decks ms (i + 1) len (dk2 & " bivy-used=" & integer-to-text (m.bivy-hwm - m.bivy-origin) & "\n")
+    in let dk2 = dk1 & " bivy-origin=" & integer-to-text (m.bivy-origin) & " bivy-close=" & integer-to-text (m.bivy-close)
+    in format-phase-decks ms (i + 1) len (dk2 & " bivy-net=" & integer-to-text (m.bivy-close - m.bivy-origin) & "\n")
 
   parse-mode-cmd : Text -> Text
   parse-mode-cmd (mode) =
@@ -2487,7 +2542,10 @@ Section: Entry Point
   disk-diag-mem : Fat16Volume -> [Console] Nothing
   disk-diag-mem (vol) = act
    print-line-uni ("DIAG mem vol " & integer-to-text (address-of vol) & " heap " & integer-to-text __heap-save)
-   print-line-uni ("DIAG hand base " & integer-to-text (peek-qword 126976 16) & " wh " & integer-to-text (peek-qword 126976 24) & " stride " & integer-to-text (peek-qword 126976 32))
+   print-line-uni (
+     let dh0 = "DIAG hand base " & integer-to-text (peek-qword 126976 16) & " wh " & integer-to-text (peek-qword 126976 24)
+     in dh0 & " stride " & integer-to-text (peek-qword 126976 32)
+   )
    print-line-uni ("DIAG stomp pre " & integer-to-text (vol.vol-bytes-per-sector))
    p <- bp-paint bp-magenta
    print-line-uni ("DIAG stomp post " & integer-to-text (vol.vol-bytes-per-sector))
@@ -2501,9 +2559,18 @@ Section: Entry Point
 
   disk-diag-vol : Fat16Volume -> [Console] Nothing
   disk-diag-vol (vol) = act
-   print-line-uni ("DIAG vol part " & integer-to-text (vol.vol-part-start) & " bps " & integer-to-text (vol.vol-bytes-per-sector) & " spc " & integer-to-text (vol.vol-sectors-per-cluster))
-   print-line-uni ("DIAG vol fat " & integer-to-text (vol.vol-fat-start) & " root " & integer-to-text (vol.vol-root-start) & " ents " & integer-to-text (vol.vol-root-entry-count))
-   print-line-uni ("DIAG vol data " & integer-to-text (vol.vol-data-start) & " total " & integer-to-text (vol.vol-total-sectors) & " clusters " & integer-to-text (vol.vol-cluster-count))
+   print-line-uni (
+     let dv0 = "DIAG vol part " & integer-to-text (vol.vol-part-start) & " bps " & integer-to-text (vol.vol-bytes-per-sector)
+     in dv0 & " spc " & integer-to-text (vol.vol-sectors-per-cluster)
+   )
+   print-line-uni (
+     let dv1 = "DIAG vol fat " & integer-to-text (vol.vol-fat-start) & " root " & integer-to-text (vol.vol-root-start)
+     in dv1 & " ents " & integer-to-text (vol.vol-root-entry-count)
+   )
+   print-line-uni (
+     let dv2 = "DIAG vol data " & integer-to-text (vol.vol-data-start) & " total " & integer-to-text (vol.vol-total-sectors)
+     in dv2 & " clusters " & integer-to-text (vol.vol-cluster-count)
+   )
   end
 
  Measured on the ASUS 2026-08-13: the three lines above print and this one does
@@ -2655,7 +2722,10 @@ Section: Entry Point
   disk-build-fnv (entry) (bs) =
     if bp-armed 0 == False then print-text ""
     else
-      print-line-uni ("SOURCE " & integer-to-text (entry.de-size) & " bytes fnv " & integer-to-text (disk-fnv bs 0 (list-length bs) (#CBF29CE484222325)))
+      print-line-uni (
+        let src0 = "SOURCE " & integer-to-text (entry.de-size) & " bytes fnv "
+        in src0 & integer-to-text (disk-fnv bs 0 (list-length bs) (#CBF29CE484222325))
+      )
 
   disk-source-bytes : Fat16Volume, Fat16DirEntry -> [Console, Device.Block] Maybe Text
   disk-source-bytes (vol) (entry) = act

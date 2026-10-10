@@ -1,0 +1,35 @@
+Chapter: BvtDoorRebuild
+  cites Uoaix chapter BvtDoorReach
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-196: a door's cells are rebuilt from the tile index within reach, not by walking every row. BvtDoorReach's
+ one-door decoration (closed at 1422,1698, open offset -1,1), given an open collider (flags 64, height 20): answers a bit per check, 1 reach is 1, 2 the closed door
+ stands a collider on its cell, 4 opened and rebuilt it stands on 1421,1699 and not on its closed cell, 8 closed and
+ rebuilt again it is back; 15 is all.
+  bdrb-count : WdState, Integer, Integer -> Integer
+  bdrb-count (doors) (x) (y) = let cell = walk-cell doors.map x y in if cell < 0 then -1 else peek-qword doors.solids (cell * doors.stride) - peek-16 doors.base (cell * 2)
+  bdrb-rebuild : WdState -> Integer
+  bdrb-rebuild (doors) = let a = when wd-rebuild-cell doors 1422 1698 is Err (_) -> 1 is Ok (_) -> 0
+    in let b = when wd-rebuild-cell doors 1421 1699 is Err (_) -> 1 is Ok (_) -> 0 in a + b
+  bdrb-fixture : WalkMap -> Integer
+  bdrb-fixture (map) = let data = bdr-fixture map in let flags = poke-qword data 160 64 in let height = poke-qword data 168 20 in data
+  bdrb-checks : Integer -> Integer
+  bdrb-checks (unused) = when walk-map-new 1408 1680 64 64
+    is Err (_) -> -1
+    is Ok (map) -> let land = bdr-land map 0 in when wd-read (bdrb-fixture map) 240 map 200
+      is Err (_) -> -2
+      is Ok (doors) -> let reach = doors.reach == 1
+        in let closed = bdrb-count doors 1422 1698 > 0 & bdrb-count doors 1421 1699 == 0
+        in let opened = poke-byte doors.opened 0 1
+        in let moved-ok = bdrb-rebuild doors == 0
+        in let moved = moved-ok & bdrb-count doors 1421 1699 > 0 & bdrb-count doors 1422 1698 == 0
+        in let shut = poke-byte doors.opened 0 0
+        in let back-ok = bdrb-rebuild doors == 0
+        in let back = back-ok & bdrb-count doors 1422 1698 > 0 & bdrb-count doors 1421 1699 == 0
+        in (if reach then 1 else 0) + (if closed then 2 else 0) + (if moved then 4 else 0) + (if back then 8 else 0)
+  bvt-door-rebuild : Integer -> [Console] Integer
+  bvt-door-rebuild (unused) = act
+    n <- bdrb-checks 0
+    a <- bvt-check ("a door's collider follows it open and shut through the tile index within reach (UOAIX-196, code " & show n & ")") (n == 15)
+    a
+  end

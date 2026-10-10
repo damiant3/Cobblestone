@@ -9,7 +9,9 @@ Chapter: AdminPanel
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter EconomyCurrency
   cites Uoaix chapter Townsfolk
+  cites Uoaix chapter ServerLog
   cites Encode chapter Json
+  cites Foreword chapter StringUtils
   cites Foreword chapter Maybe
   cites Works chapter Http
 
@@ -19,8 +21,46 @@ Chapter: AdminPanel
     connections : List Integer, pending : Integer, pending-session : Integer,
     pending-log : Integer, pending-state : Integer, gms : GmMemory,
     gm-sessions : List Integer, clock : GameClock,
-    treasury : Maybe TreasuryBinding, treasury-enabled : Boolean
+    treasury : Maybe TreasuryBinding, treasury-enabled : Boolean, server-log : Integer,
+    live : (Integer -> Text), appoint : (Integer -> Text), names : (Integer -> Text), decays : (Integer -> Text), plays : (JsonValue -> Text),
+    land-baked : (Text -> Text), history : (Integer -> Text)
   }
+ The login page asks panel-open with codex 1 and receives the compiled panel page as page; a tool asking without it
+ receives the session alone.
+  panel-with-page : JsonValue, Text -> Text
+  panel-with-page (v) (answer) = if admin-int v "codex" /= 1 | not (text-ends-with answer "}") | text-starts-with answer "{\"error\"" then answer
+    else substring answer 0 (text-length answer - 1) & ",\"page\":" & json-quote panel-page-next & "}"
+  panel-history-none : Integer -> Text
+  panel-history-none (item) = "{\"error\":\"history-unbound\"}"
+  panel-bind-history : AdminPanel, (Integer -> Text) -> Integer
+  panel-bind-history (p) (history) = let bound = __record-set p "history" history in 0
+  panel-plays-none : JsonValue -> Text
+  panel-plays-none (unused) = admin-error "unsupported-command"
+  panel-bind-plays : AdminPanel, (JsonValue -> Text) -> Integer
+  panel-bind-plays (p) (plays) = let bound = __record-set p "plays" plays in 0
+  panel-names-none : Integer -> Text
+  panel-names-none (actor) = ""
+  panel-decays-none : Integer -> Text
+  panel-decays-none (unused) = "[]"
+  panel-bind-decays : AdminPanel, (Integer -> Text) -> Integer
+  panel-bind-decays (p) (decays) = let bound = __record-set p "decays" decays in 0
+  panel-bind-names : AdminPanel, (Integer -> Text) -> Integer
+  panel-bind-names (p) (names) = let bound = __record-set p "names" names in 0
+
+  panel-live-none : Integer -> Text
+  panel-live-none (unused) = "null"
+  panel-appoint-none : Integer -> Text
+  panel-appoint-none (unused) = admin-error "unsupported-command"
+  panel-bind-appoint : AdminPanel, (Integer -> Text) -> Integer
+  panel-bind-appoint (p) (appoint) = let bound = __record-set p "appoint" appoint in 0
+
+  panel-land-baked-none : Text -> Text
+  panel-land-baked-none (tiles) = admin-error "unsupported-command"
+  panel-bind-land-baked : AdminPanel, (Text -> Text) -> Integer
+  panel-bind-land-baked (p) (baked) = let bound = __record-set p "land-baked" baked in 0
+
+  panel-bind-live : AdminPanel, (Integer -> Text) -> Integer
+  panel-bind-live (p) (live) = let bound = __record-set p "live" live in 0
 
   panel-new : AdminWorld, Text -> AdminPanel
   panel-new (world) (actor) = panel-new-with-gms world actor (gm-memory-new 0)
@@ -31,8 +71,12 @@ Chapter: AdminPanel
     sessions = 0, active = 0, touched = 0, log = tf-zeros 131072 [], log-count = 0,
     connections = tf-zeros 32768 [], pending = 0, pending-session = 0,
     pending-log = 0, pending-state = 0, gms = gms, gm-sessions = gm-zeros 384,
-    clock = gc-new get-ticks, treasury = None, treasury-enabled = False
+    clock = gc-new get-ticks, treasury = None, treasury-enabled = False, server-log = 0, live = panel-live-none, appoint = panel-appoint-none, names = panel-names-none, decays = panel-decays-none, plays = panel-plays-none,
+    land-baked = panel-land-baked-none, history = panel-history-none
   }
+
+  panel-bind-log : AdminPanel, Integer -> Integer
+  panel-bind-log (p) (log) = let bound = __record-set p "server-log" log in 0
 
   panel-bind-treasury : AdminPanel, EpWorld, Boolean -> Integer
   panel-bind-treasury (p) (world) (enabled) =
@@ -54,6 +98,14 @@ Chapter: AdminPanel
   panel-treasury-view (p) = when p.treasury
     is None -> "{\"available\":false,\"writable\":false}"
     is Just (world) -> tr-view world p.treasury-enabled
+  panel-treasury-ledger : AdminPanel -> Text
+  panel-treasury-ledger (p) = when p.treasury
+    is None -> "{\"available\":false}"
+    is Just (binding) -> tr-ledger binding p.names (",\"decays\":" & p.decays 0)
+  panel-accounts : AdminPanel, JsonValue -> Text
+  panel-accounts (p) (v) = when p.treasury
+    is None -> "{\"available\":false}"
+    is Just (binding) -> if json-get-str v "command" "" == "accounts" then tr-accounts binding p.names else tr-account binding p.names (admin-int v "purse")
 
   panel-treasury-change : AdminPanel, JsonValue, Integer -> Text
   panel-treasury-change (p) (v) (now) =
@@ -110,19 +162,19 @@ Chapter: AdminPanel
 
   panel-log : AdminPanel, Text, JsonValue, Integer, Boolean -> Integer
   panel-log (p) (action) (arguments) (now) (closing) =
-    if p.log-count >= (if closing then 128 else 127) then -1
+    if p.log-count >= 999999999 then -1
     else let id = p.log-count + 1
     in let body = "{\"id\":" & show id & ",\"actor\":" & json-quote p.actor & ",\"session\":" & show p.sessions & ",\"tick\":" & show now & ",\"action\":" & json-quote action & ",\"arguments\":" & json-emit arguments & "}"
     in if text-length body > 1020 then -1
-    else let saved = admin-store p.log (p.log-count * 1024) body
-    in let status = list-set-at p.log (p.log-count * 1024 + 1022) 0
+    else let saved = admin-store p.log (panel-log-at p p.log-count) body
+    in let status = list-set-at p.log (panel-log-at p p.log-count + 1022) 0
     in let count = __record-set p "log-count" id
     in id
 
   panel-log-result : AdminPanel, Integer, Integer -> Integer
   panel-log-result (p) (id) (result) =
-    if id < 1 | id > p.log-count then -1
-    else let saved = list-set-at p.log ((id - 1) * 1024 + 1022) result in 0
+    if id < 1 | id > p.log-count | id <= p.log-count - panel-log-room p then -1
+    else let saved = list-set-at p.log (panel-log-at p (id - 1) + 1022) result in 0
 
   panel-close : AdminPanel, Integer -> Text
   panel-close (p) (now) =
@@ -136,7 +188,7 @@ Chapter: AdminPanel
 
   panel-open : AdminPanel, Integer -> Text
   panel-open (p) (now) =
-    if p.log-count >= 126 | p.sessions >= 999999999 then admin-error "action-log-full"
+    if p.log-count >= 999999990 | p.sessions >= 999999999 then admin-error "action-log-full"
     else let closed = if p.active == 1 then panel-close p now else ""
     in let next = __record-set p "sessions" (p.sessions + 1)
     in let logged = panel-log p "session-open" JsonNull now False
@@ -144,7 +196,7 @@ Chapter: AdminPanel
     else let active = __record-set p "active" 1
     in let touched = __record-set p "touched" now
     in let done = panel-log-result p logged 1
-    in "{\"session\":" & show p.sessions & ",\"actor\":" & json-quote p.actor & ",\"html\":" & json-quote panel-html & "}"
+    in "{\"session\":" & show p.sessions & ",\"actor\":" & json-quote p.actor & "}"
 
   panel-connect : AdminPanel, Integer, Text, Text, Text, Text -> Integer
   panel-connect (p) (id) (account) (character) (address) (since) =
@@ -166,19 +218,41 @@ Chapter: AdminPanel
   panel-reports : AdminWorld, Integer, List Text -> Text
   panel-reports (a) (i) (acc) =
     if i == a.report-count then "[" & panel-join acc 0 [] & "]"
-    else let slot = int-mod (a.report-head + i) 32
+    else let slot = int-mod (a.report-head + i) (admin-report-room a)
     in let row = admin-load a.reports (slot * 2048)
     in let value = (json-parse-value row 0 (text-length row)).value
     in let summary = "{\"id\":" & show (admin-int value "id") & "," & admin-report-subject-json value & ",\"happened\":" & json-quote (json-get-str value "happened" "") & "}"
     in panel-reports a (i + 1) (list-push acc summary)
 
+ The action log is a rolling window of its 128 newest records (root, 2026-10-09: a log that refuses everything when full
+ is a defect): record n (from 1) sits in slot (n - 1) mod 128, and the count only rises.
+  panel-play-edit : AdminPanel, JsonValue, Integer -> Text
+  panel-play-edit (p) (v) (now) = let script = json-get-str v "script" ""
+    in let summary = JsonObject [json-pair "op" (JsonStr (json-get-str v "op" "")), json-pair "slot" (JsonInt (json-get-int v "slot" 0)), json-pair "story" (JsonStr (json-get-str v "story" "")), json-pair "length" (JsonInt (text-length script)), json-pair "digest" (JsonInt (panel-digest script 0 2166136261))]
+    in let logged = panel-log p "play-edit" summary now False
+    in if logged < 0 then admin-error "action-log-full"
+    else let reply = p.plays v
+    in let done = panel-log-result p logged (if text-starts-with reply "{\"ok\":true" then 1 else -1) in reply
+ A play script is logged by its length and FNV-1a digest over its characters, never its bytes (root, 2026-10-09); the
+ script itself is saved with the world (PLY1).
+  panel-digest : Text, Integer, Integer -> Integer
+  panel-digest (s) (i) (h) = if i >= text-length s then h else panel-digest s (i + 1) (int-mod (bit-xor h (char-code-at s i) * 16777619) 4294967296)
+  panel-log-room : AdminPanel -> Integer
+  panel-log-room (p) = list-length p.log / 1024
+  panel-log-at : AdminPanel, Integer -> Integer
+  panel-log-at (p) (index) = int-mod index (panel-log-room p) * 1024
+  panel-log-due : AdminPanel -> Boolean
+  panel-log-due (p) = admin-reports-due p.world
+  panel-log-grow : AdminPanel -> Integer
+  panel-log-grow (p) = let reported = if admin-reports-due p.world then admin-reports-grow p.world else 0 in panel-log-room p
   panel-log-rows : AdminPanel, Integer, List Text -> Text
   panel-log-rows (p) (i) (acc) = panel-log-range p i p.log-count acc
 
   panel-log-range : AdminPanel, Integer, Integer, List Text -> Text
   panel-log-range (p) (i) (stop) (acc) =
     if i >= stop then "[" & panel-join acc 0 [] & "]"
-    else let row = "{\"record\":" & admin-load p.log (i * 1024) & ",\"result\":" & show (list-at p.log (i * 1024 + 1022)) & "}"
+    else if i < p.log-count - panel-log-room p then panel-log-range p (p.log-count - panel-log-room p) stop acc
+    else let row = "{\"record\":" & admin-load p.log (panel-log-at p i) & ",\"result\":" & show (list-at p.log (panel-log-at p i + 1022)) & "}"
     in panel-log-range p (i + 1) stop (list-push acc row)
 
   panel-log-page : AdminPanel, Integer -> Text
@@ -202,7 +276,23 @@ Chapter: AdminPanel
     in panel-join rows (i + 1) (list-push separated (list-at rows i))
 
   panel-data : AdminPanel -> Text
-  panel-data (p) = "{\"health\":" & admin-health p.world & ",\"day_seconds\":" & show p.clock.day-seconds & ",\"support\":" & panel-reports p.world 0 [] & ",\"connections\":" & panel-connections p 0 [] & ",\"log\":" & panel-log-rows p (max 0 (p.log-count - 16)) [] & ",\"log_count\":" & show p.log-count & ",\"pending\":" & show p.pending-state & "}"
+  panel-data (p) = "{\"health\":" & admin-health p.world & ",\"day_seconds\":" & show p.clock.day-seconds & ",\"support\":" & panel-reports p.world 0 [] & ",\"connections\":" & panel-connections p 0 [] & ",\"log\":" & panel-log-rows p (max 0 (p.log-count - 16)) [] & ",\"log_count\":" & show p.log-count & ",\"pending\":" & show p.pending-state & ",\"log_levels\":" & slg-json p.server-log & ",\"live\":" & p.live 0 & "}"
+
+  panel-level-set : AdminPanel, JsonValue, Integer -> Text
+  panel-level-set (p) (v) (now) =
+    let subsystem = json-get-str v "subsystem" ""
+    in let level = slg-level-of (json-get-str v "level" "")
+    in let target = if subsystem == "all" then 0 - 2 else slg-subsystem-of subsystem
+    in if p.server-log == 0 then admin-error "log-unbound"
+    else if target == 0 - 1 then admin-error "log-subsystem"
+    else if level < 0 | (target == 0 - 2 & level == slg-inherit) then admin-error "log-level"
+    else let before = if target == 0 - 2 then peek-byte p.server-log 0 else slg-override p.server-log target
+    in let arguments = JsonObject [json-pair "subsystem" (JsonStr subsystem), json-pair "old_level" (JsonStr (slg-level-name before)), json-pair "new_level" (JsonStr (slg-level-name level))]
+    in let logged = panel-log p "log-level" arguments now False
+    in if logged < 0 then admin-error "action-log-full"
+    else let changed = if target == 0 - 2 then slg-set-all p.server-log level else slg-set p.server-log target level
+    in let done = panel-log-result p logged (if is-ok changed then 1 else 0 - 1)
+    in "{\"log_levels\":" & slg-json p.server-log & ",\"log_id\":" & show logged & "}"
 
   panel-day-set : AdminPanel, Integer, Integer -> Text
   panel-day-set (p) (seconds) (now) =
@@ -222,10 +312,10 @@ Chapter: AdminPanel
   panel-report-read (a) (id) =
     let offset = id - (a.report-sequence - a.report-count + 1)
     in if offset < 0 | offset >= a.report-count then admin-error "report-id"
-    else admin-load a.reports (int-mod (a.report-head + offset) 32 * 2048)
+    else admin-load a.reports (int-mod (a.report-head + offset) (admin-report-room a) * 2048)
 
   panel-action-known : Text -> Boolean
-  panel-action-known (action) = action == "lord-british-enter" | action == "lord-british-leave" | action == "teleport" | action == "invisible" | action == "summon-item" | action == "summon-creature" | action == "move" | action == "inspect"
+  panel-action-known (action) = action == "lord-british-enter" | action == "lord-british-leave" | action == "teleport" | action == "invisible" | action == "summon-item" | action == "summon-creature" | action == "move" | action == "inspect" | action == "grant-plot" | action == "navy" | action == "ban" | action == "unban" | action == "decor-baked"
 
   panel-action : AdminPanel, JsonValue, Integer -> Text
   panel-action (p) (v) (now) =
@@ -246,7 +336,7 @@ Chapter: AdminPanel
     else if not (panel-live p p.pending-session now) then
       let logged = panel-log-result p p.pending-log -2
       in let cancelled = __record-set p "pending-state" 0 in -2
-    else let log = admin-load p.log ((p.pending-log - 1) * 1024)
+    else let log = admin-load p.log (panel-log-at p (p.pending-log - 1))
     in let entry = (json-parse-value log 0 (text-length log)).value
     in let arguments = when json-get entry "arguments"
       is Just (value) -> value
@@ -260,20 +350,38 @@ Chapter: AdminPanel
   panel-human : AdminPanel, JsonValue, Integer -> Text
   panel-human (p) (v) (now) =
     let command = json-get-str v "command" ""
-    in if command == "panel-open" then panel-open p now
+    in if command == "panel-open" then panel-with-page v (panel-open p now)
     else if not (panel-live p (admin-int v "session") now) then admin-error "session"
     else let touched = __record-set p "touched" now
     in if command == "panel-data" then panel-data p
     else if command == "treasury-view" then panel-treasury-view p
+    else if command == "treasury-ledger" then panel-treasury-ledger p
+    else if command == "accounts" | command == "account" then panel-accounts p v
     else if command == "treasury-rates" then panel-treasury-rates p v now
     else if command == "treasury-tax" | command == "treasury-grant" then panel-treasury-change p v now
     else if command == "panel-day-set" then panel-day-set p (admin-int v "seconds") now
+    else if command == "panel-history" then p.history (admin-int v "item")
+    else if command == "panel-levels" then slg-json p.server-log
+    else if command == "panel-level-set" then panel-level-set p v now
     else if command == "gm-list" then gm-memory-view p.gms (p.world.world.hour / 24)
     else if command == "gm-log" then gm-memory-log p.gms (admin-int v "before")
     else if command == "gm-dub" | command == "gm-set" | command == "gm-revoke" then gm-memory-edit p.gms p.actor command v (p.world.world.hour / 24)
     else if command == "panel-log" then panel-log-page p (admin-int v "before")
+    else if command == "panel-cover" then "{\"ok\":true,\"slots\":" & show __cover-dump & "}"
     else if command == "panel-close" then panel-close p now
     else if command == "panel-action" then panel-action p v now
+    else if command == "plays" then p.plays v
+    else if command == "play-edit" then panel-play-edit p v now
+    else if command == "mayor-replace" then
+      let logged = panel-log p "mayor-replace" v now False
+      in if logged < 0 then admin-error "action-log-full"
+      else let reply = p.appoint 1
+      in let done = panel-log-result p logged (if text-starts-with reply "{\"ok\":true" then 1 else -1) in reply
+    else if command == "decor-land-baked" then
+      let logged = panel-log p "decor-land-baked" v now False
+      in if logged < 0 then admin-error "action-log-full"
+      else let reply = p.land-baked (json-get-str v "tiles" "")
+      in let done = panel-log-result p logged (if text-starts-with reply "{\"ok\":true" then 1 else -1) in reply
     else if command == "report-read" then panel-report-read p.world (admin-int v "id")
     else if command == "report-ack" then
       let id = admin-int v "id"
@@ -338,7 +446,7 @@ Chapter: AdminPanel
   panel-gm-data (p) (slot) =
     let a = list-at p.gms.accounts slot
     in "{\"stand_in\":true,\"account\":" & gm-account-json p.gms slot (p.world.world.hour / 24)
-      & ",\"health\":" & admin-health p.world & ",\"support\":" & panel-reports p.world 0 [] & "}"
+      & ",\"health\":" & admin-health p.world & ",\"support\":" & panel-reports p.world 0 [] & ",\"live\":" & p.live 0 & "}"
 
   panel-gm-command : AdminPanel, Integer, JsonValue, Integer -> Text
   panel-gm-command (p) (slot) (v) (now) =
@@ -354,7 +462,7 @@ Chapter: AdminPanel
       in let next = list-set-at p.gm-sessions at session
       in let touched = list-set-at p.gm-sessions (at + 1) now
       in let active = list-set-at p.gm-sessions (at + 2) 1
-      in "{\"session\":" & show session & ",\"actor\":" & json-quote (gm-name p.gms slot) & ",\"gm\":true,\"html\":" & json-quote panel-html & "}"
+      in panel-with-page v ("{\"session\":" & show session & ",\"actor\":" & json-quote (gm-name p.gms slot) & ",\"gm\":true}")
     else if list-at p.gm-sessions (at + 2) /= 1 | admin-int v "session" /= list-at p.gm-sessions at | now < list-at p.gm-sessions (at + 1) | now - list-at p.gm-sessions (at + 1) >= 180000 then admin-error "session"
     else let touched = list-set-at p.gm-sessions (at + 1) now
     in if command == "panel-close" then
@@ -400,5 +508,5 @@ Chapter: AdminPanel
   panel-route : AdminAuth, AdminPanel, HttpRequest -> HttpResponse
   panel-route (auth) (panel) (request) =
     if request.valid & request.method == "GET" & request.path == "/" & request.body == "" then
-      HttpResponse { status = "200 OK", content-type = "text/html; charset=utf-8", body = panel-login }
+      HttpResponse { status = "200 OK", content-type = "text/html; charset=utf-8", body = panel-login-next }
     else admin-route auth (panel-dispatch-auth auth panel) request

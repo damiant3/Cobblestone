@@ -1,0 +1,1013 @@
+Chapter: AdminPanelPage
+  cites UI chapter Charts
+  cites WebApp chapter WebRuntime
+  cites WebApp chapter WebGraphics
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+  cites Foreword chapter Sort
+  cites Encode chapter Json
+
+ The keeper's panel page, run in the login page's sandboxed frame (AdminPanel.md, "Graphs and the page in Codex
+ DOM"); every request goes through host-request-then.
+  ap-css : Text = ":root{font-family:system-ui,sans-serif;color:#23312c;background:#f3f1e8;line-height:1.5}*{box-sizing:border-box}body{margin:0;padding:16px}"
+    & "h1,h2,h3{font-family:Georgia,serif;font-weight:400;margin-top:0}h1{font-size:32px;margin-bottom:4px}h2{font-size:25px;margin-bottom:12px}h3{font-size:19px;margin:22px 0 8px}p{margin-top:0}"
+    & ".muted{color:#647068;font-size:14px}.empty{color:#6c766e;font-size:14px}.hide{display:none!important}"
+    & ".card{background:#fff;border:1px solid #d4d9cd;padding:24px;margin-bottom:24px;min-width:0}.grid{display:grid;grid-template-columns:1.2fr 1fr;gap:24px}"
+    & ".topline{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}"
+    & "label{display:block;font-size:13px;margin:12px 0 4px}input,select,textarea{width:100%;padding:8px 10px;border:1px solid #bfc8bd;border-radius:3px;font:inherit;background:#fff;color:#23312c}"
+    & "button{font:inherit;padding:8px 14px;border:1px solid #234c3e;border-radius:3px;background:#234c3e;color:#fff;cursor:pointer}button.secondary{background:transparent;color:#234c3e}"
+    & "#message{white-space:pre-wrap;padding:12px 16px;border-left:3px solid #ae9140;background:#fff;margin-bottom:16px}#message:empty{display:none}"
+    & ".charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));gap:16px}.charts svg,.charts canvas{max-width:100%;height:auto}"
+    & ".stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:12px}.stat{background:#fff;border-top:3px solid #a89555;padding:18px 20px}"
+    & ".stat strong{display:block;font:32px Georgia,serif;margin:6px 0}.stat span{font-size:12px;color:#637369}"
+    & ".support{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid #e5e9df;padding:12px 0}.support p{font-size:13px;margin:3px 0}"
+    & "pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace;background:#f3f5ef;padding:16px}pre:empty{display:none}"
+    & ".log-entry{border-top:1px solid #e5e9df;padding:12px 0;font-size:13px}.log-entry strong{font-weight:600}.log-entry small{display:block;color:#6b766d;overflow-wrap:anywhere}"
+    & ".formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}"
+    & ".table{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;font-size:11px;text-transform:uppercase;color:#6c766e}td,th{border-bottom:1px solid #e7ebe2;padding:10px 10px 10px 0;vertical-align:top}"
+    & ".tabradio{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;margin:0}.tabs{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0 14px;border-bottom:1px solid rgba(127,127,127,.35)}"
+    & ".tabs label{margin:0;padding:9px 16px;cursor:pointer;border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;opacity:.7;font-size:15px}.tabpanel,.subpanel{display:none}"
+    & ".subtabs{margin:0 0 14px}.subtabs label{padding:6px 14px;font-size:14px}"
+    & ".account-pick{display:block;text-align:left;width:100%;background:transparent;color:inherit;border:none;border-bottom:1px solid #e5e9df;border-radius:0;padding:8px 4px}.account-pick:hover{background:#e6ece3}"
+    & ".powers{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px}.powers button{background:#fff;color:#234c3e;text-align:left}.powers button.on{background:#234c3e;color:#fff}"
+    & "#play-script{font-family:ui-monospace,Consolas,monospace;font-size:13px}"
+    & "@media(max-width:850px){.grid{grid-template-columns:1fr}.topline{flex-direction:column;align-items:flex-start}}@media(max-width:640px){.tabs label{flex:1 1 40%;text-align:center;padding:8px 6px}}@media(max-width:460px){body{padding:8px}.card{padding:16px}}"
+  ap-tab-keys : List Text = ["overview", "actions", "treasury", "accounts", "world", "plays", "gms", "activity"]
+  ap-tab-names : List Text = ["Overview", "Actions", "Treasury", "Accounts", "World", "Plays", "Game Masters", "Activity"]
+  ap-sub-keys : List Text = ["lord", "bans", "coffers", "ledger", "day", "logs", "connections", "log"]
+  ap-rule : Text, Text -> Text
+  ap-rule (kind) (key) = "#" & kind & "-" & key & ":checked~.tabs label[for=" & kind & "-" & key & "]{opacity:1;font-weight:600;border-color:rgba(127,127,127,.35)}"
+    & "#" & kind & "-" & key & ":checked~." & kind & "panels>[data-" & kind & "=" & key & "]{display:block}"
+  ap-rules : Text, List Text, Integer -> Text
+  ap-rules (kind) (keys) (i) = if i >= list-length keys then "" else ap-rule kind (list-at keys i) & ap-rules kind keys (i + 1)
+
+  ap-add : DomElement, DomElement -> DomElement
+  ap-add (parent) (child) = let a = dom-append parent child in child
+  ap-el : Text, Text, Text -> DomElement
+  ap-el (tag) (id) (text) = dom-set-text (dom-set-attr (dom-create tag) "id" id) text
+  ap-text : DomElement, Text, Text -> DomElement
+  ap-text (parent) (tag) (text) = ap-add parent (dom-set-text (dom-create tag) text)
+  ap-muted : DomElement, Text -> DomElement
+  ap-muted (parent) (text) = dom-add-class (ap-text parent "p" text) "muted"
+  ap-note-el : DomElement, Text, Text -> DomElement
+  ap-note-el (parent) (id) (text) = ap-add parent (dom-add-class (ap-el "p" id text) "muted")
+  ap-card : DomElement, Text, Text -> DomElement
+  ap-card (parent) (id) (title) = let c = ap-add parent (dom-add-class (ap-el "section" id "") "card") in let h = ap-text c "h2" title in c
+  ap-div : DomElement, Text, Text -> DomElement
+  ap-div (parent) (id) (cls) = ap-add parent (dom-add-class (ap-el "div" id "") cls)
+  ap-label : DomElement, Text, Text -> Integer
+  ap-label (parent) (text) (target) = let l = ap-add parent (dom-set-attr (dom-set-text (dom-create "label") text) "for" target) in 0
+  ap-field : DomElement, Text, Text, Text, Text -> DomElement
+  ap-field (parent) (id) (label) (kind) (value) = let l = ap-label parent label id
+    in ap-add parent (dom-set-value (dom-set-attr (ap-el "input" id "") "type" kind) value)
+  ap-cell-field : DomElement, Text, Text, Text -> DomElement
+  ap-cell-field (grid) (id) (label) (value) = ap-field (ap-add grid (dom-create "div")) id label "number" value
+  ap-pick : DomElement, Text, Text -> DomElement
+  ap-pick (parent) (id) (label) = let l = ap-label parent label id in ap-add parent (ap-el "select" id "")
+  ap-option : DomElement, Text, Text -> Integer
+  ap-option (pick) (value) (text) = let o = dom-append pick (dom-set-text (dom-set-attr (dom-create "option") "value" value) text) in 0
+  ap-options-of : DomElement, List Text, List Text, Integer -> Integer
+  ap-options-of (pick) (values) (names) (i) = if i >= list-length values then 0
+    else let o = ap-option pick (list-at values i) (list-at names i) in ap-options-of pick values names (i + 1)
+  ap-button : DomElement, Text, Text, (Text -> Integer) -> DomElement
+  ap-button (parent) (id) (text) (handler) = ap-add parent (dom-on-click (ap-el "button" id text) handler)
+  ap-second : DomElement, Text, Text, (Text -> Integer) -> DomElement
+  ap-second (parent) (id) (text) (handler) = dom-add-class (ap-button parent id text handler) "secondary"
+  ap-tools : DomElement -> DomElement
+  ap-tools (parent) = ap-add parent (dom-add-class (dom-create "div") "tools")
+  ap-header : DomElement, List Text, Integer -> Integer
+  ap-header (row) (names) (i) = if i >= list-length names then 0
+    else let cell = dom-append row (dom-set-text (dom-create "th") (list-at names i))
+    in ap-header row names (i + 1)
+  ap-table : DomElement, List Text, Text -> Integer
+  ap-table (parent) (heads) (body) = let t = ap-add (ap-add parent (dom-add-class (dom-create "div") "table")) (dom-create "table")
+    in let h = ap-header (ap-add (ap-add t (dom-create "thead")) (dom-create "tr")) heads 0
+    in let b = ap-add t (ap-el "tbody" body "") in 0
+
+  ap-tab-set : DomElement, Text, Text, List Text, List Text -> DomElement
+  ap-tab-set (parent) (kind) (group) (keys) (names) = let r = ap-radios parent kind group keys 0
+    in let nav = ap-add parent (dom-add-class (dom-create "nav") "tabs")
+    in let sub = if kind == "sub" then dom-add-class nav "subtabs" else nav
+    in let l = ap-tab-labels nav kind keys names 0
+    in ap-add parent (dom-add-class (dom-create "div") (kind & "panels"))
+  ap-radios : DomElement, Text, Text, List Text, Integer -> Integer
+  ap-radios (parent) (kind) (group) (keys) (i) = if i >= list-length keys then 0
+    else let input = dom-set-attr (dom-set-attr (dom-set-attr (dom-add-class (dom-create "input") "tabradio") "type" "radio") "name" group) "id" (kind & "-" & list-at keys i)
+    in let a = dom-append parent (if i == 0 then dom-set-attr input "checked" "checked" else input)
+    in ap-radios parent kind group keys (i + 1)
+  ap-tab-labels : DomElement, Text, List Text, List Text, Integer -> Integer
+  ap-tab-labels (nav) (kind) (keys) (names) (i) = if i >= list-length keys then 0
+    else let id = kind & "-" & list-at keys i
+    in let a = dom-append nav (dom-set-attr (ap-el "label" ("label-" & id) (list-at names i)) "for" id)
+    in ap-tab-labels nav kind keys names (i + 1)
+  ap-pane : DomElement, Text, Text -> DomElement
+  ap-pane (panels) (kind) (key) = ap-add panels (dom-set-attr (dom-add-class (dom-create "div") (kind & "panel")) ("data-" & kind) key)
+
+  ap-obj : Text -> List Text
+  ap-obj (t) = json-parse-obj (if text-length (text-trim t) == 0 | t == "null" then "{}" else t)
+  ap-arr : Text -> List Text
+  ap-arr (t) = json-parse-obj (if text-length (text-trim t) == 0 | t == "null" then "[]" else t)
+  ap-len : List Text -> Integer
+  ap-len (rows) = text-to-int (json-obj-field rows "length")
+  ap-at : List Text, Integer -> List Text
+  ap-at (rows) (i) = ap-obj (json-obj-field rows (show i))
+  ap-f : List Text, Text -> Text
+  ap-f (o) (key) = json-obj-field o key
+  ap-num : List Text, Text -> Integer
+  ap-num (o) (key) = text-to-int (json-obj-field o key)
+  ap-yes : List Text, Text -> Boolean
+  ap-yes (o) (key) = let v = json-obj-field o key in text-length v > 0 & v /= "false" & v /= "0"
+  ap-set : Text, Text -> Integer
+  ap-set (id) (text) = let shown = dom-set-text (dom-get id) text in 0
+  ap-clear : Text -> Integer
+  ap-clear (id) = ap-set id ""
+  ap-msg : Text -> Integer
+  ap-msg (text) = ap-set "message" text
+  ap-hide : Text -> Integer
+  ap-hide (id) = let h = dom-add-class (dom-get id) "hide" in 0
+  ap-unhide : Text -> Integer
+  ap-unhide (id) = let h = dom-remove-class (dom-get id) "hide" in 0
+  ap-value : Text -> Text
+  ap-value (id) = dom-get-value (dom-get id)
+  ap-int : Text -> Integer
+  ap-int (id) = text-to-int (text-trim (dom-get-value (dom-get id)))
+  ap-cells : DomElement, List Text, Integer -> Integer
+  ap-cells (row) (values) (i) = if i >= list-length values then 0
+    else let cell = dom-append row (dom-set-text (dom-create "td") (list-at values i))
+    in ap-cells row values (i + 1)
+  ap-row : Text, List Text -> Integer
+  ap-row (body) (values) = ap-cells (ap-add (dom-get body) (dom-create "tr")) values 0
+  ap-none : Text, Text, Integer -> Integer
+  ap-none (body) (text) (cols) = let td = ap-add (ap-add (dom-get body) (dom-create "tr")) (dom-add-class (dom-set-attr (dom-set-text (dom-create "td") text) "colspan" (show cols)) "empty") in 0
+  ap-empty : Text, Text -> Integer
+  ap-empty (id) (text) = let p = ap-add (dom-get id) (dom-add-class (dom-set-text (dom-create "p") text) "empty") in 0
+  ap-when : Integer -> Text
+  ap-when (h) = "day " & show (h / 24) & ", hour " & show (int-mod h 24)
+  ap-coin : Text -> Text
+  ap-coin (m) = if m == "1" then "copper" else if m == "2" then "silver" else if m == "3" then "gold" else "coin " & m
+  ap-ore : Text -> Text
+  ap-ore (item) = if item == "6" then "gold ore" else if item == "63" then "copper ore" else if item == "64" then "silver ore" else "item " & item
+  ap-pct : Integer -> Text
+  ap-pct (bp) = show (bp / 100) & "." & text-pad-left (show (int-mod bp 100)) 2 "0"
+  ap-bp-of : Text -> Integer
+  ap-bp-of (t) = let parts = text-split (text-trim t) "."
+    in text-to-int (list-at parts 0) * 100 + (if list-length parts < 2 then 0 else text-to-int (substring (list-at parts 1 & "00") 0 2))
+  ap-hex : Integer -> Text
+  ap-hex (n) = if n < 16 then substring "0123456789abcdef" n 1 else ap-hex (n / 16) & substring "0123456789abcdef" (int-mod n 16) 1
+  ap-join : List Text, Integer, Text -> Text
+  ap-join (rows) (i) (sep) = if i >= ap-len rows then "" else (if i == 0 then "" else sep) & json-obj-field rows (show i) & ap-join rows (i + 1) sep
+  ap-error : Text -> Text
+  ap-error (answer) = json-obj-field (ap-obj answer) "error"
+  ap-said : Text, Text -> Text
+  ap-said (answer) (done) = if text-length (ap-error answer) > 0 then "Refused: " & ap-error answer else done
+  ap-desc : Integer, Integer -> Integer
+  ap-desc (a) (b) = b - a
+
+ One request at a time: the login page serves the frame's requests in order and refuses a second while one is open.
+  ap-req : Text, (Text -> Integer) -> Integer
+  ap-req (command) (k) = if state-get "busy" == 1 then ap-msg "The shard is still answering the previous request; try again in a moment."
+    else let b = state-set "busy" 1 in host-request-then command (\answer -> let free = state-set "busy" 0 in k answer)
+
+ The refresh chain: panel-data, then for the owner the history, treasury, ledger, accounts, GMs, GM log and plays.
+  ap-refresh : Text -> Integer
+  ap-refresh (unused) = ap-req "{\"command\":\"panel-data\"}" ap-data-chain
+  ap-data-chain : Text -> Integer
+  ap-data-chain (answer) = let r = ap-data answer
+    in if state-get "gm" == 1 then ap-req "{\"command\":\"gm-own-log\",\"before\":0}" ap-own-log
+    else ap-req "{\"command\":\"panel-history\",\"item\":0}" ap-history-chain
+  ap-history-chain : Text -> Integer
+  ap-history-chain (answer) = let r = ap-history answer in ap-req "{\"command\":\"treasury-view\"}" ap-treasury-chain
+  ap-treasury-chain : Text -> Integer
+  ap-treasury-chain (answer) = let r = ap-treasury answer in ap-req "{\"command\":\"treasury-ledger\"}" ap-ledger-chain
+  ap-ledger-chain : Text -> Integer
+  ap-ledger-chain (answer) = let r = ap-ledger answer in ap-req "{\"command\":\"accounts\"}" ap-accounts-chain
+  ap-accounts-chain : Text -> Integer
+  ap-accounts-chain (answer) = let r = ap-accounts answer in ap-req "{\"command\":\"gm-list\"}" ap-gms-chain
+  ap-gms-chain : Text -> Integer
+  ap-gms-chain (answer) = let r = ap-gms answer in ap-req "{\"command\":\"gm-log\",\"before\":0}" ap-gm-log-chain
+  ap-gm-log-chain : Text -> Integer
+  ap-gm-log-chain (answer) = let r = ap-gm-log answer in ap-req (ap-plays-command 0) ap-plays
+  ap-then-refresh : Text, Text -> Integer
+  ap-then-refresh (done) (answer) = let said = ap-msg (ap-said answer done) in ap-refresh ""
+
+  ap-history : Text -> Integer
+  ap-history (answer) = let o = ap-obj answer
+    in if text-length (ap-f o "error") > 0 then ap-set "graph-note" ("History unavailable: " & ap-f o "error")
+    else let hours = ap-ints (ap-f o "hours")
+    in let said = ap-set "graph-note" (show (list-length hours) & " game hours kept, oldest first.")
+    in let g = ap-chart "chart-gold" "treasury gold" hours (ap-ints (ap-f o "gold")) #B89C4A
+    in let s = ap-chart "chart-silver" "treasury silver" hours (ap-ints (ap-f o "silver")) #8A9AA0
+    in let c = ap-chart "chart-copper" "treasury copper" hours (ap-ints (ap-f o "copper")) #A8643C
+    in let listed = if text-length (ap-value "item-pick") > 0 then 0 else ap-item-options (ap-arr (ap-f o "names")) 0
+    in if text-length (ap-f o "item") == 0 then 0
+    else let p = ap-chart "chart-price" "lowest shop price" hours (ap-ints (ap-f o "price")) #234C3E
+    in ap-chart "chart-stock" "stock across shops" hours (ap-ints (ap-f o "stock")) #6C765C
+  ap-ints : Text -> List Integer
+  ap-ints (json) = let rows = ap-arr json in ap-ints-of rows 0 (ap-len rows) []
+  ap-ints-of : List Text, Integer, Integer, List Integer -> List Integer
+  ap-ints-of (rows) (i) (n) (out) = if i >= n then out else ap-ints-of rows (i + 1) n (list-push out (text-to-int (json-obj-field rows (show i))))
+  ap-points : List Integer, List Integer, Integer, List DataPoint -> List DataPoint
+  ap-points (hours) (values) (i) (out) = if i >= list-length hours | i >= list-length values then out
+    else ap-points hours values (i + 1) (list-push out (data-point (list-at hours i) (ap-floor0 (list-at values i))))
+  ap-floor0 : Integer -> Integer
+  ap-floor0 (v) = if v < 0 then 0 else v
+  ap-chart : Text, Text, List Integer, List Integer, Integer -> Integer
+  ap-chart (id) (title) (hours) (values) (colour) = mount-chart id (chart-set-labels (chart-set-size (chart-line title (ap-points hours values 0 []) colour) 360 200) "game hour" title)
+  ap-item-options : List Text, Integer -> Integer
+  ap-item-options (names) (i) = if i >= ap-len names then 0
+    else let o = ap-option (dom-get "item-pick") (show (i + 1)) (json-obj-field names (show i)) in ap-item-options names (i + 1)
+  ap-show-item : Text -> Integer
+  ap-show-item (unused) = ap-req ("{\"command\":\"panel-history\",\"item\":" & show (ap-int "item-pick") & "}") ap-history
+
+  ap-tile-ids : List Text = ["world-state", "players", "npcs", "population", "support-count", "fallbacks"]
+  ap-tile-heads : List Text = ["WORLD", "PLAYERS", "NPCS", "POPULATION", "SUPPORT", "MODEL FALLBACKS"]
+  ap-tile-notes : List Text = ["Shard status", "Characters in the world now", "", "Living townsfolk", "Awaiting human review", "Recorded unavailable or refused replies"]
+  ap-tiles : DomElement, Integer -> Integer
+  ap-tiles (parent) (i) = if i >= list-length ap-tile-ids then 0
+    else let tile = ap-add parent (dom-add-class (dom-create "div") "stat")
+    in let a = ap-text tile "span" (list-at ap-tile-heads i)
+    in let b = ap-add tile (ap-el "strong" (list-at ap-tile-ids i) "")
+    in let c = ap-add tile (ap-el "span" (list-at ap-tile-ids i & "-note") (list-at ap-tile-notes i))
+    in ap-tiles parent (i + 1)
+
+  ap-data : Text -> Integer
+  ap-data (answer) = let o = ap-obj answer
+    in if text-length (ap-f o "error") > 0 then ap-set "world-state" ("Unavailable: " & ap-f o "error")
+    else let h = ap-obj (ap-f o "health")
+    in let live = ap-obj (ap-f o "live")
+    in let gm = text-length (ap-f o "account") > 0
+    in let g = state-set "gm" (if gm then 1 else 0)
+    in let t = ap-fill-tiles h live
+    in let w = ap-health h live gm
+    in let s = ap-support (ap-f o "support") (ap-f live "help_pages")
+    in if gm then ap-gm-mode (ap-obj (ap-f o "account")) else ap-owner-data o
+  ap-fill-tiles : List Text, List Text -> Integer
+  ap-fill-tiles (h) (live) = let npcs = ap-num live "shopkeepers" + ap-num live "bankers" + ap-num live "residents" + ap-num live "monsters" + ap-num live "spawned"
+    in let world = ap-obj (ap-f live "world")
+    in let links = ap-obj (ap-f live "links")
+    in let a = ap-set "world-state" (if ap-yes h "up" then "Running" else "Down")
+    in let b = ap-set "players" (show (ap-num live "players_online"))
+    in let c = ap-set "npcs" (show npcs)
+    in let d = ap-set "npcs-note" (show (ap-num live "shopkeepers") & " shopkeepers, " & show (ap-num live "bankers") & " bankers, " & show (ap-num live "residents") & " residents, "
+      & show (ap-num live "monsters") & " monsters, " & show (ap-num live "spawned") & " spawned"
+      & (if text-length (ap-f live "world") == 0 then "" else "; world " & ap-f world "live" & " of " & ap-f world "capacity" & " slots, " & ap-f world "retired" & " retired, ceiling " & ap-f world "ceiling")
+      & (if text-length (ap-f live "links") == 0 then "" else "; links " & ap-f links "slots" & " slots" & (if ap-yes links "dynamic" then ", admitted by load (round " & ap-f links "round_ticks" & " of " & ap-f links "round_budget" & " ticks)" else ", fixed")))
+    in let e = ap-set "population" (if text-length (ap-f live "townsfolk") > 0 then ap-f live "townsfolk" else ap-f h "population")
+    in let f = ap-set "support-count" (show (ap-num h "conduct_pending" + ap-len (ap-arr (ap-f live "help_pages"))))
+    in let g = ap-set "fallbacks" (ap-f h "model_fallbacks")
+    in ap-set "hour" ("Game hour " & ap-f h "game_hour")
+
+ World health (web/admin-panel.html "World health"): one line a subsystem of the live object.
+  ap-health : List Text, List Text, Boolean -> Integer
+  ap-health (h) (live) (gm) = let e = ap-set "economy" (if gm then "Gold in " & ap-f h "gold_in" & "; gold out " & ap-f h "gold_out"
+      else "Gold in " & ap-f h "gold_in" & ", gold out " & ap-f h "gold_out" & ", bread " & ap-f h "bread_price" & ", goods " & ap-f h "goods_price" & ", spawns " & ap-f h "spawns"
+        & ", refused proposals " & ap-f h "refused_proposals" & ", errors " & ap-f h "errors")
+    in let a = ap-set "law" (ap-law (ap-f live "law"))
+    in let b = ap-set "sea" (ap-sea (ap-f live "sea"))
+    in let c = ap-set "town" (ap-town (ap-f live "town"))
+    in let d = ap-set "wilds" (ap-wilds (ap-f live "wilds"))
+    in ap-set "decor" (ap-decor (ap-f live "decor"))
+  ap-law : Text -> Text
+  ap-law (t) = if text-length t == 0 then "Law: not running"
+    else let l = ap-obj t
+    in let wanted = ap-arr (ap-f l "wanted")
+    in let jail = ap-obj (ap-f l "jail")
+    in "Law: wanted " & show (ap-len wanted) & (if ap-len wanted > 0 then " (" & ap-join wanted 0 ", " & ")" else "") & ", jailed " & ap-f l "jailed" & ", guards " & ap-f l "guards"
+      & " (" & ap-f l "busy" & " on a case), jail " & (if ap-yes jail "set" then ap-f jail "x" & ", " & ap-f jail "y" else "unset")
+  ap-sea : Text -> Text
+  ap-sea (t) = if text-length t == 0 then "Sea: not running"
+    else let s = ap-obj t
+    in "Sea: pirate haven " & ap-f s "haven" & " ships, navy " & (if ap-yes s "patrol" then "patrols daily" else "regular patrols") & ", today "
+      & (if ap-yes s "raid" then "pirates sail" else "no pirates") & (if ap-yes s "navy" then ", the navy is out" else "")
+  ap-town : Text -> Text
+  ap-town (t) = if text-length t == 0 then "Britain: no government"
+    else let b = ap-obj t
+    in "Britain: mayor " & ap-f b "mayor" & ", purse " & ap-f b "purse" & " gold, guards " & ap-f b "guards" & ", " & (if ap-yes b "raid" then "raid on, militia " & ap-f b "militia" else "no raid")
+      & ", raids " & ap-f b "raids" & ", wrecked " & ap-f b "wrecked" & ", repaired " & ap-f b "repaired" & ", fees owed " & ap-f b "owed" & ", bounties " & ap-f b "bounties"
+      & " offered, " & ap-f b "paid" & " paid, civic rows " & ap-f b "rows" & "/2048, law cases " & ap-f b "cases" & "/128"
+  ap-wilds : Text -> Text
+  ap-wilds (t) = if text-length t == 0 then "Wilds: not running"
+    else let w = ap-obj t
+    in let notable = ap-arr (ap-f w "notable")
+    in "Wilds: " & ap-f w "living" & " of " & ap-f w "capacity" & " in " & ap-f w "homes" & " homes (primal " & ap-f w "primal" & ", descendants " & ap-f w "descendants"
+      & "), spilled " & ap-f w "roamers" & ", raiding Britain " & ap-f w "raiders" & (if ap-len notable > 0 then "; " & ap-notable notable 0 else "")
+  ap-notable : List Text, Integer -> Text
+  ap-notable (rows) (i) = if i >= ap-len rows then ""
+    else let n = ap-at rows i
+    in (if i == 0 then "" else "; ") & ap-f n "name" & " " & ap-f n "primal" & "/" & ap-f n "of" & "+" & ap-f n "descendants" & " of " & ap-f n "capacity"
+      & (if ap-num n "respawn_min" >= 0 & text-length (ap-f n "respawn_min") > 0 then " respawn " & ap-f n "respawn_min" & "m" else "") & ap-notable rows (i + 1)
+  ap-decor : Text -> Text
+  ap-decor (t) = if text-length t == 0 then "Decorations: none"
+    else let d = ap-obj t
+    in let marked = ap-arr (ap-f d "marked")
+    in "Decorations: " & show (ap-num d "count") & " placed, " & show (ap-len marked) & " marked for the bake" & (if ap-len marked > 0 then ": " & ap-marked marked 0 else "")
+  ap-marked : List Text, Integer -> Text
+  ap-marked (rows) (i) = if i >= ap-len rows | i >= 24 then ""
+    else let m = ap-at rows i
+    in (if i == 0 then "" else "; ") & ap-hex (ap-num m "art") & "@" & ap-f m "x" & "," & ap-f m "y" & "," & ap-f m "z" & ap-marked rows (i + 1)
+  ap-mayor : Text -> Integer
+  ap-mayor (unused) = ap-req "{\"command\":\"mayor-replace\"}" (\answer -> ap-then-refresh ("Lord British appointed " & ap-f (ap-obj answer) "mayor" & " Mayor of Britain. The action was logged.") answer)
+
+  ap-owner-data : List Text -> Integer
+  ap-owner-data (o) = let linked = ap-connections (ap-f o "connections")
+    in let logged = ap-log (ap-f o "log")
+    in let counted = ap-set "log-count" (ap-f o "log_count" & " recorded")
+    in let pending = ap-set "action-state" (if ap-yes o "pending" then "An action awaits the game server." else "Actions are logged before the game server applies them.")
+    in let day = dom-set-value (dom-get "day-seconds") (ap-f o "day_seconds")
+    in ap-levels (ap-f o "log_levels")
+
+ The support queue: each report names its subject as AdminPort.md's report contract does (a body without
+ subject_kind is an account report), each in-game help page its character and place.
+  ap-subject : List Text -> Text
+  ap-subject (r) = let kind = if text-length (ap-f r "subject_kind") == 0 then "account" else ap-f r "subject_kind"
+    in if kind == "account" then (if text-length (ap-f r "account") > 0 then ap-f r "account" else "Account")
+    else if kind == "npc" then "NPC #" & ap-f r "subject_id"
+    else if kind == "world" then (if ap-num r "subject_id" /= 0 then "World object #" & ap-f r "subject_id" else "World")
+    else "Unknown subject"
+  ap-support-row : Text, Text -> DomElement
+  ap-support-row (title) (text) = let row = ap-add (dom-get "support") (dom-add-class (dom-create "div") "support")
+    in let copy = ap-add row (dom-create "div")
+    in let a = ap-text copy "strong" title
+    in let b = ap-text copy "p" text in row
+  ap-reports : List Text, Integer, Integer -> Integer
+  ap-reports (rows) (i) (n) = if i >= n then 0
+    else let r = ap-at rows i
+    in let row = ap-support-row (ap-subject r) (ap-f r "happened")
+    in let b = dom-append row (dom-on-click (ap-el "button" ("review-" & ap-f r "id") ("Review #" & ap-f r "id")) ap-review)
+    in ap-reports rows (i + 1) n
+  ap-helps : List Text, Integer, Integer -> Integer
+  ap-helps (rows) (i) (n) = if i >= n then 0
+    else let p = ap-at rows i
+    in let row = ap-support-row ("Help page #" & ap-f p "id") ("Character " & ap-f p "serial" & " asked for help at " & ap-f p "x" & ", " & ap-f p "y" & ", " & ap-f p "z" & ". Answer in game.")
+    in ap-helps rows (i + 1) n
+  ap-support : Text, Text -> Integer
+  ap-support (reports) (helps) = let r = ap-arr reports
+    in let h = ap-arr helps
+    in let cleared = ap-clear "support"
+    in let a = ap-reports r 0 (ap-len r)
+    in let b = ap-helps h 0 (ap-len h)
+    in if ap-len r + ap-len h > 0 then 0 else ap-empty "support" "No reports or help pages awaiting review."
+  ap-review : Text -> Integer
+  ap-review (id) = let n = text-to-int (substring id 7 (text-length id - 7))
+    in ap-req ("{\"command\":\"report-read\",\"id\":" & show n & "}") (ap-reviewed n)
+  ap-reviewed : Integer, Text -> Integer
+  ap-reviewed (n) (answer) = let r = ap-obj answer
+    in let shown = ap-set "report-detail" (if text-length (ap-f r "error") > 0 then "Refused: " & ap-f r "error"
+      else "Report #" & show n & ", " & ap-subject r & "\n" & ap-f r "location" & ", game hour " & ap-f r "game_hour" & ", " & ap-f r "wall_time" & "\n\n" & ap-f r "happened" & "\n\n" & ap-f r "evidence")
+    in let cleared = ap-clear "report-actions"
+    in let b = dom-append (dom-get "report-actions") (dom-on-click (ap-el "button" ("ack-" & show n) ("Acknowledge #" & show n)) ap-ack) in 0
+  ap-ack : Text -> Integer
+  ap-ack (id) = ap-req ("{\"command\":\"report-ack\",\"id\":" & show (text-to-int (substring id 4 (text-length id - 4))) & "}") ap-acked
+  ap-acked : Text -> Integer
+  ap-acked (answer) = let shown = ap-set "report-detail" (ap-said answer "Acknowledged and logged. No disciplinary action follows.")
+    in let cleared = ap-clear "report-actions"
+    in ap-refresh ""
+
+ Lord British's actions: one of the panel-action allowlist (AdminPanel.md, "Actions and game authority") with its
+ seven numbers; the server logs it and queues it for British's next pulse.
+  ap-actions : List Text = ["inspect", "lord-british-enter", "lord-british-leave", "teleport", "invisible", "summon-item", "summon-creature", "move", "navy", "grant-plot"]
+  ap-action-names : List Text = ["Inspect", "Enter Lord British mode", "Leave Lord British mode", "Teleport", "Go invisible", "Summon item", "Summon creature",
+    "Move item or creature", "Order the royal navy to patrol daily, or stand it down", "Grant a plot (target: the holder; x, y: its center)"]
+  ap-fields : List Text = ["connection", "target", "graphic", "x", "y", "z", "amount"]
+  ap-field-names : List Text = ["Connection ID", "Target serial", "Graphic", "X", "Y", "Z", "Amount"]
+  ap-action-fields : DomElement, Integer -> Integer
+  ap-action-fields (grid) (i) = if i >= list-length ap-fields then 0
+    else let input = ap-cell-field grid ("act-" & list-at ap-fields i) (list-at ap-field-names i) (if i == 0 | i == 6 then "1" else "0")
+    in ap-action-fields grid (i + 1)
+  ap-action-json : Integer, Text -> Text
+  ap-action-json (i) (acc) = if i >= list-length ap-fields then acc & "}"
+    else ap-action-json (i + 1) (acc & ",\"" & list-at ap-fields i & "\":" & show (ap-int ("act-" & list-at ap-fields i)))
+  ap-queue : Text -> Integer
+  ap-queue (unused) = ap-req (ap-action-json 0 ("{\"command\":\"panel-action\",\"action\":" & json-quote (ap-value "act-action"))) ap-queued
+  ap-queued : Text -> Integer
+  ap-queued (answer) = ap-then-refresh ("Action #" & ap-f (ap-obj answer) "queued" & " recorded and queued. The game server must validate and apply the action.") answer
+  ap-ban : Text -> Integer
+  ap-ban (unused) = let command = "{\"command\":\"panel-action\",\"action\":\"ban\",\"target\":" & show (ap-int "ban-target") & "}"
+    in ap-req command (\answer -> ap-then-refresh ("Ban #" & ap-f (ap-obj answer) "queued" & " recorded and queued. Lord British applies the ban in game on his next pulse.") answer)
+  ap-unban : Text -> Integer
+  ap-unban (unused) = let command = "{\"command\":\"panel-action\",\"action\":\"unban\",\"account\":" & json-quote (ap-value "unban-account") & "}"
+    in ap-req command (\answer -> ap-then-refresh ("Unban #" & ap-f (ap-obj answer) "queued" & " recorded and queued. Lord British lifts the ban in game on his next pulse.") answer)
+
+ The action log, newest first: the record's id, action and outcome (0 queued, 1 applied, -1 refused, -2 cancelled),
+ its actor, session and tick, and its arguments as recorded. Older pages come from panel-log before the oldest shown.
+  ap-outcome : Text -> Text
+  ap-outcome (r) = if r == "0" then "Queued" else if r == "1" then "Applied" else if r == "-1" then "Refused" else if r == "-2" then "Cancelled" else "Recorded"
+  ap-log-rows : List Text, Integer -> Integer
+  ap-log-rows (rows) (i) = if i < 0 then 0
+    else let item = ap-at rows i
+    in let rec = ap-obj (ap-f item "record")
+    in let row = ap-add (dom-get "actions") (dom-add-class (dom-create "div") "log-entry")
+    in let a = ap-text row "strong" ("#" & ap-f rec "id" & " " & ap-f rec "action" & ", " & ap-outcome (ap-f item "result"))
+    in let b = ap-text row "small" (ap-f rec "actor" & ", session " & ap-f rec "session" & ", tick " & ap-f rec "tick")
+    in let c = ap-text row "small" (ap-f rec "arguments")
+    in ap-log-rows rows (i - 1)
+  ap-log : Text -> Integer
+  ap-log (json) = let rows = ap-arr json
+    in let cleared = ap-clear "actions"
+    in let oldest = state-set "log-oldest" (if ap-len rows == 0 then 0 else ap-num (ap-obj (ap-f (ap-at rows 0) "record")) "id")
+    in if ap-len rows == 0 then ap-empty "actions" "No actions recorded." else ap-log-rows rows (ap-len rows - 1)
+  ap-older-log : Text -> Integer
+  ap-older-log (unused) = if state-get "log-oldest" <= 1 then ap-msg "No older actions are retained."
+    else ap-req ("{\"command\":\"panel-log\",\"before\":" & show (state-get "log-oldest") & "}") (\answer -> if text-length (ap-error answer) > 0 then ap-msg ("Refused: " & ap-error answer) else ap-log (ap-f (ap-obj answer) "log"))
+
+  ap-connections : Text -> Integer
+  ap-connections (json) = let rows = ap-arr json
+    in let cleared = ap-clear "connection-rows"
+    in let count = ap-set "connection-count" (show (ap-len rows) & " connected")
+    in ap-connection-rows rows 0 (ap-len rows)
+  ap-connection-rows : List Text, Integer, Integer -> Integer
+  ap-connection-rows (rows) (i) (n) = if i >= n then 0
+    else let c = ap-at rows i
+    in let row = ap-row "connection-rows" [ap-f c "id", ap-f c "account", ap-f c "character", ap-f c "address", ap-f c "since"]
+    in ap-connection-rows rows (i + 1) n
+
+ The treasury (TreasuryPanel.md): mode and balance by metal, the coin rates, the tax and the grant to a royal
+ business, and the crown share per chain, from treasury-view.
+  ap-treasury : Text -> Integer
+  ap-treasury (answer) = let d = ap-obj answer
+    in let available = ap-yes d "available"
+    in let currency = ap-f d "backend" == "currency"
+    in let a = ap-set "treasury-mode" (if not available then "Unavailable" else if ap-yes d "writable" then "Controls enabled" else "Read only")
+    in let b = ap-set "treasury-balance" (if not available then "Economy is not connected."
+      else "Treasury balance: " & (if currency then ap-f d "copper" & " copper, " & ap-f d "silver" & " silver, " else "")
+        & ap-f d "balance" & " gold. Game hour " & ap-f d "game_hour" & ". Ore taxed at mining (" & ap-pct (ap-num d "mining_tax_basis_points") & "%): "
+        & ap-f d "gold_ore_taxed" & " gold, " & ap-f d "silver_ore_taxed" & " silver, " & ap-f d "copper_ore_taxed" & " copper.")
+    in let c = ap-clear "treasury-business"
+    in let m = ap-clear "treasury-metal"
+    in let ch = ap-clear "treasury-chains"
+    in if not available then ap-hide "treasury-rates"
+    else let r = ap-rates d currency
+    in let t = dom-set-value (dom-get "treasury-tax") (ap-pct (ap-num d "tax_basis_points"))
+    in let metals = ap-arr (ap-f d "metals")
+    in let mo = ap-metal-options metals 0
+    in let bo = ap-businesses (ap-arr (ap-f d "businesses")) 0 currency
+    in ap-chains (ap-arr (ap-f d "chains")) 0
+  ap-rates : List Text, Boolean -> Integer
+  ap-rates (d) (currency) = if not currency then ap-hide "treasury-rates"
+    else let shown = ap-unhide "treasury-rates"
+    in let a = dom-set-value (dom-get "rate-copper") (ap-f d "copper_per_gold")
+    in let b = dom-set-value (dom-get "rate-silver") (ap-f d "silver_per_gold")
+    in ap-set "rates-current" (ap-f d "copper_per_gold" & " copper = " & ap-f d "silver_per_gold" & " silver = 1 gold")
+  ap-metal-options : List Text, Integer -> Integer
+  ap-metal-options (metals) (i) = if i >= ap-len metals then 0
+    else let m = json-obj-field metals (show i)
+    in let o = ap-option (dom-get "treasury-metal") m (if m == "1" then "Copper" else if m == "2" then "Silver" else "Gold")
+    in ap-metal-options metals (i + 1)
+  ap-businesses : List Text, Integer, Boolean -> Integer
+  ap-businesses (rows) (i) (currency) = if i >= ap-len rows then 0
+    else let b = ap-at rows i
+    in let o = ap-option (dom-get "treasury-business") (ap-f b "purse") ("Business #" & ap-f b "owner" & " (purse " & ap-f b "purse" & "): " & ap-f b "balance" & " gold"
+      & (if currency then ", " & ap-f b "copper" & " copper, " & ap-f b "silver" & " silver" else ""))
+    in ap-businesses rows (i + 1) currency
+  ap-chains : List Text, Integer -> Integer
+  ap-chains (rows) (i) = if i >= ap-len rows then 0
+    else let c = ap-at rows i
+    in let r = ap-row "treasury-chains" [ap-f c "name", ap-f c "turnover", ap-f c "crown", if text-length (ap-f c "share_basis_points") == 0 then "No turnover" else ap-pct (ap-num c "share_basis_points") & "%"]
+    in ap-chains rows (i + 1)
+  ap-set-rates : Text -> Integer
+  ap-set-rates (unused) = let command = "{\"command\":\"treasury-rates\",\"copper_per_gold\":" & show (ap-int "rate-copper") & ",\"silver_per_gold\":" & show (ap-int "rate-silver") & "}"
+    in ap-req command (ap-then-refresh "Coin rates changed and logged.")
+  ap-set-tax : Text -> Integer
+  ap-set-tax (unused) = ap-req ("{\"command\":\"treasury-tax\",\"basis_points\":" & show (ap-bp-of (ap-value "treasury-tax")) & "}") (ap-then-refresh "Tax rate changed and logged.")
+  ap-grant : Text -> Integer
+  ap-grant (unused) = ap-req ("{\"command\":\"treasury-grant\",\"purse\":" & show (ap-int "treasury-business") & ",\"amount\":" & show (ap-int "treasury-amount")
+      & ",\"metal\":" & show (ap-int "treasury-metal") & "}") (ap-then-refresh "Treasury grant transferred and logged.")
+
+ The crown ledger: totals by kind and coin, the ore taken as mining tax, every money row and ore levy newest first,
+ and the corpse decays. A row is sorted by a key of its game hour times 2000000 plus its index (levies 1000000 on).
+  ap-ledger : Text -> Integer
+  ap-ledger (answer) = let d = ap-obj answer
+    in let a = ap-clear "ledger-totals"
+    in let b = ap-clear "ledger-rows"
+    in let c = ap-clear "ledger-decays"
+    in if not (ap-yes d "available") then ap-set "ledger-hour" "Unavailable"
+    else let hour = ap-set "ledger-hour" ("Now " & ap-when (ap-num d "game_hour") & " (game hour " & ap-f d "game_hour" & ")")
+    in let totals = ap-arr (ap-f d "totals")
+    in let ore = ap-obj (ap-f d "ore_taxed")
+    in let shown = ap-totals totals 0 0 + ap-ore-total "gold ore" (ap-f ore "gold") + ap-ore-total "silver ore" (ap-f ore "silver") + ap-ore-total "copper ore" (ap-f ore "copper")
+    in let e = if shown > 0 then 0 else ap-none "ledger-totals" "Nothing taken yet." 3
+    in let rows = ap-arr (ap-f d "rows")
+    in let levies = ap-arr (ap-f d "levies")
+    in let keys = sort-by (ap-keys levies 0 1000000 (ap-keys rows 0 0 [])) ap-desc
+    in let r = if list-length keys == 0 then ap-none "ledger-rows" "No entries since the last sealed segment." 5 else ap-entries rows levies keys 0
+    in let decays = ap-arr (ap-f d "decays")
+    in if ap-len decays == 0 then ap-none "ledger-decays" "No corpse has decayed since the last restart." 4 else ap-decays decays 0
+  ap-totals : List Text, Integer, Integer -> Integer
+  ap-totals (rows) (i) (shown) = if i >= ap-len rows then shown
+    else let t = ap-at rows i
+    in if ap-num t "amount" == 0 then ap-totals rows (i + 1) shown
+    else let r = ap-row "ledger-totals" [ap-f t "kind", ap-coin (ap-f t "metal"), ap-f t "amount"] in ap-totals rows (i + 1) (shown + 1)
+  ap-ore-total : Text, Text -> Integer
+  ap-ore-total (metal) (amount) = if text-to-int amount == 0 then 0 else let r = ap-row "ledger-totals" ["mining tax", metal, amount] in 1
+  ap-keys : List Text, Integer, Integer, List Integer -> List Integer
+  ap-keys (rows) (i) (base) (out) = if i >= ap-len rows then out
+    else ap-keys rows (i + 1) base (list-push out (ap-num (ap-at rows i) "hour" * 2000000 + base + i))
+  ap-entries : List Text, List Text, List Integer, Integer -> Integer
+  ap-entries (rows) (levies) (keys) (i) = if i >= list-length keys then 0
+    else let k = int-mod (list-at keys i) 2000000
+    in let levy = k >= 1000000
+    in let r = if levy then ap-at levies (k - 1000000) else ap-at rows k
+    in let shown = ap-row "ledger-rows" [ap-when (ap-num r "hour"), ap-f r "kind", ap-f r "who", if levy then ap-ore (ap-f r "item") else ap-coin (ap-f r "metal"), ap-f r "amount"]
+    in ap-entries rows levies keys (i + 1)
+  ap-decays : List Text, Integer -> Integer
+  ap-decays (rows) (i) = if i >= ap-len rows then 0
+    else let d = ap-at rows i
+    in let r = ap-row "ledger-decays" [ap-when (ap-num d "hour"), if text-length (ap-f d "name") > 0 then ap-f d "name" else "character " & ap-f d "dead", ap-f d "corpse", ap-f d "objects"]
+    in ap-decays rows (i + 1)
+  ap-ledger-refresh : Text -> Integer
+  ap-ledger-refresh (unused) = ap-req "{\"command\":\"treasury-ledger\"}" ap-ledger
+
+ Accounts: a shop is its business purse; picking an account shows its coin movements and goods trades.
+  ap-account-kind : Integer -> Text
+  ap-account-kind (k) = if k == 2 then "person" else if k == 4 then "town" else if k == 5 then "shop" else "account"
+  ap-accounts : Text -> Integer
+  ap-accounts (answer) = let d = ap-obj answer
+    in let kept = state-set-text "accounts" (if ap-yes d "available" then ap-f d "accounts" else "[]")
+    in ap-accounts-show ""
+  ap-accounts-show : Text -> Integer
+  ap-accounts-show (unused) = let rows = ap-arr (state-get-text "accounts")
+    in let cleared = ap-clear "account-list"
+    in if ap-account-picks rows 0 (ap-int "account-filter") 0 > 0 then 0 else ap-empty "account-list" "No accounts of that kind."
+  ap-account-picks : List Text, Integer, Integer, Integer -> Integer
+  ap-account-picks (rows) (i) (kind) (shown) = if i >= ap-len rows then shown
+    else let a = ap-at rows i
+    in if ap-num a "purse" == 1 | (kind /= 0 & ap-num a "kind" /= kind) then ap-account-picks rows (i + 1) kind shown
+    else let b = dom-append (dom-get "account-list") (dom-on-click (dom-add-class (ap-el "button" ("acct-" & ap-f a "purse") (ap-f a "who" & ", " & ap-account-kind (ap-num a "kind") & ", " & ap-f a "gold" & " gold")) "account-pick") ap-account-pick)
+    in ap-account-picks rows (i + 1) kind (shown + 1)
+  ap-account-pick : Text -> Integer
+  ap-account-pick (id) = ap-req ("{\"command\":\"account\",\"purse\":" & show (text-to-int (substring id 5 (text-length id - 5))) & "}") ap-account
+  ap-account : Text -> Integer
+  ap-account (answer) = let d = ap-obj answer
+    in if not (ap-yes d "available") then ap-msg "That account is unavailable."
+    else let t = ap-set "account-title" (ap-f d "who")
+    in let p = ap-set "account-purse" ("Purse " & ap-f d "purse")
+    in let a = ap-clear "account-money"
+    in let b = ap-clear "account-trades"
+    in let money = ap-arr (ap-f d "money")
+    in let trades = ap-arr (ap-f d "trades")
+    in let m = if ap-len money == 0 then ap-none "account-money" "No coin movements since the last sealed segment." 6 else ap-money money (sort-by (ap-keys money 0 0 []) ap-desc) 0
+    in if ap-len trades == 0 then ap-none "account-trades" "No goods trades since the last sealed segment." 6 else ap-trades trades 0
+  ap-money : List Text, List Integer, Integer -> Integer
+  ap-money (rows) (keys) (i) = if i >= list-length keys then 0
+    else let r = ap-at rows (int-mod (list-at keys i) 2000000)
+    in let shown = ap-row "account-money" [ap-when (ap-num r "hour"), ap-f r "kind", ap-f r "direction", ap-f r "other", ap-coin (ap-f r "metal"), ap-f r "amount"]
+    in ap-money rows keys (i + 1)
+  ap-trades : List Text, Integer -> Integer
+  ap-trades (rows) (i) = if i >= ap-len rows then 0
+    else let t = ap-at rows i
+    in let shown = ap-row "account-trades" [ap-when (ap-num t "hour"), ap-f t "kind", ap-f t "item", ap-f t "quantity", ap-f t "gross", ap-f t "other"]
+    in ap-trades rows (i + 1)
+  ap-accounts-refresh : Text -> Integer
+  ap-accounts-refresh (unused) = ap-req "{\"command\":\"accounts\"}" ap-accounts
+
+ World: the game-day length and the server's log levels (AdminPanel.md, "Actions and game authority").
+  ap-levels : Text -> Integer
+  ap-levels (t) = let l = ap-obj t
+    in if not (ap-yes l "bound") then ap-hide "log-levels-card"
+    else let shown = ap-unhide "log-levels-card"
+    in let cleared = ap-clear "log-levels"
+    in let subs = ap-arr (ap-f l "subsystems")
+    in let all = ap-row "log-levels" ["all subsystems", ap-f l "all"]
+    in let rows = ap-level-rows subs 0 (ap-f l "all")
+    in if state-get "levels-listed" == 1 then 0
+    else let listed = state-set "levels-listed" 1
+    in let a = ap-option (dom-get "log-subsystem") "all" "all"
+    in let b = ap-level-names subs 0
+    in ap-options-of (dom-get "log-level") ap-levels-all ap-levels-all 0
+  ap-levels-all : List Text = ["trace", "debug", "info", "warn", "error", "off", "inherit"]
+  ap-level-rows : List Text, Integer, Text -> Integer
+  ap-level-rows (subs) (i) (all) = if i >= ap-len subs then 0
+    else let s = ap-at subs i
+    in let r = ap-row "log-levels" [ap-f s "name", if ap-f s "level" == "inherit" then "inherit (" & all & ")" else ap-f s "level"]
+    in ap-level-rows subs (i + 1) all
+  ap-level-names : List Text, Integer -> Integer
+  ap-level-names (subs) (i) = if i >= ap-len subs then 0
+    else let n = ap-f (ap-at subs i) "name" in let o = ap-option (dom-get "log-subsystem") n n in ap-level-names subs (i + 1)
+  ap-set-level : Text -> Integer
+  ap-set-level (unused) = let subsystem = ap-value "log-subsystem"
+    in let level = ap-value "log-level"
+    in let command = "{\"command\":\"panel-level-set\",\"subsystem\":" & json-quote subsystem & ",\"level\":" & json-quote level & "}"
+    in ap-req command (ap-then-refresh ("Log level for " & subsystem & " set to " & level & ". The change was logged."))
+  ap-set-day : Text -> Integer
+  ap-set-day (unused) = let command = "{\"command\":\"panel-day-set\",\"seconds\":" & show (ap-int "day-seconds") & "}"
+    in ap-req command (\answer -> ap-then-refresh ("Game-day length changed to " & ap-f (ap-obj answer) "day_seconds" & " real seconds. The change was logged.") answer)
+
+ Plays (UoaixPlays.md): the four plays, the stories, and the chosen play's script; every edit names its op and slot.
+  ap-plays-command : Integer -> Text
+  ap-plays-command (unused) = "{\"command\":\"plays\",\"op\":\"list\",\"slot\":" & show (ap-slot 0) & "}"
+  ap-slot : Integer -> Integer
+  ap-slot (unused) = if ap-int "play-slot" < 1 then 1 else ap-int "play-slot"
+  ap-plays-load : Text -> Integer
+  ap-plays-load (unused) = ap-req (ap-plays-command 0) ap-plays
+  ap-plays : Text -> Integer
+  ap-plays (answer) = let r = ap-obj answer
+    in if text-length (ap-f r "error") > 0 then ap-set "play-note" ("Refused: " & ap-f r "error")
+    else let a = ap-clear "plays-rows"
+    in let b = ap-clear "story-rows"
+    in let p = ap-play-rows (ap-arr (ap-f r "plays")) 0
+    in let s = ap-story-rows (ap-arr (ap-f r "stories")) 0
+    in let t = dom-set-value (dom-get "play-script") (ap-f r "script") in 0
+  ap-play-rows : List Text, Integer -> Integer
+  ap-play-rows (rows) (i) = if i >= ap-len rows then 0
+    else let p = ap-at rows i
+    in let r = ap-row "plays-rows" [ap-f p "slot", if text-length (ap-f p "title") > 0 then ap-f p "title" else "(none)", ap-f p "run", ap-f p "state", ap-f p "bytes"]
+    in ap-play-rows rows (i + 1)
+  ap-story-rows : List Text, Integer -> Integer
+  ap-story-rows (rows) (i) = if i >= ap-len rows then 0
+    else let s = ap-text (dom-get "story-rows") "li" (json-obj-field rows (show i)) in ap-story-rows rows (i + 1)
+  ap-play-edit : Text, Text, Text -> Integer
+  ap-play-edit (op) (extra) (unused) = ap-req ("{\"command\":\"play-edit\",\"op\":\"" & op & "\",\"slot\":" & show (ap-slot 0) & extra & "}") ap-play-edited
+  ap-play-edited : Text -> Integer
+  ap-play-edited (answer) = let said = ap-set "play-note" (if text-length (ap-error answer) > 0 then ap-error answer else ap-f (ap-obj answer) "message") in ap-plays-load ""
+  ap-play-save : Text -> Integer
+  ap-play-save (unused) = ap-play-edit "script" (",\"script\":" & json-quote (ap-value "play-script")) ""
+  ap-story : Text, Text -> Integer
+  ap-story (op) (unused) = ap-play-edit op (",\"story\":" & json-quote (ap-value "story-name")) ""
+
+ Game Masters (GmContract.md): the owner dubs, changes and revokes a GM's grant, issues and revokes personal keys,
+ and pages the GM action log; a GM sees the delegated actions its grant allows and its own log.
+  ap-power-bits : List Integer = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+  ap-power-names : List Text = ["Support queue", "Go to player", "Unstick player", "Inspect items and logs", "Restore lost items", "Kick", "Mute", "Jail", "Ban",
+    "Favor: coin", "Favor: items", "Favor: titles", "Favor: plots", "Decorate", "Scene design (plays)", "Character design (plays)", "Dialog (plays)", "Director (stories)"]
+  ap-power-acts : List Text = ["support", "go-to-player", "unstuck", "inspect", "restore-items", "kick", "mute", "jail", "ban", "favor-coins", "favor-items", "favor-title", "favor-plot"]
+  ap-limits : List Text = ["coin_each", "coin_day", "item_each", "item_day", "title_day", "plot_day"]
+  ap-limit-names : List Text = ["Coin per action", "Coin per game day", "Item quantity per action", "Item quantity per game day", "Titles per game day", "Plots per game day"]
+  ap-limit-id : Text -> Text
+  ap-limit-id (field) = "gm-" & text-replace field "_" "-"
+  ap-has : Integer, Integer -> Boolean
+  ap-has (mask) (bit) = int-mod (mask / bit) 2 == 1
+  ap-power-list : Integer, Integer -> Text
+  ap-power-list (mask) (i) = if i >= list-length ap-power-bits then ""
+    else if ap-has mask (list-at ap-power-bits i) then (let rest = ap-power-list mask (i + 1) in list-at ap-power-names i & (if text-length rest > 0 then ", " & rest else ""))
+    else ap-power-list mask (i + 1)
+  ap-power-buttons : DomElement, Integer -> Integer
+  ap-power-buttons (grid) (i) = if i >= list-length ap-power-bits then 0
+    else let b = ap-button grid ("pw-" & show (list-at ap-power-bits i)) (list-at ap-power-names i) ap-power-toggle
+    in ap-power-buttons grid (i + 1)
+  ap-power-toggle : Text -> Integer
+  ap-power-toggle (id) = let bit = text-to-int (substring id 3 (text-length id - 3))
+    in let mask = state-get "gm-mask"
+    in let s = state-set "gm-mask" (if ap-has mask bit then mask - bit else mask + bit)
+    in ap-power-paint 0
+  ap-power-paint : Integer -> Integer
+  ap-power-paint (i) = if i >= list-length ap-power-bits then 0
+    else let bit = list-at ap-power-bits i
+    in let b = dom-get ("pw-" & show bit)
+    in let c = if ap-has (state-get "gm-mask") bit then dom-add-class b "on" else dom-remove-class b "on"
+    in ap-power-paint (i + 1)
+
+  ap-gms : Text -> Integer
+  ap-gms (answer) = let d = ap-obj answer
+    in if ap-f d "stand_in" /= "true" then ap-msg ("GM list unavailable: " & (if text-length (ap-f d "error") > 0 then ap-f d "error" else "unexpected storage mode"))
+    else let kept = state-set-text "gm-list" (ap-f d "accounts")
+    in let rows = ap-arr (ap-f d "accounts")
+    in let chosen = ap-value "gm-account"
+    in let a = ap-clear "gm-accounts"
+    in let b = ap-clear "gm-account"
+    in let c = ap-gm-rows rows 0
+    in let e = if text-length chosen > 0 then dom-set-value (dom-get "gm-account") chosen else dom-get "gm-account"
+    in let t = ap-set "gm-treasury" ("Stand-in treasury: " & ap-f d "treasury" & " coin. Game day " & ap-f d "day" & ". " & ap-f d "action_count" & " actions recorded.")
+    in ap-gm-select ""
+  ap-gm-rows : List Text, Integer -> Integer
+  ap-gm-rows (rows) (i) = if i >= ap-len rows then 0
+    else let a = ap-at rows i
+    in let p = ap-obj (ap-f a "policy")
+    in let r = ap-row "gm-accounts" [ap-f a "name" & " (#" & ap-f a "account" & ")", if ap-num p "gm" == 1 then "GM" else if ap-yes a "human" then "Player" else "NPC",
+      (let powers = ap-power-list (ap-num p "powers") 0 in if text-length powers > 0 then powers else "None"),
+      ap-f a "coins_used" & "/" & ap-f p "coin_day" & " coin; " & ap-f a "items_used" & "/" & ap-f p "item_day" & " items; " & ap-f a "titles_used" & "/" & ap-f p "title_day"
+        & " titles; " & ap-f a "plots_used" & "/" & ap-f p "plot_day" & " plots", ap-f a "coins"]
+    in let o = if ap-yes a "human" then ap-option (dom-get "gm-account") (ap-f a "account") (ap-f a "name" & " (#" & ap-f a "account" & ")") else 0
+    in ap-gm-rows rows (i + 1)
+  ap-gm-find : List Text, Integer, Text -> List Text
+  ap-gm-find (rows) (i) (account) = if i >= ap-len rows then ap-obj "{}"
+    else if ap-f (ap-at rows i) "account" == account then ap-at rows i else ap-gm-find rows (i + 1) account
+  ap-gm-select : Text -> Integer
+  ap-gm-select (unused) = let a = ap-gm-find (ap-arr (state-get-text "gm-list")) 0 (ap-value "gm-account")
+    in let p = ap-obj (ap-f a "policy")
+    in let s = state-set "gm-mask" (ap-num p "powers")
+    in let painted = ap-power-paint 0
+    in ap-gm-limits p 0
+  ap-gm-limits : List Text, Integer -> Integer
+  ap-gm-limits (p) (i) = if i >= list-length ap-limits then 0
+    else let v = dom-set-value (dom-get (ap-limit-id (list-at ap-limits i))) (show (ap-num p (list-at ap-limits i)))
+    in ap-gm-limits p (i + 1)
+  ap-gm-limit-json : Integer -> Text
+  ap-gm-limit-json (i) = if i >= list-length ap-limits then ""
+    else ",\"" & list-at ap-limits i & "\":" & show (ap-int (ap-limit-id (list-at ap-limits i))) & ap-gm-limit-json (i + 1)
+  ap-gm-change : Text, Text -> Integer
+  ap-gm-change (op) (unused) = let command = "{\"command\":\"" & op & "\",\"account\":" & show (ap-int "gm-account") & ",\"powers\":" & show (state-get "gm-mask") & ap-gm-limit-json 0 & "}"
+    in ap-req command (\answer -> let said = ap-msg (ap-said answer "GM change recorded in the in-memory stand-in.") in ap-gms-refresh "")
+  ap-gms-refresh : Text -> Integer
+  ap-gms-refresh (unused) = ap-req "{\"command\":\"gm-list\"}" (\answer -> let r = ap-gms answer in ap-req "{\"command\":\"gm-log\",\"before\":0}" ap-gm-log)
+  ap-gm-key-issue : Text -> Integer
+  ap-gm-key-issue (unused) = let key = crypto-random-hex 32
+    in ap-req ("{\"command\":\"gm-key-set\",\"account\":" & show (ap-int "gm-account") & ",\"key\":" & json-quote key & "}") (ap-gm-key-issued key)
+  ap-gm-key-issued : Text, Text -> Integer
+  ap-gm-key-issued (key) (answer) = if text-length (ap-error answer) > 0 then ap-msg ("Refused: " & ap-error answer)
+    else let shown = dom-set-value (dom-get "gm-issued-key") ("UOAIXGM1:" & ap-f (ap-obj answer) "role" & ":" & key)
+    in let said = ap-msg "Personal GM credential issued. Share the credential privately with the selected GM."
+    in ap-gms-refresh ""
+  ap-gm-key-revoke : Text -> Integer
+  ap-gm-key-revoke (unused) = let command = "{\"command\":\"gm-key-revoke\",\"account\":" & show (ap-int "gm-account") & "}"
+    in ap-req command (\answer -> let cleared = dom-set-value (dom-get "gm-issued-key") "" in let said = ap-msg (ap-said answer "GM credential revoked.") in ap-gms-refresh "")
+  ap-gm-key-show : Text -> Integer
+  ap-gm-key-show (unused) = let shown = state-set "key-shown" (1 - state-get "key-shown")
+    in let t = dom-set-attr (dom-get "gm-issued-key") "type" (if state-get "key-shown" == 1 then "text" else "password") in 0
+
+  ap-gm-log : Text -> Integer
+  ap-gm-log (answer) = let rows = ap-arr (ap-f (ap-obj answer) "rows")
+    in let cleared = ap-clear "gm-actions"
+    in let oldest = state-set "gm-oldest" (if ap-len rows == 0 then 0 else ap-num (ap-at rows 0) "id")
+    in if ap-len rows == 0 then ap-empty "gm-actions" "No GM actions recorded." else ap-gm-log-rows rows (ap-len rows - 1) (ap-arr (state-get-text "gm-list"))
+  ap-gm-log-rows : List Text, Integer, List Text -> Integer
+  ap-gm-log-rows (rows) (i) (accounts) = if i < 0 then 0
+    else let r = ap-at rows i
+    in let named = ap-f (ap-gm-find accounts 0 (ap-f r "actor_account")) "name"
+    in let actor = if ap-num r "actor_account" == 0 then ap-f r "principal" else if text-length named > 0 then named else "Account " & ap-f r "actor_account"
+    in let row = ap-add (dom-get "gm-actions") (dom-add-class (dom-create "div") "log-entry")
+    in let a = ap-text row "strong" ("#" & ap-f r "id" & " " & ap-f r "action" & ", " & ap-f r "decision")
+    in let b = ap-text row "small" (actor & " -> account " & ap-f r "target_account" & ", day " & ap-f r "game_day" & ", grant revision " & ap-f r "grant_revision")
+    in let c = ap-text row "small" (if text-length (ap-f r "reason") > 0 then ap-f r "reason" else ap-f r "detail")
+    in let d = if text-starts-with (ap-f r "action") "gm-" then row else ap-text row "small" ("Request " & ap-f r "request_id" & ", subject " & ap-f r "subject" & ", amount " & ap-f r "amount")
+    in let e = ap-text row "small" (ap-f r "before" & " -> " & ap-f r "after")
+    in ap-gm-log-rows rows (i - 1) accounts
+  ap-gm-older : Text -> Integer
+  ap-gm-older (unused) = if state-get "gm-oldest" <= 1 then ap-msg "No older GM actions are retained."
+    else ap-req ("{\"command\":\"gm-log\",\"before\":" & show (state-get "gm-oldest") & "}") ap-gm-log
+
+  ap-gm-mode : List Text -> Integer
+  ap-gm-mode (account) = let hidden = ap-hide-all ["label-tab-actions", "label-tab-treasury", "label-tab-accounts", "label-tab-world", "label-tab-plays", "label-tab-activity", "gm-card", "graphs"] 0
+    in let shown = ap-unhide "gm-work"
+    in let p = ap-obj (ap-f account "policy")
+    in let mask = ap-num p "powers"
+    in let cleared = ap-clear "gm-work-action"
+    in let listed = ap-gm-work-options mask 1
+    in ap-set "gm-own-policy" ("Grant revision " & ap-f p "revision" & ". Today: " & ap-f account "coins_used" & "/" & ap-f p "coin_day" & " coin; " & ap-f account "items_used" & "/"
+      & ap-f p "item_day" & " items. Coin per action " & ap-f p "coin_each" & "; items per action " & ap-f p "item_each" & "; titles per day " & ap-f p "title_day" & "; plots per day " & ap-f p "plot_day" & ".")
+  ap-hide-all : List Text, Integer -> Integer
+  ap-hide-all (ids) (i) = if i >= list-length ids then 0 else let h = ap-hide (list-at ids i) in ap-hide-all ids (i + 1)
+  ap-gm-work-options : Integer, Integer -> Integer
+  ap-gm-work-options (mask) (i) = if i >= list-length ap-power-acts then 0
+    else let o = if ap-has mask (list-at ap-power-bits i) then ap-option (dom-get "gm-work-action") (list-at ap-power-acts i) (list-at ap-power-names i) else 0
+    in ap-gm-work-options mask (i + 1)
+  ap-gm-work : Text -> Integer
+  ap-gm-work (unused) = let command = ("{\"command\":\"gm-action\",\"action\":" & json-quote (ap-value "gm-work-action") & ",\"target\":" & show (ap-int "gm-work-target") & ",\"subject\":"
+      & show (ap-int "gm-work-subject") & ",\"amount\":" & show (ap-int "gm-work-amount") & ",\"detail\":" & json-quote (ap-value "gm-work-detail") & "}")
+    in ap-req command (\answer -> ap-then-refresh ("Stand-in action #" & ap-f (ap-obj answer) "log_id" & " recorded.") answer)
+  ap-own-log : Text -> Integer
+  ap-own-log (answer) = let d = ap-obj answer
+    in let rows = ap-arr (ap-f d "rows")
+    in let oldest = state-set "own-oldest" (ap-num d "before")
+    in let cleared = ap-clear "gm-own-actions"
+    in if ap-len rows == 0 then ap-empty "gm-own-actions" "No actions recorded." else ap-own-rows rows 0
+  ap-own-rows : List Text, Integer -> Integer
+  ap-own-rows (rows) (i) = if i >= ap-len rows then 0
+    else let r = ap-at rows i
+    in let row = ap-add (dom-get "gm-own-actions") (dom-add-class (dom-create "div") "log-entry")
+    in let a = ap-text row "strong" ("#" & ap-f r "id" & " " & ap-f r "action" & " " & ap-f r "decision")
+    in let b = ap-text row "small" ("Actor " & ap-f r "actor_account" & " -> " & ap-f r "target_account" & "; " & (if text-length (ap-f r "reason") > 0 then ap-f r "reason" else ap-f r "detail"))
+    in ap-own-rows rows (i + 1)
+  ap-own-older : Text -> Integer
+  ap-own-older (unused) = if state-get "own-oldest" <= 1 then ap-msg "No older actions are retained."
+    else ap-req ("{\"command\":\"gm-own-log\",\"before\":" & show (state-get "own-oldest") & "}") ap-own-log
+  ap-own-latest : Text -> Integer
+  ap-own-latest (unused) = ap-req "{\"command\":\"gm-own-log\",\"before\":0}" ap-own-log
+
+ panel-close; the login page clears its keys and shows the login form when the answer arrives.
+  ap-logout : Text -> Integer
+  ap-logout (unused) = ap-req "{\"command\":\"panel-close\"}" (\answer -> 0)
+
+  ap-build-overview : DomElement -> Integer
+  ap-build-overview (pane) = let g = ap-div pane "" "grid"
+    in let q = ap-card g "support-card" "Support queue"
+    in let qn = ap-muted q "Player help and keeper reports. Review evidence before deciding on an action."
+    in let ql = ap-add q (ap-el "div" "support" "")
+    in let qd = ap-add q (ap-el "pre" "report-detail" "")
+    in let qa = ap-div q "report-actions" "tools"
+    in let w = ap-card g "health-card" "World health"
+    in let a = ap-health-lines w ["economy", "law", "sea", "town"] 0
+    in let m = ap-button w "mayor-replace" "Replace the mayor" ap-mayor
+    in let b = ap-health-lines w ["wilds", "decor"] 0
+    in let card = ap-card pane "graphs" "Treasury and market over time"
+    in let note = ap-note-el card "graph-note" "Loading the history..."
+    in let tools = ap-tools card
+    in let pick = ap-add tools (dom-set-attr (ap-el "select" "item-pick" "") "aria-label" "Item")
+    in let show-item = ap-button tools "item-show" "Show price and stock" ap-show-item
+    in let charts = ap-div card "charts" "charts"
+    in ap-boxes charts ["chart-gold", "chart-silver", "chart-copper", "chart-price", "chart-stock"] 0
+  ap-health-lines : DomElement, List Text, Integer -> Integer
+  ap-health-lines (parent) (ids) (i) = if i >= list-length ids then 0
+    else let p = ap-add parent (ap-el "p" (list-at ids i) "") in ap-health-lines parent ids (i + 1)
+  ap-boxes : DomElement, List Text, Integer -> Integer
+  ap-boxes (parent) (ids) (i) = if i >= list-length ids then 0
+    else let b = ap-add parent (ap-el "div" (list-at ids i) "")
+    in ap-boxes parent ids (i + 1)
+
+  ap-build-actions : DomElement -> Integer
+  ap-build-actions (pane) = let panels = ap-tab-set pane "sub" "actions-sub" ["lord", "bans"] ["Lord British", "Bans"]
+    in let acts = ap-card (ap-pane panels "sub" "lord") "actions-card" "Lord British actions"
+    in let an = ap-muted acts "Lord British powers are bound to the authenticated session. The game server validates every command."
+    in let pick = ap-pick acts "act-action" "Action"
+    in let opts = ap-options-of pick ap-actions ap-action-names 0
+    in let fields = ap-action-fields (ap-div acts "" "formgrid") 0
+    in let state = ap-note-el acts "action-state" "Actions are logged before the game server applies them."
+    in let go = ap-button acts "act-submit" "Record and queue action" ap-queue
+    in let bans = ap-card (ap-pane panels "sub" "bans") "bans-card" "Bans"
+    in let bn = ap-muted bans "The game server applies a ban as Lord British's own [ban or [unban on his next pulse; until he is logged in, the action stays queued. One panel action awaits the game server at a time."
+    in let g = ap-div bans "" "grid"
+    in let left = ap-add g (dom-create "div")
+    in let lh = ap-text left "h3" "Ban an account"
+    in let bi = ap-field left "ban-target" "Character serial" "number" "0"
+    in let bnote = ap-muted left "The account owning the character is disconnected and cannot log in until unbanned. Lord British cannot be banned."
+    in let bb = ap-button left "ban-submit" "Ban the account" ap-ban
+    in let right = ap-add g (dom-create "div")
+    in let rh = ap-text right "h3" "Lift a ban"
+    in let ui = ap-field right "unban-account" "Account name" "text" ""
+    in let unote = ap-muted right "Letters and digits, as the account name was created."
+    in let ub = ap-button right "unban-submit" "Lift the ban" ap-unban
+    in 0
+
+  ap-build-treasury : DomElement -> Integer
+  ap-build-treasury (pane) = let panels = ap-tab-set pane "sub" "treasury-sub" ["coffers", "ledger"] ["Treasury", "Crown ledger"]
+    in let c = ap-card (ap-pane panels "sub" "coffers") "treasury-card" "Royal treasury"
+    in let mode = ap-note-el c "treasury-mode" ""
+    in let bal = ap-add c (ap-el "p" "treasury-balance" "")
+    in let rates = ap-div c "treasury-rates" "hide"
+    in let rc = ap-add rates (ap-el "p" "rates-current" "")
+    in let rg = ap-div rates "" "formgrid"
+    in let r1 = ap-cell-field rg "rate-copper" "Copper per gold" "1"
+    in let r2 = ap-cell-field rg "rate-silver" "Silver per gold" "1"
+    in let rn = ap-muted rates "Rates change valuation. Existing coins, loans and historical entries keep their amounts."
+    in let rb = ap-button rates "rates-submit" "Change rates" ap-set-rates
+    in let tax = ap-field c "treasury-tax" "Tax on ordinary payments (%)" "text" "0.00"
+    in let tb = ap-button (ap-tools c) "tax-submit" "Set tax rate" ap-set-tax
+    in let gh = ap-text c "h3" "Grant to a royal business"
+    in let bp = ap-pick c "treasury-business" "Royal business"
+    in let mp = ap-pick c "treasury-metal" "Coin"
+    in let amount = ap-field c "treasury-amount" "Grant amount" "number" "1"
+    in let gn = ap-muted c "Grants transfer existing treasury coin. Every change is logged."
+    in let gb = ap-button c "grant-submit" "Grant treasury coin" ap-grant
+    in let sh = ap-text c "h3" "Crown share per chain"
+    in let sn = ap-muted c "Direct crown-business purchases divided by gross turnover. Downstream spending of subsidies is not traced."
+    in let st = ap-table c ["Chain", "Total turnover", "Crown purchases", "Crown share"] "treasury-chains"
+    in ap-build-ledger (ap-pane panels "sub" "ledger")
+  ap-build-ledger : DomElement -> Integer
+  ap-build-ledger (pane) = let c = ap-card pane "ledger-card" "Crown ledger"
+    in let hour = ap-note-el c "ledger-hour" ""
+    in let n = ap-muted c "Every tax, fee and loan the Crown took or gave, newest first: trade tax, minting fee, mining tax in ore, loans given, repayments received and reclaims. Times are game hours; the economy keeps no wall clock. Money rows reach back to the last sealed ledger segment; mining-tax rows to the last restart."
+    in let r = ap-second (ap-tools c) "ledger-refresh" "Refresh ledger" ap-ledger-refresh
+    in let th = ap-text c "h3" "Totals"
+    in let tt = ap-table c ["Kind", "Coin", "Total"] "ledger-totals"
+    in let eh = ap-text c "h3" "Entries"
+    in let et = ap-table c ["When", "Kind", "From or to", "Coin or goods", "Amount"] "ledger-rows"
+    in let dh = ap-text c "h3" "Corpse decays"
+    in let dn = ap-muted c "Corpses that rotted away with what they held, newest first, since the last restart."
+    in ap-table c ["When", "Whose", "Corpse", "Objects removed"] "ledger-decays"
+
+  ap-build-accounts : DomElement -> Integer
+  ap-build-accounts (pane) = let g = ap-div pane "" "grid"
+    in let l = ap-card g "account-list-card" "Accounts"
+    in let r = ap-second (ap-tools l) "accounts-refresh" "Refresh" ap-accounts-refresh
+    in let n = ap-muted l "A shop is its business purse, so its history outlives any vendor who keeps it. Pick an account to see every coin movement and goods trade it made."
+    in let f = dom-on-input (ap-pick l "account-filter" "Show") ap-accounts-show
+    in let fo = ap-options-of f ["5", "2", "4", "0"] ["Shops", "Vendors, workers and players", "Towns", "All accounts"] 0
+    in let list = ap-add l (ap-el "div" "account-list" "")
+    in let d = ap-add g (dom-add-class (ap-el "section" "account-detail" "") "card")
+    in let t = ap-add d (ap-el "h2" "account-title" "No account chosen")
+    in let p = ap-note-el d "account-purse" ""
+    in let mh = ap-text d "h3" "Coin"
+    in let mt = ap-table d ["When", "What", "In or out", "Other side", "Coin", "Amount"] "account-money"
+    in let gh = ap-text d "h3" "Goods"
+    in ap-table d ["When", "Bought or sold", "Item", "Quantity", "Gross", "Other side"] "account-trades"
+
+  ap-build-world : DomElement -> Integer
+  ap-build-world (pane) = let panels = ap-tab-set pane "sub" "world-sub" ["day", "logs"] ["Game day", "Log levels"]
+    in let d = ap-card (ap-pane panels "sub" "day") "day-card" "Game-day length"
+    in let dn = ap-muted d "Set real seconds per game day. The shared game clock preserves time already elapsed; schedules and growth remain in game hours."
+    in let ds = ap-field d "day-seconds" "Real seconds per game day" "number" "7200"
+    in let dd = ap-muted d "Default: 7200 seconds (2 hours). Changes are logged and apply without restarting."
+    in let db = ap-button d "day-submit" "Apply day length" ap-set-day
+    in let l = ap-card (ap-pane panels "sub" "logs") "log-levels-card" "Log levels"
+    in let ln = ap-muted l "Every server log line names its subsystem and its level: trace, debug, info, warn or error. A line is written when its level is at or above its subsystem's setting; a subsystem set to inherit uses the level for all subsystems, and off writes nothing."
+    in let lt = ap-table l ["Subsystem", "Setting"] "log-levels"
+    in let ls = ap-pick l "log-subsystem" "Subsystem"
+    in let lv = ap-pick l "log-level" "Level"
+    in let lnote = ap-muted l "Changes are logged and apply to the running server without a restart."
+    in let lb = ap-button l "level-submit" "Apply log level" ap-set-level
+    in 0
+
+  ap-build-plays : DomElement -> Integer
+  ap-build-plays (pane) = let c = ap-card pane "plays-card" "Plays"
+    in let r = ap-second (ap-tools c) "plays-refresh" "Refresh" ap-plays-load
+    in let n = ap-muted c "A play is a script of scenes, cast, lines and cues. Saving compiles it, and a refused script names its line. Bots carry the minor steps; a major state waits for a player and hints."
+    in let t = ap-table c ["Play", "Title", "Run", "State", "Script bytes"] "plays-rows"
+    in let slot = dom-on-input (ap-pick c "play-slot" "Play") ap-plays-load
+    in let so = ap-options-of slot ["1", "2", "3", "4"] ["1", "2", "3", "4"] 0
+    in let sl = ap-label c "Script" "play-script"
+    in let script = ap-add c (dom-set-attr (dom-set-attr (ap-el "textarea" "play-script" "") "rows" "18") "spellcheck" "false")
+    in let tools = ap-tools c
+    in let save = ap-button tools "play-save" "Save and compile" ap-play-save
+    in let start = ap-second tools "play-start" "Start" (ap-play-edit "start" "")
+    in let pause = ap-second tools "play-pause" "Pause" (ap-play-edit "pause" "")
+    in let resume = ap-second tools "play-resume" "Resume" (ap-play-edit "resume" "")
+    in let reset = ap-second tools "play-reset" "Reset" (ap-play-edit "reset" "")
+    in let note = ap-note-el c "play-note" ""
+    in let sh = ap-text c "h3" "Stories"
+    in let sn = ap-muted c "A story is a set of decorations in named map areas. Off removes them and restores the areas."
+    in let list = ap-add c (ap-el "ul" "story-rows" "")
+    in let name = ap-field c "story-name" "Story" "text" ""
+    in let st = ap-tools c
+    in let on = ap-second st "story-on" "Turn on" (ap-story "story-on")
+    in let off = ap-second st "story-off" "Turn off" (ap-story "story-off")
+    in 0
+
+  ap-build-gms : DomElement -> Integer
+  ap-build-gms (pane) = let c = ap-card pane "gm-card" "Game Masters"
+    in let n = ap-muted c "Development stand-in: grants and balances reset when the guest restarts. Only the human owner can dub a GM, change powers or revoke a grant."
+    in let t = ap-add c (ap-el "p" "gm-treasury" "")
+    in let table = ap-table c ["Account", "GM status", "Powers", "Favor use today", "Coin purse"] "gm-accounts"
+    in let pick = dom-on-input (ap-pick c "gm-account" "Human account") ap-gm-select
+    in let pl = ap-label c "Delegated powers (select to grant)" "gm-powers"
+    in let powers = ap-power-buttons (ap-div c "gm-powers" "powers") 0
+    in let limits = ap-gm-limit-fields (ap-div c "" "formgrid") 0
+    in let ln = ap-muted c "Zero disables a favor. Changing a grant never resets the GM's daily usage. Coin and item favors transfer existing treasury resources."
+    in let tools = ap-tools c
+    in let dub = ap-button tools "gm-dub" "Dub GM" (ap-gm-change "gm-dub")
+    in let set = ap-button tools "gm-set" "Update grant" (ap-gm-change "gm-set")
+    in let revoke = ap-second tools "gm-revoke" "Revoke GM" (ap-gm-change "gm-revoke")
+    in let kh = ap-text c "h3" "Personal panel credential"
+    in let kn = ap-muted c "Issue a credential for the selected GM. Rotation closes the previous session. Copy the credential before leaving."
+    in let kt = ap-tools c
+    in let issue = ap-button kt "gm-key-issue" "Issue or rotate key" ap-gm-key-issue
+    in let kr = ap-second kt "gm-key-revoke" "Revoke key" ap-gm-key-revoke
+    in let key = dom-set-attr (dom-set-attr (ap-field c "gm-issued-key" "New credential" "password" "") "readonly" "readonly") "autocomplete" "off"
+    in let ks = ap-second (ap-tools c) "gm-key-show" "Show or hide" ap-gm-key-show
+    in let lh = ap-text c "h3" "GM and grant action log"
+    in let lt = ap-tools c
+    in let older = ap-second lt "gm-older" "Older actions" ap-gm-older
+    in let latest = ap-second lt "gm-latest" "Latest actions" ap-gms-refresh
+    in let log = ap-add c (ap-el "div" "gm-actions" "")
+    in ap-build-gm-work pane
+  ap-gm-limit-fields : DomElement, Integer -> Integer
+  ap-gm-limit-fields (grid) (i) = if i >= list-length ap-limits then 0
+    else let f = ap-cell-field grid (ap-limit-id (list-at ap-limits i)) (list-at ap-limit-names i) "0"
+    in ap-gm-limit-fields grid (i + 1)
+  ap-build-gm-work : DomElement -> Integer
+  ap-build-gm-work (pane) = let c = ap-card pane "gm-work" "Delegated actions"
+    in let hidden = ap-hide "gm-work"
+    in let n = ap-muted c "In-memory stand-in. Favors change fixture resources. Other actions record authorization only; no live player effect follows."
+    in let p = ap-add c (ap-el "p" "gm-own-policy" "")
+    in let pick = ap-pick c "gm-work-action" "Granted action"
+    in let g = ap-div c "" "formgrid"
+    in let t = ap-cell-field g "gm-work-target" "Target account" "0"
+    in let s = ap-cell-field g "gm-work-subject" "Item, title or plot ID" "0"
+    in let a = ap-cell-field g "gm-work-amount" "Amount" "1"
+    in let d = ap-field c "gm-work-detail" "Reason" "text" ""
+    in let b = ap-button c "gm-work-submit" "Record action" ap-gm-work
+    in let h = ap-text c "h3" "Your action log"
+    in let tools = ap-tools c
+    in let older = ap-second tools "gm-own-older" "Older actions" ap-own-older
+    in let latest = ap-second tools "gm-own-latest" "Latest actions" ap-own-latest
+    in let log = ap-add c (ap-el "div" "gm-own-actions" "")
+    in 0
+
+  ap-build-activity : DomElement -> Integer
+  ap-build-activity (pane) = let panels = ap-tab-set pane "sub" "activity-sub" ["connections", "log"] ["Live connections", "Action log"]
+    in let links = ap-card (ap-pane panels "sub" "connections") "connections" "Live connections"
+    in let lc = ap-note-el links "connection-count" ""
+    in let lt = ap-table links ["ID", "Account", "Character", "Address", "Connected at"] "connection-rows"
+    in let log = ap-card (ap-pane panels "sub" "log") "log-card" "Action log"
+    in let count = ap-note-el log "log-count" ""
+    in let n = ap-muted log "Recorded actions, including the authenticated identity and outcome."
+    in let tools = ap-tools log
+    in let older = ap-second tools "older-log" "Older actions" ap-older-log
+    in let latest = ap-second tools "newer-log" "Latest actions" ap-refresh
+    in let list = ap-add log (ap-el "div" "actions" "")
+    in 0
+
+  ap-build-tabs : DomElement -> Integer
+  ap-build-tabs (app) = let panels = ap-tab-set app "tab" "admin-tab" ap-tab-keys ap-tab-names
+    in let a = ap-build-overview (ap-pane panels "tab" "overview")
+    in let b = ap-build-actions (ap-pane panels "tab" "actions")
+    in let c = ap-build-treasury (ap-pane panels "tab" "treasury")
+    in let d = ap-build-accounts (ap-pane panels "tab" "accounts")
+    in let e = ap-build-world (ap-pane panels "tab" "world")
+    in let f = ap-build-plays (ap-pane panels "tab" "plays")
+    in let g = ap-build-gms (ap-pane panels "tab" "gms")
+    in ap-build-activity (ap-pane panels "tab" "activity")
+
+  opening : [Console] Integer
+  opening = let app = dom-get "app"
+    in let style = ap-text app "style" (ap-css & ap-rules "tab" ap-tab-keys 0 & ap-rules "sub" ap-sub-keys 0)
+    in let top = ap-div app "" "topline"
+    in let title = ap-add top (dom-create "div")
+    in let h = ap-text title "h1" "The keeper's desk"
+    in let hour = ap-note-el title "hour" ""
+    in let tools = ap-tools top
+    in let refresh = ap-second tools "refresh" "Refresh" ap-refresh
+    in let logout = ap-second tools "logout" "End session" ap-logout
+    in let msg = ap-add app (dom-set-attr (dom-set-attr (ap-el "div" "message" "") "role" "status") "aria-live" "polite")
+    in let stats = ap-tiles (ap-div app "stats" "stats") 0
+    in let tabs = ap-build-tabs app
+    in ap-refresh ""

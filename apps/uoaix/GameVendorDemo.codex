@@ -20,6 +20,13 @@ Chapter: GameVendorDemo
     else if left == 0 then False
     else let result = ep-craft w 1 8 2
     in if result == -1 then False else gvd-smelt w (left - 1)
+ A failed skill roll (-2) leaves the node or the inputs in place, so the demo tries again.
+  gvd-retry-harvest : EpWorld, Integer, Integer -> Integer
+  gvd-retry-harvest (w) (node) (left) = let result = eh-harvest w 1 node
+    in if result /= -2 | left == 0 then result else gvd-retry-harvest w node (left - 1)
+  gvd-retry-craft : EpWorld, Integer, Integer, Integer -> Integer
+  gvd-retry-craft (w) (recipe) (station) (left) = let result = ep-craft w 1 recipe station
+    in if result /= -2 | left == 0 then result else gvd-retry-craft w recipe station (left - 1)
   gvd-economy : Integer -> Result EuCurrency Text
   gvd-economy (unused) = when ep-new (ex-catalog 0) (em-new 0)
     is Err (e) -> Err e
@@ -37,12 +44,20 @@ Chapter: GameVendorDemo
         in let n2 = eh-source w 2 100
         in let n3 = eh-source w 6 100
         in let n4 = eh-source w 6 100
-        in let n5 = eh-source w 2 100
+        in let n5 = eh-source w 1 100
+        in let n6 = eh-source w 15 100
+        in let n7 = eh-source w 1 100
+        in let n8 = eh-source w 15 100
+        in let st4 = ep-station w 1 8 100
         in let stone = eh-harvest w 1 n1
-        in let branches = eh-harvest w 1 n2
+        in let axe = ep-craft w 1 2 st1
+        in let logs = gvd-retry-harvest w n6 64 + gvd-retry-harvest w n8 64
+        in let boards = gvd-retry-craft w 16 st4 64
+        in let more = eh-harvest w 1 n7
         in let pick = ep-craft w 1 1 st1
         in let hammer = ep-craft w 1 31 st1
-        in if pick < 1 | hammer < 1 | not (gvd-mine w 64) then Err "demo mining failed"
+        in if axe < 1 | logs < 1 | boards < 1 then Err ("demo tool chain failed: axe " & show axe & " logs " & show logs & " boards " & show boards)
+        else if pick < 1 | hammer < 1 | not (gvd-mine w 64) then Err "demo mining failed"
         else if not (gvd-smelt w 64) then Err "demo smelting failed"
         else if eu-mint-policy x True 1 3 1000 /= 0 then Err "demo mint policy failed"
         else if eu-strike x True 1 st3 3 1 /= 0 then Err "demo mint failed"
@@ -69,9 +84,7 @@ Chapter: GameVendorDemo
     is Ok (x) ->
       let w = x.world
       in let stone = eh-source w 1 100
-      in let branches = eh-source w 2 100
       in let gather1 = eh-harvest w 1 stone
-      in let gather2 = eh-harvest w 1 branches
       in let pick1 = ep-craft w 1 1 1
       in let pick2 = ep-craft w 1 1 1
       in let copper1 = eh-source w 25 100
@@ -102,8 +115,8 @@ Chapter: GameVendorDemo
                 is Err (e) -> Err e
                 is Ok (serial) ->
                   let vendor = gv-add-vendor v npc 2 stock extra buys
-                  in let lot = gv-add-lot v serial 2 2 1000 32 0
-                  in if vendor /= 0 | lot /= 0 then Err "demo vendor binding refused" else Ok v
+                  in let lot = gv-add-lot v serial 2 1 1000 32 0
+                  in if vendor /= 0 | lot < 0 then Err "demo vendor binding refused" else Ok v
   gvd-bind : GvWorld, Integer -> Result Integer Text
   gvd-bind (v) (serial) = if gv-player v serial 0 >= 0 then Ok 0
     else if v.player-count /= 0 then Err "demo admits one crown-business character"
@@ -116,7 +129,9 @@ Chapter: GameVendorDemo
     if input.mode /= 2 | input.session.phase /= 2 then Ok None
     else when gvd-bind v input.session.serial
       is Err (e) -> Err e
-      is Ok (unused) -> let p = list-at v.players 0
+      is Ok (unused) -> let at = gv-player v input.session.serial 0
+        in if at < 0 then Err "demo player binding absent"
+        else let p = list-at v.players at
         in if p.connection == input.connection then Ok None
         else let connection = __record-set p "connection" input.connection
         in let side = __record-set p "side" 0

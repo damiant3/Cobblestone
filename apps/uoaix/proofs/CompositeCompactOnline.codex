@@ -1,0 +1,51 @@
+Chapter: CompositeCompactOnline
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter CompositeStore
+
+  cco-check : Text, Boolean -> [Console] Integer
+  cco-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+ Each half holds one full snapshot and eight more sectors, so a few forced commits overflow it.
+  cco-half : Integer -> Integer
+  cco-half (unused) = us-span (us-max-payload) + 8
+  cco-commits : CompositeOwner, Integer -> [Console, Device.Block] Result Integer Text
+  cco-commits (owner) (left) = if left == 0 | owner.store.start /= 0 then act Ok left end
+    else act
+      committed <- cs-commit owner True
+      when committed
+        is Err (e) -> Err e
+        is Ok (_) -> cco-commits owner (left - 1)
+    end
+  cco-first : CompositeOwner -> [Console, Device.Block] Integer
+  cco-first (owner) = let half = cco-half 0 in act
+    switched <- cco-commits owner 40
+    when switched
+      is Err (e) -> cco-check ("forced commits: " & e) False
+      is Ok (left) -> act
+        at <- owner.store.sequence
+        a <- cco-check "the live server switches halves when a delta no longer fits, writing its snapshot at the next sequence" (left > 0 & owner.store.start == half & owner.store.twin == 0 & owner.store.snapshot == 0 & owner.store.fault == 0)
+        later <- cs-commit owner True
+        b <- cco-check "the server keeps committing deltas into the new half" (is-ok later & owner.store.sequence == at + 1 & owner.store.head > owner.store.snapshot)
+        print-line-uni ("SWITCHED sequence=" & show at & " head=" & show owner.store.head)
+        a + b
+      end
+  end
+  opening : [Console, Device.Block] Integer = let half = cco-half 0 in act
+    opened <- us-open-pair UoIde 0 (half * 2)
+    when opened
+      is Err (e) -> cco-check e False
+      is Ok (store) -> let fresh = store.head == 0 & store.start == 0 in act
+        loaded <- cs-load store 0
+        when loaded
+          is Err (e) -> cco-check ("load: " & e) False
+          is Ok (owner) -> if fresh then cco-first owner
+            else act
+              print-line-uni ("RESTORED sequence=" & show owner.store.sequence & " head=" & show owner.store.head)
+              cco-check "a restart picks the switched half and replays its snapshot and delta to the last committed sequence" (owner.store.start == half & owner.store.snapshot == 0 & owner.store.sequence > 1)
+            end
+      end
+  end
+
+Page 1

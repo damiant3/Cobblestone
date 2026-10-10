@@ -1,0 +1,35 @@
+Chapter: BvtBritainWindow
+  cites Uoaix chapter BritainWindow
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter BvtCastleGate
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ 38 colliders a cell is the installed map cache's maximum (map-install receipts, 2026-10-09): the server's Britain
+ window binds its decoration at that stride.
+  bbw-colliders : Integer = 38
+  bbw-in : WalkMap, Integer, Integer -> Boolean
+  bbw-in (map) (x) (y) = walk-cell map x y >= 0
+  bvt-britain-window : Integer -> [Console] Integer
+  bvt-britain-window (unused) = when walk-map-sized 1360 1488 160 240 1
+    is Err (e) -> act bvt-check ("britain window old fixture: " & e) False end
+    is Ok (old) -> when walk-map-sized 1294 1488 419 240 1
+      is Err (e) -> act bvt-check ("britain window unaligned fixture: " & e) False end
+      is Ok (unaligned) -> when walk-map-sized bwn-x1 bwn-y1 bwn-width bwn-height bbw-colliders
+        is Err (e) -> act bvt-check ("the Britain window allocates at the cache's collider stride: " & e) False end
+        is Ok (map) -> let covers = bbw-in map 1360 1488 & bbw-in map 1519 1727
+            & bbw-in map bwn-castle-x1 bwn-castle-y1 & bbw-in map bwn-castle-x2 bwn-castle-y2 & bbw-in map 1341 1612
+            & bbw-in map bwn-east-x2 1551 & bbw-in map 1646 1580 & bbw-in map (bwn-castle-x1 - 1) 1600 & bbw-in map (bwn-east-x2 + 1) 1600
+          in let edges = wmc-aligned map & not (wmc-aligned unaligned) & bwn-x1 > bwn-castle-x1 - 1 - 8 & bwn-x2 < bwn-east-x2 + 1 + 8
+            & not (bbw-in map (bwn-x1 - 1) 1600) & not (bbw-in map (bwn-x2 + 1) 1600)
+            & not (bbw-in old 1341 1612) & not (bbw-in old 1646 1580)
+          in let decorated = wd-read (bcg-dwd map) 64 map map.stride
+          in let refused = wd-read (bcg-dwd map) 64 map (map.stride + 1)
+          in act
+            a <- bvt-check ("the Britain window spans the town, Castle Britain's walls and the unsigned east houses, at least one tile past the walls: " & show bwn-x1 & "," & show bwn-y1 & " " & show bwn-width & "x" & show bwn-height) covers
+            b <- bvt-check "the Britain window is whole 8 by 8 map blocks (wmc-aligned), less than a block past the walls, a window at x 1294 (main 41870) is refused, and the old town window held neither the castle nor the east houses" edges
+            c <- bvt-check ("decoration binds the whole Britain window at 38 colliders a cell (" & show (map.width * map.height * map.stride) & " bytes, past the old 64 MiB budget) and refuses an invalid stride") (is-ok decorated & is-err refused & map.width * map.height * map.stride > 67108864)
+            a + b + c
+          end

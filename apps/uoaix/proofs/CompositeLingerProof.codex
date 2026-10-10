@@ -1,0 +1,181 @@
+Chapter: CompositeLingerProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  cl-check : Text, Boolean -> [Console] Integer
+  cl-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  clg-fill : WalkMap, Integer -> Integer
+  clg-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in clg-fill map (i + 1)
+  clg-create : Text -> List Integer
+  clg-create (who) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header who 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  clg-decoration : WalkMap -> Result WdState Text
+  clg-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  clg-input : List GameOpcodeSpec, Integer -> GameInput
+  clg-input (specs) (connection) = let input = gn-input-with specs connection
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 1 in input
+  clg-count : List (List Integer), Integer, Integer, Integer, Integer -> Integer
+  clg-count (packets) (opcode) (serial) (i) (n) = if i == list-length packets then n
+    else let p = list-at packets i
+    in clg-count packets opcode serial (i + 1) (if list-length p > 4 & list-at p 0 == opcode & bit-and (gp-u32 p (if opcode == #78 then 3 else 1)) #7FFFFFFF == serial then n + 1 else n)
+  clg-seen : Result (Maybe GameReply) Text, Integer, Integer -> Integer
+  clg-seen (r) (opcode) (serial) = when r
+    is Err (_) -> -1
+    is Ok (m) -> when m is None -> 0 is Just (reply) -> clg-count reply.packets opcode serial 0 0
+  clg-concealed : CompositeOwner, Integer -> Integer
+  clg-concealed (store) (serial) = let slot = world-slot store.state.items.world serial in if slot < 0 then -1 else peek-byte (sa-at store.state.active.concealed slot) 0
+  clg-pulse : CompositeOwner, GameShard, GameInput, WalkMap, Integer, Integer -> [Console, Device.Block] Result (Maybe GameReply) Text
+  clg-pulse (store) (game) (input) (map) (serial) (tick) = act
+    active <- __record-set game "active" serial
+    cs-pulse store game input map 2593 tick
+  end
+  clg-name : List (List Integer), List Integer, Integer -> Boolean
+  clg-name (packets) (name) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p > 44 + list-length name & list-at p 0 == #1C & clg-bytes p name 44 0) | clg-name packets name (i + 1)
+  clg-bytes : List Integer, List Integer, Integer, Integer -> Boolean
+  clg-bytes (p) (name) (at) (i) = if i == list-length name then True else list-at p (at + i) == list-at name i & clg-bytes p name at (i + 1)
+  clg-copy : Integer, Integer, Integer -> Integer
+  clg-copy (from) (to) (i) = if i == 160 then 0 else let b = poke-byte to i (peek-byte from i) in clg-copy from to (i + 1)
+ A click on a character whose account is not the bound one: the character is placed in British's account
+ record, and the bound slots are swapped for blank ones for the lookup.
+  clg-click : GameShard, Integer -> Boolean
+  clg-click (game) (b) = let index = ga-british game.accounts
+    in if index < 0 then False
+    else let target = ga-slots game.accounts index + 4 * 160
+    in let saved = alloc-bytes 160
+    in let kept = clg-copy target saved 0
+    in let placed = clg-copy (game.characters + 160) target 0
+    in let bound = game.characters
+    in let blank = alloc-bytes 800
+    in let zero = ga-zero blank 800 0
+    in let swapped = __record-set game "characters" blank
+    in let reply = when world-get game.world b is Err (_) -> gs-reply [] "absent" is Ok (beta) -> gsi-look-mobile game beta
+    in let back = __record-set game "characters" bound
+    in let restored = clg-copy saved target 0
+    in clg-name reply.packets [66,101,116,97] 0
+  clg-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  clg-run (store) (map) (specs) = let game = store.state.checkpoint.game in act
+    reserved <- cs-views store 2
+    one <- clg-input specs 1
+    two <- clg-input specs 2
+    a-entry <- cs-route store game one map 2593 (clg-create "Alpha")
+    a <- one.session.serial
+    idle <- __record-set game "active" 0
+    b-entry <- cs-route store game two map 2593 (clg-create "Beta")
+    b <- two.session.serial
+    first <- clg-pulse store game one map a 1000
+    drawn <- clg-seen first #78 b
+    left <- cs-disconnect store game two
+    linger <- gm-ticks cg-linger-ms
+    early <- clg-pulse store game one map a 1100
+    kept <- clg-seen early #1D b == 0 & clg-concealed store b == 0
+    late <- clg-pulse store game one map a (1000 + linger + 5)
+    print-line-uni ("LINGER drawn=" & show drawn & " removed-early=" & show (clg-seen early #1D b) & " removed-late=" & show (clg-seen late #1D b) & " concealed=" & show (clg-concealed store b))
+    x <- cl-check "a logged-out body stays drawn through the linger and leaves the other client's view when it ends" (is-ok a-entry & is-ok b-entry & drawn == 1 & is-ok left & kept & clg-seen late #1D b == 1 & clg-concealed store b == 2)
+    back <- __record-set two.session "phase" 2
+    as-b <- __record-set game "active" b
+    entered <- cg-entry store.state game two map (gs-reply [] "return")
+    again <- clg-pulse store game one map a (1000 + linger + 10)
+    print-line-uni ("RETURN entered=" & (when entered is Err (e) -> "err " & e is Ok (r) -> "ok " & r.note) & " concealed=" & show (clg-concealed store b) & " drawn-again=" & show (clg-seen again #78 b) & " early-draws=" & show (clg-seen early #78 b) & " first-err=" & (when first is Err (e) -> e is Ok (_) -> "none"))
+    y <- cl-check "re-entry restores the body to the other client's view" (is-ok entered & clg-concealed store b == 0 & clg-seen again #78 b == 1)
+    left2 <- cs-disconnect store game two
+    as-b2 <- __record-set game "active" b
+    quick <- cg-entry store.state game two map (gs-reply [] "return")
+    past <- clg-pulse store game one map a (1000 + 2 * linger + 50)
+    z <- cl-check "re-entry within the linger cancels the removal" (is-ok left2 & is-ok quick & clg-seen past #1D b == 0 & clg-concealed store b == 0)
+    w <- cl-check "a click on a character of another account answers its name" (clg-click game b)
+    names <- clg-names store game one two map a b
+    x + y + z + w + names
+  end
+  clg-say : Text -> List Integer
+  clg-say (text) = let length = 9 + text-length text in gp-ascii [3,0,length,0,3,178,0,3] text 0 (text-length text + 1)
+  clg-until : List Integer, Integer, List Integer -> List Integer
+  clg-until (p) (at) (out) = if at >= list-length p | list-at p at == 0 then out else clg-until p (at + 1) (list-push out (list-at p at))
+  clg-text : List (List Integer), Integer -> Text
+  clg-text (packets) (i) = if i == list-length packets then ""
+    else let p = list-at packets i
+    in if list-length p > 44 & list-at p 0 == #1C then utf8-bytes-to-text (clg-until p 44 []) else clg-text packets (i + 1)
+  clg-label : Result GameReply Text -> Text
+  clg-label (r) = when r is Err (e) -> "err " & e is Ok (reply) -> reply.note & ":" & clg-text reply.packets 0
+  clg-as : CompositeOwner, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Device.Block] Result GameReply Text
+  clg-as (store) (game) (input) (map) (serial) (packet) = act
+    active <- __record-set game "active" serial
+    cs-route store game input map 2593 packet
+  end
+  clg-names : CompositeOwner, GameShard, GameInput, GameInput, WalkMap, Integer, Integer -> [Console, Device.Block] Integer
+  clg-names (store) (game) (one) (two) (map) (a) (b) = act
+    before <- clg-as store game one map a (gp-put32 [9] b)
+    bar-before <- clg-as store game one map a (gp-put32 (gp-put32 [#34] #EDEDEDED & [4]) b)
+    hungry <- clg-as store game two map b (clg-say "I am hungry")
+    alias <- clg-as store game two map b (clg-say "my name is Bob")
+    still <- clg-as store game one map a (gp-put32 [9] b)
+    given <- clg-as store game two map b (clg-say "Well met, my name is Beta.")
+    after <- clg-as store game one map a (gp-put32 [9] b)
+    bar-after <- clg-as store game one map a (gp-put32 (gp-put32 [#34] #EDEDEDED & [4]) b)
+    print-line-uni ("NAMES before=" & clg-label before & " still=" & clg-label still & " given=" & clg-label given & " after=" & clg-label after & " known=" & show store.state.known.count)
+    p <- cl-check "an unknown player shows the title of its best skill, and neither 'I am hungry' nor 'my name is Bob' teaches its name" (clg-label before == "items:look stranger:a merchant" & clg-label still == "items:look stranger:a merchant" & is-ok hungry & is-ok alias)
+    q <- cl-check "'my name is Beta' teaches every character in earshot, and the next click shows the name" (is-ok given & clg-label after == "items:look character:Beta" & nn-knows store.state.known a b & not (nn-knows store.state.known b a))
+    print-line-uni ("BAR before=" & clg-bar bar-before & " after=" & clg-bar bar-after)
+    r <- cl-check "another player's status bar names it as the click does: its title until known, then its name" (clg-bar bar-before == "a merchant" & clg-bar bar-after == "Beta")
+    p + q + r
+  end
+  clg-bar : Result GameReply Text -> Text
+  clg-bar (r) = when r is Err (e) -> "err " & e is Ok (reply) -> clg-bar-in reply.packets 0
+  clg-bar-in : List (List Integer), Integer -> Text
+  clg-bar-in (packets) (i) = if i == list-length packets then "none"
+    else let p = list-at packets i in if list-length p == 43 & list-at p 0 == #11 then utf8-bytes-to-text (clg-until p 7 []) else clg-bar-in packets (i + 1)
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cl-check e False
+     is Ok (map) -> let filled = clg-fill map 0
+      in when clg-decoration map
+       is Err (e) -> cl-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cl-check e False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> cl-check ("load " & e) False
+        is Ok (owner) -> if fresh then clg-run owner map specs
+          else let a = peek-qword owner.state.checkpoint.game.characters 0
+          in let b = peek-qword owner.state.checkpoint.game.characters 160 in act
+            hidden <- cl-check "after a restart every character body is out of view until its player enters" (clg-concealed owner a == 2 & clg-concealed owner b == 2)
+            known <- cl-check "a learned name survives the restart" (nn-knows owner.state.known a b & not (nn-knows owner.state.known b a))
+            hidden + known
+          end
+      end
+    end
+
+Page 1

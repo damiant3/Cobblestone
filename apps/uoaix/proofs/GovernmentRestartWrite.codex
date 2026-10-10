@@ -1,0 +1,65 @@
+Chapter: GovernmentRestartWrite
+  cites Uoaix chapter TownGovernmentInput
+  cites Uoaix chapter TownGovernmentInputFixtures
+  cites Uoaix chapter TownGovernmentBundle
+  cites Uoaix chapter TownGovernmentStore
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  grw-save : UoStore, GovernmentCheckpoint, Integer -> [Device.Block] Result Integer Text
+  grw-save (store) (state) (buf) = when tgb-encode state buf tgb-max-bytes
+    is Err (e) -> act Err e end
+    is Ok (size) -> us-append store 1 state.sequence state.tick buf size
+  grw-loop : UoStore, GovernmentCheckpoint, TgiScenario, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  grw-loop (store) (state) (scenario) (frame) (snapshot) (i) =
+    if i == list-length scenario.entries then act Ok i end
+    else let mark = __heap-save
+    in let entry = list-at scenario.entries i
+    in when tgi-encode entry frame tgi-bytes
+      is Err (e) -> act Err e end
+      is Ok (size) -> act
+        logged <- us-append store 2 entry.sequence entry.tick frame size
+        when logged
+          is Err (e) -> act Err e end
+          is Ok (offset) -> when tgi-apply state entry
+            is Err (e) -> act Err e end
+            is Ok (result) -> act
+              checkpoint <- if entry.sequence == 7 then grw-save store state snapshot else act Ok 0 end
+              when checkpoint
+                is Err (e) -> act Err e end
+                is Ok (at) -> let restored = __heap-restore mark in grw-loop store state scenario frame snapshot (i + 1)
+            end
+      end
+  grw-run : UoStore, GovernmentCheckpoint, TgiScenario -> [Console, Device.Block] Nothing
+  grw-run (store) (state) (scenario) = act
+    anchors <- GovernmentAnchors { people = state.government.people, mind = state.disputes.admin.mind, registry = state.disputes.registry, royal-actor = 1 }
+    blank <- government-store-restore store anchors
+    print-line-uni (if is-err blank then "PASS blank civic recovery refused" else "FAIL blank recovery admitted")
+    snapshot <- alloc-bytes tgb-max-bytes
+    frame <- alloc-bytes tgi-bytes
+    saved <- grw-save store state snapshot
+    when saved
+      is Err (e) -> print-line-uni ("FAIL initial civic snapshot " & e)
+      is Ok (offset) -> act
+        completed <- grw-loop store state scenario frame snapshot 0
+        when completed
+          is Err (e) -> print-line-uni ("FAIL civic commit " & e)
+          is Ok (count) -> act
+            print-line-uni (if scenario.failed == 0 & count == 47 & store.sequence == 47 & store.tick == 470 & store.snapshot > 0 & store.fault == 0 then "PASS civic bundles and 47 inputs committed" else "FAIL civic metadata")
+            print-line-uni (if tgif-valid state then "PASS live civic obligations payments and keeper queue" else "FAIL live civic state")
+          end
+      end
+  end
+  opening : [Console, Device.Block] Nothing = act
+    opened <- us-open 0 16384
+    when opened
+      is Err (e) -> print-line-uni ("FAIL civic store " & e)
+      is Ok (store) -> when tgif-source 0
+        is Err (e) -> print-line-uni ("FAIL civic fixture " & e)
+        is Ok (simulation) -> act
+          scenario <- tgif-build simulation
+          when tgif-source 0
+            is Err (e) -> print-line-uni ("FAIL initial civic state " & e)
+            is Ok (state) -> grw-run store state scenario
+        end
+  end

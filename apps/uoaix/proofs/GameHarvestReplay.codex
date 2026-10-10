@@ -2,6 +2,7 @@ Chapter: GameHarvestReplay
   cites Uoaix chapter GameHarvest
   cites Uoaix chapter GameHarvestProduction
   cites Uoaix chapter GameHarvestCodec
+  cites Uoaix chapter GameCraftCodec
   cites Uoaix chapter GameVendorDemo
   cites Uoaix chapter GameVendorCodec
   cbr-check : Text, Boolean -> [Console] Nothing
@@ -49,12 +50,18 @@ Chapter: GameHarvestReplay
     in let drained = ghr-drain w 64
     in let stone1 = eh-source w 1 100
     in let stone2 = eh-source w 1 100
-    in let branch = eh-source w 2 100
     in let a = eh-harvest w 1 stone1
     in let b = eh-harvest w 1 stone2
-    in let c = eh-harvest w 1 branch
-    in let pick = ep-craft w 1 1 1
     in let axe = ep-craft w 1 2 1
+    in let timber = eh-source w 15 100
+    in let roll0 = __record-set p "attempts" 0
+    in let logs = eh-harvest w 1 timber
+    in let timber2 = eh-source w 15 100
+    in let roll6 = __record-set p "attempts" 0
+    in let logs2 = eh-harvest w 1 timber2
+    in let roll5 = __record-set p "attempts" 0
+    in let boards = ep-craft w 1 16 4
+    in let pick = ep-craft w 1 1 1
     in let knife = ep-craft w 1 3 1
     in let cotton1 = eh-source w 10 100
     in let cotton2 = eh-source w 10 100
@@ -78,6 +85,11 @@ Chapter: GameHarvestReplay
         in let lot = gv-add-lot v serial 1 item quality wear 0
         in let known = gsi-register items serial 0 0 True False
         in if lot < 0 | known /= 0 then 0 else serial
+  ghr-row-in : List (List Integer), Integer, Integer -> Integer
+  ghr-row-in (packets) (skill) (i) = if i == list-length packets then -1
+    else let q = list-at packets i in if list-length q > 7 + skill * 4 & list-at q 0 == #3A then gp-u16 q (6 + skill * 4) else ghr-row-in packets skill (i + 1)
+  ghr-row : Result (Maybe GameReply) Text, Integer -> Integer
+  ghr-row (reply) (skill) = when reply is Err (_) -> -1 is Ok (m) -> when m is None -> -1 is Just (r) -> ghr-row-in r.packets skill 0
   ghr-lookup : WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer
   ghr-lookup (map) (mobile) (x) (y) (z) (graphic) =
     if z /= 0 then 0
@@ -89,10 +101,41 @@ Chapter: GameHarvestReplay
     let a = gp-put32 (list-push (gp-put32 [#6C,1] context) 0) 0
     in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,0]) graphic
   ghr-use : GameHarvest, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
-  ghr-use (state) (input) (map) (tool) (x) (y) (graphic) (tick) =
+  ghr-use (state) (input) (map) (tool) (x) (y) (graphic) (tick) = ghr-use-at state input map tool x y 0 graphic tick
+  ghr-use-at : GameHarvest, GameInput, WalkMap, Integer, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  ghr-use-at (state) (input) (map) (tool) (x) (y) (z) (graphic) (tick) =
     let begin = gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (gp-put32 [6] tool) tick
     in let target = (list-at state.requests 0).target
-    in gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 (ghr-target target x y graphic) (tick + 1)
+    in let packet = list-set-at (ghr-target target x y graphic) 16 z
+    in gh-handler-at ghr-lookup gh-produce state state.vendor.game input map 2593 packet (tick + 1)
+  ghr-move : GameShard, Integer, Integer, Integer -> Boolean
+  ghr-move (game) (serial) (x) (y) = when world-get game.world serial
+    is Err (_) -> False
+    is Ok (m) -> is-ok (world-update game.world (__record-set (__record-set m "x" x) "y" y))
+  ghr-said : Result (Maybe GameReply) Text, Text -> Boolean
+  ghr-said (result) (text) = ghr-said-at (cbr-packets result) text 0
+  ghr-said-at : List (List Integer), Text, Integer -> Boolean
+  ghr-said-at (packets) (text) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in if list-at p 0 == #1C & list-length p >= 44 + text-length text & ghr-bytes p text 0 then True
+    else ghr-said-at packets text (i + 1)
+  ghr-bytes : List Integer, Text, Integer -> Boolean
+  ghr-bytes (packet) (text) (i) = if i == text-length text then True
+    else if list-at packet (44 + i) /= to-unicode (char-code (char-at text i)) then False
+    else ghr-bytes packet text (i + 1)
+  ghr-acted : Result (Maybe GameReply) Text, Integer -> Boolean
+  ghr-acted (result) (action) = ghr-acted-at (cbr-packets result) action 0
+  ghr-acted-at : List (List Integer), Integer, Integer -> Boolean
+  ghr-acted-at (packets) (action) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in if list-length p > 6 & list-at p 0 == #6E & gp-u16 p 5 == action then True
+    else ghr-acted-at packets action (i + 1)
+  ghr-last-lot : GvWorld, Integer, Integer -> Integer
+  ghr-last-lot (v) (item) (i) = if i < 0 then 0 else if ep-lot-item v.currency.world.goods (ep-lot-nth v.currency.world.goods i) == item then ep-lot-nth v.currency.world.goods i else ghr-last-lot v item (i - 1)
+  ghr-note : Result (Maybe GameReply) Text -> Text
+  ghr-note (result) = when result
+    is Err (e) -> e
+    is Ok (reply) -> when reply is None -> "" is Just (r) -> r.note
   ghr-bank : GameHarvest, GameInput, WalkMap, Integer, Integer -> [Console] Nothing
   ghr-bank (state) (input) (map) (tool) (pack) = act
     p <- list-at state.vendor.players 0
@@ -121,6 +164,49 @@ Chapter: GameHarvestReplay
           cbr-check "backpack tool remains admitted" (gh-tool state p tool >= 0)
         end
   end
+  ghr-gold-roll : Integer, Integer, Integer -> Integer
+  ghr-gold-roll (now) (x) (y) = 5
+  ghr-no-roll : Integer, Integer, Integer -> Integer
+  ghr-no-roll (now) (x) (y) = 999
+ A crown at the miner's own place makes a gold node there royal (permanent) and the miner unappointed, so a seam
+ must both waive the appointment and work out.
+  ghr-seams : GameHarvest, GvWorld, GameInput, WalkMap, Integer, EpActor -> [Console] Nothing
+  ghr-seams (state) (v) (input) (map) (pick) (p) = act
+    w <- v.currency.world
+    purse <- eu-open v.currency 2 4242
+    crown <- if purse < 1 then -1 else ep-admit w purse p.place
+    crowned <- __record-set w "mint-owner" crown
+    at <- gh-site-column state 5 1419 1698 0
+    base <- if at < 0 then 0 else (list-at state.sites at).node
+    nodes <- w.node-count
+    gold <- ep-at p.stock 6
+    forced <- __record-set state "seam" ghr-gold-roll
+    reset <- __record-set p "attempts" 0
+    dug <- ghr-use state input map pick 1419 1698 #0220 5000
+    seam <- nodes + 1
+    cbr-check "a gold seam on an iron tile yields gold to an unappointed miner at a royal place, then lies dormant and the tile's own vein returns (UOAIX-86)" (crown > 0 & at >= 0
+      & text-starts-with (ghr-note dug) "harvest produced item=6 node=" & ep-at p.stock 6 > gold & w.node-count == seam
+      & (list-at w.nodes (seam - 1)).stage == 0 & (list-at w.nodes (seam - 1)).ready == ep-limit
+      & (list-at state.sites at).node == base & (list-at state.sites at).base == 0)
+    ore <- ghr-last-lot state.vendor 6 ((ep-lot-count state.vendor.currency.world.goods) - 1)
+    cbr-check "harvested ore is registered stackable, so a stack of it splits and merges (UOAIX-103)" (ore > 0 & gsi-known state.items ore & (gsi-meta state.items ore).stackable)
+    again <- __record-set p "attempts" 0
+    redug <- ghr-use state input map pick 1419 1698 #0220 6000
+    cbr-check "the next gold seam at that place reuses the dormant node" (text-starts-with (ghr-note redug) "harvest produced item=6 node=" & w.node-count == seam & (list-at w.nodes (seam - 1)).ready == ep-limit)
+    plain <- __record-set state "seam" ghr-no-roll
+    tried <- ghr-use state input map pick 1419 1698 #0220 7000
+    cbr-check "a roll past every seam leaves the tile on its own vein and makes no node" (w.node-count == seam & (list-at state.sites at).node == base & (list-at state.sites at).base == 0)
+    packed <- __record-set (list-at state.sites at) "base" seam
+    size <- ghc-size state.count
+    buf <- alloc-bytes size
+    encoded <- ghc-encode state 20000 buf size
+    restored <- gh-state v state.items
+    decoded <- ghc-decode restored 21000 buf size
+    unpacked <- __record-set (list-at state.sites at) "base" 0
+    uncrowned <- __record-set w "mint-owner" 0
+    calm <- __record-set state "seam" ghr-no-roll
+    cbr-check "the harvest codec keeps a seam's base in the site record (version 2)" (is-ok encoded & is-ok decoded & (list-at restored.sites at).node == base & (list-at restored.sites at).base == seam)
+  end
   ghr-live : GvWorld, GsiState, GameInput, WalkMap, Integer -> [Console] Nothing
   ghr-live (v) (items) (input) (map) (pack) = act
     state <- gh-state v items
@@ -133,21 +219,46 @@ Chapter: GameHarvestReplay
     ghr-bank state input map pick pack
     roll <- __record-set p "attempts" 0
     mined <- ghr-use state input map pick 1419 1698 #0220 100
-    cbr-check "mining produces backpack ore and skill update" (cbr-opcode mined 37 0 & cbr-opcode mined 58 0 & ep-at p.stock 5 == 2 & ep-at p.skills 1 == 501)
+    cbr-check "mining produces backpack ore, practises once and sends the skill list" (cbr-opcode mined 37 0 & cbr-opcode mined 58 0 & ep-at p.stock 5 == 2 & p.attempts == 1)
     cbr-check "selected exhausted pick retires without draining spare" (is-err (world-get v.game.world pick) & is-ok (world-get v.game.world spare) & ep-at p.stock 25 == 1 & ep-at p.wear 25 == 32)
     replayed <- gh-handler-at ghr-lookup gh-produce state v.game input map 2593 (ghr-target #48410001 1419 1698 #0220) 102
     cbr-check "used target cannot harvest twice" (is-ok replayed & ep-at p.stock 5 == 2)
     roll2 <- __record-set p "attempts" 0
+    logs-before <- ep-at p.stock 15
+    saplings-before <- ep-at p.stock 56
     chopped <- ghr-use state input map axe 1421 1699 #0C95 600
-    cbr-check "lumberjacking produces logs seed and skill gain" (cbr-opcode chopped 37 0 & ep-at p.stock 15 == 2 & ep-at p.stock 56 == 1 & ep-at p.skills 6 == 501)
-    roll3 <- __record-set p "attempts" 0
+    cbr-check "lumberjacking produces logs and one timber sapling and practises once" (cbr-opcode chopped 37 0 & ep-at p.stock 15 == logs-before + 2 & ep-at p.stock 56 == saplings-before + 1 & p.attempts == 1)
+    cbr-check "chopping and mining play their swing sounds" (cbr-opcode chopped #54 0 & cbr-opcode mined #54 0)
+    roll3 <- __record-set p "attempts" 22
     fished <- ghr-use state input map rod 1420 1701 #00A8 1100
-    cbr-check "fishing produces fish and skill gain" (cbr-opcode fished 37 0 & ep-at p.stock 9 == 1 & ep-at p.skills 4 == 1)
+    cbr-check "fishing produces fish and practises once" (cbr-opcode fished 37 0 & ep-at p.stock 9 == 1 & p.attempts == 23 & cbr-opcode fished #54 0)
+    cbr-check "a fishing use whose gain roll passes (attempt 22 at 0.0) raises Fishing to 0.1 in the character's skill row, the economy actor's own skill untouched, and the reply's 0x3A list shows 0.1" (p.row /= 0 & ep-level p 4 18 == 1 & ep-at p.skills 4 == 0 & ghr-row fished 18 == 1)
     before <- p.attempts
     bad <- ghr-use state input map spare 1419 1698 #0999 1600
     cbr-check "forged terrain model grants nothing" (is-ok bad & p.attempts == before & ep-at p.stock 5 == 2)
     depleted <- ghr-use state input map spare 1419 1698 #0220 2100
     cbr-check "depleted source refuses without tool wear or skill attempt" (is-ok depleted & p.attempts == before & ep-at p.wear 25 == 32)
+    cbr-check "ore, logs and fish speak UOX3's success lines, and an empty vein says so" (ghr-said mined "You place some ore in your pack." & ghr-said chopped "You place some logs in your pack." & ghr-said fished "You pull out an item : fish" & ghr-said depleted "There is no metal to mine here.")
+    cbr-check "mining swings action 11, chopping 13 and fishing 12, as pre-SA ServUO" (ghr-acted mined 11 & ghr-acted chopped 13 & ghr-acted fished 12)
+    prompt <- gh-handler-at ghr-lookup gh-produce state v.game input map 2593 (gp-put32 [6] rod) 2650
+    cbr-check "a fishing pole asks which water" (ghr-said prompt "What water do you want to fish in?")
+    high <- ghr-use-at state input map spare 1419 1698 40 #0220 2700
+    cbr-check "a target in reach at another height is judged by the tile, and the refusal logs it" (ghr-note high == "You cannot mine there. target=1419,1698,40 id=544" & p.attempts == before)
+    me <- (when world-get v.game.world input.session.serial is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
+    far-fish <- ghr-use state input map rod (list-at me 0 + 6) (list-at me 1) #00A8 2800
+    near-fish <- ghr-use state input map rod (list-at me 0 + 5) (list-at me 1) #00A8 3400
+    cbr-check "fishing reaches five tiles on x and y and refuses six, as UOX3 fishing.js (F42)" (ghr-said far-fish "You need to be closer to the water to fish!"
+      & not (ghr-said near-fish "You need to be closer to the water to fish!"))
+    feet <- ghr-move v.game input.session.serial 1419 1698
+    own-mine <- ghr-use state input map spare 1419 1698 #0220 4000
+    shore <- ghr-move v.game input.session.serial 1420 1701
+    own-fish <- ghr-use state input map rod 1420 1701 #00A8 4600
+    back <- ghr-move v.game input.session.serial (list-at me 0) (list-at me 1)
+    print-line-uni ("OWN TILE mine=" & ghr-note own-mine & " fish=" & ghr-note own-fish)
+    cbr-check "a miner digs the tile under its own feet (ServUO InRange, UOX3 mining.js) and a fisher still cannot fish where it stands" (feet & shore & back
+      & not (ghr-said own-mine "You are too far away to mine that!") & ghr-said own-mine "There is no metal to mine here."
+      & ghr-said own-fish "You need to be closer to the water to fish!")
+    rested <- __record-set (list-at state.requests 0) "next" 0
     foreign <- gh-handler-at ghr-lookup gh-produce state v.game input map 2593 (gp-put32 [6] 0) 2600
     cbr-check "unhandled click falls through without mutation" ((when foreign is Ok (None) -> True is otherwise -> False) & p.attempts == before)
     cbr-check "production census and physical lot codec remain valid" (ep-census v.currency.world 1 & gvsc-valid v)
@@ -160,6 +271,87 @@ Chapter: GameHarvestReplay
     corrupted <- poke-qword buf 136 999
     rejected <- ghc-decode restored 9000 buf size
     cbr-check "bad source codec refuses without changing restored state" (is-err rejected & (list-at restored.requests 0).next == 8000)
+    ghr-stacks state v pack
+    ghr-seams state v input map spare p
+    ghr-ore-names v items pack
+    ghr-rebind state v
+  end
+  ghr-lot-ore : GvWorld, WorldTable, Integer, Integer -> Integer
+  ghr-lot-ore (v) (world) (serial) (item) = if serial == 0 then 0
+    else let at = gv-lot v serial 0
+    in if at >= 0 & (ep-lot v.currency.world.goods at).item == item then serial else ghr-lot-ore v world (world-next-sibling world serial) item
+  ghr-ore : WorldTable, Integer -> WorldObject
+  ghr-ore (world) (serial) = when world-get world serial
+    is Err (_) -> WorldObject { serial = 0, kind = 0, x = 0, y = 0, z = 0, graphic = 0, hue = -1, container = 0, amount = 0, health = 0 }
+    is Ok (o) -> o
+  ghr-ore-names : GvWorld, GsiState, Integer -> [Console] Nothing
+  ghr-ore-names (v) (items) (pack) = act
+    world <- v.game.world
+    gold <- ghr-ore world (ghr-lot-ore v world (world-first-child world pack) 6)
+    iron <- ghr-ore world (ghr-lot-ore v world (world-first-child world pack) 5)
+    copper <- gsi-name items (__record-set iron "hue" #096D)
+    silver <- gsi-name items (__record-set (ghr-ore world (ghr-lot-ore v world (world-first-child world pack) 5)) "hue" #0482)
+    plain <- ghr-ore world (ghr-lot-ore v world (world-first-child world pack) 5)
+    print-line-uni ("ORE gold hue " & show gold.hue & " " & gsi-name items gold & "; iron hue " & show plain.hue & " " & gsi-name items plain & "; copper " & copper & "; silver " & silver)
+    cbr-check "harvested ore names its metal: the gold seam's ore is hued 0x8A5 and reads gold ore, copper 0x96D and silver 0x482 read their metal, and iron keeps hue 0 and no metal name" (gold.graphic == #19B9 & gold.hue == #08A5 & gsi-name items gold == "gold ore"
+      & copper == "copper ore" & silver == "silver ore" & plain.graphic == #19B9 & plain.hue == 0 & item-ore-name plain.hue == "")
+  end
+  ghr-ores : WorldTable, Integer, Integer -> Integer
+  ghr-ores (world) (serial) (n) = if serial == 0 then n
+    else let found = when world-get world serial is Err (_) -> 0 is Ok (o) -> if o.graphic == #19B9 then 1 else 0
+    in ghr-ores world (world-next-sibling world serial) (n + found)
+  ghr-first-ore : WorldTable, Integer -> Integer
+  ghr-first-ore (world) (serial) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.graphic == #19B9 then serial else ghr-first-ore world (world-next-sibling world serial)
+  ghr-amount : WorldTable, Integer -> Integer
+  ghr-amount (world) (serial) = when world-get world serial is Err (_) -> -1 is Ok (o) -> o.amount
+  ghr-produced : EpWorld, EpActor, Integer -> Integer
+  ghr-produced (w) (p) (quality) = let a = ep-add p.stock 5 1
+    in let gathered = ep-add w.gathered 5 1
+    in let b = ep-add p.quality 5 quality
+    in let c = ep-add p.wear 5 32
+    in ep-add p.cost 5 1
+  ghr-stacks : GameHarvest, GvWorld, Integer -> [Console] Nothing
+  ghr-stacks (state) (v) (pack) = act
+    world <- v.game.world
+    ore <- ghr-first-ore world (world-first-child world pack)
+    inside <- (when world-get world ore is Err (_) -> False is Ok (o) -> o.x >= 44 & o.x < 156 & o.y >= 65 & o.y < 129 & (o.x /= 20 | o.y /= 20))
+    cbr-check "mined ore lands inside the backpack gump rectangle, not at its corner" (ore > 0 & inside)
+    player <- list-at v.players 0
+    p <- ep-actor v.currency.world player.actor
+    refused <- gh-output state player 5 1 550 700
+    cbr-check "a yield the economy did not produce is refused, not merged" (is-err refused & ghr-amount world ore == 2)
+    common <- ghr-produced v.currency.world p 400
+    merged <- gh-output state player 5 1 550 700
+    cbr-check "a common-grade yield merges into the common ore stack and its lot" (is-ok merged & ghr-ores world (world-first-child world pack) 0 == 1 & ghr-amount world ore == 3 & (ep-lot-amount v.currency.world.goods (gv-lot v ore 0)) == 3 & gvsc-valid v)
+    fine <- ghr-produced v.currency.world p 700
+    apart <- gh-output state player 5 1 800 701
+    cbr-check "a fine-grade yield starts its own stack" (is-ok apart & ghr-ores world (world-first-child world pack) 0 == 2 & ghr-amount world ore == 3 & gvsc-valid v)
+  end
+  ghr-rebind : GameHarvest, GvWorld -> [Console] Nothing
+  ghr-rebind (state) (v) = act
+    miner <- (list-at state.requests 0).serial
+    craft <- gcr-state state
+    crafter <- list-at craft.requests 0
+    a <- __record-set crafter "serial" miner
+    b <- __record-set crafter "next" 3000
+    cbr-check "miner's harvest and craft requests are bound before a new account logs in" (miner /= 0 & ghc-bound state miner 0)
+    when ga-create v.game.accounts [78,101,119,99,111,109,101,114] [112,119]
+      is Err (e) -> print-line-uni ("FAIL new account " & e)
+      is Ok (index) -> act
+        rebound <- gs-bind v.game index
+        size <- ghc-size state.count
+        buf <- alloc-bytes size
+        encoded <- ghc-encode state 2700 buf size
+        restored <- gh-state v state.items
+        decoded <- ghc-decode restored 8000 buf size
+        cbr-check "new account's first login leaves the harvest codec encodable" (rebound & not (ghc-bound state miner 0) & is-ok encoded & is-ok decoded & restored.count == state.count & (list-at restored.requests 0).serial == 0)
+        cbuf <- alloc-bytes 112
+        crafted <- gcrc-encode craft 2700 cbuf 112
+        cbr-check "new account's first login leaves the craft codec encodable" (is-ok crafted & peek-qword cbuf 32 == 0 & is-ok (gcrc-decode (gcr-state restored) 8000 cbuf 112))
+      end
   end
   ghr-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
   ghr-run (shard) (map) (currency) = act

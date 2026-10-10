@@ -1,0 +1,51 @@
+Chapter: ServerLogProof
+  cites Foreword chapter Result
+  cites Uoaix chapter ServerLog
+
+  slp-check : Text, Boolean -> [Console] Nothing
+  slp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  slp-every : Integer, Integer, Integer -> Boolean
+  slp-every (log) (level) (s) = if s >= slg-subsystems then True
+    else if not (slg-on log s level) then False else slp-every log level (s + 1)
+  slp-none : Integer, Integer, Integer -> Boolean
+  slp-none (log) (level) (s) = if s >= slg-subsystems then True
+    else if slg-on log s level then False else slp-none log level (s + 1)
+  slp-names : Integer -> Boolean
+  slp-names (s) = if s >= slg-subsystems then True
+    else if slg-subsystem-of (slg-subsystem-name s) /= s then False else slp-names (s + 1)
+  slp-levels : Integer -> Boolean
+  slp-levels (level) = if level > slg-off then True
+    else if slg-level-of (slg-level-name level) /= level then False else slp-levels (level + 1)
+  opening : [Console] Nothing = act
+    let log = slg-new slg-trace
+    in act
+      slp-check "a new log at trace writes every subsystem's trace line" (slp-every log slg-trace 0)
+      let all = slg-set-all log slg-info
+      in act
+        slp-check "level info for all hides debug and keeps info in every subsystem" (is-ok all & slp-none log slg-debug 0 & slp-every log slg-info 0)
+        let combat = slg-set log slg-combat slg-debug
+        in act
+          slp-check "a combat override at debug writes combat debug" (is-ok combat & slg-on log slg-combat slg-debug & not (slg-on log slg-combat slg-trace))
+          slp-check "the combat override leaves network at the global info" (not (slg-on log slg-network slg-debug) & slg-on log slg-network slg-info)
+          let quiet = slg-set log slg-network slg-error
+          in slp-check "a network override above the global hides network warn only" (is-ok quiet & not (slg-on log slg-network slg-warn) & slg-on log slg-network slg-error & slg-on log slg-store slg-warn)
+          let raised = slg-set-all log slg-warn
+          in slp-check "changing the global keeps both overrides" (is-ok raised & slg-on log slg-combat slg-debug & not (slg-on log slg-network slg-warn) & not (slg-on log slg-store slg-info))
+          let restored = slg-set log slg-combat slg-inherit
+          in slp-check "inherit returns combat to the global" (is-ok restored & not (slg-on log slg-combat slg-info) & slg-on log slg-combat slg-warn)
+          let off = slg-set-all log slg-off
+          in slp-check "off writes nothing, not even error, except a subsystem overriding it" (is-ok off & not (slg-on log slg-store slg-error) & slg-on log slg-network slg-error)
+          slp-check "bad levels and subsystems are refused" (is-err (slg-set-all log 6) & is-err (slg-set-all log (0 - 1)) & is-err (slg-set log slg-subsystems slg-info) & is-err (slg-set log (0 - 1) slg-info) & is-err (slg-set log slg-combat 9))
+          slp-check "a refused change leaves the log unchanged" (slg-threshold log slg-store == slg-off & slg-threshold log slg-network == slg-error)
+          slp-check "subsystem and level names round-trip" (slp-names 0 & slp-levels 0 & slg-level-of "inherit" == slg-inherit & slg-level-of "loud" == 0 - 1 & slg-subsystem-of "weather" == 0 - 1)
+          slp-check "log 0 writes every level and refuses changes" (slp-every 0 slg-trace 0 & is-err (slg-set-all 0 slg-info) & is-err (slg-set 0 slg-combat slg-info))
+          slp-check "tags name the level and subsystem" (slg-tags slg-combat slg-info == " level=info sys=combat")
+          written <- slg-line log slg-network slg-error "SAMPLE written"
+          hidden <- slg-line log slg-store slg-error "SAMPLE hidden"
+          slp-check "slg-line writes an enabled line and drops a disabled one" (written == 1 & hidden == 0)
+        end
+      end
+    end
+  end
+
+Page 1

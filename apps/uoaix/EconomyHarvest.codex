@@ -5,7 +5,7 @@ Chapter: EconomyHarvest
 
   eh-source : EpWorld, Integer, Integer -> Integer
   eh-source (w) (resource) (place) =
-    if resource <= 0 | resource > list-length w.catalog.resources | place <= 0 | w.node-count == ep-node-limit then -1
+    if resource <= 0 | resource > list-length w.catalog.resources | place <= 0 | not (ep-node-room w) then -1
     else let r = list-at w.catalog.resources (resource - 1)
     in let n = list-at w.nodes w.node-count
     in let id = w.node-count + 1
@@ -17,7 +17,7 @@ Chapter: EconomyHarvest
     in id
   eh-ground : EpWorld, Integer, Integer, Integer -> Integer
   eh-ground (w) (actor) (place) (ground) =
-    if not (ep-valid-actor w actor) | place <= 0 | ground < 1 | ground > 2 | w.node-count == ep-node-limit then -1
+    if not (ep-valid-actor w actor) | place <= 0 | ground < 1 | ground > 2 | not (ep-node-room w) then -1
     else if (ep-actor w actor).place /= place then -1
     else let n = list-at w.nodes w.node-count
     in let id = w.node-count + 1
@@ -26,21 +26,27 @@ Chapter: EconomyHarvest
     in let c = __record-set n "ground" ground
     in let d = __record-set w "node-count" id
     in id
+ Place 400 is the crown's farm (UOAIX-58).
+  eh-royal-place : Integer = 400
+  eh-common : EpWorld, EpNode -> Boolean
+  eh-common (w) (n) = n.planted == 1 & n.place == eh-royal-place & w.mint-owner > 0 & n.owner == w.mint-owner
   eh-valid-node : EpWorld, Integer -> Boolean
   eh-valid-node (w) (node) = node > 0 & node <= w.node-count
   eh-plant : EpWorld, Integer, Integer, Integer -> Integer
-  eh-plant (w) (actor) (node) (resource) =
+  eh-plant (w) (actor) (node) (resource) = eh-plant-from w actor node resource 0
+  eh-plant-from : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  eh-plant-from (w) (actor) (node) (resource) (serial) =
     if not (ep-valid-actor w actor) | not (eh-valid-node w node) | resource <= 0 | resource > list-length w.catalog.resources then -1
     else let p = ep-actor w actor
     in let n = list-at w.nodes (node - 1)
     in let r = list-at w.catalog.resources (resource - 1)
     in if r.seed == 0 | n.owner /= actor | n.place /= p.place | n.ground /= r.ground | (n.resource /= 0 & n.stage /= 3) | w.hour > ep-limit - r.regrow then -1
     else if ep-at p.stock r.seed < 1 then -1
-    else let a = ep-consume w p r.seed 1
+    else let a = ep-consume-serial w actor r.seed 1 serial
     in let b = __record-set n "resource" resource
     in let c = __record-set n "planted" 1
     in let d = __record-set n "stage" 0
-    in let e = __record-set n "ready" (w.hour + r.regrow)
+    in let e = __record-set n "ready" (w.hour + eh-span resource r.regrow)
     in let f = __record-set n "water" 0
     in let g = __record-set n "tended" 0
     in 0
@@ -51,7 +57,7 @@ Chapter: EconomyHarvest
     in let n = list-at w.nodes (node - 1)
     in if n.owner /= actor | n.place /= p.place | n.planted == 0 | n.stage >= 2 then -1
     else if water & (not (eg-id w.catalog 4) | ep-at p.stock 4 < 1) then -1
-    else if water then let a = ep-consume w p 4 1 in let b = __record-set n "water" 1 in 0
+    else if water then let a = ep-consume w actor 4 1 in let b = __record-set n "water" 1 in 0
     else let a = __record-set n "tended" 1 in 0
   eh-eaten : EpWorld, Integer -> Integer
   eh-eaten (w) (node) = if not (eh-valid-node w node) then -1
@@ -65,42 +71,132 @@ Chapter: EconomyHarvest
     in let c = ep-add p.wear item (quantity * 32)
     in let d = if list-length w.catalog.items >= 68 then ep-add p.cost item quantity else 0
     in ep-add w.gathered item quantity
+  eh-gather-from : EpWorld, Integer, Integer, Integer -> Integer
+  eh-gather-from (w) (actor) (item) (quantity) = if not (ep-valid-actor w actor) | not (eg-id w.catalog item) | quantity <= 0 then -1
+    else let p = ep-actor w actor
+    in if not (ep-room p item quantity) | ep-at w.gathered item > ep-limit - quantity then -1
+    else let added = eh-add-yield w p item quantity 1000 in 0
+  eh-tax-units : Integer, Integer, Integer, Integer, Integer -> Integer
+  eh-tax-units (seed) (rate) (quantity) (i) (taken) = if i == quantity then taken
+    else let roll = int-mod (int-mod (seed * 1103515245 + i * 12345 + 1013904223) 2147483648) 10000
+    in eh-tax-units seed rate quantity (i + 1) (if roll < rate then taken + 1 else taken)
+ The Crown takes 10% of mined gold, silver and copper ore, in basis points (Damian 2026-10-06: "mining should have a 10% tax right off the top").
+  eh-mining-tax : Integer = 1000
+  eh-tax-share : EpWorld, Integer, Integer, Integer -> Integer
+  eh-tax-share (w) (actor) (item) (quantity) =
+    if (item /= 6 & item /= 63 & item /= 64) | w.mint-owner <= 0 | actor == w.mint-owner | not (ep-valid-actor w w.mint-owner) then 0
+    else let share = eh-tax-units (ep-actor w actor).attempts eh-mining-tax quantity 0 0
+    in if share <= 0 | not (ep-room (ep-actor w w.mint-owner) item share) | ep-at w.taxed item > ep-limit - share then 0 else share
+ Station kind 13 is the King's warrant to mine gold ore at its place; craft
+ stations are kinds 1..12, so no recipe can bind it.
+  eh-warrant : Integer = 13
+  eh-warranted : EpWorld, Integer, Integer, Integer -> Boolean
+  eh-warranted (w) (actor) (place) (i) = if i == w.station-count then False
+    else let s = list-at w.stations i
+    in (s.kind == eh-warrant & s.owner == actor & s.place == place & s.enabled == 1) | eh-warranted w actor place (i + 1)
+  eh-appointed : EpWorld, Integer, Integer -> Boolean
+  eh-appointed (w) (actor) (place) = w.mint-owner <= 0 | actor == w.mint-owner | eh-warranted w actor place 0
+  eh-appoint : EpWorld, Boolean, Integer, Integer -> Integer
+  eh-appoint (w) (verified-king) (actor) (place) =
+    if not verified-king | not (ep-valid-actor w actor) | place <= 0 then -1
+    else if eh-warranted w actor place 0 then 0
+    else if not (ep-station-room w) then -1
+    else let s = list-at w.stations w.station-count
+    in let a = __record-set s "kind" eh-warrant
+    in let b = __record-set s "owner" actor
+    in let c = __record-set s "place" place
+    in let d = __record-set s "enabled" 1
+    in let e = __record-set w "station-count" (w.station-count + 1)
+    in w.station-count
+ Place 401 is the Royal Mine's veins: a buyer's economic place moves to the merchant's (GameLiveActions), so the crown's
+ own place is no fixed mark for them.
+  eh-mine-place : Integer = 401
+  eh-royal-mine : EpWorld, EpNode -> Boolean
+  eh-royal-mine (w) (n) = n.resource == 6 & n.place == eh-mine-place & w.mint-owner > 0
+  eh-royal-gold : EpWorld, EpNode -> Boolean
+  eh-royal-gold (w) (n) = eh-royal-mine w n | (n.resource == 6 & w.mint-owner > 0 & n.place == (ep-actor w w.mint-owner).place)
+  eh-warranted-any : EpWorld, Integer, Integer -> Boolean
+  eh-warranted-any (w) (actor) (i) = if i == w.station-count then False
+    else let s = list-at w.stations i
+    in (s.kind == eh-warrant & s.owner == actor & s.enabled == 1) | eh-warranted-any w actor (i + 1)
+ A fruit tree (resource 16) or a grapevine (27) stays grown when picked; its fruit returns at ready (Damian 2026-10-06,
+ 2026-10-07: grapes "act more like trees, you pick from by hand and it stays up").
+  eh-orchard : EpNode -> Boolean
+  eh-orchard (n) = n.resource == 16 | n.resource == 27 | n.resource == 39 | n.resource == 41
+ A reaped food or reagent (a crop, fruit or herb bed: ground 1 or 2, item chain 5 or 7) yields 10 at Farming 0, rising
+ to 40 at Farming 100 (Damian, 2026-10-08: "10 as a baseline, up to quadruple at 100 farming"), for players and NPC
+ reapers alike. Skill 5 is Farming; level runs 0 to 1000.
+  eh-farming : Integer = 5
+  eh-reap-yield : Integer -> Integer
+  eh-reap-yield (level) = 10 + 30 * (max 0 (min 1000 level)) / 1000
+  eh-reaped : EgCatalog, EgResource -> Boolean
+  eh-reaped (c) (r) = r.ground >= 1 & r.item >= 1 & r.item <= list-length c.items
+    & ((list-at c.items (r.item - 1)).chain == 5 | (list-at c.items (r.item - 1)).chain == 7)
   eh-harvest : EpWorld, Integer, Integer -> Integer
-  eh-harvest (w) (actor) (node) =
+  eh-harvest (w) (actor) (node) = eh-harvest-at w actor node False
+ A seam (gh-seam-begin) is worked by any miner, the gold appointment waived (root, 2026-10-07), and is never royal gold.
+  eh-harvest-at : EpWorld, Integer, Integer, Boolean -> Integer
+  eh-harvest-at (w) (actor) (node) (seam) = eh-harvest-with w actor node seam 0
+  eh-harvest-with : EpWorld, Integer, Integer, Boolean, Integer -> Integer
+  eh-harvest-with (w) (actor) (node) (seam) (tool-serial) =
     if not (ep-valid-actor w actor) | not (eh-valid-node w node) then -1
     else let p = ep-actor w actor
     in let n = list-at w.nodes (node - 1)
-    in if n.resource == 0 | n.stage /= 2 | n.place /= p.place | (n.owner /= 0 & n.owner /= actor) | p.attempts >= ep-limit then -1
+    in if n.resource == 0 | n.stage /= 2 | (eh-orchard n & w.hour < n.ready) | (n.place /= p.place & not (eh-common w n) & not (eh-royal-mine w n)) | (n.owner /= 0 & n.owner /= actor & not (eh-common w n)) | p.attempts >= ep-limit then -1
     else let r = list-at w.catalog.resources (n.resource - 1)
-    in let level = if r.skill == 0 then 1000 else ep-at p.skills r.skill
-    in let quantity = 1 + (r.quantity - 1) * level / 1000
+    in let level = ep-level p r.skill (ep-classic r.skill 0 r.item)
+    in let quantity = if eh-reaped w.catalog r then eh-reap-yield (ep-level p eh-farming (ep-classic eh-farming 0 r.item)) else 1 + (r.quantity - 1) * level / 1000
     in if r.item == 51 | r.seed == 51 | not (ep-tool p r.tool) | not (ep-room p r.item quantity) | ep-at w.gathered r.item > ep-limit - quantity | w.hour > ep-limit - r.regrow then -1
+    else if r.item == 6 & not seam & not (eh-appointed w actor n.place) & not (eh-royal-mine w n & eh-warranted-any w actor 0) then -1
     else if r.seed > 0 & (not (ep-room p r.seed 1) | ep-at w.gathered r.seed >= ep-limit) then -1
     else let success = ep-practice p r.skill
-    in let wear = ep-wear w p r.tool
+    in let wear = ep-wear-serial w actor r.tool tool-serial
     in if not success then -2
-    else let a = eh-add-yield w p r.item quantity (100 + level * 9 / 10)
+    else let share = eh-tax-share w actor r.item quantity
+    in let a = eh-add-yield w p r.item (quantity - share) (100 + level * 9 / 10)
+    in let crown = if share == 0 then 0 else eh-add-yield w (ep-actor w w.mint-owner) r.item share (100 + level * 9 / 10)
+    in let taxed = if share == 0 then 0 else let levied = ep-levy w actor r.item share in ep-add w.taxed r.item share
     in let b = if r.seed > 0 then eh-add-yield w p r.seed 1 1000 else 0
-    in let c = __record-set n "stage" 0
-    in let d = __record-set n "ready" (w.hour + r.regrow)
+    in let c = __record-set n "stage" (if eh-orchard n | (eh-royal-gold w n & not seam) then 2 else 0)
+    in let d = __record-set n "ready" (if eh-royal-gold w n & not seam then n.ready else w.hour + (if n.resource == 15 then eh-span n.resource r.regrow + eh-fallow else r.regrow))
     in let e = __record-set n "water" 0
     in let f = __record-set n "tended" 0
-    in quantity
+    in quantity - share
 
+  eh-fallow : Integer = 24
+  eh-span : Integer, Integer -> Integer
+  eh-span (resource) (regrow) = if resource == 15 | resource == 16 | resource == 39 | resource == 41 then 48 else regrow
+ Fragility (Damian 2026-10-07: "trees are hardy. we use that mechanic for tender crops, fragile ones. mandrake might be
+ very difficult for example, to keep alive, while wheat is fairly resilient in comparison"): 0 never withers; 1 withers
+ only when neither watered nor tended; 2 withers when either is missing; 3 also loses both when it is half grown, so it
+ is cared for twice.
+  eh-fragility : Integer -> Integer
+  eh-fragility (resource) = if resource == 15 | resource == 16 | resource == 39 | resource == 41 then 0
+    else if resource == 10 | resource == 11 | resource == 13 | resource == 28 | resource == 29 | resource == 31 | resource == 32 | resource == 37 then 1
+    else if resource == 19 | resource == 20 | resource == 35 | resource == 38 then 3 else 2
+  eh-withers : EpNode -> Boolean
+  eh-withers (n) = let f = eh-fragility n.resource
+    in if f == 0 then False else if f == 1 then n.water == 0 & n.tended == 0 else n.water == 0 | n.tended == 0
   eh-grow : EpWorld, Integer -> Integer
   eh-grow (w) (i) = if i == w.node-count then 0
     else let n = list-at w.nodes i
     in let a = if n.resource == 0 | n.stage >= 2 then 0
       else let r = list-at w.catalog.resources (n.resource - 1)
       in if w.hour >= n.ready then
-        let b = __record-set n "stage" (if n.planted == 1 & (n.water == 0 | n.tended == 0) then 3 else 2) in 0
-      else if w.hour >= n.ready - r.regrow / 2 then let b = __record-set n "stage" 1 in 0
+        let b = __record-set n "stage" (if n.planted == 1 & not (eh-common w n) & eh-withers n then 3 else 2) in 0
+      else if w.hour >= n.ready - (if n.planted == 1 | n.resource == 15 then eh-span n.resource r.regrow else r.regrow) / 2 then
+        let tender = n.stage == 0 & n.planted == 1 & eh-fragility n.resource == 3
+        in let water = __record-set n "water" (if tender then 0 else n.water)
+        in let tended = __record-set n "tended" (if tender then 0 else n.tended)
+        in let b = __record-set n "stage" 1 in 0
       else 0
     in eh-grow w (i + 1)
+ Hunger rises 3 a game hour, 72 a day, against three meals of 30 (the townsfolk eat at 6, 12 and 19, Townsfolk). A
+ player's hunger is its character's (GameHunger), so a player's actor (purse kind 3) holds none (UOAIX-147).
   eh-needs : EpWorld, Integer -> Integer
   eh-needs (w) (i) = if i == w.actor-count then 0
     else let p = list-at w.actors i
-    in let a = __record-set p "hunger" (if p.hunger > 97 then 100 else p.hunger + 3)
+    in let a = if (em-purse w.money p.purse).kind == 3 then 0 else let fed = __record-set p "hunger" (if p.hunger > 97 then 100 else p.hunger + 3) in 0
     in eh-needs w (i + 1)
   eh-demand : EpWorld, Integer -> Integer
   eh-demand (w) (item) = if item > list-length w.catalog.items then 0

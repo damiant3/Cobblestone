@@ -142,7 +142,7 @@ Exact oracles cover clocks, family/birth data, world records, counters and
 pending audit. Artifact/disk hashes and normal guest-exit evidence are retained;
 the reader must leave the disk hash unchanged. No client data enters the test.
 
-The proof establishes combined recovery under codex-vm's IDE backend. Fester's
+The proof establishes combined recovery under codex-vm's IDE backend. The
 WorldDisk proofs cover the storage layer and virtio backend separately. This
 unit does not establish the combined sequence under QEMU/virtio, physical power
 loss, authenticated game-server mutation admission, log rotation or a deployed

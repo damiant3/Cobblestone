@@ -1,0 +1,43 @@
+Chapter: BvtKitchenWage
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-157: a castle kitchen hire is advanced one day's wage before the first payroll (cg-advance-kitchen). The answer
+ is the cook's gold after an advance, plus 1000 per civic payment row and 100000 when cg-paid-once then holds; -9 is a
+ fixture that did not build, -8 a hire refused. treasury is the gold issued into purse 1 first.
+  bvkw-run : Integer -> Integer
+  bvkw-run (treasury) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let people = tf-new 0
+      in let town = tf-add-town people "Britain" 100 101 102
+      in let mayor = tf-add-person people "Britain Mayor" 1 1001 100 0 9000
+      in let cook = tf-add-person people "Castle Cook" 1 1001 100 0 9000
+      in let purse = if cook < 1 then -1 else eu-open x 2 cook
+      in let issued = if treasury > 0 then bvkw-strike x else 0
+      in when tg-new-currency people x 1
+      is Err (_) -> -9
+      is Ok (g) -> let registered = tg-register g True 1 mayor (eu-open x 4 1)
+      in if town /= 1 | mayor < 1 | cook < 1 | purse < 1 | registered < 0 | issued < 0 then -9
+      else if tg-hire g mayor 1 cook purse cg-guard-wage < 0 then -8
+      else let advanced = cg-advance-wage g cook purse
+      in (em-purse x.world.money purse).coin + 1000 * bvkw-rows g 0 0 + (if cg-paid-once g cook 0 then 100000 else 0)
+ The crown strikes one gold ingot into the treasury, as cg-open-treasury does.
+  bvkw-strike : EuCurrency -> Integer
+  bvkw-strike (x) = let crown = x.world.mint-owner
+    in if crown <= 0 then -2
+    else when bb-require (bb-producer x crown) 62 1
+      is Err (_) -> -3
+      is Ok (_) -> when bb-require (bb-producer x crown) 32 1
+        is Err (_) -> -4
+        is Ok (_) -> let station = bb-station x.world crown 12 0
+          in if station < 1 then -5 else if eu-strike x True crown station 3 1 /= 0 then -6 else 0
+  bvkw-rows : TgWorld, Integer, Integer -> Integer
+  bvkw-rows (g) (i) (n) = if i >= g.event-count then n else bvkw-rows g (i + 1) (if (list-at g.events i).kind == 7 then n + 1 else n)
+  bvt-kitchen-wage : Integer -> [Console] Integer
+  bvt-kitchen-wage (unused) = act
+    r <- bvkw-run 1
+    s <- bvkw-run 0
+    a <- bvt-check ("with gold in the treasury a kitchen hire is advanced a guard's day wage less the payment tax, with one payment row, and is then paid once: " & show r) (r > 101000 & r <= 101000 + cg-guard-wage)
+    b <- bvt-check ("with the treasury empty the advance pays nothing and writes no row, so the next step retries it: " & show s) (s == 0)
+    a + b
+  end

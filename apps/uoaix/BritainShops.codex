@@ -3,19 +3,30 @@ Chapter: BritainShops
   cites Uoaix chapter GameVendor
   cites Uoaix chapter GameVendorCodec
   cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameHarvestProduction
   cites Foreword chapter Maybe
+  cites Uoaix chapter NpcNames
+  cites Uoaix chapter MageryData
+  cites Uoaix chapter Cities
 
   BbSpot = record { x : Integer, y : Integer, z : Integer }
   BbView = record { serial : Integer, connection : Integer, visible : Integer }
-  BbTown = record { vendors : GvWorld, items : GsiState, views : List BbView }
+  BbTown = record { vendors : GvWorld, items : GsiState, views : List BbView, known : NnKnown }
   bb-views : Integer, List BbView -> List BbView
-  bb-views (i) (xs) = if i == bb-shop-count then xs else bb-views (i + 1) (list-push xs (BbView { serial = 0, connection = -1, visible = 0 }))
+  bb-views (i) (xs) = if i == bb-view-limit then xs else bb-views (i + 1) (list-push xs (BbView { serial = 0, connection = -1, visible = 0 }))
+ GameLinks serves at most 32 game links.
+  bb-view-limit : Integer = 32
+  bb-view-at : List BbView, Integer, Integer, Integer -> Integer
+  bb-view-at (views) (connection) (i) (best) = if i == list-length views then best
+    else if (list-at views i).connection == connection then i
+    else bb-view-at views connection (i + 1) (if (list-at views i).connection < (list-at views best).connection then i else best)
   bb-bind : GvWorld, GsiState -> Result BbTown Text
-  bb-bind (v) (items) = if (v.vendor-count /= bb-shop-count & v.vendor-count /= 2 * bb-shop-count) | list-length v.currency.world.catalog.items < 76
+  bb-bind (v) (items) = if v.vendor-count == bb-shop-count - 1 | v.vendor-count == 2 * (bb-shop-count - 1) then Err ("Britain world holds " & show (bb-shop-count - 1) & " shops and this server opens " & show bb-shop-count & " (a new trade): start a fresh world")
+    else if v.vendor-count < bb-shop-count | v.vendor-count > bb-shop-count + list-length ct-shop-roles | list-length v.currency.world.catalog.items < 76
     | (list-at v.currency.world.catalog.items 68).name /= "dagger"
     | (list-at v.currency.world.catalog.items 75).name /= "pizza"
     | items.world.buffer /= v.game.world.buffer | list-length items.items /= items.world.capacity then Err "Britain shop binding invalid"
-    else Ok (BbTown { vendors = v, items = items, views = bb-views 0 (__list-with-capacity bb-shop-count) })
+    else Ok (BbTown { vendors = v, items = items, views = bb-views 0 (__list-with-capacity bb-view-limit), known = nn-new 0 })
   bb-floor : WalkMap, Integer, Integer, Integer, Integer -> Result Integer Text
   bb-floor (map) (x) (y) (ground) (step) = if step > 24 | ground + step > 127 then Err "Britain floor unavailable"
     else when walk-height map x y (ground + step)
@@ -64,19 +75,150 @@ Chapter: BritainShops
         is Err (e) -> Err e
         is Ok (_) -> bb-outfit v items p npc (i + 1)
   bb-layer : Integer -> Integer
-  bb-layer (item) = if item == 69 | item == 70 then 1 else if item == 71 then 10
+  bb-layer (item) = if item == 40 | item == 69 | item == 70 then 1 else if item == 71 then 10 else if item == 41 then 13
     else if item == 72 then 5 else if item == 73 then 4 else 0
   bb-stock : GvWorld, GsiState, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
   bb-stock (v) (items) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
     else let good = list-at goods i
-    in when bb-produce p good.item
+    in if not (if good.item == bb-scroll then bb-scroll-ready p.currency.world p.actor good.graphic else bb-from-bought p.currency.world p.actor good.item) then bb-stock v items p container goods (i + 1)
+    else when (if good.item == bb-scroll then bb-inscribe p good.graphic else bb-produce p good.item)
       is Err (e) -> Err e
       is Ok (_) -> when bb-materialise v items p container good.graphic 0 (bb-layer good.item) (if good.item == 45 then #003D else 0) True
         is Err (e) -> Err e
         is Ok (_) -> bb-stock v items p container goods (i + 1)
+ Nails (item 39, 4 from one iron ingot) are made only from an iron ingot the shop holds, bought from a miner (Damian
+ 2026-10-07: "nails must be buyable", made from bought ingots), so a tinker with no ingot lists none.
+  bb-from-bought : EpWorld, Integer, Integer -> Boolean
+ The paper mill makes its goods only from logs (item 15) a lumberjack sold it: a blank scroll takes one pulp (half a log),
+ a blank book four (two logs). The scribe binds a spellbook only from a blank book it bought from the mill (bb-buy-from).
+ The potter fires a mug or a plate from one clay it bought from the clay gatherer, a vase from two, a large vase from four.
+ The innkeeper cooks fish steaks (cooked food 50) only from fish it bought from the fishmonger, who makes neither fish nor
+ raw fish steaks (127): the fisherman and players sell it fish and its cutter (worker place 423) the steaks. The carpenter makes
+ furniture (47) only from four boards and two nails it bought (the nails from the tinker, bb-buy-from).
+ The herbalist makes no reagent: what it sells is the lots its gatherers sold onto its shelf (cgg-sell). The bowyer makes
+ a bow (48) only from two boards it bought from the carpenter (bb-buy-from). The tanner makes leather (35) only from two
+ hides it bought; the leatherworker makes leather armour (44) from two leather and a bag (45) from one, bought from the
+ tanner (bb-buy-from). The cobbler makes footwear only from leather it bought from the tanner, up to 10 held (bb-buy-below). The paper mill makes parchment (126) only from two
+ leather scraps it bought from the leatherworker, who cuts them from one bought leather.
+  bb-from-bought (w) (actor) (item) = let stock = (ep-actor w actor).stock
+    in if item == 39 | item == 115 | item == 118 | item == 120 then ep-at stock 31 >= 1
+    else if item == 148 then ep-at stock 31 >= 2
+    else if item == 106 | item == 117 then ep-at stock 15 >= 1 | ep-at stock 105 >= 1
+    else if item == 107 then ep-at stock 15 * 2 + ep-at stock 105 >= 4
+    else if item == 108 then ep-at stock 107 >= 1
+    else if item == 110 then ep-at stock 109 >= 1 | ep-at stock 104 >= 2
+    else if item == 111 | item == 112 then ep-at stock 3 >= 1
+    else if item == 50 then ep-at stock 9 >= 1
+    else if item == 47 then ep-at stock 38 >= 4 & ep-at stock 39 >= 2
+    else if item == 162 then ep-at stock 32 >= 1 & ep-at stock 158 >= 1
+    else if item == 163 then ep-at stock 32 >= 1 & ep-at stock 159 >= 1
+    else if item == 164 then ep-at stock 32 >= 1 & ep-at stock 157 >= 1
+    else if item == 165 then ep-at stock 32 >= 1 & ep-at stock 154 >= 1
+    else if item == 119 then ep-at stock 38 >= 1
+    else if item == 48 then ep-at stock 38 >= 2
+    else if item == 35 then ep-at stock 7 >= 2
+    else if item == 44 then ep-at stock 35 >= 2
+    else if item == 45 then ep-at stock 35 >= 1
+    else if item == 121 then ep-at stock 35 >= 4
+    else if item == 122 then ep-at stock 35 >= 6
+    else if item == 123 then ep-at stock 35 >= 8
+    else if item == 124 then ep-at stock 35 >= 10
+    else if item == 125 then ep-at stock 35 >= 1
+    else if item == 126 then ep-at stock 125 >= 2
+    else if item == 127 then False
+    else if item == 9 then False
+    else if item == 152 then ep-at stock 78 >= 4
+    else if item == 113 then ep-at stock 3 >= 2
+    else if item == 114 then ep-at stock 3 >= 4
+    else if item >= 17 & item <= 21 then False
+    else True
+  bb-has-lot : GvWorld, Integer, Integer, Integer -> Boolean
+  bb-has-lot (v) (actor) (item) (unused) = ep-lot-of v.currency.world.goods actor item >= 0
+ Tools (item 42) stand for several goods told apart by art (a sewing kit, a lockpick, a lute), so a listed tool is held
+ only by a tools lot whose world object wears its art. Every other good is held by any lot of its item, because a good
+ a worker crafts can wear other art than its listing (bread 0x103B, listed 0x103C).
+  bb-has-good : GvWorld, Integer, BbGoods, Integer -> Boolean
+  bb-has-good (v) (actor) (good) (unused) = if good.item /= 42 & good.item /= bb-scroll then bb-has-lot v actor good.item 0
+    else bb-has-good-from v good (ep-lot-first v.currency.world.goods actor)
+  bb-has-good-from : GvWorld, BbGoods, Integer -> Boolean
+  bb-has-good-from (v) (good) (serial) = if serial == 0 then False
+    else let lot = ep-lot v.currency.world.goods serial
+    in if lot.item == good.item & ep-amount v.currency.world.goods lot.serial > 0
+      & (when world-get v.game.world lot.serial is Err (_) -> False is Ok (o) -> o.graphic == good.graphic) then True
+    else bb-has-good-from v good (ep-lot-next v.currency.world.goods serial)
+ A shop restocks a good only from the stone, logs and boards it holds, with the recipe's tool in hand: those inputs have
+ walking gatherers (the quarrier, the lumberjack) and are not harvested on demand at a restock (CompositeGame.md, every
+ input has an NPC gatherer). Founding stock is not restocking and is made as before.
+  bb-walked : Integer -> Boolean
+  bb-walked (item) = item == 1 | item == 15 | item == 38
+  bb-restock-input : EpWorld, Integer, Integer -> Boolean
+  bb-restock-input (w) (actor) (item) = let recipe = bb-recipe w.catalog item 0
+    in if recipe < 1 then True
+    else let r = list-at w.catalog.recipes (recipe - 1)
+    in let p = ep-actor w actor
+    in (not (bb-walked r.one) | ep-at p.stock r.one >= r.one-count) & (not (bb-walked r.two) | ep-at p.stock r.two >= r.two-count)
+      & (not (bb-walked r.three) | ep-at p.stock r.three >= r.three-count) & (r.tool == 0 | ep-tool p r.tool)
+  bb-restock : GvWorld, GsiState, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-restock (v) (items) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
+    else let good = list-at goods i
+    in when (if bb-has-good v p.actor good 0 | not (bb-restock-input v.currency.world p.actor good.item) then Ok 0 else bb-stock v items p container [good] 0)
+      is Err (e) -> Err e
+      is Ok (_) -> bb-restock v items p container goods (i + 1)
   bb-placeholder-loan-gold : Integer = 1
   bb-placeholder-loan-interest : Integer = 0
-  bb-placeholder-loan-hours : Integer = 48
+ A shop repays its crown loan as soon as it can afford it (Damian's loan ruling, EconomyCurrency.md "Crown loans"): it keeps working
+ capital worth the loan's principal and pays whole gold units from the rest, gold first, then silver, then copper.
+  bb-debt : EmMoney, Integer, Integer -> Integer
+  bb-debt (m) (purse) (i) = if i == m.loan-count then 0
+    else let loan = list-at m.loans i
+    in if loan.borrower == purse & loan.lender == 1 & loan.status /= 2 then i + 1 else bb-debt m purse (i + 1)
+  bb-repay : EuCurrency, Integer -> Integer
+  bb-repay (x) (actor) = if not (ep-valid-actor x.world actor) then 0
+    else let purse = (ep-actor x.world actor).purse
+    in let id = bb-debt x.world.money purse 0
+    in if id == 0 then 0
+    else let loan = list-at x.world.money.loans (id - 1)
+    in let gold = (em-purse x.world.money purse).coin
+    in let silver = (em-purse x.silver purse).coin
+    in let copper = (em-purse x.copper purse).coin
+    in let per-gold = eu-unit x 3
+    in let value = eu-value x copper silver gold
+    in let keep = loan.principal * per-gold
+    in let units = if per-gold < 1 | value <= keep then 0 else min (loan.principal + loan.interest - loan.paid) ((value - keep) / per-gold)
+    in let g = min gold units
+    in let rest = (units - g) * per-gold
+    in let s = min silver (rest / eu-unit x 2)
+    in let k = rest - s * eu-unit x 2
+    in if units < 1 | k > copper then 0
+    else if eu-repay-value x True purse 3 id k s g < 0 then -1 else units
+ A gatherer home from a trip and every shop each town step trade each whole gold's worth of their silver up at the
+ treasury, then each whole silver's worth of their copper, so struck and earned small coin returns to its reserve
+ (UOAIX-92, UOAIX-96, UOAIX-213).
+  bb-trade-up : EuCurrency, Integer -> Integer
+  bb-trade-up (x) (actor) = if not (ep-valid-actor x.world actor) then 0
+    else let purse = (ep-actor x.world actor).purse
+    in let per = eu-unit x 3 / eu-unit x 2
+    in let n = if per <= 0 then 0 else (em-purse x.silver purse).coin / per
+    in let silver = if n <= 0 then 0 else eu-exchange x purse 2 (n * per) 3
+    in let per-copper = eu-unit x 2
+    in let k = if per-copper <= 0 then 0 else min ((em-purse x.copper purse).coin / per-copper) (em-purse x.silver 1).coin
+    in let copper = if k <= 0 then 0 else eu-exchange x purse 1 (k * per-copper) 2 in silver
+  bb-trade-up-shops : GvWorld, Integer -> Integer
+  bb-trade-up-shops (v) (i) = if i >= v.vendor-count then 0
+    else let traded = bb-trade-up v.currency (list-at v.vendors i).actor in bb-trade-up-shops v (i + 1)
+ A Britain shop with no open crown loan borrows on the books once the treasury (purse 1) holds the gold (Damian
+ 2026-10-07, EconomyCurrency.md); a new world founds its shops with no loan.
+  bb-borrow-shops : GvWorld, Integer -> Integer
+  bb-borrow-shops (v) (i) = if i >= v.vendor-count | i >= bb-shop-count then 0
+    else let x = v.currency
+    in let purse = (ep-actor x.world (list-at v.vendors i).actor).purse
+    in let lent = if bb-debt x.world.money purse 0 /= 0 | (em-purse x.world.money 1).coin < bb-placeholder-loan-gold then 0
+      else if eu-lend x True 1 purse 3 bb-placeholder-loan-gold bb-placeholder-loan-interest em-limit < 1 then 0 else 1
+    in lent + bb-borrow-shops v (i + 1)
+  bb-repay-shops : GvWorld, Integer -> Integer
+  bb-repay-shops (v) (i) = if i >= v.vendor-count then 0
+    else let paid = bb-repay v.currency (list-at v.vendors i).actor
+    in (if paid > 0 then paid else 0) + bb-repay-shops v (i + 1)
   bb-populate-one : GvWorld, GsiState, WalkMap, Integer -> Result Integer Text
   bb-populate-one (v) (items) (map) (i) = if i == bb-shop-count then Ok 0
     else when bb-placement v.game.world map (list-at bb-shops i) 0
@@ -89,7 +231,6 @@ Chapter: BritainShops
         let purse = eu-open v.currency 2 (1000 + index)
         in let actor = if purse < 1 then -1 else ep-admit v.currency.world purse 100
         in if actor < 1 then Err "Britain vendor actor budget"
-        else if eu-lend v.currency True 1 purse 3 bb-placeholder-loan-gold bb-placeholder-loan-interest (v.currency.world.hour + bb-placeholder-loan-hours) < 1 then Err "Britain vendor loan refused"
         else let p = bb-producer v.currency actor
         in when world-create v.game.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
           is Err (e) -> Err e
@@ -102,22 +243,353 @@ Chapter: BritainShops
                 is Ok (buys) -> if gv-add-vendor v npc actor stock extra buys /= index then Err "Britain vendor registry order"
                   else when bb-outfit v items p npc 0
                     is Err (e) -> Err e
-                    is Ok (_) -> when bb-stock v items p stock (bb-goods role) 0
+                    is Ok (_) -> when (if bb-participant index then Ok 0 else bb-stock v items p stock (bb-goods role) 0)
                       is Err (e) -> Err e
-                      is Ok (_) -> Ok npc
+                      is Ok (_) -> when (if bb-participant index then Ok 0 else bb-refill v items p stock (bb-goods role) 0)
+                        is Err (e) -> Err e
+                        is Ok (_) -> when (if bb-participant index then Ok 0 else bb-arm-tools p (bb-goods role) 0)
+                          is Err (e) -> Err e
+                          is Ok (_) -> Ok npc
+ A shop is founded holding the tool each of its goods' recipes takes, so one that founds with nothing to sell (it makes
+ its goods only from bought inputs, as the bowyer and the tanner) can restock (bb-restock-input).
+  bb-arm-tools : BbProducer, List BbGoods, Integer -> Result Integer Text
+  bb-arm-tools (p) (goods) (i) = if i == list-length goods then Ok 0
+    else let c = p.currency.world.catalog
+    in let recipe = bb-recipe c (list-at goods i).item 0
+    in let tool = if recipe < 1 then 0 else (list-at c.recipes (recipe - 1)).tool
+    in when (if ep-tool (ep-actor p.currency.world p.actor) tool then Ok 0 else bb-require p tool 1)
+      is Err (e) -> Err e
+      is Ok (_) -> bb-arm-tools p goods (i + 1)
+  bb-refill : GvWorld, GsiState, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-refill (v) (items) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
+    else let good = list-at goods i
+    in when (if bb-has-good v p.actor good 0 | not (bb-from-bought p.currency.world p.actor good.item) then Ok 0 else bb-stock v items p container [good] 0)
+      is Err (e) -> Err e
+      is Ok (_) -> bb-refill v items p container goods (i + 1)
+ Index 1 is the actual blacksmith (bb-shops order); bank-row lineup copies are indexes bb-shop-count and up. The baker
+ bakes from bought flour but keeps its founding bread until the farm chain feeds the town (CompositeLaborProof day 3).
+ Every jeweler founds empty: its gems come only from mining and loot, and a gem stocked at founding came from nothing.
+  bb-participant : Integer -> Boolean
+  bb-participant (index) = index == 1 | index == bb-tavern-keeper | ct-vendor-role index == bb-jeweler
+ Recipe 70 makes one longsword (item 70) from 2 iron ingots (item 31) and a board; #0F60 is its bb-goods art. Recipe 71
+ makes the plate gorget (item 71, #1413) from 3 iron ingots, recipe 41 a suit of metal armour (#1415, platemail) from 4,
+ recipe 40 a weapon (#0F5E, broadsword) from 2 and a board; the smith forges a gorget, then a suit, then a weapon whenever
+ its shop holds none of it, else a longsword, the arms Britain's guards buy with their wages.
+ Recipe 34 makes bread (item 34) from 2 flour (item 33), water and fallen branches; #103C is its bb-goods art.
+  bb-input-units : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-input-units (v) (actor) (extra) (item) (unused) = bb-input-from v extra item (ep-lot-first v.currency.world.goods actor) 0
+  bb-input-from : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-input-from (v) (extra) (item) (serial) (sum) = if serial == 0 then sum
+    else let l = ep-lot v.currency.world.goods serial
+    in let n = if l.item == item & (gv-under v.game.world l.serial extra 65 | bb-in-shop v extra l.serial) then ep-amount v.currency.world.goods l.serial else 0
+    in bb-input-from v extra item (ep-lot-next v.currency.world.goods serial) (sum + n)
+ A vendor's goods kept in its shop (ShopStock) count as held in either of its containers.
+  bb-shop-of : GvWorld, Integer, Integer -> Integer
+  bb-shop-of (v) (container) (i) = if i >= v.vendor-count then -1
+    else let p = list-at v.vendors i in if p.stock == container | p.extra == container then i else bb-shop-of v container (i + 1)
+  bb-in-shop : GvWorld, Integer, Integer -> Boolean
+  bb-in-shop (v) (container) (serial) = let at = bb-shop-of v container 0
+    in at >= 0 & gv-shop-held v.game.world serial (gv-shop-tag at) 65 & not (gv-shop-art-at v.game.world serial)
+  bb-ingot-units : GvWorld, Integer, Integer, Integer -> Integer
+  bb-ingot-units (v) (actor) (extra) (i) = bb-input-units v actor extra 31 i
+  bb-craft-ready : GvWorld, Integer, Integer, Integer -> Boolean
+  bb-craft-ready (v) (index) (input) (count) = let merchant = list-at v.vendors index
+    in ep-at (ep-actor v.currency.world merchant.actor).stock input >= count & bb-input-units v merchant.actor merchant.extra input 0 >= count
+  bb-craft-from : GvWorld, GsiState, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  bb-craft-from (v) (items) (index) (input) (count) (product) (art) = let merchant = list-at v.vendors index
+    in let p = bb-producer v.currency merchant.actor
+    in if not (bb-craft-ready v index input count) then Ok 0
+    else when bb-produce p product
+      is Err (_) -> Ok 0
+      is Ok (_) -> when bb-materialise v items p merchant.stock art 0 (bb-layer product) 0 True
+        is Err (e) -> Err e
+        is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+          in let touched = world-touch v.game.world in Ok 1
+  bb-missing : GvWorld, Integer, List BbGoods, Integer -> Boolean
+  bb-missing (v) (actor) (goods) (i) = if i == list-length goods then False
+    else if not (bb-has-good v actor (list-at goods i) 0) & bb-from-bought v.currency.world actor (list-at goods i).item & bb-restock-input v.currency.world actor (list-at goods i).item then True
+    else bb-missing v actor goods (i + 1)
+ Making a restocked good can consume another good the shop already lists (a shirt eats listed cloth), so every listed
+ good is made back up to its lots' quantity.
+  bb-back : GvWorld, BbProducer, Integer, List BbGoods, Integer -> Result Integer Text
+  bb-back (v) (p) (container) (goods) (i) = if i == list-length goods then Ok 0
+    else let item = (list-at goods i).item
+    in let need = bb-input-units v p.actor container item 0
+    in when (if ep-at (ep-actor p.currency.world p.actor).stock item >= need | not (bb-from-bought p.currency.world p.actor item) | not (bb-restock-input p.currency.world p.actor item) then Ok 0 else bb-require p item need)
+      is Err (e) -> Err e
+      is Ok (_) -> bb-back v p container goods (i + 1)
+  bb-restock-ready : GvWorld, Integer -> Boolean
+  bb-restock-ready (v) (index) = bb-missing v (list-at v.vendors index).actor (bb-shop-goods index) 0
+ The goods vendor index sells: its own for a Britain shop, its role's for a city shop (Cities).
+  bb-shop-goods : Integer -> List BbGoods
+  bb-shop-goods (index) = let role = ct-vendor-role index in if role < 0 then [] else bb-goods role
+ A shop buys an input another shop makes (the scribe a blank book from the paper mill, root 2026-10-08): when it holds none
+ and the seller holds a lot of it, it pays the lot's cost basis, takes the lot (ep-hand) and moves it into its input container.
+  bb-mill : Integer = 8
+  bb-scribe : Integer = 9
+  bb-tinker : Integer = 6
+  bb-carpenter : Integer = 7
+  bb-supply : GvWorld -> Integer
+  bb-supply (v) = (if v.vendor-count <= bb-carpenter then 0 else bb-buy-from v bb-carpenter bb-tinker 39)
+    + (if v.vendor-count <= bb-bowyer then 0 else bb-buy-from v bb-bowyer bb-carpenter 38)
+    + (if v.vendor-count <= bb-leatherworker then 0 else bb-buy-from v bb-leatherworker bb-tanner 35)
+    + (if v.vendor-count <= bb-cobbler then 0 else bb-buy-below v bb-cobbler bb-tanner 35 10)
+    + (if v.vendor-count <= bb-fishmonger then 0 else bb-buy-keeping v bb-inn bb-fishmonger 9 bb-castle-fish)
+    + (if v.vendor-count <= bb-leatherworker then 0 else bb-buy-from v bb-mill bb-leatherworker 125)
+    + (if v.vendor-count <= bb-tavern-keeper then 0 else bb-tavern-supply v)
+ The tavern keeper buys bread from the baker and cooked food from the inn, a lot at a time while it holds under 2, and
+ grapes from the inn while it holds under 4 (a wine), leaving the inn 4 for its residents.
+  bb-tavern-grapes : Integer = 4
+  bb-tavern-supply : GvWorld -> Integer
+  bb-tavern-supply (v) = let inn = list-at v.vendors bb-inn
+    in let w = v.currency.world
+    in let at = bb-lot-of v inn.actor 78 0
+    in let grapes = if at < 0 then 0
+      else if not (bb-keeps (ep-at (ep-actor w inn.actor).stock 78) (ep-amount w.goods (ep-lot w.goods at).serial) bb-tavern-grapes) then 0
+      else bb-buy-below v bb-tavern-keeper bb-inn 78 bb-tavern-grapes
+    in grapes + bb-buy-below v bb-tavern-keeper 3 34 2 + bb-buy-below v bb-tavern-keeper bb-inn 50 2
+  bb-buys : Integer, Integer -> Boolean
+  bb-buys (held) (offered) = bb-buys-under held offered 1
+  bb-buys-under : Integer, Integer, Integer -> Boolean
+  bb-buys-under (held) (offered) (cap) = held < cap & offered >= 0
+  bb-lot-of : GvWorld, Integer, Integer, Integer -> Integer
+  bb-lot-of (v) (actor) (item) (unused) = ep-lot-of v.currency.world.goods actor item
+  bb-buy-from : GvWorld, Integer, Integer, Integer -> Integer
+  bb-buy-from (v) (buyer) (seller) (item) = bb-buy-below v buyer seller item 1
+ The fishmonger keeps 2 fish for the castle cook (root, 2026-10-09, UOAIX-157), as Good Eats keeps flour for the baker:
+ the inn takes a lot only when the fishmonger holds 2 more than the lot, and the fish cutter sets out only while it holds
+ 4 (cgg-raw-floor). A lot is taken whole (ep-hand), so the reserve is what is left after it.
+  bb-castle-fish : Integer = 2
+  bb-keeps : Integer, Integer, Integer -> Boolean
+  bb-keeps (held) (lot) (keep) = held - lot >= keep
+  bb-buy-keeping : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-buy-keeping (v) (buyer) (seller) (item) (keep) = if buyer >= v.vendor-count | seller >= v.vendor-count then 0
+    else let s = list-at v.vendors seller
+    in let w = v.currency.world
+    in let at = bb-lot-of v s.actor item 0
+    in if at < 0 then 0
+    else if not (bb-keeps (ep-at (ep-actor w s.actor).stock item) (ep-amount w.goods (ep-lot w.goods at).serial) keep) then 0
+    else bb-buy-from v buyer seller item
+ A buyer whose goods take more of an input than one lot holds keeps buying while it holds fewer than cap.
+  bb-buy-below : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  bb-buy-below (v) (buyer) (seller) (item) (cap) = if buyer >= v.vendor-count | seller >= v.vendor-count then 0
+    else let b = list-at v.vendors buyer
+    in let s = list-at v.vendors seller
+    in let w = v.currency.world
+    in let at = bb-lot-of v s.actor item 0
+    in if not (bb-buys-under (ep-at (ep-actor w b.actor).stock item) at cap) then 0
+    else let lot = (ep-lot w.goods at).serial
+    in let price = max 1 (ep-lot w.goods at).basis
+    in if eu-pay v.currency True (ep-actor w b.actor).purse (ep-actor w s.actor).purse price 0 0 /= 0 then 0
+    else if ep-hand w at b.actor (ep-amount w.goods lot) lot price < 0 then 0
+    else when world-get v.game.world lot
+      is Err (_) -> 0
+      is Ok (o) -> when world-update v.game.world (__record-set (__record-set (__record-set o "container" b.extra) "x" 40) "y" 60)
+        is Err (_) -> 0
+        is Ok (_) -> let invalidated = gh-invalidate-quotes v 0 in 1
+ The jeweler restocks only its jewelry at the counter (a gem has no recipe, so restocking it would make one from nothing):
+ each piece from a gold ingot and its gem, both bought.
+  bb-restock-jeweler : GvWorld, GsiState -> Result Integer Text
+  bb-restock-jeweler (v) (items) = if v.vendor-count <= bb-jeweler then Ok 0
+    else let merchant = list-at v.vendors bb-jeweler
+    in if not (bb-restock-ready v bb-jeweler) then Ok 0
+    else let p = bb-producer v.currency merchant.actor
+    in when bb-restock v items p merchant.stock bb-jewelry-goods 0
+      is Err (_) -> Ok 0
+      is Ok (_) -> when bb-back v p merchant.stock bb-jewelry-goods 0
+        is Err (e) -> Err e
+        is Ok (_) -> let invalidated = gh-invalidate-quotes v 0 in let touched = world-touch v.game.world in Ok 1
+  bb-restock-shop : GvWorld, GsiState, Integer -> Result Integer Text
+  bb-restock-shop (v) (items) (index) = let bought = if index == bb-scribe then bb-buy-from v bb-scribe bb-mill 107 + bb-buy-from v bb-scribe bb-mill 106 + bb-scribe-reagents v 17 else 0
+    in let merchant = list-at v.vendors index
+    in if not (bb-restock-ready v index) then Ok 0
+    else let p = bb-producer v.currency merchant.actor
+    in let goods = if ct-vendor-role index == bb-jeweler then bb-jewelry-goods else bb-shop-goods index
+    in when bb-restock v items p merchant.stock goods 0
+      is Err (_) -> Ok 0
+      is Ok (_) -> when bb-back v p merchant.stock goods 0
+        is Err (e) -> Err e
+        is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+        in let touched = world-touch v.game.world in Ok 1
+ The scribe inscribes a spell scroll (item 116, told apart by its scroll art, mgd-scroll) from one blank scroll (106) and
+ one of each of the spell's reagents, all bought (the scroll from the paper mill, the reagents from the herbalist).
+ MageryData's reagent bits 1-5 are the herbalist's plants (blood moss 21, garlic 18, ginseng 17, mandrake root 19,
+ nightshade 20); a spell needing black pearl, spiders' silk or sulfurous ash (bits 0, 6, 7) waits for their gatherers.
+ A catalog recipe holds three fixed inputs, so the scroll is made here and the ledger kept by hand, as gsc-cut does.
+  bb-scroll : Integer = 116
+  bb-scroll-plants : Integer = 62
+  bb-reagent-item : Integer -> Integer
+  bb-reagent-item (bit) = if bit == 1 then 21 else if bit == 2 then 18 else if bit == 3 then 17 else if bit == 4 then 19 else 20
+  bb-scroll-spell : Integer -> Integer
+  bb-scroll-spell (graphic) = let spell = mgd-scroll-spell graphic
+    in let mask = if spell > 0 then mgd-reagents spell else 0
+    in if mask == 0 | bit-and mask (bit-xor 255 bb-scroll-plants) /= 0 then 0 else spell
+  bb-reagents-held : Integer, Integer, Integer -> Boolean
+  bb-reagents-held (stock) (mask) (bit) = if bit == 6 then True
+    else (bit-and mask (bit-shl 1 bit) == 0 | ep-at stock (bb-reagent-item bit) >= 1) & bb-reagents-held stock mask (bit + 1)
+  bb-scroll-ready : EpWorld, Integer, Integer -> Boolean
+  bb-scroll-ready (w) (actor) (graphic) = let spell = bb-scroll-spell graphic
+    in let stock = (ep-actor w actor).stock
+    in spell > 0 & ep-at stock 106 >= 1 & bb-reagents-held stock (mgd-reagents spell) 1
+ One unit of an input leaves the stock with its average cost, quality and wear, and is consumed; the cost is returned.
+  bb-use : EpWorld, EpActor, Integer -> Integer
+  bb-use (w) (a) (item) = let n = ep-at a.stock item
+    in let c = ep-at a.cost item / n
+    in let q = ep-at a.quality item / n
+    in let r = ep-at a.wear item / n
+    in let s0 = ep-add a.stock item (0 - 1)
+    in let c0 = ep-add a.cost item (0 - c)
+    in let q0 = ep-add a.quality item (0 - q)
+    in let r0 = ep-add a.wear item (0 - r)
+    in let evened = ep-settle a item
+    in let used = ep-add w.consumed item 1 in c
+  bb-use-reagents : EpWorld, EpActor, Integer, Integer -> Integer
+  bb-use-reagents (w) (a) (mask) (bit) = if bit == 6 then 0
+    else (if bit-and mask (bit-shl 1 bit) == 0 then 0 else bb-use w a (bb-reagent-item bit)) + bb-use-reagents w a mask (bit + 1)
+  bb-inscribe : BbProducer, Integer -> Result Integer Text
+  bb-inscribe (p) (graphic) = let w = p.currency.world
+    in let a = ep-actor w p.actor
+    in let spell = bb-scroll-spell graphic
+    in if not (bb-scroll-ready w p.actor graphic) | not (ep-room a bb-scroll 1) then Err "scribe cannot inscribe that scroll"
+    else let quality = ep-at a.quality 106 / ep-at a.stock 106
+    in let cost = bb-use w a 106 + bb-use-reagents w a (mgd-reagents spell) 1
+    in let s = ep-add a.stock bb-scroll 1
+    in let c = ep-add a.cost bb-scroll cost
+    in let q = ep-add a.quality bb-scroll quality
+    in let made = ep-add w.crafted bb-scroll 1
+    in let f0 = __record-set p "item" bb-scroll
+    in let f1 = __record-set p "quantity" 1
+    in let f2 = __record-set p "quality" quality
+    in let f3 = __record-set p "wear" 0
+    in let f4 = __record-set p "basis" cost in Ok 1
+  bb-scribe-reagents : GvWorld, Integer -> Integer
+  bb-scribe-reagents (v) (item) = if item > 21 then 0 else bb-buy-from v bb-scribe bb-herbalist item + bb-scribe-reagents v (item + 1)
+ The provisioner restocks only its stone tools, the pickaxe and the axe, from stone the quarrier sold it.
+  bb-stone-goods : List BbGoods = [BbGoods { item = 25, graphic = #0E86 }, BbGoods { item = 26, graphic = #0F49 }]
+  bb-restock-stone : GvWorld, GsiState -> Result Integer Text
+  bb-restock-stone (v) (items) = let merchant = list-at v.vendors 0
+    in if not (bb-missing v merchant.actor bb-stone-goods 0) then Ok 0
+    else when bb-restock v items (bb-producer v.currency merchant.actor) merchant.stock bb-stone-goods 0
+      is Err (_) -> Ok 0
+      is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+        in let touched = world-touch v.game.world in Ok 1
+ The innkeeper cooks a batch of fish steaks whenever its shelf holds none and it holds fish the fisherman sold it: the
+ cooked-food recipe that takes fish (bb-recipe takes the first, which takes meat).
+  bb-inn : Integer = 5
+  bb-recipe-from : EgCatalog, Integer, Integer, Integer -> Integer
+  bb-recipe-from (c) (item) (input) (i) = if i == list-length c.recipes then 0
+    else let r = list-at c.recipes i in if r.item == item & r.one == input then i + 1 else bb-recipe-from c item input (i + 1)
+  bb-cook : GvWorld, GsiState -> Result Integer Text
+  bb-cook (v) (items) = if v.vendor-count <= bb-inn then Ok 0
+    else let inn = list-at v.vendors bb-inn
+    in let recipe = bb-recipe-from v.currency.world.catalog 50 9 0
+    in if recipe < 1 | bb-input-units v inn.actor inn.stock 50 0 > 0 | not (bb-craft-ready v bb-inn 9 1) then Ok 0
+    else let p = bb-producer v.currency inn.actor
+    in let mark = __heap-save
+    in when bb-craft p 50 recipe 0
+      is Err (_) -> let restored = __heap-restore mark in Ok 0
+      is Ok (n) -> let restored = __heap-restore mark
+        in if n == 0 then Ok 0
+        else when bb-materialise v items p inn.stock #097B 0 0 0 True
+          is Err (e) -> Err e
+          is Ok (_) -> let invalidated = gh-invalidate-quotes v 0
+            in let touched = world-touch v.game.world in Ok 1
+ The tavern keeper makes a wine whenever its shelf holds none and it holds 4 grapes it bought.
+  bb-brew : GvWorld, GsiState -> Result Integer Text
+  bb-brew (v) (items) = if v.vendor-count <= bb-tavern-keeper then Ok 0
+    else let tavern = list-at v.vendors bb-tavern-keeper
+    in if bb-input-units v tavern.actor tavern.stock 152 0 > 0 then Ok 0
+    else bb-craft-from v items bb-tavern-keeper 78 bb-tavern-grapes 152 #09C7
+  bb-forge : GvWorld, GsiState -> Result Integer Text
+  bb-forge (v) (items) = let smith = list-at v.vendors 1
+    in let ingots = min (ep-at (ep-actor v.currency.world smith.actor).stock 31) (bb-input-units v smith.actor smith.extra 31 0)
+    in let pick = bb-forge-pick (bb-input-units v smith.actor smith.stock 71 0) (bb-input-units v smith.actor smith.stock 41 0) (bb-input-units v smith.actor smith.stock 40 0) ingots
+    in bb-craft-from v items 1 31 (bb-forge-ingots pick) pick (bb-forge-art pick)
+  bb-forge-pick : Integer, Integer, Integer, Integer -> Integer
+  bb-forge-pick (gorgets) (suits) (weapons) (ingots) = if gorgets == 0 & ingots >= 3 then 71
+    else if suits == 0 & ingots >= 4 then 41 else if weapons == 0 then 40 else 70
+  bb-forge-ingots : Integer -> Integer
+  bb-forge-ingots (item) = if item == 71 then 3 else if item == 41 then 4 else 2
+  bb-forge-art : Integer -> Integer
+  bb-forge-art (item) = if item == 71 then #1413 else if item == 41 then #1415 else if item == 40 then #0F5E else #0F60
+ A founding world grows a page at a time with its item registry and goods heads (UoaixDynamicTables.md); a fixture that
+ populates Britain on its own world binds the same growth (UOAIX-144).
+  bb-found-grow : WorldTable, GsiState, EpGoods -> Result Integer Text
+  bb-found-grow (world) (items) (goods) = when world-grow world
+    is Err (e) -> Err e
+    is Ok (capacity) -> let grown = gsi-grow items capacity in let grew = ep-grow-goods goods capacity in Ok capacity
+  bb-fixture-grow : GvWorld, GsiState -> Integer
+  bb-fixture-grow (v) (items) = world-bind-grow v.game.world (\u -> bb-found-grow v.game.world items v.currency.world.goods)
   bb-populate : GvWorld, GsiState, WalkMap -> Result BbTown Text
   bb-populate (v) (items) (map) =
-    if v.vendor-count /= 0 | v.lot-count /= 0 | v.sale-count /= 0 | v.currency.world.actor-count /= 1 then Err "Britain initialization requires fresh vendor economy"
-    else if not (world-indexed v.game.world) | v.game.world.capacity < 128 | v.game.world.capacity - world-count v.game.world < 49
+    if v.vendor-count /= 0 | ep-lots-first v.currency.world.goods /= 0 | v.sale-count /= 0 | v.currency.world.actor-count /= 1 then Err "Britain initialization requires fresh vendor economy"
+    else if not (world-indexed v.game.world) | v.game.world.capacity < 128 | world-room v.game.world < 49
       | items.world.buffer /= v.game.world.buffer | list-length items.items /= items.world.capacity then Err "Britain world or item budget"
     else if map.x > 1417 | map.y > 1544 | map.x + map.width <= 1478 | map.y + map.height <= 1690 then Err "Britain shop cache coverage"
     else when bb-populate-one v items map 0
       is Err (e) -> Err e
-      is Ok (_) -> if not (gvsc-valid v) then Err "Britain stock provenance or currency census refused" else bb-bind v items
+      is Ok (_) -> if not (gvsc-valid v) then Err ("Britain stock provenance or currency census refused: " & gvsc-invalid-part v) else bb-bind v items
 
+ Every other city's shops are founded at boot after the city windows load, in table order (vendor bb-shop-count + k is city
+ shop k): a world founds the shops it does not yet hold, from its first missing one, each on its own city's map, and
+ stops at the first whose city map did not load. The table is only appended to, so a saved world gains a new city's
+ shops at its next boot. A shop region with no clear tile stands its keeper on the region's first corner and is named
+ in the refusals, so the shops after it keep their vendor indices and are founded too.
+  BbFound = record { founded : Integer, refused : Text }
+  bb-found-cities : GvWorld, GsiState, List CtCity, List WalkMap -> Result Integer Text
+  bb-found-cities (v) (items) (cities) (maps) = when bb-found-cities-noted v items cities maps
+    is Err (e) -> Err e
+    is Ok (f) -> Ok f.founded
+  bb-found-cities-noted : GvWorld, GsiState, List CtCity, List WalkMap -> Result BbFound Text
+  bb-found-cities-noted (v) (items) (cities) (maps) = let shops = ct-city-shops 0
+    in let have = v.vendor-count - bb-shop-count
+    in if have < 0 | have >= list-length shops | list-length shops /= list-length ct-shop-roles then Ok (BbFound { founded = 0, refused = "" })
+    else let mapped = bb-cities-mapped cities maps shops have
+    in if mapped == have then Ok (BbFound { founded = 0, refused = "" })
+    else let grown = gv-grow-vendors v (bb-shop-count + mapped - list-length v.vendors)
+    in when bb-found-city v items cities maps shops have mapped ""
+      is Err (e) -> Err e
+      is Ok (f) -> Ok (BbFound { founded = f.founded - have, refused = f.refused })
+ The first city shop from k on whose city map did not load (the count of shops when every one did).
+  bb-cities-mapped : List CtCity, List WalkMap, List BbShop, Integer -> Integer
+  bb-cities-mapped (cities) (maps) (shops) (k) = if k >= list-length shops then k
+    else let s = list-at shops k in when ct-map-at cities maps s.x1 s.y1 is None -> k is Just (_) -> bb-cities-mapped cities maps shops (k + 1)
+ Before each city shop is founded, the economy tables a founding fills grow a block once they run low, by the thresholds
+ the growth point uses (cg-actors-due, cg-stations-due, cg-nodes-due, cg-purses-due): a keeper takes an actor and a purse, and its
+ goods take stations and nodes (L-GROWINDEX; the side tables indexed by actor grow at the growth point after boot).
+  bb-found-room : GvWorld -> Integer
+  bb-found-room (v) = let w = v.currency.world
+    in let m = w.money
+    in let a = if list-length w.actors - w.actor-count < ep-actor-block / 4 then ep-grow-actors w ep-actor-block else 0
+    in let s = if list-length w.stations - w.station-count < ep-station-limit / 4 then ep-grow-stations w ep-station-limit else 0
+    in let n = if list-length w.nodes < ep-node-ceiling & list-length w.nodes - w.node-count < ep-node-limit / 4 then ep-grow-nodes w ep-node-limit else 0
+    in let p = if list-length m.purses - m.purse-count < em-purse-block / 4 then eu-grow-purses v.currency else 0
+    in a + s + n + p
+  bb-found-city : GvWorld, GsiState, List CtCity, List WalkMap, List BbShop, Integer, Integer, Text -> Result BbFound Text
+  bb-found-city (v) (items) (cities) (maps) (shops) (k) (stop) (refused) = if k >= stop then Ok (BbFound { founded = k, refused = refused })
+    else let s = list-at shops k
+    in let room = bb-found-room v
+    in when ct-map-at cities maps s.x1 s.y1
+      is None -> Err (s.premises & " has no city map")
+      is Just (map) -> let placed = bb-placement v.game.world map s 0
+        in let noted = if is-err placed then refused & s.premises & "; " else refused
+        in when (when placed is Ok (spot) -> Ok spot is Err (e) -> bb-corner map s e)
+          is Err (e) -> Err (s.premises & ": " & e)
+          is Ok (spot) -> when bb-populate-at v items (bb-shop-count + k) (list-at ct-shop-roles k) spot
+            is Err (e) -> Err (s.premises & ": " & e)
+            is Ok (_) -> bb-found-city v items cities maps shops (k + 1) stop noted
+  bb-corner : WalkMap, BbShop, Text -> Result BbSpot Text
+  bb-corner (map) (s) (refusal) = when walk-ground map s.x1 s.y1
+    is Err (_) -> Err refusal
+    is Ok (z) -> Ok (BbSpot { x = s.x1, y = s.y1, z = z })
   bb-specs : List GameOpcodeSpec = gv-specs & [GameOpcodeSpec { opcode = 9, size = 5, minimum = 5, maximum = 5 }]
   bb-role : GvWorld, Integer -> Integer
-  bb-role (v) (serial) = let i = gv-vendor v serial 0 in if i >= 0 & i < 2 * bb-shop-count then int-mod i bb-shop-count else -1
+  bb-role (v) (serial) = let i = gv-vendor v serial 0 in if i >= 0 then ct-vendor-role i else -1
+ The stylist dresses the blacksmith as a smith (cst-smith) and every other shopkeeper as a shopkeeper (cst-shopkeeper).
+  bb-style-role : Integer -> Integer
+  bb-style-role (role) = if role == 1 then cst-smith else cst-shopkeeper
+  bb-label : BbTown, Integer, Integer, Integer -> Text
+  bb-label (t) (character) (role) (npc) = nn-label t.known character (bb-style-role role) npc (list-at gvb-role-words role)
   bb-name-bytes : List Integer, Text, Integer -> List Integer
   bb-name-bytes (packet) (name) (i) = if i == 30 then packet
     else let value = if i < text-length name & i < 29 then to-unicode (char-code (char-at name i)) else 0
@@ -129,11 +601,11 @@ Chapter: BritainShops
     in let named = if role < 0 then packet else bb-name-bytes packet (list-at bb-shops role).title 0
     in bb-rewrite t packets (i + 1) (list-push out named)
   bb-register-lots : BbTown, Integer -> Boolean
-  bb-register-lots (t) (i) = if i == t.vendors.lot-count then True
-    else let l = list-at t.vendors.lots i
+  bb-register-lots (t) (serial) = if serial == 0 then True
+    else let l = ep-lot t.vendors.currency.world.goods serial
     in let registered = if gsi-known t.items l.serial then 0
       else gsi-register t.items l.serial (bb-layer l.item) (if l.item == 45 then #003D else 0) (l.item /= 46) (l.item == 34 | l.item == 37 | l.item == 75 | l.item == 76)
-    in registered == 0 & bb-register-lots t (i + 1)
+    in if registered /= 0 then False else bb-register-lots t (ep-lot-after t.vendors.currency.world.goods serial)
   bb-reply : BbTown, GameReply -> GameReply
   bb-reply (t) (r) = gmb-reply t.items (GameReply { packets = bb-rewrite t r.packets 0 [], close = r.close, note = r.note })
   bb-handler : BbTown, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
@@ -149,11 +621,11 @@ Chapter: BritainShops
         is Ok (player) -> when world-get game.world (gp-u32 packet 1)
           is Err (e) -> Err e
           is Ok (npc) -> if walk-abs (player.x - npc.x) > 18 | walk-abs (player.y - npc.y) > 18 then Ok None
-            else Ok (Just (gs-reply (gvp-hello npc (list-at bb-shops role).title) "Britain shop name"))
+            else Ok (Just (gs-reply (gvp-hello npc (bb-label t input.session.serial role npc.serial)) "Britain shop name"))
     else when gv-handler t.vendors game input map port packet
       is Err (e) -> Err e
       is Ok (None) -> Ok None
-      is Ok (Just (reply)) -> if not (bb-register-lots t 0) then Err "Britain delivered item registration refused"
+      is Ok (Just (reply)) -> if not (bb-register-lots t (ep-lots-first t.vendors.currency.world.goods)) then Err "Britain delivered item registration refused"
         else Ok (Just (bb-reply t reply))
   bb-visible : BbTown, WorldObject, Integer -> Boolean
   bb-visible (t) (player) (i) = when world-get t.vendors.game.world (list-at t.vendors.vendors i).serial
@@ -175,9 +647,8 @@ Chapter: BritainShops
   bb-pulse (t) (game) (input) (map) (port) (tick) =
     if input.mode /= 2 | input.session.phase /= 2 then Ok None
     else if game.world.buffer /= t.vendors.game.world.buffer | game.active /= input.session.serial then Err "Britain pulse binding"
-    else let slot = gv-slot game input.session.serial 0
-    in if slot < 0 then Err "Britain viewer metadata absent"
-    else let view = list-at t.views slot
+    else if gv-slot game input.session.serial 0 < 0 then Err "Britain viewer metadata absent"
+    else let view = list-at t.views (bb-view-at t.views input.connection 0 0)
     in let reset = if view.serial /= input.session.serial | view.connection /= input.connection then
       let a = __record-set view "serial" input.session.serial
       in let b = __record-set view "connection" input.connection

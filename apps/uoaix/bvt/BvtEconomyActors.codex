@@ -1,0 +1,37 @@
+Chapter: BvtEconomyActors
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ Actors past the first block (fester's monster inventories wait on them): a grown table admits them, a sparse
+ record keeps each actor's items, and a saved actor costs its rows, not 8344 dense bytes.
+  bvea-admit : EuCurrency, Integer, Integer -> Integer
+  bvea-admit (x) (i) (n) = if i >= n then i
+    else let purse = eu-open x 2 (2000 + i)
+    in if purse < 0 | ep-admit x.world purse 100 < 0 then i else bvea-admit x (i + 1) n
+  bvea-round : EuCurrency, Integer, Integer -> Integer
+  bvea-round (x) (actor) (size) = let buf = alloc-bytes size
+    in when euc-encode (CurrencyCheckpoint { currency = x, tick = 0, sequence = 0 }) buf size
+      is Err (_) -> -1
+      is Ok (written) -> when euc-decode buf written
+        is Err (_) -> -2
+        is Ok (c) -> if c.currency.world.actor-count /= x.world.actor-count then -3
+          else ep-at (ep-actor c.currency.world actor).stock 9
+  bvea-why : EuCurrency, Integer -> Text
+  bvea-why (x) (size) = when euc-encode (CurrencyCheckpoint { currency = x, tick = 0, sequence = 0 }) (alloc-bytes size) size is Err (e) -> e is Ok (_) -> "encoded"
+  bvt-economy-actors : Integer -> [Console] Integer
+  bvt-economy-actors (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("economy actors fixture: " & e) False
+    is Ok (x) -> act
+      grown <- ep-grow-actors x.world ep-actor-block
+      admitted <- bvea-admit x 0 (ep-actor-block + 20 - x.world.actor-count)
+      last <- x.world.actor-count
+      stocked <- ep-find x.world last 9 3
+      size <- euc-size x
+      kept <- bvea-round x last size
+      a <- bvt-check ("a grown actor table admits past the first block: " & show last & " actors") (last > ep-actor-block & stocked == 0)
+      b <- bvt-check ("a currency record keeps every actor and the last one's stock through a round trip: " & show kept & " " & bvea-why x size) (kept == 3)
+      c <- bvt-check ("a saved actor costs its sparse rows: " & show ((es-size x.world - es-bytes - 8) / last) & " bytes on average") ((es-size x.world - es-bytes - 8) / last < 1000)
+      a + b + c
+    end

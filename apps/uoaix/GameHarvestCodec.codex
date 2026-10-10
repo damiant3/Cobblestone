@@ -2,40 +2,89 @@ Chapter: GameHarvestCodec
   cites Uoaix chapter GameHarvestState
 
  UHC1 holds magic/version/site-count/next-context, five player/cooldown pairs,
- then x/y/z/resource/node qwords for each site. The owner supplies integrity.
+ then x/y/z/resource/node qwords for each site. Version 2 packs a seam's base node above the node,
+ node + base * 65536 (ep-node-limit is 2048), so the record keeps its size. Version 3 packs a tree's species (its
+ trunk art, below 16384) and felled mark above the resource, resource + species * 256 + felled * 16777216 (a resource
+ id is below 256). The owner supplies integrity.
+  ghc-pack : Integer = 65536
+  ghc-kinds : Integer = 256
+  ghc-felled : Integer = 16777216
+  ghc-resource : Integer -> Integer
+  ghc-resource (packed) = if packed < 0 then -1 else int-mod packed ghc-kinds
 
   ghc-size : Integer -> Integer
   ghc-size (count) = 112 + count * 40
-  ghc-kind : Integer -> Boolean
-  ghc-kind (kind) = kind == 5 | kind == 9 | kind == 15
+  ghc-kind : Integer, Integer -> Boolean
+  ghc-kind (resources) (kind) = kind >= 1 & kind <= resources
   ghc-site-valid : GameHarvest, Integer, Integer, Integer, Integer, Integer -> Boolean
   ghc-site-valid (state) (x) (y) (z) (resource) (node) =
-    if x < 0 | x >= 6144 | y < 0 | y >= 4096 | z < -128 | z > 127 | not (ghc-kind resource) then False
+    if x < 0 | x >= 6144 | y < 0 | y >= 4096 | z < -128 | z > 127 | not (ghc-kind (list-length state.vendor.currency.world.catalog.resources) resource) then False
     else let w = state.vendor.currency.world
     in if node < 1 | node > w.node-count then False
     else let n = list-at w.nodes (node - 1)
-    in n.resource == resource & n.owner == 0 & n.planted == 0
+    in n.resource >= 1 & n.resource <= list-length w.catalog.resources & ((n.owner == 0 & n.planted == 0) | (n.owner > 0 & n.planted == 1 & n.resource == resource))
+      & (n.resource == resource | (list-at w.catalog.resources (n.resource - 1)).tool == (list-at w.catalog.resources (resource - 1)).tool)
+  ghc-bound : GameHarvest, Integer, Integer -> Boolean
+  ghc-bound (state) (serial) (slot) =
+    serial /= 0 & gsi-slot state.vendor.game serial 0 == slot & gv-player state.vendor serial 0 >= 0
   ghc-write-requests : GameHarvest, Integer, Integer, Integer -> Integer
   ghc-write-requests (state) (now) (buf) (i) = if i == 5 then 0
     else let request = list-at state.requests i
-    in let a = poke-qword buf (32 + i * 16) request.serial
-    in let b = poke-qword buf (40 + i * 16) (max 0 (request.next - now))
+    in let bound = ghc-bound state request.serial i
+    in let a = poke-qword buf (32 + i * 16) (if bound then request.serial else 0)
+    in let b = poke-qword buf (40 + i * 16) (if bound then max 0 (request.next - now) else 0)
     in ghc-write-requests state now buf (i + 1)
   ghc-write-sites : GameHarvest, Integer, Integer -> Integer
-  ghc-write-sites (state) (buf) (i) = if i == state.count then 0
-    else let site = list-at state.sites i
-    in let at = 112 + i * 40
-    in let a = poke-qword buf at site.x
-    in let b = poke-qword buf (at + 8) site.y
-    in let c = poke-qword buf (at + 16) site.z
-    in let d = poke-qword buf (at + 24) site.resource
-    in let e = poke-qword buf (at + 32) site.node
+  ghc-write-sites (state) (buf) (i) = if i >= min state.count ghc-block then 0
+    else let done = ghc-site-out (list-at state.sites i) (buf + 112 + i * 40)
     in ghc-write-sites state buf (i + 1)
+  ghc-site-out : GhSite, Integer -> Integer
+  ghc-site-out (site) (at) = let a = poke-qword at 0 site.x
+    in let b = poke-qword at 8 site.y
+    in let c = poke-qword at 16 site.z
+    in let d = poke-qword at 24 (site.resource + site.species * ghc-kinds + site.felled * ghc-felled)
+    in poke-qword at 32 (site.node + site.base * ghc-pack)
+  ghc-site-in : GhSite, Integer -> Integer
+  ghc-site-in (site) (at) = let a = __record-set site "x" (peek-qword at 0)
+    in let b = __record-set site "y" (peek-qword at 8)
+    in let c = __record-set site "z" (peek-qword at 16)
+    in let d = __record-set site "resource" (ghc-resource (peek-qword at 24))
+    in let g = __record-set site "species" (int-mod (peek-qword at 24) ghc-felled / ghc-kinds)
+    in let h = __record-set site "felled" (peek-qword at 24 / ghc-felled)
+    in let e = __record-set site "node" (int-mod (peek-qword at 32) ghc-pack)
+    in let f = __record-set site "base" (peek-qword at 32 / ghc-pack) in 0
+ The image holds the first ghc-block sites; the rest go in the harvest tail (the extra count, then 40-byte site rows),
+ which the composite places after the town tail.
+  ghc-block : Integer = 256
+  ghc-tail-size : GameHarvest -> Integer
+  ghc-tail-size (state) = 8 + max 0 (state.count - ghc-block) * 40
+  ghc-tail-sites : GameHarvest, Integer, Boolean, Integer, Integer -> Integer
+  ghc-tail-sites (state) (at) (read) (n) (i) = if i >= n then 0
+    else let done = if read then ghc-site-in (list-at state.sites (ghc-block + i)) (at + i * 40) else ghc-site-out (list-at state.sites (ghc-block + i)) (at + i * 40)
+    in ghc-tail-sites state at read n (i + 1)
+  ghc-write-tail : GameHarvest, Integer -> Integer
+  ghc-write-tail (state) (at) = let n = max 0 (state.count - ghc-block)
+    in let a = poke-qword at 0 n in let b = ghc-tail-sites state (at + 8) False n 0 in at + 8 + n * 40
+  ghc-tail-length : Integer, Integer -> Integer
+  ghc-tail-length (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > room / 40 then -1 else 8 + peek-qword at 0 * 40
+  ghc-read-tail : GameHarvest, Integer, Integer -> Integer
+  ghc-read-tail (state) (at) (size) = if size == 0 then 0
+    else if ghc-tail-length at size /= size then -1
+    else let n = peek-qword at 0
+    in if n > 0 & state.count /= ghc-block then -1
+    else let grown = gh-grow-sites state (ghc-block + n)
+    in let read = ghc-tail-sites state (at + 8) True n 0
+    in let counted = __record-set state "count" (state.count + n)
+    in if ghc-tail-valid state ghc-block then 0 else -1
+  ghc-tail-valid : GameHarvest, Integer -> Boolean
+  ghc-tail-valid (state) (i) = if i >= state.count then True
+    else let s = list-at state.sites i
+    in ghc-site-valid state s.x s.y s.z s.resource s.node & (s.base == 0 | ghc-site-valid state s.x s.y s.z s.resource s.base) & ghc-tail-valid state (i + 1)
   ghc-request-valid : GameHarvest, Integer, Integer, Integer -> Boolean
   ghc-request-valid (state) (serial) (remaining) (slot) =
     if remaining < 0 | remaining > gh-ticks 3000 then False
     else if serial == 0 then remaining == 0
-    else gsi-slot state.vendor.game serial 0 == slot & gv-player state.vendor serial 0 >= 0
+    else ghc-bound state serial slot
   ghc-requests-valid : GameHarvest, Integer, Integer -> Boolean
   ghc-requests-valid (state) (buf) (i) = if i == 5 then True
     else ghc-request-valid state (peek-qword buf (32 + i * 16)) (peek-qword buf (40 + i * 16)) i
@@ -45,26 +94,32 @@ Chapter: GameHarvestCodec
     else let other = 112 + i * 40
     in peek-qword buf (other + 32) /= peek-qword buf (at + 32)
       & not (peek-qword buf other == peek-qword buf at & peek-qword buf (other + 8) == peek-qword buf (at + 8)
-        & peek-qword buf (other + 16) == peek-qword buf (at + 16) & peek-qword buf (other + 24) == peek-qword buf (at + 24))
+        & peek-qword buf (other + 16) == peek-qword buf (at + 16) & ghc-resource (peek-qword buf (other + 24)) == ghc-resource (peek-qword buf (at + 24)))
       & ghc-distinct buf at (i + 1)
   ghc-sites-valid : GameHarvest, Integer, Integer, Integer -> Boolean
   ghc-sites-valid (state) (buf) (count) (i) = if i == count then True
     else let at = 112 + i * 40
-    in ghc-site-valid state (peek-qword buf at) (peek-qword buf (at + 8)) (peek-qword buf (at + 16)) (peek-qword buf (at + 24)) (peek-qword buf (at + 32))
+    in let packed = peek-qword buf (at + 32)
+    in let base = if packed < 0 then -1 else packed / ghc-pack
+    in let node = int-mod packed ghc-pack
+    in let kind = peek-qword buf (at + 24)
+    in base >= 0 & kind >= 0 & kind / ghc-felled <= 1 & int-mod kind ghc-felled / ghc-kinds < 16384
+      & ghc-site-valid state (peek-qword buf at) (peek-qword buf (at + 8)) (peek-qword buf (at + 16)) (ghc-resource kind) node
+      & (base == 0 | (base /= node & ghc-site-valid state (peek-qword buf at) (peek-qword buf (at + 8)) (peek-qword buf (at + 16)) (ghc-resource kind) base))
       & ghc-distinct buf at 0 & ghc-sites-valid state buf count (i + 1)
   ghc-encode : GameHarvest, Integer, Integer, Integer -> Result Integer Text
   ghc-encode (state) (now) (buf) (capacity) =
-    if state.count < 0 | state.count > 256 | state.nonce < 1 | state.nonce > 65536
-      | now < 0 | now > 9223372036854775807 - gh-ticks 3000 then Err "harvest codec state"
-    else if capacity < ghc-size state.count then Err "harvest codec destination"
+    if state.count < 0 then Err "harvest codec site count"
+    else if capacity < ghc-size (min state.count ghc-block) then Err "harvest codec destination"
     else let a = poke-qword buf 0 #31434855
-    in let b = poke-qword buf 8 1
-    in let c = poke-qword buf 16 state.count
+    in let b = poke-qword buf 8 3
+    in let c = poke-qword buf 16 (min state.count ghc-block)
     in let d = poke-qword buf 24 state.nonce
     in let requests = ghc-write-requests state now buf 0
     in let sites = ghc-write-sites state buf 0
-    in if not (ghc-requests-valid state buf 0 & ghc-sites-valid state buf state.count 0) then Err "harvest codec bindings"
-    else Ok (ghc-size state.count)
+    in if state.nonce < 1 | state.nonce > 65536 | now < 0 | now > 9223372036854775807 - gh-ticks 3000 then Err "harvest codec state"
+    else if not (ghc-requests-valid state buf 0 & ghc-sites-valid state buf (min state.count ghc-block) 0) then Err "harvest codec bindings"
+    else Ok (ghc-size (min state.count ghc-block))
   ghc-read-requests : GameHarvest, Integer, Integer, Integer -> Integer
   ghc-read-requests (state) (now) (buf) (i) = if i == 5 then 0
     else let request = list-at state.requests i
@@ -82,15 +137,18 @@ Chapter: GameHarvestCodec
     in let a = __record-set site "x" (peek-qword buf at)
     in let b = __record-set site "y" (peek-qword buf (at + 8))
     in let c = __record-set site "z" (peek-qword buf (at + 16))
-    in let d = __record-set site "resource" (peek-qword buf (at + 24))
-    in let e = __record-set site "node" (peek-qword buf (at + 32))
+    in let d = __record-set site "resource" (ghc-resource (peek-qword buf (at + 24)))
+    in let g = __record-set site "species" (int-mod (peek-qword buf (at + 24)) ghc-felled / ghc-kinds)
+    in let h = __record-set site "felled" (peek-qword buf (at + 24) / ghc-felled)
+    in let e = __record-set site "node" (int-mod (peek-qword buf (at + 32)) ghc-pack)
+    in let f = __record-set site "base" (peek-qword buf (at + 32) / ghc-pack)
     in ghc-read-sites state buf count (i + 1)
   ghc-decode : GameHarvest, Integer, Integer, Integer -> Result Integer Text
   ghc-decode (state) (now) (buf) (size) =
     if now < 0 | now > 9223372036854775807 - gh-ticks 3000 | size < 112 | size > ghc-size 256 then Err "harvest codec extent"
     else let count = peek-qword buf 16
     in let nonce = peek-qword buf 24
-    in if peek-qword buf 0 /= #31434855 | peek-qword buf 8 /= 1 | count < 0 | count > 256
+    in if peek-qword buf 0 /= #31434855 | (peek-qword buf 8 < 1 | peek-qword buf 8 > 3) | count < 0 | count > 256
       | nonce < 1 | nonce > 65536 | size /= ghc-size count then Err "harvest codec format"
     else if not (ghc-requests-valid state buf 0 & ghc-sites-valid state buf count 0) then Err "harvest codec bindings"
     else let requests = ghc-read-requests state now buf 0

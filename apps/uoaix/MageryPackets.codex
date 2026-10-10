@@ -1,5 +1,5 @@
 Chapter: MageryPackets
-  cites Uoaix chapter MageryState
+  cites Uoaix chapter MageryIncognito
 
  Source-X PacketItemContents(spellbook), PacketManaUpdate, PacketEffect and
  PacketPlaySound, Apache-2.0, adapted to legacy packets without grid bytes.
@@ -46,8 +46,33 @@ Chapter: MageryPackets
     in let capacity = mgp-word-at packet 52 (mgs-stat actor 1)
     in let d = mgp-word-at packet 54 actor.mana
     in let e = mgp-word-at packet 56 (mgs-stat actor 2) in packet
+ Name fields of the 1.25 client's packets: 0x11 status bytes 7-36, 0x88 paperdoll 5-64, 0x1C speaker
+ 14-43 with a type-6 label's text after it (sip-name-label, sip-paperdoll-titled).
+  mgp-name-at : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  mgp-name-at (packet) (at) (width) (name) (i) = if i == width then packet
+    else let set = list-set-at packet (at + i) (if i < list-length name then list-at name i else 0) in mgp-name-at packet at width name (i + 1)
+  mgp-head : List Integer, Integer, List Integer -> List Integer
+  mgp-head (packet) (n) (out) = if list-length out == n then out else mgp-head packet n (list-push out (list-at packet (list-length out)))
+  mgp-label : List Integer, List Integer -> List Integer
+  mgp-label (packet) (name) = let body = sip-field (mgp-head packet 14 (__list-with-capacity 14)) name 30 0 & name & [0]
+    in let a = list-set-at body 1 (bit-shru (list-length body) 8)
+    in let b = list-set-at body 2 (bit-and (list-length body) 255) in body
+  mgp-disguise : Magery, List Integer -> List Integer
+  mgp-disguise (magic) (packet) = if list-length packet < 7 then packet else let opcode = list-at packet 0
+    in if opcode /= #11 & opcode /= #88 & opcode /= #1C then packet
+    else let serial = if opcode == #88 then gp-u32 packet 1 else gp-u32 packet 3
+    in let slot = world-slot magic.items.world serial
+    in if slot < 0 then packet else let actor = list-at magic.actors slot
+    in if actor.serial /= serial | actor.incognito == 0 then packet
+    else let name = text-to-utf8-bytes (mgi-name actor)
+    in if opcode == #11 & list-length packet >= 37 then mgp-name-at packet 7 30 name 0
+    else if opcode == #88 & list-length packet == 66 then mgp-name-at packet 5 60 name 0
+    else if opcode == #1C & list-length packet >= 45 then (if list-at packet 9 == 6 then mgp-label packet name else mgp-name-at packet 14 30 name 0)
+    else packet
   mgp-rewrite : Magery, List Integer -> List Integer
-  mgp-rewrite (magic) (packet) = if list-length packet < 5 then packet else let opcode = list-at packet 0
+  mgp-rewrite (magic) (packet) = mgp-disguise magic (mgp-rewrite-base magic packet)
+  mgp-rewrite-base : Magery, List Integer -> List Integer
+  mgp-rewrite-base (magic) (packet) = if list-length packet < 5 then packet else let opcode = list-at packet 0
     in let serial = if opcode == #11 | opcode == #78 then if list-length packet < 7 then 0 else gp-u32 packet 3 else gp-u32 packet 1
     in let slot = world-slot magic.items.world serial
     in if slot < 0 then packet else let actor = list-at magic.actors slot

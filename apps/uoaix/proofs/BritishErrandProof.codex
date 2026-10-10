@@ -1,0 +1,190 @@
+Chapter: BritishErrandProof
+  cites Uoaix chapter CompositeScript
+
+  bep-check : Text, Boolean -> [Console] Integer
+  bep-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+ The ramp lets a walk from the entry (z 0) reach the mine's standing tile at z 35, under the step limit.
+  bep-fill : WalkMap, Integer -> Integer
+  bep-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let y = map.y + i / map.width
+    in let result = walk-set-land map (map.x + int-mod i map.width) y (max 0 (min 35 ((1700 - y) / 4))) 0
+    in let restored = __heap-restore mark in bep-fill map (i + 1)
+  bep-data : Integer -> Integer
+  bep-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  bep-nobody : Integer -> Maybe CsPlayer
+  bep-nobody (unused) = None
+  bep-errand : CompositeGame -> CbErrand
+  bep-errand (owner) = when owner.british is None -> cbe-new 0 (BbSpot { x = 0, y = 0, z = 0 }) is Just (c) -> c
+  bep-at : CompositeGame, Integer -> List Integer
+  bep-at (owner) (serial) = when world-get owner.checkpoint.game.world serial is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y]
+  bep-ore : CompositeGame -> Integer
+  bep-ore (owner) = let w = owner.vendor.currency.world in if w.mint-owner <= 0 then -1 else ep-at (ep-actor w w.mint-owner).stock 6
+  bep-gold : CompositeGame -> Integer
+  bep-gold (owner) = (em-purse (eu-money owner.vendor.currency 3) 1).coin
+  bep-line : CompositeGame, Text -> Text
+  bep-line (owner) (tag) = let c = bep-errand owner
+    in let at = bep-at owner c.serial
+    in "ERRAND " & tag & " serial=" & show c.serial & " at " & show (list-at at 0) & "," & show (list-at at 1) & " home " & show c.home.x & "," & show c.home.y
+      & " leg=" & show c.leg & " visit=" & show c.visit & " mined=" & show c.mined & " blocked=" & show c.blocked & " crown-gold-ore=" & show (bep-ore owner)
+      & " treasury-gold=" & show (bep-gold owner) & " pickaxe=" & show (bep-tool owner 0) & " wear=" & show (bep-tool owner 1)
+  bep-tool : CompositeGame, Integer -> Integer
+  bep-tool (owner) (field) = let w = owner.vendor.currency.world
+    in if w.mint-owner <= 0 then -1 else let p = ep-actor w w.mint-owner in ep-at (if field == 0 then p.stock else p.wear) 25
+ gl-round restores the heap to the serve mark once it has grown 1 MiB past it (sl-compact),
+ and runs the world tick with no session active.
+  bep-run : CompositeOwner, WalkMap, Maybe CsPlayer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  bep-run (store) (map) (p) (mark) (tick) (left) (until) = if left == 0 | (bep-errand store.state).leg >= until then tick else act
+    pulsed <- when p
+      is None -> act Ok 0 end
+      is Just (c) -> let at = __record-set c "tick" tick in csp-pulse c 0
+    game <- store.state.checkpoint.game
+    old <- game.active
+    cleared <- __record-set game "active" 0
+    ran <- cs-tick store game map (cg-tick-watcher store.state) tick
+    restored <- __record-set game "active" old
+    if is-err pulsed | is-err ran then act
+      print-line-uni ("FAIL at " & show tick & ": pulse " & (when pulsed is Err (e) -> e is Ok (_) -> "ok") & ", world tick " & (when ran is Err (e) -> e is Ok (_) -> "ok"))
+      0 - 1
+    end
+    else if __heap-save - mark > 1048576 then
+      let reclaimed = __heap-restore mark in bep-run store map p mark (tick + 100) (left - 1) until
+    else bep-run store map p mark (tick + 100) (left - 1) until
+  end
+  bep-route : WalkMap -> Result WalkMap Text
+  bep-route (unused) = when walk-map-new cbe-window-x cbe-window-y cbe-window-width cbe-window-height
+    is Err (e) -> Err e
+    is Ok (route) -> let filled = bep-fill route 0 in Ok route
+ The Royal Mine's floor is level at the arrival's z 37 and its veins are impassable rock.
+  bep-floor : WalkMap, Integer -> Integer
+  bep-floor (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 37 0
+    in let restored = __heap-restore mark in bep-floor map (i + 1)
+  bep-rock : WalkMap, List (List Integer), Integer -> Integer
+  bep-rock (map) (veins) (i) = if i == list-length veins then 0
+    else let v = list-at veins i
+    in let set = walk-set-land map (list-at v 0) (list-at v 1) (list-at v 2) 64 in bep-rock map veins (i + 1)
+  bep-wind : Integer -> Result WalkMap Text
+  bep-wind (unused) = when walk-map-new cbe-wind-x cbe-wind-y cbe-wind-width cbe-wind-height
+    is Err (e) -> Err e
+    is Ok (wind) -> let floored = bep-floor wind 0
+      in let rocks = bep-rock wind cpr-royal-veins 0 in Ok wind
+  bep-bind : CompositeGame, WalkMap, WalkMap -> Result Integer Text
+  bep-bind (owner) (route) (wind) = when cg-british-found owner
+    is Err (e) -> Err e
+    is Ok (found) -> when owner.british
+      is None -> Err "no errand founded"
+      is Just (c) -> when cbe-route c route wind
+        is Err (e) -> Err e
+        is Ok (_) -> Ok found
+  bep-first : CompositeOwner, WalkMap, WalkMap, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  bep-first (store) (map) (route) (wind) (specs) = let owner = store.state in act
+    made <- cg-british-character owner map
+    bound <- bep-bind owner route wind
+    c <- bep-errand owner
+    start <- bep-at owner c.serial
+    print-line-uni (bep-line owner "founded")
+    a <- bep-check "boot creates Lord British on his throne and founds his errand there, before any economic activity" (is-ok made & is-ok bound & c.serial > 0
+      & c.serial == cg-british-serial owner & c.leg == 0 & list-at start 0 == cpr-seat-x & list-at start 1 == cpr-seat-y
+      & c.home.x == cpr-seat-x & c.home.y == cpr-seat-y & bep-ore owner == 0)
+    views <- cs-views store 8
+    p <- csp-new store map specs 1
+    client <- Just p
+    nobody <- bep-nobody 0
+    mark <- __heap-save
+    departed <- bep-run store map nobody mark 100 40 1
+    walked <- bep-run store map nobody mark departed 2 2
+    out <- bep-at owner c.serial
+    print-line-uni (bep-line owner "walking")
+    resumed <- csp-resume p c.serial
+    driven <- bep-run store map client mark walked 20 9
+    held <- bep-at owner c.serial
+    b <- bep-check "with no client the errand walks toward the alcove; while British's own session pulses he stays where the human left him" (c.leg == 1
+      & list-at out 1 < cpr-seat-y & list-at out 0 < cbe-wind-x & is-ok resumed & list-at held 0 == list-at out 0 & list-at held 1 == list-at out 1)
+    freed <- bep-run store map nobody mark driven 600 2
+    print-line-uni (bep-line owner "in the Royal Mine")
+    there <- bep-at owner c.serial
+    d <- bep-check "three seconds after the last pulse the errand resumes, steps into the alcove and arrives at the Royal Mine in Wind, and the NPC economy still waits" (c.leg == 2
+      & list-at there 0 == cpr-royal-x & list-at there 1 == cpr-royal-y & not (cg-seeded owner) & not owner.labor)
+    committed <- cs-commit store True
+    e <- bep-check "the world commits mid-errand" (is-ok committed)
+    a + b + d + e
+  end
+  bep-second : CompositeOwner, WalkMap, WalkMap, WalkMap -> [Console, Device.Block] Integer
+  bep-second (store) (map) (route) (wind) = let owner = store.state in act
+    c <- bep-errand owner
+    print-line-uni (bep-line owner "restored")
+    a <- bep-check "a restart restores the errand in the Royal Mine" (c.leg == 2 & c.serial > 0 & (when owner.british is None -> False is Just (_) -> True))
+    gold <- bep-gold owner
+    bound <- bep-bind owner route wind
+    nobody <- bep-nobody 0
+    mark <- __heap-save
+    ended <- bep-run store map nobody mark 100 3000 cbe-done
+    print-line-uni (bep-line owner "banked")
+    there <- bep-at owner c.serial
+    b <- bep-check "with no client British mines the Royal Mine's gold, returns through its gate, walks to the Britain banker and finishes" (is-ok bound & ended > 0
+      & cbe-finished c & c.mined > 1 & list-at there 0 == cbe-bank-x & list-at there 1 == cbe-bank-y)
+    d <- bep-check "the crown smelts two ore to the ingot and strikes the gold into the treasury, which opens the NPC economy" (bep-ore owner == int-mod c.mined 2 & bep-gold owner > gold & cg-seeded owner)
+    e <- bep-check "currency, material and vendor census stay valid" (euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1 & gvsc-valid owner.vendor)
+    committed <- cs-commit store True
+    f <- bep-check "the finished errand commits" (is-ok committed)
+    a + b + d + e + f
+  end
+  bep-third : CompositeOwner -> [Console, Device.Block] Integer
+  bep-third (store) = let owner = store.state in act
+    c <- bep-errand owner
+    mined <- c.mined
+    found <- cg-british-found owner
+    print-line-uni (bep-line owner "after")
+    bep-check "after a restart the errand stays finished and boot founds no second one" (cbe-finished c & c.mined == mined & mined > 0
+      & (when found is Err (_) -> False is Ok (n) -> n == 0) & not c.timed)
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> bep-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1520 96 224
+     is Err (e) -> bep-check e False
+     is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> bep-check e False
+      is Ok (britain) -> when bep-route map
+       is Err (e) -> bep-check e False
+       is Ok (route) -> when bep-wind 0
+        is Err (e) -> bep-check e False
+        is Ok (wind) -> let filled = bep-fill map 0
+        in let town-filled = bep-fill britain 0
+        in let data = bep-data 0
+        in when wd-read data 240 map map.stride
+         is Err (e) -> bep-check e False
+         is Ok (decoration) -> act
+       opened <- us-open 0 131072
+       when opened
+        is Err (e) -> bep-check ("store " & e) False
+        is Ok (store) -> let fresh = store.head == 0 in act
+         loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+         when loaded
+          is Err (e) -> bep-check ("recovery " & e) False
+          is Ok (owner) -> when cg-town-doors owner.state data 240
+           is Err (e) -> bep-check ("town doors " & e) False
+           is Ok (_) -> if fresh then bep-first owner map route wind specs
+             else if cbe-finished (bep-errand owner.state) then bep-third owner
+             else bep-second owner map route wind
+        end
+      end

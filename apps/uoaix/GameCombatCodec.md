@@ -19,4 +19,4 @@ with the matching world. It must validate serial/world associations before
 publishing a restored checkpoint. This component does not commit storage.
 
 Cost: O(actor capacity) encode and validation plus restore, fixed caller
-buffer, no new retained allocation. No compiler or seed change.
+buffer, no new retained allocation.

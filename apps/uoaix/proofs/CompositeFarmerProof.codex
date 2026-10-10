@@ -1,0 +1,158 @@
+Chapter: CompositeFarmerProof
+  cites Uoaix chapter CompositeStore
+
+  cfp-check : Text, Boolean -> [Console] Integer
+  cfp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cfp-fill : WalkMap, Integer -> Integer
+  cfp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cfp-fill map (i + 1)
+  cfp-data : Integer -> Integer
+  cfp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  cfp-mobile : CompositeGame, CgGatherer -> WorldObject
+  cfp-mobile (owner) (c) = when world-get owner.checkpoint.game.world c.serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+  cfp-at : CompositeGame, Integer -> WorldObject
+  cfp-at (owner) (serial) = when world-get owner.checkpoint.game.world serial is Err (_) -> gs-item 0 0 0 is Ok (m) -> m
+ A sale that empties a good: its lots leave the ledger as consumed stock, as an NPC death settles them (cgg-drop-lots).
+  cfp-sell-out : GvWorld, Integer, Integer -> Integer
+  cfp-sell-out (v) (index) (item) = let actor = (list-at v.vendors index).actor
+    in cfp-drop v item (ep-lot-first v.currency.world.goods actor)
+  cfp-drop : GvWorld, Integer, Integer -> Integer
+  cfp-drop (v) (item) (serial) = if serial == 0 then 0
+    else let next = ep-lot-next v.currency.world.goods serial
+    in if ep-lot-item v.currency.world.goods serial /= item then cfp-drop v item next
+    else let lost = ep-forget-lot v.currency.world serial
+    in let gone = world-delete v.game.world serial in 1 + cfp-drop v item next
+  cfp-held : CgGatherer, Integer -> Integer
+  cfp-held (c) (item) = let x = c.gatherer.producer.currency in ep-at (ep-actor x.world c.gatherer.producer.actor).stock item
+  cfp-baker : CompositeGame, Integer -> Integer
+  cfp-baker (owner) (item) = ep-at (ep-actor owner.vendor.currency.world (list-at owner.vendor.vendors 3).actor).stock item
+  cfp-line : CompositeGame, CgGatherer, Text -> Text
+  cfp-line (owner) (c) (label) = let m = cfp-mobile owner c
+    in "FARMER " & label & " at " & show m.x & "," & show m.y & " home " & show c.home.x & "," & show c.home.y
+      & " field " & show c.node.x & "," & show c.node.y & " leg=" & show c.leg & " trips=" & show c.trips
+      & " wheat=" & show (cfp-held c 13) & " made=" & show c.made & " sold=" & show c.sold
+      & " milled at " & show c.smelt-x & "," & show c.smelt-y & " baker flour=" & show (cfp-baker owner 33)
+  cfp-idle : CgGatherer -> Boolean
+  cfp-idle (c) = c.leg == 0 & c.lot == 0 & cgg-held c 13 < 2 & not (cgg-ready c)
+  cfp-settle : CompositeGame, CgGatherer, WalkMap, Integer, Integer -> Integer
+  cfp-settle (owner) (c) (map) (tick) (left) = if left == 0 then -1
+    else when cg-world-tick owner owner.checkpoint.game map c.serial tick
+      is Err (_) -> -2
+      is Ok (_) -> if cfp-idle c & csn-smith-idle owner.baker owner.vendor & csn-smith-idle owner.tailor owner.vendor & csn-smith-idle owner.tinker owner.vendor & csn-smith-idle owner.carpenter owner.vendor then left else cfp-settle owner c map (tick + 1000) (left - 1)
+ Each round grows the field for 72 economy hours (wheat's regrow time) and runs the world until the farmer is idle.
+  cfp-rounds : CompositeGame, CgGatherer, WalkMap, Integer -> Integer
+  cfp-rounds (owner) (c) (map) (rounds) = if c.sold >= 1 | rounds == 0 then rounds
+    else let x = owner.vendor.currency
+    in if not (cg-economy-hours x (x.world.hour + 72) 72) then -1
+    else if cfp-settle owner c map 9000000 3000 < 0 then -2
+    else cfp-rounds owner c map (rounds - 1)
+  cfp-first : CompositeOwner, WalkMap -> [Console, Device.Block] Integer
+  cfp-first (store) (map) = let owner = store.state in when owner.farmer
+    is None -> cfp-check "a fresh Britain world founds the farmer" False
+    is Just (c) -> act
+      x <- owner.vendor.currency
+      start <- cfp-mobile owner c
+      print-line-uni (cfp-line owner c "fresh")
+      founded <- cfp-check "a fresh Britain world founds a farmer at home with the townsfolk look and a field in the wheat strip (UOAIX-55)" (start.kind == 1 & start.x == c.home.x & start.y == c.home.y
+        & c.gatherer.place == cgg-farm-place & cst-styled owner.items c.serial cst-townsfolk
+        & c.node.x >= 1410 & c.node.x <= 1415 & c.node.y >= 1660 & c.node.y <= 1670)
+      flour-before <- cfp-baker owner 33
+      bread-before <- cfp-baker owner 34
+      left <- cfp-rounds owner c map 8
+      print-line-uni (cfp-line owner c "sold")
+      sold <- cfp-check "the farmer harvests wheat, mills it standing within 2 tiles of the bakery mill and sells the flour to the baker (UOAIX-55)" (left >= 0 & c.made >= 1 & c.sold >= 1
+        & walk-abs (c.smelt-x - wks-mill.x) <= 2 & walk-abs (c.smelt-y - wks-mill.y) <= 2 & cfp-baker owner 33 + 2 * owner.baker.forged >= flour-before + 2
+        & euv-valid x & ep-census x.world 1 & gvsc-valid owner.vendor)
+      b <- owner.baker
+      baker <- cfp-at owner (list-at owner.vendor.vendors 3).serial
+      shop <- list-at bb-shops 3
+      print-line-uni ("BAKER baked=" & show b.forged & " at " & show b.forged-x & "," & show b.forged-y & " now " & show baker.x & "," & show baker.y & " counter " & show b.counter.x & "," & show b.counter.y & " bread=" & show (cfp-baker owner 34) & " leg=" & show b.leg)
+      baked <- cfp-check "the baker bakes bread from the bought flour standing within 2 tiles of the Good Eats oven, then walks back to its counter (UOAIX-55)" (b.forged >= 1 & cfp-baker owner 34 >= bread-before + 1
+        & walk-abs (b.forged-x - wks-oven.x) <= 2 & walk-abs (b.forged-y - wks-oven.y) <= 2
+        & b.leg == 0 & baker.x == b.counter.x & baker.y == b.counter.y & baker.x >= shop.x1 & baker.x <= shop.x2 & baker.y >= shop.y1 & baker.y <= shop.y2
+        & euv-valid x & ep-census x.world 1 & gvsc-valid owner.vendor)
+      sold-out <- cfp-sell-out owner.vendor 2 72
+      sewn-left <- cfp-settle owner c map 9100000 600
+      tl <- owner.tailor
+      tailor <- cfp-at owner (list-at owner.vendor.vendors 2).serial
+      tshop <- list-at bb-shops 2
+      print-line-uni ("TAILOR sold-out=" & show sold-out & " restocked=" & show tl.forged & " at " & show tl.forged-x & "," & show tl.forged-y & " now " & show tailor.x & "," & show tailor.y & " counter " & show tl.counter.x & "," & show tl.counter.y & " leg=" & show tl.leg)
+      restocked <- cfp-check "a sold-out shirt sends the tailor to the loom beside the spinning wheel, where it restocks, then back to its counter (UOAIX-55)" (sold-out == 1 & sewn-left >= 0 & tl.forged >= 1
+        & bb-has-lot owner.vendor (list-at owner.vendor.vendors 2).actor 72 0
+        & walk-abs (tl.forged-x - wks-loom.x) <= 2 & walk-abs (tl.forged-y - wks-loom.y) <= 2 & walk-abs (tl.forged-x - wks-wheel.x) <= 2 & walk-abs (tl.forged-y - wks-wheel.y) <= 2
+        & tl.leg == 0 & tailor.x == tl.counter.x & tailor.y == tl.counter.y & tailor.x >= tshop.x1 & tailor.x <= tshop.x2 & tailor.y >= tshop.y1 & tailor.y <= tshop.y2
+        & euv-valid x & ep-census x.world 1 & gvsc-valid owner.vendor)
+      cut-out <- cfp-sell-out owner.vendor 6 74
+      cut-left <- cfp-settle owner c map 9200000 600
+      tk <- owner.tinker
+      tinker <- cfp-at owner (list-at owner.vendor.vendors 6).serial
+      kshop <- list-at bb-shops 6
+      print-line-uni ("TINKER sold-out=" & show cut-out & " restocked=" & show tk.forged & " at " & show tk.forged-x & "," & show tk.forged-y & " now " & show tinker.x & "," & show tinker.y & " counter " & show tk.counter.x & "," & show tk.counter.y & " leg=" & show tk.leg)
+      tinkered <- cfp-check "sold-out scissors send the tinker to its guild workbench, where it restocks, then back to its counter (UOAIX-55)" (cut-out == 1 & cut-left >= 0 & tk.forged >= 1
+        & bb-has-lot owner.vendor (list-at owner.vendor.vendors 6).actor 74 0 & walk-abs (tk.forged-x - wks-tinker.x) <= 2 & walk-abs (tk.forged-y - wks-tinker.y) <= 2
+        & tk.leg == 0 & tinker.x == tk.counter.x & tinker.y == tk.counter.y & tinker.x >= kshop.x1 & tinker.x <= kshop.x2 & tinker.y >= kshop.y1 & tinker.y <= kshop.y2
+        & euv-valid x & ep-census x.world 1 & gvsc-valid owner.vendor)
+      saw-out <- cfp-sell-out owner.vendor 7 42
+      saw-left <- cfp-settle owner c map 9300000 600
+      cp <- owner.carpenter
+      carpenter <- cfp-at owner (list-at owner.vendor.vendors 7).serial
+      pshop <- list-at bb-shops 7
+      print-line-uni ("CARPENTER sold-out=" & show saw-out & " restocked=" & show cp.forged & " at " & show cp.forged-x & "," & show cp.forged-y & " now " & show carpenter.x & "," & show carpenter.y & " counter " & show cp.counter.x & "," & show cp.counter.y & " leg=" & show cp.leg)
+      sawn <- cfp-check "a sold-out saw sends the carpenter to The Saw Horse's bench, where it restocks, then back to its counter (UOAIX-55)" (saw-out == 1 & saw-left >= 0 & cp.forged >= 1
+        & bb-has-lot owner.vendor (list-at owner.vendor.vendors 7).actor 42 0 & walk-abs (cp.forged-x - wks-saw-bench.x) <= 2 & walk-abs (cp.forged-y - wks-saw-bench.y) <= 2
+        & cp.leg == 0 & carpenter.x == cp.counter.x & carpenter.y == cp.counter.y & carpenter.x >= pshop.x1 & carpenter.x <= pshop.x2 & carpenter.y >= pshop.y1 & carpenter.y <= pshop.y2
+        & euv-valid x & ep-census x.world 1 & gvsc-valid owner.vendor)
+      committed <- cs-commit store True
+      saved <- cfp-check "the farmer commits with the composite" (is-ok committed)
+      founded + sold + baked + restocked + tinkered + sawn + saved
+    end
+  cfp-later : CompositeOwner -> [Console, Device.Block] Integer
+  cfp-later (store) = let owner = store.state in when owner.farmer
+    is None -> cfp-check "restart restores the farmer" False
+    is Just (c) -> act
+      m <- cfp-mobile owner c
+      print-line-uni (cfp-line owner c "restored")
+      cfp-check "restart restores the farmer with its sale, at home (UOAIX-55)" (m.kind == 1 & c.sold >= 1 & c.made >= 1 & c.gatherer.place == cgg-farm-place & cfp-baker owner 34 >= 1)
+    end
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> cfp-check e False
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+     is Err (e) -> cfp-check e False
+     is Ok (britain) -> let filled = cfp-fill map 0
+      in let town-filled = cfp-fill britain 0
+      in let data = cfp-data 0
+      in when wd-read data 240 map map.stride
+       is Err (e) -> cfp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> cfp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+       when loaded
+        is Err (e) -> cfp-check ("recovery " & e) False
+        is Ok (owner) -> let seeded = cg-seed-gold owner.state in when cg-town-doors owner.state data 240
+         is Err (e) -> cfp-check ("town doors " & e) False
+         is Ok (_) -> if fresh then cfp-first owner map else cfp-later owner
+      end
+    end

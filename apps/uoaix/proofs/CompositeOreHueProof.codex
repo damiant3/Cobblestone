@@ -1,0 +1,80 @@
+Chapter: CompositeOreHueProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+ Two boots on one disk (UOAIX-105): boot 1 saves gold and iron ore lots drawn with hue 0, as ore was drawn before ore
+ took its metal's hue; boot 2 reads the gold lot hued 0x8A5 and named gold ore, and the iron lot unchanged.
+  coh-check : Text, Boolean -> [Console] Integer
+  coh-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  coh-fill : WalkMap, Integer -> Integer
+  coh-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in coh-fill map (i + 1)
+  coh-create : Integer -> List Integer
+  coh-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Miner" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  coh-ore : CompositeOwner, GameShard, Integer, Integer, Integer -> Integer
+  coh-ore (store) (game) (player) (pack) (item) = when world-create game.world (WorldObject { serial = 0, kind = 2, x = 50, y = 60, z = 0,
+      graphic = #19B9, hue = 0, container = pack, amount = 3, health = 0 })
+    is Err (_) -> 0
+    is Ok (serial) -> if gsi-register store.state.items serial 0 0 True True /= 0 then 0
+      else if cp-add-lot store player serial item 3 then serial else 0
+  coh-lot-ore : GvWorld, Integer, Integer -> Integer
+  coh-lot-ore (v) (item) (unused) = coh-lot-ore-from v item (ep-lots-first v.currency.world.goods)
+  coh-lot-ore-from : GvWorld, Integer, Integer -> Integer
+  coh-lot-ore-from (v) (item) (serial) = if serial == 0 then 0
+    else if ep-lot-item v.currency.world.goods serial == item then serial else coh-lot-ore-from v item (ep-lot-after v.currency.world.goods serial)
+  coh-object : GameShard, Integer -> WorldObject
+  coh-object (game) (serial) = when world-get game.world serial
+    is Err (_) -> WorldObject { serial = 0, kind = 0, x = 0, y = 0, z = 0, graphic = 0, hue = -1, container = 0, amount = 0, health = 0 }
+    is Ok (o) -> o
+  coh-first : CompositeOwner, List GameOpcodeSpec, WalkMap -> [Console, Device.Block] Integer
+  coh-first (store) (specs) (map) = let owner = store.state in act
+      input <- gn-input-with specs 1
+      mode <- __record-set input "mode" 2
+      phase <- __record-set input.session "phase" 1
+      game <- owner.checkpoint.game
+      entry <- cs-route store game input map 2593 (coh-create 0)
+      player <- input.session.serial
+      pack <- gsi-pack-find game.world player 0
+      gold <- coh-ore store game player pack 6
+      iron <- coh-ore store game player pack 5
+      a <- coh-check "a miner saves 3 gold ore and 3 iron ore as lots drawn with hue 0" (is-ok entry & gold > 0 & iron > 0
+        & (coh-object game gold).hue == 0 & (coh-object game iron).hue == 0)
+      committed <- cs-commit store True
+      b <- coh-check "the world commits with both ore lots" (is-ok committed)
+      a + b
+  end
+  coh-later : CompositeOwner -> [Console, Device.Block] Integer
+  coh-later (store) = let owner = store.state in act
+      game <- owner.checkpoint.game
+      gold <- coh-object game (coh-lot-ore owner.vendor 6 0)
+      iron <- coh-object game (coh-lot-ore owner.vendor 5 0)
+      print-line-uni ("ORE after load: gold hue " & show gold.hue & " " & gsi-name owner.items gold & "; iron hue " & show iron.hue)
+      coh-check "a restart hues the saved gold ore 0x8A5 and names it gold ore, and leaves the iron ore at hue 0" (gold.serial > 0 & gold.hue == #08A5
+        & gsi-name owner.items gold == "gold ore" & iron.serial > 0 & iron.hue == 0)
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> coh-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1392 1664 96 96
+     is Err (e) -> coh-check e False
+     is Ok (map) -> let filled = coh-fill map 0
+      in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> coh-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) None None
+       when loaded
+        is Err (e) -> coh-check ("recovery " & e) False
+        is Ok (owner) -> if fresh then coh-first owner specs map else coh-later owner
+      end
+    end
+
+Page 1

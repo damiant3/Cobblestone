@@ -1,0 +1,42 @@
+Chapter: BvtKeeperWander
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bkw-land : WalkMap, Integer, Integer -> Integer
+  bkw-land (map) (i) (n) = if i >= n then 0
+    else let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0 in bkw-land map (i + 1) n
+  bkw-map : BbShop -> WalkMap
+  bkw-map (b) = when walk-map-new (b.x1 - 4) (b.y1 - 4) (b.x2 - b.x1 + 9) (b.y2 - b.y1 + 9)
+    is Err (_) -> WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+    is Ok (map) -> let landed = bkw-land map 0 (map.width * map.height) in map
+  bkw-at : GvWorld, Integer -> WorldObject
+  bkw-at (v) (i) = when world-get v.game.world (list-at v.vendors i).serial is Err (_) -> gs-mobile 0 0 0 0 400 0 is Ok (m) -> m
+  bkw-walk : CompositeGame, GvWorld, BbShop, WalkMap, Integer, Integer, Boolean -> Integer
+  bkw-walk (owner) (v) (box) (map) (left) (moved) (inside) = if left == 0 then (if inside then moved else 0 - 1)
+    else let stepped = cg-wander-one owner v 0 box map
+    in let here = bkw-at v 0
+    in bkw-walk owner v box map (left - 1) (moved + stepped) (inside & cg-in-box box here.x here.y)
+  bkw-checks : Integer -> Integer
+  bkw-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> let v = owner.vendor
+      in let box = cg-keeper-box 0 []
+      in let map = bkw-map box
+      in if v.vendor-count < 1 | map.width == 0 then -2
+      else let keeper = bkw-at v 0
+      in let placed = world-update v.game.world (__record-set (__record-set (__record-set keeper "x" ((box.x1 + box.x2) / 2)) "y" ((box.y1 + box.y2) / 2)) "z" 0)
+      in let opened = gv-set-shut v 0 False
+      in let moves = bkw-walk owner v box map 120 0 True
+      in let shut = gv-set-shut v 0 True
+      in let before = bkw-at v 0
+      in let still = bkw-walk owner v box map 30 0 True
+      in let after = bkw-at v 0
+      in (if moves >= 0 then 1 else 0) + (if moves > 0 then 2 else 0) + (if still == 0 & before.x == after.x & before.y == after.y then 4 else 0)
+  bvt-keeper-wander : Integer -> [Console] Integer
+  bvt-keeper-wander (unused) = act
+    n <- bkw-checks 0
+    bvt-check ("a shopkeeper wanders its own shop and never leaves it, and stands still while the shop is closed (UOAIX-233, code " & show n & ")") (n == 7)
+  end

@@ -1,0 +1,46 @@
+Chapter: BvtLoomDeed
+  cites Uoaix chapter LoomDeed
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-174: the loom deed's two tiles must be open ground with nothing on them, and the craft gump says "You have no
+ chance" when a player's Carpentry is below an item's ServUO low. Carpentry is client skill 11.
+  blmd-fill : WalkMap, Integer -> Integer
+  blmd-fill (map) (i) = if i == map.width * map.height then 0
+    else let filled = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0 in blmd-fill map (i + 1)
+  blmd-open : Integer -> Integer
+  blmd-open (unused) = when walk-map-new 1400 1600 16 16
+    is Err (_) -> -1
+    is Ok (map) -> when world-new 64
+      is Err (_) -> -1
+      is Ok (world) -> let filled = blmd-fill map 0
+        in let free = ld-open map world 1405 1605
+        in let placed = world-create world (WorldObject { serial = 0, kind = 2, x = 1406, y = 1605, z = 0, graphic = #0E43, hue = 0, container = 0, amount = 1, health = 0 })
+        in (if free then 1 else 0) + (if ld-open map world 1406 1605 then 10 else 0) + (if ld-open map world 1300 1600 then 100 else 0) + (if ld-open map world 1405 1605 then 1000 else 0)
+  blmd-row : Integer -> Integer
+  blmd-row (level) = let row = alloc-bytes (46 * 8) in let cleared = blmd-zero row 0 in let set = poke-qword row (11 * 8) level in row
+  blmd-zero : Integer, Integer -> Integer
+  blmd-zero (row) (i) = if i >= 46 then 0 else let z = poke-qword row (i * 8) 0 in blmd-zero row (i + 1)
+  blmd-chance : Integer -> Integer
+  blmd-chance (level) = when bb-economy 0
+    is Err (_) -> -1
+    is Ok (x) -> let w = x.world
+      in let actor = ep-admit w (eu-open x 2 1001) 100
+      in if actor < 1 then -1
+      else let table = gcr-recipe-of w 133 0
+      in let stool = gcr-recipe-of w 128 0
+      in let loom = gcr-recipe-of w 147 0
+      in let npc = (if gcr-no-chance w actor table then 1 else 0)
+      in let bound = __record-set (ep-actor w actor) "row" (blmd-row level)
+      in npc * 1000 + (if gcr-no-chance w actor table then 1 else 0) + (if gcr-no-chance w actor stool then 10 else 0) + (if gcr-no-chance w actor loom then 100 else 0)
+  bvt-loom-deed : Integer -> [Console] Integer
+  bvt-loom-deed (unused) = let o = blmd-open 0
+    in let low = blmd-chance 500
+    in let high = blmd-chance 1000
+    in act
+      a <- bvt-check ("the loom's tiles: open land is free, a tile holding an item or off the map is not: " & show o) (o == 1001)
+      b <- bvt-check ("at Carpentry 50.0 a player has no chance at the large table or the loom deed (84.2) and has one at the foot stool (11.0); an NPC is never refused: " & show low) (low == 101)
+      c <- bvt-check ("at Carpentry 100.0 the large table, the loom deed and the foot stool all have a chance: " & show high) (high == 0)
+      a + b + c
+    end

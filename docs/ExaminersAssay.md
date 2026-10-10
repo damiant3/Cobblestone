@@ -40,6 +40,7 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.skip` | Skipped entirely; first line is the reason |
 | `foo.slow` | Skipped unless `-Slow`; first line is the reason |
 | `foo.fatal` | Skipped unless `-Fatal`; kills the VM at runtime |
+| `foo.wall` | Run budget in whole seconds above the 60 s `-run-list` default, 61..600 on the first line; any other first line is refused. `bvt.ps1` (and so the cite-gate) and `test.ps1`'s phase 2 run every such subject one at a time in an extra slot whose supervisor gets the largest budget; `test.ps1` under `CODEX_VM_HOST=qemu` does not read it. `codex/test/apps/t5-encoder-step` is the first |
 | `foo.renode` | The cross subject needs a Renode board model QEMU `virt` lacks (first line names it); `build/test-cross-batch.ps1` skips it unless `-Renode` |
 | `foo.cross-fatal` | With `foo.fatal`: `build/test-cross-batch.ps1` runs the test anyway and passes it only when the guest reports a fault (`!EXC=` on riscv, `!A64FAULT` on arm64); a run that ends without one fails. Needs no `.expected` |
 | `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs (`codex/test/apps/foreword-all-compile` cites all 416 foreword chapters and carries `decks=200`, re-measured 2026-09-02 off the file and not carried forward; without it the compile is `CDX9002: Deck overflow in LOWER`, run both ways 2026-07-22). Read by `build/test-compile-batch.ps1` and, since 2026-09-02, by `build/bvt.ps1`, so it applies to the battery and the BVT but **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches. **Until then the BVT could not have run a `.flags` subject at all**: it compiled every subject with bare switches, so a chapter needing `decks=200` failed COMPILE there while compiling fine in the battery, and the runner was measuring its own invocation rather than the test (L-SIDECAR). Nothing had noticed because no BVT subject carried a `.flags`; it surfaced the moment the gate's cited-test run phase pointed the same runner at `foreword-all-compile` |
@@ -822,6 +823,32 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
   persist to the input file. To chain two boots, copy that temp file back
   as the next run's input. `-Keys` takes Set-1 make codes (`88` is F12);
   `-KeyDelayMs 4000` survives TCG-speed keygen.
+- **`build/test-run.ps1 -DiskFile` also boots a temp copy and deletes it**, so a
+  multi-boot proof run through it restarts from an empty disk every boot and
+  never reaches its restore arms. Boot `tools/codex-vm.exe -kernel X -disk D
+  -output O -mem 3072 -headless` directly, once per boot, on one disk.
+- **A proof whose `opening` carries `Device.Block` needs `-disk`** (a fresh
+  64 MiB file). Without one it fails at its first store open (the text varies; GameDispatchProof prints "fixture disk missing") and reads as a
+  regression; grep the opening's effects before reading a red.
+- **A hand-run comparison grades the whole `.expected`**, after dropping the
+  `HEAP:`, `WD:` and `STACK:` lines, never the PASS/FAIL lines alone: a stray
+  diagnostic line is a red that a PASS/FAIL-only runner reports green.
+- **A test that cites compiler chapters runs the TREE's source, whatever
+  kernel compiles it**, so a seed or sabotaged kernel is no control for it.
+  The control swaps the source file: `p4 print` the depot revision over it,
+  compile, restore (a printed copy is read-only).
+- **A sabotage is `p4 edit` first, and its write is checked.** On a file not
+  opened the write throws inside a pipeline that carries on, and the
+  "sabotaged" build is the real one, so its green proves nothing.
+- **A semantics change that re-pins a shared `.expected` reddens every backend
+  still on the old semantics.** Run the subject under `test-cross.ps1` per
+  arch before landing, or land the plug ports with it.
+- **Folding another lane's shelf into a seed arc, run the BVT before folding
+  the next one**: a shelf green on its own tests can redden BVT subjects
+  through callers outside its audit.
+- **In composite proofs `csp-wait N` does not outlast a real-time cooldown of
+  N ms**; clear the request's `next` (`owner.production.harvest.requests`)
+  as test setup instead.
 - **A pane F12 shot takes roughly 16 to 110 s in the bed**, because
   `med-selected` is unset under DeskVm so every sector op pays the AHCI
   and NVMe probes before falling through to IDE. **A capture deadline
@@ -2180,7 +2207,7 @@ useful shape of the result -- it is the measurement proving the old test could
 not have caught this, not merely a claim that it did not.
 
 **One fragility worth knowing before this test is moved or reordered.** Its
-`.expected` carries the literal addresses `6291456` and `6291520` -- the heap
+`.expected` carries the literal addresses `16777216` and `16777280` -- the heap
 base and 64 bytes past it -- because the two buffers are the first allocations
 the program makes. Anything that allocates ahead of them moves both numbers.
 
@@ -3838,8 +3865,7 @@ junk, and an 8-byte runt killed the guest, `!EXC=06` with `RDI=-1` (a
 
 `fb-ttf-plausible buf size` now runs before the parse and `gfont-load`
 answers `gfont-none` (the CBF fallback) when it says no. It reads only bytes
-already proven inside the buffer, in dependency order by nested `if` (the
-`&` operator is not a short circuit): the directory fits (`12 + tables*16`),
+already proven inside the buffer, in dependency order by nested `if`: the directory fits (`12 + tables*16`),
 all seven required tables are present with `offset + length <= size` and a
 per-table minimum (`head` 54, `maxp` 6, `hhea` 36), `numGlyphs >= 1`,
 `numHMetrics >= 1` and `*4` inside `hmtx`, `indexToLoc` is 0 or 1 and

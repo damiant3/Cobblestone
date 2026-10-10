@@ -1,0 +1,79 @@
+Chapter: Cartography
+  cites Uoaix chapter GameAlchemy
+  cites Uoaix chapter ActiveSkillsHandler
+  cites Uoaix chapter MageryState
+
+ ServUO Scripts/Items/Tools/LocalMap.cs, MapItem.cs and Services/Craft/DefCartography.cs, GPL-2.0;
+ ports/ServUO-LICENSE.txt. Double-clicking a blank map (0x14EC) in the backpack with a mapmaker's pen (0x0FBF or
+ 0x0FC0, the scribe's pen art) also carried rolls Cartography (12) against a difficulty between 10.0 and 70.0, ServUO's
+ local map range. Success spends the blank map and draws a local map (0x14EB) of the square 64 + 2 x skill tiles each
+ way around the cartographer; a failure spends nothing. Double-clicking a drawn map sends MapDetails (0x90): its serial,
+ gump 0x139D, the bounds and a 200 x 200 display.
+ A drawn map keeps its centre and reach in the item definitions (mgs-chart), which MGC1 saves.
+  cart-blank : Integer = #14EC
+  cart-drawn : Integer = #14EB
+  cart-pen : WorldTable, Integer -> Integer
+  cart-pen (world) (pack) = let a = gal-find world (world-first-child world pack) #0FBF 2 in if a /= 0 then a else gal-find world (world-first-child world pack) #0FC0 2
+  cart-details : Integer, Integer, Integer, Integer -> List Integer
+  cart-details (serial) (x) (y) (reach) = let x1 = max 0 (x - reach) in let y1 = max 0 (y - reach)
+    in let x2 = min 6143 (x + reach) in let y2 = min 4095 (y + reach)
+    in gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#90] serial) #139D) x1) y1) x2) y2) 200) 200
+  cart-draw : GameHarvest, ActiveSkills, Magery, AsActor, WorldObject, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  cart-draw (h) (s) (magic) (a) (me) (pack) (blank) (now) =
+    if now < a.next then Ok (Just (gsi-denied "You must wait to perform another action."))
+    else if cart-pen h.items.world pack == 0 then Ok (Just (gsi-denied "You need a mapmaker's pen to draw a map."))
+    else let paced = __record-set a "next" (now + gh-ticks 3000)
+    in let sound = gsi-sound-at h.items me.serial #0249
+    in if not (as-roll s a 12 (100 + skc-random a.skills 601)) then Ok (Just (gs-reply (sound & [gal-say "You fail to create the item.", as-skills a]) "cartography failed"))
+    else let reach = 64 + as-level a 12 / 5
+    in when gal-take h blank
+      is Err (e) -> Err e
+      is Ok (spent) -> when world-create h.items.world (__record-set (__record-set (gs-item (gh-into h pack (cart-pen h.items.world pack)) cart-drawn 0) "x" 60) "y" 80)
+        is Err (e) -> Err e
+        is Ok (serial) -> if gsi-register h.items serial 0 0 True False /= 0 then Err "map registration refused"
+          else when mgs-chart magic serial me.x me.y reach
+            is Err (e) -> Err e
+            is Ok (_) -> when world-get h.items.world serial
+              is Err (e) -> Err e
+              is Ok (made) -> Ok (Just (gs-reply ([spent, sip-item made] & sound & [gal-say "You create the item and place it in your backpack.", as-skills a])
+                ("cartography drew reach=" & show reach)))
+ The skills window's Cartography button (0x12 type 0x24, skill 12) draws with the first blank map in the backpack,
+ as a double-click on it would (UOAIX-71); without a blank map and a pen it names both.
+  cart-button : List Integer -> Boolean
+  cart-button (packet) = list-length packet >= 6 & list-length packet <= 64 & list-at packet 0 == #12 & gp-u16 packet 1 == list-length packet
+    & list-at packet 3 == #24 & list-at packet (list-length packet - 1) == 0 & gsi-skill-number packet 4 0 == 12
+  cart-skill : GameHarvest, ActiveSkills, Magery, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  cart-skill (h) (s) (magic) (game) (input) (now) =
+    let at = gv-player h.vendor input.session.serial 0
+    in let slot = gsi-slot game input.session.serial 0
+    in if at < 0 | slot < 0 then Ok None
+    else when world-get h.items.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if me.health <= 0 then Ok (Just (gsi-denied "You cannot use skills while dead."))
+        else let pack = (list-at h.vendor.players at).pack
+        in let blank = gal-find h.items.world (world-first-child h.items.world pack) cart-blank 0
+        in if blank == 0 | cart-pen h.items.world pack == 0 then Ok (Just (gsi-denied "You need a blank map and a mapmaker's pen in your backpack to draw a map."))
+        else cart-draw h s magic (as-session s game input me slot) me pack blank now
+  cart-handler-at : GameHarvest, ActiveSkills, Magery, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  cart-handler-at (h) (s) (magic) (game) (input) (packet) (now) =
+    if cart-button packet then (if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | h.items.world.buffer /= game.world.buffer then Ok None
+      else cart-skill h s magic game input now)
+    else if list-length packet /= 5 | list-at packet 0 /= 6 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | h.items.world.buffer /= game.world.buffer then Ok None
+    else let used = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in when world-get h.items.world used
+      is Err (_) -> Ok None
+      is Ok (item) -> if item.kind /= 2 | (item.graphic /= cart-blank & item.graphic /= cart-drawn) then Ok None
+        else if item.graphic == cart-drawn then (if not (mgs-known magic item.serial) then Ok None else when mgs-meta magic item.serial
+          is Err (_) -> Ok None
+          is Ok (meta) -> if not meta.chart then Ok None else Ok (Just (gs-reply [cart-details item.serial meta.x meta.y meta.z] "cartography map shown")))
+        else let at = gv-player h.vendor input.session.serial 0
+        in let slot = gsi-slot game input.session.serial 0
+        in if at < 0 | slot < 0 then Ok None
+        else when world-get h.items.world input.session.serial
+          is Err (e) -> Err e
+          is Ok (me) -> let pack = (list-at h.vendor.players at).pack
+            in if not (gv-owned h.items.world used me.serial 65) then Ok (Just (gsi-denied "This must be in your backpack or equipped before it can be used."))
+            else cart-draw h s magic (as-session s game input me slot) me pack used now
+
+Page 1

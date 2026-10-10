@@ -1,0 +1,118 @@
+Chapter: CompositeScriptProof
+  cites Uoaix chapter CompositeScript
+  cites Uoaix chapter CompositeLineup
+
+  csq-check : Text, Boolean -> [Console] Integer
+  csq-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  csq-fill : WalkMap, Integer -> Integer
+  csq-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in csq-fill map (i + 1)
+  csq-far : GvWorld, Integer, Integer, Integer -> Integer
+  csq-far (v) (lot) (x) (y) = when world-get v.game.world (csq-vendor v (ep-lot v.currency.world.goods lot).actor 0)
+    is Err (_) -> 1000000
+    is Ok (m) -> max (abs (m.x - x)) (abs (m.y - y))
+  csq-lot : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  csq-lot (v) (item) (x) (y) (unused) (best) = csq-lot-from v item x y (ep-lots-first v.currency.world.goods) best
+  csq-lot-from : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  csq-lot-from (v) (item) (x) (y) (serial) (best) = if serial == 0 then best
+    else let lot = ep-lot v.currency.world.goods serial
+    in let next = ep-lot-after v.currency.world.goods serial
+    in if lot.item == item & (ep-amount v.currency.world.goods lot.serial) > 0 & csq-vendor v lot.actor 0 > 0
+      & (best < 0 | csq-far v serial x y < csq-far v best x y) then csq-lot-from v item x y next serial
+    else csq-lot-from v item x y next best
+  csq-vendor : GvWorld, Integer, Integer -> Integer
+  csq-vendor (v) (actor) (i) = if i == v.vendor-count then 0
+    else if (list-at v.vendors i).actor == actor then (list-at v.vendors i).serial else csq-vendor v actor (i + 1)
+  csq-mine : CsPlayer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  csq-mine (p) (tool) (x) (y) (left) = if left == 0 then 0
+    else act
+      used <- csp-send p (csp-use tool)
+      aimed <- csp-send p (csp-target-ground p x y 0 0)
+      if is-ok aimed & csp-has-op p #25 0 then left else act
+        waited <- csp-pulse p 2000
+        csq-mine p tool x y (left - 1)
+      end
+    end
+  csq-census : CsPlayer, Integer, Text -> [Console] Integer
+  csq-census (p) (pack) (tag) = let owner = p.store.state
+    in let world = owner.checkpoint.game.world
+    in act
+      print-line-uni ("SCRIPT " & tag & " sent=" & show p.sent & " refused=" & show p.failed & " sales=" & show owner.vendor.sale-count
+        & " pack=" & show (world-child-count world pack) & " objects=" & show (world-count world) & " census=" & (if euv-valid owner.vendor.currency then "valid" else "INVALID"))
+      if euv-valid owner.vendor.currency then 0 else 1
+    end
+  csq-first : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  csq-first (store) (map) (specs) = let owner = store.state in act
+    lined <- cgl-arrange owner True
+    p <- csp-new store map specs 1
+    logged <- csp-login p "Lord"
+    a <- csq-check "a scripted session with no client creates Lord British's character" (is-ok logged & ga-is-british owner.checkpoint.game.accounts)
+    me <- p.input.session.serial
+    player <- list-at owner.vendor.players 0
+    turned <- csp-send p (csp-walk p 2)
+    walked <- csp-send p (csp-walk p 2)
+    x <- (when world-get owner.checkpoint.game.world me is Err (_) -> 0 is Ok (m) -> m.x)
+    y <- (when world-get owner.checkpoint.game.world me is Err (_) -> 0 is Ok (m) -> m.y)
+    b <- csq-check "replayed walk packets move the character" (is-ok turned & is-ok walked & x == 1421)
+    lot <- csq-lot owner.vendor 25 x y 0 -1
+    vendor <- (if lot < 0 then 0 else csq-vendor owner.vendor (ep-lot owner.vendor.currency.world.goods lot).actor 0)
+    at <- (when world-get owner.checkpoint.game.world vendor is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
+    arrived <- csp-walk-to p (list-at at 0) (list-at at 1) 1 200
+    sales <- owner.vendor.sale-count
+    print-line-uni ("WALK to vendor at " & show (list-at at 0) & "," & show (list-at at 1) & " " & (when arrived is Err (e) -> e is Ok (n) -> "arrived, budget left " & show n))
+    print-line-uni ("SHOP lot=" & show lot & " vendor=" & show vendor & " lots=" & show (ep-lot-count owner.vendor.currency.world.goods) & " vendors=" & show owner.vendor.vendor-count & " pack=" & show player.pack)
+    menu <- csp-send p (csp-use vendor)
+    bought <- csp-send p (csp-buy vendor (if lot < 0 then 0 else (ep-lot owner.vendor.currency.world.goods lot).serial) 1)
+    tool <- (if owner.vendor.sale-count == sales then 0 else (list-at owner.vendor.sales sales).delivered)
+    c <- csq-check "the scripted player buys a pickaxe through the vendor packets and the sale is in the audit book" (lot >= 0 & vendor > 0 & is-ok menu & is-ok bought
+      & owner.vendor.sale-count == sales + 1 & (list-at owner.vendor.sales sales).item == 25 & tool > 0)
+    mx <- (when world-get owner.checkpoint.game.world me is Err (_) -> 0 is Ok (m) -> m.x)
+    my <- (when world-get owner.checkpoint.game.world me is Err (_) -> 0 is Ok (m) -> m.y)
+    mountain <- walk-set-land map (mx - 1) my 0 (mt-mark 220 64)
+    before <- world-child-count owner.checkpoint.game.world player.pack
+    mined <- csq-mine p tool (mx - 1) my 12
+    d <- csq-check "the scripted player mines ore with the bought pickaxe" (mined > 0 & world-child-count owner.checkpoint.game.world player.pack > before)
+    committed <- cs-commit store True
+    e <- csq-check "the scripted session's world commits" (is-ok committed)
+    f <- csq-census p player.pack "first"
+    a + b + c + d + e + f
+  end
+  csq-later : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  csq-later (store) (map) (specs) = let owner = store.state in act
+    player <- list-at owner.vendor.players 0
+    p <- csp-new store map specs 2
+    resumed <- csp-resume p player.serial
+    tool <- (list-at owner.vendor.sales 0).delivered
+    a <- csq-check "after a restart the scripted session resumes Lord British holding his pickaxe" (is-ok resumed & owner.vendor.sale-count >= 1
+      & (when world-get owner.checkpoint.game.world tool is Err (_) -> False is Ok (t) -> t.container == player.pack))
+    turned <- csp-send p (csp-walk p 6)
+    walked <- csp-send p (csp-walk p 6)
+    b <- csq-check "the resumed session walks" (is-ok turned & is-ok walked & p.failed == 0)
+    c <- csq-census p player.pack "later"
+    a + b + c
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> csq-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1536 96 224
+      is Err (e) -> csq-check e False
+      is Ok (map) -> when walk-map-new 1408 1520 96 240
+       is Err (e) -> csq-check e False
+       is Ok (britain) -> let filled = csq-fill map 0 in let town-filled = csq-fill britain 0 in act
+        opened <- us-open 0 131072
+        when opened
+          is Err (e) -> csq-check ("store " & e) False
+          is Ok (store) -> let fresh = store.head == 0 in act
+            loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) (Just britain) None
+            when loaded
+              is Err (e) -> csq-check ("recovery " & e) False
+              is Ok (owner) -> if fresh then csq-first owner map specs else csq-later owner map specs
+          end
+      end
+
+Page 1

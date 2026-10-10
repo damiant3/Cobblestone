@@ -25,12 +25,19 @@ store; a nonzero unrecognized or corrupt initial header is refused, never
 reformatted. The returned store contains relative head, latest snapshot
 offset (-1 when absent), sequence, tick, tail and fault fields.
 
+A paired journal splits the span into two halves, exactly one live. When a
+commit does not fit (`us-fits`), the composite (`CompositeStore`) switches
+(`us-switch`): it commits a full snapshot at a higher sequence into the other
+half, then wipes the first sector of the old half, so a crash at any step
+leaves one half that replays to the last committed sequence, and logs
+`WORLD COMPACTED`. A journal that crosses the half boundary is compacted
+offline by `compact-world.ps1`, which refuses a disk a running VM holds.
+
 `us-append store kind sequence tick buffer length` accepts kind 1 for a
 checkpoint and kind 2 for a subsequent input record. An initial checkpoint
 has sequence zero. A later checkpoint must equal the latest input sequence;
 an input must advance sequence by exactly one. Tick never decreases. A full
-region refuses without advancing head. There is no automatic log rotation,
-compaction or disk growth in this unit.
+region refuses without advancing head; `us-append` itself never compacts.
 
 The writer clears the pending commit sector, writes and reads back every
 payload sector, writes a zero terminator after the new record when space
@@ -69,8 +76,6 @@ Append and read take linear time in payload bytes, using a reusable sector
 buffer and per-sector scratch restoration. Opening is linear in all committed
 bytes, bounded by 64 MiB. Store metadata is fixed; no in-memory list grows
 with log history. The supplied payload/output buffers remain caller-owned.
-Daily scheduling, retention/rotation policy, and the combined world,
-Townsfolk and TownMind commit remain server integration work.
 
 Run `pwsh -File apps/uoaix/proofs/test-world-disk.ps1 -Kernel seed/Codex.cdx`
 from the repository root. The harness creates a new scratch image, compiles
@@ -94,11 +99,4 @@ guest processes grade write, restart, and read-only commit refusal; every
 arm also checks propagation of an injected faulted queue. The host confirms
 the pending payload bytes and an unchanged read-only image. These are
 storage-component proofs. Physical power loss, host cache persistence,
-the UEFI shard image, KVM and rented-host acceptance remain stage-D work.
-
-On 2026-10-04, kernel `9752080A0276505E` passed all six required harness
-runs in `build-output/uoaix/disk-proof-7/result.json`: write, reboot,
-torn-header recovery, committed-corruption refusal, initial-header refusal,
-and payload-metadata binding. The receipt preserves each guest PID and
-image hash. No append was interrupted during execution; interrupted-tail
-states were prepared explicitly and verified before the recovery guest.
+the UEFI shard image, KVM and rented-host acceptance are not graded.

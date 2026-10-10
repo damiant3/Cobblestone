@@ -1,0 +1,70 @@
+Chapter: BvtWorldSerial
+  cites Uoaix chapter CompositeGrow
+  cites Uoaix chapter BvtCheck
+
+  bws-item : Integer -> WorldObject
+  bws-item (x) = WorldObject { serial = 0, kind = 2, x = x, y = 1600, z = 0, graphic = #0EED, hue = 0, container = 0, amount = 1, health = 0 }
+  bws-create : WorldTable, Integer -> Integer
+  bws-create (world) (x) = when world-create world (bws-item x) is Err (_) -> 0 is Ok (s) -> s
+  bws-low : Integer -> Integer
+  bws-low (serial) = bit-and serial wi-serial-mask
+ Slot 0's first serial is low 1; deleted and reissued it is low 1 + 2^24, the old serial goes stale.
+  bws-generation : Integer -> Boolean
+  bws-generation (unused) = when world-new 64
+    is Err (_) -> False
+    is Ok (w) -> let first = bws-create w 1400
+      in let gone = world-delete w first
+      in let second = bws-create w 1401
+      in bws-low first == 1 & bws-low second == 1 + wi-slot-space & world-slot w second == 0 & world-slot w first == -1
+        & ws-table-valid w
+ A slot whose last serial is generation 63 is retired when freed: never relinked, counted, and the table still validates.
+  bws-retires : Integer -> Boolean
+  bws-retires (unused) = when world-new 64
+    is Err (_) -> False
+    is Ok (w) -> let first = bws-create w 1400
+      in let gone = world-delete w first
+      in let aged = poke-qword (wi-object w.buffer 0) 0 (0 - (world-item-bit + 1 + 62 * wi-slot-space))
+      in let last = bws-create w 1401
+      in let retired = world-delete w last
+      in let next = bws-create w 1402
+      in bws-low last == 1 + 63 * wi-slot-space & world-slot w next /= 0 & ws-retired-count w 0 0 == 1
+        & ws-table-valid w & not (wi-retired (peek-qword (wi-object w.buffer 1) 0) 1)
+  bws-refuses-retired-link : Integer -> Boolean
+  bws-refuses-retired-link (unused) = when world-new 64
+    is Err (_) -> False
+    is Ok (w) -> let first = bws-create w 1400
+      in let gone = world-delete w first
+      in let aged = poke-qword (wi-object w.buffer 0) 0 (0 - (world-item-bit + 1 + 62 * wi-slot-space))
+      in let last = bws-create w 1401
+      in let retired = world-delete w last
+      in if not (ws-table-valid w) then False
+      else let relinked = poke-qword (wi-object w.buffer 0) 8 (peek-qword w.buffer 8)
+      in let head = poke-qword w.buffer 8 0
+      in not (ws-table-valid w)
+  bws-refuses-wrong-slot : Integer -> Boolean
+  bws-refuses-wrong-slot (unused) = when world-new 64
+    is Err (_) -> False
+    is Ok (w) -> let first = bws-create w 1400
+      in if not (ws-table-valid w) then False
+      else let moved = poke-qword (wi-object w.buffer 0) 0 (first + 1) in not (ws-slot-valid w 0)
+ Growing 64 to 160 slots (not a multiple) keeps every serial on its slot and the next generation of a freed slot.
+  bws-grows : Integer -> Boolean
+  bws-grows (unused) = when world-new 64
+    is Err (_) -> False
+    is Ok (w) -> let a = bws-create w 1400
+      in let b = bws-create w 1401
+      in let gone = world-delete w a
+      in when cu-world w 160
+        is Err (_) -> False
+        is Ok (g) -> let c = bws-create g 1402
+          in g.capacity == 160 & world-slot g b == 1 & world-slot g a == -1 & bws-low c == 1 + wi-slot-space & world-count g == 2 & ws-table-valid g
+  bvt-world-serial : Integer -> [Console] Integer
+  bvt-world-serial (unused) = act
+    a <- bvt-check "a freed slot reissues its serial one generation on (low + 2^24) and the old serial is stale" (bws-generation 0)
+    b <- bvt-check "a slot freed at generation 63 is retired: not relinked, counted, the table still valid" (bws-retires 0)
+    c <- bvt-check "the validator refuses a retired slot on the free list" (bws-refuses-retired-link 0)
+    d <- bvt-check "the validator refuses a serial whose slot is another row's" (bws-refuses-wrong-slot 0)
+    e <- bvt-check "growing 64 slots to 160 keeps every serial on its slot and the next generation" (bws-grows 0)
+    f <- bvt-check "a mobile serial of any generation names its slot for combat and the client view" (cb-actor-slot (3 + 5 * wi-slot-space) 64 == 2 & cb-actor-slot 3 64 == 2)
+    a + b + c + d + e + f
+  end

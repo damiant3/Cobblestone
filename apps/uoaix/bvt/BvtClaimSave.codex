@@ -1,0 +1,34 @@
+Chapter: BvtClaimSave
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawnCodec
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-193: a creature claimed from the royal stable (gws-summon until the tick plus gws-forever, cp-claim-named)
+ passes the UWS1 check and reads back as claimed forever; a summoning past a day that is not forever is still refused.
+ Answers a bit per check: 1 the claim encodes, 2 it decodes, 4 the decoded slot is still forever, 8 a two-day summoning
+ is refused; 15 is all, -1 when the scenario cannot be built.
+  bcs-checks : Integer -> Integer
+  bcs-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let profile = gws-claim-profile g "horse" 0
+        in if profile < 0 then -2
+        else when gws-summon g game profile 1420 1700 0 0 (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (horse) -> let now = g.combat.tick
+            in let buf = alloc-bytes (gwsc-size g)
+            in let encoded = gwsc-encode g game.world now buf (gwsc-size g)
+            in let decoded = if is-ok encoded then gwsc-decode g game.world now buf (gwsc-size g) else Err "not encoded"
+            in let slot = gws-slot-of g horse 0
+            in let forever = slot >= 0 & (list-at g.slots slot).summoned >= gws-forever
+            in let long = __record-set (list-at g.slots (max 0 slot)) "summoned" (now + gm-ticks 172800000)
+            in let refused = is-err (gwsc-encode g game.world now buf (gwsc-size g))
+            in (if is-ok encoded then 1 else 0) + (if is-ok decoded then 2 else 0) + (if forever then 4 else 0) + (if refused then 8 else 0)
+  bvt-claim-save : Integer -> [Console] Integer
+  bvt-claim-save (unused) = act
+    n <- bcs-checks 0
+    bvt-check ("a claimed creature's forever summoning saves and loads; a two-day one is refused (UOAIX-193, code " & show n & ")") (n == 15)
+  end

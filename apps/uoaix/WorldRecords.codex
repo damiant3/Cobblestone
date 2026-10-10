@@ -1,5 +1,6 @@
 Chapter: WorldRecords
   cites Foreword chapter Result
+  cites Foreword chapter Hamt
   cites Uoaix chapter WorldIndex
 
  Each slot is ten 64-bit cells (80 bytes); the table header holds count
@@ -10,10 +11,39 @@ Chapter: WorldRecords
     serial : Integer, kind : Integer, x : Integer, y : Integer, z : Integer,
     graphic : Integer, hue : Integer, container : Integer, amount : Integer, health : Integer
   }
-  WorldTable = record { buffer : Integer, capacity : Integer, index : Integer }
+  WorldTable = record { buffer : Integer, capacity : Integer, index : Integer,
+    grow : (Integer -> Result Integer Text), growing : Boolean, blocks : (Integer -> Boolean) }
+  world-grow-none : Integer -> Result Integer Text
+  world-grow-none (unused) = Err "world grows only while founding"
+ Whether a mobile blocks a walking NPC. Every mobile does until the server binds its rule: NPCs walk through each other
+ and only players block them (Damian, 2026-10-09: "lets just make npcs not block each other like this").
+  world-blocks-all : Integer -> Boolean
+  world-blocks-all (serial) = True
+  world-bind-blocks : WorldTable, (Integer -> Boolean) -> Integer
+  world-bind-blocks (world) (blocks) = let a = __record-set world "blocks" blocks in 0
+  world-blocker-at : WorldTable, Integer -> Boolean
+  world-blocker-at (world) (serial) = if serial == 0 then False
+    else let slot = world-slot world serial
+    in if slot >= 0 & peek-qword (wi-object world.buffer slot) 8 == 1 & world.blocks serial then True
+    else world-blocker-at world (world-tile-next world serial)
+  world-blocked : WorldTable, Integer, Integer -> Boolean
+  world-blocked (world) (x) (y) = not (world-indexed world) | world-blocker-at world (world-tile-first world x y)
+  world-view : Integer, Integer -> WorldTable
+  world-view (buffer) (capacity) = WorldTable { buffer = buffer, capacity = capacity, index = 0, grow = world-grow-none, growing = False, blocks = world-blocks-all }
+ While founding, a create on an empty free list grows the world and every per-slot table through grow, so room counts
+ up to the ceiling. A live world grows only at the round's growth point (GameLinks), above which a create would
+ allocate past the compaction mark (L-BELOWMARK).
+  world-bind-grow : WorldTable, (Integer -> Result Integer Text) -> Integer
+  world-bind-grow (world) (grow) = let a = __record-set world "grow" grow in let b = __record-set world "growing" True in 0
+  world-unbind-grow : WorldTable -> Integer
+  world-unbind-grow (world) = let a = __record-set world "grow" world-grow-none in let b = __record-set world "growing" False in 0
+  world-room : WorldTable -> Integer
+  world-room (world) = (if world.growing then world-max-objects else world.capacity) - world-count world
 
-  world-max-objects : Integer = 16384
-  world-max-container-depth : Integer = 64
+  world-max-objects : Integer = wi-pages * 256
+ Containers nest at most 8 deep (Damian, 2026-10-08: "anyone going beyond 8 is trying to invoke a quadratic search"):
+ every parent walk is bounded by this depth.
+  world-max-container-depth : Integer = 8
   world-object-bytes : Integer = 80
   world-item-bit : Integer = 1073741824
   world-serial-mask : Integer = 1073741823
@@ -27,19 +57,71 @@ Chapter: WorldRecords
   world-init-slots : Integer, Integer, Integer -> Integer
   world-init-slots (buffer) (capacity) (i) =
     if i >= capacity then 0
-    else let zero = world-zero-slot buffer (16 + i * 80) 0
-    in let link = poke-qword buffer (24 + i * 80) (if i + 1 == capacity then -1 else i + 1)
+    else let zero = world-zero-slot (wi-object buffer i) 0 0
+    in let link = poke-qword (wi-object buffer i) 8 (if i + 1 == capacity then -1 else i + 1)
     in world-init-slots buffer capacity (i + 1)
 
   world-new : Integer -> Result WorldTable Text
   world-new (capacity) =
-    if capacity < 1 | capacity > world-max-objects then Err "world capacity outside 1..16384"
-    else let buffer = alloc-bytes (16 + capacity * 80)
-    in let count = poke-qword buffer 0 0
-    in let head = poke-qword buffer 8 0
+    if capacity < 1 | capacity > world-max-objects then Err "world capacity outside 1..world-max-objects"
+    else let buffer = alloc-bytes (16 + world-directory * 8)
+    in let cleared = wi-zero buffer (16 + world-directory * 8) 0
+    in let paged = world-add-pages buffer 0 ((capacity + 255) / 256)
     in let slots = world-init-slots buffer capacity 0
-    in Ok (WorldTable { buffer = buffer, capacity = capacity, index = wi-new capacity })
+    in Ok (WorldTable { buffer = buffer, capacity = capacity, index = wi-new capacity, grow = world-grow-none, growing = False, blocks = world-blocks-all })
+ A table grows to the next page boundary, allocating a world page and its index pages when it is already on one; the
+ new slots join both free lists. The heap it allocates must be kept (L-BELOWMARK, UoaixDynamicTables.md).
+  world-grow : WorldTable -> Result Integer Text
+  world-grow (world) = let target = min world-max-objects ((world.capacity / 256 + 1) * 256)
+    in if target <= world.capacity then Err "world at its ceiling"
+    else if not (world-indexed world) then Err "world index unavailable"
+    else let page = world.capacity / 256
+    in let fresh = if int-mod world.capacity 256 /= 0 then 0
+      else let rows = wi-dir-set (world.buffer + 16) page (alloc-bytes 20480)
+      in wi-add-pages world.index page (page + 1)
+    in let rows = world-grow-rows world.buffer world.capacity target (peek-qword world.buffer 8)
+    in let head = poke-qword world.buffer 8 world.capacity
+    in let tags = wi-grow-tags world.index world.capacity target (peek-qword world.index 8)
+    in let tagged = poke-qword world.index 8 (world.capacity + 1)
+    in let indexed = poke-qword world.index 24 target
+    in let grown = __record-set world "capacity" target
+    in Ok target
+  world-grow-rows : Integer, Integer, Integer, Integer -> Integer
+  world-grow-rows (buffer) (slot) (stop) (head) = if slot >= stop then 0
+    else let zero = world-zero-slot (wi-object buffer slot) 0 0
+    in let link = poke-qword (wi-object buffer slot) 8 (if slot + 1 == stop then head else slot + 1)
+    in world-grow-rows buffer (slot + 1) stop head
+ The heap a table of this capacity takes: its header block and its pages.
+  world-bytes : Integer -> Integer
+  world-bytes (capacity) = 16 + world-directory * 8 + (capacity + 255) / 256 * 20480 + wi-dir-blocks ((capacity + 255) / 256) * 2048
+ Whether the bytes at buf meet the table's header block or any of its pages.
+  world-overlaps : WorldTable, Integer, Integer -> Boolean
+  world-overlaps (world) (buf) (size) = (buf < world.buffer + 16 + world-directory * 8 & world.buffer < buf + size)
+    | world-page-overlaps world.buffer buf size 0
+  world-page-overlaps : Integer, Integer, Integer, Integer -> Boolean
+  world-page-overlaps (buffer) (buf) (size) (page) = let at = wi-dir-get (buffer + 16) page
+    in if at == 0 then False
+    else (buf < at + 20480 & at < buf + size) | world-page-overlaps buffer buf size (page + 1)
+  world-directory : Integer = wi-top-entries
+  world-add-pages : Integer, Integer, Integer -> Integer
+  world-add-pages (buffer) (page) (pages) = if page >= pages then 0
+    else let set = wi-dir-set (buffer + 16) page (alloc-bytes 20480)
+    in world-add-pages buffer (page + 1) pages
 
+ An NPC announces a state once, whoever hears it, and again only after the state changes (NpcSpeech.md ruling,
+ Damian 2026-10-08). Index cell 120 holds one 8-byte cell a slot: the hash of the NPC's last announced state, 0 for
+ none. A world with no index (a view) always announces.
+  world-announce : WorldTable, Integer, Integer -> Boolean
+  world-announce (world) (serial) (state) = let slot = if world.index <= 0 then -1 else world-slot world serial
+    in if slot < 0 then True
+    else let key = if state == 0 then 1 else state
+    in if peek-qword (wi-said world.index slot) 0 == key then False
+    else let kept = poke-qword (wi-said world.index slot) 0 key in True
+  world-announce-text : WorldTable, Integer, Text -> Boolean
+  world-announce-text (world) (serial) (text) = world-announce world serial (hamt-djb2-hash text)
+  world-state-clear : WorldTable, Integer -> Integer
+  world-state-clear (world) (serial) = let slot = if world.index <= 0 then -1 else world-slot world serial
+    in if slot < 0 then 0 else poke-qword (wi-said world.index slot) 0 0
   world-indexed : WorldTable -> Boolean
   world-indexed (world) = world.index > 0 & (if world.index <= 0 then False else peek-qword world.index 24 == world.capacity & peek-qword world.index 32 == 1)
   world-revision : WorldTable -> Integer
@@ -71,12 +153,12 @@ Chapter: WorldRecords
   world-set-layer : WorldTable, Integer, Integer -> Integer
   world-set-layer (world) (serial) (layer) = let slot = world-slot world serial
     in if slot < 0 | not (world-indexed world) | layer < 0 | layer > 29 then -1
-    else if peek-qword world.buffer (24 + slot * 80) /= 2 then -1
+    else if peek-qword (wi-object world.buffer slot) 8 /= 2 then -1
     else wi-set-layer world.buffer world.capacity world.index slot layer
   world-layer-serial : WorldTable, Integer, Integer -> Integer
   world-layer-serial (world) (serial) (layer) = let slot = world-slot world serial
     in if slot < 0 | not (world-indexed world) | layer < 1 | layer > 29 then 0
-    else if layer <= 25 then peek-qword (wi-row world.index slot) (72 + (layer - 1) * 8)
+    else if layer <= 25 & peek-qword (wi-object world.buffer slot) 8 /= 1 then 0
     else wi-serial world.buffer (wi-child-layer world.buffer world.index (peek-qword (wi-row world.index slot) 8) layer 0)
   world-tile-first : WorldTable, Integer, Integer -> Integer
   world-tile-first (world) (x) (y) = if not (world-indexed world) then 0
@@ -88,7 +170,7 @@ Chapter: WorldRecords
   world-parent-depth (world) (serial) (depth) = if serial == 0 then depth
     else if depth >= world-max-container-depth then -1
     else let slot = world-slot world serial
-    in if slot < 0 then -1 else world-parent-depth world (peek-qword world.buffer (72 + slot * 80)) (depth + 1)
+    in if slot < 0 then -1 else world-parent-depth world (peek-qword (wi-object world.buffer slot) 56) (depth + 1)
 
   world-count : WorldTable -> Integer
   world-count (world) = peek-qword world.buffer 0
@@ -98,56 +180,61 @@ Chapter: WorldRecords
     if serial <= 0 | serial > 2147483647 then -1
     else let low = bit-and serial world-serial-mask
     in if low == 0 then -1
-    else let slot = int-mod (low - 1) world.capacity
-    in if peek-qword world.buffer (16 + slot * 80) == serial then slot else -1
+    else let slot = wi-low-slot low
+    in if slot >= world.capacity then -1 else if peek-qword (wi-object world.buffer slot) 0 == serial then slot else -1
 
   world-read-slot : WorldTable, Integer -> WorldObject
-  world-read-slot (world) (slot) =
-    let at = 16 + slot * 80
-    in WorldObject { serial = peek-qword world.buffer at, kind = peek-qword world.buffer (at + 8),
-      x = peek-qword world.buffer (at + 16), y = peek-qword world.buffer (at + 24), z = peek-qword world.buffer (at + 32),
-      graphic = peek-qword world.buffer (at + 40), hue = peek-qword world.buffer (at + 48),
-      container = peek-qword world.buffer (at + 56), amount = peek-qword world.buffer (at + 64), health = peek-qword world.buffer (at + 72) }
+  world-read-slot (world) (slot) = world-read-row (wi-object world.buffer slot)
+  world-read-row : Integer -> WorldObject
+  world-read-row (at) = WorldObject { serial = peek-qword at 0, kind = peek-qword at 8,
+      x = peek-qword at 16, y = peek-qword at 24, z = peek-qword at 32,
+      graphic = peek-qword at 40, hue = peek-qword at 48,
+      container = peek-qword at 56, amount = peek-qword at 64, health = peek-qword at 72 }
 
   world-get : WorldTable, Integer -> Result WorldObject Text
   world-get (world) (serial) =
     let slot = world-slot world serial
-    in if slot < 0 then Err "world serial absent or stale" else Ok (world-read-slot world slot)
+    in if slot < 0 then Err "world serial absent or stale (get)" else Ok (world-read-slot world slot)
 
   world-at : WorldTable, Integer -> Result WorldObject Text
   world-at (world) (slot) =
     if slot < 0 | slot >= world.capacity then Err "world slot outside capacity"
-    else if peek-qword world.buffer (16 + slot * 80) <= 0 then Err "world slot empty"
+    else if peek-qword (wi-object world.buffer slot) 0 <= 0 then Err "world slot empty"
     else Ok (world-read-slot world slot)
 
+ An item's art reaches 0x7FFF because 0x4000 + id is a whole MULTI.MUL building to the 1.25 client; a body stays below 0x4000.
   world-fields-valid : WorldObject -> Boolean
   world-fields-valid (obj) =
     (obj.kind == 1 | obj.kind == 2) & obj.x >= 0 & obj.x < 6144 & obj.y >= 0 & obj.y < 4096
-    & obj.z >= -128 & obj.z <= 127 & obj.graphic >= 0 & obj.graphic < 16384
+    & obj.z >= -128 & obj.z <= 127 & obj.graphic >= 0 & obj.graphic < (if obj.kind == 2 then 32768 else 16384)
     & obj.hue >= 0 & obj.hue <= 65535 & obj.amount >= 1 & obj.amount <= 65535
     & obj.health >= 0 & obj.health <= 65535 & (obj.kind == 2 | (obj.container == 0 & obj.amount == 1))
 
+  world-fields-text : WorldObject -> Text
+  world-fields-text (obj) = "world object fields invalid: serial=" & show obj.serial & " kind=" & show obj.kind & " at " & show obj.x & "," & show obj.y & "," & show obj.z
+    & " graphic=" & show obj.graphic & " hue=" & show obj.hue & " amount=" & show obj.amount & " health=" & show obj.health & " container=" & show obj.container
   world-parent-valid : WorldTable, Integer, Integer, Integer -> Boolean
   world-parent-valid (world) (serial) (parent) (left) =
     if parent == 0 then True
     else if parent == serial | left <= 0 then False
     else let slot = world-slot world parent
     in if slot < 0 then False
-    else world-parent-valid world serial (peek-qword world.buffer (72 + slot * 80)) (left - 1)
+    else world-parent-valid world serial (peek-qword (wi-object world.buffer slot) 56) (left - 1)
 
   world-write-slot : WorldTable, Integer, Integer, WorldObject -> Integer
-  world-write-slot (world) (slot) (serial) (obj) =
-    let at = 16 + slot * 80
-    in let a = poke-qword world.buffer at serial
-    in let b = poke-qword world.buffer (at + 8) obj.kind
-    in let c = poke-qword world.buffer (at + 16) obj.x
-    in let d = poke-qword world.buffer (at + 24) obj.y
-    in let e = poke-qword world.buffer (at + 32) obj.z
-    in let f = poke-qword world.buffer (at + 40) obj.graphic
-    in let g = poke-qword world.buffer (at + 48) obj.hue
-    in let h = poke-qword world.buffer (at + 56) obj.container
-    in let j = poke-qword world.buffer (at + 64) obj.amount
-    in poke-qword world.buffer (at + 72) obj.health
+  world-write-slot (world) (slot) (serial) (obj) = world-write-row (wi-object world.buffer slot) serial obj
+  world-write-row : Integer, Integer, WorldObject -> Integer
+  world-write-row (at) (serial) (obj) =
+    let a = poke-qword at 0 serial
+    in let b = poke-qword at 8 obj.kind
+    in let c = poke-qword at 16 obj.x
+    in let d = poke-qword at 24 obj.y
+    in let e = poke-qword at 32 obj.z
+    in let f = poke-qword at 40 obj.graphic
+    in let g = poke-qword at 48 obj.hue
+    in let h = poke-qword at 56 obj.container
+    in let j = poke-qword at 64 obj.amount
+    in poke-qword at 72 obj.health
 
   world-parent-after : WorldTable, Integer, Integer, Integer, Integer -> Boolean
   world-parent-after (world) (moving) (replacement) (parent) (left) =
@@ -155,7 +242,7 @@ Chapter: WorldRecords
     else if left <= 0 then False
     else let slot = world-slot world parent
     in if slot < 0 then False
-    else let next = if parent == moving then replacement else peek-qword world.buffer (72 + slot * 80)
+    else let next = if parent == moving then replacement else peek-qword (wi-object world.buffer slot) 56
     in world-parent-after world moving replacement next (left - 1)
 
   world-subtrees-valid : WorldTable, Integer, Integer, Integer -> Boolean
@@ -164,8 +251,8 @@ Chapter: WorldRecords
       in let depth = world-parent-depth world replacement 0
       in slot >= 0 & depth >= 0 & (if slot < 0 then False else depth + peek-qword (wi-row world.index slot) 32 <= world-max-container-depth)
     else if i >= world.capacity then True
-    else let serial = peek-qword world.buffer (16 + i * 80)
-    in let parent = if serial == moving then replacement else peek-qword world.buffer (72 + i * 80)
+    else let serial = peek-qword (wi-object world.buffer i) 0
+    in let parent = if serial == moving then replacement else peek-qword (wi-object world.buffer i) 56
     in if serial > 0 & not (world-parent-after world moving replacement parent world-max-container-depth) then False
     else world-subtrees-valid world moving replacement (i + 1)
 
@@ -173,15 +260,16 @@ Chapter: WorldRecords
   world-create (world) (obj) =
     if not (world-indexed world) then Err "world index unavailable"
     else if obj.serial /= 0 then Err "world create requires serial zero"
-    else if not (world-fields-valid obj) then Err "world object fields invalid"
+    else if not (world-fields-valid obj) then Err (world-fields-text obj)
     else if not (world-parent-valid world 0 obj.container world-max-container-depth) then Err "world container absent, cyclic or too deep"
     else let slot = peek-qword world.buffer 8
-    in if slot < 0 then Err "world object budget exhausted"
-    else let old = peek-qword world.buffer (16 + slot * 80)
-    in let low = if old == 0 then slot + 1 else bit-and (0 - old) world-serial-mask + world.capacity
+    in if slot < 0 then (if not world.growing then Err "world object budget exhausted"
+      else when world.grow 0 is Err (e) -> Err ("world object budget exhausted: " & e) is Ok (_) -> world-create world obj)
+    else let old = peek-qword (wi-object world.buffer slot) 0
+    in let low = wi-next-low old slot
     in if low > world-serial-mask then Err "world serial generation exhausted"
     else let serial = low + (if obj.kind == 2 then world-item-bit else 0)
-    in let next = peek-qword world.buffer (24 + slot * 80)
+    in let next = peek-qword (wi-object world.buffer slot) 8
     in let stored = world-write-slot world slot serial obj
     in let head = poke-qword world.buffer 8 next
     in let count = poke-qword world.buffer 0 (world-count world + 1)
@@ -191,24 +279,24 @@ Chapter: WorldRecords
     in Ok serial
 
   world-same : WorldTable, Integer, WorldObject -> Boolean
-  world-same (world) (slot) (obj) = let at = 16 + slot * 80
-    in peek-qword world.buffer (at + 16) == obj.x & peek-qword world.buffer (at + 24) == obj.y
-      & peek-qword world.buffer (at + 32) == obj.z & peek-qword world.buffer (at + 40) == obj.graphic
-      & peek-qword world.buffer (at + 48) == obj.hue & peek-qword world.buffer (at + 56) == obj.container
-      & peek-qword world.buffer (at + 64) == obj.amount & peek-qword world.buffer (at + 72) == obj.health
+  world-same (world) (slot) (obj) = let at = wi-object world.buffer slot
+    in peek-qword at 16 == obj.x & peek-qword at 24 == obj.y
+      & peek-qword at 32 == obj.z & peek-qword at 40 == obj.graphic
+      & peek-qword at 48 == obj.hue & peek-qword at 56 == obj.container
+      & peek-qword at 64 == obj.amount & peek-qword at 72 == obj.health
 
   world-update : WorldTable, WorldObject -> Result Integer Text
   world-update (world) (obj) =
     let slot = world-slot world obj.serial
     in if not (world-indexed world) then Err "world index unavailable"
-    else if slot < 0 then Err "world serial absent or stale"
-    else if not (world-fields-valid obj) then Err "world object fields invalid"
-    else if peek-qword world.buffer (24 + slot * 80) /= obj.kind then Err "world object kind cannot change"
+    else if slot < 0 then Err "world serial absent or stale (update)"
+    else if not (world-fields-valid obj) then Err (world-fields-text obj)
+    else if peek-qword (wi-object world.buffer slot) 8 /= obj.kind then Err "world object kind cannot change"
     else if world-same world slot obj then Ok obj.serial
     else if not (world-parent-valid world obj.serial obj.container world-max-container-depth) then Err "world container absent, cyclic or too deep"
     else if not (world-move-valid world slot obj) then Err "world descendant container depth exceeded"
-    else let reparent = peek-qword world.buffer (72 + slot * 80) /= obj.container
-    in let relocate = reparent | (obj.container == 0 & (peek-qword world.buffer (32 + slot * 80) /= obj.x | peek-qword world.buffer (40 + slot * 80) /= obj.y))
+    else let reparent = peek-qword (wi-object world.buffer slot) 56 /= obj.container
+    in let relocate = reparent | (obj.container == 0 & (peek-qword (wi-object world.buffer slot) 16 /= obj.x | peek-qword (wi-object world.buffer slot) 24 /= obj.y))
     in let child = if reparent then wi-child-remove world.buffer world.capacity world.index slot else 0
     in let tile = if relocate then wi-tile-remove world.buffer world.capacity world.index slot else 0
     in let stored = world-write-slot world slot obj.serial obj
@@ -219,7 +307,7 @@ Chapter: WorldRecords
 
   world-move-valid : WorldTable, Integer, WorldObject -> Boolean
   world-move-valid (world) (slot) (obj) =
-    if peek-qword world.buffer (72 + slot * 80) == obj.container then True
+    if peek-qword (wi-object world.buffer slot) 56 == obj.container then True
     else if not (world-has-child world obj.serial 0) then True
     else world-subtrees-valid world obj.serial obj.container 0
 
@@ -227,21 +315,22 @@ Chapter: WorldRecords
   world-has-child (world) (serial) (i) =
     if i == 0 & world-indexed world then world-child-count world serial > 0
     else if i >= world.capacity then False
-    else if peek-qword world.buffer (16 + i * 80) > 0 & peek-qword world.buffer (72 + i * 80) == serial then True
+    else if peek-qword (wi-object world.buffer i) 0 > 0 & peek-qword (wi-object world.buffer i) 56 == serial then True
     else world-has-child world serial (i + 1)
 
   world-delete : WorldTable, Integer -> Result Integer Text
   world-delete (world) (serial) =
     let slot = world-slot world serial
     in if not (world-indexed world) then Err "world index unavailable"
-    else if slot < 0 then Err "world serial absent or stale"
+    else if slot < 0 then Err "world serial absent or stale (delete)"
     else if world-has-child world serial 0 then Err "world container is not empty"
-    else let kind = peek-qword world.buffer (24 + slot * 80)
+    else let kind = peek-qword (wi-object world.buffer slot) 8
     in let child = wi-child-remove world.buffer world.capacity world.index slot
     in let tile = wi-tile-remove world.buffer world.capacity world.index slot
-    in let tombstone = poke-qword world.buffer (16 + slot * 80) (0 - serial)
-    in let link = poke-qword world.buffer (24 + slot * 80) (peek-qword world.buffer 8)
-    in let head = poke-qword world.buffer 8 slot
+    in let tombstone = poke-qword (wi-object world.buffer slot) 0 (0 - serial)
+    in let freed = if wi-retired (0 - serial) slot then 0
+      else let link = poke-qword (wi-object world.buffer slot) 8 (peek-qword world.buffer 8)
+      in poke-qword world.buffer 8 slot
     in let count = poke-qword world.buffer 0 (world-count world - 1)
     in let touched = if kind == 2 then world-item-touch world else world-touch world
     in Ok serial

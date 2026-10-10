@@ -2763,13 +2763,40 @@ function point(v) {
 function pegs(e, code) { return seq(4).map(i => e.mm_digit(code, i)).join(''); }
 
 // The module writes nothing and reads nothing. If it asks, that is a defect
-// in the module, not a thing to satisfy quietly.
-export const IMPORTS = {
-  wasi_snapshot_preview1: {
-    fd_write: () => { throw new Error('fd_write: a game module must not write'); },
-    fd_read: () => { throw new Error('fd_read: a game module must not read'); },
-  },
-};
+// in the module, not a thing to satisfy quietly. It may draw randomness:
+// WASI random_get fills (ptr, len) of the CALLING instance's memory, so every
+// instance gets its own import object. getRandomValues takes at most 65536
+// bytes a call; on failure the answer is errno 29 (EIO) and nothing is written.
+function wasiImports(memory) {
+  return {
+    wasi_snapshot_preview1: {
+      fd_write: () => { throw new Error('fd_write: a game module must not write'); },
+      fd_read: () => { throw new Error('fd_read: a game module must not read'); },
+      random_get: (ptr, len) => {
+        try {
+          const view = new Uint8Array(memory().buffer, ptr >>> 0, len >>> 0);
+          for (let i = 0; i < view.length; i += 65536) crypto.getRandomValues(view.subarray(i, i + 65536));
+          return 0;
+        } catch (err) {
+          return 29;
+        }
+      },
+    },
+  };
+}
+
+export async function instantiateGame(bytes) {
+  let instance = null;
+  const made = await WebAssembly.instantiate(bytes, wasiImports(() => instance.exports.memory));
+  instance = made.instance;
+  return made;
+}
+
+export function gameInstance(module) {
+  let instance = null;
+  instance = new WebAssembly.Instance(module, wasiImports(() => instance.exports.memory));
+  return instance;
+}
 
 // THE DEFAULT IS THAT YOU ARE PLAYING, and you are player one. A game the
 // visitor can take a turn in opens in 'play' mode with the human on move;

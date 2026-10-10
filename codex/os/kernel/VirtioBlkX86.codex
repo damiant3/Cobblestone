@@ -1,6 +1,7 @@
 Chapter: VirtioBlkX86
   cites Kernel chapter VirtioPciX86
   cites Kernel chapter Pci
+  cites Kernel chapter Hpet
   cites Foreword chapter Maybe
   cites Foreword chapter Result
 
@@ -11,8 +12,11 @@ Chapter: VirtioBlkX86
 
   VbxState = record {
     device : VpxDevice, queue : VpxQueue, request : Integer, data : Integer,
-    status : Integer, completion : Integer, capacity : Integer, readonly : Boolean, flush : Boolean
+    status : Integer, completion : Integer, capacity : Integer, readonly : Boolean, flush : Boolean, bulk : Integer
   }
+ A bulk transfer carries up to vbx-max-sectors sectors in one request (one descriptor of count x 512 bytes), so a store
+ write costs one request, one flush and one read-back per bulk rather than per sector (UOAIX-138: 680 requests a commit).
+  vbx-max-sectors : Integer = 64
 
   vbx-capacity : VpxDevice, Integer -> Integer
   vbx-capacity (d) (left) =
@@ -47,8 +51,10 @@ Chapter: VirtioBlkX86
                   in let buffer = bit-and (raw + 15) (0 - 16)
                   in let zero = vpx-zero buffer 544 0
                   in let ready = vpx-ready d
+                  in let bulk-raw = alloc-bytes (vbx-max-sectors * 512 + 16)
                   in Ok (VbxState { device = d, queue = q, request = buffer, data = buffer + 16,
-                    status = buffer + 528, completion = buffer + 536, capacity = capacity, readonly = readonly, flush = flush })
+                    status = buffer + 528, completion = buffer + 536, capacity = capacity, readonly = readonly, flush = flush,
+                    bulk = bit-and (bulk-raw + 15) (0 - 16) })
 
   vbx-find : PciScanResult -> Result VbxState Text
   vbx-find (scan) =
@@ -66,18 +72,32 @@ Chapter: VirtioBlkX86
     in let c = poke-16 at 12 flags
     in poke-16 at 14 next
 
-  vbx-poll : VbxState, Integer -> Integer
-  vbx-poll (state) (left) =
+ A completion is awaited for vbx-timeout-ms by the HPET, not for a poll count: QEMU on a Windows host completes a flush
+ by FlushFileBuffers on the backing file, measured at 0.29 s on a 560 MB world disk under TCG, longer than 10,000,000
+ polls there (fester, shelf 40106). Without an HPET the bound is that poll count.
+  vbx-timeout-ms : Integer = 30000
+  vbx-poll-batch : Integer = 10000000
+  vbx-deadline : Integer -> Integer
+  vbx-deadline (unused) =
+    let started = hpet-start
+    in let rate = hpet-ticks-per-second
+    in if rate <= 0 then 0 else hpet-ticks + (rate * vbx-timeout-ms) / 1000
+  vbx-poll : VbxState, Integer, Integer -> Integer
+  vbx-poll (state) (deadline) (left) =
     let result = vpx-take state.queue state.completion
     in if result /= 0 then result
-    else if left <= 0 then let fault = __record-set state.queue "fault" 1 in -1
-    else vbx-poll state (left - 1)
+    else if left > 0 then vbx-poll state deadline (left - 1)
+    else if deadline > 0 & hpet-ticks < deadline then vbx-poll state deadline vbx-poll-batch
+    else let fault = __record-set state.queue "fault" 1 in -1
 
   vbx-request : VbxState, Integer, Integer -> Result Integer Text
-  vbx-request (state) (kind) (sector) =
+  vbx-request (state) (kind) (sector) = vbx-request-at state kind sector state.data 1
+ Kind 0 reads and kind 1 writes count sectors at sector through the buffer at data; kind 4 flushes.
+  vbx-request-at : VbxState, Integer, Integer, Integer, Integer -> Result Integer Text
+  vbx-request-at (state) (kind) (sector) (buffer) (count) =
     if state.queue.fault /= 0 then Err "virtio block queue faulted"
     else if kind /= 0 & kind /= 1 & kind /= 4 then Err "virtio block operation invalid"
-    else if kind /= 4 & (sector < 0 | sector >= state.capacity) then Err "virtio block sector outside capacity"
+    else if kind /= 4 & (count < 1 | count > vbx-max-sectors | sector < 0 | sector > state.capacity - count) then Err "virtio block sector outside capacity"
     else if kind == 1 & state.readonly then Err "virtio block device is read-only"
     else if kind == 4 & not state.flush then Err "virtio block flush not negotiated"
     else let a = poke-32 state.request 0 kind
@@ -87,18 +107,18 @@ Chapter: VirtioBlkX86
     in let q = state.queue
     in let header = vbx-descriptor q.desc state.request 16 1 1
     in let data = if kind == 4 then vbx-descriptor (q.desc + 16) state.status 1 2 0
-      else vbx-descriptor (q.desc + 16) state.data 512 (if kind == 0 then 3 else 1) 2
+      else vbx-descriptor (q.desc + 16) buffer (count * 512) (if kind == 0 then 3 else 1) 2
     in let tail = if kind == 4 then 0 else vbx-descriptor (q.desc + 32) state.status 1 2 0
     in if vpx-publish q 0 /= 0 then Err "virtio block publication refused"
-    else if vbx-poll state 10000000 /= 1 then Err "virtio block completion timed out or malformed"
+    else if vbx-poll state (vbx-deadline 0) vbx-poll-batch /= 1 then Err "virtio block completion timed out or malformed"
     else let fence = memory-fence 0
     in let id = bit-and (peek-32 state.completion 0) #FFFFFFFF
     in let length = bit-and (peek-32 state.completion 4) #FFFFFFFF
-    in if id /= 0 | length < 1 | length > (if kind == 0 then 513 else 1) then
+    in if id /= 0 | length < 1 | length > (if kind == 0 then count * 512 + 1 else 1) then
       let fault = __record-set q "fault" 1 in Err "virtio block completion identity or length invalid"
     else let code = peek-byte state.status 0
     in if code == 0 then
-      if length == (if kind == 0 then 513 else 1) then Ok 0
+      if length == (if kind == 0 then count * 512 + 1 else 1) then Ok 0
       else let fault = __record-set q "fault" 1 in Err "virtio block successful read was short"
     else if code == 1 then Err "virtio block device I/O error"
     else if code == 2 then Err "virtio block operation unsupported"
@@ -125,3 +145,21 @@ Chapter: VirtioBlkX86
       is Ok (status) -> if state.flush then vbx-request state 4 0 else Ok 0
 
 Page 1
+ Count sectors (at most vbx-max-sectors) through the bulk buffer: one request, then for a write one flush.
+  vbx-copy-qwords : Integer, Integer, Integer, Integer -> Integer
+  vbx-copy-qwords (src) (dst) (n) (i) = if i >= n then 0 else let c = poke-qword dst i (peek-qword src i) in vbx-copy-qwords src dst n (i + 8)
+  vbx-write-many : VbxState, Integer, Integer, Integer -> Result Integer Text
+  vbx-write-many (state) (sector) (source) (count) =
+    if state.queue.fault /= 0 then Err "virtio block queue faulted"
+    else if state.readonly then Err "virtio block device is read-only"
+    else if count < 1 | count > vbx-max-sectors then Err "virtio block bulk count invalid"
+    else let copied = vbx-copy-qwords source state.bulk (count * 512) 0
+    in when vbx-request-at state 1 sector state.bulk count
+      is Err (e) -> Err e
+      is Ok (status) -> if state.flush then vbx-request state 4 0 else Ok 0
+  vbx-read-many : VbxState, Integer, Integer, Integer -> Result Integer Text
+  vbx-read-many (state) (sector) (out) (count) =
+    if count < 1 | count > vbx-max-sectors then Err "virtio block bulk count invalid"
+    else when vbx-request-at state 0 sector state.bulk count
+      is Err (e) -> Err e
+      is Ok (status) -> let copied = vbx-copy-qwords state.bulk out (count * 512) 0 in Ok (count * 512)

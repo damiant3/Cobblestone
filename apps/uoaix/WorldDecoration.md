@@ -4,7 +4,11 @@ The host importer ports ServUO `Scripts/Commands/Decorate.cs`,
 `Scripts/Items/Functional/BaseDoor.cs`, `Doors.cs`, `SecretDoors.cs`, and
 the literal component constructors under `Scripts/Items/Addons`. It reads
 all CFG files in `Data/Decoration/Old/Britannia`, then `Data/Decoration/Britannia`,
-including `patches.cfg`. Identical art/hue/position placements collapse into
+including `patches.cfg`, then the shard's own `premises.cfg`: its `Clear`
+areas drop scenery and lights (doors and signs stay) and its placements refit a
+building for a new trade. `houses.cfg` comes last: the sign outside every house
+the crown sells (UOAIX-236), generated with `HouseData.codex` by
+`import-houses.ps1`. A changed `houses.cfg` needs the decoration re-imported. Identical art/hue/position placements collapse into
 one row; current definitions replace old ones. Named signs come from literal
 CFG Name properties and UOX3's `felucca_signs.jsdata`; this old client has no
 modern cliloc dictionary. The runtime is a Codex adaptation of door range,
@@ -20,6 +24,10 @@ x/y/z, even if the supplemental table has another art or facing there. Template
 type12 is an unlocked door and type13 is locked, as in UOX3's item types.
 This reads literal placements, not upstream JavaScript execution or guessed
 doors at arbitrary gaps. Unmapped supplemental door art is reported as skipped.
+A door from either source with no wall (TILEDATA 0x10) or impassable (0x40)
+static within one tile at its height is skipped as unframed: 133 of 1,768 on the
+1.25 client (2026-10-06), among them two template gates standing in the open
+at 1421,1563-1564 beside the Britain forge.
 
 ServUO sources and data are GPL-2.0; UOX3 uses GPL-2.0-or-later. Copyright
 belongs to their contributors; licenses are in
@@ -63,14 +71,23 @@ and its buffers must be below receive scratch. The map must contain only
 its base terrain/statics when `wd-read` is called; it saves that collision
 base before applying decoration. Keep this base distinct from a cache that
 already includes decoration, so restart cannot apply the overlay twice.
+The base is each cell's collider COUNT before decoration, 16 bits a cell (a cell holds up to 256)
+(`state.base`), not a copy of the cells: decoration only appends a cell's
+colliders after the cell's own (`wd-solid`, `wd-extra-solid`), so restoring a
+cell is setting its count back. A copy of the Britain window's colliders
+(117504 cells at stride 560) was 66 MB of the boot heap; the counts are 230
+KiB. The rule binds every writer to a decorated cell: a collider removed from
+one (WorldFlora's tree felling moves the cell's last collider into the gap)
+can leave a decoration collider below the saved count, which the next door
+toggle on that cell keeps.
 The immutable dataset covers the walk window and remains unchanged as that
 window moves. After each map-cache refill, call `wd-rebind state map map.stride` before
 dispatching or publishing another gameplay reply. This recaptures the new
 base collision cells and applies the same saved door bits to the new window.
-`wd-rebind` copies the map's CURRENT solids as the new base, so the map must
+`wd-rebind` takes the map's CURRENT counts as the new base, so the map must
 be undecorated when it is called: rebinding a map that `wd-read` already
 decorated bakes every closed door into the base, and no later toggle can open
-it. Restore the map from `state.base` first (`cg-town-doors` does).
+it. Restore the map from `state.base` first (`wd-restore`; `cg-town-doors` does).
 Window dimensions and stride must stay fixed; resizing needs a fresh retained context.
 The state stores origin, dimensions and buffer identities separately from
 the mutable WalkMap. Handler, pulse and codec restoration reject a rebased
@@ -91,10 +108,13 @@ must not enter that interval. A handler collision with an existing world
 object refuses. Decoration is stored independently of WorldTable, so it
 does not consume the game's inventory/NPC slots. Double-click toggles a
 nearby unlocked door, updates art and position, and rebuilds collision in
-its affected cells. Closing onto a mobile or ground item refuses. Locked
+its affected cells. Extra colliders outside DWD1 (`wd-extra-add`, `wd-extra-set`;
+the Castle Britain portcullis, `CastleGate.codex`) are applied with the rows at
+read, rebind and cell rebuild, and are never persisted. Closing onto a mobile or ground item refuses. Locked
 doors refuse until a future key service authorizes them. All other imported
 objects remain immovable. Clicking a sign returns its text. Light patterns
-use the legacy 1A direction field. This layer has no automatic door timer.
+use the legacy 1A direction field. Door autoclose is the composite's wheel
+timer (WorldTimers.md, kind 1).
 
 Persist the WDS1 codec in the same encompassing transaction as game state.
 `wdc-size state`, `wdc-write state buffer length` and `wdc-read state buffer
@@ -124,6 +144,13 @@ absent;0..255 supplies the packet direction byte. Non-door offsets are zero.
 
 WDS1 is 24 + row-count bytes: qword magic31534457, dataset identity, count,
 then one byte per row. Zero is closed;1 is open and is valid only for doors.
+2 marks a locked door (kind 4) unlocked, with or without 1. 4 bars a closed
+door (`wd-bar` at night, BritainShops.md "Hours"; `wd-lock` on a kind-1
+door), and a barred door counts as locked. `wd-unbar` (the morning, the jail
+emptying) clears 4 only; `wd-unlock` (a pick or a key) clears 4 and sets 2 on a
+kind-4 door; `wd-lock` on a shut kind-4 door clears 2. A pick or key turns the
+other leaf of a double door too (`wd-leaf`; `GameLocks`: door key ids, each
+shopkeeper's keys to the doors within 8 tiles, Lord British's master key).
 Views, connections and rendering cursors are never persisted. Extents and
 all row/state fields are validated before admission.
 
@@ -131,13 +158,12 @@ all row/state fields are validated before admission.
 
 `proofs/DecorationReplay.codex` checks collision before and after opening,
 occupied close refusal, legacy light and named-sign replies, immovability,
-client culling, bounded reentry, codec recovery and malformed state rejection. Root grades the
-real client only in Fester's complete composite; this unit makes no separate
-client-acceptance claim. Import and adapter checks use local install data.
+client culling, bounded reentry, codec recovery and malformed state rejection.
+Import and adapter checks use local install data.
 
 Retained storage is the descriptor buffer (64 +176N), two N-byte arrays,
 two4N-byte row arrays, and a stride-sized base collision snapshot per loaded
-map cell (capped at64 MiB). Decoration reuses WorldIndex's sparse8x8 tile
+map cell. Decoration reuses WorldIndex's sparse8x8 tile
 pages and directory, with capacity P equal to occupied blocks: wi-bytes(P).
 Its immutable row chains use closed coordinates; a19-tile lookup margin
 covers the one-tile door offset, then filters actual positions to18 tiles.
@@ -152,4 +178,4 @@ each affected cell plus the bounded world table for close obstruction.
 Codec work is O(N + map cells); import sorting is O(N log N). All request
 packets and text use the owner's scratch boundary; no per-row records are
 retained. The caller's collider capacity is enforced, with rollback
-on overflow. Compiler heap/time behavior is unchanged.
+on overflow.

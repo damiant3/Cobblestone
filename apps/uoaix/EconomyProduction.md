@@ -36,6 +36,13 @@ This is an aggregate inventory, not a serial-numbered item store. A future
 world binding must preserve individual object identity and complete trade
 records when converting between representations.
 
+A harvest adds the exact quality (up to 1000 a unit) while its lot records only
+the grade floor. `ep-settle actor item` caps quality at 1000 and wear at 32 a
+unit held and clears cost at zero stock; without it `ev-actor-items` refuses the
+next save (UOAIX-110). `ep-take`'s lot path (`ep-take-lot`) settles itself;
+its no-lot path (`ep-take-rest`) and `ep-remove` do not, and a hand debit (eating,
+reagents, cooking) ends with `ep-settle` itself, as `gco-cook` does.
+
 `eh-harvest world actor node` requires a mature source at the actor's place,
 the source's tool, and ownership when the node is planted. On success the
 source becomes depleted, the actor receives actual output and any seed, and
@@ -82,17 +89,34 @@ handling before dispatch rather than assuming every operation is idempotent.
 
 Node stages are depleted/just planted 0, growing/sapling 1, mature 2, failed
 or eaten 3. Growth enters stage 1 halfway to the configured deadline. At the
-deadline wild sources regrow; planted sources mature only if both watered
-and tended during that cycle. Harvest clears both care flags. Neglected or
-eaten plants fail and require fresh seed to replant. A felled timber source
-becomes a stump, then a sapling, then a mature tree. Client art/statics changes
-are not implemented by these state transitions.
+deadline wild sources regrow; whether a neglected planted source fails
+depends on its fragility (`eh-fragility`), per Damian's ruling of 2026-10-07:
+"no, they shouldn't. trees are hardy. we use that mechanic for tender crops,
+fragile ones. mandrake might be very difficult for example, to keep alive,
+while wheat is fairly resilient in comparison."
+
+| fragility | resources | fails at the deadline when |
+|---|---|---|
+| 0 hardy | timber 15, fruit 16 | never |
+| 1 resilient | cotton 10, flax 11, wheat 13, carrots 28, onions 29, turnips 31, corn 32, gourds 37 | neither watered nor tended |
+| 2 moderate | every other crop | not both watered and tended |
+| 3 tender | mandrake 19, nightshade 20, honeydew 35, hops 38 | as 2, and both flags clear when it turns half grown, so it is cared for in each half |
+
+Harvest clears both care flags. Failed or eaten plants require fresh seed to
+replant. A felled timber source
+becomes a stump, then a sapling, then a mature tree; with the flora layer
+(`WorldFlora.codex`, UOAIX-47) a stripped client sees those stages as art.
 
 `eh-step world` advances one game hour, together with the money clock and
 loan-default events. A money-ledger refusal leaves the production clock and
 nodes unchanged. Actor hunger rises by three up to 100. Demand counters halve
-each game day. `ep-eat world actor item` consumes owned vegetables, fruit,
-bread or cooked food and reduces hunger by 30 down to zero. An actor lacking
+each game day. `ep-eat world actor item` consumes an owned food (`ep-food`):
+cabbages, apples, bread, cooked food, grapes and the field crops carrots,
+onions, lettuce, turnips, corn, pumpkins, squash, honeydew melons, watermelons
+and gourds (hops are not food), and reduces hunger by 30 down to zero. A
+player eats any of them from the pack (`gh-fill`, ServUO Food.cs fill factors).
+An item is named by its own kind, never its category (Damian, 2026-10-07:
+"'vegetable' is not a vegetable. its a category."). An actor lacking
 food cannot eat and remains hungry. Purchasing, work and meals are explicit
 operations; the next clock harness must schedule those actions.
 
@@ -109,6 +133,20 @@ Each purchase appends action ID, hour, buyer/seller purse IDs, item type,
 quantity, gross coin, quality and remaining charges. The action ID matches
 the corresponding money-ledger action. Trade and ledger capacity are checked
 before either coin or goods move. Logs are never overwritten or cleared.
+
+**Theft transfer** (`as-steal-lot`, `ActiveSkillsStealing.codex`): a successful
+steal of an item held as an economy lot moves its units from the victim's actor
+to the thief's with no payment: stock, quality and wear at the lot's own
+per-unit grade, and cost by the lot's share of basis. A whole stack keeps its
+lot under the thief; part of a pile reduces the victim's lot and opens a new
+one for the thief. Every census holds because no unit is made or destroyed.
+The thief must be a player with an economy actor and room for the units, or
+the steal fails before anything moves. It writes no trade-log row (that log is
+tied to money actions); the record is the steal reply's note in the server log,
+`skills:stolen; theft item=<id> quantity=<n> from-actor=<a> to-actor=<b>`.
+Stealing a lot-less item (summoned or testing stock) moves only the world item.
+A coin pile in an economy actor's pack is purse coin, not material: its theft is
+the currency theft in [EconomyCurrency.md](EconomyCurrency.md) (`eu-steal`).
 These records describe one item-type sale, not a multi-item barter or a
 complete server log of serial-numbered player trades.
 
@@ -127,13 +165,11 @@ stock, but is not a per-object provenance tree or an untrusted-state validator.
 
 ## Bounds, costs and integration
 
-The runtime preallocates 128 actors, 256 stations (`ep-station-limit`), 1024 resource/plot nodes (`ep-node-limit`) and
+The runtime preallocates 128 actors, 512 stations (`ep-station-limit`), 2048 resource/plot nodes (`ep-node-limit`) and
 4096 lifetime purchases. Actor records are 9 fields (72 bytes), stations 4
 (32 bytes), nodes and purchase rows 9 (72 bytes each), and the world 20
-(160 bytes), plus lists and fixed inventory/counter arrays. The production
-state, standard catalog and Result wrapper retained 1024728 bytes under seed
-`4228CD5103DC4523` on 2026-10-05, excluding the separately allocated money state.
-Ordinary actions and ticks allocate no heap. Records refuse past capacity.
+(160 bytes), plus lists and fixed inventory/counter arrays. Ordinary actions
+and ticks allocate no heap. Records refuse past capacity.
 
 Harvest, crafting, pricing and purchases are O(1) with indexed records. Actor
 admission scans at most 128 purse bindings. A tick costs O(nodes + actors +
@@ -148,10 +184,7 @@ prices, planted crop care/failure, the mill-to-bread chain, eating, tree
 regrowth, purchase logs, capacity refusal and both censuses. Normal and poisoned
 builds must match `proofs/EconomyProductionProof.expected` exactly.
 
-The runtime is not connected to `TfWorld` jobs/needs, the game server or the
-combined checkpoint yet. It provides in-process refusal atomicity, not crash
-atomicity. [EconomyClock.md](EconomyClock.md) owns the 30-day scheduling/census
-acceptance. Production mint terms, persistence/restart and world bindings
-remain open. The database path replaces
-the current codecs only after equivalent restart acceptance, per
-[Database.md](Database.md).
+The runtime provides in-process refusal atomicity, not crash atomicity; the
+composite's commit owns durability. [EconomyClock.md](EconomyClock.md) owns the
+30-day scheduling/census acceptance. The database path replaces the current
+codecs only after equivalent restart acceptance, per [Database.md](Database.md).

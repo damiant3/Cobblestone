@@ -1,0 +1,99 @@
+Chapter: CraftGump
+  cites Uoaix chapter GamePackets
+
+ The craft gump (UOAIX-185), after ServUO Engines/Craft CraftGump: a title, the categories down the left, the chosen
+ category's items down the right with what each makes and needs, a status line, and Make Last and Exit. ServUO draws
+ it with art the 1998 GUMPIDX lacks (5054, 4005-4012); this one uses the 2600 backing and the 15 by 15 round button
+ 2117 (pressed 2118), both in it. Each category is a gump page, so choosing one is the client's own page switch
+ (button type 0); only an item, Make Last or Exit answers the server (0xB1). Every text and button lies inside the
+ 2600 frame (corners 47 by 44, left edge 34, right edge 45, bottom 40; UOAIX-230): x 52 to 485, y 52 to 440 of 530 by 480.
+ Category names are ServUO's Def files' (DefBlacksmithy, DefTailoring, DefCarpentry, DefTinkering, DefCooking,
+ DefBowFletching, DefAlchemy, DefInscription), in their order; a category with nothing in it is not shown.
+  crg-tag : Integer = #43520000
+  crg-make-last : Integer = 9999
+ Alchemy and Inscription sit above the tool categories (gcr-category 1 to 9).
+  crg-alchemy : Integer = 20
+  crg-inscription : Integer = 21
+  crg-labels : Integer -> List Text
+  crg-labels (craft) = if craft == crg-alchemy then ["Healing and Curative", "Enhancement", "Toxic", "Explosive"]
+    else if craft == crg-inscription then ["First Circle", "Second Circle", "Third Circle", "Fourth Circle", "Fifth Circle", "Sixth Circle", "Seventh Circle", "Eighth Circle"]
+    else if craft == 1 then ["Metal Armor", "Helmets", "Shields", "Bladed", "Axes", "Polearms", "Bashing"]
+    else if craft == 2 then ["Hats", "Shirts and Pants", "Miscellaneous", "Footwear", "Leather Armor", "Studded Armor", "Female Armor", "Bone Armor"]
+    else if craft == 3 | (craft >= 7 & craft <= 9) then ["Other", "Furniture", "Containers", "Weapons", "Armor", "Instruments", "Misc", "Tailoring and Cooking", "Anvils and Forges", "Training"]
+    else if craft == 4 then ["Wooden Items", "Tools", "Parts", "Utensils", "Miscellaneous", "Jewelry", "Multi-component Items", "Traps"]
+    else if craft == 5 then ["Ingredients", "Preparations", "Baking", "Barbecue"]
+    else if craft == 6 then ["Materials", "Ammunition", "Weapons"] else ["Items"]
+ The category of a catalog item within a craft: dagger 69 and longsword 70 are Bladed, plate gorget 71 Metal Armor;
+ shirt 72 and short pants 73 Shirts and Pants, footwear 121-124 Footwear; boards 38 and arrows 49 Other, furniture 47
+ Furniture, bow 48 Weapons; the toolkits 42 and scissors 74 Tools, nails 39 Parts; bread 34 Baking, cooked meat and
+ fish 50 Barbecue; for the fletcher, arrows Ammunition and the bow Weapons.
+  crg-category : Integer, Integer -> Integer
+  crg-category (craft) (item) = if craft == 1 then (if item == 69 | item == 70 then 3 else 0)
+    else if craft == 2 then (if item == 72 | item == 73 then 1 else if item >= 121 & item <= 124 then 3 else 2)
+    else if craft == 3 | (craft >= 7 & craft <= 9) then (if item == 47 | (item >= 128 & item <= 133) then 1 else if item >= 134 & item <= 138 then 2 else if item == 48 | item == 77 then 3
+      else if item >= 139 & item <= 142 then 5 else if item == 143 then 6 else if item == 144 | item == 145 | item == 147 then 7 else if item == 146 then 9 else 0)
+    else if craft == 4 then (if item == 42 | item == 74 then 1 else if item == 39 | item == 148 then 2 else 4)
+    else if craft == 5 then (if item == 34 then 2 else if item == 50 then 3 else 1)
+    else if craft == 6 then (if item == 49 then 1 else if item == 48 then 2 else 0) else 0
+  crg-ucs2 : List Integer, Text, Integer -> List Integer
+  crg-ucs2 (bytes) (text) (i) = if i >= text-length text then bytes
+    else crg-ucs2 (gp-put16 bytes (to-unicode (char-code (char-at text i)))) text (i + 1)
+  crg-lines : List Integer, List Text, Integer -> List Integer
+  crg-lines (bytes) (texts) (i) = if i >= list-length texts then bytes
+    else let t = list-at texts i in crg-lines (crg-ucs2 (gp-put16 bytes (text-length t)) t 0) texts (i + 1)
+  crg-has : List Integer, Integer, Integer -> Boolean
+  crg-has (cats) (k) (i) = if i >= list-length cats then False else if list-at cats i == k then True else crg-has cats k (i + 1)
+ The categories that hold an item, in label order.
+  crg-used : List Integer, Integer, Integer, List Integer -> List Integer
+  crg-used (cats) (count) (k) (out) = if k >= count then out else crg-used cats count (k + 1) (if crg-has cats k 0 then out & [k] else out)
+  crg-left : List Text, List Integer, Integer, Text, List Text -> Text
+  crg-left (labels) (used) (j) (layout) (texts) = if j >= list-length used then layout
+    else let y = 108 + 22 * j
+    in crg-left labels used (j + 1) (layout & "{ button 52 " & show y & " 2117 2118 0 " & show (j + 1) & " 0 }{ text 72 " & show (y - 2) & " 0 " & show (list-length texts + j) & " }") texts
+  crg-left-texts : List Text, List Integer, Integer, List Text -> List Text
+  crg-left-texts (labels) (used) (j) (out) = if j >= list-length used then out else crg-left-texts labels used (j + 1) (out & [list-at labels (list-at used j)])
+ One page a category: a round button answering the item's id (its place in the menu, from 1, unless the menu gives
+ ids) and its line.
+  crg-page : List Text, List Integer, List Integer, Integer, Integer, Integer, Text, List Text -> Text
+  crg-page (names) (cats) (ids) (k) (i) (row) (layout) (texts) = if i >= list-length names | row >= 13 then layout
+    else if list-at cats i /= k then crg-page names cats ids k (i + 1) row layout texts
+    else let y = 108 + 22 * row
+    in crg-page names cats ids k (i + 1) (row + 1) (layout & "{ button 250 " & show y & " 2117 2118 1 0 " & show (list-at ids i) & " }{ text 270 " & show (y - 2) & " 0 " & show (list-length texts + row) & " }") texts
+  crg-page-texts : List Text, List Integer, Integer, Integer, List Text -> List Text
+  crg-page-texts (names) (cats) (k) (i) (out) = if i >= list-length names then out
+    else crg-page-texts names cats k (i + 1) (if list-at cats i == k then out & [list-at names i] else out)
+  crg-pages : List Text, List Integer, List Integer, List Integer, Integer, Text, List Text -> List Text
+  crg-pages (names) (cats) (ids) (used) (j) (layout) (texts) = if j >= list-length used then [layout] & texts
+    else let k = list-at used j
+    in let page = crg-page names cats ids k 0 0 (layout & "{ page " & show (j + 1) & " }") texts
+    in crg-pages names cats ids used (j + 1) page (crg-page-texts names cats k 0 texts)
+ The gump packet: names and cats are the menu's items in choice order and each one's category in labels; ids are the
+ buttons' answers, and Make Last shows only when lastable.
+  crg-gump : Integer, Integer, Text, List Text, List Text, List Integer, Text -> List Integer
+  crg-gump (serial) (context) (title) (labels) (names) (cats) (status) = crg-gump-ids serial context title labels names cats (crg-count (list-length names) 1 []) status True
+  crg-count : Integer, Integer, List Integer -> List Integer
+  crg-count (n) (i) (out) = if i > n then out else crg-count n (i + 1) (out & [i])
+  crg-gump-ids : Integer, Integer, Text, List Text, List Text, List Integer, List Integer, Text, Boolean -> List Integer
+  crg-gump-ids (serial) (context) (title) (labels) (names) (cats) (ids) (status) (lastable) =
+    let used = crg-used cats (list-length labels) 0 []
+    in let head-texts = [title & " Menu", "CATEGORIES", "SELECTIONS", (if status == "" then " " else status), "MAKE LAST", "EXIT"]
+    in let head = "{ page 0 }{ resizepic 0 0 2600 530 480 }{ text 200 52 0 0 }{ text 52 80 0 1 }{ text 250 80 0 2 }{ text 52 395 0 3 }"
+      & (if lastable then "{ button 52 422 2117 2118 1 0 " & show crg-make-last & " }{ text 72 420 0 4 }" else "") & "{ button 400 422 2117 2118 1 0 0 }{ text 420 420 0 5 }"
+    in let left = crg-left labels used 0 head head-texts
+    in let texts = crg-left-texts labels used 0 head-texts
+    in let built = crg-pages names cats ids used 0 left texts
+    in let layout = list-at built 0
+    in let lines = crg-rest built 1 []
+    in let start = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) (crg-tag + context)) 60) 60) (text-length layout + 1)
+    in let counted = gp-put16 (gp-ascii start layout 0 (text-length layout + 1)) (list-length lines)
+    in crg-finish (crg-lines counted lines 0)
+  crg-rest : List Text, Integer, List Text -> List Text
+  crg-rest (xs) (i) (out) = if i >= list-length xs then out else crg-rest xs (i + 1) (out & [list-at xs i])
+  crg-finish : List Integer -> List Integer
+  crg-finish (p) = let a = list-set-at p 1 (bit-and (bit-shr (list-length p) 8) 255) in let b = list-set-at p 2 (bit-and (list-length p) 255) in p
+ A craft gump's answer (0xB1: serial at 3, gump id at 7, button at 11) becomes the 13-byte 0x7D menu choice the craft
+ handler takes: the tool, the menu context, the choice (Make Last's 9999 included); button 0 (Exit, or a right click)
+ is choice 0, which cancels. Any other packet passes through unchanged.
+  crg-answer : List Integer -> List Integer
+  crg-answer (packet) = if list-length packet < 15 | list-at packet 0 /= #B1 | bit-and (gp-u32 packet 7) #FFFF0000 /= crg-tag then packet
+    else gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] (gp-u32 packet 3)) (bit-and (gp-u32 packet 7) #FFFF)) (gp-u32 packet 11)) 0 & [0, 0]

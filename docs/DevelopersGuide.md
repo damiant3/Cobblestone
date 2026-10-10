@@ -2229,7 +2229,31 @@ same type transposes silently.
 Also note that a `field-access` node's own type is the FIELD's type, not the
 record's, so the record type has to come from the receiver expression.
 
+## Narrow by design
+
+Codex accepts the narrow form and refuses the rest (Damian, 2026-09-25: "we
+want our code to be narrow, to prevent unintended error or ambiguity or forms
+that don't read well. we take the opposite approach to most languages which
+flex on obfuscation").
+
+- When a syntax question has a permissive answer and a narrow one, the narrow
+  one wins, and the refusal is an ERROR, not a warning.
+- Whitespace is significant: a newline ends an application, and a line
+  continued as an argument is a form to refuse, not to support.
+- A workaround idiom that a rule forces on correct code (parentheses around a
+  statement) is a defect in the rule, not a style to document.
+- Ruled: a bare literal as a non-final `act` statement is an error; a literal
+  line is valid only as a block's final value.
+
 ## Pitfalls
+
+**A generated text longer than about a thousand `&` pieces fails CDX9001.** One definition's expression chain
+past the name resolver's budget (1024, `name-resolver.resolve-expr`) stops the compile; split the text into
+definitions of a few hundred pieces and join those (`apps/uoaix/build-admin-page.ps1` uses 200).
+
+**An `act` block inside parentheses loses its line layout.** `(if c then act` with binders on the following lines reads the next binder as an argument (CDX3002 `Undefined name`). Move the `act` into its own function.
+
+**`poke-32 addr v` writes nothing and compiles.** `peek-32`/`poke-32` take (address, offset[, value]), so the two-argument form is a partial application; a probe built on it reads as "the hardware did not fire".
 
 **A device store inside a bound `if` is not lowered by the WGSL plug.** `w <- (if c then device-store-f32 b i v else 0)` becomes WGSL `select(0, device_store_f32(...), c)`, which evaluates both arms and leaves an unresolved call, so the shader fails to compile (red, 2026-10-02, `apps/spark/QwenKernels.codex`). Put the conditional store at a function's top level (`qw-store-when`: `if on == 0 then 0 else device-store-f32 ...`) or as the last statement of an `act` block.
 

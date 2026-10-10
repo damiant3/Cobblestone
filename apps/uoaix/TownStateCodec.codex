@@ -56,8 +56,10 @@ Chapter: TownStateCodec
     in ts-write-list buf (at + 200784) m.audit 0
 
   ts-encode : TownState, Integer, Integer -> Result Integer Text
-  ts-encode (state) (buf) (capacity) =
-    if not (ts-state-valid state.checkpoint state.townsfolk state.mind) then Err "town state invariant invalid"
+  ts-encode (state) (buf) (capacity) = ts-encode-as state buf capacity True
+  ts-encode-as : TownState, Integer, Integer, Boolean -> Result Integer Text
+  ts-encode-as (state) (buf) (capacity) (strict) =
+    if strict & not (ts-state-valid state.checkpoint state.townsfolk state.mind) then Err "town state invariant invalid"
     else let world-bytes = ws-size state.checkpoint.world.capacity
     in let size = 64 + world-bytes + ts-body-bytes
     in if capacity < size then Err "town checkpoint destination too short"
@@ -77,6 +79,42 @@ Chapter: TownStateCodec
         in let checksum = poke-qword buf 48 (ws-hash buf size 0 2166136261)
         in Ok size
 
+ The town tail holds the people and personas past the first block (tf-people-block): two counts, then those person rows
+ (592 bytes) and persona rows (712). The composite closes its image with it after the government tail.
+  ts-tail-size : TownState -> Integer
+  ts-tail-size (s) = 16 + max 0 (list-length s.townsfolk.people - tf-people-block) * 592 + max 0 (list-length s.mind.personas - tf-people-block) * 712
+  ts-tail-people : TownState, Integer, Boolean, Integer, Integer -> Integer
+  ts-tail-people (s) (at) (read) (n) (i) = if i >= n then 0
+    else let done = if read then ts-read-person at (i * 592) (list-at s.townsfolk.people (tf-people-block + i)) else ts-write-person at (i * 592) (list-at s.townsfolk.people (tf-people-block + i))
+    in ts-tail-people s at read n (i + 1)
+  ts-tail-personas : TownState, Integer, Boolean, Integer, Integer -> Integer
+  ts-tail-personas (s) (at) (read) (n) (i) = if i >= n then 0
+    else let done = if read then ts-read-persona at (i * 712) (list-at s.mind.personas (tf-people-block + i)) else ts-write-persona at (i * 712) (list-at s.mind.personas (tf-people-block + i))
+    in ts-tail-personas s at read n (i + 1)
+  ts-write-tail : TownState, Integer -> Integer
+  ts-write-tail (s) (at) = let people = max 0 (list-length s.townsfolk.people - tf-people-block)
+    in let personas = max 0 (list-length s.mind.personas - tf-people-block)
+    in let a = poke-qword at 0 people
+    in let b = poke-qword at 8 personas
+    in let c = ts-tail-people s (at + 16) False people 0
+    in let d = ts-tail-personas s (at + 16 + people * 592) False personas 0
+    in at + ts-tail-size s
+  ts-tail-length : Integer, Integer -> Integer
+  ts-tail-length (at) (room) = if room < 16 | peek-qword at 0 < 0 | peek-qword at 8 < 0 | peek-qword at 0 > room / 592 | peek-qword at 8 > room / 712 then -1
+    else 16 + peek-qword at 0 * 592 + peek-qword at 8 * 712
+  ts-read-tail : TownState, Integer, Integer -> Integer
+  ts-read-tail (s) (at) (size) = if size == 0 then 0
+    else if ts-tail-length at size /= size | peek-qword at 0 /= peek-qword at 8 then -1
+    else if not (ts-people-wire-valid-n at 16 (peek-qword at 0) 0) then -1
+    else let people = peek-qword at 0
+    in let grown = tf-grow-people s.townsfolk (tf-people-block + people - list-length s.townsfolk.people)
+    in let minds = tm-grow-personas s.mind (tf-people-block + people)
+    in let a = ts-tail-people s (at + 16) True people 0
+    in let b = ts-tail-personas s (at + 16 + people * 592) True people 0
+    in 0
+  ts-people-wire-valid-n : Integer, Integer, Integer, Integer -> Boolean
+  ts-people-wire-valid-n (buf) (at) (n) (i) = if i >= n then True
+    else ts-person-wire-valid buf (at + i * 592) & ts-people-wire-valid-n buf at n (i + 1)
   ts-towns-wire-valid : Integer, Integer, Integer -> Boolean
   ts-towns-wire-valid (buf) (at) (i) =
     if i == 4 then True
@@ -132,7 +170,9 @@ Chapter: TownStateCodec
     in TownState { checkpoint = checkpoint, townsfolk = w, mind = m }
 
   ts-decode : Integer, Integer -> Result TownState Text
-  ts-decode (buf) (size) =
+  ts-decode (buf) (size) = ts-decode-as buf size True
+  ts-decode-as : Integer, Integer, Boolean -> Result TownState Text
+  ts-decode-as (buf) (size) (strict) =
     if size < ts-size 1 | size > ts-size world-max-objects then Err "town checkpoint length outside budget"
     else if peek-qword buf 0 /= #31435354 | peek-qword buf 8 /= 1 | peek-qword buf 56 /= 0 then Err "town checkpoint format unsupported"
     else let world-bytes = peek-qword buf 24
@@ -147,11 +187,13 @@ Chapter: TownStateCodec
       is Ok (checkpoint) ->
         if checkpoint.tick /= peek-qword buf 32 | checkpoint.sequence /= peek-qword buf 40 then Err "town checkpoint metadata disagrees with world"
         else let state = ts-read-body buf at checkpoint
-        in if not (ts-state-valid checkpoint state.townsfolk state.mind) then Err "town checkpoint state invalid"
+        in if strict & not (ts-state-valid checkpoint state.townsfolk state.mind) then Err "town checkpoint state invalid"
         else Ok state
 
   ts-decode-record : Integer, Integer, Integer, Integer -> Result TownState Text
-  ts-decode-record (buf) (size) (tick) (sequence) =
+  ts-decode-record (buf) (size) (tick) (sequence) = ts-decode-record-as buf size tick sequence True
+  ts-decode-record-as : Integer, Integer, Integer, Integer, Boolean -> Result TownState Text
+  ts-decode-record-as (buf) (size) (tick) (sequence) (strict) =
     if size < 64 then Err "town checkpoint record truncated"
     else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "town checkpoint disagrees with record metadata"
-    else ts-decode buf size
+    else ts-decode-as buf size strict

@@ -595,7 +595,8 @@ Section: Emitter Context
    inplace : List Text,
    eff-ops : List WhOp,
    try-level : Integer,
-   has-fail : Boolean
+   has-fail : Boolean,
+   fail-label : Text
   }
 
   wat-scrut-name : Integer -> Text
@@ -634,7 +635,8 @@ Section: Emitter Context
       inplace = ctx.inplace,
       eff-ops = ctx.eff-ops,
       try-level = ctx.try-level,
-      has-fail = ctx.has-fail
+      has-fail = ctx.has-fail,
+      fail-label = ctx.fail-label
     }
 
 Section: Local Collection
@@ -665,7 +667,8 @@ Section: Local Collection
       inplace = ctx.inplace,
       eff-ops = ctx.eff-ops,
       try-level = ctx.try-level,
-      has-fail = ctx.has-fail
+      has-fail = ctx.has-fail,
+      fail-label = ctx.fail-label
     }
 
   ctx-with-inplace : WasmCtx, List Text -> WasmCtx
@@ -679,7 +682,8 @@ Section: Local Collection
       inplace = ip,
       eff-ops = ctx.eff-ops,
       try-level = ctx.try-level,
-      has-fail = ctx.has-fail
+      has-fail = ctx.has-fail,
+      fail-label = ctx.fail-label
     }
 
   collect-locals-params : List IRParam, Integer, List Text -> List Text
@@ -942,7 +946,7 @@ Section: Expression Emission
      is IrRecord (name) (fields) (ty) (sp) -> emit-wat-record ctx fields ty depth
      is IrFieldAccess (rec) (field) (ty) (sp) -> emit-wat-field-access ctx rec field ty depth
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-wat-field-store ctx rec field val ty depth
-     is IrFork (body) (ty) (sp) -> "(call $clo_apply1 " & emit-wat-expr-at ctx body (depth + 1) & " (i64.const 0))"
+     is IrFork (body) (ty) (sp) -> wat-checked-call ctx ("(call $clo_apply1 " & emit-wat-expr-at ctx body (depth + 1) & " (i64.const 0))")
      is IrAwait (task) (ty) (sp) -> emit-wat-expr-at ctx task (depth + 1)
      is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-try ctx max body fb fail-stmts
      is IrError (msg) (ty) (sp) -> "(unreachable)"
@@ -1130,8 +1134,8 @@ Section: Expression Emission
       "(i64.extend_i32_u (i32.div_u (global.get $disk_size) (i32.const 512)))"
     else if n == "process-get-pid" then "(i64.const 0)"
     else if n == "process-count" then "(i64.const 1)"
-    else if n == "hardware-random" then
-      "(i64.load (block (result i32) (drop (call $random_get (global.get $heap_ptr) (i32.const 8))) (global.get $heap_ptr)))"
+    else if n == "__hardware-random-word" then
+      "(if (result i64) (i32.eqz (call $random_get (global.get $heap_ptr) (i32.const 8))) (then (i64.load (global.get $heap_ptr))) (else (i64.const 0)))"
     else if n == "process-yield" then "(i64.const 0)"
     else if n == "hosted-kind" then "(i64.const 1)"
     else if n == "__heap-base" then "(i64.extend_i32_u (global.get $heap_start))"
@@ -1154,7 +1158,7 @@ Section: Expression Emission
   wat-emit-def-ref : WasmCtx, Text -> Text
   wat-emit-def-ref (ctx) (n) =
     let ar = lookup-arity (ctx.arities) n
-    in if ar == 0 then "(call $" & wat-arity-id (ctx.arities) n & ")"
+    in if ar == 0 then wat-checked-call ctx ("(call $" & wat-arity-id (ctx.arities) n & ")")
     else if ar > 0 then "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
     else wat-refuse-name n
 
@@ -1393,17 +1397,30 @@ Section: Expression Emission
   emit-wat-act (ctx) (stmts) =
     emit-wat-act-stmts ctx stmts 0
 
- Eight is the try nesting cap: every level declares three locals in every function that has a try.
+ Eight is the try nesting cap: every level declares four locals in every function that has a try.
 
   wat-try-max-level : Integer = 8
 
-  emit-wat-try : WasmCtx, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> Text
-  emit-wat-try (ctx) (max) (body) (fb) (fail-stmts) =
-    if ctx.has-fail == False then emit-wat-act ctx body
-    else if ctx.try-level >= wat-try-max-level then
-      "(unreachable (; wasm plug: try nested deeper than 8 ;))"
-    else let k = integer-to-text (ctx.try-level)
-    in let ictx = WasmCtx {
+ WebAssembly has no unwind without the exception-handling proposal, so a
+ `fail` leaves its function at once and every call in a module that uses
+ `fail` checks `$try_fail` on return: inside a `try` of the same function
+ the check branches to that `try`'s failure block, elsewhere it returns 0
+ to its own caller, which checks in turn. `$try_depth` counts the `try`s
+ entered and not left; a `fail` with none active traps.
+
+  wat-fail-exit : WasmCtx -> Text
+  wat-fail-exit (ctx) =
+    if text-length (ctx.fail-label) > 0 then "(br " & ctx.fail-label & ")"
+    else "(if (i32.eqz (global.get $try_depth)) (then (unreachable))) (return (i64.const 0))"
+
+  wat-checked-call : WasmCtx, Text -> Text
+  wat-checked-call (ctx) (call) =
+    if ctx.has-fail == False then call
+    else "(block (result i64) (local.set $_fc " & call & ") (if (global.get $try_fail) (then " & wat-fail-exit ctx & ")) (local.get $_fc))"
+
+  ctx-try : WasmCtx, Text -> WasmCtx
+  ctx-try (ctx) (label) =
+    WasmCtx {
       arities = ctx.arities,
       strings = ctx.strings,
       type-defs = ctx.type-defs,
@@ -1412,47 +1429,57 @@ Section: Expression Emission
       inplace = ctx.inplace,
       eff-ops = ctx.eff-ops,
       try-level = ctx.try-level + 1,
-      has-fail = True
+      has-fail = True,
+      fail-label = label
     }
+
+  emit-wat-try : WasmCtx, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> Text
+  emit-wat-try (ctx) (max) (body) (fb) (fail-stmts) =
+    if ctx.has-fail == False then emit-wat-act ctx body
+    else if ctx.try-level >= wat-try-max-level then
+      "(unreachable (; wasm plug: try nested deeper than 8 ;))"
+    else let k = integer-to-text (ctx.try-level)
     in let n = "$_try_n" & k
     in let h = "$_try_h" & k
-    in let head = "(block $try_end" & k & " (result i64) (local.set " & n & " (i64.const 0)) (local.set " & h & " (i64.extend_i32_u (global.get $heap_ptr))) "
-    in let attempt = "(loop $try_retry" & k & " (global.set $try_fail (i32.const 0)) (global.set $heap_ptr (i32.wrap_i64 (local.get " & h & "))) (block $try_failed" & k & " " & emit-wat-try-body ictx k body 0 & ") "
+    in let d = "$_try_d" & k
+    in let dec = "(global.set $try_depth (i32.sub (global.get $try_depth) (i32.const 1))) "
+    in let deck-back = "(if (i32.and (i32.gt_s (global.get $deck_depth) (i32.wrap_i64 (local.get " & d & "))) (i32.eqz (i32.wrap_i64 (local.get " & d & ")))) (then (global.set $deck_ptr (global.get $heap_ptr)))) "
+    in let catch = deck-back & "(global.set $deck_depth (i32.wrap_i64 (local.get " & d & "))) (global.set $heap_ptr (i32.wrap_i64 (local.get " & h & "))) "
+    in let head = "(block $try_end" & k & " (result i64) (global.set $try_depth (i32.add (global.get $try_depth) (i32.const 1))) (local.set " & n & " (i64.const 0)) (local.set " & h & " (i64.extend_i32_u (global.get $heap_ptr))) (local.set " & d & " (i64.extend_i32_u (global.get $deck_depth))) "
+    in let attempt = "(loop $try_retry" & k & " (global.set $try_fail (i32.const 0)) (global.set $heap_ptr (i32.wrap_i64 (local.get " & h & "))) (block $try_failed" & k & " " & emit-wat-try-body (ctx-try ctx ("$try_failed" & k)) k dec body 0 & ") " & catch
     in let count = "(local.set " & n & " (i64.add (local.get " & n & ") (i64.const 1))) (br_if $try_retry" & k & " (i64.lt_s (local.get " & n & ") (i64.const " & integer-to-text max & ")))) "
-    in head & attempt & count & emit-wat-try-exhausted ictx k fb fail-stmts & ")"
+    in head & attempt & count & emit-wat-try-exhausted ctx k dec catch fb fail-stmts & ")"
 
-  emit-wat-try-body : WasmCtx, Text, List IRActStmt, Integer -> Text
-  emit-wat-try-body (ctx) (k) (stmts) (i) =
-    if i >= list-length stmts then "(br $try_end" & k & " (i64.const 0))"
-    else let check = " (br_if $try_failed" & k & " (global.get $try_fail)) "
-    in let is-last = i == list-length stmts - 1
+  emit-wat-try-body : WasmCtx, Text, Text, List IRActStmt, Integer -> Text
+  emit-wat-try-body (ctx) (k) (dec) (stmts) (i) =
+    if i >= list-length stmts then dec & "(br $try_end" & k & " (i64.const 0))"
+    else let is-last = i == list-length stmts - 1
     in when list-at stmts i
-     is IrDoBind (name) (ty) (val) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr ctx val & ")" & check & emit-wat-try-body ctx k stmts (i + 1)
+     is IrDoBind (name) (ty) (val) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr ctx val & ") " & emit-wat-try-body ctx k dec stmts (i + 1)
      is IrDoExec (e) (sp) ->
       if is-last then
-        "(local.set $_try_v" & k & " " & emit-wat-expr ctx e & ")" & check & "(br $try_end" & k & " (local.get $_try_v" & k & "))"
-      else "(drop " & emit-wat-expr ctx e & ")" & check & emit-wat-try-body ctx k stmts (i + 1)
+        "(local.set $_try_v" & k & " " & emit-wat-expr ctx e & ") " & dec & "(br $try_end" & k & " (local.get $_try_v" & k & "))"
+      else "(drop " & emit-wat-expr ctx e & ") " & emit-wat-try-body ctx k dec stmts (i + 1)
 
-  emit-wat-try-exhausted : WasmCtx, Text, List IRActStmt, List IRActStmt -> Text
-  emit-wat-try-exhausted (ctx) (k) (fb) (fail-stmts) =
-    if list-length fb == 0 then "(i64.const 0)"
+  emit-wat-try-exhausted : WasmCtx, Text, Text, Text, List IRActStmt, List IRActStmt -> Text
+  emit-wat-try-exhausted (ctx) (k) (dec) (catch) (fb) (fail-stmts) =
+    let refail = "(global.set $try_fail (i32.const 1)) " & wat-fail-exit ctx
+    in if list-length fb == 0 then dec & refail
     else let v = "$_try_v" & k
-    in let run-fb = "(global.set $try_fail (i32.const 0)) (local.set " & v & " " & emit-wat-act ctx fb & ") "
-    in if list-length fail-stmts == 0 then run-fb & "(local.get " & v & ")"
-    else
-      run-fb & "(if (result i64) (global.get $try_fail) (then (global.set $try_fail (i32.const 0)) " & emit-wat-act ctx fail-stmts & ") (else (local.get " & v & ")))"
+    in let run-fb = "(block $try_fbfailed" & k & " (global.set $try_fail (i32.const 0)) (local.set " & v & " " & emit-wat-act (ctx-try ctx ("$try_fbfailed" & k)) fb & ") " & dec & "(br $try_end" & k & " (local.get " & v & "))) " & catch & dec
+    in if list-length fail-stmts == 0 then run-fb & refail
+    else run-fb & "(global.set $try_fail (i32.const 0)) " & emit-wat-act ctx fail-stmts
 
   wat-try-local-decls : WasmCtx, Text -> Text
   wat-try-local-decls (ctx) (body) =
     if ctx.has-fail == False then ""
-    else if text-contains body "$_try_n" == False then ""
-    else wat-try-local-decls-from 0
+    else (if text-contains body "$_fc" then "(local $_fc i64) " else "") & (if text-contains body "$_try_n" then wat-try-local-decls-from 0 else "")
 
   wat-try-local-decls-from : Integer -> Text
   wat-try-local-decls-from (i) =
     if i >= wat-try-max-level then ""
     else let k = integer-to-text i
-    in "(local $_try_n" & k & " i64) (local $_try_h" & k & " i64) (local $_try_v" & k & " i64) " & wat-try-local-decls-from (i + 1)
+    in "(local $_try_n" & k & " i64) (local $_try_h" & k & " i64) (local $_try_v" & k & " i64) (local $_try_d" & k & " i64) " & wat-try-local-decls-from (i + 1)
 
   emit-wat-act-stmts : WasmCtx, List IRActStmt, Integer -> Text
   emit-wat-act-stmts (ctx) (stmts) (i) =
@@ -1490,7 +1517,7 @@ Section: Apply Emission
   wat-emit-indirect (ctx) (args) (callee) =
     let n = list-length args
     in if n >= 2 & n <= wat-fn-type-ceiling (ctx.arities) then
-      "(call $clo_apply" & integer-to-text n & " " & callee & wat-emit-indirect-args ctx args 0 & ")"
+      wat-checked-call ctx ("(call $clo_apply" & integer-to-text n & " " & callee & wat-emit-indirect-args ctx args 0 & ")")
     else wat-emit-apply-chain ctx args 0 callee
 
   wat-emit-indirect-args : WasmCtx, List IRExpr, Integer -> Text
@@ -1501,19 +1528,19 @@ Section: Apply Emission
   wat-emit-apply-chain : WasmCtx, List IRExpr, Integer, Text -> Text
   wat-emit-apply-chain (ctx) (args) (i) (acc) =
     if i >= list-length args then acc
-    else let step = "(call $clo_apply1 " & acc & " " & emit-wat-expr ctx (list-at args i) & ")"
+    else let step = wat-checked-call ctx ("(call $clo_apply1 " & acc & " " & emit-wat-expr ctx (list-at args i) & ")")
     in wat-emit-apply-chain ctx args (i + 1) step
 
   wat-emit-named-apply : WasmCtx, Text, List IRExpr, Integer -> Text
   wat-emit-named-apply (ctx) (n) (args) (ar) =
     let k = list-length args
     in if k == ar then
-      "(call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx args 0 & ")"
+      wat-checked-call ctx ("(call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx args 0 & ")")
     else if k < ar then
       let seed = "(i64.const " & integer-to-text (lookup-fn-index (ctx.arities) n) & ")"
       in wat-emit-apply-chain ctx args 0 seed
     else
-      let sat = "(call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx (list-take args ar) 0 & ")"
+      let sat = wat-checked-call ctx ("(call $" & wat-arity-id (ctx.arities) n & " " & emit-wat-apply-args ctx (list-take args ar) 0 & ")")
       in wat-emit-apply-chain ctx (list-drop args ar) 0 sat
 
 
@@ -1913,7 +1940,7 @@ Section: Apply Emission
     if n == "gpu-ring" then wat-refuse-host n
     else if wat-def-outranks-builtin ctx n then ""
     else if n == "fail" then
-      "(block (result i64) (drop " & emit-wat-expr ctx (list-at args 0) & ") (global.set $try_fail (i32.const 1)) (i64.const 0))"
+      "(block (result i64) (drop " & emit-wat-expr ctx (list-at args 0) & ") (global.set $try_fail (i32.const 1)) " & wat-fail-exit ctx & ")"
     else if n == "__heap-restore" then
       "(block (result i64) (global.set $heap_ptr (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ")) (i64.const 0))"
     else if n == "peek-byte" then "(i64.load8_u " & wat-addr-of ctx args & ")"
@@ -4355,17 +4382,18 @@ Section: Chapter Emission
       inplace = [],
       eff-ops = lifted.ops,
       try-level = 0,
-      has-fail = wat-defs-call-name (m.defs) "fail" 0
+      has-fail = wat-defs-call-name (m.defs) "fail" 0,
+      fail-label = ""
     }
     in let data-text = emit-data-sections strings 0
     in let entry = wat-emit-entry ctx (m.defs)
     in let needs-key = wasm-mention-any (m.defs) runtime types-text entry "$on_key_import" wasm-no-builtin
-    in let needs-random = wasm-mention-any (m.defs) runtime types-text entry "$random_get" "hardware-random"
+    in let needs-random = wasm-mention-any (m.defs) runtime types-text entry "$random_get" "__hardware-random-word"
     in let needs-deck = wat-defs-call-name (m.defs) "deck-record" 0 | wat-defs-call-name (m.defs) "__deck-enter" 0 | wat-defs-call-name (m.defs) "__deck-alloc" 0
     in let header = wat-runtime-header heap-start (if needs-deck then wat-deck-region-bytes else 0) needs-key needs-random
     in act
      print-uni header
-     print-uni (if ctx.has-fail then "  (global $try_fail (mut i32) (i32.const 0))\n" else "")
+     print-uni (if ctx.has-fail then "  (global $try_fail (mut i32) (i32.const 0))\n  (global $try_depth (mut i32) (i32.const 0))\n" else "")
      print-uni wh-text
      print-uni (wat-emit-table (ctx.arities))
      print-uni data-text

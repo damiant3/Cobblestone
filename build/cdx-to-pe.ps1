@@ -186,17 +186,16 @@ function Find-FuncOffset([string]$name) {
         if (-not $UniToCce.ContainsKey($u)) { return -1 }
         $pat[$k] = [byte]$UniToCce[$u]
     }
-    # The string table is NUL-terminated entries; require the terminator so a
-    # name that is a prefix of another ('opening' inside 'manifest-find-opening'
-    # would not match anyway, but 'sha256' inside 'sha256-compress' would) does
-    # not resolve to the wrong function.
+    # The string table is NUL-terminated entries; require a NUL on BOTH sides so
+    # only a whole entry matches: 'opening' is the tail of 'em-opening' and
+    # 'sha256' the head of 'sha256-compress'.
     $strPos = -1
     for ($i = $stringsBase; $i -lt $cdx.Length - $pat.Length; $i++) {
         $match = $true
         for ($j = 0; $j -lt $pat.Length -and $match; $j++) {
             if ($cdx[$i+$j] -ne $pat[$j]) { $match = $false }
         }
-        if ($match -and ($i + $pat.Length -ge $cdx.Length -or $cdx[$i + $pat.Length] -eq 0)) {
+        if ($match -and ($i -eq $stringsBase -or $cdx[$i - 1] -eq 0) -and ($i + $pat.Length -ge $cdx.Length -or $cdx[$i + $pat.Length] -eq 0)) {
             $strPos = $i - $stringsBase
             break
         }
@@ -1345,8 +1344,8 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 
 # Pre-load the serial input ring, for a board with no serial port.
 #
-# `__bare_metal_read_serial` polls a ring at serial-ring-buf-addr (0x500000,
-# X86_64Boot.codex:91) with the write position at cell 28704 and the read
+# `__bare_metal_read_serial` polls a ring at serial-ring-buf-addr (1 MB below
+# the heap base the CDX header states) with the write position at cell 28704 and the read
 # position at 28712. codex-vm's -input does exactly this and nothing else
 # (load_input_file), which is why a bed run can feed the compiler a mode line
 # while a board cannot: no UART, and nothing else fills the ring.
@@ -1356,8 +1355,8 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 if ($Stdin) {
     $sb = [System.Text.Encoding]::ASCII.GetBytes($Stdin)
     if ($sb.Length -gt 120) { throw "[cdx-to-pe] -Stdin is $($sb.Length) bytes; this emitter stores it with disp8 and tops out at 120." }
-    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 0x500000
-    $bw.Write([BitConverter]::GetBytes([long]0x500000))
+    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, serial ring
+    $bw.Write([BitConverter]::GetBytes([long](3221225472 - [BitConverter]::ToUInt32($cdx, 212) - 1048576)))
     for ($i = 0; $i -lt $sb.Length; $i++) {
         $bw.Write([byte[]]@(0xC6, 0x47, [byte]$i, $sb[$i]))         # mov byte [rdi+i], imm8
     }

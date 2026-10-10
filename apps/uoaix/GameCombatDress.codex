@@ -1,33 +1,13 @@
 Chapter: GameCombatDress
   cites Uoaix chapter GameCombat
   cites Uoaix chapter GameMobileBank
-
-  CombatBank = record { serial : Integer, owner : Integer }
-  cbd-banks : GsiState, GameShard, Integer, List CombatBank -> List CombatBank
-  cbd-banks (items) (shard) (i) (banks) = if i == 5 then banks
-    else let owner = peek-qword shard.characters (i * 160)
-    in let found = if owner == 0 then banks else cbd-bank-children items owner (world-first-child items.world owner) banks
-    in cbd-banks items shard (i + 1) found
-  cbd-bank-children : GsiState, Integer, Integer, List CombatBank -> List CombatBank
-  cbd-bank-children (items) (owner) (serial) (banks) = if serial == 0 then banks
-    else let slot = world-slot items.world serial
-    in if slot < 0 then banks else let meta = list-at items.items slot
-    in let keep = meta.serial == serial & meta.layer == 29 & peek-qword items.world.buffer (24 + slot * 80) == 2
-    in cbd-bank-children items owner (world-next-sibling items.world serial) (if keep then list-push banks (CombatBank { serial = serial, owner = owner }) else banks)
-  cbd-bank-restore : GsiState, List CombatBank, Integer -> Result Integer Text
-  cbd-bank-restore (items) (banks) (i) = if i == list-length banks then Ok 0
-    else let bank = list-at banks i
-    in when world-get items.world bank.serial
-      is Err (e) -> Err e
-      is Ok (item) -> if item.container == bank.owner then cbd-bank-restore items banks (i + 1)
-        else when world-update items.world (cb-object item item.health item.graphic item.hue bank.owner)
-          is Err (e) -> Err e
-          is Ok (_) -> cbd-bank-restore items banks (i + 1)
+  cites Uoaix chapter CharacterStylist
 
   cbd-name : Integer, Text, Integer -> Boolean
   cbd-name (buf) (name) (i) = if i == 30 then True
     else let expected = if i < text-length name then to-unicode (char-code (char-at name i)) else 0
     in peek-byte buf i == expected & cbd-name buf name (i + 1)
+ Only the stylist gives a fixture hair (layer 11, after every clothing row in cst-head), so a fixture wearing hair is styled and the pulse allocates nothing for it.
   cbd-dress : GameCombat, GsiState, Integer -> Result Integer Text
   cbd-dress (c) (items) (i) = cbd-dress-root c items (world-first-child items.world 0)
   cbd-dress-root : GameCombat, GsiState, Integer -> Result Integer Text
@@ -35,20 +15,16 @@ Chapter: GameCombatDress
     else let next = world-next-sibling items.world serial
     in let slot = world-slot items.world serial
     in if slot < 0 then Err "clothing root index invalid"
-    else if peek-qword items.world.buffer (24 + slot * 80) /= 1 then cbd-dress-root c items next
+    else if peek-qword (wi-object items.world.buffer slot) 8 /= 1 then cbd-dress-root c items next
     else let a = list-at c.actors slot
     in if not a.npc | a.serial /= serial then cbd-dress-root c items next
     else if not (cbd-name a.name "Sparring partner" 0 | cbd-name a.name "Veteran opponent" 0) then cbd-dress-root c items next
     else when world-get items.world a.serial
       is Err (_) -> cbd-dress-root c items next
-      is Ok (m) -> if m.kind /= 1 | m.health == 0 then cbd-dress-root c items next
-        else when gmb-clothe items a.serial #1517 #035F 5
+      is Ok (m) -> if m.kind /= 1 | m.health == 0 | gmb-layer items a.serial 11 0 > 0 then cbd-dress-root c items next
+        else when cst-style items a.serial cst-fighter
           is Err (e) -> Err e
-          is Ok (_) -> when gmb-clothe items a.serial #152E 0 4
-            is Err (e) -> Err e
-            is Ok (_) -> when gmb-clothe items a.serial #170F 0 3
-              is Err (e) -> Err e
-              is Ok (_) -> cbd-dress-root c items next
+          is Ok (_) -> cbd-dress-root c items next
   cbd-reply : GsiState, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
   cbd-reply (items) (result) = when result
     is Err (e) -> Err e
@@ -63,19 +39,16 @@ Chapter: GameCombatDress
     else if list-length items.items /= shard.world.capacity then Err "combat clothing capacity"
     else if items.world.buffer /= 0 & items.world.buffer /= shard.world.buffer then Err "combat clothing world binding"
     else let bound = __record-set items "world" shard.world
-    in let banks = cbd-banks items shard 0 []
     in when cb-pulse c shard input map port tick
       is Err (e) -> Err e
-      is Ok (reply) -> when cbd-bank-restore items banks 0
+      is Ok (reply) -> when cbd-dress c items 0
         is Err (e) -> Err e
-        is Ok (_) -> when cbd-dress c items 0
-          is Err (e) -> Err e
-          is Ok (_) -> cbd-reply items (Ok reply)
+        is Ok (_) -> cbd-reply items (Ok reply)
   cbd-server : Integer, Integer -> [Console, Network.Read, Network.Write] Integer
   cbd-server (port) (window) =
     let c = cb-state 64 42
     in let scene = __record-set c "scene" 1
-    in let items = gsi-new (WorldTable { buffer = 0, capacity = 64, index = 0 })
+    in let items = gsi-new ((world-view 0 64))
     in game-server-with (cb-specs 0) (gn-route (cbd-handler c items)) (cbd-pulse c items) port window
 
 Page 1

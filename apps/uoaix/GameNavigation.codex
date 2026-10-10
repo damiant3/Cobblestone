@@ -1,0 +1,52 @@
+Chapter: GameNavigation
+  cites Uoaix chapter GameHarvest
+  cites Uoaix chapter GameMoongates
+
+ UOX3 js/item/sextant.js, js/server/data/map_coordinates.js and dictionary.ENG 274, 1763, 2789: a sextant
+ (0x1057, 0x1058) in the user's own pack reports the position as degrees and minutes from the centre
+ 1323,1624 on a 5120 x 4096 world, or 5936,3112 past x 5120. The classic dungeons are the block x >= 5120,
+ y < 2304 (the Lost Lands lie below it); a sextant there answers 2789. UOX3 also refuses inside a building,
+ and this server has no building predicate.
+ UOX3 js/item/spyglass.js and 2757: a spyglass (0x14F5, 0x14F6) names both moons' phases over the user, hue
+ 0x03B2. The phases are this server's moongate moons (gmg-phase), so the spyglass and the gates agree.
+  gnv-sextant : Integer -> Boolean
+  gnv-sextant (graphic) = graphic == #1057 | graphic == #1058
+  gnv-spyglass : Integer -> Boolean
+  gnv-spyglass (graphic) = graphic == #14F5 | graphic == #14F6
+  gnv-wrap : Integer, Integer -> Integer
+  gnv-wrap (d) (span) = int-mod (d + span / 2 + span) span - span / 2
+  gnv-angle : Integer, Integer -> Text
+  gnv-angle (d) (span) = let a = (if d < 0 then 0 - d else d) * 360
+    in show (a / span) & "o " & show ((int-mod a span * 60 + span / 2) / span) & "'"
+  gnv-position : Integer, Integer -> Text
+  gnv-position (x) (y) = let lost = x >= 5120
+    in let dy = gnv-wrap (y - (if lost then 3112 else 1624)) 4096
+    in let dx = gnv-wrap (x - (if lost then 5936 else 1323)) 5120
+    in gnv-angle dy 4096 & (if dy < 0 then "N" else "S") & " " & gnv-angle dx 5120 & (if dx < 0 then "W" else "E")
+  gnv-phase-name : Integer -> Text
+  gnv-phase-name (phase) = if phase == 0 then "a full moon" else if phase == 1 then "waning gibbous"
+    else if phase == 2 then "in it's last quarter" else if phase == 3 then "waning crescent" else if phase == 4 then "a new moon"
+    else if phase == 5 then "waxing crescent" else if phase == 6 then "in it's first quarter" else "waxing gibbous"
+  gnv-say : WorldObject, Text -> List Integer
+  gnv-say (me) (text) = sip-message me.serial me.graphic 0 text
+  gnv-use : GsiState, GsiActor, WorldObject, WorldObject, Integer -> Result (Maybe GameReply) Text
+  gnv-use (items) (actor) (me) (tool) (seconds) =
+    if gnv-spyglass tool.graphic then (if not (gsi-access items actor tool) then gh-denied "That is out of reach."
+      else Ok (Just (gs-reply [gnv-say me "You peer into the heavens, seeking the moons...",
+        gnv-say me ("Trammel : " & gnv-phase-name (gmg-phase seconds False)), gnv-say me ("Felucca : " & gnv-phase-name (gmg-phase seconds True))] "spyglass")))
+    else if not (gv-owned items.world tool.serial me.serial 65) then gh-denied "That item must be in your backpack before it can be used."
+    else if me.x >= 5120 & me.y < 2304 then gh-denied "You can only use this outdoors."
+    else Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 ("You are at: " & gnv-position me.x me.y)] "sextant"))
+  gnv-handler-at : GsiState, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  gnv-handler-at (items) (shard) (input) (packet) (seconds) =
+    if list-length packet /= 5 | list-at packet 0 /= 6 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial | items.world.buffer /= shard.world.buffer then Ok None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 | not (gsi-known items serial) then Ok None
+    else when world-get items.world serial
+      is Err (_) -> Ok None
+      is Ok (tool) -> if tool.kind /= 2 | not (gnv-sextant tool.graphic | gnv-spyglass tool.graphic) then Ok None
+        else when world-get items.world input.session.serial
+          is Err (e) -> Err e
+          is Ok (me) -> gnv-use items (list-at items.actors slot) me tool seconds

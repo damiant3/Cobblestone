@@ -32,19 +32,26 @@ Chapter: GameMoongates
   gmg-followers (i) (xs) = if i == 32 then xs
     else gmg-followers (i + 1) (list-push xs (GmgFollower { serial = 0, leader = 0, following = False }))
   gmg-viewers : Integer, List GmgViewer -> List GmgViewer
-  gmg-viewers (i) (xs) = if i == 5 then xs
+  gmg-viewers (i) (xs) = if i == gmg-viewer-limit then xs
     else gmg-viewers (i + 1) (list-push xs (GmgViewer { serial = 0, connection = -1, visible = 0 }))
+ GameLinks serves at most 32 game links.
+  gmg-viewer-limit : Integer = 32
+  gmg-viewer-at : List GmgViewer, Integer, Integer, Integer -> Integer
+  gmg-viewer-at (views) (connection) (i) (best) = if i == list-length views then best
+    else if (list-at views i).connection == connection then i
+    else gmg-viewer-at views connection (i + 1) (if (list-at views i).connection < (list-at views best).connection then i else best)
   gmg-new : GameShard, GsiState, GameCombat, WalkMap -> Result GameMoongates Text
   gmg-new (game) (items) (combat) (map) = if items.world.buffer /= game.world.buffer
     | list-length combat.actors /= game.world.capacity | not (world-indexed game.world) then Err "moongate world binding"
     else Ok (GameMoongates { game = game, items = items, combat = combat, gates = gmg-gates 0,
-      followers = gmg-followers 0 (__list-with-capacity 32), viewers = gmg-viewers 0 (__list-with-capacity 5),
+      followers = gmg-followers 0 (__list-with-capacity 32), viewers = gmg-viewers 0 (__list-with-capacity gmg-viewer-limit),
       nav = tl-path-new map, path = alloc-bytes 256, sequence = 0 })
   gmg-phase : Integer, Boolean -> Integer
   gmg-phase (seconds) (felucca) = let period = if felucca then 840 else 105
     in int-mod ((int-mod (seconds / 60) period * 8 + period / 2) / period) 8
   gmg-destination : Integer, Integer -> Integer
-  gmg-destination (source) (seconds) = int-mod (source + gmg-phase seconds False + 8 - gmg-phase seconds True) 8
+  gmg-destination (source) (seconds) = let target = int-mod (source + gmg-phase seconds False + 8 - gmg-phase seconds True) 8
+    in if target == source then int-mod (source + 1) 8 else target
   gmg-time : GameClock, Integer -> Integer
   gmg-time (clock) (hour) = if not (gc-rate-valid clock.day-seconds) | hour < 0 | hour > 8760000
     | clock.phase < 0 | clock.phase >= clock.day-seconds * 100 | clock.due < 0 then -1
@@ -57,19 +64,6 @@ Chapter: GameMoongates
       is Ok (item) -> item.kind == 2 & item.graphic == #0F6C & item.container == 0 & item.amount == 1
         & item.x == gate.x & item.y == gate.y & item.z == gate.z
         & gsi-known g.items serial & not (gsi-meta g.items serial).movable
-  gmg-install-at : GameMoongates, Integer -> Result Integer Text
-  gmg-install-at (g) (i) = if i == 8 then Ok 8
-    else let p = list-at g.gates i
-    in when world-create g.game.world (WorldObject { serial = 0, kind = 2, x = p.x, y = p.y, z = p.z,
-      graphic = #0F6C, hue = 0, container = 0, amount = 1, health = 0 })
-      is Err (e) -> Err e
-      is Ok (serial) -> if gsi-register g.items serial 0 0 False False /= 0 then Err "moongate item registration"
-        else let bound = __record-set p "serial" serial in gmg-install-at g (i + 1)
-  gmg-empty : GameMoongates, Integer -> Boolean
-  gmg-empty (g) (i) = if i == 8 then True else (list-at g.gates i).serial == 0 & gmg-empty g (i + 1)
-  gmg-install : GameMoongates -> Result Integer Text
-  gmg-install (g) = if not (gmg-empty g 0) | g.game.world.capacity - world-count g.game.world < 8 then Err "moongate installation budget or existing binding"
-    else gmg-install-at g 0
   gmg-follower-valid : GameMoongates, Integer, Integer -> Boolean
   gmg-follower-valid (g) (leader) (serial) = if leader == serial | cb-slot g.game leader 0 < 0 | cb-slot g.game serial 0 >= 0 then False
     else when world-get g.game.world leader
@@ -95,18 +89,13 @@ Chapter: GameMoongates
     in let a = __record-set row "serial" serial
     in let b = __record-set row "leader" leader
     in let c = __record-set row "following" following
-    in let sequence = __record-set g "sequence" (g.sequence + 1)
-    in let touched = world-touch g.game.world in 0
-  gmg-tidy : GameMoongates, Integer -> Integer
-  gmg-tidy (g) (i) = if i == 32 then 0
+    in let sequence = __record-set g "sequence" (g.sequence + 1) in 0
+  gmg-release : GameMoongates, Integer, Integer -> Integer
+  gmg-release (g) (leader) (i) = if i == 32 then 0
     else let f = list-at g.followers i
-    in if f.serial == 0 | gmg-follower-valid g f.leader f.serial then gmg-tidy g (i + 1)
-    else if g.sequence >= gmg-limit then -1
-    else let a = __record-set f "serial" 0
-    in let b = __record-set f "leader" 0
-    in let c = __record-set f "following" False
-    in let sequence = __record-set g "sequence" (g.sequence + 1)
-    in let touched = world-touch g.game.world in gmg-tidy g (i + 1)
+    in let cleared = if f.serial == 0 | f.leader /= leader then 0
+      else let a = __record-set f "serial" 0 in let b = __record-set f "leader" 0 in let c = __record-set f "following" False in 0
+    in gmg-release g leader (i + 1)
   gmg-at : GameMoongates, WorldObject, Integer -> Integer
   gmg-at (g) (m) (i) = if i == 8 then -1 else let p = list-at g.gates i
     in if m.x == p.x & m.y == p.y & walk-abs (m.z - p.z) <= 3 then i else gmg-at g m (i + 1)
@@ -228,9 +217,8 @@ Chapter: GameMoongates
       is Ok (item) -> gmg-visible g view m (i + 1) (list-push packets (sip-ground item))
   gmg-view : GameMoongates, GameInput, GameReply -> Result GameReply Text
   gmg-view (g) (input) (reply) = if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= g.game.active then Ok reply
-    else let slot = cb-slot g.game input.session.serial 0
-    in if slot < 0 then Err "moongate viewer binding"
-    else let view = list-at g.viewers slot
+    else if cb-slot g.game input.session.serial 0 < 0 then Err "moongate viewer binding"
+    else let view = list-at g.viewers (gmg-viewer-at g.viewers input.connection 0 0)
     in let reset = if view.serial == input.session.serial & view.connection == input.connection then 0 else
       let actor = __record-set view "serial" input.session.serial
       in let link = __record-set view "connection" input.connection

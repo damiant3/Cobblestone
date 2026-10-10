@@ -1,0 +1,35 @@
+Chapter: BvtEconomyPurses
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvep-open : EuCurrency, Integer, Integer -> Integer
+  bvep-open (x) (i) (n) = if i >= n then i
+    else if eu-open x 2 (3000 + i) < 0 then i else bvep-open x (i + 1) n
+  bvep-round : EuCurrency, Integer -> Integer
+  bvep-round (x) (size) = let buf = alloc-bytes size
+    in when euc-encode (CurrencyCheckpoint { currency = x, tick = 0, sequence = 0 }) buf size
+      is Err (_) -> -1
+      is Ok (written) -> when euc-decode buf written
+        is Err (_) -> -2
+        is Ok (c) -> if c.currency.world.money.purse-count /= x.world.money.purse-count | c.currency.copper.purse-count /= x.copper.purse-count then -3
+          else if not (euv-valid c.currency) then -4
+          else (em-purse c.currency.world.money c.currency.world.money.purse-count).owner
+  bvt-economy-purses : Integer -> [Console] Integer
+  bvt-economy-purses (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("economy purses fixture: " & e) False
+    is Ok (x) -> act
+      first <- bvep-open x 0 em-purse-block
+      capped <- x.world.money.purse-count
+      grown <- eu-grow-purses x
+      second <- bvep-open x first (first + 40)
+      last <- x.world.money.purse-count
+      owner <- (em-purse x.world.money last).owner
+      kept <- bvep-round x (euc-size x)
+      a <- bvt-check ("an ungrown purse table refuses past its block: " & show capped & " purses") (capped == em-purse-block)
+      b <- bvt-check ("a grown purse table admits past 256 in all three currencies: " & show last) (grown == 2 * em-purse-block & last > em-purse-block & x.copper.purse-count == last & x.silver.purse-count == last & euv-valid x)
+      c <- bvt-check ("a currency record keeps every purse through a round trip: " & show kept) (kept == owner & owner > 0)
+      a + b + c
+    end

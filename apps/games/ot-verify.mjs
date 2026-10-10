@@ -19,20 +19,15 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { gameInstance } from '../landing/web/games/arcade.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wasmPath = process.argv[2] ||
   join(here, '..', 'landing', 'web', 'games', 'othello.wasm');
 
-const imports = {
-  wasi_snapshot_preview1: {
-    fd_write: () => { throw new Error('fd_write: the game module must not write'); },
-    fd_read: () => { throw new Error('fd_read: the game module must not read'); },
-  },
-};
 
-const inst = new WebAssembly.Instance(
-  new WebAssembly.Module(readFileSync(wasmPath)), imports);
+const inst = gameInstance(
+  new WebAssembly.Module(readFileSync(wasmPath)));
 const e = inst.exports;
 
 let pass = 0, fail = 0;

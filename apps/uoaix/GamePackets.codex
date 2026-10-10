@@ -82,17 +82,22 @@ Chapter: GamePackets
   gp-move-accepted : Integer -> List Integer
   gp-move-accepted (sequence) = [34, sequence, 1]
 
+ A character record's strength, dexterity and intelligence (stat 0, 1, 2): a value set by [attr at byte 147 + stat,
+ else the creation stat at byte 79 + stat.
+  gp-stat : Integer, Integer -> Integer
+  gp-stat (row) (stat) = let set = peek-byte row (147 + stat) in if set > 0 then set else peek-byte row (79 + stat)
   gp-status : WorldObject, Integer, Integer -> List Integer
   gp-status (mobile) (characters) (slot) =
     let base = slot * 160 + 8
-    in let strength = peek-byte characters (base + 71)
-    in let dexterity = peek-byte characters (base + 72)
-    in let intelligence = peek-byte characters (base + 73)
+    in let strength = gp-stat (characters + slot * 160) 0
+    in let dexterity = gp-stat (characters + slot * 160) 1
+    in let intelligence = gp-stat (characters + slot * 160) 2
     in let a = gp-buffer (gp-put32 (gp-put16 (gp-start 17) 66) mobile.serial) characters (base + 10) 30
     in let b = gp-put16 (gp-put16 a mobile.health) strength
     in let c = list-push (list-push (list-push b 0) 1) (peek-byte characters (base + 70))
     in let d = gp-put16 (gp-put16 (gp-put16 c strength) dexterity) intelligence
-    in let e = gp-put16 (gp-put16 (gp-put16 (gp-put16 d dexterity) dexterity) intelligence) intelligence
+    in let stamina = max 0 (dexterity - peek-byte characters (slot * 160 + 145))
+    in let e = gp-put16 (gp-put16 (gp-put16 (gp-put16 d stamina) dexterity) intelligence) intelligence
     in gp-put16 (gp-put16 (gp-put32 e 0) 0) 0
 
   gp-packet-size : Integer -> Integer
@@ -109,6 +114,10 @@ Chapter: GamePackets
     else if opcode == 52 then 10
     else if opcode == 1 then 5
     else if opcode == 131 then 39
+    else if opcode == 34 then 3
+    else if opcode == 86 then 11
+    else if opcode == 117 then 35
+    else if opcode == 147 then 98
     else 0
 
   gp-packet-length-valid : List Integer -> Boolean

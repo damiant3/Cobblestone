@@ -132,7 +132,7 @@ $failures = 0
 # allocates a little before this runs, so the landing point is approximate --
 # it does not need to be exact, because the arm then walks ~4 MB upward and the
 # hole is only 2 MB wide, so it cannot be stepped over from below.
-$firePark = $guardAddr - 6291456 - 65536
+$firePark = $guardAddr - 16777216 - 65536
 Write-Host "guard-page-test: FIRE arm (park $firePark, expect OUT OF MEMORY)"
 $fire = Invoke-Arm -Tag 'fire' -Park $firePark
 if ($null -ne $fire) {

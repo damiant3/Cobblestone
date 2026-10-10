@@ -1,0 +1,36 @@
+Chapter: EconomyFarmer
+  cites Uoaix chapter BritainProduction
+
+ The farmer works the wheat node (resource 13) at its place and mills at its own mill: the catalog's recipe
+ for flour (item 33) makes it from wheat (item 13) at the station kind it names (kind 2 in EconomyCatalog).
+  EfFarmer = record { producer : BbProducer, node : Integer, mill : Integer, recipe : Integer, place : Integer, gathered : Integer, milled : Integer }
+  efm-wheat : Integer = 13
+  efm-flour : Integer = 33
+  efm-recipe : EpWorld, Integer -> Integer
+  efm-recipe (w) (i) = if i == list-length w.catalog.recipes then 0
+    else if (list-at w.catalog.recipes i).item == efm-flour then i + 1 else efm-recipe w (i + 1)
+  efm-node : EpWorld, Integer, Integer -> Integer
+  efm-node (w) (place) (i) = if i == w.node-count then eh-source w efm-wheat place
+    else let n = list-at w.nodes i
+    in if n.resource == efm-wheat & n.place == place then i + 1 else efm-node w place (i + 1)
+  efm-new : EuCurrency, Integer, Integer -> Result EfFarmer Text
+  efm-new (x) (owner) (place) =
+    let purse = eu-open x 2 owner
+    in let actor = if purse < 1 then -1 else ep-admit x.world purse place
+    in let recipe = efm-recipe x.world 0
+    in if actor < 1 | recipe < 1 then Err "farmer actor or flour recipe refused"
+    else let mill = ep-station x.world actor (list-at x.world.catalog.recipes (recipe - 1)).station place
+    in if mill < 1 then Err "farmer mill refused"
+    else let node = efm-node x.world place 0
+    in if node < 1 then Err "farmer wheat node refused"
+    else Ok (EfFarmer { producer = bb-producer x actor, node = node, mill = mill, recipe = recipe, place = place, gathered = 0, milled = 0 })
+ Each hour the farmer mills when it holds two wheat, and otherwise works the field.
+  efm-hour : EfFarmer -> Integer
+  efm-hour (f) = let w = f.producer.currency.world
+    in let actor = f.producer.actor
+    in if ep-at (ep-actor w actor).stock efm-wheat >= 2 then
+      (let made = ep-craft w actor f.recipe f.mill in if made > 0 then let counted = __record-set f "milled" (f.milled + made) in made else 0)
+    else let result = eh-harvest w actor f.node
+    in if result > 0 then let counted = __record-set f "gathered" (f.gathered + result) in result else 0
+
+Page 1

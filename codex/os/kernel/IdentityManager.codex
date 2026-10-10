@@ -1,5 +1,6 @@
 Chapter: IdentityManager
   cites Foreword chapter Maybe
+  cites Foreword chapter Random
   cites Foreword chapter Sha256
   cites Foreword chapter Ed25519
   cites Foreword chapter Aes256
@@ -37,7 +38,9 @@ Section: Types
 Section: First-Boot Ceremony
 
   idm-first-boot : DiskFactStore, Integer -> [Console, Identity] IdmOutcome
-  idm-first-boot (store) (timestamp) = act
+  idm-first-boot (store) (timestamp) =
+    if device-seed-present idm-read-device-seed == False then IdmOutcome { idm-store = store, idm-result = idm-no-entropy }
+    else act
     let seed-bytes = idm-read-device-seed
     in act
       kb-entropy <- idm-collect-keyboard-entropy
@@ -153,7 +156,8 @@ Section: Passphrase Change
 
   idm-change-passphrase : DiskFactStore, Integer -> [Console] IdmOutcome
   idm-change-passphrase (store) (timestamp) =
-    let id-maybe = sysdb-find-identity store
+    if device-seed-present idm-read-device-seed == False then IdmOutcome { idm-store = store, idm-result = idm-no-entropy }
+    else let id-maybe = sysdb-find-identity store
     in when id-maybe
       is None -> IdmOutcome { idm-store = store, idm-result = IdmNoIdentity }
       is Just (rec) -> act
@@ -239,6 +243,8 @@ Section: Kernel Memory Interface
     in poke-byte buf-addr 3 (bit-and (bit-shru tick 24) 255)
 
 Section: Entropy Collection
+
+  idm-no-entropy : IdmResult = IdmError "no entropy: device seed absent"
 
   idm-read-device-seed : List Integer
   idm-read-device-seed = idm-peek-bytes 30576 32 0 []

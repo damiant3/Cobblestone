@@ -1,0 +1,118 @@
+Chapter: BritishFirstMineProof
+  cites Uoaix chapter CompositeScript
+  cites Uoaix chapter CompositeLineup
+
+  bfm-check : Text, Boolean -> [Console] Integer
+  bfm-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+ The ramp lets a walk from the entry (z 0) reach the mine's standing tile at
+ z 35, under the step limit.
+  bfm-fill : WalkMap, Integer -> Integer
+  bfm-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let y = map.y + i / map.width
+    in let result = walk-set-land map (map.x + int-mod i map.width) y (max 0 (min 35 ((1700 - y) / 4))) 0
+    in let restored = __heap-restore mark in bfm-fill map (i + 1)
+  bfm-vendor : GvWorld, Integer, Integer -> Integer
+  bfm-vendor (v) (actor) (i) = if i == v.vendor-count then 0
+    else if (list-at v.vendors i).actor == actor then (list-at v.vendors i).serial else bfm-vendor v actor (i + 1)
+  bfm-lot : GvWorld, Integer -> Integer
+  bfm-lot (v) (unused) = bfm-lot-from v (ep-lots-first v.currency.world.goods)
+  bfm-lot-from : GvWorld, Integer -> Integer
+  bfm-lot-from (v) (serial) = if serial == 0 then -1
+    else let lot = ep-lot v.currency.world.goods serial
+    in if lot.item == 25 & (ep-amount v.currency.world.goods lot.serial) > 0 & bfm-vendor v lot.actor 0 > 0 then serial else bfm-lot-from v (ep-lot-after v.currency.world.goods serial)
+  bfm-claim : CprState -> Integer
+  bfm-claim (s) = let at = gh-site-find s.harvest 5 cpr-mine-x cpr-mine-y cpr-mine-z 0
+    in if at < 0 then 0 else (list-at s.harvest.sites at).node
+  bfm-gold : CompositeGame, Integer -> Integer
+  bfm-gold (owner) (serial) = let v = owner.vendor
+    in let at = gv-player v serial 0
+    in if at < 0 then -1 else ep-at (ep-actor v.currency.world (list-at v.players at).actor).stock 6
+  bfm-mine : CsPlayer, Integer, Integer -> [Console, Device.Block] Integer
+  bfm-mine (p) (tool) (left) = if left == 0 then 0
+    else act
+      used <- csp-send p (csp-use tool)
+      aimed <- csp-send p (csp-target-ground p cpr-mine-x cpr-mine-y cpr-mine-z 0)
+      print-line-uni ("MINE try " & show left & " use=" & (when used is Err (e) -> e is Ok (r) -> r.note) & " target=" & (when aimed is Err (e) -> e is Ok (r) -> r.note))
+      if is-ok aimed & csp-has-op p #25 0 then left else act
+        waited <- csp-wait 3100
+        bfm-mine p tool (left - 1)
+      end
+    end
+  bfm-census : CompositeGame, Integer, Text -> [Console] Integer
+  bfm-census (owner) (serial) (tag) = let world = owner.vendor.currency.world
+    in let node = bfm-claim owner.production
+    in act
+      print-line-uni ("MINE " & tag & " node=" & show node & " owner=" & (if node > 0 then show (list-at world.nodes (node - 1)).owner else "-")
+        & " resource=" & (if node > 0 then show (list-at world.nodes (node - 1)).resource else "-") & " nodes=" & show world.node-count
+        & " sites=" & show owner.production.harvest.count & " gold-ore=" & show (bfm-gold owner serial)
+        & " census=" & (if euv-valid owner.vendor.currency then "valid" else "INVALID"))
+      if euv-valid owner.vendor.currency then 0 else 1
+    end
+  bfm-first : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  bfm-first (store) (map) (specs) = let owner = store.state in act
+    lined <- cgl-arrange owner True
+    p <- csp-new store map specs 1
+    logged <- csp-login p "Lord"
+    me <- p.input.session.serial
+    at <- gv-player owner.vendor me 0
+    actor <- (if at < 0 then 0 else (list-at owner.vendor.players at).actor)
+    node <- bfm-claim owner.production
+    a <- bfm-check "a new world has a wild gold-ore node at Britain's mine, at the crown's place, and Lord British is the crown" (is-ok logged & ga-is-british owner.checkpoint.game.accounts
+      & node > 0 & (list-at owner.vendor.currency.world.nodes (node - 1)).owner == 0 & (list-at owner.vendor.currency.world.nodes (node - 1)).resource == 6
+      & actor == owner.vendor.currency.world.mint-owner & (list-at owner.vendor.currency.world.nodes (node - 1)).place == (ep-actor owner.vendor.currency.world actor).place)
+    lot <- bfm-lot owner.vendor 0
+    vendor <- (if lot < 0 then 0 else bfm-vendor owner.vendor (ep-lot owner.vendor.currency.world.goods lot).actor 0)
+    shop <- (when world-get owner.checkpoint.game.world vendor is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
+    reached <- csp-walk-to p (list-at shop 0) (list-at shop 1) 1 200
+    sales <- owner.vendor.sale-count
+    menu <- csp-send p (csp-use vendor)
+    bought <- csp-send p (csp-buy vendor (if lot < 0 then 0 else (ep-lot owner.vendor.currency.world.goods lot).serial) 1)
+    tool <- (if owner.vendor.sale-count == sales then 0 else (list-at owner.vendor.sales sales).delivered)
+    b <- bfm-check "he buys a pickaxe from a Britain shop through vendor packets" (lot >= 0 & is-ok reached & is-ok menu & is-ok bought & tool > 0)
+    rock <- walk-set-land map cpr-mine-x cpr-mine-y cpr-mine-z (mt-mark 565 64)
+    walked <- csp-walk-to p (cpr-mine-x + 1) (cpr-mine-y + 1) 0 400
+    print-line-uni ("WALK to the mine " & (when walked is Err (e) -> e is Ok (n) -> "arrived, budget left " & show n))
+    gold <- bfm-gold owner me
+    mined <- bfm-mine p tool 24
+    c <- bfm-check "he walks to the mine and mines gold ore from it" (is-ok walked & mined > 0 & bfm-gold owner me > gold)
+    committed <- cs-commit store True
+    d <- bfm-check "the world commits" (is-ok committed)
+    e <- bfm-census owner me "first"
+    a + b + c + d + e
+  end
+  bfm-later : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  bfm-later (store) (map) (specs) = let owner = store.state in act
+    player <- list-at owner.vendor.players 0
+    nodes <- owner.vendor.currency.world.node-count
+    sites <- owner.production.harvest.count
+    p <- csp-new store map specs 2
+    resumed <- csp-resume p player.serial
+    a <- bfm-check "after a restart the mine node and his gold ore persist and the restart installs no second node" (is-ok resumed & bfm-claim owner.production > 0
+      & owner.vendor.currency.world.node-count == nodes & owner.production.harvest.count == sites & bfm-gold owner player.serial > 0)
+    b <- bfm-census owner player.serial "later"
+    a + b
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> bfm-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1520 96 224
+      is Err (e) -> bfm-check e False
+      is Ok (map) -> when walk-map-new 1408 1520 96 240
+       is Err (e) -> bfm-check e False
+       is Ok (britain) -> let filled = bfm-fill map 0 in let town-filled = bfm-fill britain 0 in act
+        opened <- us-open 0 131072
+        when opened
+          is Err (e) -> bfm-check ("store " & e) False
+          is Ok (store) -> let fresh = store.head == 0 in act
+            loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) (Just britain) None
+            when loaded
+              is Err (e) -> bfm-check ("recovery " & e) False
+              is Ok (owner) -> if fresh then bfm-first owner map specs else bfm-later owner map specs
+          end
+      end
+
+Page 1

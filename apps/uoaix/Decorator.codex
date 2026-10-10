@@ -1,0 +1,138 @@
+Chapter: Decorator
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter SkillsItemsPackets
+  cites Foreword chapter Result
+
+  DcState = record { rows : Integer, room : Integer, count : Integer }
+  dc-row-bytes : Integer = 24
+  dc-block : Integer = 64
+  dc-ceiling : Integer = 1048576
+  dc-new : Integer -> DcState
+  dc-new (unused) = DcState { rows = alloc-bytes (dc-block * dc-row-bytes), room = dc-block, count = 0 }
+  dc-serial : DcState, Integer -> Integer
+  dc-serial (s) (i) = peek-qword s.rows (i * dc-row-bytes)
+  dc-account : DcState, Integer -> Integer
+  dc-account (s) (i) = peek-qword s.rows (i * dc-row-bytes + 8)
+  dc-marked : DcState, Integer -> Boolean
+  dc-marked (s) (i) = peek-qword s.rows (i * dc-row-bytes + 16) == 1
+ A removal row (mark 2) is a hued copy of a client static the bake removes from the clients and the server's colliders.
+  dc-removal : DcState, Integer -> Boolean
+  dc-removal (s) (i) = if i < 0 then False else peek-qword s.rows (i * dc-row-bytes + 16) == 2
+  dc-removal-hue : Integer = #0026
+  dc-find : DcState, Integer, Integer -> Integer
+  dc-find (s) (serial) (i) = if i >= s.count then -1 else if dc-serial s i == serial then i else dc-find s serial (i + 1)
+  dc-due : DcState -> Boolean
+  dc-due (s) = s.room - s.count < s.room / 4 & s.room < dc-ceiling
+  dc-grow-to : DcState, Integer -> Integer
+  dc-grow-to (s) (room) = if room <= s.room then 0
+    else let fresh = alloc-bytes (room * dc-row-bytes)
+    in let copied = ws-copy s.rows fresh (s.count * dc-row-bytes) 0
+    in let a = __record-set s "rows" fresh
+    in let b = __record-set s "room" room in 0
+  dc-grow : DcState -> Integer
+  dc-grow (s) = dc-grow-to s (min dc-ceiling (s.room * 2))
+  dc-add : DcState, Integer, Integer -> Integer
+  dc-add (s) (serial) (account) = if s.count >= s.room then -1
+    else let at = s.rows + s.count * dc-row-bytes
+    in let a = poke-qword at 0 serial
+    in let b = poke-qword at 8 account
+    in let c = poke-qword at 16 0
+    in let d = __record-set s "count" (s.count + 1) in 0
+  dc-drop : DcState, Integer -> Integer
+  dc-drop (s) (serial) = let i = dc-find s serial 0
+    in if i < 0 then -1
+    else let last = s.count - 1
+    in let moved = if i == last then 0 else ws-copy (s.rows + last * dc-row-bytes) (s.rows + i * dc-row-bytes) dc-row-bytes 0
+    in let a = __record-set s "count" last in 0
+  dc-set-mark : DcState, Integer, Boolean -> Integer
+  dc-set-mark (s) (serial) (marked) = let i = dc-find s serial 0
+    in if i < 0 | dc-removal s i then -1 else let a = poke-qword s.rows (i * dc-row-bytes + 16) (if marked then 1 else 0) in 0
+  dc-marked-count : DcState, Integer, Integer -> Integer
+  dc-marked-count (s) (i) (n) = if i >= s.count then n else dc-marked-count s (i + 1) (if dc-marked s i then n + 1 else n)
+
+  dc-tail-size : DcState -> Integer
+  dc-tail-size (s) = 8 + s.count * dc-row-bytes
+  dc-write-tail : DcState, Integer -> Integer
+  dc-write-tail (s) (at) = let a = poke-qword at 0 s.count
+    in let b = ws-copy s.rows (at + 8) (s.count * dc-row-bytes) 0 in at + dc-tail-size s
+  dc-tail-length : Integer, Integer -> Integer
+  dc-tail-length (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > (room - 8) / dc-row-bytes | peek-qword at 0 > dc-ceiling then -1
+    else 8 + peek-qword at 0 * dc-row-bytes
+  dc-read-tail : DcState, Integer, Integer -> Integer
+  dc-read-tail (s) (at) (size) = if size == 0 then 0
+    else if dc-tail-length at size /= size then -1
+    else let n = peek-qword at 0
+    in let grown = dc-grow-to s (max s.room (n + n / 2 + dc-block))
+    in let a = ws-copy (at + 8) s.rows (n * dc-row-bytes) 0
+    in let b = __record-set s "count" n in 0
+
+  dc-create : DcState, GsiState, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  dc-create (s) (items) (art) (hue) (x) (y) (z) (account) =
+    if art < 1 | art > #7FFF | hue < 0 | hue > #FFFF | x < 0 | x >= 6144 | y < 0 | y >= 4096 | z < -128 | z > 127 then Err "art, hue or place out of range"
+    else if s.count >= s.room then Err "the decoration table is full until the next save grows it"
+    else let o = WorldObject { serial = 0, kind = 2, x = x, y = y, z = z, graphic = art, hue = hue, container = 0, amount = 1, health = 0 }
+    in when world-create items.world o
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register items serial 0 0 False False /= 0 then
+          (let gone = world-delete items.world serial in Err "the item could not be registered")
+        else let added = dc-add s serial account
+        in let touched = world-item-touch items.world in Ok serial
+  dc-place : DcState, GsiState, Integer, Integer, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  dc-place (s) (items) (art) (hue) (x) (y) (z) (account) = when dc-create s items art hue x y z account
+    is Err (e) -> Err e
+    is Ok (serial) -> when world-get items.world serial
+      is Err (e) -> Err e
+      is Ok (made) -> Ok (gsi-placement items made)
+  dc-place-marked : DcState, GsiState, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  dc-place-marked (s) (items) (art) (hue) (x) (y) (z) (account) = when dc-create s items art hue x y z account
+    is Err (e) -> Err e
+    is Ok (serial) -> let marked = dc-set-mark s serial True in Ok serial
+  dc-place-removal : DcState, GsiState, Integer, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  dc-place-removal (s) (items) (art) (x) (y) (z) (account) = if art > #3FFF then Err "that art is not a client static"
+    else when dc-create s items art dc-removal-hue x y z account
+      is Err (e) -> Err e
+      is Ok (serial) -> let row = dc-find s serial 0 in let a = poke-qword s.rows (row * dc-row-bytes + 16) 2
+        in when world-get items.world serial
+          is Err (e) -> Err e
+          is Ok (made) -> Ok (gsi-placement items made)
+  dc-remove : DcState, GsiState, Integer -> Result (List Integer) Text
+  dc-remove (s) (items) (serial) = if dc-find s serial 0 < 0 then Err "that is not a decoration"
+    else when world-delete items.world serial
+      is Err (e) -> Err e
+      is Ok (_) -> let dropped = dc-drop s serial in let touched = world-item-touch items.world in Ok (sip-remove serial)
+  dc-move : DcState, GsiState, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  dc-move (s) (items) (serial) (x) (y) (z) = if dc-find s serial 0 < 0 then Err "that is not a decoration"
+    else if dc-removal s (dc-find s serial 0) then Err "a removal mark stays on its static; [decor remove drops it"
+    else if x < 0 | x >= 6144 | y < 0 | y >= 4096 | z < -128 | z > 127 then Err "place out of range"
+    else when world-get items.world serial
+      is Err (e) -> Err e
+      is Ok (o) -> when world-update items.world (__record-set (__record-set (__record-set o "x" x) "y" y) "z" z)
+        is Err (e) -> Err e
+        is Ok (_) -> let touched = world-item-touch items.world in when world-get items.world serial
+          is Err (e) -> Err e
+          is Ok (moved) -> Ok (gsi-placement items moved)
+  dc-baked : DcState, GsiState, List Integer, Integer, Integer -> Integer
+  dc-baked (s) (items) (serials) (i) (done) = if i >= list-length serials then done
+    else let serial = list-at serials i
+    in let row = dc-find s serial 0
+    in let gone = if row < 0 | not (dc-marked s row | dc-removal s row) then -1 else (when world-delete items.world serial is Err (_) -> -1 is Ok (_) -> dc-drop s serial)
+    in dc-baked s items serials (i + 1) (if gone == 0 then done + 1 else done)
+
+  dc-marked-json : DcState, WorldTable, Integer, Text -> Text
+  dc-marked-json (s) (world) (i) (out) = if i >= s.count then "[" & out & "]"
+    else if not (dc-marked s i) then dc-marked-json s world (i + 1) out
+    else when world-get world (dc-serial s i)
+      is Err (_) -> dc-marked-json s world (i + 1) out
+      is Ok (o) -> dc-marked-json s world (i + 1) ((if out == "" then "" else out & ",")
+        & "{\"serial\":" & show o.serial & ",\"art\":" & show o.graphic & ",\"hue\":" & show o.hue & ",\"x\":" & show o.x
+        & ",\"y\":" & show o.y & ",\"z\":" & show o.z & ",\"account\":" & show (dc-account s i) & "}")
+  dc-removed-json : DcState, WorldTable, Integer, Text -> Text
+  dc-removed-json (s) (world) (i) (out) = if i >= s.count then "[" & out & "]"
+    else if not (dc-removal s i) then dc-removed-json s world (i + 1) out
+    else when world-get world (dc-serial s i)
+      is Err (_) -> dc-removed-json s world (i + 1) out
+      is Ok (o) -> dc-removed-json s world (i + 1) ((if out == "" then "" else out & ",")
+        & "{\"serial\":" & show o.serial & ",\"art\":" & show o.graphic & ",\"x\":" & show o.x
+        & ",\"y\":" & show o.y & ",\"z\":" & show o.z & ",\"account\":" & show (dc-account s i) & "}")

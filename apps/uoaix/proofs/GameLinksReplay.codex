@@ -46,8 +46,15 @@ Chapter: GameLinksReplay
     failure <- gl-close (glr-disconnect seen True) owner 1
     prevented <- gl-handle (glr-refuse seen) owner 0 [115,8]
     f <- glr-check "disconnect failure latches owner fault and refuses later admission" (failure == -1 & owner.fault & is-err prevented & list-at seen 0 == 1 & owner.server.game.active == 0 & two.session.phase == 2)
-    a+b+c+d+e+f
+    redraw <- gl-queue owner 3 (gs-reply (glr-packets 270 True []) "death redraw")
+    drained <- __record-set (list-at owner.server.links.slots 3).tx "offset" (list-at owner.server.links.slots 3).tx.used
+    flood <- gl-queue owner 3 (gs-reply (glr-packets (gl-reply-packets + 1) False []) "flood")
+    g <- glr-check "a 270-packet death redraw queues whole and the packet cap still refuses past its bound" (is-ok redraw & (when redraw is Err (_) -> False is Ok (n) -> n == 270 * 19) & is-err flood)
+    a+b+c+d+e+f+g
   end
+  glr-packets : Integer, Boolean, List (List Integer) -> List (List Integer)
+  glr-packets (left) (item) (out) = if left == 0 then out
+    else glr-packets (left - 1) item (list-push out (if item then [#1A,0,19,#40,0,0,1,#0E,#ED,5,#78,6,#80,0,0,0,0,0,0] else [85]))
   opening : [Console, Network.Read, Network.Write] Integer = act
     none <- net-driver-bind-none 0
     arena <- nc-set-acquire (nc-pool-cell process-get-pid)

@@ -1,0 +1,49 @@
+Chapter: BvtCompositeGrow
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ A composite founded on a 512-slot world, as cg-new founds one on world-max-objects.
+  bcg-small : Integer -> Result CompositeGame Text
+  bcg-small (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> cg-founded game vendor (gsi-new game.world)
+  bcg-sized : CompositeGame, Integer -> Boolean
+  bcg-sized (owner) (n) = owner.items.world.capacity == n & owner.checkpoint.game.world.capacity == n
+    & list-length owner.combat.actors == n & sa-capacity owner.combat.positions == n & sa-capacity owner.combat.active == n
+    & sa-capacity owner.combat.slain == n & list-length owner.items.items == n & sa-capacity owner.items.looted == n
+    & sa-capacity owner.active.concealed == n & sa-capacity owner.active.picks == n & list-length owner.view.seen == n
+    & sa-capacity owner.view.visible == n & sa-capacity owner.decay == n
+    & (when owner.magic is None -> True is Just (m) -> list-length m.actors == n & sa-capacity m.active == n)
+  bcg-grows : Integer -> Boolean
+  bcg-grows (unused) = when bcg-small 0
+    is Err (_) -> False
+    is Ok (owner) -> if not (bcg-sized owner 512) then False
+      else when cg-grow owner
+        is Err (_) -> False
+        is Ok (cap) -> cap == 768 & bcg-sized owner 768 & peek-qword (sa-at owner.combat.positions 767) 0 == -1
+          & peek-qword (sa-at owner.combat.positions 600) 0 == -1 & ws-table-valid owner.items.world
+  bcg-item : Integer -> WorldObject
+  bcg-item (i) = WorldObject { serial = 0, kind = 2, x = 1000 + int-mod i 200, y = 1000 + i / 200, z = 0, graphic = #0EED, hue = 0, container = 0, amount = 1, health = 0 }
+  bcg-fill : WorldTable, Integer -> Integer
+  bcg-fill (w) (i) = if w.capacity - world-count w < 256 then i
+    else when world-create w (bcg-item i) is Err (_) -> -1 is Ok (_) -> bcg-fill w (i + 1)
+ Growth is due only once fewer than a page of slots are free, and one growth clears it.
+  bcg-due : Integer -> Boolean
+  bcg-due (unused) = when bcg-small 0
+    is Err (_) -> False
+    is Ok (owner) -> let before = cg-grow-due owner
+      in let filled = bcg-fill owner.items.world 0
+      in let due = cg-grow-due owner
+      in when cg-grow owner
+        is Err (_) -> False
+        is Ok (cap) -> not before & filled > 0 & due & cap == 768 & not (cg-grow-due owner)
+  bvt-composite-grow : Integer -> [Console] Integer
+  bvt-composite-grow (unused) = act
+    a <- bvt-check "a 512-slot composite grows to 768 and every per-slot table, list and slot array follows (cg-grow)" (bcg-grows 0)
+    b <- bvt-check "growth is due once fewer than a page of slots are free, not before, and one growth clears it (cg-grow-due)" (bcg-due 0)
+    a + b
+  end

@@ -1,0 +1,100 @@
+Chapter: CompositeResidentRemovalProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositeRemoval
+
+  crr-check : Text, Boolean -> [Console] Integer
+  crr-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  crr-fill : WalkMap, Integer -> Integer
+  crr-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in crr-fill map (i + 1)
+  crr-data : Integer -> Integer
+  crr-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  crr-ticks : CompositeGame, WalkMap, Integer, Integer, Integer -> Integer
+  crr-ticks (owner) (map) (watcher) (tick) (left) = if left == 0 then tick
+    else when cg-world-tick owner owner.checkpoint.game map watcher tick
+      is Err (_) -> -1
+      is Ok (_) -> crr-ticks owner map watcher (tick + 100) (left - 1)
+  crr-valid : CompositeGame, WalkMap -> Boolean
+  crr-valid (owner) (britain) = euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1 & gvsc-valid owner.vendor
+    & (when owner.town is None -> False is Just (t) -> tlc-valid t britain)
+  crr-first : CompositeOwner, WalkMap, WalkMap -> [Console, Device.Block] Integer
+  crr-first (store) (map) (britain) = let owner = store.state in act
+    worked <- crr-ticks owner map (list-at owner.vendor.vendors 0).serial 100 7200
+    a <- crr-check "a working day runs before the removal" (worked > 0)
+    when owner.town
+      is None -> crr-check "townsfolk bound" False
+      is Just (t) -> let r = list-at t.residents 0
+        in let p = tf-person t.people r.person
+        in let serial = p.world-serial
+        in let owners = owner.vendor.owner-count
+        in act
+          removed <- crm-remove store owner.checkpoint.game (gn-input 0) serial
+          gone <- ((when removed is Err (_) -> False is Ok (v) -> v.note == "british:remove") & p.alive == 0 & world-slot owner.checkpoint.game.world serial < 0
+            & gv-owner owner.vendor serial 0 < 0 & owner.vendor.owner-count == owners - 1 & (list-at r.clothes 0).serial == 0 & crr-valid owner britain)
+          print-line-uni ("RESIDENT note=" & (when removed is Err (e) -> "Err " & e is Ok (v) -> v.note) & " alive=" & show p.alive & " slot=" & show (world-slot owner.checkpoint.game.world serial)
+            & " owner=" & show (gv-owner owner.vendor serial 0) & " owners=" & show owner.vendor.owner-count & "/" & show owners & " cloth=" & show (list-at r.clothes 0).serial
+            & " euv=" & (if euv-valid owner.vendor.currency then "1" else "0") & " census=" & (if ep-census owner.vendor.currency.world 1 then "1" else "0")
+            & " gvsc=" & (if gvsc-valid owner.vendor then "1" else "0") & " tlc=" & (when owner.town is None -> "none" is Just (t) -> if tlc-valid t britain then "1" else "0"))
+          b <- crr-check "[remove on a resident: the body, its clothes and its owner row go, the person is dead and every validator holds" gone
+          again <- crm-remove store owner.checkpoint.game (gn-input 0) serial
+          c <- crr-check "the removed resident cannot be removed twice" (when again is Err (_) -> False is Ok (v) -> v.note == "british:refused")
+          later <- crr-ticks owner map (list-at owner.vendor.vendors 0).serial (100 + 720000) 7200
+          d <- crr-check "the next working day runs headless with two residents and every validator holds" (later > 0 & crr-valid owner britain)
+          committed <- cs-commit store True
+          print-line-uni ("COMMIT " & (when committed is Err (x) -> "Err " & x is Ok (_) -> "ok"))
+          e <- crr-check "the world commits" (is-ok committed)
+          a + b + c + d + e
+        end
+  end
+  crr-later : CompositeOwner, WalkMap, WalkMap -> [Console, Device.Block] Integer
+  crr-later (store) (map) (britain) = let owner = store.state in act
+    a <- crr-check "the restart restores the world with the resident still dead" (when owner.town is None -> False is Just (t) -> t.count == 3 & (tf-person t.people (list-at t.residents 0).person).alive == 0 & (tf-person t.people (list-at t.residents 1).person).alive == 1)
+    worked <- crr-ticks owner map (list-at owner.vendor.vendors 0).serial 100 7200
+    b <- crr-check "a working day runs after the restart and every validator holds" (worked > 0 & crr-valid owner britain)
+    a + b
+  end
+
+  opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
+    is Err (e) -> crr-check e False
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+     is Err (e) -> crr-check e False
+     is Ok (britain) -> let filled = crr-fill map 0
+      in let town-filled = crr-fill britain 0
+      in let data = crr-data 0
+      in when wd-read data 240 map map.stride
+       is Err (e) -> crr-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> crr-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration }) (Just britain) None
+       when loaded
+        is Err (e) -> crr-check ("recovery " & e) False
+        is Ok (owner) -> let seeded = cg-seed-gold owner.state in when cg-town-doors owner.state data 240
+         is Err (e) -> crr-check ("town doors " & e) False
+         is Ok (_) -> if fresh then crr-first owner map britain else crr-later owner map britain
+      end
+    end
+
+Page 1

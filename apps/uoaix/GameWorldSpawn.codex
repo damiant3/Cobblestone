@@ -1,6 +1,7 @@
 Chapter: GameWorldSpawn
   cites Uoaix chapter WorldSpawnTypes
   cites Uoaix chapter GameMonster
+  cites Uoaix chapter WorldSpawnRenown
 
  Modified UOX3 CSpawnRegion::DoRegionSpawn/RegionSpawnChar, GPL-2.0-or-later.
  Copyright 1997, 98 Marcus Rating (Cironian). License: ports/UOX3-LICENSE.txt.
@@ -8,29 +9,153 @@ Chapter: GameWorldSpawn
  Copyright 2026 SphereServer development team. License: Sphere-LICENSE.txt.
 
   WorldSpawnSlot = record { serial : Integer, region : Integer, profile : Integer,
-    direction : Integer, due : Integer, visible : Boolean }
-  GameWorldSpawn = record { catalog : WsCatalog, combat : GameCombat,
+    direction : Integer, due : Integer, seen : Integer, sector : Integer, next : Integer, visit : Integer, engaged : Integer,
+    follow : Integer, owner : Integer, order : Integer, goal-x : Integer, goal-y : Integer, goal-steps : Integer, summoned : Integer, actor : Integer, stepped : Integer, aim : Integer, foe : Integer, ward : Integer }
+  GameWorldSpawn = record { catalog : WsCatalog, combat : GameCombat, steps : Integer, fast : Integer,
     slots : List WorldSpawnSlot, populations : Integer, deadlines : Integer,
-    connection : Integer, due : Integer, cursor : Integer }
+    links : List Integer, viewer : Integer, due : Integer, cursor : Integer, unseen : Integer,
+    heads : Integer, lists : Integer, stamp : Integer, fights : Integer, shortfalls : Integer, prey : (Integer, Integer, Integer -> Integer), spared : (Integer -> Boolean), wheeled : Boolean,
+    area-heads : Integer, area-links : Integer }
+  gws-prey-none : Integer, Integer, Integer -> Integer
+  gws-prey-none (attacker) (x) (y) = 0
+ A serial a wild creature never takes as its target; the composite spares its town workers (root for Damian, 2026-10-09).
+  gws-spared-none : Integer -> Boolean
+  gws-spared-none (serial) = False
+ A 64-tile sector is wider than the 37-tile view, so a view touches at most 2 x 2 sectors;
+ 112 x 64 sectors cover the 7168 x 4096 map.
+  gws-sight : Integer = 18
+  gws-sector-size : Integer = 64
+  gws-columns : Integer = 112
+  gws-rows : Integer = 64
+  gws-band : Integer, Integer -> Integer
+  gws-band (v) (count) = min (count - 1) (max 0 v / gws-sector-size)
+  gws-sector : Integer, Integer -> Integer
+  gws-sector (x) (y) = gws-band y gws-rows * gws-columns + gws-band x gws-columns
+  gws-unlink-walk : GameWorldSpawn, Integer, Integer -> Integer
+  gws-unlink-walk (g) (prev) (i) = let p = list-at g.slots prev
+    in if p.next == 0 then 0
+    else if p.next == i + 1 then let skipped = __record-set p "next" (list-at g.slots i).next in 0
+    else gws-unlink-walk g (p.next - 1) i
+  gws-unlink : GameWorldSpawn, Integer -> Integer
+  gws-unlink (g) (i) = let slot = list-at g.slots i
+    in if slot.sector < 0 then 0
+    else let head = peek-qword g.heads (slot.sector * 8)
+    in let removed = if head == i + 1 then poke-qword g.heads (slot.sector * 8) slot.next
+      else if head == 0 then 0 else gws-unlink-walk g (head - 1) i
+    in let a = __record-set slot "sector" (0 - 1)
+    in let b = __record-set slot "next" 0 in 0
+  gws-file : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gws-file (g) (i) (x) (y) = let slot = list-at g.slots i
+    in let sector = gws-sector x y
+    in if slot.sector == sector then 0
+    else let out = gws-unlink g i
+    in let a = __record-set slot "sector" sector
+    in let b = __record-set slot "next" (peek-qword g.heads (sector * 8))
+    in let c = poke-qword g.heads (sector * 8) (i + 1) in 1
+  gws-refile : GameWorldSpawn, WorldTable, Integer -> Integer
+  gws-refile (g) (world) (i) = let slot = list-at g.slots i
+    in if slot.serial == 0 then gws-unlink g i
+    else when world-get world slot.serial
+      is Err (_) -> 0
+      is Ok (m) -> gws-file g i m.x m.y
+  gws-reindex : GameWorldSpawn, WorldTable -> Integer
+  gws-reindex (g) (world) = let heads = gws-zero g.heads 0 (gws-columns * gws-rows)
+    in let lists = gws-zero g.lists 0 (list-length g.links * (list-length g.slots + 1))
+    in let fights = gws-zero g.fights 0 (list-length g.slots + 1)
+    in gws-reindex-slots g world 0
+  gws-reindex-slots : GameWorldSpawn, WorldTable, Integer -> Integer
+  gws-reindex-slots (g) (world) (i) = if i == list-length g.slots then 0
+    else let slot = list-at g.slots i
+    in let a = __record-set slot "sector" (0 - 1)
+    in let b = __record-set slot "next" 0
+    in let c = __record-set slot "engaged" 0
+    in let filed = gws-refile g world i
+    in gws-reindex-slots g world (i + 1)
+  gws-list : GameWorldSpawn -> Integer
+  gws-list (g) = g.lists + g.viewer * (list-length g.slots + 1) * 8
+ UOX3 cServerData.cpp:667 and :931: an NPC aggroes within CombatMaxNpcAggroRange (10 tiles) and chases at
+ NPCRunningSpeed (0.3 s a step); IsValidAttackTarget (ai.cpp:66) refuses a hidden target.
+  gws-aggro : Integer = 10
+  gws-chase-ms : Integer = 300
+ A follower more than 3 tiles behind its master runs at a player's on-foot run (ServUO Mobile.RunFoot, 0.2 s a step)
+ until it is close, then walks at WalkFoot (0.4 s) (Damian, 2026-10-09: "make sure followers will run to catch up").
+  gws-run-ms : Integer = 200
+  gws-walk-ms : Integer = 400
+  gws-slot-seen : GameWorldSpawn, WorldSpawnSlot -> Boolean
+  gws-slot-seen (g) (slot) = bit-and slot.seen (bit-shl 1 g.viewer) /= 0
+  gws-slot-mark : GameWorldSpawn, WorldSpawnSlot, Boolean -> Integer
+  gws-slot-mark (g) (slot) (on) = let bit = bit-shl 1 g.viewer
+    in let kept = __record-set slot "seen" (if on then bit-or slot.seen bit else bit-xor (bit-or slot.seen bit) bit) in 0
   gws-zero : Integer, Integer, Integer -> Integer
   gws-zero (buf) (i) (count) = if i == count then 0
     else let zero = poke-qword buf (i * 8) 0 in gws-zero buf (i + 1) count
   gws-slots : Integer, List WorldSpawnSlot -> List WorldSpawnSlot
   gws-slots (left) (xs) = if left == 0 then xs
     else gws-slots (left - 1) (list-push xs (WorldSpawnSlot {
-      serial = 0, region = -1, profile = -1, direction = 0, due = 0, visible = False }))
+      serial = 0, region = -1, profile = -1, direction = 0, due = 0, seen = 0, sector = -1, next = 0, visit = 0, engaged = 0,
+      follow = 0, owner = 0, order = 0, goal-x = 0, goal-y = 0, goal-steps = 0, summoned = 0, actor = 0, stepped = 0, aim = 0, foe = 0, ward = 0 }))
   gws-new : WsCatalog, GameCombat, Integer -> Result GameWorldSpawn Text
   gws-new (catalog) (combat) (capacity) =
     let count = list-length catalog.regions
-    in if capacity < 1 | capacity > 256 | capacity >= list-length combat.actors
+    in if capacity < 1 | capacity >= list-length combat.actors
       | count < 1 | count > 1024 then Err "world spawn capacity"
     else let populations = alloc-bytes (count * 8)
     in let deadlines = alloc-bytes (count * 8)
+    in let shortfalls = gws-boot-marks (alloc-bytes (count * 8)) 0 count
+    in let heads = alloc-bytes (gws-columns * gws-rows * 8)
+    in let lists = alloc-bytes (gm-link-limit * (capacity + 1) * 8)
+    in let fights = alloc-bytes ((capacity + 1) * 8)
+    in let e = gws-zero fights 0 (capacity + 1)
     in let a = gws-zero populations 0 count
     in let b = gws-zero deadlines 0 count
-    in Ok (GameWorldSpawn { catalog = catalog, combat = combat,
+    in let c = gws-zero heads 0 (gws-columns * gws-rows)
+    in let d = gws-zero lists 0 (gm-link-limit * (capacity + 1))
+    in let area-heads = alloc-bytes (gws-columns * gws-rows * 8)
+    in let f = gws-zero area-heads 0 (gws-columns * gws-rows)
+    in let area-links = alloc-bytes (max 1 (gws-area-count catalog.regions 0 0) * 16)
+    in let filed = gws-area-index area-heads area-links catalog.regions (list-length catalog.regions - 1) 0
+    in Ok (GameWorldSpawn { catalog = catalog, combat = combat, steps = 0, fast = 0,
       slots = gws-slots capacity (__list-with-capacity capacity),
-      populations = populations, deadlines = deadlines, connection = -1, due = 0, cursor = 0 })
+      populations = populations, deadlines = deadlines,
+      links = gm-links gm-link-limit (__list-with-capacity gm-link-limit), viewer = 0, due = 0, cursor = 0, unseen = 0,
+      heads = heads, lists = lists, stamp = 0, fights = fights, shortfalls = shortfalls, prey = gws-prey-none, spared = gws-spared-none, wheeled = False,
+      area-heads = area-heads, area-links = area-links })
+ Every region is filed in each sector its area touches, last region first so a sector lists its regions in catalog
+ order: area-heads holds a sector's first entry + 1, and an entry is 16 bytes, the region's index then the next entry + 1.
+  gws-area-span : WsRect -> Integer
+  gws-area-span (a) = (gws-band a.x2 gws-columns - gws-band a.x1 gws-columns + 1) * (gws-band a.y2 gws-rows - gws-band a.y1 gws-rows + 1)
+  gws-area-count : List WsRegion, Integer, Integer -> Integer
+  gws-area-count (regions) (i) (n) = if i == list-length regions then n
+    else gws-area-count regions (i + 1) (n + max 0 (gws-area-span (list-at regions i).area))
+  gws-area-file : Integer, Integer, Integer, Integer, Integer -> Integer
+  gws-area-file (heads) (links) (sector) (region) (k) = let a = poke-qword links (k * 16) region
+    in let b = poke-qword links (k * 16 + 8) (peek-qword heads (sector * 8))
+    in let c = poke-qword heads (sector * 8) (k + 1) in k + 1
+  gws-area-cells : Integer, Integer, WsRect, Integer, Integer, Integer, Integer -> Integer
+  gws-area-cells (heads) (links) (a) (region) (column) (row) (k) = if row > gws-band a.y2 gws-rows then k
+    else if column > gws-band a.x2 gws-columns then gws-area-cells heads links a region (gws-band a.x1 gws-columns) (row + 1) k
+    else gws-area-cells heads links a region (column + 1) row (gws-area-file heads links (row * gws-columns + column) region k)
+  gws-area-index : Integer, Integer, List WsRegion, Integer, Integer -> Integer
+  gws-area-index (heads) (links) (regions) (i) (k) = if i < 0 then k
+    else let a = (list-at regions i).area
+    in gws-area-index heads links regions (i - 1) (gws-area-cells heads links a i (gws-band a.x1 gws-columns) (gws-band a.y1 gws-rows) k)
+  gws-fit-links : GameWorldSpawn, WorldTable, Integer -> Integer
+  gws-fit-links (g) (world) (n) = if list-length g.links >= n then 0
+    else let linked = __record-set g "links" (gm-links (n - list-length g.links) g.links)
+    in let lists = __record-set g "lists" (alloc-bytes (n * (list-length g.slots + 1) * 8))
+    in gws-reindex g world
+  gws-used : GameWorldSpawn, Integer -> Integer
+  gws-used (g) (i) = if i >= list-length g.slots then 0 else (if (list-at g.slots i).serial /= 0 then 1 else 0) + gws-used g (i + 1)
+ Spawn slots grow at the growth point once fewer than a quarter are free (the regions' population targets bound how many
+ fill), and stay below the combat table (UoaixDynamicTables.md stage 7); the link and fight buffers are rebuilt.
+  gws-due : GameWorldSpawn -> Boolean
+  gws-due (g) = list-length g.slots - gws-used g 0 < list-length g.slots / 4 & list-length g.slots * 2 < list-length g.combat.actors
+  gws-grow : GameWorldSpawn, WorldTable -> Integer
+  gws-grow (g) (world) = let capacity = list-length g.slots * 2
+    in let slots = __record-set g "slots" (gws-slots (capacity - list-length g.slots) g.slots)
+    in let lists = __record-set g "lists" (alloc-bytes (list-length g.links * (capacity + 1) * 8))
+    in let fights = __record-set g "fights" (alloc-bytes ((capacity + 1) * 8))
+    in let rebuilt = gws-reindex g world in capacity
   gws-in : WsRect, Integer, Integer -> Boolean
   gws-in (r) (x) (y) = x >= r.x1 & x <= r.x2 & y >= r.y1 & y <= r.y2
   gws-excluded : List WsRect, Integer, Integer, Integer -> Boolean
@@ -42,7 +167,7 @@ Chapter: GameWorldSpawn
   gws-occupied-at (world) (serial) = if serial == 0 then False
     else let slot = world-slot world serial
     in if slot < 0 then True
-    else if peek-qword world.buffer (24 + slot * 80) == 1 then True
+    else if peek-qword (wi-object world.buffer slot) 8 == 1 then True
     else gws-occupied-at world (world-tile-next world serial)
   gws-occupied : WorldTable, Integer, Integer -> Boolean
   gws-occupied (world) (x) (y) = not (world-indexed world)
@@ -103,7 +228,7 @@ Chapter: GameWorldSpawn
       is Err (_) -> gws-place terrain g shard map region profile (attempt + 1)
       is Ok (z) ->
         let free = gws-free g.slots 0
-        in if free < 0 | world-count shard.world >= shard.world.capacity then Ok 0
+        in if free < 0 | world-room shard.world <= 0 then Ok 0
         else when world-create shard.world (__record-set (gs-mobile 0 x y z p.body (gws-roll g.combat p.hue p.hue-high)) "health" (gws-roll g.combat p.hits-low p.hits-high))
           is Err (e) -> Err e
           is Ok (serial) ->
@@ -115,9 +240,100 @@ Chapter: GameWorldSpawn
             in let c = __record-set slot "profile" profile
             in let d = __record-set slot "direction" (cb-random g.combat 8)
             in let e = __record-set slot "due" (g.combat.tick + gm-ticks 1000)
-            in let f = __record-set slot "visible" False
+            in let f = __record-set slot "seen" 0
+            in let filed = gws-file g free x y
             in let population = poke-qword g.populations (region * 8) (peek-qword g.populations (region * 8) + 1)
+            in let armed = gws-arm g free
             in Ok serial
+ Creatures only Magery summons, from ServUO's pre-SE Mobiles (BladeSpirits, EnergyVortex, BlackBear), appended after
+ the generated catalog so its revision, and every saved spawn, stays valid. The 1.25 client animates no body 164, so the
+ energy vortex is drawn as Body.def's substitute, body 13 at hue 20, as the importer does for a catalog body.
+  gws-summon-profile : Text, Text, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> WsProfile
+  gws-summon-profile (key) (name) (body) (hue) (str-low) (str-high) (dex-low) (dex-high) (hits-low) (hits-high) (damage-low) (damage-high) (skill) (ai) =
+    WsProfile { key = key, name = name, body = body, hue = hue, hue-high = hue, water = False,
+      strength-low = str-low, strength-high = str-high, dex-low = dex-low, dex-high = dex-high,
+      hits-low = hits-low, hits-high = hits-high, damage-low = damage-low, damage-high = damage-high,
+      skill-low = skill, skill-high = skill, tactics-low = skill, tactics-high = skill, ai = ai, taming = 0 }
+  gws-summon-profiles : Integer -> List WsProfile
+  gws-summon-profiles (unused) = [gws-summon-profile "bladespirit" "a blade spirit" 574 0 150 150 150 150 80 80 10 14 900 2,
+    gws-summon-profile "energyvortex" "an energy vortex" 13 20 200 200 200 200 70 70 14 17 1200 2,
+    gws-summon-profile "blackbear" "a black bear" 211 0 76 100 56 75 46 60 4 10 500 6,
+    gws-tamed (gws-summon-profile "cat" "a cat" 201 0 9 9 35 35 6 6 1 1 50 0) 1,
+    gws-tamed (gws-summon-profile "dog" "a dog" 217 0 27 37 28 43 17 22 4 7 250 0) 1,
+    gws-tamed (gws-summon-profile "packhorse" "a pack horse" 291 0 44 120 36 55 61 80 5 11 370 0) 291,
+    gws-tamed (gws-summon-profile "packllama" "a pack llama" 292 0 52 80 36 55 50 50 2 6 240 0) 291]
+ The stablemasters' animals the generated catalog lacks (ServUO Mobiles/Normal Cat, Dog, PackHorse, PackLlama; skill is
+ the midpoint of Wrestling and Tactics in tenths, taming MinTameSkill in tenths, at least 1). Bodies 201, 217, 291 and 292
+ animate in the 1.25 ANIM.IDX.
+  gws-tamed : WsProfile, Integer -> WsProfile
+  gws-tamed (p) (taming) = __record-set p "taming" taming
+  gws-with-summons : WsCatalog -> WsCatalog
+  gws-with-summons (c) = WsCatalog { revision = c.revision, profiles = c.profiles & gws-summon-profiles 0, groups = c.groups, regions = c.regions }
+  gws-profile-key : GameWorldSpawn, Text, Integer -> Integer
+  gws-profile-key (g) (key) (i) = if i == list-length g.catalog.profiles then -1
+    else if (list-at g.catalog.profiles i).key == key then i else gws-profile-key g key (i + 1)
+ ServUO BaseCreature.Summon: a summoned creature has no region, an owner it follows (0 for one that answers to nobody)
+ and the tick its summoning ends; the spawn pass dismisses it then.
+  gws-forever : Integer = 1000000000000000
+  gws-claim-profile : GameWorldSpawn, Text, Integer -> Integer
+  gws-claim-profile (g) (name) (i) = if i >= list-length g.catalog.profiles then 0 - 1
+    else let p = list-at g.catalog.profiles i
+    in if p.taming > 0 & (p.name == ("a " & name) | p.name == ("an " & name) | p.key == name) then i else gws-claim-profile g name (i + 1)
+ The royal stable (UOAIX-156, Damian 2026-10-09: "royal stablemaster needs wryms, drakes, and ancientwyrms") gives Lord British any
+ creature its name or key names, tameable or not (the shadow and ancient wyrms are not), and knows a drake by its colour.
+  gws-royal-key : Text -> Text
+  gws-royal-key (name) = if name == "red drake" then "reddrake" else if name == "gray drake" | name == "grey drake" then "graydrake"
+    else if name == "white wyrm" then "whitewyrm" else if name == "shadow wyrm" then "shadowwyrm" else if name == "ancient wyrm" then "ancientwyrm" else name
+  gws-royal-in : WsCatalog, Text, Integer -> Integer
+  gws-royal-in (c) (name) (i) = if i >= list-length c.profiles then 0 - 1
+    else let p = list-at c.profiles i
+    in if p.key == gws-royal-key name | p.name == ("a " & name) | p.name == ("an " & name) then i else gws-royal-in c name (i + 1)
+  gws-royal-profile : GameWorldSpawn, Text -> Integer
+  gws-royal-profile (g) (name) = gws-royal-in g.catalog name 0
+  gws-summon : GameWorldSpawn, GameShard, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  gws-summon (g) (shard) (profile) (x) (y) (z) (owner) (until) =
+    let free = gws-free g.slots 0
+    in if profile < 0 | profile >= list-length g.catalog.profiles | until <= g.combat.tick then Err "summon profile or duration"
+    else if free < 0 | world-room shard.world <= 0 then Err "summon capacity"
+    else let p = list-at g.catalog.profiles profile
+    in when world-create shard.world (__record-set (gs-mobile 0 x y z p.body (gws-roll g.combat p.hue p.hue-high)) "health" (gws-roll g.combat p.hits-low p.hits-high))
+      is Err (e) -> Err e
+      is Ok (serial) -> let bound = gws-profile g shard serial p
+        in if bound /= 0 then let removed = world-delete shard.world serial in Err "summon combat binding"
+        else let slot = list-at g.slots free
+        in let a = __record-set slot "serial" serial
+        in let b = __record-set slot "region" -1
+        in let c = __record-set slot "profile" profile
+        in let d = __record-set slot "direction" (cb-random g.combat 8)
+        in let e = __record-set slot "due" g.combat.tick
+        in let f = __record-set slot "seen" 0
+        in let h = __record-set slot "owner" owner
+        in let o = __record-set slot "order" gws-order-follow
+        in let uncommanded = gws-uncommand slot
+        in let s = __record-set slot "summoned" until
+        in let filed = gws-file g free x y
+        in let armed = gws-arm g free in Ok serial
+ ServUO ControlSlots (pre-SE) of the creatures a player can own: a daemon 5, a fire elemental 4, a water elemental 3,
+ an air or earth elemental 2, any other 1. A creature answering to nobody counts against no one.
+  gws-control-slots : Text -> Integer
+  gws-control-slots (key) = if key == "daemon" | key == "armeddaemon" then 5 else if key == "fireele" then 4
+    else if key == "waterele" then 3 else if key == "airele" | key == "earthele" then 2 else 1
+  gws-followers : GameWorldSpawn, WorldTable, Integer, Integer -> Integer
+  gws-followers (g) (world) (owner) (i) = if i == list-length g.slots then 0
+    else let s = list-at g.slots i
+    in (if owner > 0 & s.serial /= 0 & s.owner == owner & world-slot world s.serial >= 0 then gws-control-slots (list-at g.catalog.profiles s.profile).key else 0) + gws-followers g world owner (i + 1)
+  gws-summon-key : GameWorldSpawn, Integer -> Text
+  gws-summon-key (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then "" else if (list-at g.slots i).summoned == 0 then "" else (list-at g.catalog.profiles (list-at g.slots i).profile).key
+  gws-summoned : GameWorldSpawn, Integer -> Boolean
+  gws-summoned (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then False else (list-at g.slots i).summoned > 0
+ A dismissed creature leaves the world at once, with no corpse; its slot is released at its next visit.
+  gws-dismiss : GameWorldSpawn, GameShard, Integer -> Result Integer Text
+  gws-dismiss (g) (shard) (serial) = let at = world-slot shard.world serial
+    in let calmed = if at < 0 then 0 else let a = list-at g.combat.actors at in let stopped = cb-stop g.combat a in let peace = __record-set a "war" False in 0
+    in let spared = cb-clear-target g.combat serial 0
+    in world-delete shard.world serial
   gws-batch : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, WalkMap, Integer, Integer -> Result Integer Text
   gws-batch (terrain) (g) (shard) (map) (region) (left) =
     let r = list-at g.catalog.regions region
@@ -128,117 +344,512 @@ Chapter: GameWorldSpawn
     else when gws-place terrain g shard map region profile 0
       is Err (e) -> Err e
       is Ok (_) -> gws-batch terrain g shard map region (left - 1)
-  gws-regions : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, WalkMap, Integer -> Result Integer Text
-  gws-regions (terrain) (g) (shard) (map) (left) = if left == 0 then Ok 0
-    else let i = g.cursor
+ Damian, 2026-10-07: "monsters should respawn, but not for a game world day"; "a killed primary spawner... not their
+ decendants" ("maybe primal is correct"). A home's first r.batch creatures are its primal spawns: a missing primal
+ returns only after the home has been short of them for a game day (7200 real seconds, two real hours). Every other
+ creature is a descendant, born r.batch per spawn timer (UOX3 CALL, as MAXNPCS fills) only while a living parent remains, so a home emptied of every
+ creature breeds nothing until its primals return. The shortfall marks live only in memory and start at -1 at a boot, so
+ a home short at a boot refills at once.
+  gws-boot-marks : Integer, Integer, Integer -> Integer
+  gws-boot-marks (buf) (i) (n) = if i == n then buf else let set = poke-qword buf (i * 8) (0 - 1) in gws-boot-marks buf (i + 1) n
+  gws-births : GameWorldSpawn, Integer, WsRegion -> Integer
+  gws-births (g) (i) (r) = let pop = peek-qword g.populations (i * 8)
+    in let primal = min r.batch r.maximum
+    in let since = peek-qword g.shortfalls (i * 8)
+    in let refill = if pop >= primal then (let cleared = poke-qword g.shortfalls (i * 8) 0 in 0)
+      else if since == (0 - 1) then (let cleared = poke-qword g.shortfalls (i * 8) 0 in primal - pop)
+      else if since == 0 then (let marked = poke-qword g.shortfalls (i * 8) g.combat.tick in 0)
+      else if g.combat.tick - since >= gm-ticks 7200000 then (let cleared = poke-qword g.shortfalls (i * 8) 0 in primal - pop)
+      else 0
+    in let bred = if pop > 0 & pop < r.maximum then min (max 1 r.batch) (r.maximum - pop) else 0
+    in min 16 (refill + bred)
+ A round wakes every region its map touches whose timer is due, wherever the map lies; a region in several of the map's
+ sectors is due once, its timer set at the first.
+  gws-region-at : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, WalkMap, Integer -> Result Integer Text
+  gws-region-at (terrain) (g) (shard) (map) (link) = if link == 0 then Ok 0
+    else let i = peek-qword g.area-links ((link - 1) * 16)
+    in let next = peek-qword g.area-links ((link - 1) * 16 + 8)
     in let r = list-at g.catalog.regions i
-    in let next = __record-set g "cursor" (int-mod (i + 1) (list-length g.catalog.regions))
     in if g.combat.tick < peek-qword g.deadlines (i * 8)
       | r.area.x2 < map.x | r.area.y2 < map.y
       | r.area.x1 >= map.x + map.width - 1 | r.area.y1 >= map.y + map.height - 1
-      then gws-regions terrain g shard map (left - 1)
+      then gws-region-at terrain g shard map next
     else let seconds = gws-roll g.combat (r.minimum-minutes * 60) (r.maximum-minutes * 60)
     in let timer = poke-qword g.deadlines (i * 8) (g.combat.tick + gm-ticks (max 1000 (seconds * 1000)))
-    in when gws-batch terrain g shard map i (min 16 r.batch)
+    in when gws-wake-region terrain g shard map i
       is Err (e) -> Err e
-      is Ok (_) -> gws-regions terrain g shard map (left - 1)
-  gws-step : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, Integer -> Boolean
-  gws-step (g) (shard) (map) (slot) (m) (direction) =
+      is Ok (_) -> gws-region-at terrain g shard map next
+  gws-wake-region : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, WalkMap, Integer -> Result Integer Text
+  gws-wake-region (terrain) (g) (shard) (map) (i) = let r = list-at g.catalog.regions i
+    in let since = peek-qword g.shortfalls (i * 8)
+    in let pop = peek-qword g.populations (i * 8)
+    in when gws-batch terrain g shard map i (gws-births g i r)
+      is Err (e) -> Err e
+      is Ok (n) -> let kept = if since /= 0 & pop < min r.batch r.maximum & peek-qword g.populations (i * 8) == pop then poke-qword g.shortfalls (i * 8) since else 0
+        in Ok n
+  gws-regions : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, WalkMap, Integer, Integer -> Result Integer Text
+  gws-regions (terrain) (g) (shard) (map) (column) (row) =
+    if row > gws-band (map.y + map.height - 1) gws-rows then Ok 0
+    else if column > gws-band (map.x + map.width - 1) gws-columns then gws-regions terrain g shard map (gws-band map.x gws-columns) (row + 1)
+    else when gws-region-at terrain g shard map (peek-qword g.area-heads ((row * gws-columns + column) * 8))
+      is Err (e) -> Err e
+      is Ok (_) -> gws-regions terrain g shard map (column + 1) row
+  gws-step : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, Integer, Boolean -> Boolean
+  gws-step (g) (shard) (map) (slot) (m) (direction) (free) =
     let x = m.x + walk-dx direction
     in let y = m.y + walk-dy direction
-    in if not (gws-inside (list-at g.catalog.regions slot.region) x y) | gws-occupied shard.world x y then False
+    in if (if free | slot.region < 0 then False else not (gws-inside (list-at g.catalog.regions slot.region) x y)) | world-blocked shard.world x y then False
     else when walk-step map m.x m.y m.z direction
       is Err (_) -> False
       is Ok (z) -> when world-update shard.world (WorldObject { serial = m.serial, kind = 1,
         x = x, y = y, z = z, graphic = m.graphic, hue = m.hue, container = 0, amount = 1, health = m.health })
         is Err (_) -> False
-        is Ok (_) -> let face = __record-set slot "direction" direction in True
-  gws-walk : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, Integer -> Boolean
-  gws-walk (g) (shard) (map) (slot) (m) (direction) =
-    if gws-step g shard map slot m direction then True
+        is Ok (_) -> let face = __record-set slot "direction" direction
+          in let quick = g.combat.tick - slot.stepped < gm-ticks gws-step-floor-ms
+          in let counted = __record-set g "steps" (g.steps + 1)
+          in let raced = if quick then __record-set g "fast" (g.fast + 1) else g
+          in let stamp = __record-set slot "stepped" g.combat.tick in True
+ A step sooner than this after the creature's last one is faster than the 200 ms run a follower catches up at allows
+ (UOAIX-161).
+  gws-step-floor-ms : Integer = 150
+  gws-moves-said : Maybe GameWorldSpawn -> Text
+  gws-moves-said (spawns) = when spawns
+    is None -> "SPAWN MOVES none"
+    is Just (g) -> let said = "SPAWN MOVES steps=" & show g.steps & " fast=" & show g.fast
+      in let a = __record-set g "steps" 0
+      in let b = __record-set g "fast" 0 in said
+  gws-walk :GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, Integer, Boolean -> Boolean
+  gws-walk (g) (shard) (map) (slot) (m) (direction) (free) =
+    if gws-step g shard map slot m direction free then True
     else let r = cb-random g.combat 100
     in if r < 30 then False
     else let turn = if r < 35 then 4 else if r < 40 then 3 else if r < 65 then 2 else 1
-    in gws-step g shard map slot m (int-mod (direction + 8 + (if int-mod r 2 == 1 then 0 - turn else turn)) 8)
-  gws-act : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, WorldObject -> Boolean
-  gws-act (g) (shard) (map) (slot) (m) (viewer) = if g.combat.tick < slot.due then False
+    in gws-step g shard map slot m (int-mod (direction + 8 + (if int-mod r 2 == 1 then 0 - turn else turn)) 8) free
+ A tamed slot's order (UOX3 pet commands): follow walks to its owner, guard follows and fights whoever its owner
+ fights or whoever fights its owner, stay holds its tile. A pet keeps a combat target it already has, and under any
+ order fights back whoever attacks it, its owner excepted (UOAIX-195, as a struck wild creature does, UOAIX-172).
+  gws-order-follow : Integer = 0
+  gws-order-guard : Integer = 1
+  gws-order-stay : Integer = 2
+  gws-alive : GameWorldSpawn, GameShard, Integer, WorldObject -> Integer
+  gws-alive (g) (shard) (serial) (master) = if serial <= 0 then 0
+    else when world-get shard.world serial
+      is Err (_) -> 0
+      is Ok (target) -> if target.kind == 1 & target.health > 0 & target.serial /= g.unseen & gm-near target.x target.y master.x master.y gws-sight then serial else 0
+  gws-attacker : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gws-attacker (g) (master) (self) (i) = if i == g.combat.count then 0
+    else let actor = list-at g.combat.actors (peek-qword (sa-at g.combat.active i) 0)
+    in if actor.war & actor.target == master & actor.serial /= self then actor.serial else gws-attacker g master self (i + 1)
+  gws-pet-foe : GameWorldSpawn, GameShard, WorldSpawnSlot, CombatActor, WorldObject -> Integer
+  gws-pet-foe (g) (shard) (slot) (a) (master) =
+    let commanded = if slot.foe == 0 then 0 else gws-alive g shard slot.foe master
+    in let lapsed = if slot.foe /= 0 & commanded == 0 then __record-set slot "foe" 0 else slot
+    in let kept = if commanded > 0 | not a.war | a.target == 0 | a.target == slot.owner then 0 else gws-alive g shard a.target master
+    in let striker = if commanded > 0 | kept > 0 then 0 else gws-attacker g a.serial a.serial 0
+    in let defended = if striker == 0 | striker == slot.owner then 0 else gws-alive g shard striker master
+    in if commanded > 0 then commanded else if kept > 0 then kept else if defended > 0 then defended
+    else if slot.order /= gws-order-guard then 0
+    else let ward = if slot.ward == 0 then slot.owner else slot.ward
+    in let at = world-slot shard.world ward
+    in let mine = if at < 0 | at >= list-length g.combat.actors then 0
+      else let o = list-at g.combat.actors at in if o.serial == ward & o.war & o.target /= a.serial then o.target else 0
+    in gws-alive g shard (if mine > 0 then mine else gws-attacker g ward a.serial 0) master
+ UOAIX-203: an owner's command marks a pet (aim 1 attack, 2 defend) until the owner's target cursor answers; the answer
+ sets the foe it fights or the ward it guards.
+  gws-uncommand : WorldSpawnSlot -> Integer
+  gws-uncommand (slot) = let a = __record-set slot "aim" 0 in let b = __record-set slot "foe" 0 in let c = __record-set slot "ward" 0 in 0
+  gws-command : GameWorldSpawn, Integer, Integer, Integer, Integer -> Integer
+  gws-command (g) (master) (aim) (target) (i) = if i == list-length g.slots then 0
+    else let slot = list-at g.slots i
+    in if slot.serial == 0 | slot.owner /= master | slot.aim /= aim | aim == 0 then gws-command g master aim target (i + 1)
+    else let cleared = __record-set slot "aim" 0
+    in let set = if target <= 0 | target == slot.serial then 0
+      else if aim == 1 then (if target == master then 0 else let f = __record-set slot "foe" target in 1)
+      else let w = __record-set slot "ward" target in let o = __record-set slot "order" gws-order-guard in 1
+    in let due = __record-set slot "due" g.combat.tick in set + gws-command g master aim target (i + 1)
+  gws-pet-fight : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, CombatActor, Integer -> Boolean
+  gws-pet-fight (g) (shard) (map) (slot) (m) (a) (foe) = when world-get shard.world foe
+    is Err (_) -> False
+    is Ok (target) -> when cb-ensure g.combat shard foe
+      is Err (_) -> False
+      is Ok (actor) -> let engaged = a.war & a.target == foe
+        in if not engaged & not (cb-live shard actor) then False
+        else if not engaged & not (cb-select g.combat shard a actor) then False
+        else if cb-reach map m target then False
+        else gws-walk g shard map slot m (cb-direction (target.x - m.x) (target.y - m.y)) True
+  gws-pet : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject -> Boolean
+  gws-pet (g) (shard) (map) (slot) (m) = if g.combat.tick < slot.due | gws-frozen g shard m then False
     else let a = list-at g.combat.actors (world-slot shard.world m.serial)
+    in when world-get shard.world slot.owner
+      is Err (_) -> let stopped = cb-stop g.combat a in let peace = __record-set a "war" False
+        in let due = __record-set slot "due" (g.combat.tick + gm-ticks 1000) in False
+      is Ok (master) -> let foe = if master.kind /= 1 | master.health <= 0 then 0 else gws-pet-foe g shard slot a master
+        in let gap = max (walk-abs (master.x - m.x)) (walk-abs (master.y - m.y))
+        in let due = __record-set slot "due" (g.combat.tick + gm-ticks (if foe > 0 then gws-chase-ms else if gap > 3 then gws-run-ms else if gap > 1 then gws-walk-ms else 1000))
+        in if foe > 0 then gws-pet-fight g shard map slot m a foe
+        else let stopped = cb-stop g.combat a
+        in let peace = __record-set a "war" False
+        in if slot.order == gws-order-stay | master.kind /= 1 | master.health <= 0 | not (gm-near m.x m.y master.x master.y gws-sight)
+          | gm-near m.x m.y master.x master.y 1 then False
+        else gws-walk g shard map slot m (cb-direction (master.x - m.x) (master.y - m.y)) True
+ UOX3 taming.js: a tamed creature drops its combat, follows its master and stops counting against its region.
+  gws-owner-of : GameWorldSpawn, Integer -> Integer
+  gws-owner-of (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then -1 else (list-at g.slots i).owner
+  gws-taming : GameWorldSpawn, Integer -> Integer
+  gws-taming (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then 0 else (list-at g.catalog.profiles (list-at g.slots i).profile).taming
+ UOX3 dfndata/npc POISONSTRENGTH of the spawn profiles that carry one, by key.
+  gws-poison-keys : List Text = ["dreadspider", "rottingcorpse", "poisonele", "silverserpent", "lavasnake", "giantserpent", "wyvern",
+    "shadowwyrm", "slime", "icesnake", "giantspider", "scorpion", "ophknight", "ophavenger", "teraavenger", "snake"]
+  gws-poison-levels : List Integer = [5, 4, 5, 4, 1, 3, 4, 4, 1, 1, 1, 3, 4, 4, 5, 1]
+  gws-poison-of : Text, Integer -> Integer
+  gws-poison-of (key) (i) = if i == list-length gws-poison-keys then 0
+    else if list-at gws-poison-keys i == key then list-at gws-poison-levels i else gws-poison-of key (i + 1)
+  gws-poison : GameWorldSpawn, Integer -> Integer
+  gws-poison (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then 0
+    else let profile = (list-at g.slots i).profile
+    in if profile < 0 | profile >= list-length g.catalog.profiles then 0 else gws-poison-of (list-at g.catalog.profiles profile).key 0
+ A spawned creature's UOX3 fame (karma False) or karma (karma True); 0 for a summons or a serial that is no spawn.
+  gws-renown : GameWorldSpawn, Integer, Boolean -> Integer
+  gws-renown (g) (serial) (karma) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then 0
+    else let profile = (list-at g.slots i).profile
+    in if profile < 0 | profile >= list-length g.catalog.profiles then 0
+    else let at = wsr-at (list-at g.catalog.profiles profile).key 0
+    in if at < 0 then 0 else if karma then list-at wsr-karma at else list-at wsr-fame at
+  gws-name : GameWorldSpawn, Integer -> Text
+  gws-name (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then "creature" else (list-at g.catalog.profiles (list-at g.slots i).profile).name
+  gws-tame : GameWorldSpawn, GameShard, Integer, Integer -> Boolean
+  gws-tame (g) (shard) (serial) (master) = let i = if serial <= 0 | master <= 0 | serial == master then -1 else gws-slot-of g serial 0
+    in if i < 0 then False
+    else let slot = list-at g.slots i
+    in if slot.owner /= 0 | slot.summoned > 0 | slot.region < 0 then False
+    else let count = poke-qword g.populations (slot.region * 8) (peek-qword g.populations (slot.region * 8) - 1)
+    in let owned = __record-set slot "owner" master
+    in let unlured = __record-set slot "follow" 0
+    in let ordered = __record-set slot "order" gws-order-follow
+    in let uncommanded = gws-uncommand slot
+    in let due = __record-set slot "due" g.combat.tick
+    in let at = world-slot shard.world serial
+    in let calmed = if at < 0 then 0 else let a = list-at g.combat.actors at in let stopped = cb-stop g.combat a in let peace = __record-set a "war" False in 0
+    in let spared = cb-clear-target g.combat serial 0 in True
+  gws-order : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gws-order (g) (master) (order) (i) = if i == list-length g.slots then 0
+    else let slot = list-at g.slots i
+    in if slot.serial == 0 | slot.owner /= master then gws-order g master order (i + 1)
+    else let set = __record-set slot "order" order
+    in let due = __record-set slot "due" g.combat.tick in 1 + gws-order g master order (i + 1)
+  gws-act : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, WorldObject -> Boolean
+  gws-act (g) (shard) (map) (slot) (m) (viewer) = if slot.owner /= 0 then gws-pet g shard map slot m else gws-wild g shard map slot m viewer
+ A paralysed creature (CombatActor.frozen, Magery) stands still until it thaws.
+  gws-frozen : GameWorldSpawn, GameShard, WorldObject -> Boolean
+  gws-frozen (g) (shard) (m) = let a = list-at g.combat.actors (world-slot shard.world m.serial) in a.serial == m.serial & a.frozen > g.combat.tick
+ A full home's creature (UOAIX-150, trial 43060: a Britain mine elemental walked 70 tiles into the town) spills at most
+ gws-spill-reach tiles past its region, then walks home.
+  gws-spill-reach : Integer = 8
+  gws-near-home : WsRect, Integer, Integer, Integer -> Boolean
+  gws-near-home (r) (x) (y) (d) = x >= r.x1 - d & x <= r.x2 + d & y >= r.y1 - d & y <= r.y2 + d
+  gws-wild : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, WorldObject -> Boolean
+  gws-wild (g) (shard) (map) (slot) (m) (viewer) =
+    let a = list-at g.combat.actors (world-slot shard.world m.serial)
     in let p = list-at g.catalog.profiles slot.profile
-    in let speed = 1000 + cb-random g.combat (max 1 ((100 - a.dexterity) / 3)) * 100
+    in let seen = viewer.health > 0 & viewer.serial /= g.unseen
+    in let hostile = seen & (p.ai == 2 | p.ai == 11) & gm-near m.x m.y viewer.x viewer.y gws-aggro
+    in let early = g.combat.tick < slot.due
+    in let was = slot.due
+    in if gws-frozen g shard m | (early & not (hostile & gws-slot-seen g slot & not (a.war & a.target /= 0))) then False
+    else let speed = 1000 + cb-random g.combat (max 1 ((100 - a.dexterity) / 3)) * 100
     in let due = __record-set slot "due" (g.combat.tick + gm-ticks (max 100 (min 5000 speed)))
-    in let near = viewer.health > 0 & gm-near m.x m.y viewer.x viewer.y 6
+    in let near = seen & gm-near m.x m.y viewer.x viewer.y 6
     in let existing = if not a.war | a.target == 0 | p.ai == 12 then 0 else when world-get shard.world a.target
       is Err (_) -> 0
-      is Ok (target) -> if target.health > 0 & gm-near m.x m.y target.x target.y 18 then a.target else 0
-    in let chosen = if existing > 0 then existing else if near & (p.ai == 2 | p.ai == 11) then viewer.serial else 0
+      is Ok (target) -> if target.health > 0 & target.serial /= g.unseen & gm-near m.x m.y target.x target.y 18 then a.target else 0
+    in let picked = if existing > 0 then existing else if hostile then viewer.serial else if p.ai == 2 | p.ai == 11 then g.prey m.serial m.x m.y else 0
+    in let chosen = if picked == 0 then 0 else if existing > 0 then existing else when world-get shard.world picked is Err (_) -> 0 is Ok (t) -> if gws-held g slot p t.x t.y & not (g.spared picked) then picked else 0
     in if chosen > 0 then when world-get shard.world chosen
       is Err (_) -> False
       is Ok (target) -> when cb-ensure g.combat shard chosen
         is Err (_) -> False
-        is Ok (actor) -> let selected = cb-select g.combat shard a actor
+        is Ok (actor) -> let selected = if existing > 0 then True else cb-select g.combat shard a actor
+          in let chase = __record-set slot "due" (g.combat.tick + gm-ticks gws-chase-ms)
           in if not selected | cb-reach map m target then False
-          else gws-walk g shard map slot m (cb-direction (target.x - m.x) (target.y - m.y))
+          else gws-walk g shard map slot m (cb-direction (target.x - m.x) (target.y - m.y)) True
+    else if early then let kept = __record-set slot "due" was in False
     else let stopped = cb-stop g.combat a
     in let peace = __record-set a "war" False
-    in if near & p.ai == 12 then gws-walk g shard map slot m (cb-direction (m.x - viewer.x) (m.y - viewer.y))
+    in let leader = if slot.follow == 0 then 0 else gws-leader g shard slot m
+    in if slot.goal-steps > 0 then gws-goal g shard map slot m
+    else if leader /= 0 then gws-follow g shard map slot m leader
+    else if near & p.ai == 12 then gws-walk g shard map slot m (cb-direction (m.x - viewer.x) (m.y - viewer.y)) False
     else let r = cb-random g.combat 100
     in if int-mod r (7 + a.dexterity / 30) == 0 then False
-    else gws-walk g shard map slot m (int-mod (slot.direction + 9 - int-mod r 3) 8)
+    else if slot.region < 0 then gws-walk g shard map slot m (int-mod (slot.direction + 9 - int-mod r 3) 8) True
+    else let rg = list-at g.catalog.regions slot.region
+    in let home = rg.area
+    in let spill = (p.ai == 2 | p.ai == 11) & peek-qword g.populations (slot.region * 8) >= rg.maximum
+    in let raid = spill & gws-orc p & walk-abs ((home.x1 + home.x2) / 2 - gws-britain-x) <= 900 & walk-abs ((home.y1 + home.y2) / 2 - gws-britain-y) <= 900
+    in if raid & int-mod r 4 /= 0 then gws-walk g shard map slot m (cb-direction (gws-britain-x - m.x) (gws-britain-y - m.y)) True
+    else if spill & gws-near-home home m.x m.y gws-spill-reach then gws-walk g shard map slot m (int-mod (slot.direction + 9 - int-mod r 3) 8) True
+    else if gws-inside rg m.x m.y then gws-walk g shard map slot m (int-mod (slot.direction + 9 - int-mod r 3) 8) False
+    else gws-walk g shard map slot m (cb-direction ((home.x1 + home.x2) / 2 - m.x) ((home.y1 + home.y2) / 2 - m.y)) True
+ A wild creature takes new prey only inside its home region, so one with no target there walks home (root for
+ Damian, 2026-10-09, UOAIX-150); a regionless creature and an orc out raiding Britain are not held. One struck fights its
+ attacker back wherever it stands, until either dies or leaves sight (UOAIX-172).
+  gws-held : GameWorldSpawn, WorldSpawnSlot, WsProfile, Integer, Integer -> Boolean
+  gws-held (g) (slot) (p) (x) (y) = if slot.region < 0 then True
+    else let rg = list-at g.catalog.regions slot.region
+    in gws-inside rg x y | gws-raider g slot p rg
+  gws-raider : GameWorldSpawn, WorldSpawnSlot, WsProfile, WsRegion -> Boolean
+  gws-raider (g) (slot) (p) (rg) = (p.ai == 2 | p.ai == 11) & peek-qword g.populations (slot.region * 8) >= rg.maximum & gws-orc p
+    & walk-abs ((rg.area.x1 + rg.area.x2) / 2 - gws-britain-x) <= 900 & walk-abs ((rg.area.y1 + rg.area.y2) / 2 - gws-britain-y) <= 900
+ UOX3 CChar::Follow (enticement.js): a lured creature that is not fighting walks at chase pace toward its leader and
+ stops beside it; the lure ends when the leader is gone, dead or past the 18-tile chase range.
+ Britain's market square, the town a full orc camp within 900 tiles raids (UOAIX.md, the living wilds): the
+ Cove forts and the western Medium orc fort.
+  gws-britain-x : Integer = 1475
+  gws-britain-y : Integer = 1645
+  gws-orc : WsProfile -> Boolean
+  gws-orc (p) = p.key == "orc" | p.key == "orcmage" | p.key == "orcbomber" | p.key == "orclord" | p.key == "orcscout" | p.key == "orccaptain" | p.key == "orcchopper" | p.key == "orcbrute"
+  gws-leader : GameWorldSpawn, GameShard, WorldSpawnSlot, WorldObject -> Integer
+  gws-leader (g) (shard) (slot) (m) = let kept = when world-get shard.world slot.follow
+      is Err (_) -> False
+      is Ok (leader) -> leader.health > 0 & leader.serial /= g.unseen & gm-near m.x m.y leader.x leader.y 18
+    in if kept then slot.follow else let lost = __record-set slot "follow" 0 in 0
+  gws-follow : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, Integer -> Boolean
+  gws-follow (g) (shard) (map) (slot) (m) (leader) = when world-get shard.world leader
+    is Err (_) -> False
+    is Ok (l) -> let pace = __record-set slot "due" (g.combat.tick + gm-ticks gws-chase-ms)
+      in if gm-near m.x m.y l.x l.y 1 then False
+      else gws-walk g shard map slot m (cb-direction (l.x - m.x) (l.y - m.y)) True
+ UOX3 herding.js WalkTo( x, y, 20 ): a herded creature walks at chase pace toward the place, 20 steps at most.
+  gws-herd-steps : Integer = 20
+  gws-herd : GameWorldSpawn, Integer, Integer, Integer -> Boolean
+  gws-herd (g) (creature) (x) (y) = let i = if creature <= 0 then -1 else gws-slot-of g creature 0
+    in if i < 0 then False
+    else let slot = list-at g.slots i
+    in let unlured = __record-set slot "follow" 0
+    in let a = __record-set slot "goal-x" x
+    in let b = __record-set slot "goal-y" y
+    in let c = __record-set slot "goal-steps" gws-herd-steps in True
+  gws-goal : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject -> Boolean
+  gws-goal (g) (shard) (map) (slot) (m) = if m.x == slot.goal-x & m.y == slot.goal-y then let done = __record-set slot "goal-steps" 0 in False
+    else let pace = __record-set slot "due" (g.combat.tick + gm-ticks gws-chase-ms)
+    in let spent = __record-set slot "goal-steps" (slot.goal-steps - 1)
+    in let moved = gws-walk g shard map slot m (cb-direction (slot.goal-x - m.x) (slot.goal-y - m.y)) True
+    in let landed = when world-get shard.world m.serial
+      is Err (_) -> 0
+      is Ok (n) -> if n.x == slot.goal-x & n.y == slot.goal-y then let done = __record-set slot "goal-steps" 0 in 1 else 0
+    in moved
+ Whether a spawned creature can follow, and with a leader above 0 sets it following; a leader of -1 only asks.
+  gws-lure : GameWorldSpawn, Integer, Integer -> Boolean
+  gws-lure (g) (follower) (leader) = let i = if follower <= 0 then -1 else gws-slot-of g follower 0
+    in if i < 0 then False else if leader < 0 then True else let set = __record-set (list-at g.slots i) "follow" leader in True
+ UOX3 combat.cpp:186-190: an NPC that starts an attack plays its creature's SOUND_STARTATTACK (sound-hook kind 2);
+ RandomNum( 1, 3 ) is never 0, so the sound always plays.
+  gws-anger : GameWorldSpawn, WorldObject, WorldObject, List (List Integer) -> List (List Integer)
+  gws-anger (g) (m) (viewer) (packets) = let sound = g.combat.sound-hook m.graphic 2
+    in if sound == 0 then packets
+    else let packet = cbp-sound sound m
+    in let heard = cb-notice g.combat m viewer.serial 0 0 [packet] 0
+    in list-push packets packet
   gws-show : GameWorldSpawn, WorldSpawnSlot, WorldObject, WorldObject, Boolean, List (List Integer) -> List (List Integer)
   gws-show (g) (slot) (m) (viewer) (moved) (packets) =
-    let near = gm-near m.x m.y viewer.x viewer.y 18
-    in let was = slot.visible
-    in let visible = __record-set slot "visible" near
-    in let a = list-at g.combat.actors (int-mod (m.serial - 1) (list-length g.combat.actors))
+    let near = gm-near m.x m.y viewer.x viewer.y gws-sight
+    in let was = gws-slot-seen g slot
+    in let visible = gws-slot-mark g slot near
+    in let a = list-at g.combat.actors (cb-actor-slot m.serial (list-length g.combat.actors))
     in let flags = cbp-flags a.war False
     in if near & not was then list-push packets (cbp-mobile m slot.direction flags 3)
     else if near & moved then list-push packets (cbp-move m slot.direction flags 3)
     else if was & not near then list-push packets (cbp-remove m.serial) else packets
-  gws-live : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
-  gws-live (g) (shard) (map) (viewer) (i) (packets) = if i == list-length g.slots then Ok packets
-    else let slot = list-at g.slots i
-    in if slot.serial == 0 then gws-live g shard map viewer (i + 1) packets
+ UOX3 sheepshearing.js regrows a shorn sheep (0xDF) to 0xCF after RandomNumber( 60, 180 ) seconds; one roll in 60 per
+ sheep action, about 2.2 s apart at dexterity 25, averages about 130 s and keeps no timer.
+  gws-regrow : GameWorldSpawn, GameShard, WorldSpawnSlot, WorldObject -> Boolean
+  gws-regrow (g) (shard) (slot) (m) = if m.graphic /= #00DF then False
+    else if (list-at g.catalog.profiles slot.profile).body /= #00CF | g.combat.tick < slot.due then False
+    else if cb-random g.combat 60 /= 0 then False
+    else when world-update shard.world (__record-set m "graphic" #00CF)
+      is Err (_) -> False
+      is Ok (_) -> True
+  gws-visit : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Boolean, List (List Integer) -> Result (List (List Integer)) Text
+  gws-visit (g) (shard) (map) (viewer) (i) (draw) (packets) =
+    let slot = list-at g.slots i
+    in let visited = __record-set slot "visit" g.stamp
+    in if slot.serial == 0 then Ok packets
     else when world-get shard.world slot.serial
       is Err (_) ->
         let old = slot.serial
-        in let shown = slot.visible
-        in let count = poke-qword g.populations (slot.region * 8) (peek-qword g.populations (slot.region * 8) - 1)
+        in let shown = draw & gws-slot-seen g slot
+        in let count = if slot.owner /= 0 | slot.region < 0 then 0 else poke-qword g.populations (slot.region * 8) (peek-qword g.populations (slot.region * 8) - 1)
+        in let unsummoned = __record-set slot "summoned" 0
+        in let unfiled = gws-unlink g i
+        in let freed = __record-set slot "owner" 0
+        in let unaimed = gws-uncommand slot
+        in let unordered = __record-set slot "order" 0
+        in let ungoaled = __record-set slot "goal-steps" 0
         in let serial = __record-set slot "serial" 0
-        in let invisible = __record-set slot "visible" False
-        in gws-live g shard map viewer (i + 1) (if shown then list-push packets (cbp-remove old) else packets)
+        in let invisible = __record-set slot "seen" 0
+        in Ok (if shown then list-push packets (cbp-remove old) else packets)
       is Ok (m) -> if m.kind /= 1 then Err "world spawn serial is not mobile"
-        else let moved = if m.health > 0 then gws-act g shard map slot m viewer else False
+        else if slot.summoned > 0 & g.combat.tick >= slot.summoned then when gws-dismiss g shard m.serial
+          is Err (e) -> Err e
+          is Ok (_) -> gws-visit g shard map viewer i draw packets
+        else let a = list-at g.combat.actors (world-slot shard.world m.serial)
+        in let fighting = a.war & a.target /= 0
+        in let regrown = if m.health > 0 then gws-regrow g shard slot m else False
+        in let moved = if m.health > 0 then gws-act g shard map slot m viewer else False
+        in let angry = not fighting & a.war & a.target /= 0
         in when world-get shard.world m.serial
           is Err (e) -> Err e
-          is Ok (after) -> gws-live g shard map viewer (i + 1) (gws-show g slot after viewer moved packets)
+          is Ok (after) -> let filed = gws-file g i after.x after.y
+            in let fighting-now = gws-engage g shard i
+            in if not draw then Ok packets
+            else let shown = gws-show g slot after viewer (moved | regrown) packets
+            in Ok (if angry then gws-anger g after viewer shown else shown)
+  gws-keep : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-keep (g) (shard) (map) (viewer) (list) (k) (count) (kept) (packets) =
+    if k == count then let stored = poke-qword list 0 kept in Ok packets
+    else let i = peek-qword list (8 + k * 8)
+    in if (list-at g.slots i).visit == g.stamp then gws-keep g shard map viewer list (k + 1) count kept packets
+    else when gws-visit g shard map viewer i True packets
+      is Err (e) -> Err e
+      is Ok (drawn) -> if not (gws-slot-seen g (list-at g.slots i)) then gws-keep g shard map viewer list (k + 1) count kept drawn
+        else let stored = poke-qword list (8 + kept * 8) i
+        in gws-keep g shard map viewer list (k + 1) count (kept + 1) drawn
+  gws-join : GameWorldSpawn, Integer, Integer -> Integer
+  gws-join (g) (list) (i) = if not (gws-slot-seen g (list-at g.slots i)) then 0
+    else let count = peek-qword list 0
+    in let entry = poke-qword list (8 + count * 8) i
+    in poke-qword list 0 (count + 1)
+  gws-chain : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-chain (g) (shard) (map) (viewer) (list) (link) (packets) = if link == 0 then Ok packets
+    else let i = link - 1
+    in let next = (list-at g.slots i).next
+    in if (list-at g.slots i).visit == g.stamp then gws-chain g shard map viewer list next packets
+    else when gws-visit g shard map viewer i True packets
+      is Err (e) -> Err e
+      is Ok (drawn) -> let joined = gws-join g list i
+        in gws-chain g shard map viewer list next drawn
+  gws-columns-at : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-columns-at (g) (shard) (map) (viewer) (list) (row) (column) (last) (packets) = if column > last then Ok packets
+    else when gws-chain g shard map viewer list (peek-qword g.heads ((row * gws-columns + column) * 8)) packets
+      is Err (e) -> Err e
+      is Ok (drawn) -> gws-columns-at g shard map viewer list row (column + 1) last drawn
+  gws-rows-at : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-rows-at (g) (shard) (map) (viewer) (list) (row) (last) (packets) = if row > last then Ok packets
+    else let first = gws-band (viewer.x - gws-sight) gws-columns
+    in when gws-columns-at g shard map viewer list row first (gws-band (viewer.x + gws-sight) gws-columns) packets
+      is Err (e) -> Err e
+      is Ok (drawn) -> gws-rows-at g shard map viewer list (row + 1) last drawn
+  gws-view : GameWorldSpawn, GameShard, WalkMap, WorldObject, List (List Integer) -> Result (List (List Integer)) Text
+  gws-view (g) (shard) (map) (viewer) (packets) =
+    let stamped = __record-set g "stamp" (g.stamp + 1)
+    in let list = gws-list g
+    in when gws-keep g shard map viewer list 0 (peek-qword list 0) 0 packets
+      is Err (e) -> Err e
+      is Ok (kept) -> when gws-rows-at g shard map viewer list (gws-band (viewer.y - gws-sight) gws-rows) (gws-band (viewer.y + gws-sight) gws-rows) kept
+        is Err (e) -> Err e
+        is Ok (near) -> gws-fights g shard map viewer 0 (peek-qword g.fights 0) 0 near
+  gws-at-war : GameWorldSpawn, GameShard, Integer -> Boolean
+  gws-at-war (g) (shard) (serial) = if serial == 0 then False
+    else let at = world-slot shard.world serial
+    in if at < 0 | at >= list-length g.combat.actors then False
+    else (list-at g.combat.actors at).war & (list-at g.combat.actors at).target /= 0
+  gws-engage : GameWorldSpawn, GameShard, Integer -> Integer
+  gws-engage (g) (shard) (i) = let slot = list-at g.slots i
+    in if slot.engaged /= 0 | not (gws-at-war g shard slot.serial) then 0
+    else let count = peek-qword g.fights 0
+    in let entry = poke-qword g.fights (8 + count * 8) i
+    in let stored = poke-qword g.fights 0 (count + 1)
+    in let marked = __record-set slot "engaged" 1 in 1
+  gws-fights : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-fights (g) (shard) (map) (viewer) (k) (count) (kept) (packets) =
+    if k == count then let stored = poke-qword g.fights 0 kept in Ok packets
+    else let i = peek-qword g.fights (8 + k * 8)
+    in when (if (list-at g.slots i).visit == g.stamp then Ok packets else gws-visit g shard map viewer i True packets)
+      is Err (e) -> Err e
+      is Ok (drawn) -> if gws-at-war g shard (list-at g.slots i).serial then gws-fights-keep g shard map viewer k count kept i drawn
+        else let released = __record-set (list-at g.slots i) "engaged" 0 in gws-fights g shard map viewer (k + 1) count kept drawn
+  gws-fights-keep : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-fights-keep (g) (shard) (map) (viewer) (k) (count) (kept) (i) (packets) =
+    let stored = poke-qword g.fights (8 + kept * 8) i in gws-fights g shard map viewer (k + 1) count (kept + 1) packets
+  gws-sweep : GameWorldSpawn, GameShard, WalkMap, WorldObject, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-sweep (g) (shard) (map) (viewer) (i) (packets) = if i == list-length g.slots then Ok packets
+    else if (list-at g.slots i).visit == g.stamp then gws-sweep g shard map viewer (i + 1) packets
+    else when gws-visit g shard map viewer i False packets
+      is Err (e) -> Err e
+      is Ok (same) -> gws-sweep g shard map viewer (i + 1) same
   gws-forget : GameWorldSpawn, Integer -> Integer
-  gws-forget (g) (i) = if i == list-length g.slots then 0
-    else let invisible = __record-set (list-at g.slots i) "visible" False in gws-forget g (i + 1)
+  gws-forget (g) (i) = if i == list-length g.slots then poke-qword (gws-list g) 0 0
+    else let invisible = gws-slot-mark g (list-at g.slots i) False in gws-forget g (i + 1)
+  gws-slot-of : GameWorldSpawn, Integer, Integer -> Integer
+  gws-slot-of (g) (serial) (i) = if i == list-length g.slots then -1
+    else if (list-at g.slots i).serial == serial then i else gws-slot-of g serial (i + 1)
   gws-after : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, GameInput, WalkMap, Integer, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
   gws-after (terrain) (g) (shard) (input) (map) (tick) (prior) = when prior
     is Err (e) -> Err e
     is Ok (reply) -> if input.mode /= 2 | input.session.phase /= 2 | input.session.serial /= shard.active then prior
-      else if not (world-indexed shard.world) then Err "world spawn requires tile index"
-      else let reset = if g.connection == input.connection then 0 else gws-forget g 0
-      in let link = __record-set g "connection" input.connection
-      in let now = __record-set g.combat "tick" tick
-      in when world-get shard.world input.session.serial
+      else let at = gm-link-at g.links input.connection 0 0
+      in let index = __record-set g "viewer" at
+      in let reset = if list-at g.links at == input.connection then 0 else gws-forget g 0
+      in let link = list-set-at g.links at input.connection
+      in let packets = when reply is None -> [] is Just (r) -> r.packets
+      in when gws-world terrain g shard input.session.serial map tick packets
         is Err (e) -> Err e
-        is Ok (viewer) ->
-          let packets = when reply is None -> [] is Just (r) -> r.packets
-          in when gws-live g shard map viewer 0 packets
+        is Ok (all) -> if list-length all == 0 then prior
+          else when reply
+            is None -> Ok (Just (gs-reply all "world spawn pulse"))
+            is Just (r) -> Ok (Just (__record-set r "packets" all))
+ With a wheel (combat.wheel) each occupied slot is a (due, gws-kind, slot) entry: the owner's drain wakes the slot
+ (gws-wake) and the pass sweeps no slot. A slot is armed when it is born and re-armed after every wake at its due, at
+ least a second out (the sweep's pace) unless its summoning ends sooner; a refused arm clears wheeled, so the next pass
+ arms every slot again (a restore clears it too).
+  gws-kind : Integer = 16
+  gws-wake-ms : Integer = 1000
+  gws-arm : GameWorldSpawn, Integer -> Integer
+  gws-arm (g) (i) = when g.combat.wheel
+    is None -> 0
+    is Just (w) -> let slot = list-at g.slots i
+      in if slot.serial == 0 then wtm-clear w gws-kind i
+      else let floor = g.combat.tick + gm-ticks gws-wake-ms
+      in let at = if slot.summoned > 0 & slot.summoned < floor then slot.summoned else max slot.due floor
+      in if wtm-set w at gws-kind i >= 0 then 1 else let lost = __record-set g "wheeled" False in -1
+  gws-arm-all : GameWorldSpawn, Integer, Integer -> Integer
+  gws-arm-all (g) (i) (refused) = if i == list-length g.slots then refused
+    else gws-arm-all g (i + 1) (refused + (if gws-arm g i < 0 then 1 else 0))
+  gws-pass : GameWorldSpawn, GameShard, WalkMap, WorldObject, List (List Integer) -> Result (List (List Integer)) Text
+  gws-pass (g) (shard) (map) (viewer) (packets) = when g.combat.wheel
+    is None -> gws-sweep g shard map viewer 0 packets
+    is Just (_) -> if g.wheeled then Ok packets
+      else let marked = __record-set g "wheeled" True
+      in let refused = gws-arm-all g 0 0 in Ok packets
+  gws-wake : GameWorldSpawn, GameShard, WalkMap, Integer, Integer, Integer -> Result Integer Text
+  gws-wake (g) (shard) (map) (watcher) (i) (tick) = if i < 0 | i >= list-length g.slots then Ok 0
+    else let now = __record-set g.combat "tick" (max g.combat.tick tick)
+    in when world-get shard.world watcher
+      is Err (_) -> Ok (gws-arm g i)
+      is Ok (viewer) -> when gws-visit g shard map viewer i False []
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (gws-arm g i)
+ One spawn pass around `watcher`, a player or an NPC; with no client, the
+ caller discards the packets.
+  gws-world : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, Integer, WalkMap, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  gws-world (terrain) (g) (shard) (watcher) (map) (tick) (packets) =
+    if not (world-indexed shard.world) then Err "world spawn requires tile index"
+    else let now = __record-set g.combat "tick" tick
+    in when world-get shard.world watcher
+      is Err (e) -> Err e
+      is Ok (viewer) -> when gws-view g shard map viewer packets
+        is Err (e) -> Err e
+        is Ok (updates) -> if tick < g.due then Ok updates
+          else let due = __record-set g "due" (tick + gm-ticks 1000)
+          in when gws-pass g shard map viewer updates
             is Err (e) -> Err e
-            is Ok (updates) ->
-              let spawn = if tick < g.due then Ok 0 else
-                let due = __record-set g "due" (tick + gm-ticks 1000)
-                in gws-regions terrain g shard map (min 16 (list-length g.catalog.regions))
-              in when spawn
-                is Err (e) -> Err e
-                is Ok (_) -> when gws-live g shard map viewer 0 updates
-                  is Err (e) -> Err e
-                  is Ok (all) -> if list-length all == 0 then prior
-                    else when reply
-                      is None -> Ok (Just (gs-reply all "world spawn pulse"))
-                      is Just (r) -> Ok (Just (__record-set r "packets" all))
+            is Ok (swept) -> when gws-regions terrain g shard map (gws-band map.x gws-columns) (gws-band map.y gws-rows)
+              is Err (e) -> Err e
+              is Ok (_) -> gws-view g shard map viewer swept
 
 Page 1

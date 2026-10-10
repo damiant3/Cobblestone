@@ -264,7 +264,7 @@ Section: Function Application
       st-append-code st4 (add-ri reg-rsp (stack-arg-count * 8))
     else st4
     in EmitResult {
-    state = __record-set st5 "next-temp" (st5.next-temp + 1),
+    state = __record-set st5 "next-temp" (temp-step (st5.next-temp)),
     reg = reg-rax
   }
 
@@ -281,7 +281,7 @@ Section: Function Application
     in let st4a = st-append-code st4 (push-i32 arg-count)
     in let st5 = drop-closure-stack-args (st-append-code st4a [255, 208]) arg-count
     in EmitResult {
-    state = __record-set st5 "next-temp" (st5.next-temp + 1),
+    state = __record-set st5 "next-temp" (temp-step (st5.next-temp)),
     reg = reg-rax
   }
 
@@ -2289,25 +2289,25 @@ Section: Pattern Matching
      cg-state = st1a,
      end-patches = []
   }
-   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches) scrut-ty
+   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches) scrut-ty saved-tail
    in let st-end = patch-match-end-jumps (mbs-final.cg-state) (mbs-final.end-patches) 0
    in load-local st-end (result-loc.reg)
 
-  emit-match-branch-loop : MatchBranchState, Integer, Integer, List IRBranch, Integer, Integer, CodexType -> MatchBranchState
-  emit-match-branch-loop (mbs) (scrut-loc) (result-loc) (branches) (i) (total) (scrut-ty) =
+  emit-match-branch-loop : MatchBranchState, Integer, Integer, List IRBranch, Integer, Integer, CodexType, Boolean -> MatchBranchState
+  emit-match-branch-loop (mbs) (scrut-loc) (result-loc) (branches) (i) (total) (scrut-ty) (tail) =
     if i == total then mbs
     else let b = list-at branches i
-    in let mbs1 = emit-one-match-branch mbs scrut-loc result-loc b (i < total - 1) scrut-ty
-    in emit-match-branch-loop mbs1 scrut-loc result-loc branches (i + 1) total scrut-ty
+    in let mbs1 = emit-one-match-branch mbs scrut-loc result-loc b (i < total - 1) scrut-ty tail
+    in emit-match-branch-loop mbs1 scrut-loc result-loc branches (i + 1) total scrut-ty tail
 
-  emit-one-match-branch : MatchBranchState, Integer, Integer, IRBranch, Boolean, CodexType -> MatchBranchState
-  emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) (scrut-ty) =
+  emit-one-match-branch : MatchBranchState, Integer, Integer, IRBranch, Boolean, CodexType, Boolean -> MatchBranchState
+  emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) (scrut-ty) (tail) =
     let sv-local = mbs.cg-state.next-local
     in let sv-spill = mbs.cg-state.spill-count
     in let sv-locals = mbs.cg-state.locals
     in let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern) scrut-ty
     in let guard-result = emit-match-guard (pat-result.state) (branch.guard)
-    in let body-result = emit-expr (guard-result.state) (branch.body)
+    in let body-result = emit-expr (st-set-tail-pos (guard-result.state) tail) (branch.body)
     in let st1s = store-local (body-result.state) result-loc (body-result.reg)
     in let st1 = restore-locals (__record-set (__record-set st1s "next-local" sv-local) "spill-count" sv-spill) sv-locals
     in let st2 = if needs-jmp-end then let jmp-pos = st1.code-len

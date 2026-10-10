@@ -1,0 +1,115 @@
+Chapter: CompositeHelp
+
+  HelpPage = record { id : Integer, serial : Integer, x : Integer, y : Integer, z : Integer, at : Integer }
+  HelpPages = record { pages : List HelpPage, count : Integer, sequence : Integer }
+  hp-limit : Integer = 32
+  hp-rows : Integer, List HelpPage -> List HelpPage
+  hp-rows (i) (xs) = if i == hp-limit then xs
+    else hp-rows (i + 1) (list-push xs (HelpPage { id = 0, serial = 0, x = 0, y = 0, z = 0, at = 0 }))
+  hp-new : Integer -> HelpPages
+  hp-new (unused) = HelpPages { pages = hp-rows 0 (__list-with-capacity hp-limit), count = 0, sequence = 0 }
+  hp-by-serial : HelpPages, Integer, Integer -> Integer
+  hp-by-serial (h) (serial) (i) = if i == h.count then -1
+    else if (list-at h.pages i).serial == serial then i else hp-by-serial h serial (i + 1)
+  hp-by-id : HelpPages, Integer, Integer -> Integer
+  hp-by-id (h) (id) (i) = if i == h.count then -1
+    else if (list-at h.pages i).id == id then i else hp-by-id h id (i + 1)
+  hp-set : HelpPage, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  hp-set (row) (id) (serial) (x) (y) (z) (at) =
+    let a = __record-set row "id" id
+    in let b = __record-set row "serial" serial
+    in let c = __record-set row "x" x
+    in let d = __record-set row "y" y
+    in let e = __record-set row "z" z
+    in let f = __record-set row "at" at in 0
+  hp-add : HelpPages, Integer, Integer, Integer, Integer, Integer -> Integer
+  hp-add (h) (serial) (x) (y) (z) (at) =
+    let known = hp-by-serial h serial 0
+    in if known >= 0 then (list-at h.pages known).id
+    else if h.count >= list-length h.pages then -1
+    else let id = h.sequence + 1
+    in let stored = hp-set (list-at h.pages h.count) id serial x y z at
+    in let n = __record-set h "count" (h.count + 1)
+    in let s = __record-set h "sequence" id in id
+  hp-close : HelpPages, Integer -> Integer
+  hp-close (h) (i) = if i + 1 >= h.count then let n = __record-set h "count" (h.count - 1) in 0
+    else let next = list-at h.pages (i + 1)
+    in let moved = hp-set (list-at h.pages i) next.id next.serial next.x next.y next.z next.at
+    in hp-close h (i + 1)
+  hp-ack : HelpPages, Integer -> Boolean
+  hp-ack (h) (id) = let at = hp-by-id h id 0
+    in if at < 0 then False else let closed = hp-close h at in True
+ UHP1: magic, count, sequence, then hp-limit rows of id, serial, x, y, z, at; rows past count are zero.
+  hp-bytes : Integer = 24 + hp-limit * 48
+  hp-write-rows : HelpPages, Integer, Integer -> Integer
+  hp-write-rows (h) (buf) (i) = if i == hp-limit then 0
+    else let row = list-at h.pages i
+    in let at = buf + 24 + i * 48
+    in let live = i < h.count
+    in let a = poke-qword at 0 (if live then row.id else 0)
+    in let b = poke-qword at 8 (if live then row.serial else 0)
+    in let c = poke-qword at 16 (if live then row.x else 0)
+    in let d = poke-qword at 24 (if live then row.y else 0)
+    in let e = poke-qword at 32 (if live then row.z else 0)
+    in let f = poke-qword at 40 (if live then row.at else 0)
+    in hp-write-rows h buf (i + 1)
+  hp-encode : HelpPages, Integer -> Integer
+  hp-encode (h) (buf) = let a = poke-qword buf 0 #31504855
+    in let b = poke-qword buf 8 (min h.count hp-limit)
+    in let c = poke-qword buf 16 h.sequence in hp-write-rows h buf 0
+  hp-row-zero : Integer, Integer -> Boolean
+  hp-row-zero (at) (i) = if i == 6 then True else peek-qword at (i * 8) == 0 & hp-row-zero at (i + 1)
+  hp-rows-valid : Integer, Integer, Integer, Integer, Integer -> Boolean
+  hp-rows-valid (buf) (count) (sequence) (i) (last) = if i == hp-limit then True
+    else let at = buf + 24 + i * 48
+    in if i >= count then hp-row-zero at 0 & hp-rows-valid buf count sequence (i + 1) last
+    else let id = peek-qword at 0
+    in id > last & id <= sequence & peek-qword at 8 > 0
+      & peek-qword at 16 >= 0 & peek-qword at 16 < 6144 & peek-qword at 24 >= 0 & peek-qword at 24 < 4096
+      & peek-qword at 32 >= -128 & peek-qword at 32 <= 127 & peek-qword at 40 >= 0
+      & hp-rows-valid buf count sequence (i + 1) id
+  hp-read-rows : HelpPages, Integer, Integer, Integer -> Integer
+  hp-read-rows (h) (buf) (count) (i) = if i == count then 0
+    else let at = buf + 24 + i * 48
+    in let stored = hp-set (list-at h.pages i) (peek-qword at 0) (peek-qword at 8) (peek-qword at 16) (peek-qword at 24) (peek-qword at 32) (peek-qword at 40)
+    in hp-read-rows h buf count (i + 1)
+  hp-due : HelpPages -> Boolean
+  hp-due (h) = list-length h.pages - h.count < hp-limit / 4
+  hp-grow : HelpPages -> Integer
+  hp-grow (h) = let grown = __record-set h "pages" (hp-rows 0 h.pages) in list-length h.pages
+ Open pages past hp-limit travel in the help tail: the extra count, then 48-byte rows as UHP1 lays them out.
+  hp-tail-size : HelpPages -> Integer
+  hp-tail-size (h) = 8 + max 0 (h.count - hp-limit) * 48
+  hp-tail-rows : HelpPages, Integer, Boolean, Integer, Integer -> Integer
+  hp-tail-rows (h) (at) (read) (n) (i) = if i >= n then 0
+    else let row = list-at h.pages (hp-limit + i)
+    in let p = at + i * 48
+    in let done = if read then hp-set row (peek-qword p 0) (peek-qword p 8) (peek-qword p 16) (peek-qword p 24) (peek-qword p 32) (peek-qword p 40)
+      else let a = poke-qword p 0 row.id in let b = poke-qword p 8 row.serial in let c = poke-qword p 16 row.x in let d = poke-qword p 24 row.y in let e = poke-qword p 32 row.z in poke-qword p 40 row.at
+    in hp-tail-rows h at read n (i + 1)
+  hp-write-tail : HelpPages, Integer -> Integer
+  hp-write-tail (h) (at) = let n = max 0 (h.count - hp-limit) in let a = poke-qword at 0 n in let b = hp-tail-rows h (at + 8) False n 0 in at + 8 + n * 48
+  hp-tail-length : Integer, Integer -> Integer
+  hp-tail-length (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > room / 48 then -1 else 8 + peek-qword at 0 * 48
+  hp-read-tail : HelpPages, Integer, Integer -> Integer
+  hp-read-tail (h) (at) (size) = if size == 0 then 0
+    else if hp-tail-length at size /= size then -1
+    else let n = peek-qword at 0
+    in if n > 0 & h.count /= hp-limit then -1
+    else if not (hp-rows-valid-n (at + 8) n h.sequence 0 (if h.count == 0 then 0 else (list-at h.pages (h.count - 1)).id)) then -1
+    else let grown = if n == 0 then h else __record-set h "pages" (hp-rows (hp-limit - n) h.pages)
+    in let read = hp-tail-rows h (at + 8) True n 0
+    in let counted = __record-set h "count" (h.count + n) in 0
+  hp-rows-valid-n : Integer, Integer, Integer, Integer, Integer -> Boolean
+  hp-rows-valid-n (at) (n) (sequence) (i) (last) = if i >= n then True
+    else let p = at + i * 48 in let id = peek-qword p 0
+    in id > last & id <= sequence & peek-qword p 8 > 0 & peek-qword p 16 >= 0 & peek-qword p 16 < 6144 & peek-qword p 24 >= 0 & peek-qword p 24 < 4096
+      & peek-qword p 32 >= -128 & peek-qword p 32 <= 127 & peek-qword p 40 >= 0 & hp-rows-valid-n at n sequence (i + 1) id
+  hp-decode : HelpPages, Integer -> Result Integer Text
+  hp-decode (h) (buf) = let count = peek-qword buf 8
+    in let sequence = peek-qword buf 16
+    in if peek-qword buf 0 /= #31504855 | count < 0 | count > hp-limit | sequence < count then Err "help pages format"
+    else if not (hp-rows-valid buf count sequence 0 0) then Err "help pages rows"
+    else let rows = hp-read-rows h buf count 0
+    in let n = __record-set h "count" count
+    in let s = __record-set h "sequence" sequence in Ok count

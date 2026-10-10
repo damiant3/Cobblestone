@@ -1,0 +1,97 @@
+Chapter: CompositeFaultProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  cfi-check : Text, Boolean -> [Console] Integer
+  cfi-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cfi-fill : WalkMap, Integer -> Integer
+  cfi-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cfi-fill map (i + 1)
+  cfi-create : Integer -> List Integer
+  cfi-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Faulty" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cfi-err-starts : Result GameReply Text, Text -> Boolean
+  cfi-err-starts (r) (prefix) = when r is Ok (_) -> False is Err (e) -> text-starts-with e prefix
+  cfi-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cfi-run (store) (map) (specs) = let owner = store.state in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    game <- owner.checkpoint.game
+    good <- owner.active.next-target
+    before <- store.store.sequence
+    broken <- __record-set owner.active "next-target" 70000
+    entry <- cs-route store game input map 2593 (cfi-create 0)
+    a <- cfi-check "a route whose save the codec refuses is served, and the owner neither latches nor writes" (is-ok entry
+      & store.store.fault == 0 & store.refusals >= 1 & store.refused-at > 0 & store.store.sequence == before)
+    counted <- store.refusals
+    dirty <- __record-set owner.combat "draws" (owner.combat.draws + 1)
+    soft <- cs-commit-soft store
+    hard <- cs-commit store True
+    b <- cfi-check "soft and forced commits the codec refuses answer Ok and count the refusals" (is-ok soft & is-ok hard
+      & store.store.fault == 0 & store.refusals == counted + 2)
+    short <- cs-route store game input map 2593 [5]
+    pinged <- cs-route store game input map 2593 [115, 0]
+    c <- cfi-check "a handler refusal drops only its route and the next route is served" (is-err short & is-ok pinged & store.store.fault == 0)
+    mended <- __record-set owner.active "next-target" good
+    clean <- cs-commit store True
+    written <- store.store.sequence
+    e <- cfi-check "control: a valid commit writes with no failed check and clears the refusal count" (is-ok clean & store.check == 0
+      & store.refusals == 0 & store.refused-at == 0 & written == before + 1)
+    treasury <- em-purse owner.vendor.currency.copper 1
+    coin <- treasury.coin
+    bent <- __record-set treasury "coin" (coin + 7)
+    wrong <- cs-commit store True
+    d <- cfi-check "a currency state that disagrees with its history is written anyway and its clause is kept" (is-ok wrong
+      & store.store.sequence == written + 1 & store.check / 4 /= 0 & not (euv-valid owner.vendor.currency) & store.store.fault == 0)
+    reopened <- us-open 0 131072
+    reloaded <- (when reopened
+      is Err (e) -> act Err e end
+      is Ok (disk) -> cs-load-config disk (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }))
+    f <- cfi-check "the world that disagrees reloads from disk with the written coin" (when reloaded
+      is Err (e) -> False
+      is Ok (back) -> (em-purse back.state.vendor.currency.copper 1).coin == coin + 7 & back.store.sequence == written + 1)
+    home <- store.store.start
+    landed <- store.store.sequence
+    away <- __record-set store.store "start" 140000
+    churned <- __record-set owner.combat "draws" (owner.combat.draws + 1)
+    failed <- cs-commit store True
+    pong <- cs-route store game input map 2593 [115, 0]
+    g <- cfi-check "a store write failure answers Ok, keeps serving and leaves the store open" (is-ok failed & is-ok pong
+      & store.store.fault == 0 & store.store.sequence == landed & store.refusals >= 1)
+    returned <- __record-set store.store "start" home
+    retried <- cs-commit store True
+    h <- cfi-check "the next commit retries the write and lands" (is-ok retried & store.store.sequence == landed + 1 & store.refusals == 0)
+    a + b + c + d + e + f + g + h
+  end
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cfi-check e False
+     is Ok (map) -> let filled = cfi-fill map 0 in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> act
+        print-line-uni ("FAIL store " & e)
+        1
+      end
+      is Ok (store) -> act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None })
+       when loaded
+        is Err (e) -> act
+          print-line-uni ("FAIL recovery " & e)
+          1
+        end
+        is Ok (owner) -> cfi-run owner map specs
+      end
+    end

@@ -1,0 +1,42 @@
+Chapter: RaftVoteDedupeTest
+  cites Net chapter RaftConsensus
+
+Section: Helpers
+
+  fresh : Integer -> RaftState
+  fresh (k) = raft-start-election (raft-new "n1" ["n2", "n3", "n4", "n5"])
+
+  grant : RaftState, Integer, Text -> RaftState
+  grant (st) (term) (voter) = raft-handle-vote-response st term voter True
+
+  report : Text, RaftState -> Text
+  report (label) (st) =
+    label & ": leader=" & (if raft-is-leader st then "yes" else "no") & " role=" & raft-role-label (st.rs-role) & " votes=" & show (st.rs-votes-received)
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let distinct = grant (grant (fresh 0) 1 "n2") 1 "n3"
+    in let repeated = grant (grant (grant (fresh 0) 1 "n2") 1 "n2") 1 "n2"
+    in let unknown = grant (grant (grant (fresh 0) 1 "mallory") 1 "mallory") 1 "mallory"
+    in let own = grant (grant (grant (fresh 0) 1 "n1") 1 "n1") 1 "n1"
+    in let stale = grant (grant (fresh 0) 0 "n2") 0 "n3"
+    in let newer = grant (fresh 0) 2 "n2"
+    in let denied = raft-handle-vote-response (raft-handle-vote-response (fresh 0) 1 "n2" False) 1 "n3" False
+    in let second = raft-start-election (grant (fresh 0) 1 "n2")
+    in let second-old = grant (grant second 1 "n2") 2 "n2"
+    in let second-won = grant (grant (grant (raft-start-election (grant (fresh 0) 1 "n2")) 1 "n2") 2 "n2") 2 "n3"
+    in act
+      print-line-uni ("quorum of 5 nodes: " & show (raft-quorum-size (fresh 0)))
+      print-line-uni (report "two distinct peers" distinct)
+      print-line-uni (report "one peer three times" repeated)
+      print-line-uni (report "unknown voter three times" unknown)
+      print-line-uni (report "own id three times" own)
+      print-line-uni (report "two peers, stale term 0" stale)
+      print-line-uni (report "one peer, newer term 2" newer)
+      print-line-uni (report "two peers, denied" denied)
+      print-line-uni (report "term 2, term-1 grant replayed, one fresh grant" second-old)
+      print-line-uni (report "term 2, two fresh grants" second-won)
+    end
+
+Page 1

@@ -1,6 +1,7 @@
 Chapter: WorldDecoration
   cites Uoaix chapter GameSkillsItems
   cites Uoaix chapter WorldTimers
+  cites Uoaix chapter BookcaseLibrary
 
  GPL-2.0 port of ServUO BaseDoor and decoration semantics.
  Legacy 1A light/direction encoding follows Apache-2.0 Source-X send.cpp.
@@ -9,8 +10,19 @@ Chapter: WorldDecoration
   WdState = record { data : Integer, count : Integer, identity : Integer, map : WalkMap,
     base : Integer, opened : Integer, visible : Integer, connection : Integer, cursor : Integer, view-x : Integer, view-y : Integer,
     window-x : Integer, window-y : Integer, width : Integer, height : Integer, land : Integer, solids : Integer, limit : Integer, stride : Integer,
-    tiles : Integer, pages : Integer, links : Integer, shown : Integer, shown-count : Integer, row : Integer }
+    tiles : Integer, pages : Integer, links : Integer, shown : Integer, shown-count : Integer, row : Integer,
+    viewers : List WdViewer, viewer : Integer, clock : Integer, extras : List Integer, reach : Integer }
+  WdViewer = record { connection : Integer, visible : Integer, shown : Integer, shown-count : Integer,
+    cursor : Integer, view-x : Integer, view-y : Integer, row : Integer, used : Integer }
   wd-serial-base : Integer = #7E000000
+ GameLinks serves at most 32 game links.
+  wd-viewer-limit : Integer = 32
+  wd-viewers : Integer, Integer, List WdViewer -> List WdViewer
+  wd-viewers (count) (left) (xs) = if left == 0 then xs
+    else let visible = alloc-bytes (max 1 count)
+    in let cleared = wd-zero visible 0 count
+    in wd-viewers count (left - 1) (list-push xs (WdViewer { connection = -1, visible = visible, shown = alloc-bytes (max 8 (count * 4)),
+      shown-count = 0, cursor = -1, view-x = -1, view-y = -1, row = 0, used = 0 }))
   wd-page-count : Integer, Integer, Integer, Integer, Integer -> Integer
   wd-page-count (data) (count) (seen) (i) (total) = if i == count then total
     else let block = peek-qword data (64 + i * 176) / 8 * 512 + peek-qword data (72 + i * 176) / 8
@@ -37,14 +49,48 @@ Chapter: WorldDecoration
   wd-lower : WdState, Integer, Integer, Integer -> Integer
   wd-lower (state) (x) (lo) (hi) = if lo >= hi then lo else let mid = lo + (hi - lo) / 2
     in if wd-field state mid 0 < x then wd-lower state x (mid + 1) hi else wd-lower state x lo mid
+ ServUO DefBlacksmithy CheckAnvilAndForge: a station item within 2 tiles and 16 z. Rows are sorted by x, so a scan
+ starts at wd-lower (x - 2) and stops past x + 2.
+  wd-art-near : WdState, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  wd-art-near (state) (x) (y) (z) (a) (b) (i) = if i >= state.count then False else if wd-field state i 0 > x + 2 then False
+    else let art = wd-art state i
+    in if walk-abs (wd-field state i 1 - y) <= 2 & walk-abs (wd-field state i 2 - z) <= 16 & (art == a | art == b) then True
+    else wd-art-near state x y z a b (i + 1)
+  wd-locked : WdState, Integer -> Boolean
+  wd-locked (state) (i) = (wd-field state i 7 == 4 & bit-and (peek-byte state.opened i) 2 == 0) | bit-and (peek-byte state.opened i) 4 /= 0
+  wd-unlock : WdState, Integer -> Integer
+  wd-unlock (state) (i) = let raw = peek-byte state.opened i
+    in let unbarred = if bit-and raw 4 /= 0 then raw - 4 else raw
+    in poke-byte state.opened i (if wd-field state i 7 == 4 then bit-or unbarred 2 else unbarred)
+ Lifting a bar (the morning, the jail emptying) clears bit 4 only, so a kind-4 door stays locked until a pick or key.
+  wd-unbar : WdState, Integer -> Integer
+  wd-unbar (state) (i) = let raw = peek-byte state.opened i in if bit-and raw 4 == 0 then 0 else poke-byte state.opened i (raw - 4)
+ A shut door locks: a locked door (kind 4) loses its unlocked bit, any other door is barred. An open one refuses (0).
+  wd-lock : WdState, Integer -> Integer
+  wd-lock (state) (i) = let raw = peek-byte state.opened i
+    in if not (wd-is-door state i) | bit-and raw 1 /= 0 then 0
+    else if wd-field state i 7 == 4 then let locked = poke-byte state.opened i (bit-and raw 253) in 1
+    else let barred = poke-byte state.opened i (bit-or raw 4) in 1
+ The other leaf of a double door: a door whose closed tile touches this one's along a row or a column at the same
+ height; -1 when there is none.
+  wd-leaf : WdState, Integer -> Integer
+  wd-leaf (state) (i) = wd-leaf-scan state i (wd-lower state (wd-field state i 0 - 1) 0 state.count)
+  wd-leaf-scan : WdState, Integer, Integer -> Integer
+  wd-leaf-scan (state) (i) (j) = if j >= state.count then -1 else if wd-field state j 0 > wd-field state i 0 + 1 then -1
+    else let dx = walk-abs (wd-field state j 0 - wd-field state i 0)
+    in let dy = walk-abs (wd-field state j 1 - wd-field state i 1)
+    in if j /= i & wd-is-door state j & dx + dy == 1 & wd-field state j 2 == wd-field state i 2 then j
+    else wd-leaf-scan state i (j + 1)
+  wd-bar : WdState, Integer -> Integer
+  wd-bar (state) (i) = if wd-field state i 7 /= 1 | peek-byte state.opened i /= 0 then 0 else let barred = poke-byte state.opened i 4 in 1
   wd-is-door : WdState, Integer -> Boolean
   wd-is-door (state) (i) = wd-field state i 7 == 1 | wd-field state i 7 == 4
   wd-x : WdState, Integer -> Integer
-  wd-x (state) (i) = wd-field state i 0 + (if peek-byte state.opened i == 0 then 0 else wd-field state i 9)
+  wd-x (state) (i) = wd-field state i 0 + (if bit-and (peek-byte state.opened i) 1 == 0 then 0 else wd-field state i 9)
   wd-y : WdState, Integer -> Integer
-  wd-y (state) (i) = wd-field state i 1 + (if peek-byte state.opened i == 0 then 0 else wd-field state i 10)
+  wd-y (state) (i) = wd-field state i 1 + (if bit-and (peek-byte state.opened i) 1 == 0 then 0 else wd-field state i 10)
   wd-art : WdState, Integer -> Integer
-  wd-art (state) (i) = wd-field state i (if peek-byte state.opened i == 0 then 3 else 8)
+  wd-art (state) (i) = wd-field state i (if bit-and (peek-byte state.opened i) 1 == 0 then 3 else 8)
   wd-zero : Integer, Integer, Integer -> Integer
   wd-zero (buffer) (i) (count) = if i == count then 0 else let cleared = poke-byte buffer i 0 in wd-zero buffer (i + 1) count
   wd-copy : Integer, Integer, Integer, Integer -> Integer
@@ -89,13 +135,13 @@ Chapter: WorldDecoration
     in if peek-qword state.solids at == z & peek-qword state.solids (at + 8) == height & peek-qword state.solids (at + 16) == flags then True
     else wd-solid-present state cell z height flags (i + 1)
   wd-solid : WdState, Integer -> Result Integer Text
-  wd-solid (state) (i) = if not (wd-bound state) then Err "decoration window requires rebind" else let opened = peek-byte state.opened i /= 0
+  wd-solid (state) (i) = if not (wd-bound state) then Err "decoration window requires rebind" else let opened = bit-and (peek-byte state.opened i) 1 /= 0
     in let flags = wd-field state i (if opened then 12 else 5)
     in let height = wd-field state i (if opened then 13 else 6)
     in let x = wd-x state i
     in let y = wd-y state i
     in let z = wd-field state i 2
-    in if walk-cell state.map x y < 0 | bit-and flags 576 == 0 then Ok 0
+    in if walk-cell state.map x y < 0 | bit-and flags 576 == 0 | walk-passable (wd-field state i (if opened then 8 else 3)) then Ok 0
       else let cell = walk-cell state.map x y
       in let count = peek-qword state.solids (cell * state.stride)
       in if count < 0 | count > (state.stride - 8) / 24 then Err "decoration collider count invalid"
@@ -112,8 +158,7 @@ Chapter: WorldDecoration
       is Err (e) -> Err e
       is Ok (_) -> let restored = __heap-restore mark in wd-solids state (i + 1)
   wd-read : Integer, Integer, WalkMap, Integer -> Result WdState Text
-  wd-read (data) (length) (map) (stride) = if stride < 32 | stride > 6152 | int-mod (stride - 8) 24 /= 0
-      | map.width * map.height * stride > 67108864 then Err "decoration collision stride budget"
+  wd-read (data) (length) (map) (stride) = if stride < 32 | stride > 6152 | int-mod (stride - 8) 24 /= 0 then Err "decoration collision stride invalid"
     else if length < 64 then Err "DWD1 header truncated"
     else let count = peek-qword data 8
     in if peek-qword data 0 /= #31445744 | count < 0 | count > 65536 | length /= 64 + count * 176 | peek-qword data 48 < 0 | peek-qword data 56 /= 0 then Err "DWD1 header invalid"
@@ -122,12 +167,12 @@ Chapter: WorldDecoration
       | peek-qword data 16 + peek-qword data 32 > 6144 | peek-qword data 24 + peek-qword data 40 > 4096 then Err "DWD1 region invalid"
     else if not (wd-covered data map) then Err "DWD1 does not cover walk window"
     else if not (wd-rows-valid data map 0 count) then Err "DWD1 row invalid"
-    else let base = alloc-bytes (map.width * map.height * stride)
-    in let saved = wd-copy map.solids base 0 (map.width * map.height * stride / 8)
+    else let base = alloc-bytes (map.width * map.height * 2)
+    in let saved = wd-base-save map.solids base stride 0 (map.width * map.height)
     in let opened = alloc-bytes (max 1 count)
-    in let visible = alloc-bytes (max 1 count)
+    in let viewers = wd-viewers count wd-viewer-limit (__list-with-capacity wd-viewer-limit)
+    in let first = list-at viewers 0
     in let a = wd-zero opened 0 count
-    in let b = wd-zero visible 0 count
     in let mark = __heap-save
     in let seen = alloc-bytes 393216
     in let zero = wi-zero seen 393216 0
@@ -135,18 +180,29 @@ Chapter: WorldDecoration
     in let restored = __heap-restore mark
     in let tiles = wi-new pages
     in let links = alloc-bytes (max 8 (count * 4))
-    in let shown = alloc-bytes (max 8 (count * 4))
     in let state = WdState { data = data, count = count, identity = peek-qword data 48, map = map,
-      base = base, opened = opened, visible = visible, connection = -1, cursor = -1, view-x = -1, view-y = -1,
+      base = base, opened = opened, visible = first.visible, connection = -1, cursor = -1, view-x = -1, view-y = -1,
       window-x = map.x, window-y = map.y, width = map.width, height = map.height, land = map.land, solids = map.solids, limit = count, stride = stride,
-      tiles = tiles, pages = pages, links = links, shown = shown, shown-count = 0, row = 0 }
+      tiles = tiles, pages = pages, links = links, shown = first.shown, shown-count = 0, row = 0,
+      viewers = viewers, viewer = 0, clock = 0, extras = [], reach = 0 }
     in let indexed = wd-index state (count - 1)
+    in let reached = __record-set state "reach" (wd-reach state 0 0)
     in when wd-solids state (wd-lower state (map.x - 1) 0 count)
-      is Err (e) -> let reset = wd-copy base map.solids 0 (map.width * map.height * stride / 8) in Err e
+      is Err (e) -> let reset = wd-base-load map.solids base stride 0 (map.width * map.height) in Err e
       is Ok (_) -> Ok state
+ The base is each cell's collider count before decoration, 16 bits a cell (WorldDecoration.md): decoration only appends
+ after a cell's own colliders, so a cell is restored by setting its count back.
+  wd-base-save : Integer, Integer, Integer, Integer, Integer -> Integer
+  wd-base-save (solids) (base) (stride) (i) (cells) = if i >= cells then 0
+    else let a = poke-16 base (i * 2) (peek-qword solids (i * stride)) in wd-base-save solids base stride (i + 1) cells
+  wd-base-load : Integer, Integer, Integer, Integer, Integer -> Integer
+  wd-base-load (solids) (base) (stride) (i) (cells) = if i >= cells then 0
+    else let a = poke-qword solids (i * stride) (peek-16 base (i * 2)) in wd-base-load solids base stride (i + 1) cells
+  wd-restore : WdState -> Integer
+  wd-restore (state) = wd-base-load state.solids state.base state.stride 0 (state.width * state.height)
   wd-rebind : WdState, WalkMap, Integer -> Result Integer Text
   wd-rebind (state) (map) (stride) = if stride /= state.stride | map.width /= state.width | map.height /= state.height | not (wd-covered state.data map) then Err "decoration rebind extent"
-    else let copied = wd-copy map.solids state.base 0 (state.width * state.height * stride / 8)
+    else let copied = wd-base-save map.solids state.base stride 0 (state.width * state.height)
     in let a = __record-set state "map" map
     in let b = __record-set state "window-x" map.x
     in let c = __record-set state "window-y" map.y
@@ -154,20 +210,75 @@ Chapter: WorldDecoration
     in let e = __record-set state "solids" map.solids
     in let f = __record-set state "cursor" 0
     in let g = __record-set state "row" 0
+    in let rescan = wd-rescan state.viewers 0
     in when wd-solids state (wd-lower state (map.x - 1) 0 state.count)
-      is Err (e) -> let reset = wd-copy state.base map.solids 0 (state.width * state.height * stride / 8) in Err e
-      is Ok (_) -> Ok state.count
+      is Err (e) -> let reset = wd-restore state in Err e
+      is Ok (_) -> when wd-extras-at state -1 -1 0
+        is Err (e) -> let reset = wd-restore state in Err e
+        is Ok (_) -> Ok state.count
+  wd-extra-solid : WdState, Integer -> Result Integer Text
+  wd-extra-solid (state) (i) = let x = list-at state.extras i
+    in let y = list-at state.extras (i + 1)
+    in let z = list-at state.extras (i + 2)
+    in let height = list-at state.extras (i + 3)
+    in let flags = list-at state.extras (i + 4)
+    in let cell = walk-cell state.map x y
+    in if list-at state.extras (i + 5) == 0 | cell < 0 then Ok 0
+    else let count = peek-qword state.solids (cell * state.stride)
+    in if count < 0 | count > (state.stride - 8) / 24 then Err "decoration collider count invalid"
+    else if wd-solid-present state cell z height flags 0 then Ok 0
+    else if count == (state.stride - 8) / 24 then Err "decoration collider budget"
+    else let at = cell * state.stride + 8 + count * 24
+    in let a = poke-qword state.solids at z
+    in let b = poke-qword state.solids (at + 8) height
+    in let c = poke-qword state.solids (at + 16) flags
+    in let d = poke-qword state.solids (cell * state.stride) (count + 1) in Ok count
+  wd-extras-at : WdState, Integer, Integer, Integer -> Result Integer Text
+  wd-extras-at (state) (x) (y) (i) = if i >= list-length state.extras then Ok 0
+    else if x >= 0 & (list-at state.extras i /= x | list-at state.extras (i + 1) /= y) then wd-extras-at state x y (i + 6)
+    else when wd-extra-solid state i
+      is Err (e) -> Err e
+      is Ok (_) -> wd-extras-at state x y (i + 6)
+  wd-extra-add : WdState, Integer, Integer, Integer, Integer, Integer, Boolean -> Result Integer Text
+  wd-extra-add (state) (x) (y) (z) (height) (flags) (on) =
+    if z < -128 | z > 127 | height < 0 | height > 255 | flags < 0 | flags > #FFFFFFFF then Err "decoration extra fields invalid"
+    else let grown = __record-set state "extras" (state.extras & [x, y, z, height, flags, if on then 1 else 0])
+    in if walk-cell state.map x y < 0 then Ok 0 else wd-rebuild-cell state x y
+  wd-extra-set : WdState, Integer, Integer, Boolean -> Result Integer Text
+  wd-extra-set (state) (x) (y) (on) = let flipped = wd-extra-flag state x y (if on then 1 else 0) 0
+    in if walk-cell state.map x y < 0 then Ok 0 else wd-rebuild-cell state x y
+  wd-extra-flag : WdState, Integer, Integer, Integer, Integer -> Integer
+  wd-extra-flag (state) (x) (y) (on) (i) = if i >= list-length state.extras then 0
+    else let set = if list-at state.extras i == x & list-at state.extras (i + 1) == y then list-set-at state.extras (i + 5) on else state.extras
+    in wd-extra-flag state x y on (i + 6)
+ A cell's colliders are rebuilt from the rows standing on it now. The tile index files a row under its closed place
+ (fields 0 and 1), and an open door stands its offset away (fields 9 and 10), so the rows on a cell are those filed
+ within reach of it, reach being the largest offset in the data (wd-reach, at load). Walking every row instead was a
+ quarter of a shard's samples (UOAIX-196).
+  wd-reach : WdState, Integer, Integer -> Integer
+  wd-reach (state) (i) (most) = if i >= state.count then most
+    else wd-reach state (i + 1) (max most (max (walk-abs (wd-field state i 9)) (walk-abs (wd-field state i 10))))
   wd-rebuild-rows : WdState, Integer, Integer, Integer -> Result Integer Text
-  wd-rebuild-rows (state) (x) (y) (i) = if i == state.count then Ok 0
-    else if wd-x state i /= x | wd-y state i /= y then wd-rebuild-rows state x y (i + 1)
+  wd-rebuild-rows (state) (x) (y) (k) = let side = 2 * state.reach + 1
+    in if k >= side * side then wd-extras-at state x y 0
+    else let fx = x - state.reach + int-mod k side
+    in let fy = y - state.reach + k / side
+    in when wd-rebuild-chain state x y (if fx < 0 | fy < 0 then 0 else wi-tile-head state.tiles state.pages fx fy)
+      is Err (e) -> Err e
+      is Ok (_) -> wd-rebuild-rows state x y (k + 1)
+  wd-rebuild-chain : WdState, Integer, Integer, Integer -> Result Integer Text
+  wd-rebuild-chain (state) (x) (y) (tag) = if tag == 0 then Ok 0
+    else let i = tag - 1
+    in let next = peek-32 state.links (i * 4)
+    in if wd-x state i /= x | wd-y state i /= y then wd-rebuild-chain state x y next
     else let mark = __heap-save
     in when wd-solid state i
       is Err (e) -> Err e
-      is Ok (_) -> let restored = __heap-restore mark in wd-rebuild-rows state x y (i + 1)
+      is Ok (_) -> let restored = __heap-restore mark in wd-rebuild-chain state x y next
   wd-rebuild-cell : WdState, Integer, Integer -> Result Integer Text
   wd-rebuild-cell (state) (x) (y) = if not (wd-bound state) then Err "decoration window requires rebind" else let cell = walk-cell state.map x y
     in if cell < 0 then Err "door outside loaded collision window"
-    else let reset = wd-copy (state.base + cell * state.stride) (state.solids + cell * state.stride) 0 (state.stride / 8)
+    else let reset = poke-qword state.solids (cell * state.stride) (peek-16 state.base (cell * 2))
     in wd-rebuild-rows state x y 0
   wd-packet : WdState, Integer -> List Integer
   wd-packet (state) (i) = let light = wd-field state i 11
@@ -176,14 +287,21 @@ Chapter: WorldDecoration
     in let b = gp-put16 (gp-put16 a (wd-x state i + (if light < 0 then 0 else #8000))) (wd-y state i + (if hue == 0 then 0 else #8000))
     in let c = list-push (if light < 0 then b else list-push b light) (bit-and (wd-field state i 2) 255)
     in sip-length (if hue == 0 then c else gp-put16 c hue)
+  wd-target-packet : WdState, List Integer -> List Integer
+  wd-target-packet (s) (packet) = if list-length packet /= 19 | list-at packet 0 /= #6C then packet
+    else let i = bit-and (gp-u32 packet 7) #7FFFFFFF - wd-serial-base - 1
+    in if i < 0 | i >= s.count then packet
+    else let head = [list-at packet 0, list-at packet 1, list-at packet 2, list-at packet 3, list-at packet 4, list-at packet 5, list-at packet 6]
+    in let placed = gp-put16 (gp-put16 (gp-put32 head 0) (wd-x s i)) (wd-y s i)
+    in gp-put16 (list-push (list-push placed (list-at packet 15)) (bit-and (wd-field s i 2) 255)) (wd-art s i)
   wd-occupied : WorldTable, Integer, Integer, Integer, Integer -> Boolean
   wd-occupied (world) (x) (y) (z) (i) = if i == world.capacity then False
-    else let at = 16 + i * 80
-    in let live = peek-qword world.buffer at > 0
-    in let kind = peek-qword world.buffer (at + 8)
-    in let oz = peek-qword world.buffer (at + 32)
-    in if live & peek-qword world.buffer (at + 56) == 0 & peek-qword world.buffer (at + 16) == x
-      & peek-qword world.buffer (at + 24) == y & oz < z + 16 & oz + (if kind == 1 then 16 else 1) > z then True
+    else let at = wi-object world.buffer i
+    in let live = peek-qword at 0 > 0
+    in let kind = peek-qword at 8
+    in let oz = peek-qword at 32
+    in if live & peek-qword at 56 == 0 & peek-qword at 16 == x
+      & peek-qword at 24 == y & oz < z + 16 & oz + (if kind == 1 then 16 else 1) > z then True
     else wd-occupied world x y z (i + 1)
   wd-deco-occupied : WdState, Integer, Integer, Integer, Integer -> Boolean
   wd-deco-occupied (state) (x) (y) (z) (i) = if i == state.count then False else if wd-field state i 0 > x then False
@@ -191,29 +309,31 @@ Chapter: WorldDecoration
     in let base = wd-field state i 2
     in let height = wd-field state i 6 / (if bit-and flags 1024 /= 0 then 2 else 1)
     in if not (wd-is-door state i) & wd-field state i 0 == x & wd-field state i 1 == y
-      & bit-and flags 576 /= 0 & base + height > z & z + 16 > base then True
+      & bit-and flags 576 /= 0 & not (walk-passable (wd-field state i 3)) & base + height > z & z + 16 > base then True
     else wd-deco-occupied state x y z (i + 1)
   wd-toggle : WdState, GameShard, Integer -> Result GameReply Text
-  wd-toggle (state) (shard) (i) = if not (wd-bound state) then Err "decoration window requires rebind" else let old = peek-byte state.opened i
+  wd-toggle (state) (shard) (i) = if not (wd-bound state) then Err "decoration window requires rebind" else let raw = peek-byte state.opened i in let old = bit-and raw 1
     in let x = wd-x state i
     in let y = wd-y state i
-    in if wd-field state i 7 == 4 then Ok (gsi-denied "That door is locked.")
+    in if wd-locked state i then Ok (gsi-denied "That door is locked.")
     else if old /= 0 & (wd-occupied shard.world (wd-field state i 0) (wd-field state i 1) (wd-field state i 2) 0
       | wd-deco-occupied state (wd-field state i 0) (wd-field state i 1) (wd-field state i 2) (wd-lower state (wd-field state i 0) 0 state.count)) then Ok (gsi-denied "The doorway is blocked.")
-    else let changed = poke-byte state.opened i (1 - old)
+    else let changed = poke-byte state.opened i (if old == 1 then raw - 1 else raw + 1)
     in let next-x = wd-x state i
     in let next-y = wd-y state i
     in let rebuild = when wd-rebuild-cell state x y
       is Err (e) -> Err e
       is Ok (_) -> wd-rebuild-cell state next-x next-y
     in when rebuild
-      is Err (e) -> let undone = poke-byte state.opened i old
+      is Err (e) -> let undone = poke-byte state.opened i raw
         in let first = wd-rebuild-cell state x y
         in let second = wd-rebuild-cell state next-x next-y
         in Err e
-      is Ok (_) -> let sound = wd-door-sound (wd-field state i 3) (old == 0)
+      is Ok (_) -> let stale = wd-invalidate state i 0
+        in let sound = wd-door-sound (wd-field state i 3) (old == 0)
         in let noise = gp-put16 (gp-put16 (gp-put16 [#54,1,0,sound,0,0] (wd-x state i)) (wd-y state i)) (bit-and (wd-field state i 2) #FFFF)
-        in Ok (gs-reply [sip-remove (wd-serial-base + i + 1),wd-packet state i,noise] (if old == 0 then "decoration:door-open" else "decoration:door-close"))
+        in Ok (gs-reply [sip-remove (wd-serial-base + i + 1),wd-packet state i,noise] ((if old == 0 then "decoration:door-open" else "decoration:door-close") & " serial=" & show (wd-serial-base + i + 1)
+          & " at " & show (wd-field state i 0) & "," & show (wd-field state i 1) & "," & show (wd-field state i 2)))
  ServUO Doors.cs open/close sounds per door family (16 art IDs per family).
   wd-door-sound : Integer, Boolean -> Integer
   wd-door-sound (art) (opening) =
@@ -229,7 +349,11 @@ Chapter: WorldDecoration
     else if not (go-packet-valid (gsi-specs 0) packet) | not (gs-byte-range packet 0) then Err "decoration packet extent"
     else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
     in let i = serial - wd-serial-base - 1
-    in if i < 0 | i >= state.count then Ok None
+    in if lib-is serial then
+      (if op == 6 then Ok (Just (gs-reply (lib-read serial) "decoration:book"))
+      else if op == 7 then Ok (Just (gs-reply [sip-bounce 0] "decoration:immovable"))
+      else Ok (Just (gs-reply [sip-message serial (lib-art 0) 6 (lib-title serial)] "decoration:name")))
+    else if i < 0 | i >= state.count then Ok None
     else if world-slot shard.world serial >= 0 then Err "decoration serial namespace collision"
     else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial then Err "decoration session binding"
     else if map.solids /= state.solids | not (wd-bound state) then Err "decoration collision binding"
@@ -245,7 +369,15 @@ Chapter: WorldDecoration
               let connection = wd-connection state input.connection
               in wd-shown state i else 0
             in Ok (Just reply)
+        else if op == 6 & wd-bookcase (wd-art state i) then Ok (Just (gs-reply [sip-open serial wd-bookcase-gump, lib-contents serial i] "decoration:bookcase"))
         else Ok (Just (gs-reply [sip-message serial (wd-art state i) 6 (wd-name state i)] "decoration:name"))
+ Damian, 2026-10-09: "bookcases in the world, when doubleclicked, should open up the container gump for bookcases. we can
+ populate them next week with books." The 1.25 TILEDATA names 0x0A97..0x0A9C "bookcase" (0x0C14 and 0x0C15 are ruined);
+ the client's bookcase container gump is 0x4D (GUMPIDX.MUL holds it). A bookcase opens on three library books
+ (BookcaseLibrary).
+  wd-bookcase-gump : Integer = #4D
+  wd-bookcase : Integer -> Boolean
+  wd-bookcase (art) = art >= #0A97 & art <= #0A9C
   wd-shown : WdState, Integer -> Integer
   wd-shown (state) (i) = if peek-byte state.visible i /= 0 then 0
     else let bit = poke-byte state.visible i 1
@@ -253,12 +385,81 @@ Chapter: WorldDecoration
     in let count = __record-set state "shown-count" (state.shown-count + 1) in 0
   wd-connection : WdState, Integer -> Integer
   wd-connection (state) (connection) = if state.connection == connection then 0
-    else let cleared = wd-zero state.visible 0 state.count
-    in let bound = __record-set state "connection" connection
-    in let cursor = __record-set state "cursor" -1
-    in let x = __record-set state "view-x" -1
-    in let count = __record-set state "shown-count" 0
-    in let row = __record-set state "row" 0 in 0
+    else let parked = wd-park state (list-at state.viewers state.viewer)
+    in let found = wd-viewer-find state.viewers connection 0
+    in let at = if found >= 0 then found else wd-viewer-oldest state.viewers 0 0
+    in let row = list-at state.viewers at
+    in let fresh = if found >= 0 then 0 else wd-viewer-reset state row connection
+    in let tick = state.clock + 1
+    in let clock = __record-set state "clock" tick
+    in let used = __record-set row "used" tick
+    in let index = __record-set state "viewer" at
+    in wd-load state row
+  wd-viewer-find : List WdViewer, Integer, Integer -> Integer
+  wd-viewer-find (viewers) (connection) (i) = if i == list-length viewers then -1
+    else if (list-at viewers i).connection == connection then i else wd-viewer-find viewers connection (i + 1)
+  wd-viewer-oldest : List WdViewer, Integer, Integer -> Integer
+  wd-viewer-oldest (viewers) (i) (best) = if i == list-length viewers then best
+    else wd-viewer-oldest viewers (i + 1) (if (list-at viewers i).used < (list-at viewers best).used then i else best)
+  wd-viewer-reset : WdState, WdViewer, Integer -> Integer
+  wd-viewer-reset (state) (row) (connection) = let cleared = wd-zero row.visible 0 state.count
+    in let a = __record-set row "connection" connection
+    in let b = __record-set row "shown-count" 0
+    in let c = __record-set row "cursor" -1
+    in let d = __record-set row "view-x" -1
+    in let e = __record-set row "view-y" -1
+    in let f = __record-set row "row" 0 in 0
+  wd-park : WdState, WdViewer -> Integer
+  wd-park (state) (row) = let a = __record-set row "connection" state.connection
+    in let b = __record-set row "visible" state.visible
+    in let c = __record-set row "shown" state.shown
+    in let d = __record-set row "shown-count" state.shown-count
+    in let e = __record-set row "cursor" state.cursor
+    in let f = __record-set row "view-x" state.view-x
+    in let g = __record-set row "view-y" state.view-y
+    in let h = __record-set row "row" state.row in 0
+  wd-load : WdState, WdViewer -> Integer
+  wd-load (state) (row) = let a = __record-set state "connection" row.connection
+    in let b = __record-set state "visible" row.visible
+    in let c = __record-set state "shown" row.shown
+    in let d = __record-set state "shown-count" row.shown-count
+    in let e = __record-set state "cursor" row.cursor
+    in let f = __record-set state "view-x" row.view-x
+    in let g = __record-set state "view-y" row.view-y
+    in let h = __record-set state "row" row.row in 0
+  wd-forget-all : WdState -> Integer
+  wd-forget-all (state) = let reset = wd-reset-all state 0
+    in let index = __record-set state "viewer" 0
+    in wd-load state (list-at state.viewers 0)
+  wd-reset-all : WdState, Integer -> Integer
+  wd-reset-all (state) (i) = if i == list-length state.viewers then 0
+    else let reset = wd-viewer-reset state (list-at state.viewers i) -1 in wd-reset-all state (i + 1)
+  wd-rescan : List WdViewer, Integer -> Integer
+  wd-rescan (viewers) (i) = if i == list-length viewers then 0
+    else let row = list-at viewers i
+    in let c = __record-set row "cursor" 0
+    in let r = __record-set row "row" 0 in wd-rescan viewers (i + 1)
+  wd-unshow : Integer, Integer, Integer, Integer -> Integer
+  wd-unshow (shown) (count) (at) (target) = if at == count then count
+    else if peek-32 shown (at * 4) == target then let moved = poke-32 shown (at * 4) (peek-32 shown ((count - 1) * 4)) in count - 1
+    else wd-unshow shown count (at + 1) target
+  wd-invalidate : WdState, Integer, Integer -> Integer
+  wd-invalidate (state) (door) (i) = if i == list-length state.viewers then 0
+    else let row = list-at state.viewers i
+    in let loaded = i == state.viewer
+    in let visible = if loaded then state.visible else row.visible
+    in let skip = peek-byte visible door == 0
+    in if skip then wd-invalidate state door (i + 1)
+    else let cleared = poke-byte visible door 0
+    in let a = if loaded then let count = wd-unshow state.shown state.shown-count 0 door
+        in let s = __record-set state "shown-count" count
+        in let c = __record-set state "cursor" 0
+        in let r = __record-set state "row" 0 in 0
+      else let count = wd-unshow row.shown row.shown-count 0 door
+        in let s = __record-set row "shown-count" count
+        in let c = __record-set row "cursor" 0
+        in let r = __record-set row "row" 0 in 0
+    in wd-invalidate state door (i + 1)
   wd-prune : WdState, WorldObject, Integer, Integer -> Integer
   wd-prune (state) (mobile) (i) (kept) = if i == state.shown-count then
       let count = __record-set state "shown-count" kept in 0
@@ -266,6 +467,13 @@ Chapter: WorldDecoration
     in let near = walk-abs (mobile.x - wd-x state row) <= 18 & walk-abs (mobile.y - wd-y state row) <= 18
     in let saved = if near then poke-32 state.shown (kept * 4) row else poke-byte state.visible row 0
     in wd-prune state mobile (i + 1) (kept + (if near then 1 else 0))
+ Castle Britain's fruit trees (CompositePlanting cpl-castle-orchard, x 1363..1390, y 1574..1658) are picked as orchard
+ sites, and the planting view draws their leaves bare or fruited, so the decoration never sends those leaves rows. TILEDATA
+ fruit trees span 0x0D94..0x0DAB, a trunk every fourth id from 0x0D94 and its leaves the three ids after it.
+  wd-orchard-leaves : WdState, Integer -> Boolean
+  wd-orchard-leaves (state) (row) = wd-orchard-leaf (wd-art state row) (wd-x state row) (wd-y state row)
+  wd-orchard-leaf : Integer, Integer, Integer -> Boolean
+  wd-orchard-leaf (art) (x) (y) = art > #0D94 & art <= #0DAB & int-mod (art - #0D94) 4 /= 0 & x >= 1360 & x <= 1392 & y >= 1570 & y <= 1660
   wd-view : WdState, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
   wd-view (state) (mobile) (i) (sent) (packets) = if i == 1521 | sent == 32 then
       let cursor = __record-set state "cursor" (if i == 1521 then -1 else i) in packets
@@ -275,7 +483,7 @@ Chapter: WorldDecoration
     in let next = peek-32 state.links (row * 4)
     in let saved = __record-set state "row" next
     in let near = walk-abs (mobile.x - wd-x state row) <= 18 & walk-abs (mobile.y - wd-y state row) <= 18
-    in let emit = near & peek-byte state.visible row == 0
+    in let emit = near & peek-byte state.visible row == 0 & not (wd-orchard-leaves state row)
     in let marked = if emit then wd-shown state row else 0
     in wd-view state mobile (i + (if next == 0 then 1 else 0)) (sent + (if emit then 1 else 0)) (if emit then list-push packets (wd-packet state row) else packets)
  ServUO BaseDoor closes an open door after 20 seconds unless the doorway is occupied.
@@ -285,13 +493,17 @@ Chapter: WorldDecoration
   wd-track (state) (timers) (row) (before) (tick) = if row < 0 | row >= state.count | before < 0 then 0
     else let after = peek-byte state.opened row
     in if after == before then 0
-    else if after /= 0 then wtm-set timers (tick + wd-close-ticks) wd-door-timer row
+    else if bit-and after 1 /= 0 then wtm-set timers (tick + wd-close-ticks) wd-door-timer row
     else wtm-clear timers wd-door-timer row
-  wd-autoclose : WdState, WorldTimers, GameShard, Integer, Integer -> List (List Integer)
-  wd-autoclose (state) (timers) (shard) (row) (tick) = if row < 0 | row >= state.count | peek-byte state.opened row == 0 then []
+  wd-arm-open : WdState, WorldTimers, Integer, Integer, Integer -> Integer
+  wd-arm-open (state) (timers) (tick) (i) (refused) = if i >= state.count then refused
+    else if bit-and (peek-byte state.opened i) 1 == 0 then wd-arm-open state timers tick (i + 1) refused
+    else wd-arm-open state timers tick (i + 1) (refused + (if wtm-set timers (tick + wd-close-ticks) wd-door-timer i < 0 then 1 else 0))
+  wd-autoclose :WdState, WorldTimers, GameShard, Integer, Integer -> List (List Integer)
+  wd-autoclose (state) (timers) (shard) (row) (tick) = if row < 0 | row >= state.count | bit-and (peek-byte state.opened row) 1 == 0 then []
     else when wd-toggle state shard row
       is Err (_) -> let retry = wtm-add timers (tick + wd-close-ticks) wd-door-timer row in []
-      is Ok (reply) -> if peek-byte state.opened row /= 0 then let retry = wtm-add timers (tick + wd-close-ticks) wd-door-timer row in []
+      is Ok (reply) -> if bit-and (peek-byte state.opened row) 1 /= 0 then let retry = wtm-add timers (tick + wd-close-ticks) wd-door-timer row in []
         else reply.packets
   wd-pulse : WdState, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   wd-pulse (state) (shard) (input) (map) (port) (tick) = if input.mode /= 2 | input.session.phase /= 2 then Ok None

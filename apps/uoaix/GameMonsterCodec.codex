@@ -39,10 +39,8 @@ Chapter: GameMonsterCodec
   gmc-encode : GameMonster, WorldTable, Integer, Integer, Integer -> Result Integer Text
   gmc-encode (g) (world) (now) (buf) (capacity) =
     let count = list-length g.slots
-    in if count < 1 | count > 8 | list-length g.combat.actors /= world.capacity
-      | now < 0 | now > 9223372036854775807 - gm-ticks 60000 then Err "monster codec owner or clock"
+    in if count < 1 | count > 8 | list-length g.combat.actors /= world.capacity then Err "monster codec owner"
     else if capacity < gmc-size count then Err "monster codec destination"
-    else if not (gmc-home g.x g.y g.z g.radius) | not (gmc-state-valid g world now 0) then Err "monster codec state"
     else let a = poke-qword buf 0 #31434D55
     in let b = poke-qword buf 8 1
     in let c = poke-qword buf 16 count
@@ -52,7 +50,9 @@ Chapter: GameMonsterCodec
     in let h = poke-qword buf 48 g.radius
     in let reserved = poke-qword buf 56 0
     in let rows = gmc-write g world now buf 0
-    in Ok (gmc-size count)
+    in if now < 0 | now > 9223372036854775807 - gm-ticks 60000 then Err "monster codec clock"
+    else if not (gmc-home g.x g.y g.z g.radius) | not (gmc-state-valid g world now 0) then Err "monster codec state"
+    else Ok (gmc-size count)
   gmc-distinct : Integer, Integer, Integer, Integer -> Boolean
   gmc-distinct (buf) (serial) (i) (limit) = if serial == 0 | i == limit then True
     else peek-qword buf (64 + i * 24) /= serial & gmc-distinct buf serial (i + 1) limit
@@ -71,7 +71,7 @@ Chapter: GameMonsterCodec
     in let a = __record-set slot "serial" (peek-qword buf at)
     in let b = __record-set slot "direction" (peek-qword buf (at + 8))
     in let c = __record-set slot "due" (now + peek-qword buf (at + 16))
-    in let d = __record-set slot "visible" False
+    in let d = __record-set slot "seen" 0
     in gmc-read g now buf (i + 1)
   gmc-decode : GameMonster, WorldTable, Integer, Integer, Integer -> Result Integer Text
   gmc-decode (g) (world) (now) (buf) (size) =
@@ -88,7 +88,7 @@ Chapter: GameMonsterCodec
     in let c = __record-set g "z" (peek-qword buf 40)
     in let d = __record-set g "radius" (peek-qword buf 48)
     in let e = gmc-read g now buf 0
-    in let f = __record-set g "connection" -1
+    in let f = gm-links-clear g.links 0
     in let tick = __record-set g.combat "tick" now
     in Ok size
 

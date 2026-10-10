@@ -1,0 +1,119 @@
+Chapter: BvtBedDecor
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-154 (trial 41911): the founding chooses beds on a walk map that holds no decoration, and ServUO's chest of drawers
+ stood on miner-1's bed. BvtWorkerDay's fixture is founded once to learn miner 0's bed, then again with a chest
+ (impassable, 9 high) on it.
+  bbe-fill : WalkMap, Integer -> Integer
+  bbe-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bbe-fill map (i + 1)
+  bbe-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bbe-row (data) (i) (x) (y) (z) (art) (flags) (height) (kind) (opened) (dx) = let at = 64 + i * 176
+    in let a = poke-qword data at x
+    in let b = poke-qword data (at + 8) y
+    in let c = poke-qword data (at + 16) z
+    in let d = poke-qword data (at + 24) art
+    in let e = poke-qword data (at + 40) flags
+    in let f = poke-qword data (at + 48) height
+    in let g = poke-qword data (at + 56) kind
+    in let h = poke-qword data (at + 64) opened
+    in let k = poke-qword data (at + 72) dx
+    in let m = poke-qword data (at + 88) -1
+    in let n = poke-qword data (at + 96) (if kind == 0 then flags else 0)
+    in poke-qword data (at + 104) (if kind == 0 then height else 0)
+  bbe-size : Integer -> Integer
+  bbe-size (count) = 64 + count * 176
+  bbe-data : BbSpot, Integer -> Integer
+  bbe-data (bed) (count) = let data = alloc-bytes (bbe-size count)
+    in let clear = wd-zero data 0 (bbe-size count)
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 count
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let first = count == 2 & bed.x < 1419
+    in let door = bbe-row data (if first then 1 else 0) 1419 1690 0 #0675 64 20 1 #0676 1
+    in let chest = if count == 2 then bbe-row data (if first then 0 else 1) bed.x bed.y bed.z #0A38 64 9 0 #0A38 0 else 0
+    in data
+  bbe-founded : BbSpot, Integer -> Result CompositeGame Text
+  bbe-founded (bed) (count) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> Err e
+      is Ok (britain) -> let filled = bbe-fill map 0
+        in let town-filled = bbe-fill britain 0
+        in when wd-read (bbe-data bed count) (bbe-size count) map map.stride
+          is Err (e) -> Err e
+          is Ok (decoration) -> when cg-britain britain
+            is Err (e) -> Err e
+            is Ok (owner) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner
+  bbe-spot : BbSpot -> BbSpot
+  bbe-spot (s) = BbSpot { x = s.x, y = s.y, z = s.z }
+  bbe-same : BbSpot, BbSpot -> Boolean
+  bbe-same (a) (b) = a.x == b.x & a.y == b.y
+ Walls every neighbour of the spot except the bed, so the spot is reached from nowhere.
+  bbe-wall : WalkMap, BbSpot, BbSpot, Integer -> Integer
+  bbe-wall (map) (spot) (bed) (d) = if d >= 8 then 0
+    else let x = spot.x + walk-dx d
+    in let y = spot.y + walk-dy d
+    in let built = if x == bed.x & y == bed.y then 0 else (when walk-add-solid map x y spot.z 20 64 is Err (_) -> 1 is Ok (_) -> 0)
+    in built + bbe-wall map spot bed (d + 1)
+ Miner 2 is given the chest's tile as its bed and rebeds from it: answers the bed it ends with, or the bed tile when a
+ step of the fixture fails. With a way, the plan to the tile beside it starts there instead of at its door: an inn worker's
+ door is the town entrance, and the route the open arm planned from there is cached (rte-find), so the walled arm starts a
+ tile east of it to be planned afresh.
+  bbe-rebed : CompositeGame, BbSpot, Maybe BbSpot -> BbSpot
+  bbe-rebed (owner) (bed) (way) = when owner.town
+    is None -> bed
+    is Just (t) -> when owner.town-map
+      is None -> bed
+      is Just (map) -> let c = list-at owner.miners 2
+        in when world-get owner.checkpoint.game.world c.serial
+          is Err (_) -> bed
+          is Ok (mobile) -> let homed = tl-copy-spot c.home bed
+            in let moved = when way is None -> 0 is Just (w) -> tl-copy-spot c.door w
+            in when cgg-rebed c t mobile map owner.town-doors
+              is Err (_) -> bed
+              is Ok (_) -> bbe-spot c.home
+  bbe-beside : CompositeGame, BbSpot -> BbSpot
+  bbe-beside (owner) (bed) = when owner.town
+    is None -> bed
+    is Just (t) -> when owner.town-map
+      is None -> bed
+      is Just (map) -> let c = list-at owner.miners 2
+        in when world-get owner.checkpoint.game.world c.serial
+          is Err (_) -> bed
+          is Ok (mobile) -> cgg-beside t mobile map bed 0
+  bbe-blocked : CompositeGame, BbSpot -> Boolean
+  bbe-blocked (owner) (s) = when owner.town-map is None -> False is Just (map) -> cgg-bed-blocked s map
+  bvt-bed-decor : Integer -> [Console] Integer
+  bvt-bed-decor (unused) = when bbe-founded (BbSpot { x = 0, y = 0, z = 0 }) 1
+    is Err (e) -> bvt-check ("bed decoration fixture: " & e) False
+    is Ok (plain) -> let bed = bbe-spot (list-at plain.miners 0).home
+      in let kept = bbe-spot (list-at plain.miners 1).home
+      in when bbe-founded bed 2
+        is Err (e) -> bvt-check ("bed decoration chest fixture: " & e) False
+        is Ok (owner) -> act
+          founded <- bbe-spot (list-at owner.miners 0).home
+          doors <- cg-town-doors owner (bbe-data bed 2) (bbe-size 2)
+          after <- bbe-spot (list-at owner.miners 0).home
+          other <- bbe-spot (list-at owner.miners 1).home
+          print-line-uni ("BEDDECOR chest " & show bed.x & "," & show bed.y & " founded " & show founded.x & "," & show founded.y & " after " & show after.x & "," & show after.y & " miner-1 " & show other.x & "," & show other.y & " was " & show kept.x & "," & show kept.y)
+          a <- bvt-check "the founding puts miner 0's bed on the tile the chest decorates, and the chest blocks it once the decoration binds (UOAIX-154)" (is-ok doors & bbe-same founded bed & bbe-blocked owner bed)
+          b <- bvt-check "binding the decoration moves the bed off the chest to a tile a walker stands on" (not (bbe-same after bed) & not (bbe-blocked owner after))
+          d <- bvt-check "a bed the decoration leaves clear is kept (miner 1)" (bbe-same other kept)
+          beside <- bbe-beside owner bed
+          opened <- bbe-rebed owner bed None
+          walls <- when owner.town-map is None -> 1 is Just (map) -> bbe-wall map beside bed 0
+          entrance <- when owner.town is None -> beside is Just (t) -> BbSpot { x = t.entrance.x + 1, y = t.entrance.y, z = t.entrance.z }
+          shut <- bbe-rebed owner bed (Just entrance)
+          print-line-uni ("BEDDECOR rebed beside " & show beside.x & "," & show beside.y & " open " & show opened.x & "," & show opened.y & " walled " & show shut.x & "," & show shut.y & " walls-refused=" & show walls)
+          e <- bvt-check "a worker whose bed is blocked moves it to the free tile beside it when that tile routes from its door" (not (bbe-same beside bed) & bbe-same opened beside)
+          f <- bvt-check "the same tile walled in from every side but the bed is refused, and the worker takes an inn bed" (walls == 0 & not (bbe-same shut beside) & not (bbe-same shut bed))
+          a + b + d + e + f
+        end

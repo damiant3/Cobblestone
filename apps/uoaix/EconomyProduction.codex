@@ -1,11 +1,14 @@
 Chapter: EconomyProduction
   cites Uoaix chapter EconomyCatalog
   cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter SkillCurve
+  cites Uoaix chapter SlotArray
+  cites Uoaix chapter WorldRecords
   cites Foreword chapter Result
 
   EpActor = record { purse : Integer, place : Integer, hunger : Integer,
     attempts : Integer, stock : Integer, quality : Integer, cost : Integer,
-    wear : Integer, skills : Integer }
+    wear : Integer, skills : Integer, row : Integer, card : Integer }
   EpStation = record { kind : Integer, place : Integer, owner : Integer, enabled : Integer }
   EpNode = record { resource : Integer, place : Integer, owner : Integer,
     ground : Integer, planted : Integer, stage : Integer, ready : Integer,
@@ -16,16 +19,29 @@ Chapter: EconomyProduction
   EpWorld = record { catalog : EgCatalog, money : EmMoney,
     actors : List EpActor, stations : List EpStation, nodes : List EpNode,
     actor-count : Integer, station-count : Integer, node-count : Integer,
-    hour : Integer, gathered : Integer, found : Integer, crafted : Integer, consumed : Integer,
+    hour : Integer, gathered : Integer, found : Integer, taxed : Integer, crafted : Integer, consumed : Integer,
     sales : Integer, turnover : Integer, crown-turnover : Integer,
     trades : List EpTrade, trade-count : Integer,
-    mint-owner : Integer, mint-rate : Integer, mint-ingots : Integer }
+    mint-owner : Integer, mint-rate : Integer, mint-ingots : Integer, opening : Integer, goods : EpGoods, no-picks : List EpPick, levies : Integer }
+  EpLot = record { serial : Integer, actor : Integer, item : Integer,
+    quality : Integer, wear : Integer, basis : Integer }
+  EpGoods = record { rows : Integer, heads : Integer, world : WorldTable }
+  EpPick = record { serial : Integer, item : Integer, quantity : Integer }
+ The trade log's carried state at its last seal (UOAIX-50), in cells: turnover by chain (0..7), crown turnover by
+ chain (8..15), the day demand was measured (16), then demand by item (one cell per catalog item cell, from 17).
+  ep-open-crown : Integer = 8
+  ep-open-day : Integer = 16
+  ep-open-sales : Integer = 17
+  ep-open-cells : EgCatalog -> Integer
+  ep-open-cells (c) = ep-open-sales + eg-cells c
 
   ep-limit : Integer = 1000000000000
   ep-stock-limit : Integer = 1000000
   ep-trade-limit : Integer = 4096
-  ep-station-limit : Integer = 256
-  ep-node-limit : Integer = 1024
+ Every Britain shopkeeper and lineup copy keeps its own stations (an outfit alone takes several), so ten shops and their
+ copies passed 256 at founding (BVT 2026-10-08, 'workplace budget exhausted').
+  ep-station-limit : Integer = 512
+  ep-node-limit : Integer = 2048
  Labor in copper at 10 a work-day (1 silver a day, Damian 2026-10-05), sized so
  that with materials and the quarter margin a basic sword quotes near 1 gold
  (700 copper), a full metal suit near 10 gold, and bread and a meal within 8.
@@ -41,24 +57,44 @@ Chapter: EconomyProduction
     else if item == 74 then 35 else if item == 72 | item == 73 then 20 else if item == 45 then 15
     else if item == 29 | item == 30 | item == 31 | item == 32 | item == 65 | item == 66 | item == 37 | item == 49 | item == 75 then 10
     else if item == 35 | item == 36 | item == 38 | item == 39 | item == 25 | item == 26 | item == 27 | item == 28 | item == 62 then 5
-    else if item == 34 | item == 76 | item == 50 | item == 33 then 2 else 0
+    else if item == 34 | item == 76 | item == 50 | item == 33 | item == 149 then 2 else 0
   ep-clear : Integer, Integer, Integer -> Integer
   ep-clear (buf) (cells) (i) = if i == cells then 0
     else let a = poke-qword buf (i * 8) 0 in ep-clear buf cells (i + 1)
   ep-buffer : Integer -> Integer
   ep-buffer (cells) = let buf = alloc-bytes (cells * 8)
     in let a = ep-clear buf cells 0 in buf
+ The Crown's takes in kind (the mining tax on ore and gold finds), newest 1024, for the admin page: cell 0 counts every
+ take, then rows of hour, actor, item and amount. Memory only: a save keeps the taxed counters, not these rows.
+  ep-levy-rows : Integer = 1024
+  ep-levy : EpWorld, Integer, Integer, Integer -> Integer
+  ep-levy (w) (actor) (item) (amount) = let n = peek-qword w.levies 0
+    in let at = 8 + int-mod n ep-levy-rows * 32
+    in let a = poke-qword w.levies at w.hour
+    in let b = poke-qword w.levies (at + 8) actor
+    in let c = poke-qword w.levies (at + 16) item
+    in let d = poke-qword w.levies (at + 24) amount
+    in let e = poke-qword w.levies 0 (n + 1) in 0
   ep-at : Integer, Integer -> Integer
   ep-at (buf) (id) = peek-qword buf (id * 8)
   ep-set : Integer, Integer, Integer -> Integer
   ep-set (buf) (id) (value) = let a = poke-qword buf (id * 8) value in 0
   ep-add : Integer, Integer, Integer -> Integer
   ep-add (buf) (id) (value) = ep-set buf id (ep-at buf id + value)
-  ep-actors : Integer, List EpActor -> List EpActor
-  ep-actors (i) (xs) = if i == 128 then xs else
-    ep-actors (i + 1) (list-push xs (EpActor { purse = 0, place = 0, hunger = 0,
-      attempts = 0, stock = ep-buffer 129, quality = ep-buffer 129,
-      cost = ep-buffer 129, wear = ep-buffer 129, skills = ep-buffer 11 }))
+  ep-actor-block : Integer = 128
+ Economy skills 0 to 11 (11 is Masonry, UOAIX-122).
+  ep-skill-cells : Integer = 12
+  ep-actor-new : Integer -> EpActor
+  ep-actor-new (cells) = EpActor { purse = 0, place = 0, hunger = 0,
+      attempts = 0, stock = ep-buffer cells, quality = ep-buffer cells,
+      cost = ep-buffer cells, wear = ep-buffer cells, skills = ep-buffer ep-skill-cells, row = 0, card = 0 }
+  ep-actors : Integer, Integer, List EpActor -> List EpActor
+  ep-actors (cells) (i) (xs) = if i == ep-actor-block then xs else ep-actors cells (i + 1) (list-push xs (ep-actor-new cells))
+ The actor table grows a block at a time; the heap it takes must be kept (UoaixDynamicTables.md stage 4).
+  ep-grow-actors : EpWorld, Integer -> Integer
+  ep-grow-actors (w) (left) = if left <= 0 then list-length w.actors
+    else let grown = __record-set w "actors" (list-push w.actors (ep-actor-new (eg-cells w.catalog)))
+    in let heads = sa-grow w.goods.heads (list-length w.actors + 1) in ep-grow-actors w (left - 1)
   ep-stations : Integer, List EpStation -> List EpStation
   ep-stations (i) (xs) = if i == ep-station-limit then xs else
     ep-stations (i + 1) (list-push xs (EpStation { kind = 0, place = 0, owner = 0, enabled = 0 }))
@@ -66,24 +102,377 @@ Chapter: EconomyProduction
   ep-nodes (i) (xs) = if i == ep-node-limit then xs else
     ep-nodes (i + 1) (list-push xs (EpNode { resource = 0, place = 0, owner = 0,
       ground = 0, planted = 0, stage = 0, ready = 0, water = 0, tended = 0 }))
+ Stations and nodes start at those blocks and grow a block at a time, as actors do; a node id stays within 16 bits
+ (GameHarvestCodec packs it beside its base).
+  ep-node-ceiling : Integer = 65535
+  ep-station-new : Integer -> EpStation
+  ep-station-new (unused) = EpStation { kind = 0, place = 0, owner = 0, enabled = 0 }
+  ep-node-new : Integer -> EpNode
+  ep-node-new (unused) = EpNode { resource = 0, place = 0, owner = 0, ground = 0, planted = 0, stage = 0, ready = 0, water = 0, tended = 0 }
+  ep-grow-stations : EpWorld, Integer -> Integer
+  ep-grow-stations (w) (left) = if left <= 0 then list-length w.stations
+    else let grown = __record-set w "stations" (list-push w.stations (ep-station-new 0)) in ep-grow-stations w (left - 1)
+  ep-grow-nodes : EpWorld, Integer -> Integer
+  ep-grow-nodes (w) (left) = if left <= 0 | list-length w.nodes >= ep-node-ceiling then list-length w.nodes
+    else let grown = __record-set w "nodes" (list-push w.nodes (ep-node-new 0)) in ep-grow-nodes w (left - 1)
+  ep-station-room : EpWorld -> Boolean
+  ep-station-room (w) = if w.station-count < list-length w.stations then True
+    else if not w.goods.world.growing then False else ep-grow-stations w ep-station-limit > w.station-count
+  ep-node-room : EpWorld -> Boolean
+  ep-node-room (w) = if w.node-count < list-length w.nodes then True
+    else if not w.goods.world.growing then False else ep-grow-nodes w ep-node-limit > w.node-count
   ep-trades : Integer, List EpTrade -> List EpTrade
   ep-trades (i) (xs) = if i == ep-trade-limit then xs else
     ep-trades (i + 1) (list-push xs (EpTrade { action = 0, hour = 0, buyer = 0,
       seller = 0, item = 0, quantity = 0, gross = 0, quality = 0, durability = 0 }))
+  ep-grow-trades : EpWorld, Integer -> Integer
+  ep-grow-trades (w) (left) = if left <= 0 then list-length w.trades
+    else let grown = __record-set w "trades" (list-push w.trades (EpTrade { action = 0, hour = 0, buyer = 0,
+      seller = 0, item = 0, quantity = 0, gross = 0, quality = 0, durability = 0 })) in ep-grow-trades w (left - 1)
+  ep-trades-due : EpWorld -> Boolean
+  ep-trades-due (w) = list-length w.trades - w.trade-count < ep-trade-limit / 4
+  ep-seal-cells : Integer, Integer, Integer, Integer -> Integer
+  ep-seal-cells (from) (to) (count) (i) = if i == count then 0 else let a = ep-set to i (ep-at from i) in ep-seal-cells from to count (i + 1)
+  ep-clear-trades : EpWorld, Integer -> Integer
+  ep-clear-trades (w) (i) = if i == w.trade-count then 0
+    else let t = list-at w.trades i
+    in let a = __record-set t "action" 0
+    in let b = __record-set t "hour" 0
+    in let c = __record-set t "buyer" 0
+    in let d = __record-set t "seller" 0
+    in let e = __record-set t "item" 0
+    in let f = __record-set t "quantity" 0
+    in let g = __record-set t "gross" 0
+    in let h = __record-set t "quality" 0
+    in let j = __record-set t "durability" 0
+    in ep-clear-trades w (i + 1)
+  ep-seal-trades : EpWorld -> Integer
+  ep-seal-trades (w) = let turnover = ep-seal-cells w.turnover w.opening 8 0
+    in let crown = ep-seal-cells w.crown-turnover (w.opening + ep-open-crown * 8) 8 0
+    in let demand = ep-seal-cells w.sales (w.opening + ep-open-sales * 8) (eg-cells w.catalog) 0
+    in let day = ep-set w.opening ep-open-day (w.hour / 24)
+    in let cleared = ep-clear-trades w 0
+    in let a = __record-set w "trade-count" 0 in 0
   ep-core-items : EgCatalog -> Boolean
   ep-core-items (c) = if list-length c.items < 62 then False
-    else (list-at c.items 3).name == "water" & (list-at c.items 13).name == "vegetables"
-      & (list-at c.items 15).name == "fruit" & (list-at c.items 33).name == "bread"
+    else (list-at c.items 3).name == "water" & ((list-at c.items 13).name == "cabbages" | (list-at c.items 13).name == "vegetables")
+      & ((list-at c.items 15).name == "apples" | (list-at c.items 15).name == "fruit") & (list-at c.items 33).name == "bread"
       & (list-at c.items 49).name == "cooked food" & (list-at c.items 50).name == "coin"
       & (list-at c.items 31).name == "gold ingots" & (list-at c.items 61).name == "stone hammer"
   ep-new : EgCatalog, EmMoney -> Result EpWorld Text
   ep-new (catalog) (money) = if eg-validate catalog /= 0 | not (ep-core-items catalog) then Err "economy catalog refused"
-    else Ok (EpWorld { catalog = catalog, money = money, actors = ep-actors 0 [],
+    else Ok (EpWorld { catalog = catalog, money = money, actors = ep-actors (eg-cells catalog) 0 [],
       stations = ep-stations 0 [], nodes = ep-nodes 0 [], actor-count = 0,
       station-count = 0, node-count = 0, hour = money.hour,
-      gathered = ep-buffer 129, found = ep-buffer 129, crafted = ep-buffer 129, consumed = ep-buffer 129,
-      sales = ep-buffer 129, turnover = ep-buffer 8, crown-turnover = ep-buffer 8,
-      trades = ep-trades 0 [], trade-count = 0, mint-owner = 0, mint-rate = 0, mint-ingots = 0 })
+      gathered = ep-buffer (eg-cells catalog), found = ep-buffer (eg-cells catalog), taxed = ep-buffer (eg-cells catalog), crafted = ep-buffer (eg-cells catalog), consumed = ep-buffer (eg-cells catalog),
+      sales = ep-buffer (eg-cells catalog), turnover = ep-buffer 8, crown-turnover = ep-buffer 8,
+      trades = ep-trades 0 [], trade-count = 0, mint-owner = 0, mint-rate = 0, mint-ingots = 0, opening = ep-buffer (ep-open-cells catalog),
+      goods = ep-goods-new 0, no-picks = [], levies = ep-buffer (1 + ep-levy-rows * 4) })
+ GVS1's fixed block holds 1024 lot records; the rest travel in its tail.
+  ep-lot-limit : Integer = 1024
+ A lot's row sits at its world item's slot, 80 bytes: serial (0 for none), actor, item, quality, wear, basis, then the
+ actor chain's next and previous serials (48, 56) and the whole chain's (64, 72), each in creation order. A head is 16
+ bytes, the first and last serial of an actor's chain; head 0 is the whole chain's.
+  ep-row-bytes : Integer = 80
+  ep-goods-new : Integer -> EpGoods
+  ep-goods-new (unused) = EpGoods { rows = sa-new ep-row-bytes 0, heads = sa-new 16 (ep-actor-block + 1),
+    world = (world-view 0 0) }
+  ep-row : EpGoods, Integer -> Integer
+  ep-row (g) (serial) = sa-at g.rows (wi-low-slot (bit-and serial world-serial-mask))
+  ep-head : EpGoods, Integer -> Integer
+  ep-head (g) (actor) = sa-at g.heads actor
+  ep-grow-goods : EpGoods, Integer -> Integer
+  ep-grow-goods (g) (capacity) = sa-grow g.rows capacity
+  ep-is-lot : EpGoods, Integer -> Boolean
+  ep-is-lot (g) (serial) = if serial <= 0 | serial > 2147483647 then False
+    else let low = bit-and serial world-serial-mask
+    in if low == 0 then False else if wi-low-slot low >= sa-capacity g.rows then False
+    else peek-qword (ep-row g serial) 0 == serial
+ Whether a decoded record can take a row: its serial names a slot below the ceiling and its actor a head.
+  ep-lot-key : EpGoods, Integer, Integer -> Boolean
+  ep-lot-key (g) (serial) (actor) = if serial <= 0 | serial > 2147483647 | actor <= 0 | actor >= sa-capacity g.heads then False
+    else let low = bit-and serial world-serial-mask
+    in low /= 0 & wi-low-slot low < sa-capacity g.rows
+  ep-lot-at : EpGoods, Integer -> Integer
+  ep-lot-at (g) (serial) = if ep-is-lot g serial then serial else -1
+  ep-lot-field : EpGoods, Integer, Integer -> Integer
+  ep-lot-field (g) (serial) (at) = if ep-is-lot g serial then peek-qword (ep-row g serial) at else 0
+  ep-lot-actor : EpGoods, Integer -> Integer
+  ep-lot-actor (g) (serial) = ep-lot-field g serial 8
+  ep-lot-item : EpGoods, Integer -> Integer
+  ep-lot-item (g) (serial) = ep-lot-field g serial 16
+  ep-lot-quality : EpGoods, Integer -> Integer
+  ep-lot-quality (g) (serial) = ep-lot-field g serial 24
+  ep-lot-wear : EpGoods, Integer -> Integer
+  ep-lot-wear (g) (serial) = ep-lot-field g serial 32
+  ep-lot-basis : EpGoods, Integer -> Integer
+  ep-lot-basis (g) (serial) = ep-lot-field g serial 40
+  ep-lot : EpGoods, Integer -> EpLot
+  ep-lot (g) (serial) = if not (ep-is-lot g serial) then EpLot { serial = 0, actor = 0, item = 0, quality = 0, wear = 0, basis = 0 }
+    else let row = ep-row g serial
+    in EpLot { serial = serial, actor = peek-qword row 8, item = peek-qword row 16,
+      quality = peek-qword row 24, wear = peek-qword row 32, basis = peek-qword row 40 }
+  ep-lot-first : EpGoods, Integer -> Integer
+  ep-lot-first (g) (actor) = if actor <= 0 | actor >= sa-capacity g.heads then 0 else peek-qword (ep-head g actor) 0
+  ep-lot-next : EpGoods, Integer -> Integer
+  ep-lot-next (g) (serial) = peek-qword (ep-row g serial) 48
+  ep-lots-first : EpGoods -> Integer
+  ep-lots-first (g) = peek-qword (ep-head g 0) 0
+  ep-lot-after : EpGoods, Integer -> Integer
+  ep-lot-after (g) (serial) = peek-qword (ep-row g serial) 64
+  ep-lot-count : EpGoods -> Integer
+  ep-lot-count (g) = ep-lots-from g (ep-lots-first g) 0
+  ep-lots-from : EpGoods, Integer, Integer -> Integer
+  ep-lots-from (g) (serial) (n) = if serial == 0 then n else ep-lots-from g (ep-lot-after g serial) (n + 1)
+  ep-lot-room : EpGoods, Integer -> Boolean
+  ep-lot-room (g) (n) = n >= 0
+ The serial of the i-th lot in creation order, -1 past the last.
+  ep-lot-nth : EpGoods, Integer -> Integer
+  ep-lot-nth (g) (i) = ep-nth-from g (ep-lots-first g) i
+  ep-nth-from : EpGoods, Integer, Integer -> Integer
+  ep-nth-from (g) (serial) (i) = if serial == 0 then -1 else if i == 0 then serial else ep-nth-from g (ep-lot-after g serial) (i - 1)
+  ep-link : EpGoods, Integer, Integer, Integer, Integer -> Integer
+  ep-link (g) (serial) (head) (next) (prev) = let row = ep-row g serial
+    in let last = peek-qword head 8
+    in let a = poke-qword row next 0
+    in let b = poke-qword row prev last
+    in let c = if last == 0 then poke-qword head 0 serial else poke-qword (ep-row g last) next serial
+    in poke-qword head 8 serial
+  ep-unlink : EpGoods, Integer, Integer, Integer, Integer -> Integer
+  ep-unlink (g) (serial) (head) (next) (prev) = let row = ep-row g serial
+    in let after = peek-qword row next
+    in let before = peek-qword row prev
+    in let a = if before == 0 then poke-qword head 0 after else poke-qword (ep-row g before) next after
+    in if after == 0 then poke-qword head 8 before else poke-qword (ep-row g after) prev before
+  ep-clear-row : Integer, Integer -> Integer
+  ep-clear-row (row) (cell) = if cell == 10 then 0 else let a = poke-qword row (cell * 8) 0 in ep-clear-row row (cell + 1)
+  ep-drop-row : EpGoods, Integer -> Integer
+  ep-drop-row (g) (serial) = let row = ep-row g serial
+    in let a = ep-unlink g serial (ep-head g (peek-qword row 8)) 48 56
+    in let b = ep-unlink g serial (ep-head g 0) 64 72
+    in ep-clear-row row 0
+ A row still naming a serial the world has since reused is dropped before the new lot takes it.
+  ep-occupy : EpGoods, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-occupy (g) (serial) (actor) (item) (quality) (wear) (basis) = let slot = wi-low-slot (bit-and serial world-serial-mask)
+    in let room = if slot < sa-capacity g.rows then 0 else ep-grow-goods g (max g.world.capacity (slot + 1))
+    in let row = ep-row g serial
+    in let old = peek-qword row 0
+    in let freed = if old /= 0 then ep-drop-row g old else 0
+    in let s = poke-qword row 0 serial
+    in let ac = poke-qword row 8 actor
+    in let it = poke-qword row 16 item
+    in let lq = poke-qword row 24 quality
+    in let lw = poke-qword row 32 wear
+    in let lb = poke-qword row 40 basis
+    in let mine = ep-link g serial (ep-head g actor) 48 56
+    in let ordered = ep-link g serial (ep-head g 0) 64 72
+    in serial
+  ep-reown : EpGoods, Integer, Integer -> Integer
+  ep-reown (g) (serial) (to) = let row = ep-row g serial
+    in let a = ep-unlink g serial (ep-head g (peek-qword row 8)) 48 56
+    in let b = poke-qword row 8 to
+    in ep-link g serial (ep-head g to) 48 56
+  ep-holder : EpWorld, Integer -> Boolean
+  ep-holder (w) (actor) = ep-valid-actor w actor & actor < sa-capacity w.goods.heads
+  ep-bind-goods : EpWorld, WorldTable -> Integer
+  ep-bind-goods (w) (world) = if w.goods.world.capacity > 0 then 0
+    else let bound = __record-set w.goods "world" world in ep-grow-goods w.goods world.capacity
+ A lot's quantity is its pile's amount (WorldRecords slot layout: amount at byte 64 of the 80-byte record after the 16-byte head).
+  ep-amount : EpGoods, Integer -> Integer
+  ep-amount (g) (serial) = if g.world.capacity <= 0 then 0
+    else let slot = world-slot g.world serial
+    in if slot < 0 then 0 else peek-qword (wi-object g.world.buffer slot) 64
+  ep-lot-amount : EpGoods, Integer -> Integer
+  ep-lot-amount (g) (at) = ep-amount g at
+  ep-lot-of : EpGoods, Integer, Integer -> Integer
+  ep-lot-of (g) (actor) (item) = ep-lot-of-from g item (ep-lot-first g actor)
+  ep-lot-of-from : EpGoods, Integer, Integer -> Integer
+  ep-lot-of-from (g) (item) (serial) = if serial == 0 then -1
+    else if peek-qword (ep-row g serial) 16 == item & ep-amount g serial > 0 then serial
+    else ep-lot-of-from g item (ep-lot-next g serial)
+  ep-represented : EpGoods, Integer, Integer, Integer -> Integer
+  ep-represented (g) (actor) (item) (field) = ep-represented-from g item field (ep-lot-first g actor) 0
+  ep-represented-from : EpGoods, Integer, Integer, Integer, Integer -> Integer
+  ep-represented-from (g) (item) (field) (serial) (sum) = if serial == 0 then sum
+    else let row = ep-row g serial
+    in let n = if peek-qword row 16 /= item then 0
+      else if field == 0 then ep-amount g serial else if field == 1 then ep-amount g serial * peek-qword row 24
+      else if field == 2 then ep-amount g serial * peek-qword row 32 else peek-qword row 40
+    in ep-represented-from g item field (peek-qword row 48) (sum + n)
+  ep-goods-text : Integer -> Text
+  ep-goods-text (code) = if code == -2 then "goods lot absent" else if code == -3 then "goods lot does not hold the units"
+    else if code == -4 then "goods take outside the lot" else if code == -5 then "goods world refused"
+    else if code == -6 then "goods put invalid" else if code == -7 then "goods new lot needs its pile"
+    else if code == -8 then "goods lot does not match its pile" else "goods short"
+  ep-coded : Integer -> Result Integer Text
+  ep-coded (code) = if code < 0 then Err (ep-goods-text code) else Ok code
+  ep-take-lot : EpWorld, Integer, Integer -> Result Integer Text
+  ep-take-lot (w) (at) (k) = ep-coded (ep-take-lot-n w at k)
+  ep-take-lot-n : EpWorld, Integer, Integer -> Integer
+  ep-take-lot-n (w) (at) (k) = let g = w.goods
+    in if not (ep-is-lot g at) then -2
+    else let l = ep-lot g at
+    in let held = ep-amount g at
+    in if k <= 0 | k > held | not (ep-valid-actor w l.actor) then -4
+    else when world-get g.world at
+      is Err (_) -> -5
+      is Ok (obj) -> when (if obj.amount <= k then world-delete g.world at else world-update g.world (__record-set obj "amount" (obj.amount - k)))
+        is Err (_) -> -5
+        is Ok (_) -> let p = ep-actor w l.actor
+          in let share = l.basis * k / held
+          in let a = ep-add p.stock l.item (0 - k)
+          in let b = ep-add p.quality l.item (0 - k * l.quality)
+          in let c = ep-add p.wear l.item (0 - k * l.wear)
+          in let d = ep-add p.cost l.item (0 - share)
+          in let settled = ep-settle p l.item
+          in let f = poke-qword (ep-row g at) 40 (l.basis - share)
+          in let r = if held <= k then ep-drop-row g at else 0
+          in k
+  ep-take-rest : EpWorld, Integer, Integer, Integer -> Result Integer Text
+  ep-take-rest (w) (actor) (item) (n) = ep-coded (ep-take-rest-n w actor item n)
+  ep-take-rest-n : EpWorld, Integer, Integer, Integer -> Integer
+  ep-take-rest-n (w) (actor) (item) (n) = let g = w.goods
+    in let p = ep-actor w actor
+    in let free = ep-at p.stock item - ep-represented g actor item 0
+    in if n <= 0 then 0 else if n > free then -1
+    else let uq = ep-at p.quality item - ep-represented g actor item 1
+    in let uw = ep-at p.wear item - ep-represented g actor item 2
+    in let uc = ep-at p.cost item - ep-represented g actor item 3
+    in let a = ep-add p.quality item (0 - uq * n / free)
+    in let b = ep-add p.wear item (0 - uw * n / free)
+    in let c = ep-add p.cost item (0 - uc * n / free)
+    in let d = ep-add p.stock item (0 - n)
+    in let settled = ep-settle p item
+    in n
+  ep-take-oldest : EpWorld, Integer, Integer, Integer -> Result Integer Text
+  ep-take-oldest (w) (actor) (item) (n) = ep-coded (ep-take-oldest-n w actor item n)
+  ep-take-oldest-n : EpWorld, Integer, Integer, Integer -> Integer
+  ep-take-oldest-n (w) (actor) (item) (n) = if n == 0 then 0
+    else let at = ep-lot-of w.goods actor item
+    in if at < 0 then ep-take-rest-n w actor item n
+    else let k = min n (ep-lot-amount w.goods at)
+    in let taken = ep-take-lot-n w at k
+    in if taken < 0 then taken else ep-take-oldest-n w actor item (n - k)
+  ep-take : EpWorld, Integer, Integer, Integer, Integer -> Result Integer Text
+  ep-take (w) (actor) (item) (n) (serial) = ep-coded (ep-take-n w actor item n serial)
+  ep-take-n : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  ep-take-n (w) (actor) (item) (n) (serial) =
+    if not (ep-valid-actor w actor) | n <= 0 | ep-at (ep-actor w actor).stock item < n then -1
+    else if serial == 0 then (let taken = ep-take-oldest-n w actor item n in if taken < 0 then taken else n)
+    else let at = ep-lot-at w.goods serial
+    in if at < 0 then -2
+    else if ep-lot-actor w.goods at /= actor | ep-lot-item w.goods at /= item | ep-amount w.goods serial < n then -3
+    else ep-take-lot-n w at n
+  ep-put : EpWorld, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  ep-put (w) (actor) (item) (n) (quality) (wear) (basis) (serial) = ep-coded (ep-put-n w actor item n quality wear basis serial)
+  ep-put-n : EpWorld, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-put-n (w) (actor) (item) (n) (quality) (wear) (basis) (serial) =
+    if not (ep-valid-actor w actor) | n <= 0 | quality < 0 | quality > 1000 | wear < 0 | wear > 32 | basis < 0 then -6
+    else let g = w.goods
+    in let at = if serial == 0 then -1 else ep-lot-at g serial
+    in let old = if at < 0 then 0 else ep-amount g serial
+    in let placed = if serial == 0 then 0
+      else when world-get g.world serial
+        is Err (_) -> -5
+        is Ok (obj) -> if at < 0 then (if obj.amount /= n | not (ep-lot-room g 1) | not (ep-holder w actor) then -7 else 0)
+          else if ep-lot-actor g at /= actor | ep-lot-item g at /= item then -8
+          else when world-update g.world (__record-set obj "amount" (obj.amount + n)) is Err (_) -> -5 is Ok (_) -> 0
+    in if placed < 0 then placed
+      else let p = ep-actor w actor
+        in let a = ep-add p.stock item n
+        in let b = ep-add p.quality item (n * quality)
+        in let c = ep-add p.wear item (n * wear)
+        in let d = ep-add p.cost item basis
+        in let lot = if serial == 0 then 0
+          else if at >= 0 then
+            (let l = ep-lot g at
+            in let row = ep-row g at
+            in let total = old + n
+            in let lq = poke-qword row 24 ((l.quality * old + quality * n) / total)
+            in let lw = poke-qword row 32 ((l.wear * old + wear * n) / total)
+            in let lb = poke-qword row 40 (l.basis + basis) in 0)
+          else ep-occupy g serial actor item quality wear basis
+        in n
+  ep-room-for : EpWorld, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  ep-room-for (w) (actor) (item) (n) (quality) (wear) (basis) = let g = w.goods
+    in let p = ep-actor w actor
+    in ep-represented g actor item 0 + n <= ep-at p.stock item & ep-represented g actor item 1 + n * quality <= ep-at p.quality item
+      & ep-represented g actor item 2 + n * wear <= ep-at p.wear item & ep-represented g actor item 3 + basis <= ep-at p.cost item
+  ep-list : EpWorld, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-list (w) (serial) (actor) (item) (quality) (wear) (basis) = let g = w.goods
+    in if not (ep-lot-room g 1) | ep-is-lot g serial | not (ep-holder w actor) | not (eg-id w.catalog item)
+      | quality < 0 | quality > 1000 | wear < 0 | wear > 32 | basis < 0 | basis > ep-limit then -1
+    else when world-get g.world serial
+      is Err (_) -> -1
+      is Ok (obj) -> if obj.kind /= 2 | not (ep-room-for w actor item obj.amount quality wear basis) then -1
+        else ep-occupy g serial actor item quality wear basis
+  ep-relist : EpWorld, Integer, Integer, Integer -> Result Integer Text
+  ep-relist (w) (at) (n) (basis) = let g = w.goods
+    in if not (ep-is-lot g at) | n <= 0 | basis < 0 then Err "goods relist invalid"
+    else let l = ep-lot g at
+    in if not (ep-room-for w l.actor l.item n l.quality l.wear basis) then Err "goods relist exceeds the remainder"
+    else when world-get g.world at
+      is Err (e) -> Err e
+      is Ok (obj) -> when world-update g.world (__record-set obj "amount" (obj.amount + n))
+        is Err (e) -> Err e
+        is Ok (_) -> let b = poke-qword (ep-row g at) 40 (l.basis + basis) in Ok at
+  ep-hand : EpWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-hand (w) (at) (to) (k) (serial) (basis-in) = let g = w.goods
+    in if not (ep-is-lot g at) | not (ep-holder w to) then -1
+    else let l = ep-lot g at
+    in let whole = serial == at
+    in let before = if whole then ep-amount g at else ep-amount g at + k
+    in if k <= 0 | k > before | to == l.actor | (whole & k /= before)
+      | (not whole & (ep-amount g serial /= k | not (ep-lot-room g 1) | ep-is-lot g serial)) then -1
+    else let from = ep-actor w l.actor
+    in let into = ep-actor w to
+    in let item = l.item
+    in let share = l.basis * k / before
+    in let basis = if basis-in < 0 then share else basis-in
+    in let a = ep-add from.stock item (0 - k)
+    in let b = ep-add from.quality item (0 - k * l.quality)
+    in let c = ep-add from.wear item (0 - k * l.wear)
+    in let d = ep-add from.cost item (0 - share)
+    in let settled = ep-settle from item
+    in let e = ep-add into.stock item k
+    in let f = ep-add into.quality item (k * l.quality)
+    in let h = ep-add into.wear item (k * l.wear)
+    in let j = ep-add into.cost item basis
+    in if whole then (let owner = ep-reown g at to in let paid = poke-qword (ep-row g at) 40 basis in at)
+    else let made = ep-occupy g serial to item l.quality l.wear basis
+    in let kept = poke-qword (ep-row g at) 40 (l.basis - share)
+    in made
+  ep-join : EpWorld, Integer, Integer, Integer -> Integer
+  ep-join (w) (src) (tgt) (moved) = let g = w.goods
+    in if not (ep-is-lot g src) | not (ep-is-lot g tgt) | src == tgt then -1
+    else let l = ep-lot g src
+    in let t = ep-lot g tgt
+    in let left = ep-amount g src
+    in let told = ep-amount g tgt - moved
+    in if moved <= 0 | told < 0 | l.actor /= t.actor | l.item /= t.item then -1
+    else let share = if left == 0 then l.basis else l.basis * moved / (left + moved)
+    in let total = told + moved
+    in let row = ep-row g tgt
+    in let tr = poke-qword row 24 ((t.quality * told + l.quality * moved) / total)
+    in let tw = poke-qword row 32 ((t.wear * told + l.wear * moved) / total)
+    in let tb = poke-qword row 40 (t.basis + share)
+    in if left == 0 then ep-unlist w src
+    else let b = poke-qword (ep-row g src) 40 (l.basis - share) in 0
+  ep-split : EpWorld, Integer, Integer, Integer -> Integer
+  ep-split (w) (src) (serial) (graphic) = let g = w.goods
+    in if not (ep-is-lot g src) then -1
+    else let l = ep-lot g src
+    in let kept = ep-amount g src
+    in when world-get g.world serial
+      is Err (_) -> -1
+      is Ok (piece) -> if kept <= 0 | piece.amount <= 0 | piece.kind /= 2 | piece.graphic /= graphic | not (ep-lot-room g 1) | ep-is-lot g serial then -1
+        else let share = l.basis * piece.amount / (kept + piece.amount)
+        in let b = poke-qword (ep-row g src) 40 (l.basis - share)
+        in ep-occupy g serial l.actor l.item l.quality l.wear share
+  ep-unlist : EpWorld, Integer -> Integer
+  ep-unlist (w) (at) = if not (ep-is-lot w.goods at) then -1 else ep-drop-row w.goods at
+  ep-retire-lot : EpGoods, Integer -> Integer
+  ep-retire-lot (g) (at) = if ep-is-lot g at then ep-drop-row g at else 0
   ep-actor : EpWorld, Integer -> EpActor
   ep-actor (w) (id) = list-at w.actors (id - 1)
   ep-valid-actor : EpWorld, Integer -> Boolean
@@ -93,8 +482,10 @@ Chapter: EconomyProduction
     else (list-at w.actors i).purse == purse | ep-purse-used w purse (i + 1)
   ep-admit : EpWorld, Integer, Integer -> Integer
   ep-admit (w) (purse) (place) =
-    if w.actor-count == 128 | place <= 0 | not (em-valid-purse w.money purse) then -1
+    if place <= 0 | not (em-valid-purse w.money purse) then -1
     else if purse == 1 | ep-purse-used w purse 0 then -1
+    else if (if w.actor-count < list-length w.actors then False
+      else if not w.goods.world.growing then True else ep-grow-actors w ep-actor-block <= w.actor-count) then -1
     else let id = w.actor-count + 1
     in let p = list-at w.actors w.actor-count
     in let a = __record-set p "purse" purse
@@ -106,7 +497,7 @@ Chapter: EconomyProduction
     else let a = __record-set (ep-actor w actor) "place" place in 0
   ep-station : EpWorld, Integer, Integer, Integer -> Integer
   ep-station (w) (actor) (kind) (place) =
-    if not (ep-valid-actor w actor) | kind < 1 | kind > 12 | place <= 0 | w.station-count == ep-station-limit then -1
+    if not (ep-valid-actor w actor) | kind < 1 | kind > eg-station-kinds | place <= 0 | not (ep-station-room w) then -1
     else let id = w.station-count + 1
     in let s = list-at w.stations w.station-count
     in let a = __record-set s "kind" kind
@@ -118,57 +509,196 @@ Chapter: EconomyProduction
 
   ep-room : EpActor, Integer, Integer -> Boolean
   ep-room (p) (item) (quantity) = quantity >= 0 & quantity <= ep-stock-limit & ep-at p.stock item <= ep-stock-limit - quantity
-  ep-remove : EpActor, Integer, Integer -> Integer
-  ep-remove (p) (item) (quantity) =
-    if item == 0 | quantity == 0 then 0 else let stock = ep-at p.stock item
-    in let a = ep-set p.quality item (ep-at p.quality item - ep-at p.quality item * quantity / stock)
-    in let b = ep-set p.cost item (ep-at p.cost item - ep-at p.cost item * quantity / stock)
-    in let c = ep-set p.wear item (ep-at p.wear item - ep-at p.wear item * quantity / stock)
-    in ep-add p.stock item (0 - quantity)
-  ep-consume : EpWorld, EpActor, Integer, Integer -> Integer
-  ep-consume (w) (p) (item) (quantity) = if item == 0 | quantity == 0 then 0
-    else let a = ep-remove p item quantity in ep-add w.consumed item quantity
+  ep-consume : EpWorld, Integer, Integer, Integer -> Integer
+  ep-consume (w) (actor) (item) (quantity) = if item == 0 | quantity == 0 then 0
+    else if ep-take-n w actor item quantity 0 < 0 then -1
+    else ep-add w.consumed item quantity
+  ep-consume-picks : EpWorld, Integer, Integer, Integer, List EpPick, Integer -> Integer
+  ep-consume-picks (w) (actor) (item) (n) (picks) (i) = if item == 0 | n == 0 then 0
+    else if i >= list-length picks then ep-consume w actor item n
+    else let pick = list-at picks i
+    in if pick.item /= item | pick.quantity <= 0 then ep-consume-picks w actor item n picks (i + 1)
+    else let k = min n pick.quantity
+    in if ep-take-n w actor item k pick.serial < 0 then -1
+    else let used = ep-add w.consumed item k in ep-consume-picks w actor item (n - k) picks (i + 1)
+  ep-consume-serial : EpWorld, Integer, Integer, Integer, Integer -> Integer
+  ep-consume-serial (w) (actor) (item) (n) (serial) = if serial == 0 then ep-consume w actor item n
+    else ep-consume-picks w actor item n [EpPick { serial = serial, item = item, quantity = n }] 0
+  ep-consume-lot : EpWorld, Integer -> Integer
+  ep-consume-lot (w) (serial) = if not (ep-is-lot w.goods serial) then -1
+    else let l = ep-lot w.goods serial
+    in let item = l.item
+    in let n = ep-amount w.goods serial
+    in if ep-take-n w l.actor item n serial < 0 then -1
+    else ep-add w.consumed item n
+  ep-forget-lot : EpWorld, Integer -> Integer
+  ep-forget-lot (w) (at) = if not (ep-is-lot w.goods at) then -1
+    else let l = ep-lot w.goods at
+    in let p = ep-actor w l.actor
+    in let n = ep-amount w.goods at
+    in let a = ep-add p.stock l.item (0 - n)
+    in let b = ep-add p.quality l.item (0 - n * l.quality)
+    in let c = ep-add p.wear l.item (0 - n * l.wear)
+    in let d = ep-add p.cost l.item (0 - l.basis)
+    in let e = ep-add w.consumed l.item n
+    in let settled = ep-settle p l.item
+    in ep-drop-row w.goods at
+  ep-settle : EpActor, Integer -> Integer
+  ep-settle (p) (item) = let left = ep-at p.stock item
+    in let q = if ep-at p.quality item > left * 1000 then ep-set p.quality item (left * 1000) else 0
+    in let w = if ep-at p.wear item > left * 32 then ep-set p.wear item (left * 32) else 0
+    in if left == 0 then ep-set p.cost item 0 else 0
   ep-tool : EpActor, Integer -> Boolean
   ep-tool (p) (tool) = tool == 0 | (ep-at p.stock tool > 0 & ep-at p.wear tool > 0)
-  ep-wear : EpWorld, EpActor, Integer -> Integer
-  ep-wear (w) (p) (tool) = if tool == 0 then 0
-    else let left = ep-at p.wear tool - 1
-    in let a = if left <= (ep-at p.stock tool - 1) * 32 then ep-consume w p tool 1 else 0
-    in ep-set p.wear tool left
+  ep-worn-lot : EpGoods, Integer, Integer, Boolean -> Integer
+  ep-worn-lot (g) (actor) (tool) (single) = ep-worn-from g tool single (ep-lot-first g actor)
+  ep-worn-from : EpGoods, Integer, Boolean, Integer -> Integer
+  ep-worn-from (g) (tool) (single) (serial) = if serial == 0 then -1
+    else let row = ep-row g serial
+    in let n = ep-amount g serial
+    in if peek-qword row 16 == tool & peek-qword row 32 > 0 & n > 0 & (not single | n == 1) then serial
+    else ep-worn-from g tool single (peek-qword row 48)
+  ep-wear-pool : EpWorld, EpActor, Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-wear-pool (w) (p) (tool) (free) (uq) (uw) (uc) = if free <= 0 | uw <= 0 then 0
+    else let a = ep-add p.wear tool (0 - 1)
+    in if uw - 1 > (free - 1) * 32 then 0
+    else let b = ep-add p.quality tool (0 - uq / free)
+    in let c = ep-add p.cost tool (0 - uc / free)
+    in let d = ep-add p.stock tool (0 - 1)
+    in let e = ep-add w.consumed tool 1
+    in ep-settle p tool
+  ep-wear-rest : EpWorld, Integer, Integer -> Integer
+  ep-wear-rest (w) (actor) (tool) = let g = w.goods
+    in let p = ep-actor w actor
+    in let free = ep-at p.stock tool - ep-represented g actor tool 0
+    in let uq = ep-at p.quality tool - ep-represented g actor tool 1
+    in let uw = ep-at p.wear tool - ep-represented g actor tool 2
+    in let uc = ep-at p.cost tool - ep-represented g actor tool 3
+    in ep-wear-pool w p tool free uq uw uc
+  ep-wear-lot : EpWorld, Integer -> Integer
+  ep-wear-lot (w) (at) = let l = ep-lot w.goods at
+    in let item = l.item
+    in let a = ep-add (ep-actor w l.actor).wear item (0 - 1)
+    in let b = poke-qword (ep-row w.goods at) 32 (l.wear - 1)
+    in if l.wear - 1 > 0 then 0
+    else when ep-take-lot w at 1
+      is Err (_) -> -1
+      is Ok (_) -> ep-add w.consumed item 1
+  ep-wear-serial : EpWorld, Integer, Integer, Integer -> Integer
+  ep-wear-serial (w) (actor) (tool) (serial) = let at = if serial == 0 then -1 else ep-lot-at w.goods serial
+    in if at < 0 then ep-wear w actor tool
+    else let l = ep-lot w.goods at
+    in if l.actor /= actor | l.item /= tool | ep-amount w.goods serial /= 1 | l.wear <= 0 then ep-wear w actor tool else ep-wear-lot w at
+  ep-wear : EpWorld, Integer, Integer -> Integer
+  ep-wear (w) (actor) (tool) =if tool == 0 | not (ep-valid-actor w actor) then 0
+    else let single = ep-worn-lot w.goods actor tool True
+    in if single >= 0 then ep-wear-lot w single
+    else let p = ep-actor w actor
+    in let free = ep-at p.stock tool - ep-represented w.goods actor tool 0
+    in let unworn = ep-at p.wear tool - ep-represented w.goods actor tool 2
+    in if free > 0 & unworn > 0 then ep-wear-rest w actor tool
+    else let shelf = ep-worn-lot w.goods actor tool False
+    in if shelf < 0 then 0
+    else let l = ep-lot w.goods shelf
+    in let quality = l.quality
+    in let wear = l.wear
+    in let share = l.basis / ep-amount w.goods l.serial
+    in if ep-take-lot-n w shelf 1 < 0 then -1
+    else if ep-put-n w actor tool 1 quality wear share 0 < 0 then -1
+    else ep-wear-rest w actor tool
+ The client skill an economy use practises (Damian 2026-10-06, ActiveSkills.md "One skill store"): mining and gold mining
+ Mining 45, fishing Fishing 18, farming Farming 6, lumber Lumberjacking 44 when harvested and Carpentry 11 when crafted
+ (Bowcraft 8 for bows and arrows), smelting Mining 45, smithing Blacksmithy 7 (Tinkering 37 for the Tinkering menu's
+ tools 42, 43 and scissors 74), cooking Cooking 13, textile and leather
+ Tailoring 34, masonry Carpentry 11 (ServUO DefMasonry). -1: no client skill (none, hunting, herbalism, pottery, minting): a player's use of one rolls nothing and gains
+  ep-classic : Integer, Integer, Integer -> Integer
+  ep-classic (skill) (station) (item) = if skill == 1 | skill == 2 then 45 else if skill == 4 then 18 else if skill == 5 then 6
+    else if skill == 9 then 13 else if skill == 10 then 34 else if skill == 11 then 11
+    else if skill == 6 then (if station == 0 then 44 else if item == 48 | item == 49 then 8 else 11)
+    else if skill == 8 then (if station == 3 then 45 else if station == 9 then (if item == 42 | item == 43 | item == 74 | item == 115 | item == 120 | item == 148 then 37 else 7) else -1)
+    else -1
+ nothing (root, 2026-10-06). A player's actor reads and writes its character row (row, bound by the game); an NPC
+ actor has no row and practises its own economy skills exactly as before.
+  ep-level : EpActor, Integer, Integer -> Integer
+  ep-level (p) (skill) (classic) = if skill == 0 then 1000 else if classic >= 0 & p.row /= 0 then peek-qword p.row (classic * 8) else ep-at p.skills skill
   ep-practice : EpActor, Integer -> Boolean
-  ep-practice (p) (skill) =
-    let level = ep-at p.skills skill
-    in let chance = if skill == 0 then 1000 else 100 + level * 9 / 10
+  ep-practice (p) (skill) = ep-practice-as p skill (ep-classic skill 0 0)
+  ep-practice-as : EpActor, Integer, Integer -> Boolean
+  ep-practice-as (p) (skill) (classic) = ep-practice-in p skill classic 0
+ A player's craft of an item with a ServUO skill range (ep-skill-range, packed low * 10000 + high, per mille) succeeds
+ with chance (level - low) / (high - low), and below low neither succeeds nor gains (ServUO CheckSkill); NPCs and items
+ without a range keep 100 + 9/10 of the level.
+  ep-practice-in : EpActor, Integer, Integer, Integer -> Boolean
+  ep-practice-in (p) (skill) (classic) (range) =
+    let level = ep-level p skill classic
+    in let player = p.row /= 0
+    in let low = range / 10000
+    in let high = int-mod range 10000
+    in let ranged = player & classic >= 0 & high > low
+    in let chance = if skill == 0 | (player & classic < 0) then 1000 else if ranged then ep-range-chance level low high else 100 + level * 9 / 10
     in let roll = int-mod (p.attempts * 137 + 37) 1000
+    in let gain = int-mod (p.attempts * 271 + 101) 1000
     in let a = __record-set p "attempts" (p.attempts + 1)
-    in let b = if skill > 0 & level < 1000 then ep-add p.skills skill 1 else 0
-    in roll < chance
+    in let success = roll < chance
+    in let b = if skill == 0 | (player & classic < 0) | (ranged & level < low) | level >= 1000 | gain >= skc-gain-at 100 level level success then 0
+      else if player then (if skc-train p.row classic gain == 0 then 0 else skc-stat-gain p.card classic (p.attempts * 7919 + gain)) else ep-add p.skills skill 1
+    in success
+  ep-range-chance : Integer, Integer, Integer -> Integer
+  ep-range-chance (level) (low) (high) = if level < low then 0 else if level >= high then 1000 else (level - low) * 1000 / (high - low)
+ ServUO DefCarpentry's ranges, in tenths of a skill point: shepherd's crook 77, furniture and containers 128 to 138,
+ instruments and dart board 139 to 143, dress form, spinning wheel, training dummy and loom deed 144 to 147.
+  ep-skill-range : Integer -> Integer
+  ep-skill-range (item) = if item == 77 then 7891039
+    else if item == 128 | item == 129 then 1100360 else if item == 130 | item == 134 then 2100460 else if item == 131 then 5260776
+    else if item == 132 | item == 139 | item == 144 then 6310881 else if item == 133 | item == 138 | item == 147 then 8421092 else if item == 135 then 1000350
+    else if item == 136 | item == 145 then 7360986 else if item == 137 then 3150565 else if item == 140 | item == 142 then 5780828
+    else if item == 141 | item == 146 then 6840934 else if item == 143 then 1570407 else 0
   ep-has : EpActor, Integer, Integer -> Boolean
   ep-has (p) (item) (quantity) = item == 0 | ep-at p.stock item >= quantity
+  ep-inputs-cost : EpActor, Integer, Integer, Integer -> Integer
+  ep-inputs-cost (p) (one) (two) (three) = (if one == 0 then 0 else ep-at p.cost one)
+    + (if two == 0 | two == one then 0 else ep-at p.cost two)
+    + (if three == 0 | three == one | three == two then 0 else ep-at p.cost three)
   ep-input-cost : EpActor, Integer, Integer -> Integer
   ep-input-cost (p) (item) (quantity) = if item == 0 then 0
     else ep-at p.cost item * quantity / ep-at p.stock item
+ Smelting (station 3) spends no fallen branch and rolls Mining, for NPCs as for players (Damian, 2026-10-07: "yes npcs
+ should follow the same rules"); a world keeps the catalog it was founded with, so the rule lives here, not in the recipes.
+  ep-unfueled : EgRecipe, Integer -> Integer
+  ep-unfueled (r) (item) = if r.station == 3 & item == 2 then 0 else item
+ The oven (station 6) burns a log, or a board when the crafter holds too few logs (Damian 2026-10-08: "you can burn boards
+ too").
+  ep-fuel : EpActor, EgRecipe, Integer, Integer -> Integer
+  ep-fuel (p) (r) (item) (count) = if r.station == 6 & item == 15 & ep-at p.stock 15 < count & ep-at p.stock 38 >= count then 38 else item
   ep-craft : EpWorld, Integer, Integer, Integer -> Integer
-  ep-craft (w) (actor) (recipe) (station) =
+  ep-craft (w) (actor) (recipe) (station) = ep-craft-picks w actor recipe station w.no-picks 0
+  ep-craft-picks : EpWorld, Integer, Integer, Integer, List EpPick, Integer -> Integer
+  ep-craft-picks (w) (actor) (recipe) (station) (picks) (tool-serial) =
     if not (ep-valid-actor w actor) | recipe <= 0 | recipe > list-length w.catalog.recipes | station <= 0 | station > w.station-count then -1
     else let p = ep-actor w actor
     in let r = list-at w.catalog.recipes (recipe - 1)
     in let s = list-at w.stations (station - 1)
+    in let one = ep-fuel p r (ep-unfueled r r.one) r.one-count
+    in let two = ep-fuel p r (ep-unfueled r r.two) r.two-count
+    in let three = ep-fuel p r (ep-unfueled r r.three) r.three-count
+    in let skill = if r.station == 3 then 1 else r.skill
     in if s.owner /= actor | s.place /= p.place | s.enabled == 0 | s.kind /= r.station | r.station == 12 | r.item == 51 | p.attempts >= ep-limit then -1
-    else if not (ep-has p r.one r.one-count) | not (ep-has p r.two r.two-count) | not (ep-has p r.three r.three-count) | not (ep-tool p r.tool) then -1
-    else if r.tool > 0 & ((r.tool == r.one & ep-at p.stock r.one <= r.one-count) | (r.tool == r.two & ep-at p.stock r.two <= r.two-count) | (r.tool == r.three & ep-at p.stock r.three <= r.three-count)) then -1
+    else if not (ep-has p one r.one-count) | not (ep-has p two r.two-count) | not (ep-has p three r.three-count) | not (ep-tool p r.tool) then -1
+    else if r.tool > 0 & ((r.tool == one & ep-at p.stock one <= r.one-count) | (r.tool == two & ep-at p.stock two <= r.two-count) | (r.tool == three & ep-at p.stock three <= r.three-count)) then -1
     else if not (ep-room p r.item r.quantity) | ep-at w.crafted r.item > ep-limit - r.quantity then -1
-    else let cost = ep-input-cost p r.one r.one-count + ep-input-cost p r.two r.two-count + ep-input-cost p r.three r.three-count + ep-labor-in w r.item
+    else let cost = ep-input-cost p one r.one-count + ep-input-cost p two r.two-count + ep-input-cost p three r.three-count + ep-labor-in w r.item
     in if ep-at p.cost r.item > ep-limit - cost then -1
-    else let success = ep-practice p r.skill
-    in let wear = ep-wear w p r.tool
+    else let classic = ep-classic skill r.station r.item
+    in let success = ep-practice-in p skill classic (ep-skill-range r.item)
+    in let wear = ep-wear-serial w actor r.tool tool-serial
     in if not success then -2
-    else let a = ep-consume w p r.one r.one-count
-    in let b = ep-consume w p r.two r.two-count
-    in let c = ep-consume w p r.three r.three-count
+    else let before = ep-inputs-cost p one two three
+    in let a = ep-consume-picks w actor one r.one-count picks 0
+    in let b = ep-consume-picks w actor two r.two-count picks 0
+    in let c = ep-consume-picks w actor three r.three-count picks 0
     in let d = ep-add p.stock r.item r.quantity
-    in let e = ep-add p.cost r.item cost
-    in let f = ep-add p.quality r.item (r.quantity * (if r.skill == 0 then 1000 else 100 + ep-at p.skills r.skill * 9 / 10))
+    in let e = ep-add p.cost r.item (before - ep-inputs-cost p one two three + ep-labor-in w r.item)
+    in let f = ep-add p.quality r.item (r.quantity * (100 + ep-level p skill classic * 9 / 10))
     in let durability = ep-add p.wear r.item (r.quantity * 32)
     in let g = ep-add w.crafted r.item r.quantity
     in r.quantity
@@ -188,7 +718,7 @@ Chapter: EconomyProduction
     in if price > 1000000 then 1000000 else price
   ep-buy : EpWorld, Integer, Integer, Integer, Integer -> Integer
   ep-buy (w) (buyer) (seller) (item) (quantity) =
-    if not (ep-valid-actor w buyer) | not (ep-valid-actor w seller) | buyer == seller | not (eg-id w.catalog item) | quantity <= 0 | quantity > ep-stock-limit | w.trade-count == ep-trade-limit then -1
+    if not (ep-valid-actor w buyer) | not (ep-valid-actor w seller) | buyer == seller | not (eg-id w.catalog item) | quantity <= 0 | quantity > ep-stock-limit | w.trade-count >= list-length w.trades then -1
     else let b = ep-actor w buyer
     in let s = ep-actor w seller
     in if b.place /= s.place | not (ep-has s item quantity) | not (ep-room b item quantity) then -1
@@ -197,12 +727,15 @@ Chapter: EconomyProduction
     in let chain = (list-at w.catalog.items (item - 1)).chain
     in if ep-at b.cost item > ep-limit - gross | ep-at w.turnover chain > ep-limit - gross | ep-at w.sales item > ep-limit - quantity then -1
     else if not (em-can-pay w.money b.purse s.purse gross) then -1
-    else let quality = ep-at s.quality item * quantity / ep-at s.stock item
-    in let durability = ep-at s.wear item * quantity / ep-at s.stock item
+    else let held-quality = ep-at s.quality item
+    in let held-wear = ep-at s.wear item
     in let a = em-pay w.money b.purse s.purse gross
     in if a /= 0 then -1
-    else let c = ep-remove s item quantity
-    in let d = ep-add b.stock item quantity
+    else if ep-take-n w seller item quantity 0 < 0 then -1
+    else ep-sold w b s item quantity gross chain (held-quality - ep-at s.quality item) (held-wear - ep-at s.wear item)
+  ep-sold : EpWorld, EpActor, EpActor, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-sold (w) (b) (s) (item) (quantity) (gross) (chain) (quality) (durability) =
+    let d = ep-add b.stock item quantity
     in let e = ep-add b.quality item quality
     in let f = ep-add b.cost item gross
     in let transferred-wear = ep-add b.wear item durability
@@ -222,13 +755,38 @@ Chapter: EconomyProduction
     in let count = __record-set w "trade-count" (w.trade-count + 1)
     in 0
   ep-food : Integer -> Boolean
-  ep-food (item) = item == 14 | item == 16 | item == 34 | item == 50
+  ep-food (item) = item == 14 | item == 16 | item == 34 | item == 50 | item == 78 | (item >= 80 & item <= 98 & int-mod item 2 == 0) | item == 102 | item == 150
+ A catalog saved before items were named by their own kind (Damian 2026-10-07: 'vegetable' is not a vegetable, it is a
+ category) is renamed on load: cabbages (14), apples (16) and their seed (53) and cutting (57).
+ Carrots (80), onions (82) and turnips (86) are dug with the shovel (tool 25); a catalog saved with them picked by hand
+ takes the tool on load.
+  ep-crop-tools : EgCatalog, Integer -> Integer
+  ep-crop-tools (c) (i) = if i >= list-length c.resources then 0
+    else let r = list-at c.resources i
+    in let set = if r.tool == 0 & (r.item == 80 | r.item == 82 | r.item == 86) then let t = __record-set r "tool" 25 in 1 else 0
+    in set + ep-crop-tools c (i + 1)
+  ep-rename-crops : EgCatalog -> Integer
+  ep-rename-crops (c) = if list-length c.items < 62 then 0
+    else let a = if (list-at c.items 13).name == "vegetables" then let n = __record-set (list-at c.items 13) "name" "cabbages" in 1 else 0
+    in let b = if (list-at c.items 15).name == "fruit" then let n = __record-set (list-at c.items 15) "name" "apples" in 1 else 0
+    in let d = if (list-at c.items 52).name == "vegetable seed" then let n = __record-set (list-at c.items 52) "name" "cabbage seed" in 1 else 0
+    in let e = if (list-at c.items 56).name == "fruit cutting" then let n = __record-set (list-at c.items 56) "name" "apple cutting" in 1 else 0
+    in a + b + d + e
+ A catalog saved with the 101 items and 38 resources of the crop expansion gains the pear tree on load (resource 39:
+ pears 102 from a pear cutting 103, BritainCatalog), so a running world grows pears without a fresh start.
+  ep-add-pears : EgCatalog -> Integer
+  ep-add-pears (c) = if list-length c.items /= 101 | list-length c.resources /= 38 then 0
+    else let a = __record-set c "items" (c.items & [eg-item "pears" 5, eg-item "pear cutting" 5])
+    in let b = __record-set c "resources" (c.resources & [eg-resource 102 103 0 5 2 96 4]) in 1
   ep-eat : EpWorld, Integer, Integer -> Integer
-  ep-eat (w) (actor) (item) = if not (ep-valid-actor w actor) | not (ep-food item) | not (eg-id w.catalog item) then -1
+  ep-eat (w) (actor) (item) = ep-eat-from w actor item 0
+  ep-eat-from : EpWorld, Integer, Integer, Integer -> Integer
+  ep-eat-from (w) (actor) (item) (serial) = if not (ep-valid-actor w actor) | not (ep-food item) | not (eg-id w.catalog item) then -1
     else let p = ep-actor w actor
     in if ep-at p.stock item == 0 then -1
-    else let a = ep-consume w p item 1
-    in let b = __record-set p "hunger" (if p.hunger < 30 then 0 else p.hunger - 30)
+    else let a = ep-consume-serial w actor item 1 serial
+    in if a < 0 then -1
+    else let b = __record-set p "hunger" (if p.hunger < 30 then 0 else p.hunger - 30)
     in 0
  1000 quality and 32 wear per unit are an unskilled craft's full values (ep-craft).
   ep-find : EpWorld, Integer, Integer, Integer -> Integer

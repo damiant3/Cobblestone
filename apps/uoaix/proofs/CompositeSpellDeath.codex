@@ -1,0 +1,171 @@
+Chapter: CompositeSpellDeath
+  cites Uoaix chapter CompositeStore
+
+  csd-check : Text, Boolean -> [Console] Integer
+  csd-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  csd-fill : WalkMap, Integer -> Integer
+  csd-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in csd-fill map (i + 1)
+  csd-create : Integer -> List Integer
+  csd-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Mage" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,25,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  csd-decoration : WalkMap -> Result WdState Text
+  csd-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  csd-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  csd-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  csd-reagents : GsiState, Integer, Integer -> Integer
+  csd-reagents (items) (pack) (i) = if i == 8 then 0 else let item = gs-item pack (mgd-reagent i) 0
+    in let amount = __record-set item "amount" 5
+    in when world-create items.world item
+      is Err (_) -> -1
+      is Ok (serial) -> let registered = gsi-register items serial 0 0 True True in csd-reagents items pack (i + 1)
+  csd-children : WorldTable, Integer, Integer -> Integer
+  csd-children (world) (serial) (count) = if serial == 0 then count
+    else csd-children world (world-next-sibling world serial) (count + 1)
+  csd-command : Integer -> List Integer
+  csd-command (spell) = let text = show spell in sip-length (gp-ascii [#12,0,0,#27] text 0 (text-length text + 1))
+  csd-target : Integer, Integer, Integer, Integer, Integer -> List Integer
+  csd-target (cursor) (serial) (x) (y) (z) =
+    let a = gp-put32 (gp-put32 [#6C,0] cursor & [0]) serial
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0,bit-and z 255]) 0
+  csd-corpse-drawn : List (List Integer), Integer, Integer -> Boolean
+  csd-corpse-drawn (packets) (corpse) (i) = if i == list-length packets then False
+    else let packet = list-at packets i
+    in if list-length packet >= 7 & list-at packet 0 == #1A & bit-and (gp-u32 packet 3) #7FFFFFFF == corpse then True
+    else csd-corpse-drawn packets corpse (i + 1)
+
+  csd-loose : WorldTable, Integer, List Integer, Integer -> Integer
+  csd-loose (world) (serial) (seen) (count) = if serial == 0 then count
+    else when world-get world serial
+      is Err (_) -> -1
+      is Ok (item) -> let at = item.x * 65536 + item.y
+        in if item.graphic == #0E75 | item.graphic == #09B2 | item.x < 20 | item.x >= 124 | item.y < 85 | item.y >= 196 | csd-in seen at 0 then -1
+        else csd-loose world (world-next-sibling world serial) (list-push seen at) (count + 1)
+  csd-in : List Integer, Integer, Integer -> Boolean
+  csd-in (xs) (v) (i) = if i == list-length xs then False else list-at xs i == v | csd-in xs v (i + 1)
+  csd-text : List (List Integer), Text, Integer -> Boolean
+  csd-text (packets) (text) (i) = if i == list-length packets then False
+    else csd-at (list-at packets i) text 0 | csd-text packets text (i + 1)
+  csd-at : List Integer, Text, Integer -> Boolean
+  csd-at (packet) (text) (at) = if at + text-length text > list-length packet then False
+    else csd-match packet text at 0 | csd-at packet text (at + 1)
+  csd-match : List Integer, Text, Integer, Integer -> Boolean
+  csd-match (packet) (text) (at) (i) = if i == text-length text then True
+    else list-at packet (at + i) == to-unicode (char-code (char-at text i)) & csd-match packet text at (i + 1)
+  csd-die : CompositeOwner, Magery, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  csd-die (store) (magic) (map) (specs) = let owner = store.state in act
+    enabled <- __record-set owner "testing" True
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store owner.checkpoint.game input map 2593 (csd-create 0)
+    game <- owner.checkpoint.game
+    player <- list-at owner.vendor.players 0
+    bank <- gmb-bank-find owner.items player.serial 0
+    held <- if bank > 0 then csd-children game.world (world-first-child game.world bank) 0 else 0
+    book <- world-create game.world (gs-item player.pack #0EFA 0)
+    marked <- when book is Err (e) -> Err e is Ok (b) -> mgs-book magic b #3F
+    reagents <- csd-reagents owner.items player.pack 0
+    a <- csd-check "testing entry stocks a bank box on the caster" (is-ok entry & bank > 0 & held > 0 & is-ok marked & reagents == 0)
+    ensured <- mgs-ensure magic game player.serial
+    when ensured
+      is Err (e) -> csd-check ("actor " & e) False
+      is Ok (actor) -> when world-get game.world player.serial
+        is Err (e) -> csd-check ("mobile " & e) False
+        is Ok (mobile) -> act
+          mana <- __record-set actor "mana" 50
+          frail <- world-update game.world (__record-set mobile "health" 1)
+          cast <- cs-route store game input map 2593 (csd-command 5)
+          ready <- __record-set actor "due" 0
+          aimed <- cs-pulse store game input map 2593 get-ticks
+          fired <- cs-route store game input map 2593 (csd-target actor.cursor player.serial mobile.x mobile.y mobile.z)
+          fallen <- when world-get game.world player.serial is Err (_) -> -1 is Ok (m) -> m.health
+          fighter <- list-at owner.combat.actors (world-slot game.world player.serial)
+          b <- csd-check "a self-cast Magic Arrow at 1 hp kills through the composite route" (is-ok cast & is-ok aimed & is-ok fired & fallen == 0 & fighter.corpse > 0)
+          c <- csd-check "spell death leaves the bank box on the dead mobile with its contents" (gmb-bank-find owner.items player.serial 0 == bank
+            & csd-children game.world (world-first-child game.world bank) 0 == held)
+          d <- csd-check "spell death registers the corpse and the fatal reply draws it" (fighter.corpse > 0 & gsi-known owner.items fighter.corpse
+            & (when fired is Err (_) -> False is Ok (r) -> csd-corpse-drawn r.packets fighter.corpse 0))
+          answered <- cs-route store game input map 2593 [44, 2]
+          redrawn <- cs-pulse store game input map 2593 get-ticks
+          e <- csd-check "the ghost answer's redraw shows the spell corpse" (is-ok answered
+            & (when redrawn is Err (_) -> False is Ok (None) -> False is Ok (Just (r)) -> csd-corpse-drawn r.packets fighter.corpse 0))
+          robe <- world-layer-serial game.world player.serial 22
+          robed <- csd-check "the ghost wears a death robe 204E on layer 22 and a reply draws it" (robe > 0
+            & (when world-get game.world robe is Err (_) -> False is Ok (r) -> r.graphic == #204E & r.container == player.serial)
+            & (csd-robe fired | csd-robe-maybe redrawn))
+          pack <- gsi-pack-find game.world player.serial 0
+          loose <- csd-loose game.world (world-first-child game.world fighter.corpse) [] 0
+          g <- csd-check "the backpack stays on the ghost and its contents lie loose in the corpse, each on its own spot" (pack > 0 & pack == player.pack & loose > 0)
+          labelled <- cs-route store game input map 2593 (gp-put32 [9] fighter.corpse)
+          h <- csd-check "a corpse single-click reads 'corpse of Mage' with no amount" (when labelled is Err (_) -> False is Ok (r) -> r.note == "items:corpse" & csd-text r.packets "corpse of Mage" 0 & not (csd-text r.packets "400" 0))
+          committed <- cs-commit store True
+          f <- csd-check "spell death state commits" (is-ok committed)
+          trapped <- when world-get game.world bank is Err (e) -> Err e is Ok (box) -> world-update game.world (__record-set box "container" fighter.corpse)
+          legacy <- cs-commit store True
+          i <- csd-check "a legacy bank box inside the corpse commits for the restart repair" (is-ok trapped & is-ok legacy & gmb-bank-find owner.items player.serial 0 == 0)
+          a + b + c + d + e + robed + g + h + f + i
+        end
+  end
+  csd-robe-at : List (List Integer), Integer -> Boolean
+  csd-robe-at (packets) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in (list-length p == 15 & list-at p 0 == #2E & gp-u16 p 5 == #204E & list-at p 8 == 22) | csd-robe-at packets (i + 1)
+  csd-robe : Result GameReply Text -> Boolean
+  csd-robe (r) = when r is Err (_) -> False is Ok (v) -> csd-robe-at v.packets 0
+  csd-robe-maybe : Result (Maybe GameReply) Text -> Boolean
+  csd-robe-maybe (r) = when r is Ok (Just (v)) -> csd-robe-at v.packets 0 is Ok (None) -> False is Err (_) -> False
+  csd-restored : CompositeOwner -> [Console] Integer
+  csd-restored (store) = let owner = store.state
+    in let game = owner.checkpoint.game
+    in let player = list-at owner.vendor.players 0
+    in let bank = gmb-bank-find owner.items player.serial 0
+    in csd-check "restart returns a bank box trapped in the corpse to the ghost with its contents" (bank > 0 & csd-children game.world (world-first-child game.world bank) 0 > 0)
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> csd-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> csd-check e False
+     is Ok (map) -> let filled = csd-fill map 0
+      in when csd-decoration map
+       is Err (e) -> csd-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> csd-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+       when loaded
+        is Err (e) -> csd-check ("recovery " & e) False
+        is Ok (owner) -> if not fresh then csd-restored owner
+          else let magic = mgs-new owner.state.items owner.state.banks owner.state.combat decoration (Just owner.state.vendor) (csd-cover map)
+          in let hooked = mge-bind magic
+          in let attached = __record-set owner.state "magic" (Just magic)
+          in csd-die owner magic map specs
+      end
+    end

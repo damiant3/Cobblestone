@@ -1,6 +1,6 @@
 # Town offices and public finances
 
-`TownGovernment.codex` is stage G's first layer-1 unit: appointed mayors,
+`TownGovernment.codex` is the layer-1 civic unit: appointed mayors,
 local dues, guard employment/payroll, funding requests, and town grants/loans.
 It references an existing `TfWorld` for resident identity and an `EpWorld`
 for authoritative money. It does not create townsfolk, guards, buildings,
@@ -42,6 +42,12 @@ namespaces; NPC purse kind 2 uses the NPC ID as its owner key. This component
 does not grant GM authority and has no player-account action.
 
 ## Dues and employment
+
+Ruling (Damian, 2026-10-07): "no, the kingdom taxes gold, silver, and copper ore
+mining, and the king has a magic gold supply. that is plenty." The live
+composite collects no town dues from anyone: Britain's office keeps its dues at
+zero, and the mayor reports only the town purse. The dues operations below
+remain the component's contract and are not called.
 
 `tg-set-dues state mayor town amount` sets a flat daily gross due from zero
 through 1000000 coin; zero disables collection. Rates are explicit policy,
@@ -87,6 +93,14 @@ Full append-only logs have no rotation or reclamation in this unit. The
 capacity proof restores an artificial full marker; it does not establish a
 production method for recovering log space or discarding old history.
 
+## Gifts to the town
+
+The mayor accepts money from anyone, player or NPC, and puts it in the town purse (Damian, 2026-10-08: "mayors should accept money from anyone and put it in town purse").
+Every gift is one logged payment from the giver's purse (`cg-gift-pay`, `eu-pay`, currency kind 4); an NPC gives through
+`cg-town-gift`. A player says "donate N gold" (or silver, copper) within 4 tiles of the mayor. A coin pile dropped on
+the mayor bounces with that instruction, because a player's coin is purse coin and a pile in a player's pack is no share
+of it.
+
 ## Royal funding and audit
 
 `tg-request state mayor town kind neededBalance` records a positive shortfall
@@ -113,12 +127,11 @@ Refusals append no success row and must be reported by the calling adapter.
 
 ## Bounds and acceptance
 
-Budgets are four town offices, 64 lifetime guard contracts, 2048 civic events
+Budgets are four town offices, 64 lifetime guard contracts, 8192 civic events (tg-event-limit)
 and one last-paid-day cell per town/purse pair (4 * 256 cells). Native offices
 have nine fields (72 bytes), guards six (48 bytes), events eight (64 bytes)
 and state thirteen (104 bytes), plus lists, the optional binding and the stamp
-array. Legacy construction retained 176800 bytes under seed `4228CD5103DC4523`
-on 2026-10-04, excluding the referenced townsfolk/economy. Currency binding adds
+array. Currency binding adds
 one retained reference and royal actor ID, not a copy of the economy. Daily
 dues and payroll retain no heap; financial routing adds constant work.
 
@@ -147,6 +160,7 @@ payment interfaces.
 essential-workplace orders and bounties. [TitleRegistry.md](TitleRegistry.md)
 defines registered ownership, provenance and transaction participation.
 [TownDisputes.md](TownDisputes.md) defines evidence-gated case closure and
-keeper escalation. Actual combat, ordered civic inputs, composite restart and
+keeper escalation. [TownGovernmentInput.md](TownGovernmentInput.md) defines
+ordered civic replay and component restart. Actual combat, composite restart and
 panel/game bindings remain stage G work. This unit does not replace the
 townsfolk/economy clock owner.

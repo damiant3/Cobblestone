@@ -1,0 +1,28 @@
+Chapter: BvtWalkRedrawn
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ TESTPLAN row 7 (the combat jump): every 0x20 drawing the session's own character restarts its walk sequence, as the
+ 1998 client does. A session at sequence 9 with serial 0x2BC; answers a bit per check: 1 a reply drawing it restarts at
+ 0, 2 a 0x20 drawing another serial does not, 4 a 0x77 moving it does not, 8 a short 0x20 does not, 16 a reply drawing it beside
+ another mobile restarts too; every reply passes with its packet count unchanged (else -1); 31 is all.
+  bwr-draw : Integer -> List Integer
+  bwr-draw (serial) = [#20, 0, 0, serial / 256, int-mod serial 256, 1, #90, 0, 3, #EA, #40, 5, #58, 5, #C6, 0, 0, 7, 10]
+  bwr-after : List (List Integer) -> Integer
+  bwr-after (packets) = let session = gs-session 0
+    in let a = __record-set session "serial" #2BC
+    in let b = __record-set session "sequence" 9
+    in let passed = cg-walk-redrawn session (gs-reply packets "probe")
+    in if list-length passed.packets /= list-length packets then -1 else session.sequence
+  bwr-checks : Integer -> Integer
+  bwr-checks (unused) = (if bwr-after [[#A1, 0, 0, 2, #BC, 0, 100, 0, 50], bwr-draw #2BC] == 0 then 1 else 0)
+    + (if bwr-after [bwr-draw #427] == 9 then 2 else 0)
+    + (if bwr-after [[#77, 0, 0, 2, #BC, 1, #90, 5, #58, 5, #C6, 10, 7, 3, #EA, #40, 1]] == 9 then 4 else 0)
+    + (if bwr-after [[#20, 0, 0, 2, #BC]] == 9 then 8 else 0)
+    + (if bwr-after [bwr-draw #2BC, bwr-draw #427] == 0 then 16 else 0)
+  bvt-walk-redrawn : Integer -> [Console] Integer
+  bvt-walk-redrawn (unused) = act
+    n <- bwr-checks 0
+    a <- bvt-check ("a 0x20 drawing the player restarts its walk sequence, and nothing else does (TESTPLAN row 7, code " & show n & ")") (n == 31)
+    a
+  end

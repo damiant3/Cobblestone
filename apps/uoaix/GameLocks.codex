@@ -1,0 +1,289 @@
+Chapter: GameLocks
+  cites Uoaix chapter GameInscription
+  cites Uoaix chapter GameLockpick
+
+ UOX3 js/skill/lockpicking.js and dictionary.ENG 933, 935, 936: a lockpick aimed at a locked container rolls
+ Lockpicking (skill 24) from 0, or from 50.0 when the container is trapped, to the skill cap; success unlocks it with
+ sound 0x1FF (935), and a failure breaks the pick half the time (933, sound 0x13A) or else fails (936). Chests (art
+ 0x0E40-0x0E43, 0x09AB) carried by a character are lockable, and an empty one arrives locked to the pack's gold key.
+ UOX3 js/item/key.js and dictionary.ENG 937, 1018, 1020, 1025, 1026, 2728, 2738: a key (0x100E-0x1010, 0x1012, 0x1013) whose
+ id matches a lock's locks or unlocks it, another key does not fit, and a keyed lock cannot be picked. The key id is the
+ key item's health and the lock's MGM2 key; the testing kit's blank gold key (0x100F) is cut to the first empty chest
+ registered, that chest's world slot plus one becoming the id (an item's health is at most 65535), and every later empty
+ chest in the pack takes the same id, so the one key turns both kit chests.
+  glk-chest : Integer -> Boolean
+  glk-chest (g) = (g >= #0E40 & g <= #0E43) | g == #09AB
+  glk-key : Integer -> Boolean
+  glk-key (g) = (g >= #100E & g <= #1010) | g == #1012 | g == #1013
+  glk-blank : WorldTable, Integer, Integer -> Integer
+  glk-blank (world) (serial) (depth) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.graphic == #100F & o.health == 0 then serial
+        else let inner = if depth > 0 & world-child-count world serial > 0 then glk-blank world (world-first-child world serial) (depth - 1) else 0
+        in if inner > 0 then inner else glk-blank world (world-next-sibling world serial) depth
+  glk-gold : WorldTable, Integer, Integer -> Integer
+  glk-gold (world) (serial) (depth) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.graphic == #100F & o.health > 0 & o.health <= 16384 then o.health
+        else let inner = if depth > 0 & world-child-count world serial > 0 then glk-gold world (world-first-child world serial) (depth - 1) else 0
+        in if inner > 0 then inner else glk-gold world (world-next-sibling world serial) depth
+  glk-cut : Magery, Integer, Integer -> Integer
+  glk-cut (magic) (pack) (chest) = let blank = glk-blank magic.items.world (world-first-child magic.items.world pack) 3
+    in if blank == 0 then (let id = glk-gold magic.items.world (world-first-child magic.items.world pack) 3
+      in if id == 0 then 0 else let keyed = __record-set (list-at magic.definitions (world-slot magic.items.world chest)) "key" id in id)
+    else when world-get magic.items.world blank
+      is Err (_) -> 0
+      is Ok (key) -> let id = world-slot magic.items.world chest + 1 in when world-update magic.items.world (__record-set key "health" id)
+        is Err (_) -> 0
+        is Ok (_) -> let keyed = __record-set (list-at magic.definitions (world-slot magic.items.world chest)) "key" id in id
+  glk-register : Magery, Integer, Integer, Integer -> Integer
+  glk-register (magic) (pack) (serial) (depth) = if serial == 0 then 0
+    else let next = world-next-sibling magic.items.world serial
+    in let here = when world-get magic.items.world serial
+      is Err (_) -> 0
+      is Ok (item) -> if item.kind /= 2 | not (gsi-known magic.items serial) | (gsi-meta magic.items serial).gump == 0 then 0
+        else if glk-chest item.graphic & not (mgs-known magic serial & (if mgs-known magic serial then (list-at magic.definitions (world-slot magic.items.world serial)).lockable else False)) then
+          (when mgs-container magic serial is Err (_) -> 0 is Ok (_) -> let locked = __record-set (list-at magic.definitions (world-slot magic.items.world serial)) "locked" (world-child-count magic.items.world serial == 0) in if world-child-count magic.items.world serial == 0 then glk-cut magic pack serial else 0)
+        else if depth > 0 then glk-register magic pack (world-first-child magic.items.world serial) (depth - 1) else 0
+    in glk-register magic pack next depth
+  glk-locked : Magery, Integer -> Boolean
+  glk-locked (magic) (serial) = if serial == 0 | not (mgs-known magic serial) then False
+    else (list-at magic.definitions (world-slot magic.items.world serial)).locked
+  glk-say : Text -> List Integer
+  glk-say (text) = sip-message #FFFFFFFF #FFFF 6 text
+  glk-roll : GameHarvest, ActiveSkills, Magery, AsActor, WorldObject, Integer, Integer -> Result (Maybe GameReply) Text
+  glk-roll (h) (s) (magic) (a) (me) (pick) (serial) =
+    let meta = list-at magic.definitions (world-slot magic.items.world serial)
+    in if meta.key /= 0 then Ok (Just (gs-reply [glk-say "That cannot be unlocked without a key!"] "lockpick keyed"))
+    else if as-roll s a 24 (if meta.trapped then 750 else 500) then
+      (let opened = __record-set meta "locked" False
+      in let touched = mgs-touch magic
+      in let witnessed = as-picked s serial a.serial (as-level a 24)
+      in Ok (Just (gs-reply (gsi-sound-at h.items me.serial #01FF & [glk-say "You manage to pick the lock."]) "lockpick opened")))
+    else if skc-random a.skills 2 == 0 then Ok (Just (gs-reply [glk-say "You fail to open the lock!"] "lockpick failed"))
+    else when gal-take h pick
+      is Err (e) -> Err e
+      is Ok (broken) -> Ok (Just (gs-reply ([broken] & gsi-sound-at h.items me.serial #013A & [glk-say "You broke your lockpick!"]) "lockpick broke"))
+  glk-pick-at : GameHarvest, ActiveSkills, Magery, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  glk-pick-at (h) (s) (magic) (shard) (input) (packet) (now) =
+    if list-length packet /= 19 | list-at packet 0 /= #6C | not (gs-byte-range packet 0) then Ok None
+    else if bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial | h.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player h.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | slot >= list-length s.actors | now < 0 then Ok None
+    else let player = list-at h.vendor.players at
+    in let actor = list-at h.items.actors slot
+    in let request = gh-session h input player slot
+    in let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+    in if request.target == 0 | request.target /= gp-u32 packet 2 | not (glp-tool h actor request.tool) | not (glk-locked magic serial) then Ok None
+    else let clear = __record-set request "target" 0
+    in if now > request.expires then gh-denied "That target expired."
+    else when world-get h.items.world serial
+      is Err (_) -> gh-denied "That does not have a lock."
+      is Ok (target) -> if not (gsi-access h.items actor target) then gh-denied "That is too far away."
+        else when world-get h.items.world input.session.serial
+          is Err (e) -> Err e
+          is Ok (me) -> glk-roll h s magic (as-session s shard input me slot) me request.tool serial
+  glk-key-tool : GameHarvest, GsiActor, Integer -> Boolean
+  glk-key-tool (h) (actor) (serial) = if serial == 0 | not (gsi-known h.items serial) then False
+    else when world-get h.items.world serial
+      is Err (_) -> False
+      is Ok (key) -> key.kind == 2 & glk-key key.graphic & gsi-access h.items actor key
+  glk-turn : GameHarvest, Magery, GsiActor, Integer, Integer -> Result (Maybe GameReply) Text
+  glk-turn (h) (magic) (actor) (key) (serial) = when world-get h.items.world key
+    is Err (_) -> gh-denied "That does not have a lock."
+    is Ok (k) -> if serial == 0 | not (mgs-known magic serial) then gh-denied "That does not have a lock."
+      else let meta = list-at magic.definitions (world-slot magic.items.world serial)
+      in if not meta.lockable then gh-denied "That does not have a lock."
+      else when world-get h.items.world serial
+        is Err (_) -> gh-denied "That does not have a lock."
+        is Ok (target) -> if not (gsi-access h.items actor target) then gh-denied "That is too far away."
+          else if k.health /= glk-master & (meta.key == 0 | meta.key /= k.health) then gh-denied "The key does not fit into that lock."
+          else let turned = __record-set meta "locked" (not meta.locked)
+          in let touched = mgs-touch magic
+          in Ok (Just (gs-reply [glk-say (if meta.locked then "You lock the container." else "You unlock the container.")] (if meta.locked then "key locked" else "key unlocked")))
+  glk-key-at : GameHarvest, Magery, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  glk-key-at (h) (magic) (shard) (input) (packet) (now) =
+    if list-length packet == 0 then Ok None
+    else let op = list-at packet 0
+    in if (op /= 6 | list-length packet /= 5) & (op /= #6C | list-length packet /= 19) then Ok None
+    else if not (gs-byte-range packet 0) then Ok None
+    else if op == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial | h.items.world.buffer /= shard.world.buffer then Ok None
+    else let at = gv-player h.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 | now > 9223372036854775807 - gh-ticks 10000 then Ok None
+    else let player = list-at h.vendor.players at
+    in let actor = list-at h.items.actors slot
+    in let request = gh-session h input player slot
+    in if op == 6 then
+      (let key = bit-and (gp-u32 packet 1) #7FFFFFFF
+      in if not (glk-key-tool h actor key) then Ok None
+      else when world-get h.items.world key
+        is Err (_) -> Ok None
+        is Ok (k) -> if k.health == 0 then gh-denied "That key has no lock defined for it!"
+          else if h.nonce > 65535 then gh-denied "Harvest target contexts exhausted."
+          else let target = #48410000 + h.nonce
+          in let nonce = __record-set h "nonce" (h.nonce + 1)
+          in let context = __record-set request "target" target
+          in let selected = __record-set request "tool" key
+          in let expires = __record-set request "expires" (now + gh-ticks 10000)
+          in Ok (Just (gs-reply [sip-target target, glk-say "What do you want to use this key on?"] "key target")))
+    else if request.target == 0 | request.target /= gp-u32 packet 2 | not (glk-key-tool h actor request.tool) then Ok None
+    else let clear = __record-set request "target" 0
+    in if gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 then Ok (Just (gs-reply [] "key cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else glk-turn h magic actor request.tool (bit-and (gp-u32 packet 7) #7FFFFFFF)
+ A door's key id is 32768 plus its closed tile folded into 15 bits, so a door key never matches a chest's (a world slot
+ plus one, at most 16384); 65535 is Lord British's master key, which turns every door and every lockable container.
+  glk-master : Integer = 65535
+  glk-door-id : WdState, Integer -> Integer
+  glk-door-id (doors) (i) = 32768 + int-mod (wd-field doors i 0 * 4099 + wd-field doors i 1) 32767
+  glk-fits : WdState, Integer, Integer -> Boolean
+  glk-fits (doors) (i) (key) = key == glk-master | key == glk-door-id doors i | (wd-leaf doors i >= 0 & key == glk-door-id doors (wd-leaf doors i))
+ Unlocking or locking a door turns the other leaf of a double door with it.
+  glk-both : WdState, Integer, Boolean -> Integer
+  glk-both (doors) (i) (unlock) = let leaf = wd-leaf doors i
+    in let one = if unlock then wd-unlock doors i else wd-lock doors i
+    in if leaf < 0 then one else if unlock then wd-unlock doors leaf else wd-lock doors leaf
+ A key aimed at a door within 2 tiles: a fitting key unlocks a locked door and locks a shut one, with no sound (ServUO Key.cs plays none).
+  glk-key-door-at : GameHarvest, WdState, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  glk-key-door-at (h) (doors) (shard) (input) (packet) (now) =
+    if list-length packet /= 19 | list-at packet 0 /= #6C | not (gs-byte-range packet 0) then Ok None
+    else if bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial | h.items.world.buffer /= shard.world.buffer then Ok None
+    else let i = bit-and (gp-u32 packet 7) #7FFFFFFF - wd-serial-base - 1
+    in if i < 0 | i >= doors.count then Ok None
+    else if not (wd-is-door doors i) then Ok None
+    else let at = gv-player h.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | now < 0 then Ok None
+    else let player = list-at h.vendor.players at
+    in let actor = list-at h.items.actors slot
+    in let request = gh-session h input player slot
+    in if request.target == 0 | request.target /= gp-u32 packet 2 | not (glk-key-tool h actor request.tool) then Ok None
+    else let clear = __record-set request "target" 0
+    in if now > request.expires then gh-denied "That target expired."
+    else when world-get h.items.world request.tool
+      is Err (_) -> Ok None
+      is Ok (key) -> when world-get h.items.world input.session.serial
+        is Err (e) -> Err e
+        is Ok (me) -> if walk-abs (me.x - wd-x doors i) > 2 | walk-abs (me.y - wd-y doors i) > 2 then gh-denied "That is too far away."
+          else if not (glk-fits doors i key.health) then gh-denied "The key does not fit into that lock."
+          else if wd-locked doors i then
+            (let opened = glk-both doors i True
+            in let touched = world-item-touch shard.world
+            in Ok (Just (gs-reply [glk-say "You unlock the door."] "key door unlocked")))
+          else if bit-and (peek-byte doors.opened i) 1 /= 0 then gh-denied "Close the door first."
+          else let locked = glk-both doors i False
+          in let touched = world-item-touch shard.world
+          in Ok (Just (gs-reply [glk-say "You lock the door."] "key door locked"))
+ At boot every shopkeeper carries, in a backpack of its own (layer 21, apart from the stock containers on layers 26-28),
+ an iron key (0x1010) to each door within 8 tiles of where it stands, one key per double door.
+  glk-key-in : WorldTable, Integer, Integer -> Boolean
+  glk-key-in (world) (serial) (id) = if serial == 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (o) -> if o.kind == 2 & glk-key o.graphic & o.health == id then True else glk-key-in world (world-next-sibling world serial) id
+  glk-own-pack : GsiState, Integer -> Integer
+  glk-own-pack (items) (npc) = let worn = world-layer-serial items.world npc 21
+    in if worn /= 0 then worn
+    else if world-room items.world <= 0 then 0
+    else when world-create items.world (gs-item npc #0E75 0)
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register items serial 21 #003C False False /= 0 then 0 else serial
+  glk-cut-door : GsiState, WdState, Integer, Integer -> Integer
+  glk-cut-door (items) (doors) (pack) (i) = let id = glk-door-id doors i
+    in if glk-key-in items.world (world-first-child items.world pack) id | world-room items.world <= 0 then 0
+    else when world-create items.world (__record-set (__record-set (__record-set (gs-item pack #1010 0) "x" (50 + int-mod i 5 * 20)) "y" (70 + int-mod (i / 5) 4 * 20)) "health" id)
+      is Err (_) -> 0
+      is Ok (serial) -> let known = gsi-register items serial 0 0 True False in let touched = world-touch items.world in 1
+  glk-near-doors : GsiState, WdState, WorldObject, Integer, Integer -> Integer
+  glk-near-doors (items) (doors) (npc) (pack) (j) = if j >= doors.count then 0 else if wd-field doors j 0 > npc.x + 8 then 0
+    else let leaf = wd-leaf doors j
+    in let cut = if not (wd-is-door doors j) | walk-abs (wd-field doors j 1 - npc.y) > 8 | (leaf >= 0 & leaf < j) then 0 else glk-cut-door items doors pack j
+    in cut + glk-near-doors items doors npc pack (j + 1)
+  glk-shop-keys : GsiState, WdState, GvWorld, Integer -> Integer
+  glk-shop-keys (items) (doors) (v) (i) = if i >= v.vendor-count then 0
+    else let serial = (list-at v.vendors i).serial
+    in let cut = when world-get items.world serial
+      is Err (_) -> 0
+      is Ok (npc) -> if npc.kind /= 1 then 0
+        else let pack = glk-own-pack items serial
+        in if pack == 0 then 0 else glk-near-doors items doors npc pack (wd-lower doors (npc.x - 8) 0 doors.count)
+    in cut + glk-shop-keys items doors v (i + 1)
+ Lord British carries the master key: at boot one is made in his backpack when it holds none.
+  glk-has-master : WorldTable, Integer, Integer -> Boolean
+  glk-has-master (world) (serial) (depth) = if serial == 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (o) -> if o.kind == 2 & glk-key o.graphic & o.health == glk-master then True
+        else if depth > 0 & world-child-count world serial > 0 & glk-has-master world (world-first-child world serial) (depth - 1) then True
+        else glk-has-master world (world-next-sibling world serial) depth
+  glk-give-master : GsiState, Integer -> Integer
+  glk-give-master (items) (owner) = let pack = if owner == 0 then 0 else gsi-pack-find items.world owner 0
+    in if pack == 0 | glk-has-master items.world (world-first-child items.world pack) 3 | world-room items.world <= 0 then 0
+    else when world-create items.world (__record-set (__record-set (__record-set (gs-item pack #100E 0) "x" 70) "y" 90) "health" glk-master)
+      is Err (_) -> 0
+      is Ok (serial) -> let known = gsi-register items serial 0 0 True False in let touched = world-touch items.world in 1
+ Lord British's kit chests stand locked down behind the castle throne, not in his pack (Damian, 2026-10-09: "take these
+ chests out of my backpack at start, and lock them down behind the throne"). The throne's seats are 1323,1624 and
+ 1323,1625 on the z 55 floor (1.25 statics); x 1322 behind them is the passage, outside both teleporting alcoves. Each
+ chest is immovable, locked and keyed to the first chest's slot plus one, so it refuses a pick and the master key turns it.
+  glk-throne-x : Integer = 1322
+  glk-throne-z : Integer = 55
+  glk-throne-at : WorldTable, Integer, Integer -> Integer
+  glk-throne-at (world) (serial) (art) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == art & o.container == 0) then serial
+    else glk-throne-at world (world-tile-next world serial) art
+  glk-throne-chest : Magery, Integer, Integer, Integer -> Integer
+  glk-throne-chest (magic) (y) (art) (key) = let world = magic.items.world
+    in let found = glk-throne-at world (world-tile-first world glk-throne-x y) art
+    in if found /= 0 then (if mgs-known magic found then (list-at magic.definitions (world-slot world found)).key else 0)
+    else if world-room world <= 0 then 0
+    else when world-create world (WorldObject { serial = 0, kind = 2, x = glk-throne-x, y = y, z = glk-throne-z, graphic = art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register magic.items serial 0 #0049 False False /= 0 then 0
+        else when mgs-container magic serial
+          is Err (_) -> 0
+          is Ok (_) -> let meta = list-at magic.definitions (world-slot world serial)
+            in let id = if key > 0 then key else world-slot world serial + 1
+            in let locked = __record-set meta "locked" True
+            in let keyed = __record-set meta "key" id
+            in let touched = mgs-touch magic in id
+  glk-throne-chests : Magery -> Integer
+  glk-throne-chests (magic) = if not (world-indexed magic.items.world) then 0 else let first = glk-throne-chest magic 1624 #0E43 0
+    in if first <= 0 then 0 else glk-throne-chest magic 1625 #0E41 first
+  glk-door-at :GameHarvest, ActiveSkills, WdState, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
+  glk-door-at (h) (s) (doors) (shard) (input) (packet) (now) =
+    if list-length packet /= 19 | list-at packet 0 /= #6C | not (gs-byte-range packet 0) then Ok None
+    else if bit-and (gp-u32 packet 2) #FFFF0000 /= #48410000 then Ok None
+    else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial | h.items.world.buffer /= shard.world.buffer then Ok None
+    else let i = bit-and (gp-u32 packet 7) #7FFFFFFF - wd-serial-base - 1
+    in if i < 0 | i >= doors.count then Ok None
+    else if not (wd-is-door doors i) then Ok None
+    else let at = gv-player h.vendor input.session.serial 0
+    in let slot = gsi-slot shard input.session.serial 0
+    in if at < 0 | slot < 0 | slot >= list-length s.actors | now < 0 then Ok None
+    else let player = list-at h.vendor.players at
+    in let actor = list-at h.items.actors slot
+    in let request = gh-session h input player slot
+    in if request.target == 0 | request.target /= gp-u32 packet 2 | not (glp-tool h actor request.tool) then Ok None
+    else let clear = __record-set request "target" 0
+    in if now > request.expires then gh-denied "That target expired."
+    else when world-get h.items.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if walk-abs (me.x - wd-x doors i) > 2 | walk-abs (me.y - wd-y doors i) > 2 then gh-denied "That is too far away."
+        else if not (wd-locked doors i) then gh-denied "That is not locked."
+        else let a = as-session s shard input me slot
+        in if as-roll s a 24 500 then
+          (let opened = glk-both doors i True
+          in let touched = world-item-touch shard.world
+          in Ok (Just (gs-reply (gsi-sound-at h.items me.serial #01FF & [glk-say "You manage to pick the lock."]) "lockpick door opened")))
+        else if skc-random a.skills 2 == 0 then Ok (Just (gs-reply [glk-say "You fail to open the lock!"] "lockpick failed"))
+        else when gal-take h request.tool
+          is Err (e) -> Err e
+          is Ok (broken) -> Ok (Just (gs-reply ([broken] & gsi-sound-at h.items me.serial #013A & [glk-say "You broke your lockpick!"]) "lockpick broke"))

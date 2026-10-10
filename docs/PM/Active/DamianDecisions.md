@@ -12,8 +12,7 @@ ruling there and deletes the item here.
 | # | decision | what waits |
 |---|---|---|
 | 0.1 | **Standing GO (Damian, 2026-10-04) for local development client runs** against the codex-vm server "as long as i am not typing": the driver checks physical input idle before every click and aborts otherwise. Open: nothing; this row is a standing reminder until stages 0 and 1 pass (login through character creation pass; the create packet is reek's fix in progress). | stages 0 and 1 acceptance (`apps/uoaix/GameServer.md`) |
-| 0.2 | **Publish the UOAIX page** on cobblestoneproject.com (built, with the UO art; preview `D:\Projects\Cobblestone-val\apps\landing\web\uoaix.html`). | the public page |
-| 0.3 | **Release timing:** a full release or a preview push (root's CurrentPlan row). | the next public release |
+| 0.2 | **Publish the UOAIX page** (Damian, 2026-10-06: "we will deal with publish and release later") on cobblestoneproject.com (built, with the UO art; preview `D:\Projects\Cobblestone-val\apps\landing\web\uoaix.html`). | the public page |
 
 ## 6. UOAIX, the shard (`apps/uoaix/UOAIX.md` section 10)
 
@@ -21,9 +20,10 @@ Each row carries root's recommendation (R) where root has one.
 
 | # | id | decision | R |
 |---|---|---|---|
-| 6.2 | R2 | The language model provider and model for NPC speech and the keeper, where the relay runs, and the monthly budget; or local Qwen3 as the relay model. | Claude for the keeper; batch-generate the canned library first and size the budget from its cost |
 | 6.4 | R6 | Host ruled: Vultr, custom ISO. Still open: region, plan size, when the shard goes public; and opening the Vultr account (yours). | the region nearest you; the smallest 1 GiB plan; public after stage 6 |
-| 6.6 | R8 | Ruled: no starting purse, Lord British mines the first gold; monsters carry only gold they acquired. Still open: the mint's terms (who sells it gold, at what price) and other sinks (repairs, guild fees). | the mint buys gold ingots from anyone at a crown price Lord British sets on the panel; no other sinks yet |
+| 6.5 | UOAIX-84 | Ghost visibility beyond your rule (a ghost is seen when it speaks, or by a player who wins the Spirit Speak contest). ServUO also shows a ghost to every viewer while the ghost is in war mode (the "manifest"), and always to a viewer with Spirit Speak 100.0 or more, with no contest (`D:/Projects/uo-reference/ServUO/Server/Mobile.cs:9230-9232`). Option: add the war-mode manifest. | not added; your rule as written is built |
+| 6.6 | stage K | Weapon sub-skills (UOAIX.md section 5, skills: a longsword fighter is no good with a katana until trained). `Skills.md` caps an untrained instrument at 20.0 and lifts the cap only by a master's training, and no master exists in the live shard. Built as written, every fighter's effective weapon skill, British's included, falls to 20.0 at the next boot. Options: (a) every existing character's every weapon starts at the character's current parent skill, and new characters follow the cap; (b) every existing character's most-used weapon kind starts at the parent skill and every other kind at 20.0; (c) masters ship first (a trainer per weapon kind in Britain), then the cap, with (a) for existing characters; (d) no cap until masters exist: the sub-skill grows by use from the parent's level. Held until you choose. | (root) |
+| 6.7 | stage A | GM coin favors in game (`favor-coins`, bit 512): a dubbed GM pays real royal-treasury coin to a player's purse. **Land now:** the coin moves through the live currency (`eu-pay` from Lord British's actor 1) and the grant's per-action and per-day coin limits apply, but the GM audit row lives only in the in-memory stand-in (`GmMemory`), so a restart erases who paid whom while the coin stays moved; exposure is one GM's daily coin limit per game day, untraceable after a restart. **Wait for the Codex DB:** coin favors stay refused (today's behaviour); exposure is none, and GMs cannot reward players with coin. | wait, unless you want favors before the database: then land with a small daily limit |
 
 ## 1. Time-bound
 
@@ -48,6 +48,14 @@ Each row carries the options and root's recommendation (R). A one-word answer
 | # | row | options | R |
 |---|---|---|---|
 | 3.11 | "a virtual desktop space to move into" (`docs/Designs/Active/OS/ShellRefinement.md` 6.4, Damian 2026-09-07): which meaning | (a) the drag clamp that landed 2026-09-08 (main 23592, recorded then as Damian's reading B): a window drags down until only the window's titlebar stays in the panel, uncovering the windows behind; nothing further is built; (b) several virtual desktops, each holding the desktop's own windows, with a switcher on the taskbar; (c) one desk larger than the screen, with the view panning across the desk | **(a)**, and the 6.4 row closes: the clamp already lets every window move out of the way, and (b) and (c) each add desk-wide state to `GopDesk`, whose `ds` cell block is full |
+
+### 3.12 to 3.14, CORE-12 persisted keys (`codex/foreword/core/core-backlog.md` CORE-12, census by fester 2026-10-07)
+
+| # | site | options | R |
+|---|---|---|---|
+| 3.12 | `apps/works/DevConsoleBoot.codex:336`: the dev console's signing key comes from `generate-keypair (sha256 ...)`, which feeds 8 digest words to the key as bytes. The seed is a constant, therefore no secrecy is lost either way. | (a) seed the key with `sha256-bytes`: the key changes, and every fact already signed on a dev disk stops verifying until the dev disk is rebuilt; (b) keep the word path | **(a)**: the key matches the 8 test sites fester moved (main 38681), and dev disks rebuild from source |
+| 3.13 | `codex/os/kernel/IdentityManager.codex:265`, `idm-derive-random`: the persisted identity's salt and IV ask for 16 bytes and receive 8 digest words above 255, then 8 zeros, which is at most 64 bits of randomness where 128 bits are meant. | (a) convert the digest words to 16 real bytes: an identity created or re-keyed after the change carries a full 128-bit salt and IV; every stored identity keeps working, because each record keeps the record's own `id-salt` and `id-iv` (`IdentityManager.codex:111`, `:165`); (b) keep the word path | **(a)**: nothing stored breaks |
+| 3.14 | `apps/secrets/AuditLog.codex:68`, `hash-audit-entry`: each audit entry hashes the entry's text bytes followed by the previous entry's digest words, and `audit-verify-chain` walks the chain from a word-list genesis hash. | (a) move the chain to bytes with a version field in the chain: a log written before the move verifies under version 0, and new entries write version 1; (b) move the chain to bytes without a version: every log written before the move fails verification; (c) keep the word path | **(a)** |
 
 ## 4. Blocked on an asset or hardware Damian holds
 

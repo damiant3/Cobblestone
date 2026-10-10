@@ -1,0 +1,25 @@
+Chapter: BvtTradeMark
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bvtm-buyers : List Integer, Integer -> Boolean
+  bvtm-buyers (places) (i) = if i >= list-length places then True
+    else let b = (cgg-trade-of (list-at places i)).buyer in b >= 0 & b < bb-shop-count & bvtm-buyers places (i + 1)
+  bvtm-scribble : Integer, Integer -> Integer
+  bvtm-scribble (at) (left) = if left <= 0 then 0 else let put = poke-qword at #0F2ABF4500 in bvtm-scribble (at + 8) (left - 8)
+ A trade made below a heap mark, retraded to the mill's log trade above it, then the heap restored and overwritten:
+ the trade must still read its log values, as sl-compact leaves it.
+  bvtm-survives : Integer -> Boolean
+  bvtm-survives (unused) = let trade = cgg-trade-of cgg-lumber-place
+    in let mark = __heap-save
+    in let changed = cgg-retrade trade (cgg-log-trade cgg-mill)
+    in let reclaimed = __heap-restore mark
+    in let over = bvtm-scribble (alloc-bytes 4096) 4096
+    in trade.buyer == cgg-mill & trade.product == 15 & trade.raw == 15 & trade.art == #1BDD
+  bvt-trade-mark : Integer -> [Console] Integer
+  bvt-trade-mark (unused) = act
+    a <- bvt-check "every gatherer's buyer is a founded shop (founders, miners, farmer, lumberjack's mill)" (bvtm-buyers (cg-founders & [cgg-farm-place, cgg-place + 1]) 0 & cgg-mill >= 0 & cgg-mill < bb-shop-count)
+    b <- bvt-check "a lumberjack's trade switched to the mill above a heap mark survives the mark's restore (main 40589 crash)" (bvtm-survives 0)
+    c <- bvt-check "switching back restores the board trade for the carpenter" (let trade = cgg-trade-of cgg-lumber-place in let x = cgg-retrade trade (cgg-log-trade cgg-mill) in let y = cgg-retrade trade (cgg-trade-of cgg-lumber-place) in trade.buyer == 7 & trade.product == 38 & trade.art == #1BD7)
+    a + b + c
+  end

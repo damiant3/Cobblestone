@@ -27,20 +27,28 @@ measured 2026-10-04):
 - `CLIENT.EXE` 1.25.32, the last notoriety client; base data files from
   1.25.34 (the T2A beta CD); `MAP0.MUL`, `STATICS0.MUL`, `STAIDX0.MUL` from
   1.25.0.
+- A player's client needs the flora strip and the decorator bake applied to its map statics before it connects:
+  [PlayerClient.md](PlayerClient.md).
 - `LOGIN.CFG` names the login server. The shard install is
   `D:\Projects\uoaix-client`, a copy whose `LOGIN.CFG` is
   `LoginServer=127.0.0.1,2593` and whose `UO.CFG` carries only the test
   account `uoaixtest`; Damian's own install is never edited and none of its
   account details enter the project.
+- The new-character tutorial is client-side and has no `UO.CFG` key or
+  packet. After character creation `CLIENT.EXE` 1.25.32 opens
+  `tutorial\1gen.tga` (code at 0x4116F1); when that open fails it enters the
+  world directly, which is the same call (0x44E430) the tutorial's last page
+  makes. The shard install skips it by renaming `TUTORIAL\1GEN.TGA` to
+  `1GEN.TGA.skip`; renaming it back restores the tutorial.
+- Mounts: none yet; how the 1.25 client draws a rider is open (UOAIX-183).
 
 The protocol is EA's, so its details are recorded here as facts we do not
 own. A UO session is two TCP connections: the client sends a 4-byte seed,
 logs in to the login server, picks a shard from the server list, and is
 relayed to the game server with a key; the game server then exchanges
 fixed- and variable-length packets keyed by a one-byte id (movement, speech,
-item and mobile updates, gumps, targeting). Whether 1.25.32 encrypts its
-login and game streams, and with which keys, is **not assumed**: stage 0
-measures it from the client's own bytes (L-ASSUME). Community packet
+item and mobile updates, gumps, targeting). The measured stream modes and
+keys are in [ProtocolFacts.md](ProtocolFacts.md). Community packet
 references (POL, RunUO, and Jerrith's UO Packets Guide at
 `http://uo.torfo.org/packetguide/`, which is based on Damian's 1997
 `UOPackets.doc`, "UOX Protocol") are read as hypotheses; the
@@ -112,9 +120,8 @@ the VM runs nothing else, no operating system and no other service.
   PCI/block path is `VirtioPciX86.codex` and `VirtioBlkX86.codex`, with the
   supported device envelope and QEMU proof in [VirtioX86.md](VirtioX86.md).
   [WorldDisk.md](WorldDisk.md) defines its world-store binding and restart
-  proof. The x86 virtio network path is blu's stage-D work. codex-vm has no
-  virtio device model; virtio is graded under QEMU/KVM. The complete UEFI
-  shard image and port acceptance remain integration work. Each host is accepted only by
+  proof, and [VirtioNetX86.md](VirtioNetX86.md) the network path. codex-vm has no
+  virtio device model; virtio is graded under QEMU/KVM. Each host is accepted only by
   booting the exact image bytes on it (L-ARTIFACT, L-REHEARSE).
 - **Exactly two kinds of open port:** the game ports the client uses (login
   and game, 2593 by default), and one admin/health port. The kernel answers
@@ -218,8 +225,7 @@ the VM runs nothing else, no operating system and no other service.
   container; the tick advances movement, timers, decay and spawns.
 - **Cost bounds (R-COST, L-PEROBJECT):** every record type states its size
   and the count it is budgeted for before it lands, and the server refuses
-  past the budget rather than degrading silently (L-BAILVALUE). Stage 2
-  measures a populated Britain and writes the numbers here, dated.
+  past the budget rather than degrading silently (L-BAILVALUE).
 
 ## 5. The townsfolk: three layers
 
@@ -237,14 +243,9 @@ and harvests, the baker bakes, the vendor sells from real stock). Births,
 marriages, aging, illness and death are simulation events, not model
 inventions. Layer 1 alone gives a living town.
 
-The stage 3 implementation is `Townsfolk.codex`; [Townsfolk.md](Townsfolk.md)
-owns the API, rules, record budgets and stage 2 persistence boundary.
-The `test-clock.ps1` acceptance runs Britain and Minoc for 30 game days.
-Normal and poisoned-allocation runs pass; destination, production, parent-link
-and death-boundary mutations each fail runtime assertions (2026-10-04).
-The simulation selects home/workplace destinations; physical walking and
-durable snapshots remain world-layer integration work. Family events are
-scheduled through explicit simulation calls, with no model dependency.
+Layer 1 is `Townsfolk.codex`; [Townsfolk.md](Townsfolk.md) owns its API,
+rules, record budgets and persistence boundary, and `test-clock.ps1` runs
+Britain and Minoc for 30 game days.
 
 **NPCs live in the map's prebuilt city buildings** (Damian, 2026-10-04).
 A home is an assignment of a household to a building that already stands
@@ -312,6 +313,16 @@ and every coin that changes hands came out of somebody's purse.
   with the trees taken out, and the server places every tree as an item
   the client draws with the same art. Shipping that changed statics file
   to players is part of ruling R1.
+- **Ship a transformer, not the files** (Damian, 2026-10-06: "we may need a
+  creative solution to flora spawns and statics files. obviously we need to
+  ship a transformer"). Root's reading: the shard never distributes client
+  data; it ships a transformer program the player runs on their own legal
+  client install. The transformer removes every flora static (trees, bushes,
+  plants, crops) from the player's statics files, checks the before and
+  after hashes, and is reversible; the server then owns all flora as world
+  items and spawns, so felling, harvesting and planting are visible to every
+  client. The 1.25 protocol cannot report the client's file hashes, so the
+  transformer, not the server, verifies them (UOAIX-47).
 - **Anything that grows can be planted** (Damian, 2026-10-04: "we need to
   be able to plant anything that grows basically. farms need to be
   farmable, plantable, etc"). Crops, cotton, flax, herbs and reagent plants,
@@ -405,6 +416,14 @@ judgement calls (what to make next, whether to haggle, where to hunt).
   have rare trainers in particular places: the viking sword is taught only
   at Buccaneer's Den, for example. Masters and their locations are world
   data the keeper edits.
+- **Built (`StarterKit.codex`):** a character created in the 1.25 client
+  gets its trade's starter tool (the highest of its three chosen skills:
+  shovel, saw, smith's hammer, sewing kit, fishing pole, hatchet, butcher
+  knife, longsword, bow, mortar, spellbook), blessed so it stays on the
+  character at death, made an economy lot, and one sausage (the client has
+  no jerky), and a full belly. **Open:** tool tiers in harvesting (a shovel cannot dig big ore),
+  wear, instrument sub-skills and masters (`Skills.codex` models them; no
+  live chapter calls it).
 
 ### Construction: houses and ships are built on site
 
@@ -442,7 +461,38 @@ from materials, never bought as a finished building (accepted by Damian,
 - **The client draws only finished multis.** The 1.25.32 client renders a
   multi from its own `MULTI.MUL` designs, so a site appears as scaffolding
   and foundation items on the plot until completion, when the server swaps
-  in the finished multi. Stage 2 confirms the client accepts that swap.
+  in the finished multi.
+- **Built (`Construction.codex`):** Lord British's `[plot` (or the admin panel's
+  `grant-plot`, logged in its action log) grants a 9 by 9 plot (holder, then center tile; an `ADMIN plot` info line, sys=admin),
+  refusing land where no house fits and naming the nearest center that does;
+  wooden posts stake every plot's corners;
+  a holder who says "my plot" hears each plot's bounds and what stands on it. A
+  deed (0x14F0, one in each new testing kit; `[add 14F0`; or drawn on a
+  blank scroll by a carpenter of 50.0 who says "draw a deed") targeted anywhere
+  in the holder's plot opens a site at the nearest spot where the house and
+  its steps stand on level land clear of items, flora and impassable statics:
+  a lumber pile
+  and four scaffolds. The holder double-clicks the pile to deliver the bill
+  (small wooden house, multi 0x6A: 250 boards, 60 nails, 20 iron ingots, 2 hinges;
+  thatched-roof cottage, 0x6E, drawn by "draw a cottage deed": 150 boards,
+  40 nails, 60 wheat lots, 2 hinges; field stone house, 0x66, drawn by "draw a stone house deed": 60 boards, 40 nails,
+  120 stone blocks, 2 hinges; a hinge is catalog item 148, made by Tinkering from 2 iron ingots and sold by the tinker;
+  a stone block is item 149, cut by Masonry (economy skill 11, practising client Carpentry) from 1 stone and sold by the provisioner) from the
+  backpack, and the builders fetch the rest from the holder's bank; economy lots leave the ledger as consumed goods. Two builders
+  stand hammering at the front step while they work. One game day
+  on the town clock after the bill fills, the client is sent the design's multi
+  with its door (0x06A5, which only the holder opens) and a sign naming
+  the holder (graded in the client, Damian 2026-10-07). The standing house is solid in the server's walk map: floor
+  at +7, walls on its border, the closed door in the doorway, the steps.
+  A deleted character's plots return to the crown and its sites and houses
+  come down; the next site takes the freed row. What stood in a house moves
+  to the King's bank (British's bank box), one bag per catalog chain, plain
+  stacks merged.
+  The Saw Horse carpenter is the architect: a player in the shop who says "buy a deed" (or a cottage or stone house deed)
+  pays 70 copper and gets it. A holder beside an unfilled site who says "hire builders" has them buy the rest of the bill
+  from the shops (boards, nails, hinges, stone blocks) and the gatherers (iron ingots, wheat) at their asking prices from the holder's purse; leftovers go to
+  the bank.
+  **Open:** the larger designs; plot grants by mayors.
 
 ### The sea: fishermen, pirates and the navy
 
@@ -507,29 +557,7 @@ witnesses and guards who walk:
   accept one (a tavern brawl, a settled grudge, a wager). Drink matters: an
   NPC who has been drinking is more likely to accept, and drunkenness is a
   layer 1 state that rises with each drink and wears off with time.
-
-### Tavern games: backgammon
-
-The world's backgammon board is a real game (Damian, 2026-10-04): a player
-can sit at a tavern table and challenge an NPC patron, or another player,
-and the game is played and refereed properly.
-
-- **The rules are the project's existing engine:**
-  `apps/games/classic/Backgammon.codex`, already graded (moves against an
-  800-position oracle, the doubling cube, gammon and backgammon scoring).
-  The server keeps the authoritative game state in that engine; a move the
-  engine refuses is put back where it came from.
-- **The server rolls the dice** and announces the roll over the table; the
-  board is set up by the server at the start of each game.
-- **NPC patrons play** through the engine's move choice, with their
-  strength set by their persona (a sharp gambler, a sleepy farmer) and
-  dulled by drink; a mind decides whether to accept a challenge and what to
-  wager.
-- **Wagers move real coin** between the two purses (section 5, the
-  economy).
-- **The table's UI** is the client's game-board window, with checkers as
-  items dragged between points; setup, dice and turn prompts need sprucing
-  up within what the 1.25.32 client can show, which stage 2 measures. Armed blows in a consensual fight follow the normal combat rules.
+  Armed blows in a consensual fight follow the normal combat rules.
   **Non-consensual** PvP is open ("still the jungle out there"): any attack
   can kill, notoriety applies to the attacker, and the attack is a crime
   that reaches the guards and jail only through a witness who tells.
@@ -596,6 +624,29 @@ and the game is played and refereed properly.
 - **This is game law, not discipline.** The simulation applies it to
   players and NPCs alike, as a world rule; it never touches a player's
   account. Account actions stay with the human in charge (section 7).
+
+### Tavern games: backgammon
+
+The world's backgammon board is a real game (Damian, 2026-10-04): a player
+can sit at a tavern table and challenge an NPC patron, or another player,
+and the game is played and refereed properly.
+
+- **The rules are the project's existing engine:**
+  `apps/games/classic/Backgammon.codex`, already graded (moves against an
+  800-position oracle, the doubling cube, gammon and backgammon scoring).
+  The server keeps the authoritative game state in that engine; a move the
+  engine refuses is put back where it came from.
+- **The server rolls the dice** and announces the roll over the table; the
+  board is set up by the server at the start of each game.
+- **NPC patrons play** through the engine's move choice, with their
+  strength set by their persona (a sharp gambler, a sleepy farmer) and
+  dulled by drink; a mind decides whether to accept a challenge and what to
+  wager.
+- **Wagers move real coin** between the two purses (section 5, the
+  economy).
+- **The table's UI** is the client's game-board window, with checkers as
+  items dragged between points; setup, dice and turn prompts need sprucing
+  up within what the 1.25.32 client can show.
 
 ### Town government: mayors and lords
 
@@ -675,12 +726,8 @@ fallback is logged as a fallback every time, so a dead model never passes
 for a quiet town (L-BAILVALUE, L-UNHEARD).
 
 The model-free groundwork is `TownMind.codex`, with the API and limits in
-[TownMind.md](TownMind.md). `test-mind.ps1` grades quoted player data, real
-inventory transfers, event policy, replay, call/token admission, and logged
-fallbacks. Normal and poisoned runs pass; policy, inventory, replay and audit
-mutations fail runtime assertions (2026-10-04). The deterministic transcript
-has an independent reader pass. R2 still blocks a real provider; dialogue
-quality, generated plans and nightly summaries are not graded by the stub.
+[TownMind.md](TownMind.md), graded by `test-mind.ps1`. Dialogue quality,
+generated plans and nightly summaries wait on a real provider (R2).
 
 ### Layer 3, the keeper
 
@@ -732,6 +779,38 @@ of happiness / alarm").
   validator as every other mind (section 8): a queue item the rules or the
   NPC's inventory forbid is refused and logged.
 
+Stage N slices (val, root 2026-10-07; each visible in the client or the
+admin panel, landed one at a time). The network runs live for the three
+residents (`tnv-advance` in `cg-town-step`); what the stage row still lacks:
+
+1. Built: the admin context's `opinions` topic answers from the live network
+   (`cgs-context`: trade and work opinions, alarm, mood per resident).
+2. Count the network's queued actions passed and refused by layer 1 in
+   `TownNetworkLive` (`tnv-act`) and show the ratio on the admin page.
+3. Built with slice 6's raid retrain (NOT RUN live): a resident, worker or
+   townsperson whose mobile stands within 18 tiles of a live wild orc has its
+   safety input set to 0 (`raid-sight`, bound at install to `cg-raid-sees`). With
+   the retrained weights alarm is 0 at safety 1000 and 155 (hunger 0) to 289
+   (hunger 30) at safety 0 (blu probe 2026-10-09).
+4. Built (NOT RUN): every miner and the farmer has a network state of its own
+   (`TnvWorker` in `TownNetworkLive.workers`, bound at install by `cg-bind-minds`)
+   framed in the miner role from its own product's price, thinking every 900 s
+   from `tnv-advance` (`tnv-workers-think`); the admin context's `opinions` topic
+   answers for a worker's mobile serial (`cgs-mind`). The smith's frame carries no
+   input price, so an ingot-price rise moves the miners' trade opinion and not the
+   smith's until slice 6 adds the input-cost target.
+5. Built (NOT RUN live): every townsperson slot (128) has a network state, bound
+   at install (`tnv-bind-people` from `cg-bind-minds`) and framed from its hunger,
+   coin, bread, goods and the hour (`tnv-person-frame`); `tnv-advance` scans 16 slots
+   a call and steps each due one every 900 s (`tnv-people-think`); the admin context's
+   `opinions` topic answers for any person id. Measured 2026-10-09 at main 41421
+   (`proofs/TownNetworkFolkBench`, 128 states, 2048 rounds against 0): 696 bytes
+   per state (budget 1024), 736 multiply-accumulates per step (budget 1024), about
+   2.4 us host wall per townsperson step with its frame, 0 bytes retained.
+6. Retrained on the raid target (`TownNetworkHill.md`, 64-case corpus). Open: the
+   price target (UOAIX-145) and the 30-game-day run with the network deciding,
+   stage E and M checks green.
+
 ### Models
 
 The townsfolk network above is the decision core and needs no language
@@ -744,10 +823,12 @@ requested"):
 - **Context:** each request carries the NPC's persona, role, current
   opinions and emotional state from the network, the relevant memory, and
   the situation (who is speaking, where, about what).
-- **Canned lines:** common speech (greetings, trade talk, complaints and
-  praise by role, opinion and mood, reactions to common events) is
-  generated in batches and saved in the database, keyed by role, topic,
-  opinion and emotional state, and reused at no further cost.
+- **Canned lines:** every NPC speaks from the canned library
+  (`NpcLines.codex`, UOAIX-66), written offline by a lane and shipped in the
+  image, keyed by town, kind, role, topic, opinion and mood, with the
+  townsfolk network supplying opinion and alarm (`NpcSpeech.md`, "The canned
+  library"). Generated batches add rows under the same keys; a database
+  table holds them once the database backend exists.
 - **On the fly:** a conversation a canned line cannot answer is generated
   on request, and a good result can be saved into the canned library.
 - **The image makes no outbound call and holds no key.** Requests go to a
@@ -878,36 +959,44 @@ Each stage is its own landing and is graded before the next starts.
 
 | stage | delivers | graded by |
 |---|---|---|
-| 0 | The wire, measured: a Codex listener that records the 1.25.32 client's bytes through login; the encryption question answered | the bytes recorded under `build-output/uoaix/wire/` from the seed through the shard list, over host port 2593 forwarded to the guest; a second client run whose bytes equal the first after the seed and any key-derived bytes are masked |
-| 1 | Login and walk: account, character creation, shard list, relay, entering the world, walking Britain at correct heights | the client's own screens at each step, and the server's position for the character agreeing with the map's height at 20 sampled tiles |
-| 2 | The world: items, containers, vendors with stock, speech, basic combat and a skill subset, saves and reload | a scripted client session per feature, and a reload that restores every record (counted) |
-| 3 | Layer 1 townsfolk: homes, jobs, schedules, families, births and deaths, no model | a headless clock-advance harness (the shape of `apps/modbuilder/test-play.ps1`, which ran Valheim headless over 14 game days to count spawns) running 30 game days and counting schedule adherence, job output and population per town |
 | B | The database (`apps/uoaix/Database.md`): all shard state in Codex DB (`apps/data`), one transaction per game action, every player-to-player trade logged server side, a double-entry coin ledger; first the page store and WAL backend Codex DB lacks, over the shard disk | a trade, a purchase and a death each commit atomically and survive a kill and reboot; a crash mid-action leaves all or none of it; the coin census is a ledger query that balances; the restart proof passes on the database before the snapshot/journal codecs retire |
 | K | Skills (section 5): professions and blessed starting kits, tool tiers per trade (shovel below pickaxe), the carpentry kit consolidated with one job per tool and the other trades reviewed, sub-skills per tool and weapon kind, master trainers and rare trainers by place | a new character holds only its blessed kit, jerky and a full belly; a shovel cannot dig a big ore and a pickaxe can; the blessed tool survives death and never decays; longsword skill does not carry to a katana; a sub-skill stops at the basics until a master trains it; a rare trainer teaches only where placed |
-| C | Construction (section 5): deeds as plans, construction sites with bills of materials, NPC and player builders, Carpentry/Tinkering/Blacksmithy/Masonry, plots granted by mayors and Lord British, the site-to-multi swap in the client; needs stage E's chains and stage 2's multis | a 30-game-day run: a placed deed becomes a site, builders deliver every item on its bill (each traced to a harvestable), the finished house replaces the site and the 1.25.32 client draws it, and a plot granted from the panel is a logged administrative action |
-| S | The sea (section 5): shipwrights and ships, NPC fishing fleets landing the catch, pirate havens and raids, the royal navy under Lord British's orders; needs ships that move in the game server (stage 2) and stage M's populations and combat | a 30-game-day run: the fish stalls' stock traced to landed catches, a grown pirate haven takes cargo and shows in the economy census, a navy patrol sinks pirates and the haven shrinks, and a navy order from the panel is a logged administrative action |
+| C | Construction (section 5): deeds as plans, construction sites with bills of materials, NPC and player builders, Carpentry/Tinkering/Blacksmithy/Masonry, plots granted by mayors and Lord British, the site-to-multi swap in the client; needs stage E's chains | a 30-game-day run: a placed deed becomes a site, builders deliver every item on its bill (each traced to a harvestable), the finished house replaces the site and the 1.25.32 client draws it, and a plot granted from the panel is a logged administrative action |
+| S | The sea (section 5): shipwrights and ships, NPC fishing fleets landing the catch, pirate havens and raids, the royal navy under Lord British's orders; needs ships that move in the game server and stage M's populations | a 30-game-day run: the fish stalls' stock traced to landed catches, a grown pirate haven takes cargo and shows in the economy census, a navy patrol sinks pirates and the haven shrinks, and a navy order from the panel is a logged administrative action |
 | T | Tavern backgammon (section 5): the client's game board refereed by `Backgammon.codex`, server dice and setup, NPC patrons who accept and play by persona and drink, wagers in real coin, the board UI spruced up within the client | a scripted client session plays a full game against an NPC patron: an illegal move is put back, the server's dice and the engine agree at every turn, the result and wager settle in both purses, and a drunk patron accepts a challenge a sober one refused |
-| L | The law (section 5): witnesses and their willingness to tell, NPC memory of criminals, guards in earshot responding on foot, the three-tile capture check, submit to jail by the sentence table or fight with the three nearest guards assisting; needs stage 2's combat and pathing | scripted scenarios: an unwitnessed theft raises nothing; a witnessed one is remembered by the witness; a call with no guard in earshot gets no response; a guard walks (no teleport) to within three tiles and the arrest fires; submitting jails for the table's term; fighting draws exactly the three nearest other guards on foot |
+| L | The law (section 5): witnesses and their willingness to tell, NPC memory of criminals, guards in earshot responding on foot, the three-tile capture check, submit to jail by the sentence table or fight with the three nearest guards assisting | scripted scenarios: an unwitnessed theft raises nothing; a witnessed one is remembered by the witness; a call with no guard in earshot gets no response; a guard walks (no teleport) to within three tiles and the arrest fires; submitting jails for the table's term; fighting draws exactly the three nearest other guards on foot |
 | G | Town government (section 5): a mayor or lord per town; guards and militia, repairs, essential workplaces, the town purse and dues, bounties, disputes, reports to Lord British; needs stage E's purses and stage M's raids for its full grade | a 30-game-day run: every town's purse balances in the coin census, a raid is answered by the militia and followed by repair orders, a missing mill gets a miller, a bounty posted on an overflowing dungeon is paid to whoever clears it, and a mayor replaced from the panel is a logged administrative action |
-| M | The living wilds (section 5): monster populations with homes, breeding and territory; dungeon capacity and overflow; orc camps raiding towns; guards, militia and adventurers pushing back; needs stage 2's combat | a headless clock-advance run of 30 game days: an uncleared dungeon overflows onto the roads, a grown orc camp raids its town and the raid's losses show in the economy census, a cleared dungeon stops overflowing, and monster counts stay within each home's bounds |
+| M | The living wilds (section 5): monster populations with homes, breeding and territory; dungeon capacity and overflow; orc camps raiding towns; guards, militia and adventurers pushing back | a headless clock-advance run of 30 game days: an uncleared dungeon overflows onto the roads, a grown orc camp raids its town and the raid's losses show in the economy census, a cleared dungeon stops overflowing, and monster counts stay within each home's bounds |
 | E | The economy (section 5, "nothing spawns in a shop"): the production chains, NPC buying and consumption, skill gain by use, supply-and-demand prices, conserved coin | a headless clock-advance run of 30 game days: every item in every shop traced back to a gathered resource (a census, zero orphans), total coin equal to start plus sources minus sinks every day, each chain producing, and a starved upstream link (hunters removed) emptying the downstream shelf |
 | N | The townsfolk network (section 5): a lightweight network in Codex with shared weights and a small state per NPC, inputs from drives, role, prices, ties, memory and events, outputs a priority queue of actions and a happiness/alarm state, role-shaped opinions; trained offline on the box GPU, inference on the VM CPU | per-NPC state and step cost measured against a budget for the full population; on a scripted ingot-price rise the blacksmith's happiness falls and the miner's rises; a raid raises alarm in witnesses; every queued action passes or is refused by the layer 1 validator; a 30-game-day run with the network deciding keeps every economy and population check of stages E and M green |
 | 4 | Layer 2 minds: dialogue, morning plans, event reactions, nightly memory | conversation transcripts read by a naive judge (R-NAIVE), the adversarial corpus moving zero items, and fallbacks counted in the world-health report |
 | 5 | The keeper: decorating, population, events, stories, world-health and conduct reports | one in-game week run by the keeper, with its reports and a human review of each conduct report |
 | 6 | A second player: Damian invites one person | that player's session, and the keeper's reports about it |
-| A | The admin control panel, Lord British mode and Game Masters (sections 3 and 7): GMs dubbed and scoped from the panel, their resolve and favor powers in game, every GM action logged;  the panel over the admin port (blu), the administrator character's invulnerability, stats, skills and powers in the game server (reek, after stage 1 has characters) | an unauthenticated browser gets nothing; an authenticated one sees the support queue, action log, connections and health against a seeded world; entering Lord British mode logs the action, the character takes no damage from a scripted attack, and a game client sending the same flags without the admin session gains nothing; a GM's action outside the powers Lord British granted is refused, a favor moves treasury coin through the ledger, and a revoked GM loses every power at once |
+| A | The admin control panel, Lord British mode and Game Masters (sections 3 and 7): GMs dubbed and scoped from the panel, their resolve and favor powers in game, every GM action logged;  the panel over the admin port, the administrator character's invulnerability, stats, skills and powers in the game server | an unauthenticated browser gets nothing; an authenticated one sees the support queue, action log, connections and health against a seeded world; entering Lord British mode logs the action, the character takes no damage from a scripted attack, and a game client sending the same flags without the admin session gains nothing; a GM's action outside the powers Lord British granted is refused, a favor moves treasury coin through the ledger, and a revoked GM loses every power at once |
 | W | After D works well (Damian, 2026-10-04): our own UO client in the browser, written in Codex for the wasm and WGSL plugs (WebGPU), speaking the same protocol over a WebSocket port the image adds beside the game ports, published on cobblestoneproject.com. Not a port of EA's client binary | the browser client logs in, walks and talks on the same shard beside a 1.25.32 client, and both see each other; art per ruling R7 |
 | D | The deployable image: kernel, shard and world data on one UEFI disk image, game ports and the admin/health port only, persistence on the virtio disk | the exact image boots under QEMU/KVM with virtio network and disk devices, through the x86 virtio drivers stage D adds; a port scan of the running image finds only the game and admin ports; the admin port refuses an unauthenticated client; a kill and reboot restores the world from disk; then the same bytes boot on the chosen host (ruling R6) |
+
+**Stage D slices** (fester, 2026-10-07; each lands alone; its check is a run of the built server under QEMU, KVM where the box allows, using the existing `proofs/test-*.ps1` launchers without editing a proof, since UOAIX proofs are off and Damian's client test grades the game itself):
+
+| slice | delivers | file | check |
+|---|---|---|---|
+| D1 | Built (compiled; codex-vm falls back to IDE, probed): the composite server opens its world on a virtio disk when one is present, else IDE, and logs `DISK virtio` or `DISK ide` | `CompositeGameServer.codex`, `CompositeCompact.codex` (`UoVirtio` beside `UoIde`, `WorldBlock.codex`) | `proofs/test-world-virtio.ps1` shape with the real server: boot, commit, kill, reboot restores |
+| D2 | The server answers on a virtio NIC with a static address from the launch record (`CompositeLaunch.codex`, `cl-read`, the record the launcher writes), no DHCP | `CompositeGameServer.codex`; the probe order in `codex/os/net/NetDriver.codex` only with blu's word (blu owns `codex/os/net`) | `proofs/test-virtio-net.ps1` shape: a 1.25 login reaches the character list over the virtio NIC |
+| D3 | A provisioning step writes journal, map cache and DWD from the user's own client onto a blank virtio data disk (never into the image, R1) | `install-map-cache.ps1 -WorldDisk` on the data disk | the installed disk boots D1 and loads Britain |
+| D4 | The UEFI image and the BIOS ISO carry the real server CDX (`build-img.ps1 -PeInput`, `build-iso.ps1`) | `apps/uoaix/build-shard-image.ps1` (new) | QEMU OVMF and BIOS boots both reach `READY` on the D3 disk |
+| D5 | Only 2593 and 2594 answer; the admin port refuses an unauthenticated client | the built image | a port scan of the running image lists exactly those two; an unauthenticated panel request is refused |
+| D6 | Recovery from a commit cut mid-write | the built image on the D3 disk | kill during a commit, reboot, the world restores the last whole commit |
+| D7 | The same bytes boot on the chosen host (R6: Vultr custom ISO; region, plan and date are Damian's) | none | a Vultr boot of the D4 ISO serves a 1.25 client |
 
 ## 10. Rulings for Damian
 
 | id | question |
 |---|---|
-| R1 | Answered in part (Damian, 2026-10-04): **we ship code, never EA's files.** A transform tool, our own code, runs on a copy of the client files its user already obtained (the 1.25.32 client the uo1998 shard distributes) and produces the shard's versions (the tree-free statics, the server's map data). Neither the depot, the image we publish, nor the site carries EA data. Research (2026-10-04, not legal advice): EA's terms license the client only for EA's own service and forbid emulators, and EA has never sued a free shard; the community norm that has kept shards out of trouble is not distributing the client files and not charging for play. No evidence was found that EA released any map revision publicly. The uo1998 shard serves its full client as its own download (`/download/uo1998-client.zip`) after a free account sign-up, runs its server from the UO demo binary on the T2A disc, and states no permission from EA (its pages carry "(c) Origin Systems"). **Answered (Damian, 2026-10-04): "we can work with what the end user brings point them to the one we use behind the scenes and let them take the licensing risk. we are just tools to transorm it into a byte identical copy of ours. that is fair use"** (Damian's position, not a verified legal finding). Users bring their own client; we point them to the client we use (the uo1998 download) and they take its licensing risk. The transform tool turns their copy into files byte-identical to ours, and proves it: we publish only the SHA-256 of each reference file, never the files, and the tool refuses to finish unless every output matches. The original question follows. The server needs EA's map, statics, tiledata and multi files. On the box it reads them in place from a local client install; on a rented VM there is no install, so the deployable image must carry a copy of those files to a server Damian rents (private, never published). Felling trees also needs a shard client install whose statics file has the trees removed (section 5, the economy), which players would need too. Accept both, or require Codex-built map data (a far larger stage 1) |
-| R2 | The language model provider for NPC speech (canned and on-the-fly) and for the keeper, the model, the relay's host, and the monthly budget; or local Qwen3 as the relay model |
-| R3 | Answered in part (Damian, 2026-10-04): no instant guards; the law runs on witnesses, guards on foot, a three-tile capture and jail or combat; notoriety stays the classic 1.25.32 scale, moved by every crime, witnessed or not; PvP is open, with unarmed and wrestling blows subdual-only inside a consensual duel (section 5, the law). Answered |
+| R1 | Answered in part (Damian, 2026-10-04): **we ship code, never EA's files.** A transform tool, our own code, runs on a copy of the client files its user already obtained (the 1.25.32 client the uo1998 shard distributes) and produces the shard's versions (the tree-free statics, the server's map data). Neither the depot, the image we publish, nor the site carries EA data. **Answered (Damian, 2026-10-04): "we can work with what the end user brings point them to the one we use behind the scenes and let them take the licensing risk. we are just tools to transorm it into a byte identical copy of ours. that is fair use"** (Damian's position, not a verified legal finding). Users bring their own client; we point them to the client we use (the uo1998 download) and they take its licensing risk. The transform tool turns their copy into files byte-identical to ours, and proves it: we publish only the SHA-256 of each reference file, never the files, and the tool refuses to finish unless every output matches. |
+| R2 | Answered in part (Damian, 2026-10-06: "lets work with the canned approach first. we can revisit live llm ai service calls later."): NPC speech ships from the canned library alone (UOAIX-66). Root's reading: the fleet's lanes write the library offline, so the shard and the build need no provider key and make no billed call. Still open, for later: the provider and model for on-the-fly lines and for the keeper, the relay's host, and the monthly budget; or local Qwen3 as the relay model |
+| R3 | Answered in part (Damian, 2026-10-04): no instant guards; the law runs on witnesses, guards on foot, a three-tile capture and jail or combat; notoriety stays the classic 1.25.32 scale, moved by every crime, witnessed or not; PvP is open, with unarmed and wrestling blows subdual-only inside a consensual duel (section 5, the law) |
 | R4 | Answered (Damian, 2026-10-04): conduct reports go to the support queue on the admin-port panel, read by Lord British and the GMs, who act on them within their powers (section 3). Which action classes ever become automatic is decided later, class by class |
-| R6 | The VM host, its region and size, and when the shard goes on the public internet. Research (2026-10-04): DigitalOcean's cheapest droplets are $4 a month (512 MiB) and $6 (1 GiB), billed per second; its custom images must boot by BIOS (no UEFI), get networking by DHCP, and are documented as requiring a Unix-like OS with cloud-init, sshd and ext3/4, which our image is not. Vultr attaches a custom ISO to an instance (any OS, the ISO served from a public URL, 10 GB at most), from a few dollars a month. Either way the image needs a BIOS boot path beside UEFI (stage D). **Host chosen (Damian, 2026-10-04): Vultr, booting the image from a custom ISO.** Still open: region, plan size (working assumption: the smallest plan with 1 GiB) and when the shard goes public; the Vultr account is Damian's |
-| R8 | Answered in part (Damian, 2026-10-04): the royal treasury taxes gold changing hands and funds royal businesses until the economy runs on its own, and new coin comes from gold mining: gold ore smelted to ingots and struck into coin at the royal mint (section 5, the economy). The treasury starts with no gold at all: Lord British mines the first gold himself (Damian, 2026-10-04: "The treasure has no starting purse. Lord British has to go gold mining"); monsters carry no new gold, only gold they acquired, as a dragon's hoard. Still open: the mint's terms (who sells it gold, at what price) and other sinks (repairs, guild fees) |
+| R6 | The VM host, its region and size, and when the shard goes on the public internet. Vultr attaches a custom ISO to an instance (any OS, served from a public URL, 10 GB at most), so the image needs a BIOS boot path beside UEFI (stage D). **Host chosen (Damian, 2026-10-04): Vultr, booting the image from a custom ISO.** Still open: region, plan size (working assumption: the smallest plan with 1 GiB) and when the shard goes public; the Vultr account is Damian's |
+| R8 | Answered in part (Damian, 2026-10-04): the royal treasury taxes gold changing hands and funds royal businesses until the economy runs on its own, and new coin comes from gold mining: gold ore smelted to ingots and struck into coin at the royal mint (section 5, the economy). The treasury starts with no gold at all: Lord British mines the first gold himself (Damian, 2026-10-04: "The treasure has no starting purse. Lord British has to go gold mining"); monsters carry no new gold, only gold they acquired, as a dragon's hoard. The Crown takes its share of gold at the moment the gold is mined, by magic (Damian, 2026-10-06: "the Crown taxes gold at the moment of its mining, magically."). The mint buys nothing: an owner pays to have the owner's own gold struck into coin. The rates (Damian, 2026-10-06: "mining should have a 10% tax right off the top. another 10% to coin it."): 10% of mined gold to the Crown at the harvest, and 10% of the gold brought to the mint as the minting fee. Both rates apply to all 3 coin metals, gold, silver and copper (Damian, 2026-10-06: "10% for all money refining is fine"); other ore is untaxed. Every fee a player pays (a guild fee, for one) goes to the Crown's treasury (Damian, 2026-10-06: "fees that take coin out should go to the crown"): a fee moves coin and destroys none. Repairs are not a fee (Damian, 2026-10-06: "whoa, not repairs"; root's reading: a repair pays whoever does the repair). Answered |
 | R7 | Answered (Damian, 2026-10-04): the browser client (stage W) uses art of our own, inspired by the game: terrain tiles, buildings and statics, items, creature and character animations, and the window art, made with the project's own image pipeline (`codex_image` and the diffusion work in `apps/diffusion`), never copied or traced from EA's files. The 1998 client keeps drawing EA's art from the player's own install |
-| R5 | Answered (Damian, 2026-10-04): fester, reek and val build it. reek: stages 0 and 1, the wire and login-and-walk. fester: the map-file readers (terrain height, statics, tiledata, multis) that stage 1 walks on, then the stage 2 world records and persistence. val: stage 3, the layer 1 townsfolk and the clock-advance harness, which need no wire |
+| R9 | Answered (Damian, 2026-10-06): the GPL-2 ports (UOX3, ServUO) and the Apache ports (Sphere, Source-X) ship on the public mirror with the licence files their terms require (`Sphere-LICENSE.txt`, `ports/*-LICENSE.txt`), and every ported chapter keeps its attribution header. His words: "we can ship their licensing docs as they require by their licensing terms. It should be noted, however, that sphere stole what they have from UOX, which I helped build originally. At the time we built it (30 years ago), it was just standard to use GPL without thinking." |

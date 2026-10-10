@@ -1,0 +1,33 @@
+Chapter: BvtHinge
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter Construction
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-122 slice 1: catalog item 148 is the hinge (ServUO Hinge, art 0x1055), made by Tinkering at the tinker's
+ station (9) from two iron ingots (31), filed under Parts; the tinker sells it, and both house designs' bills carry
+ two hinges on line 3.
+  bhg-recipe : EgCatalog, Integer -> Integer
+  bhg-recipe (c) (i) = if i >= list-length c.recipes then -1
+    else let r = list-at c.recipes i
+    in if r.item == 148 then r.one * 1000 + r.one-count * 100 + r.station * 10 + r.two-count else bhg-recipe c (i + 1)
+  bhg-sold : List BbGoods, Integer -> Boolean
+  bhg-sold (goods) (i) = if i >= list-length goods then False else (list-at goods i).item == 148 | bhg-sold goods (i + 1)
+  bhg-menu : List Integer, EpWorld, Integer -> Boolean
+  bhg-menu (ids) (w) (i) = if i >= list-length ids then False else (list-at w.catalog.recipes (list-at ids i - 1)).item == 148 | bhg-menu ids w (i + 1)
+  bvt-hinge : Integer -> [Console] Integer
+  bvt-hinge (unused) = let c = bb-catalog 0
+    in let named = list-length c.items >= 151 & (list-at c.items 147).name == "hinge"
+    in let made = bhg-recipe c 0 == 31290
+    in let menu = when bb-economy 0 is Err (_) -> False is Ok (x) -> bhg-menu (gcr-recipes x.world 4) x.world 0
+    in let billed = cn-bill-item 1 3 == 148 & cn-bill-item 2 3 == 148 & cn-bill-count 1 3 == 2 & cn-bill-count 2 3 == 2 & cn-bill-name 1 3 == "hinges" & cn-lines == 4
+    in let kept = cn-bill-item 1 2 == 31 & cn-bill-item 2 2 == 13 & cn-bill-count 1 0 == 250 & cn-bill-name 2 2 == "wheat"
+    in act
+      r1 <- bvt-check "item 148 is the hinge, made by Tinkering at the tinker's station from two iron ingots, drawn 0x1055, under Parts, practising Tinkering" (named & made & gcr-graphic 148 == #1055 & crg-category 4 148 == 2 & ep-classic 8 9 148 == 37)
+      r2 <- bvt-check "the tinker's menu offers the hinge" menu
+      r4 <- bvt-check "the tinker sells hinges" (bhg-sold (bb-goods 6) 0)
+      r3 <- bvt-check "both house bills carry two hinges on a fourth line; the first three lines are unchanged" (billed & kept)
+      r1 + r2 + r3 + r4
+    end

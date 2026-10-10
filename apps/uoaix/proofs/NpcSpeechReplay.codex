@@ -71,6 +71,13 @@ Chapter: NpcSpeechReplay
         in let after = ns-pulse loaded game input map 2593 2
         in act
           nsr-check "vendor approach greeting cooldown survives reconnect and NSC1" (move & nsr-note first "bank/vendor approach greeting" & not (nsr-note repeated "bank/vendor approach greeting") & is-ok saved & is-ok restored & not (nsr-note after "bank/vendor approach greeting"))
+          let settle = ns-pulse s game input map 2593 3
+          in let base = s.scans
+          in let still = ns-pulse s game input map 2593 4
+          in let unmoved = s.scans == base
+          in let away = nsr-move s input.session.serial 1462 1600
+          in let far = ns-pulse s game input map 2593 5
+          in nsr-check "a pulse with the viewer unmoved does no greeting scan, and a move does exactly one" (unmoved & away & s.scans == base + 1)
           let forged = poke-qword buf 104 0
           in let hashed = poke-qword buf 48 (ws-hash buf nsc-bytes 0 2166136261)
           in nsr-check "NSC1 rejects rebound NPC identities" (not (is-ok (nsc-decode loaded buf nsc-bytes)))
@@ -86,12 +93,68 @@ Chapter: NpcSpeechReplay
       is Err (e) -> print-line-uni ("FAIL person " & e)
       is Ok (npc) -> let moved = nsr-move s input.session.serial (npc.x - 4) npc.y
         in let before = s.town.mind.audit-count
-        in let lots = s.shops.vendors.lot-count
+        in let lots = (ep-lot-count s.shops.vendors.currency.world.goods)
         in let reply = ns-handler-at s game input map 2593 (nsr-packet "NELL, how fares the tailor?" 0) 110
         in let answered = s.town.mind.audit-count == before + 1
         in let far = nsr-move s input.session.serial (npc.x - 5) npc.y
         in let refused = ns-handler-at s game input map 2593 (nsr-packet "Nell, buy" 0) 111
-        in nsr-check "named townsfolk reply logs fallback without moving items" (moved & answered & far & nsr-note reply "townsfolk named fallback" & nsr-note refused "speech out of range" & s.town.mind.audit-count == before + 1 & s.shops.vendors.lot-count == lots & euv-valid s.shops.vendors.currency)
+        in act
+          nsr-check "named townsfolk reply logs a canned line without moving items" (moved & answered & far & nsr-note reply "townsfolk canned line" & nsr-note refused "speech out of range" & s.town.mind.audit-count == before + 1 & (ep-lot-count s.shops.vendors.currency.world.goods) == lots & euv-valid s.shops.vendors.currency)
+          let near = nsr-move s input.session.serial (npc.x - 4) npc.y
+          in let glad = list-set-at s.town.feel 0 800
+          in let up = ns-handler-at s game input map 2593 (nsr-packet "Nell, what do bread prices look like?" 0) 112
+          in let sour = list-set-at s.town.feel 0 -800
+          in let down = ns-handler-at s game input map 2593 (nsr-packet "Nell, what do bread prices look like?" 0) 113
+          in let reset = list-set-at s.town.feel 0 0
+          in nsr-check "the network's trade outlook picks the baker's glad or sour trade line" (near & nsr-said up npc "Nell" "Bread sells before it cools. A good season for the ovens." & nsr-said down npc "Nell" "Flour costs dear and bread sells cheap. A baker cannot live on crusts.")
+          let alarmed = list-set-at s.town.feel 2 800
+          in let news = tl-line s.town 0 3 0
+          in let calm = list-set-at s.town.feel 2 0
+          in nsr-check "network alarm reaches the town's news line" (news == "The guards doubled the watch by the bank. Something has them nervous.")
+        end
+ UOAIX-68: a NoShoot wall (tiledata 0x2000) between a player and Nell stops her hearing; the banker hears through one.
+  nsr-sight : NpcSpeech, GameInput, WalkMap -> [Console] Nothing
+  nsr-sight (s) (input) (map) = let game = s.shops.vendors.game
+    in let person = tf-person s.town.people 1
+    in when world-get game.world person.world-serial
+      is Err (e) -> print-line-uni ("FAIL sight person " & e)
+      is Ok (npc) -> let moved = nsr-move s input.session.serial (npc.x - 3) npc.y
+        in let open = ns-handler-at s game input map 2593 (nsr-packet "Nell, how fares the tailor?" 0) 120
+        in let walled = walk-add-solid map (npc.x - 2) npc.y 0 20 #2000
+        in let shut = ns-handler-at s game input map 2593 (nsr-packet "Nell, how fares the tailor?" 0) 121
+        in let teller = nsr-move s input.session.serial 1460 1664
+        in let wall = walk-add-solid map 1461 1664 0 20 #2000
+        in let banker = ns-handler-at s game input map 2593 (nsr-packet "Banker, hello" 0) 122
+        in act
+          nsr-check "Nell answers across three clear tiles and not through a wall; the banker hears through one" (moved & is-ok walled & teller & is-ok wall
+            & nsr-note open "townsfolk canned line" & nsr-note shut "speech out of range" & nsr-note banker "NPC greeting")
+        end
+  nsr-same : List Integer, List Integer, Integer -> Boolean
+  nsr-same (a) (b) (i) = if list-length a /= list-length b then False else if i == list-length a then True
+    else if list-at a i /= list-at b i then False else nsr-same a b (i + 1)
+  nsr-said : Result (Maybe GameReply) Text, WorldObject, Text, Text -> Boolean
+  nsr-said (result) (npc) (name) (line) = when result
+    is Err (_) -> False
+    is Ok (None) -> False
+    is Ok (Just (reply)) -> list-length reply.packets == 2 & reply.note == "townsfolk canned line" & nsr-same (list-at reply.packets 1) (gvp-speech npc name line) 0
+  nsr-library : NpcSpeech -> [Console] Nothing
+  nsr-library (s) = let lib = s.town.lines
+    in let missed = lib.misses
+    in act
+      nsr-check "library rows are valid and cover every kind and topic" (nl-valid lib)
+      nsr-check "a vendor greeting without both command phrases or a library missing a kind is refused" (not (nl-valid (NlLibrary { lines = [nl 1 "" "" 0 9 9 "Welcome."] & lib.lines, hits = 0, misses = 0 })) & not (nl-valid (NlLibrary { lines = nl-bank 0, hits = 0, misses = 0 })))
+      nsr-check "the most specific key wins" (nl-pick lib 3 "Trinsic" "smith" 1 -1 9 0 == "Ingots cost too much. The miners grow fat while my forge goes cold.")
+      nsr-check "town culture selects the town's line" (nl-pick lib 3 "Vesper" "" 0 9 0 5 == "Another grey Vesper morning. What do you want?")
+      nsr-check "alarm outranks mood and mood falls in thirds" (nl-mood 90 700 == 3 & nl-mood 90 0 == 2 & nl-mood 50 0 == 1 & nl-mood 20 599 == 0 & nl-opinion 250 == 1 & nl-opinion -249 == 0)
+      let a = nl-pick lib 3 "Britain" "baker" 4 0 2 0
+      in let b = nl-pick lib 3 "Britain" "baker" 4 0 2 1
+      in let c = nl-pick lib 3 "Britain" "baker" 4 0 2 2
+      in let d = nl-pick lib 3 "Britain" "baker" 4 0 2 3
+      in nsr-check "equally specific lines rotate with variety" (a /= b & b /= c & a /= c & d == a)
+      let unknown = nl-pick lib 4 "Britain" "" 0 9 9 0
+      in nsr-check "an unknown kind misses and is counted" (text-length unknown == 0 & lib.misses == missed + 1)
+      nsr-check "speech topics follow trade, work, news, greeting, chat" (ns-topic "Hail, any news?" == 3 & ns-topic "What do you charge for bread?" == 2 & ns-topic "bread prices" == 1 & ns-topic "Hello there" == 0 & ns-topic "How fares the tailor?" == 4)
+    end
   nsr-player : NpcSpeech, WalkMap -> [Console] Nothing
   nsr-player (s) (map) = let v = s.shops.vendors
     in when world-create v.game.world (gs-mobile 0 1461 1672 0 400 1002)
@@ -112,10 +175,13 @@ Chapter: NpcSpeechReplay
             nsr-trades s input map
             nsr-greetings s input map
             nsr-person s input map
+            nsr-sight s input map
+            nsr-library s
           end
   nsr-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
   nsr-run (game) (map) (currency) = let v = gv-new game currency
     in let items = gsi-new game.world
+    in let growing = bb-fixture-grow v items
     in when bb-populate v items map
       is Err (e) -> print-line-uni ("FAIL shops " & e)
       is Ok (shops) -> when tl-populate v items map None 0 3
@@ -129,11 +195,11 @@ Chapter: NpcSpeechReplay
                 is Ok (speech) -> nsr-player speech map
   opening : [Console] Nothing = when bb-economy 0
     is Err (e) -> print-line-uni ("FAIL economy " & e)
-    is Ok (currency) -> when world-new 128
+    is Ok (currency) -> when world-new 1024
       is Err (e) -> print-line-uni ("FAIL world " & e)
-      is Ok (world) -> let chars = alloc-bytes 800
-        in let cleared = gs-zero chars 0
-        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0 }
-        in when walk-map-new 1408 1536 128 192
+      is Ok (world) -> let shard-accounts = ga-new ga-dev
+        in let chars = ga-working shard-accounts
+        in let game = GameShard { world = world, characters = chars, accounts = shard-accounts, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+        in when walk-map-new 1408 1536 128 224
           is Err (e) -> print-line-uni ("FAIL map " & e)
           is Ok (map) -> let filled = nsr-fill map 0 in if filled then nsr-run game map currency else print-line-uni "FAIL terrain"

@@ -1,0 +1,153 @@
+Chapter: CompositeRemoval
+  cites Uoaix chapter CompositeStore
+
+  crm-line : GameInput, Text -> List Integer
+  crm-line (input) (text) = sip-message input.session.serial #FFFF 6 text
+  crm-say : GameInput, Text, Text -> GameReply
+  crm-say (input) (note) (text) = gs-reply [crm-line input text] note
+  crm-player : GameShard, Integer -> Boolean
+  crm-player (game) (serial) = chs-record game.characters game.accounts serial /= 0
+  crm-speaker : NpcSpeech, Integer, Integer -> Boolean
+  crm-speaker (s) (serial) (i) = if i >= s.count then False else if (list-at s.rows i).serial == serial then True else crm-speaker s serial (i + 1)
+  crm-person : TfWorld, Integer, Integer -> Boolean
+  crm-person (w) (serial) (i) = if i >= w.used then False else if (list-at w.people i).world-serial == serial then True else crm-person w serial (i + 1)
+  crm-miner : List CgGatherer, Integer, Integer -> Boolean
+  crm-miner (xs) (serial) (i) = if i >= list-length xs then False else if (list-at xs i).serial == serial then True else crm-miner xs serial (i + 1)
+  crm-resident-at : TownLive, Integer, Integer -> Integer
+  crm-resident-at (t) (serial) (i) = if i == t.count then -1
+    else let p = tf-person t.people (list-at t.residents i).person
+    in if p.alive == 1 & p.world-serial == serial then i else crm-resident-at t serial (i + 1)
+  crm-unclothe : EpWorld, TlResident, Integer -> Integer
+  crm-unclothe (w) (r) (i) = if i == 3 then 0
+    else let c = list-at r.clothes i
+    in let used = if c.serial == 0 then 0 else ep-consume w r.actor 46 1
+    in let a = __record-set c "serial" 0
+    in let b = __record-set c "quality" 0
+    in let d = __record-set c "wear" 0
+    in let e = __record-set c "basis" 0 in crm-unclothe w r (i + 1)
+  crm-retire : TownLive, Integer -> Integer
+  crm-retire (t) (i) = let r = list-at t.residents i
+    in let dropped = cgg-drop-lots t.vendors r.actor 0
+    in let unowned = cgg-unregister t.vendors r.actor 0
+    in let unclothed = crm-unclothe t.vendors.currency.world r 0
+    in tf-death t.people (tf-person t.people r.person)
+  crm-conceal : CompositeGame, Integer -> Integer
+  crm-conceal (s) (serial) = let slot = world-slot s.items.world serial
+    in let dropped = gmb-drop-banker s.banks serial 0
+    in if slot < 0 then 0 else poke-byte (sa-at s.active.concealed slot) 0 3
+  crm-reapply : CompositeGame, Integer -> Integer
+  crm-reapply (s) (i) = if i >= peek-qword s.vendor.gone 0 then 0
+    else let hidden = crm-conceal s (peek-qword s.vendor.gone (8 + i * 8)) in crm-reapply s (i + 1)
+  crm-dismissable : CompositeGame, Integer -> Boolean
+  crm-dismissable (s) (serial) = gv-vendor s.vendor serial 0 >= 0 | gmb-is-banker s.banks serial 0
+  crm-gate : List GmgGate, Integer, Integer -> Boolean
+  crm-gate (xs) (serial) (i) = if i >= list-length xs then False else if (list-at xs i).serial == serial then True else crm-gate xs serial (i + 1)
+  crm-town : CompositeGame, Integer -> Boolean
+  crm-town (s) (serial) = if gv-vendor s.vendor serial 0 >= 0 | gv-owner s.vendor serial 0 >= 0 | gmb-is-banker s.banks serial 0 then True
+    else if s.smith.serial == serial | s.baker.serial == serial | s.tailor.serial == serial | s.tinker.serial == serial | s.carpenter.serial == serial | s.glassblower.serial == serial | s.potter.serial == serial | s.bowyer.serial == serial | s.tanner.serial == serial | s.leatherworker.serial == serial | s.cobbler.serial == serial then True
+    else if crm-miner s.miners serial 0 then True
+    else if (when s.gatherer is None -> False is Just (g) -> g.serial == serial) then True
+    else if (when s.farmer is None -> False is Just (g) -> g.serial == serial) then True
+    else if (when s.fighter is None -> False is Just (f) -> f.serial == serial) | (when s.hunter is None -> False is Just (h) -> h.serial == serial) then True
+    else if (when s.british is None -> False is Just (b) -> b.serial == serial) then True
+    else if (when s.lineup is None -> False is Just (l) -> l.resident == serial | l.banker == serial) then True
+    else if (when s.speech is None -> False is Just (p) -> crm-speaker p serial 0) then True
+    else when s.town is None -> False is Just (t) -> crm-person t.people serial 0
+  crm-top : WorldTable, Integer, Integer -> Integer
+  crm-top (world) (serial) (left) = let slot = world-slot world serial
+    in if slot < 0 | left == 0 then serial
+    else let container = peek-qword (wi-object world.buffer slot) 56
+    in if container == 0 then serial else crm-top world container (left - 1)
+  crm-item-refusal : CompositeGame, GameShard, WorldObject -> Text
+  crm-item-refusal (s) (game) (item) = let top = crm-top game.world item.serial 64
+    in let holder = if top == item.serial then 0 else top
+    in if (when s.gates is None -> False is Just (g) -> crm-gate g.gates item.serial 0) then "A moongate cannot be removed."
+    else if item.serial == s.resurrection.shrine | item.serial == s.resurrection.other then "A shrine cannot be removed."
+    else if holder /= 0 & item.container == holder & crm-player game holder & (item.graphic == #0E75 | item.graphic == #09B2) then "A player's backpack or bank box cannot be removed."
+    else if holder /= 0 & crm-town s holder & (gv-lot s.vendor item.serial 0 < 0 | world-first-child game.world item.serial /= 0) then "A townsperson's goods cannot be removed yet."
+    else ""
+  crm-delete : GvWorld, WorldTable, Integer, Integer -> Result Integer Text
+  crm-delete (v) (world) (serial) (depth) = if depth == 0 then Err "remove depth"
+    else let child = world-first-child world serial
+    in if child /= 0 then when crm-delete v world child (depth - 1)
+      is Err (e) -> Err e
+      is Ok (n) -> when crm-delete v world serial depth
+        is Err (e) -> Err e
+        is Ok (m) -> Ok (n + m)
+    else let at = gv-lot v serial 0
+    in let retired = if at < 0 then 0 else ep-forget-lot v.currency.world at
+    in when world-delete world serial
+      is Err (e) -> Err e
+      is Ok (_) -> Ok 1
+  crm-done : CompositeOwner, GameInput, WorldObject, Integer, Text -> [Console, Device.Block] Result GameReply Text
+  crm-done (owner) (input) (o) (n) (what) = act
+    slg-line owner.state.checkpoint.game.log slg-admin slg-info ("REMOVE " & what & " serial=" & show o.serial & " graphic=" & show o.graphic
+      & " x=" & show o.x & " y=" & show o.y & " z=" & show o.z & " container=" & show o.container & " objects=" & show n)
+    committed <- cs-commit owner False
+    when committed
+      is Err (e) -> Err e
+      is Ok (_) -> Ok (gs-reply [sip-remove o.serial, crm-line input (if n == 0 then "Removed from the world." else "Removed " & show n & (if n == 1 then " object." else " objects."))] "british:remove")
+  end
+  crm-dismiss : CompositeOwner, GameInput, WorldObject -> [Console, Device.Block] Result GameReply Text
+  crm-dismiss (owner) (input) (mobile) = let s = owner.state
+    in if gv-gone s.vendor mobile.serial then act Ok (crm-say input "british:refused" "Already removed.") end
+    else if gv-gone-add s.vendor mobile.serial < 0 then act Ok (crm-say input "british:refused" "No more townspeople can be removed.") end
+    else let hidden = crm-conceal s mobile.serial
+    in let told = cb-notice s.combat mobile input.session.serial 0 0 [cbp-remove mobile.serial] 0
+    in let touched = world-touch s.checkpoint.game.world
+    in crm-done owner input mobile 0 (if gv-vendor s.vendor mobile.serial 0 >= 0 then "vendor" else "banker")
+  crm-mobile : CompositeOwner, GameShard, GameInput, WorldObject -> [Console, Device.Block] Result GameReply Text
+  crm-mobile (owner) (game) (input) (mobile) = let s = owner.state
+    in if crm-player game mobile.serial then act Ok (crm-say input "british:refused" "A player character cannot be removed.") end
+    else if mobile.serial == input.session.serial | mobile.serial == cg-british-serial s then act Ok (crm-say input "british:refused" "Lord British cannot be removed.") end
+    else let resident = when s.town is None -> -1 is Just (t) -> crm-resident-at t mobile.serial 0
+    in if resident < 0 & crm-dismissable s mobile.serial then crm-dismiss owner input mobile
+    else if resident < 0 & crm-town s mobile.serial then act Ok (crm-say input "british:refused" "cannot remove a townsperson yet") end
+    else let retired = if resident < 0 then 0 else when s.town is None -> 0 is Just (t) -> crm-retire t resident
+    in let slot = world-slot game.world mobile.serial
+    in let actor = list-at s.combat.actors slot
+    in let stopped = if actor.serial == mobile.serial then cb-stop s.combat actor else 0
+    in let untargeted = cb-clear-target s.combat mobile.serial 0
+    in let unspelled = when s.magic is None -> 0 is Just (m) -> let a = list-at m.actors slot in if a.serial == mobile.serial then mgs-untrack m a else 0
+    in when crm-delete s.vendor game.world mobile.serial 64
+      is Err (e) -> act Ok (crm-say input "british:refused" ("Cannot remove: " & e)) end
+      is Ok (n) -> let told = cb-notice s.combat mobile input.session.serial 0 0 [cbp-remove mobile.serial] 0
+        in crm-done owner input mobile n (if resident < 0 then "npc" else "resident")
+  crm-item : CompositeOwner, GameShard, GameInput, WorldObject -> [Console, Device.Block] Result GameReply Text
+  crm-item (owner) (game) (input) (item) = let refusal = crm-item-refusal owner.state game item
+    in if refusal /= "" then act Ok (crm-say input "british:refused" refusal) end
+    else when crm-delete owner.state.vendor game.world item.serial 64
+      is Err (e) -> act Ok (crm-say input "british:refused" ("Cannot remove: " & e)) end
+      is Ok (n) -> let touched = world-item-touch game.world in crm-done owner input item n "item"
+  crm-remove : CompositeOwner, GameShard, GameInput, Integer -> [Console, Device.Block] Result GameReply Text
+  crm-remove (owner) (game) (input) (serial) = when world-get game.world serial
+    is Err (_) -> act Ok (crm-say input "british:refused" "Nothing there to remove.") end
+    is Ok (o) -> if o.kind == 1 then crm-mobile owner game input o else crm-item owner game input o
+  crm-killed : CompositeOwner, GameShard, GameInput, WorldObject, List (List Integer) -> [Console, Device.Block] Result GameReply Text
+  crm-killed (owner) (game) (input) (m) (packets) = when world-get game.world m.serial
+    is Ok (after) -> if after.health > 0 then act Ok (crm-say input "british:refused" "That cannot be killed.") end
+      else act Ok (gs-reply (packets & [crm-line input "Killed."]) "british:kill") end
+    is Err (_) -> let opened = gr-corpse-packets owner.state.items packets 0 in act
+      slg-line owner.state.checkpoint.game.log slg-admin slg-info ("KILL serial=" & show m.serial & " graphic=" & show m.graphic
+        & " x=" & show m.x & " y=" & show m.y & " z=" & show m.z)
+      committed <- cs-commit owner False
+      when committed
+        is Err (e) -> Err e
+        is Ok (_) -> Ok (gs-reply (packets & [crm-line input "Killed."]) "british:kill")
+    end
+  crm-kill : CompositeOwner, GameShard, GameInput, Integer -> [Console, Device.Block] Result GameReply Text
+  crm-kill (owner) (game) (input) (serial) = let s = owner.state
+    in when world-get game.world serial
+      is Err (_) -> act Ok (crm-say input "british:refused" "Nothing there to kill.") end
+      is Ok (m) -> if m.kind /= 1 then act Ok (crm-say input "british:refused" "[kill targets a creature.") end
+        else if crm-player game serial then act Ok (crm-say input "british:refused" "A player character cannot be killed.") end
+        else if serial == input.session.serial | serial == cg-british-serial s then act Ok (crm-say input "british:refused" "Lord British cannot be killed.") end
+        else if crm-town s serial then act Ok (crm-say input "british:refused" "A townsperson cannot be killed.") end
+        else if m.health == 0 then act Ok (crm-say input "british:refused" "That is already dead.") end
+        else when s.magic
+          is None -> act Ok (crm-say input "british:refused" "Magery is not bound.") end
+          is Just (magic) -> when mge-harm magic game input input.session.serial serial m.health cb-cause-spell
+            is Err (e) -> act Ok (crm-say input "british:refused" ("Cannot kill: " & e)) end
+            is Ok (packets) -> crm-killed owner game input m packets
+
+Page 1

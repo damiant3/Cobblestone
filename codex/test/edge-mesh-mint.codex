@@ -6,6 +6,8 @@ Chapter: EdgeMeshMintTest
   cites Mesh chapter EdgeMeshMint
   cites CodexMagic chapter ChainCore
   cites CodexMagic chapter TransactionValidator
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
 
  EdgeMeshGameServers phase 4, stage 4. Every refusal arm asserts the BALANCE as
  well as the answer, because a guard that credits and then rolls back on a
@@ -25,14 +27,42 @@ Section: Fixtures
   prize : Integer -> MatchReward
   prize (dummy) = compute-reward 1600 1500 True
 
+  platform-seed : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+  other-seed : List Integer = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (list-push acc 0)
+
+  registered : ChainState, Integer, List Integer -> ChainState
+  registered (c) (id) (key) = when register-account-key c id key
+    is Just (c2) -> c2
+    is None -> c
+
+  ready : Integer -> ChainState
+  ready (dummy) = registered (registered (registered (chain-new 0) platform (ed25519-public-key platform-seed)) 99 (ed25519-public-key other-seed)) 55 (zeros 32 [])
+
   good-tx : Integer -> ChainTx
-  good-tx (dummy) = mesh-reward-tx platform 7 65 1 100 0
+  good-tx (dummy) = mesh-reward-tx platform 7 65 1 100 platform-seed
+
+  verdict : TxValidation -> Text
+  verdict (v) = if v.valid then "accepted" else "refused: " & v.reason
+
+  mined : ChainState -> ChainState
+  mined (c) = produce-block ((submit-validated c (good-tx 0) platform).chain) 200 0 0
+
+  replay-pending : ChainState -> Text
+  replay-pending (c) = verdict (validate-tx ((submit-validated c (good-tx 0) platform).chain) (good-tx 0) platform)
+
+  pinned : ChainState -> Text
+  pinned (c) = when register-account-key c platform (ed25519-public-key other-seed)
+    is Just (c2) -> "replaced"
+    is None -> "refused"
 
 Section: Entry
 
   opening : [Console] Nothing
   opening = act
-    let chain = chain-new 0
+    let chain = ready 0
     in act
       act
         let o = guarded-settle chain platform (two-planes 0) 1 "codexmagic" "chess" (prize 0) (good-tx 0)
@@ -40,17 +70,17 @@ Section: Entry
       end
 
       act
-        let o = guarded-settle chain platform (two-planes 0) 2 "codexmagic" "chess" (prize 0) (mesh-reward-tx platform 7 20000 1 100 0)
+        let o = guarded-settle chain platform (two-planes 0) 2 "codexmagic" "chess" (prize 0) (mesh-reward-tx platform 7 20000 1 100 platform-seed)
         in print-line-uni ("a reward above the bound: " & mint-label o & ", codexmagic " & show (ledger-balance (mint-ledger o) "codexmagic"))
       end
 
       act
-        let o = guarded-settle chain platform (two-planes 0) 3 "codexmagic" "chess" (prize 0) (mesh-reward-tx 99 7 65 1 100 0)
+        let o = guarded-settle chain platform (two-planes 0) 3 "codexmagic" "chess" (prize 0) (mesh-reward-tx 99 7 65 1 100 other-seed)
         in print-line-uni ("a reward from another key: " & mint-label o & ", codexmagic " & show (ledger-balance (mint-ledger o) "codexmagic"))
       end
 
       act
-        let o = guarded-settle chain platform (two-planes 0) 4 "codexmagic" "chess" (prize 0) (mesh-reward-tx platform 7 65 1 100 7)
+        let o = guarded-settle chain platform (two-planes 0) 4 "codexmagic" "chess" (prize 0) (mesh-reward-tx platform 7 65 1 100 other-seed)
         in print-line-uni ("a badly signed reward: " & mint-label o & ", codexmagic " & show (ledger-balance (mint-ledger o) "codexmagic"))
       end
 
@@ -64,5 +94,25 @@ Section: Entry
         in let again = guarded-settle chain platform (mint-ledger first) 6 "codexmagic" "chess" (prize 0) (good-tx 0)
         in print-line-uni ("the same match behind the guard twice: " & mint-label again & ", codexmagic " & show (ledger-balance (mint-ledger again) "codexmagic"))
       end
+      act
+        let o = guarded-settle chain platform (two-planes 0) 7 "codexmagic" "chess" (prize 0) (mesh-reward-tx 77 7 65 1 100 other-seed)
+        in print-line-uni ("a reward from an account with no registered key: " & mint-label o & ", codexmagic " & show (ledger-balance (mint-ledger o) "codexmagic"))
+      end
+
+      act
+        let o = guarded-settle chain platform (two-planes 0) 8 "codexmagic" "chess" (prize 0) (__record-set (good-tx 0) "amount" 66)
+        in print-line-uni ("a signed reward with its amount changed after signing: " & mint-label o & ", codexmagic " & show (ledger-balance (mint-ledger o) "codexmagic"))
+      end
+
+      act
+        let o = guarded-settle chain 55 (two-planes 0) 9 "codexmagic" "chess" (prize 0) (create-tx 55 7 65 TxReward 1 100 (zeros 64 []))
+        in print-line-uni ("an all-zero signature under an all-zero registered key: " & mint-label o & ", codexmagic " & show (ledger-balance (mint-ledger o) "codexmagic"))
+      end
+
+      print-line-uni ("registering a second key for the platform account: " & pinned chain)
+      print-line-uni ("a signed reward replayed after it was mined: " & verdict (validate-tx (mined chain) (good-tx 0) platform))
+      print-line-uni ("a signed reward replayed while it is pending: " & replay-pending chain)
+      print-line-uni ("the next nonce after the mined reward: " & verdict (validate-tx (mined chain) (mesh-reward-tx platform 7 65 2 100 platform-seed) platform))
+      print-line-uni ("a nonce below the mined reward: " & verdict (validate-tx (mined chain) (mesh-reward-tx platform 7 65 0 100 platform-seed) platform))
     end
   end

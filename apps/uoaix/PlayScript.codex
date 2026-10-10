@@ -1,0 +1,539 @@
+Chapter: PlayScript
+  cites Foreword chapter Result
+
+ Content caps per play (ServerLimits.md, deliberate): a 64 KiB script, a 120-byte line of dialog (the 1.25 client's
+ speech width) and a 30-byte name or title (its name field), 32 tokens a statement, and the table rows below.
+  pls-max-script : Integer = 65536
+  pls-max-text : Integer = 120
+  pls-max-name : Integer = 30
+  pls-max-tokens : Integer = 32
+  pls-max-marks : Integer = 256
+  pls-max-scenes : Integer = 64
+  pls-max-cast : Integer = 64
+  pls-max-sets : Integer = 256
+  pls-max-states : Integer = 512
+  pls-max-actions : Integer = 4096
+  pls-max-cues : Integer = 2048
+  pls-max-words : Integer = 4096
+
+  pls-tokens-at : Integer = 128
+  pls-marks-at : Integer = 1024
+  pls-mark-size : Integer = 40
+  pls-scenes-at : Integer = pls-marks-at + pls-max-marks * pls-mark-size
+  pls-scene-size : Integer = 56
+  pls-cast-at : Integer = pls-scenes-at + pls-max-scenes * pls-scene-size
+  pls-cast-size : Integer = 96
+  pls-sets-at : Integer = pls-cast-at + pls-max-cast * pls-cast-size
+  pls-set-size : Integer = 64
+  pls-states-at : Integer = pls-sets-at + pls-max-sets * pls-set-size
+  pls-state-size : Integer = 80
+  pls-actions-at : Integer = pls-states-at + pls-max-states * pls-state-size
+  pls-action-size : Integer = 64
+  pls-cues-at : Integer = pls-actions-at + pls-max-actions * pls-action-size
+  pls-cue-size : Integer = 64
+  pls-words-at : Integer = pls-cues-at + pls-max-cues * pls-cue-size
+  pls-word-size : Integer = 16
+  pls-table-bytes : Integer = pls-words-at + pls-max-words * pls-word-size
+
+ Header qwords: 0 marks, 1 scenes, 2 cast, 3 sets, 4 states, 5 actions, 6 cues, 7 words, 8 title offset, 9 title
+ length, 10 tokens on the current line, 11 story name offset, 12 its length, 13 the story stays.
+  pls-count : Integer, Integer -> Integer
+  pls-count (t) (f) = peek-qword t (f * 8)
+  pls-set-count : Integer, Integer, Integer -> Integer
+  pls-set-count (t) (f) (v) = poke-qword t (f * 8) v
+  pls-get : Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-get (t) (at) (size) (i) (f) = peek-qword t (at + i * size + f * 8)
+  pls-put : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-put (t) (at) (size) (i) (f) (v) = poke-qword t (at + i * size + f * 8) v
+  pls-zero : Integer, Integer, Integer -> Integer
+  pls-zero (t) (i) (n) = if i >= n then 0 else let z = poke-qword t (i * 8) 0 in pls-zero t (i + 1) n
+
+ Statement keywords, packed little-endian from their ASCII bytes (pls-key).
+  plk-play : Integer = #79616C70
+  plk-mark : Integer = #6B72616D
+  plk-scene : Integer = #656E656373
+  plk-cast : Integer = #74736163
+  plk-story : Integer = #79726F7473
+  plk-stay : Integer = #79617473
+  plk-set : Integer = #746573
+  plk-state : Integer = #6574617473
+  plk-minor : Integer = #726F6E696D
+  plk-major : Integer = #726F6A616D
+  plk-end : Integer = #646E65
+  plk-say : Integer = #796173
+  plk-yell : Integer = #6C6C6579
+  plk-emote : Integer = #65746F6D65
+  plk-walk : Integer = #6B6C6177
+  plk-face : Integer = #65636166
+  plk-give : Integer = #65766967
+  plk-take : Integer = #656B6174
+  plk-wait : Integer = #74696177
+  plk-after : Integer = #7265746661
+  plk-heard : Integer = #6472616568
+  plk-near : Integer = #7261656E
+  plk-given : Integer = #6E65766967
+  plk-used : Integer = #64657375
+  plk-hint : Integer = #746E6968
+  plk-at : Integer = #7461
+  plk-player : Integer = #726579616C70
+  plk-arrow : Integer = #3E2D
+  plk-gold : Integer = #646C6F67
+  plk-silver : Integer = #7265766C6973
+  plk-copper : Integer = #726570706F63
+  plk-male : Integer = #656C616D
+  plk-female : Integer = #656C616D6566
+
+ Action kinds: 1 say, 2 yell, 3 emote, 4 walk, 5 face, 6 give, 7 take, 8 wait, 9 hint. Cue kinds: 1 after, 2 heard,
+ 3 near, 4 given, 5 used. State kinds: 0 minor, 1 major, 2 end.
+  pls-say : Integer = 1
+  pls-yell : Integer = 2
+  pls-emote : Integer = 3
+  pls-walk : Integer = 4
+  pls-face : Integer = 5
+  pls-give : Integer = 6
+  pls-take : Integer = 7
+  pls-wait : Integer = 8
+  pls-hint : Integer = 9
+  pls-after : Integer = 1
+  pls-heard : Integer = 2
+  pls-near : Integer = 3
+  pls-given : Integer = 4
+  pls-used : Integer = 5
+  pls-minor : Integer = 0
+  pls-major : Integer = 1
+  pls-end : Integer = 2
+
+  pls-pack : Integer, Integer, Integer, Integer -> Integer
+  pls-pack (s) (off) (i) (n) = if i < 0 then n else pls-pack s off (i - 1) (n * 256 + peek-byte s (off + i))
+  pls-tok : Integer, Integer, Integer -> Integer
+  pls-tok (t) (i) (f) = peek-qword t (pls-tokens-at + i * 24 + f * 8)
+  pls-key : Integer, Integer, Integer -> Integer
+  pls-key (s) (t) (i) = if pls-tok t i 2 /= 0 | pls-tok t i 1 > 8 then -1 else pls-pack s (pls-tok t i 0) (pls-tok t i 1 - 1) 0
+  pls-err : Integer, Text -> Result Integer Text
+  pls-err (line) (why) = Err ("line " & show line & ": " & why)
+
+ Lines: a statement is one line; LF ends it and a CR before the LF is dropped.
+  pls-eol : Integer, Integer, Integer -> Integer
+  pls-eol (s) (n) (i) = if i >= n then n else if peek-byte s i == 10 then i else pls-eol s n (i + 1)
+  pls-compile : Integer, Integer, Integer -> Result Integer Text
+  pls-compile (s) (n) (t) = if n < 1 | n > pls-max-script then Err "play script must be 1 to 65536 bytes"
+    else let cleared = pls-zero t 0 16
+    in when pls-lines s n t 0 1
+      is Err (e) -> Err e
+      is Ok (_) -> if pls-count t 9 == 0 then pls-err 1 "a script starts with play and its title"
+        else if pls-count t 4 == 0 then pls-err 1 "a play has at least one state"
+        else if pls-count t 1 == 0 then pls-err 1 "a play has at least one scene, where players join it"
+        else when pls-resolve s t
+          is Err (e) -> Err e
+          is Ok (_) -> pls-validate t
+  pls-lines : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-lines (s) (n) (t) (pos) (line) = if pos >= n then Ok 0
+    else let e = pls-eol s n pos
+    in let stop = if e > pos & peek-byte s (e - 1) == 13 then e - 1 else e
+    in when pls-statement s t pos stop line
+      is Err (x) -> Err x
+      is Ok (_) -> pls-lines s n t (e + 1) (line + 1)
+
+ Tokens: words split on spaces; a double-quoted run is one token without its quotes. Bytes are printable ASCII.
+  pls-tokenize : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-tokenize (s) (t) (i) (e) (line) = if i >= e then Ok (pls-count t 10)
+    else let c = peek-byte s i
+    in if c == 32 then pls-tokenize s t (i + 1) e line
+    else if c < 32 | c > 126 then pls-err line "only printable ASCII"
+    else if pls-count t 10 >= pls-max-tokens then pls-err line "more than 32 words in one statement"
+    else if c == 34 then pls-quoted s t (i + 1) e line
+    else pls-word s t i e line
+  pls-add-token : Integer, Integer, Integer, Integer -> Integer
+  pls-add-token (t) (off) (len) (quoted) = let k = pls-count t 10
+    in let a = poke-qword t (pls-tokens-at + k * 24) off
+    in let b = poke-qword t (pls-tokens-at + k * 24 + 8) len
+    in let c = poke-qword t (pls-tokens-at + k * 24 + 16) quoted
+    in pls-set-count t 10 (k + 1)
+  pls-quoted : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-quoted (s) (t) (start) (e) (line) = let close = pls-find-byte s start e 34
+    in if close >= e then pls-err line "a quoted text has no closing quote"
+    else let added = pls-add-token t start (close - start) 1 in pls-tokenize s t (close + 1) e line
+  pls-word : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-word (s) (t) (start) (e) (line) = let stop = pls-find-byte s start e 32
+    in let added = pls-add-token t start (stop - start) 0 in pls-tokenize s t stop e line
+  pls-find-byte : Integer, Integer, Integer, Integer -> Integer
+  pls-find-byte (s) (i) (e) (b) = if i >= e then e else if peek-byte s i == b then i else pls-find-byte s (i + 1) e b
+
+ Numbers: decimal with an optional minus, or 0x hex. pls-numeric checks the form; pls-value reads it.
+  pls-digit : Integer -> Integer
+  pls-digit (c) = if c >= 48 & c <= 57 then c - 48 else if c >= 97 & c <= 102 then c - 87 else if c >= 65 & c <= 70 then c - 55 else -1
+  pls-hex : Integer, Integer, Integer -> Boolean
+  pls-hex (s) (off) (len) = len > 2 & len <= 10 & peek-byte s off == 48 & (peek-byte s (off + 1) == 120 | peek-byte s (off + 1) == 88)
+  pls-digits : Integer, Integer, Integer, Integer -> Boolean
+  pls-digits (s) (i) (e) (base) = if i >= e then True
+    else let d = pls-digit (peek-byte s i) in if d < 0 | d >= base then False else pls-digits s (i + 1) e base
+  pls-numeric : Integer, Integer, Integer -> Boolean
+  pls-numeric (s) (t) (i) = let off = pls-tok t i 0
+    in let len = pls-tok t i 1
+    in if pls-tok t i 2 /= 0 | len < 1 then False
+    else if pls-hex s off len then pls-digits s (off + 2) (off + len) 16
+    else if peek-byte s off == 45 then len > 1 & len <= 7 & pls-digits s (off + 1) (off + len) 10
+    else len <= 7 & pls-digits s off (off + len) 10
+  pls-read : Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-read (s) (i) (e) (base) (n) = if i >= e then n else pls-read s (i + 1) e base (n * base + pls-digit (peek-byte s i))
+  pls-value : Integer, Integer, Integer -> Integer
+  pls-value (s) (t) (i) = let off = pls-tok t i 0
+    in let len = pls-tok t i 1
+    in if pls-hex s off len then pls-read s (off + 2) (off + len) 16 0
+    else if peek-byte s off == 45 then 0 - pls-read s (off + 1) (off + len) 10 0
+    else pls-read s off (off + len) 10 0
+  pls-in-range : Integer, Integer, Integer, Integer, Integer -> Boolean
+  pls-in-range (s) (t) (i) (low) (high) = if not (pls-numeric s t i) then False
+    else let v = pls-value s t i in v >= low & v <= high
+
+  pls-same : Integer, Integer, Integer, Integer, Integer -> Boolean
+  pls-same (s) (a) (b) (n) (i) = if i >= n then True else if peek-byte s (a + i) /= peek-byte s (b + i) then False else pls-same s a b n (i + 1)
+ The row of a table whose name (fields 0 and 1) equals bytes off..off+len of the script, or -1.
+  pls-find : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-find (s) (t) (at) (size) (count) (off) (len) (i) = if i >= count then -1
+    else if pls-get t at size i 1 == len & pls-same s (pls-get t at size i 0) off len 0 then i
+    else pls-find s t at size count off len (i + 1)
+  pls-named : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-named (s) (t) (at) (size) (field) (i) = pls-find s t at size (pls-count t field) (pls-tok t i 0) (pls-tok t i 1) 0
+
+  pls-statement : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-statement (s) (t) (start) (e) (line) = let reset = pls-set-count t 10 0
+    in when pls-tokenize s t start e line
+      is Err (x) -> Err x
+      is Ok (count) -> if count == 0 then Ok 0
+        else let k = pls-key s t 0
+        in if k == plk-play then pls-play s t count e line
+        else if k == plk-mark then pls-place s t count line 0
+        else if k == plk-scene then pls-scene s t count line
+        else if k == plk-story then pls-story s t count line
+        else if k == plk-cast then pls-cast s t count line
+        else if k == plk-set then pls-set s t count line
+        else if k == plk-state then pls-state s t count line
+        else if pls-count t 4 == 0 then pls-err line "this statement belongs inside a state"
+        else pls-in-state s t count line k
+  pls-in-state : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-in-state (s) (t) (count) (line) (k) =
+    if k == plk-after | k == plk-heard | k == plk-near | k == plk-given | k == plk-used then pls-cue s t count line k
+    else if k == plk-wait then pls-do-wait s t count line
+    else if k == plk-hint then pls-do-hint s t count line
+    else pls-action s t count line
+
+  pls-play : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-play (s) (t) (count) (e) (line) = if count < 2 then pls-err line "play needs a title"
+    else if pls-count t 9 /= 0 then pls-err line "a script has one play line"
+    else let off = pls-tok t 1 0
+    in if e - off > pls-max-name * 2 then pls-err line "a play title is at most 60 bytes"
+    else let a = pls-set-count t 8 off in let b = pls-set-count t 9 (e - off) in Ok 0
+
+ mark NAME X Y Z. Row: name offset, name length, x, y, z.
+  pls-place : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-place (s) (t) (count) (line) (unused) = let n = pls-count t 0
+    in if count /= 5 | pls-tok t 1 2 /= 0 then pls-err line "mark NAME X Y Z"
+    else if not (pls-in-range s t 2 0 6143) | not (pls-in-range s t 3 0 4095) then pls-err line "x is 0 to 6143 and y is 0 to 4095"
+    else if not (pls-in-range s t 4 (0 - 128) 127) then pls-err line "z is -128 to 127"
+    else if pls-named s t pls-marks-at pls-mark-size 0 1 >= 0 then pls-err line "that mark is already declared"
+    else if n >= pls-max-marks then pls-err line "more than 256 marks in one play"
+    else let a = pls-put t pls-marks-at pls-mark-size n 0 (pls-tok t 1 0)
+    in let b = pls-put t pls-marks-at pls-mark-size n 1 (pls-tok t 1 1)
+    in let c = pls-put t pls-marks-at pls-mark-size n 2 (pls-value s t 2)
+    in let d = pls-put t pls-marks-at pls-mark-size n 3 (pls-value s t 3)
+    in let z = pls-put t pls-marks-at pls-mark-size n 4 (pls-value s t 4)
+    in let counted = pls-set-count t 0 (n + 1) in Ok n
+ scene NAME X1 Y1 X2 Y2: a rectangle, west to east and north to south. Row: name offset, name length, x1, y1, x2, y2,
+ and the story registry's set for it (PlayRun writes it at compile).
+  pls-scene : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-scene (s) (t) (count) (line) = let n = pls-count t 1
+    in if count /= 6 | pls-tok t 1 2 /= 0 | pls-tok t 1 1 > pls-max-name then pls-err line "scene NAME X1 Y1 X2 Y2"
+    else if not (pls-in-range s t 2 0 6143) | not (pls-in-range s t 3 0 4095) | not (pls-in-range s t 4 0 6143) | not (pls-in-range s t 5 0 4095) then pls-err line "x is 0 to 6143 and y is 0 to 4095"
+    else if pls-value s t 2 > pls-value s t 4 | pls-value s t 3 > pls-value s t 5 then pls-err line "a scene runs from its west x1 and north y1 to its east x2 and south y2"
+    else if pls-named s t pls-scenes-at pls-scene-size 1 1 >= 0 then pls-err line "that scene is already declared"
+    else if n >= pls-max-scenes then pls-err line "more than 64 scenes in one play"
+    else let a = pls-put t pls-scenes-at pls-scene-size n 0 (pls-tok t 1 0)
+    in let b = pls-put t pls-scenes-at pls-scene-size n 1 (pls-tok t 1 1)
+    in let c = pls-put t pls-scenes-at pls-scene-size n 2 (pls-value s t 2)
+    in let d = pls-put t pls-scenes-at pls-scene-size n 3 (pls-value s t 3)
+    in let e = pls-put t pls-scenes-at pls-scene-size n 4 (pls-value s t 4)
+    in let f = pls-put t pls-scenes-at pls-scene-size n 5 (pls-value s t 5)
+    in let counted = pls-set-count t 1 (n + 1) in Ok n
+ story NAME [stay]: the story the play dresses, once a script.
+  pls-story : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-story (s) (t) (count) (line) = if count < 2 | count > 3 | pls-tok t 1 2 /= 0 | pls-tok t 1 1 > pls-max-name then pls-err line "story NAME [stay]"
+    else if count == 3 & pls-key s t 2 /= plk-stay then pls-err line "story NAME [stay]"
+    else if pls-count t 12 /= 0 then pls-err line "a script dresses one story"
+    else let a = pls-set-count t 11 (pls-tok t 1 0) in let b = pls-set-count t 12 (pls-tok t 1 1) in let c = pls-set-count t 13 (if count == 3 then 1 else 0) in Ok 0
+ Stylist roles by name (CharacterStylist cst-* values 0 to 12).
+  pls-role : Integer, Integer, Integer -> Integer
+  pls-role (s) (t) (i) = let len = pls-tok t i 1
+    in let k = if pls-tok t i 2 /= 0 | len > 10 then -1 else pls-pack s (pls-tok t i 0) (min len 8 - 1) 0
+    in if len == 9 & k == #6C6F66736E776F74 then 0
+    else if len == 10 & k == #7065656B706F6873 then 1
+    else if len == 5 & k == #6874696D73 then 2
+    else if len == 6 & k == #72656B6E6162 then 3
+    else if len == 7 & k == #72657468676966 then 4
+    else if len == 5 & k == #72656E696D then 5
+    else if len == 5 & k == #6472617567 then 6
+    else if len == 5 & k == #726F79616D then 7
+    else if len == 6 & k == #72656D726166 then 8
+    else if len == 6 & k == #72656B636970 then 9
+    else if len == 8 & k == #6472656870656873 then 10
+    else if len == 10 & k == #616A7265626D756C then 11
+    else if len == 6 & k == #726568736966 then 12
+    else -1
+  pls-text-ok : Integer, Integer, Integer -> Boolean
+  pls-text-ok (t) (i) (most) = pls-tok t i 2 /= 0 & pls-tok t i 1 >= 1 & pls-tok t i 1 <= most
+
+ cast ID "NAME" "TITLE" ROLE SEX at MARK. Row: id, name, title (offset and length each), role, female, mark, line.
+  pls-cast : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-cast (s) (t) (count) (line) = let n = pls-count t 2
+    in let sex = pls-key s t 5
+    in if count /= 8 | pls-tok t 1 2 /= 0 | pls-key s t 6 /= plk-at then pls-err line "cast ID \"NAME\" \"TITLE\" ROLE male|female at MARK"
+    else if not (pls-text-ok t 2 pls-max-name) | not (pls-text-ok t 3 pls-max-name) then pls-err line "a name and a title are quoted, 1 to 30 bytes"
+    else if pls-role s t 4 < 0 then pls-err line "unknown role: townsfolk, shopkeeper, smith, banker, fighter, miner, guard, mayor, farmer, picker, shepherd, lumberjack or fisher"
+    else if sex /= plk-male & sex /= plk-female then pls-err line "a character is male or female"
+    else if pls-named s t pls-cast-at pls-cast-size 2 1 >= 0 then pls-err line "that character is already cast"
+    else if n >= pls-max-cast then pls-err line "more than 64 characters in one play"
+    else let a = pls-put t pls-cast-at pls-cast-size n 0 (pls-tok t 1 0)
+    in let b = pls-put t pls-cast-at pls-cast-size n 1 (pls-tok t 1 1)
+    in let c = pls-put t pls-cast-at pls-cast-size n 2 (pls-tok t 2 0)
+    in let d = pls-put t pls-cast-at pls-cast-size n 3 (pls-tok t 2 1)
+    in let f = pls-put t pls-cast-at pls-cast-size n 4 (pls-tok t 3 0)
+    in let g = pls-put t pls-cast-at pls-cast-size n 5 (pls-tok t 3 1)
+    in let h = pls-put t pls-cast-at pls-cast-size n 6 (pls-role s t 4)
+    in let j = pls-put t pls-cast-at pls-cast-size n 7 (if sex == plk-female then 1 else 0)
+    in let m = pls-put t pls-cast-at pls-cast-size n 8 (pls-tok t 7 0)
+    in let o = pls-put t pls-cast-at pls-cast-size n 9 (pls-tok t 7 1)
+    in let l = pls-put t pls-cast-at pls-cast-size n 10 line
+    in let counted = pls-set-count t 2 (n + 1) in Ok n
+
+ set SCENE ART HUE X Y Z. Row: scene name offset and length, art, hue, x, y, z, line.
+  pls-set : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-set (s) (t) (count) (line) = let n = pls-count t 3
+    in if count /= 7 | pls-tok t 1 2 /= 0 then pls-err line "set SCENE ART HUE X Y Z"
+    else if not (pls-in-range s t 2 1 16383) | not (pls-in-range s t 3 0 2999) then pls-err line "art is 1 to 0x3FFF and hue 0 to 2999"
+    else if not (pls-in-range s t 4 0 6143) | not (pls-in-range s t 5 0 4095) | not (pls-in-range s t 6 (0 - 128) 127) then pls-err line "x is 0 to 6143, y 0 to 4095, z -128 to 127"
+    else if n >= pls-max-sets then pls-err line "more than 256 set pieces in one play"
+    else let a = pls-put t pls-sets-at pls-set-size n 0 (pls-tok t 1 0)
+    in let b = pls-put t pls-sets-at pls-set-size n 1 (pls-tok t 1 1)
+    in let c = pls-put t pls-sets-at pls-set-size n 2 (pls-value s t 2)
+    in let d = pls-put t pls-sets-at pls-set-size n 3 (pls-value s t 3)
+    in let f = pls-put t pls-sets-at pls-set-size n 4 (pls-value s t 4)
+    in let g = pls-put t pls-sets-at pls-set-size n 5 (pls-value s t 5)
+    in let h = pls-put t pls-sets-at pls-set-size n 6 (pls-value s t 6)
+    in let l = pls-put t pls-sets-at pls-set-size n 7 line
+    in let counted = pls-set-count t 3 (n + 1) in Ok n
+
+ state ID minor|major|end. Row: id offset and length, kind, first action, action count, first cue, cue count, line,
+ reached (the validator's mark).
+  pls-state : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-state (s) (t) (count) (line) = let n = pls-count t 4
+    in let k = pls-key s t 2
+    in let kind = if k == plk-minor then pls-minor else if k == plk-major then pls-major else if k == plk-end then pls-end else -1
+    in if count /= 3 | pls-tok t 1 2 /= 0 | kind < 0 then pls-err line "state ID minor|major|end"
+    else if pls-named s t pls-states-at pls-state-size 4 1 >= 0 then pls-err line "that state is already declared"
+    else if n >= pls-max-states then pls-err line "more than 512 states in one play"
+    else let a = pls-put t pls-states-at pls-state-size n 0 (pls-tok t 1 0)
+    in let b = pls-put t pls-states-at pls-state-size n 1 (pls-tok t 1 1)
+    in let c = pls-put t pls-states-at pls-state-size n 2 kind
+    in let d = pls-put t pls-states-at pls-state-size n 3 (pls-count t 5)
+    in let f = pls-put t pls-states-at pls-state-size n 4 0
+    in let g = pls-put t pls-states-at pls-state-size n 5 (pls-count t 6)
+    in let h = pls-put t pls-states-at pls-state-size n 6 0
+    in let l = pls-put t pls-states-at pls-state-size n 7 line
+    in let r = pls-put t pls-states-at pls-state-size n 8 0
+    in let counted = pls-set-count t 4 (n + 1) in Ok n
+
+ An action row: kind, actor offset, actor length, a, b, c, line. A text action keeps the text's offset and length in
+ a and b; walk and face keep the mark's in a and b (face player: a = -1); give and take keep item in a and count in b;
+ wait keeps seconds in a; a hint keeps text in a and b, its period in c and its speech kind in d. pls-resolve turns names into rows.
+  pls-add-action : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-add-action (t) (line) (kind) (aoff) (alen) (a) (b) (c) (d) = let n = pls-count t 5
+    in let state = pls-count t 4 - 1
+    in if n >= pls-max-actions then pls-err line "more than 4096 actions in one play"
+    else let k = pls-put t pls-actions-at pls-action-size n 0 kind
+    in let p = pls-put t pls-actions-at pls-action-size n 1 aoff
+    in let q = pls-put t pls-actions-at pls-action-size n 2 alen
+    in let r = pls-put t pls-actions-at pls-action-size n 3 a
+    in let u = pls-put t pls-actions-at pls-action-size n 4 b
+    in let v = pls-put t pls-actions-at pls-action-size n 5 c
+    in let l = pls-put t pls-actions-at pls-action-size n 6 line
+    in let m = pls-put t pls-actions-at pls-action-size n 7 d
+    in let grown = pls-put t pls-states-at pls-state-size state 4 (pls-get t pls-states-at pls-state-size state 4 + 1)
+    in let counted = pls-set-count t 5 (n + 1) in Ok n
+  pls-item : Integer, Integer, Integer -> Integer
+  pls-item (s) (t) (i) = if pls-key s t i == plk-gold then 0 else if pls-in-range s t i 1 65535 then pls-value s t i else -1
+ A coin's metal as the economy numbers it: 1 copper, 2 silver, 3 gold; -1 otherwise.
+  pls-goods : Integer, Integer, Integer -> Integer
+  pls-goods (s) (t) (i) = if pls-metal s t i > 0 then pls-metal s t i else if pls-in-range s t i 1 65535 then 0 - pls-value s t i else 0
+  pls-metal : Integer, Integer, Integer -> Integer
+  pls-metal (s) (t) (i) = let k = pls-key s t i in if k == plk-gold then 3 else if k == plk-silver then 2 else if k == plk-copper then 1 else 0 - 1
+ What a give or take moves: a catalog item number, or a coin as 0 - its metal.
+  pls-trade-goods : Integer, Integer, Integer -> Integer
+  pls-trade-goods (s) (t) (i) = if pls-metal s t i > 0 then 0 - pls-metal s t i else pls-item s t i
+  pls-action : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-action (s) (t) (count) (line) = let v = pls-key s t 1
+    in if pls-tok t 0 2 /= 0 | count < 2 then pls-err line "unknown statement"
+    else if v == plk-say | v == plk-yell | v == plk-emote then
+      (if count /= 3 | not (pls-text-ok t 2 pls-max-text) then pls-err line "ACTOR say|yell|emote \"TEXT\" (1 to 120 bytes)"
+      else pls-add-action t line (if v == plk-say then pls-say else if v == plk-yell then pls-yell else pls-emote) (pls-tok t 0 0) (pls-tok t 0 1) (pls-tok t 2 0) (pls-tok t 2 1) 0 0)
+    else if v == plk-walk | v == plk-face then
+      (if count /= 3 | pls-tok t 2 2 /= 0 then pls-err line "ACTOR walk MARK or ACTOR face MARK|player"
+      else if v == plk-face & pls-key s t 2 == plk-player then pls-add-action t line pls-face (pls-tok t 0 0) (pls-tok t 0 1) (0 - 1) 0 0 0
+      else pls-add-action t line (if v == plk-walk then pls-walk else pls-face) (pls-tok t 0 0) (pls-tok t 0 1) (pls-tok t 2 0) (pls-tok t 2 1) 0 0)
+    else if v == plk-give | v == plk-take then
+      (if count /= 4 | (pls-metal s t 2 < 1 & pls-item s t 2 < 1) | not (pls-in-range s t 3 1 1000000) then pls-err line "ACTOR give|take gold|silver|copper|ITEM N (ITEM a catalog item number; N 1 to 1000000)"
+      else pls-add-action t line (if v == plk-give then pls-give else pls-take) (pls-tok t 0 0) (pls-tok t 0 1) (pls-trade-goods s t 2) (pls-value s t 3) 0 0)
+    else pls-err line "unknown statement"
+  pls-do-wait : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-do-wait (s) (t) (count) (line) = if count /= 2 | not (pls-in-range s t 1 1 86400) then pls-err line "wait N (1 to 86400 game seconds)"
+    else pls-add-action t line pls-wait 0 0 (pls-value s t 1) 0 0 0
+  pls-do-hint : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-do-hint (s) (t) (count) (line) = let v = pls-key s t 3
+    in if count /= 5 | not (pls-in-range s t 1 10 86400) | pls-tok t 2 2 /= 0 | (v /= plk-say & v /= plk-yell & v /= plk-emote) | not (pls-text-ok t 4 pls-max-text)
+      then pls-err line "hint N ACTOR say|yell|emote \"TEXT\" (N 10 to 86400 game seconds)"
+    else pls-add-action t line pls-hint (pls-tok t 2 0) (pls-tok t 2 1) (pls-tok t 4 0) (pls-tok t 4 1) (pls-value s t 1) (if v == plk-say then pls-say else if v == plk-yell then pls-yell else pls-emote)
+
+ A cue row: kind, target state offset and length, a, b, c, d, line. after: a = seconds; heard: a = first word, b = word
+ count; given: a and b the actor's name, c = item, d = count; used: a and b the actor's name.
+  pls-add-cue : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-add-cue (t) (line) (kind) (target) (a) (b) (c) (d) (count) = let n = pls-count t 6
+    in let state = pls-count t 4 - 1
+    in if n >= pls-max-cues then pls-err line "more than 2048 cues in one play"
+    else let k = pls-put t pls-cues-at pls-cue-size n 0 kind
+    in let p = pls-put t pls-cues-at pls-cue-size n 1 (pls-tok t target 0)
+    in let q = pls-put t pls-cues-at pls-cue-size n 2 (pls-tok t target 1)
+    in let r = pls-put t pls-cues-at pls-cue-size n 3 a
+    in let u = pls-put t pls-cues-at pls-cue-size n 4 b
+    in let v = pls-put t pls-cues-at pls-cue-size n 5 c
+    in let w = pls-put t pls-cues-at pls-cue-size n 6 d
+    in let l = pls-put t pls-cues-at pls-cue-size n 7 line
+    in let grown = pls-put t pls-states-at pls-state-size state 6 (pls-get t pls-states-at pls-state-size state 6 + 1)
+    in let counted = pls-set-count t 6 (n + 1) in Ok n
+  pls-arrow : Integer, Integer, Integer -> Boolean
+  pls-arrow (s) (t) (count) = count >= 3 & pls-key s t (count - 2) == plk-arrow & pls-tok t (count - 1) 2 == 0
+  pls-cue : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-cue (s) (t) (count) (line) (k) = if not (pls-arrow s t count) then pls-err line "a cue ends with -> STATE"
+    else if k == plk-after then
+      (if count /= 4 | not (pls-in-range s t 1 1 86400) then pls-err line "after N -> STATE (1 to 86400 game seconds)"
+      else pls-add-cue t line pls-after 3 (pls-value s t 1) 0 0 0 count)
+    else if k == plk-near then
+      (if count /= 3 then pls-err line "near -> STATE" else pls-add-cue t line pls-near 2 0 0 0 0 count)
+    else if k == plk-used then
+      (if count /= 4 | pls-tok t 1 2 /= 0 then pls-err line "used ACTOR -> STATE" else pls-add-cue t line pls-used 3 (pls-tok t 1 0) (pls-tok t 1 1) 0 0 count)
+    else if k == plk-given then
+      (if count /= 6 | pls-tok t 1 2 /= 0 | pls-goods s t 2 == 0 | not (pls-in-range s t 3 1 1000000) then pls-err line "given ACTOR gold|silver|copper|ITEM N -> STATE (ITEM a catalog number)"
+      else pls-add-cue t line pls-given 5 (pls-tok t 1 0) (pls-tok t 1 1) (pls-goods s t 2) (pls-value s t 3) count)
+    else pls-do-heard s t count line
+  pls-do-heard : Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-do-heard (s) (t) (count) (line) = let first = pls-count t 7
+    in if count < 4 then pls-err line "heard \"WORD\" ... -> STATE"
+    else if first + count - 3 > pls-max-words then pls-err line "more than 4096 heard words in one play"
+    else when pls-words s t 1 (count - 2) line
+      is Err (x) -> Err x
+      is Ok (_) -> pls-add-cue t line pls-heard (count - 1) first (count - 3) 0 0 count
+  pls-words : Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  pls-words (s) (t) (i) (stop) (line) = if i >= stop then Ok 0
+    else if not (pls-text-ok t i 30) then pls-err line "a heard word is quoted, 1 to 30 bytes"
+    else let n = pls-count t 7
+    in let a = poke-qword t (pls-words-at + n * pls-word-size) (pls-tok t i 0)
+    in let b = poke-qword t (pls-words-at + n * pls-word-size + 8) (pls-tok t i 1)
+    in let counted = pls-set-count t 7 (n + 1) in pls-words s t (i + 1) stop line
+
+ Resolution: every name a row holds becomes a row index, and a name nothing declared refuses with its line.
+  pls-resolve : Integer, Integer -> Result Integer Text
+  pls-resolve (s) (t) = when pls-resolve-cast s t 0
+    is Err (x) -> Err x
+    is Ok (_) -> when pls-resolve-sets s t 0
+      is Err (x) -> Err x
+      is Ok (_) -> when pls-resolve-actions s t 0
+        is Err (x) -> Err x
+        is Ok (_) -> pls-resolve-cues s t 0
+  pls-look : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-look (s) (t) (at) (size) (field) (off) (len) = pls-find s t at size (pls-count t field) off len 0
+  pls-resolve-cast : Integer, Integer, Integer -> Result Integer Text
+  pls-resolve-cast (s) (t) (i) = if i >= pls-count t 2 then Ok 0
+    else let m = pls-look s t pls-marks-at pls-mark-size 0 (pls-get t pls-cast-at pls-cast-size i 8) (pls-get t pls-cast-at pls-cast-size i 9)
+    in if m < 0 then pls-err (pls-get t pls-cast-at pls-cast-size i 10) "unknown mark"
+    else let a = pls-put t pls-cast-at pls-cast-size i 8 m in pls-resolve-cast s t (i + 1)
+  pls-resolve-sets : Integer, Integer, Integer -> Result Integer Text
+  pls-resolve-sets (s) (t) (i) = if i >= pls-count t 3 then Ok 0
+    else let m = pls-look s t pls-scenes-at pls-scene-size 1 (pls-get t pls-sets-at pls-set-size i 0) (pls-get t pls-sets-at pls-set-size i 1)
+    in if m < 0 then pls-err (pls-get t pls-sets-at pls-set-size i 7) "unknown scene"
+    else let x = pls-get t pls-sets-at pls-set-size i 4
+    in let y = pls-get t pls-sets-at pls-set-size i 5
+    in if x < pls-get t pls-scenes-at pls-scene-size m 2 | x > pls-get t pls-scenes-at pls-scene-size m 4
+      | y < pls-get t pls-scenes-at pls-scene-size m 3 | y > pls-get t pls-scenes-at pls-scene-size m 5 then pls-err (pls-get t pls-sets-at pls-set-size i 7) "a set piece lies inside its scene"
+    else let a = pls-put t pls-sets-at pls-set-size i 0 m in pls-resolve-sets s t (i + 1)
+  pls-resolve-actions : Integer, Integer, Integer -> Result Integer Text
+  pls-resolve-actions (s) (t) (i) = if i >= pls-count t 5 then Ok 0
+    else let kind = pls-get t pls-actions-at pls-action-size i 0
+    in let line = pls-get t pls-actions-at pls-action-size i 6
+    in let actor = if kind == pls-wait then 0 else pls-look s t pls-cast-at pls-cast-size 2 (pls-get t pls-actions-at pls-action-size i 1) (pls-get t pls-actions-at pls-action-size i 2)
+    in let marked = kind == pls-walk | (kind == pls-face & pls-get t pls-actions-at pls-action-size i 3 >= 0)
+    in let mark = if marked then pls-look s t pls-marks-at pls-mark-size 0 (pls-get t pls-actions-at pls-action-size i 3) (pls-get t pls-actions-at pls-action-size i 4) else 0
+    in if actor < 0 then pls-err line "unknown character"
+    else if mark < 0 then pls-err line "unknown mark"
+    else let a = pls-put t pls-actions-at pls-action-size i 1 actor
+    in let b = if marked then pls-put t pls-actions-at pls-action-size i 3 mark else 0
+    in pls-resolve-actions s t (i + 1)
+  pls-resolve-cues : Integer, Integer, Integer -> Result Integer Text
+  pls-resolve-cues (s) (t) (i) = if i >= pls-count t 6 then Ok 0
+    else let kind = pls-get t pls-cues-at pls-cue-size i 0
+    in let line = pls-get t pls-cues-at pls-cue-size i 7
+    in let target = pls-look s t pls-states-at pls-state-size 4 (pls-get t pls-cues-at pls-cue-size i 1) (pls-get t pls-cues-at pls-cue-size i 2)
+    in let named = kind == pls-given | kind == pls-used
+    in let actor = if named then pls-look s t pls-cast-at pls-cast-size 2 (pls-get t pls-cues-at pls-cue-size i 3) (pls-get t pls-cues-at pls-cue-size i 4) else 0
+    in if target < 0 then pls-err line "unknown state"
+    else if actor < 0 then pls-err line "unknown character"
+    else let a = pls-put t pls-cues-at pls-cue-size i 1 target
+    in let b = if named then pls-put t pls-cues-at pls-cue-size i 3 actor else 0
+    in pls-resolve-cues s t (i + 1)
+
+ Validation: a minor state carries an after cue (the bots carry it on); a major state has none and at least one hint
+ (it waits for a player and tells the player so); an end state has no cue; every state is reached from the first.
+  pls-validate : Integer -> Result Integer Text
+  pls-validate (t) = when pls-shapes t 0
+    is Err (x) -> Err x
+    is Ok (_) -> let first = pls-put t pls-states-at pls-state-size 0 8 1
+      in let spread = pls-reach t 1
+      in pls-reached t 0
+  pls-cue-count : Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-cue-count (t) (i) (stop) (kind) (n) = if i >= stop then n
+    else pls-cue-count t (i + 1) stop kind (if pls-get t pls-cues-at pls-cue-size i 0 == kind then n + 1 else n)
+  pls-action-count : Integer, Integer, Integer, Integer, Integer -> Integer
+  pls-action-count (t) (i) (stop) (kind) (n) = if i >= stop then n
+    else pls-action-count t (i + 1) stop kind (if pls-get t pls-actions-at pls-action-size i 0 == kind then n + 1 else n)
+  pls-shapes : Integer, Integer -> Result Integer Text
+  pls-shapes (t) (i) = if i >= pls-count t 4 then Ok 0
+    else let kind = pls-get t pls-states-at pls-state-size i 2
+    in let line = pls-get t pls-states-at pls-state-size i 7
+    in let cue = pls-get t pls-states-at pls-state-size i 5
+    in let cues = pls-get t pls-states-at pls-state-size i 6
+    in let acts = pls-get t pls-states-at pls-state-size i 3
+    in let afters = pls-cue-count t cue (cue + cues) pls-after 0
+    in let hints = pls-action-count t acts (acts + pls-get t pls-states-at pls-state-size i 4) pls-hint 0
+    in if kind == pls-minor & afters == 0 then pls-err line "a minor state needs an after cue, so the bots carry it on"
+    else if kind == pls-major & afters > 0 then pls-err line "a major state waits for a player: no after cue"
+    else if kind == pls-major & hints == 0 then pls-err line "a major state needs a hint, so a player learns what it waits for"
+    else if kind == pls-major & cues == 0 then pls-err line "a major state needs a player cue"
+    else if kind == pls-end & cues > 0 then pls-err line "an end state has no cues"
+    else if kind /= pls-major & hints > 0 then pls-err line "only a major state hints"
+    else pls-shapes t (i + 1)
+ One pass marks the targets of every reached state's cues; passes repeat until one marks nothing (at most one pass a
+ state).
+  pls-reach : Integer, Integer -> Integer
+  pls-reach (t) (pass) = if pass > pls-count t 4 then pass
+    else if pls-mark-pass t 0 0 == 0 then pass else pls-reach t (pass + 1)
+  pls-mark-pass : Integer, Integer, Integer -> Integer
+  pls-mark-pass (t) (i) (marked) = if i >= pls-count t 4 then marked
+    else if pls-get t pls-states-at pls-state-size i 8 == 0 then pls-mark-pass t (i + 1) marked
+    else let cue = pls-get t pls-states-at pls-state-size i 5
+    in pls-mark-pass t (i + 1) (marked + pls-mark-cues t cue (cue + pls-get t pls-states-at pls-state-size i 6) 0)
+  pls-mark-cues : Integer, Integer, Integer, Integer -> Integer
+  pls-mark-cues (t) (c) (stop) (marked) = if c >= stop then marked
+    else let target = pls-get t pls-cues-at pls-cue-size c 1
+    in if pls-get t pls-states-at pls-state-size target 8 /= 0 then pls-mark-cues t (c + 1) stop marked
+    else let set = pls-put t pls-states-at pls-state-size target 8 1 in pls-mark-cues t (c + 1) stop (marked + 1)
+  pls-reached : Integer, Integer -> Result Integer Text
+  pls-reached (t) (i) = if i >= pls-count t 4 then Ok (pls-count t 4)
+    else if pls-get t pls-states-at pls-state-size i 8 == 0 then pls-err (pls-get t pls-states-at pls-state-size i 7) "this state cannot be reached from the first state"
+    else pls-reached t (i + 1)

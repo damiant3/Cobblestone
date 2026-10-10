@@ -1,0 +1,836 @@
+Chapter: Construction
+  cites Uoaix chapter CompositePlanting
+  cites Uoaix chapter NpcSpeechText
+
+ Houses are built on site (UOAIX.md section 5, construction). A deed (TILEDATA 0x14F0) names a design in its health,
+ 0 reading as design 1. Placing it on a plot its holder was granted opens a building site; the holder delivers the
+ bill from the backpack; a game day after the bill is filled the 1.25 client draws the finished multi. Sites and
+ houses draw as virtual items under serials 7B000001 and up, eight a site: the lumber pile, four scaffolds, the house.
+  cn-serial-base : Integer = #7B000000
+  cn-context : Integer = #434E0000
+  cn-deed-art : Integer = #14F0
+ TILEDATA: boards 0x1BD8 (the pile), scaffold 0x12B1 and 0x12B2.
+  cn-pile-art : Integer = #1BD8
+  cn-scaffold-art : Integer = #12B1
+  cn-scaffold-east : Integer = #12B2
+ The 0x1A world item draws a multi when its art carries 0x4000 (ServUO Packets.cs WorldItem).
+  cn-multi-flag : Integer = #4000
+ ServUO BaseHouse AddSouthDoor(0, 3, 7) and SetSign(2, 4, 5) for SmallOldHouse; HouseDoors.cs DarkWoodHouseDoor
+ WestCW: closed 0x06A5, open 0x06A6 one tile west and one south (BaseDoor m_Offsets). HouseSign is 0x0BD2.
+  cn-door-art : Integer = #06A5
+  cn-door-open-art : Integer = #06A6
+  cn-sign-art : Integer = #0BD2
+ ServUO Multis/Houses.cs SmallOldHouse: area (-3,-3,7,7) and the steps (-1,4,3,1); Deeds.cs WoodHouseDeed: multi 0x6A,
+ placed by its front step, offset (0,4,0).
+  cn-design-ok : Integer -> Boolean
+  cn-design-ok (d) = d == 1 | d == 2 | d == 3
+ Design 2 is ThatchedRoofCottageDeed's multi 0x6E and design 3 FieldStoneHouseDeed's 0x66, the same SmallOldHouse footprint,
+ door and sign (MULTI.MUL agrees).
+  cn-design-name : Integer -> Text
+  cn-design-name (d) = if d == 2 then "thatched-roof cottage" else if d == 3 then "field stone house" else "small wooden house"
+  cn-design-multi : Integer -> Integer
+  cn-design-multi (d) = if d == 2 then #6E else if d == 3 then #66 else #6A
+ Bill lines are catalog items (EconomyCatalog): boards 38, nails 39, iron ingots 31 for the fittings, wheat 13 for the
+ cottage's thatch (a farmed lot; a wheat stack that is no lot does not count), stone blocks 149 for the stone house's walls
+ (Masonry), hinges 148 for the door (Tinkering).
+  cn-lines : Integer = 4
+  cn-bill-item : Integer, Integer -> Integer
+  cn-bill-item (d) (line) = if line == 0 then 38 else if line == 1 then 39 else if line == 2 then (if d == 2 then 13 else if d == 3 then 149 else 31) else if line == 3 then 148 else 0
+  cn-bill-count : Integer, Integer -> Integer
+  cn-bill-count (d) (line) = if d == 3 then (if line == 0 then 60 else if line == 1 then 40 else if line == 2 then 120 else if line == 3 then 2 else 0)
+    else if d == 2 then (if line == 0 then 150 else if line == 1 then 40 else if line == 2 then 60 else if line == 3 then 2 else 0)
+    else if line == 0 then 250 else if line == 1 then 60 else if line == 2 then 20 else if line == 3 then 2 else 0
+  cn-bill-name : Integer, Integer -> Text
+  cn-bill-name (d) (line) = if line == 0 then "boards" else if line == 1 then "nails" else if line == 3 then "hinges" else if d == 2 then "wheat" else if d == 3 then "stone blocks" else "iron ingots"
+  cn-work-seconds : Integer -> Integer
+  cn-work-seconds (d) = 86400
+ A granted plot is 9 by 9 tiles around the tile British targets, enough for a small house and its steps.
+  cn-plot-reach : Integer = 4
+ CNS1 (composite format 30) is one buffer allocated at boot: the plot count, the site count, cn-plot-limit rows of x0,
+ y0, x1, y1 (inclusive), holder serial and the game day granted, then cn-site-limit rows of design, x, y, z (the
+ center), holder serial, plot row plus 1, the town second the bill filled plus 1 (0 while unfilled), one delivered
+ count per bill line (qwords 7 to 12), and the house door, 1 when open (qword 13).
+  cn-plot-limit : Integer = 64
+  cn-plot-bytes : Integer = 48
+  cn-site-limit : Integer = 32
+  cn-site-bytes : Integer = 128
+  cn-sites-at : Integer = 16 + cn-plot-limit * cn-plot-bytes
+  cn-codec-bytes : Integer = cn-sites-at + cn-site-limit * cn-site-bytes
+ Plots and sites grow past those blocks (UoaixDynamicTables.md stage 7): the live buffer holds plot-room plot rows, then
+ site-room site rows, and the growth point doubles a room once under a quarter is free. CNS1 keeps the first blocks; the
+ rest travel in the construction tail. The ceilings keep each object's serial inside its reserved range.
+  cn-plot-ceiling : Integer = 262144
+  cn-site-ceiling : Integer = 65536
+  cn-sites-base : CnState -> Integer
+  cn-sites-base (s) = 16 + s.plot-room * cn-plot-bytes
+  cn-plot-at : CnState, Integer -> Integer
+  cn-plot-at (s) (p) = s.buf + 16 + p * cn-plot-bytes
+  cn-site-at : CnState, Integer -> Integer
+  cn-site-at (s) (k) = s.buf + cn-sites-base s + k * cn-site-bytes
+  cn-buf-bytes : Integer, Integer -> Integer
+  cn-buf-bytes (plots) (sites) = 16 + plots * cn-plot-bytes + sites * cn-site-bytes
+  cn-sent-bytes : CnState -> Integer
+  cn-sent-bytes (s) = (s.site-room + s.plot-room + 7) / 8 * 8
+ A viewer remembers one byte per site, then one per plot.
+  cn-viewer-bytes : Integer = cn-site-limit + cn-plot-limit
+  CnRequest = record { serial : Integer, target : Integer, deed : Integer, expires : Integer }
+  CnViewer = record { connection : Integer, sent : Integer, used : Integer }
+  CnState = record { buf : Integer, requests : List CnRequest, viewers : List CnViewer, nonce : Integer, clock : Integer, grantee : Integer, plot-room : Integer, site-room : Integer }
+  cn-clear : Integer, Integer, Integer -> Integer
+  cn-clear (buf) (i) (n) = if i >= n then 0 else let z = poke-qword buf (i * 8) 0 in cn-clear buf (i + 1) n
+  cn-requests : Integer, List CnRequest -> List CnRequest
+  cn-requests (left) (xs) = if left == 0 then xs else cn-requests (left - 1) (list-push xs (CnRequest { serial = 0, target = 0, deed = 0, expires = 0 }))
+  cn-viewers : Integer, List CnViewer -> List CnViewer
+  cn-viewers (left) (xs) = if left == 0 then xs
+    else let sent = alloc-bytes cn-viewer-bytes
+    in let cleared = cn-clear sent 0 (cn-viewer-bytes / 8)
+    in cn-viewers (left - 1) (list-push xs (CnViewer { connection = -1, sent = sent, used = 0 }))
+  cn-new : Integer -> CnState
+  cn-new (unused) = let buf = alloc-bytes cn-codec-bytes
+    in let cleared = cn-clear buf 0 (cn-codec-bytes / 8)
+    in CnState { buf = buf, requests = cn-requests 8 [], viewers = cn-viewers 8 [], nonce = 0, clock = 0, grantee = 0, plot-room = cn-plot-limit, site-room = cn-site-limit }
+  cn-encode : CnState, Integer -> Integer
+  cn-encode (s) (buf) = let cleared = cn-clear buf 0 (cn-codec-bytes / 8)
+    in let a = poke-qword buf 0 (min (cn-plots s) cn-plot-limit)
+    in let b = poke-qword buf 8 (min (cn-sites s) cn-site-limit)
+    in let plots = ws-copy (s.buf + 16) (buf + 16) (min (cn-plots s) cn-plot-limit * cn-plot-bytes) 0
+    in ws-copy (s.buf + cn-sites-base s) (buf + cn-sites-at) (min (cn-sites s) cn-site-limit * cn-site-bytes) 0
+  cn-tail-size : CnState -> Integer
+  cn-tail-size (s) = 16 + max 0 (cn-plots s - cn-plot-limit) * cn-plot-bytes + max 0 (cn-sites s - cn-site-limit) * cn-site-bytes
+  cn-write-tail : CnState, Integer -> Integer
+  cn-write-tail (s) (at) = let plots = max 0 (cn-plots s - cn-plot-limit)
+    in let sites = max 0 (cn-sites s - cn-site-limit)
+    in let a = poke-qword at 0 plots in let b = poke-qword at 8 sites
+    in let c = ws-copy (cn-plot-at s cn-plot-limit) (at + 16) (plots * cn-plot-bytes) 0
+    in let d = ws-copy (cn-site-at s cn-site-limit) (at + 16 + plots * cn-plot-bytes) (sites * cn-site-bytes) 0
+    in at + cn-tail-size s
+  cn-tail-length : Integer, Integer -> Integer
+  cn-tail-length (at) (room) = if room < 16 | peek-qword at 0 < 0 | peek-qword at 8 < 0 | peek-qword at 0 > room / cn-plot-bytes | peek-qword at 8 > room / cn-site-bytes then -1
+    else 16 + peek-qword at 0 * cn-plot-bytes + peek-qword at 8 * cn-site-bytes
+  cn-read-tail : CnState, Integer, Integer -> Integer
+  cn-read-tail (s) (at) (size) = if size == 0 then 0
+    else if cn-tail-length at size /= size then -1
+    else let plots = peek-qword at 0
+    in let sites = peek-qword at 8
+    in if (plots > 0 & cn-plots s /= cn-plot-limit) | (sites > 0 & cn-sites s /= cn-site-limit) | cn-plot-limit + plots > cn-plot-ceiling | cn-site-limit + sites > cn-site-ceiling then -1
+    else let grown = cn-grow-to s (max s.plot-room (cn-plot-limit + plots)) (max s.site-room (cn-site-limit + sites))
+    in let a = ws-copy (at + 16) (cn-plot-at s cn-plot-limit) (plots * cn-plot-bytes) 0
+    in let b = ws-copy (at + 16 + plots * cn-plot-bytes) (cn-site-at s cn-site-limit) (sites * cn-site-bytes) 0
+    in let c = poke-qword s.buf 0 (cn-plots s + plots)
+    in let d = poke-qword s.buf 8 (cn-sites s + sites) in 0
+  cn-grow-to : CnState, Integer, Integer -> Integer
+  cn-grow-to (s) (plots) (sites) = if plots <= s.plot-room & sites <= s.site-room then 0
+    else let fresh = alloc-bytes (cn-buf-bytes plots sites)
+    in let cleared = cn-clear fresh 0 (cn-buf-bytes plots sites / 8)
+    in let header = ws-copy s.buf fresh 16 0
+    in let rows = ws-copy (s.buf + 16) (fresh + 16) (cn-plots s * cn-plot-bytes) 0
+    in let built = ws-copy (s.buf + cn-sites-base s) (fresh + 16 + plots * cn-plot-bytes) (cn-sites s * cn-site-bytes) 0
+    in let a = __record-set s "buf" fresh
+    in let b = __record-set s "plot-room" plots
+    in let c = __record-set s "site-room" sites
+    in cn-resend s.viewers (cn-sent-bytes s) 0
+  cn-resend : List CnViewer, Integer, Integer -> Integer
+  cn-resend (viewers) (bytes) (i) = if i >= list-length viewers then 0
+    else let v = list-at viewers i in let fresh = alloc-bytes bytes in let cleared = cn-clear fresh 0 (bytes / 8)
+    in let set = __record-set v "sent" fresh in let gone = __record-set v "connection" -1 in cn-resend viewers bytes (i + 1)
+  cn-due : CnState -> Boolean
+  cn-due (s) = (s.plot-room - cn-plots s < s.plot-room / 4 & s.plot-room < cn-plot-ceiling) | (s.site-room - cn-sites s < s.site-room / 4 & s.site-room < cn-site-ceiling)
+  cn-grow : CnState -> Integer
+  cn-grow (s) = cn-grow-to s (min cn-plot-ceiling (if s.plot-room - cn-plots s < s.plot-room / 4 then s.plot-room * 2 else s.plot-room)) (min cn-site-ceiling (if s.site-room - cn-sites s < s.site-room / 4 then s.site-room * 2 else s.site-room))
+  cn-decode : CnState, Integer -> Result Integer Text
+  cn-decode (s) (buf) = let plots = peek-qword buf 0
+    in let sites = peek-qword buf 8
+    in if plots < 0 | plots > cn-plot-limit | sites < 0 | sites > cn-site-limit then Err "construction extent"
+    else Ok (ws-copy buf s.buf cn-codec-bytes 0)
+
+Section: Rows
+
+  cn-plots : CnState -> Integer
+  cn-plots (s) = peek-qword s.buf 0
+  cn-sites : CnState -> Integer
+  cn-sites (s) = peek-qword s.buf 8
+  cn-plot : CnState, Integer, Integer -> Integer
+  cn-plot (s) (p) (field) = peek-qword (cn-plot-at s p) (field * 8)
+  cn-site : CnState, Integer, Integer -> Integer
+  cn-site (s) (k) (field) = peek-qword (cn-site-at s k) (field * 8)
+  cn-site-set : CnState, Integer, Integer, Integer -> Integer
+  cn-site-set (s) (k) (field) (value) = poke-qword (cn-site-at s k) (field * 8) value
+  cn-delivered : CnState, Integer, Integer -> Integer
+  cn-delivered (s) (k) (line) = cn-site s k (7 + line)
+  cn-need : CnState, Integer, Integer -> Integer
+  cn-need (s) (k) (line) = max 0 (cn-bill-count (cn-site s k 0) line - cn-delivered s k line)
+  cn-short : CnState, Integer, Integer -> Integer
+  cn-short (s) (k) (line) = if line >= cn-lines then 0 else cn-need s k line + cn-short s k (line + 1)
+  cn-built : CnState, Integer, Integer -> Boolean
+  cn-built (s) (k) (seconds) = cn-site s k 6 > 0 & seconds >= cn-site s k 6 - 1 + cn-work-seconds (cn-site s k 0)
+  cn-hours-left : CnState, Integer, Integer -> Integer
+  cn-hours-left (s) (k) (seconds) = max 1 ((cn-site s k 6 - 1 + cn-work-seconds (cn-site s k 0) - seconds + 3599) / 3600)
+  cn-in-plot : CnState, Integer, Integer, Integer -> Boolean
+  cn-in-plot (s) (p) (x) (y) = x >= cn-plot s p 0 & y >= cn-plot s p 1 & x <= cn-plot s p 2 & y <= cn-plot s p 3
+ A retired site row is all zeros (design 0): views drop it and a new site takes the first such row.
+  cn-free-site : CnState, Integer -> Integer
+  cn-free-site (s) (k) = if k >= cn-sites s then cn-sites s else if cn-site s k 0 == 0 then k else cn-free-site s (k + 1)
+ A deleted character's land goes to the crown (UOAIX.md section 5): its plots' holder becomes 0 and its sites and
+ houses are torn down.
+  cn-forfeit : CnState, GameHarvest, Integer, Integer -> Integer
+  cn-forfeit (s) (h) (holder) (crown) = if holder <= 0 then 0
+    else let filed = cn-crown-houses s h holder (gmb-bank-find h.items crown 0) 0
+    in filed + cn-forfeit-plots s holder 0 + cn-forfeit-sites s holder 0
+ Everything standing in a forfeited house's footprint becomes Lord British's and moves to the King's bank (his bank
+ box), which sorts itself: one bag (0x0E76) per catalog chain, its health the chain plus 1 (0 for goods outside the
+ catalog), and a plain stack merges into a like one already there up to 60000.
+  cn-crown-houses : CnState, GameHarvest, Integer, Integer, Integer -> Integer
+  cn-crown-houses (s) (h) (holder) (bank) (k) = if bank == 0 | k >= cn-sites s then 0
+    else let here = if cn-site s k 4 /= holder | cn-site s k 0 == 0 then 0 else cn-crown-rows s h bank k (0 - 3)
+    in here + cn-crown-houses s h holder bank (k + 1)
+  cn-crown-rows : CnState, GameHarvest, Integer, Integer, Integer -> Integer
+  cn-crown-rows (s) (h) (bank) (k) (dy) = if dy > 4 then 0
+    else cn-crown-row s h bank k (if dy == 4 then 0 - 1 else 0 - 3) (if dy == 4 then 1 else 3) dy + cn-crown-rows s h bank k (dy + 1)
+  cn-crown-row : CnState, GameHarvest, Integer, Integer, Integer, Integer, Integer -> Integer
+  cn-crown-row (s) (h) (bank) (k) (dx) (last) (dy) = if dx > last then 0
+    else let x = cn-site s k 1 + dx
+    in let y = cn-site s k 2 + dy
+    in cn-crown-tile h bank (world-tile-first h.items.world x y) + cn-crown-row s h bank k (dx + 1) last dy
+  cn-crown-tile : GameHarvest, Integer, Integer -> Integer
+  cn-crown-tile (h) (bank) (serial) = if serial == 0 then 0
+    else let next = world-tile-next h.items.world serial
+    in let moved = when world-get h.items.world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind /= 2 | o.container /= 0 | not (gsi-known h.items serial) | not (gsi-meta h.items serial).movable then 0 else cn-crown-file h bank o
+    in moved + cn-crown-tile h bank next
+  cn-chain : GameHarvest, WorldObject -> Integer
+  cn-chain (h) (o) = let item = cn-item-of h o
+    in let w = h.vendor.currency.world
+    in if item < 1 | item > list-length w.catalog.items then 0 else (list-at w.catalog.items (item - 1)).chain
+  cn-crown-bag : GameHarvest, Integer, Integer, Integer -> Integer
+  cn-crown-bag (h) (bank) (chain) (serial) = if serial == 0 then
+      (if world-room h.items.world <= 0 then 0
+      else when world-create h.items.world (__record-set (__record-set (__record-set (gs-item bank #0E76 0) "x" (50 + chain * 12)) "y" 80) "health" (chain + 1))
+        is Err (_) -> 0
+        is Ok (made) -> if gsi-register h.items made 0 #003D True False /= 0 then 0 else made)
+    else when world-get h.items.world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.graphic == #0E76 & o.health == chain + 1 then serial else cn-crown-bag h bank chain (world-next-sibling h.items.world serial)
+  cn-like : GameHarvest, WorldObject, Integer -> Integer
+  cn-like (h) (o) (serial) = if serial == 0 then 0
+    else when world-get h.items.world serial
+      is Err (_) -> 0
+      is Ok (p) -> if p.graphic == o.graphic & p.hue == o.hue & p.amount + o.amount <= 60000 & gv-lot h.vendor serial 0 < 0 & gsi-known h.items serial & (gsi-meta h.items serial).stackable then serial
+        else cn-like h o (world-next-sibling h.items.world serial)
+  cn-crown-file : GameHarvest, Integer, WorldObject -> Integer
+  cn-crown-file (h) (bank) (o) = let bag = cn-crown-bag h bank (cn-chain h o) (world-first-child h.items.world bank)
+    in if bag == 0 then 0
+    else let plain = gv-lot h.vendor o.serial 0 < 0 & (gsi-meta h.items o.serial).stackable
+    in let like = if plain then cn-like h o (world-first-child h.items.world bag) else 0
+    in if like > 0 then (when world-get h.items.world like
+        is Err (_) -> 0
+        is Ok (p) -> when world-update h.items.world (__record-set p "amount" (p.amount + o.amount))
+          is Err (_) -> 0
+          is Ok (_) -> when world-delete h.items.world o.serial is Err (_) -> 0 is Ok (_) -> 1)
+    else when world-update h.items.world (ia-copy o o.serial o.amount bag (40 + int-mod o.serial 9 * 10) (60 + int-mod o.serial 5 * 12) 0)
+      is Err (_) -> 0
+      is Ok (_) -> 1
+  cn-forfeit-plots : CnState, Integer, Integer -> Integer
+  cn-forfeit-plots (s) (holder) (p) = if p >= cn-plots s then 0
+    else let here = if cn-plot s p 4 /= holder then 0 else let crowned = poke-qword (cn-plot-at s p) 32 0 in 1
+    in here + cn-forfeit-plots s holder (p + 1)
+  cn-forfeit-sites : CnState, Integer, Integer -> Integer
+  cn-forfeit-sites (s) (holder) (k) = if k >= cn-sites s then 0
+    else let here = if cn-site s k 4 /= holder then 0 else let wiped = cn-clear (cn-site-at s k) 0 (cn-site-bytes / 8) in 1
+    in here + cn-forfeit-sites s holder (k + 1)
+ The holder's plot that holds the tile x, y; -1 when none. A deed targeted anywhere in it builds at the nearest center
+ whose house and steps fit inside.
+  cn-plot-holding : CnState, Integer, Integer, Integer, Integer -> Integer
+  cn-plot-holding (s) (holder) (x) (y) (p) = if p >= cn-plots s then -1
+    else if cn-plot s p 4 == holder & cn-in-plot s p x y then p
+    else cn-plot-holding s holder x y (p + 1)
+ The plot that holds every tile of a house centered on x, y, held by the holder; -1 when none.
+  cn-plot-for : CnState, Integer, Integer, Integer, Integer -> Integer
+  cn-plot-for (s) (holder) (x) (y) (p) = if p >= cn-plots s then -1
+    else if cn-plot s p 4 == holder & cn-in-plot s p (x - 3) (y - 3) & cn-in-plot s p (x + 3) (y + 4) then p
+    else cn-plot-for s holder x y (p + 1)
+  cn-plot-site : CnState, Integer, Integer -> Integer
+  cn-plot-site (s) (p) (k) = if k >= cn-sites s then -1 else if cn-site s k 5 == p + 1 then k else cn-plot-site s p (k + 1)
+  cn-overlaps : CnState, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cn-overlaps (s) (x0) (y0) (x1) (y1) (p) = if p >= cn-plots s then False
+    else if x0 <= cn-plot s p 2 & x1 >= cn-plot s p 0 & y0 <= cn-plot s p 3 & y1 >= cn-plot s p 1 then True
+    else cn-overlaps s x0 y0 x1 y1 (p + 1)
+ Land a grant centered on x, y could take: no other plot, and somewhere a house fits on it.
+  cn-land-ok : CnState, GameShard, Maybe WfState, WalkMap, Integer, Integer -> Boolean
+  cn-land-ok (s) (shard) (flora) (map) (x) (y) = if cn-overlaps s (x - cn-plot-reach) (y - cn-plot-reach) (x + cn-plot-reach) (y + cn-plot-reach) 0 then False
+    else cn-fit shard flora map (x - cn-plot-reach) (y - cn-plot-reach) (x + cn-plot-reach) (y + cn-plot-reach) x y 0 (0 - 1) 1000000 >= 0
+ The nearest grant center within 8 tiles of x, y whose land is ok, as x * 65536 + y; -1 when none.
+  cn-land-near : CnState, GameShard, Maybe WfState, WalkMap, Integer, Integer, Integer, Integer, Integer -> Integer
+  cn-land-near (s) (shard) (flora) (map) (x) (y) (i) (best) (far) = if i >= 289 then best
+    else let gx = x + int-mod i 17 - 8
+    in let gy = y + i / 17 - 8
+    in let d = walk-abs (gx - x) + walk-abs (gy - y)
+    in if d < far & cn-land-ok s shard flora map gx gy then cn-land-near s shard flora map x y (i + 1) (gx * 65536 + gy) d
+    else cn-land-near s shard flora map x y (i + 1) best far
+ Lord British grants a plot centered on x, y to a holder; answers the plot number (1 up) or the refusal, which names
+ the nearest center where a house could stand.
+  cn-grant : CnState, GameShard, Maybe WfState, WalkMap, Integer, Integer, Integer, Integer -> Result Integer Text
+  cn-grant (s) (shard) (flora) (map) (holder) (x) (y) (day) = let n = cn-plots s
+    in let x0 = x - cn-plot-reach
+    in let y0 = y - cn-plot-reach
+    in let x1 = x + cn-plot-reach
+    in let y1 = y + cn-plot-reach
+    in if holder <= 0 then Err "That plot has no holder."
+    else if n >= s.plot-room then Err "Every plot is granted."
+    else if not (cn-land-ok s shard flora map x y) then
+      (let near = cn-land-near s shard flora map x y 0 (0 - 1) 1000000
+      in Err ((if cn-overlaps s x0 y0 x1 y1 0 then "That land overlaps a plot already granted." else "No house can stand on that land: it is not clear and level.")
+        & (if near < 0 then " No land within 8 tiles will do." else " The nearest land that will do centers at " & show (near / 65536) & ", " & show (int-mod near 65536) & ".")))
+    else let row = 16 + n * cn-plot-bytes
+    in let a = poke-qword s.buf row x0
+    in let b = poke-qword s.buf (row + 8) y0
+    in let c = poke-qword s.buf (row + 16) x1
+    in let d = poke-qword s.buf (row + 24) y1
+    in let e = poke-qword s.buf (row + 32) holder
+    in let f = poke-qword s.buf (row + 40) day
+    in let counted = poke-qword s.buf 0 (n + 1) in Ok (n + 1)
+
+ A house the crown sells (Housing) becomes its buyer's plot over its floor and walls, on whatever land it stands.
+  cn-hold : CnState, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
+  cn-hold (s) (holder) (x0) (y0) (x1) (y1) (day) = let n = cn-plots s
+    in if holder <= 0 then Err "That plot has no holder."
+    else if n >= s.plot-room then Err "Every plot is granted."
+    else let at = cn-plot-at s n
+    in let a = poke-qword at 0 x0
+    in let b = poke-qword at 8 y0
+    in let c = poke-qword at 16 x1
+    in let d = poke-qword at 24 y1
+    in let e = poke-qword at 32 holder
+    in let f = poke-qword at 40 day
+    in let counted = poke-qword s.buf 0 (n + 1) in Ok (n + 1)
+
+Section: Placing a deed
+
+  cn-denied : Text -> Result (Maybe GameReply) Text
+  cn-denied (text) = Ok (Just (gsi-denied text))
+  cn-deed-design : WorldObject -> Integer
+  cn-deed-design (deed) = if deed.health == 0 then 1 else deed.health
+  cn-begin : CnState, GameHarvest, GameShard, GameInput, Integer, Integer -> Result (Maybe GameReply) Text
+  cn-begin (s) (h) (shard) (input) (serial) (now) = when world-get h.items.world serial
+    is Err (_) -> Ok None
+    is Ok (deed) -> if deed.kind /= 2 | deed.graphic /= cn-deed-art then Ok None
+      else if not (gv-owned h.items.world serial input.session.serial 65) then cn-denied "That deed must be in your pack."
+      else if not (cn-design-ok (cn-deed-design deed)) then cn-denied "That deed names no design a builder knows."
+      else let slot = gsi-slot shard input.session.serial 0
+      in if slot < 0 | slot >= 8 then Ok None
+      else if s.nonce > 65535 then cn-denied "Building target contexts exhausted."
+      else let request = list-at s.requests slot
+      in let target = cn-context + s.nonce
+      in let counted = __record-set s "nonce" (s.nonce + 1)
+      in let a = __record-set request "serial" input.session.serial
+      in let b = __record-set request "target" target
+      in let c = __record-set request "deed" serial
+      in let d = __record-set request "expires" (now + gh-ticks 10000)
+      in let cursor = list-set-at (sip-target target) 1 1
+      in Ok (Just (gs-reply [cursor, sip-message #FFFFFFFF #FFFF 6 ("Where is the front step of your " & cn-design-name (cn-deed-design deed) & "?")] "construction:target"))
+ Every tile of the house and its steps is level land in the walk window with no item and no flora; a static there is
+ refused only when it is impassable (TILEDATA 0x40) or a surface rising past the floor line, since grass and road
+ statics lie under a house.
+  cn-solids-clear : WalkMap, Integer, Integer, Integer -> Boolean
+  cn-solids-clear (map) (cell) (z) (i) = if i >= peek-qword map.solids (cell * map.stride) then True
+    else let at = cell * map.stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let flags = peek-qword map.solids (at + 16)
+    in if bit-and flags 64 /= 0 & base + peek-qword map.solids (at + 8) > z then False
+    else if bit-and flags 512 /= 0 & base + peek-qword map.solids (at + 8) > z + 6 then False
+    else cn-solids-clear map cell z (i + 1)
+  cn-tile-free : GameShard, Maybe WfState, WalkMap, Integer, Integer, Integer -> Boolean
+  cn-tile-free (shard) (flora) (map) (x) (y) (z) = let cell = walk-cell map x y
+    in if cell < 0 then False
+    else if not (walk-ready map x y) then False
+    else walk-abs (walk-z map x y - z) <= 4 & cn-solids-clear map cell z 0
+      & world-tile-first shard.world x y == 0 & not (cpl-flora-at flora x y)
+  cn-fits : GameShard, Maybe WfState, WalkMap, Integer, Integer -> Boolean
+  cn-fits (shard) (flora) (map) (x) (y) = if walk-cell map x y < 0 then False else cn-ground-free shard flora map x y (walk-z map x y) (0 - 3)
+ The center in the rectangle x0..x1, y0..y1 whose house and steps fit and stand nearest tx, ty, as x * 65536 + y; -1
+ when none does.
+  cn-fit : GameShard, Maybe WfState, WalkMap, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cn-fit (shard) (flora) (map) (x0) (y0) (x1) (y1) (tx) (ty) (i) (best) (far) =
+    let cols = x1 - x0 - 5
+    in if cols < 1 | y1 - y0 - 6 < 1 | i >= cols * (y1 - y0 - 6) then best
+    else let x = x0 + 3 + int-mod i cols
+    in let y = y0 + 3 + i / cols
+    in let d = walk-abs (x - tx) + walk-abs (y - ty)
+    in if d < far & cn-fits shard flora map x y then cn-fit shard flora map x0 y0 x1 y1 tx ty (i + 1) (x * 65536 + y) d
+    else cn-fit shard flora map x0 y0 x1 y1 tx ty (i + 1) best far
+  cn-row-free : GameShard, Maybe WfState, WalkMap, Integer, Integer, Integer, Integer, Integer -> Boolean
+  cn-row-free (shard) (flora) (map) (x) (y) (z) (from) (to) = if from > to then True
+    else if not (cn-tile-free shard flora map (x + from) y z) then False
+    else cn-row-free shard flora map x y z (from + 1) to
+  cn-ground-free : GameShard, Maybe WfState, WalkMap, Integer, Integer, Integer, Integer -> Boolean
+  cn-ground-free (shard) (flora) (map) (x) (y) (z) (dy) = if dy > 4 then True
+    else if not (if dy == 4 then cn-row-free shard flora map x (y + dy) z (0 - 1) 1 else cn-row-free shard flora map x (y + dy) z (0 - 3) 3) then False
+    else cn-ground-free shard flora map x y z (dy + 1)
+  cn-place : CnState, GameHarvest, Maybe WfState, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
+  cn-place (s) (h) (flora) (shard) (input) (map) (packet) (now) = let slot = gsi-slot shard input.session.serial 0
+    in if slot < 0 | slot >= 8 then Ok None
+    else let request = list-at s.requests slot
+    in if request.target == 0 | request.target /= gp-u32 packet 2 | request.serial /= input.session.serial then cn-denied "That building target is no longer active."
+    else let deed-serial = request.deed
+    in let clear = __record-set request "target" 0
+    in let tx = gp-u16 packet 11
+    in let ty = gp-u16 packet 13
+    in let plot = cn-plot-holding s input.session.serial tx ty 0
+    in let fit = if plot < 0 | tx == 65535 then -1 else cn-fit shard flora map (cn-plot s plot 0) (cn-plot s plot 1) (cn-plot s plot 2) (cn-plot s plot 3) tx (ty - 4) 0 (0 - 1) 1000000
+    in let x = fit / 65536
+    in let y = int-mod fit 65536
+    in if tx == 65535 then Ok (Just (gs-reply [] "construction:cancelled"))
+    else if now > request.expires then cn-denied "That building target expired."
+    else when world-get h.items.world deed-serial
+      is Err (_) -> cn-denied "The deed is gone."
+      is Ok (deed) -> if deed.graphic /= cn-deed-art | not (gv-owned h.items.world deed-serial input.session.serial 65) then cn-denied "The deed is gone."
+        else when world-get shard.world input.session.serial
+          is Err (e) -> Err e
+          is Ok (mobile) -> if plot < 0 then cn-denied "You hold no plot there; its corners are staked. Say \"my plot\" to hear where."
+            else if cn-plot-site s plot 0 >= 0 then cn-denied "Your plot already holds a building."
+            else if cn-free-site s 0 >= s.site-room then cn-denied "No more building sites can be opened."
+            else if fit < 0 then cn-denied "No spot in your plot is clear and level enough for the house; stand inside it and try again, or ask Lord British for other land."
+            else if walk-abs (x - mobile.x) > 12 | walk-abs (y + 4 - mobile.y) > 12 then cn-denied "That is too far away."
+            else let z = walk-z map x y
+            in when world-delete h.items.world deed-serial
+              is Err (e) -> Err e
+              is Ok (_) -> let k = cn-free-site s 0
+                in let wiped = cn-clear (cn-site-at s k) 0 (cn-site-bytes / 8)
+                in let a = cn-site-set s k 0 (cn-deed-design deed)
+                in let b = cn-site-set s k 1 x
+                in let c = cn-site-set s k 2 y
+                in let d = cn-site-set s k 3 z
+                in let e = cn-site-set s k 4 input.session.serial
+                in let f = cn-site-set s k 5 (plot + 1)
+                in let counted = if k == cn-sites s then poke-qword s.buf 8 (k + 1) else 0
+                in let touched = world-touch shard.world
+                in Ok (Just (gs-reply [sip-remove deed-serial, sip-message #FFFFFFFF #FFFF 6 ("The builders stake out your " & cn-design-name (cn-deed-design deed) & ". It needs " & cn-bill-text s k 0 "" & ".")] "construction:site"))
+
+Section: Delivering the bill
+
+  cn-bill-text : CnState, Integer, Integer, Text -> Text
+  cn-bill-text (s) (k) (line) (acc) = if line >= cn-lines then acc
+    else let need = cn-need s k line
+    in if need == 0 then cn-bill-text s k (line + 1) acc
+    else cn-bill-text s k (line + 1) (acc & (if text-length acc == 0 then "" else ", ") & show need & " " & cn-bill-name (cn-site s k 0) line)
+  cn-line-of : CnState, Integer, Integer, Integer -> Integer
+  cn-line-of (s) (k) (item) (line) = if line >= cn-lines then -1
+    else if item > 0 & cn-bill-item (cn-site s k 0) line == item & cn-need s k line > 0 then line else cn-line-of s k item (line + 1)
+ One stack's units leave the world: an economy lot through the ledger as consumed goods, a plain stack by its count.
+  cn-take : GameHarvest, Integer, Integer -> Result (List Integer) Text
+  cn-take (h) (serial) (n) = let w = h.vendor.currency.world
+    in let at = gv-lot h.vendor serial 0
+    in if at >= 0 then
+      (let lot = ep-lot w.goods at
+      in when ep-take w lot.actor lot.item n serial
+        is Err (e) -> Err e
+        is Ok (_) -> let used = ep-add w.consumed lot.item n
+          in let invalidated = gh-invalidate-quotes h.vendor 0
+          in when world-get h.items.world serial
+            is Err (_) -> Ok (sip-remove serial)
+            is Ok (left) -> Ok (sip-item left))
+    else when world-get h.items.world serial
+      is Err (e) -> Err e
+      is Ok (o) -> if o.amount > n then when world-update h.items.world (__record-set o "amount" (o.amount - n))
+          is Err (e) -> Err e
+          is Ok (_) -> when world-get h.items.world serial is Err (e) -> Err e is Ok (left) -> Ok (sip-item left)
+        else when world-delete h.items.world serial
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (sip-remove serial)
+  cn-item-of : GameHarvest, WorldObject -> Integer
+  cn-item-of (h) (o) = let at = gv-lot h.vendor o.serial 0
+    in if at >= 0 then (ep-lot h.vendor.currency.world.goods at).item else gvb-item-of o.graphic
+ Walks the pack and the containers in it, two deep, taking what the bill still needs; the next sibling is read before
+ a stack can be deleted.
+  cn-gather : CnState, GameHarvest, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
+  cn-gather (s) (h) (k) (serial) (depth) (out) = if serial == 0 then Ok out
+    else let next = world-next-sibling h.items.world serial
+    in when world-get h.items.world serial
+      is Err (_) -> cn-gather s h k next depth out
+      is Ok (o) -> let inner = if depth > 0 & world-child-count h.items.world serial > 0 then cn-gather s h k (world-first-child h.items.world serial) (depth - 1) out else Ok out
+        in when inner
+          is Err (e) -> Err e
+          is Ok (deeper) -> let line = if o.kind /= 2 | o.amount < 1 then -1 else cn-line-of s k (cn-item-of h o) 0
+            in if line < 0 then cn-gather s h k next depth deeper
+            else let n = min o.amount (cn-need s k line)
+            in when cn-take h serial n
+              is Err (e) -> Err e
+              is Ok (packet) -> let given = cn-site-set s k (7 + line) (cn-delivered s k line + n)
+                in cn-gather s h k next depth (list-push deeper packet)
+  cn-far : WorldObject, CnState, Integer -> Boolean
+  cn-far (mobile) (s) (k) = walk-abs (cn-site s k 1 - mobile.x) > 5 | walk-abs (cn-site s k 2 - mobile.y) > 6
+  cn-deliver : CnState, GameHarvest, GameShard, GameInput, Integer, Integer -> Result (Maybe GameReply) Text
+  cn-deliver (s) (h) (shard) (input) (k) (seconds) = if k < 0 | k >= cn-sites s then Ok None
+    else when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> if cn-built s k seconds then Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 ("A " & cn-design-name (cn-site s k 0) & ".")] "construction:house"))
+        else if cn-site s k 4 /= input.session.serial then cn-denied "That is not your building site."
+        else if cn-far mobile s k then cn-denied "That is too far away."
+        else if cn-site s k 6 > 0 then cn-denied ("The builders are at work; it stands in " & show (cn-hours-left s k seconds) & " game hours.")
+        else let before = cn-short s k 0
+        in let pack = gsi-pack-find h.items.world input.session.serial 0
+        in if pack == 0 then cn-denied "You have no pack."
+        else when cn-gather s h k (world-first-child h.items.world pack) 2 []
+          is Err (e) -> Err e
+          is Ok (carried) -> let bank = gmb-bank-find h.items input.session.serial 0
+          in let hauled = before - cn-short s k 0
+          in when (if bank == 0 | cn-short s k 0 == 0 then Ok carried else cn-gather s h k (world-first-child h.items.world bank) 2 carried)
+          is Err (e) -> Err e
+          is Ok (packets) -> let given = before - cn-short s k 0
+            in let fetched = given - hauled
+            in if given == 0 then cn-denied ("Neither your pack nor your bank holds anything the site needs. It needs " & cn-bill-text s k 0 "" & ".")
+            else let filled = if cn-short s k 0 == 0 then cn-site-set s k 6 (seconds + 1) else 0
+            in let touched = world-touch shard.world
+            in let said = if cn-short s k 0 == 0 then "The bill is filled. The builders set to work; it stands in " & show (cn-hours-left s k seconds) & " game hours."
+              else "You deliver " & show given & " units. It still needs " & cn-bill-text s k 0 "" & "."
+            in let fetching = if fetched == 0 then said else "The builders fetch " & show fetched & " units from your bank. " & said
+            in Ok (Just (gs-reply (list-push packets (sip-message #FFFFFFFF #FFFF 6 fetching)) "construction:delivered"))
+
+ Hired builders (UOAIX.md section 5, "builders do the work"): the holder beside an unfilled site says "hire builders", and for
+ every line still short the builders buy whole lots, at most cn-hire-lots a line, from the first Britain shop that lists the
+ item (else a gatherer), at that shop's asking price (ep-price, as its buy menu quotes), paid from the holder's purse gold first, then silver,
+ then copper (gv-tender-plan's split); the lot passes to the holder (ep-hand, as shops buy from shops), the bill takes what
+ it needs and the rest goes to the holder's bank.
+  cn-hire-lots : Integer = 16
+  cn-lists : List BbGoods, Integer, Integer -> Boolean
+  cn-lists (goods) (item) (i) = if i >= list-length goods then False else (list-at goods i).item == item | cn-lists goods item (i + 1)
+  cn-seller : GvWorld, Integer, Integer -> Integer
+  cn-seller (v) (item) (i) = if i >= bb-shop-count | i >= v.vendor-count then -1 else if cn-lists (bb-goods i) item 0 then i else cn-seller v item (i + 1)
+  cn-tender : EuCurrency, Integer, Integer, Integer -> Integer
+  cn-tender (x) (payer) (payee) (price) = let gold = (em-purse x.world.money payer).coin
+    in let silver = (em-purse x.silver payer).coin
+    in let copper = (em-purse x.copper payer).coin
+    in let g = min gold (price / x.copper-rate)
+    in let rest = price - g * x.copper-rate
+    in let per-silver = x.copper-rate / x.silver-rate
+    in let sv = min silver (rest / per-silver)
+    in let c = rest - sv * per-silver
+    in if c > copper then -1 else eu-pay x True payer payee c sv g
+  cn-purse-value : EuCurrency, Integer -> Integer
+  cn-purse-value (x) (purse) = eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+  cn-buy-lots : CnState, GameHarvest, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cn-buy-lots (s) (h) (k) (line) (seller) (buyer) (bank) (left) = if left <= 0 | cn-need s k line == 0 then 0
+    else let v = h.vendor
+    in let w = v.currency.world
+    in let item = cn-bill-item (cn-site s k 0) line
+    in let at = ep-lot-of w.goods seller item
+    in if at < 0 then 0
+    else let lot = (ep-lot w.goods at).serial
+    in let amount = ep-amount w.goods lot
+    in let ask = ep-price w seller item
+    in if ask < 1 | amount < 1 then 0
+    else if cn-tender v.currency (ep-actor w buyer).purse (ep-actor w seller).purse (ask * amount) /= 0 then 0
+    else if ep-hand w at buyer amount lot (ask * amount) < 0 then 0
+    else when world-get h.items.world lot
+      is Err (_) -> 0
+      is Ok (o) -> when world-update h.items.world (__record-set (__record-set (__record-set o "container" bank) "x" 40) "y" 60)
+        is Err (_) -> 0
+        is Ok (_) -> let n = min amount (cn-need s k line)
+          in when cn-take h lot n
+            is Err (_) -> 0
+            is Ok (_) -> let given = cn-site-set s k (7 + line) (cn-delivered s k line + n)
+              in n + cn-buy-lots s h k line seller buyer bank (left - 1)
+ An item no shop lists (iron ingots, wheat) is bought from the first gatherer holding a lot of it, as a player buys from one.
+  cn-gatherer : EpWorld, List Integer, Integer, Integer -> Integer
+  cn-gatherer (w) (workers) (item) (i) = if i >= list-length workers then -1
+    else if ep-valid-actor w (list-at workers i) & ep-lot-of w.goods (list-at workers i) item >= 0 then list-at workers i else cn-gatherer w workers item (i + 1)
+  cn-bill-seller : GameHarvest, List Integer, Integer -> Integer
+  cn-bill-seller (h) (workers) (item) = let shop = cn-seller h.vendor item 0
+    in if shop >= 0 then (list-at h.vendor.vendors shop).actor else cn-gatherer h.vendor.currency.world workers item 0
+  cn-buy-bill : CnState, GameHarvest, List Integer, Integer, Integer, Integer, Integer -> Integer
+  cn-buy-bill (s) (h) (workers) (k) (buyer) (bank) (line) = if line >= cn-lines then 0
+    else let seller = if cn-need s k line == 0 then -1 else cn-bill-seller h workers (cn-bill-item (cn-site s k 0) line)
+    in (if seller < 1 | seller == buyer then 0 else cn-buy-lots s h k line seller buyer bank cn-hire-lots) + cn-buy-bill s h workers k buyer bank (line + 1)
+  cn-site-near : CnState, Integer, WorldObject, Integer -> Integer
+  cn-site-near (s) (holder) (mobile) (k) = if k >= cn-sites s then -1
+    else if cn-site s k 0 /= 0 & cn-site s k 4 == holder & cn-site s k 6 == 0 & not (cn-far mobile s k) then k else cn-site-near s holder mobile (k + 1)
+  cn-hire : CnState, GameHarvest, List Integer, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  cn-hire (s) (h) (workers) (shard) (input) (seconds) = let v = h.vendor
+    in let at = gv-player v input.session.serial 0
+    in when world-get shard.world input.session.serial
+      is Err (_) -> Ok None
+      is Ok (mobile) -> let k = cn-site-near s input.session.serial mobile 0
+        in if at < 0 | k < 0 then Ok None
+        else let bank = gmb-bank-find h.items input.session.serial 0
+        in if bank == 0 then cn-denied "The builders need your bank box to keep what the site does not use."
+        else let buyer = (list-at v.players at).actor
+        in let purse = (ep-actor v.currency.world buyer).purse
+        in let before = cn-purse-value v.currency purse
+        in let bought = cn-buy-bill s h workers k buyer bank 0
+        in let spent = before - cn-purse-value v.currency purse
+        in let invalidated = gh-invalidate-quotes v 0
+        in let filled = if cn-short s k 0 == 0 then cn-site-set s k 6 (seconds + 1) else 0
+        in let touched = world-touch shard.world
+        in let said = if bought == 0 then "The builders find nothing they can afford in the shops. It needs " & cn-bill-text s k 0 "" & "."
+          else "The builders buy " & show bought & " units in the shops for " & show spent & " copper. "
+            & (if cn-short s k 0 == 0 then "The bill is filled. The builders set to work; it stands in " & show (cn-hours-left s k seconds) & " game hours." else "It still needs " & cn-bill-text s k 0 "" & ".")
+        in Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 said] "construction:hired"))
+Section: Drawing
+
+  cn-label : CnState, Integer, Integer -> Text
+  cn-label (s) (k) (seconds) = if k < 0 | k >= cn-sites s then "a building site"
+    else let name = cn-design-name (cn-site s k 0)
+    in if cn-built s k seconds then "a " & name
+    else if cn-site s k 6 > 0 then "a building site: " & name & " (builders at work, " & show (cn-hours-left s k seconds) & " game hours left)"
+    else "a building site: " & name & " (needs " & cn-bill-text s k 0 "" & ")"
+  cn-item : Integer, Integer, Integer, Integer, Integer -> List Integer
+  cn-item (serial) (art) (x) (y) (z) = sip-length (list-push (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#1A,0,0] serial) art) x) y) (bit-and z 255))
+ The 1.25 client forgets objects past 18 tiles; within 16 a viewer's record of what it holds is still true, so a site,
+ house or plot that leaves 16 is marked undrawn and sent whole again on its return.
+  cn-range : Integer = 16
+  cn-site-serial : Integer, Integer -> Integer
+  cn-site-serial (k) (n) = cn-serial-base + k * 8 + n
+  cn-draw-site : CnState, Integer, List (List Integer) -> List (List Integer)
+  cn-draw-site (s) (k) (out) = let x = cn-site s k 1
+    in let y = cn-site s k 2
+    in let z = cn-site s k 3
+    in out & [cn-item (cn-site-serial k 1) cn-pile-art x (y + 3) z, cn-item (cn-site-serial k 2) cn-scaffold-art (x - 3) (y - 3) z,
+      cn-item (cn-site-serial k 3) cn-scaffold-east (x + 3) (y - 3) z, cn-item (cn-site-serial k 4) cn-scaffold-art (x - 3) (y + 3) z,
+      cn-item (cn-site-serial k 5) cn-scaffold-east (x + 3) (y + 3) z]
+  cn-undraw-site : Integer, List (List Integer) -> List (List Integer)
+  cn-undraw-site (k) (out) = out & [sip-remove (cn-site-serial k 1), sip-remove (cn-site-serial k 2), sip-remove (cn-site-serial k 3),
+    sip-remove (cn-site-serial k 4), sip-remove (cn-site-serial k 5)]
+  cn-door : CnState, Integer -> List Integer
+  cn-door (s) (k) = let open = cn-site s k 13 == 1
+    in cn-item (cn-site-serial k 7) (if open then cn-door-open-art else cn-door-art) (cn-site s k 1 + (if open then 0 - 1 else 0)) (cn-site s k 2 + 3 + (if open then 1 else 0)) (cn-site s k 3 + 7)
+  cn-draw-house : CnState, Integer, List (List Integer) -> List (List Integer)
+  cn-draw-house (s) (k) (out) = let x = cn-site s k 1
+    in let y = cn-site s k 2
+    in let z = cn-site s k 3
+    in out & [cn-item (cn-site-serial k 6) (cn-multi-flag + cn-design-multi (cn-site s k 0)) x y z, cn-door s k, cn-item (cn-site-serial k 8) cn-sign-art (x + 2) (y + 4) (z + 5)]
+ While the builders work, two stand at the front step hammering: virtual mobiles under serials 3B000001 and up, two a
+ site, human body 0x0190 with a smith's hammer 0x13E3 (layer 1), shirt 0x1517 (5) and pants 0x152E (4) under item
+ serials 7B100001 and up, drawn as gmb-mobile lays out 0x78; 0x6E animates action 9, the one-handed swing (ServUO
+ MobileAnimation: action, frames, repeat count, then the byte 0 for forward, repeat on, delay).
+  cn-builder-base : Integer = #3B000000
+  cn-gear-base : Integer = #7B100000
+  cn-builder-serial : Integer, Integer -> Integer
+  cn-builder-serial (k) (n) = cn-builder-base + k * 2 + n
+  cn-builder-ours : Integer -> Boolean
+  cn-builder-ours (serial) = serial > cn-builder-base & serial <= cn-builder-base + cn-site-ceiling * 2
+  cn-gear : List Integer, Integer, Integer, Integer -> List Integer
+  cn-gear (out) (serial) (art) (layer) = list-push (gp-put16 (gp-put32 out serial) art) layer
+  cn-builder : Integer, Integer, Integer, Integer, Integer -> List Integer
+  cn-builder (serial) (gear) (x) (y) (z) = let a = gp-put16 (gp-put32 [#78,0,0] serial) #0190
+    in let b = list-push (list-push (gp-put16 (gp-put16 a x) y) (bit-and z 255)) 0
+    in let c = (gp-put16 b #83EA) & [0, 1]
+    in sip-length (gp-put32 (cn-gear (cn-gear (cn-gear c gear #13E3 1) (gear + 1) #1517 5) (gear + 2) #152E 4) 0)
+  cn-swing : Integer -> List Integer
+  cn-swing (serial) = list-push (list-push (list-push (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#6E] serial) 9) 5) 255) 0) 1) 1
+  cn-draw-builders : CnState, Integer, List (List Integer) -> List (List Integer)
+  cn-draw-builders (s) (k) (out) = let x = cn-site s k 1
+    in let y = cn-site s k 2 + 4
+    in let z = cn-site s k 3
+    in out & [cn-builder (cn-builder-serial k 1) (cn-gear-base + k * 8 + 1) (x - 2) y z, cn-builder (cn-builder-serial k 2) (cn-gear-base + k * 8 + 4) (x + 2) y z,
+      cn-swing (cn-builder-serial k 1), cn-swing (cn-builder-serial k 2)]
+  cn-undraw-builders : Integer, List (List Integer) -> List (List Integer)
+  cn-undraw-builders (k) (out) = out & [sip-remove (cn-builder-serial k 1), sip-remove (cn-builder-serial k 2)]
+ Viewer states: 0 nothing, 1 the site, 2 the house with its door shut, 3 with it open, 4 the site with its builders.
+  cn-house-state : Integer -> Boolean
+  cn-house-state (state) = state == 2 | state == 3
+  cn-draw : CnState, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-draw (s) (k) (had) (want) (out) = if cn-house-state had & cn-house-state want then list-push out (cn-door s k)
+    else if had == 1 & want == 4 then cn-draw-builders s k out
+    else let cleared = if had == 1 then cn-undraw-site k out
+      else if had == 4 then cn-undraw-builders k (cn-undraw-site k out)
+      else if cn-house-state had then out & [sip-remove (cn-site-serial k 6), sip-remove (cn-site-serial k 7), sip-remove (cn-site-serial k 8)] else out
+    in if want == 1 then cn-draw-site s k cleared
+    else if want == 4 then cn-draw-builders s k (cn-draw-site s k cleared)
+    else if cn-house-state want then cn-draw-house s k cleared
+    else cleared
+  cn-scan : CnState, CnViewer, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-scan (s) (v) (x) (y) (seconds) (k) (out) = if k >= cn-sites s then out
+    else let near = walk-abs (cn-site s k 1 - x) <= cn-range & walk-abs (cn-site s k 2 - y) <= cn-range
+    in let had = peek-byte v.sent k
+    in let want = if not near | cn-site s k 0 == 0 then 0 else if cn-built s k seconds then 2 + cn-site s k 13 else if cn-site s k 6 > 0 then 4 else 1
+    in if had == want then cn-scan s v x y seconds (k + 1) out
+    else let set = poke-byte v.sent k want
+    in cn-scan s v x y seconds (k + 1) (cn-draw s k had want out)
+ Every plot's four corners stand staked with a wooden post (TILEDATA 0x0017, height 5) under serials 7B200001 and up,
+ four a plot.
+  cn-stake-art : Integer = #0017
+  cn-stake-base : Integer = #7B200000
+  cn-stake-ours : Integer -> Boolean
+  cn-stake-ours (serial) = serial > cn-stake-base & serial <= cn-stake-base + cn-plot-ceiling * 4
+  cn-stake-z : WalkMap, Integer, Integer -> Integer
+  cn-stake-z (map) (x) (y) = if walk-cell map x y < 0 then 0 else walk-z map x y
+  cn-stakes : CnState, CnViewer, WalkMap, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-stakes (s) (v) (map) (x) (y) (p) (out) = if p >= cn-plots s then out
+    else let x0 = cn-plot s p 0
+    in let y0 = cn-plot s p 1
+    in let x1 = cn-plot s p 2
+    in let y1 = cn-plot s p 3
+    in let near = walk-abs ((x0 + x1) / 2 - x) <= cn-range & walk-abs ((y0 + y1) / 2 - y) <= cn-range
+    in let had = peek-byte v.sent (s.site-room + p)
+    in let want = if near then 1 else 0
+    in if had == want then cn-stakes s v map x y (p + 1) out
+    else let set = poke-byte v.sent (s.site-room + p) want
+    in let serial = cn-stake-base + p * 4
+    in cn-stakes s v map x y (p + 1) (if want == 1
+      then out & [cn-item (serial + 1) cn-stake-art x0 y0 (cn-stake-z map x0 y0), cn-item (serial + 2) cn-stake-art x1 y0 (cn-stake-z map x1 y0), cn-item (serial + 3) cn-stake-art x0 y1 (cn-stake-z map x0 y1), cn-item (serial + 4) cn-stake-art x1 y1 (cn-stake-z map x1 y1)]
+      else out & [sip-remove (serial + 1), sip-remove (serial + 2), sip-remove (serial + 3), sip-remove (serial + 4)])
+  cn-viewer : CnState, Integer -> CnViewer
+  cn-viewer (s) (connection) = let found = cn-viewer-find s.viewers connection 0
+    in let v = list-at s.viewers (if found >= 0 then found else cn-viewer-oldest s.viewers 0 0)
+    in let fresh = if found >= 0 then 0 else let cleared = cn-clear v.sent 0 (cn-sent-bytes s / 8) in let c = __record-set v "connection" connection in 0
+    in let tick = __record-set s "clock" (s.clock + 1)
+    in let used = __record-set v "used" s.clock in v
+  cn-viewer-find : List CnViewer, Integer, Integer -> Integer
+  cn-viewer-find (viewers) (connection) (i) = if i == list-length viewers then -1
+    else if (list-at viewers i).connection == connection then i else cn-viewer-find viewers connection (i + 1)
+  cn-viewer-oldest : List CnViewer, Integer, Integer -> Integer
+  cn-viewer-oldest (viewers) (i) (best) = if i == list-length viewers then best
+    else cn-viewer-oldest viewers (i + 1) (if (list-at viewers i).used < (list-at viewers best).used then i else best)
+  cn-view : CnState, WalkMap, Integer, Integer, Integer, Integer -> List (List Integer)
+  cn-view (s) (map) (connection) (x) (y) (seconds) = let v = cn-viewer s connection in cn-stakes s v map x y 0 (cn-scan s v x y seconds 0 [])
+
+Section: Walls
+
+ A standing house is solid in the walk window: wooden boards 0x04A9 floor all 7 by 7 tiles at +7, wooden wall 0x0007
+ stands on the border at +7 but in the doorway (0, +3), the closed door 0x06A5 fills the doorway, and stone stairs 0x0751
+ are the steps at +2 (TILEDATA: boards surface height 0; wall and door impassable height 20; stairs surface and bridge
+ height 5). Each piece takes its flags and height from the installed TILEDATA, as cpl-collide does for trees.
+  cn-solid : Integer, WalkMap, Integer, Integer, Integer, Integer, Boolean -> Integer
+  cn-solid (tiles) (map) (x) (y) (z) (art) (present) = let cell = walk-cell map x y
+    in if cell < 0 then 0
+    else let at = wf-tile-at art
+    in let flags = mul-u32 tiles at
+    in let height = peek-byte tiles (at + 16)
+    in let found = wf-solid-find map cell z height flags 0
+    in if present & found < 0 then (when walk-add-solid map x y z height flags is Err (_) -> 0 is Ok (_) -> 1)
+    else if not present & found >= 0 then let dropped = wf-solid-drop map cell found in 1
+    else 0
+  cn-collide-row : CnState, Integer, WalkMap, Integer, Integer, Integer -> Integer
+  cn-collide-row (s) (tiles) (map) (k) (dx) (dy) = if dx > 3 then 0
+    else let x = cn-site s k 1 + dx
+    in let y = cn-site s k 2 + dy
+    in let z = cn-site s k 3 + 7
+    in let floor = cn-solid tiles map x y z #04A9 True
+    in let border = dx == 0 - 3 | dx == 3 | dy == 0 - 3 | dy == 3
+    in let doorway = dx == 0 & dy == 3
+    in let wall = if border & not doorway then cn-solid tiles map x y z #0007 True else 0
+    in let door = if doorway then cn-solid tiles map x y z cn-door-art (cn-site s k 13 == 0) else 0
+    in floor + wall + door + cn-collide-row s tiles map k (dx + 1) dy
+  cn-collide-rows : CnState, Integer, WalkMap, Integer, Integer -> Integer
+  cn-collide-rows (s) (tiles) (map) (k) (dy) = if dy > 3 then 0
+    else cn-collide-row s tiles map k (0 - 3) dy + cn-collide-rows s tiles map k (dy + 1)
+  cn-collide-steps : CnState, Integer, WalkMap, Integer, Integer -> Integer
+  cn-collide-steps (s) (tiles) (map) (k) (dx) = if dx > 1 then 0
+    else cn-solid tiles map (cn-site s k 1 + dx) (cn-site s k 2 + 4) (cn-site s k 3 + 2) #0751 True + cn-collide-steps s tiles map k (dx + 1)
+  cn-collide : CnState, Integer, WalkMap, Integer, Integer -> Integer
+  cn-collide (s) (tiles) (map) (seconds) (k) = if tiles == 0 | k >= cn-sites s then 0
+    else let here = if not (cn-built s k seconds) | walk-cell map (cn-site s k 1) (cn-site s k 2) < 0 then 0
+      else cn-collide-rows s tiles map k (0 - 3) + cn-collide-steps s tiles map k (0 - 1)
+    in here + cn-collide s tiles map seconds (k + 1)
+
+Section: Handler
+
+  cn-ours : Integer -> Boolean
+  cn-ours (serial) = serial > cn-serial-base & serial <= cn-serial-base + cn-site-ceiling * 8
+  cn-index : Integer -> Integer
+  cn-index (serial) = (serial - cn-serial-base - 1) / 8
+ The holder opens and shuts the door from within 2 tiles; to anyone else it is locked.
+  cn-use-door : CnState, GameShard, GameInput, Integer, Integer -> Result (Maybe GameReply) Text
+  cn-use-door (s) (shard) (input) (k) (seconds) = if k >= cn-sites s | not (cn-built s k seconds) then Ok None
+    else when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> if walk-abs (cn-site s k 1 - mobile.x) > 2 | walk-abs (cn-site s k 2 + 3 - mobile.y) > 2 then cn-denied "That is too far away."
+        else if cn-site s k 4 /= input.session.serial then cn-denied "The door is locked."
+        else let swung = cn-site-set s k 13 (1 - cn-site s k 13)
+        in let touched = world-touch shard.world
+        in Ok (Just (gs-reply [cn-door s k] "construction:door"))
+ cn-handler answers a double-click or a click on a deed, a site or a house, a lift of one, and the deed's ground target.
+  cn-handler : CnState, GameHarvest, Maybe WfState, GameShard, GameInput, WalkMap, List Integer, Integer, Integer, (Integer -> Text), List Integer -> Result (Maybe GameReply) Text
+  cn-handler (s) (h) (flora) (shard) (input) (map) (packet) (now) (seconds) (namer) (workers) = if list-length packet == 0 | input.mode /= 2 | input.session.phase /= 2 then Ok None
+    else let op = list-at packet 0
+    in if (op == 6 | op == 7 | op == 9) & list-length packet >= 5 then
+      (let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+      in let part = int-mod (serial - cn-serial-base - 1) 8 + 1
+      in if cn-ours serial then
+        (if op == 7 then Ok (Just (gs-reply [sip-bounce 0] "construction:immovable"))
+        else if op == 9 & part == 8 then Ok (Just (gs-reply [sip-message serial 0 6 ("the house of " & namer (cn-site s (cn-index serial) 4))] "construction:sign"))
+        else if op == 9 then Ok (Just (gs-reply [sip-message serial 0 6 (cn-label s (cn-index serial) seconds)] "construction:name"))
+        else if part == 7 then cn-use-door s shard input (cn-index serial) seconds
+        else cn-deliver s h shard input (cn-index serial) seconds)
+      else if cn-stake-ours serial then
+        (let p = (serial - cn-stake-base - 1) / 4
+        in if op == 7 then Ok (Just (gs-reply [sip-bounce 0] "construction:immovable"))
+        else if p >= cn-plots s then Ok None
+        else Ok (Just (gs-reply [sip-message serial 0 6 ("a plot stake: plot " & show (p + 1) & ", held by " & (if cn-plot s p 4 == 0 then "the crown" else namer (cn-plot s p 4)))] "construction:stake")))
+      else if cn-builder-ours serial & op /= 7 then Ok (Just (gs-reply [sip-message serial 0 6 (if op == 9 then "a builder" else "We work as fast as the wood allows.")] "construction:builder"))
+      else if op == 6 & list-length packet == 5 then cn-begin s h shard input serial now
+      else if op == 9 & list-length packet == 5 then cn-deed-name h serial
+      else Ok None)
+    else if op == #6C & list-length packet == 19 & bit-and (gp-u32 packet 2) #FFFF0000 == cn-context then cn-place s h flora shard input map packet now
+    else if op == 3 & list-length packet > 9 & gp-speech-valid packet then
+      (let said = gp-speech-text packet
+      in if ns-has said "my plot" then Ok (Just (cn-my-plots s input seconds))
+      else if ns-has said "draw" & ns-has said "deed" then cn-draw-deed h shard input (cn-design-said said)
+      else if ns-has said "buy" & ns-has said "deed" then cn-buy-deed h shard input (cn-design-said said)
+      else if ns-has said "hire" & ns-has said "builders" then cn-hire s h workers shard input seconds
+      else Ok None)
+    else Ok None
+ A carpenter or mason of 50.0 Carpentry (skill 11, which Masonry practises) who says "draw a deed" (a cottage or a stone
+ house when the words name one) draws one on a blank scroll (0x0EF3 or 0x0E34, as
+ GameInscription reads them) from the pack (UOAIX.md section 5: drawing a deed is cheap).
+  cn-carpentry : Integer = 11
+  cn-blank-at : WorldTable, Integer, Integer -> Integer
+  cn-blank-at (world) (serial) (depth) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.amount > 0 & (o.graphic == #0EF3 | o.graphic == #0E34) then serial
+        else let inner = if depth > 0 & world-child-count world serial > 0 then cn-blank-at world (world-first-child world serial) (depth - 1) else 0
+        in if inner > 0 then inner else cn-blank-at world (world-next-sibling world serial) depth
+  cn-draw-deed : GameHarvest, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  cn-draw-deed (h) (shard) (input) (design) = let pack = gsi-pack-find h.items.world input.session.serial 0
+    in let blank = if pack == 0 then 0 else cn-blank-at h.items.world (world-first-child h.items.world pack) 2
+    in if gs-skill shard input.session.serial cn-carpentry < 500 then cn-denied "Only a carpenter of 50.0 Carpentry can draw a house plan."
+    else if blank == 0 then cn-denied "You need a blank scroll to draw the plan on."
+    else if world-room h.items.world <= 0 then cn-denied "There is no room in the world for another deed."
+    else when cn-take h blank 1
+      is Err (e) -> Err e
+      is Ok (spent) -> cn-make-deed h shard pack design [spent] ("You draw up a deed to a " & cn-design-name design & ".") "construction:drawn"
+  cn-design-said : Text -> Integer
+  cn-design-said (said) = if ns-has said "stone" then 3 else if ns-has said "cottage" then 2 else 1
+  cn-make-deed : GameHarvest, GameShard, Integer, Integer, List (List Integer), Text, Text -> Result (Maybe GameReply) Text
+  cn-make-deed (h) (shard) (pack) (design) (before) (line) (note) = when world-create h.items.world (__record-set (__record-set (__record-set (gs-item pack cn-deed-art 0) "x" 60) "y" 80) "health" design)
+    is Err (e) -> Err e
+    is Ok (serial) -> if gsi-register h.items serial 0 0 True False /= 0 then Err "deed registration refused"
+      else when world-get h.items.world serial
+        is Err (e) -> Err e
+        is Ok (made) -> let touched = world-touch shard.world
+          in Ok (Just (gs-reply (before & [sip-item made, sip-message #FFFFFFFF #FFFF 6 line]) note))
+ The Saw Horse's carpenter is Britain's architect (UOAIX.md section 5): a player inside the shop who says "buy a deed" (a cottage
+ or a stone house when the words name one) pays a plan's price to the carpenter's purse and gets the deed. A plan costs a
+ day's labour, one silver (70 copper, ep-labor's rate).
+  cn-plan-price : Integer = 70
+  cn-in-shop : BbShop, WorldObject -> Boolean
+  cn-in-shop (shop) (m) = m.x >= shop.x1 - 1 & m.x <= shop.x2 + 1 & m.y >= shop.y1 - 1 & m.y <= shop.y2 + 1
+  cn-buy-deed : GameHarvest, GameShard, GameInput, Integer -> Result (Maybe GameReply) Text
+  cn-buy-deed (h) (shard) (input) (design) = let v = h.vendor
+    in let at = gv-player v input.session.serial 0
+    in let pack = gsi-pack-find h.items.world input.session.serial 0
+    in when world-get shard.world input.session.serial
+      is Err (_) -> Ok None
+      is Ok (mobile) -> if at < 0 | v.vendor-count <= bb-carpenter | not (cn-in-shop (list-at bb-shops bb-carpenter) mobile) then Ok None
+        else if pack == 0 then cn-denied "You have no pack to carry the deed."
+        else if world-room h.items.world <= 0 then cn-denied "There is no room in the world for another deed."
+        else let w = v.currency.world
+        in if eu-pay v.currency True (ep-actor w (list-at v.players at).actor).purse (ep-actor w (list-at v.vendors bb-carpenter).actor).purse cn-plan-price 0 0 /= 0 then cn-denied ("A house plan costs " & show cn-plan-price & " copper.")
+        else cn-make-deed h shard pack design [] ("The carpenter draws up a deed to a " & cn-design-name design & " for " & show cn-plan-price & " copper.") "construction:bought"
+ Saying "my plot" lists the speaker's plots, each with what stands on it.
+  cn-plot-line : CnState, Integer, Integer -> Text
+  cn-plot-line (s) (p) (seconds) = let k = cn-plot-site s p 0
+    in "Plot " & show (p + 1) & ": " & show (cn-plot s p 0) & ".." & show (cn-plot s p 2) & ", " & show (cn-plot s p 1) & ".." & show (cn-plot s p 3)
+      & (if k < 0 then ", empty." else ", " & cn-label s k seconds & ".")
+  cn-plot-lines : CnState, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-plot-lines (s) (holder) (seconds) (p) (out) = if p >= cn-plots s then out
+    else cn-plot-lines s holder seconds (p + 1) (if cn-plot s p 4 == holder then list-push out (sip-message #FFFFFFFF #FFFF 6 (cn-plot-line s p seconds)) else out)
+  cn-my-plots : CnState, GameInput, Integer -> GameReply
+  cn-my-plots (s) (input) (seconds) = let lines = cn-plot-lines s input.session.serial seconds 0 []
+    in gs-reply (if list-length lines == 0 then [sip-message #FFFFFFFF #FFFF 6 "You hold no plot. Lord British grants the land."] else lines) "construction:plots"
+  cn-deed-name : GameHarvest, Integer -> Result (Maybe GameReply) Text
+  cn-deed-name (h) (serial) = when world-get h.items.world serial
+    is Err (_) -> Ok None
+    is Ok (deed) -> if deed.kind /= 2 | deed.graphic /= cn-deed-art | not (cn-design-ok (cn-deed-design deed)) then Ok None
+      else Ok (Just (gs-reply [sip-message serial deed.graphic 6 ("a deed to a " & cn-design-name (cn-deed-design deed))] "construction:deed"))

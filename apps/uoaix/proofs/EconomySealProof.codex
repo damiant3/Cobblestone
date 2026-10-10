@@ -1,0 +1,131 @@
+Chapter: EconomySealProof
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyStateValid
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+
+  esl-check : Text, Boolean -> [Console] Nothing
+  esl-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  esl-hours : EuCurrency, Integer -> Integer
+  esl-hours (x) (n) = if n == 0 then 0 else if eu-hour x /= 0 then -1 else esl-hours x (n - 1)
+  esl-until-sealed : EuCurrency, Integer, Integer -> Integer
+  esl-until-sealed (x) (sealed) (budget) = if x.start.sealed > sealed then 0
+    else if budget == 0 | eu-hour x /= 0 then -1 else esl-until-sealed x sealed (budget - 1)
+  esl-valid : EuCurrency -> Boolean
+  esl-valid (x) = euv-valid x & eu-census x & ev-valid x.world
+  esl-roundtrip : EuCurrency, Integer, Integer -> Text
+  esl-roundtrip (x) (buf) (copy) =
+    let checkpoint = CurrencyCheckpoint { currency = x, tick = x.world.hour, sequence = 1 }
+    in when euc-encode checkpoint buf us-max-payload
+      is Err (e) -> "encode " & e
+      is Ok (_) -> when euc-decode buf (peek-qword buf 16)
+        is Err (e) -> "decode " & e
+        is Ok (s) -> when euc-encode s copy us-max-payload
+          is Err (e) -> "re-encode " & e
+          is Ok (_) -> if esl-equal buf copy 0 then "ok" else "re-encode differs"
+  esl-equal : Integer, Integer, Integer -> Boolean
+  esl-equal (a) (b) (i) = if i >= peek-qword a 16 then True
+    else if peek-qword a i /= peek-qword b i then False else esl-equal a b (i + 8)
+  esl-tampered : Integer, Integer -> Boolean
+  esl-tampered (buf) (at) = esl-set buf at (peek-qword buf at + 1)
+  esl-set : Integer, Integer, Integer -> Boolean
+  esl-set (buf) (at) (value) =
+    let old = peek-qword buf at
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (euc-decode buf (peek-qword buf 16))
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at old
+    in let rehash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
+    in refused
+  esl-run : EuCurrency -> [Console] Nothing
+  esl-run (x) = act
+    w <- x.world
+    crown <- eu-open x 5 1
+    player <- eu-open x 2 7
+    vendor <- eu-open x 3 9
+    actor <- ep-admit w crown 1
+    p <- ep-actor w actor
+    hand <- ep-station w actor 1 1
+    smelter <- ep-station w actor 3 1
+    mint <- ep-station w actor 12 1
+    stone <- eh-source w 1 1
+    branch <- eh-source w 2 1
+    fuel <- eh-source w 2 1
+    gold <- eh-source w 6 1
+    copper <- eh-source w 25 1
+    silver <- eh-source w 26 1
+    a <- eh-harvest w actor stone
+    b <- eh-harvest w actor branch
+    c <- eh-harvest w actor fuel
+    d <- ep-craft w actor 1 hand
+    e <- ep-craft w actor 31 hand
+    f <- ep-set p.skills 1 1000
+    g <- ep-set p.skills 2 1000
+    h <- ep-set p.skills 8 1000
+    i <- eh-harvest w actor gold
+    j <- eh-harvest w actor copper
+    k <- eh-harvest w actor silver
+    l <- ep-craft w actor 8 smelter
+    m <- ep-craft w actor 32 smelter
+    n <- ep-craft w actor 33 smelter
+    policy-c <- eu-mint-policy x True actor 1 1000
+    policy-s <- eu-mint-policy x True actor 2 100
+    policy-g <- eu-mint-policy x True actor 3 10
+    mint-c <- eu-strike x True actor mint 1 1
+    mint-s <- eu-strike x True actor mint 2 1
+    mint-g <- eu-strike x True actor mint 3 1
+    grant <- eu-grant x True actor crown 10 1 1
+    tax <- eu-tax x True actor 1000
+    kept <- eu-lend x True 1 player 1 200 0 50
+    lapsed <- eu-lend x True 1 player 2 20 2 30
+    payment <- eu-pay x True player vendor 0 5 0
+    advanced <- esl-hours x 12
+    esl-check "fixture with two open loans is valid before any seal" (kept == 1 & lapsed == 1 & payment == 0 & advanced == 0 & x.start.sealed == 0 & esl-valid x)
+    events <- x.count
+    gold-rows <- x.world.money.entry-count
+    segment-bytes <- eu-seg-bytes x
+    sealed <- eu-seal x
+    seg <- x.start.archive
+    esl-check ("the seal captures its rows as a SEG1 segment of " & show segment-bytes & " bytes") (seg /= 0 & x.start.pending == 1 & peek-qword seg 0 == #31474553 & peek-qword seg 16 == segment-bytes & peek-qword seg 24 == 1 & peek-qword seg 40 == events & peek-qword seg 72 == gold-rows & peek-qword seg 48 == eu-seg-hash seg segment-bytes 0 2166136261)
+    esl-check "a seal empties the event log and all three ledgers and keeps every balance" (sealed == 0 & x.start.sealed == 1 & x.base == events & x.count == 0 & x.world.money.entry-count == 0 & x.copper.entry-count == 0 & x.silver.entry-count == 0 & gold-rows > 0 & (em-purse x.copper player).coin > 0)
+    esl-check "the sealed world validates from its opening" (esl-valid x)
+    after <- esl-hours x 20
+    repaid <- eu-repay x True player 1 kept 200
+    esl-check "a loan opened before the seal is repaid after it, and another defaults after it" (after == 0 & repaid == 0 & (list-at x.copper.loans 0).status == 2 & (list-at x.silver.loans 0).status == 3 & x.silver.defaults == 1 & esl-valid x)
+    returned <- eu-pay x True vendor player 0 1 0
+    retaxed <- eu-tax x True actor 500
+    esl-check "payment and tax continue after the seal" (returned == 0 & retaxed == 0 & esl-valid x)
+    buf <- alloc-bytes us-max-payload
+    copy <- alloc-bytes us-max-payload
+    trip <- esl-roundtrip x buf copy
+    esl-check ("a sealed world saves and restores byte for byte: " & trip) (trip == "ok")
+    esl-check "a rehashed opening balance refuses" (esl-tampered buf ((euc-tail-from (peek-qword buf 184)) + 8 * player))
+    esl-check "a rehashed start table purse refuses" (esl-tampered buf (euc-part-at buf 6 - buf + 8 + (player - 1) * 24 + 16))
+    esl-check "a rehashed event base refuses" (esl-tampered buf 168)
+    esl-check "a rehashed zero segment count under a nonzero base refuses" (esl-set buf 176 0)
+    tight <- __record-set x.start "room" 1
+    refused <- eu-seal x
+    roomy <- __record-set x.start "room" -1
+    esl-check "a seal that would not fit its archive region refuses and changes nothing" (refused == -1 & x.start.sealed == 1 & x.count > 0)
+    rolled <- esl-until-sealed x 1 9000
+    esl-check ("economy hours roll the logs over by themselves: hour " & show x.world.hour & ", segment " & show x.start.sealed & ", base " & show x.base) (rolled == 0 & x.start.sealed == 2 & esl-valid x)
+    again <- esl-roundtrip x buf copy
+    esl-check ("the second segment saves and restores byte for byte: " & again) (again == "ok")
+  end
+  opening : [Console] Nothing = act
+    when ep-new (ex-catalog 0) (em-new 0)
+      is Err (e) -> print-line-uni ("FAIL currency world " & e)
+      is Ok (w) -> when eu-new w
+        is Err (e) -> print-line-uni ("FAIL currency fixture " & e)
+        is Ok (x) -> esl-run x
+  end

@@ -1,0 +1,143 @@
+Chapter: CompositeCartographyProof
+  cites Uoaix chapter CompositeStore
+
+  ckp-check : Text, Boolean -> [Console] Integer
+  ckp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  ckp-fill : WalkMap, Integer -> Integer
+  ckp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in ckp-fill map (i + 1)
+  ckp-create : Integer -> List Integer
+  ckp-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Mapmaker" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  ckp-use : Integer -> List Integer
+  ckp-use (serial) = gp-put32 [6] serial
+  ckp-note : Result GameReply Text -> Text
+  ckp-note (r) = when r is Ok (reply) -> reply.note is Err (e) -> "error " & e
+  ckp-first-packet : Result GameReply Text -> List Integer
+  ckp-first-packet (r) = when r is Ok (reply) -> (if list-length reply.packets == 0 then [] else list-at reply.packets 0) is Err (_) -> []
+  ckp-move : GameShard, Integer, Integer, Integer -> Boolean
+  ckp-move (game) (serial) (x) (y) = when world-get game.world serial
+    is Err (_) -> False
+    is Ok (m) -> is-ok (world-update game.world (__record-set (__record-set m "x" x) "y" y))
+  ckp-find : GameShard, Integer, Integer -> Integer
+  ckp-find (game) (graphic) (slot) = if slot >= game.world.capacity then 0
+    else when world-at game.world slot
+      is Err (_) -> ckp-find game graphic (slot + 1)
+      is Ok (o) -> if o.kind == 2 & o.graphic == graphic then o.serial else ckp-find game graphic (slot + 1)
+  ckp-give : CompositeGame, GameShard, Integer, Integer -> Integer
+  ckp-give (owner) (game) (pack) (graphic) = when world-create game.world (gs-item pack graphic 0)
+    is Err (_) -> 0
+    is Ok (serial) -> let known = gsi-register owner.items serial 0 0 True True in serial
+  ckp-button : Integer -> List Integer
+  ckp-button (unused) = [#12, 0, 9, #24, 49, 50, 32, 48, 0]
+  ckp-count : GameShard, Integer, Integer, Integer -> Integer
+  ckp-count (game) (graphic) (slot) (n) = if slot >= game.world.capacity then n
+    else when world-at game.world slot
+      is Err (_) -> ckp-count game graphic (slot + 1) n
+      is Ok (o) -> ckp-count game graphic (slot + 1) (if o.kind == 2 & o.graphic == graphic then n + 1 else n)
+  ckp-said : Result (Maybe GameReply) Text -> Text
+  ckp-said (r) = when r is Err (e) -> "error " & e is Ok (None) -> "none" is Ok (Just (reply)) -> reply.note
+  ckp-first : CompositeOwner, List GameOpcodeSpec, WalkMap -> [Console, Device.Block] Integer
+  ckp-first (store) (specs) (map) = let owner = store.state in act
+      input <- gn-input-with specs 1
+      mode <- __record-set input "mode" 2
+      phase <- __record-set input.session "phase" 1
+      game <- owner.checkpoint.game
+      entry <- cs-route store game input map 2593 (ckp-create 0)
+      player <- input.session.serial
+      placed <- ckp-move game player 1440 1710
+      pack <- gsi-pack-find game.world player 0
+      blank <- ckp-give owner game pack cart-blank
+      a <- ckp-check "the fixture mapmaker carries a blank map" (is-ok entry & placed & pack > 0 & blank > 0)
+      pressed <- cs-route store game input map 2593 (ckp-button 0)
+      a2 <- ckp-check "the Cartography skill button without a pen names the blank map and the mapmaker's pen" (ckp-note pressed == "You need a blank map and a mapmaker's pen in your backpack to draw a map." & ckp-find game cart-drawn 0 == 0)
+      penless <- cs-route store game input map 2593 (ckp-use blank)
+      b <- ckp-check "a blank map with no mapmaker's pen in the pack is refused" (ckp-note penless == "You need a mapmaker's pen to draw a map." & ckp-find game cart-drawn 0 == 0)
+      pen <- ckp-give owner game pack #0FBF
+      skilled <- gs-skill-set game player 12 1000
+      drawn <- cs-route store game input map 2593 (ckp-use blank)
+      map-serial <- ckp-find game cart-drawn 0
+      print-line-uni ("DRAWN " & ckp-note drawn & " map " & show map-serial)
+      c <- ckp-check "at Cartography 100.0 the pen draws a local map of 264 tiles each way and spends the blank map" (pen > 0 & skilled >= 0
+        & ckp-note drawn == "cartography drew reach=264" & map-serial > 0 & is-err (world-get game.world blank))
+      shown <- cs-route store game input map 2593 (ckp-use map-serial)
+      seen <- ckp-first-packet shown
+      d <- ckp-check "double-clicking the drawn map sends MapDetails 0x90: gump 0x139D, bounds 1176,1446 to 1704,1974, 200 by 200" (list-length seen == 19
+        & list-at seen 0 == #90 & gp-u32 seen 1 == map-serial & gp-u16 seen 5 == #139D & gp-u16 seen 7 == 1176 & gp-u16 seen 9 == 1446
+        & gp-u16 seen 11 == 1704 & gp-u16 seen 13 == 1974 & gp-u16 seen 15 == 200 & gp-u16 seen 17 == 200)
+      empty <- cs-route store game input map 2593 (ckp-button 0)
+      blank2 <- ckp-give owner game pack cart-blank
+      later <- when owner.magic is None -> Err "no magery" is Just (magic) -> cart-handler-at owner.production.harvest owner.active magic game input (ckp-button 0) (get-ticks + gh-ticks 10000)
+      f <- ckp-check "with no blank map the button names both items again; with one, the button draws as a double-click does" (ckp-note empty == "You need a blank map and a mapmaker's pen in your backpack to draw a map."
+        & ckp-said later == "cartography drew reach=264" & is-err (world-get game.world blank2) & ckp-count game cart-drawn 0 0 == 2)
+      committed <- cs-commit store True
+      e <- ckp-check "the world commits with the drawn map" (is-ok committed)
+      a + a2 + b + c + d + f + e
+  end
+  ckp-later : CompositeOwner, Magery -> [Console] Integer
+  ckp-later (store) (magic) = let owner = store.state in act
+    game <- owner.checkpoint.game
+    map-serial <- ckp-find game cart-drawn 0
+    kept <- if not (mgs-known magic map-serial) then [] else when mgs-meta magic map-serial is Err (_) -> [] is Ok (m) -> (if m.chart then cart-details 0 m.x m.y m.z else [])
+    ckp-check "a restart keeps the drawn map's area" (map-serial > 0 & list-length kept == 19 & gp-u16 kept 7 == 1176 & gp-u16 kept 13 == 1974)
+  end
+
+  ckp-data : Integer -> Integer
+  ckp-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  ckp-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  ckp-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+ Magery attaches as the server attaches it at boot; a drawn map's area lives in its item definitions.
+  ckp-attach : CompositeOwner, WdState, WalkMap -> Result Magery Text
+  ckp-attach (store) (decoration) (map) = let owner = store.state
+    in let magic = mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (ckp-cover map)
+    in let hooked = mge-bind magic
+    in let attached = __record-set owner "magic" (Just magic)
+    in when cc-magic-restore owner magic
+      is Err (e) -> Err e
+      is Ok (_) -> Ok magic
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> ckp-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1392 1664 96 96
+     is Err (e) -> ckp-check e False
+     is Ok (map) -> let filled = ckp-fill map 0
+      in when wd-read (ckp-data 0) 240 map map.stride
+       is Err (e) -> ckp-check e False
+       is Ok (decoration) -> act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> ckp-check ("store " & e) False
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load store 0
+       when loaded
+        is Err (e) -> ckp-check ("recovery " & e) False
+        is Ok (owner) -> when ckp-attach owner decoration map
+         is Err (e) -> ckp-check ("magery " & e) False
+         is Ok (magic) -> if fresh then ckp-first owner specs map else ckp-later owner magic
+      end
+    end
+
+Page 1

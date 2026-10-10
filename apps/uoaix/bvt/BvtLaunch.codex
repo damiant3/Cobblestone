@@ -1,0 +1,22 @@
+Chapter: BvtLaunch
+  cites Uoaix chapter CompositeLaunch
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-launch : Integer -> [Console] Integer
+  bvt-launch (unused) = act
+    a <- bvt-check "launch record UOAIX TESTING sets testing and dev, and leaves the economy closed" (when cl-parse [85,79,65,73,88,32,84,69,83,84,73,78,71,10] is Ok (m) -> m.testing & m.dev & not m.open is Err (_) -> False)
+    b <- bvt-check "launch record with an unknown mode is refused" (when cl-parse [85,79,65,73,88,32,66,79,71,85,83,10] is Ok (_) -> False is Err (_) -> True)
+    c <- bvt-check "launch record UOAIX TESTING OPEN sets testing and opens the economy at boot" (when cl-parse [85,79,65,73,88,32,84,69,83,84,73,78,71,32,79,80,69,78,10] is Ok (m) -> m.testing & m.dev & m.open is Err (_) -> False)
+    d <- bvt-check "no other launch opens the economy: DEV and an empty record leave it closed" ((when cl-parse [85,79,65,73,88,32,68,69,86,10] is Ok (m) -> not m.open is Err (_) -> False) & (when cl-parse [] is Ok (m) -> not m.open & not m.testing is Err (_) -> False))
+    e <- bvt-launch-hours 0
+    f <- bvt-check "LINKS 64 before UOAIX TESTING sets 64 game links and keeps the mode; no line means 32" ((when cl-parse ([76,73,78,75,83,32,54,52,10] & [85,79,65,73,88,32,84,69,83,84,73,78,71,10]) is Ok (m) -> m.links == 64 & m.testing is Err (_) -> False) & (when cl-parse [85,79,65,73,88,32,84,69,83,84,73,78,71,10] is Ok (m) -> m.links == 32 is Err (_) -> False))
+    g <- bvt-check "LINKS 0 asks for links admitted by box load" (when cl-parse ([76,73,78,75,83,32,48,10] & [85,79,65,73,88,32,68,69,86,10]) is Ok (m) -> m.links == 0 & m.dev is Err (_) -> False)
+    h <- bvt-check "LINKS past 256, with no digits or with a letter is refused" ((when cl-parse [76,73,78,75,83,32,51,48,48,10] is Ok (_) -> False is Err (_) -> True) & (when cl-parse [76,73,78,75,83,32,10] is Ok (_) -> False is Err (_) -> True) & (when cl-parse [76,73,78,75,83,32,54,120,10] is Ok (_) -> False is Err (_) -> True))
+    a + b + c + d + e + f + g + h
+  end
+  bvt-launch-hours : Integer -> [Console] Integer
+  bvt-launch-hours (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("hours economy: " & e) False
+    is Ok (x) -> bvt-check "a founded economy's hour advances to 2 and its state stays valid (cg-economy-hours, the town step's clock)" (x.world.hour == 0 & cg-economy-hours x 2 2 & x.world.hour == 2 & ev-valid x.world)

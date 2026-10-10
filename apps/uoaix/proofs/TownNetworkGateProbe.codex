@@ -1,0 +1,122 @@
+Chapter: TownNetworkGateProbe
+  cites Uoaix chapter TownNetworkOutcomes
+  cites Uoaix chapter TownNetworkWeights
+
+  gp-load : TnState, TnoData, Integer, Integer -> Integer
+  gp-load (s) (d) (row) (i) = if i == 32 then 0
+    else let a = tn-input s i (list-at d.inputs (row * 32 + i)) in gp-load s d row (i + 1)
+  gp-state : TnModel, TnoData, Integer -> TnState
+  gp-state (m) (d) (row) = let s = tn-new 0 in let a = gp-load s d row 0 in let b = tn-step m s in s
+  gp-output : TnModel, TnoData, Integer, Integer, Integer -> Integer
+  gp-output (m) (d) (row) (output) (target) = if target == 1 then list-at d.outcomes (row * 14 + output)
+    else list-at (gp-state m d row).outputs output
+  gp-row : Integer, Integer -> Integer
+  gp-row (base) (variant) = base + variant * tno-base-rows
+  gp-alarm : TnModel, TnoData, Integer, Integer, Integer -> Integer
+  gp-alarm (m) (d) (base) (variant) (target) = gp-output m d (gp-row base variant) 11 target
+  gp-trade : TnModel, TnoData, Integer, Integer, Integer -> Integer
+  gp-trade (m) (d) (base) (variant) (target) = gp-output m d (gp-row base variant) 12 target
+  gp-in : TnoData, Integer, Integer, Integer -> Integer
+  gp-in (d) (base) (variant) (slot) = list-at d.inputs (gp-row base variant * 32 + slot)
+  gp-least : Integer, Integer -> Integer
+  gp-least (a) (b) = if a < b then a else b
+  gp-most : Integer, Integer -> Integer
+  gp-most (a) (b) = if a > b then a else b
+  gp-raid-room : TnoData, Integer, Integer -> Boolean
+  gp-raid-room (d) (base) (variant) = gp-in d base variant 0 <= 100
+  gp-raid-pair : TnModel, TnoData, Integer, Integer, Integer -> Integer
+  gp-raid-pair (m) (d) (base) (calm) (target) = if not (gp-raid-room d base calm) then 1001
+    else gp-alarm m d base (calm + 1) target - gp-alarm m d base calm target
+  gp-raid : TnModel, TnoData, Integer, Integer, Integer -> Integer
+  gp-raid (m) (d) (base) (least) (target) = if base == tno-base-rows then least
+    else gp-raid m d (base + 1) (gp-least least (gp-least (gp-raid-pair m d base 0 target) (gp-raid-pair m d base 2 target))) target
+  gp-calm : TnModel, TnoData, Integer, Integer, Integer -> Integer
+  gp-calm (m) (d) (base) (most) (target) = if base == tno-base-rows then most
+    else if not (gp-raid-room d base 2) then gp-calm m d (base + 1) most target
+    else gp-calm m d (base + 1) (gp-most most (gp-alarm m d base 2 target)) target
+  gp-fed-eligible : TnoData, Integer -> Boolean
+  gp-fed-eligible (d) (base) = gp-in d base 0 0 >= gp-in d base 2 0 + 200
+  gp-fed : TnModel, TnoData, Integer, Integer, Integer, Integer -> Integer
+  gp-fed (m) (d) (base) (seen) (failed) (target) = if base == tno-base-rows then seen * 1000 + failed
+    else if not (gp-fed-eligible d base) then gp-fed m d (base + 1) seen failed target
+    else let lower = gp-alarm m d base 2 target < gp-alarm m d base 0 target
+    in gp-fed m d (base + 1) (seen + 1) (if lower then failed else failed + 1) target
+  gp-price-eligible : TnoData, Integer -> Boolean
+  gp-price-eligible (d) (base) = gp-in d base 2 7 < 1000 & gp-in d base 6 7 > gp-in d base 2 7
+    & list-at d.outcomes (gp-row base 6 * 14 + 12) < list-at d.outcomes (gp-row base 2 * 14 + 12)
+  gp-falls : TnModel, TnoData, Integer, Integer -> Boolean
+  gp-falls (m) (d) (base) (target) =
+    let cheap = gp-trade m d base 2 target
+    in let dear = gp-trade m d base 4 target
+    in let dearer = gp-trade m d base 5 target
+    in let dearest = gp-trade m d base 6 target
+    in dear <= cheap & dearer <= dear & dearest <= dearer & dearest < cheap
+  gp-price : TnModel, TnoData, Integer, Integer, Integer, Integer -> Integer
+  gp-price (m) (d) (base) (seen) (failed) (target) = if base == tno-base-rows then seen * 1000 + failed
+    else if not (gp-price-eligible d base) then gp-price m d (base + 1) seen failed target
+    else gp-price m d (base + 1) (seen + 1) (if gp-falls m d base target then failed else failed + 1) target
+  gp-pinned : TnModel, TnoData, Integer, Integer, Integer -> Boolean
+  gp-pinned (m) (d) (output) (row) (target) = if row == d.count then True
+    else let value = gp-output m d row output target
+    in (value >= 1000 | value <= -1000) & gp-pinned m d output (row + 1) target
+  gp-saturated : TnModel, TnoData, Integer -> Integer
+  gp-saturated (m) (d) (output) = if output == 14 then 0
+    else (if gp-pinned m d output 0 0 & not (gp-pinned m d output 0 1) then 1 else 0) + gp-saturated m d (output + 1)
+  gp-trades : TnModel, TnoData, Integer, Integer -> Text
+  gp-trades (m) (d) (base) (target) = if base == tno-base-rows then ""
+    else if not (gp-price-eligible d base) then gp-trades m d (base + 1) target
+    else "base=" & show base & " trade " & show (gp-trade m d base 2 target) & "," & show (gp-trade m d base 4 target)
+      & "," & show (gp-trade m d base 5 target) & "," & show (gp-trade m d base 6 target)
+      & " at slot7 " & show (gp-in d base 2 7) & "," & show (gp-in d base 4 7) & "," & show (gp-in d base 5 7)
+      & "," & show (gp-in d base 6 7) & "; " & gp-trades m d (base + 1) target
+  gp-sale-eligible : TnoData, Integer -> Boolean
+  gp-sale-eligible (d) (base) = gp-in d base 7 9 > gp-in d base 2 9 & gp-in d base 8 9 > gp-in d base 7 9
+    & list-at d.outcomes (gp-row base 8 * 14 + 12) > list-at d.outcomes (gp-row base 2 * 14 + 12)
+  gp-rises : TnModel, TnoData, Integer, Integer -> Boolean
+  gp-rises (m) (d) (base) (target) =
+    let plain = gp-trade m d base 2 target
+    in let richer = gp-trade m d base 7 target
+    in let richest = gp-trade m d base 8 target
+    in richer >= plain & richest >= richer & richest > plain
+  gp-sale : TnModel, TnoData, Integer, Integer, Integer, Integer -> Integer
+  gp-sale (m) (d) (base) (seen) (failed) (target) = if base == tno-base-rows then seen * 1000 + failed
+    else if not (gp-sale-eligible d base) then gp-sale m d (base + 1) seen failed target
+    else gp-sale m d (base + 1) (seen + 1) (if gp-rises m d base target then failed else failed + 1) target
+  gp-sales : TnModel, TnoData, Integer, Integer -> Text
+  gp-sales (m) (d) (base) (target) = if base == tno-base-rows then ""
+    else if not (gp-sale-eligible d base) then gp-sales m d (base + 1) target
+    else "base=" & show base & " trade " & show (gp-trade m d base 2 target) & "," & show (gp-trade m d base 7 target)
+      & "," & show (gp-trade m d base 8 target) & " at slot9 " & show (gp-in d base 2 9) & "," & show (gp-in d base 7 9)
+      & "," & show (gp-in d base 8 9) & "; " & gp-sales m d (base + 1) target
+  gp-check : Text, Boolean -> [Console] Nothing
+  gp-check (name) (ok) = when ok
+    is True -> print-line-uni ("PASS " & name)
+    is False -> print-line-uni ("FAIL " & name)
+  gp-arm : TnModel, TnoData, Integer, Text -> [Console] Nothing
+  gp-arm (m) (d) (target) (arm) = gp-report d arm (gp-raid m d 0 1001 target) (gp-calm m d 0 -1 target) (gp-fed m d 0 0 0 target) (gp-price m d 0 0 0 target) (gp-trades m d 0 target) (gp-sale m d 0 0 0 target) (gp-sales m d 0 target)
+  gp-report : TnoData, Text, Integer, Integer, Integer, Integer, Text, Integer, Text -> [Console] Nothing
+  gp-report (d) (arm) (raid) (calm) (fed) (price) (trades) (sale) (sales) = act
+    print-line-uni (arm & " raid margin least=" & show raid & " calm alarm most=" & show calm & " fed rows=" & show (fed / 1000) & " failed=" & show (int-mod fed 1000) & " price rows=" & show (price / 1000) & " failed=" & show (int-mod price 1000))
+    print-line-uni (arm & " " & trades)
+    print-line-uni (arm & " sale rows=" & show (sale / 1000) & " failed=" & show (int-mod sale 1000) & " " & sales)
+    gp-check (arm & " raid alarm at least 300 above the same fed or unfed row at safety 1000, hunger under 10") (raid >= 300 & raid <= 1000)
+    gp-check (arm & " calm alarm at most 200 at safety 1000, hunger under 10") (calm >= 0 & calm <= 200)
+    gp-check (arm & " fed lowers alarm on every row the meals fed") (fed / 1000 > 0 & int-mod fed 1000 == 0)
+    gp-check (arm & " trade opinion falls as the goal price rises") (price / 1000 > 0 & int-mod price 1000 == 0)
+    gp-check (arm & " trade opinion rises as the own produced-item quote rises") (sale / 1000 > 0 & int-mod sale 1000 == 0)
+  end
+  gp-grade : TnModel, TnoData -> [Console] Nothing
+  gp-grade (m) (d) = act
+    gp-arm m d 1 "target"
+    gp-arm m d 0 "model"
+    gp-check ("model outputs pinned at a bound on every case where the target is not: " & show (gp-saturated m d 0)) (gp-saturated m d 0 == 0)
+  end
+  opening : [Console] Nothing = act
+    when tn-trained-model 0
+      is Err (e) -> print-line-uni ("FAIL model " & e)
+      is Ok (m) -> act
+        when tno-build 0
+          is Err (e) -> print-line-uni ("FAIL corpus " & e)
+          is Ok (d) -> gp-grade m d
+      end
+  end

@@ -3,125 +3,53 @@ Chapter: GameCraftProduction
 
   CraftTake = record { serial : Integer, item : Integer, quantity : Integer,
     quality : Integer, wear : Integer, basis : Integer, whole : Boolean }
-  CraftCandidate = record { world : EpWorld, actor : EpActor }
   gcr-select : GameHarvest, GvPlayer, Integer, Integer, Integer, List CraftTake -> Result (List CraftTake) Text
-  gcr-select (h) (player) (item) (need) (i) (takes) =
+  gcr-select (h) (player) (item) (need) (unused) (takes) = gcr-select-from h player item need (ep-lot-first h.vendor.currency.world.goods player.actor) takes
+  gcr-select-from : GameHarvest, GvPlayer, Integer, Integer, Integer, List CraftTake -> Result (List CraftTake) Text
+  gcr-select-from (h) (player) (item) (need) (serial) (takes) =
     if item == 0 | need == 0 then Ok takes
-    else if i == h.vendor.lot-count then Err "Not enough recipe materials in your backpack."
-    else let lot = list-at h.vendor.lots i
-    in if lot.actor /= player.actor | lot.item /= item | lot.quantity < 1
-      | not (gv-under h.items.world lot.serial player.pack 65) | gmb-root h.items lot.serial 65 /= 0 then gcr-select h player item need (i + 1) takes
+    else if serial == 0 then
+      (let have = gcr-held takes item 0
+      in Err ("You need " & show (have + need) & " " & (list-at h.vendor.currency.world.catalog.items (item - 1)).name
+        & " in your backpack and have " & show have & "."))
+    else let lot = ep-lot h.vendor.currency.world.goods serial
+    in let next = ep-lot-next h.vendor.currency.world.goods serial
+    in if lot.item /= item | ep-amount h.vendor.currency.world.goods lot.serial < 1
+      | not (gv-under h.items.world lot.serial player.pack 65) | gmb-root h.items lot.serial 65 /= 0 then gcr-select-from h player item need next takes
     else when world-get h.items.world lot.serial
       is Err (e) -> Err e
-      is Ok (obj) -> if obj.kind /= 2 | obj.amount /= lot.quantity | world-has-child h.items.world lot.serial 0 then Err "Craft material binding invalid."
-        else let quantity = min need lot.quantity
+      is Ok (obj) -> if obj.kind /= 2 | world-has-child h.items.world lot.serial 0 then Err "Craft material binding invalid."
+        else let quantity = min need obj.amount
         in let take = CraftTake { serial = lot.serial, item = item, quantity = quantity,
-          quality = lot.quality, wear = lot.wear, basis = lot.basis * quantity / lot.quantity, whole = quantity == lot.quantity }
-        in gcr-select h player item (need - quantity) (i + 1) (list-push takes take)
+          quality = lot.quality, wear = lot.wear, basis = lot.basis * quantity / obj.amount, whole = quantity == obj.amount }
+        in gcr-select-from h player item (need - quantity) next (list-push takes take)
+  gcr-held : List CraftTake, Integer, Integer -> Integer
+  gcr-held (takes) (item) (i) = if i == list-length takes then 0
+    else (if (list-at takes i).item == item then (list-at takes i).quantity else 0) + gcr-held takes item (i + 1)
   gcr-tool : GameHarvest, GvPlayer, Integer, Integer -> Integer
-  gcr-tool (h) (player) (item) (i) = if i == h.vendor.lot-count then -1
-    else let lot = list-at h.vendor.lots i
-    in if lot.actor /= player.actor | lot.item /= item | lot.quantity /= 1 | lot.wear < 1 then gcr-tool h player item (i + 1)
+  gcr-tool (h) (player) (item) (unused) = gcr-tool-from h player item (ep-lot-first h.vendor.currency.world.goods player.actor)
+  gcr-tool-from : GameHarvest, GvPlayer, Integer, Integer -> Integer
+  gcr-tool-from (h) (player) (item) (serial) = if serial == 0 then -1
+    else let lot = ep-lot h.vendor.currency.world.goods serial
+    in let next = ep-lot-next h.vendor.currency.world.goods serial
+    in if lot.item /= item | ep-amount h.vendor.currency.world.goods lot.serial /= 1 | lot.wear < 1 then gcr-tool-from h player item next
     else when world-get h.items.world lot.serial
-      is Err (_) -> gcr-tool h player item (i + 1)
-      is Ok (tool) -> if gh-carried h player tool & tool.amount == 1 then i else gcr-tool h player item (i + 1)
-  gcr-zero : EpActor, Integer -> Integer
-  gcr-zero (p) (item) = if item == 0 then 0 else
-    let a = ep-set p.stock item 0
-    in let b = ep-set p.quality item 0
-    in let c = ep-set p.wear item 0
-    in ep-set p.cost item 0
-  gcr-fill : EpActor, List CraftTake, Integer -> Integer
-  gcr-fill (p) (takes) (i) = if i == list-length takes then 0
+      is Err (_) -> gcr-tool-from h player item next
+      is Ok (tool) -> if gh-carried h player tool & tool.amount == 1 then serial else gcr-tool-from h player item next
+  gcr-picks : List CraftTake, Integer, List EpPick -> List EpPick
+  gcr-picks (takes) (i) (out) = if i == list-length takes then out
     else let t = list-at takes i
-    in let a = ep-add p.stock t.item t.quantity
-    in let b = ep-add p.quality t.item (t.quantity * t.quality)
-    in let c = ep-add p.wear t.item (t.quantity * t.wear)
-    in let d = ep-add p.cost t.item t.basis
-    in gcr-fill p takes (i + 1)
-  gcr-isolate-tool : EpActor, GvLot -> Integer
-  gcr-isolate-tool (p) (tool) = if tool.item == 0 then 0
-    else let a = ep-set p.stock tool.item 1
-    in let b = ep-set p.quality tool.item tool.quality
-    in let c = ep-set p.wear tool.item tool.wear
-    in ep-set p.cost tool.item tool.basis
-  gcr-recombine-tool : EpActor, EpActor, GvLot -> Integer
-  gcr-recombine-tool (p) (original) (tool) = if tool.item == 0 then 0
-    else let a = ep-add p.stock tool.item (ep-at original.stock tool.item - 1)
-    in let b = ep-add p.quality tool.item (ep-at original.quality tool.item - tool.quality)
-    in let c = ep-add p.wear tool.item (ep-at original.wear tool.item - tool.wear)
-    in ep-add p.cost tool.item (ep-at original.cost tool.item - tool.basis)
-  gcr-candidate : EpWorld, Integer, EgRecipe, GvLot, List CraftTake -> CraftCandidate
-  gcr-candidate (w) (actor-id) (recipe) (tool) (takes) =
-    let original = ep-actor w actor-id
-    in let p = EpActor { purse = original.purse, place = original.place, hunger = original.hunger,
-      attempts = original.attempts, stock = gh-buffer original.stock 129, quality = gh-buffer original.quality 129,
-      cost = gh-buffer original.cost 129, wear = gh-buffer original.wear 129, skills = gh-buffer original.skills 11 }
-    in let one = gcr-zero p recipe.one
-    in let two = gcr-zero p recipe.two
-    in let three = gcr-zero p recipe.three
-    in let inputs = gcr-fill p takes 0
-    in let tool-bound = gcr-isolate-tool p tool
-    in let actors = gh-actor-list w.actors 0 (__list-with-capacity (list-length w.actors))
-    in let bound = list-set-at actors (actor-id - 1) p
-    in let world = EpWorld { catalog = w.catalog, money = w.money, actors = actors,
-      stations = w.stations, nodes = w.nodes, actor-count = w.actor-count, station-count = w.station-count,
-      node-count = w.node-count, hour = w.hour, gathered = w.gathered, found = w.found, crafted = gh-buffer w.crafted 129,
-      consumed = gh-buffer w.consumed 129, sales = w.sales, turnover = w.turnover,
-      crown-turnover = w.crown-turnover, trades = w.trades, trade-count = w.trade-count,
-      mint-owner = w.mint-owner, mint-rate = w.mint-rate, mint-ingots = w.mint-ingots }
-    in CraftCandidate { world = world, actor = p }
-  gcr-sum : List CraftTake, Integer, Integer, Integer -> Integer
-  gcr-sum (takes) (item) (field) (i) = if i == list-length takes then 0
-    else let t = list-at takes i
-    in let value = if t.item /= item then 0 else if field == 0 then t.quantity
-      else if field == 1 then t.quantity * t.quality else if field == 2 then t.quantity * t.wear else t.basis
-    in value + gcr-sum takes item field (i + 1)
-  gcr-recombine-item : EpActor, EpActor, List CraftTake, Integer -> Integer
-  gcr-recombine-item (p) (original) (takes) (item) = if item == 0 then 0
-    else let a = ep-add p.stock item (ep-at original.stock item - gcr-sum takes item 0 0)
-    in let b = ep-add p.quality item (ep-at original.quality item - gcr-sum takes item 1 0)
-    in let c = ep-add p.wear item (ep-at original.wear item - gcr-sum takes item 2 0)
-    in ep-add p.cost item (ep-at original.cost item - gcr-sum takes item 3 0)
-  gcr-publish : CraftCandidate, EpWorld, Integer -> Integer
-  gcr-publish (candidate) (world) (actor-id) =
-    let p = ep-actor world actor-id
-    in let a = gh-copy candidate.actor.stock p.stock 129 0
-    in let b = gh-copy candidate.actor.quality p.quality 129 0
-    in let c = gh-copy candidate.actor.cost p.cost 129 0
-    in let d = gh-copy candidate.actor.wear p.wear 129 0
-    in let e = gh-copy candidate.actor.skills p.skills 11 0
-    in let f = __record-set p "attempts" candidate.actor.attempts
-    in let g = gh-copy candidate.world.crafted world.crafted 129 0
-    in gh-copy candidate.world.consumed world.consumed 129 0
-  gcr-freed : List CraftTake, Integer -> Integer
-  gcr-freed (takes) (i) = if i == list-length takes then 0
-    else (if (list-at takes i).whole then 1 else 0) + gcr-freed takes (i + 1)
-  gcr-consume : GameHarvest, List CraftTake, Integer, List (List Integer) -> Result (List (List Integer)) Text
-  gcr-consume (h) (takes) (i) (packets) = if i == list-length takes then Ok packets
-    else let t = list-at takes i
-    in let at = gv-lot h.vendor t.serial 0
-    in if at < 0 then Err "Craft input serial disappeared."
-    else let lot = list-at h.vendor.lots at
-    in if t.whole then when world-delete h.items.world t.serial
-      is Err (e) -> Err e
-      is Ok (_) -> let retired = gh-retire-lot h.vendor at
-        in gcr-consume h takes (i + 1) (list-push packets (sip-remove t.serial))
-    else when world-get h.items.world t.serial
-      is Err (e) -> Err e
-      is Ok (obj) ->
-        let remaining = lot.quantity - t.quantity
-        in let item = ia-copy obj obj.serial remaining obj.container obj.x obj.y obj.z
-        in when world-update h.items.world item
-          is Err (e) -> Err e
-          is Ok (_) ->
-            let quantity = __record-set lot "quantity" remaining
-            in let basis = __record-set lot "basis" (lot.basis - t.basis)
-            in gcr-consume h takes (i + 1) (list-push packets (sip-item item))
-  gcr-output : GameHarvest, GvPlayer, EgRecipe, Integer, Integer, Integer -> Result WorldObject Text
-  gcr-output (h) (player) (recipe) (quality) (basis) (graphic) =
+    in gcr-picks takes (i + 1) (list-push out (EpPick { serial = t.serial, item = t.item, quantity = t.quantity }))
+  gcr-gone : GameHarvest, Integer -> Boolean
+  gcr-gone (h) (serial) = when world-get h.items.world serial is Err (_) -> True is Ok (_) -> False
+  gcr-shown : GameHarvest, List CraftTake, Integer, List (List Integer) -> List (List Integer)
+  gcr-shown (h) (takes) (i) (packets) = if i == list-length takes then packets
+    else let serial = (list-at takes i).serial
+    in gcr-shown h takes (i + 1) (list-push packets (when world-get h.items.world serial is Err (_) -> sip-remove serial is Ok (obj) -> sip-item obj))
+  gcr-output : GameHarvest, GvPlayer, EgRecipe, Integer, Integer, Integer, Integer -> Result WorldObject Text
+  gcr-output (h) (player) (recipe) (quality) (basis) (graphic) (into) =
     let item = WorldObject { serial = 0, kind = 2, x = 60, y = 20, z = 0,
-      graphic = graphic, hue = 0, container = player.pack, amount = recipe.quantity, health = 0 }
+      graphic = graphic, hue = 0, container = into, amount = recipe.quantity, health = 0 }
     in when world-create h.items.world item
       is Err (e) -> Err e
       is Ok (serial) ->
@@ -129,50 +57,34 @@ Chapter: GameCraftProduction
         in if lot < 0 then Err "Craft output provenance refused."
         else let known = gsi-register h.items serial (gcr-layer recipe.item) 0 True False
         in world-get h.items.world serial
-  gcr-finish : GameCraft, GvPlayer, Integer, Integer, GvLot, List CraftTake, Integer -> Result GameReply Text
-  gcr-finish (state) (player) (recipe-id) (station) (tool) (takes) (graphic) =
+  gcr-finish : GameCraft, GvPlayer, Integer, Integer, EpLot, List CraftTake, Integer, Integer -> Result GameReply Text
+  gcr-finish (state) (player) (recipe-id) (station) (tool) (takes) (graphic) (into) =
     let h = state.harvest
     in let w = h.vendor.currency.world
     in let p = ep-actor w player.actor
     in let r = list-at w.catalog.recipes (recipe-id - 1)
-    in let candidate = gcr-candidate w player.actor r tool takes
-    in let result = ep-craft candidate.world player.actor recipe-id station
+    in if not (ep-lot-room w.goods 1) | world-room h.items.world < 1 then Ok (gsi-denied "No room for the crafted item.")
+    else let bound = gh-row h.vendor player
+    in let quality-before = ep-at p.quality r.item
+    in let cost-before = ep-at p.cost r.item
+    in let picks = gcr-picks takes 0 (__list-with-capacity (list-length takes + 1))
+    in let result = ep-craft-picks w player.actor recipe-id station picks tool.serial
     in if result == -1 then Ok (gsi-denied "The recipe, tools or workshop are unavailable.")
-    else let broken = tool.item > 0 & ep-at candidate.actor.stock tool.item == 0
-    in let freed = (if result > 0 then gcr-freed takes 0 else 0) + (if broken then 1 else 0)
-    in let output = if result > 0 then 1 else 0
-    in if h.vendor.lot-count + output - freed > gv-lot-limit | world-count h.items.world + output - freed > h.items.world.capacity then Ok (gsi-denied "No room for the crafted item.")
-    else let quality = if result > 0 then (ep-at candidate.actor.quality r.item - ep-at p.quality r.item) / r.quantity else 0
-    in let basis = ep-at candidate.actor.cost r.item - ep-at p.cost r.item
-    in let one = gcr-recombine-item candidate.actor p takes r.one
-    in let two = gcr-recombine-item candidate.actor p takes r.two
-    in let three = gcr-recombine-item candidate.actor p takes r.three
-    in let tools = gcr-recombine-tool candidate.actor p tool
-    in let published = gcr-publish candidate w player.actor
-    in when (if result > 0 then gcr-consume h takes 0 [] else Ok [])
+    else let broken = tool.item > 0 & gcr-gone h tool.serial
+    in let quality = if result > 0 then (ep-at p.quality r.item - quality-before) / r.quantity else 0
+    in let basis = ep-at p.cost r.item - cost-before
+    in let packets = if result > 0 then gcr-shown h takes 0 [] else []
+    in let invalidated = gh-invalidate-quotes h.vendor 0
+    in let changes = if broken then list-push packets (sip-remove tool.serial) else packets
+    in let skills = list-push changes (gh-skills h player (gsi-slot h.vendor.game player.serial 0))
+    in if result < 0 then Ok (gs-reply (list-push skills (sip-message #FFFFFFFF #FFFF 6 "You fail to create the item.")) "craft failed attempt")
+    else when gcr-output h player r quality basis graphic into
       is Err (e) -> Err e
-      is Ok (packets) ->
-        let serial = tool.serial
-        in let retired = if broken then when world-delete h.items.world serial
-          is Err (e) -> Err e
-          is Ok (_) -> let removed = gh-retire-lot h.vendor (gv-lot h.vendor serial 0) in Ok 0
-          else if tool.item == 0 then Ok 0
-          else let worn = __record-set tool "wear" (tool.wear - 1) in Ok 0
-        in when retired
-          is Err (e) -> Err e
-          is Ok (_) ->
-            let invalidated = gh-invalidate-quotes h.vendor 0
-            in let changes = if broken then list-push packets (sip-remove serial) else packets
-            in let skills = list-push changes (gh-skills h player (gsi-slot h.vendor.game player.serial 0))
-            in if result < 0 then Ok (gs-reply (list-push skills (sip-message #FFFFFFFF #FFFF 6 "You fail to make the item.")) "craft failed attempt")
-            else when gcr-output h player r quality basis graphic
-              is Err (e) -> Err e
-              is Ok (made) ->
-                let displayed = list-push skills (sip-item made)
-                in let name = gcr-name w.catalog r.item graphic
-                in Ok (gs-reply (list-push displayed (sip-message made.serial made.graphic 6 (name & ", quality " & show (quality / 10) & "%."))) "craft produced")
-  gcr-produce : GameCraft, GvPlayer, Integer, Integer, Integer -> Result GameReply Text
-  gcr-produce (state) (player) (recipe-id) (station) (graphic) =
+      is Ok (made) ->
+        let displayed = list-push skills (sip-item made)
+        in Ok (gs-reply (list-push displayed (sip-message #FFFFFFFF #FFFF 6 "You create the item and place it in your backpack.")) "craft produced")
+  gcr-produce : GameCraft, GvPlayer, Integer, Integer, Integer, Integer -> Result GameReply Text
+  gcr-produce (state) (player) (recipe-id) (station) (graphic) (into) =
     let h = state.harvest
     in let w = h.vendor.currency.world
     in if recipe-id < 1 | recipe-id > list-length w.catalog.recipes | station < 1 | station > w.station-count then Ok (gsi-denied "Workshop unavailable.")
@@ -181,17 +93,17 @@ Chapter: GameCraftProduction
       | (r.tool > 0 & (r.tool == r.one | r.tool == r.two | r.tool == r.three))
       | (r.one > 0 & (r.one == r.two | r.one == r.three)) | (r.two > 0 & r.two == r.three)
       | gcr-graphic r.item == 0 | not (gv-owned h.items.world player.pack player.serial 65)
-      | (graphic /= gcr-graphic r.item & not (r.item == 42 & (graphic == #0F9D | graphic == #1034))) then Ok (gsi-denied "Craft recipe binding refused.")
+      | (graphic /= gcr-graphic r.item & not (r.item == 42 & (graphic == #0F9D | graphic == #1034)) & not (r.item == 50 & graphic == #09F2)) then Ok (gsi-denied "Craft recipe binding refused.")
     else let tool-at = if r.tool == 0 then -1 else gcr-tool h player r.tool 0
     in if r.tool > 0 & tool-at < 0 then Ok (gsi-denied "Carry or equip the recipe's working tool.")
-    else let tool = if r.tool == 0 then GvLot { serial = 0, actor = 0, item = 0, quantity = 0, quality = 0, wear = 0, basis = 0 }
-      else list-at h.vendor.lots tool-at
+    else let tool = if r.tool == 0 then EpLot { serial = 0, actor = 0, item = 0, quality = 0, wear = 0, basis = 0 }
+      else ep-lot h.vendor.currency.world.goods tool-at
     in when gcr-select h player r.one r.one-count 0 (__list-with-capacity 64)
       is Err (e) -> Ok (gsi-denied e)
       is Ok (one) -> when gcr-select h player r.two r.two-count 0 one
         is Err (e) -> Ok (gsi-denied e)
         is Ok (two) -> when gcr-select h player r.three r.three-count 0 two
           is Err (e) -> Ok (gsi-denied e)
-          is Ok (takes) -> gcr-finish state player recipe-id station tool takes graphic
+          is Ok (takes) -> gcr-finish state player recipe-id station tool takes graphic into
 
 Page 1

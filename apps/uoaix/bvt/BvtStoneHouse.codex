@@ -1,0 +1,60 @@
+Chapter: BvtStoneHouse
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter Construction
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter BvtCheck
+
+  bvst-recipe : EgCatalog, Integer -> Boolean
+  bvst-recipe (c) (i) = if i >= list-length c.recipes then False
+    else let r = list-at c.recipes i
+    in if r.item == 149 then r.quantity == 1 & r.one == 1 & r.one-count == 1 & r.two == 0 & r.station == 1 & r.tool == 62 & r.skill == 11 else bvst-recipe c (i + 1)
+  bvst-sold : List BbGoods, Integer, Integer, Integer -> Boolean
+  bvst-sold (goods) (item) (art) (i) = if i >= list-length goods then False
+    else ((list-at goods i).item == item & (list-at goods i).graphic == art) | bvst-sold goods item art (i + 1)
+  bvst-menu : List Integer, EpWorld -> Boolean
+  bvst-menu (ids) (w) = list-length ids == 1 & (list-at w.catalog.recipes (list-at ids 0 - 1)).item == 149
+ Actor 1's Masonry cell after a save and a load of w, or -1 when either refuses; stale sets the saved version back to 13.
+  bvst-round : EpWorld, Boolean -> Integer
+  bvst-round (w) (stale) = let buf = alloc-bytes (es-max-size w)
+    in when es-encode (EconomyCheckpoint { world = w, tick = 1, sequence = 1 }) buf (es-max-size w)
+      is Err (e) -> -1
+      is Ok (size) -> let aged = if stale then poke-qword buf 8 13 else 0
+        in when es-decode buf size
+          is Err (e) -> -1
+          is Ok (back) -> ep-at (ep-actor back.world 1).skills 11
+  bvst-saved : Boolean -> Integer
+  bvst-saved (stale) = when bb-economy 0
+    is Err (e) -> -2
+    is Ok (y) -> let trained = ep-set (ep-actor y.world 1).skills 11 7 in bvst-round y.world stale
+  bvst-made : Result Integer Text -> Boolean
+  bvst-made (r) = when r is Err (e) -> False is Ok (n) -> n == 1
+  bvt-stone-house : Integer -> [Console] Integer
+  bvt-stone-house (unused) = let c = bb-catalog 0
+    in let named = list-length c.items >= 151 & (list-at c.items 148).name == "stone block" & (list-at c.items 148).chain == 1
+    in let skill12 = EgCatalog { items = c.items, resources = c.resources, recipes = [eg-recipe 149 1 1 1 0 0 0 0 1 62 12] }
+    in when bb-economy 0
+      is Err (e) -> bvt-check ("stone house fixture economy: " & e) False
+      is Ok (x) -> act
+        r1 <- bvt-check "item 149 is the stone block, cut from 1 stone at the hand station (1) with a stone hammer on economy skill 11 (Masonry), which practises client Carpentry 11, drawn 0x1364; the catalog validates" (named & bvst-recipe c 0 & ep-classic 11 1 149 == 11 & gcr-graphic 149 == #1364 & eg-validate c == 0)
+        r2 <- bvt-check "a recipe on economy skill 12 is refused" (eg-validate skill12 /= 0)
+        r3 <- bvt-check "the provisioner sells stone blocks" (bvst-sold (bb-goods 0) 149 #1364 0)
+        mason <- ep-admit x.world (eu-open x 2 2998) 100
+        bare <- not (bb-restock-input x.world mason 149)
+        stone <- ep-find x.world mason 1 1
+        hammer <- ep-find x.world mason 62 1
+        r4 <- bvt-check "a shop restocks a stone block only from stone and a stone hammer it holds" (mason > 0 & bare & stone >= 0 & hammer >= 0 & bb-restock-input x.world mason 149)
+        made <- bb-produce (bb-producer x mason) 149
+        r5 <- bvt-check "the mason cuts one block from its one stone" (bvst-made made & ep-at (ep-actor x.world mason).stock 149 == 1 & ep-at (ep-actor x.world mason).stock 1 == 0)
+        r6 <- bvt-check "economy format 14 keeps a Masonry level through a save" (bvst-saved False == 7)
+        r7 <- bvt-check "a format 13 record is refused" (bvst-saved True == -1)
+        r8 <- bvt-check "design 3 is the field stone house, multi 0x66, billed 60 boards, 40 nails, 120 stone blocks and 2 hinges; design 4 is no design" (cn-design-ok 3 & not (cn-design-ok 4) & cn-design-multi 3 == #66 & cn-design-name 3 == "field stone house" & cn-bill-item 3 0 == 38 & cn-bill-count 3 0 == 60 & cn-bill-item 3 1 == 39 & cn-bill-count 3 1 == 40 & cn-bill-item 3 2 == 149 & cn-bill-count 3 2 == 120 & cn-bill-name 3 2 == "stone blocks" & cn-bill-item 3 3 == 148 & cn-bill-count 3 3 == 2)
+        r9 <- bvt-check "the wooden house and cottage keep their bills and multis" (cn-bill-item 1 2 == 31 & cn-bill-count 1 2 == 20 & cn-bill-item 2 2 == 13 & cn-bill-count 2 2 == 60 & cn-design-multi 1 == #6A & cn-design-multi 2 == #6E)
+        r10 <- bvt-check "a stone hammer in mallet-and-chisel art (0x12B3) opens Masonry (category 10, practising Carpentry 11), whose menu holds only the stone block; the provisioner sells one" (gcr-category 62 #12B3 == 10 & gcr-title 10 == "Masonry" & gcr-skill 10 == 11 & bvst-menu (gcr-recipes x.world 10) x.world & bvst-sold (bb-goods 0) 62 #12B3 0)
+        r11 <- bvt-check "a tools lot in that art opens nothing, and the smith's hammer still opens Blacksmithing" (gcr-category 42 #12B3 == 0 & gcr-category 62 #13E3 == 1)
+        r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10 + r11
+      end

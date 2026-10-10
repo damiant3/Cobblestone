@@ -17,6 +17,25 @@ Chapter: GameCraftReplay
   cbr-packet : Result (Maybe GameReply) Text, Integer -> List Integer
   cbr-packet (result) (i) = let packets = cbr-packets result
     in if i < list-length packets then list-at packets i else []
+  gct-removed : Result (Maybe GameReply) Text, Integer -> Boolean
+  gct-removed (result) (serial) = gct-removed-at (cbr-packets result) serial 0
+  gct-removed-at : List (List Integer), Integer, Integer -> Boolean
+  gct-removed-at (packets) (serial) (i) = if i == list-length packets then False
+    else let q = list-at packets i
+    in if list-length q == 5 & list-at q 0 == #1D & gp-u32 q 1 == serial then True else gct-removed-at packets serial (i + 1)
+  gct-note : Result (Maybe GameReply) Text -> Text
+  gct-note (result) = when result is Err (e) -> e is Ok (m) -> when m is None -> "none" is Just (r) -> r.note
+  gct-said : Result (Maybe GameReply) Text, Text -> Boolean
+  gct-said (result) (text) = gct-said-at (cbr-packets result) text 0
+  gct-said-at : List (List Integer), Text, Integer -> Boolean
+  gct-said-at (packets) (text) (i) = if i == list-length packets then False
+    else let p = list-at packets i
+    in if list-at p 0 == #1C & list-length p >= 44 + text-length text & gct-bytes p text 0 then True
+    else gct-said-at packets text (i + 1)
+  gct-bytes : List Integer, Text, Integer -> Boolean
+  gct-bytes (packet) (text) (i) = if i == text-length text then True
+    else if list-at packet (44 + i) /= to-unicode (char-code (char-at text i)) then False
+    else gct-bytes packet text (i + 1)
   cbr-opcode : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
   cbr-opcode (result) (opcode) (i) =
     let packets = cbr-packets result
@@ -99,6 +118,12 @@ Chapter: GameCraftReplay
     in let begin = gcr-handler-at (gct-lookup h.vendor.currency.world) state h.vendor.game input map 2593 (gp-put32 [6] tool) tick
     in let context = (list-at state.requests 0).menu
     in gcr-handler-at (gct-lookup h.vendor.currency.world) state h.vendor.game input map 2593 (gct-choice tool context choice) (tick + 1)
+  gct-made-in : Result (Maybe GameReply) Text, Integer, Integer -> Boolean
+  gct-made-in (result) (graphic) (container) = gct-made-in-at (cbr-packets result) graphic container 0
+  gct-made-in-at : List (List Integer), Integer, Integer, Integer -> Boolean
+  gct-made-in-at (packets) (graphic) (container) (i) = if i == list-length packets then False
+    else let q = list-at packets i
+    in if list-length q >= 18 & list-at q 0 == #25 & gp-u16 q 5 == graphic & gp-u32 q 14 == container then True else gct-made-in-at packets graphic container (i + 1)
   gct-live : GameHarvest, GameInput, WalkMap -> [Console] Nothing
   gct-live (h) (input) (map) = act
     player <- list-at h.vendor.players 0
@@ -119,7 +144,7 @@ Chapter: GameCraftReplay
     cbr-check "craft fixtures materialize real production stock" (hammer > 0 & axe > 0 & knife > 0 & sewing > 0 & saw > 0 & tinker > 0 & materials & ep-census w 1 & gvsc-valid h.vendor)
     opened <- gcr-handler-at (gct-lookup w) state h.vendor.game input map 2593 (gp-put32 [6] hammer) 100
     menu <- cbr-packet opened 0
-    cbr-check "legacy craft menu has bounded framing and tool identity" (list-length menu > 11 & list-at menu 0 == #7C & gp-u16 menu 1 == list-length menu & gp-u32 menu 3 == hammer & list-at menu (10 + text-length "Blacksmithing") == 5)
+    cbr-check "craft gump has bounded framing and tool identity" (list-length menu > 21 & list-at menu 0 == #B0 & gp-u16 menu 1 == list-length menu & gp-u32 menu 3 == hammer & bit-and (gp-u32 menu 7) #FFFF0000 == crg-tag)
     when world-get h.items.world player.serial
       is Err (e) -> print-line-uni ("FAIL player " & e)
       is Ok (mobile) -> act
@@ -134,13 +159,17 @@ Chapter: GameCraftReplay
     iron <- ep-at p.stock 31
     boards <- ep-at p.stock 38
     roll1 <- __record-set p "attempts" 0
-    smith <- gct-use state input map hammer 4 1000
-    cbr-check "blacksmithing consumes exact materials and gains skill" (cbr-opcode smith #25 0 & ep-at p.stock 40 == 1 & ep-at p.stock 31 == iron - 2 & ep-at p.stock 38 == boards - 1 & ep-at p.skills 8 == 501)
+    smith <- gct-use state input map hammer 2 1000
+    cbr-check "blacksmithing consumes exact materials and practises once" (cbr-opcode smith #25 0 & ep-at p.stock 40 == 1 & ep-at p.stock 31 == iron - 2 & ep-at p.stock 38 == boards - 1 & p.attempts == 1)
     roll2 <- __record-set p "attempts" 0
+    thread-quality <- ep-at p.quality 36
     tailor <- gct-use state input map sewing 2 2000
-    cbr-check "tailoring consumes cloth and preserves unselected thread quality" (cbr-opcode tailor #25 0 & ep-at p.stock 46 == 1 & ep-at p.stock 37 == 0 & ep-at p.stock 36 == 1 & ep-at p.quality 36 == 101 & ep-at p.skills 10 == 501)
+    cbr-check "tailoring consumes cloth, preserves unselected thread quality and practises once" (cbr-opcode tailor #25 0 & ep-at p.stock 46 == 1 & ep-at p.stock 37 == 0 & ep-at p.stock 36 == 1 & ep-at p.quality 36 == thread-quality - thread-quality / 2 & p.attempts == 1)
     roll3 <- __record-set p "attempts" 0
+    bag <- (when world-create h.items.world (gs-item player.pack #0E76 0) is Err (_) -> 0 is Ok (s) -> if gsi-register h.items s 0 #003C False False /= 0 then 0 else s)
+    bagged <- (when world-get h.items.world saw is Err (_) -> False is Ok (t) -> is-ok (world-update h.items.world (__record-set t "container" bag)))
     carpenter <- gct-use state input map saw 2 3000
+    cbr-check "an item crafted with a tool in a bag is made inside that bag (GameServer.md testing stock)" (bag > 0 & bagged & gct-made-in carpenter #0B2C bag & not (gct-made-in carpenter #0B2C player.pack))
     cbr-check "carpentry consumes boards and nails" (cbr-opcode carpenter #25 0 & ep-at p.stock 47 == 1 & ep-at p.stock 39 == 2)
     boards-left <- ep-at p.stock 38
     axe-wear <- ep-at p.wear 26
@@ -149,17 +178,24 @@ Chapter: GameCraftReplay
     cbr-check "failed craft preserves materials but practices and wears tool" (is-ok failed & ep-at p.stock 47 == 1 & ep-at p.stock 38 == boards-left & ep-at p.wear 26 == axe-wear - 1)
     roll4 <- __record-set p "attempts" 0
     tinkered <- gct-use state input map tinker 1 5000
-    cbr-check "tinkering creates a quality-backed tool lot" (cbr-opcode tinkered #25 0 & ep-at p.stock 42 == 4 & ep-at p.skills 8 == 502)
+    cbr-check "tinkering creates a quality-backed tool lot and practises once" (cbr-opcode tinkered #25 0 & ep-at p.stock 42 == 4 & p.attempts == 1)
     roll5 <- __record-set p "attempts" 0
     made-sewing <- gct-use state input map tinker 2 6000
     roll6 <- __record-set p "attempts" 0
     made-saw <- gct-use state input map tinker 3 7000
     cbr-check "tinkering makes usable sewing and carpentry tools" (cbr-opcode made-sewing #25 0 & cbr-opcode made-saw #25 0 & ep-at p.stock 42 == 6)
+    cbr-check "an item crafted with a tool loose in the backpack is made in the backpack" (gct-made-in smith #0F5E player.pack & not (gct-made-in smith #0F5E bag))
+    cbr-check "smithing plays the anvil" (cbr-opcode smith #54 0)
+    cbr-check "tailoring plays the sewing sound" (cbr-opcode tailor #54 0)
+    cbr-check "carpentry plays the saw" (cbr-opcode carpenter #54 0)
+    cbr-check "tinkering plays the tinker sound" (cbr-opcode tinkered #54 0)
+    cbr-check "a craft speaks UOX3's lines: created into the backpack, or failed" (gct-said smith "You create the item and place it in your backpack." & gct-said failed "You fail to create the item.")
     hammer-wear <- ep-at p.wear 62
     ingots <- ep-at p.stock 31
     roll7 <- __record-set p "attempts" 0
-    smelted <- gct-use state input map hammer 1 8000
-    cbr-check "forge menu smelts harvested ore without phantom tool wear" (cbr-opcode smelted #25 0 & ep-at p.stock 5 == 0 & ep-at p.stock 31 == ingots + 1 & ep-at p.wear 62 == hammer-wear)
+    menu-recipes <- gcr-recipes w 1
+    cbr-check "the smith's hammer menu offers no smelting: ore is smelted on a forge (Damian, 2026-10-07)" (list-length menu-recipes == 3 & list-at menu-recipes 0 /= 7 & list-at menu-recipes 0 /= 8 & ep-at p.stock 5 > 0 & ep-at p.wear 62 == hammer-wear & ep-at p.stock 31 == ingots)
+    cooled <- gct-use state input map hammer 1 8000
     attempts <- p.attempts
     stale <- gcr-handler-at (gct-lookup w) state h.vendor.game input map 2593 (gct-choice tinker #4006 1) 8002
     cbr-check "used craft menu cannot consume materials twice" (is-ok stale & p.attempts == attempts)
@@ -170,6 +206,32 @@ Chapter: GameCraftReplay
     decoded <- gcrc-decode restored 8000 buf 112
     cbr-check "craft recovery rebases cooldown and clears menu authority" (is-ok encoded & is-ok decoded & (list-at restored.requests 0).next == 8201 & (list-at restored.requests 0).menu == 0)
     cbr-check "short craft codec refuses before read" (is-err (gcrc-decode restored 0 0 0))
+    short <- gct-use state input map hammer 1 9000
+    cbr-check "a craft short of material names the material, the count needed and the count held (F41)" (gct-said short "You need 1 iron ingots in your backpack and have 0.")
+    last-at <- gcr-tool h player 26 0
+    last <- if last-at < 0 then 0 else (ep-lot h.vendor.currency.world.goods last-at).serial
+    worn <- if last-at < 0 then 0 else let one = poke-qword (ep-row h.vendor.currency.world.goods last-at) 32 1 in 1
+    more <- eh-add-yield w p 38 3 1000
+    boards3 <- gct-item h player 38 #1BD7 3 1000 32
+    break-roll <- __record-set p "attempts" 1
+    broke <- gct-use state input map saw 2 10000
+    print-line-uni ("BREAK last=" & show last & " note=" & gct-note broke & " alive=" & (if is-ok (world-get h.items.world last) then "yes" else "no")
+      & " lot=" & show (gv-lot h.vendor last 0) & " removed=" & (if gct-removed broke last then "yes" else "no"))
+    cbr-check "a working tool on its last use breaks: the craft reply removes it and its lot retires" (last > 0 & worn == 1
+      & gct-said broke "You fail to create the item." & is-err (world-get h.items.world last) & gv-lot h.vendor last 0 < 0 & gct-removed broke last)
+    bow-boards <- eh-add-yield w p 38 2 1000
+    boards2 <- gct-item h player 38 #1BD7 2 1000 32
+    found-tool <- ep-find w player.actor 42 1
+    spare-q <- min 1000 (ep-at p.quality 42 - ep-represented w.goods player.actor 42 1)
+    spare-w <- min 32 (ep-at p.wear 42 - ep-represented w.goods player.actor 42 2)
+    made-tool <- world-create h.items.world (gs-item player.pack #1022 0)
+    fletcher <- (when made-tool is Err (_) -> 0 is Ok (s) -> if gv-add-lot h.vendor s player.actor 42 spare-q spare-w 0 < 0 | gsi-register h.items s (gcr-layer 42) 0 True False /= 0 then 0 else s)
+    quiver <- (when world-create h.items.world (gs-item player.pack #0E76 0) is Err (_) -> 0 is Ok (s) -> if gsi-register h.items s 0 #003C False False /= 0 then 0 else s)
+    quivered <- (when world-get h.items.world fletcher is Err (_) -> False is Ok (t) -> is-ok (world-update h.items.world (__record-set t "container" quiver)))
+    bows <- ep-at p.stock 48
+    roll8 <- __record-set p "attempts" 0
+    fletched <- gct-use state input map fletcher 1 11000
+    cbr-check "the fletcher's tools in a bag make a bow from 2 boards and thread at the carpentry bench, and the bow lands in that bag (row 25 slice 7)" (fletcher > 0 & boards2 > 0 & quivered & cbr-opcode fletched #25 0 & gct-made-in fletched #13B2 quiver & ep-at p.stock 48 == bows + 1)
   end
   gct-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
   gct-run (shard) (map) (currency) = act

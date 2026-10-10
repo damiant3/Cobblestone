@@ -4,23 +4,81 @@ Chapter: WorldIndex
  768x512 block directory selects a recycled64-tile page. Page storage is
  reserved at construction, so receive-arena restoration cannot free it.
 
+ A page directory is two levels: a top of wi-top-entries pointers, each to a block of 256 page pointers made when its
+ first page is set, so 2^24 slots take a 2 KiB top and a table pays only for the blocks its pages use.
+  wi-top-entries : Integer = 256
+  wi-dir-at : Integer, Integer -> Integer
+  wi-dir-at (top) (page) = peek-qword (peek-qword top (bit-shr page 8 * 8)) (bit-and page 255 * 8)
+  wi-dir-get : Integer, Integer -> Integer
+  wi-dir-get (top) (page) = if page < 0 | page >= wi-top-entries * 256 then 0
+    else let block = peek-qword top (bit-shr page 8 * 8) in if block == 0 then 0 else peek-qword block (bit-and page 255 * 8)
+  wi-dir-set : Integer, Integer, Integer -> Integer
+  wi-dir-set (top) (page) (value) = let at = bit-shr page 8 * 8
+    in let block = if peek-qword top at /= 0 then peek-qword top at
+      else let made = alloc-bytes 2048 in let cleared = wi-zero made 2048 0 in let set = poke-qword top at made in made
+    in poke-qword block (bit-and page 255 * 8) value
+  wi-dir-blocks : Integer -> Integer
+  wi-dir-blocks (pages) = (pages + 255) / 256
+  wi-object : Integer, Integer -> Integer
+  wi-object (buffer) (slot) = wi-dir-at (buffer + 16) (bit-shr slot 8) + bit-and slot 255 * 80
+ A serial's low 30 bits are slot + 1 + generation * 2^24 (root for Damian, 2026-10-08): 2^24 slots, 64 generations a
+ slot, so 2^30 serials over a world's life. A slot whose next generation would pass 2^30 is retired, never reused.
+  wi-slot-space : Integer = 16777216
+  wi-serial-mask : Integer = 1073741823
+  wi-low-slot : Integer -> Integer
+  wi-low-slot (low) = int-mod (low - 1) wi-slot-space
+ The low serial a slot issues next, from its row's serial cell (0 for never used, minus the last serial when free).
+  wi-next-low : Integer, Integer -> Integer
+  wi-next-low (old) (slot) = if old == 0 then slot + 1 else bit-and (0 - old) wi-serial-mask + wi-slot-space
+  wi-retired : Integer, Integer -> Boolean
+  wi-retired (old) (slot) = old < 0 & wi-next-low old slot > wi-serial-mask
+ The index block holds a 128-byte header, the 768x512 block directory (u32 tile-page tags), then three directory tops:
+ pages of 256 slot rows (72 bytes each), pages of 256 tile pages (304 bytes each), and pages of 256 announce cells
+ (8 bytes each). The world holds at most wi-pages * 256 objects, the serial scheme's 2^24 slots.
+  wi-pages : Integer = 65536
+  wi-rows-at : Integer = 128 + 1572864
+  wi-tiles-at : Integer = wi-rows-at + wi-top-entries * 8
+  wi-said-at : Integer = wi-tiles-at + wi-top-entries * 8
+  wi-block-bytes : Integer -> Integer
+  wi-block-bytes (capacity) = wi-said-at + wi-top-entries * 8
   wi-row : Integer, Integer -> Integer
-  wi-row (index) (slot) = index + 128 + slot * 272
+  wi-row (index) (slot) = wi-dir-at (index + wi-rows-at) (bit-shr slot 8) + bit-and slot 255 * 72
+  wi-said : Integer, Integer -> Integer
+  wi-said (index) (slot) = wi-dir-at (index + wi-said-at) (bit-shr slot 8) + bit-and slot 255 * 8
   wi-directory : Integer, Integer -> Integer
-  wi-directory (index) (capacity) = index + 128 + capacity * 272
+  wi-directory (index) (capacity) = index + 128
   wi-page : Integer, Integer, Integer -> Integer
-  wi-page (index) (capacity) (tag) = wi-directory index capacity + 1572864 + (tag - 1) * 304
+  wi-page (index) (capacity) (tag) = wi-dir-at (index + wi-tiles-at) (bit-shr (tag - 1) 8) + bit-and (tag - 1) 255 * 304
   wi-bytes : Integer -> Integer
-  wi-bytes (capacity) = 128 + 1572864 + capacity * 576
+  wi-bytes (capacity) = wi-block-bytes capacity + (capacity + 255) / 256 * 98304 + 3 * wi-dir-blocks ((capacity + 255) / 256) * 2048
+  wi-add-pages : Integer, Integer, Integer -> Integer
+  wi-add-pages (index) (page) (pages) = if page >= pages then 0
+    else let rows = alloc-bytes 18432
+    in let a = wi-zero rows 18432 0
+    in let b = wi-dir-set (index + wi-rows-at) page rows
+    in let tiles = alloc-bytes 77824
+    in let c = wi-zero tiles 77824 0
+    in let d = wi-dir-set (index + wi-tiles-at) page tiles
+    in let said = alloc-bytes 2048
+    in let e = wi-zero said 2048 0
+    in let f = wi-dir-set (index + wi-said-at) page said
+    in wi-add-pages index (page + 1) pages
   wi-zero : Integer, Integer, Integer -> Integer
   wi-zero (buf) (size) (i) = if i >= size then 0 else let cleared = poke-qword buf i 0 in wi-zero buf size (i + 8)
   wi-free-pages : Integer, Integer, Integer -> Integer
   wi-free-pages (index) (capacity) (i) = if i == capacity then 0
     else let next = poke-qword (wi-page index capacity (i + 1)) 32 (if i + 1 == capacity then 0 else i + 2)
     in wi-free-pages index capacity (i + 1)
+ Tags capacity + 1 .. stop join the tile-page free list ahead of head (0 is none).
+  wi-grow-tags : Integer, Integer, Integer, Integer -> Integer
+  wi-grow-tags (index) (capacity) (stop) (head) = if capacity >= stop then 0
+    else let next = poke-qword (wi-page index stop (capacity + 1)) 32 (if capacity + 1 == stop then head else capacity + 2)
+    in wi-grow-tags index (capacity + 1) stop head
   wi-new : Integer -> Integer
-  wi-new (capacity) = let index = alloc-bytes (wi-bytes capacity)
-    in let clear = wi-zero index (wi-bytes capacity) 0
+  wi-new (capacity) = let index = alloc-bytes (wi-block-bytes capacity)
+    in let clear = wi-zero index (wi-block-bytes capacity) 0
+
+    in let paged = wi-add-pages index 0 ((capacity + 255) / 256)
     in let pages = wi-free-pages index capacity 0
     in let free = poke-qword index 8 1
     in let cap = poke-qword index 24 capacity
@@ -28,40 +86,23 @@ Chapter: WorldIndex
     in index
   wi-slot : Integer, Integer, Integer -> Integer
   wi-slot (buffer) (capacity) (serial) = if serial <= 0 | serial > 2147483647 then -1
-    else let low = bit-and serial 1073741823
-    in if low == 0 then -1 else let slot = int-mod (low - 1) capacity
-    in if peek-qword buffer (16 + slot * 80) == serial then slot else -1
+    else let low = bit-and serial wi-serial-mask
+    in if low == 0 then -1 else let slot = wi-low-slot low
+    in if slot >= capacity then -1 else if peek-qword (wi-object buffer slot) 0 == serial then slot else -1
   wi-serial : Integer, Integer -> Integer
-  wi-serial (buffer) (tag) = if tag <= 0 then 0 else peek-qword buffer (16 + (tag - 1) * 80)
+  wi-serial (buffer) (tag) = if tag <= 0 then 0 else peek-qword (wi-object buffer (tag - 1)) 0
   wi-layer : Integer, Integer, Integer -> Integer
   wi-layer (buffer) (index) (slot) = let row = wi-row index slot
-    in if peek-qword row 48 == peek-qword buffer (16 + slot * 80) then peek-qword row 40 else 0
+    in if peek-qword row 48 == peek-qword (wi-object buffer slot) 0 then peek-qword row 40 else 0
   wi-child-layer : Integer, Integer, Integer, Integer, Integer -> Integer
   wi-child-layer (buffer) (index) (tag) (layer) (best) = if tag == 0 then best
     else let slot = tag - 1
     in let next = peek-qword (wi-row index slot) 16
     in wi-child-layer buffer index next layer (if wi-layer buffer index slot == layer & (best == 0 | tag < best) then tag else best)
-  wi-layer-add : Integer, Integer, Integer, Integer, Integer -> Integer
-  wi-layer-add (buffer) (capacity) (index) (parent) (slot) =
-    let layer = wi-layer buffer index slot
-    in if parent < 0 | layer < 1 | layer > 25 then 0
-    else if peek-qword buffer (24 + parent * 80) /= 1 then 0
-    else let at = wi-row index parent + 72 + (layer - 1) * 8
-    in let old = peek-qword at 0
-    in if old == 0 | slot < wi-slot buffer capacity old then poke-qword at 0 (peek-qword buffer (16 + slot * 80)) else 0
-  wi-layer-refresh : Integer, Integer, Integer, Integer -> Integer
-  wi-layer-refresh (buffer) (index) (parent) (layer) = if parent < 0 | layer < 1 | layer > 25 then 0
-    else let head = peek-qword (wi-row index parent) 8
-    in let first = wi-child-layer buffer index head layer 0
-    in poke-qword (wi-row index parent) (72 + (layer - 1) * 8) (wi-serial buffer first)
   wi-set-layer : Integer, Integer, Integer, Integer, Integer -> Integer
   wi-set-layer (buffer) (capacity) (index) (slot) (layer) = let row = wi-row index slot
-    in let old = wi-layer buffer index slot
-    in let parent = wi-slot buffer capacity (peek-qword buffer (72 + slot * 80))
-    in let name = poke-qword row 48 (peek-qword buffer (16 + slot * 80))
-    in let changed = poke-qword row 40 layer
-    in let removed = if parent < 0 | old == layer then 0 else wi-layer-refresh buffer index parent old
-    in wi-layer-add buffer capacity index parent slot
+    in let name = poke-qword row 48 (peek-qword (wi-object buffer slot) 0)
+    in let changed = poke-qword row 40 layer in 0
   wi-raise : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   wi-raise (buffer) (capacity) (index) (parent) (height) (left) = if parent == 0 then 0
     else if left <= 0 then -1
@@ -69,7 +110,7 @@ Chapter: WorldIndex
     in if slot < 0 then -1 else let row = wi-row index slot
     in if peek-qword row 32 >= height then 0
     else let raised = poke-qword row 32 height
-    in wi-raise buffer capacity index (peek-qword buffer (72 + slot * 80)) (height + 1) (left - 1)
+    in wi-raise buffer capacity index (peek-qword (wi-object buffer slot) 56) (height + 1) (left - 1)
   wi-maximum : Integer, Integer, Integer -> Integer
   wi-maximum (index) (tag) (best) = if tag == 0 then best
     else let row = wi-row index (tag - 1)
@@ -81,9 +122,9 @@ Chapter: WorldIndex
     in let height = wi-maximum index (peek-qword row 8) 0
     in if height == peek-qword row 32 then 0
     else let changed = poke-qword row 32 height
-    in wi-refresh buffer capacity index (peek-qword buffer (72 + slot * 80)) (left - 1)
+    in wi-refresh buffer capacity index (peek-qword (wi-object buffer slot) 56) (left - 1)
   wi-child-add : Integer, Integer, Integer, Integer, Boolean -> Integer
-  wi-child-add (buffer) (capacity) (index) (slot) (heights) = let serial = peek-qword buffer (72 + slot * 80)
+  wi-child-add (buffer) (capacity) (index) (slot) (heights) = let serial = peek-qword (wi-object buffer slot) 56
     in if serial == 0 then wi-root-add index slot else let parent = wi-slot buffer capacity serial
     in if parent < 0 then -1 else let row = wi-row index parent
     in let child = wi-row index slot
@@ -93,10 +134,9 @@ Chapter: WorldIndex
     in let linked = if head == 0 then 0 else poke-qword (wi-row index (head - 1)) 24 (slot + 1)
     in let first = poke-qword row 8 (slot + 1)
     in let count = poke-qword row 0 (peek-qword row 0 + 1)
-    in let layer = wi-layer-add buffer capacity index parent slot
     in if heights then wi-raise buffer capacity index serial (peek-qword child 32 + 1) 64 else 0
   wi-child-remove : Integer, Integer, Integer, Integer -> Integer
-  wi-child-remove (buffer) (capacity) (index) (slot) = let serial = peek-qword buffer (72 + slot * 80)
+  wi-child-remove (buffer) (capacity) (index) (slot) = let serial = peek-qword (wi-object buffer slot) 56
     in if serial == 0 then wi-root-remove index slot else let parent = wi-slot buffer capacity serial
     in if parent < 0 then -1 else let row = wi-row index parent
     in let child = wi-row index slot
@@ -107,9 +147,6 @@ Chapter: WorldIndex
     in let count = poke-qword row 0 (peek-qword row 0 - 1)
     in let clear-next = poke-qword child 16 0
     in let clear-prev = poke-qword child 24 0
-    in let layer = wi-layer buffer index slot
-    in let removed = if layer < 1 | layer > 25 then 0
-      else if peek-qword row (72 + (layer - 1) * 8) == peek-qword buffer (16 + slot * 80) then wi-layer-refresh buffer index parent layer else 0
     in if peek-qword child 32 + 1 < peek-qword row 32 then 0
     else if peek-qword child 32 == 0 & peek-qword row 32 == 1 & peek-qword row 0 > 0 then 0
     else wi-refresh buffer capacity index serial 64
@@ -155,9 +192,9 @@ Chapter: WorldIndex
     in let free = poke-qword page 32 (peek-qword index 8)
     in poke-qword index 8 tag
   wi-tile-add : Integer, Integer, Integer, Integer -> Integer
-  wi-tile-add (buffer) (capacity) (index) (slot) = if peek-qword buffer (72 + slot * 80) /= 0 then 0
-    else let x = peek-qword buffer (32 + slot * 80)
-    in let y = peek-qword buffer (40 + slot * 80)
+  wi-tile-add (buffer) (capacity) (index) (slot) = if peek-qword (wi-object buffer slot) 56 /= 0 then 0
+    else let x = peek-qword (wi-object buffer slot) 16
+    in let y = peek-qword (wi-object buffer slot) 24
     in let block = x / 8 * 512 + y / 8
     in let tag = wi-page-get index capacity block
     in if tag == 0 then -1 else let page = wi-page index capacity tag
@@ -170,9 +207,9 @@ Chapter: WorldIndex
     in let d = poke-32 page at (slot + 1)
     in poke-qword page 8 (peek-qword page 8 + 1)
   wi-tile-remove : Integer, Integer, Integer, Integer -> Integer
-  wi-tile-remove (buffer) (capacity) (index) (slot) = if peek-qword buffer (72 + slot * 80) /= 0 then 0
-    else let x = peek-qword buffer (32 + slot * 80)
-    in let y = peek-qword buffer (40 + slot * 80)
+  wi-tile-remove (buffer) (capacity) (index) (slot) = if peek-qword (wi-object buffer slot) 56 /= 0 then 0
+    else let x = peek-qword (wi-object buffer slot) 16
+    in let y = peek-qword (wi-object buffer slot) 24
     in let tag = peek-32 (wi-directory index capacity) ((x / 8 * 512 + y / 8) * 4)
     in if tag == 0 then -1 else let page = wi-page index capacity tag
     in let at = 48 + (int-mod y 8 * 8 + int-mod x 8) * 4
@@ -200,18 +237,18 @@ Chapter: WorldIndex
   wi-clear-rows (index) (capacity) (i) = if i == capacity then 0
     else let row = wi-row index i
     in let a = wi-zero row 40 0
-    in let b = wi-zero (row + 56) 216 0
+    in let b = wi-zero (row + 56) 16 0
     in wi-clear-rows index capacity (i + 1)
   wi-build-rows : Integer, Integer, Integer, Integer -> Boolean
   wi-build-rows (buffer) (capacity) (index) (i) = if i == capacity then True
-    else if peek-qword buffer (16 + i * 80) <= 0 then wi-build-rows buffer capacity index (i + 1)
+    else if peek-qword (wi-object buffer i) 0 <= 0 then wi-build-rows buffer capacity index (i + 1)
     else if wi-child-add buffer capacity index i False < 0 then False
     else if wi-tile-add buffer capacity index i < 0 then False
     else wi-build-rows buffer capacity index (i + 1)
   wi-build-heights : Integer, Integer, Integer, Integer -> Boolean
   wi-build-heights (buffer) (capacity) (index) (i) = if i == capacity then True
-    else if peek-qword buffer (16 + i * 80) <= 0 then wi-build-heights buffer capacity index (i + 1)
-    else if wi-raise buffer capacity index (peek-qword buffer (72 + i * 80)) 1 64 < 0 then False
+    else if peek-qword (wi-object buffer i) 0 <= 0 then wi-build-heights buffer capacity index (i + 1)
+    else if wi-raise buffer capacity index (peek-qword (wi-object buffer i) 56) 1 64 < 0 then False
     else wi-build-heights buffer capacity index (i + 1)
   wi-rebuild : Integer, Integer, Integer -> Boolean
   wi-rebuild (buffer) (capacity) (index) = let pending = poke-qword index 32 0

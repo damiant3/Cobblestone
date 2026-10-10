@@ -1,0 +1,31 @@
+Chapter: BvtCityHours
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter Cities
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-city-hours : Integer -> [Console] Integer
+  bvt-city-hours (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("city hours fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("city hours fixture economy: " & e) False
+      is Ok (x) -> act
+        v <- gv-new shard x
+        grown <- gv-grow-vendors v gv-vendor-limit
+        counted <- __record-set v "vendor-count" (bb-shop-count + 1)
+        city <- bb-shop-count
+        night <- bsh-shut v (22 * 3600) 0 0
+        shut <- gv-shut v city
+        day <- bsh-shut v (10 * 3600) 0 0
+        open <- not (gv-shut v city)
+        print-line-uni ("CITYHOURS role=" & show (ct-vendor-role city) & " night=" & show night & " day=" & show day)
+        a <- bvt-check "a city shop keeps its role's hours: shut at 22:00 with Britain's shops, open at 10:00 (UOAIX-217)" (ct-vendor-role city >= 0 & shut & open & night > day)
+        b <- bvt-check "city shops restock at the counter one a game minute in turn, wrapping, from the first city shop (UOAIX-217)" (cg-city-turn (bb-shop-count + 134) 0 == bb-shop-count & cg-city-turn (bb-shop-count + 134) 60 == bb-shop-count + 1 & cg-city-turn (bb-shop-count + 134) (134 * 60) == bb-shop-count)
+        c <- bvt-check "a world with no city shop, or no clock, restocks none" (cg-city-turn bb-shop-count 600 < 0 & cg-city-turn (bb-shop-count + 5) (0 - 1) < 0)
+        widened <- __record-set v "vendor-count" (bb-shop-count + 6)
+        late <- bsh-shut v (22 * 3600) 0 0
+        d <- bvt-check "a city healer (role 4) and innkeeper (role 5) stay open at 22:00 while the city provisioner shuts (Damian, 2026-10-10)" (ct-vendor-role (bb-shop-count + 4) == 4 & ct-vendor-role (bb-shop-count + 5) == 5 & not (gv-shut v (bb-shop-count + 4)) & not (gv-shut v (bb-shop-count + 5)) & gv-shut v city)
+        a + b + c + d
+      end

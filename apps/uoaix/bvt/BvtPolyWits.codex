@@ -1,0 +1,65 @@
+Chapter: BvtPolyWits
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-165 and UOAIX-166: a creature leaves a polymorphed character alone unless the form is human, it wins the contest
+ of INT (about half the castings at even INT), or the character is fighting it; mana returns three times as fast.
+  bpw-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  bpw-cover (map) (x) (y) (z) = act
+    Ok map
+  end
+  bpw-made : Result Integer Text -> Integer
+  bpw-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bpw-owner : Integer -> Result CompositeGame Text
+  bpw-owner (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> let filled = bwd-fill map 0
+      in when wd-read (bwd-data 0) 240 map map.stride
+        is Err (e) -> Err e
+        is Ok (decoration) -> when cg-new 0
+          is Err (e) -> Err e
+          is Ok (owner) -> let magic = mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (bpw-cover map)
+            in let attached = __record-set owner "magic" (Just magic) in Ok owner
+  bpw-seen : CompositeGame, MgActor, Integer, Integer, Integer -> Integer
+  bpw-seen (owner) (disguise) (attacker) (target) (i) = if i > 200 then 0
+    else let cast = __record-set disguise "poly" i
+    in (if cg-fooled owner attacker target then 0 else 1) + bpw-seen owner disguise attacker target (i + 1)
+  bpw-regen : MgActor -> Integer
+  bpw-regen (a) = let points = mgs-stat a 2 * 10
+    in let millis = 7000 - 239 * points / 48 + 19 * points * points / 19200
+    in max 1 (mgd-ticks (max 250 (min (min 7000 millis) (cb-regen-full-ms / max 1 (mgs-stat a 2)))) / 3)
+  bvt-poly-wits : Integer -> [Console] Integer
+  bvt-poly-wits (unused) = when bpw-owner 0
+    is Err (e) -> bvt-check ("poly wits fixture: " & e) False
+    is Ok (owner) -> when owner.magic
+      is None -> bvt-check "poly wits fixture: no magic" False
+      is Just (magic) -> let game = owner.checkpoint.game
+        in let world = owner.items.world
+        in let caster = bpw-made (world-create world (gs-mobile 0 1420 1700 0 #00CB 1015))
+        in let lich = bpw-made (world-create world (gs-mobile 0 1422 1700 0 #0018 0))
+        in when mgs-ensure magic game caster
+          is Err (e) -> bvt-check ("poly wits caster: " & e) False
+          is Ok (disguise) -> when mgs-ensure magic game lich
+            is Err (e) -> bvt-check ("poly wits lich: " & e) False
+            is Ok (creature) -> let even = __record-set disguise "intelligence" 20
+              in let level = __record-set creature "intelligence" 20
+              in let seen = bpw-seen owner disguise lich caster 1
+              in let bright = __record-set disguise "intelligence" 1000000
+              in let fooled = cg-fooled owner lich caster
+              in let plain = __record-set disguise "poly" 0
+              in let undisguised = not (cg-fooled owner lich caster)
+              in let again = __record-set disguise "poly" 7
+              in let human = when world-get world caster is Err (_) -> False is Ok (m) -> is-ok (world-update world (__record-set m "graphic" #0190))
+              in let manlike = not (cg-fooled owner lich caster)
+              in let regen = mgr-regen-delay game disguise
+              in let even-again = __record-set disguise "intelligence" 50
+              in let fifty = mgr-regen-delay game disguise in act
+              print-line-uni ("POLYWITS seen=" & show seen & "/200 fooled=" & (if fooled then "1" else "0") & " regen50=" & show fifty & " want=" & show (bpw-regen disguise))
+              a <- bvt-check "at even INT a creature sees through about half of 200 castings (UOAIX-166)" (caster > 0 & lich > 0 & seen >= 70 & seen <= 130)
+              b <- bvt-check "a creature far outwitted leaves the polymorphed pig alone" fooled
+              c <- bvt-check "no polymorph, or a form the creature hunts (a player's body), is attacked as before; pig and deer forms are not hunted" (undisguised & human & manlike
+                & cg-hunted-form owner #0190 & cg-hunted-form owner #0191 & not (cg-hunted-form owner #00CB) & not (cg-hunted-form owner #00ED))
+              d <- bvt-check "mana returns three times as fast as the curve (UOAIX-165)" (fifty == bpw-regen disguise & fifty < mgd-ticks 4758)
+              a + b + c + d
+            end

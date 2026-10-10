@@ -1,0 +1,68 @@
+Chapter: SkillStoreProof
+  cites Uoaix chapter ClassicSkills
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter GameCombat
+
+  ssp-check : Text, Boolean -> [Console] Integer
+  ssp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  ssp-uses : SkClassic, Integer, Integer, Integer -> Integer
+  ssp-uses (p) (skill) (difficulty) (left) = if left == 0 then 0 else let used = skc-use p skill difficulty True in ssp-uses p skill difficulty (left - 1)
+  ssp-practise : EpActor, Integer, Integer, Integer, Integer -> Integer
+  ssp-practise (p) (skill) (classic) (left) (ok) = if left == 0 then ok
+    else ssp-practise p skill classic (left - 1) (if ep-practice-as p skill classic then ok + 1 else ok)
+  ssp-swings : GameCombat, GameShard, CombatActor, Integer, Integer -> Integer
+  ssp-swings (c) (shard) (a) (w) (left) = if left == 0 then 0
+    else let drawn = cb-random c 2 in let trained = cb-practise c shard a 0 w True in ssp-swings c shard a w (left - 1)
+  ssp-actor : Integer, Boolean -> CombatActor
+  ssp-actor (serial) (npc) = CombatActor { serial = serial, name = alloc-bytes 32, maximum = 50, strength = 0, dexterity = 100,
+    skill = 250, tactics = 500, anatomy = 0, low = 3, high = 6, war = False, target = 0, due = 0, body = 400, corpse = 0,
+    connection = 0, npc = npc, immune = False, regen = 0, armed = False, frozen = 0 }
+  ssp-economy : Integer -> EpActor
+  ssp-economy (row) = EpActor { purse = 0, place = 0, hunger = 0, attempts = 0, stock = ep-buffer 129, quality = ep-buffer 129,
+    cost = ep-buffer 129, wear = ep-buffer 129, skills = ep-buffer 11, row = row, card = 0 }
+  ssp-run : GameShard -> [Console] Integer
+  ssp-run (shard) = act
+    character <- poke-qword shard.characters 0 4660
+    s1 <- poke-byte shard.characters 82 25
+    v1 <- poke-byte shard.characters 83 50
+    a <- ssp-check "an unclaimed character reads its creation skill, and a serial that is no character reads 0 and refuses a write" (gs-skill shard 4660 25 == 500 & gs-skill shard 4660 43 == 0 & gs-skill shard 777 25 == 0 & gs-skill-set shard 777 25 100 == -1 & gs-skill-row shard 777 == 0)
+    row <- gs-skill-row shard 4660
+    written <- gs-skill-set shard 4660 43 1000
+    b <- ssp-check "the first claim seeds the row from the creation skills, and the one write lands in it" (row /= 0 & peek-qword row (25 * 8) == 500 & written == 0 & gs-skill shard 4660 43 == 1000 & peek-qword row (43 * 8) == 1000 & gs-skill-set shard 4660 43 1001 == -1)
+    active <- skc-new 7 100
+    aliased <- __record-set active "levels" row
+    zero <- gs-skill-set shard 4660 21 0
+    used <- ssp-uses active 21 0 400
+    c <- ssp-check "an active use through the session's ClassicSkills gains in the character's row (Hiding from 0.0 over 400 uses)" (gs-skill shard 4660 21 > 0 & sk-at active.levels 21 == gs-skill shard 4660 21)
+    d <- ssp-check "economy categories map to client skills: mining and gold 45, fishing 18, farming 6, lumber 44 harvested, carpentry 11, bows and arrows 8, smelting 45, smithing 7, cooking 13, textile 34" (ep-classic 1 0 5 == 45 & ep-classic 2 0 6 == 45 & ep-classic 4 0 9 == 18 & ep-classic 5 0 13 == 6 & ep-classic 6 0 15 == 44 & ep-classic 6 8 38 == 11 & ep-classic 6 8 48 == 8 & ep-classic 6 8 49 == 8 & ep-classic 8 3 31 == 45 & ep-classic 8 9 40 == 7 & ep-classic 9 6 34 == 13 & ep-classic 10 11 44 == 34)
+    e <- ssp-check "hunting, herbalism, pottery, minting and no skill map to no client skill" (ep-classic 0 1 25 == -1 & ep-classic 3 0 7 == -1 & ep-classic 7 0 17 == -1 & ep-classic 8 10 30 == -1 & ep-classic 8 12 51 == -1)
+    player <- ssp-economy row
+    mining <- gs-skill-set shard 4660 45 1000
+    sure <- ssp-practise player 1 45 100 0
+    f <- ssp-check "after a write of Mining 100.0 to the row, a player's economy mining reads it and never fails (100 of 100); the actor's own economy skills stay 0" (ep-level player 1 45 == 1000 & sure == 100 & ep-at player.skills 1 == 0)
+    sowing <- gs-skill-set shard 4660 6 0
+    farmed <- ssp-practise player 5 6 400 0
+    g <- ssp-check "farming practises Farming (client skill 6) in the row" (gs-skill shard 4660 6 > 0 & ep-at player.skills 5 == 0)
+    carving <- ssp-practise player 3 (0 - 1) 100 0
+    h <- ssp-check "a use with no client skill always succeeds and moves nothing" (carving == 100 & ep-at player.skills 3 == 0)
+    npc <- ssp-economy 0
+    worker <- ssp-practise npc 1 45 400 0
+    i <- ssp-check "an NPC actor with no row keeps practising its own economy skill" (ep-at npc.skills 1 > 0)
+    combat <- cb-new shard 7
+    fighter <- ssp-actor 4660 False
+    monster <- ssp-actor 4661 True
+    sword <- gs-skill-set shard 4660 40 1000
+    j <- ssp-check "a player's weapon skill, Wrestling, Tactics and Anatomy are read from the row; an NPC's from its own fields" (cb-skill-for shard fighter (wpn-stats #0F60) == 1000 & cb-skill-for shard fighter 0 == 1000 & cb-skill-for shard monster 0 == 250 & cb-level shard fighter 27 500 == gs-skill shard 4660 27)
+    wrestling <- gs-skill-set shard 4660 43 0
+    swung <- ssp-swings combat shard fighter 0 400
+    k <- ssp-check "a player's swing practises the skill it fought with in the row (Wrestling from 0.0)" (gs-skill shard 4660 43 > 0)
+    a+b+c+d+e+f+g+h+i+j+k
+  end
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> ssp-check e False
+    is Ok (shard) -> ssp-run shard
+
+Page 1

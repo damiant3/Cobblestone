@@ -122,7 +122,13 @@ Section: Record Types
    avx-used : Boolean,
    avx-local : Boolean,
    call-census : Boolean,
-   emit-path : Integer between 0 and 2
+   emit-path : Integer between 0 and 2,
+   cover : Boolean,
+   cover-base : Integer,
+   cover-count : Integer,
+   cover-slot : Integer,
+   cover-arms : Integer,
+   cover-arm-map : List Integer
   }
 
   EffectOpAddr = record {
@@ -396,7 +402,13 @@ Section: State Helpers
     avx-used = False,
     avx-local = False,
     call-census = False,
-    emit-path = 0
+    emit-path = 0,
+    cover = False,
+    cover-base = 0,
+    cover-count = 0,
+    cover-slot = 0 - 1,
+    cover-arms = 0,
+    cover-arm-map = []
   }
 
   fc-flush : CodegenState -> CodegenState
@@ -602,7 +614,13 @@ Section: State Helpers
      avx-used = st.avx-used,
      avx-local = st.avx-local,
      call-census = st.call-census,
-     emit-path = 0
+     emit-path = 0,
+     cover = st.cover,
+     cover-base = st.cover-base,
+     cover-count = st.cover-count,
+     cover-slot = 0 - 1,
+     cover-arms = st.cover-arms,
+     cover-arm-map = st.cover-arm-map
     }
 
   reset-func-scratch : CodegenState -> CodegenState
@@ -671,13 +689,20 @@ Section: Register Allocation
     if list-length (st.func-local-regs) > 0 then st.func-local-regs
     else local-regs
 
+ next-temp is read only modulo the temp pool's length (1 to 6 registers) and is bounded to 65535, so it wraps at
+ 65520, the largest count below the bound that every pool length divides: the rotation phase is unchanged and a
+ function needing more temps (one list literal of 66,304 elements, COMPILER-128) no longer traps the bound.
+
+  temp-step : Integer between 0 and 65535 -> Integer between 0 and 65519
+  temp-step (n) = int-mod (n + 1) 65520
+
   alloc-temp : CodegenState -> EmitResult
   alloc-temp (st) =
     let pool = active-temp-regs st
     in let idx = int-mod (st.next-temp) (list-length pool)
     in let reg = list-at pool idx
     in EmitResult {
-    state = fc-evict-reg (__record-set st "next-temp" (st.next-temp + 1)) reg,
+    state = fc-evict-reg (__record-set st "next-temp" (temp-step (st.next-temp))) reg,
     reg = __narrow reg
   }
 
@@ -693,7 +718,7 @@ Section: Register Allocation
     let pool = active-temp-regs st
     in let idx = int-mod (st.next-temp) (list-length pool)
     in if list-at pool idx == avoid
-       then alloc-temp (__record-set st "next-temp" (st.next-temp + 1))
+       then alloc-temp (__record-set st "next-temp" (temp-step (st.next-temp)))
     else alloc-temp st
 
   alloc-local : CodegenState -> EmitResult

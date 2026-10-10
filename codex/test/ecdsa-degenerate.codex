@@ -1,0 +1,82 @@
+Chapter: EcdsaDegenerateTest
+  cites Foreword chapter EcdsaP256
+  cites Foreword chapter Console
+
+ The RFC 6979 A.2.5 key, message and signature (P-256, SHA-256, "sample"), the same vector
+ codex/test/ecdsa-p256 confirms against OpenSSL and CNG.
+
+Section: Vectors
+
+  p-pub : List Integer =
+    [4, 96, 254, 212, 186, 37, 90, 157, 49, 201, 97, 235, 116, 198, 53, 109,
+     104, 192, 73, 184, 146, 59, 97, 250, 108, 230, 105, 98, 46, 96, 242, 159,
+     182, 121, 3, 254, 16, 8, 184, 188, 153, 164, 26, 233, 233, 86, 40, 188,
+     100, 242, 241, 178, 12, 45, 126, 159, 81, 119, 163, 194, 148, 212, 70, 34,
+     153]
+
+  p-msg : List Integer = [115, 97, 109, 112, 108, 101]
+
+  p-sig : List Integer =
+    [239, 212, 139, 42, 172, 182, 168, 253, 17, 64, 221, 156, 212, 94, 129, 214,
+     157, 44, 135, 123, 86, 170, 249, 145, 195, 77, 14, 168, 78, 175, 55, 22,
+     247, 203, 28, 148, 45, 101, 124, 65, 212, 54, 199, 161, 182, 226, 159, 101,
+     243, 233, 0, 219, 185, 175, 244, 6, 77, 196, 171, 47, 132, 58, 205, 168]
+
+Section: Helpers
+
+  ed-zeros : Integer -> List Integer
+  ed-zeros (n) = ed-fill n 0
+
+  ed-fill : Integer, Integer -> List Integer
+  ed-fill (n) (v) = if n <= 0 then [] else list-push (ed-fill (n - 1) v) v
+
+  ed-join : List Integer, List Integer -> List Integer
+  ed-join (a) (b) = a & b
+
+  ed-prefixed : Integer -> List Integer
+  ed-prefixed (b) = list-set-at (for x in p-pub -> x) 0 b
+
+  ed-r : List Integer = ec-slice p-sig 0 32
+  ed-s : List Integer = ec-slice p-sig 32 32
+
+ y negated modulo p: the same x, the other point, on the curve and not the signer's key.
+
+  ed-neg-y : List Integer =
+    let f = ec-p256-curve
+    in let y = ec-from-mont (ec-sub-f (cb-zeros f.ef-n) (ec-to-mont (cb-from-bytes (ec-slice p-pub 33 32) f.ef-n) f) f) f
+    in cb-to-bytes y 32
+
+  ed-negated-key : List Integer = [4] & ec-slice p-pub 1 32 & ed-neg-y
+
+  ed-negated-on-curve : Boolean =
+    let f = ec-p256-curve
+    in ec-on-curve (ec-point-of (ec-slice p-pub 1 32) ed-neg-y f) f
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("control: the rfc6979 signature verifies = " & show (ecdsa-p256-verify p-pub p-msg p-sig))
+    print-line-uni ("all-zero key (prefix 0) and all-zero signature = " & show (ecdsa-p256-verify (ed-zeros 65) p-msg (ed-zeros 64)))
+    print-line-uni ("prefix 4 and zero coordinates, zero signature = " & show (ecdsa-p256-verify ([4] & ed-zeros 64) p-msg (ed-zeros 64)))
+    print-line-uni ("genuine key, all-zero signature = " & show (ecdsa-p256-verify p-pub p-msg (ed-zeros 64)))
+    print-line-uni ("r of zero with the genuine s = " & show (ecdsa-p256-verify p-pub p-msg (ed-join (ed-zeros 32) ed-s)))
+    print-line-uni ("r equal to the order n = " & show (ecdsa-p256-verify p-pub p-msg (ed-join ec-n-bytes ed-s)))
+    print-line-uni ("s equal to the order n = " & show (ecdsa-p256-verify p-pub p-msg (ed-join ed-r ec-n-bytes)))
+    print-line-uni ("r and s equal to n = " & show (ecdsa-p256-verify p-pub p-msg (ed-join ec-n-bytes ec-n-bytes)))
+    print-line-uni ("r of all ones (above n) = " & show (ecdsa-p256-verify p-pub p-msg (ed-join (ed-fill 32 255) ed-s)))
+    print-line-uni ("compressed prefix 2 on the genuine coordinates = " & show (ecdsa-p256-verify (ed-prefixed 2) p-msg p-sig))
+    print-line-uni ("compressed prefix 3 on the genuine coordinates = " & show (ecdsa-p256-verify (ed-prefixed 3) p-msg p-sig))
+    print-line-uni ("hybrid prefix 6 on the genuine coordinates = " & show (ecdsa-p256-verify (ed-prefixed 6) p-msg p-sig))
+    print-line-uni ("hybrid prefix 7 on the genuine coordinates = " & show (ecdsa-p256-verify (ed-prefixed 7) p-msg p-sig))
+    print-line-uni ("prefix 0 on the genuine coordinates = " & show (ecdsa-p256-verify (ed-prefixed 0) p-msg p-sig))
+    print-line-uni ("negated key is on the curve = " & show ed-negated-on-curve)
+    print-line-uni ("genuine signature under the negated key = " & show (ecdsa-p256-verify ed-negated-key p-msg p-sig))
+    print-line-uni ("key with x equal to p = " & show (ecdsa-p256-verify ([4] & ec-p-bytes & ec-slice p-pub 33 32) p-msg p-sig))
+    print-line-uni ("key with y equal to p = " & show (ecdsa-p256-verify ([4] & ec-slice p-pub 1 32 & ec-p-bytes) p-msg p-sig))
+    print-line-uni ("empty key and empty signature = " & show (ecdsa-p256-verify [] p-msg []))
+    print-line-uni ("sha-384 path: all-zero key and signature = " & show (ecdsa-p256-verify-sha384 ([4] & ed-zeros 64) p-msg (ed-zeros 64)))
+    print-line-uni ("p-384: all-zero key and signature = " & show (ecdsa-p384-verify ([4] & ed-zeros 96) p-msg (ed-zeros 96)))
+    print-line-uni ("p-384: zero key, signature r = s = 1 = " & show (ecdsa-p384-verify ([4] & ed-zeros 96) p-msg (ed-zeros 47 & [1] & ed-zeros 47 & [1])))
+  end
+
+Page 1

@@ -9,27 +9,28 @@ Chapter: EconomyStateCodec
   cites Foreword chapter Result
 
   EconomyCheckpoint = record { world : EpWorld, tick : Integer, sequence : Integer }
-  es-catalog-bytes : Integer = 32 + 128 * 80 + 64 * 56 + 128 * 88
-  es-money-at : Integer = 64 + es-catalog-bytes
+ Format 12: the header (64 bytes), the catalog's item, resource and recipe counts (32), the gold table and the world
+ (64 each), the ledger, the gold opening cells and the two turnover arrays (64 each) are es-bytes. The catalog-wide
+ block follows: item rows (80 bytes), resource rows (56), recipe rows (88), six item arrays (gathered, crafted,
+ consumed, sales, found, taxed) and the trade opening; then the actor count and the sparse rows.
+  es-money-at : Integer = 96
   es-world-at : Integer = es-money-at + 64
-  es-purses-at : Integer = es-world-at + 64
-  es-loans-at : Integer = es-purses-at + 256 * 24
-  es-ledger-at : Integer = es-loans-at + 128 * 56
-  es-actors-at : Integer = es-ledger-at + em-rows * 56
-  es-stations-at : Integer = es-actors-at + 128 * 4248
-  es-nodes-at : Integer = es-stations-at + 64 * 32
-  es-trades-at : Integer = es-nodes-at + 256 * 72
-  es-counters-at : Integer = es-trades-at + ep-trade-limit * 72
-  es-v1-bytes : Integer = es-counters-at + 4 * 1032 + 2 * 64
-  es-v2-bytes : Integer = es-v1-bytes + (ep-station-limit - 64) * 32
-  es-v3-bytes : Integer = es-v2-bytes + (ep-node-limit - 256) * 72
-  es-bytes : Integer = es-v3-bytes + 1032
-  es-station-at : Integer -> Integer
-  es-station-at (i) = if i < 64 then es-stations-at + i * 32 else es-v1-bytes + (i - 64) * 32
-  es-node-at : Integer -> Integer
-  es-node-at (i) = if i < 256 then es-nodes-at + i * 72 else es-v2-bytes + (i - 256) * 72
-  es-version : Integer -> Integer
-  es-version (size) = if size == es-v1-bytes then 1 else if size == es-v2-bytes then 2 else if size == es-v3-bytes then 3 else if size == es-bytes then 4 else 0
+  es-ledger-at : Integer = es-world-at + 64
+  es-open-at : Integer = es-ledger-at + em-rows * 56
+  es-turnover-at : Integer = es-open-at + em-open-cells * 8
+  es-bytes : Integer = es-turnover-at + 128
+  es-resources-at : Integer -> Integer
+  es-resources-at (items) = es-bytes + items * 80
+  es-recipes-at : Integer, Integer -> Integer
+  es-recipes-at (items) (resources) = es-resources-at items + resources * 56
+  es-counters-at : Integer, Integer, Integer -> Integer
+  es-counters-at (items) (resources) (recipes) = es-recipes-at items resources + recipes * 88
+  es-head-at : Integer, Integer, Integer -> Integer
+  es-head-at (items) (resources) (recipes) = es-counters-at items resources recipes + 6 * (items + 1) * 8 + (ep-open-sales + items + 1) * 8
+  es-catalog-counters : EgCatalog -> Integer
+  es-catalog-counters (c) = es-counters-at (list-length c.items) (list-length c.resources) (list-length c.recipes)
+  es-catalog-head : EgCatalog -> Integer
+  es-catalog-head (c) = es-head-at (list-length c.items) (list-length c.resources) (list-length c.recipes)
 
   es-zero-range : Integer, Integer, Integer -> Boolean
   es-zero-range (buf) (at) (stop) = if at == stop then True
@@ -37,16 +38,16 @@ Chapter: EconomyStateCodec
   es-write-items : Integer, EgCatalog, Integer -> Integer
   es-write-items (buf) (c) (i) = if i == list-length c.items then 0
     else let item = list-at c.items i
-    in let a = poke-qword buf (96 + i * 80) item.chain
-    in let b = ts-write-text buf (104 + i * 80) 64 item.name
+    in let a = poke-qword buf (es-bytes + i * 80) item.chain
+    in let b = ts-write-text buf (es-bytes + 8 + i * 80) 64 item.name
     in es-write-items buf c (i + 1)
   es-write-resources : Integer, EgCatalog, Integer -> Integer
   es-write-resources (buf) (c) (i) = if i == list-length c.resources then 0
-    else let a = es-write-resource buf (96 + 128 * 80 + i * 56) (list-at c.resources i)
+    else let a = es-write-resource buf (es-resources-at (list-length c.items) + i * 56) (list-at c.resources i)
     in es-write-resources buf c (i + 1)
   es-write-recipes : Integer, EgCatalog, Integer -> Integer
   es-write-recipes (buf) (c) (i) = if i == list-length c.recipes then 0
-    else let a = es-write-recipe buf (96 + 128 * 80 + 64 * 56 + i * 88) (list-at c.recipes i)
+    else let a = es-write-recipe buf (es-recipes-at (list-length c.items) (list-length c.resources) + i * 88) (list-at c.recipes i)
     in es-write-recipes buf c (i + 1)
   es-write-catalog : Integer, EgCatalog -> Integer
   es-write-catalog (buf) (c) =
@@ -57,48 +58,45 @@ Chapter: EconomyStateCodec
     in let f = es-write-resources buf c 0
     in es-write-recipes buf c 0
   es-catalog-wire : Integer, Integer -> Boolean
-  es-catalog-wire (buf) (i) = if i == 128 then True
-    else let at = 96 + i * 80
-    in let item = if i < peek-qword buf 64 then ts-text-valid buf (at + 8) 64 else es-zero-range buf at (at + 80)
-    in let resource = if i >= 64 | i < peek-qword buf 72 then True else es-zero-range buf (96 + 128 * 80 + i * 56) (96 + 128 * 80 + (i + 1) * 56)
-    in let recipe = if i < peek-qword buf 80 then True else es-zero-range buf (96 + 128 * 80 + 64 * 56 + i * 88) (96 + 128 * 80 + 64 * 56 + (i + 1) * 88)
-    in item & resource & recipe & es-catalog-wire buf (i + 1)
+  es-catalog-wire (buf) (i) = if i == peek-qword buf 64 then True
+    else ts-text-valid buf (es-bytes + 8 + i * 80) 64 & es-catalog-wire buf (i + 1)
   es-read-items : Integer, Integer, List EgItem -> List EgItem
   es-read-items (buf) (i) (xs) = if i == peek-qword buf 64 then xs
-    else es-read-items buf (i + 1) (list-push xs (eg-item (ts-read-text buf (104 + i * 80)) (peek-qword buf (96 + i * 80))))
+    else es-read-items buf (i + 1) (list-push xs (eg-item (ts-read-text buf (es-bytes + 8 + i * 80)) (peek-qword buf (es-bytes + i * 80))))
   es-read-resources : Integer, Integer, List EgResource -> List EgResource
   es-read-resources (buf) (i) (xs) = if i == peek-qword buf 72 then xs
     else let r = eg-resource 0 0 0 0 0 0 0
-    in let a = es-read-resource buf (96 + 128 * 80 + i * 56) r
+    in let a = es-read-resource buf (es-resources-at (peek-qword buf 64) + i * 56) r
     in es-read-resources buf (i + 1) (list-push xs r)
   es-read-recipes : Integer, Integer, List EgRecipe -> List EgRecipe
   es-read-recipes (buf) (i) (xs) = if i == peek-qword buf 80 then xs
     else let r = eg-recipe 0 0 0 0 0 0 0 0 0 0 0
-    in let a = es-read-recipe buf (96 + 128 * 80 + 64 * 56 + i * 88) r
+    in let a = es-read-recipe buf (es-recipes-at (peek-qword buf 64) (peek-qword buf 72) + i * 88) r
     in es-read-recipes buf (i + 1) (list-push xs r)
 
-  es-write-purses : Integer, EmMoney, Integer -> Integer
-  es-write-purses (buf) (w) (i) = if i == 256 then 0
-    else let a = es-write-purse buf (es-purses-at + i * 24) (list-at w.purses i)
-    in es-write-purses buf w (i + 1)
+ Version 8 closes the record, after the actor rows, with the purse count and that many 24-byte purse rows.
+  es-write-purses : Integer, Integer, EmMoney, Integer -> Integer
+  es-write-purses (buf) (at) (w) (i) = if i >= w.purse-count then at + i * 24
+    else let a = es-write-purse buf (at + i * 24) (list-at w.purses i)
+    in es-write-purses buf at w (i + 1)
 
-  es-read-purses : Integer, EmMoney, Integer -> Integer
-  es-read-purses (buf) (w) (i) = if i == 256 then 0
-    else let a = es-read-purse buf (es-purses-at + i * 24) (list-at w.purses i)
-    in es-read-purses buf w (i + 1)
+  es-read-purses : Integer, Integer, EmMoney, Integer, Integer -> Integer
+  es-read-purses (buf) (at) (w) (count) (i) = if i >= count then at + i * 24
+    else let a = es-read-purse buf (at + i * 24) (list-at w.purses i)
+    in es-read-purses buf at w count (i + 1)
 
-  es-write-loans : Integer, EmMoney, Integer -> Integer
-  es-write-loans (buf) (w) (i) = if i == 128 then 0
-    else let a = es-write-loan buf (es-loans-at + i * 56) (list-at w.loans i)
-    in es-write-loans buf w (i + 1)
+  es-write-loans : Integer, Integer, EmMoney, Integer -> Integer
+  es-write-loans (buf) (at) (w) (i) = if i >= w.loan-count then at + i * 56
+    else let a = es-write-loan buf (at + i * 56) (list-at w.loans i)
+    in es-write-loans buf at w (i + 1)
 
-  es-read-loans : Integer, EmMoney, Integer -> Integer
-  es-read-loans (buf) (w) (i) = if i == 128 then 0
-    else let a = es-read-loan buf (es-loans-at + i * 56) (list-at w.loans i)
-    in es-read-loans buf w (i + 1)
+  es-read-loans : Integer, Integer, EmMoney, Integer -> Integer
+  es-read-loans (buf) (at) (w) (i) = if i >= w.loan-count then at + i * 56
+    else let a = es-read-loan buf (at + i * 56) (list-at w.loans i)
+    in es-read-loans buf at w (i + 1)
 
   es-write-ledger : Integer, EmMoney, Integer -> Integer
-  es-write-ledger (buf) (w) (i) = if i == em-rows then 0
+  es-write-ledger (buf) (w) (i) = if i == em-rows | i >= w.entry-count then 0
     else let a = es-write-entry buf (es-ledger-at + i * 56) (list-at w.ledger i)
     in es-write-ledger buf w (i + 1)
 
@@ -107,145 +105,271 @@ Chapter: EconomyStateCodec
     else let a = es-read-entry buf (es-ledger-at + i * 56) (list-at w.ledger i)
     in es-read-ledger buf w (i + 1)
 
-  es-write-stations : Integer, EpWorld, Integer -> Integer
-  es-write-stations (buf) (w) (i) = if i == ep-station-limit then 0
-    else let a = es-write-station buf (es-station-at i) (list-at w.stations i)
-    in es-write-stations buf w (i + 1)
+ Version 9 keeps stations and nodes as their live rows after the purses (32 and 72 bytes); each writer and reader
+ answers the offset after its rows.
+  es-write-stations : Integer, Integer, EpWorld, Integer -> Integer
+  es-write-stations (buf) (at) (w) (i) = if i >= w.station-count then at + i * 32
+    else let a = es-write-station buf (at + i * 32) (list-at w.stations i)
+    in es-write-stations buf at w (i + 1)
 
-  es-read-stations : Integer, EpWorld, Integer, Integer -> Integer
-  es-read-stations (buf) (w) (i) (count) = if i == count then 0
-    else let a = es-read-station buf (es-station-at i) (list-at w.stations i)
-    in es-read-stations buf w (i + 1) count
+  es-read-stations : Integer, Integer, EpWorld, Integer -> Integer
+  es-read-stations (buf) (at) (w) (i) = if i >= w.station-count then at + i * 32
+    else let a = es-read-station buf (at + i * 32) (list-at w.stations i)
+    in es-read-stations buf at w (i + 1)
 
-  es-write-nodes : Integer, EpWorld, Integer -> Integer
-  es-write-nodes (buf) (w) (i) = if i == ep-node-limit then 0
-    else let a = es-write-node buf (es-node-at i) (list-at w.nodes i)
-    in es-write-nodes buf w (i + 1)
+  es-write-nodes : Integer, Integer, EpWorld, Integer -> Integer
+  es-write-nodes (buf) (at) (w) (i) = if i >= w.node-count then at + i * 72
+    else let a = es-write-node buf (at + i * 72) (list-at w.nodes i)
+    in es-write-nodes buf at w (i + 1)
 
-  es-read-nodes : Integer, EpWorld, Integer, Integer -> Integer
-  es-read-nodes (buf) (w) (i) (count) = if i == count then 0
-    else let a = es-read-node buf (es-node-at i) (list-at w.nodes i)
-    in es-read-nodes buf w (i + 1) count
+  es-read-nodes : Integer, Integer, EpWorld, Integer -> Integer
+  es-read-nodes (buf) (at) (w) (i) = if i >= w.node-count then at + i * 72
+    else let a = es-read-node buf (at + i * 72) (list-at w.nodes i)
+    in es-read-nodes buf at w (i + 1)
 
-  es-write-trades : Integer, EpWorld, Integer -> Integer
-  es-write-trades (buf) (w) (i) = if i == ep-trade-limit then 0
-    else let a = es-write-trade buf (es-trades-at + i * 72) (list-at w.trades i)
-    in es-write-trades buf w (i + 1)
+  es-write-trades : Integer, Integer, EpWorld, Integer -> Integer
+  es-write-trades (buf) (at) (w) (i) = if i >= w.trade-count then at + i * 72
+    else let a = es-write-trade buf (at + i * 72) (list-at w.trades i)
+    in es-write-trades buf at w (i + 1)
 
-  es-read-trades : Integer, EpWorld, Integer -> Integer
-  es-read-trades (buf) (w) (i) = if i == ep-trade-limit then 0
-    else let a = es-read-trade buf (es-trades-at + i * 72) (list-at w.trades i)
-    in es-read-trades buf w (i + 1)
+  es-read-trades : Integer, Integer, EpWorld, Integer -> Integer
+  es-read-trades (buf) (at) (w) (i) = if i >= w.trade-count then at + i * 72
+    else let a = es-read-trade buf (at + i * 72) (list-at w.trades i)
+    in es-read-trades buf at w (i + 1)
 
-  es-write-actors : Integer, EpWorld, Integer -> Integer
-  es-write-actors (buf) (w) (i) = if i == 128 then 0
+ Version 7 closes the record with the actors as sparse rows after the catalog-wide block: the admitted count, then per actor its
+ four fields, its eleven skills, the count of items with a nonzero cell, and per such item: item, stock, quality,
+ cost, wear (UoaixDynamicTables.md stage 4). Version 14 keeps twelve skills (Masonry, UOAIX-122), so a row is es-actor-row
+ bytes before its items.
+  es-actor-row : Integer = 32 + ep-skill-cells * 8 + 8
+  es-item-used : EpActor, Integer -> Boolean
+  es-item-used (p) (i) = ep-at p.stock i /= 0 | ep-at p.quality i /= 0 | ep-at p.cost i /= 0 | ep-at p.wear i /= 0
+  es-used-count : EpActor, Integer, Integer, Integer -> Integer
+  es-used-count (p) (cells) (i) (n) = if i == cells then n else es-used-count p cells (i + 1) (if es-item-used p i then n + 1 else n)
+  es-actors-bytes : EpWorld, Integer, Integer -> Integer
+  es-actors-bytes (w) (i) (n) = if i >= w.actor-count then n else es-actors-bytes w (i + 1) (n + es-actor-row + 40 * es-used-count (list-at w.actors i) (eg-cells w.catalog) 0 0)
+ Versions 13 and 14 close the record after the catalog head with seven parts, each a slot length then its content padded to
+ the slot's end: the actor count and sparse actor rows, the purse count and purse rows (24 bytes), the opening cells,
+ the stations (32), the nodes (72), the loans (56) and the trades (72). The slots are kept from the previous record by
+ es-slot, so an actor that gains an item moves no purse, station, node, loan or trade (UOAIX-138: in version 12 every
+ stock change moved some 270 KB of rows into the commit's delta).
+  es-part-count : Integer = 7
+  es-slot : Integer, Integer -> Integer
+  es-slot (kept) (n) = if kept >= n & kept <= 2 * n + 65536 & int-mod kept 8 == 0 then kept else (n + n / 2 + 4096 + 7) / 8 * 8
+  es-part-lengths : EpWorld -> List Integer
+  es-part-lengths (w) = [8 + es-actors-bytes w 0 0, 8 + w.money.purse-count * 24, em-open-used w.money * 8, w.station-count * 32, w.node-count * 72, w.money.loan-count * 56, w.trade-count * 72]
+  es-part-length : Integer, Integer, Integer -> Integer
+  es-part-length (buf) (at) (stop) = if at < 0 | at + 8 > stop then -1
+    else let n = peek-qword buf at in if n < 0 | int-mod n 8 /= 0 | n > stop - at - 8 then -1 else n
+  es-kept-walk : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  es-kept-walk (buf) (at) (stop) (i) (out) = if i == es-part-count then out
+    else let n = es-part-length buf at stop in if n < 0 then [] else es-kept-walk buf (at + 8 + n) stop (i + 1) (out & [n])
+ The part slots of a previous version 13 record at prev (0 for none), or none.
+  es-kept-parts : Integer -> List Integer
+  es-kept-parts (prev) = if prev == 0 then [] else if peek-qword prev 8 /= 14 | peek-qword prev 16 < es-bytes + 8 then []
+    else es-kept-walk prev (es-head-at (peek-qword prev 64) (peek-qword prev 72) (peek-qword prev 80)) (peek-qword prev 16) 0 []
+  es-pick : List Integer, List Integer, Integer, List Integer -> List Integer
+  es-pick (actual) (kept) (i) (out) = if i == list-length actual then out
+    else es-pick actual kept (i + 1) (out & [es-slot (if list-length kept == list-length actual then list-at kept i else 0) (list-at actual i)])
+  es-part-slots : EpWorld, Integer -> List Integer
+  es-part-slots (w) (prev) = es-pick (es-part-lengths w) (es-kept-parts prev) 0 []
+  es-put-slots : Integer, Integer, List Integer, Integer -> Integer
+  es-put-slots (buf) (at) (slots) (i) = if i == list-length slots then at
+    else let put = poke-qword buf at (list-at slots i) in es-put-slots buf (at + 8 + list-at slots i) slots (i + 1)
+  es-parts-bytes : List Integer, Integer -> Integer
+  es-parts-bytes (slots) (i) = if i == list-length slots then 0 else 8 + list-at slots i + es-parts-bytes slots (i + 1)
+ The most a fresh record of this world can take: every actor holding every item, each part in a fresh slot.
+  es-max-size : EpWorld -> Integer
+  es-max-size (w) = es-catalog-head w.catalog + es-parts-bytes (es-pick [8 + list-length w.actors * (es-actor-row + 40 * eg-cells w.catalog), 8 + list-length w.money.purses * 24, em-open-held w.money * 8, list-length w.stations * 32, list-length w.nodes * 72, list-length w.money.loans * 56, list-length w.trades * 72] [] 0 []) 0
+  es-size : EpWorld -> Integer
+  es-size (w) = es-size-in w 0
+  es-size-in : EpWorld, Integer -> Integer
+  es-size-in (w) (prev) = es-catalog-head w.catalog + es-parts-bytes (es-part-slots w prev) 0
+  es-write-used : Integer, Integer, EpActor, Integer, Integer -> Integer
+  es-write-used (buf) (at) (p) (cells) (i) = if i == cells then at
+    else if not (es-item-used p i) then es-write-used buf at p cells (i + 1)
+    else let a = poke-qword buf at i
+    in let b = poke-qword buf (at + 8) (ep-at p.stock i)
+    in let c = poke-qword buf (at + 16) (ep-at p.quality i)
+    in let d = poke-qword buf (at + 24) (ep-at p.cost i)
+    in let e = poke-qword buf (at + 32) (ep-at p.wear i)
+    in es-write-used buf (at + 40) p cells (i + 1)
+  es-write-actors : Integer, Integer, EpWorld, Integer -> Integer
+  es-write-actors (buf) (at) (w) (i) = if i >= w.actor-count then at
     else let p = list-at w.actors i
-    in let a = es-write-actor buf (es-actors-at + i * 4248) p
-    in let b = es-write-actor-buffers buf (es-actors-at + i * 4248 + 32) p
-    in es-write-actors buf w (i + 1)
+    in let a = es-write-actor buf at p
+    in let b = es-copy-cells p.skills (buf + at + 32) ep-skill-cells 0
+    in let c = poke-qword buf (at + es-actor-row - 8) (es-used-count p (eg-cells w.catalog) 0 0)
+    in es-write-actors buf (es-write-used buf (at + es-actor-row) p (eg-cells w.catalog) 0) w (i + 1)
 
   es-write-counters : Integer, EpWorld -> Integer
-  es-write-counters (buf) (w) =
-    let a0 = es-copy-cells w.gathered (buf + es-counters-at + 0) 129 0
-    in let a1 = es-copy-cells w.crafted (buf + es-counters-at + 1032) 129 0
-    in let a2 = es-copy-cells w.consumed (buf + es-counters-at + 2064) 129 0
-    in let a3 = es-copy-cells w.sales (buf + es-counters-at + 3096) 129 0
-    in let a4 = es-copy-cells w.turnover (buf + es-counters-at + 4128) 8 0
-    in let a5 = es-copy-cells w.crown-turnover (buf + es-counters-at + 4192) 8 0
-    in let a6 = es-copy-cells w.found (buf + es-v3-bytes) 129 0
-    in 0
+  es-write-counters (buf) (w) = let at = buf + es-catalog-counters w.catalog
+    in let n = eg-cells w.catalog
+    in let a0 = es-copy-cells w.gathered at n 0
+    in let a1 = es-copy-cells w.crafted (at + n * 8) n 0
+    in let a2 = es-copy-cells w.consumed (at + 2 * n * 8) n 0
+    in let a3 = es-copy-cells w.sales (at + 3 * n * 8) n 0
+    in let a4 = es-copy-cells w.found (at + 4 * n * 8) n 0
+    in let a5 = es-copy-cells w.taxed (at + 5 * n * 8) n 0
+    in let a6 = es-copy-cells w.opening (at + 6 * n * 8) (ep-open-cells w.catalog) 0
+    in let a7 = es-copy-cells w.money.opening (buf + es-open-at) em-open-cells 0
+    in let a8 = es-copy-cells w.turnover (buf + es-turnover-at) 8 0
+    in es-copy-cells w.crown-turnover (buf + es-turnover-at + 64) 8 0
 
-  es-read-actors : Integer, EpWorld, Integer -> Integer
-  es-read-actors (buf) (w) (i) = if i == 128 then 0
+ A row's items must name distinct catalog cells in rising order and stay inside the record.
+  es-read-used : Integer, Integer, Integer, EpActor, Integer, Integer, Integer -> Integer
+  es-read-used (buf) (at) (stop) (p) (cells) (left) (last) = if left == 0 then at
+    else if at + 40 > stop then -1
+    else let item = peek-qword buf at
+    in if item <= last | item >= cells then -1
+    else let a = ep-set p.stock item (peek-qword buf (at + 8))
+    in let b = ep-set p.quality item (peek-qword buf (at + 16))
+    in let c = ep-set p.cost item (peek-qword buf (at + 24))
+    in let d = ep-set p.wear item (peek-qword buf (at + 32))
+    in es-read-used buf (at + 40) stop p cells (left - 1) item
+  es-read-actors : Integer, Integer, Integer, EpWorld, Integer -> Integer
+  es-read-actors (buf) (at) (stop) (w) (i) = if at < 0 | i >= w.actor-count then at
+    else if at + es-actor-row > stop then -1
     else let p = list-at w.actors i
-    in let a = es-read-actor buf (es-actors-at + i * 4248) p
-    in let b = es-read-actor-buffers buf (es-actors-at + i * 4248 + 32) p
-    in es-read-actors buf w (i + 1)
+    in let a = es-read-actor buf at p
+    in let b = es-copy-cells (buf + at + 32) p.skills ep-skill-cells 0
+    in let used = peek-qword buf (at + es-actor-row - 8)
+    in if used < 0 | used > eg-cells w.catalog then -1
+    else es-read-actors buf (es-read-used buf (at + es-actor-row) stop p (eg-cells w.catalog) used (0 - 1)) stop w (i + 1)
 
   es-read-counters : Integer, EpWorld -> Integer
-  es-read-counters (buf) (w) =
-    let a0 = es-copy-cells (buf + es-counters-at + 0) w.gathered 129 0
-    in let a1 = es-copy-cells (buf + es-counters-at + 1032) w.crafted 129 0
-    in let a2 = es-copy-cells (buf + es-counters-at + 2064) w.consumed 129 0
-    in let a3 = es-copy-cells (buf + es-counters-at + 3096) w.sales 129 0
-    in let a4 = es-copy-cells (buf + es-counters-at + 4128) w.turnover 8 0
-    in let a5 = es-copy-cells (buf + es-counters-at + 4192) w.crown-turnover 8 0
-    in 0
-  es-read-found : Integer, Integer, EpWorld -> Integer
-  es-read-found (buf) (size) (w) = if size == es-bytes then es-copy-cells (buf + es-v3-bytes) w.found 129 0 else 0
+  es-read-counters (buf) (w) = let at = buf + es-catalog-counters w.catalog
+    in let n = eg-cells w.catalog
+    in let a0 = es-copy-cells at w.gathered n 0
+    in let a1 = es-copy-cells (at + n * 8) w.crafted n 0
+    in let a2 = es-copy-cells (at + 2 * n * 8) w.consumed n 0
+    in let a3 = es-copy-cells (at + 3 * n * 8) w.sales n 0
+    in let a4 = es-copy-cells (at + 4 * n * 8) w.found n 0
+    in let a5 = es-copy-cells (at + 5 * n * 8) w.taxed n 0
+    in let a6 = es-copy-cells (at + 6 * n * 8) w.opening (ep-open-cells w.catalog) 0
+    in let a7 = es-copy-cells (buf + es-open-at) w.money.opening em-open-cells 0
+    in let a8 = es-copy-cells (buf + es-turnover-at) w.turnover 8 0
+    in es-copy-cells (buf + es-turnover-at + 64) w.crown-turnover 8 0
 
   es-overlap : Integer, Integer, Integer, Integer -> Boolean
   es-overlap (one) (size) (two) (bytes) = one < two + bytes & two < one + size
-  es-actor-overlap : Integer, EpWorld, Integer -> Boolean
-  es-actor-overlap (buf) (w) (i) = if i == 128 then False
+  es-actor-overlap : Integer, Integer, EpWorld, Integer, Integer -> Boolean
+  es-actor-overlap (buf) (size) (w) (bytes) (i) = if i == list-length w.actors then False
     else let p = list-at w.actors i
-    in es-overlap buf es-bytes p.stock 1032 | es-overlap buf es-bytes p.quality 1032
-      | es-overlap buf es-bytes p.cost 1032 | es-overlap buf es-bytes p.wear 1032
-      | es-overlap buf es-bytes p.skills 88 | es-actor-overlap buf w (i + 1)
-  es-buffer-overlap : Integer, EpWorld -> Boolean
-  es-buffer-overlap (buf) (w) =
-    es-actor-overlap buf w 0 | es-overlap buf es-bytes w.gathered 1032
-      | es-overlap buf es-bytes w.crafted 1032 | es-overlap buf es-bytes w.consumed 1032
-      | es-overlap buf es-bytes w.sales 1032 | es-overlap buf es-bytes w.turnover 64
-      | es-overlap buf es-bytes w.crown-turnover 64 | es-overlap buf es-bytes w.found 1032
+    in es-overlap buf size p.stock bytes | es-overlap buf size p.quality bytes
+      | es-overlap buf size p.cost bytes | es-overlap buf size p.wear bytes
+      | es-overlap buf size p.skills (ep-skill-cells * 8) | es-actor-overlap buf size w bytes (i + 1)
+  es-buffer-overlap : Integer, Integer, EpWorld -> Boolean
+  es-buffer-overlap (buf) (size) (w) = let bytes = eg-bytes w.catalog
+    in es-actor-overlap buf size w bytes 0 | es-overlap buf size w.gathered bytes
+      | es-overlap buf size w.crafted bytes | es-overlap buf size w.consumed bytes
+      | es-overlap buf size w.sales bytes | es-overlap buf size w.turnover 64
+      | es-overlap buf size w.crown-turnover 64 | es-overlap buf size w.found bytes
+      | es-overlap buf size w.taxed bytes | es-overlap buf size w.opening (ep-open-cells w.catalog * 8)
 
   es-encode : EconomyCheckpoint, Integer, Integer -> Result Integer Text
-  es-encode (checkpoint) (buf) (capacity) =
-    if capacity < es-bytes then Err "economy destination too short"
-    else if not (ev-range checkpoint.tick ep-limit) | not (ev-range checkpoint.sequence ep-limit) then Err "economy metadata outside budget"
-    else if not (ev-valid checkpoint.world) then Err "economy state invalid"
+  es-encode (checkpoint) (buf) (capacity) = es-encode-over checkpoint buf capacity 0
+ Written over prev, the previous record (0 for none), whose part slots it keeps.
+  es-encode-over : EconomyCheckpoint, Integer, Integer, Integer -> Result Integer Text
+  es-encode-over (checkpoint) (buf) (capacity) (prev) =
+    if not (ev-range checkpoint.tick ep-limit) | not (ev-range checkpoint.sequence ep-limit) then Err "economy metadata outside budget"
+    else if not (ev-valid checkpoint.world) then Err ("economy state invalid: " & ev-invalid-part checkpoint.world)
     else let w = checkpoint.world
-    in if es-buffer-overlap buf w then Err "economy destination overlaps inventory"
-    else let clear = ts-zero buf es-bytes 0
+    in let parts = es-part-slots w prev
+    in let size = es-catalog-head w.catalog + es-parts-bytes parts 0
+    in if capacity < size then Err "economy destination too short"
+    else if es-buffer-overlap buf size w then Err "economy destination overlaps inventory"
+    else let clear = ts-zero buf size 0
     in let h0 = poke-qword buf 0 #31434555
-    in let h1 = poke-qword buf 8 4
-    in let h2 = poke-qword buf 16 es-bytes
-    in let h3 = poke-qword buf 24 es-catalog-bytes
+    in let h1 = poke-qword buf 8 14
+    in let h2 = poke-qword buf 16 size
+    in let h3 = poke-qword buf 24 es-bytes
     in let h4 = poke-qword buf 32 checkpoint.tick
     in let h5 = poke-qword buf 40 checkpoint.sequence
     in let catalog = es-write-catalog buf w.catalog
     in let money = es-write-money buf es-money-at w.money
     in let world = es-write-world buf es-world-at w
-    in let purses = es-write-purses buf w.money 0
-    in let loans = es-write-loans buf w.money 0
     in let ledger = es-write-ledger buf w.money 0
-    in let actors = es-write-actors buf w 0
-    in let stations = es-write-stations buf w 0
-    in let nodes = es-write-nodes buf w 0
-    in let trades = es-write-trades buf w 0
     in let counters = es-write-counters buf w
-    in let hash = poke-qword buf 48 (ws-hash buf es-bytes 0 2166136261)
-    in Ok es-bytes
+    in let p0 = es-catalog-head w.catalog
+    in let p1 = p0 + 8 + list-at parts 0
+    in let p2 = p1 + 8 + list-at parts 1
+    in let p3 = p2 + 8 + list-at parts 2
+    in let p4 = p3 + 8 + list-at parts 3
+    in let p5 = p4 + 8 + list-at parts 4
+    in let p6 = p5 + 8 + list-at parts 5
+    in let slotted = es-put-slots buf p0 parts 0
+    in let counted = poke-qword buf (p0 + 8) w.actor-count
+    in let ended = es-write-actors buf (p0 + 16) w 0
+    in let counted-purses = poke-qword buf (p1 + 8) w.money.purse-count
+    in let purses = es-write-purses buf (p1 + 16) w.money 0
+    in let more = es-copy-cells (w.money.opening + em-open-cells * 8) (buf + p2 + 8) (em-open-used w.money) 0
+    in let stations = es-write-stations buf (p3 + 8) w 0
+    in let nodes = es-write-nodes buf (p4 + 8) w 0
+    in let loans = es-write-loans buf (p5 + 8) w.money 0
+    in let trades = es-write-trades buf (p6 + 8) w 0
+    in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+    in Ok size
 
   es-decode : Integer, Integer -> Result EconomyCheckpoint Text
   es-decode (buf) (size) =
-    if es-version size == 0 then Err "economy checkpoint length outside budget"
-    else if peek-qword buf 0 /= #31434555 | peek-qword buf 8 /= es-version size | peek-qword buf 16 /= size | peek-qword buf 24 /= es-catalog-bytes | peek-qword buf 56 /= 0 then Err "economy checkpoint format invalid"
+    if size < es-bytes + 8 then Err "economy checkpoint length outside budget"
+    else if peek-qword buf 8 /= 14 then Err "economy checkpoint predates format 14 (twelve skills a row); start a fresh world"
+    else if peek-qword buf 0 /= #31434555 | peek-qword buf 16 /= size | peek-qword buf 24 /= es-bytes | peek-qword buf 56 /= 0 then Err "economy checkpoint format invalid"
     else if not (ev-range (peek-qword buf 32) ep-limit) | not (ev-range (peek-qword buf 40) ep-limit) then Err "economy checkpoint metadata invalid"
     else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "economy checkpoint checksum invalid"
-    else if peek-qword buf 64 < 1 | peek-qword buf 64 > 128 | not (ev-range (peek-qword buf 72) 64) | not (ev-range (peek-qword buf 80) 128) | peek-qword buf 88 /= 0 then Err "economy catalog dimensions invalid"
+    else if peek-qword buf 64 < 1 | peek-qword buf 72 < 0 | peek-qword buf 80 < 0 | peek-qword buf 88 /= 0
+      | peek-qword buf 64 > size / 80 | peek-qword buf 72 > size / 56 | peek-qword buf 80 > size / 88
+      | es-head-at (peek-qword buf 64) (peek-qword buf 72) (peek-qword buf 80) + 8 > size then Err "economy catalog dimensions invalid"
     else if not (es-catalog-wire buf 0) then Err "economy catalog text or padding invalid"
     else let catalog = EgCatalog { items = es-read-items buf 0 [], resources = es-read-resources buf 0 [], recipes = es-read-recipes buf 0 [] }
     in let money = em-new 0
     in let metadata = es-read-money buf es-money-at money
-    in let purses = es-read-purses buf money 0
-    in let loans = es-read-loans buf money 0
     in let ledger = es-read-ledger buf money 0
     in when ep-new catalog money
       is Err (e) -> Err e
       is Ok (w) ->
         let world = es-read-world buf es-world-at w
-        in let actors = es-read-actors buf w 0
-        in let stations = es-read-stations buf w 0 (if size == es-v1-bytes then 64 else ep-station-limit)
-        in let nodes = es-read-nodes buf w 0 (if size >= es-v3-bytes then ep-node-limit else 256)
-        in let trades = es-read-trades buf w 0
+        in let p0 = es-catalog-head w.catalog
+        in let s0 = es-part-length buf p0 size
+        in if s0 < 8 | peek-qword buf (p0 + 8) /= w.actor-count | w.actor-count < 0 | w.actor-count * es-actor-row > s0 - 8 then Err "economy actor count invalid"
+        else let grown = ep-grow-actors w (w.actor-count - list-length w.actors)
+        in let ended = es-read-actors buf (p0 + 16) (p0 + 8 + s0) w 0
+        in if ended < 0 then Err "economy actor rows invalid"
+        else let p1 = p0 + 8 + s0
+        in let s1 = es-part-length buf p1 size
+        in let count = if s1 < 8 then -1 else peek-qword buf (p1 + 8)
+        in let p2 = p1 + 8 + s1
+        in let s2 = es-part-length buf p2 size
+        in let p3 = p2 + 8 + s2
+        in let s3 = es-part-length buf p3 size
+        in let p4 = p3 + 8 + s3
+        in let s4 = es-part-length buf p4 size
+        in let p5 = p4 + 8 + s4
+        in let s5 = es-part-length buf p5 size
+        in let p6 = p5 + 8 + s5
+        in let s6 = es-part-length buf p6 size
+        in if w.station-count < 0 | w.node-count < 0 | w.node-count > ep-node-ceiling | w.money.loan-count < 0 | w.trade-count < 0 then Err "economy station, node, loan or trade count invalid"
+        else if s1 < 8 | s2 < 0 | s3 < 0 | s4 < 0 | s5 < 0 | s6 < 0 | p6 + 8 + s6 /= size then Err "economy part slots invalid"
+        else if count /= w.money.purse-count | count < 1 | 8 + count * 24 > s1 | em-open-extra count w.money.loan-count * 8 > s2
+          | w.station-count * 32 > s3 | w.node-count * 72 > s4 | w.money.loan-count * 56 > s5 | w.trade-count * 72 > s6 then Err "economy purse rows invalid"
+        else let lent = em-grow-loans w.money (w.money.loan-count - list-length w.money.loans)
+        in let room = em-grow-purses w.money (count - list-length w.money.purses)
+        in let purses = es-read-purses buf (p1 + 16) w.money count 0
+        in let more = es-copy-cells (buf + p2 + 8) (w.money.opening + em-open-cells * 8) (em-open-extra count w.money.loan-count) 0
+        in let grown-stations = ep-grow-stations w (w.station-count - list-length w.stations)
+        in let grown-nodes = ep-grow-nodes w (w.node-count - list-length w.nodes)
+        in let stations = es-read-stations buf (p3 + 8) w 0
+        in let nodes = es-read-nodes buf (p4 + 8) w 0
+        in let loans = es-read-loans buf (p5 + 8) w.money 0
+        in let grown-trades = ep-grow-trades w (w.trade-count - list-length w.trades)
+        in let trades = es-read-trades buf (p6 + 8) w 0
         in let counters = es-read-counters buf w
-        in let found = es-read-found buf size w
         in if not (ev-valid w) then Err "economy checkpoint state invalid"
         else Ok (EconomyCheckpoint { world = w, tick = peek-qword buf 32, sequence = peek-qword buf 40 })
   es-decode-record : Integer, Integer, Integer, Integer -> Result EconomyCheckpoint Text
   es-decode-record (buf) (size) (tick) (sequence) =
-    if es-version size == 0 then Err "economy record length invalid"
+    if size < es-bytes + 8 then Err "economy record length invalid"
     else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "economy record metadata mismatch"
     else es-decode buf size
 

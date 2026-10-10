@@ -35,14 +35,14 @@ Chapter: GameDeltaProof
   gdl-negative (name) (game) (checkpoint) (original) (buf) (size) (offset) (value) (rehash) =
     let world-size = 16 + game.world.capacity * 80
     in let before = alloc-bytes (world-size + 800)
-    in let saved-world = ws-copy game.world.buffer before world-size 0
+    in let saved-world = ws-image-write game.world before
     in let saved-characters = ws-copy game.characters (before + world-size) 800 0
     in let copied = ws-copy original buf size 0
     in let changed = poke-qword buf offset value
     in let hash = if rehash then poke-qword buf 48 (ws-hash buf size 0 2166136261) else 0
     in let refused = is-err (gd-apply checkpoint game buf size)
     in gdl-check name (refused & checkpoint.sequence == 0 & checkpoint.tick == 0 & game.next-key == 100
-      & gt-equal before game.world.buffer world-size 0 & gt-equal (before + world-size) game.characters 800 0)
+      & ws-image-equal game.world before & gt-equal (before + world-size) game.characters 800 0)
 
   gdl-overwrite : Integer, Integer, Integer -> Integer
   gdl-overwrite (buf) (size) (i) = if i >= size then 0
@@ -59,7 +59,7 @@ Chapter: GameDeltaProof
       gdl-negative "duplicate slot refuses" target checkpoint original buf size (gd-entries + gd-entry-bytes) 0 True
       gdl-negative "generation mismatch rolls back applied state" target checkpoint original buf size (gd-entries + 88) 65 True
       gdl-negative "invalid free head rolls back applied state" target checkpoint original buf size 904 -2 True
-      gdl-negative "invalid character padding rolls back applied state" target checkpoint original buf size (912 + 144) 1 True
+      gdl-negative "invalid character padding rolls back applied state" target checkpoint original buf size (912 + 144) 2 True
       gdl-negative "sequence gap refuses" target checkpoint original buf size 32 2 True
       gdl-negative "clock reversal refuses" target checkpoint original buf size 40 -1 True
       gdl-check "record metadata mismatch refuses" (is-err (gd-apply-record checkpoint target original size 2 10) & checkpoint.sequence == 0)
@@ -96,17 +96,17 @@ Chapter: GameDeltaProof
             in let preserved = ws-copy buf saved size 0
             in let world-size = 16 + target.world.capacity * 80
             in let before = alloc-bytes world-size
-            in let captured = ws-copy target.world.buffer before world-size 0
+            in let captured = ws-image-write target.world before
             in let bad-parent = poke-qword buf (gd-entries + 88 + 56) 1
             in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
             in let refused = is-err (gd-apply checkpoint target buf size)
             in act
-              gdl-check "movement cannot reparent a live object" (refused & checkpoint.sequence == 1 & checkpoint.tick == 10 & gt-equal before target.world.buffer world-size 0 & gt-equal source.characters target.characters 800 0)
+              gdl-check "movement cannot reparent a live object" (refused & checkpoint.sequence == 1 & checkpoint.tick == 10 & ws-image-equal target.world before & gt-equal source.characters target.characters 800 0)
               let restored = ws-copy saved buf size 0
               in let applied = gd-apply-record checkpoint target buf size 2 11
               in let accepted = gt-accept move.undo
               in act
-                gdl-check "ordered movement delta reproduces world bytes" (is-ok applied & checkpoint.sequence == 2 & checkpoint.tick == 11 & gt-equal source.world.buffer target.world.buffer (16 + source.world.capacity * 80) 0)
+                gdl-check "ordered movement delta reproduces world bytes" (is-ok applied & checkpoint.sequence == 2 & checkpoint.tick == 11 & ws-world-equal source.world target.world)
                 gdl-relay source target checkpoint map buf
               end
             end
@@ -133,11 +133,11 @@ Chapter: GameDeltaProof
               let applied = gd-apply-record checkpoint target buf size 1 10
               in let accepted = gt-accept prepared.undo
               in act
-                gdl-check "creation replay reproduces world and character bytes" (is-ok applied & checkpoint.sequence == 1 & checkpoint.tick == 10 & gt-equal source.world.buffer target.world.buffer (16 + source.world.capacity * 80) 0 & gt-equal source.characters target.characters 800 0 & ws-table-valid target.world)
+                gdl-check "creation replay reproduces world and character bytes" (is-ok applied & checkpoint.sequence == 1 & checkpoint.tick == 10 & ws-world-equal source.world target.world & gt-equal source.characters target.characters 800 0 & ws-table-valid target.world)
                 gdl-check "duplicate replay refuses without changing commit position" (is-err (gd-apply checkpoint target buf size) & checkpoint.sequence == 1 & world-count target.world == 5)
                 let overwritten = gdl-overwrite buf size 0
                 in act
-                  gdl-check "replayed state owns bytes independently of input" (gt-equal source.world.buffer target.world.buffer (16 + source.world.capacity * 80) 0 & gt-equal source.characters target.characters 800 0)
+                  gdl-check "replayed state owns bytes independently of input" (ws-world-equal source.world target.world & gt-equal source.characters target.characters 800 0)
                   gdl-move source target checkpoint input map buf
                 end
               end

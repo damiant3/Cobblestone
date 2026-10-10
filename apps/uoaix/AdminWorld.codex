@@ -64,7 +64,8 @@ Section: Input Bounds
       if depth <= 0 then False else admin-json-safe s (i + 1) (depth - 1) False False 0
     else if c >= char-code-at "0" 0 & c <= char-code-at "9" 0 then
       if digits >= 10 then False else admin-json-safe s (i + 1) depth False False (digits + 1)
-    else if c == char-code-at "." 0 | c == char-code-at "e" 0 | c == char-code-at "E" 0 then False
+    else if c == char-code-at "." 0 then False
+    else if digits > 0 & (c == char-code-at "e" 0 | c == char-code-at "E" 0) then False
     else admin-json-safe s (i + 1) depth False False 0
 
   admin-int : JsonValue, Text -> Integer
@@ -134,23 +135,39 @@ Section: Conduct Queue
     in let evidence = json-get-str v "evidence" ""
     in let hour = admin-int v "game_hour"
     in if not (admin-report-subject-valid v) | text-length happened == 0 | text-length happened > 256 | text-length location == 0 | text-length location > 64 | text-length wall == 0 | text-length wall > 64 | text-length evidence == 0 | text-length evidence > 512 | hour < 0 then admin-error "report-fields"
-    else if a.report-count == 32 | a.report-sequence >= 999999999 then admin-error "report-full"
+    else if a.report-count >= admin-report-room a | a.report-sequence >= 999999999 then admin-error "report-full"
     else let id = a.report-sequence + 1
     in let body = "{\"id\":" & show id & "," & admin-report-subject-json v & ",\"happened\":" & json-quote happened & ",\"location\":" & json-quote location & ",\"wall_time\":" & json-quote wall & ",\"game_hour\":" & show hour & ",\"evidence\":" & json-quote evidence & "}"
     in if text-length body > 2047 then admin-error "report-size"
-    else let slot = int-mod (a.report-head + a.report-count) 32
+    else let slot = int-mod (a.report-head + a.report-count) (admin-report-room a)
     in let stored = admin-store a.reports (slot * 2048) body
     in let count = __record-set a "report-count" (a.report-count + 1)
     in let sequence = __record-set a "report-sequence" id
     in "{\"queued\":" & show id & "}"
 
+ Open reports are a ring of 2048-cell rows that the growth point doubles, laid out again from its head, once fewer than
+ 8 rows are free; the action log grows 128 rows of 1024 cells the same way (AdminPanel).
+  admin-report-room : AdminWorld -> Integer
+  admin-report-room (a) = list-length a.reports / 2048
+  admin-reports-due : AdminWorld -> Boolean
+  admin-reports-due (a) = admin-report-room a - a.report-count < 8
+  admin-reports-grow : AdminWorld -> Integer
+  admin-reports-grow (a) = let room = admin-report-room a
+    in let fresh = tf-zeros (room * 2 * 2048) []
+    in let copied = admin-ring-copy a.reports fresh room a.report-head (a.report-count * 2048) 0
+    in let r = __record-set a "reports" fresh
+    in let h = __record-set a "report-head" 0 in room * 2
+  admin-ring-copy : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  admin-ring-copy (from) (to) (room) (head) (cells) (i) = if i >= cells then 0
+    else let moved = list-set-at to i (list-at from (int-mod (head + i / 2048) room * 2048 + int-mod i 2048))
+    in admin-ring-copy from to room head cells (i + 1)
   admin-report-peek : AdminWorld -> Text
   admin-report-peek (a) = if a.report-count == 0 then "{\"report\":null}" else admin-load a.reports (a.report-head * 2048)
 
   admin-report-ack : AdminWorld, Integer -> Text
   admin-report-ack (a) (id) =
     if a.report-count == 0 | id /= a.report-sequence - a.report-count + 1 then admin-error "report-id"
-    else let head = __record-set a "report-head" (int-mod (a.report-head + 1) 32)
+    else let head = __record-set a "report-head" (int-mod (a.report-head + 1) (admin-report-room a))
     in let count = __record-set a "report-count" (a.report-count - 1)
     in "{\"acknowledged\":" & show id & "}"
 

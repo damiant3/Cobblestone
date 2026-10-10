@@ -1,0 +1,55 @@
+Chapter: WeaponClassProof
+  cites Uoaix chapter CompositeGameRules
+
+  wcp-check : Text, Boolean -> [Console] Integer
+  wcp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+ Expected values are UOX3 weapons_t2a (damage, spd, str) and combat.cpp GetWeaponType/GetCombatSkill, read by hand.
+  wcp-row : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  wcp-row (graphic) (low) (high) (speed) (strength) (skill) = let w = wpn-stats graphic
+    in wpn-low w == low & wpn-high w == high & wpn-speed w == speed & wpn-strength w == strength & wpn-skill w == skill
+  wcp-actor : Integer, Boolean -> CombatActor
+  wcp-actor (serial) (npc) = CombatActor { serial = serial, name = alloc-bytes 32, maximum = 50, strength = 0, dexterity = 100,
+    skill = 250, tactics = 500, anatomy = 0, low = 3, high = 6, war = False, target = 0, due = 0, body = 400, corpse = 0,
+    connection = 0, npc = npc, immune = False, regen = 0, armed = False, frozen = 0 }
+ At tactics 50, anatomy 0 and strength 0 the damage bonus is 0, so draws span exactly the weapon's dice.
+  wcp-span : GameCombat, GameShard, CombatActor, Integer, Integer, Integer, Integer -> Integer
+  wcp-span (c) (shard) (a) (w) (left) (low) (high) = if left == 0 then low * 1000 + high
+    else let d = cb-damage c shard a w
+    in wcp-span c shard a w (left - 1) (min low d) (max high d)
+  wcp-spans : GameCombat, GameShard, CombatActor, Integer, Integer, Integer -> Boolean
+  wcp-spans (c) (shard) (a) (graphic) (low) (high) = wcp-span c shard a (wpn-stats graphic) 400 1000 0 == low * 1000 + high
+  opening : [Console] Integer = when cg-game 64
+    is Err (e) -> wcp-check e False
+    is Ok (shard) -> let c = cb-new shard 7
+      in let player = wcp-actor 4660 False
+      in let npc = wcp-actor 4661 True
+      in let slot = poke-qword shard.characters 0 4660
+      in let s1 = poke-byte shard.characters 82 40
+      in let v1 = poke-byte shard.characters 83 50
+      in let s2 = poke-byte shard.characters 84 41
+      in let v2 = poke-byte shard.characters 85 60
+      in let s3 = poke-byte shard.characters 86 42
+      in let v3 = poke-byte shard.characters 87 70
+      in let wrestling = gs-skill-set shard 4660 43 250
+      in act
+        a <- wcp-check "WeaponData carries the UOX3 T2A rows: longsword 5-33 spd 35 str 25, mace 8-32 spd 30, kryss 3-28 spd 53, dagger 3-15 spd 55, war axe 9-27 spd 40, halberd 5-49 spd 25, bow 8-41 spd 20" (
+          wcp-row #0F60 5 33 35 25 40 & wcp-row #0F61 5 33 35 25 40 & wcp-row #0F5C 8 32 30 20 41 & wcp-row #1400 3 28 53 10 42
+          & wcp-row #0F51 3 15 55 1 42 & wcp-row #13AF 9 27 40 35 41 & wcp-row #143E 5 49 25 45 40 & wcp-row #13B1 8 41 20 20 31 & wpn-stats #0EED == 0)
+        b <- wcp-check "a wielded weapon's damage spans its dice: sword 5-33, mace 8-32, fencing 3-28, axe of the mace class 9-27, polearm 5-49; unarmed keeps 3-6" (
+          wcp-spans c shard npc #0F60 5 33 & wcp-spans c shard npc #0F5C 8 32 & wcp-spans c shard npc #1400 3 28 & wcp-spans c shard npc #13AF 9 27 & wcp-spans c shard npc #143E 5 49
+          & wcp-span c shard npc 0 400 1000 0 == 3006)
+        d <- wcp-check "swing delay follows weapon speed at 100 dexterity: longsword 2.1 s, mace 2.5 s, kryss 1.4 s, unarmed 1.5 s" (
+          cb-swing-delay npc (wpn-stats #0F60) == gm-ticks 2100 & cb-swing-delay npc (wpn-stats #0F5C) == gm-ticks 2500
+          & cb-swing-delay npc (wpn-stats #1400) == gm-ticks 1400 & cb-swing-delay npc 0 == gm-ticks 1500)
+        e <- wcp-check "a player's combat skill follows the weapon class (Swordsmanship 50 for sword and polearm, Mace Fighting 60 for mace and war axe, Fencing 70 for kryss and dagger); an NPC fights with its own skill" (
+          cb-skill-for shard player (wpn-stats #0F60) == 500 & cb-skill-for shard player (wpn-stats #143E) == 500
+          & cb-skill-for shard player (wpn-stats #0F5C) == 600 & cb-skill-for shard player (wpn-stats #13AF) == 600
+          & cb-skill-for shard player (wpn-stats #1400) == 700 & cb-skill-for shard player (wpn-stats #0F51) == 700
+          & cb-skill-for shard player 0 == 250 & cb-skill-for shard npc (wpn-stats #0F5C) == 250)
+        f <- wcp-check "a bow is not swung in melee; every melee class and the bare hand are" (not (cb-melee (wpn-stats #13B1))
+          & cb-melee (wpn-stats #0F60) & cb-melee (wpn-stats #0F5C) & cb-melee (wpn-stats #1400) & cb-melee 0)
+        a + b + d + e + f
+      end

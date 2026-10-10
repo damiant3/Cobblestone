@@ -1,0 +1,40 @@
+Chapter: BvtResync
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ Client packets in play that no handler claims (2026-10-09 census of the live proxy and server logs): a fixed-length one
+ used to end in a refusal, which disconnects the player. A session in the world at sequence 7; answers a bit per check:
+ 1 a 0x22 resync draws the player (0x20 with its serial) and restarts the sequence at 0, 2 a 0x56 map pin is skipped
+ (answered, nothing sent), 4 a 0x75 rename is skipped, 8 a stray packet before entering the world is still refused;
+ 15 is all.
+  brs-session : Integer, Integer -> GameSession
+  brs-session (serial) (phase) = let s = gs-session 0
+    in let a = __record-set s "serial" serial
+    in let b = __record-set s "phase" phase
+    in let c = __record-set s "sequence" 7
+    in let d = __record-set s "direction" 3 in s
+  brs-zeros : Integer, List Integer -> List Integer
+  brs-zeros (n) (xs) = if n <= 0 then xs else brs-zeros (n - 1) (list-push xs 0)
+  brs-packet : Integer, Integer -> List Integer
+  brs-packet (opcode) (length) = brs-zeros (length - 1) [opcode]
+  brs-checks : Integer -> Integer
+  brs-checks (unused) = when cg-game 16
+    is Err (_) -> -1
+    is Ok (shard) -> when walk-map-new 1400 1680 16 16
+      is Err (_) -> -2
+      is Ok (map) -> when world-create shard.world (gs-mobile 0 1405 1685 0 400 0)
+        is Err (_) -> -3
+        is Ok (serial) -> let s = brs-session serial 2
+          in let resync = gs-handle shard s map (brs-packet #22 3)
+          in let drawn = when resync is Err (_) -> False is Ok (r) -> list-length r.packets == 1 & list-at (list-at r.packets 0) 0 == #20 & gp-u32 (list-at r.packets 0) 1 == serial
+          in let first = (if drawn & s.sequence == 0 then 1 else 0)
+          in let pin = when gs-handle shard (brs-session serial 2) map (brs-packet #56 11) is Err (_) -> 0 is Ok (r) -> if list-length r.packets == 0 & not r.close then 2 else 0
+          in let named = when gs-handle shard (brs-session serial 2) map (brs-packet #75 35) is Err (_) -> 0 is Ok (r) -> if list-length r.packets == 0 & not r.close then 4 else 0
+          in let early = when gs-handle shard (brs-session serial 1) map (brs-packet #56 11) is Err (_) -> 8 is Ok (_) -> 0
+          in first + pin + named + early
+  bvt-resync : Integer -> [Console] Integer
+  bvt-resync (unused) = act
+    n <- brs-checks 0
+    a <- bvt-check ("a resync redraws the player; unclaimed packets in play are skipped, not refused (code " & show n & ")") (n == 15)
+    a
+  end

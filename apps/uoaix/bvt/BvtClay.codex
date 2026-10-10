@@ -1,0 +1,36 @@
+Chapter: BvtClay
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter ItemNames
+  cites Uoaix chapter BvtCheck
+
+  bvc-at : List Integer, Integer, Integer -> Integer
+  bvc-at (xs) (v) (i) = if i >= list-length xs then 0 - 1 else if list-at xs i == v then i else bvc-at xs v (i + 1)
+  bvc-name : EgCatalog, Integer -> Text
+  bvc-name (c) (item) = (list-at c.items (item - 1)).name
+  bvc-fired : EgCatalog, Integer, Integer -> Boolean
+  bvc-fired (c) (item) (clay) = let k = cgg-recipe c item 3 0
+    in k > 0 & (list-at c.recipes (k - 1)).station == 10 & (list-at c.recipes (k - 1)).one-count == clay & (list-at c.recipes (k - 1)).two == 0
+  bvc-fires : Integer, Integer -> Boolean
+  bvc-fires (clay) (item) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (_) -> False
+    is Ok (w) -> let actor = ep-admit w (em-open w.money 2 1011) 100
+      in if actor < 1 then False else let held = ep-set (ep-actor w actor).stock 3 clay in bb-from-bought w actor item
+  bvc-goods : Integer, Integer, Integer -> Boolean
+  bvc-goods (i) (item) (art) = let g = list-at (bb-goods bb-potter) i in g.item == item & g.graphic == art
+  bvt-clay : Integer -> [Console] Integer
+  bvt-clay (unused) = act
+    a <- bvt-check "the clay gatherer digs clay (item 3) by hand and sells it as dug to the potter" (let t = cgg-trade-of cgg-clay-place in t.raw == 3 & t.product == 3 & t.tool == 0 & t.buyer == bb-potter & t.art == #0F81)
+    b <- bvt-check "the clay gatherer is founded right after the sand gatherer" (bvc-at cg-founders cgg-clay-place 0 == bvc-at cg-founders cgg-sand-place 0 + 1 & bvc-at cg-founders cgg-sand-place 0 >= 0)
+    c <- bvt-check "the clay lot's art is named clay" (item-art-name #0F81 == "clay")
+    d <- bvt-check "items 111 to 114 are the potter's mug, plate, vase and large vase" (let k = bb-catalog 0 in bvc-name k 111 == "ceramic mug" & bvc-name k 112 == "plate" & bvc-name k 113 == "vase" & bvc-name k 114 == "large vase")
+    e <- bvt-check "pottery is fired at the kiln from clay alone (1, 1, 2, 4 clay)" (let k = bb-catalog 0 in bvc-fired k 111 1 & bvc-fired k 112 1 & bvc-fired k 113 2 & bvc-fired k 114 4)
+    f <- bvt-check "the Britain catalog with pottery validates" (eg-validate (bb-catalog 0) == 0)
+    g <- bvt-check "no pottery recipe takes sand, and the Provisioner buys no clay" (cgg-recipe (bb-catalog 0) 113 104 0 == 0 & not (gvb-material 0 3))
+    h <- bvt-check "the potter is shop 12, in the Heavy Metal Armorer, selling mug, plate, vase and large vase" (bb-shop-count >= 12 & bb-potter == 11 & (list-at bb-shops 11).title == "Potter" & (list-at bb-shops 11).premises == "Heavy Metal Armorer" & bvc-goods 0 111 #0995 & bvc-goods 1 112 #09D7 & bvc-goods 2 113 #0B46 & bvc-goods 3 114 #0B45)
+    i <- bvt-check "the potter buys clay and no sand, sells its pottery, and vendor 11 opens the potter's menu" (gvb-material (gvb-role bb-potter) 3 & not (gvb-material (gvb-role bb-potter) 104) & gvb-goods (gvb-role bb-potter) 113 & list-at gvb-role-words 11 == "potter" & gvb-role 11 == 11)
+    j <- bvt-check "the potter works at its kiln, inside its shop" (let w = csn-potter 0 in let s = list-at bb-shops bb-potter in w.station-a.x == wks-kiln.x & w.station-a.y == wks-kiln.y & wks-kiln.x >= s.x1 & wks-kiln.x <= s.x2 & wks-kiln.y >= s.y1 & wks-kiln.y <= s.y2)
+    k <- bvt-check "4 bought clay fires a large vase and 1 a mug; 3 clay fires no large vase and none fires no mug" (bvc-fires 4 114 & bvc-fires 1 111 & not (bvc-fires 3 114) & not (bvc-fires 0 111))
+    a + b + c + d + e + f + g + h + i + j + k
+  end

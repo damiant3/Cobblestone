@@ -238,7 +238,7 @@ Section: Expression Emission
      is IrAwait (task) (ty) (sp) -> "(await " & emit-ts-expr task ctx indent & ")"
      is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ts-expr body ctx indent
      is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ts-expr body ctx indent
-     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-ts-act body ctx indent
+     is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-ts-try max body fb fail ctx indent
      is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & ts-escape msg & "\"); })()"
 
 Section: Binary Operators
@@ -312,6 +312,7 @@ Section: Apply and Helpers
       if is-mktup-name n then "[" & emit-ts-apply-args (chain.args) ctx indent 0 & "]"
       else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then
         ts-sanitize n & "(" & emit-ts-apply-args (chain.args) ctx indent 0 & ")"
+      else if n == "fail" & list-length (chain.args) == 1 then "(() => { throw new Error(" & emit-ts-expr (list-at (chain.args) 0) ctx indent & "); })()"
       else let ar = lookup-arity (ctx.ts-arities) n
       in if ar < 0 then
         (if ts-is-local (ctx.ts-locals) n 0 then ts-sanitize n & emit-ts-apply-rest (chain.args) ctx indent 0 else ts-refuse-name n)
@@ -450,6 +451,17 @@ Section: Match
 
 Section: Act Blocks
 
+ `try` up to `max` attempts, as the JavaScript plug: the first attempt that completes answers; on exhaustion the
+ fallback answers, a failing fallback answers the `on failure` block, and with no fallback the last failure is thrown.
+  emit-ts-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, TsCtx, Integer -> Text
+  emit-ts-try (max) (body) (fb) (fail-stmts) (ctx) (indent) =
+    let body-text = emit-ts-act body ctx indent
+    in let fb-text = emit-ts-act fb ctx indent
+    in let fail-text = emit-ts-act fail-stmts ctx indent
+    in let tail = if list-length fb == 0 then "throw _try_err;"
+      else if list-length fail-stmts == 0 then "return " & fb-text & ";"
+      else "try { return " & fb-text & "; } catch (_e) { return " & fail-text & "; }"
+    in "(() => { let _try_ok = false; let _try_result: any; let _try_err: any; for (let _try_i = 0; _try_i < " & integer-to-text max & "; _try_i++) { try { _try_result = " & body-text & "; _try_ok = true; break; } catch (_e) { _try_err = _e; } } if (_try_ok) return _try_result; " & tail & " })()"
   emit-ts-act : List IRActStmt, TsCtx, Integer -> Text
   emit-ts-act (stmts) (ctx) (indent) =
     "(() => {\n" & emit-ts-act-stmts stmts ctx (indent + 1) 0 & ts-indent indent & "})()"
@@ -584,7 +596,7 @@ Section: TypeScript Module Assembly
     "function read_line(): any { throw new Error(\"typescript plug: no emitter for read-line\"); }\n\n"
 
   ts-entry-text : Text
-  ts-entry-text = "// Entry: the program re-runs itself on a worker whose stack is 512 MB (plugs 1.14)\ndeclare const require: any; declare const __filename: string; declare const process: any;\nconst { Worker: _CxWorker, isMainThread: _cxIsMain } = require(\"worker_threads\");\nif (_cxIsMain) {\n  const _cxW = new _CxWorker(__filename, { resourceLimits: { stackSizeMb: 512 } });\n  _cxW.on(\"error\", (e: any) => { process.exitCode = 1; throw e; });\n  _cxW.on(\"exit\", (c: number) => { if (c !== 0) process.exitCode = c; });\n} else {\n  try { (opening as any)(); } catch(e) { console.error(e); }\n}\n"
+  ts-entry-text = "// Entry: the program re-runs itself on a worker whose stack is 512 MB (plugs 1.14)\ndeclare const require: any; declare const __filename: string; declare const process: any;\nconst { Worker: _CxWorker, isMainThread: _cxIsMain } = require(\"worker_threads\");\nif (_cxIsMain) {\n  const _cxW = new _CxWorker(__filename, { resourceLimits: { stackSizeMb: 512 } });\n  _cxW.on(\"error\", (e: any) => { process.exitCode = 1; throw e; });\n  _cxW.on(\"exit\", (c: number) => { if (c !== 0) process.exitCode = c; });\n} else {\n  (opening as any)();\n}\n"
 
   emit-typescript-chapter : IRChapter, List ATypeDef -> Text
   emit-typescript-chapter (m) (type-defs) =

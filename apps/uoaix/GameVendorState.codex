@@ -1,5 +1,6 @@
 Chapter: GameVendorState
   cites Uoaix chapter GameVendorPackets
+  cites Uoaix chapter BritainCatalog
   cites Uoaix chapter GameSession
   cites Uoaix chapter EconomyCurrency
   cites Uoaix chapter EconomyProduction
@@ -7,51 +8,171 @@ Chapter: GameVendorState
   cites Foreword chapter Result
 
   GvVendor = record { serial : Integer, actor : Integer, stock : Integer,
-    extra : Integer, buys : Integer, prices : Integer }
+    extra : Integer, buys : Integer, prices : Integer, shut : Integer }
   GvPlayer = record { serial : Integer, actor : Integer, pack : Integer,
     connection : Integer, vendor : Integer, side : Integer, expires : Integer,
     copper-rate : Integer, silver-rate : Integer,
     offers : List GvQuote, count : Integer }
-  GvLot = record { serial : Integer, actor : Integer, item : Integer,
-    quantity : Integer, quality : Integer, wear : Integer, basis : Integer }
   GvOwner = record { serial : Integer, actor : Integer }
   GvSale = record { source : Integer, delivered : Integer, buyer : Integer,
     seller : Integer, item : Integer, quantity : Integer, quality : Integer,
     wear : Integer, gross : Integer, currency-event : Integer, gold-action : Integer,
     hour : Integer }
   GvWorld = record { game : GameShard, currency : EuCurrency,
-    vendors : List GvVendor, players : List GvPlayer, lots : List GvLot,
+    vendors : List GvVendor, players : List GvPlayer,
     sales : List GvSale, vendor-count : Integer, player-count : Integer,
-    lot-count : Integer, sale-count : Integer, sequence : Integer,
-    owners : List GvOwner, owner-count : Integer }
+    sale-count : Integer, sequence : Integer,
+    owners : List GvOwner, owner-count : Integer, sale-base : Integer, gone : Integer, gone-room : Integer,
+    window : (Integer, Integer -> Integer), closed : Integer, staff : (Integer, Integer -> Integer), serves : (Integer, Integer -> Integer), shun : (Integer, Integer -> Integer), keeps : (Integer -> Boolean) }
+ An actor the composite lets hold lots with no owner row: a wild spawn's, whose mobile dies and leaves its lots on the corpse.
+  gv-keeps-none : Integer -> Boolean
+  gv-keeps-none (actor) = False
+  gv-window-none : Integer, Integer -> Integer
+  gv-window-none (vendor) (mode) = 0
+  gv-staff-none : Integer, Integer -> Integer
+  gv-staff-none (vendor) (serial) = 0
+ A shop's closed flag lives on its vendor row, which grows with the vendor table; closed counts the shut shops.
+  gv-shut : GvWorld, Integer -> Boolean
+  gv-shut (v) (i) = if i < 0 | i >= list-length v.vendors then False else (list-at v.vendors i).shut /= 0
+  gv-set-shut : GvWorld, Integer, Boolean -> Integer
+  gv-set-shut (v) (i) (shut) = if i < 0 | i >= list-length v.vendors then 0
+    else let set = __record-set (list-at v.vendors i) "shut" (if shut then 1 else 0) in if shut then 1 else 0
+  gv-window-all : GvWorld, Integer -> Integer
+  gv-window-all (v) (i) = if i >= v.vendor-count then 0 else let back = v.window i 0 in gv-window-all v (i + 1)
+ A shop container (ShopStock) is a floor container whose health holds #5300 plus its vendor's index: the strong box
+ 0x0E80 or the crate 0x0E3C of TILEDATA.
+  gv-shop-tag : Integer -> Integer
+  gv-shop-tag (vendor) = #5300 + vendor
+  gv-shop-art : Integer -> Boolean
+  gv-shop-art (g) = g == #0E80 | g == #0E3C
+  gv-shop-held : WorldTable, Integer, Integer, Integer -> Boolean
+  gv-shop-held (world) (serial) (tag) (left) = if left <= 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (obj) -> if obj.kind /= 2 then False
+        else if obj.container == 0 then obj.health == tag & gv-shop-art obj.graphic
+        else gv-shop-held world obj.container tag (left - 1)
   gv-owners : Integer, List GvOwner -> List GvOwner
-  gv-owners (i) (xs) = if i == 128 then xs
+  gv-owners (i) (xs) = if i == gv-owner-block then xs
     else gv-owners (i + 1) (list-push xs (GvOwner { serial = 0, actor = 0 }))
   gv-offers : Integer, List GvQuote -> List GvQuote
   gv-offers (i) (xs) = if i == 32 then xs else gv-offers (i + 1) (list-push xs (GvQuote {
     serial = 0, quantity = 0, price = 0, graphic = 0, hue = 0, item = 0, lot = 0 }))
-  gv-vendors : Integer, List GvVendor -> List GvVendor
-  gv-vendors (i) (xs) = if i == 16 then xs else gv-vendors (i + 1) (list-push xs (GvVendor {
-    serial = 0, actor = 0, stock = 0, extra = 0, buys = 0, prices = ep-buffer 129 }))
+ One vendor row per Britain shop.
+  gv-vendor-limit : Integer = bb-shop-count
+  gv-vendors : Integer, Integer, List GvVendor -> List GvVendor
+  gv-vendors (cells) (i) (xs) = if i == gv-vendor-limit then xs else gv-vendors cells (i + 1) (list-push xs (GvVendor {
+    serial = 0, actor = 0, stock = 0, extra = 0, buys = 0, prices = ep-buffer cells, shut = 0 }))
+  gv-player-limit : Integer = 64
   gv-players : Integer, List GvPlayer -> List GvPlayer
-  gv-players (i) (xs) = if i == 5 then xs else gv-players (i + 1) (list-push xs (GvPlayer {
+  gv-players (i) (xs) = if i == gv-player-limit then xs else gv-players (i + 1) (list-push xs (GvPlayer {
     serial = 0, actor = 0, pack = 0, connection = -1, vendor = 0, side = 0, expires = 0,
     copper-rate = 0, silver-rate = 0,
     offers = gv-offers 0 (__list-with-capacity 32), count = 0 }))
-  gv-lot-limit : Integer = 128
-  gv-lots : Integer, List GvLot -> List GvLot
-  gv-lots (i) (xs) = if i == gv-lot-limit then xs else gv-lots (i + 1) (list-push xs (GvLot {
-    serial = 0, actor = 0, item = 0, quantity = 0, quality = 0, wear = 0, basis = 0 }))
+  gv-lot-limit : Integer = ep-lot-limit
   gv-sales : Integer, List GvSale -> List GvSale
   gv-sales (i) (xs) = if i == 1024 then xs else gv-sales (i + 1) (list-push xs (GvSale {
     source = 0, delivered = 0, buyer = 0, seller = 0, item = 0, quantity = 0,
     quality = 0, wear = 0, gross = 0, currency-event = 0, gold-action = 0, hour = 0 }))
+ Vendors, players and owners start at their blocks and grow a block at a time at the growth point
+ (UoaixDynamicTables.md stage 5); rows past a block save in the GVS1 tail.
+  gv-owner-block : Integer = 128
+  gv-grow-vendors : GvWorld, Integer -> Integer
+  gv-grow-vendors (v) (left) = if left <= 0 then list-length v.vendors
+    else let grown = __record-set v "vendors" (list-push v.vendors (GvVendor { serial = 0, actor = 0, stock = 0, extra = 0, buys = 0, prices = ep-buffer (eg-cells v.currency.world.catalog), shut = 0 }))
+    in gv-grow-vendors v (left - 1)
+  gv-grow-players : GvWorld, Integer -> Integer
+  gv-grow-players (v) (left) = if left <= 0 then list-length v.players
+    else let grown = __record-set v "players" (list-push v.players (GvPlayer { serial = 0, actor = 0, pack = 0, connection = -1, vendor = 0, side = 0, expires = 0,
+      copper-rate = 0, silver-rate = 0, offers = gv-offers 0 (__list-with-capacity 32), count = 0 }))
+    in gv-grow-players v (left - 1)
+  gv-grow-owners : GvWorld, Integer -> Integer
+  gv-grow-owners (v) (left) = if left <= 0 then list-length v.owners
+    else let grown = __record-set v "owners" (list-push v.owners (GvOwner { serial = 0, actor = 0 })) in gv-grow-owners v (left - 1)
+  gv-tables-due : GvWorld -> Boolean
+  gv-tables-due (v) = list-length v.vendors - v.vendor-count < max 1 (gv-vendor-limit / 4)
+    | list-length v.players - v.player-count < gv-player-limit / 4 | list-length v.owners - v.owner-count < gv-owner-block / 4
+  gv-grow-tables : GvWorld -> Integer
+  gv-grow-tables (v) = let a = if list-length v.vendors - v.vendor-count < max 1 (gv-vendor-limit / 4) then gv-grow-vendors v gv-vendor-limit else 0
+    in let b = if list-length v.players - v.player-count < gv-player-limit / 4 then gv-grow-players v gv-player-limit else 0
+    in if list-length v.owners - v.owner-count < gv-owner-block / 4 then gv-grow-owners v gv-owner-block else 0
   gv-new : GameShard, EuCurrency -> GvWorld
-  gv-new (game) (currency) = GvWorld { game = game, currency = currency,
-    vendors = gv-vendors 0 (__list-with-capacity 16), players = gv-players 0 (__list-with-capacity 5),
-    lots = gv-lots 0 (__list-with-capacity gv-lot-limit), sales = gv-sales 0 (__list-with-capacity 1024),
-    vendor-count = 0, player-count = 0, lot-count = 0, sale-count = 0, sequence = 0,
-    owners = gv-owners 0 (__list-with-capacity 128), owner-count = 0 }
+  gv-new (game) (currency) = let bound = ep-bind-goods currency.world game.world
+    in GvWorld { game = game, currency = currency,
+    vendors = gv-vendors (eg-cells currency.world.catalog) 0 (__list-with-capacity gv-vendor-limit), players = gv-players 0 (__list-with-capacity gv-player-limit),
+    sales = gv-sales 0 (__list-with-capacity 1024),
+    vendor-count = 0, player-count = 0, sale-count = 0, sequence = 0,
+    owners = gv-owners 0 (__list-with-capacity 128), owner-count = 0, sale-base = 0, gone = gv-gone-new 0, gone-room = gv-gone-limit, window = gv-window-none, closed = 0,
+    staff = gv-staff-none, serves = gv-staff-none, shun = gv-staff-none, keeps = gv-keeps-none }
+  gv-gone-bytes : Integer = 64
+  gv-gone-limit : Integer = 7
+  gv-gone-zero : Integer, Integer -> Integer
+  gv-gone-zero (buffer) (i) = if i == 8 then buffer else let z = poke-qword buffer (i * 8) 0 in gv-gone-zero buffer (i + 1)
+  gv-gone-new : Integer -> Integer
+  gv-gone-new (unused) = gv-gone-zero (alloc-bytes gv-gone-bytes) 0
+  gv-gone-at : GvWorld, Integer, Integer -> Boolean
+  gv-gone-at (v) (serial) (i) = if i >= peek-qword v.gone 0 then False else if peek-qword v.gone (8 + i * 8) == serial then True else gv-gone-at v serial (i + 1)
+  gv-gone : GvWorld, Integer -> Boolean
+  gv-gone (v) (serial) = serial /= 0 & gv-gone-at v serial 0
+  gv-gone-add : GvWorld, Integer -> Integer
+  gv-gone-add (v) (serial) = if gv-gone v serial then 0
+    else if serial <= 0 | peek-qword v.gone 0 >= v.gone-room then -1
+    else let n = peek-qword v.gone 0 in let a = poke-qword v.gone (8 + n * 8) serial in let b = poke-qword v.gone 0 (n + 1) in 0
+  gv-gone-due : GvWorld -> Boolean
+  gv-gone-due (v) = v.gone-room - peek-qword v.gone 0 < 2
+  gv-gone-grow-to : GvWorld, Integer -> Integer
+  gv-gone-grow-to (v) (room) = if room <= v.gone-room then v.gone-room
+    else let fresh = gv-gone-fill (alloc-bytes (8 + room * 8)) 0 (1 + room)
+    in let copied = gv-gone-copy v.gone fresh (1 + peek-qword v.gone 0) 0
+    in let a = __record-set v "gone" fresh
+    in let b = __record-set v "gone-room" room in room
+  gv-gone-copy : Integer, Integer, Integer, Integer -> Integer
+  gv-gone-copy (from) (to) (cells) (i) = if i >= cells then 0 else let a = poke-qword to (i * 8) (peek-qword from (i * 8)) in gv-gone-copy from to cells (i + 1)
+  gv-gone-fill : Integer, Integer, Integer -> Integer
+  gv-gone-fill (buffer) (i) (cells) = if i >= cells then buffer else let z = poke-qword buffer (i * 8) 0 in gv-gone-fill buffer (i + 1) cells
+  gv-gone-tail-size : GvWorld -> Integer
+  gv-gone-tail-size (v) = 8 + max 0 (peek-qword v.gone 0 - gv-gone-limit) * 8
+  gv-gone-write-tail : GvWorld, Integer -> Integer
+  gv-gone-write-tail (v) (at) = let n = max 0 (peek-qword v.gone 0 - gv-gone-limit)
+    in let a = poke-qword at 0 n in let b = gv-gone-copy (v.gone + 8 + gv-gone-limit * 8) (at + 8) n 0 in at + 8 + n * 8
+  gv-gone-tail-length : Integer, Integer -> Integer
+  gv-gone-tail-length (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > room / 8 then -1 else 8 + peek-qword at 0 * 8
+  gv-gone-read-tail : GvWorld, Integer, Integer -> Integer
+  gv-gone-read-tail (v) (at) (size) = if gv-gone-tail-length at size /= size then -1
+    else let n = peek-qword at 0
+    in if n == 0 then 0
+    else if peek-qword v.gone 0 /= gv-gone-limit | not (gv-gone-serials (at + 8) 0 n) then -1
+    else let grown = gv-gone-grow-to v (gv-gone-limit + n + 2)
+    in let copied = gv-gone-copy (at + 8) (v.gone + 8 + gv-gone-limit * 8) n 0
+    in let counted = poke-qword v.gone 0 (gv-gone-limit + n) in 0
+  gv-gone-serials : Integer, Integer, Integer -> Boolean
+  gv-gone-serials (buf) (i) (n) = if i >= n then True else peek-qword buf (i * 8) > 0 & peek-qword buf (i * 8) <= world-serial-mask & gv-gone-serials buf (i + 1) n
+  gv-gone-actor : GvWorld, Integer, Integer -> Boolean
+  gv-gone-actor (v) (actor) (i) = if i >= v.vendor-count then False
+    else if (list-at v.vendors i).actor == actor & gv-gone v (list-at v.vendors i).serial then True else gv-gone-actor v actor (i + 1)
+  gv-clear-sales : GvWorld, Integer -> Integer
+  gv-clear-sales (v) (i) = if i == v.sale-count then 0
+    else let s = list-at v.sales i
+    in let a = __record-set s "source" 0
+    in let b = __record-set s "delivered" 0
+    in let c = __record-set s "buyer" 0
+    in let d = __record-set s "seller" 0
+    in let e = __record-set s "item" 0
+    in let f = __record-set s "quantity" 0
+    in let g = __record-set s "quality" 0
+    in let h = __record-set s "wear" 0
+    in let j = __record-set s "gross" 0
+    in let k = __record-set s "currency-event" 0
+    in let l = __record-set s "gold-action" 0
+    in let m = __record-set s "hour" 0
+    in gv-clear-sales v (i + 1)
+ A cart holds at most 32 lines, so the sale log rolls over (UOAIX-50) while it still has room for one more cart.
+  gv-seal-sales : GvWorld -> Integer
+  gv-seal-sales (v) = if v.sale-count <= 1024 - 32 then 0 else gv-roll-sales v
+  gv-roll-sales : GvWorld -> Integer
+  gv-roll-sales (v) = let cleared = gv-clear-sales v 0
+    in let based = __record-set v "sale-base" (v.sale-base + v.sale-count)
+    in let a = __record-set v "sale-count" 0 in 1
   gv-owner : GvWorld, Integer, Integer -> Integer
   gv-owner (v) (serial) (i) = if i == v.owner-count then -1
     else if (list-at v.owners i).serial == serial then i else gv-owner v serial (i + 1)
@@ -64,7 +185,7 @@ Chapter: GameVendorState
       (list-at v.owners (i - v.vendor-count - v.player-count)).actor == actor | gv-actor-bound v actor (i + 1)
     else False
   gv-add-owner : GvWorld, Integer, Integer -> Integer
-  gv-add-owner (v) (serial) (actor) = if v.owner-count == 128 | gv-owner v serial 0 >= 0
+  gv-add-owner (v) (serial) (actor) = if v.owner-count >= list-length v.owners | gv-owner v serial 0 >= 0
     | gv-vendor v serial 0 >= 0 | gv-player v serial 0 >= 0
     | not (ep-valid-actor v.currency.world actor) | gv-actor-bound v actor 0 then -1
     else if (em-purse v.currency.world.money (ep-actor v.currency.world actor).purse).kind /= 2 then -1
@@ -83,8 +204,7 @@ Chapter: GameVendorState
   gv-player (v) (serial) (i) = if i == v.player-count then -1
     else if (list-at v.players i).serial == serial then i else gv-player v serial (i + 1)
   gv-lot : GvWorld, Integer, Integer -> Integer
-  gv-lot (v) (serial) (i) = if i == v.lot-count then -1
-    else if (list-at v.lots i).serial == serial then i else gv-lot v serial (i + 1)
+  gv-lot (v) (serial) (unused) = ep-lot-at v.currency.world.goods serial
   gv-owned : WorldTable, Integer, Integer, Integer -> Boolean
   gv-owned (world) (serial) (owner) (left) = if left <= 0 then False
     else when world-get world serial
@@ -106,14 +226,17 @@ Chapter: GameVendorState
     in if vendor < 0 then let at = gv-owner v owner 0
       in at >= 0 & (if at < 0 then False else (list-at v.owners at).actor == actor & gv-owned v.game.world serial owner 65)
     else let p = list-at v.vendors vendor
-    in p.actor == actor & (gv-under v.game.world serial p.stock 65 | gv-under v.game.world serial p.extra 65)
+    in p.actor == actor & (gv-under v.game.world serial p.stock 65 | gv-under v.game.world serial p.extra 65
+      | (serial /= 0 & gv-shop-held v.game.world serial (gv-shop-tag vendor) 65 & not (gv-shop-art-at v.game.world serial)))
+  gv-shop-art-at : WorldTable, Integer -> Boolean
+  gv-shop-art-at (world) (serial) = when world-get world serial is Err (_) -> False is Ok (obj) -> obj.container == 0 & gv-shop-art obj.graphic
   gv-near : WorldObject, WorldObject -> Boolean
   gv-near (one) (two) = one.kind == 1 & two.kind == 1 & one.health > 0 & two.health > 0
     & one.x >= two.x - 4 & one.x <= two.x + 4 & one.y >= two.y - 4 & one.y <= two.y + 4
     & one.z >= two.z - 16 & one.z <= two.z + 16
   gv-add-vendor : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
   gv-add-vendor (v) (serial) (actor) (stock) (extra) (buys) =
-    if v.vendor-count == 16 | gv-vendor v serial 0 >= 0 | gv-owner v serial 0 >= 0 | gv-actor-bound v actor 0 | not (ep-valid-actor v.currency.world actor)
+    if v.vendor-count >= list-length v.vendors | gv-vendor v serial 0 >= 0 | gv-owner v serial 0 >= 0 | gv-actor-bound v actor 0 | not (ep-valid-actor v.currency.world actor)
       | stock == extra | stock == buys | extra == buys then -1
     else if not (gv-owned v.game.world stock serial 65 & gv-owned v.game.world extra serial 65 & gv-owned v.game.world buys serial 65) then -1
     else let vendor = list-at v.vendors v.vendor-count
@@ -127,7 +250,7 @@ Chapter: GameVendorState
     in id
   gv-add-player : GvWorld, Integer, Integer, Integer -> Integer
   gv-add-player (v) (serial) (actor) (pack) =
-    if v.player-count == 5 | gv-player v serial 0 >= 0 | gv-owner v serial 0 >= 0 | gv-actor-bound v actor 0 | not (ep-valid-actor v.currency.world actor)
+    if v.player-count >= list-length v.players | gv-player v serial 0 >= 0 | gv-owner v serial 0 >= 0 | gv-actor-bound v actor 0 | not (ep-valid-actor v.currency.world actor)
       | not (gv-owned v.game.world pack serial 65) then -1
     else let p = list-at v.players v.player-count
     in let a = __record-set p "serial" serial
@@ -136,33 +259,7 @@ Chapter: GameVendorState
     in let id = v.player-count
     in let count = __record-set v "player-count" (id + 1)
     in id
-  gv-represented : GvWorld, Integer, Integer, Integer, Integer -> Integer
-  gv-represented (v) (actor) (item) (field) (i) = if i == v.lot-count then 0
-    else let l = list-at v.lots i
-    in let n = if l.actor /= actor | l.item /= item then 0
-      else if field == 0 then l.quantity else if field == 1 then l.quantity * l.quality
-      else if field == 2 then l.quantity * l.wear else l.basis
-    in n + gv-represented v actor item field (i + 1)
+  gv-represented : GvWorld, Integer, Integer, Integer -> Integer
+  gv-represented (v) (actor) (item) (field) = ep-represented v.currency.world.goods actor item field
   gv-add-lot : GvWorld, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  gv-add-lot (v) (serial) (actor) (item) (quality) (wear) (basis) =
-    if v.lot-count == gv-lot-limit | gv-lot v serial 0 >= 0 | not (ep-valid-actor v.currency.world actor)
-      | not (eg-id v.currency.world.catalog item) | quality < 0 | quality > 1000 | wear < 0 | wear > 32 | basis < 0 | basis > ep-limit then -1
-    else when world-get v.game.world serial
-      is Err (e) -> -1
-      is Ok (obj) ->
-        let p = ep-actor v.currency.world actor
-        in if obj.kind /= 2 | gv-represented v actor item 0 0 + obj.amount > ep-at p.stock item
-          | gv-represented v actor item 1 0 + obj.amount * quality > ep-at p.quality item
-          | gv-represented v actor item 2 0 + obj.amount * wear > ep-at p.wear item
-          | gv-represented v actor item 3 0 + basis > ep-at p.cost item then -1
-        else let l = list-at v.lots v.lot-count
-        in let a = __record-set l "serial" serial
-        in let b = __record-set l "actor" actor
-        in let c = __record-set l "item" item
-        in let d = __record-set l "quantity" obj.amount
-        in let e = __record-set l "quality" quality
-        in let f = __record-set l "wear" wear
-        in let g = __record-set l "basis" basis
-        in let id = v.lot-count
-        in let used = __record-set v "lot-count" (id + 1)
-        in id
+  gv-add-lot (v) (serial) (actor) (item) (quality) (wear) (basis) = ep-list v.currency.world serial actor item quality wear basis

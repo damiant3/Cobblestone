@@ -105,10 +105,8 @@ Persist binding configuration, residence hours, current town and sampled hour,
 town profiles and the corresponding world/input-log position together before
 claiming restart support. No raw heap pointers belong in that format.
 
-Under depot compiler `4228CD5103DC4523` on 2026-10-04, successful binding
-construction retained 160 bytes, including its copied four-town history and
-result wrapper. The existing 688-byte network state is separate. Each frame
-retains no new heap. Work is constant in population: fixed input slots and
+A binding retains its copied four-town history and nothing per frame; the
+network state is separate. Work is constant in population: fixed input slots and
 four town terms, direct actor/item access and the existing quote calculation.
 The full-population scheduling budget still needs an integrated measurement.
 Compiler heap/time behavior is unchanged.

@@ -35,7 +35,7 @@ login/entry route. Run `gsi-after-entry` once after create/select, then bind
 the vendor player to the resulting actor.pack; do not create a second pack.
 
 Vendor composition requires the pack-only sale admission at both quote and
-checkout from MAIN35443. Owner-chain-only vendor admission is insufficient.
+checkout. Owner-chain-only vendor admission is insufficient.
 The replay quotes a purchased lot, deposits it, moves one tile while staying
 near the vendor, and requires both stale checkout and fresh quote refusal.
 
@@ -62,13 +62,11 @@ a dressed banker at 1422,1698 for the real-client grade.
 
 `proofs/MobileBankReplay.codex` grades legacy equipment fields, bank packet
 ordering, nested deposits/withdrawals, movement and connection refusal,
-foreign ownership and metadata recovery. Root's real-client grade on
-2026-10-04 accepted candidate3276F8FA: the banker renders dressed and `bank`
-opens the bank box with `bank:open`. Deposit/withdraw and drag/drop/equip
-remain ungraded in the real client. Bank coin accounting and durable
-composite replay belong to the encompassing image owner.
+foreign ownership and metadata recovery. Deposit/withdraw and
+drag/drop/equip are ungraded in the real client. Bank coin accounting and
+durable composite replay belong to the encompassing image owner.
 
-Mobile packets query the25-layer table and emit at most25 equipment rows.
+Mobile packets walk the mobile's equipment and emit at most 25 equipment rows.
 A request-local list of at most25 serials preserves the established slot
 order using bounded insertion sorting, O(E squared) with E at most25.
 Backpack and bank lookup traverse owner children rather than world capacity.
@@ -76,4 +74,3 @@ Bank ancestry walks at most65 objects; banker search is capped at16.
 Metadata encode/decode are O(world capacity), with 40 bytes per slot on
 disk and the existing GSI retained rows on decode. Five bank permissions
 and sixteen banker slots are allocated once; requests retain no new lists.
-Compiler heap/time behavior is unchanged.

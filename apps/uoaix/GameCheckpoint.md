@@ -1,8 +1,8 @@
-# Stage-1 game checkpoint envelope
+# Game checkpoint envelope
 
 `GameCheckpoint` wraps the combined TownState checkpoint and all 800 bytes
 of GameShard character slots. The stage-D owner uses the envelope while the
-database backend is pending. Reek owns later gameplay format changes; the
+database backend is pending; the
 database may replace the envelope only after equivalent restart acceptance.
 
 `gc-encode town game buffer capacity` requires the game and town to share
@@ -29,7 +29,13 @@ normalize those hues to zero; existing normalized records retain their hues.
 This leaves the UGC1 layout unchanged. Validation rejects duplicate character
 mobile references, missing/wrong-kind mobiles, invalid creation packets,
 equipment outside the owning mobile, nonzero unused slots and reserved
-padding. The existing stage-1 single-account contract remains unchanged.
+padding. Slot byte 145 is stamina spent, at most the dexterity at byte 80
+(0 = full). UOX3 1998 rules: a point returns every 2 s, running spends a point per 15 steps,
+a swing 2, and an overloaded step 5 (carried weight over strength x 3.5 + 40 stones,
+`cp-overload`; about 97 transient heap bytes per carried item per step, reclaimed by
+`sl-compact`); at 0 a step is refused (1382, or 1783 when overloaded). Slot byte 144 is the testing-supplies grant flag (0 or 1, set by
+`CompositeTestStock`); byte 146 counts running steps (under 15), bytes 152..159 hold the stamina tick, and bytes 147..151 must be zero. The existing stage-1
+single-account contract remains unchanged.
 
 ## UGC1 layout
 

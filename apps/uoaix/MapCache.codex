@@ -11,8 +11,23 @@ Chapter: MapCache
   MapCacheState = record { device : UoDevice, sectors : Integer, colliders : Integer,
     directory : Integer, directory-sector : Integer, buffer : Integer, map : WalkMap, ready : Boolean,
     map-end : Integer, decoration-sector : Integer, decoration-size : Integer, decoration-hash : Integer,
-    items-sector : Integer, items-size : Integer, items-hash : Integer }
+    items-sector : Integer, items-size : Integer, items-hash : Integer, flora-sector : Integer, flora-size : Integer, flora-hash : Integer }
   MapInstallData = record { data : Integer, size : Integer }
+ The world journal's region as [start sector, sectors]: the store the map-cache header names at cells 320 and 328
+ (install-map-cache.ps1 -StoreMiB), or the first 64 MiB on a disk installed before it.
+  wmc-store-region : UoDevice -> [Device.Block] List Integer
+  wmc-store-region (device) = act
+    sectors <- us-device-count device
+    if sectors <= wmc-start then act [0, wmc-start] end
+    else act
+      read <- us-device-read device wmc-start
+      when read
+        is Err (_) -> [0, wmc-start]
+        is Ok (header) -> if peek-qword header 0 /= #32434D55 | peek-qword header 48 /= ws-hash header 512 0 2166136261
+            | peek-qword header 320 <= 0 | peek-qword header 328 < 2 | wmc-start + peek-qword header 320 + peek-qword header 328 > sectors then [0, wmc-start]
+          else [wmc-start + peek-qword header 320, peek-qword header 328]
+    end
+  end
 
   wmc-open : UoDevice -> [Device.Block] Result MapCacheState Text
   wmc-open (device) = act
@@ -23,7 +38,8 @@ Chapter: MapCache
       when read
         is Err (e) -> Err e
         is Ok (header) ->
-          if peek-qword header 0 /= #32434D55 | peek-qword header 8 /= 2 then Err "whole-map cache missing or unsupported"
+          if peek-qword header 0 /= #32434D55 then Err "whole-map cache missing or unsupported"
+          else if peek-qword header 8 /= 3 then Err "whole-map cache predates mountain land marks: rerun install-map-cache.ps1"
           else if peek-qword header 48 /= ws-hash header 512 0 2166136261 then Err "map cache header checksum invalid"
           else let maximum = peek-qword header 64
           in if peek-qword header 16 /= 6144 | peek-qword header 24 /= 4096 | peek-qword header 32 /= 393216
@@ -35,20 +51,28 @@ Chapter: MapCache
           in let total-colliders = peek-qword header 120
           in let items = peek-qword header 256
           in let items-size = peek-qword header 264
-          in let tail = if items-size > 0 then items else sectors - wmc-start
-          in if map-end < wmc-data-sector | map-end > sectors - wmc-start
+          in let flora = peek-qword header 280
+          in let flora-size = peek-qword header 288
+          in let archive = peek-qword header 304
+          in let cache-end = if peek-qword header 312 > 0 then archive else sectors - wmc-start
+          in let items-end = if flora-size > 0 then flora else cache-end
+          in let tail = if items-size > 0 then items else items-end
+          in if cache-end < wmc-data-sector | cache-end > sectors - wmc-start then Err "map cache archive region invalid"
+          else if map-end < wmc-data-sector | map-end > cache-end
             | total-colliders < maximum | total-colliders > 256
             | decoration-size < 0 | decoration-size > 11534400
             | (decoration-size > 0 & (decoration /= map-end | decoration-size < 64
               | (decoration-size + 511) / 512 /= tail - decoration)) then Err "map cache decoration extent invalid"
           else if items-size /= 0 & (items-size /= 608256 | items < map-end
-            | (items-size + 511) / 512 /= sectors - wmc-start - items) then Err "map cache item table extent invalid"
+            | (items-size + 511) / 512 /= items-end - items) then Err "map cache item table extent invalid"
+          else if flora-size /= 0 & (flora-size < 64 | flora-size > 16777216 | flora < map-end | (flora-size + 511) / 512 /= cache-end - flora) then Err "map cache flora extent invalid"
           else when walk-map-sized 0 0 64 64 total-colliders
             is Err (e) -> Err e
             is Ok (map) -> Ok (MapCacheState { device = device, sectors = sectors - wmc-start, colliders = maximum,
               directory = alloc-bytes 512, directory-sector = -1, buffer = alloc-bytes (464 + 64 * maximum * 6), map = map, ready = False,
               map-end = map-end, decoration-sector = decoration, decoration-size = decoration-size, decoration-hash = peek-qword header 104,
-              items-sector = items, items-size = items-size, items-hash = peek-qword header 272 })
+              items-sector = items, items-size = items-size, items-hash = peek-qword header 272,
+              flora-sector = flora, flora-size = flora-size, flora-hash = peek-qword header 296 })
     end
   end
   wmc-directory : MapCacheState, Integer -> [Device.Block] Result Integer Text
@@ -87,8 +111,9 @@ Chapter: MapCache
       is Ok (_) -> when wmc-solids cache map dx dy at count
         is Err (e) -> Err e
         is Ok (next) -> let restored = __heap-restore mark in wmc-cells cache map x y size (cell + 1) next
-  wmc-block : MapCacheState, WalkMap, Integer, Integer -> [Device.Block] Result Integer Text
-  wmc-block (cache) (map) (x) (y) = when mul-block x y
+ Reads and checks the block holding x, y into the cache buffer; answers the payload's size.
+  wmc-load : MapCacheState, Integer, Integer -> [Device.Block] Result Integer Text
+  wmc-load (cache) (x) (y) = when mul-block x y
     is Err (e) -> act Err e end
     is Ok (block) -> act
       indexed <- wmc-directory cache block
@@ -106,12 +131,81 @@ Chapter: MapCache
               is Err (e) -> Err e
               is Ok (_) -> if us-hash cache.buffer size 0 2166136261 /= hash then Err "map cache block checksum invalid"
                 else if peek-qword cache.buffer 0 /= block | peek-qword cache.buffer 8 /= 64 then Err "map cache block identity invalid"
-                else wmc-cells cache map x y size 0 464
+                else Ok size
           end
     end
+  wmc-block : MapCacheState, WalkMap, Integer, Integer -> [Device.Block] Result Integer Text
+  wmc-block (cache) (map) (x) (y) = act
+    loaded <- wmc-load cache x y
+    when loaded
+      is Err (e) -> Err e
+      is Ok (size) -> wmc-cells cache map x y size 0 464
+  end
+ A window's collider stride is its own busiest cell, statics and decoration (both door positions) counted together, plus
+ wmc-room for what play adds to a cell (a house's floor, wall and stairs, a magic field, a planted tree). The cache's
+ stride is the busiest cell of the whole world, 60 colliders against Britain's 15 (2026-10-09), and a window keeps it
+ twice per cell (the walk map and the decoration's base). Counts are one qword a cell, released before the answer.
+  wmc-room : Integer = 8
+  wmc-window-colliders : MapCacheState, Integer, Integer, Integer, Integer, MapInstallData -> [Device.Block] Result Integer Text
+  wmc-window-colliders (cache) (x) (y) (width) (height) (decoration) = if int-mod x 8 /= 0 | int-mod y 8 /= 0 | int-mod width 8 /= 0 | int-mod height 8 /= 0
+    | width < 8 | height < 8 then act Err "walk window not block-aligned" end
+    else let mark = __heap-save
+    in let counts = alloc-bytes (width * height * 8)
+    in let zeroed = wmc-zero counts 0 (width * height)
+    in act
+      statics <- wmc-count-blocks cache counts x y width height 0
+      when statics
+        is Err (e) -> let restored = __heap-restore mark in Err e
+        is Ok (_) -> let decorated = wmc-count-decoration counts x y width height decoration.data (wmc-rows decoration) 0
+          in let most = wmc-most counts (width * height) 0 0
+          in let restored = __heap-restore mark
+          in Ok (min 256 (most + wmc-room))
+    end
+  wmc-rows : MapInstallData -> Integer
+  wmc-rows (decoration) = if decoration.size < 64 then 0
+    else let rows = peek-qword decoration.data 8 in if rows < 0 | 64 + rows * 176 /= decoration.size then 0 else rows
+  wmc-zero : Integer, Integer, Integer -> Integer
+  wmc-zero (counts) (i) (n) = if i >= n then 0 else let a = poke-qword counts (i * 8) 0 in wmc-zero counts (i + 1) n
+  wmc-most : Integer, Integer, Integer, Integer -> Integer
+  wmc-most (counts) (n) (i) (best) = if i >= n then best else wmc-most counts n (i + 1) (max best (peek-qword counts (i * 8)))
+  wmc-count-blocks : MapCacheState, Integer, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Result Integer Text
+  wmc-count-blocks (cache) (counts) (x) (y) (width) (height) (i) = let rows = height / 8
+    in if i == width / 8 * rows then act Ok i end
+    else let bx = i / rows * 8
+    in let by = int-mod i rows * 8
+    in act
+      loaded <- wmc-load cache (x + bx) (y + by)
+      when loaded
+        is Err (e) -> Err e
+        is Ok (_) -> let counted = wmc-count-cells cache counts width bx by 0
+          in wmc-count-blocks cache counts x y width height (i + 1)
+    end
+  wmc-count-cells : MapCacheState, Integer, Integer, Integer, Integer, Integer -> Integer
+  wmc-count-cells (cache) (counts) (width) (bx) (by) (cell) = if cell == 64 then 0
+    else let at = ((by + cell / 8) * width + bx + int-mod cell 8) * 8
+    in let a = poke-qword counts at (mul-u16 cache.buffer (16 + cell * 7 + 5))
+    in wmc-count-cells cache counts width bx by (cell + 1)
+ DWD1 rows are 176 bytes from 64: x, y at qwords 0, 1; closed flags at 5; the open offset dx, dy at 9, 10; open flags at 12.
+ A row collides in one state at a time, so its open state is counted only where it lands on another tile.
+  wmc-count-decoration : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wmc-count-decoration (counts) (x) (y) (width) (height) (data) (rows) (i) = if i >= rows then 0
+    else let at = data + 64 + i * 176
+    in let closed = wmc-count-one counts x y width height (peek-qword at 0) (peek-qword at 8) (peek-qword at 40)
+    in let opened = if peek-qword at 72 == 0 & peek-qword at 80 == 0 then 0
+      else wmc-count-one counts x y width height (peek-qword at 0 + peek-qword at 72) (peek-qword at 8 + peek-qword at 80) (peek-qword at 96)
+    in wmc-count-decoration counts x y width height data rows (i + 1)
+  wmc-count-one : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wmc-count-one (counts) (x) (y) (width) (height) (cx) (cy) (flags) = if bit-and flags 576 == 0 | cx < x | cy < y | cx >= x + width | cy >= y + height then 0
+    else let at = ((cy - y) * width + cx - x) * 8
+    in poke-qword counts at (peek-qword counts at + 1)
+ A window is filled block by block from its origin, each block's cells written at origin + 8k + dx, so a window whose
+ origin or extent is not a whole number of 8 by 8 blocks would shift every cell (main 41870, Britain at x 1294).
+  wmc-aligned : WalkMap -> Boolean
+  wmc-aligned (map) = int-mod map.x 8 == 0 & int-mod map.y 8 == 0 & int-mod map.width 8 == 0 & int-mod map.height 8 == 0
   wmc-fill : MapCacheState, WalkMap, Integer -> [Device.Block] Result Integer Text
   wmc-fill (cache) (map) (i) = let rows = map.height / 8
-    in if i == map.width / 8 * rows then act Ok i end
+    in if i == 0 & not (wmc-aligned map) then act Err "walk window not block-aligned" end
+    else if i == map.width / 8 * rows then act Ok i end
     else let mark = __heap-save
     in act
       loaded <- wmc-block cache map (map.x + i / rows * 8) (map.y + int-mod i rows * 8)
@@ -154,4 +248,14 @@ Chapter: MapCache
         is Err (e) -> Err e
         is Ok (_) -> if us-hash data cache.items-size 0 2166136261 /= cache.items-hash then Err "installed item table checksum invalid"
           else Ok data
+    end
+  wmc-flora : MapCacheState -> [Device.Block] Result MapInstallData Text
+  wmc-flora (cache) = if cache.flora-size == 0 then act Ok (MapInstallData { data = 0, size = 0 }) end
+    else let data = alloc-bytes cache.flora-size
+    in act
+      loaded <- us-read-payload cache.device (wmc-start + cache.flora-sector) data cache.flora-size 0
+      when loaded
+        is Err (e) -> Err e
+        is Ok (_) -> if us-hash data cache.flora-size 0 2166136261 /= cache.flora-hash then Err "installed flora table checksum invalid"
+          else Ok (MapInstallData { data = data, size = cache.flora-size })
     end

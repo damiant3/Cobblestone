@@ -1,0 +1,64 @@
+Chapter: GameLinksAccountsProof
+  cites Uoaix chapter GameLinks
+
+  gla-check : Text, Boolean -> [Console] Integer
+  gla-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  gla-probe : List Integer, GameShard, GameInput, WalkMap, Integer, List Integer -> Result GameReply Text
+  gla-probe (seen) (game) (input) (map) (port) (packet) =
+    let a = list-set-at seen 0 (peek-qword game.characters 0)
+    in let b = list-set-at seen 1 (ga-bound game.accounts)
+    in let c = list-set-at seen 2 (peek-qword game.accounts 56)
+    in let marked = if ga-bound game.accounts == 0 & list-at packet 1 == 1 then poke-byte game.characters 8 77 else 0
+    in let d = list-set-at seen 3 (peek-byte game.characters 8)
+    in Ok (gs-reply [] "probe")
+  gla-run : GameLinks -> [Console, Network.Read, Network.Write] Integer
+  gla-run (owner) = let game = owner.server.game in act
+    seen <- [0,0,0,0]
+    other <- ga-create game.accounts [79,116,104,101,114] [112,119]
+    lord-slot <- poke-qword game.characters 0 1001
+    other-slot <- poke-qword (ga-slots game.accounts 1) 0 2002
+    one <- (list-at owner.server.protocols 0).game
+    two <- (list-at owner.server.protocols 1).game
+    a1 <- __record-set one "mode" 2
+    a2 <- __record-set one.session "phase" 1
+    b1 <- __record-set two "mode" 2
+    b2 <- __record-set two.session "phase" 1
+    lord <- poke-qword game.accounts 56 1
+    adopt-one <- gl-adopt owner 0
+    bound-two <- gs-bind game 1
+    plain <- poke-qword game.accounts 56 0
+    adopt-two <- gl-adopt owner 1
+    first <- gl-handle (gla-probe seen) owner 0 [115,1]
+    s0 <- list-at seen 0
+    b0 <- list-at seen 1
+    f0 <- list-at seen 2
+    second <- gl-handle (gla-probe seen) owner 1 [115,2]
+    s1 <- list-at seen 0
+    b1x <- list-at seen 1
+    f1 <- list-at seen 2
+    saved-lord <- peek-byte (ga-slots game.accounts 0) 8
+    third <- gl-handle (gla-probe seen) owner 0 [115,3]
+    print-line-uni ("SESSIONS one sees slot " & show s0 & " bound " & show b0 & " flag " & show f0 & "; two sees slot " & show s1 & " bound " & show b1x & " flag " & show f1)
+    x <- gla-check "the first session sees its own account and login flag" (is-ok other & is-ok first & s0 == 1001 & b0 == 0 & f0 == 1)
+    y <- gla-check "the second session sees its own account without the first session's flag" (is-ok second & s1 == 2002 & b1x == 1 & f1 == 0)
+    z <- gla-check "a slot change by one session is saved to its account across the other's turn" (saved-lord == 77 & is-ok third & list-at seen 3 == 77 & list-at seen 0 == 1001)
+    x + y + z
+  end
+  opening : [Console, Network.Read, Network.Write] Integer = act
+    none <- net-driver-bind-none 0
+    arena <- nc-set-acquire (nc-pool-cell process-get-pid)
+    released <- nc-set-release arena
+    when gs-new 0
+      is Err (_) -> -1
+      is Ok (game) -> when walk-map-new 0 0 4 4
+        is Err (_) -> -1
+        is Ok (map) -> when gl-new [] game map 0 2594 [2593,2593,2593,2593] [82,84,0,18,52,86] [10,0,2,15] [10,0,2,2] [255,255,255,0]
+          is Err (e) -> act
+            print-line-uni e
+            1
+          end
+          is Ok (owner) -> gla-run owner
+  end

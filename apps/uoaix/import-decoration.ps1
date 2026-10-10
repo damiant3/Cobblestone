@@ -135,26 +135,35 @@ function Add-Decoration([string]$Type,[int]$Art,[hashtable]$Props,[int]$AtX,[int
     $rows[$key]=[pscustomobject]@{X=$AtX;Y=$AtY;Z=$AtZ;Art=$Art;Hue=$hue;Flags=$tile.Flags;Height=$tile.Height;Kind=$kind;Open=$open;DX=$ox;DY=$oy;Light=$light;OpenFlags=$openTile.Flags;OpenHeight=$openTile.Height;Name=$Name;Source=$Source}
     if($kind -eq 1 -or $kind -eq 4) {$doorPositions["$AtX,$AtY,$AtZ"]=$true}
 }
+function Read-DecorationCfg([string]$Path,[string]$Label) {
+    $inputs.Add($Path)
+    $type='';$art=0;$props=@{};$comment='';$lineNo=0
+    foreach($line in [IO.File]::ReadLines($Path)) {
+        $lineNo++;$line=$line.Trim()
+        if($line.Length -eq 0) {continue}
+        if($line.StartsWith('#')) {$comment=$line.TrimStart('#').Trim();continue}
+        if($line -match '^Strip\s') {continue}
+        if($line -match '^Clear\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$') {
+            $x1=[int]$Matches[1];$y1=[int]$Matches[2];$x2=[int]$Matches[3];$y2=[int]$Matches[4]
+            foreach($key in @($rows.Keys)) {$row=$rows[$key];if($row.Kind -in 0,3 -and $row.X -ge $x1 -and $row.X -le $x2 -and $row.Y -ge $y1 -and $row.Y -le $y2) {$rows.Remove($key)}}
+            continue
+        }
+        if($line -match '^(\w+)\s+(0x[0-9a-fA-F]+|\d+)(?:\s*\((.*)\))?$') {
+            $type=$Matches[1];$art=[Convert]::ToInt32($Matches[2],$(if($Matches[2].StartsWith('0x')){16}else{10}));$props=@{}
+            if($Matches.ContainsKey(3)) {foreach($property in $Matches[3].Split(';')) {
+                $pair=$property.Trim().Split('=',2);if($pair[0]) {$props[$pair[0].Trim()]=if($pair.Length -eq 2){$pair[1].Trim()}else{'true'}}
+            }}
+        } elseif($line -match '^(-?\d+)\s+(-?\d+)\s+(-?\d+)(?:\s+.*)?$') {
+            if(-not $type) {throw "Placement without definition at ${Label}:$lineNo"}
+            Add-Placement $type $art $props ([int]$Matches[1]) ([int]$Matches[2]) ([int]$Matches[3]) $comment "${Label}:$lineNo"
+        } elseif($line -match '^-?\d+\s+-?\d+\s+\S+') {
+            $skipped.Add([pscustomobject]@{Source="${Label}:$lineNo";Art=$art;Reason='malformed placement';Text=$line})
+        } else {throw "Unparsed decoration at ${Label}:$lineNo"}
+    }
+}
 foreach($folder in @('ServUO/Data/Decoration/Old/Britannia','ServUO/Data/Decoration/Britannia')) {
     foreach($file in (Get-ChildItem (Join-Path $ReferenceRoot $folder) -Filter '*.cfg' -File | Sort-Object Name)) {
-        $inputs.Add($file.FullName)
-        $type='';$art=0;$props=@{};$comment='';$lineNo=0
-        foreach($line in [IO.File]::ReadLines($file.FullName)) {
-            $lineNo++;$line=$line.Trim()
-            if($line.Length -eq 0) {continue}
-            if($line.StartsWith('#')) {$comment=$line.TrimStart('#').Trim();continue}
-            if($line -match '^(\w+)\s+(0x[0-9a-fA-F]+|\d+)(?:\s*\((.*)\))?$') {
-                $type=$Matches[1];$art=[Convert]::ToInt32($Matches[2],$(if($Matches[2].StartsWith('0x')){16}else{10}));$props=@{}
-                if($Matches.ContainsKey(3)) {foreach($property in $Matches[3].Split(';')) {
-                    $pair=$property.Trim().Split('=',2);if($pair[0]) {$props[$pair[0].Trim()]=if($pair.Length -eq 2){$pair[1].Trim()}else{'true'}}
-                }}
-            } elseif($line -match '^(-?\d+)\s+(-?\d+)\s+(-?\d+)(?:\s+.*)?$') {
-                if(-not $type) {throw "Placement without definition at $($file.Name):$lineNo"}
-                Add-Placement $type $art $props ([int]$Matches[1]) ([int]$Matches[2]) ([int]$Matches[3]) $comment "$folder/$($file.Name):$lineNo"
-            } elseif($line -match '^-?\d+\s+-?\d+\s+\S+') {
-                $skipped.Add([pscustomobject]@{Source="$folder/$($file.Name):$lineNo";Art=$art;Reason='malformed placement';Text=$line})
-            } else {throw "Unparsed decoration at $($file.Name):$lineNo"}
-        }
+        Read-DecorationCfg $file.FullName "$folder/$($file.Name)"
     }
 }
 # ServUO's CFGs omit doors installed by DoorGenerator. UOX3's literal Felucca
@@ -194,6 +203,34 @@ foreach($line in [IO.File]::ReadLines($signs)) {
     $parts=$line.Split('|')
     if($parts.Length -lt 7 -or $parts[1] -eq '#') {continue}
     Add-Decoration 'Sign' ([int]$parts[0]) @{} ([int]$parts[4]) ([int]$parts[5]) ([int]$parts[6]) $parts[1] 'UOX3/felucca_signs.jsdata'
+}
+Read-DecorationCfg (Join-Path $PSScriptRoot 'premises.cfg') 'apps/uoaix/premises.cfg'
+Read-DecorationCfg (Join-Path $PSScriptRoot 'houses.cfg') 'apps/uoaix/houses.cfg'
+# A door or gate stands in a wall or fence: one with no wall (0x10) or impassable (0x40) static within one tile
+# at its height floats in the open (two UOX3 template gates at 1421,1563-1564 beside the Britain forge), so it is dropped.
+$staticIndex=[IO.File]::ReadAllBytes((Join-Path $ClientRoot 'STAIDX0.MUL'))
+$staticData=[IO.File]::ReadAllBytes((Join-Path $ClientRoot 'STATICS0.MUL'))
+function Test-DoorFramed([int]$AtX,[int]$AtY,[int]$AtZ) {
+    for($fx=$AtX-1;$fx -le $AtX+1;$fx++) {for($fy=$AtY-1;$fy -le $AtY+1;$fy++) {
+        if($fx -lt 0 -or $fy -lt 0 -or $fx -ge 6144 -or $fy -ge 4096) {continue}
+        $block=[int][Math]::Floor($fx/8)*512+[int][Math]::Floor($fy/8)
+        $offset=[BitConverter]::ToUInt32($staticIndex,$block*12);$length=[BitConverter]::ToUInt32($staticIndex,$block*12+4)
+        if($offset -eq [uint32]::MaxValue) {continue}
+        for($at=[long]$offset;$at -lt [long]$offset+$length;$at+=7) {
+            if($staticData[$at+2] -ne $fx%8 -or $staticData[$at+3] -ne $fy%8) {continue}
+            $frame=Read-Tile ([BitConverter]::ToUInt16($staticData,$at))
+            if($null -eq $frame -or ($frame.Flags -band 0x50) -eq 0) {continue}
+            $base=if($staticData[$at+4] -ge 128){$staticData[$at+4]-256}else{$staticData[$at+4]}
+            if($base -lt $AtZ+20 -and $base+[Math]::Max(1,$frame.Height) -gt $AtZ) {return $true}
+        }
+    }}
+    return $false
+}
+foreach($key in @($rows.Keys)) {
+    $row=$rows[$key]
+    if($row.Kind -in 1,4 -and -not (Test-DoorFramed $row.X $row.Y $row.Z)) {
+        $skipped.Add([pscustomobject]@{Source=$row.Source;Art=$row.Art;Reason='door with no wall within one tile'});$rows.Remove($key)
+    }
 }
 $ordered=@($rows.Values | Sort-Object X,Y,Z,Art,Hue)
 if($ordered.Count -gt 65536) {throw 'Decoration region exceeds 65536 rows; reduce region'}

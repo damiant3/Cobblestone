@@ -1,0 +1,85 @@
+Chapter: BvtTavernSeats
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-178 (Damian, 2026-10-09): the Blue Boar's board seats the first two rollers, one per cup, and locks the table.
+ On a founded fixture town; answers a bit per check: 1 the board and both cups stand at the Blue Boar, 2 a first roll
+ seats its roller on that cup's side, 4 a second roll by the same player is refused privately, 8 a second player's roll
+ at the other cup seats it and locks the table on a side to roll, 16 a third player is told it watches, 32 the referee
+ refuses a watcher's drag (3) and an opponent's checker (5), 64 a reset frees both seats and the phase, 128 the last set in tbd-sets is installed too; 255 is all.
+  bts-fill : WalkMap, Integer -> Integer
+  bts-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bts-fill map (i + 1)
+  bts-data : Integer -> Integer
+  bts-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  bts-founded : Integer -> Result CompositeGame Text
+  bts-founded (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> Err e
+      is Ok (britain) -> let filled = bts-fill map 0
+        in let town-filled = bts-fill britain 0
+        in when cg-britain britain
+          is Err (e) -> Err e
+          is Ok (owner) -> when wd-read (bts-data 0) 240 map map.stride
+            is Err (e) -> Err e
+            is Ok (decoration) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner
+  bts-note : Maybe GameReply -> Text
+  bts-note (r) = when r is None -> "" is Just (g) -> g.note
+  bts-drag : Integer, Integer, Integer, Integer -> List Integer
+  bts-drag (checker) (x) (y) (board) = [8, checker / 16777216, int-mod (checker / 65536) 256, int-mod (checker / 256) 256, int-mod checker 256,
+    x / 256, int-mod x 256, y / 256, int-mod y 256, 0, board / 16777216, int-mod (board / 65536) 256, int-mod (board / 256) 256, int-mod board 256]
+  bts-checker : WorldTable, Integer, Integer -> Integer
+  bts-checker (world) (serial) (art) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.graphic == art) then serial
+    else bts-checker world (world-next-sibling world serial) art
+  bts-checks : CompositeGame -> Integer
+  bts-checks (owner) = let items = owner.production.harvest.items
+    in let w = items.world
+    in let board = tbd-board w tbd-home
+    in let north = tbd-cup-of w tbd-home 0
+    in let south = tbd-cup-of w tbd-home 1
+    in let placed = if board /= 0 & north /= 0 & south /= 0 then 1 else 0
+    in let first = tbd-roll w owner.tavern tbd-home north 0 101 1000 False
+    in let seated = if tbd-phase w tbd-home == 1 & tbd-seat owner.tavern tbd-home 0 == 101 & bts-note first == "tavern:dice" then 2 else 0
+    in let again = tbd-roll w owner.tavern tbd-home north 0 101 1100 False
+    in let private = if bts-note again == "tavern:refused" & tbd-seat owner.tavern tbd-home 0 == 101 then 4 else 0
+    in let second = tbd-roll w owner.tavern tbd-home south 1 202 1200 False
+    in let locked = if tbd-seat owner.tavern tbd-home 1 == 202 & (tbd-phase w tbd-home == 2 | tbd-phase w tbd-home == 3) & bts-note second == "tavern:dice" then 8 else 0
+    in let third = tbd-roll w owner.tavern tbd-home north 0 303 1300 False
+    in let watching = if bts-note third == "tavern:refused" & tbd-seat owner.tavern tbd-home 0 == 101 & tbd-seat owner.tavern tbd-home 1 == 202 then 16 else 0
+    in let white = bts-checker w (world-first-child w board) tbd-white
+    in let watcher = tbd-referee items owner.tavern (bts-drag white 60 20 board) 303
+    in let opponent = tbd-referee items owner.tavern (bts-drag white 60 20 board) 202
+    in let refereed = if white /= 0 & watcher == 3 & opponent == 5 then 32 else 0
+    in let reset = tbd-reset items owner.tavern tbd-home
+    in let freed = if tbd-phase w tbd-home == 0 & tbd-seat owner.tavern tbd-home 0 == 0 & tbd-seat owner.tavern tbd-home 1 == 0 then 64 else 0
+    in let everywhere = if tbd-board w (list-at tbd-sets (list-length tbd-sets - 1)) /= 0 then 128 else 0
+    in placed + seated + private + locked + watching + refereed + freed + everywhere
+  bvt-tavern-seats : Integer -> [Console] Integer
+  bvt-tavern-seats (unused) = when bts-founded 0
+    is Err (e) -> bvt-check ("tavern seats fixture: " & e) False
+    is Ok (owner) -> act
+      n <- bts-checks owner
+      a <- bvt-check ("the Blue Boar board seats the first two rollers, locks the table and lets the others watch (UOAIX-178, code " & show n & ")") (n == 255)
+      a
+    end

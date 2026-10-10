@@ -35,7 +35,7 @@ Chapter: EconomyClock
       let resource = i + 1
       in let r = list-at w.catalog.resources i
       in let a = __record-set job "resource" resource
-      in let nodes = ec-nodes w resource (if resource == 8 | resource == 9 | resource == 13 | resource == 14 then 8 else 4)
+      in let nodes = ec-nodes w resource (if resource == 8 | resource == 9 | resource == 13 | resource == 14 | resource == 15 then 8 else 4)
       in if nodes < 0 then -1
       else if r.seed > 0 then let plot = eh-ground w actor 100 r.ground
         in let b = __record-set job "plot" plot in if plot < 0 then -1 else 0
@@ -58,37 +58,90 @@ Chapter: EconomyClock
       is Ok (world) ->
         let clock = EcClock { world = world, jobs = ec-jobs 0 [], consumer = 55,
           checks = 0, bad-census = 0, exhausted = 0 }
-        in if ec-admit clock 0 /= 0 | ec-bootstrap clock /= 0 | ec-fund clock 0 /= 0 then Err "economy fixture admission refused"
+        in if ec-admit clock 0 /= 0 | ec-warrant clock 0 /= 0 | ec-bootstrap clock /= 0 | ec-fund clock 0 /= 0 | ec-equip clock 1 /= 0 | ec-stock-maker clock /= 0 then Err "economy fixture admission refused"
         else Ok clock
+
+  ec-warrant : EcClock, Integer -> Integer
+  ec-warrant (clock) (i) = if i == 54 then 0
+    else let job = list-at clock.jobs i
+    in if job.enabled == 0 | job.resource <= 0 then ec-warrant clock (i + 1)
+    else if (list-at clock.world.catalog.resources (job.resource - 1)).item /= 6 then ec-warrant clock (i + 1)
+    else if eh-appoint clock.world True job.actor (ep-actor clock.world job.actor).place < 0 then -1
+    else ec-warrant clock (i + 1)
 
   ec-bootstrap : EcClock -> Integer
   ec-bootstrap (clock) =
     let w = clock.world
     in let lord = clock.consumer
     in let hand = ep-station w lord 1 100
+    in let saw = ep-station w lord 8 100
     in let smelter = ep-station w lord 3 100
     in let mint = ep-station w lord 12 100
     in if em-total w.money 1 /= 0 then -1
     else if eh-harvest w lord (ec-node w lord 1 0) /= 4 then -1
-    else if eh-harvest w lord (ec-node w lord 2 0) /= 4 then -1
+    else if ep-craft w lord 2 hand /= 1 then -1
+    else if eh-harvest w lord (ec-node w lord 1 0) /= 4 then -1
+    else if eh-harvest w lord (ec-node w lord 15 0) < 2 then -1
+    else if ep-craft w lord 16 saw /= 4 then -1
     else if ep-craft w lord 1 hand /= 1 | ep-craft w lord 31 hand /= 1 then -1
     else if eh-harvest w lord (ec-node w lord 6 0) /= 2 then -1
     else if ep-craft w lord 8 smelter /= 1 then -1
     else if emi-configure w True lord 6000000 /= 0 then -1
-    else emi-strike w True lord mint 1
+    else if emi-strike w True lord mint 1 /= 0 then -1
+    else ec-grant-tools clock lord hand saw (ec-needing clock 62 1 0 + ec-spare-tools + 1 - ep-at (ep-actor w lord).stock 62)
+  ec-spare-tools : Integer = 2
+  ec-maker : EcClock, Integer, Integer -> Integer
+  ec-maker (clock) (item) (actor) = if actor > list-length clock.jobs then 0
+    else let job = list-at clock.jobs (actor - 1)
+    in if job.recipe > 0 & (list-at clock.world.catalog.recipes (job.recipe - 1)).item == item then actor else ec-maker clock item (actor + 1)
+  ec-stock-maker : EcClock -> Integer
+  ec-stock-maker (clock) = let maker = ec-maker clock 62 1
+    in let left = ep-at (ep-actor clock.world clock.consumer).stock 62 - 1
+    in if maker == 0 | left < 1 then 0 else if ep-buy clock.world maker clock.consumer 62 left < 0 then -1 else 0
+  ec-equip : EcClock, Integer -> Integer
+  ec-equip (clock) (actor) = if actor > list-length clock.jobs then 0
+    else let tool = ec-tool-of clock actor
+    in let w = clock.world
+    in let lord = clock.consumer
+    in let bought = if tool /= 62 | ep-at (ep-actor w actor).stock tool > 0 | ep-at (ep-actor w lord).stock tool < 1 then 0
+      else ep-buy w actor lord tool 1
+    in if bought < 0 then -1 else ec-equip clock (actor + 1)
+  ec-needing : EcClock, Integer, Integer, Integer -> Integer
+  ec-needing (clock) (tool) (actor) (n) = if actor > list-length clock.jobs then n
+    else ec-needing clock tool (actor + 1) (n + (if ec-tool-of clock actor == tool then 1 else 0))
+  ec-source : EpWorld, Integer, Integer -> Integer
+  ec-source (w) (actor) (resource) = let ready = ec-node w actor resource 0 in if ready > 0 then ready else eh-source w resource 100
+  ec-grant-tools : EcClock, Integer, Integer, Integer, Integer -> Integer
+  ec-grant-tools (clock) (lord) (hand) (saw) (left) = if left <= 0 then 0
+    else let w = clock.world
+    in let p = ep-actor w lord
+    in let stone = if ep-at p.stock 1 >= 2 then 2 else eh-harvest w lord (ec-source w lord 1)
+    in if stone < 2 then -1
+    else let logs = if ep-at p.stock 38 >= 1 then 1 else eh-harvest w lord (ec-source w lord 15)
+    in let boards = if ep-at p.stock 38 >= 1 then 1 else if logs < 1 then 0 else ep-craft w lord 16 saw
+    in if boards < 1 then -1
+    else if ep-craft w lord 31 hand /= 1 then -1
+    else ec-grant-tools clock lord hand saw (left - 1)
   ec-fund : EcClock, Integer -> Integer
   ec-fund (clock) (i) = if i == clock.world.actor-count then 0
     else let p = list-at clock.world.actors i
     in if em-lend clock.world.money 1 p.purse 100000 0 1000 < 0 then -1
     else ec-fund clock (i + 1)
 
+  ec-tool-of : EcClock, Integer -> Integer
+  ec-tool-of (clock) (actor) = if actor < 1 | actor > list-length clock.jobs then 0
+    else let job = list-at clock.jobs (actor - 1)
+    in if job.resource > 0 then (list-at clock.world.catalog.resources (job.resource - 1)).tool
+    else if job.recipe > 0 then (list-at clock.world.catalog.recipes (job.recipe - 1)).tool else 0
+  ec-keeps : EcClock, Integer, Integer -> Integer
+  ec-keeps (clock) (actor) (item) = if item > 0 & ec-tool-of clock actor == item then 1 else 0
   ec-seller : EcClock, Integer, Integer, Integer, Integer -> Integer
   ec-seller (clock) (buyer) (item) (i) (best) =
     if i == 54 then best
     else let w = clock.world
     in let id = i + 1
     in let p = ep-actor w id
-    in let pick = if id == buyer | ep-at p.stock item == 0 then best
+    in let pick = if id == buyer | ep-at p.stock item - ec-keeps clock id item < 1 then best
       else if best == 0 then id
       else if ep-price w id item < ep-price w best item then id else best
     in ec-seller clock buyer item (i + 1) pick
@@ -104,7 +157,7 @@ Chapter: EconomyClock
     else let available = ep-at (ep-actor w seller).stock item
     in let buy = if available < missing then available else missing
     in let result = ep-buy w actor seller item buy
-    in let exhausted = if w.trade-count == ep-trade-limit | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
+    in let exhausted = if w.trade-count >= list-length w.trades | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
     in result == 0 & ep-at p.stock item >= quantity
   ec-node : EpWorld, Integer, Integer, Integer -> Integer
   ec-node (w) (actor) (resource) (i) = if i == w.node-count then 0
@@ -158,7 +211,7 @@ Chapter: EconomyClock
     in let buyer = clock.consumer
     in let seller = ec-seller clock buyer item 0 0
     in let bought = if seller == 0 then -1 else ep-buy w buyer seller item 1
-    in let exhausted = if w.trade-count == ep-trade-limit | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
+    in let exhausted = if w.trade-count >= list-length w.trades | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
     in ec-consume-market clock (item + 1)
   ec-check : EcClock -> Integer
   ec-check (clock) =

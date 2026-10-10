@@ -4,6 +4,11 @@ Chapter: GameHarvest
 
   gh-denied : Text -> Result (Maybe GameReply) Text
   gh-denied (text) = Ok (Just (gsi-denied text))
+  gh-refused : Text, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  gh-refused (text) (x) (y) (z) (graphic) = Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 text]
+    (text & " target=" & show x & "," & show y & "," & show z & " id=" & show graphic)))
+  gh-swing-delay : Integer -> Integer
+  gh-swing-delay (resource) = gh-ticks (if resource == 5 then 2400 else 3000)
   gh-carried : GameHarvest, GvPlayer, WorldObject -> Boolean
   gh-carried (state) (player) (tool) =
     if not (gsi-known state.items tool.serial) then False
@@ -12,12 +17,19 @@ Chapter: GameHarvest
       let layer = (gsi-meta state.items tool.serial).layer
       in layer >= 1 & layer <= 25
     else gv-under state.items.world tool.serial player.pack 65
+ An item made with a tool is made inside the bag that holds the tool (Damian, 2026-10-08, GameServer.md "Testing stock"),
+ and in the backpack when the tool is equipped, loose in the backpack, absent or in the bank.
+  gh-into : GameHarvest, Integer, Integer -> Integer
+  gh-into (state) (pack) (tool) = if tool == 0 then pack
+    else when world-get state.items.world tool
+      is Err (_) -> pack
+      is Ok (t) -> if t.kind == 2 & t.container /= 0 & gv-under state.items.world t.container pack 65 & gmb-root state.items t.container 65 == 0 then t.container else pack
   gh-tool : GameHarvest, GvPlayer, Integer -> Integer
   gh-tool (state) (player) (serial) =
     let at = gv-lot state.vendor serial 0
     in if at < 0 then -1
-    else let lot = list-at state.vendor.lots at
-    in if lot.actor /= player.actor | lot.quantity /= 1 | lot.wear < 1
+    else let lot = ep-lot state.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | ep-amount state.vendor.currency.world.goods lot.serial /= 1 | lot.wear < 1
       | gh-tool-type lot.item == 0 | not (gsi-known state.items serial)
       | not (gv-owned state.items.world serial player.serial 65) then -1
     else when world-get state.items.world serial
@@ -36,7 +48,14 @@ Chapter: GameHarvest
     in let expires = __record-set request "expires" (now + gh-ticks 10000)
     in let cursor = sip-target target
     in let ground = list-set-at cursor 1 1
-    in Ok (Just (gs-reply [cursor,sip-message #FFFFFFFF #FFFF 6 "Select a natural resource."] "harvest target"))
+    in let resource = gh-tool-type (ep-lot state.vendor.currency.world.goods (gh-tool state player tool)).item
+    in Ok (Just (gs-reply [cursor,sip-message #FFFFFFFF #FFFF 6 (gh-say resource 0)] "harvest target"))
+  gh-vein-art : Integer = #19B9
+  gh-vein-hue : Integer = #08A5
+  gh-vein-marker : WorldTable, Integer -> Boolean
+  gh-vein-marker (world) (serial) = if serial == 0 then False else when world-get world serial
+    is Err (_) -> False
+    is Ok (o) -> o.kind == 2 & o.container == 0 & o.graphic == gh-vein-art & o.hue == gh-vein-hue
   gh-target : (WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer),
     (GameHarvest, GvPlayer, Integer, Integer, Integer -> Result GameReply Text),
     GameHarvest, GvPlayer, GhRequest, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
@@ -56,18 +75,23 @@ Chapter: GameHarvest
     else when world-get state.items.world player.serial
       is Err (e) -> Err e
       is Ok (mobile) ->
-        let resource = gh-tool-type (list-at state.vendor.lots lot).item
-        in let range = if resource == 9 then 4 else 2
-        in if gp-u32 packet 7 /= 0 | x < mobile.x - range | x > mobile.x + range
-          | y < mobile.y - range | y > mobile.y + range | (x == mobile.x & y == mobile.y)
-          | z < mobile.z - 16 | z > mobile.z + 16 then gh-denied "That resource is out of reach."
-        else if lookup map mobile x y z (gp-u16 packet 17) /= resource then gh-denied "That is not the resource for this tool."
-        else let node = gh-site state player resource x y z
-        in if node < 1 then gh-denied "The resource-node budget is full."
-        else let next = __record-set request "next" (now + gh-ticks 3000)
-        in when produce state player node lot now
+        let resource = gh-tool-type (ep-lot state.vendor.currency.world.goods lot).item
+        in let range = if resource == 9 then 5 else 2
+        in let marked = gh-vein-marker state.items.world (bit-and (gp-u32 packet 7) #7FFFFFFF)
+        in let graphic = if marked then 0 else gp-u16 packet 17
+        in if (gp-u32 packet 7 /= 0 & not marked) | x < mobile.x - range | x > mobile.x + range
+          | y < mobile.y - range | y > mobile.y + range | (resource == 9 & x == mobile.x & y == mobile.y) then gh-refused (gh-say resource 2) x y z graphic
+        else if lookup map mobile x y z graphic /= resource then gh-refused (gh-say resource 1) x y z graphic
+        else let node = gh-site state player resource x y (if graphic == 0 then walk-z map x y else z)
+        in if node < 1 then gh-refused "The resource-node budget is full." x y z graphic
+        else let at = gh-site-of state node 0
+        in let named = if at >= 0 & resource == 15 & graphic /= 0 then (let s = __record-set (list-at state.sites at) "species" graphic in 0) else 0
+        in let mined = if at < 0 then node else gh-seam-begin state at (state.seam now x y) (ep-actor state.vendor.currency.world player.actor).place
+        in let next = __record-set request "next" (now + gh-swing-delay resource)
+        in let struck = state.swing player.serial resource graphic mobile.x mobile.y
+        in when produce state player mined lot now
           is Err (e) -> Err e
-          is Ok (reply) -> Ok (Just reply)
+          is Ok (reply) -> let ended = gh-seam-end state at in Ok (Just reply)
   gh-handler-at : (WalkMap, WorldObject, Integer, Integer, Integer, Integer -> Integer),
     (GameHarvest, GvPlayer, Integer, Integer, Integer -> Result GameReply Text),
     GameHarvest, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
@@ -81,7 +105,7 @@ Chapter: GameHarvest
     else if op == #34 & list-at packet 5 /= 5 then Ok None
     else let lot = if op == 6 then gv-lot state.vendor (bit-and (gp-u32 packet 1) #7FFFFFFF) 0 else 0
     in if op == 6 & lot < 0 then Ok None
-    else if op == 6 & gh-tool-type (list-at state.vendor.lots lot).item == 0 then Ok None
+    else if op == 6 & gh-tool-type (ep-lot state.vendor.currency.world.goods lot).item == 0 then Ok None
     else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
       | state.items.world.buffer /= shard.world.buffer | state.vendor.game.world.buffer /= shard.world.buffer then Err "harvest active world binding"
     else let at = gv-player state.vendor input.session.serial 0

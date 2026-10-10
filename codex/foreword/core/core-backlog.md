@@ -141,6 +141,80 @@ key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
 
+**CORE-11. PBKDF2 is too slow on codex-vm for the current iteration guidance.**
+Measured 2026-10-07 (red, seed 8264163D, one 200000-iteration hash against a
+1-iteration control, three runs): 8.4 us per iteration, where the byte-level PRF
+took 18.3, so 600000 iterations, the current guidance for PBKDF2-HMAC-SHA256, take
+about 5 s per verify. Every caller (`apps/market/MarketAuth`,
+`apps/uoaix/GameAccounts`) verifies on a single request loop and stays at 20000.
+An iteration is two `sha256-compress` calls over the precomputed pad states; what
+remains is the compression itself, and not its allocation: threading the eight
+working variables through the rounds with no `Sha256State` record and giving the
+schedule its 64 words up front measured 7.6 us per iteration (2026-10-07), about
+10%, too little for a seed move, so the per-round arithmetic is the cost.
+
+**CORE-12. SHA-1, SHA-256 and SHA-512 alias a non-octet element instead of
+refusing it.** `bytes-to-words` (`Sha256.codex`) and its siblings in
+`Sha512.codex` and `Sha1.codex` OR each shifted element into the block word
+unmasked, so `sha256 [0, 0, 0, 256]` equals `sha256 [0, 0, 1, 0]` and
+`[0, 0, 0, -1]` equals `[255, 255, 255, 255]` (val probe, seed 279DF926).
+Text callers cannot reach it (`text-to-bytes` yields CCE bytes). Raw-list callers
+DO reach it, on purpose: `generate-keypair (sha256 (text-to-bytes ...))` hands the
+eight 32-bit digest WORDS to `sha256-bytes` as if they were bytes (9 call sites of
+that shape, 2026-10-07), so keys, identities and pinned outputs depend on the alias.
+The plain functions and `hmac-sha256` keep that behaviour; `sha256-checked`,
+`sha512-checked`, `sha384-checked` and `sha1-checked` answer `None` on a non-octet
+(arm `sha-octet-refusal`). Census by shape, a digest passed straight on as an
+argument (fester, 2026-10-07): 68 sites; every one that converts the words
+(`sha256-to-hex`, `hkdf-words-to-bytes`, `wz-words-to-bytes`,
+`cdxb-hash-words-to-bytes`, `sha512-words-to-byte-list`, `sha256-digest-bytes`)
+or hashes with `sha256-bytes` is sound. The word-as-bytes ones are 9
+`generate-keypair (sha256 ...)` sites (`apps/works/DevConsoleBoot.codex:336` and 8
+under `codex/test/apps`: agent-manager, checkout-emit, colophon-dogfood, debug-expr,
+dev-name-cmd, dev-mem-find, dev-mem-cmd, dev-console-stick) and
+`idm-derive-random` (`codex/os/kernel/IdentityManager.codex:265`), which hands out
+digest words as random bytes, so its values exceed 255. Not yet classified:
+`audit-verify-chain` (`apps/secrets/AuditLog.codex:80`) seeds its chain with a
+word-list genesis hash. The census does not see a digest bound by `let` and passed
+later. The 8 test-only sites now seed `generate-keypair (sha256-bytes ...)` (root's
+GO, 2026-10-07); no `.expected` line depends on the key. Held for Damian (root carries
+them), both persisted: `DevConsoleBoot.codex:336`, the dev console's signing key, from
+a constant seed, so moving it loses no secrecy but re-keys facts already signed on dev
+disks; and `idm-derive-random`, the persisted identity's salt and IV, asked for 16 bytes
+from 8 digest words, so it returns 8 values above 255 then 8 zeros, which is at most
+64 bits of randomness where 128 are meant if the consumer keeps each low byte. Both
+are DamianDecisions 3.12 and 3.13. What a re-derive of `idm-derive-random` breaks
+(fester, 2026-10-07): no stored identity, because each record keeps its `id-salt` and
+`id-iv` and unlock and passphrase change read them back (`IdentityManager.codex:111`,
+`:165`); only identities created or re-keyed afterwards get the new salt and IV. Its
+consumers are those two writers (`:64`, `:183`); GopWizard derives its own salt
+through `wz-words-to-bytes` and is unaffected; `codex/test/idm-salt-iv-distinct` prints
+only booleans, so its 4 expected lines do not move. A third persisted site, for the
+same ruling: `hash-audit-entry` (`apps/secrets/AuditLog.codex:68`) hashes each entry's
+text bytes followed by the previous entry's digest WORDS, and `audit-verify-chain`
+walks that chain from a word-list genesis hash; moving it to bytes changes every
+link, so a log written before the move fails verification unless the chain carries a
+version. The `let`-bound digests (19 bindings, 2026-10-07): 13 convert or compare as
+hex (Hmac, ProofOfWork, AppPersist, DiskFacts, IdentityManager twice, CdxBinary four
+times, ManagedAccounts, ContentChunker:105); `apps/secrets/SecretGenerator.codex:105`
+and `:131` read two digest words as bytes to form an index, which the modulo keeps in
+range, so nothing breaks there. The four stored in a field: piece hashes
+(`ContentChunker.codex:78`) and revocation ids (`Revocation.codex:107`) are compared as
+hex or by equality, sound; the Merkle tree (`ContentChunker.codex:150`) hashes two
+child digests' WORDS as bytes, so every root is a word-as-bytes digest, a published
+value in the held class if manifests leave the node; the DHT node id
+(`FileShareApp.codex:60`, from a constant each boot, not persisted) reaches
+`leading-zeros` (`PeerDiscovery.codex:87`), which counts 8 bits per element, so a
+32-bit word misplaces the bucket. Both go on the wire: the fileshare HANDSHAKE
+(`apps/fileshare/TransferProtocol.codex:15`, `:59`) carries a 32-byte content hash and
+a 32-byte peer id, and the decoder takes 32 elements of each (`:130`), so an 8-word
+digest handed to the encoder makes a handshake no decoder reads correctly: no
+working interop exists to preserve. Fixed (root's GO): a Merkle parent hashes its
+children's digest bytes and `dht-bucket-index` measures the XOR distance over bytes;
+nothing builds a handshake yet, and `codex/test/apps/fileshare-bytes` proves the
+32-byte fields round-trip (both other lines go red with the old code). Open: the three
+held persisted sites, DamianDecisions 3.12 and 3.13.
+
 ## CCE has no Dingbats block
 
 U+2700..U+27BF (Dingbats) is in neither CCE tier, so a character from it

@@ -29,6 +29,31 @@ count does.
 
 ## Done
 
+### Update 69 -- three reds at step 0b, none a compiler defect
+
+- `test-run`: six GPU diffusion subjects over the 60 s wall budget at 16-way; all six pass alone: `build/bvt.ps1 -CodexCdx build/output/Sut.cdx -Jobs 1 -SubjectsFile <the reds>`.
+- `plug-smoke` cross-host: QEMU under WHPX booted its default CPU model, which has no RDRAND, so Update 68's device-seed init printed `no entropy` ahead of the ptx plug's serial output. The fallback now boots `-cpu host` under WHPX (red 38873). Update 68's gate missed it because `plug-smoke` rebuilds a plug only when its sources are newer than its CDX, never when the seed moves, so its ptx plug predated the change. After a seed that changes the boot path, rebuild the smoke plugs before the gate: `foreach ($p in 'typescript','python','rust','ptx') { pwsh codex/plugs/$p/build.ps1 -Force }`.
+- `wasm-run`: `cover-arms` is graded on its `cover` flag, which only the x86-64 emitter implements and the hosted arms never apply, so it now carries `.bare-metal` (red 38905). A new test whose output depends on a `.flags` mode needs the same.
+
+The Update 66 resume recipe (a copy of `build.ps1` outside the workspace, proven phases in `$SkipPhases`, `$script:seedVerdict = 'one-pass'`) carried the gate through all three.
+
+### Update 68 -- three traps the Update 67 recipe did not cover
+
+- `degenerate-arms` (the gate runner from the SignatureSlippage campaign) read the DDC's concatenated compiler unit under `codex/plugs/csharp/build-output` as a caller and reported 5 unregistered decisions; it now skips multi-chapter files (fester 38425). Run the DDC chain in a different workspace from the gate.
+- The shelve, revert, merge, unshelve cycle around a release changelist DROPS a pending `p4 add` (unshelve will not clobber the writable file and does not open the add). After the unshelve, `p4 opened` every file you meant to submit; re-add a missing one.
+- A seed that makes wasm programs import WASI `random_get` breaks every page host that does not provide it; the games bundle failed `wasm-bundles` with "function import requires a callable". Grep the page hosts for the import set when the wasm plug's imports change.
+### Update 67 -- six reds past the compiler stages, none a compiler defect
+
+The compiler stages were green first time (SUT === stage1 in one pass, DDC holds, poison clean). What stopped the gate, in order, each with its fix:
+
+- `p4-stale-check` refused an untracked `.md` in the release workspace. Move such a file out before the gate and back after.
+- `sem-equiv` red at 123 bodies: `compare-codex-semantic` read COMPILER-109's wrapped signature continuations as bodies, and stage1 prints `not x` as `x == False`. Instrument fix, red 38264; a planted body change still fails it.
+- The raw-shell ratchet refused that fix's 13 raw lines (red 38327).
+- A resumed gate that skips `cdx-fixedpoint` must preset ` = 'one-pass'` beside the `` list, or it dies after `cdx-exports`.
+- `plug-binary`: arm64 and elf plugs carried a duplicate `a64-emit-call-to` that this cycle's new CDX3027 ambiguity refusal catches (red 38352).
+- `gen-scripts`: `bvt.ps1` and `check-sidecars.ps1` had been hand-edited (COMPILER-123 `.wall`) without their generators; drift recorded (38365), port owed.
+
+Also: the battery refuses to start until `build/diffusion-roots.ps1 -Provision` has made the junctions, and the gate's `clean` wipes them, so provision after `clean`. `test.ps1` cannot select one subject, so a GPU wall-budget red is re-run by tier or not at all. Diag arm `b3-short` hangs on any codex-vm after 35609 (fast NAT acks): the harness now sets `CODEX_VM_NET_TRACE=1` (red 38362) and the payload's unbounded send heap is fixed (reek 38374).
 ### Update 66 -- the full gate has no resume, and its reds past test-run were the bed and the corpus
 
 Three reds at step 0b, 2026-10-02, none a compiler defect; the compiler stages

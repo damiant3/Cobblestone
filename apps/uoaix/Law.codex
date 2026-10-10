@@ -27,6 +27,19 @@ Chapter: Law
   lw-new (world) = LawWorld { world = world, cases = lw-cases 128 [], witnesses = lw-witnesses 256 [],
     guards = lw-guards 32 [], jails = lw-jails 16 [], sentences = [1,6,24],
     count = 0, witness-count = 0, guard-count = 0, hour = 0 }
+  lw-case-block : Integer = 128
+  lw-witness-block : Integer = 256
+ Cases and witness rows grow a block at a time at the growth point (UoaixDynamicTables.md stage 6); rows past the first
+ blocks save in the law tail.
+  lw-guard-block : Integer = 32
+  lw-due : LawWorld -> Boolean
+  lw-due (w) = list-length w.cases - w.count < lw-case-block / 4 | list-length w.witnesses - w.witness-count < lw-witness-block / 4
+    | list-length w.guards - w.guard-count < lw-guard-block / 4
+  lw-grow : LawWorld -> Integer
+  lw-grow (w) = let a = if list-length w.cases - w.count < lw-case-block / 4 then __record-set w "cases" (lw-cases lw-case-block w.cases) else w
+    in let b = if list-length w.witnesses - w.witness-count < lw-witness-block / 4 then __record-set w "witnesses" (lw-witnesses lw-witness-block w.witnesses) else w
+    in let c = if list-length w.guards - w.guard-count < lw-guard-block / 4 then __record-set w "guards" (lw-guards lw-guard-block w.guards) else w
+    in list-length w.cases
   lw-live : LawWorld, Integer -> Boolean
   lw-live (w) (serial) = when world-get w.world serial
     is Err (e) -> False
@@ -48,7 +61,7 @@ Chapter: Law
   lw-deed : LawWorld, Boolean, Integer, Integer, Integer, Integer -> Integer
   lw-deed (w) (verified) (source) (offender) (kind) (town) =
     if not verified | source <= 0 | source > 1000000000000 | kind < 1 | kind > 3 | town < 1 | town > 16
-      | w.count == 128 | not (lw-live w offender) then -1
+      | w.count >= list-length w.cases | not (lw-live w offender) then -1
     else if lw-source w source 0 then -1
     else let obj = world-read-slot w.world (world-slot w.world offender)
     in let c = list-at w.cases w.count
@@ -59,6 +72,7 @@ Chapter: Law
     in let f = __record-set c "x" obj.x
     in let g = __record-set c "y" obj.y
     in let h = __record-set c "term" (list-at w.sentences (kind - 1))
+    in let at = __record-set c "due" w.hour
     in let id = w.count + 1
     in let used = __record-set w "count" id in id
   lw-witness-id : LawWorld, Integer, Integer, Integer -> Integer
@@ -67,7 +81,7 @@ Chapter: Law
     in if witness.case-id == case-id & witness.serial == serial then i + 1 else lw-witness-id w case-id serial (i + 1)
   lw-observe : LawWorld, Boolean, Integer, Integer, Boolean, Boolean -> Integer
   lw-observe (w) (saw) (case-id) (serial) (npc) (willing) =
-    if not saw | not (lw-valid-case w case-id) | not (lw-live w serial) | w.witness-count == 256 then -1
+    if not saw | not (lw-valid-case w case-id) | not (lw-live w serial) | w.witness-count >= list-length w.witnesses then -1
     else let c = lw-case w case-id
     in if c.offender == serial | lw-witness-id w case-id serial 0 /= 0 then -1
     else let id = w.witness-count + 1
@@ -96,7 +110,7 @@ Chapter: Law
     else if (list-at w.guards i).serial == serial then i + 1 else lw-guard-id w serial (i + 1)
   lw-add-guard : LawWorld, Boolean, Integer, Integer -> Integer
   lw-add-guard (w) (verified) (serial) (town) =
-    if not verified | not (lw-live w serial) | town < 1 | town > 16 | w.guard-count == 32 then -1
+    if not verified | not (lw-live w serial) | town < 1 | town > 16 | w.guard-count >= list-length w.guards then -1
     else if lw-guard-id w serial 0 /= 0 then -1
     else let g = list-at w.guards w.guard-count
     in let a = __record-set g "serial" serial
@@ -185,5 +199,82 @@ Chapter: Law
   lw-release : LawWorld, Integer -> Integer
   lw-release (w) (case-id) = if not (lw-valid-case w case-id) then -1 else let c = lw-case w case-id
     in if c.status /= 4 | w.hour < c.due then -1 else let a = __record-set c "status" 5 in 0
+ A GM's jail order is case kind 4: jailed at once at the town's cell for the given hours, with no deed, witness or guard.
+  lw-confine : LawWorld, Boolean, Integer, Integer, Integer -> Integer
+  lw-confine (w) (verified) (offender) (town) (hours) =
+    if not verified | town < 1 | town > 16 | hours < 1 | hours > 8760 | w.count >= list-length w.cases | w.hour > 1000000000000 - hours
+      | not (lw-live w offender) | lw-held w offender 0 | not (list-at w.jails (town - 1)).enabled then -1
+    else let jail = list-at w.jails (town - 1)
+    in let c = list-at w.cases w.count
+    in let a = __record-set c "source" (lw-next-source w 0 0)
+    in let b = __record-set c "offender" offender
+    in let d = __record-set c "kind" 4
+    in let e = __record-set c "town" town
+    in let f = __record-set c "x" jail.x
+    in let g = __record-set c "y" jail.y
+    in let h = __record-set c "known" False
+    in let j = __record-set c "status" 4
+    in let k = __record-set c "guard" 0
+    in let m = __record-set c "term" hours
+    in let p = __record-set c "due" (w.hour + hours)
+    in let id = w.count + 1
+    in let used = __record-set w "count" id in id
+  lw-free : LawWorld, Integer, Integer -> Integer
+  lw-free (w) (offender) (i) = if i >= w.count then 0
+    else let c = list-at w.cases i
+    in if c.offender /= offender | c.status /= 4 then lw-free w offender (i + 1)
+    else let a = __record-set c "status" 5 in let b = __record-set c "due" w.hour in 1 + lw-free w offender (i + 1)
+ A served case, and a deed nobody reported, retire lw-retire-hours game hours after their due hour with their witness
+ rows; 40 game hours is classic UO's long-term murder count decay. Retirement compacts the tables in place and renumbers
+ every surviving case id in the witness and guard rows, so 128 cases and 256 witness rows never fill for life.
+  lw-retire-hours : Integer = 40
+  lw-gone : LawWorld, Integer -> Boolean
+  lw-gone (w) (id) = let c = lw-case w id
+    in w.hour >= c.due + lw-retire-hours & (c.status == 5 | (c.status == 0 & not c.known & c.guard == 0))
+  lw-gone-before : LawWorld, Integer, Integer -> Integer
+  lw-gone-before (w) (id) (k) = if k >= id then 0 else (if lw-gone w k then 1 else 0) + lw-gone-before w id (k + 1)
+  lw-next-source : LawWorld, Integer, Integer -> Integer
+  lw-next-source (w) (i) (most) = if i == w.count then most + 1 else lw-next-source w (i + 1) (max most (list-at w.cases i).source)
+  lw-swap : List a, Integer, Integer -> Integer
+  lw-swap (xs) (i) (j) = let a = list-at xs i in let b = list-at xs j in let c = list-set-at xs i b in let d = list-set-at xs j a in 0
+  lw-keep-witnesses : LawWorld, Integer, Integer -> Integer
+  lw-keep-witnesses (w) (i) (kept) = if i == w.witness-count then kept
+    else let r = list-at w.witnesses i
+    in if lw-gone w r.case-id then lw-keep-witnesses w (i + 1) kept
+    else let renumbered = __record-set r "case-id" (r.case-id - lw-gone-before w r.case-id 1)
+    in let moved = if i == kept then 0 else lw-swap w.witnesses i kept
+    in lw-keep-witnesses w (i + 1) (kept + 1)
+  lw-renumber-guards : LawWorld, Integer -> Integer
+  lw-renumber-guards (w) (i) = if i == w.guard-count then 0
+    else let g = list-at w.guards i
+    in let a = if g.case-id > 0 then __record-set g "case-id" (g.case-id - lw-gone-before w g.case-id 1) else g
+    in lw-renumber-guards w (i + 1)
+  lw-keep-cases : LawWorld, Integer, Integer -> Integer
+  lw-keep-cases (w) (i) (kept) = if i == w.count then kept
+    else if lw-gone w (i + 1) then lw-keep-cases w (i + 1) kept
+    else let moved = if i == kept then 0 else lw-swap w.cases i kept
+    in lw-keep-cases w (i + 1) (kept + 1)
+  lw-zero-witnesses : LawWorld, Integer, Integer -> Integer
+  lw-zero-witnesses (w) (i) (n) = if i >= n then 0
+    else let r = list-at w.witnesses i
+    in let a = __record-set r "case-id" 0 in let b = __record-set r "serial" 0 in let c = __record-set r "npc" False
+    in let d = __record-set r "willing" False in let e = __record-set r "reported" False in lw-zero-witnesses w (i + 1) n
+  lw-zero-cases : LawWorld, Integer, Integer -> Integer
+  lw-zero-cases (w) (i) (n) = if i >= n then 0
+    else let c = list-at w.cases i
+    in let a = __record-set c "source" 0 in let b = __record-set c "offender" 0 in let d = __record-set c "kind" 0
+    in let e = __record-set c "town" 0 in let f = __record-set c "x" 0 in let g = __record-set c "y" 0
+    in let h = __record-set c "known" False in let j = __record-set c "status" 0 in let k = __record-set c "guard" 0
+    in let m = __record-set c "term" 0 in let p = __record-set c "due" 0 in lw-zero-cases w (i + 1) n
+  lw-retire : LawWorld -> Integer
+  lw-retire (w) = let gone = lw-gone-before w (w.count + 1) 1
+    in if gone == 0 then 0
+    else let witnesses = lw-keep-witnesses w 0 0
+    in let guards = lw-renumber-guards w 0
+    in let cases = lw-keep-cases w 0 0
+    in let a = lw-zero-witnesses w witnesses w.witness-count
+    in let b = lw-zero-cases w cases w.count
+    in let c = __record-set w "witness-count" witnesses
+    in let d = __record-set w "count" cases in gone
   lw-hour : LawWorld, Integer -> Integer
   lw-hour (w) (hour) = if hour < w.hour | hour > 1000000000000 then -1 else let a = __record-set w "hour" hour in 0

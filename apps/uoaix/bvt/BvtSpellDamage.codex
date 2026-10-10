@@ -1,0 +1,47 @@
+Chapter: BvtSpellDamage
+  cites Uoaix chapter MageryEffects
+  cites Uoaix chapter MageryActions
+  cites Uoaix chapter MageryResources
+  cites Uoaix chapter MageryData
+  cites Uoaix chapter WorldSpawnData
+  cites Uoaix chapter BvtCheck
+
+  bvt-spelldmg-profile : List WsProfile, Text, Integer -> Integer
+  bvt-spelldmg-profile (ps) (key) (i) = if i >= list-length ps then -1 else if (list-at ps i).key == key then i else bvt-spelldmg-profile ps key (i + 1)
+ Pairs (roll, hits) a GM caster's Earthquake kills outright: every roll of its base against every hits value in range.
+  bvt-spelldmg-kills : Integer, Integer, Integer, Integer, Integer -> Integer
+  bvt-spelldmg-kills (low) (high) (roll) (hits) (n) = if roll >= mge-base-span 57 then n
+    else if hits > high then bvt-spelldmg-kills low high (roll + 1) low n
+    else let damage = mge-scaled-of (mge-base-low 57 + roll) 1000 (mge-scalar-of 1000 1000) 2 1000
+    in bvt-spelldmg-kills low high roll (hits + 1) (if damage >= hits then n + 1 else n)
+  bvt-spelldmg-half : List WsProfile, Text -> Boolean
+  bvt-spelldmg-half (ps) (key) = let i = bvt-spelldmg-profile ps key 0
+    in if i < 0 then False
+    else let p = list-at ps i
+    in let total = mge-base-span 57 * (p.hits-high - p.hits-low + 1)
+    in p.hits-low > 75 & bvt-spelldmg-kills p.hits-low p.hits-high 0 p.hits-low 0 * 2 >= total
+ Twice a damage spell's mean base (Mind Blast at its cap).
+  bvt-spelldmg-twice : Integer -> Integer
+  bvt-spelldmg-twice (spell) = if spell == 37 then 2 * mge-mind-cap else 2 * mge-base-low spell + mge-base-span spell - 1
+ Every pair of damage spells in different circles: the higher circle pays more damage per mana and per tick of delay.
+  bvt-spelldmg-rises : List Integer, Integer, Integer -> Boolean
+  bvt-spelldmg-rises (spells) (i) (j) = if i >= list-length spells then True
+    else if j >= list-length spells then bvt-spelldmg-rises spells (i + 1) (i + 2)
+    else let a = list-at spells i
+    in let b = list-at spells j
+    in let ok = mgd-circle a == mgd-circle b
+      | (bvt-spelldmg-twice a * mgd-mana b < bvt-spelldmg-twice b * mgd-mana a & bvt-spelldmg-twice a * mgd-delay b < bvt-spelldmg-twice b * mgd-delay a)
+    in ok & bvt-spelldmg-rises spells i (j + 1)
+  bvt-spelldmg : Integer -> [Console] Integer
+  bvt-spelldmg (unused) = let ps = (wsd-catalog 0).profiles
+    in let orc = bvt-spelldmg-half ps "orc"
+    in let ratman = bvt-spelldmg-half ps "ratman"
+    in let ladder = bvt-spelldmg-rises [5, 12, 18, 30, 37, 42, 43, 51, 57] 0 1
+    in let drain = mga-drain-take 150 0 == 75 & mga-drain-take 150 50 == 150 & mga-drain-take 0 30 == 0
+    in let slow = mgr-drained-delay 10 20 7 == 21 & mgr-drained-delay 20 20 7 == 7 & mga-drain-ticks == mgd-ticks 60000 & mga-drain-ticks > 0
+    in act
+      a <- bvt-check "a GM's Earthquake kills an orc and a ratman in one cast at least half the time, which the old 75 cap never did (UOAIX-201)" (orc & ratman)
+      b <- bvt-check "each circle's damage spells pay more per mana and per second of cast delay than every lower circle's (UOAIX-201)" ladder
+      c <- bvt-check "Mana Drain takes half to all of the target's mana, and a drained target regains mana 3 times as slowly for a minute (UOAIX-202)" (drain & slow)
+      a + b + c
+    end

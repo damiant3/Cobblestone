@@ -37,10 +37,7 @@ Plaintext is UTF-8 JSON, at most 2048 bytes; the tag is 16 bytes. The sequence
 must lie within the issued ceiling and strictly exceed the last accepted
 sequence for that role during the boot. Each sender reserves a fresh range
 before its first encrypted request, on reconnect, and after using a range.
-Unreserved sequences are refused. Earlier clients that only recovered the
-accepted sequence must be upgraded; the browser, host relay and .NET witness
-implement the mandatory reservation exchange.
-One serialized sender owns each role's sequence. Reconnects skip old ranges;
+Unreserved sequences are refused. One serialized sender owns each role's sequence. Reconnects skip old ranges;
 after losing a reply the sender must not retry a mutation under a new sequence
 without reconciling state. Replays return an empty 401 response.
 
@@ -69,10 +66,8 @@ opinion or game-character adapters return an explicit unavailable result.
 Health credentials and personal GM routes cannot query those views.
 
 The decrypted JSON object selects an operation with the `command` field.
-Open input compatibility gap: `admin-json-safe` rejects an unquoted `e`
-while excluding exponent notation, so JSON `true` and `false` literals are
-also refused as syntax. Current command fields use strings and integers;
-Boolean-valued extensions need a token-aware guard before admission.
+Admission refuses floating-point and exponent notation; `true`, `false` and
+`null` literals are admitted.
 The smallest health request is `{"command":"health"}`. A mind polls with
 `{"command":"mind-next"}`. A human reads `{"command":"report-peek"}` and
 acknowledges the received id with `{"command":"report-ack","id":1}`.
@@ -184,19 +179,11 @@ fixture keys are removed and the owned guest is stopped on success or failure.
 only a scratch protocol copy to expose `/reports`; successful compilation must
 be followed by `FAIL unauthenticated /reports empty refusal`.
 
-The current protocol regression passed on 2026-10-04 with depot kernel
-`4228CD5103DC4523`, under `build-output/uoaix/nonce-admin/`. The nonce-range
-oracle rejects the prior listener in `nonce-old-control/` at
-`FAIL authenticated but unreserved nonce refused`. Reservation replay,
-unreserved/over-ceiling requests and skipping a lost request's range are graded.
-Normal and poisoned host/context controls pass in `relay-final/` and
-`relay-final-poison/`. The protocol proof covers encrypted health
-and report readback, wrong epoch, tampered tag, replay, role authority, report
-capacity and ordered acknowledgement, mind-event enforcement, and a fragmented
-authenticated request followed by a plaintext request on the same connection.
-Core controls cover a valid gift, unavailable-model fallback, audit backpressure,
-and retained text after request heap restoration. Construction retained 557256
-bytes; 1000 storage/restore cycles retained zero additional bytes. No compiler
-heap or time behavior changes. Contract and harness received an independent
-reader pass; the reader's command examples and failure-token check corrections
-are incorporated.
+The protocol proof covers encrypted health and report readback, wrong epoch,
+tampered tag, replay, reservation replay, unreserved and over-ceiling
+sequences, skipping a lost request's range, role authority, report capacity and
+ordered acknowledgement, mind-event enforcement, and a fragmented authenticated
+request followed by a plaintext request on the same connection. Core controls
+cover a valid gift, unavailable-model fallback, audit backpressure, and retained
+text after request heap restoration; 1000 storage/restore cycles retain no
+additional bytes.

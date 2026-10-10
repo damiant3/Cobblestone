@@ -58,6 +58,18 @@ Chapter: GameFramingProof
       is Err (e) -> False
       is Ok (reply) -> not reply.close & list-length reply.packets == 0 & input.session.phase == phase & game.active == 0
 
+  gfp-delete : GameShard, WalkMap, Integer -> Result GameReply Text
+  gfp-delete (game) (map) (phase) =
+    let input = gn-input 9
+    in let mode = __record-set input "mode" 2
+    in let set-phase = __record-set input.session "phase" phase
+    in gn-default-handler game input map 2593 (gp-zeros (gp-start 131) ((go-default 131).size - 1))
+  gfp-delete-empty : Result GameReply Text -> Boolean
+  gfp-delete-empty (r) = when r
+    is Err (e) -> False
+    is Ok (reply) -> not reply.close & list-length reply.packets == 1
+      & (let p = list-at reply.packets 0 in list-length p == 2 & list-at p 0 == #85 & list-at p 1 == 1)
+
   opening : [Console] Nothing = when gs-new 0
     is Err (e) -> print-line-uni ("FAIL " & e)
     is Ok (game) -> when walk-map-new 0 0 4 4
@@ -66,8 +78,8 @@ Chapter: GameFramingProof
         gfp-table game 0
         gfp-check "maximum dynamic then ping" (gfp-frame game 2 12 65535)
         gfp-check "short dynamic refused" (not (gfp-frame game 2 12 2))
-        gfp-check "delete skipped before authentication" (gfp-skip game map 0 131)
-        gfp-check "delete skipped at character list" (gfp-skip game map 1 131)
+        gfp-check "delete refused before authentication" (is-err (gfp-delete game map 0) & game.active == 0)
+        gfp-check "delete of an empty slot at character list answers 0x85 reason 1" (gfp-delete-empty (gfp-delete game map 1))
         gfp-check "help skipped in world" (gfp-skip game map 2 155)
         gfp-check "fixed profile cannot drift" (not (go-valid [GameOpcodeSpec { opcode = 155, size = 256, minimum = 256, maximum = 256 }]))
         let before = __heap-save

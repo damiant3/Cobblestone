@@ -1,0 +1,35 @@
+Chapter: BvtFishGrounds
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-192: Britain's shore holds cgg-fish-spots fish nodes, so a fisherman whose spot is spent finds the next ready one.
+ Answers a bit per check: 1 the founding node and cgg-fish-grounds make six fish nodes at the shore, 2 with the first
+ spent the next ready one is found, 4 with every one spent none is; -9 is a fixture that did not build. 7 is all.
+  bfg-count : EpWorld, Integer, Integer -> Integer
+  bfg-count (w) (i) (n) = if i == w.node-count then n
+    else let node = list-at w.nodes i
+    in bfg-count w (i + 1) (if node.resource == 9 & node.place == cgg-fish-place then n + 1 else n)
+  bfg-spend : EpWorld, Integer, Integer -> Integer
+  bfg-spend (w) (i) (n) = if i == w.node-count | n <= 0 then 0
+    else let node = list-at w.nodes i
+    in if node.resource == 9 & node.place == cgg-fish-place then (let a = __record-set node "stage" 0 in bfg-spend w (i + 1) (n - 1))
+    else bfg-spend w (i + 1) n
+  bfg-run : Integer -> Integer
+  bfg-run (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let w = x.world
+      in let first = eh-source w (cgg-resource-of w 9 0) cgg-fish-place
+      in let opened = cgg-fish-grounds w cgg-fish-place (cgg-fish-spots - 1)
+      in let six = if first > 0 & opened == cgg-fish-spots - 1 & bfg-count w 0 0 == 6 then 1 else 0
+      in let one = bfg-spend w 0 1
+      in let next = cgg-field-node w 9 cgg-fish-place 0
+      in let moved = if next > 0 & next /= first then 2 else 0
+      in let all = bfg-spend w 0 cgg-fish-spots
+      in let none = if cgg-field-node w 9 cgg-fish-place 0 == 0 then 4 else 0
+      in six + moved + none
+  bvt-fish-grounds : Integer -> [Console] Integer
+  bvt-fish-grounds (unused) = act
+    n <- bfg-run 0
+    a <- bvt-check ("Britain's shore has six fish spots and a fisherman moves to the next ready one, none when all are spent (UOAIX-192, code " & show n & ")") (n == 7)
+    a
+  end

@@ -30,7 +30,7 @@ indexed extent must be read in bounded chunks aligned to its record stride.
 Zero count at EOF succeeds. Unsupported file IDs and paths are refused.
 
 Run codex-vm with `-natmap 2595:2595`; the guest connects to the NAT host
-address 10.0.2.2, port 2595. Reek owns the stage-1 connection and preload.
+address 10.0.2.2, port 2595.
 The adapter does not parse or decide map content. The guest must check HTTP
 status, exact body length and all decoder results. The generic Text-valued
 HttpClient response is unsuitable for binary MUL bytes.
@@ -79,11 +79,7 @@ and [MultiLoader](https://github.com/ClassicUO/ClassicUO/blob/main/src/ClassicUO
 The native proof grades our layout handling; client screens remain the
 stage-1 acceptance oracle specified in UOAIX.md.
 
-Validation on 2026-10-04 used depot kernel `9752080A0276505E`: all 20 native
-checks matched the exact oracle. A transposed x/y decoder failed the
-asymmetric cell check; deleting an output line failed the exact comparison.
-The live adapter passed its required 78 checks against the original install,
-including 20 Britain map/index ranges, EOF, size, cap and request refusals.
-The independent reader pass found and corrected the symmetric-cell proof,
-missing output manifest and missing NAT setup. No client login or walking
-screen has been graded by these reader proofs.
+`MulReadersProof` runs 20 native checks; its asymmetric cell check fails a
+transposed x/y decoder. `test-mul-service.ps1` runs 78 live checks against the
+original install, including 20 Britain map/index ranges, EOF, size, cap and
+request refusals. These reader proofs grade no client login or walking screen.

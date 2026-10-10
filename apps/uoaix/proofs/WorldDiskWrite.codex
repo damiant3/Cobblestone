@@ -61,6 +61,17 @@ Chapter: WorldDiskWrite
         ignored <- us-device-write store.device 11 uncommitted
         udw-check "uncommitted payload prepared" (store.head == 10)
       end
+      fresh <- us-open-on store.device 40 20
+      when fresh
+        is Err (err) -> print-line-uni ("FAIL fresh open " & err)
+        is Ok (later) -> act
+          first <- us-append later 1 5 300 snapshot 320
+          next <- us-append later 2 6 301 frame 128
+          stale <- us-append later 1 9 302 snapshot 320
+          udw-check "a fresh journal may begin with a snapshot at any sequence, and later records keep the order" (is-ok first & is-ok next & is-err stale & later.sequence == 6 & later.snapshot == 0)
+          reopened <- us-open-on store.device 40 20
+          udw-check "a journal beginning at sequence 5 reopens at its last sequence" (when reopened is Err (_) -> False is Ok (r) -> r.sequence == 6 & r.snapshot == 0 & r.head == later.head)
+        end
       tiny <- us-open-on store.device 32 2
       when tiny
         is Err (err) -> print-line-uni ("FAIL tiny open " & err)

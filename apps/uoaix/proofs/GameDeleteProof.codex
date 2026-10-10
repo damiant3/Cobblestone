@@ -1,0 +1,58 @@
+Chapter: GameDeleteProof
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter GameAccounts
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter WalkMap
+  cites Foreword chapter Result
+
+  gdp-check : Text, Boolean -> [Console] Integer
+  gdp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  gdp-fill : WalkMap, Integer -> Integer
+  gdp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in gdp-fill map (i + 1)
+  gdp-field : List Integer, Integer, List Integer, Integer -> List Integer
+  gdp-field (packet) (at) (bytes) (i) = if i == list-length bytes then packet
+    else gdp-field (list-set-at packet (at + i) (list-at bytes i)) at bytes (i + 1)
+  gdp-create : List Integer -> List Integer
+  gdp-create (password) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-zeros header 60
+    in let named = gdp-field name 10 [68,101,108] 0
+    in let stats = gdp-field named 40 password 0 & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  gdp-delete : List Integer, Integer -> List Integer
+  gdp-delete (password) (slot) = gp-put32 (gdp-field (gp-zeros [#83] 30) 1 password 0) slot & [0,0,0,0]
+  gdp-made : GameShard, WalkMap, List Integer -> Integer
+  gdp-made (shard) (map) (password) = let session = (gn-input 1).session
+    in let phase = __record-set session "phase" 1
+    in let created = gs-create shard session map (gdp-create password)
+    in let idle = __record-set shard "active" 0
+    in when created is Err (_) -> -1 is Ok (_) -> 0
+  gdp-answer : Result GameReply Text -> Integer
+  gdp-answer (r) = when r is Err (_) -> -1 is Ok (v) -> if list-length v.packets == 0 then -2
+    else let p = list-at v.packets 0 in if list-at p 0 == #85 then 100 + list-at p 1 else list-at p 0
+  gdp-run : GameShard, WalkMap -> [Console] Integer
+  gdp-run (shard) (map) = act
+    made1 <- gdp-made shard map [0,120,121,122]
+    a <- gdp-check "an empty client password is refused for a character created without one" (made1 == 0 & gdp-answer (gs-delete shard (gdp-delete [0,97,98,99] 0)) == 100 & peek-qword shard.characters 0 /= 0)
+    b <- gdp-check "the account password deletes, junk after its NUL ignored" (gdp-answer (gs-delete shard (gdp-delete (ga-british-password & [0,113]) 0)) == #86 & peek-qword shard.characters 0 == 0)
+    made2 <- gdp-made shard map [112,119]
+    c <- gdp-check "the creation password is not stored" (made2 == 0 & gdp-stored-blank shard.characters 0)
+    d <- gdp-check "the creation password does not delete" (gdp-answer (gs-delete shard (gdp-delete [112,119] 0)) == 100 & peek-qword shard.characters 0 /= 0)
+    e <- gdp-check "a password that extends the account one is refused" (gdp-answer (gs-delete shard (gdp-delete (ga-british-password & [120]) 0)) == 100)
+    f <- gdp-check "an empty client password is refused" (gdp-answer (gs-delete shard (gdp-delete [0] 0)) == 100 & peek-qword shard.characters 0 /= 0)
+    a + b + c + d + e + f
+  end
+  gdp-stored-blank : Integer, Integer -> Boolean
+  gdp-stored-blank (characters) (k) = if k >= 30 then True
+    else peek-byte characters (48 + k) == 0 & gdp-stored-blank characters (k + 1)
+  opening : [Console] Integer = when gs-new 0
+    is Err (e) -> gdp-check e False
+    is Ok (shard) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> gdp-check e False
+      is Ok (map) -> let filled = gdp-fill map 0 in gdp-run shard map

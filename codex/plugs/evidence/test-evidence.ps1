@@ -17,6 +17,8 @@
 #              flips to not-claimed while compile-log stays claimed with
 #              errors=1 in its note (the checker's refusal is what the claim
 #              cites, so a red build must not read as a clean one)
+#   sbom-json  a product and board holding `"` and `\`: SBOM.cdx.json parses
+#              and both strings decode to exactly what was passed
 [CmdletBinding()]
 param([switch]$SkipBuild)
 Set-StrictMode -Version Latest
@@ -46,7 +48,7 @@ function Run-Plug([string]$name, [string[]]$extra) {
 function Cdxe([string]$dir) { if ($dir -and (Test-Path (Join-Path $dir 'Evidence.cdxe'))) { return @(Get-Content (Join-Path $dir 'Evidence.cdxe')) } else { return @() } }
 function Count([string[]]$rows, [string]$pattern) { return @($rows | Where-Object { $_ -match $pattern }).Count }
 
-$expected = [ordered]@{ self = 'three docs, 61 claims, some claimed'; stable = 'byte-identical rerun'; 'no-log' = 'log claims not-claimed'; 'not-cdx' = 'cdx claims not-claimed'; 'dirty-log' = 'effect-types not-claimed, errors counted'; board = 'the residual adjusts by SoC'; 'fact-ingest' = 'the package lands as a fact, once'; 'no-store' = 'a diskless image refuses' }
+$expected = [ordered]@{ self = 'three docs, 61 claims, some claimed'; stable = 'byte-identical rerun'; 'no-log' = 'log claims not-claimed'; 'not-cdx' = 'cdx claims not-claimed'; 'dirty-log' = 'effect-types not-claimed, errors counted'; board = 'the residual adjusts by SoC'; 'sbom-json' = 'quote and backslash decode exactly'; 'fact-ingest' = 'the package lands as a fact, once'; 'no-store' = 'a diskless image refuses' }
 $actual = [ordered]@{}
 
 # self
@@ -139,6 +141,26 @@ else {
     $claimsS = @($rS | Where-Object { $_ -match '^claim ' })
     if (($claimsE -join "`n") -ne ($claimsS -join "`n")) { $actual['board'] = 'the board changed a claim, which it must not' }
     else { $actual['board'] = $expected['board'] }
+}
+
+# sbom-json: a product and board carrying a double quote and a backslash
+# survive into SBOM.cdx.json: it parses, and both decode to the exact input.
+$jp = 'evi"de\nce'; $jb = 'b\q"x'
+$jd = Join-Path $Work 'sbomjson'
+Remove-Item $jd -Recurse -Force -ErrorAction SilentlyContinue
+& pwsh -NoProfile -File (Join-Path $Here 'run.ps1') -OutDir $jd -Product $jp -Board $jb -Cdx $cdx -Log $log -Source $src | Out-Null
+$sb = Join-Path $jd 'SBOM.cdx.json'
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sb)) { $actual['sbom-json'] = '(run failed)' }
+else {
+    $j = $null
+    try { $j = Get-Content $sb -Raw | ConvertFrom-Json } catch { $actual['sbom-json'] = "SBOM.cdx.json does not parse: $($_.Exception.Message)" }
+    if ($j) {
+        $gotP = $j.metadata.component.name
+        $gotB = @($j.metadata.component.properties | Where-Object { $_.name -eq 'codex:board' })[0].value
+        if ($gotP -cne $jp) { $actual['sbom-json'] = "product decodes to [$gotP], wanted [$jp]" }
+        elseif ($gotB -cne $jb) { $actual['sbom-json'] = "board decodes to [$gotB], wanted [$jb]" }
+        else { $actual['sbom-json'] = $expected['sbom-json'] }
+    }
 }
 
 # fact-ingest: the package lands in a fact store image as one kind-50 fact,

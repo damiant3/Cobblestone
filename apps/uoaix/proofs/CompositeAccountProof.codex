@@ -1,0 +1,87 @@
+Chapter: CompositeAccountProof
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositePaging
+
+  cap-check : Text, Boolean -> [Console] Integer
+  cap-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  cap-fill : WalkMap, Integer -> Integer
+  cap-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in cap-fill map (i + 1)
+  cap-create : Integer -> List Integer
+  cap-create (unused) = let header = list-push (gp-put32 (gp-put32 (gp-start 0) #EDEDEDED) #FFFFFFFF) 0
+    in let name = gp-ascii (gp-ascii header "Lord" 0 30) "" 0 30
+    in let stats = name & [0,30,20,15,3,50,11,30,45,20]
+    in gp-put32 (gp-put16 (gp-zeros (gp-put16 stats 1002) 12) 0) 0
+  cap-say : Text -> List Integer
+  cap-say (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) 0) 0) 3) text 0 (text-length text + 1)
+  cap-password : List Integer = [81,122,55,112,119,33,76,107]
+  cap-alice : List Integer = [65,108,105,99,101]
+  cap-has : List Integer, List Integer, Integer -> Boolean
+  cap-has (bytes) (needle) (i) = if i + list-length needle > list-length bytes then False
+    else cap-at bytes needle i 0 | cap-has bytes needle (i + 1)
+  cap-at : List Integer, List Integer, Integer, Integer -> Boolean
+  cap-at (bytes) (needle) (i) (j) = if j == list-length needle then True
+    else list-at bytes (i + j) == list-at needle j & cap-at bytes needle i (j + 1)
+  cap-leaks : List (List Integer), Integer -> Boolean
+  cap-leaks (packets) (i) = if i == list-length packets then False
+    else cap-has (list-at packets i) cap-password 0 | cap-leaks packets (i + 1)
+  cap-reply : Result GameReply Text, Text, Integer -> Boolean
+  cap-reply (r) (note) (packets) = when r
+    is Err (_) -> False
+    is Ok (v) -> v.note == note & not v.close & list-length v.packets == packets & not (cap-leaks v.packets 0)
+  cap-run : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  cap-run (store) (map) (specs) = let owner = store.state in let game = owner.checkpoint.game in act
+    input <- gn-input-with specs 1
+    mode <- __record-set input "mode" 2
+    phase <- __record-set input.session "phase" 1
+    entry <- cs-route store game input map 2593 (cap-create 0)
+    logged <- ga-logged game.accounts
+    a <- cap-check "account commands are told apart and British is logged in" (is-ok entry & ga-is-british game.accounts
+      & ca-account-request (cap-say "[account Alice Qz7pw!Lk") & not (ca-accounts-request (cap-say "[account Alice Qz7pw!Lk"))
+      & ca-accounts-request (cap-say "[accounts") & not (ca-account-request (cap-say "[accounts")))
+    made <- ca-account store game input (cap-say "[account Alice Qz7pw!Lk")
+    index <- ga-find game.accounts cap-alice 0
+    b <- cap-check "British creates an account whose hash verifies, and no reply carries the password" (cap-reply made "british:account" 1
+      & ga-count game.accounts == 2 & index == 1 & ga-verify game.accounts index cap-password & not (ga-verify game.accounts index cap-alice))
+    again <- ca-account store game input (cap-say "[account alice Other123")
+    c <- cap-check "a name already taken, in any case, is refused with a message" (cap-reply again "british:account" 1 & ga-count game.accounts == 2)
+    bare <- ca-account store game input (cap-say "[account Bob")
+    odd <- ca-account store game input (cap-say "[account B-b pass")
+    d <- cap-check "a missing password or a bad name answers usage and creates nothing" (cap-reply bare "british:account" 1 & cap-reply odd "british:account" 1 & ga-count game.accounts == 2)
+    e <- cap-check "[accounts lists every account and the count" (let r = ca-accounts game input in r.note == "british:accounts" & list-length r.packets == 3)
+    a + b + c + d + e
+  end
+  cap-restored : CompositeOwner -> [Console] Integer
+  cap-restored (store) = let game = store.state.checkpoint.game
+    in let index = ga-find game.accounts cap-alice 0
+    in cap-check "restart keeps the account and only its own password verifies" (index == 1 & ga-count game.accounts == 2
+      & ga-verify game.accounts index cap-password & not (ga-verify game.accounts index [111,116,104,101,114]))
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> act
+      print-line-uni ("FAIL registry " & e)
+      1
+    end
+    is Ok (specs) -> when walk-map-new 1408 1680 64 64
+     is Err (e) -> cap-check e False
+     is Ok (map) -> let filled = cap-fill map 0 in act
+     opened <- us-open 0 131072
+     when opened
+      is Err (e) -> act
+        print-line-uni ("FAIL store " & e)
+        1
+      end
+      is Ok (store) -> let fresh = store.head == 0 in act
+       loaded <- cs-load-config store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None })
+       when loaded
+        is Err (e) -> act
+          print-line-uni ("FAIL recovery " & e)
+          1
+        end
+        is Ok (owner) -> if fresh then cap-run owner map specs else cap-restored owner
+      end
+    end

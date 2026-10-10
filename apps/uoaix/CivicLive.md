@@ -4,6 +4,27 @@
 The shared `LawWorld` remains the authority for crimes, witnesses, guard
 assignment and arrest offers. No player speech creates a deed or a witness.
 
+## In the composite
+
+The composite founds the mayor and both patrols once per world, at the first
+boot that binds the town's doors (`cg-civic-found` in `cg-town-doors`), with
+the royal-business actor 1, on a fresh world and on a format 25 world alike.
+A refused founding leaves the world without them. Each town step walks the
+patrols after the shop keepers (`cv-advance`, budget 8, in `cg-town-move`),
+and `cv-handler` answers before NPC speech, after the treasury
+(`cg-family-said`). Composite format 26 saves CVC1 after the skill table
+(`cc-write-civic`) through `cvc-write`; load uses `cvc-decode-any`, and a
+section that fails to encode or decode is left empty, so the next boot founds
+a second mayor and pair of patrols beside the first.
+
+Britain keeps four foot guards (`cv-guard-limit`). The two founded with the
+mayor are CVC1's; two more are founded at boot when missing
+(`cv-populate-extra`, one on each route, starting at its third waypoint), so a
+format 26 world gains them at its first boot under format 27. Format 27 saves
+them in the CVX section after CVC1 (`cvx-write`: the cloth count, patrols 2
+and 3, clothes rows 11 to 18). Patrols step earliest-due first
+(`cv-earliest`), and every guard answers to its name.
+
 ## Installation and owner binding
 
 ```text
@@ -137,5 +158,5 @@ checks and a case/witness cross-check, with no full world or economy clone.
 `proofs/CivicLiveReplay.codex` covers produced outfits, bounded adjacent
 patrol movement, mayor speech, evidence-only guard calls, on-foot pursuit,
 arrest offers, CVC1/LSC1 recovery and forged unused-row refusal. The replay
-uses a synthetic clear map. Root grades visible routes, mayor and guard
-responses only in fester's complete composite.
+uses a synthetic clear map; visible routes, mayor and guard responses are
+graded only on the complete composite.

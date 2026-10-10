@@ -1,0 +1,41 @@
+Chapter: FileshareBytes
+  cites FileShare chapter ContentChunker
+  cites FileShare chapter PeerDiscovery
+  cites FileShare chapter TransferProtocol
+
+ CORE-12: fileshare hashes a digest's bytes, never its 32-bit words. A Merkle parent is the SHA-256 of its children's
+ 64 digest bytes; a DHT bucket counts leading zero bits over the 32 bytes of the XOR distance; a handshake carries a
+ 32-byte content hash and a 32-byte peer id and decodes back to the same bytes.
+
+Section: Helpers
+  fb-same : List Integer, List Integer, Integer -> Boolean
+  fb-same (a) (b) (i) = if list-length a /= list-length b then False
+    else if i == list-length a then True
+    else if list-at a i /= list-at b i then False else fb-same a b (i + 1)
+  fb-yn : Boolean -> Text
+  fb-yn (b) = if b then "yes" else "no"
+  fb-leaf : List Integer -> MerkleNode
+  fb-leaf (h) = MerkleNode { mn-hash = h, mn-left = None, mn-right = None, mn-leaf = True }
+  fb-zeros : Integer, List Integer -> List Integer
+  fb-zeros (n) (acc) = if n == 0 then acc else fb-zeros (n - 1) (list-push acc 0)
+
+Section: Body
+  opening : [Console] Nothing =
+    let a = sha256 (text-to-bytes "piece-a")
+    in let b = sha256 (text-to-bytes "piece-b")
+    in let parents = merkle-pair-nodes [fb-leaf a, fb-leaf b] 0 []
+    in let parent = (list-at parents 0).mn-hash
+    in let wanted = sha256 (sha256-bytes (text-to-bytes "piece-a") & sha256-bytes (text-to-bytes "piece-b"))
+    in let self = sha256 (text-to-bytes "node")
+    in let other = list-set-at (sha256 (text-to-bytes "node")) 7 (bit-xor (list-at self 7) 1)
+    in let content = sha256-bytes (text-to-bytes "content")
+    in let peer = sha256-bytes (text-to-bytes "node")
+    in let signature = fb-zeros 64 []
+    in let decoded = decode-message (encode-handshake content peer signature)
+    in act
+      print-line-uni ("merkle-parent-of-bytes=" & fb-yn (fb-same parent wanted 0))
+      print-line-uni ("bucket-last-bit=" & show (dht-bucket-index self other))
+      print-line-uni ("handshake-round-trip=" & (when decoded
+        is PmHandshake (h) (p) (s) -> fb-yn (fb-same h content 0 & fb-same p peer 0 & fb-same s signature 0 & list-length h == 32 & list-length p == 32)
+        is otherwise -> "no"))
+    end

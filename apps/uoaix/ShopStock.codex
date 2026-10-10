@@ -1,0 +1,76 @@
+Chapter: ShopStock
+  cites Uoaix chapter BritainShops
+
+ A shop's goods for sale lie in two floor containers on its region's first tile (BbShop x1, y1): small valuables in the
+ strong box, everything else in the crate. The vendor's layer-26 container is only the 1.25 buy window, which reads it
+ off the vendor's body; goods move into it when a buyer opens it and back out after, so each item has one location.
+  ss-box-art : Integer = #0E80
+  ss-crate-art : Integer = #0E3C
+  ss-shops : GvWorld -> Integer
+  ss-shops (v) = min v.vendor-count bb-shop-count
+ TILEDATA art ranges: potions 0x0F06-0x0F0D, gems 0x0F0F-0x0F30, reagents 0x0F78-0x0F91, ingots 0x1BE3-0x1BFA,
+ scrolls 0x1F2D-0x1F72 and the blank 0x0EF3, coins 0x0EED-0x0EF2, jewelry 0x1085-0x108A.
+  ss-small : Integer -> Boolean
+  ss-small (g) = (g >= #0F06 & g <= #0F0D) | (g >= #0F0F & g <= #0F30) | (g >= #0F78 & g <= #0F91) | (g >= #1BE3 & g <= #1BFA)
+    | (g >= #1F2D & g <= #1F72) | g == #0EF3 | (g >= #0EED & g <= #0EF2) | (g >= #1085 & g <= #108A)
+  ss-find-at : WorldTable, Integer, Integer, Integer -> Integer
+  ss-find-at (world) (serial) (art) (tag) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.container == 0 & o.graphic == art & o.health == tag then serial
+        else ss-find-at world (world-tile-next world serial) art tag
+  ss-box : GvWorld, Integer, Integer -> Integer
+  ss-box (v) (i) (art) = let shop = list-at bb-shops i
+    in ss-find-at v.game.world (world-tile-first v.game.world shop.x1 shop.y1) art (gv-shop-tag i)
+  ss-vendor-z : GvWorld, Integer -> Integer
+  ss-vendor-z (v) (i) = when world-get v.game.world (list-at v.vendors i).serial is Err (_) -> 0 is Ok (o) -> o.z
+  ss-z : Maybe WalkMap, GvWorld, Integer -> Integer
+  ss-z (map) (v) (i) = let shop = list-at bb-shops i
+    in when map
+      is None -> ss-vendor-z v i
+      is Just (m) -> when walk-ground m shop.x1 shop.y1 is Err (_) -> ss-vendor-z v i is Ok (z) -> z
+  ss-make : GvWorld, GsiState, Integer, Integer, Integer -> Integer
+  ss-make (v) (items) (i) (art) (z) = if ss-box v i art > 0 then 0
+    else let shop = list-at bb-shops i
+    in when world-create v.game.world (WorldObject { serial = 0, kind = 2, x = shop.x1, y = shop.y1, z = z, graphic = art, hue = 0, container = 0, amount = 1, health = gv-shop-tag i })
+      is Err (_) -> -1
+      is Ok (serial) -> if gsi-register items serial 0 0 False False /= 0 then -1 else 1
+  ss-ensure : GvWorld, GsiState, Maybe WalkMap, Integer -> Integer
+  ss-ensure (v) (items) (map) (i) = if i >= ss-shops v then 0
+    else let z = ss-z map v i
+    in let box = ss-make v items i ss-box-art z
+    in let crate = ss-make v items i ss-crate-art z
+    in ss-ensure v items map (i + 1)
+  ss-children : WorldTable, Integer, List Integer -> List Integer
+  ss-children (world) (serial) (out) = if serial == 0 then out else ss-children world (world-next-sibling world serial) (list-push out serial)
+  ss-put : WorldTable, Integer, Integer -> Integer
+  ss-put (world) (serial) (dest) = when world-get world serial
+    is Err (_) -> 0
+    is Ok (o) -> if o.container == dest then 0 else when world-update world (__record-set o "container" dest) is Err (_) -> 0 is Ok (_) -> 1
+  ss-store-list : WorldTable, List Integer, Integer, Integer, Integer -> Integer
+  ss-store-list (world) (xs) (i) (box) (crate) = if i == list-length xs then 0
+    else let serial = list-at xs i
+    in let dest = when world-get world serial is Err (_) -> crate is Ok (o) -> if ss-small o.graphic then box else crate
+    in ss-put world serial dest + ss-store-list world xs (i + 1) box crate
+  ss-fill-list : WorldTable, List Integer, Integer, Integer -> Integer
+  ss-fill-list (world) (xs) (i) (window) = if i == list-length xs then 0
+    else ss-put world (list-at xs i) window + ss-fill-list world xs (i + 1) window
+  ss-store : GvWorld, Integer -> Integer
+  ss-store (v) (i) = if i < 0 | i >= ss-shops v then 0
+    else let box = ss-box v i ss-box-art
+    in let crate = ss-box v i ss-crate-art
+    in if box == 0 | crate == 0 then 0
+    else let w = v.game.world
+    in ss-store-list w (ss-children w (world-first-child w (list-at v.vendors i).stock) []) 0 box crate
+      + ss-store-list w (ss-children w (world-first-child w (list-at v.vendors i).extra) []) 0 box crate
+  ss-fill : GvWorld, Integer -> Integer
+  ss-fill (v) (i) = if i < 0 | i >= ss-shops v then 0
+    else let box = ss-box v i ss-box-art
+    in let crate = ss-box v i ss-crate-art
+    in if box == 0 | crate == 0 then 0
+    else let w = v.game.world
+    in let window = (list-at v.vendors i).stock
+    in ss-fill-list w (ss-children w (world-first-child w box) []) 0 window + ss-fill-list w (ss-children w (world-first-child w crate) []) 0 window
+ Mode 1 opens the window: whatever an earlier buyer left goes back first, then the shop's goods come in. Mode 0 empties it.
+  ss-window : GvWorld, Integer, Integer -> Integer
+  ss-window (v) (i) (mode) = let back = ss-store v i in if mode == 1 then ss-fill v i else back

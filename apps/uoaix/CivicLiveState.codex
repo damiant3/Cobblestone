@@ -2,71 +2,116 @@ Chapter: CivicLiveState
   cites Uoaix chapter TownLive
   cites Uoaix chapter LawStateCodec
   cites Uoaix chapter NpcSpeechText
+  cites Uoaix chapter CharacterStylist
 
   CvDress = record { serial : Integer, owner : Integer, item : Integer, quality : Integer, wear : Integer, basis : Integer, layer : Integer }
   CvPatrol = record { serial : Integer, law-id : Integer, route : List BbSpot,
     waypoint : Integer, next-step : Integer, direction : Integer, target : BbSpot,
-    path : Integer, used : Integer, at : Integer }
+    walk : RteWalk }
   CivicLive = record { town : TownLive, law : LawWorld, mayor : Integer, production-actor : Integer,
-    guards : List CvPatrol, clothes : List CvDress, cloth-count : Integer, cursor : Integer, now : Integer }
+    guards : List CvPatrol, clothes : List CvDress, cloth-count : Integer, cursor : Integer, now : Integer,
+    mayor-note : (Integer -> Text), focus : Integer, focus-by : Integer, city-guards : List CvPatrol, city-clothes : List CvDress,
+    place : (Integer, Integer -> Integer), place-map : (Integer, Integer -> Maybe WalkMap) }
+  cv-town-one : Integer, Integer -> Integer
+  cv-town-one (x) (y) = 1
+  cv-map-none : Integer, Integer -> Maybe WalkMap
+  cv-map-none (x) (y) = None
+  cv-note-none : Integer -> Text
+  cv-note-none (unused) = ""
   cv-south : BbShop = BbShop { title = "South patrol", premises = "Britain guard post", x1 = 1422, y1 = 1695, x2 = 1442, y2 = 1698 }
   cv-north : BbShop = BbShop { title = "North patrol", premises = "Guard Post North", x1 = 1510, y1 = 1611, x2 = 1516, y2 = 1616 }
+  cv-yard : BbShop = BbShop { title = "North patrol", premises = "Workers' yard", x1 = 1493, y1 = 1615, x2 = 1498, y2 = 1620 }
   cv-spots : Integer, List BbSpot -> List BbSpot
   cv-spots (i) (xs) = if i == 4 then xs else cv-spots (i + 1) (list-push xs (BbSpot { x = 0, y = 0, z = 0 }))
   cv-patrols : Integer, Integer, List CvPatrol -> List CvPatrol
-  cv-patrols (i) (now) (xs) = if i == 2 then xs else let path = alloc-bytes 256
-    in let zero = wd-zero path 0 256
-    in cv-patrols (i + 1) now (list-push xs (CvPatrol { serial = 0, law-id = 0, route = cv-spots 0 (__list-with-capacity 4),
-      waypoint = 0, next-step = now, direction = 4, target = BbSpot { x = -1, y = -1, z = 0 }, path = path, used = 0, at = 0 }))
+  cv-patrols (i) (now) (xs) = if i == cv-guard-limit then xs
+    else cv-patrols (i + 1) now (list-push xs (CvPatrol { serial = 0, law-id = 0, route = cv-spots 0 (__list-with-capacity 4),
+      waypoint = 0, next-step = now, direction = 4, target = BbSpot { x = -1, y = -1, z = 0 }, walk = rte-walk 0 }))
   cv-clothes : Integer, List CvDress -> List CvDress
-  cv-clothes (i) (xs) = if i == 11 then xs else cv-clothes (i + 1) (list-push xs
+  cv-clothes (i) (xs) = if i == 3 + 4 * cv-guard-limit then xs else cv-clothes (i + 1) (list-push xs
     (CvDress { serial = 0, owner = 0, item = 0, quality = 0, wear = 0, basis = 0, layer = 0 }))
+ Britain keeps six foot guards: the two founded with the mayor (CVC1), two more founded at boot on the same routes and
+ two on Castle Britain's main floor (CompositeCodec's CVX section), so a fight draws the arresting guard and up to five
+ others.
+  cv-guard-limit : Integer = 6
+  cv-which : Integer -> Integer
+  cv-which (i) = if i >= 4 then 2 else if i == 3 then 3 else int-mod i 2
+ UOAIX-150: no beat walked north of the middle street (y 1617), and alarms at 1449-1465,1529-1542 and 1474,1597-1610 found
+ the nearest guard 54 to 95 tiles off, past cv-earshot. Guard 3 walks the north streets through UOX3's northern "Britain
+ guard" regions (spawn_felucca_town_britain.dfn: 1484-1501,1573-1578; 1472-1490,1525-1535; 1422-1432,1561-1572), whose
+ centres hold no static in the 1.25 STATICS0.MUL, from the middle street's east end.
+ Castle Britain's main floor is z 72 (STATICS0.MUL floor tiles 0x0515 to 0x0518), 22 above its cobblestone land at z
+ 50, which is standable, so a castle spot is taken at the floor's height rather than searched up from the land. The
+ loop walks the north hall (Damian's call at 1341,1612, UOAIX-159), the east corridor and the south hall.
+  cv-castle-floor : Integer = 72
+  cv-floor : WalkMap, Integer, Integer, Integer -> Result Integer Text
+  cv-floor (map) (x) (y) (which) = if which == 2 then (when walk-height map x y cv-castle-floor
+      is Err (e) -> Err e
+      is Ok (z) -> if z == cv-castle-floor then Ok z else Err "castle main floor missing")
+    else when walk-ground map x y
+      is Err (e) -> Err e
+      is Ok (ground) -> bb-floor map x y ground 0
   cv-new : TownLive, LawWorld, Integer -> CivicLive
   cv-new (town) (law) (royal) = CivicLive { town = town, law = law, mayor = 0, production-actor = royal,
-    guards = cv-patrols 0 town.now (__list-with-capacity 2), clothes = cv-clothes 0 (__list-with-capacity 11),
-    cloth-count = 0, cursor = 0, now = town.now }
+    guards = cv-patrols 0 town.now (__list-with-capacity cv-guard-limit), clothes = cv-clothes 0 (__list-with-capacity (3 + 4 * cv-guard-limit)),
+    cloth-count = 0, cursor = 0, now = town.now, mayor-note = cv-note-none, focus = 0, focus-by = 0, city-guards = [], city-clothes = [], place = cv-town-one, place-map = cv-map-none }
   cv-reset : CvPatrol -> Integer
-  cv-reset (p) = let a = __record-set p "used" 0 in let b = __record-set p "at" 0 in wd-zero p.path 0 256
+  cv-reset (p) = rte-drop p.walk
   cv-outfit : CivicLive, BbProducer, Integer, Boolean, Integer -> Result Integer Text
   cv-outfit (s) (producer) (owner) (guard) (i) = if i == (if guard then 4 else 3) then Ok 0
-    else when bb-produce producer (if i == 3 then 70 else 46)
+    else when cv-wear s (list-at s.clothes s.cloth-count) producer owner guard i
       is Err (e) -> Err e
-      is Ok (_) -> let layer = if i == 0 then 5 else if i == 1 then 4 else if i == 2 then 3 else 1
-        in let graphic = if i == 0 then #1517 else if i == 1 then #152E else if i == 2 then #170F else #0F60
-        in when bb-materialise s.town.vendors s.town.items producer owner graphic (if i == 0 then (if guard then #035F else #0481) else 0) layer 0 False
-          is Err (e) -> Err e
-          is Ok (serial) -> let row = list-at s.clothes s.cloth-count
-            in let a = __record-set row "serial" serial
-            in let b = __record-set row "owner" owner
-            in let c = __record-set row "item" producer.item
-            in let d = __record-set row "quality" producer.quality
-            in let e = __record-set row "wear" producer.wear
-            in let f = __record-set row "basis" producer.basis
-            in let g = __record-set row "layer" layer
-            in let immovable = __record-set (gsi-meta s.town.items serial) "movable" False
-            in let count = __record-set s "cloth-count" (s.cloth-count + 1)
-            in cv-outfit s producer owner guard (i + 1)
+      is Ok (_) -> let count = __record-set s "cloth-count" (s.cloth-count + 1) in cv-outfit s producer owner guard (i + 1)
+  cv-wear : CivicLive, CvDress, BbProducer, Integer, Boolean, Integer -> Result Integer Text
+  cv-wear (s) (row) (producer) (owner) (guard) (i) = when bb-produce producer (if i == 3 then 70 else 46)
+    is Err (e) -> Err e
+    is Ok (_) -> let layer = if i == 0 then 5 else if i == 1 then 4 else if i == 2 then 3 else 1
+      in let graphic = if i == 0 then #1517 else if i == 1 then #152E else if i == 2 then #170F else #0F60
+      in when bb-materialise s.town.vendors s.town.items producer owner graphic (if i == 0 then (if guard then cst-guard-hue else cst-mayor-hue) else 0) layer 0 False
+        is Err (e) -> Err e
+        is Ok (serial) -> let a = __record-set row "serial" serial
+          in let b = __record-set row "owner" owner
+          in let c = __record-set row "item" producer.item
+          in let d = __record-set row "quality" producer.quality
+          in let e = __record-set row "wear" producer.wear
+          in let f = __record-set row "basis" producer.basis
+          in let g = __record-set row "layer" layer
+          in let immovable = __record-set (gsi-meta s.town.items serial) "movable" False in Ok serial
+ A city's foot guards (UOAIX-217) keep rows of their own, a patrol and four clothes rows each for patrol k of
+ ct-city-patrols, apart from Britain's: Britain's payroll, names and chases walk s.guards only. Rows grow at boot.
+  cv-grow-city : CivicLive, Integer -> Integer
+  cv-grow-city (s) (n) = if list-length s.city-guards >= n then list-length s.city-guards
+    else let p = __record-set s "city-guards" (s.city-guards & cv-patrols 0 s.now (__list-with-capacity cv-guard-limit))
+    in let c = __record-set s "city-clothes" (s.city-clothes & cv-clothes 3 (__list-with-capacity (4 * cv-guard-limit)))
+    in cv-grow-city s n
+  cv-city-outfit : CivicLive, BbProducer, Integer, Integer, Integer -> Result Integer Text
+  cv-city-outfit (s) (producer) (owner) (k) (i) = if i == 4 then Ok 0
+    else when cv-wear s (list-at s.city-clothes (4 * k + i)) producer owner True i
+      is Err (e) -> Err e
+      is Ok (_) -> cv-city-outfit s producer owner k (i + 1)
   cv-route : CvPatrol, WalkMap, Integer, Integer -> Result Integer Text
   cv-route (p) (map) (which) (i) = if i == 4 then Ok 0
     else let x = if which == 0 then (if i == 0 then 1424 else if i == 1 then 1440 else if i == 2 then 1450 else 1432)
-      else (if i == 0 then 1512 else if i == 1 then 1496 else if i == 2 then 1488 else 1504)
+      else if which == 1 then (if i == 0 then 1496 else if i == 1 then 1439 else if i == 2 then 1416 else 1495)
+      else if which == 3 then (if i == 0 then 1495 else if i == 1 then 1492 else if i == 2 then 1481 else 1427)
+      else (if i == 0 | i == 3 then 1324 else 1357)
     in let y = if which == 0 then (if i == 0 then 1696 else if i == 1 then 1698 else if i == 2 then 1680 else 1688)
-      else (if i == 0 then 1612 else if i == 1 then 1624 else if i == 2 then 1626 else 1622)
-    in when walk-ground map x y
+      else if which == 1 then (if i == 0 then 1617 else if i == 1 then 1625 else if i == 2 then 1625 else 1619)
+      else if which == 3 then (if i == 0 then 1619 else if i == 1 then 1575 else if i == 2 then 1530 else 1566)
+      else (if i < 2 then 1613 else 1637)
+    in when cv-floor map x y which
       is Err (e) -> Err e
-      is Ok (ground) -> when bb-floor map x y ground 0
-        is Err (e) -> Err e
-        is Ok (z) -> let spot = list-at p.route i
-          in let a = __record-set spot "x" x in let b = __record-set spot "y" y in let c = __record-set spot "z" z
-          in cv-route p map which (i + 1)
+      is Ok (z) -> let spot = list-at p.route i
+        in let a = __record-set spot "x" x in let b = __record-set spot "y" y in let c = __record-set spot "z" z
+        in cv-route p map which (i + 1)
   cv-populate-guards : CivicLive, WalkMap, BbProducer, Integer -> Result Integer Text
   cv-populate-guards (s) (map) (producer) (i) = if i == 2 then Ok 0
-    else when bb-placement s.law.world map (if i == 0 then cv-south else cv-north) 0
+    else when bb-placement s.law.world map (if i == 0 then cv-south else cv-yard) 0
       is Err (e) -> Err e
       is Ok (spot) -> when world-create s.law.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
         is Err (e) -> Err e
         is Ok (serial) -> let law-id = lw-add-guard s.law True serial 1
-          in if law-id < 1 then Err "Civic guard registration refused"
+          in if law-id < 1 then let gone = cv-discard s.law.world serial in Err "Civic guard registration refused"
           else let p = list-at s.guards i
           in let a = __record-set p "serial" serial
           in let b = __record-set p "law-id" law-id
@@ -74,11 +119,36 @@ Chapter: CivicLiveState
             is Err (e) -> Err e
             is Ok (_) -> when cv-outfit s producer serial True 0
               is Err (e) -> Err e
-              is Ok (_) -> cv-populate-guards s map producer (i + 1)
+              is Ok (_) -> when cst-style s.town.items serial cst-guard
+                is Err (e) -> Err e
+                is Ok (_) -> cv-populate-guards s map producer (i + 1)
+  cv-populate-extra : CivicLive, WalkMap, Integer -> Result Integer Text
+  cv-populate-extra (s) (map) (i) = if i >= list-length s.guards then Ok 0
+    else let p = list-at s.guards i
+    in if p.serial /= 0 then (when cv-route p map (cv-which i) 0 is Err (e) -> Err e is Ok (_) -> cv-populate-extra s map (i + 1))
+    else let producer = bb-producer s.town.vendors.currency s.production-actor
+    in let which = cv-which i
+    in let start = if which == 2 then 2 * (i - 4) else 2
+    in when cv-route p map which 0
+      is Err (e) -> Err e
+      is Ok (_) -> when (if which == 2 then Ok (list-at p.route start) else bb-placement s.law.world map (if which == 0 then cv-south else cv-yard) 0)
+        is Err (e) -> Err e
+        is Ok (spot) -> when world-create s.law.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
+          is Err (e) -> Err e
+          is Ok (serial) -> let law-id = lw-add-guard s.law True serial 1
+            in if law-id < 1 then let gone = cv-discard s.law.world serial in Err "Civic guard registration refused"
+            else let a = __record-set p "serial" serial
+            in let b = __record-set p "law-id" law-id
+            in let c = __record-set p "waypoint" start
+            in when cv-outfit s producer serial True 0
+              is Err (e) -> Err e
+              is Ok (_) -> when cst-style s.town.items serial cst-guard
+                is Err (e) -> Err e
+                is Ok (_) -> let touched = world-touch s.law.world in cv-populate-extra s map (i + 1)
   cv-populate : TownLive, LawWorld, WalkMap, Integer -> Result CivicLive Text
   cv-populate (town) (law) (map) (royal) =
     if town.vendors.game.world.buffer /= law.world.buffer | law.guard-count /= 0
-      | not (world-indexed law.world) | law.world.capacity - world-count law.world < 14
+      | not (world-indexed law.world) | world-room law.world < 3 * (1 + cst-most-rows)
       | not (eu-royal town.vendors.currency True royal) then Err "Civic population binding or authority"
     else if lw-hour law (town.now / 3600) /= 0 then Err "Civic law clock binding"
     else let s = cv-new town law royal
@@ -89,7 +159,19 @@ Chapter: CivicLiveState
         is Err (e) -> Err e
         is Ok (serial) -> let mayor = __record-set s "mayor" serial
           in when cv-outfit s producer serial False 0
-            is Err (e) -> Err e
+            is Err (e) -> cv-abandon s e
+            is Ok (_) -> when cst-style s.town.items serial cst-mayor
+            is Err (e) -> cv-abandon s e
             is Ok (_) -> when cv-populate-guards s map producer 0
-              is Err (e) -> Err e
+              is Err (e) -> cv-abandon s e
               is Ok (_) -> Ok s
+  cv-discard : WorldTable, Integer -> Integer
+  cv-discard (world) (serial) = if serial <= 0 then 0
+    else let child = world-first-child world serial
+    in if child /= 0 then (if cv-discard world child == 0 then 0 else cv-discard world serial)
+    else when world-delete world serial is Err (_) -> 0 is Ok (_) -> 1
+  cv-undo : CivicLive, Integer -> Integer
+  cv-undo (s) (i) = if i >= list-length s.guards then cv-discard s.law.world s.mayor
+    else let gone = cv-discard s.law.world (list-at s.guards i).serial in cv-undo s (i + 1)
+  cv-abandon : CivicLive, Text -> Result CivicLive Text
+  cv-abandon (s) (e) = let gone = cv-undo s 0 in let touched = world-touch s.law.world in Err e

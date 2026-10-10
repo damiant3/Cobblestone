@@ -148,7 +148,7 @@ Section: Expression Emission
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(sub { my $r = " & emit-pl-expr-at rec arities (depth + 1) & "; $r->{'" & pl-field field & "'} = " & emit-pl-expr-at val arities (depth + 1) & "; $r })->()"
      is IrFork (body) (ty) (sp) -> emit-pl-expr-at body arities (depth + 1)
      is IrAwait (task) (ty) (sp) -> emit-pl-expr-at task arities (depth + 1)
-     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(eval { " & emit-pl-act body arities & " } // " & emit-pl-act fb arities & ")"
+     is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-pl-try max body fb fail-stmts arities
      is IrError (msg) (ty) (sp) -> "die(\"" & pl-escape msg & "\")"
 
   emit-pl-name : Text, List ArityEntry -> Text
@@ -292,6 +292,15 @@ Section: Expression Emission
      is IrDoBind (name) (ty) (val) (sp) -> "my $" & pl-sanitize name & " = " & emit-pl-expr val arities & "; "
      is IrDoExec (e) (sp) -> emit-pl-expr e arities & "; ") & (if i < list-length stmts - 1 then emit-pl-act-stmts stmts (i + 1) arities else "")
 
+  emit-pl-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, List ArityEntry -> Text
+  emit-pl-try (max) (body) (fb) (fail-stmts) (arities) =
+    let body-text = emit-pl-act body arities
+    in let fb-text = emit-pl-act fb arities
+    in let tail = if list-length fb == 0 then "die $_try_err;"
+      else if list-length fail-stmts == 0 then "return " & fb-text & ";"
+      else "my $_try_fb; if (eval { $_try_fb = " & fb-text & "; 1 }) { return $_try_fb; } return " & emit-pl-act fail-stmts arities & ";"
+    in "(sub { my $_try_err; for my $_try_i (1 .. " & integer-to-text max & ") { my $_try_result; if (eval { $_try_result = " & body-text & "; 1 }) { return $_try_result; } $_try_err = $@; } " & tail & " })->()"
+
 Section: Apply Emission
 
   emit-pl-apply : IRExpr, List ArityEntry -> Text
@@ -384,6 +393,10 @@ Section: Apply Emission
    PlBuiltinEmitter {
      name = "char-to-text",
      emit = \args arities -> "chr(" & emit-pl-expr (list-at args 0) arities & ")"
+   },
+   PlBuiltinEmitter {
+     name = "fail",
+     emit = \args arities -> "die(" & emit-pl-expr (list-at args 0) arities & " . \"\\n\")"
    },
    PlBuiltinEmitter {
      name = "int-mod",

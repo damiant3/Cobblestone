@@ -26,6 +26,12 @@ request scratch marks. Rebind after full recovery to the recovered economy;
 panel constructors and `PanelAuditCodec` restore unbound, with changes disabled.
 No pointer or enable flag is serialized by the panel codec.
 
+The composite server binds its live currency read-only
+(`panel-bind-currency panel currency 1 False` in `cgs-panel`, Lord British's
+economy actor 1): the owner panel shows the shard's real treasury, metals,
+rates and chains, and refuses tax, grant and rate changes with
+`treasury-read-only` until the durable path below exists.
+
 The existing standalone listener proves in-memory operations only. A production
 owner must keep changes disabled until its encompassing transaction path can
 commit economy state and panel audit together before sending an applied receipt
@@ -104,7 +110,7 @@ Queries scan at most 256 purses and seven chain counters. Per-chain arithmetic
 is bounded by the production counters; mutations use the money module's
 constant-work tax/grant paths. Binding adds only a retained reference and
 enable flag to the panel, not copies of the economy or balances. Query/audit
-text is bounded request scratch. Compiler heap/time behavior is unchanged.
+text is bounded request scratch.
 
 `TreasuryProof.codex` and `test-admin-panel.ps1` grade authority, conservation,
 money/panel audit exhaustion, read-only and unbound states, chain arithmetic,

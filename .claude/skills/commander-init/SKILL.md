@@ -116,6 +116,9 @@ and mail; (6) report to Damian only what he would act on (R-REPORT), and
   its work to an elapsed-time budget.
 - Land the assignment on the lane's CurrentPlan row first; the message
   is a pointer (300 chars, one addressee, one event).
+- A dispatch into an app or quire names its sub-init (`<project>-init.md`,
+  init Step 4c) when one exists; a project ruling from Damian goes into that
+  sub-init at once, with his words.
 - A lane owns its register (compiler: red; plugs: reek; works/desk: val).
   An audit of another lane's register goes to its owner.
 

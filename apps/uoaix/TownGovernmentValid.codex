@@ -27,7 +27,7 @@ Chapter: TownGovernmentValid
         & ev-range o.request ep-limit & ((o.request == 0 & o.request-kind == 0) | (o.request > 0 & o.request-kind >= 1 & o.request-kind <= 2))
         & o.mayor == tgv-latest g o.town True 0 0 & o.dues == tgv-latest g o.town False 0 0
         & o.unpaid == tg-guard-sum g o.town 0 False
-        & o.paid == tgv-paid g o.town 0 0 & o.collected == tgv-collected g o.town 0 0
+        & o.paid == tgv-paid g o.town 0 0 & o.collected == tgv-collected g o.town 0 (em-opening g.economy.money (em-open-gained o.purse))
         & o.request == tgv-request g o.town 0 0 0 False & o.request-kind == tgv-request g o.town 0 0 0 True
     in valid & tgv-offices g (i + 1)
   tgv-request : TgWorld, Integer, Integer, Integer, Integer, Boolean -> Integer
@@ -46,7 +46,7 @@ Chapter: TownGovernmentValid
   tgv-collected : TgWorld, Integer, Integer, Integer -> Integer
   tgv-collected (g) (town) (i) (sum) = if i == g.event-count then sum
     else let e = list-at g.events i
-    in if e.kind /= 4 | e.town /= town then tgv-collected g town (i + 1) sum
+    in if e.kind /= 4 | e.town /= town | e.money-action <= em-opening g.economy.money em-open-action then tgv-collected g town (i + 1) sum
     else let at = ev-find-action g.economy.money e.money-action 0 g.economy.money.entry-count
     in if at >= g.economy.money.entry-count then -1
     else tgv-collected g town (i + 1) (sum + (list-at g.economy.money.ledger at).amount)
@@ -76,7 +76,7 @@ Chapter: TownGovernmentValid
     in let two = list-at g.guards i
     in (id == i | one.active == 0 | two.active == 0 | one.npc /= two.npc) & tgv-guard-unique g id (i + 1)
   tgv-guards : TgWorld, Integer -> Boolean
-  tgv-guards (g) (i) = if i == 64 then True
+  tgv-guards (g) (i) = if i >= list-length g.guards then True
     else let c = list-at g.guards i
     in let valid = if i >= g.guard-count then tgf-zero-guard c
       else if not (tg-valid-town g c.town) | c.npc <= 0 | c.npc > g.people.used | not (em-valid-purse g.economy.money c.purse) then False
@@ -84,20 +84,24 @@ Chapter: TownGovernmentValid
       in p.kind == 2 & p.owner == c.npc & c.wage > 0 & c.wage <= 1000000
         & ev-range c.arrears ep-limit & ev-range c.active 1 & tgv-guard-unique g i 0 & tgv-hire g i 0 0
     in valid & tgv-guards g (i + 1)
-  tgv-stamp : TgWorld, Integer, Integer, Integer, Integer -> Integer
-  tgv-stamp (g) (town) (purse) (i) (value) = if i == g.event-count then value
+ One pass over the rows writes each town and purse cell's last collection day, so the check costs rows + 1024 steps.
+  tgv-stamp-fill : TgWorld, Integer, Integer -> Integer
+  tgv-stamp-fill (g) (buf) (i) = if i == g.event-count then buf
     else let e = list-at g.events i
-    in let next = if e.kind == 4 & e.town == town & e.subject == purse then e.hour / 24 + 1 else value
-    in tgv-stamp g town purse (i + 1) next
+    in let set = if e.kind == 4 & e.town >= 1 & e.town <= 4 & e.subject >= 1 & e.subject <= g.stamp-stride
+      then poke-qword buf (tg-stamp-at g e.town e.subject * 8) (e.hour / 24 + 1) else 0
+    in tgv-stamp-fill g buf (i + 1)
+  tgv-stamps-in : TgWorld, Integer, Integer -> Boolean
+  tgv-stamps-in (g) (buf) (i) = if i >= 4 * g.stamp-stride then True
+    else let town = i / g.stamp-stride + 1
+    in let purse = int-mod i g.stamp-stride + 1
+    in let expected = if town > g.town-count | purse > g.economy.money.purse-count then 0 else peek-qword buf (i * 8)
+    in ep-at g.dues-stamps i == expected & tgv-stamps-in g buf (i + 1)
   tgv-stamps : TgWorld, Integer -> Boolean
-  tgv-stamps (g) (i) = if i == 1024 then True
-    else let town = i / 256 + 1
-    in let purse = int-mod i 256 + 1
-    in let expected = if town > g.town-count | purse > g.economy.money.purse-count then 0 else tgv-stamp g town purse 0 0
-    in ep-at g.dues-stamps i == expected & tgv-stamps g (i + 1)
+  tgv-stamps (g) (i) = tgv-stamps-in g (tgv-stamp-fill g (ep-buffer (4 * g.stamp-stride)) 0) i
   tgv-payment : TgWorld, TgEvent, Integer, Integer, Integer -> Boolean
-  tgv-payment (g) (e) (payer) (payee) (kind) =
-    let at = ev-find-action g.economy.money e.money-action 0 g.economy.money.entry-count
+  tgv-payment (g) (e) (payer) (payee) (kind) = if e.money-action <= em-opening g.economy.money em-open-action then True
+    else let at = ev-find-action g.economy.money e.money-action 0 g.economy.money.entry-count
     in if at >= g.economy.money.entry-count then False
     else let row = list-at g.economy.money.ledger at
     in row.action == e.money-action & row.hour == e.hour & row.payer == payer & row.payee == payee
@@ -127,7 +131,7 @@ Chapter: TownGovernmentValid
     else let e = list-at g.events i
     in (e.kind == kind & e.subject == id & e.money-action == action) | tgv-work-payment g kind id action (i + 1)
   tgv-events : TgWorld, TwWorld, Integer, Integer, Integer -> Boolean
-  tgv-events (g) (t) (i) (hour) (action) = if i == 2048 then True
+  tgv-events (g) (t) (i) (hour) (action) = if i >= list-length g.events then True
     else let e = list-at g.events i
     in if i >= g.event-count then tgf-zero-civic e & tgv-events g t (i + 1) hour action
     else if e.sequence /= i + 1 | e.hour < hour | e.hour > g.economy.hour | e.kind < 1 | e.kind > 26
@@ -137,7 +141,7 @@ Chapter: TownGovernmentValid
     else if e.money-action > 0 & e.money-action <= action then False
     else tgv-receipt g t e & tgv-events g t (i + 1) e.hour (if e.money-action > 0 then e.money-action else action)
   tgv-militia-count : TwWorld, Integer, Integer -> Integer
-  tgv-militia-count (t) (town) (i) = if i == 128 then 0
+  tgv-militia-count (t) (town) (i) = if i >= t.militia-cells then 0
     else (if ep-at t.militia i == town then 1 else 0) + tgv-militia-count t town (i + 1)
   tgv-towns : TgWorld, TwWorld, Integer -> Boolean
   tgv-towns (g) (t) (i) = if i == 4 then True
@@ -148,17 +152,17 @@ Chapter: TownGovernmentValid
         & (n.active-raid > 0 | n.militia == 0) & ev-range n.damaged 128 & ev-range n.repaired n.damaged
     in valid & tgv-towns g t (i + 1)
   tgv-sites : TgWorld, TwWorld, Integer -> Boolean
-  tgv-sites (g) (t) (i) = if i == 64 then True
+  tgv-sites (g) (t) (i) = if i >= list-length t.sites then True
     else let s = list-at t.sites i
     in (if s.town == 0 then s.owner == 0 else tg-valid-town g s.town & i < g.economy.station-count & ep-valid-actor g.economy s.owner)
       & tgv-sites g t (i + 1)
   tgv-rosters : TgWorld, TwWorld, Integer -> Boolean
-  tgv-rosters (g) (t) (i) = if i == 128 then True
-    else ev-range (ep-at t.militia i) (if i < g.people.used then g.town-count else 0)
-      & ev-range (ep-at t.worker-stamps i) (if i < g.economy.actor-count then g.economy.hour + 1 else 0)
+  tgv-rosters (g) (t) (i) = if i >= max t.militia-cells t.worker-cells then True
+    else (i >= t.militia-cells | ev-range (ep-at t.militia i) (if i < g.people.used then g.town-count else 0))
+      & (i >= t.worker-cells | ev-range (ep-at t.worker-stamps i) (if i < g.economy.actor-count then g.economy.hour + 1 else 0))
       & tgv-rosters g t (i + 1)
   tgv-orders : TgWorld, TwWorld, Integer -> Boolean
-  tgv-orders (g) (t) (i) = if i == 128 then True
+  tgv-orders (g) (t) (i) = if i >= list-length t.orders then True
     else let o = list-at t.orders i
     in let valid = if i >= t.order-count then tgf-zero-order o
       else if not (tg-valid-town g o.town) | not (ev-range o.money-action g.economy.money.sequence) then False
@@ -178,7 +182,7 @@ Chapter: TownGovernmentValid
              & (if o.status == 4 then o.fee > 0 & o.money-action == 0 else (o.fee == 0 & o.money-action == 0) | (o.fee > 0 & o.money-action > 0)))
     in valid & (o.money-action == 0 | tgv-work-payment g 21 (i + 1) o.money-action 0) & tgv-orders g t (i + 1)
   tgv-bounties : TgWorld, TwWorld, Integer -> Boolean
-  tgv-bounties (g) (t) (i) = if i == 128 then True
+  tgv-bounties (g) (t) (i) = if i >= list-length t.bounties then True
     else let b = list-at t.bounties i
     in let valid = if i >= t.bounty-count then tgf-zero-bounty b
       else if not (tg-valid-town g b.town) | b.home <= 0 | b.threat <= 0 | b.threat > ep-limit | b.reward <= 0 | b.reward > 1000000
@@ -208,7 +212,7 @@ Chapter: TownGovernmentValid
     in let two = list-at d.cases i
     in (id == i | one.town /= two.town | one.source-event /= two.source-event) & tgv-case-unique d id (i + 1)
   tgv-cases : TgWorld, TdWorld, Integer -> Boolean
-  tgv-cases (g) (d) (i) = if i == 128 then True
+  tgv-cases (g) (d) (i) = if i >= list-length d.cases then True
     else let c = list-at d.cases i
     in let valid = if i >= d.used then tgf-zero-case c
       else if not (tg-valid-town g c.town) | c.kind < 1 | c.kind > 4 | c.status < 1 | c.status > 3
@@ -232,7 +236,7 @@ Chapter: TownGovernmentValid
     else if e.kind == 3 then e.reference == c.report & tgv-case-history d id (i + 1) 3 e.sequence
     else tgv-case-history d id (i + 1) 2 e.sequence
   tgv-disputes : TgWorld, TdWorld, Integer, Integer -> Boolean
-  tgv-disputes (g) (d) (i) (hour) = if i == 256 then (d.count == 0 | hour == d.hour)
+  tgv-disputes (g) (d) (i) (hour) = if i >= list-length d.events then (d.count == 0 | hour == d.hour)
     else let e = list-at d.events i
     in if i >= d.count then tgf-zero-dispute e & tgv-disputes g d (i + 1) hour
     else e.sequence == i + 1 & e.hour >= hour & e.hour <= d.hour & e.kind >= 1 & e.kind <= 3
@@ -242,14 +246,14 @@ Chapter: TownGovernmentValid
   tgv-histories (d) (id) = if id > d.used then True else tgv-case-history d id 0 0 0 & tgv-histories d (id + 1)
   tgv-check : TgWorld, TwWorld, TdWorld -> Boolean
   tgv-check (g) (t) (d) =
-    if not (ev-range g.people.used 128) | not (ev-range g.people.town-count 4)
-      | not (ev-range g.town-count g.people.town-count) | not (ev-range g.guard-count 64)
-      | not (ev-range g.event-count 2048) | g.sequence /= g.event-count | not (ev-range g.day (g.economy.hour / 24))
-      | not (ev-range t.order-count 128) | not (ev-range t.bounty-count 128)
-      | not (ev-range d.used 128) | not (ev-range d.count 256) | not (ev-range d.hour g.economy.hour) then False
-    else if list-length g.offices /= 4 | list-length g.guards /= 64 | list-length g.events /= 2048
-      | list-length t.towns /= 4 | list-length t.sites /= 64 | list-length t.orders /= 128 | list-length t.bounties /= 128
-      | list-length d.cases /= 128 | list-length d.events /= 256 then False
+    if not (ev-range g.people.used (list-length g.people.people)) | not (ev-range g.people.town-count 4)
+      | not (ev-range g.town-count g.people.town-count) | not (ev-range g.guard-count (list-length g.guards))
+      | not (ev-range g.event-count (list-length g.events)) | g.sequence /= g.event-count | not (ev-range g.day (g.economy.hour / 24))
+      | not (ev-range t.order-count (list-length t.orders)) | not (ev-range t.bounty-count (list-length t.bounties))
+      | not (ev-range d.used (list-length d.cases)) | not (ev-range d.count (list-length d.events)) | not (ev-range d.hour g.economy.hour) then False
+    else if list-length g.offices /= 4 | list-length g.guards < 64 | list-length g.events < tg-event-limit
+      | list-length t.towns /= 4 | list-length t.sites < 64 | list-length t.orders < 128 | list-length t.bounties < 128
+      | list-length d.cases < 128 | list-length d.events < 256 then False
     else if d.registry.busy /= 0 | not (ac-state-valid d.admin) then False
     else let economy = when g.currency
       is None -> g.royal-actor == 0 & not (eu-catalog g.economy) & ev-valid g.economy

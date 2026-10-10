@@ -56,6 +56,12 @@ $raw = [System.IO.File]::ReadAllText($outFile)
 $lines = $raw -split "`n" | Where-Object { $_ -notmatch '^(HEAP|WD|STACK|PM):' -and $_.Trim().Length -gt 0 }
 $ptx = ($lines -join "`n")
 $ptx = $ptx -replace '^[\x00-\x1f]+', ''
+$refused = @([regex]::Matches($ptx, 'CODEX_REFUSED_(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+if ($refused.Count -gt 0) { [Console]::Error.WriteLine("FAIL: the plug refused: $($refused -join ', ')"); exit 6 }
+$declared = @([regex]::Matches($ptx, '\.(?:func|entry)\s+(?:\([^)]*\)\s*)?([A-Za-z_$][\w$]*)') | ForEach-Object { $_.Groups[1].Value })
+$called = @([regex]::Matches($ptx, '\bcall(?:\.uni)?\s+(?:\([^)]*\),\s*)?([A-Za-z_$][\w$]*)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$undefined = @($called | Where-Object { $declared -notcontains $_ })
+if ($undefined.Count -gt 0) { [Console]::Error.WriteLine("FAIL: PTX calls a function it does not define: $($undefined -join ', ')"); exit 6 }
 if ($Chapter) {
     # -Chapter wraps the PTX as one Text definition, so a guest can hand it to gpu-launch.
     if (-not $Name) { [Console]::Error.WriteLine("FAIL: -Chapter needs -Name"); exit 2 }

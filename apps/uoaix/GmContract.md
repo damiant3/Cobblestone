@@ -5,13 +5,63 @@ GM authority belongs to an existing human account. NPCs, models and game-client
 flags cannot confer that authority. Every operation re-reads the current grant;
 revocation or narrowing therefore affects the next action without reconnecting.
 
-`GmMemory.codex` is the explicitly named **in-memory stand-in**, authorized by
-root on 2026-10-04 pending the [Codex DB backend](Database.md). The panel labels
+`GmMemory.codex` is the explicitly named **in-memory stand-in** until the
+[Codex DB backend](Database.md) exists. The panel labels
 the mode; successful queries and mutation receipts carry `stand_in: true`.
 Authentication/session failures remain protocol errors. The stand-in is a rules
 reference and development fixture, not durable shard state or live game powers.
-Fester and reek implement the database/game boundary to this contract. The wire
-contract and transaction rules below remain independent of storage effects.
+The database/game boundary implements this contract; the wire contract and
+transaction rules below remain independent of storage effects.
+
+The composite server admits every game account into its stand-in before it
+answers each admin request (`cgs-admit`): account index i is GM account id
+i + 1 with the account's name, and every account except British is human, so
+Lord British can dub any player account but not British. The stand-in holds
+128 accounts; accounts past 128 are not admitted.
+
+In game (`cgs-gm-allow`, `cp-route`), a dubbed GM's `[go x y` and `[goto` run
+as `go-to-player` through `gm-memory-act` with the GM as actor and target and
+detail `in game`: a grant holding bit 2 travels, and any other grant is answered
+`GM refused:` with the audit row. Every attempt is an action row. A player who
+is not a GM is not audited, and outside testing mode the speech stays speech.
+A GM's `[inspect` runs as `inspect` (bit 8) the same way and opens British's
+inspect cursor; the cursor's answer inspects its target only while the grant
+still holds bit 8 (checked, not audited again). A target answer from anyone
+else inspects nothing. `[kick` is `kick` (bit 32) the same way: its cursor's
+answer closes every logged-in connection playing the targeted character
+(`cgs-kick`), never British's. Every dubbed GM reads the in-game help pages
+with `[pages` (not audited); `[pageack id` is `support` (bit 1), audited.
+`[mute` is `mute` (bit 64): its cursor's answer toggles the targeted
+character in a fixed 64-slot mute list (`CompositeOwner.muted`, in memory
+like the stand-in, so a restart clears it); a muted character's speech
+reaches no other player. British cannot be muted. `[unstuck` is `unstuck`
+(bit 4): its cursor's answer moves the targeted player's character to the
+nearest standing tile within 3 of the new-character entry 1420,1698 in
+Britain, commits, and closes that player's connection so the client logs
+back in there; British's characters are refused. `[jail N` is `jail`
+(bit 128), N game hours from 1 to 8760: its cursor's answer opens a law case
+of kind 4 (a GM order: no deed, witness or guard) jailed at once in Britain's
+cell until its due hour (`lw-confine`), moves the character onto the cell,
+commits and closes that player's connection. The cell's bars, the release at
+the due hour and the break-out rule are the law's (`Law.md`). Answering the
+cursor on a prisoner releases every jailed case of that character
+(`lw-free`). British's characters are refused. `[ban` is `ban` (bit 256): its
+cursor's answer bans the account owning the targeted character (`ga-owner`),
+commits and closes that player's connection; a banned account's login is
+refused with 0x82 reason 2. `[unban name` is `ban` too and lifts the ban by
+account name. The flag is account record byte 31 (`ga-ban-at`). British's
+account and the GM's own are refused. British uses `[kick`, `[mute`,
+`[unstuck`, `[jail`, `[ban` and `[unban` himself with no grant and no audit row.
+`[zones` and `[spawns` (any dubbed GM, and British, not audited) toggle the
+GM overlays (`GmOverlay.codex`, `docs/Designs/Active/Apps/UoaixDecorator.md`
+item 7) for that connection only; every pulse re-reads the grant and drops the
+overlay once the GM is no longer dubbed. The overlay is held in memory and a
+restart clears it. `[landshow` toggles the pending land edits the same way. The
+decorator's land tools (`[land`, `[raise`, `[lower`, `[flatten`, `[brush`,
+`[landclear`) check `?decorate` (not audited); each stroke writes an `ADMIN land`
+line to the server log.
+A GM holding any of the three play aspects runs `[play` as British does (action `play`,
+audited), and a Director runs `[story` (action `director`); the panel's Plays tab stays the owner's.
 
 ## Database contract
 
@@ -55,8 +105,13 @@ serialized and performs no fallible operation after its audit admission.
 | 1024 | `favor-items` | Transfer owned treasury items within both quantity limits |
 | 2048 | `favor-title` | Grant a defined title, one per operation, within the daily limit |
 | 4096 | `favor-plot` | Transfer a crown-owned plot, one per operation, within the daily limit |
+| 8192 | `decorate` | Place, move, remove and mark decoration (`UoaixDecorator.md`) |
+| 16384 | `scene-design` | Plays: marks, scenes and set pieces (`UoaixPlays.md`) |
+| 32768 | `character-design` | Plays: the cast |
+| 65536 | `dialog` | Plays: states, lines and cues |
+| 131072 | `director` | Stories: switch a story's decoration sets on and off |
 
-The mask is 0 through 8191. Per-action limits cannot exceed their daily limit.
+The mask is 0 through 262143. Per-action limits cannot exceed their daily limit.
 Limits are 0 through one billion; amount must be positive. Favor recipients
 must be admitted human accounts. Loyalty remains a human judgement; the policy
 does not invent a loyalty score. The backend validates target existence,
@@ -163,8 +218,7 @@ do not escape. Lookup scans at most 128 accounts; resource/quota updates are
 constant work, and text generation is linear in bounded returned text. No
 compiler heap/time behavior changes. `panel-new-with-gms` accepts a configured
 stand-in; `panel-new` creates an empty one with zero treasury for compatibility.
-The native proof measured 2,222,024 retained bytes for one stand-in on
-2026-10-04; repeated request scratch restores preserve that allocation.
+Repeated request scratch restores preserve the stand-in's allocation.
 Personal access adds 128 fixed session triples and 128 pairs of 32-byte keys
 represented as machine-word lists, plus fixed replay/enabled cells in
 `AdminAuth`. GM log paging scans at most 256 bounded rows and emits at most

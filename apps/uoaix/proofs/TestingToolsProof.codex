@@ -1,0 +1,682 @@
+Chapter: TestingToolsProof
+  cites Uoaix chapter CompositeScript
+  cites Uoaix chapter CompositeLineup
+
+  ttp-bags : WorldTable, Integer -> Integer
+  ttp-bags (world) (serial) = if serial == 0 then 0
+    else (when world-get world serial is Err (_) -> 0 is Ok (o) -> if o.graphic == #0E76 & o.health > cpr-bag-mark & o.health <= cpr-bag-mark + 13 then 1 else 0) + ttp-bags world (world-next-sibling world serial)
+  ttp-tools-bag : WorldTable, Integer -> Integer
+  ttp-tools-bag (world) (serial) = if serial == 0 then 0
+    else if cts-holds world (world-first-child world serial) #1057 0 > 0 then serial else ttp-tools-bag world (world-next-sibling world serial)
+  ttp-parent : WorldTable, Integer -> Integer
+  ttp-parent (world) (serial) = when world-get world serial is Err (_) -> -1 is Ok (o) -> o.container
+  ttp-check : Text, Boolean -> [Console] Integer
+  ttp-check (name) (ok) = act
+    print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+    if ok then 0 else 1
+  end
+  ttp-fill : WalkMap, Integer -> Integer
+  ttp-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in ttp-fill map (i + 1)
+  ttp-find : WorldTable, Integer, Integer, Integer -> Integer
+  ttp-find (world) (serial) (graphic) (depth) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (obj) -> if obj.graphic == graphic then serial
+        else let inner = if depth > 0 & world-child-count world serial > 0 then ttp-find world (world-first-child world serial) graphic (depth - 1) else 0
+        in if inner > 0 then inner else ttp-find world (world-next-sibling world serial) graphic depth
+  ttp-lot : GvWorld, Integer, Integer, Integer -> Integer
+  ttp-lot (v) (actor) (item) (unused) = ep-lot-of v.currency.world.goods actor item
+  ttp-target-object : CsPlayer, Integer, Integer, Integer, Integer -> List Integer
+  ttp-target-object (p) (serial) (x) (y) (graphic) = let a = gp-put32 (list-push (gp-put32 [#6C,0] p.cursor) 0) serial
+    in gp-put16 ((gp-put16 (gp-put16 a x) y) & [0, 0]) graphic
+  ttp-corpse : WorldTable, Integer, Integer -> Integer
+  ttp-corpse (world) (x) (y) = when world-create world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = 8198, hue = 0, container = 0, amount = 209, health = 0 })
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  ttp-carved : WorldTable, Integer -> Boolean
+  ttp-carved (world) (serial) = when world-get world serial is Err (_) -> False is Ok (o) -> o.health == 1 & world-child-count world serial > 0
+  ttp-carve : CsPlayer, WorldTable, Integer, Integer, Integer -> [Console, Device.Block] Boolean
+  ttp-carve (p) (world) (blade) (x) (y) = act
+    corpse <- ttp-corpse world x y
+    rested <- __record-set (list-at p.store.state.production.harvest.requests 0) "next" 0
+    used <- csp-send p (csp-use blade)
+    cursor <- csp-has-op p #6C 0
+    carved <- csp-send p (ttp-target-object p corpse x y 8198)
+    blade > 0 & corpse > 0 & cursor & is-ok carved & ttp-carved world corpse
+  end
+  ttp-note : Result GameReply Text -> Text
+  ttp-note (r) = when r is Err (e) -> e is Ok (x) -> x.note
+  ttp-scissors : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-scissors (p) (owner) (world) (knife) (scissors) (pick) (pack) (x) (y) = act
+    corpse <- ttp-corpse world x y
+    idle <- __record-set (list-at owner.production.harvest.requests 0) "next" 0
+    knifed <- csp-send p (csp-use knife)
+    carved <- is-ok (csp-send p (ttp-target-object p corpse x y 8198))
+    hides <- ttp-find world (world-first-child world corpse) #1078 0
+    moved <- when world-get world hides is Err (e) -> Err e is Ok (h) -> world-update world (__record-set (__record-set (__record-set h "container" pack) "x" 60) "y" 90)
+    used <- csp-send p (csp-use scissors)
+    cut <- csp-send p (ttp-target-object p hides 60 90 #1078)
+    leather <- (when world-get world hides is Err (_) -> 0 is Ok (h) -> h.graphic)
+    lot <- gv-lot owner.vendor hides 0
+    a <- ttp-check "kit scissors cut backpack hides into leather, as UOX3 6035" (is-ok moved & leather == #1081 & lot >= 0 & (ep-lot owner.vendor.currency.world.goods lot).item == 35 & euv-valid owner.vendor.currency & ttp-note cut == "scissors cut")
+    wrong-use <- csp-send p (csp-use scissors)
+    wrong <- csp-send p (ttp-target-object p pick 60 90 #0E86)
+    b <- ttp-check "scissors on a pickaxe answer UOX3 6036" (ttp-note wrong == "Scissors cannot be used on that to produce anything.")
+    actor <- (list-at owner.vendor.players 0).actor
+    economy <- owner.vendor.currency.world
+    stocked <- ep-add (ep-actor economy actor).stock 37 1
+    graded <- ep-add (ep-actor economy actor).quality 37 500
+    sharp <- ep-add (ep-actor economy actor).wear 37 32
+    counted <- ep-add economy.found 37 1
+    cloth <- (when world-create world (__record-set (__record-set (gs-item pack #1766 0) "x" 70) "y" 100) is Err (_) -> 0 is Ok (c) -> c)
+    bound <- gv-add-lot owner.vendor cloth actor 37 500 32 0
+    known <- gsi-register owner.items cloth 0 0 True False
+    cloth-used <- csp-send p (csp-use scissors)
+    bandaged <- csp-send p (ttp-target-object p cloth 60 90 #1766)
+    made <- (when world-get world cloth is Err (_) -> 0 is Ok (h) -> h.graphic)
+    clot <- gv-lot owner.vendor cloth 0
+    c <- ttp-check "kit scissors cut a backpack cloth lot into clean bandages, as UOX3 6034" (cloth > 0 & clot >= 0 & made == #0E21 & (ep-lot owner.vendor.currency.world.goods clot).item == 75 & euv-valid owner.vendor.currency)
+    a + b + c
+  end
+  ttp-sheep : WorldTable, Integer, Integer, Integer -> Integer
+  ttp-sheep (world) (x) (y) (z) = when world-create world (__record-set (gs-mobile 0 x y z #00CF 0) "health" 19)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  ttp-shear : CsPlayer, CompositeGame, WorldTable, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-shear (p) (owner) (world) (scissors) (me) = act
+    at <- (when world-get world me is Err (_) -> [0, 0, 0] is Ok (m) -> [m.x, m.y, m.z])
+    x <- list-at at 0
+    y <- list-at at 1
+    sheep <- ttp-sheep world (x + 2) y (list-at at 2)
+    far <- ttp-sheep world (x + 6) y (list-at at 2)
+    actor <- (list-at owner.vendor.players 0).actor
+    found <- ep-at owner.vendor.currency.world.found 12
+    gathered <- ep-at owner.vendor.currency.world.gathered 12
+    used <- csp-send p (csp-use scissors)
+    sheared <- csp-send p (ttp-target-object p sheep (x + 2) y #00CF)
+    body <- (when world-get world sheep is Err (_) -> 0 is Ok (s) -> s.graphic)
+    lot <- ttp-lot owner.vendor actor 12 0
+    wool <- (if lot < 0 then 0 else when world-get world (ep-lot owner.vendor.currency.world.goods lot).serial is Err (_) -> 0 is Ok (w) -> w.graphic)
+    a <- ttp-check "kit scissors shear a wooly sheep in reach: body 0xDF, 2 wool (0x0DF8) in a pack lot, a harvest (gathered, not found: main 40646), as UOX3 1773" (ttp-note sheared == "scissors shear" & body == #00DF
+      & lot >= 0 & (ep-lot-amount owner.vendor.currency.world.goods (max 0 lot)) == 2 & wool == #0DF8 & ep-at owner.vendor.currency.world.gathered 12 == gathered + 2 & ep-at owner.vendor.currency.world.found 12 == found & euv-valid owner.vendor.currency)
+    again-used <- csp-send p (csp-use scissors)
+    again <- csp-send p (ttp-target-object p sheep (x + 2) y #00DF)
+    b <- ttp-check "a shorn sheep answers UOX3 1774" (ttp-note again == "This sheep is not yet ready to be shorn.")
+    far-used <- csp-send p (csp-use scissors)
+    distant <- csp-send p (ttp-target-object p far (x + 6) y #00CF)
+    c <- ttp-check "a sheep six tiles away answers UOX3 461 and keeps its wool" (ttp-note distant == "You are too far away." & (when world-get world far is Err (_) -> False is Ok (s) -> s.graphic == #00CF))
+    self-used <- csp-send p (csp-use scissors)
+    self <- csp-send p (ttp-target-object p me x y 400)
+    d <- ttp-check "scissors on a person answer UOX3 6030" (ttp-note self == "You can't use the scissors on that.")
+    gone <- world-delete world sheep
+    gone-far <- world-delete world far
+    a + b + c + d
+  end
+  ttp-first-packet : Result GameReply Text -> List Integer
+  ttp-first-packet (r) = when r is Err (_) -> [] is Ok (x) -> if list-length x.packets == 0 then [] else list-at x.packets 0
+  ttp-same : List Integer, List Integer, Integer -> Boolean
+  ttp-same (a) (b) (i) = if list-length a /= list-length b then False else if i == list-length a then True
+    else if list-at a i /= list-at b i then False else ttp-same a b (i + 1)
+  ttp-tool : WorldTable, CompositeGame, Integer, Integer -> Integer
+  ttp-tool (world) (owner) (container) (graphic) = when world-create world (__record-set (__record-set (gs-item container graphic 0) "x" 80) "y" 90)
+    is Err (_) -> 0
+    is Ok (serial) -> if gsi-register owner.items serial 0 0 True False /= 0 then 0 else serial
+  ttp-navigate : CsPlayer, CompositeGame, WorldTable, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-navigate (p) (owner) (world) (pack) (me) = act
+    sums <- (gnv-position 1323 1624 == "0o 0'S 0o 0'E" & gnv-position 1495 1631 == "0o 37'S 12o 6'E" & gnv-position 1000 1000 == "54o 51'N 22o 43'W"
+      & gnv-position 4000 1624 == "0o 0'S 171o 46'W" & gnv-position 5936 3112 == "0o 0'S 0o 0'E")
+    a <- ttp-check "the sextant's arithmetic matches UOX3 map_coordinates.js at the centre, south-east, north-west, past the wrap and in the Lost Lands" sums
+    at <- (when world-get world me is Err (_) -> [0, 0, 0] is Ok (m) -> [m.x, m.y, m.z])
+    sextant <- ttp-tool world owner pack #1057
+    reading <- csp-send p (csp-use sextant)
+    b <- ttp-check "a kit-pack sextant says where the user stands, as UOX3 274" (sextant > 0 & ttp-note reading == "sextant"
+      & ttp-same (ttp-first-packet reading)(sip-message #FFFFFFFF #FFFF 6 ("You are at: " & gnv-position (list-at at 0) (list-at at 1))) 0)
+    loose <- (when world-create world (WorldObject { serial = 0, kind = 2, x = list-at at 0, y = list-at at 1, z = list-at at 2, graphic = #1058, hue = 0, container = 0, amount = 1, health = 0 }) is Err (_) -> 0 is Ok (s) -> s)
+    known <- gsi-register owner.items loose 0 0 True True
+    grounded <- csp-send p (csp-use loose)
+    c <- ttp-check "a sextant on the ground answers UOX3 1763" (loose > 0 & ttp-note grounded =="That item must be in your backpack before it can be used.")
+    spyglass <- ttp-tool world owner pack #14F5
+    looked <- csp-send p (csp-use spyglass)
+    d <- ttp-check "a spyglass names both moons over its user, as UOX3 2757" (spyglass > 0 & ttp-note looked == "spyglass"
+      & (when looked is Err (_) -> False is Ok (r) -> list-length r.packets == 3))
+    a + b + c + d
+  end
+  ttp-lockpick : CsPlayer, CompositeGame, WorldTable, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-lockpick (p) (owner) (world) (pack) (pick) = act
+    lockpick <- ttp-tool world owner pack #14FC
+    opened <- csp-send p (csp-use lockpick)
+    cursor <- csp-has-op p #6C 0
+    a <- ttp-check "a lockpick asks which lock, as UOX3 475" (lockpick > 0 & ttp-note opened == "lockpick target" & cursor)
+    bag <- csp-send p (ttp-target-object p pack 0 0 #0E75)
+    b <- ttp-check "a lockpick on an unlocked container answers UOX3 932" (ttp-note bag == "That is not locked.")
+    again <- csp-send p (csp-use lockpick)
+    tool <- csp-send p (ttp-target-object p pick 60 90 #0E86)
+    c <- ttp-check "a lockpick on a pickaxe answers UOX3 678" (ttp-note tool == "That does not have a lock.")
+    a + b + c
+  end
+  ttp-hue : WorldTable, Integer -> Integer
+  ttp-hue (world) (serial) = when world-get world serial is Err (_) -> -1 is Ok (o) -> o.hue
+  ttp-dye : CsPlayer, CompositeGame, WorldTable, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-dye (p) (owner) (world) (pack) (pick) = act
+    dyes <- ttp-find world (world-first-child world pack) #0FA9 2
+    tub <- ttp-find world (world-first-child world pack) #0FAB 2
+    asked <- csp-send p (csp-use dyes)
+    offered <- csp-send p (ttp-target-object p tub 60 90 #0FAB)
+    window <- ttp-first-packet offered
+    a <- ttp-check "kit dyes aimed at the kit dye tub open the 0x95 hue picker for that tub, as UOX3 441" (dyes > 0 & tub > 0 & ttp-note asked == "dyes target"
+      & list-length window == 9 & list-at window 0 == #95 & gp-u32 window 1 == tub & gp-u16 window 7 == #0FAB)
+    picked <- csp-send p (gp-put16 (gp-put16 (gp-put32 [#95] tub) 0) #0021)
+    b <- ttp-check "the picker's reply dyes the tub (0x21)" (ttp-note picked == "dyed" & ttp-hue world tub == #0021)
+    cloth <- ttp-tool world owner pack #1766
+    tubbed <- csp-send p (csp-use tub)
+    dipped <- csp-send p (ttp-target-object p cloth 60 90 #1766)
+    c <- ttp-check "the dye tub gives cloth its hue, as UOX3 442" (cloth > 0 & ttp-note tubbed == "dye tub target" & ttp-note dipped == "dyed" & ttp-hue world cloth == #0021)
+    again <- csp-send p (csp-use tub)
+    refused <- csp-send p (ttp-target-object p pick 60 90 #0E86)
+    wrong <- csp-send p (csp-use dyes)
+    not-vat <- csp-send p (ttp-target-object p pick 60 90 #0E86)
+    d <- ttp-check "a tub on a pickaxe answers UOX3 1033 and dyes on a pickaxe answer 1031" (ttp-note refused == "You can only dye clothes with this." & ttp-note not-vat == "You can only use this item on a dye vat.")
+    reopened <- csp-send p (csp-use dyes)
+    reoffered <- csp-send p (ttp-target-object p tub 60 90 #0FAB)
+    clamped <- csp-send p (gp-put16 (gp-put16 (gp-put32 [#95] tub) 0) #0500)
+    e <- ttp-check "a hue past 0x3E9 becomes 0x3E9" (ttp-note clamped == "dyed" & ttp-hue world tub == #03E9 & ttp-hue world cloth == #0021)
+    a + b + c + d + e
+  end
+  ttp-stamina-shown : List (List Integer), Integer -> Integer
+  ttp-stamina-shown (ps) (i) = if i == list-length ps then -1 else if list-at (list-at ps i) 0 == #A3 & list-length (list-at ps i) == 9 then gp-u16 (list-at ps i) 7 else ttp-stamina-shown ps (i + 1)
+  ttp-amount : WorldTable, Integer -> Integer
+  ttp-amount (world) (serial) = when world-get world serial is Err (_) -> 0 is Ok (o) -> o.amount
+  ttp-health : WorldTable, Integer -> Integer
+  ttp-health (world) (serial) = when world-get world serial is Err (_) -> -1 is Ok (o) -> o.health
+  ttp-alchemy : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-alchemy (p) (owner) (world) (pack) (pick) (me) = act
+    mortar <- ttp-find world (world-first-child world pack) #0E9B 2
+    ginseng <- ttp-find world (world-first-child world pack) #0F85 2
+    bottles <- ttp-find world (world-first-child world pack) #0F0E 2
+    roots <- ttp-amount world ginseng
+    empties <- ttp-amount world bottles
+    asked <- csp-send p (csp-use mortar)
+    trained <- (let i = as-profile owner.active me 0 in if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 0 1000)
+    offered <- csp-send p (ttp-target-object p ginseng 60 90 #0F85)
+    tiers <- ttp-first-packet offered
+    brewed <- csp-send p (ttp-scribe-answer ginseng #A010 1)
+    potion <- ttp-find world (world-first-child world pack) #0F0C 2
+    a <- ttp-check "the kit mortar grinds kit ginseng with an empty bottle into a lesser heal potion, as UOX3 470 and 1466" (mortar > 0 & ttp-note asked == "alchemy target" & trained >= 0
+      & ttp-note offered == "alchemy menu" & list-length tiers > 17 & list-at tiers 0 == #7C & gp-u16 tiers 7 == #A010 & list-at tiers 17 == 3
+      & ttp-note brewed == "alchemy made" & potion > 0 & ttp-amount world ginseng == roots - 1 & ttp-amount world bottles == empties - 1
+      & gsi-name owner.items (when world-get world potion is Err (_) -> WorldObject { serial = 0, kind = 0, x = 0, y = 0, z = 0, graphic = 0, hue = 0, container = 0, amount = 0, health = 0 } is Ok (o) -> o) == "lesser heal potion")
+    a-bag <- ttp-check "the potion is made inside the bag holding the mortar, the kit's tools bag (GameServer.md testing stock)" (potion > 0 & ttp-parent world potion == ttp-parent world mortar & ttp-parent world mortar /= pack)
+    again <- csp-send p (csp-use mortar)
+    junk <- csp-send p (ttp-target-object p pick 60 90 #0E86)
+    b <- ttp-check "a mortar on a pickaxe answers UOX3 6001" (ttp-note junk == "You can't make anything useful from that.")
+    full <- csp-send p (csp-use potion)
+    c <- ttp-check "a heal potion at full health is refused, as UOX3 9059" (ttp-note full == "You decide against drinking this potion, as you are already at full health." & ttp-find world (world-first-child world pack) #0F0C 2 == potion)
+    hurt <- (when world-get world me is Err (e) -> Err e is Ok (m) -> world-update world (__record-set m "health" (m.health - 15)))
+    before <- ttp-health world me
+    empties2 <- ttp-amount world bottles
+    drunk <- csp-send p (csp-use potion)
+    gained <- ttp-health world me - before
+    d <- ttp-check "a lesser heal restores 3 to 10 hits and gives back an empty bottle, as UOX3 1349" (is-ok hurt & ttp-note drunk == "potion heal" & gained >= 3 & gained <= 10
+      & ttp-find world (world-first-child world pack) #0F0C 2 == 0 & ttp-find world (world-first-child world pack) #0F0E 2 > 0
+      & (when world-get world potion is Err (_) -> False is Ok (o) -> o.graphic == #0F0E & o.health == 0))
+    cure <- ttp-tool world owner pack #0F07
+    clean <- csp-send p (csp-use cure)
+    e <- ttp-check "a lesser cure without poison has no effect and is used up, as UOX3 1344" (cure > 0 & ttp-note clean == "potion no effect" & ttp-find world (world-first-child world pack) #0F07 2 == 0)
+    greater <- ttp-brew p world pack mortar ginseng #A010 3 5
+    strong <- ttp-find world (world-first-child world pack) #0F0C 2
+    labelled <- (when world-get world strong is Err (_) -> False is Ok (o) -> o.health == 3 & gsi-name owner.items o == "greater heal potion")
+    wounded <- (when world-get world me is Err (e) -> Err e is Ok (m) -> world-update world (__record-set m "health" 10))
+    weak <- ttp-health world me
+    gulped <- csp-send p (csp-use strong)
+    restored <- ttp-health world me - weak
+    f2 <- ttp-check "at Alchemy 100.0 seven ginseng make a greater heal potion (UOX3 ITEM 300), named so, restoring 9 to 30 hits" (greater == "alchemy made" & strong > 0
+      & labelled
+      & is-ok wounded & ttp-note gulped == "potion heal" & restored >= 9 & restored <= 30)
+    garlic <- ttp-find world (world-first-child world pack) #0F84 2
+    cloves <- ttp-amount world garlic
+    cured <- ttp-brew p world pack mortar garlic #A011 2 5
+    tonic <- ttp-find world (world-first-child world pack) #0F07 2
+    g2 <- ttp-check "three garlic make a cure potion (UOX3 ITEM 293), and the cure tiers follow potion.js morez" (cured == "alchemy made" & tonic > 0
+      & (when world-get world tonic is Err (_) -> False is Ok (o) -> o.health == 2 & gsi-name owner.items o == "cure potion")
+      & int-mod (cloves - ttp-amount world garlic) 3 == 0 & gal-cures 2 0 99 & not (gal-cures 1 0 99) & gal-cures 3 1 99 & not (gal-cures 2 1 99) & gal-cures 3 3 60 & not (gal-cures 2 3 60))
+    shade <- ttp-find world (world-first-child world pack) #0F88 2
+    berries <- ttp-amount world shade
+    venomous <- ttp-brew p world pack mortar shade #A012 3 5
+    vial <- ttp-find world (world-first-child world pack) #0F0A 2
+    strength <- (when world-get world vial is Err (_) -> 0 is Ok (o) -> o.health)
+    named <- (when world-get world vial is Err (_) -> "" is Ok (o) -> gsi-name owner.items o)
+    h2 <- ttp-check "four nightshade make a greater poison potion (UOX3 ITEM 303), named so" (venomous == "alchemy made" & vial > 0
+      & strength == 3 & named == "greater poison potion" & int-mod (berries - ttp-amount world shade) 4 == 0)
+    row <- owner.checkpoint.game.characters + gsi-slot owner.checkpoint.game me 0 * 160
+    tired <- poke-byte row 145 40
+    refresh <- ttp-tool world owner pack #0F0B
+    perked <- csp-send p (csp-use refresh)
+    left <- peek-byte row 145
+    shown <- ttp-first-packet perked
+    f <- ttp-check "a refresh potion restores 21 to 30 stamina and sends 0xA3, as UOX3 1353 (UOAIX-59)" (refresh > 0 & ttp-note perked == "potion refresh" & left >= 10 & left <= 19
+      & (when perked is Err (_) -> False is Ok (r) -> ttp-stamina-shown r.packets 0 == peek-byte row 80 - left) & gal-potion-of #0F7A == #0F0B)
+    rested <- poke-byte row 145 0
+    a + a-bag + b + c + d + e + f + f2 + g2 + h2
+  end
+  ttp-brew : CsPlayer, WorldTable, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Text
+  ttp-brew (p) (world) (pack) (mortar) (reagent) (menu) (choice) (left) = act
+    asked <- csp-send p (csp-use mortar)
+    offered <- csp-send p (ttp-target-object p reagent 60 90 (when world-get world reagent is Err (_) -> 0 is Ok (o) -> o.graphic))
+    brewed <- csp-send p (ttp-scribe-answer reagent menu choice)
+    print-line-uni ("BREW " & ttp-note asked & " / " & ttp-note offered & " / " & ttp-note brewed)
+    if ttp-note brewed == "alchemy failed" & left > 1 then ttp-brew p world pack mortar reagent menu choice (left - 1) else act ttp-note brewed end
+  end
+  ttp-scribe-answer : Integer, Integer, Integer -> List Integer
+  ttp-scribe-answer (dialog) (menu) (choice) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put32 [#7D] dialog) menu) choice) 0) 0
+  ttp-scribe-level : CompositeGame, Integer -> Integer
+  ttp-scribe-level (owner) (i) = if i < 0 then -1 else sk-at (list-at owner.active.actors i).skills.levels 23
+  ttp-scribe-once : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-scribe-once (p) (owner) (world) (pack) (pen) (blank) (moss) (slot) (i) = act
+    cleared <- __record-set (list-at owner.production.harvest.requests slot) "next" 0
+    scrolls <- ttp-amount world blank
+    mosses <- ttp-amount world moss
+    level <- ttp-scribe-level owner i
+    used <- csp-send p (csp-use pen)
+    menu <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
+    circle <- csp-send p (ttp-scribe-answer blank #A000 1)
+    made <- csp-send p (ttp-scribe-answer blank #A001 1)
+    note <- ttp-note made
+    print-line-uni ("SCRIBE level=" & show level & " " & ttp-note used & " / " & ttp-note menu & " / " & ttp-note circle & " / " & note)
+    (if note == "inscription failed" then (if ttp-amount world blank == scrolls & ttp-amount world moss == mosses then 2 else 3)
+      else if note /= "inscription made spell=1" then 0
+      else if ttp-amount world blank == scrolls - 1 & ttp-amount world moss == mosses - 1 & ttp-scribe-level owner i == level + 1
+        & ttp-find world (world-first-child world pack) #1F2E 2 > 0 then 1 else 4)
+  end
+  ttp-scribe-loop : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-scribe-loop (p) (owner) (world) (pack) (pen) (blank) (moss) (slot) (i) (clean) (made) (left) =
+    if clean > 0 & made > 0 then act 1 end
+    else if left == 0 then act 0 - 1 end
+    else act
+      code <- ttp-scribe-once p owner world pack pen blank moss slot i
+      if code == 2 then ttp-scribe-loop p owner world pack pen blank moss slot i (clean + 1) made (left - 1)
+      else if code == 1 then ttp-scribe-loop p owner world pack pen blank moss slot i clean (made + 1) (left - 1)
+      else act 0 - 10 - code end
+    end
+  ttp-scribe-recall : CsPlayer, CompositeGame, Integer, Integer, Integer, Integer -> [Console, Device.Block] Text
+  ttp-scribe-recall (p) (owner) (pen) (blank) (slot) (left) = act
+    cleared <- __record-set (list-at owner.production.harvest.requests slot) "next" 0
+    used <- csp-send p (csp-use pen)
+    menu <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
+    circle <- csp-send p (ttp-scribe-answer blank #A000 4)
+    made <- csp-send p (ttp-scribe-answer blank #A004 1)
+    if ttp-note made == "inscription failed" & left > 1 then ttp-scribe-recall p owner pen blank slot (left - 1) else act ttp-note made end
+  end
+  ttp-decoration : WalkMap -> Result WdState Text
+  ttp-decoration (map) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1699
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1
+    in wd-read data 240 map map.stride
+  ttp-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  ttp-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  ttp-bits : Integer, Integer, Integer -> Integer
+  ttp-bits (mask) (i) (n) = if i == 64 then n else ttp-bits mask (i + 1) (n + bit-and (bit-shru mask i) 1)
+  ttp-inscribe : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer, WalkMap -> [Console, Device.Block] Integer
+  ttp-inscribe (p) (owner) (world) (pack) (pick) (me) (map) = when ttp-decoration map
+    is Err (e) -> ttp-check ("inscription decoration " & e) False
+    is Ok (decoration) -> act
+      magic <- mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (ttp-cover map)
+      attached <- __record-set owner "magic" (Just magic)
+      book <- ttp-find world (world-first-child world pack) #0EFA 2
+      registered <- mgs-book magic book mgs-working
+      known <- ttp-check "the kit spellbook registers with the working spells" (book > 0 & is-ok registered)
+      aged <- mgs-book magic book #100480FFFFFF
+      raised <- cg-books magic owner.checkpoint.game True (world-first-child world me) 4
+      filled <- mgs-spells magic book
+      again <- mgs-book magic book #100480FFFFFF
+      plain <- cg-books magic owner.checkpoint.game False (world-first-child world me) 4
+      left <- mgs-spells magic book
+      restored <- mgs-book magic book mgs-working
+      full <- ttp-check ("a testing entry fills a carried spellbook from the old 27-spell mask to every working spell (" & show (ttp-bits filled 0 0) & " of 64 counted by hand), and a normal entry leaves it as it was") (is-ok aged & filled == mgs-working & ttp-bits filled 0 0 == 64 & left == #100480FFFFFF & is-ok restored)
+      scribed <- ttp-scribe p owner world pack pick me
+      clumsy <- ttp-find world (world-first-child world pack) #1F2E 2
+      reading <- csp-send p (gp-put32 [6] clumsy)
+      lifted <- csp-send p (gp-put16 (gp-put32 [#07] clumsy) 1)
+      dropped <- csp-send p (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [#08] clumsy) #FFFF) #FFFF) 0) book)
+      used <- ttp-check "an inscribed Clumsy scroll begins a cast, and dropped on the kit book that holds Clumsy answers 500179 and stays" (clumsy > 0
+        & ttp-note reading == "magery:casting spell=1" & ttp-note lifted == "items:lift" & ttp-note dropped == "magery:book-has"
+        & ttp-find world (world-first-child world pack) #1F2E 2 == clumsy)
+      locks <- ttp-locks p owner magic world pack me
+      doors <- ttp-locked-door p owner world map me
+      vial <- ttp-find world (world-first-child world pack) #0F0A 2
+      gulp <- csp-send p (csp-use vial)
+      sick <- ttp-check "drinking a greater poison potion poisons the drinker at Magery level 2 (282)" (vial > 0 & ttp-note gulp == "potion poison" & cg-as-poison owner me == 2)
+      cured <- cg-as-cure owner me
+      detached <- __record-set owner "magic" None
+      known + full + scribed + used + locks + doors + sick
+    end
+  ttp-locked-door : CsPlayer, CompositeGame, WorldTable, WalkMap, Integer -> [Console, Device.Block] Integer
+  ttp-locked-door (p) (owner) (world) (map) (me) = when ttp-decoration map
+    is Err (e) -> ttp-check ("locked door fixture " & e) False
+    is Ok (doors) -> act
+      kind <- poke-qword doors.data 120 4
+      attached <- __record-set owner "decoration" (Just doors)
+      moved <- (when world-get world me is Err (e) -> Err e is Ok (m) -> world-update world (__record-set (__record-set m "x" 1420) "y" 1698))
+      door <- wd-serial-base + 1
+      shut <- csp-send p (csp-use door)
+      pick <- ttp-find world (world-first-child world (gsi-pack-find world me 0)) #14FC 2
+      i <- as-profile owner.active me 0
+      clumsy <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 24 0
+      fumbled <- csp-send p (csp-use pick)
+      missed <- csp-send p (ttp-target-object p door 60 90 #0675)
+      practice <- ttp-check "lockpicking is practised on doors: at Lockpicking 0 the roll fails, 936 or a broken pick (933), and the door stays locked" (pick > 0
+        & ttp-note fumbled == "lockpick target" & (ttp-note missed == "lockpick failed" | (ttp-note missed == "lockpick broke" & ttp-amount world pick == 9)) & wd-locked doors 0)
+      deft <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 24 1000
+      opened <- ttp-pick-until p pick door "lockpick door opened" 5
+      entered <- csp-send p (csp-use door)
+      again <- csp-send p (csp-use pick)
+      loose <- csp-send p (ttp-target-object p door 60 90 #0675)
+      size <- wdc-size doors
+      saved <- wdc-write doors (alloc-bytes size) size
+      buffer <- alloc-bytes size
+      written <- wdc-write doors buffer size
+      kept <- peek-byte (buffer + 24) 0
+      detached <- __record-set owner "decoration" None
+      unlocked <- ttp-check "a locked door (decoration kind 4) refuses to open, at Lockpicking 100.0 a lockpick unlocks it (935) and it opens, a pick on it then answers 932, and WDS1 keeps the unlock bit" (is-ok moved
+        & ttp-note shut == "That door is locked." & opened == "lockpick door opened" & text-starts-with (ttp-note entered) "decoration:door-open" & ttp-note loose == "That is not locked."
+        & is-ok written & kept == 3 & not (wd-locked doors 0))
+      practice + unlocked
+    end
+  ttp-pick-until : CsPlayer, Integer, Integer, Text, Integer -> [Console, Device.Block] Text
+  ttp-pick-until (p) (pick) (chest) (want) (left) = act
+    asked <- csp-send p (csp-use pick)
+    tried <- csp-send p (ttp-target-object p chest 60 90 #0E43)
+    print-line-uni ("PICK " & ttp-note asked & " / " & ttp-note tried)
+    if ttp-note tried /= want & left > 1 then ttp-pick-until p pick chest want (left - 1) else act ttp-note tried end
+  end
+ A testing character other than Lord British gets the kit chests and their gold key in its pack; the lock arms plant
+ the same three items when the character is British (UOAIX-158).
+  ttp-kit : GsiState, Integer -> Integer
+  ttp-kit (items) (pack) = when cts-item items pack #0E43 1 #0049
+    is Err (_) -> 0
+    is Ok (_) -> when cts-item items pack #0E41 1 #0049
+      is Err (_) -> 0
+      is Ok (_) -> when cts-item items pack #100F 1 0
+        is Err (_) -> 0
+        is Ok (_) -> 3
+  ttp-locks : CsPlayer, CompositeGame, Magery, WorldTable, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-locks (p) (owner) (magic) (world) (pack) (me) = act
+    planted <- (if ttp-find world (world-first-child world pack) #0E43 2 > 0 then 0 else ttp-kit owner.items pack)
+    registered <- glk-register magic pack (world-first-child world pack) 3
+    chest <- ttp-find world (world-first-child world pack) #0E43 2
+    strong <- ttp-find world (world-first-child world pack) #0E41 2
+    key <- ttp-find world (world-first-child world pack) #100F 2
+    cut <- (when world-get world key is Err (_) -> 0 is Ok (k) -> k.health)
+    shut <- csp-send p (csp-use chest)
+    a <- ttp-check "the kit's wooden and metal chests both arrive locked to its one gold key, and a locked chest answers 501747, not a magic lock" (chest > 0 & strong > 0 & key > 0
+      & (cut == world-slot world chest + 1 | cut == world-slot world strong + 1) & glk-locked magic chest & glk-locked magic strong
+      & (list-at magic.definitions (world-slot world chest)).key == cut & (list-at magic.definitions (world-slot world strong)).key == cut
+      & ttp-note shut == "It appears to be locked.")
+    made <- world-create world (WorldObject { serial = 0, kind = 2, x = 40, y = 60, z = 0, graphic = #14FC, hue = 0, container = pack, amount = 10, health = 0 })
+    pick <- (when made is Err (_) -> 0 is Ok (s) -> if gsi-register owner.items s 0 0 True True /= 0 then 0 else s)
+    probed <- csp-send p (csp-use pick)
+    resisted <- csp-send p (ttp-target-object p chest 60 90 #0E43)
+    b <- ttp-check "a keyed kit chest refuses a pick (UOX3 937); lockpicking is practised on doors" (pick > 0 & ttp-note probed == "lockpick target" & ttp-note resisted == "lockpick keyed" & glk-locked magic chest)
+    turning <- csp-send p (csp-use key)
+    turned <- csp-send p (ttp-target-object p strong 60 90 #0E41)
+    open-now <- not (glk-locked magic strong)
+    relock <- csp-send p (csp-use key)
+    relocked <- csp-send p (ttp-target-object p strong 60 90 #0E41)
+    c <- ttp-check "the gold key unlocks and relocks the metal chest (UOX3 1020, 1018)" (ttp-note turning == "key target" & ttp-note turned == "key unlocked" & open-now
+      & ttp-note relocked == "key locked" & glk-locked magic strong)
+    other <- csp-send p (csp-use key)
+    wooden <- csp-send p (ttp-target-object p chest 60 90 #0E43)
+    d <- ttp-check "the same key unlocks the wooden chest" (ttp-note wooden == "key unlocked" & not (glk-locked magic chest))
+    self <- csp-send p (csp-use key)
+    nothing <- csp-send p (ttp-target-object p key 60 90 #100F)
+    e <- ttp-check "a key has no lock (1025)" (ttp-note nothing == "That does not have a lock.")
+    a + b + c + d + e  end
+  ttp-scribe : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-scribe (p) (owner) (world) (pack) (pick) (me) = act
+    pen <- ttp-find world (world-first-child world pack) #0FBF 2
+    blank <- ttp-find world (world-first-child world pack) #0EF3 2
+    moss <- ttp-find world (world-first-child world pack) #0F7B 2
+    pearl <- ttp-find world (world-first-child world pack) #0F7A 2
+    mandrake <- ttp-find world (world-first-child world pack) #0F86 2
+    slot <- gsi-slot owner.checkpoint.game me 0
+    i <- as-profile owner.active me 0
+    asked <- csp-send p (csp-use pen)
+    junk <- csp-send p (ttp-target-object p pick 60 90 #0E86)
+    a <- ttp-check "kit pen and ink asks what to place a spell on (UOX3 865), and on a pickaxe answers 6001" (pen > 0 & blank > 0 & i >= 0
+      & ttp-note asked == "inscription target" & ttp-note junk == "You can't make anything useful from that.")
+    untrained <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 23 0
+    again <- csp-send p (csp-use pen)
+    unskilled <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
+    b <- ttp-check "with no Inscription a blank scroll offers no spell" (ttp-note unskilled == "You lack the skill to inscribe any spell in your spellbook.")
+    novice <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 23 11
+    looped <- ttp-scribe-loop p owner world pack pen blank moss slot i 0 0 60
+    c <- ttp-check "at 1.1 Inscription a Clumsy scroll fails consuming nothing (UOX3 984), and succeeds consuming a blank scroll and the spell's reagents and gaining Inscription (985)" (looped == 1)
+    master <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 23 1000
+    cleared <- __record-set (list-at owner.production.harvest.requests slot) "next" 0
+    opened <- csp-send p (csp-use pen)
+    menu <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
+    circles <- ttp-first-packet menu
+    d <- ttp-check "at 100.0 the menu offers the six circles holding the 27 working spells" (ttp-note menu == "inscription menu" & list-length circles > 21
+      & list-at circles 0 == #7C & gp-u32 circles 3 == blank & gp-u16 circles 7 == #A000 & list-at circles 21 == 6)
+    fourth <- csp-send p (ttp-scribe-answer blank #A000 4)
+    spells <- ttp-first-packet fourth
+    e <- ttp-check "the fourth circle offers Recall with its scroll art 0x1F4C" (ttp-note fourth == "inscription spells" & list-length spells > 25
+      & gp-u16 spells 7 == #A004 & list-at spells 23 == 1 & gp-u16 spells 24 == #1F4C)
+    forged <- csp-send p (ttp-scribe-answer blank #A004 9)
+    stale <- csp-send p (ttp-scribe-answer blank #A004 1)
+    f <- ttp-check "a choice past the menu is refused and closes it, and a closed menu is refused" (ttp-note forged == "That selection is no longer available."
+      & ttp-note stale == "That menu is no longer active.")
+    pearls <- ttp-amount world pearl
+    roots <- ttp-amount world mandrake
+    scrolls <- ttp-amount world blank
+    recalled <- ttp-scribe-recall p owner pen blank slot 5
+    g <- ttp-check "a Recall scroll costs a blank scroll, black pearl, bloodmoss and mandrake" (recalled == "inscription made spell=32" & ttp-find world (world-first-child world pack) #1F4C 2 > 0
+      & ttp-amount world pearl == pearls - 1 & ttp-amount world mandrake == roots - 1 & ttp-amount world blank == scrolls - 1)
+    h <- ttp-check "the scroll is made inside the bag holding the pen and ink (GameServer.md testing stock)" (ttp-parent world (ttp-find world (world-first-child world pack) #1F4C 2) == ttp-parent world pen & ttp-parent world pen /= pack)
+    a + b + c + d + e + f + g + h
+  end
+  ttp-bytes-at : List Integer, Text, Integer, Integer -> Boolean
+  ttp-bytes-at (p) (text) (at) (i) = if i == text-length text then list-at p (at + i) == 0
+    else if list-at p (at + i) /= to-unicode (char-code (char-at text i)) then False else ttp-bytes-at p text at (i + 1)
+  ttp-in-packet : List Integer, Text, Integer -> Boolean
+  ttp-in-packet (p) (text) (at) = if at + text-length text >= list-length p then False
+    else if list-at p (at - 1) == text-length text + 1 & ttp-bytes-at p text at 0 then True else ttp-in-packet p text (at + 1)
+  ttp-listed-in : List (List Integer), Text, Integer -> Boolean
+  ttp-listed-in (packets) (text) (i) = if i == list-length packets then False
+    else if list-at (list-at packets i) 0 == #74 & ttp-in-packet (list-at packets i) text 9 then True else ttp-listed-in packets text (i + 1)
+  ttp-listed : Result GameReply Text, Text -> Boolean
+  ttp-listed (r) (text) = when r is Err (_) -> False is Ok (x) -> ttp-listed-in x.packets text 0
+  ttp-provisioner : CompositeGame -> GvVendor
+  ttp-provisioner (owner) = list-at owner.vendor.vendors 0
+  ttp-buy-all : CsPlayer, CompositeGame, Integer -> [Console, Device.Block] Integer
+  ttp-buy-all (p) (owner) (left) = let vendor = ttp-provisioner owner
+    in let lot = ttp-lot owner.vendor vendor.actor 25 0
+    in if lot < 0 | left == 0 then left
+    else act
+      menu <- csp-send p (csp-use vendor.serial)
+      bought <- csp-send p (csp-buy vendor.serial (ep-lot owner.vendor.currency.world.goods lot).serial 1)
+      ttp-buy-all p owner (if is-ok bought then left - 1 else 0)
+    end
+  ttp-mine : CsPlayer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-mine (p) (tool) (x) (y) (left) = if left == 0 then 0
+    else act
+      used <- csp-send p (csp-use tool)
+      aimed <- csp-send p (csp-target-ground p x y 0 0)
+      if is-ok aimed & csp-has-op p #25 0 then left else act
+        waited <- csp-wait 3100
+        ttp-mine p tool x y (left - 1)
+      end
+    end
+  ttp-first : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  ttp-first (store) (map) (specs) = let owner = store.state in act
+    testing <- __record-set owner "testing" True
+    lined <- cgl-arrange owner True
+    p <- csp-new store map specs 1
+    logged <- csp-login p "Lord"
+    me <- p.input.session.serial
+    pack <- gsi-pack-find owner.checkpoint.game.world me 0
+    world <- owner.checkpoint.game.world
+    bank-tools <- ttp-tools-bag world (world-first-child world (gmb-bank-find owner.banks.items me 0))
+    lord <- ga-is-british owner.checkpoint.game.accounts
+    light <- ttp-check "a new testing character's backpack carries no tools bag: it waits in the bank box; the kit chests and key stay in the pack, except Lord British's, which stand behind the throne (UOAIX-158)" (bank-tools > 0
+      & ttp-tools-bag world (world-first-child world pack) == 0 & (if lord then ttp-find world (world-first-child world pack) #0E41 0 == 0 & ttp-find world (world-first-child world pack) #100F 0 == 0
+        else ttp-find world (world-first-child world pack) #0E41 0 > 0 & ttp-find world (world-first-child world pack) #100F 0 > 0))
+    taken <- (when world-get world bank-tools is Err (_) -> False is Ok (bag) -> is-ok (world-update world (__record-set bag "container" pack)))
+    pick <- ttp-find world (world-first-child world pack) #0E86 2
+    hatchet <- ttp-find world (world-first-child world pack) #0F43 2
+    a <- ttp-check "the testing kit's pickaxe and hatchet are economy lots" (is-ok logged & pick > 0 & hatchet > 0
+      & gv-lot owner.vendor pick 0 >= 0 & gv-lot owner.vendor hatchet 0 >= 0)
+    print-line-uni ("KIT login=" & (when logged is Err (e) -> e is Ok (n) -> show n) & " pack=" & show pack & " pick=" & show pick & " hatchet=" & show hatchet & " lot=" & show (gv-lot owner.vendor pick 0) & " census=" & (if euv-valid owner.vendor.currency then "valid" else "INVALID") & " refusal=" & p.refusal & " lots=" & show (ep-lot-count owner.vendor.currency.world.goods) & "/" & show gv-lot-limit)
+    chop <- csp-send p (csp-use hatchet)
+    b <- ttp-check "using the kit hatchet opens a harvest target cursor" (is-ok chop & csp-has-op p #6C 0)
+    x <- (when world-get world me is Err (_) -> 0 is Ok (m) -> m.x)
+    y <- (when world-get world me is Err (_) -> 0 is Ok (m) -> m.y)
+    rock <- walk-set-land map (x - 1) y 0 (mt-mark 220 64)
+    before <- world-child-count world pack
+    mined <- ttp-mine p pick (x - 1) y 12
+    c <- ttp-check "the kit pickaxe mines ore" (mined > 0 & world-child-count world pack > before)
+    knife <- ttp-find world (world-first-child world pack) #0EC4 2
+    dagger <- ttp-find world (world-first-child world pack) #0F52 2
+    bound <- ttp-check "the testing kit's skinning knife and dagger are economy lots" (knife > 0 & dagger > 0 & gv-lot owner.vendor knife 0 >= 0 & gv-lot owner.vendor dagger 0 >= 0)
+    skinned <- ttp-carve p world knife (x + 1) y
+    k <- ttp-check "the kit skinning knife carves a goat corpse" skinned
+    stabbed <- ttp-carve p world dagger x (y + 1)
+    g <- ttp-check "the kit dagger carves a goat corpse" stabbed
+    hammer <- ttp-find world (world-first-child world pack) #13E3 2
+    sewing <- ttp-find world (world-first-child world pack) #0F9D 2
+    saw <- ttp-find world (world-first-child world pack) #1034 2
+    tinker <- ttp-find world (world-first-child world pack) #1EB8 2
+    scissors <- ttp-find world (world-first-child world pack) #0F9F 2
+    sextant-kit <- ttp-find world (world-first-child world pack) #1057 2
+    spyglass-kit <- ttp-find world (world-first-child world pack) #14F5 2
+    navigating <- ttp-check "the testing kit carries a sextant and a spyglass (F40)" (sextant-kit > 0 & spyglass-kit > 0)
+    dropped <- world-delete world sextant-kit
+    crafts <- ttp-check"the kit hammer, sewing kit, saw, tinker's tools and scissors are economy lots" (hammer > 0 & sewing > 0 & saw > 0 & tinker > 0 & scissors > 0 & gv-lot owner.vendor hammer 0 >= 0 & gv-lot owner.vendor sewing 0 >= 0 & gv-lot owner.vendor saw 0 >= 0 & gv-lot owner.vendor tinker 0 >= 0 & gv-lot owner.vendor scissors 0 >= 0)
+    bank-box <- gmb-bank-find owner.banks.items me 0
+    ingot <- ttp-find world (world-first-child world bank-box) #1BF2 2
+    board <- ttp-find world (world-first-child world bank-box) #1BD7 2
+    cloth <- (let cut = ttp-find world (world-first-child world bank-box) #1766 2 in if cut > 0 then cut else ttp-find world (world-first-child world bank-box) #175D 2)
+    ingot-lot <- if ingot > 0 then gv-lot owner.vendor ingot 0 else -1
+    ingot-amount <- when world-get world ingot is Err (_) -> 0 is Ok (o) -> o.amount
+    print-line-uni ("KIT materials ingot=" & show ingot & " lot=" & show ingot-lot & " amount=" & show ingot-amount & " board-lot=" & show (if board > 0 then gv-lot owner.vendor board 0 else -1) & " cloth-lot=" & show (if cloth > 0 then gv-lot owner.vendor cloth 0 else -1))
+    stuff <- ttp-check "the testing kit's ingots, boards and cloth are economy lots of their whole stacks, so crafting counts them (F51)" (ingot > 0 & ingot-lot >= 0 & board > 0 & cloth > 0
+      & gv-lot owner.vendor board 0 >= 0 & gv-lot owner.vendor cloth 0 >= 0 & (if ingot-lot < 0 then False else (ep-lot-amount owner.vendor.currency.world.goods ingot-lot) == ingot-amount)
+      & euv-valid owner.vendor.currency & gvsc-valid owner.vendor)
+    smith-bag <- cpr-bag-find world (world-first-child world bank-box) (cpr-bag-mark + 1)
+    smith-hammer <- ttp-find world (world-first-child world smith-bag) #13E3 0
+    smith-ingots <- ttp-find world (world-first-child world smith-bag) #1BF2 0
+    alchemy-bag <- cpr-bag-find world (world-first-child world bank-box) (cpr-bag-mark + 11)
+    scribe-bag <- cpr-bag-find world (world-first-child world bank-box) (cpr-bag-mark + 12)
+    shade <- ttp-find world (world-first-child world alchemy-bag) #0F88 0
+    scrolls <- ttp-find world (world-first-child world scribe-bag) #0EF3 0
+    trade <- ttp-check "the bank box holds one bag per profession, thirteen; the smith's holds a hammer and its ingots as economy lots, the alchemist's 15 nightshade for poison tiers 1 to 4, the scribe's a blank scroll per spell (GameServer.md testing stock)" (ttp-bags world (world-first-child world bank-box) == 13
+      & ttp-amount world shade == 15 & ttp-amount world scrolls == cpr-spells 1 & cpr-spells 1 > 0 & ttp-find world (world-first-child world alchemy-bag) #0E9B 0 > 0
+      & smith-bag > 0 & smith-hammer > 0 & smith-ingots > 0 & gv-lot owner.vendor smith-hammer 0 >= 0 & gv-lot owner.vendor smith-ingots 0 >= 0 & euv-valid owner.vendor.currency & gvsc-valid owner.vendor)
+    fletcher <- ttp-find world (world-first-child world pack) #1022 2
+    fletching <- csp-send p (csp-use fletcher)
+    bows <- ttp-check "the kit fletcher's tools open the Bowcraft and Fletching menu (bow, arrows), and away from a workshop say to move beside it" (fletcher > 0 & gv-lot owner.vendor fletcher 0 >= 0
+      & gcr-title 6 == "Bowcraft and Fletching" & list-length (gcr-recipes owner.vendor.currency.world 6) == 2
+      & (when fletching is Err (_) -> False is Ok (r) -> r.note == "Move beside the required workshop."))
+    smithing <- csp-send p (csp-use hammer)
+    menu <- ttp-check "the kit hammer is taken as a craft tool, and away from an anvil it says to come within 2 tiles of one" (when smithing is Err (_) -> False is Ok (r) -> r.note == "You must be within 2 tiles of an anvil.")
+    cuts <- ttp-scissors p owner world knife scissors pick pack (x + 1) (y + 1)
+    shears <- ttp-shear p owner world scissors me
+    looks <- ttp-navigate p owner world pack me
+    picks <- ttp-lockpick p owner world pack pick
+    dyed <- ttp-dye p owner world pack pick
+    brewed <- ttp-alchemy p owner world pack pick me
+    scribed <- ttp-inscribe p owner world pack pick me map
+    vendor <- ttp-provisioner owner
+    vendor-pack <- glk-own-pack owner.items vendor.serial
+    peeked <- csp-send p (csp-use vendor-pack)
+    lordly <- ttp-check "Lord British opens a shopkeeper's worn backpack with no roll and no crime (snooping; cg-snoop-pack)" (vendor-pack > 0 & ttp-note peeked == "items:inspect-pack")
+    stocked <- ttp-lot owner.vendor vendor.actor 25 0
+    at <- (when world-get world vendor.serial is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
+    walked <- csp-walk-to p (list-at at 0) (list-at at 1) 1 200
+    shown <- csp-send p (csp-use vendor.serial)
+    named <- ttp-check "the provisioner's sale list names the pickaxe by its art, not the catalog's stone pickaxe" (ttp-listed shown "pickaxe" & not (ttp-listed shown "stone pickaxe"))
+    left <- ttp-buy-all p owner 8
+    f <- ttp-rebook store me pack
+    d <- ttp-check "the provisioner sells a pickaxe, and buying every one empties its stock" (stocked >= 0 & is-ok walked & left < 8 & ttp-lot owner.vendor vendor.actor 25 0 < 0)
+    committed <- cs-commit store True
+    print-line-uni ("COMMIT " & (when committed is Err (e) -> e is Ok (n) -> show n))
+    e <- ttp-check "the world commits" (is-ok committed)
+    a + light + b + bound + k + g + navigating + crafts + trade + lordly + bows + menu + cuts + shears + looks + picks + dyed + brewed + scribed + c + f + named + d + e
+  end
+ The rebook arm needs an iron-ore lot in the pack, and the earlier mining step's yield is random (UOAIX-93), so the arm
+ books one of its own when mining left none: one ore of item 5 at quality 500, gathered and in stock.
+  ttp-ore-lot : CompositeGame, Integer, Integer -> Integer
+  ttp-ore-lot (owner) (actor) (pack) = let v = owner.vendor
+    in when world-create owner.checkpoint.game.world (WorldObject { serial = 0, kind = 2, x = 50, y = 60, z = 0, graphic = #19B9, hue = 0, container = pack, amount = 1, health = 0 })
+      is Err (_) -> -1
+      is Ok (serial) -> let p = ep-actor v.currency.world actor
+        in let a = ep-add p.stock 5 1
+        in let b = ep-add p.quality 5 500
+        in let c = ep-add p.cost 5 1
+        in let d = ep-add v.currency.world.gathered 5 1
+        in let registered = gsi-register owner.items serial 0 0 True True
+        in gv-add-lot v serial actor 5 500 0 1
+  ttp-rebook : CompositeOwner, Integer, Integer -> [Console, Device.Block] Integer
+  ttp-rebook (store) (me) (pack) = let owner = store.state in act
+    at <- gv-player owner.vendor me 0
+    actor <- if at < 0 then 0 else (list-at owner.vendor.players at).actor
+    v <- owner.vendor
+    world <- owner.checkpoint.game.world
+    spare <- ep-at (ep-actor v.currency.world actor).stock 69 - gv-represented v actor 69 0
+    seeded <- if gv-represented v actor 5 0 > 0 then 0 else ttp-ore-lot owner actor pack
+    ore <- gv-represented v actor 5 0
+    dagger <- world-create world (WorldObject { serial = 0, kind = 2, x = 40, y = 60, z = 0, graphic = #0F52, hue = 0, container = pack, amount = 1, health = 0 })
+    rebooked <- cpr-kit-tools owner.production me pack
+    print-line-uni ("REBOOK actor=" & show actor & " spare-daggers=" & show spare & " ore-lots=" & show ore & " iron-ore stock after=" & show (ep-at (ep-actor v.currency.world actor).stock 5)
+      & " dagger-lot=" & (when dagger is Err (e) -> e is Ok (s) -> show (gv-lot v s 0)))
+    ttp-check "a kit dagger booked with no spare daggers and the pack's iron ore already a lot spends none of that ore, so the vendor state stays valid" (actor > 0 & spare == 0 & ore > 0
+      & is-ok rebooked & (when dagger is Err (_) -> False is Ok (s) -> gv-lot v s 0 >= 0) & gvsc-valid v)
+  end
+  ttp-later : CompositeOwner, WalkMap, List GameOpcodeSpec -> [Console, Device.Block] Integer
+  ttp-later (store) (map) (specs) = let owner = store.state in act
+    testing <- __record-set owner "testing" True
+    lined <- cgl-arrange owner True
+    player <- list-at owner.vendor.players 0
+    p <- csp-new store map specs 2
+    resumed <- csp-resume p player.serial
+    world <- owner.checkpoint.game.world
+    pack <- gsi-pack-find world player.serial 0
+    ttp-check "a kit granted without the sextant gets one back at the next login" (is-ok lined & is-ok resumed & ttp-find world (world-first-child world pack) #1057 2 > 0)
+  end
+
+  opening : [Console, Device.Block] Integer = when cg-specs 0
+    is Err (e) -> ttp-check ("registry " & e) False
+    is Ok (specs) -> when walk-map-new 1408 1536 96 224
+      is Err (e) -> ttp-check e False
+      is Ok (map) -> when walk-map-new 1408 1520 96 240
+       is Err (e) -> ttp-check e False
+       is Ok (britain) -> let filled = ttp-fill map 0 in let town-filled = ttp-fill britain 0 in act
+        opened <- us-open 0 131072
+        when opened
+          is Err (e) -> ttp-check ("store " & e) False
+          is Ok (store) -> let fresh = store.head == 0 in act
+            loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) (Just britain) None
+            when loaded
+              is Err (e) -> ttp-check ("recovery " & e) False
+              is Ok (owner) -> if fresh then ttp-first owner map specs else ttp-later owner map specs
+          end
+      end
+
+Page 1

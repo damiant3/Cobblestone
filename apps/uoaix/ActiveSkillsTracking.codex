@@ -1,0 +1,95 @@
+Chapter: ActiveSkillsTracking
+  cites Uoaix chapter ActiveSkillsHiding
+
+ ServUO Skills/Tracking.cs (TrackWhatMenu icons 8478/8401/8454, range 10 plus a
+ tenth of the skill, skill check 0..21.1), GPL-2.0; ports/ServUO-LICENSE.txt.
+ The 1.25 client answers a 0x7C item list with 0x7D; 0xBA carries
+ active/x/y for the quest arrow. Menus use ids #9000..#9FFF.
+
+  as-track-range : AsActor -> Integer
+  as-track-range (a) = 10 + as-level a 38 / 100
+  as-track-icon : Integer -> Integer
+  as-track-icon (category) = if category == 1 then #211E else if category == 2 then #20D1 else #2106
+  as-arrow : Boolean, Integer, Integer -> List Integer
+  as-arrow (active) (x) (y) = gp-put16 (gp-put16 [#BA, if active then 1 else 0] x) y
+  as-menu-head : Integer, Integer, Text, Integer -> List Integer
+  as-menu-head (dialog) (menu) (title) (count) = let header = list-push (gp-put16 (gp-put32 [#7C,0,0] dialog) menu) (text-length title)
+    in list-push (gp-ascii header title 0 (text-length title)) count
+  as-menu-row : List Integer, Integer, Text -> List Integer
+  as-menu-row (out) (icon) (name) = gp-ascii (list-push (gp-put16 (gp-put16 out icon) 0) (text-length name)) name 0 (text-length name)
+  as-name-bytes : Integer, Integer, List Integer -> List Integer
+  as-name-bytes (buf) (i) (out) = if i == 30 | peek-byte buf i == 0 then out
+    else as-name-bytes buf (i + 1) (list-push out (peek-byte buf i))
+  as-menu-name : List Integer, Integer, List Integer -> List Integer
+  as-menu-name (out) (icon) (name) = list-push (gp-put16 (gp-put16 out icon) 0) (list-length name) & name
+  as-open-menu : ActiveSkills, AsActor -> Integer
+  as-open-menu (s) (a) = let id = #9000 + bit-and s.next-target #FFF
+    in let next = __record-set s "next-target" (if s.next-target >= 65535 then 1 else s.next-target + 1)
+    in let saved = __record-set a "menu" id in id
+  as-track-begin : ActiveSkills, AsActor, WorldObject -> GameReply
+  as-track-begin (s) (a) (player) = let id = as-open-menu s a
+    in let category = __record-set a "category" 0
+    in let head = as-menu-head player.serial id "Tracking" 4
+    in let rows = as-menu-row (as-menu-row (as-menu-row (as-menu-row head #211E "Animals") #20D1 "Monsters") #2106 "Human NPCs") #2106 "Players"
+    in gs-reply [sip-length rows] "skills:track-menu"
+  as-track-kind : AsServices, GameShard, WorldObject -> Integer
+  as-track-kind (services) (game) (m) = if gsi-slot game m.serial 0 >= 0 then 4
+    else if services.animal m.serial then 1
+    else if m.graphic == 400 | m.graphic == 401 then 3 else 2
+  as-track-tile : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, Integer, Integer -> Integer
+  as-track-tile (services) (s) (a) (game) (player) (serial) (category) = if serial == 0 | a.choice-count == 12 then 0
+    else let next = world-tile-next s.items.world serial
+    in let slot = world-slot s.items.world serial
+    in let taken = if slot < 0 then 0 else if peek-qword (wi-object s.items.world.buffer slot) 8 /= 1 then 0
+      else let m = world-read-slot s.items.world slot
+      in if m.serial == player.serial | m.health <= 0 | not (as-visible s player.serial m.serial) | as-track-kind services game m /= category then 0
+      else let kept = list-set-at a.choices a.choice-count m.serial in let counted = __record-set a "choice-count" (a.choice-count + 1) in 1
+    in as-track-tile services s a game player next category
+  as-track-scan : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, Integer, Integer, Integer -> Integer
+  as-track-scan (services) (s) (a) (game) (player) (category) (x) (y) = let r = as-track-range a
+    in if y > min 4095 (player.y + r) then a.choice-count
+    else if x > min 6143 (player.x + r) then as-track-scan services s a game player category (max 0 (player.x - r)) (y + 1)
+    else let found = as-track-tile services s a game player (world-tile-first s.items.world x y) category
+    in as-track-scan services s a game player category (x + 1) y
+  as-track-names : ActiveSkills, AsActor, GameShard, Integer, Integer, List Integer -> List Integer
+  as-track-names (s) (a) (game) (icon) (i) (out) = if i == a.choice-count then sip-length out
+    else let serial = list-at a.choices i
+    in let name = when cb-ensure s.combat game serial is Err (_) -> [63] is Ok (c) -> as-name-bytes c.name 0 (__list-with-capacity 30)
+    in as-track-names s a game icon (i + 1) (as-menu-name out icon (if list-length name == 0 then [63] else name))
+  as-track-pick : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, Integer -> GameReply
+  as-track-pick (services) (s) (a) (game) (player) (choice) = if choice < 1 | choice > 4 then gsi-denied "That is not a tracking choice."
+    else let cleared = __record-set a "choice-count" 0
+    in if not (as-roll s a 38 (skc-random a.skills 212)) then let closed = __record-set a "menu" 0 in gs-reply [as-say "You see no evidence of those in the area."] "skills:track-none"
+    else let found = as-track-scan services s a game player choice (max 0 (player.x - as-track-range a)) (max 0 (player.y - as-track-range a))
+    in if found == 0 then let closed = __record-set a "menu" 0 in gs-reply [as-say "You see no evidence of those in the area."] "skills:track-none"
+    else let id = as-open-menu s a
+    in let category = __record-set a "category" choice
+    in gs-reply [as-track-names s a game (as-track-icon choice) 0 (as-menu-head player.serial id "Tracking" found)] "skills:track-list"
+  as-track-follow : ActiveSkills, AsActor, WorldObject, Integer, Integer -> GameReply
+  as-track-follow (s) (a) (player) (choice) (now) = let closed = __record-set a "menu" 0
+    in if choice < 1 | choice > a.choice-count then gsi-denied "That is not a tracking choice."
+    else let serial = list-at a.choices (choice - 1)
+    in when world-get s.items.world serial
+      is Err (_) -> gsi-denied "You have lost your quarry."
+      is Ok (m) -> if m.health <= 0 | not (as-visible s player.serial m.serial) | not (as-near player m (as-track-range a)) then gsi-denied "You have lost your quarry."
+        else let bound = __record-set a "tracking" serial
+        in let until = __record-set a "track-until" (now + gh-ticks 60000)
+        in let next = __record-set a "track-next" (now + gh-ticks 1000)
+        in gs-reply [as-arrow True m.x m.y, as-say "You are now tracking your quarry."] "skills:tracking"
+  as-track-answer : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, List Integer, Integer -> GameReply
+  as-track-answer (services) (s) (a) (game) (player) (packet) (now) =
+    if a.menu == 0 | gp-u32 packet 1 /= player.serial | gp-u16 packet 5 /= a.menu then gsi-denied "That menu is no longer active."
+    else let choice = gp-u16 packet 7
+    in if choice == 0 then let closed = __record-set a "menu" 0 in gs-reply [] "skills:track-cancelled"
+    else if a.category == 0 then as-track-pick services s a game player choice
+    else as-track-follow s a player choice now
+  as-track-pulse : ActiveSkills, AsActor, WorldObject, Integer -> List (List Integer)
+  as-track-pulse (s) (a) (player) (now) = if a.tracking == 0 | now < a.track-next then []
+    else let lost = when world-get s.items.world a.tracking
+      is Err (_) -> True
+      is Ok (m) -> now > a.track-until | m.health <= 0 | not (as-visible s player.serial m.serial) | not (as-near player m (2 * as-track-range a))
+    in if lost then let stopped = __record-set a "tracking" 0 in [as-arrow False 0 0]
+    else let next = __record-set a "track-next" (now + gh-ticks 1000)
+    in when world-get s.items.world a.tracking
+      is Err (_) -> []
+      is Ok (m) -> [as-arrow True m.x m.y]

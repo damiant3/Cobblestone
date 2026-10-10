@@ -118,9 +118,8 @@ commit, QEMU/virtio, physical power-loss or complete live-shard recovery.
 
 `proofs/EconomyInputProof.codex` also grades byte equality with the executed
 source, source isolation, rehashed sequence/outcome/time/argument corruption,
-metadata and length bounds, and 4096 actual clock advances. Under kernel
-`BF984339C7BA4BAE` on 2026-10-04, replay retained 2927123 bytes for both 2 and
-4096 clock inputs. Frame codec work is fixed-size; replay costs one checkpoint
+metadata and length bounds, and 4096 actual clock advances; replay retains the
+same heap for 2 and for 4096 clock inputs. Frame codec work is fixed-size; replay costs one checkpoint
 clone plus the operations and final bounded validation. `EconomyInput` has
 five fields (40 native bytes) plus its bounded argument list; results and
 frames are caller scratch. Compile normal and poisoned input proofs and

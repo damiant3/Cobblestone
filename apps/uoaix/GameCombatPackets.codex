@@ -27,23 +27,32 @@ Chapter: GameCombatPackets
   cbp-animation (serial) (action) =
     let a = gp-put16 (gp-put32 (cbp-start 110 14) serial) action
     in (gp-put16 (gp-put16 a 5) 1) & [0, 0, 1]
+ 0x54 play sound: flags 1, sound, volume 0, then x, y and z as 16-bit fields (send.cpp PacketPlaySound).
+  cbp-sound : Integer, WorldObject -> List Integer
+  cbp-sound (sound) (m) = gp-put16 (gp-put16 (gp-put16 (gp-put16 (gp-put16 [#54, 1] sound) 0) m.x) m.y) m.z
   cbp-death : Integer, Integer -> List Integer
   cbp-death (serial) (corpse) = gp-put32 (gp-put32 (gp-put32 (cbp-start 175 13) serial) corpse) 0
   cbp-remove : Integer -> List Integer
   cbp-remove (serial) = gp-put32 (cbp-start 29 5) serial
   cbp-flags : Boolean, Boolean -> Integer
   cbp-flags (war) (dead) = if war then 64 else if dead then 128 else 0
+ A hue with bit 0x4000 is the translucent class (UOX3 0x6677, ServUO 0x4001): the 1.25 HUES.MUL holds 3000 hues, so
+ the client gets the hue without the bit and the 0x80 status flag, which it draws translucent.
+  cbp-hue : Integer -> Integer
+  cbp-hue (hue) = if bit-and hue #4000 /= 0 then bit-and hue #3FFF else hue
+  cbp-shade : Integer, Integer -> Integer
+  cbp-shade (hue) (flags) = if bit-and hue #4000 /= 0 then bit-or flags 128 else flags
   cbp-mobile : WorldObject, Integer, Integer, Integer -> List Integer
   cbp-mobile (m) (direction) (flags) (notoriety) =
     let a = gp-put16 (gp-put32 (gp-put16 (cbp-start 120 23) 23) m.serial) m.graphic
     in let b = gp-put16 (gp-put16 a m.x) m.y
-    in let c = gp-put16 (b & [bit-and m.z 255, direction]) m.hue
-    in gp-put32 (c & [flags, notoriety]) 0
+    in let c = gp-put16 (b & [bit-and m.z 255, direction]) (cbp-hue m.hue)
+    in gp-put32 (c & [cbp-shade m.hue flags, notoriety]) 0
   cbp-move : WorldObject, Integer, Integer, Integer -> List Integer
   cbp-move (m) (direction) (flags) (notoriety) =
     let a = gp-put16 (gp-put32 (cbp-start 119 17) m.serial) m.graphic
     in let b = gp-put16 (gp-put16 a m.x) m.y
-    in (gp-put16 (b & [bit-and m.z 255, direction]) m.hue) & [flags, notoriety]
+    in (gp-put16 (b & [bit-and m.z 255, direction]) (cbp-hue m.hue)) & [cbp-shade m.hue flags, notoriety]
   cbp-player : WorldObject, Integer, Integer -> List Integer
   cbp-player (m) (direction) (flags) =
     let bytes = gp-player m direction
@@ -53,10 +62,11 @@ Chapter: GameCombatPackets
     let a = gp-put32 (gp-put16 (cbp-start 26 20) 0) (bit-or item.serial #80000000)
     in let b = gp-put16 (gp-put16 a 8198) body
     in let c = gp-put16 b (bit-or item.x (if direction > 0 then 32768 else 0))
-    in let d = gp-put16 c (bit-or item.y (if item.hue > 0 then 32768 else 0))
+    in let hue = cbp-hue item.hue
+    in let d = gp-put16 c (bit-or item.y (if hue > 0 then 32768 else 0))
     in let e = if direction > 0 then list-push d direction else d
     in let f = list-push e (bit-and item.z 255)
-    in let g = if item.hue > 0 then gp-put16 f item.hue else f
+    in let g = if hue > 0 then gp-put16 f hue else f
     in let h = list-set-at g 1 (bit-shr (list-length g) 8)
     in let i = list-set-at g 2 (bit-and (list-length g) 255)
     in g

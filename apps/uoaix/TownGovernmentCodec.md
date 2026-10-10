@@ -42,7 +42,7 @@ The fixed payload is 198240 bytes. All cells are little-endian integers.
 | Offset | Content |
 |---:|---|
 | 0 | Magic `0x31434754` |
-| 8 | Version 1 |
+| 8 | Version 2 (the decoder also reads version 1) |
 | 16 | Total length |
 | 24 | Gold mode 1 or currency mode 2 |
 | 32 | Outer tick |
@@ -53,7 +53,7 @@ The fixed payload is 198240 bytes. All cells are little-endian integers.
 | 152 | Reserved zero |
 | 160 | Four offices, 72 bytes each |
 | 448 | 64 guards, 48 bytes each |
-| 3520 | 2048 civic events, 64 bytes each |
+| 3520 | Civic events, 64 bytes each: 8192 in version 2, 2048 in version 1; every later offset below is version 1's, and version 2 adds 393216 |
 | 134592 | 1024 dues-day stamps |
 | 142784 | Four public-works towns, 40 bytes each |
 | 142944 | 64 site bindings, 16 bytes each |
@@ -113,12 +113,10 @@ case validation scans bounded dispute history and checks duplicate source
 events. Works records scan civic history for their paid references. Receipt
 lookup uses the existing ordered money ledger. Shared economy
 and queue validation retain their existing costs. Validation scratch is
-reclaimed; no per-record wrapper is added to the returned state.
-
-Under seed `4228CD5103DC4523` on 2026-10-04, the populated currency-bound decode
-retained 244216 bytes beyond shared bindings, below the proof's 512 KiB limit.
-This measures retained memory, not maximum validation scratch or worst-case
-elapsed time.
+reclaimed; no per-record wrapper is added to the returned state. The proof
+bounds the populated currency-bound decode's retention, beyond shared
+bindings, below 512 KiB; validation scratch and elapsed time are not bounded
+by that check.
 
 `proofs/TownGovernmentCodecProof.codex` covers funded offices, payroll, raid
 damage and repair obligations, an essential-workplace order, a paid bounty,
@@ -126,7 +124,9 @@ active militia, debt/land/misconduct cases, canonical roundtrip, detached civic
 records, duplicate-dues/report refusal and rehashed corruption. Run normal and
 poisoned builds against the complete oracle.
 
-Ordered civic inputs, composite shard inclusion and disk restart of the complete
-bound state remain integration work. TGC1 alone cannot recover currency,
-registered titles, physical world state or keeper report bodies. Restore their
-own checkpoints from the same commit before supplying bindings.
+[TownGovernmentInput.md](TownGovernmentInput.md) defines ordered TGI1 replay,
+the TGB1 bundle of civic/money/queue state, and a separate-VM restart witness
+with unchanged external anchors. Full composite shard inclusion remains open.
+TGC1 alone cannot recover currency, registered titles, physical world state or
+keeper report bodies. Restore their owning checkpoints from the same commit
+before supplying bindings.

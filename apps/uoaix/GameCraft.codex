@@ -4,6 +4,10 @@ Chapter: GameCraft
   gcr-spec : GameOpcodeSpec = GameOpcodeSpec { opcode = #7D, size = 13, minimum = 13, maximum = 13 }
   gcr-denied : Text -> Result (Maybe GameReply) Text
   gcr-denied (message) = Ok (Just (gsi-denied message))
+ Smithing (stations 3 and 9) needs an anvil, not a workshop (Damian, 2026-10-10).
+  gcr-away-text : EpWorld, Integer, Text -> Text
+  gcr-away-text (w) (recipe) (other) = if recipe < 1 | recipe > list-length w.catalog.recipes then other
+    else let kind = (list-at w.catalog.recipes (recipe - 1)).station in if kind == 3 | kind == 9 then "You must be within 2 tiles of an anvil." else other
   gcr-open : (WalkMap, WorldObject, Integer, Integer -> Integer),
     GameCraft, GvPlayer, CraftRequest, WorldObject, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   gcr-open (lookup) (state) (player) (request) (mobile) (map) (tool) (now) =
@@ -11,32 +15,61 @@ Chapter: GameCraft
     in if category == 0 then gcr-denied "You need your own crafting tool."
     else if now < request.next then gcr-denied "Wait before crafting again."
     else if state.nonce > 16383 then gcr-denied "Craft menu contexts exhausted."
-    else if lookup map mobile (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) category < 1 then gcr-denied "Move beside the required workshop."
-    else let context = #4000 + state.nonce
-    in let n = __record-set state "nonce" (state.nonce + 1)
-    in let a = __record-set request "tool" tool
-    in let b = __record-set request "menu" context
+    else if lookup map mobile (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) category < 1 then gcr-denied (gcr-away-text state.harvest.vendor.currency.world (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) "Move beside the required workshop.")
+    else let a = __record-set request "tool" tool
     in let c = __record-set request "category" category
-    in let d = __record-set request "expires" (now + gh-ticks 10000)
-    in Ok (Just (gs-reply [gcr-menu state.harvest.vendor.currency.world tool context category] "craft menu"))
+    in Ok (Just (gs-reply [gcr-show state request now ""] "craft menu"))
+ The craft gump stays usable for two minutes; each showing takes a fresh menu context, so an answer to an older one is
+ refused.
+  gcr-life : Integer = 120000
+  gcr-show : GameCraft, CraftRequest, Integer, Text -> List Integer
+  gcr-show (state) (request) (now) (status) = let context = #4000 + state.nonce
+    in let n = __record-set state "nonce" (state.nonce + 1)
+    in let b = __record-set request "menu" context
+    in let d = __record-set request "expires" (now + gh-ticks gcr-life)
+    in gcr-gump state.harvest.vendor.currency.world request.tool context request.category status
+  gcr-status : Text -> Text
+  gcr-status (note) = if note == "craft produced" then "You create the item." else if note == "craft failed attempt" then "You failed to create the item." else ""
   gcr-choice : (WalkMap, WorldObject, Integer, Integer -> Integer),
     GameCraft, GvPlayer, CraftRequest, WorldObject, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
   gcr-choice (lookup) (state) (player) (request) (mobile) (map) (packet) (now) =
     if request.menu == 0 | gp-u16 packet 5 /= request.menu | gp-u32 packet 1 /= request.tool then gcr-denied "That craft menu is no longer active."
     else let cleared = __record-set request "menu" 0
-    in let choice = gp-u16 packet 7
+    in let asked = gp-u16 packet 7
+    in let choice = if asked == crg-make-last then request.last else asked
     in let recipes = gcr-recipes state.harvest.vendor.currency.world request.category
-    in if choice == 0 then Ok (Just (gs-reply [] "craft cancelled"))
-    else if choice > list-length recipes | now > request.expires | now < request.next
+    in if asked == 0 then Ok (Just (gs-reply [] "craft cancelled"))
+    else if choice == 0 then Ok (Just (gs-reply [gcr-show state request now "You have not made anything yet."] "craft no last"))
+    else if choice > list-length recipes | now > request.expires
       | gcr-opener state player request.tool /= request.category then gcr-denied "That craft selection expired or is invalid."
+    else if now < request.next then Ok (Just (gs-reply [gcr-show state request now "You must wait a moment before crafting again."] "craft wait"))
     else let recipe = list-at recipes (choice - 1)
     in let station = lookup map mobile recipe request.category
-    in if station < 1 then gcr-denied "The required workshop is out of reach."
+    in if station < 1 then Ok (Just (gs-reply [gcr-show state request now (gcr-away-text state.harvest.vendor.currency.world recipe "The required workshop is out of reach.")] "craft workshop"))
+    else if gcr-no-chance state.harvest.vendor.currency.world player.actor recipe then Ok (Just (gs-reply [gcr-show state request now "You have no chance to make that."] "craft no chance"))
     else let next = __record-set request "next" (now + gh-ticks 3000)
+    in let remembered = __record-set request "last" choice
     in let item = (list-at state.harvest.vendor.currency.world.catalog.recipes (recipe - 1)).item
-    in when gcr-produce state player recipe station (gcr-variant request.category choice item)
+    in when gcr-produce state player recipe station (gcr-variant request.category choice item) (gh-into state.harvest player.pack request.tool)
       is Err (e) -> Err e
-      is Ok (reply) -> Ok (Just reply)
+      is Ok (reply) -> let sounded = gcr-sounded state player request.category reply
+        in Ok (Just (gs-reply (sounded.packets & [gcr-show state request now (gcr-status reply.note)]) sounded.note))
+ ServUO DefBlacksmithy, DefTailoring, DefCarpentry (and DefMasonry), DefTinkering and DefBowFletching craft sounds: 0x2A, 0x248,
+ 0x23D, 0x23B, 0x55, played on every attempt, made or failed.
+  gcr-sounded : GameCraft, GvPlayer, Integer, GameReply -> GameReply
+  gcr-sounded (state) (player) (category) (reply) =
+    let sound = if category == 1 then #002A else if category == 2 then #0248 else if category == 3 | (category >= 7 & category <= 10) then #023D else if category == 4 then #023B else if category == 6 then #0055 else 0
+    in if sound == 0 | (reply.note /= "craft produced" & reply.note /= "craft failed attempt") then reply
+    else gs-reply (reply.packets & gsi-sound-at state.harvest.items player.serial sound) reply.note
+ UOAIX-229 (Damian, live 42731: "i was unable to use the tinker tool in my bank starting gear"): a player's craft tool
+ inside a bank answers ServUO BaseTool's 1044263 rather than falling through to "That item has no use action".
+  gcr-banked : GameCraft, GvPlayer, Integer -> Boolean
+  gcr-banked (state) (player) (serial) = let h = state.harvest
+    in let at = gv-lot h.vendor serial 0
+    in if at < 0 then False
+    else if (ep-lot h.vendor.currency.world.goods at).actor /= player.actor then False
+    else if not (gsi-known h.items serial) then False
+    else gmb-root h.items serial 65 /= 0
   gcr-handler-at : (WalkMap, WorldObject, Integer, Integer -> Integer),
     GameCraft, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> Result (Maybe GameReply) Text
   gcr-handler-at (lookup) (state) (shard) (input) (map) (port) (packet) (now) =
@@ -49,7 +82,7 @@ Chapter: GameCraft
     in let tool = if op == 6 then bit-and (gp-u32 packet 1) #7FFFFFFF else 0
     in let at = if op == 6 then gv-lot h.vendor tool 0 else 0
     in if op == 6 & at < 0 then Ok None
-    else if op == 6 & (list-at h.vendor.lots at).item /= 42 & (list-at h.vendor.lots at).item /= 62 then Ok None
+    else if op == 6 & (ep-lot h.vendor.currency.world.goods at).item /= 42 & (ep-lot h.vendor.currency.world.goods at).item /= 62 then Ok None
     else if input.mode /= 2 | input.session.phase /= 2 | shard.active /= input.session.serial
       | h.items.world.buffer /= shard.world.buffer | h.vendor.game.world.buffer /= shard.world.buffer then Err "craft active world binding"
     else let player-at = gv-player h.vendor input.session.serial 0
@@ -60,15 +93,10 @@ Chapter: GameCraft
     else when world-get shard.world player.serial
       is Err (e) -> Err e
       is Ok (mobile) ->
-        if op == 6 & gcr-opener state player tool == 0 then Ok None
+        if op == 6 & gcr-opener state player tool == 0 then (if gcr-banked state player tool then gcr-denied "The tool must be on your person to use." else Ok None)
         else if mobile.health <= 0 then gcr-denied "You cannot craft while dead."
         else if (list-at h.items.actors slot).holding /= 0 then gcr-denied "Finish moving that item first."
         else let request = gcr-session state input player slot
-        in let p = ep-actor h.vendor.currency.world player.actor
-        in let smith = gh-skill-baseline p shard slot 7
-        in let tailor = gh-skill-baseline p shard slot 34
-        in let carpenter = gh-skill-baseline p shard slot 11
-        in let tinker = gh-skill-baseline p shard slot 37
         in if op == 6 then gcr-open lookup state player request mobile map tool now
         else gcr-choice lookup state player request mobile map packet now
   gcr-handler : (WalkMap, WorldObject, Integer, Integer -> Integer),

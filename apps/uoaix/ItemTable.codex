@@ -17,6 +17,14 @@ Chapter: ItemTable
   it-weight : Integer, Integer -> Integer
   it-weight (tiles) (graphic) = if not (it-present tiles graphic) then 0
     else let w = peek-byte tiles (it-entry tiles graphic + 4) in if w == 255 then 0 else w
+ Byte 16 of an entry is the art's height in z units (a crate 3, a barrel 5, gold coins 0).
+  it-height : Integer, Integer -> Integer
+  it-height (tiles) (graphic) = if not (it-present tiles graphic) then 0 else peek-byte tiles (it-entry tiles graphic + 16)
+ Flag 0x00400000 (byte 2, bit 0x40) marks wearable art, and byte 5 is the layer it is worn on (a longsword 1, a
+ battle axe 2), or 0.
+  it-layer : Integer, Integer -> Integer
+  it-layer (tiles) (graphic) = if not (it-present tiles graphic) then 0
+    else if bit-and (peek-byte tiles (it-entry tiles graphic + 2)) #40 == 0 then 0 else peek-byte tiles (it-entry tiles graphic + 5)
   it-generic : Integer, Integer -> Boolean
   it-generic (tiles) (graphic) = it-present tiles graphic & bit-and (peek-byte tiles (it-entry tiles graphic + 1)) 8 /= 0
   it-name : Integer, Integer, Integer -> Text
@@ -31,6 +39,39 @@ Chapter: ItemTable
     else if c == 47 & mode == 1 then it-name-bytes tiles at (i + 1) plural 2 out
     else let keep = c >= 32 & c < 127 & (mode == 0 | (mode == 1 & plural) | (mode == 2 & not plural))
     in it-name-bytes tiles at (i + 1) plural mode (if keep then list-push out c else out)
+
+ Name lookup for [add: the query is ASCII bytes of a packet. The result buffer
+ holds 18 words: exact and partial match counts, then the first 8 exact and the
+ first 8 partial graphics, ascending.
+  it-fold : Integer -> Integer
+  it-fold (c) = if c >= 65 & c <= 90 then c + 32 else c
+  it-same : List Integer, List Integer, Integer, Integer, Integer, Integer -> Boolean
+  it-same (name) (query) (start) (length) (at) (i) = if i == length then True
+    else if it-fold (list-at name (at + i)) /= it-fold (list-at query (start + i)) then False
+    else it-same name query start length at (i + 1)
+  it-within : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  it-within (name) (query) (start) (length) (at) = if at + length > list-length name then False
+    else if it-same name query start length at 0 then True
+    else it-within name query start length (at + 1)
+  it-match : Integer, Integer, List Integer, Integer, Integer -> Integer
+  it-match (tiles) (graphic) (query) (start) (length) = let mark = __heap-save
+    in let name = it-name-bytes tiles (it-entry tiles graphic + 17) 0 False 0 []
+    in let kind = if list-length name == length & it-same name query start length 0 0 then 2
+      else if it-within name query start length 0 then 1 else 0
+    in let released = __heap-restore mark in kind
+  it-note : Integer, Integer, Integer -> Integer
+  it-note (buf) (slot) (graphic) = let count = peek-qword buf (slot * 8)
+    in let kept = if count < 8 then poke-qword buf ((2 + slot * 8 + count) * 8) graphic else 0
+    in poke-qword buf (slot * 8) (count + 1)
+  it-find : Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  it-find (tiles) (query) (start) (length) (buf) (graphic) = if graphic == 16384 then peek-qword buf 0 + peek-qword buf 8
+    else let kind = if it-present tiles graphic then it-match tiles graphic query start length else 0
+    in let noted = if kind == 2 then it-note buf 0 graphic else if kind == 1 then it-note buf 1 graphic else 0
+    in it-find tiles query start length buf (graphic + 1)
+  it-find-new : Integer -> Integer
+  it-find-new (unused) = let buf = alloc-bytes 144 in it-zero buf 0
+  it-zero : Integer, Integer -> Integer
+  it-zero (buf) (i) = if i == 18 then buf else let z = poke-qword buf (i * 8) 0 in it-zero buf (i + 1)
 
   it-load : WorldTable, Integer, Integer, Integer, Integer, Boolean, Integer -> Integer
   it-load (world) (tiles) (serial) (skip) (depth) (gold) (acc) =

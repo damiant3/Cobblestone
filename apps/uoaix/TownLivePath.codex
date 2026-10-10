@@ -8,7 +8,8 @@ Chapter: TownLivePath
 
   TlPath = record { width : Integer, height : Integer, epoch : Integer, count : Integer,
     seen : Integer, cost : Integer, parent : Integer, z : Integer, position : Integer, heap : Integer,
-    goal-x : Integer, goal-y : Integer, goal-z : Integer, expanded : Integer }
+    goal-x : Integer, goal-y : Integer, goal-z : Integer, expanded : Integer,
+    route-keys : Integer, route-steps : Integer, route-count : Integer, route-cursor : Integer }
   tl-path-new : WalkMap -> TlPath
   tl-path-new (map) = let cells = map.width * map.height
     in let seen = alloc-bytes (cells * 8)
@@ -16,19 +17,30 @@ Chapter: TownLivePath
     in TlPath { width = map.width, height = map.height, epoch = 0, count = 0,
       seen = seen, cost = alloc-bytes (cells * 8), parent = alloc-bytes (cells * 8),
       z = alloc-bytes (cells * 8), position = alloc-bytes (cells * 8), heap = alloc-bytes (cells * 8),
-      goal-x = 0, goal-y = 0, goal-z = 0, expanded = 0 }
+      goal-x = 0, goal-y = 0, goal-z = 0, expanded = 0,
+      route-keys = alloc-bytes (tl-route-limit * tl-route-key-bytes), route-steps = alloc-bytes (tl-route-limit * cells), route-count = 0, route-cursor = 0 }
+ Each shared route is 8 qwords: from x, y, z, to x, y, z, step count, generation; its steps are one direction byte each
+ in a slot of one byte per map cell, because a found path enters no cell twice, so no plan outgrows its slot.
+  tl-route-limit : Integer = 64
+  tl-route-key-bytes : Integer = 64
+  tl-route-step-bytes : TlPath -> Integer
+  tl-route-step-bytes (p) = p.width * p.height
   tl-occupied : WorldTable, Integer, Integer, Integer -> Boolean
   tl-occupied (world) (serial) (self) (z) = if serial == 0 then False
     else when world-get world serial
       is Err (_) -> False
-      is Ok (obj) -> (obj.serial /= self & obj.kind == 1 & obj.health > 0 & walk-abs (obj.z - z) < 16)
+      is Ok (obj) -> (obj.serial /= self & obj.kind == 1 & obj.health > 0 & walk-abs (obj.z - z) < 16 & world.blocks obj.serial)
         | tl-occupied world (world-tile-next world serial) self z
+ A door is the walker's within one stair's height (5, Britain's stone stairs 0x0751-0x0758): a walker stands on a stair
+ at its base plus half its height, 3 below the sill of a house door the stair climbs to (UOAIX-154), and a door a storey
+ (20) above or below is never matched. The step through the opened door is still judged by walk-step.
+  tl-door-reach : Integer = 5
   tl-door-find : WdState, Integer, Integer, Integer, Integer -> Integer
   tl-door-find (doors) (x) (y) (z) (i) = if i == doors.count then -1
     else if wd-field doors i 0 > x then -1
     else if wd-field doors i 0 == x & wd-field doors i 1 == y
-      & wd-field doors i 7 == 1 & peek-byte doors.opened i == 0
-      & walk-abs (wd-field doors i 2 - z) <= 2 then i
+      & wd-is-door doors i & not (wd-locked doors i) & bit-and (peek-byte doors.opened i) 1 == 0
+      & walk-abs (wd-field doors i 2 - z) <= tl-door-reach then i
     else tl-door-find doors x y z (i + 1)
   tl-door : Maybe WdState, Integer, Integer, Integer -> Integer
   tl-door (optional) (x) (y) (z) = when optional
@@ -40,7 +52,7 @@ Chapter: TownLivePath
     if not (wd-bound doors) | map.solids /= doors.solids | map.land /= doors.land
       | map.x /= doors.window-x | map.y /= doors.window-y | map.width /= doors.width | map.height /= doors.height
       | door < 0 | door >= doors.count then -129
-    else if peek-byte doors.opened door /= 0 | wd-field doors door 7 /= 1 then -129
+    else if not (wd-is-door doors door) | wd-locked doors door | bit-and (peek-byte doors.opened door) 1 /= 0 then -129
     else let closed-x = wd-field doors door 0
     in let closed-y = wd-field doors door 1
     in let opened-x = closed-x + wd-field doors door 9
@@ -52,30 +64,39 @@ Chapter: TownLivePath
     in let second = alloc-bytes doors.stride
     in let saved1 = ws-copy (map.solids + one * doors.stride) first doors.stride 0
     in let saved2 = ws-copy (map.solids + two * doors.stride) second doors.stride 0
-    in let opened = poke-byte doors.opened door 1
+    in let raw = peek-byte doors.opened door
+    in let opened = poke-byte doors.opened door (raw + 1)
     in let rebuilt1 = wd-rebuild-cell doors closed-x closed-y
     in let rebuilt2 = wd-rebuild-cell doors opened-x opened-y
     in let result = if not (is-ok rebuilt1 & is-ok rebuilt2) then -129
       else when walk-step map x y z direction is Err (_) -> -129 is Ok (height) -> height
-    in let closed = poke-byte doors.opened door 0
+    in let closed = poke-byte doors.opened door raw
     in let restored1 = ws-copy first (map.solids + one * doors.stride) doors.stride 0
     in let restored2 = ws-copy second (map.solids + two * doors.stride) doors.stride 0
     in result
   tl-probe : WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer, Integer, Integer -> Integer
-  tl-probe (world) (map) (doors) (self) (x) (y) (z) (direction) =
+  tl-probe (world) (map) (doors) (self) (x) (y) (z) (direction) = tl-probe-in world map doors self x y z direction True
+ A step out of a closed door cell is probed with that door open too, as a step into one is: a closed door was a dead end,
+ so once the inn's open leaf swung shut no plan passed the door and every worker stood outside or inside it.
+ A plan treats a mobile as a wall only next to the walker's start: a crowd far along the way has moved by the time the
+ walker gets there, and walling it off failed every plan through the inn's one door while three workers stood on it.
+  tl-probe-in : WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
+  tl-probe-in (world) (map) (doors) (self) (x) (y) (z) (direction) (occupied) =
     let nx = x + walk-dx direction
     in let ny = y + walk-dy direction
     in if walk-cell map nx ny < 0 then -129
     else let height = when walk-step map x y z direction
       is Ok (height) -> height
       is Err (_) -> let door = tl-door doors nx ny z
-        in if door < 0 then -129 else when doors
+        in let from = if door >= 0 then -1 else tl-door doors x y z
+        in if door < 0 & from < 0 then -129 else when doors
           is None -> -129
-          is Just (state) -> tl-probe-door state map x y z direction door
+          is Just (state) -> tl-probe-door state map x y z direction (if door >= 0 then door else from)
     in if height < -128 then -129
-    else if tl-occupied world (world-tile-first world nx ny) self height then -129 else height
+    else if occupied & tl-occupied world (world-tile-first world nx ny) self height then -129 else height
+  tl-step-cost : Integer = 8
   tl-heuristic : TlPath, Integer -> Integer
-  tl-heuristic (p) (cell) = max (walk-abs (int-mod cell p.width - p.goal-x)) (walk-abs (cell / p.width - p.goal-y))
+  tl-heuristic (p) (cell) = tl-step-cost * max (walk-abs (int-mod cell p.width - p.goal-x)) (walk-abs (cell / p.width - p.goal-y))
   tl-before : TlPath, Integer, Integer -> Boolean
   tl-before (p) (a) (b) = let ah = tl-heuristic p a
     in let bh = tl-heuristic p b
@@ -119,32 +140,33 @@ Chapter: TownLivePath
     else let slot = p.count
     in let count = __record-set p "count" (slot + 1)
     in tl-up p slot cell
-  tl-expand : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer -> Integer
-  tl-expand (p) (world) (map) (doors) (self) (cell) (direction) = if direction == 8 then 0
+  tl-expand : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Boolean, Integer, Integer -> Integer
+  tl-expand (p) (world) (map) (doors) (self) (start) (walls) (cell) (direction) = if direction == 8 then 0
     else let x = map.x + int-mod cell p.width
     in let y = map.y + cell / p.width
     in let mark = __heap-save
-    in let height = tl-probe world map doors self x y (peek-qword p.z (cell * 8)) direction
+    in let near = walls & max (walk-abs (int-mod cell p.width + walk-dx direction - int-mod start p.width)) (walk-abs (cell / p.width + walk-dy direction - start / p.width)) <= 1
+    in let height = tl-probe-in world map doors self x y (peek-qword p.z (cell * 8)) direction near
     in let restored = __heap-restore mark
     in let neighbor = walk-cell map (x + walk-dx direction) (y + walk-dy direction)
     in let opened = if height < -128 | neighbor < 0 then 0
-      else tl-open p neighbor (peek-qword p.cost (cell * 8) + 1) direction height
-    in tl-expand p world map doors self cell (direction + 1)
-  tl-search : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer -> Integer
-  tl-search (p) (world) (map) (doors) (self) (goal) (budget) =
+      else tl-open p neighbor (peek-qword p.cost (cell * 8) + tl-step-cost + (if direction == peek-qword p.parent (cell * 8) then 0 else 1)) direction height
+    in tl-expand p world map doors self start walls cell (direction + 1)
+  tl-search : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Boolean, Integer, Integer -> Integer
+  tl-search (p) (world) (map) (doors) (self) (start) (walls) (goal) (budget) =
     if p.count == 0 | budget == 0 then -1
     else let cell = tl-pop p
     in let expanded = __record-set p "expanded" (p.expanded + 1)
     in if cell == goal & walk-abs (peek-qword p.z (cell * 8) - p.goal-z) <= 2 then cell
-    else let neighbors = tl-expand p world map doors self cell 0
-    in tl-search p world map doors self goal (budget - 1)
-  tl-reverse-path : TlPath, Integer, Integer, Integer, Integer -> Integer
-  tl-reverse-path (p) (cell) (start) (path) (count) = if cell == start then count
-    else if count == 256 then -1
+    else let neighbors = tl-expand p world map doors self start walls cell 0
+    in tl-search p world map doors self start walls goal (budget - 1)
+  tl-reverse-path : TlPath, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-reverse-path (p) (cell) (start) (path) (limit) (count) = if cell == start then count
+    else if count == limit then -1
     else let direction = peek-qword p.parent (cell * 8)
     in let saved = poke-byte path count direction
     in let previous = cell - walk-dx direction - walk-dy direction * p.width
-    in tl-reverse-path p previous start path (count + 1)
+    in tl-reverse-path p previous start path limit (count + 1)
   tl-flip-path : Integer, Integer, Integer -> Integer
   tl-flip-path (path) (count) (i) = if i >= count / 2 then 0
     else let one = peek-byte path i
@@ -152,22 +174,37 @@ Chapter: TownLivePath
     in let a = poke-byte path i two
     in let b = poke-byte path (count - i - 1) one
     in tl-flip-path path count (i + 1)
+ A walker boxed in by mobiles at its start (twenty workers in the inn's 6 by 7 lodging) has no walled plan; it plans
+ again with no mobile walled, and rte-try-in steps past the crowd after rte-pass-stalls.
+  tl-boxed : WorldTable, WorldObject, Integer -> Boolean
+  tl-boxed (world) (m) (direction) = if direction == 8 then False
+    else tl-occupied world (world-tile-first world (m.x + walk-dx direction) (m.y + walk-dy direction)) m.serial m.z | tl-boxed world m (direction + 1)
+  tl-pass : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Boolean -> Integer
+  tl-pass (p) (world) (map) (doors) (mobile) (start) (goal) (walls) = tl-pass-budget p world map doors mobile start goal walls (p.width * p.height)
+  tl-pass-budget : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Boolean, Integer -> Integer
+  tl-pass-budget (p) (world) (map) (doors) (mobile) (start) (goal) (walls) (budget) = let epoch = __record-set p "epoch" (p.epoch + 1)
+    in let cleared = if p.epoch < 1000000000 then 0 else let zero = wd-zero p.seen 0 (p.width * p.height * 8) in let reset = __record-set p "epoch" 1 in 0
+    in let count = __record-set p "count" 0
+    in let opened = tl-open p start 0 0 mobile.z
+    in tl-search p world map doors mobile.serial start walls goal budget
+ A plan into a path buffer of 256 bytes; tl-plan-sized takes the buffer's size.
   tl-plan : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer -> Integer
-  tl-plan (p) (world) (map) (doors) (mobile) (x) (y) (z) (path) =
+  tl-plan (p) (world) (map) (doors) (mobile) (x) (y) (z) (path) = tl-plan-sized p world map doors mobile x y z path 256
+  tl-plan-sized : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-plan-sized (p) (world) (map) (doors) (mobile) (x) (y) (z) (path) (limit) = tl-plan-budget p world map doors mobile x y z path limit (p.width * p.height)
+ A plan whose search expands at most budget cells (a failed plan otherwise expands every cell the start reaches).
+  tl-plan-budget : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  tl-plan-budget (p) (world) (map) (doors) (mobile) (x) (y) (z) (path) (limit) (budget) =
     let start = walk-cell map mobile.x mobile.y
     in let goal = walk-cell map x y
     in if start < 0 | goal < 0 | p.width /= map.width | p.height /= map.height | not (world-indexed world) then -1
-    else if tl-occupied world (world-tile-first world x y) mobile.serial z then -1
-    else let epoch = __record-set p "epoch" (p.epoch + 1)
-    in let cleared = if p.epoch < 1000000000 then 0 else let zero = wd-zero p.seen 0 (p.width * p.height * 8) in let reset = __record-set p "epoch" 1 in 0
-    in let count = __record-set p "count" 0
-    in let gx = __record-set p "goal-x" (x - map.x)
+    else let gx = __record-set p "goal-x" (x - map.x)
     in let gy = __record-set p "goal-y" (y - map.y)
     in let gz = __record-set p "goal-z" z
     in let expanded = __record-set p "expanded" 0
-    in let opened = tl-open p start 0 0 mobile.z
-    in let found = tl-search p world map doors mobile.serial goal 4096
-    in let zero = wd-zero path 0 256
+    in let walled = tl-pass-budget p world map doors mobile start goal True budget
+    in let found = if walled >= 0 | not (tl-boxed world mobile 0) then walled else tl-pass-budget p world map doors mobile start goal False budget
+    in let zero = wd-zero path 0 limit
     in if found < 0 then -1
-    else let length = tl-reverse-path p found start path 0
+    else let length = tl-reverse-path p found start path limit 0
     in if length < 0 then -1 else let ordered = tl-flip-path path length 0 in length
