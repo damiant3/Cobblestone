@@ -5,12 +5,14 @@ Chapter: Decorator
   cites Uoaix chapter SkillsItemsPackets
   cites Foreword chapter Result
 
-  DcState = record { rows : Integer, room : Integer, count : Integer }
+  DcState = record { rows : Integer, room : Integer, count : Integer, revision : Integer }
   dc-row-bytes : Integer = 24
   dc-block : Integer = 64
   dc-ceiling : Integer = 1048576
   dc-new : Integer -> DcState
-  dc-new (unused) = DcState { rows = alloc-bytes (dc-block * dc-row-bytes), room = dc-block, count = 0 }
+  dc-new (unused) = DcState { rows = alloc-bytes (dc-block * dc-row-bytes), room = dc-block, count = 0, revision = 0 }
+  dc-touch : DcState -> Integer
+  dc-touch (s) = let a = __record-set s "revision" (s.revision + 1) in 0
   dc-serial : DcState, Integer -> Integer
   dc-serial (s) (i) = peek-qword s.rows (i * dc-row-bytes)
   dc-account : DcState, Integer -> Integer
@@ -39,13 +41,13 @@ Chapter: Decorator
     in let a = poke-qword at 0 serial
     in let b = poke-qword at 8 account
     in let c = poke-qword at 16 0
-    in let d = __record-set s "count" (s.count + 1) in 0
+    in let d = __record-set s "count" (s.count + 1) in dc-touch s
   dc-drop : DcState, Integer -> Integer
   dc-drop (s) (serial) = let i = dc-find s serial 0
     in if i < 0 then -1
     else let last = s.count - 1
     in let moved = if i == last then 0 else ws-copy (s.rows + last * dc-row-bytes) (s.rows + i * dc-row-bytes) dc-row-bytes 0
-    in let a = __record-set s "count" last in 0
+    in let a = __record-set s "count" last in dc-touch s
   dc-set-mark : DcState, Integer, Boolean -> Integer
   dc-set-mark (s) (serial) (marked) = let i = dc-find s serial 0
     in if i < 0 | dc-removal s i then -1 else let a = poke-qword s.rows (i * dc-row-bytes + 16) (if marked then 1 else 0) in 0
@@ -66,7 +68,7 @@ Chapter: Decorator
     else let n = peek-qword at 0
     in let grown = dc-grow-to s (max s.room (n + n / 2 + dc-block))
     in let a = ws-copy (at + 8) s.rows (n * dc-row-bytes) 0
-    in let b = __record-set s "count" n in 0
+    in let b = __record-set s "count" n in dc-touch s
 
   dc-create : DcState, GsiState, Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
   dc-create (s) (items) (art) (hue) (x) (y) (z) (account) =
@@ -110,7 +112,7 @@ Chapter: Decorator
       is Err (e) -> Err e
       is Ok (o) -> when world-update items.world (__record-set (__record-set (__record-set o "x" x) "y" y) "z" z)
         is Err (e) -> Err e
-        is Ok (_) -> let touched = world-item-touch items.world in when world-get items.world serial
+        is Ok (_) -> let touched = world-item-touch items.world in let changed = dc-touch s in when world-get items.world serial
           is Err (e) -> Err e
           is Ok (moved) -> Ok (gsi-placement items moved)
   dc-baked : DcState, GsiState, List Integer, Integer, Integer -> Integer

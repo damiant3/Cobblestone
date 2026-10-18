@@ -1,0 +1,55 @@
+Chapter: BvtSmith1998
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter Smith1998
+  cites Uoaix chapter Skill1998
+  cites Uoaix chapter BvtCheck
+
+  bsm-lo : Integer, Integer -> Integer
+  bsm-lo (k) (acc) = if k >= sm98-n then acc else bsm-lo (k + 1) (min acc (sm98-raw k))
+  bsm-hi : Integer, Integer -> Integer
+  bsm-hi (k) (acc) = if k >= sm98-n then acc else bsm-hi (k + 1) (max acc (sm98-raw k))
+ Every row's difficulty is SmithModel's rescale of its raw value.
+  bsm-rescaled : Integer, Integer, Integer -> Boolean
+  bsm-rescaled (k) (lo) (hi) = if k >= sm98-n then True
+    else sm98-at sm98-difficulty k == (sm98-raw k - lo) * 1000 / (hi - lo) & bsm-rescaled (k + 1) lo hi
+  bsm-lengths : Boolean
+  bsm-lengths = list-length sm98-names == sm98-n & list-length sm98-items == sm98-n & list-length sm98-arts == sm98-n
+    & list-length sm98-layers == sm98-n & list-length sm98-cats == sm98-n & list-length sm98-metal == sm98-n
+    & list-length sm98-difficulty == sm98-n & list-length sm98-speed == sm98-n & list-length sm98-ac == sm98-n
+    & list-length sm98-dice == sm98-n & list-length sm98-faces == sm98-n & list-length sm98-bonus == sm98-n
+ Rows past the old catalog are 167 on, one each, in row order, named as the catalog names them.
+  bsm-new-ids : EpWorld, Integer, Integer -> Boolean
+  bsm-new-ids (w) (k) (next) = if k >= sm98-n then next == 211
+    else let item = sm98-at sm98-items k
+    in if item < 167 then (item == 69 | item == 70 | item == 71 | item == 40 | item == 41) & bsm-new-ids w (k + 1) next
+    else item == next & (list-at w.catalog.items (item - 1)).name == list-at sm98-names k & bsm-new-ids w (k + 1) (next + 1)
+ Every row's menu recipe makes it from its metal in iron ingots at the smithy with a smith's hammer, and sits in the
+ smith menu at its row with its gump category.
+  bsm-recipes : EpWorld, List Integer, Integer -> Boolean
+  bsm-recipes (w) (menu) (k) = if k >= sm98-n then True
+    else let id = list-at menu k
+    in let r = list-at w.catalog.recipes (id - 1)
+    in r.item == sm98-at sm98-items k & r.one == 31 & r.one-count == sm98-at sm98-metal k & r.two == 0 & r.station == 9 & r.tool == 62
+      & crg-category 1 r.item == sm98-at sm98-cats k & gcr-graphic r.item == sm98-at sm98-arts k & gcr-layer r.item == sm98-at sm98-layers k
+      & bsm-recipes w menu (k + 1)
+  bvt-smith1998 : Integer -> [Console] Integer
+  bvt-smith1998 (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("smith 1998 fixture economy: " & e) False
+    is Ok (currency) -> let w = currency.world
+      in let lo = bsm-lo 0 1000000
+      in let hi = bsm-hi 0 0
+      in let menu = gcr-recipes w 1
+      in let axe = sm98-index 195
+      in act
+        a <- bvt-check ("UOAIX-242: " & show sm98-n & " smith rows whose difficulties are SmithModel's rescale of raw " & show lo & " to " & show hi & ": buckler 0, platemail 1000, executioner's axe 918; UOX3's axe 786, double axe 803, large battle axe 737") (sm98-n == 49 & bsm-lengths & lo == 24 & hi == 85 & bsm-rescaled 0 lo hi & sm98-of 183 == 0 & sm98-of 41 == 1000 & sm98-of 195 == 918 & sm98-of 69 == 180 & sm98-of 208 == 786 & sm98-of 209 == 803 & sm98-of 210 == 737)
+        b <- bvt-check "the new smith items are catalog 167 to 210 by row, named as the rows; the dagger, longsword, gorget, broadsword and platemail keep 69, 70, 71, 40 and 41" (bsm-new-ids w 0 167)
+        c <- bvt-check ("the smith menu is the 49 rows in order, each made from its metal in iron ingots with a smith's hammer at the smithy, in its gump category, art and layer: " & show (list-length menu)) (list-length menu == sm98-n & bsm-recipes w menu 0)
+        d <- bvt-check "the menu lists a row while difficulty <= value + 250 and the pack holds its metal" (sm98-listed (sm98-index 183) 0 10 & not (sm98-listed (sm98-index 183) 0 9) & not (sm98-listed (sm98-index 41) 700 25) & sm98-listed (sm98-index 41) 750 25 & not (sm98-listed (0 - 1) 1000 1000))
+        e <- bvt-check "a failure loses metal * (-success) / 1000 + 1, at most the metal; a success at 600 is exceptional, below 300 poor" (sm98-loss 10 (0 - 500) == 6 & sm98-loss 10 0 == 1 & sm98-loss 25 (0 - 1000) == 25 & sm98-quality 600 == sm98-exceptional & sm98-quality 599 == sm98-regular & sm98-quality 300 == sm98-regular & sm98-quality 299 == sm98-poor)
+        f <- bvt-check "the 1998 check: Blacksmithy 92.4 at strength 100 makes an executioner's axe at chance 526 (the design's pinned case)" (axe >= 0 & s98-chance (s98-value sm98-skill 924 100 0 0) (sm98-of 195) sm98-range == 526)
+        g <- bvt-check "a smith row under Blacksmithy is Smith1998's (ep-smith98, ep-d98): the axe 918; the axe under Tinkering and bread are not" (ep-d98 7 195 == 918 & ep-smith98 7 195 & not (ep-smith98 37 195) & not (ep-smith98 7 34) & ep-d98 7 34 < 0 & ep-loss98 7 195 14 (0 - 300) 0 == 5 & ep-loss98 7 34 14 (0 - 300) 0 == 0)
+        a + b + c + d + e + f + g
+      end

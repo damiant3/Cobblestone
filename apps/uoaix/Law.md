@@ -23,7 +23,13 @@ with a clear line to the offender witnesses the deed (`cg-witnesses`). An NPC
 witness three rounds drunk is unwilling: it remembers the deed (refusal, warning,
 testimony) but neither tells nor calls. Any other NPC witness tells at once and calls the nearest guard of Britain within 12 tiles
 of itself, who walks to the offender and makes the arrest call. A player
-witness calls by saying `guards`.
+witness calls by saying `guards`. A foot guard on patrol in sight of a
+townsperson's corpse within 8 tiles cries the killer's open murder or assault
+case known and, when no guard holds it, takes it and goes after the killer
+(`cg-dead-cry`). A killed townsperson that was fighting its killer back makes
+the killing no deed only while the killer holds no open assault. A struck guard
+fights its striker where it stands, and every guard on patrol in sight of the
+striker within 18 tiles joins it (`cg-guard-defend`, `cg-focus-join`).
 
 Notoriety is the client's classic byte, overriding what the emitter sent
 (`GameClientView.noto-hook`, `cg-notoriety`): 6 (red, murderer) at five
@@ -66,18 +72,24 @@ challenges the nearest other player within 8 tiles (`cg-duel-said`), who
 accepts by saying "I accept". Between duellists no blow or kill is a deed.
 A bare-handed blow subdues (`GameCombat.subdue-hook`, `cg-subdue`): it stops at
 1 hit point, knocks the loser down, stops both fighters' attacks and ends the
-duel. Armed blows follow the normal rules, and a death ends the duel. With no
+duel; the loser does not turn on the winner (`cb-apply-hit-as`, calm). Armed blows follow the normal rules, and a death ends the duel. With no
 player near, Silas the gambler answers a challenge within 8 tiles: after two
 rounds of ale he accepts and swings first, sober he refuses
-(`cg-duel-silas`). Before Silas, the nearest resident within 8 tiles in sight
-answers (`cg-duel-folk`): after two rounds the resident accepts and swings first,
-sober the resident refuses. A player who says "buy thee a drink" (or "a round")
-beside a resident in sight pays the tavern Silas's price and the resident drinks one
-round, at most 4, one wearing off each game hour (`cg-round-said`); its name reads
-"(merry)" from one round and "(drunk)" from three. A resident three
-rounds drunk challenges a player within 3 tiles in sight aloud and spends a round on
-the boast (`cg-folk-dare`); "I accept" starts the fight with the resident swinging
-first, and the challenge lapses past 8 tiles. Duels and rounds are not saved.
+(`cg-duel-silas`). Before Silas, the nearest drinker within 8 tiles in sight
+answers (`cg-duel-folk`): after two rounds the drinker accepts and swings first,
+sober the drinker refuses. A drinker is a resident, a worker of Britain or a city,
+or a keeper of any town while its shop is shut (`cg-folk-near`, sight on the map of
+the city the player stands in): the healer, the innkeeper and the tavern keeper
+never drink, the musician not during its concert, and guards, bankers and the mayor
+never (root, 2026-10-16). A player who says "buy thee a drink" (or "a round")
+beside a drinker in sight pays Silas's price to the drinker's town house (Britain's
+Sweet Dreams, else the city's tavern keeper or innkeeper, `cg-round-house`) and
+the drinker drinks one round, at most 4, one wearing off each game hour
+(`cg-round-said`); its name reads "(merry)" from one round and "(drunk)" from
+three. A drinker three rounds drunk challenges a player within 3 tiles in sight
+aloud and spends a round on the boast (`cg-folk-dare`); "I accept" starts the
+fight with the drinker swinging first, and the challenge lapses past 8 tiles.
+Duels and rounds are not saved.
 
 Testimony: a player who says "witness", or asks what an NPC saw, to a
 shopkeeper, resident, the mayor or a guard within 3 tiles hears the deeds that

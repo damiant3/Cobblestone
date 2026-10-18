@@ -30,7 +30,7 @@ and audit backpressure remain unchanged.
 ## Kill and restart proof
 
 ```powershell
-pwsh -File apps/uoaix/proofs/test-shard-restart.ps1 -Kernel seed/Codex.cdx -Nasm C:/Tools/nasm/nasm.exe -OutDir build-output/uoaix/shard-kill-proof
+pwsh -File apps/uoaix/proofs/test-shard-restart.ps1 -Kernel seed/Codex.cdx -OutDir build-output/uoaix/shard-kill-proof
 ```
 
 Use a new output directory. The harness expands and hashes complete BIOS/UEFI

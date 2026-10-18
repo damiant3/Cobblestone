@@ -86,21 +86,39 @@ Chapter: TownNetworkHillKernels
       tnhk-error outputs outcomes base (i + 1) (sum + difference * difference / 16)
     end
   end
-  tnhk-score-one : Integer, Integer, Integer, Integer -> [Device] Integer
-  tnhk-score-one (outputs) (outcomes) (scores) (i) = act
+  tnhk-score-one : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-score-one (outputs) (outcomes) (scores) (rows) (i) = act
     base <- i * 14
     chosen <- tnhk-best outputs base 0 -1 0
     reward <- if chosen < 0 then 0 else device-load outcomes (base + chosen)
     error <- tnhk-error outputs outcomes base 0 0
-    device-store scores i (reward * 1000 - error)
+    sale <- tnhk-sale outputs outcomes rows i
+    device-store scores i (reward * 1000 - error - sale)
   end
-  kernel-tnh-score : Integer, Integer, Integer, Integer -> [Device] Integer
-  kernel-tnh-score (outputs) (outcomes) (scores) (samples) = act
+ Score v2 (UOAIX-240): the corpus is variant-major, rows base rows per variant (tno-base-rows, passed by the host);
+ variant 2 is fed and 7 and 8 raise the actor's own quote (slot 9). A demand case whose trade-opinion outcome (12)
+ rises over its chain predecessor's but whose output 12 falls loses 1000 per point of the fall.
+  tnhk-sale : Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-sale (outputs) (outcomes) (rows) (i) = act
+    variant <- i / rows
+    if variant == 7 then tnhk-sale-from outputs outcomes i (i - 5 * rows)
+      else if variant == 8 then tnhk-sale-from outputs outcomes i (i - rows) else 0
+  end
+  tnhk-sale-from : Integer, Integer, Integer, Integer -> [Device] Integer
+  tnhk-sale-from (outputs) (outcomes) (i) (prev) = act
+    mine <- device-load outputs (i * 14 + 12)
+    theirs <- device-load outputs (prev * 14 + 12)
+    want <- device-load outcomes (i * 14 + 12)
+    had <- device-load outcomes (prev * 14 + 12)
+    if want > had then (if mine < theirs then (theirs - mine) * 1000 else 0) else 0
+  end
+  kernel-tnh-score : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-tnh-score (outputs) (outcomes) (scores) (samples) (rows) = act
     bx <- block-idx-x
     bd <- block-dim-x
     tx <- thread-idx-x
     i <- bx * bd + tx
-    if i < samples then tnhk-score-one outputs outcomes scores i else 0
+    if i < samples then tnhk-score-one outputs outcomes scores rows i else 0
   end
   tnhk-sum : Integer, Integer, Integer, Integer -> [Device] Integer
   tnhk-sum (scores) (samples) (i) (sum) = act

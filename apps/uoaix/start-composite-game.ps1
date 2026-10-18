@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$StateFile,
-    [string]$OutDir='',[ValidateRange(10,120)][int]$StartupSeconds=60,[switch]$Testing,[switch]$Dev,[switch]$Hosted,[switch]$Admin,[string]$Vm='',[ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,[ValidateRange(1,100)][int]$ClockScale=1,[switch]$NoPrompt,[switch]$Open,[ValidateRange(0,256)][int]$Links=32)
+    [string]$OutDir='',[ValidateRange(10,900)][int]$StartupSeconds=60,[switch]$Testing,[switch]$Dev,[switch]$Hosted,[switch]$Admin,[string]$Vm='',[ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,[ValidateRange(1,100)][int]$ClockScale=1,[switch]$NoPrompt,[switch]$Open,[ValidateRange(0,256)][int]$Links=32)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 if($Testing -and $Hosted){throw 'Testing mode is forbidden on a public or hosted shard'}

@@ -1,0 +1,60 @@
+Chapter: BvtLoanRetire
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter BvtSealLoans
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-246: each day an empty shop borrows a gold from the king, a customer pays it one, it repays in full and spends
+ its till back to the customer, and a seal closes the day. 300 days lend 300 loans, more than the 128 a loan block
+ holds: each seal retires the repaid loan, so the only live loan is the customer's float, the tables never grow, ids
+ keep counting, and twenty days retain no heap early or late (a loan table growth, the control, retains some).
+  blr-day : EuCurrency, Integer, Integer -> Integer
+  blr-day (x) (shop) (payer) = let purse = (ep-actor x.world shop).purse
+    in let lent = bb-borrow-one x shop
+    in let paid = eu-pay x True payer purse 0 0 1
+    in let repaid = bb-repay x shop
+    in let spent = eu-pay x True purse payer (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+    in let sealed = eu-seal x
+    in if lent == 1 & paid == 0 & spent == 0 & bb-debt x.world.money purse 0 == 0 & sealed == 0 & x.world.money.loan-count == 1 then 1 else 0
+  blr-days : EuCurrency, Integer, Integer, Integer, Integer -> Integer
+  blr-days (x) (shop) (payer) (left) (done) = if left == 0 then done else blr-days x shop payer (left - 1) (done + blr-day x shop payer)
+ The shop and the customer's purse, after the customer is staked a 2-gold float and the shop is emptied; empty when
+ the fixture fails.
+  blr-setup : EuCurrency -> List Integer
+  blr-setup (x) = let opened = bsl-open x
+    in let shop = cg-label-actor x 1001
+    in let customer = cg-label-actor x 1002
+    in if shop < 1 | customer < 1 then []
+    else let purse = (ep-actor x.world shop).purse
+    in let payer = (ep-actor x.world customer).purse
+    in let drained = eu-pay x True purse 1 (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+    in let staked = eu-lend x True 1 payer 3 2 0 em-limit
+    in if staked < 1 | cgf-value x purse /= 0 then [] else [shop, payer]
+  bvt-loan-retire : Integer -> [Console] Integer
+  bvt-loan-retire (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("loan retirement fixture economy: " & e) False
+    is Ok (x) -> act
+      setup <- blr-setup x
+      ok <- list-length setup == 2
+      shop <- if ok then list-at setup 0 else 0
+      payer <- if ok then list-at setup 1 else 0
+      length <- list-length x.world.money.loans
+      warm <- if ok then blr-days x shop payer 20 0 else 0
+      h0 <- __heap-save
+      early <- if ok then blr-days x shop payer 20 0 else 0
+      h1 <- __heap-save
+      middle <- if ok then blr-days x shop payer 240 0 else 0
+      h2 <- __heap-save
+      late <- if ok then blr-days x shop payer 20 0 else 0
+      h3 <- __heap-save
+      days <- warm + early + middle + late
+      a <- bvt-check ("UOAIX-246 retirement: days " & show days & ", live " & show x.world.money.loan-count & ", grown " & show (list-length x.world.money.loans - length) & ", next " & show x.world.money.loan-next & ", heap days 21-40 " & show (h1 - h0) & " days 281-300 " & show (h3 - h2) & ", opening extra " & show (em-open-held x.world.money)) ok
+      b <- bvt-check "UOAIX-246: 300 days of borrow, full repayment and a seal each lend 300 loans past the 128 a block holds, and each seal retires the repaid one: one live loan, no table growth, no extra opening cells" (ok & days == 300 & x.world.money.loan-count == 1 & list-length x.world.money.loans == length & em-open-held x.world.money == 0)
+      c <- bvt-check "UOAIX-246: loan ids keep counting across the retirements (the float is 1, the shop's 300 loans 2 to 301)" (ok & x.world.money.loan-next == 301)
+      h4 <- __heap-save
+      grown <- eu-grow-loans x
+      h5 <- __heap-save
+      d <- bvt-check ("UOAIX-246: twenty days early and late retain no heap, where one loan table growth retains " & show (h5 - h4) & " bytes") (ok & h1 - h0 == 0 & h3 - h2 == 0 & h5 - h4 > 0)
+      e <- bvt-check "UOAIX-246: the economy validates after 300 seals" (ok & euv-valid x)
+      a + b + c + d + e
+    end

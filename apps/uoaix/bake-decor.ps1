@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][int]$Port,[Parameter(Mandatory)][string]$KeyFile,[string]$Pending='',[string]$ClientRoot='')
+param([Parameter(Mandatory)][int]$Port,[Parameter(Mandatory)][string]$KeyFile,[string]$Pending='',[string]$ClientRoot='',[string]$MultiDir='')
 # The decorator bake's export, run against the live shard before a downtime (UoaixDecorator.md): reads live.decor's
 # marked items (marked: serial, art, hue, x, y, z, account) and land edits (land: x, y, art, z, account; absent before
 # the land tools), appends them to decor.cfg and land.cfg, and writes the serials and tiles to the pending file, which
@@ -19,6 +19,11 @@ $marked=@(if($decor.PSObject.Properties.Name -contains 'marked'){$decor.marked})
 if(-not ($decor.PSObject.Properties.Name -contains 'marked') -and -not ($decor.PSObject.Properties.Name -contains 'land')){throw 'live.decor has neither a marked list nor land edits'}
 $land=@(if($decor.PSObject.Properties.Name -contains 'land'){$decor.land})
 $removed=@(if($decor.PSObject.Properties.Name -contains 'removed'){$decor.removed})
+$cuts=@(if($decor.PSObject.Properties.Name -contains 'cuts'){$decor.cuts})
+foreach($c in $cuts){
+    foreach($field in 'name','x0','y0','x1','y1','account'){if($null -eq $c.$field){throw "Cut lacks $field"}}
+    if([string]$c.name -notmatch '^[a-z0-9-]{1,28}$' -or [int]$c.x0 -gt [int]$c.x1 -or [int]$c.y0 -gt [int]$c.y1 -or [int]$c.x1 -ge 6144 -or [int]$c.y1 -ge 4096){throw "Cut $($c.name) outside the legacy map or misnamed"}
+}
 foreach($m in $marked){
     foreach($field in 'serial','art','hue','x','y','z','account'){if($null -eq $m.$field){throw "Marked item lacks $field"}}
     if([int]$m.art -lt 0 -or [int]$m.art -gt 0x7FFF -or [int]$m.hue -lt 0 -or [int]$m.hue -gt 65535 -or [int]$m.z -lt -128 -or [int]$m.z -gt 127 -or [int]$m.x -ge 6144 -or [int]$m.y -ge 4096){throw "Marked item $($m.serial) outside the legacy client's fields"}
@@ -34,14 +39,55 @@ foreach($l in $land){
     if([int]$l.art -lt -1 -or [int]$l.art -gt 0x3FFF -or [int]$l.z -lt -128 -or [int]$l.z -gt 127 -or [int]$l.x -lt 0 -or [int]$l.x -ge 6144 -or [int]$l.y -lt 0 -or [int]$l.y -ge 4096){throw "Land edit $($l.x),$($l.y) outside the legacy map"}
     if([string]$l.account -notmatch '^[A-Za-z0-9 _.-]{1,30}$'){throw "Land edit $($l.x),$($l.y) account name is not plain ASCII"}
 }
-if($marked.Count -eq 0 -and $land.Count -eq 0 -and $removed.Count -eq 0){Write-Output 'BAKE nothing marked';return}
+if($marked.Count -eq 0 -and $land.Count -eq 0 -and $removed.Count -eq 0 -and $cuts.Count -eq 0){Write-Output 'BAKE nothing marked';return}
+# A cut ([decor cut, UoaixMultis.md) becomes a Piece of the map rectangle and a Design of it alone in multis.cfg, at the
+# next id above every design there that MULTI.IDX (-MultiDir, the client's multis with the designs) leaves free. The
+# server keeps cuts in memory only, so the bake's restart is their confirmation and none goes in the pending file.
+$cutsAdded=0
+if($cuts.Count -gt 0){
+    if(-not $MultiDir){throw 'A cut needs -MultiDir (build-multis.ps1 output) to choose a free multi id'}
+    $multisCfg=Join-Path $PSScriptRoot 'multis.cfg'
+    $cfgText=[IO.File]::ReadAllText($multisCfg)
+    $taken=[IO.File]::ReadAllBytes((Join-Path $MultiDir 'MULTI.IDX'))
+    $next=0x1FF;foreach($m in [regex]::Matches($cfgText,'(?m)^Design\s+0x([0-9A-Fa-f]+)')){$next=[Math]::Max($next,[Convert]::ToInt32($m.Groups[1].Value,16))}
+    $lines=@()
+    foreach($c in $cuts){
+        if($cfgText -match ('(?m)^(Piece|Design\s+0x[0-9A-Fa-f]+)\s+'+[regex]::Escape([string]$c.name)+'\s')){Write-Warning "Cut $($c.name) names a piece or design multis.cfg already holds; skipped";continue}
+        $composed=$c.PSObject.Properties.Name -contains 'compose'
+        # A compose is a design of the decorations it held, relative to the GM's tile: a placed multi (art 0x4000 + id)
+        # by its id, which an earlier design or the client defines, and any other decoration as one static. A member
+        # naming a multi neither holds is left out, and a compose left empty is skipped, so the build never refuses it.
+        $parts=@(if($composed){foreach($m in @($c.compose.members)){
+            $dx=[int]$m.x-[int]$c.compose.x;$dy=[int]$m.y-[int]$c.compose.y;$dz=[int]$m.z-[int]$c.compose.z
+            $id=[int]$m.art-0x4000
+            if($id -ge 0 -and ($id -ge 4096 -or [BitConverter]::ToInt32($taken,$id*12) -lt 0 -or [BitConverter]::ToInt32($taken,$id*12+4) -le 0)){Write-Warning "Compose $($c.name) member multi 0x$($id.ToString('X')) is no client multi or design; left out";continue}
+            if($id -ge 0){'  multi 0x{0:X4} {1} {2} {3}' -f $id,$dx,$dy,$dz}else{'  item 0x{0:X4} {1} {2} {3}' -f [int]$m.art,$dx,$dy,$dz}
+        }})
+        if($composed -and $parts.Count -eq 0){Write-Warning "Compose $($c.name) holds no decorations it can keep; skipped";continue}
+        do{$next++;if($next -ge 4096){throw 'No free multi id below 4096 for a cut'}}while([BitConverter]::ToInt32($taken,$next*12) -ge 0 -and [BitConverter]::ToInt32($taken,$next*12+4) -gt 0)
+        if($composed){
+            $lines+=@('',"# Composed in game by account $($c.account), $([DateTime]::UtcNow.ToString('yyyy-MM-dd')).",('Design 0x{0:X4} {1}' -f $next,$c.name))+$parts
+        }else{
+            # A building's floor is often land: stone, cobblestone and marble land become their floor statics.
+            $lines+=@('',"# Cut in game by account $($c.account), $([DateTime]::UtcNow.ToString('yyyy-MM-dd')).",('Piece {0} {1} {2} {3} {4}' -f $c.name,[int]$c.x0,[int]$c.y0,[int]$c.x1,[int]$c.y1),
+                '  land 0x043A 0x043D 0x0519','  land 0x03E9 0x03EC 0x0515','  land 0x0486 0x0489 0x0511',('Design 0x{0:X4} {1}' -f $next,$c.name),('  {0} 0 0 0' -f $c.name))
+        }
+        $cutsAdded++
+    }
+    if($cutsAdded -gt 0){
+        if((Get-Item -LiteralPath $multisCfg).IsReadOnly){& p4 edit $multisCfg | Out-Null}
+        [IO.File]::AppendAllText($multisCfg,(($lines -join "`r`n")+"`r`n"))
+    }
+}
 # A marked building piece is one item of art 0x4000 + multi; it bakes as the multi's drawn components from the client's
 # MULTI.IDX (12 bytes a multi: offset, length, extra) and MULTI.MUL (12 bytes a component: art, x, y, z as 16-bit
 # offsets, then flags; flags 0 is a component the client does not draw: placeholder art 0x0001, doors, boat parts).
+# -MultiDir is build-multis.ps1's output, which holds the designs cut from the map (UoaixMultis.md) beside the client's.
 $multiIdx=$null;$multiMul=$null
 if(@($marked|Where-Object {[int]$_.art -ge 0x4000}).Count -gt 0){
-    if(-not $ClientRoot){throw 'A marked building piece needs -ClientRoot for MULTI.IDX and MULTI.MUL'}
-    $multiIdx=[IO.File]::ReadAllBytes((Join-Path $ClientRoot 'MULTI.IDX'));$multiMul=[IO.File]::ReadAllBytes((Join-Path $ClientRoot 'MULTI.MUL'))
+    $multiRoot=if($MultiDir){$MultiDir}else{$ClientRoot}
+    if(-not $multiRoot){throw 'A marked building piece needs -MultiDir or -ClientRoot for MULTI.IDX and MULTI.MUL'}
+    $multiIdx=[IO.File]::ReadAllBytes((Join-Path $multiRoot 'MULTI.IDX'));$multiMul=[IO.File]::ReadAllBytes((Join-Path $multiRoot 'MULTI.MUL'))
 }
 function Get-Parts($m){
     $list=[Collections.Generic.List[int[]]]::new()
@@ -74,4 +120,4 @@ if($land.Count -gt 0){
 }
 New-Item -ItemType Directory -Force -Path (Split-Path $Pending) | Out-Null
 [ordered]@{serials=@(@($marked)+@($removed)|ForEach-Object {[long]$_.serial});tiles=@($land|ForEach-Object {'{0},{1}' -f [int]$_.x,[int]$_.y}|Select-Object -Unique);exported=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath $Pending
-Write-Output "BAKE exported $($marked.Count) marked items and $($removed.Count) static removals to $cfg and $($land.Count) land edits to $landCfg; pending $Pending"
+Write-Output "BAKE exported $($marked.Count) marked items and $($removed.Count) static removals to $cfg, $($land.Count) land edits to $landCfg and $cutsAdded cuts to multis.cfg; pending $Pending"

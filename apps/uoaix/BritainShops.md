@@ -42,10 +42,10 @@ player in event range (`bsh-shop-open`, `bsh-plays`). The musician sells nothing
 its income is tickets. Outside its hours `GvWorld.closed` marks a shop, and a buy
 or sell request (speech, double-click, 3B, 9F) answers "The shop is closed."
 At closing each keeper walks to its own tile at the Blue Boar
-(`tl-tavern-region`), at game hour 22 to its own tile in the shared lodging
-(`tl-home-region`) through the lodging entrance, and at opening walks back to
-the tile it stood on. The innkeeper's home is its post. A keeper the lodging
-cannot hold stays at its shop. Every ordinary door within `bsh-reach` tiles of
+(`tl-tavern-region`), at game hour 22 to its own floor tile in a Britain house
+(`cg-lodge-all`, UOAIX-239), and at opening walks back to the tile it stood
+on. The innkeeper's home is its post. A keeper no house can hold stays at its
+shop. Every ordinary door within `bsh-reach` tiles of
 a shop's reference region bars once per night (`wd-bar`), when it is closed
 and the keeper is outside that reach. Lockpicking a barred door opens it for
 the rest of that night. All bars lift at opening. The inn's doors and the

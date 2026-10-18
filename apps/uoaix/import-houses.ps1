@@ -1,5 +1,5 @@
 param(
-    [string]$ClientRoot = 'D:/Projects/uoaix-client',
+    [string]$ClientRoot = 'D:/Games/UOAIX-Reference',
     [string]$ReferenceRoot = 'D:/Projects/uo-reference',
     [string]$Output = "$PSScriptRoot/HouseData.codex",
     [string]$SignFile = "$PSScriptRoot/houses.cfg",

@@ -111,8 +111,8 @@ only the town's abstract counters and make no catalog item.
 | 162-165 | gold ring, gold bracelet, necklace, earrings | C st9, 1 gold ingot and 1 ruby, sapphire, emerald or amethyst | the jeweler (shop 21, restock at its counter from gold ingots and gems it bought, `bb-restock-jeweler`; also sold) | players |
 | 119 | kindling | C st8, 1 board makes 4; also H, a blade on a tree (`GameCarve`, no lot) | the carpenter (shop 8), from a bought board; a campfire spends it (`Campfires`) | lumberjack |
 | 120 | pitchfork | C st9, 1 iron ingot and 1 board, Tinkering | the tinker (restock, from a bought ingot); the farmer and the flax picker make their own at founding | miners, lumberjack |
-| 148 | hinge | C st9, 2 iron ingots, Tinkering | the tinker (restock, from bought ingots; also sold) | building sites: 2 for either house (Construction `cn-bill-item` line 3) |
-| 149 | stone block | C st1, 1 stone and a stone hammer, Masonry (economy skill 11) | the provisioner (restock, from stone it bought from the quarrier; also sold) | building sites: 120 for the field stone house (Construction `cn-bill-item` line 2) |
+| 148 | hinge | C st9, 2 iron ingots, Tinkering | the tinker (restock, from bought ingots; also sold) | none since houses come from deeds |
+| 149 | stone block | C st1, 1 stone and a stone hammer, Masonry (economy skill 11) | the provisioner (restock, from stone it bought from the quarrier; also sold) | none since houses come from deeds |
 
 No NPC maker: 8, 16-24, 43, 44, 49, 57-61, 78-103.
 A restock (bb-restock) makes a good only from stone, logs and boards the shop holds (`bb-restock-input`).

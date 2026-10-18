@@ -236,7 +236,7 @@ records.
 
 Rows keep their original identifiers.
 
-**Takeable now, no ruling or toolchain needed:** 2.38 (the WGSL runner check).
+**Takeable now, no ruling or toolchain needed:** none.
 **Parked:** 2.73 (red).
 
 **WE DO NOT DO TOOLCHAINS** (Damian, 2026-09-07, in those words). This is not
@@ -581,45 +581,6 @@ emission is 3.6 s of a 149.4 s module phase and `wat2wasm` itself is 0.3 s, so
 there is no build-time case, only self-sufficiency.
 
 
-## 2.13 -- the zig plug discards a Real's width and overflow mode
-
-`ZigEmitter.codex:348` and `:379` map `RealTy (w) (m)` to `f64`, discarding
-both the width and the overflow mode, so in this plug an f32 Real is an f64, a
-trapping Real does not trap and a saturating one does not saturate. Filling the
-mode rows would replace an honest refusal with a plausible wrong number.
-**This wants a representation decision, not an emitter row.**
-
-**The WIDTH half is settled and the MODE half is not.** An approx Real is the
-exact f64 widening of its f32, which is a real convention rather than an
-erasure: `cx_bits_to_real_approx` states it, `cx_to_real_approx` rounds through
-f32 so the narrowing is not lost, and `real-approx-to-int` follows from it
-(2.36). Nothing analogous exists for the modes, and
-`to-real-trapping` / `to-real-saturating` are still refused by name, which is
-why `codex/test/ops/real-mode-show` cannot build.
-
-**`show` on a Real WORKS now (reek, 2026-09-07),** so this row no longer blocks
-text output. `cx_real_to_text` follows the `__real_to_text` oracle's format: at
-most fifteen fractional digits, trailing zeros stripped to one, always a dot
-and always a digit after it, with the integer part taken through
-`cx_real_to_int` so the two agree on NaN, the infinities and anything past 2^63
-by construction rather than by a guard written twice. CCE codes read off the
-plug's own `cce_table`: 3 is '0', 65 is '.', 73 is '-'.
-
-**An `opening` that RETURNS a Real prints too**, from the same helper; that was
-a second refusal for the same missing capability and both are deleted rather
-than left uncalled. Graded on an entry returning `2.5`, which answers `2.5`.
-
-**The corpus cannot grade the interesting half of that, so it was probed
-directly.** Every `show` of a Real in the tree is a half or an integer, all
-exact in binary, so a green run does not separate a correct formatter from one
-merely right on exact values (L-CONSTRUCT). Driving the emitted function on
-values the corpus lacks: `0.1` answers `0.1` rather than a 0.0999 tail,
-`1.0/3.0` answers `0.333333333333333`, `2.9000001` and `3.141592654` come back
-exactly, `0.0000001` keeps its leading zeros. Negative zero prints `-0.0`,
-following the oracle's sign-bit test; no `.expected` in the tree spells it, so
-that one is a decision rather than a measurement.
-
-
 ## 2.14 -- what the hosted corpus score does NOT mean
 
 The four defects this row was opened for are fixed and parity holds: wasm 51 =
@@ -701,7 +662,7 @@ OPEN, AS SEVEN CLASSES (root's ruling 2026-09-07: one CL per class, class = the 
 - **Class 2, wrapping-only 64-bit, no checked primitive. DONE** (d, fortran, objc, flutter). The go shape: a helper per op in the plug's own preamble, so the emission carries one grammar rather than four closure syntaxes. Two members are NOT plain wraps and the difference is in the code: **objc** is C, where signed overflow is UNDEFINED rather than wrapping, so its band does the arithmetic in `NSUInteger` and converts back, and its trap computes the same way before reading the sign, because the check must not be the thing that overflows; **fortran** has no unsigned type at all, so its band is the bare operator and rests on gfortran wrapping in practice rather than on the standard, which leaves `integer(8)` overflow undefined. Fortran also has no exceptions: `error stop` is the only way one of its procedures can refuse to return. d and flutter (Dart on the VM) genuinely wrap, so their bands are the bare operator. EMISSION ONLY: no toolchain for any of the four is on this box (g++, gcc, clang, dmd, ldc2, gfortran, dart all absent, measured 2026-09-07) and none is oracle-wired, so nothing here is graded by running. Dart on the WEB is a double, where neither arm holds; that build would take the class 5 treatment. **FOR WHOEVER INSTALLS A TOOLCHAIN, START WITH FORTRAN, AND THE QUESTION IS REFUSE-OR-WRAP:** its band is the one arm in this class resting on a compiler's habit rather than on a language guarantee, so `gfortran -ftrapv` or a future release turning overflow into a trap would make the WRAPPING band abort instead of wrapping, which is the contract inverted rather than merely unimplemented. The two outcomes to distinguish on the first real run are a band row answering the wrapped value (the arm is sound and the standard's silence is harmless here) against a band row aborting (the plug cannot express the band at all and belongs in class 5 with a named refusal, not in this one). Nothing on this box can tell those apart today.
 - **Class 3, trapping by default. DONE** (zig, swift, swiftui, nim, ada). **The PLAIN arm needed nothing and the BAND was the entire job**, which is the reverse of every other class: these targets already trap, so what was wrong is that the wrapping band trapped too, inverting the contract rather than leaving it unimplemented. The row previously called this class "nothing but a sentence" and that reading had it backwards. swift and swiftui take the masking operators `&+` `&-` `&*`; nim has no such operator, so its band goes through `uint`, whose arithmetic wraps by definition, and casts back; ada needs a MODULAR type and `Unsigned_64` is the one that matches the width, but converting a negative `Long_Long_Integer` to it would itself raise, so the band is two `Ada.Unchecked_Conversion` instantiations with the arithmetic done in the modular type. **The PLAIN arm in two of them rests on a compiler setting rather than on the language, the same shape as fortran's band in class 2:** nim's overflow checks are on by default but `-d:release` turns them off unless `--overflowChecks:on` is passed, and swift's trap is off under `-Ounchecked`. Neither is expressible in the emission; both are the build's to guarantee. EMISSION ONLY: no swift, nim or ada toolchain on this box.
 - **Class 4, bignum, no fixed width.** python, ruby, elixir, scheme, javascript DONE (main 22426). **gtk joins this class and is done with them**: it emits Python (PyGObject), not C++. GRADED where a runtime exists: javascript and python each 57 of 57 values against x86-64 truth. The band rows overflow, so a bignum plug without the truncation cannot match, and they cannot pass by accident (L-VACUOUS). The trap arm's throw is not exercised: the oracle cannot grade a program that traps.
-- **Class 5, double-valued, cannot represent i64. DONE** (typescript, angular, react, vue, svelte, electron, html, qt). Every one emits JavaScript or, for qt, QML with a JavaScript block, so a Codex Integer is a Number and a double holds an exact integer only to 2^53. **BOTH ARMS REFUSE and the node type is not consulted**: the band cannot wrap at 64 bits and the plain arm cannot tell an overflow from a rounding, and in range the two agree anyway, so there is nothing for `int-ty-wraps` to decide. The guard is on the VALUES (`Number.isSafeInteger` of both operands and the result), so a program whose integers fit a double still computes and only the unrepresentable case refuses; refusing every integer add outright would forfeit the 55 oracle rows that are correct today to answer the 2 that are not. The marker is `CODEX_REFUSED_integer_exceeds_double_precision`, which `plug-oracle-test.ps1` reads as its REFUSED verdict. **typescript left this class with 2.43** (a Codex Integer is a BigInt there) and answers the oracle subject in full, PASS 57/57. **html left too**: its integers are BigInt, the band is `BigInt.asIntN(64, ...)` when `int-ty-wraps`, and the plain arm traps `CODEX_TRAP_integer_overflow`; graded 2026-09-29 by Hamt's djb2 on a 43-character string against an independent PowerShell BigInteger oracle, where the refusing arm had thrown. The other six carry the refusal arm. The six are not oracle-wired and could not be: they emit framework sources (React components, Vue and Svelte single-file components, an Electron main, an HTML page, QML) rather than a program node can run, so for them the build is the only instrument. lua, perl and php remain OUT of this class: the row places them here by a language claim nobody has measured, and each needs its integer width established first.
+- **Class 5, double-valued, cannot represent i64. DONE** (typescript, angular, react, vue, svelte, electron, html, qt). Every one emits JavaScript or, for qt, QML with a JavaScript block, so a Codex Integer is a Number and a double holds an exact integer only to 2^53. **BOTH ARMS REFUSE and the node type is not consulted**: the band cannot wrap at 64 bits and the plain arm cannot tell an overflow from a rounding, and in range the two agree anyway, so there is nothing for `int-ty-wraps` to decide. The guard is on the VALUES (`Number.isSafeInteger` of both operands and the result), so a program whose integers fit a double still computes and only the unrepresentable case refuses; refusing every integer add outright would forfeit the 55 oracle rows that are correct today to answer the 2 that are not. The marker is `CODEX_REFUSED_integer_exceeds_double_precision`, which `plug-oracle-test.ps1` reads as its REFUSED verdict. **typescript left this class with 2.43** (a Codex Integer is a BigInt there) and answers the oracle subject in full, PASS 57/57. **html left too**: its integers are BigInt, the band is `BigInt.asIntN(64, ...)` when `int-ty-wraps`, and the plain arm traps `CODEX_TRAP_integer_overflow`; graded 2026-09-29 by Hamt's djb2 on a 43-character string against an independent PowerShell BigInteger oracle, where the refusing arm had thrown. The other six carry the refusal arm. The six are not oracle-wired and could not be: they emit framework sources (React components, Vue and Svelte single-file components, an Electron main, an HTML page, QML) rather than a program node can run, so for them the build is the only instrument. lua and php remain OUT of this class: the row places them here by a language claim nobody has measured, and each needs its integer width established first. **perl is DONE and is its own mechanism**: a 64-bit IV that silently PROMOTES past 2^63, to an unsigned UV and then to a double, so it neither traps nor wraps. Its band runs under `use integer`, which wraps in two's complement; its plain arm is three preamble helpers (`pl-int-helpers`, `PerlEmitter.codex`) that compute the wrapped value, test the sign, and for multiply also the quotient and the two -1 cases, and on overflow print `CODEX_TRAP_integer_overflow` and EXIT 255 rather than die, because `try` lowers to eval and an x86-64 trap is not recoverable. GRADED BY RUNNING under Git for Windows' perl 5.38 (2026-10-16): 12 boundary and band values equal x86-64's, three trap probes (add, sub, mul) stop with the marker where x86-64 raises `!EXC=06`, an in-range control runs to completion on both, and the pre-change plug gets all four band rows wrong (16000000000000000000, 9223372036854775808, -9.22337203685478e+18, 9223372037000250000). perl is not oracle-wired: see 2.110.
 - **Class 6, integer narrower than 64 bits.** DONE for the JVM plugs (java, kotlin, scala, compose): all four emit 64-bit `L` literals and longs, so a plain Integer takes `Math.addExact` / `subtractExact` / `multiplyExact` and the band the bare long operator. EMISSION ONLY (no JDK, permanently): on `plug-oracle-arith` each emits 7 / 26 / 2 exact calls where it emitted none, with both band rows bare (2026-09-29). OPEN: ocaml (native `int` is 63-bit), wgsl (i32, already refuses a literal wider than 32 bits), and haskell, which emits bare literals with no `:: Int`, so GHC defaults them to `Integer` and its width is not what the class name assumes. A checked primitive applied to a narrow int traps at the wrong boundary, which is worse than the wrap.
 - **Class 7, not general-purpose expression emitters. RULED OUT OF 2.21, not deferred** (babbage, cobol, pascal, ptx, t3isa). The first question was whether the contract applies at all, and measured on what each emits, it does not. **babbage** and **cobol** return a structured result (a store-and-operate record, `PIC S9(18)` fixed decimal) rather than an expression, and neither target has a 64-bit two's-complement integer for the band to wrap in: COBOL's `PIC S9(18)` is 18 DECIMAL digits, not 2^63. **ptx** (`add.s64`) and **t3isa** (`TADD`) are machine targets whose add IS the hardware's, so the band is already whatever the ISA does and a trap would have to be synthesised in emitted instructions. **pascal** is the one worth revisiting if anyone installs a toolchain: it is a real expression language, so the class is a statement about the other four rather than about it. Nothing here is blocked; the contract simply does not reach these emitters, and saying so is the answer rather than a deferral.
 
@@ -730,17 +691,13 @@ routed: it is fixed on OUR side, `$f64_to_text` in `WasmEmitter.codex` at head
 2026-09-07. His items 7 and 8 belong to `angry-gopher` and are not ours.
 
 
-## 2.38 -- OPEN: the undefined-callee check covers the six text plugs whose toolchain is on the box; the rest need an analyzer or a toolchain
+## 2.38 -- OPEN: the undefined-callee check covers WGSL, PTX and the six text plugs whose toolchain is on the box; the rest need an analyzer or a toolchain
 
-WGSL needs the check: `codex/plugs/wgsl/run.ps1` reports success for a module
-that calls a function it never defines, which WebGPU then refuses whole
-("unresolved call target"). `int-mod` lowers now (`codex/plugs/wgsl/arms/int-mod.mjs`),
-so the case that found the gap is gone; the next unhandled builtin takes the
-same path. WGSL's own builtins (`abs`, `select`, `bitcast`, the type
-constructors) carry no `fn` declaration, so the runner check needs that list,
-or the emitter refuses a callee that is neither a definition nor a lowered
-builtin. `codex/plugs/ptx/run.ps1` holds the PTX form of the check (a call to
-an undeclared function, or a `CODEX_REFUSED_` marker, exits 6).
+`codex/plugs/wgsl/run.ps1` refuses (exit 6, nothing written) a module that calls a
+name it neither declares (`fn`, `struct`, `alias`) nor finds among WGSL's predeclared
+built-ins, constructors and statement keywords (`codex/plugs/wgsl/wgsl-callees.ps1`);
+the 88 tracked `.wgsl` files pass it and a planted missing callee fails it (red,
+2026-10-17). `codex/plugs/ptx/run.ps1` holds the PTX form.
 
 `build/check-plug-callees.ps1` reads the source `plug-oracle-test.ps1 -KeepArtifacts`
 leaves in `build-output/plug-oracle` and fails on a name that is called, bound
@@ -860,3 +817,13 @@ mentions one 20 times and still drops it at this subject.
 No runtime for any of the four is on this box, so the oracle cannot grade a repair and the guards checker
 reads text only (L-VACUOUS): a repair here needs a toolchain decision first (WE DO NOT DO TOOLCHAINS,
 Damian 2026-09-07), or a refusal of guarded matches as the honest answer.
+
+## 2.110 -- the perl plug answers 47 of `plug-oracle-arith`'s 59 rows, so it is graded only by hand-built subjects
+
+Measured 2026-10-16 (red) under Git for Windows' perl 5.38 against x86-64 truth from seed ADF1D659: rows 1 to 49 print and 47 of them match; the program dies at row 50. What is left, each its own cause:
+
+- **Rows 18 and 19, a `clamping` bounded record field** (`gauge 150` answers 150 where x86-64 clamps to 100): `new_Gauge` stores the value unchecked.
+- **Row 50 on, `char-encode` and `code-to-char`** are absent from `pl-builtin-emitters`, so they emit as bareword calls to subs that do not exist (`Undefined subroutine &main::code_to_char`).
+- **A function PARAMETER applied to arguments** emits as a bareword (`f->(...)` in Foreword's `map-list-loop`, so `for x in xs -> Ctor x` dies). Emitting `$f` there is right for a local and is NOT the fix: `emit-pl-apply` cannot tell a local from an unknown builtin, and `$name` makes every unknown builtin anywhere in the program, reached or not, fail `use strict` at compile time, where today an unreached one compiles. The fix needs the locals in scope.
+
+Until these close, perl cannot join `plug-oracle-test`, whose `Exe` would be `C:\Program Files\Git\usr\bin\perl.exe` (not on PATH). Owner red.

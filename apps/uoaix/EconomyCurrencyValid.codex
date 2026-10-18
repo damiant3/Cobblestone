@@ -33,14 +33,13 @@ Chapter: EconomyCurrencyValid
     station-count = w.station-count, node-count = w.node-count, hour = 0,
     gathered = w.gathered, found = w.found, taxed = w.taxed, crafted = w.crafted, consumed = w.consumed,
     sales = w.sales, turnover = w.turnover, crown-turnover = w.crown-turnover,
-    trades = w.trades, trade-count = w.trade-count, mint-owner = 0, mint-rate = 0, mint-ingots = 0, opening = w.opening, goods = w.goods, no-picks = w.no-picks, levies = w.levies }
+    trades = w.trades, trade-count = w.trade-count, mint-owner = 0, mint-rate = 0, mint-ingots = 0, opening = w.opening, goods = w.goods, no-picks = w.no-picks, levies = w.levies, learn-hook = ep-learn-none }
   euv-started : EmMoney, EmMoney -> EmMoney
   euv-started (start) (live) = let m = em-new 0
     in let copied = em-copy-table start m
     in let opened = __record-set m "opening" live.opening in m
   euv-resume : EuCurrency -> Result EuCurrency Text
-  euv-resume (source) = if source.start.sealed == 0 then
-      (when eu-new (euv-shadow source.world) is Err (e) -> Err e is Ok (x) -> let based = __record-set x "start" source.start in Ok x)
+  euv-resume (source) = if source.start.sealed == 0 then eu-new (euv-shadow source.world)
     else let c = source.start.cells
     in let w = euv-shadow source.world
     in let money = __record-set w "money" (euv-started source.start.gold source.world.money)
@@ -52,7 +51,7 @@ Chapter: EconomyCurrencyValid
       events = eu-events 0 [], count = 0, copper-rate = ep-at c 1, silver-rate = ep-at c 2,
       copper-owner = ep-at c 3, silver-owner = ep-at c 4, copper-yield = ep-at c 5, silver-yield = ep-at c 6,
       copper-ingots = ep-at c 7, silver-ingots = ep-at c 8, copper-seq = ep-at c 9, silver-seq = ep-at c 10,
-      gold-seq = ep-at c 11, purse-count = ep-at c 12, base = source.base, start = source.start })
+      gold-seq = ep-at c 11, purse-count = ep-at c 12, base = source.base, start = eu-start-new 0 })
   euv-mint : EuCurrency, EuEvent -> Integer
   euv-mint (x) (e) = if not (eu-room x) | not (eu-metal e.metal) | e.reference <= 0 | e.reference > 1000 then -1
     else let owner = if e.metal == 1 then x.copper-owner else if e.metal == 2 then x.silver-owner else x.world.mint-owner
@@ -96,8 +95,8 @@ Chapter: EconomyCurrencyValid
     else if e.kind == 8 then
       if not (eu-metal e.metal) | e.reference <= 0 then -1
       else let m = eu-money source e.metal
-      in if e.reference > m.loan-count then -1
-      else let loan = list-at m.loans (e.reference - 1)
+      in if em-loan-slot m e.reference < 0 then -1
+      else let loan = em-loan m e.reference
       in let room = if (eu-money x e.metal).loan-count < list-length (eu-money x e.metal).loans then 0 else eu-grow-loans x
       in eu-lend x True e.actor e.party e.metal loan.principal loan.interest loan.due
     else if e.kind == 9 then eu-repay x True e.actor e.metal e.reference (if e.metal == 1 then e.copper else if e.metal == 2 then e.silver else e.gold)
@@ -106,7 +105,8 @@ Chapter: EconomyCurrencyValid
     else if e.kind == 12 then eu-exchange x e.actor e.metal e.reference (if e.copper > 0 then 1 else if e.silver > 0 then 2 else 3)
     else if e.kind == 13 then eu-repay-value x True e.actor e.metal e.reference e.copper e.silver e.gold
     else if e.kind == 14 then eu-steal x e.actor e.party e.copper e.silver e.gold
-    else if e.kind == 15 then eu-escrow x e.actor e.party e.copper e.silver e.gold e.reference else -1
+    else if e.kind == 15 then eu-escrow x e.actor e.party e.copper e.silver e.gold e.reference
+    else if e.kind == 16 then eu-deposit x e.actor e.party e.copper e.silver e.gold else -1
   euv-replay-at : EuCurrency, EuCurrency, Integer -> Integer
   euv-replay-at (source) (x) (i) = if i == source.count then -1
     else let e = list-at source.events i

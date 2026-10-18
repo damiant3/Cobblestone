@@ -258,7 +258,8 @@ try {
 } finally {
     Remove-Item -Force $subjectsFile -ErrorAction SilentlyContinue
 }
-if ($code -ne 0) { Write-Host "[cite-gate] FAIL: the cited tests did not all pass"; exit 1 }
+$failed = 0
+if ($code -ne 0) { Write-Host "[cite-gate] FAIL: the cited tests did not all pass"; $failed++ }
 
 # THE CODEGEN COST PINS. A codex/test chapter with a .census sidecar is compiled
 # under the callcensus mode flag, and every CDX6014 line pinned there is a
@@ -298,7 +299,17 @@ if ($compilerChanged) {
         }
         Write-Host "[cite-gate] census $tag : $($pinned.Count) pinned definition(s), $better value(s) improved$(if ($better -gt 0) { '; re-pin to keep the gain' })"
     }
-    if ($worse -gt 0) { Write-Host "[cite-gate] FAIL: $worse codegen cost regression(s) against a .census pin"; exit 1 }
+    if ($worse -gt 0) { Write-Host "[cite-gate] FAIL: $worse codegen cost regression(s) against a .census pin"; $failed++ }
+
+    # The LIR dump pins: the x86 block structure, liveness and allocation, and
+    # the same allocator under two non-x86 register files, each with every
+    # verifier's verdict. No cite reaches them, because the compiler is
+    # assembled by glob.
+    foreach ($h in 'lir-dump-test.ps1', 'lir-a64-test.ps1') {
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot $h) -Kernel $Kernel
+        if ($LASTEXITCODE -ne 0) { Write-Host "[cite-gate] FAIL: $h"; $failed++ }
+    }
 }
+if ($failed -gt 0) { exit 1 }
 Write-Host "[cite-gate] OK: $($rel.Count) cited test chapter(s), $($runnable.Count) of them against an .expected"
 exit 0

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([Parameter(Mandatory=$true)][int]$Port,[Parameter(Mandatory=$true)][string]$KeyFile,
-    [ValidateSet('panel-data','gm-list')][string]$Command='panel-data',[string]$HostName='127.0.0.1',[string]$Section='')
+    [ValidateSet('panel-data','gm-list','treasury-view')][string]$Command='panel-data',[string]$HostName='127.0.0.1',[string]$Section='')
 # Reads the live admin state the way the login page (AdminLoginPage) does (UOAIX1 handshake: HMAC-derived keys, AES-GCM envelopes) and
 # prints the reply JSON, whole or one top-level section (-Section live, or a dotted path such as live.law.jail).
 # Read commands only; the protocol is the one apps/uoaix/test-admin.ps1 grades. The panel holds one owner session:

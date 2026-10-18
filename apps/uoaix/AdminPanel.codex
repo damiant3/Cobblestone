@@ -23,7 +23,7 @@ Chapter: AdminPanel
     gm-sessions : List Integer, clock : GameClock,
     treasury : Maybe TreasuryBinding, treasury-enabled : Boolean, server-log : Integer,
     live : (Integer -> Text), appoint : (Integer -> Text), names : (Integer -> Text), decays : (Integer -> Text), plays : (JsonValue -> Text),
-    land-baked : (Text -> Text), history : (Integer -> Text)
+    land-baked : (Text -> Text), history : (Integer -> Text), houses : (Integer -> Text)
   }
  The login page asks panel-open with codex 1 and receives the compiled panel page as page; a tool asking without it
  receives the session alone.
@@ -34,6 +34,10 @@ Chapter: AdminPanel
   panel-history-none (item) = "{\"error\":\"history-unbound\"}"
   panel-bind-history : AdminPanel, (Integer -> Text) -> Integer
   panel-bind-history (p) (history) = let bound = __record-set p "history" history in 0
+  panel-houses-none : Integer -> Text
+  panel-houses-none (unused) = "{\"error\":\"houses-unbound\"}"
+  panel-bind-houses : AdminPanel, (Integer -> Text) -> Integer
+  panel-bind-houses (p) (houses) = let bound = __record-set p "houses" houses in 0
   panel-plays-none : JsonValue -> Text
   panel-plays-none (unused) = admin-error "unsupported-command"
   panel-bind-plays : AdminPanel, (JsonValue -> Text) -> Integer
@@ -72,7 +76,7 @@ Chapter: AdminPanel
     connections = tf-zeros 32768 [], pending = 0, pending-session = 0,
     pending-log = 0, pending-state = 0, gms = gms, gm-sessions = gm-zeros 384,
     clock = gc-new get-ticks, treasury = None, treasury-enabled = False, server-log = 0, live = panel-live-none, appoint = panel-appoint-none, names = panel-names-none, decays = panel-decays-none, plays = panel-plays-none,
-    land-baked = panel-land-baked-none, history = panel-history-none
+    land-baked = panel-land-baked-none, history = panel-history-none, houses = panel-houses-none
   }
 
   panel-bind-log : AdminPanel, Integer -> Integer
@@ -315,7 +319,7 @@ Chapter: AdminPanel
     else admin-load a.reports (int-mod (a.report-head + offset) (admin-report-room a) * 2048)
 
   panel-action-known : Text -> Boolean
-  panel-action-known (action) = action == "lord-british-enter" | action == "lord-british-leave" | action == "teleport" | action == "invisible" | action == "summon-item" | action == "summon-creature" | action == "move" | action == "inspect" | action == "grant-plot" | action == "navy" | action == "ban" | action == "unban" | action == "decor-baked"
+  panel-action-known (action) = action == "lord-british-enter" | action == "lord-british-leave" | action == "teleport" | action == "invisible" | action == "summon-item" | action == "summon-creature" | action == "move" | action == "inspect" | action == "navy" | action == "ban" | action == "unban" | action == "decor-baked"
 
   panel-action : AdminPanel, JsonValue, Integer -> Text
   panel-action (p) (v) (now) =
@@ -361,6 +365,7 @@ Chapter: AdminPanel
     else if command == "treasury-tax" | command == "treasury-grant" then panel-treasury-change p v now
     else if command == "panel-day-set" then panel-day-set p (admin-int v "seconds") now
     else if command == "panel-history" then p.history (admin-int v "item")
+    else if command == "panel-houses" then p.houses 0
     else if command == "panel-levels" then slg-json p.server-log
     else if command == "panel-level-set" then panel-level-set p v now
     else if command == "gm-list" then gm-memory-view p.gms (p.world.world.hour / 24)
@@ -399,7 +404,8 @@ Chapter: AdminPanel
     in if not parsed.ok then admin-error "syntax"
     else if skip-ws body parsed.next (text-length body) /= text-length body then admin-error "syntax"
     else let command = json-get-str parsed.value "command" ""
-    in if text-starts-with command "panel-" | text-starts-with command "gm-" | text-starts-with command "treasury-" | command == "report-read" | command == "report-ack" then
+    in if text-starts-with command "panel-" | text-starts-with command "gm-" | text-starts-with command "treasury-" | command == "report-read" | command == "report-ack"
+      | command == "plays" | command == "play-edit" | command == "mayor-replace" | command == "decor-land-baked" then
       if role /= 4 then admin-error "role" else panel-human p parsed.value get-ticks
     else admin-command p.world role parsed.value
 

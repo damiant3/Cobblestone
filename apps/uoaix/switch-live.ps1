@@ -2,17 +2,17 @@
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$World,[Parameter(Mandatory)][string]$OutDir,
     [string]$Running='',[string]$BackupDir='',[switch]$Fresh,[string]$ClientRoot='',[string]$DecorationFile='',[string]$FloraFile='',
     [ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,
-    [ValidateRange(10,600)][int]$StopSeconds=120,[ValidateRange(30,900)][int]$ServeSeconds=300,[ValidateRange(10,120)][int]$StartupSeconds=120,[ValidateRange(1,100)][int]$ClockScale=1,
-    [switch]$Bake,[string]$KeyFile='',[string[]]$PlayerClients=@('D:\Projects\uoaix-client-flora','D:\Projects\uoaix-client2'))
+    [ValidateRange(10,600)][int]$StopSeconds=120,[ValidateRange(30,1800)][int]$ServeSeconds=900,[ValidateRange(10,900)][int]$StartupSeconds=600,[ValidateRange(1,100)][int]$ClockScale=1,
+    [switch]$Bake,[string]$KeyFile='',[string[]]$PlayerClients=@('D:\Games\UOAIX-Client1','D:\Games\UOAIX-Client2'))
 # Switches the live testing shard to a new server artifact: stops the supervisor at -Running (its OutDir) through its
 # stop file, backs up every world disk being left or reused, then launches supervise-composite-game.ps1 -Testing -Admin
 # detached on -World into the new -OutDir. -Fresh installs the map cache on -World, which must not exist yet.
 # A disk a codex-vm process names is never copied (L-HOTCOPY): the switch refuses before it touches anything.
 # -Bake (UoaixDecorator.md) adds the decorator bake: before the stop, bake-decor.ps1 exports the marked items through
 # the running shard's admin port; after the world backup, install-map-cache.ps1 folds decor.cfg and land.cfg into
-# -World, and every -PlayerClients directory gets the same STAIDX0, STATICS0 and MAP0 (decor-statics.ps1 over a fresh
-# transform-flora.ps1 output, decor-land.ps1 over -ClientRoot), its own three files backed up first. A failure after
-# the stop leaves the shard down with its world and clients backed up.
+# -World, and every -PlayerClients directory gets the same STAIDX0, STATICS0, MAP0, MULTI.IDX and MULTI.MUL
+# (decor-statics.ps1 over a fresh transform-flora.ps1 output, decor-land.ps1 and build-multis.ps1 over -ClientRoot),
+# its own five files backed up first. A failure after the stop leaves the shard down with its world and clients backed up.
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $Artifact=(Resolve-Path -LiteralPath $Artifact).Path
@@ -36,6 +36,14 @@ $BackupDir=[IO.Path]::GetFullPath($BackupDir)
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $bakeRoot=$BackupDir
 if($bakeRoot.StartsWith($repo+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -or $bakeRoot -eq $repo){$bakeRoot=Join-Path $env:LOCALAPPDATA 'uoaix-bake'}
+$stamp=[datetime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+$bakeDir=Join-Path $bakeRoot "bake-$stamp"
+# The designs cut from the map (multis.cfg, UoaixMultis.md) are built before anything stops: the export expands a
+# marked design from them, and the player clients get the same MULTI.IDX and MULTI.MUL.
+if($Bake){
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'build-multis.ps1') -ClientRoot $ClientRoot -OutDir (Join-Path $bakeDir 'client') -DecorationFile $DecorationFile
+    if($LASTEXITCODE -ne 0){throw 'Multi build failed; nothing was stopped'}
+}
 function Get-Holders([string]$Disk){
     $needle=$Disk.Replace('\','/')
     @(Get-CimInstance Win32_Process | Where-Object {$_.Name -in @('codex-vm.exe','candidate.exe') -and $_.CommandLine -and
@@ -60,8 +68,11 @@ if($Running){
     }
     if($Bake){
         if($s.state -ne 'serving'){throw "-Bake exports from a serving shard; $Running is $($s.state)"}
-        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'bake-decor.ps1') -Port $AdminPort -KeyFile $KeyFile -ClientRoot $ClientRoot
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'bake-decor.ps1') -Port $AdminPort -KeyFile $KeyFile -ClientRoot $ClientRoot -MultiDir (Join-Path $bakeDir 'client')
         if($LASTEXITCODE -ne 0){throw 'Decorator export failed; nothing was stopped'}
+        # The export appends in-game cuts to multis.cfg; build again so the clients and the map cache carry them.
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'build-multis.ps1') -ClientRoot $ClientRoot -OutDir (Join-Path $bakeDir 'client') -DecorationFile $DecorationFile
+        if($LASTEXITCODE -ne 0){throw 'Multi build after the export failed; nothing was stopped (multis.cfg holds the cuts)'}
     }
     if($s.state -ne 'stopped'){
         "STOP supervisor PID=$($s.supervisor) guest=$($s.guest) state=$($s.state)"
@@ -82,7 +93,6 @@ foreach($d in $leaving){
     if($h.Count -gt 0){throw "A VM holds $d (PID $(($h|ForEach-Object ProcessId) -join ',')); nothing was copied or launched"}
 }
 if($leaving.Count -gt 0){[void](New-Item -ItemType Directory -Force $BackupDir)}
-$stamp=[datetime]::UtcNow.ToString('yyyyMMdd-HHmmss')
 foreach($d in $leaving){
     if(-not (Test-Path -LiteralPath $d)){continue}
     $copy=Join-Path $BackupDir ("{0}-{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($d),$stamp,[IO.Path]::GetExtension($d))
@@ -98,9 +108,8 @@ if($Fresh){
     if($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $World)){throw 'Map cache install failed; nothing was launched'}
 }
 if($Bake){
-    $bakeDir=Join-Path $bakeRoot "bake-$stamp"
     if(@(Get-Holders $World).Count -gt 0){throw "A VM holds $World; the bake did not fold"}
-    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'install-map-cache.ps1') -ClientRoot $ClientRoot -WorldDisk $World -DecorationFile $DecorationFile -FloraFile $FloraFile
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'install-map-cache.ps1') -ClientRoot $ClientRoot -WorldDisk $World -DecorationFile $DecorationFile -FloraFile $FloraFile -MultiDir (Join-Path $bakeDir 'client')
     if($LASTEXITCODE -ne 0){throw "Bake fold failed; the shard is stopped, world backed up in $BackupDir"}
     & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'transform-flora.ps1') -ClientRoot $ClientRoot -OutDir (Join-Path $bakeDir 'stripped')
     if($LASTEXITCODE -ne 0){throw 'Bake flora strip failed; the shard is stopped, world folded, clients untouched'}
@@ -108,7 +117,7 @@ if($Bake){
     if($LASTEXITCODE -ne 0){throw 'Bake statics patch failed; the shard is stopped, world folded, clients untouched'}
     & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'decor-land.ps1') -ClientRoot $ClientRoot -OutDir (Join-Path $bakeDir 'client')
     if($LASTEXITCODE -ne 0){throw 'Bake land patch failed; the shard is stopped, world folded, clients untouched'}
-    $files='STAIDX0.MUL','STATICS0.MUL','MAP0.MUL'
+    $files='STAIDX0.MUL','STATICS0.MUL','MAP0.MUL','MULTI.IDX','MULTI.MUL'
     $want=@{};foreach($n in $files){$want[$n]=(Get-FileHash -LiteralPath (Join-Path $bakeDir "client\$n")).Hash}
     foreach($c in $PlayerClients){
         $keep=Join-Path $bakeRoot ("clients-{0}\{1}" -f $stamp,(Split-Path $c -Leaf))

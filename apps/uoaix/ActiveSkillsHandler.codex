@@ -23,10 +23,18 @@ Chapter: ActiveSkillsHandler
     else if skill == 30 then "What poison do you want to apply?" else if skill == 33 then "Which item will you attempt to steal?"
     else if skill == 35 then "Tame which animal?" else if skill == 36 then "What would you like to taste?"
     else if skill == 9 then "Whom do you wish to calm?" else if skill == 28 then "Whose belongings do you wish to peek into?" else "What do you wish to examine?"
+ The lore skills share one 15 s lockout (Damian, 2026-10-13: "lore skills anatomy, item id, etc, all need a 15 timeout
+ between calls, and they need to be in a group of functions that all block each other for that timeout"): Anatomy 1,
+ Animal Lore 2, Item Identification 3, Arms Lore 4, Evaluating Intelligence 16, Forensic Evaluation 19, Taste
+ Identification 36.
+  as-lore-skill : Integer -> Boolean
+  as-lore-skill (skill) = skill == 1 | skill == 2 | skill == 3 | skill == 4 | skill == 16 | skill == 19 | skill == 36
+  as-lore-wait : Integer = 15000
   as-denied : Text -> Result (Maybe GameReply) Text
   as-denied (text) = Ok (Just (gsi-denied text))
   as-use : AsServices, ActiveSkills, AsActor, WorldObject, Integer, Integer, Integer -> Result (Maybe GameReply) Text
   as-use (services) (s) (a) (mobile) (direction) (skill) (now) = if now < a.next then as-denied "You must wait to perform another action."
+    else if as-lore-skill skill & now < a.lore-next then as-denied "You must wait to perform another action."
     else if skill == 21 then Ok (Just (as-hide services s a mobile direction now))
     else if skill == 32 then (let before = as-level a 32 in let attempts = a.skills.attempts
       in let reply = as-spirit services s a mobile now
@@ -71,6 +79,7 @@ Chapter: ActiveSkillsHandler
     in let attempts = a.skills.attempts
     in let reply = as-effect services s a game input player slot packet now
     in let paced = if a.skills.attempts == attempts then a else __record-set a "next" (max a.next (now + gh-ticks 1000))
+    in let lored = if a.skills.attempts == attempts | not (as-lore-skill skill) then a else __record-set a "lore-next" (now + gh-ticks as-lore-wait)
     in Ok (Just (as-practiced a skill before reply))
   as-specs : Integer -> List GameOpcodeSpec
   as-specs (unused) = [gsi-spec #7D 13 13 13]

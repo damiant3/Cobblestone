@@ -1,13 +1,13 @@
 param(
     [string]$ReferenceRoot = 'D:/Projects/uo-reference/UOX3',
-    [string]$AnimIndex = 'D:/Projects/uoaix-client/ANIM.IDX',
+    [string]$AnimIndex = 'D:/Games/UOAIX-Reference/ANIM.IDX',
     [string]$BodyDef = 'D:/OldProjects/Projects/UO/UOCli_Official/Body.def',
     [string]$Output = "$PSScriptRoot/WorldSpawnData.codex",
     [string]$SoundOutput = "$PSScriptRoot/CreatureSoundData.codex",
     [string]$CarveOutput = "$PSScriptRoot/CreatureCarveData.codex",
     [string]$IntOutput = "$PSScriptRoot/WorldSpawnIntData.codex",
     [string]$OutfitOutput = "$PSScriptRoot/WorldSpawnOutfitData.codex",
-    [string]$TileData = 'D:/Projects/uoaix-client/TILEDATA.MUL',
+    [string]$TileData = 'D:/Games/UOAIX-Reference/TILEDATA.MUL',
     [string]$Manifest = "$PSScriptRoot/../../build-output/uoaix/world-spawns/import.json"
 )
 $ErrorActionPreference = 'Stop'
@@ -365,6 +365,7 @@ function Entries([string[]]$lines,[string[]]$chain) {
         $weight=1L;$entry=$line
         if($line -match '^([0-9]+)\|(.*)$'){$weight=Number $Matches[1];$entry=$Matches[2].Trim()}
         if($weight -lt 1 -or $weight -gt 65535){throw "NPC choice weight outside budget: $line"}
+        if($expansionOreElementals -contains $entry){continue}
         if($entry -match '^NPCLIST\s*=\s*(.+)$') {
             $group=Resolve-SpawnGroup $Matches[1].Trim() $chain
             "WsChoice { key = $(CdText $entry), profile = -1, group = $group, weight = $weight }"
@@ -405,6 +406,9 @@ $themeDensity=2.4
 # Damian, 2026-10-10: "we need orc lords and orc mages at the nearby orc camp" (the palisade at 622..646, 1473..1497 is
 # UOX3's Location 8 Medium orc fort).
 $orcCamp=@('20|orclord','20|orcmage')
+# Damian, 2026-10-10 (UOAIX-240): "remove the dullcopper elementals, and any reference to the horribly bad ore system of
+# the official expansions". A group that named one keeps its other choices at their weights.
+$expansionOreElementals=@('dullcopperele','shadowironele','copperele','bronzeele','goldenele','agapiteele','veriteele','valoriteele')
 $regionThemes=@{5660L=$swamp;5850L=$swamp;5690L=$ice;5791L=$ice;5792L=$ice;5793L=$ice;5794L=$ice;5795L=$ice;5796L=$ice;5797L=$ice;5798L=$ice;5873L=$fireTemple;5511L=$orcCamp}
 function FieldNumber($fields,[string]$key,[long]$fallback){if($fields.ContainsKey($key)){Number $fields[$key]}else{$fallback}}
 $regionInputs=[Collections.Generic.List[object]]::new()

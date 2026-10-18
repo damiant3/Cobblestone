@@ -7,7 +7,7 @@ all CFG files in `Data/Decoration/Old/Britannia`, then `Data/Decoration/Britanni
 including `patches.cfg`, then the shard's own `premises.cfg`: its `Clear`
 areas drop scenery and lights (doors and signs stay) and its placements refit a
 building for a new trade. `houses.cfg` comes last: the sign outside every house
-the crown sells (UOAIX-236), generated with `HouseData.codex` by
+the crown holds (UOAIX-236), generated with `HouseData.codex` by
 `import-houses.ps1`. A changed `houses.cfg` needs the decoration re-imported. Identical art/hue/position placements collapse into
 one row; current definitions replace old ones. Named signs come from literal
 CFG Name properties and UOX3's `felucca_signs.jsdata`; this old client has no
@@ -43,7 +43,7 @@ Run the importer once for Britannia; a smaller fixed region can be selected
 with X/Y/Width/Height:
 
 ```powershell
-pwsh apps/uoaix/import-decoration.ps1 -ClientRoot D:/Projects/uoaix-client -ReferenceRoot D:/Projects/uo-reference -OutFile <local-install>/britannia.dwd
+pwsh apps/uoaix/import-decoration.ps1 -ClientRoot D:/Games/UOAIX-Reference -ReferenceRoot D:/Projects/uo-reference -OutFile <local-install>/britannia.dwd
 ```
 
 This reads the installed 1.25.34 legacy TILEDATA in place. Missing/empty or

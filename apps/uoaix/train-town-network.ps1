@@ -132,7 +132,7 @@ try {
         vmHash=(Get-FileHash $script:CodexVmBin).Hash
         hostElapsedSeconds=$elapsed
         method='coordinate-hill-v1'
-        scoreFunction='tnh-outcome-v1'
+        scoreFunction='tnh-outcome-v2'
         seed=$Seed
         step=$Step
         iterations=$Iterations

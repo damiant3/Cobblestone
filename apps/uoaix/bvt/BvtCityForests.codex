@@ -1,0 +1,52 @@
+Chapter: BvtCityForests
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter EconomyGatherer
+  cites Uoaix chapter EconomyHarvest
+
+ True when no tile of box r lies in a city rectangle.
+  bvcf-outside : List CtCity, BbShop, Integer, Integer -> Boolean
+  bvcf-outside (cities) (r) (x) (y) = if y > r.y2 then True
+    else if x > r.x2 then bvcf-outside cities r r.x1 (y + 1)
+    else if ct-city-at cities x y 0 >= 0 then False
+    else bvcf-outside cities r (x + 1) y
+ A forested city's forest lies outside every city and inside its own walk window; i counts the forested cities.
+  bvcf-forests : List CtCity, Integer, Integer -> Integer
+  bvcf-forests (cities) (i) (n) = if i >= list-length cities then n
+    else let c = list-at cities i
+    in if not (ct-forested c) then bvcf-forests cities (i + 1) n
+    else if not (bvcf-outside cities c.forest c.forest.x1 c.forest.y1) then -1
+    else if c.forest.x1 < ct-x c | c.forest.y1 < ct-y c | c.forest.x2 >= ct-x c + ct-width c | c.forest.y2 >= ct-y c + ct-height c then -2
+    else bvcf-forests cities (i + 1) (n + 1)
+  bvcf-same : BbShop, BbShop -> Boolean
+  bvcf-same (a) (b) = a.x1 == b.x1 & a.y1 == b.y1 & a.x2 == b.x2 & a.y2 == b.y2
+ A bit per check: 1 a Skara Brae lumberjack whose node stands in the old in-town woods is placed again, 2 one whose node
+ stands in its forest is not; -9 is a fixture that did not build.
+  bvcf-placed : Integer -> Integer
+  bvcf-placed (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let w = x.world
+      in let r = cgg-resource-of w 15 0
+      in let skara = cw-skara (ct-table 0) (ct-city-shops 0) ct-shop-roles
+      in when egg-new-for x 3710 (cgg-lumber-place + skara.place-base) r 0
+        is Err (_) -> -9
+        is Ok (g) -> let home = BbSpot { x = 601, y = 2234, z = 0 }
+          in let town = cgg-make-in skara g 0 home (BbSpot { x = 546, y = 2136, z = 0 }) 0 0 0 0
+          in let forest = cgg-make-in skara g 0 home (BbSpot { x = 590, y = 2110, z = 0 }) 0 0 0 0
+          in (if cw-placed town then 0 else 1) + (if cw-placed forest then 2 else 0)
+  bvt-city-forests : Integer -> [Console] Integer
+  bvt-city-forests (unused) = act
+    cities <- ct-table 0
+    shops <- ct-city-shops 0
+    n <- bvcf-forests cities 0 0
+    a <- bvt-check ("six cities hold a forest outside every city rectangle and inside their own walk window (UOAIX-234 part 4, code " & show n & ")") (n == 6)
+    woods <- bvcf-same (cw-vesper cities shops ct-shop-roles).woods (list-at cities 12).forest & bvcf-same (cw-minoc cities shops ct-shop-roles).woods (list-at cities 13).forest & bvcf-same (cw-moonglow cities shops ct-shop-roles).woods (list-at cities 2).forest & bvcf-same (cw-yew cities shops ct-shop-roles).woods (list-at cities 3).forest & bvcf-same (cw-trinsic cities shops ct-shop-roles).woods (list-at cities 1).forest & bvcf-same (cw-skara cities shops ct-shop-roles).woods (list-at cities 5).forest
+    b <- bvt-check "Vesper's, Minoc's, Moonglow's, Yew's, Trinsic's and Skara Brae's lumberjacks work their city's forest (Damian: 'lets make the lumberjacks work the forests, not the cities')" woods
+    trees <- not (cg-tree-in-city cities 15 590 2110) & not (cw-held (cw-cove cities shops ct-shop-roles).woods) & not (cw-held (cw-bucc cities shops ct-shop-roles).woods)
+    c <- bvt-check "a forest tree is no city tree, and Cove (no carpenter) and Buccaneer's Den (no forest) hold no woods" trees
+    placed <- bvcf-placed 0
+    d <- bvt-check ("a restored city lumberjack whose node stands in its old in-town woods is placed again in its forest at boot, one already there is not (code " & show placed & ")") (placed == 3)
+    a + b + c + d
+  end

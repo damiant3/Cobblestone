@@ -24,7 +24,7 @@ Chapter: EconomyCurrency
   eu-start-new : Integer -> EuStart
   eu-start-new (unused) = EuStart { copper = em-bare 0, silver = em-bare 0, gold = em-bare 0, cells = ep-buffer eu-start-cells, sealed = 0,
     archive = 0, pending = 0, room = -1, probed = 0, region = 0, capacity = 0, next = 0, segments = 0, last = 0, archive-bytes = 0 }
- SEG1 version 3 (UOAIX-50): a 128-byte header (magic, version, bytes, segment, event base, event rows, FNV32 at 48, copper,
+ SEG1 version 4 (UOAIX-50; 4 packs the loan id and loan-next as EconomyStateFields does): a 128-byte header (magic, version, bytes, segment, event base, event rows, FNV32 at 48, copper,
  silver and gold rows, trade rows, previous segment FNV32 at 88, start purse rows at 96, opening cells past the first
  blocks at 104, start loan rows at 112, trade opening cells at 120), the start state that began the segment (three 64-byte table counters, 17 cells),
  the three ledger openings and the trade opening, then the sealed events (120 bytes), copper, silver and gold rows (56),
@@ -56,11 +56,11 @@ Chapter: EconomyCurrency
     in let d = poke-qword buf (at + 24) l.interest
     in let e = poke-qword buf (at + 32) l.due
     in let f = poke-qword buf (at + 40) l.paid
-    in let g = poke-qword buf (at + 48) l.status
+    in let g = poke-qword buf (at + 48) (l.status + em-loan-pack * l.id)
     in eu-seg-loans buf m (i + 1)
   eu-seg-table-write : Integer, EmMoney -> Integer
   eu-seg-table-write (buf) (m) = let a = poke-qword buf 0 m.purse-count
-    in let b = poke-qword buf 8 m.loan-count
+    in let b = poke-qword buf 8 (m.loan-count + em-count-pack * m.loan-next)
     in let c = poke-qword buf 16 m.entry-count
     in let d = poke-qword buf 24 m.sequence
     in let e = poke-qword buf 32 m.hour
@@ -160,7 +160,7 @@ Chapter: EconomyCurrency
     in let trade-at = gold-at + w.money.entry-count * 56
     in let purses-at = trade-at + w.trade-count * 72
     in let h0 = poke-qword buf 0 #31474553
-    in let h1 = poke-qword buf 8 3
+    in let h1 = poke-qword buf 8 4
     in let h2 = poke-qword buf 16 (eu-seg-bytes x)
     in let h3 = poke-qword buf 24 (x.start.sealed + 1)
     in let h4 = poke-qword buf 32 x.base
@@ -270,10 +270,12 @@ Chapter: EconomyCurrency
     in let s = em-grow-purses x.silver em-purse-block
     in let g = em-grow-purses x.world.money em-purse-block
     in let fitted = eu-fit-start x in g
+ Each growth copies every opening cell (em-open-widen), so a table that grew by a block at a time cost the square of
+ its length; it doubles instead (UOAIX-246), and a seal retires the repaid loans (em-retire-loans).
   eu-grow-loans : EuCurrency -> Integer
-  eu-grow-loans (x) = let c = em-grow-loans x.copper em-loan-block
-    in let s = em-grow-loans x.silver em-loan-block
-    in let g = em-grow-loans x.world.money em-loan-block
+  eu-grow-loans (x) = let c = em-grow-loans x.copper (max em-loan-block (list-length x.copper.loans))
+    in let s = em-grow-loans x.silver (max em-loan-block (list-length x.silver.loans))
+    in let g = em-grow-loans x.world.money (max em-loan-block (list-length x.world.money.loans))
     in let fitted = eu-fit-start x in g
   eu-start-short : EuCurrency -> Boolean
   eu-start-short (x) = eu-money-short x.start.copper x.copper | eu-money-short x.start.silver x.silver | eu-money-short x.start.gold x.world.money
@@ -365,6 +367,19 @@ Chapter: EconomyCurrency
     in let s = eu-escrow-one x.silver payer payee silver reference
     in let g = eu-escrow-one x.world.money payer payee gold reference
     in eu-log x 15 payer payee 0 copper silver gold reference
+  eu-deposit-can : EmMoney, Integer -> Boolean
+  eu-deposit-can (m) (amount) = amount == 0 | (em-room m 2 & m.issued <= em-limit - amount & (em-purse m 1).coin <= em-limit - amount)
+  eu-deposit-one : EmMoney, Integer, Integer -> Integer
+  eu-deposit-one (m) (purse) (amount) = if amount == 0 then 0 else if em-decree m amount /= 0 then -1 else em-payout m purse amount
+  eu-deposit : EuCurrency, Integer, Integer, Integer, Integer, Integer -> Integer
+  eu-deposit (x) (actor) (purse) (copper) (silver) (gold) =
+    if not (eu-room x) | not (eu-amounts copper silver gold) | purse <= 1
+      | not (ep-valid-actor x.world actor) | (ep-actor x.world actor).purse /= purse then -1
+    else if not (eu-deposit-can x.copper copper) | not (eu-deposit-can x.silver silver) | not (eu-deposit-can x.world.money gold) then -1
+    else let c = eu-deposit-one x.copper purse copper
+    in let s = eu-deposit-one x.silver purse silver
+    in let g = eu-deposit-one x.world.money purse gold
+    in if c /= 0 | s /= 0 | g /= 0 then -1 else eu-log x 16 actor purse 0 copper silver gold 0
   eu-unit : EuCurrency, Integer -> Integer
   eu-unit (x) (metal) = if metal == 3 then x.copper-rate else if metal == 2 then x.copper-rate / x.silver-rate else 1
  An exchange breaks coin with the crown at the current rates, at any distance. When the treasury holds too little of
@@ -500,8 +515,8 @@ Chapter: EconomyCurrency
     else let m = eu-money x metal
     in let value = eu-value x copper silver gold
     in let per = eu-unit x metal
-    in if value <= 0 | per <= 0 | int-mod value per /= 0 | loan <= 0 | loan > m.loan-count then -1
-    else let l = list-at m.loans (loan - 1)
+    in if value <= 0 | per <= 0 | int-mod value per /= 0 | em-loan-slot m loan < 0 then -1
+    else let l = em-loan m loan
     in let units = value / per
     in if l.borrower /= borrower | l.status == 2 | units > l.principal + l.interest - l.paid | not (em-room m 3)
       | not (eu-can-pay x.copper x.world.money.tax borrower l.lender copper) | not (eu-can-pay x.silver x.world.money.tax borrower l.lender silver)

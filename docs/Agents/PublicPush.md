@@ -272,13 +272,19 @@ the site falls back to the github.io URL.
 
 The update procedure:
 
-1. `p4 edit apps/landing/web/landing.html
-   apps/landing/web/compile/prism.html`. Both are tracked build outputs;
-   against read-only files the build fails with "Access to the path ...
-   is denied" (measured 2026-08-27).
+1. `p4 edit //Codex/<agent>/apps/landing/web/...`: every tracked file there
+   is a build output (35 on 2026-10-10: `landing.html`, `uoaix.html`,
+   `compile/prism.html`, the imagegen and Spark Studio pages and more), and
+   against a read-only one the build fails with "Access to the path ... is
+   denied". After the build, `p4 revert -a` the same path drops the unchanged.
 2. **Rebuild the plugs the assembly rides before trusting it:**
    `codex/plugs/wasm/build.ps1` and `codex/plugs/html/build.ps1`. A stale
-   plug binary reads as a defect in the page it built (L-SAMEVER).
+   plug binary reads as a defect in the page it built (L-SAMEVER). A plug is
+   stale when its `build-output/<plug>-plug.cdx` is older than its newest
+   `.codex`. The Prism page also refuses a `build/output/Codex.codex` older
+   than `codex/compiler`; refresh it with `build/concat-codex-self.ps1
+   -CodexDir codex\compiler -OutFile build\output\Codex.codex` (with no
+   `-OutFile` the script writes nothing).
 3. `apps/landing/build.ps1` assembles `web/` whole.
 4. **Compare the regenerated tracked artifacts against the depot before
    landing or shipping them, and take the better one per file.** The

@@ -8,7 +8,7 @@ Chapter: GameLinks
     peers : List GamePeer, relays : List GameRelay, lifetime : Integer, fault : Boolean,
     web : (HttpRequest -> Result HttpResponse Text), tick-at : Integer, tick-failures : Integer,
     watermark-at : Integer, heap-peak : Integer, stack-low : Integer,
-    grow-need : (Integer -> Boolean), grow : (Integer -> Result Integer Text), grow-limit : Integer, grow-base : Integer,
+    grow-need : (Integer -> Boolean), grow : (Integer -> Result Integer Text), grow-limit : Integer, grow-base : Integer, grow-why : (Integer -> Integer),
     admit-dynamic : Boolean, link-bytes : Integer, round-ticks : Integer, round-budget : Integer, rate : Integer, round-end : Integer, first-hpet : Integer, first-ticks : Integer }
   gl-ports : List Integer, Integer -> Boolean
   gl-ports (ports) (i) = if i == list-length ports then True else (list-at ports i == 2593 | list-at ports i == 2594) & gl-ports ports (i + 1)
@@ -22,6 +22,10 @@ Chapter: GameLinks
   gl-grow-never (unused) = False
   gl-grow-none : Integer -> Result Integer Text
   gl-grow-none (unused) = Ok 0
+  gl-grow-why-none : Integer -> Integer
+  gl-grow-why-none (unused) = 0
+  gl-bind-grow-why : GameLinks, (Integer -> Integer) -> Integer
+  gl-bind-grow-why (owner) (why) = let a = __record-set owner "grow-why" why in 0
  LINKS 0 (root for Damian, 2026-10-08, "if the box has room, let it grow"): an account login is admitted only while one
  more link's bytes keep the heap under the growth limit and the decaying maximum round time is under its budget.
   gl-bind-admission : GameLinks, Integer, Integer -> Integer
@@ -43,21 +47,25 @@ Chapter: GameLinks
     in let d = __record-set owner "grow-base" __heap-save in 0
   gl-grow : GameLinks, Integer -> [Console] Integer
   gl-grow (owner) (now) = if not (owner.grow-need now) | __heap-save >= owner.grow-limit then act 0 end
-    else when sl-compact owner.server.links
+    else let due = owner.grow-why now
+    in when sl-compact owner.server.links
       is Err (e) -> act
         slg-line owner.server.game.log slg-network slg-error ("WORLD GROWTH compaction " & e)
         0
       end
-      is Ok (_) -> when owner.grow 0
+      is Ok (_) -> let base = __heap-save in when owner.grow 0
         is Err (e) -> act
           slg-line owner.server.game.log slg-network slg-warn ("WORLD GROWTH refused: " & e)
           0
         end
-        is Ok (capacity) -> let raised = __record-set owner.server.links "mark" __heap-save
+        is Ok (capacity) -> let pinned = __heap-save - base
+          in let raised = __record-set owner.server.links "mark" __heap-save
           in let used = __heap-save - owner.grow-base
+          in let still = owner.grow-why now
           in let budget = owner.grow-limit - owner.grow-base
           in act
-            slg-line owner.server.game.log slg-network (if used * 10 > budget * 9 then slg-warn else slg-info) ("WORLD GROWN capacity=" & show capacity & " heap-used=" & show used & " budget=" & show budget)
+            slg-line owner.server.game.log slg-network (if used * 10 > budget * 9 then slg-warn else slg-info) ("WORLD GROWN capacity=" & show capacity & " heap-used=" & show used & " budget=" & show budget
+              & " due=" & show due & " still=" & show still & " pinned=" & show pinned)
             1
           end
   gl-relays : Integer, List GameRelay -> List GameRelay
@@ -76,7 +84,7 @@ Chapter: GameLinks
         is Err (e) -> Err e
         is Ok (peers) -> let owner = GameLinks { server = server, specs = specs, peers = peers,
           relays = gl-relays sl-max-links [], lifetime = hpet-ticks-per-second * 120, rate = hpet-ticks-per-second, fault = False, web = gl-web-none, tick-at = 0, tick-failures = 0,
-          watermark-at = 0, heap-peak = 0, stack-low = 0, grow-need = gl-grow-never, grow = gl-grow-none, grow-limit = 0, grow-base = 0,
+          watermark-at = 0, heap-peak = 0, stack-low = 0, grow-need = gl-grow-never, grow = gl-grow-none, grow-limit = 0, grow-base = 0, grow-why = gl-grow-why-none,
           admit-dynamic = False, link-bytes = 0, round-ticks = 0, round-budget = 0, round-end = 0, first-hpet = 0, first-ticks = 0 }
           in let saved = __record-set server.links "mark" __heap-save in Ok owner
   gl-ticket : GameLinks, Integer, Integer, Integer -> Integer
@@ -301,8 +309,10 @@ Chapter: GameLinks
     in let p = list-at owner.server.protocols i
     in if not slot.occupied then gl-pass handler pulse disconnect owner (i + 1) now
     else let reset = if p.epoch /= slot.epoch then gl-reset owner i now else 0
-    in let failed = if slot.failed | net-io-conn-closed slot.transport | get-ticks - p.activity > 30000 then __record-set p "closing" 2 else p
+    in let idle = p.closing == 0 & not slot.failed & not (net-io-conn-closed slot.transport) & get-ticks - p.activity > gl-idle-ms
+    in let failed = if slot.failed | net-io-conn-closed slot.transport | idle then __record-set p "closing" 2 else p
     in act
+      noted <- if idle then slg-line owner.server.game.log slg-network slg-warn ("LINK IDLE closed connection=" & show i & " after " & show (get-ticks - p.activity) & " ms with no frame") else act 0 end
       consumed <- if p.closing /= 0 | slot.tx.offset /= slot.tx.used | slot.transport.recv-len == 0 then act 0 end
         else if slot.port == 2593 then gl-input handler owner i 0
         else if p.seen == slot.transport.recv-len & not (net-io-peer-finished slot.transport) then act 0 end
@@ -335,6 +345,9 @@ Chapter: GameLinks
         end
       end
     end
+ A link with no inbound frame for gl-idle-ms (get-ticks, wall ms) is reaped. The 1.25 client pings (0x73) about once a
+ minute when idle (live 43454: 15.6 to 74.9 s, median 62 s), so the limit is above three of its longest gaps (UOAIX-249).
+  gl-idle-ms : Integer = 240000
   gl-time-before-rx : GameLinks, Integer, Integer -> [Network.Write] Integer
   gl-time-before-rx (owner) (i) (now) = if i >= list-length owner.server.links.slots then 0
     else let slot = list-at owner.server.links.slots i

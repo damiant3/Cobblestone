@@ -19,8 +19,9 @@ Chapter: CompositePaging
   cites Uoaix chapter PlayRun
   cites Uoaix chapter ActiveSkillsTracking
   cites Uoaix chapter Housing
+  cites Uoaix chapter MultiDesigns
 
-  cp-cover : MapCacheState, CompositeOwner, GameShard, GameInput -> [Device.Block] Result Integer Text
+  cp-cover : MapCacheState, CompositeOwner, GameShard, GameInput -> [Console, Device.Block] Result Integer Text
   cp-cover (cache) (owner) (game) (input) =
     if input.mode /= 2 | input.session.phase /= 2 then act Ok 0 end
     else when world-get game.world input.session.serial
@@ -29,26 +30,62 @@ Chapter: CompositePaging
         loaded <- wmc-cover cache mobile.x mobile.y
         when loaded
           is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
-          is Ok (map) -> when owner.state.decoration
-            is None -> Ok 0
-            is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
-              is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
-              is Ok (_) -> Ok 0
+          is Ok (map) -> act
+            designed <- cp-designs owner map
+            when owner.state.decoration
+              is None -> Ok 0
+              is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
+                is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
+                is Ok (_) -> Ok 0
+          end
       end
+ Placed multis collide in the paged and Britain windows (MultiDesigns), laid before decoration rebinds so its base keeps
+ them: the decorator's multis and the deed houses of multis.cfg designs. A torn design is lifted first.
+  cp-designs : CompositeOwner, WalkMap -> [Console] Integer
+  cp-designs (owner) (map) = let d = owner.state.designs
+    in let revision = owner.state.decor.revision * 4294967296 + owner.state.construction.revision
+    in let paged = md-map-due d revision map
+    in let towned = md-town-due d revision owner.state.town-map
+    in let lifted = if paged | towned then cp-lift-torn d owner.state.construction (if paged then Just map else None) (if towned then owner.state.town-map else None) 0 else 0
+    in let missed = (if paged then cp-lay-placed owner map else 0)
+      + (if towned then (when owner.state.town-map is None -> 0 is Just (t) -> cp-lay-placed owner t) else 0)
+    in let marked = if paged | towned then md-mark d revision map owner.state.town-map else 0
+    in if missed == 0 then act 0 end
+    else slg-line owner.state.checkpoint.game.log slg-world slg-warn ("MULTI colliders without room=" & show missed & " window=" & show map.x & "," & show map.y)
+  cp-lay-placed : CompositeOwner, WalkMap -> Integer
+  cp-lay-placed (owner) (map) = md-lay-all owner.state.designs owner.state.decor owner.state.items.world map 0 0
+    + cp-lay-sites owner.state.designs owner.state.construction map 0 0
+  cp-lay-sites : MdState, CnState, WalkMap, Integer, Integer -> Integer
+  cp-lay-sites (d) (s) (map) (k) (missed) = if k >= cn-sites s then missed
+    else let design = cn-site s k 0
+    in let more = if design < #200 then 0 else md-lay d map design (cn-site s k 1) (cn-site s k 2) (cn-site s k 3) True
+    in cp-lay-sites d s map (k + 1) (missed + more)
+  cp-lift-torn : MdState, CnState, Maybe WalkMap, Maybe WalkMap, Integer -> Integer
+  cp-lift-torn (d) (s) (map) (town) (k) = if k >= cn-sites s then 0
+    else let design = cn-site s k cn-torn-field
+    in let lifted = if cn-site s k 0 /= 0 | design < #200 then 0
+      else let x = cn-site s k 1 in let y = cn-site s k 2 in let z = cn-site s k 3
+      in let a = (when map is None -> 0 is Just (m) -> md-lay d m design x y z False)
+      in let b = (when town is None -> 0 is Just (t) -> md-lay d t design x y z False)
+      in cn-site-set s k cn-torn-field 0
+    in cp-lift-torn d s map town (k + 1)
  A new character enters at gs-create's fixed tile 1420,1698 before it has a mobile to cover, so the window
  is paged there rather than left wherever the last covered player stood.
   cp-creating : GameInput, List Integer -> Boolean
   cp-creating (input) (packet) = input.mode == 2 & input.session.phase == 1 & list-length packet > 0 & list-at packet 0 == 0
-  cp-cover-at : MapCacheState, CompositeOwner, Integer, Integer -> [Device.Block] Result Integer Text
+  cp-cover-at : MapCacheState, CompositeOwner, Integer, Integer -> [Console, Device.Block] Result Integer Text
   cp-cover-at (cache) (owner) (x) (y) = act
     loaded <- wmc-cover cache x y
     when loaded
       is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
-      is Ok (map) -> when owner.state.decoration
-        is None -> Ok 0
-        is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
-          is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
-          is Ok (_) -> Ok 0
+      is Ok (map) -> act
+        designed <- cp-designs owner map
+        when owner.state.decoration
+          is None -> Ok 0
+          is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
+            is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
+            is Ok (_) -> Ok 0
+      end
   end
   cp-magic-cover : MapCacheState, WdState, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
   cp-magic-cover (cache) (decoration) (x) (y) (z) = act
@@ -61,7 +98,7 @@ Chapter: CompositePaging
   end
   cp-route : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
   cp-route (cache) (owner) (game) (input) (map) (port) (raw) =
-    let gumped = cp-decor-gump-answer (cpy-gump-answer (crg-answer raw))
+    let gumped = cp-decor-gump-answer (cpy-gump-answer (crg-answer (cp-craft-repair raw)))
     in let landed = cp-speech-answer gumped cp-land-gump-id cp-land-commands
     in let packet = if list-length landed < 15 | list-at landed 0 /= #B1 | gp-u32 landed 7 /= cp-story-gump-id then landed
       else cp-speech-answer landed cp-story-gump-id (cp-story-commands owner.state.plays.stories 0 [])
@@ -133,9 +170,9 @@ Chapter: CompositePaging
     else if gm == "" & banning then act Ok (cp-cursor input 11 0 "Ban whose account?") end
     else if gm == "" & banned then cp-ban owner game input (gp-u32 packet 7)
     else if gm == "" & unbanning then cp-unban owner game input (cp-unban-name packet)
-    else if gm == "" & decorating then cp-decor owner game input packet
+    else if gm == "" & decorating then cp-decor owner game input map packet
     else if gm == "" & decorated & cp-decor-choice-request packet then cp-decor-choice owner game input packet
-    else if gm == "" & decorated then (if bit-and (gp-u32 packet 2) #FFFF >= cp-build-run then cp-build-answer owner game input packet else cp-decor-answer owner game input packet)
+    else if gm == "" & decorated then (if bit-and (gp-u32 packet 2) #FFFF >= cp-build-run then cp-build-answer owner game input packet else cp-decor-answer owner game input map packet)
     else if gm == "" & kicking then act Ok (cp-cursor input 8 0 "Kick whom?") end
     else if gm == "" & showing then act Ok (cp-overlay owner game input gmo-land) end
     else if gm == "" & landing then act Ok (gld-command owner.state.land input packet) end
@@ -162,20 +199,23 @@ Chapter: CompositePaging
     else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ch-ack-request packet then ch-ack owner input packet
     else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ca-account-request packet then ca-account owner game input packet
     else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & ca-accounts-request packet then act Ok (ca-accounts game input) end
-    else if ga-is-british game.accounts & input.mode == 2 & input.session.phase == 2 & cp-house-request packet then cp-house owner game input packet
     else if input.mode == 2 & input.session.phase == 2 & game.active == input.session.serial & bc-request packet then
       let reply = cp-refresh owner game input (bc-handle owner.state.banks game input packet get-ticks)
       in let weighed = cp-weigh owner input reply in act Ok reply end
     else act
+      stepping <- cp-stepping game input packet
       drained <- cp-overload owner game input packet
-      if drained < 0 then cp-pass cache owner game input map port packet
+      if drained < 0 then act
+        passed <- cp-pass cache owner game input map port packet
+        cp-bumped owner game input stepping passed
+      end
       else if gp-stat (game.characters + drained * 160) 1 > 0 & peek-byte (game.characters + drained * 160) 145 >= gp-stat (game.characters + drained * 160) 1 then act cp-overweight game input end
       else act
         passed <- cp-pass cache owner game input map port packet
-        when passed
+        cp-bumped owner game input stepping (when passed
           is Err (e) -> Err e
           is Ok (reply) -> Ok (GameReply { packets = list-push reply.packets (gs-stamina-packet (game.characters + drained * 160) input.session.serial),
-            close = reply.close, note = reply.note })
+            close = reply.close, note = reply.note }))
       end
     end
   cp-pass : MapCacheState, CompositeOwner, GameShard, GameInput, WalkMap, Integer, List Integer -> [Console, Network.Read, Network.Write, Device.Block] Result GameReply Text
@@ -204,9 +244,15 @@ Chapter: CompositePaging
   cp-raised (owner) (game) (input) (reply) = when cp-raise owner game input
     is Err (_) -> reply
     is Ok (packets) -> GameReply { packets = reply.packets & packets, close = reply.close, note = reply.note }
- UOX3 movement.cpp IsOverloaded, CChar::GetWeightMax and uox.ini WEIGHTPERSTR=3.5: a living player carrying more than
- strength x 3.5 + 40 stones spends 5 stamina on each step, and at 0 the step is refused (dictionary.ENG 1783). Answers the
- drained character slot, or -1 when the packet is no step or the walker is not overloaded.
+ UOX3 CChar::GetWeightMax and uox.ini WEIGHTPERSTR=3.5: the carry max is strength x 3.5 + 40 stones; a living player past
+ its grace spends cp-overload-cost on each step, and at 0 the step is refused (dictionary.ENG 1783). Answers the drained
+ character slot, or -1 when the packet is no step or the walker is within its grace.
+ UOAIX-245 (Damian, 2026-10-12: "there should be a little grace, 1% i think of the actual hard cap where even one move
+ drains fully"): a clear step is free up to the carry max plus 1% of it, and past that every step drains the whole bar.
+  cp-grace : Integer -> Integer
+  cp-grace (most) = most / 100
+  cp-overload-cost : Integer, Integer, Integer -> Integer
+  cp-overload-cost (carried) (most) (bar) = if carried <= most + cp-grace most then 0 else max 1 bar
   cp-overload : CompositeOwner, GameShard, GameInput, List Integer -> Integer
   cp-overload (owner) (game) (input) (packet) =
     if input.mode /= 2 | input.session.phase /= 2 | list-length packet < 3 | list-at packet 0 /= 2 | ga-is-british game.accounts then -1
@@ -222,11 +268,53 @@ Chapter: CompositePaging
         in let amount = if actor < 0 then 0 else (list-at owner.state.items.actors actor).amount
         in let carried = it-carried owner.state.items.world owner.state.items.tiles input.session.serial False
           + it-held owner.state.items.world owner.state.items.tiles input.session.serial held amount
-        in if carried * 2 <= gp-stat row 0 * 7 + 80 then -1
+        in let cost = cp-overload-cost carried ((gp-stat row 0 * 7 + 80) / 2) (gp-stat row 1)
+        in if cost == 0 then -1
         else let settled = gs-stamina row get-ticks False
         in let before = peek-byte row 145
         in let stamp = if before == 0 then poke-qword row 152 get-ticks else 0
-        in let spent = poke-byte row 145 (min (gp-stat row 1) (before + 5)) in slot
+        in let spent = poke-byte row 145 (min (gp-stat row 1) (before + cost)) in slot
+ UOAIX-245 (Damian, 2026-10-12: "unencumbered running in the clear is no drain, but if you hit a rock or get deflected,
+ its a draw on stamina, the more enumbered the more stamina drain from that"): a real step (the facing direction) that
+ the reply refuses (0x21) spends 1 stamina up to the carry max (strength x 3.5 + 40 stones, cp-overload), then one more
+ for each stone over it within the grace (Damian: "up to 400 is only 1 per bump. at 401 make it 2, then 3, then 4."),
+ and past the grace the whole bar.
+  cp-bump-cost : Integer, Integer, Integer -> Integer
+  cp-bump-cost (carried) (most) (bar) = let m = max 1 most
+    in if carried <= m then 1
+    else if carried > m + cp-grace m then max 1 bar
+    else 1 + carried - m
+  cp-stepping : GameShard, GameInput, List Integer -> Boolean
+  cp-stepping (game) (input) (packet) = cp-walk-step input packet & list-length packet >= 3 & not (ga-is-british game.accounts)
+    & bit-and (list-at packet 1) 7 == input.session.direction
+  cp-denied : List (List Integer), Integer -> Boolean
+  cp-denied (packets) (i) = if i >= list-length packets then False
+    else (list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == #21) | cp-denied packets (i + 1)
+  cp-bump : CompositeOwner, GameShard, GameInput -> Integer
+  cp-bump (owner) (game) (input) = let slot = gs-char-slot game.characters input.session.serial 0
+    in if slot < 0 then -1
+    else when world-get game.world input.session.serial
+      is Err (_) -> -1
+      is Ok (mobile) -> if mobile.health <= 0 then -1
+        else let row = game.characters + slot * 160
+        in let actor = cp-holder owner.state.items.actors input.session.serial 0
+        in let held = if actor < 0 then 0 else (list-at owner.state.items.actors actor).holding
+        in let amount = if actor < 0 then 0 else (list-at owner.state.items.actors actor).amount
+        in let carried = it-carried owner.state.items.world owner.state.items.tiles input.session.serial False
+          + it-held owner.state.items.world owner.state.items.tiles input.session.serial held amount
+        in let settled = gs-stamina row get-ticks False
+        in let before = peek-byte row 145
+        in let stamp = if before == 0 then poke-qword row 152 get-ticks else 0
+        in let spent = poke-byte row 145 (min (gp-stat row 1) (before + cp-bump-cost carried ((gp-stat row 0 * 7 + 80) / 2) (gp-stat row 1))) in slot
+  cp-bumped : CompositeOwner, GameShard, GameInput, Boolean, Result GameReply Text -> Result GameReply Text
+  cp-bumped (owner) (game) (input) (stepping) (passed) = if not stepping then passed
+    else when passed
+      is Err (e) -> Err e
+      is Ok (reply) -> if not (cp-denied reply.packets 0) then Ok reply
+        else let slot = cp-bump owner game input
+        in if slot < 0 then Ok reply
+        else Ok (GameReply { packets = list-push reply.packets (gs-stamina-packet (game.characters + slot * 160) input.session.serial),
+          close = reply.close, note = reply.note })
   cp-overweight : GameShard, GameInput -> Result GameReply Text
   cp-overweight (game) (input) = when world-get game.world input.session.serial
     is Err (e) -> Err e
@@ -379,9 +467,9 @@ Chapter: CompositePaging
   cp-decor-pick : GameInput, Integer, Text -> GameReply
   cp-decor-pick (input) (context) (text) =
     gs-reply [cp-line input text, gp-zeros (list-push (gp-put32 [#6C, 1] (cp-decor-tag + context)) 0) 12] "decor:cursor"
-  cp-decor-usage : Text = "[decor gump | place <art hex> [hue hex] | remove | mark | unmark | nudge <dx> <dy> [dz] | markarea <radius> | list | run <art hex> | fill <art hex> | multi <id hex> | set <story> <set> | unstatic"
-  cp-decor : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
-  cp-decor (owner) (game) (input) (packet) =
+  cp-decor-usage : Text = "[decor gump | place <art hex> [hue hex] | remove | mark | unmark | nudge <dx> <dy> [dz] | markarea <radius> | list | run <art hex> | fill <art hex> | multi <id hex or name> | cut <name> | compose <name> | set <story> <set> | unstatic"
+  cp-decor : CompositeOwner, GameShard, GameInput, WalkMap, List Integer -> [Console] Result GameReply Text
+  cp-decor (owner) (game) (input) (map) (packet) =
     if cp-sub packet cp-dc-gump then act Ok (cp-decor-gump owner input) end
     else if cp-sub packet cp-dc-place then cp-decor-place owner game input packet
     else if cp-sub packet cp-dc-remove then act Ok (cp-decor-cursor input 1 "Remove which decoration?") end
@@ -393,7 +481,9 @@ Chapter: CompositePaging
     else if cp-sub packet cp-dc-baked & ga-is-british game.accounts then cp-decor-baked owner game input packet
     else if cp-sub packet cp-dc-run then act Ok (cp-build-ask input packet 19 cp-build-run "Run the wall from here to where?") end
     else if cp-sub packet cp-dc-fill then act Ok (cp-build-ask input packet 20 cp-build-fill "Fill the floor from here to which corner?") end
-    else if cp-sub packet cp-dc-multi then cp-build-multi owner game input packet
+    else if cp-sub packet cp-dc-multi then cp-build-multi owner game input map packet
+    else if cp-sub packet cp-dc-cut then act Ok (cp-cut-ask owner game input packet) end
+    else if cp-sub packet cp-dc-compose then act Ok (cp-compose-ask owner game input packet) end
     else if cp-sub packet cp-dc-set then act Ok (cp-decor-set-ask owner input packet) end
     else if cp-sub packet cp-dc-unstatic then act Ok (cp-decor-pick input cp-unstatic-context "Remove which client static at the next bake? [decor remove on its red copy cancels.") end
     else if list-length packet == 14 | list-at packet 14 == 0 then act Ok (cp-decor-menu owner input) end
@@ -511,19 +601,70 @@ Chapter: CompositePaging
             Ok (gs-reply (list-push shown (cp-line input ("Placed " & show (list-length tiles) & " pieces. [decor markarea marks them for the bake."))) "decor:build")
           end
  A multi (MULTI.MUL id) is one item of art 0x4000 + id, which the 1.25 client draws whole; the bake expands it into its
- component statics (bake-decor.ps1, val main 41747).
-  cp-build-multi : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
-  cp-build-multi (owner) (game) (input) (packet) = let id = cp-hex packet 21 0 0
-    in if list-at id 2 == 0 | list-at id 0 < 0 | list-at id 0 > #3FFF then act Ok (cp-say input "decor:help" "Usage: [decor multi <multi id hex>") end
+ component statics (bake-decor.ps1, val main 41747). It collides from the cache's multi table (MultiDesigns), so it is
+ refused where a cell of the GM's window lacks room for its colliders. A word of hex digits is an id, any other word a
+ multis.cfg design's name (UoaixMultis.md); no word lists the designs.
+  cp-design-list : MdState, Integer, Text -> Text
+  cp-design-list (s) (i) (out) = if i >= md-names s then (if out == "" then "none installed" else out)
+    else cp-design-list s (i + 1) ((if out == "" then "" else out & ", ") & cp-hex-text (md-name-id s i) "" & " " & md-name-text s i)
+  cp-build-multi : CompositeOwner, GameShard, GameInput, WalkMap, List Integer -> [Console] Result GameReply Text
+  cp-build-multi (owner) (game) (input) (map) (packet) = let stop = cp-word-end packet 21
+    in let hex = cp-hex packet 21 0 0
+    in let multi = if list-at hex 2 > 0 & list-at hex 1 == stop then list-at hex 0 else md-find-name owner.state.designs packet 21 stop 0
+    in if stop <= 21 then act Ok (cp-say input "decor:help" ("Usage: [decor multi <id hex or name>. Designs: " & cp-design-list owner.state.designs 0 "")) end
+    else if multi < 0 | multi > #3FFF then act Ok (cp-say input "decor:help" ("No multi by that name. Designs: " & cp-design-list owner.state.designs 0 "")) end
     else when world-get game.world input.session.serial
       is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
-      is Ok (me) -> when dc-place owner.state.decor owner.state.items (#4000 + list-at id 0) 0 me.x me.y me.z (ga-bound game.accounts)
+      is Ok (me) -> let short = md-fits owner.state.designs map multi me.x me.y
+        in let solid = md-count owner.state.designs multi
+        in if short > 0 then act Ok (cp-say input "decor:refused" ("No room for the multi's walls and floors in " & show short & " tiles here.")) end
+        else when dc-place owner.state.decor owner.state.items (#4000 + multi) 0 me.x me.y me.z (ga-bound game.accounts)
         is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
         is Ok (shown) -> act
           logged <- slg-line game.log slg-world slg-info ("DECOR multi gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)
-            & " multi=" & cp-hex-text (list-at id 0) "" & " at " & show me.x & " " & show me.y & " " & show me.z)
-          Ok (gs-reply [shown, cp-line input "Placed the multi. [decor mark marks it for the bake."] "decor:multi")
+            & " multi=" & cp-hex-text multi "" & " at " & show me.x & " " & show me.y & " " & show me.z & " colliders=" & show solid)
+          Ok (gs-reply [shown, cp-line input (if solid == 0 then "Placed the multi; the map cache holds no colliders for it, so it collides after the bake. [decor mark marks it." else "Placed the multi. [decor mark marks it for the bake.")] "decor:multi")
         end
+ A cut ([decor cut <name>) takes the map's statics between the GM's tile and a picked tile as a new multis.cfg piece and
+ design of that name; the bake writes both (bake-decor.ps1) and ships the client patch (UoaixMultis.md).
+  cp-dc-cut : List Integer = [99, 117, 116]
+  cp-cut-context : Integer = 5
+  cp-cut-most : Integer = 128
+  cp-cut-ask : CompositeOwner, GameShard, GameInput, List Integer -> GameReply
+  cp-cut-ask (owner) (game) (input) (packet) = let stop = cp-word-end packet 19
+    in let d = owner.state.designs
+    in if not (md-name-valid packet 19 stop) then cp-say input "decor:help" "Usage: [decor cut <name> (a-z, 0-9 and -, at most 28 letters), then pick the far corner."
+    else if md-find-name d packet 19 stop 0 >= 0 | md-cut-find d packet 19 stop 0 >= 0 then cp-say input "decor:refused" "A design or a cut already has that name."
+    else if not (md-cut-open d packet 19 stop (ga-bound game.accounts)) then cp-say input "decor:refused" ("A bake takes at most " & show md-cut-room & " cuts; bake these first.")
+    else cp-decor-pick input cp-cut-context "Cut the map from here to which corner?"
+  cp-cut-answer : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
+  cp-cut-answer (owner) (game) (input) (packet) = let x1 = gp-u16 packet 11 in let y1 = gp-u16 packet 13
+    in if x1 == 65535 then act Ok (cp-say input "decor:cancel" "Cancelled.") end
+    else when world-get game.world input.session.serial
+      is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot cut: " & e)) end
+      is Ok (me) -> if walk-abs (x1 - me.x) >= cp-cut-most | walk-abs (y1 - me.y) >= cp-cut-most then act Ok (cp-say input "decor:refused" ("A cut spans at most " & show cp-cut-most & " tiles a side.")) end
+        else let i = md-cut-close owner.state.designs (min me.x x1) (min me.y y1) (max me.x x1) (max me.y y1)
+        in if i < 0 then act Ok (cp-say input "decor:refused" "Say [decor cut <name> first.") end
+        else act
+          logged <- slg-line game.log slg-world slg-info ("DECOR cut gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)
+            & " from " & show (min me.x x1) & " " & show (min me.y y1) & " to " & show (max me.x x1) & " " & show (max me.y y1))
+          Ok (cp-say input "decor:cut" ((if bit-and (gp-u32 packet 2) #FFFF == cp-compose-context then "Composed " else "Cut ") & show (walk-abs (x1 - me.x) + 1) & " by " & show (walk-abs (y1 - me.y) + 1)
+            & (if bit-and (gp-u32 packet 2) #FFFF == cp-compose-context then " tiles: every decoration there joins the design, its origin where you stand. The next bake makes it; a restart before the bake drops it."
+              else " tiles. The next bake makes it a design (stone, cobblestone and marble ground become floor); a restart before the bake drops it.")))
+        end
+ A compose ([decor compose <name>) makes a design of every decoration between the GM's tile and a picked tile (placed
+ multis by their id, single items by their art), its origin the GM's tile; the bake writes it to multis.cfg.
+  cp-dc-compose : List Integer = [99, 111, 109, 112, 111, 115, 101]
+  cp-compose-context : Integer = 6
+  cp-compose-ask : CompositeOwner, GameShard, GameInput, List Integer -> GameReply
+  cp-compose-ask (owner) (game) (input) (packet) = let stop = cp-word-end packet 23
+    in let d = owner.state.designs
+    in if not (md-name-valid packet 23 stop) then cp-say input "decor:help" "Usage: [decor compose <name> (a-z, 0-9 and -, at most 28 letters), then pick the far corner."
+    else if md-find-name d packet 23 stop 0 >= 0 | md-cut-find d packet 23 stop 0 >= 0 then cp-say input "decor:refused" "A design or a cut already has that name."
+    else when world-get game.world input.session.serial
+      is Err (e) -> cp-say input "decor:refused" ("Cannot compose: " & e)
+      is Ok (me) -> if not (md-compose-open d packet 23 stop (ga-bound game.accounts) me.x me.y me.z) then cp-say input "decor:refused" ("A bake takes at most " & show md-cut-room & " cuts and composes; bake these first.")
+        else cp-decor-pick input cp-compose-context "Compose the decorations from here to which corner?"
   cp-dc-baked : List Integer = [98, 97, 107, 101, 100]
   cp-long : List Integer, Integer, Integer, Integer -> Integer
   cp-long (packet) (i) (value) (digits) = if not (cp-digit packet i) | digits >= 10 then value
@@ -566,14 +707,17 @@ Chapter: CompositePaging
     in let dz = if list-at c 2 == 1 then list-at c 0 else 0
     in if list-at a 2 == 0 | list-at b 2 == 0 | dx < -7 | dx > 7 | dy < -7 | dy > 7 | dz < -31 | dz > 31 then cp-say input "decor:help" "Usage: [decor nudge <dx -7..7> <dy -7..7> [dz -31..31]"
     else cp-decor-cursor input (#4000 + (dx + 7) * 1024 + (dy + 7) * 64 + dz + 31) ("Nudge which decoration by " & show dx & " " & show dy & " " & show dz & "?")
-  cp-decor-answer : CompositeOwner, GameShard, GameInput, List Integer -> [Console] Result GameReply Text
-  cp-decor-answer (owner) (game) (input) (packet) =
+  cp-decor-answer : CompositeOwner, GameShard, GameInput, WalkMap, List Integer -> [Console] Result GameReply Text
+  cp-decor-answer (owner) (game) (input) (map) (packet) =
     let context = bit-and (gp-u32 packet 2) #FFFF
     in let serial = gp-u32 packet 7
     in let s = owner.state.decor
     in let items = owner.state.items
     in let v = context - #4000
+    in let lifted = if (context == 1 | (context >= #4000 & context < #8000)) & dc-find s serial 0 >= 0 then
+      (let off = md-lift owner.state.designs items.world serial map owner.state.town-map in dc-touch s) else 0
     in if context == cp-unstatic-context then cp-unstatic-answer owner game input packet
+    else if context == cp-cut-context | context == cp-compose-context then cp-cut-answer owner game input packet
     else let result = if context == 1 then dc-remove s items serial
       else if context == 2 | context == 3 then (if dc-set-mark s serial (context == 2) < 0 then Err "that is not a decoration" else let touched = world-touch items.world in Ok [])
       else if context >= cp-decor-set-base & context < cp-decor-set-base + sty-max-sets then cp-decor-member owner (context - cp-decor-set-base) serial
@@ -671,6 +815,11 @@ Chapter: CompositePaging
  A speech gump: button k answers as its k-th command spoken (speech type cpy-gump-mark), so each command keeps its own gate.
   cp-speech-packet : Text -> List Integer
   cp-speech-packet (text) = gp-ascii (gp-put16 (gp-put16 (list-push (gp-put16 (gp-start 3) (9 + text-length text)) cpy-gump-mark) 0) 3) text 0 (text-length text + 1)
+ UOAIX-238: the smith's craft gump's REPAIR button speaks "repair" (cg-repair-said: a smith's hammer in the pack, beside
+ an anvil, each worn piece tried once).
+  cp-craft-repair : List Integer -> List Integer
+  cp-craft-repair (packet) = if list-length packet < 15 | list-at packet 0 /= #B1 | bit-and (gp-u32 packet 7) #FFFF0000 /= crg-tag | gp-u32 packet 11 /= crg-repair then packet
+    else cp-speech-packet "repair"
   cp-speech-answer : List Integer, Integer, List Text -> List Integer
   cp-speech-answer (packet) (id) (commands) = if list-length packet < 15 | list-at packet 0 /= #B1 | gp-u32 packet 7 /= id then packet
     else let b = gp-u32 packet 11
@@ -783,9 +932,9 @@ Chapter: CompositePaging
       is Err (e) -> act cp-go-say input ("Cannot add: " & e) end
       is Ok (serial) -> let stacked = if cp-add-stacks graphic then gsi-register owner.state.items serial 0 0 True True else 0 in let touched = world-item-touch game.world in act
         item <- cp-add-item graphic
-        lotted <- cp-add-lot owner input.session.serial serial item amount
+        lotted <- cp-add-lot owner.state input.session.serial serial item amount
         logged <- slg-line game.log slg-world slg-info ("SUMMON gm=" & show input.session.serial & " serial=" & show serial & " graphic=" & cp-hex-text graphic "" & " amount=" & show amount & " item=" & show item & " lot=" & (if lotted then "yes" else "no"))
-        committed <- cs-commit owner False
+        committed <- cs-commit-play owner False
         when committed
           is Err (e) -> Err e
           is Ok (_) -> when world-get game.world serial
@@ -806,8 +955,8 @@ Chapter: CompositePaging
   cp-add-stacks : Integer -> Boolean
   cp-add-stacks (g) = let kit = cpr-kit-item g
     in if kit > 0 then cpr-kit-material g == kit else gvb-item-of g > 0 & gvb-item-of g /= 42
-  cp-add-lot : CompositeOwner, Integer, Integer, Integer, Integer -> Boolean
-  cp-add-lot (owner) (me) (serial) (item) (amount) = let v = owner.state.vendor
+  cp-add-lot : CompositeGame, Integer, Integer, Integer, Integer -> Boolean
+  cp-add-lot (g) (me) (serial) (item) (amount) = let v = g.vendor
     in let at = gv-player v me 0
     in if item <= 0 | at < 0 then False
     else let actor = (list-at v.players at).actor
@@ -894,7 +1043,7 @@ Chapter: CompositePaging
               in when world-update game.world m
                 is Err (e) -> Ok (cp-say input "gm:unstuck" ("Cannot move: " & e))
                 is Ok (_) -> act
-                  committed <- cs-commit owner False
+                  committed <- cs-commit-play owner False
                   when committed
                     is Err (e) -> Err e
                     is Ok (_) -> Ok (cp-say input "gm:unstuck" (if owner.kick serial > 0 then "Freed to Britain; the player reconnects there." else "Freed to Britain."))
@@ -930,7 +1079,7 @@ Chapter: CompositePaging
     else if account == ga-bound game.accounts then act Ok (cp-say input "gm:ban" "You cannot ban your own account.") end
     else let set = ga-set-ban game.accounts account True
     in act
-      committed <- cs-commit owner False
+      committed <- cs-commit-play owner False
       when committed
         is Err (e) -> Err e
         is Ok (_) -> Ok (cp-say input "gm:ban" (if owner.kick serial > 0 then "Banned; the player is disconnected and cannot log in." else "Banned; that account cannot log in."))
@@ -941,7 +1090,7 @@ Chapter: CompositePaging
     else if not (ga-banned game.accounts account) then act Ok (cp-say input "gm:unban" "That account is not banned.") end
     else let set = ga-set-ban game.accounts account False
     in act
-      committed <- cs-commit owner False
+      committed <- cs-commit-play owner False
       when committed
         is Err (e) -> Err e
         is Ok (_) -> Ok (cp-say input "gm:unban" "Unbanned; that account can log in again.")
@@ -968,7 +1117,7 @@ Chapter: CompositePaging
       is Just (c) -> if lw-held c.law serial 0 then
           let freed = lw-free c.law serial 0
           in let touched = world-touch game.world in act
-            committed <- cs-commit owner False
+            committed <- cs-commit-play owner False
             when committed
               is Err (e) -> Err e
               is Ok (_) -> Ok (cp-say input "gm:jail" "Released from jail.")
@@ -990,7 +1139,7 @@ Chapter: CompositePaging
                   in when world-update game.world m
                     is Err (e) -> Ok (cp-say input "gm:jail" ("Cannot move: " & e))
                     is Ok (_) -> act
-                      committed <- cs-commit owner False
+                      committed <- cs-commit-play owner False
                       when committed
                         is Err (e) -> Err e
                         is Ok (_) -> Ok (cp-say input "gm:jail" ("Jailed for " & show hours & " game hours" & (if owner.kick serial > 0 then "; the player reconnects in the cell." else ".")))
@@ -999,19 +1148,37 @@ Chapter: CompositePaging
   cp-time-word : List Integer = [91, 116, 105, 109, 101, 32]
  "[time N" moves the town clock N game hours ahead in testing mode (Damian, 2026-10-07: "i don't know how to speed up
  the clock"); the economy hour, crop growth and schedules catch up 24 hours per town step (cg-economy-hours).
+  cp-time-bare : List Integer = [91, 116, 105, 109, 101]
+ "[time" alone reports the town clock (Damian, 2026-10-13: "[time with no params must report the current time").
+  cp-time-now : CompositeOwner, GameInput -> GameReply
+  cp-time-now (owner) (input) = let s = owner.state.town-seconds
+    in let hour = int-mod (s / 3600) 24
+    in let minute = int-mod (s / 60) 60
+    in cp-say input "british:time" ("It is day " & show (s / 86400 + 1) & ", " & show hour & ":" & (if minute < 10 then "0" else "") & show minute & " game time.")
   cp-time : CompositeOwner, GameInput, List Integer -> GameReply
   cp-time (owner) (input) (packet) = let hours = cp-number packet 14 0
     in if not owner.state.testing then cp-say input "british:time" "The clock moves only in testing mode."
     else if hours < 1 | hours > 720 then cp-say input "british:time" "Say [time and a number of game hours, 1 to 720."
     else let moved = __record-set owner.state "town-seconds" (owner.state.town-seconds + hours * 3600)
     in cp-say input "british:time" ("The clock advances " & show hours & " game hours; the town catches up a day at a time.")
+  cp-light-word : List Integer = [91, 108, 105, 103, 104, 116, 32]
+  cp-light-clock-word : List Integer = [91, 108, 105, 103, 104, 116, 32, 99, 108, 111, 99, 107]
+ "[light N" holds every viewer's light at level N, 0 full daylight to 30 full darkness (packet 0x4F); "[light clock"
+ returns it to the game clock (Damian, 2026-10-13: "lord british needs a [light command with level settings").
+  cp-light : CompositeOwner, GameInput, List Integer -> GameReply
+  cp-light (owner) (input) (packet) = if cp-word packet cp-light-clock-word 0 then let back = __record-set owner.state "light" (0 - 1)
+      in cp-say input "british:light" "The light follows the game clock again."
+    else let level = if cp-digit packet 15 then cp-number packet 15 0 else 0 - 1
+    in if level < 0 | level > 30 then cp-say input "british:light" "Say [light and a level, 0 full daylight to 30 full darkness, or [light clock."
+    else let held = __record-set owner.state "light" level
+    in cp-say input "british:light" ("The light holds at level " & show level & " of 30; [light clock returns it to the game clock.")
   cp-target-request : List Integer -> Boolean
   cp-target-request (packet) = list-length packet == 19 & list-at packet 0 == #6C & bit-and (gp-u32 packet 2) #FFFF0000 == cp-cursor-tag
   cp-british-request : List Integer -> Boolean
   cp-british-request (packet) = if list-length packet == 0 then False
     else if list-at packet 0 == #6C then cp-target-request packet
-    else cp-alone packet cp-invisible-word | cp-alone packet cp-inspect-word | cp-alone packet cp-move-word | cp-alone packet cp-remove-word | cp-alone packet cp-kill-word | cp-alone packet cp-plot-word
-      | (list-at packet 0 == 3 & cp-word packet cp-summon-word 0) | (list-at packet 0 == 3 & cp-word packet cp-time-word 0) | csk-request packet | cat-request packet | cp-alone packet cp-help-word | cp-alone packet cp-cover-word | cp-alone packet cp-navy-word | cpy-request packet | cpy-story-request packet | cp-mount-request packet
+    else cp-alone packet cp-invisible-word | cp-alone packet cp-inspect-word | cp-alone packet cp-move-word | cp-alone packet cp-remove-word | cp-alone packet cp-kill-word
+      | (list-at packet 0 == 3 & cp-word packet cp-summon-word 0) | (list-at packet 0 == 3 & cp-word packet cp-time-word 0) | cp-alone packet cp-time-bare | (list-at packet 0 == 3 & cp-word packet cp-light-word 0) | csk-request packet | cat-request packet | cp-alone packet cp-help-word | cp-alone packet cp-cover-word | cp-alone packet cp-navy-word | cpy-request packet | cpy-story-request packet | cp-mount-request packet
   cp-british :WalkMap, CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
   cp-british (map) (owner) (game) (input) (packet) =
     if list-at packet 0 == #6C then cp-target map owner game input packet
@@ -1020,7 +1187,6 @@ Chapter: CompositePaging
     else if cp-alone packet cp-move-word then let cleared = __record-set owner.state "moving" 0 in act Ok (cp-cursor input 2 0 "Move what?") end
     else if cp-alone packet cp-remove-word then act Ok (cp-cursor input 4 0 "Remove what?") end
     else if cp-alone packet cp-kill-word then act Ok (cp-cursor input 5 0 "Kill what?") end
-    else if cp-alone packet cp-plot-word then let cleared = __record-set owner.state.construction "grantee" 0 in act Ok (cp-cursor input 6 0 "Grant a plot to whom?") end
     else if csk-request packet then act Ok (cp-skill owner game input packet) end
     else if cat-request packet then act Ok (cp-attr owner game input packet) end
     else if cp-alone packet cp-help-word then act Ok (cp-help input) end
@@ -1030,6 +1196,8 @@ Chapter: CompositePaging
     else if cp-alone packet cp-cover-word then act Ok (cp-cover-dump input) end
     else if cp-mount-request packet then act Ok (cp-mount input packet) end
     else if list-at packet 0 == 3 & cp-word packet cp-time-word 0 then act Ok (cp-time owner input packet) end
+    else if cp-alone packet cp-time-bare then act Ok (cp-time-now owner input) end
+    else if list-at packet 0 == 3 & cp-word packet cp-light-word 0 then act Ok (cp-light owner input packet) end
     else cp-summon map owner game input packet
   cp-line : GameInput, Text -> List Integer
   cp-line (input) (text) = sip-message input.session.serial #FFFF 6 text
@@ -1064,8 +1232,6 @@ Chapter: CompositePaging
     else if context == 3 then cp-place map owner game input x y z
     else if context == 4 then crm-remove owner game input serial
     else if context == 5 then crm-kill owner game input serial
-    else if context == 6 then act Ok (cp-plot-whom owner input serial) end
-    else if context == 7 then cp-plot-where map owner game input x y
     else if context >= 16 & context < 16 + 47 * 1001 then act Ok (cp-skill-on owner game input serial (csk-from-context context)) end
     else if context >= cat-base & context < cat-base + 7 * 256 then act Ok (cp-attr-on owner game input serial (cat-from-context context)) end
     else act Ok (cp-say input "british:refused" "That target is no longer active.") end
@@ -1091,61 +1257,12 @@ Chapter: CompositePaging
     is Err (e) -> cp-say input "british:refused" e
     is Ok (status) -> let said = cp-say input "british:attr" (cat-said r)
       in if serial == input.session.serial then gs-reply (said.packets & [status]) "british:attr" else said
- "[plot" grants a 9 by 9 plot (Construction): first the holder, a player, then the plot's center tile.
-  cp-plot-word : List Integer = [91, 112, 108, 111, 116]
-  cp-plot-whom : CompositeOwner, GameInput, Integer -> GameReply
-  cp-plot-whom (owner) (input) (serial) = if gv-player owner.state.vendor serial 0 < 0 then cp-say input "british:refused" "Only a player holds land."
-    else let chosen = __record-set owner.state.construction "grantee" serial in cp-cursor input 7 1 "Where is the center of the plot?"
-  cp-plot-where : WalkMap, CompositeOwner, GameShard, GameInput, Integer, Integer -> [Console, Device.Block] Result GameReply Text
-  cp-plot-where (map) (owner) (game) (input) (x) (y) = let s = owner.state.construction
-    in let holder = s.grantee
-    in let cleared = __record-set s "grantee" 0
-    in when cn-grant s game owner.state.flora map holder x y (owner.state.town-seconds / 86400 + 1)
-      is Err (e) -> act Ok (cp-say input "british:refused" e) end
-      is Ok (plot) -> let touched = world-touch game.world in act
-        logged <- slg-line game.log slg-admin slg-info ("ADMIN plot " & show plot & " granted holder=" & show holder & " x=" & show (x - cn-plot-reach) & ".." & show (x + cn-plot-reach) & " y=" & show (y - cn-plot-reach) & ".." & show (y + cn-plot-reach) & " by=" & show input.session.serial)
-        committed <- cs-commit owner False
-        when committed
-          is Err (e) -> Err e
-          is Ok (_) -> Ok (cp-say input "british:plot" ("Plot " & show plot & " granted: " & show (x - cn-plot-reach) & ".." & show (x + cn-plot-reach) & ", " & show (y - cn-plot-reach) & ".." & show (y + cn-plot-reach) & "."))
-      end
- "[houses" lists the open bids on the crown's houses; "[house grant N" and "[house reject N" answer bid N.
-  cp-houses-word : List Integer = [91, 104, 111, 117, 115, 101, 115]
-  cp-house-word : List Integer = [91, 104, 111, 117, 115, 101, 32]
-  cp-house-request : List Integer -> Boolean
-  cp-house-request (packet) = cp-alone packet cp-houses-word | (list-length packet > 15 & list-at packet 0 == 3 & cp-word packet cp-house-word 0)
-  cp-house : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
-  cp-house (owner) (game) (input) (packet) = let s = owner.state
-    in if cp-alone packet cp-houses-word then (let lines = hs-lines s.housing s.construction (as-mobile-name s.active game) 0 []
-      in act Ok (gs-reply (cp-say-lines input (if list-length lines == 0 then ["No house bids are open."] else lines) 0 []) "british:houses") end)
-    else let words = bc-words (bc-said packet 8 []) 0 [] []
-    in let id = if list-length words < 3 then 0 else bc-number (list-at words 2) 0 0
-    in let granting = list-length words >= 2 & bc-same (list-at words 1) [103, 114, 97, 110, 116]
-    in let rejecting = list-length words >= 2 & bc-same (list-at words 1) [114, 101, 106, 101, 99, 116]
-    in if id < 1 | not (granting | rejecting) then act Ok (cp-say input "british:house" "Say [houses, [house grant N or [house reject N.") end
-    else if rejecting then cp-house-done owner game input "reject" (hs-reject s.housing s.vendor.currency id)
-    else when hs-grant s.housing s.construction s.vendor.currency id (s.town-seconds / 86400 + 1)
-      is Err (e) -> act Ok (cp-say input "british:refused" e) end
-      is Ok (r) -> let unmarked = when s.magic is None -> 0 is Just (m) -> hs-unmark m s.housing (list-at r 1) 0 0
-        in cp-house-done owner game input "grant" (Ok ("Bid " & show id & " granted: " & hs-where s.housing (list-at r 1) & " is now the home of "
-        & as-mobile-name s.active game (list-at r 0) & (if list-at r 2 > 0 then "; " & show (list-at r 2) & " other bids on it stay in escrow" else "; every other bid on it is returned")
-        & "; " & show unmarked & (if unmarked == 1 then " rune" else " runes") & " marked inside deleted."))
-  cp-house-done : CompositeOwner, GameShard, GameInput, Text, Result Text Text -> [Console, Device.Block] Result GameReply Text
-  cp-house-done (owner) (game) (input) (verb) (result) = when result
-    is Err (e) -> act Ok (cp-say input "british:refused" e) end
-    is Ok (text) -> let touched = world-touch game.world in act
-      logged <- slg-line game.log slg-admin slg-info ("ADMIN house " & verb & " " & text & " by=" & show input.session.serial)
-      committed <- cs-commit owner False
-      when committed
-        is Err (e) -> Err e
-        is Ok (_) -> Ok (cp-say input ("british:house-" & verb) text)
-    end
  "[navy" is Lord British's order to the royal navy (Ships): it turns the standing order to patrol every day on or off,
  logged as an administrative action and committed.
   cp-play : CompositeOwner, GameShard, GameInput, List Integer -> [Console, Device.Block] Result GameReply Text
   cp-play (owner) (game) (input) (packet) = let answer = cpy-command owner game input.session.serial packet in act
     logged <- slg-line game.log slg-admin slg-info ("ADMIN play " & answer & " by=" & show input.session.serial)
-    committed <- cs-commit owner False
+    committed <- cs-commit-play owner False
     when committed
       is Err (e) -> Err e
       is Ok (_) -> Ok (cp-say input "british:play" answer)
@@ -1175,7 +1292,7 @@ Chapter: CompositePaging
   cp-story (owner) (game) (input) (packet) = if cpy-story-arg packet [103, 117, 109, 112] then act Ok (gs-reply [cp-story-gump owner input] "british:story-gump") end
     else let answer = cpy-story-command owner packet in act
     logged <- slg-line game.log slg-admin slg-info ("ADMIN story " & answer & " by=" & show input.session.serial)
-    committed <- cs-commit owner False
+    committed <- cs-commit-play owner False
     when committed
       is Err (e) -> Err e
       is Ok (_) -> let said = cp-say input "british:story" answer
@@ -1201,22 +1318,22 @@ Chapter: CompositePaging
     in let set = __record-set owner.state.ships "patrol" order
     in let touched = world-touch game.world in act
       logged <- slg-line game.log slg-admin slg-info ("ADMIN navy " & (if order == 1 then "patrol daily" else "stand down") & " by=" & show input.session.serial)
-      committed <- cs-commit owner False
+      committed <- cs-commit-play owner False
       when committed
         is Err (e) -> Err e
         is Ok (_) -> Ok (cp-say input "british:navy" (if order == 1 then "The royal navy will patrol the coast every day." else "The royal navy returns to its regular patrols."))
     end
   cp-help-word : List Integer = [91, 104, 101, 108, 112]
-  cp-help-lines : List Text = ["[go x y, [goto [place], [where", "[add art-hex|name [count], [summon body-hex", "[invisible, [inspect, [move, [cover, [remove, [kill, [plot, [navy, [play, [story, [kick, [mute, [unstuck, [jail hours, [ban, [unban name, [houses, [house grant N, [house reject N",
+  cp-help-lines : List Text = ["[go x y, [goto [place], [where", "[add art-hex|name [count], [summon body-hex", "[invisible, [inspect, [move, [cover, [remove, [kill, [navy, [play, [story, [kick, [mute, [unstuck, [jail hours, [ban, [unban name",
     "[skill <name|id|all> <0.0-100.0> [target] (testing)", "[attr <str|dex|int|all|hits> <1-100>, [attr <stam|mana> <0-100>, then [target] (testing)",
-    "[pages, [pageack id, [account name password, [accounts", "[time <1-720> game hours ahead (testing)", "[zones, [spawns, [landshow", "Decorators: [land, [raise, [lower, [flatten, [brush, [landclear",
+    "[pages, [pageack id, [account name password, [accounts", "[time (the game time), [time <1-720> game hours ahead (testing), [light <0-30>|clock", "[zones, [spawns, [landshow", "Decorators: [land, [raise, [lower, [flatten, [brush, [landclear",
     "A command that takes words, said alone, shows its usage; [<command> help shows the usage of one that takes none."]
   cp-usages : List Text = ["[go", "[go x y: go to map tile x, y.",
     "[play", "[play select 1-4|new|line STATEMENT|mark NAME|sample|start|pause|resume|reset|show: write and run a play.",
     "[story", "[story, [story on NAME, [story off NAME: list the stories, or switch one's decoration sets on or off.",
     "[add", "[add <art hex|item name> [count]: put a new item in your backpack.",
     "[summon", "[summon <body hex>: summon a creature beside you.",
-    "[time", "[time <1-720>: move the town clock that many game hours ahead (testing mode).",
+    "[light", "[light <0-30>: hold the light at a level, 0 full daylight to 30 full darkness; [light clock follows the game clock again.",
     "[skill", "[skill <name|id|all> <0.0-100.0> [target]: set a skill; target picks a character of your account (testing mode).",
     "[attr", "[attr <str|dex|int|all|hits> <1-100>, or [attr <stam|mana> <0-100>, then [target]: set a stat (testing mode).",
     "[account", "[account <name> <password>: create a player account.",
@@ -1230,7 +1347,6 @@ Chapter: CompositePaging
     "[cover help", "[cover: dump the map cache's covered slots (testing mode).",
     "[remove help", "[remove: pick an object or a townsperson to remove; players and Lord British are refused.",
     "[kill help", "[kill: pick a creature to kill; players, townspeople and Lord British are refused.",
-    "[plot help", "[plot: pick a player, then the center tile of a 9 by 9 plot granted to that player.",
     "[navy help", "[navy: order the royal navy to patrol the coast every day, or stand it down.",
     "[kick help", "[kick: pick a player to disconnect.",
     "[ban help", "[ban: pick a player's character; its account is disconnected and cannot log in until [unban.",
@@ -1254,11 +1370,12 @@ Chapter: CompositePaging
   cp-inspect : GameShard, GameInput, Integer -> GameReply
   cp-inspect (game) (input) (serial) = when world-get game.world serial
     is Err (e) -> cp-say input "british:refused" ("Nothing to inspect: " & e)
-    is Ok (o) -> let what = if o.kind == 1 then "mobile" else "item"
-      in let first = what & " " & cp-hex-text o.serial "" & " graphic " & cp-hex-text o.graphic "" & " hue " & cp-hex-text o.hue ""
-      in let place = if o.container == 0 then "at " & show o.x & " " & show o.y & " " & show o.z else "in " & cp-hex-text o.container ""
-      in let second = place & ", amount " & show o.amount & ", health " & show o.health
-      in gs-reply [cp-line input first, cp-line input second] "british:inspect"
+    is Ok (o) -> let lines = cp-inspect-lines o in gs-reply [cp-line input (list-at lines 0), cp-line input (list-at lines 1)] "british:inspect"
+  cp-inspect-lines : WorldObject -> List Text
+  cp-inspect-lines (o) = let what = if o.kind == 1 then "mobile" else "item"
+    in let place = if o.container == 0 then "at " & show o.x & " " & show o.y & " " & show o.z else "in " & cp-hex-text o.container ""
+    in let first = what & " " & cp-hex-text o.serial "" & " graphic " & cp-hex-text o.graphic "" & " hue " & cp-hex-text o.hue ""
+    in [first, place & ", amount " & show o.amount & ", health " & show o.health]
   cp-pick : CompositeOwner, GameShard, GameInput, Integer -> GameReply
   cp-pick (owner) (game) (input) (serial) = when world-get game.world serial
     is Err (e) -> cp-say input "british:refused" ("Nothing to move: " & e)
@@ -1282,7 +1399,7 @@ Chapter: CompositePaging
             is Err (e) -> act Ok (cp-say input "british:refused" ("Cannot move: " & e)) end
             is Ok (_) -> act
               routine <- if o.kind == 1 then cg-npc-moved owner.state o.serial else ""
-              committed <- cs-commit owner False
+              committed <- cs-commit-play owner False
               when committed
                 is Err (e) -> Err e
                 is Ok (_) -> let said = cp-line input ("Moved to " & show o.x & " " & show o.y & " " & show o.z
@@ -1319,7 +1436,7 @@ Chapter: CompositePaging
               is Err (e) -> act Ok (cp-say input "british:claim" ("The stableman cannot: " & e)) end
               is Ok (serial) -> act
                 logged <- slg-line game.log slg-world slg-info ("CLAIM british=" & show me.serial & " creature=" & name & " serial=" & show serial)
-                committed <- cs-commit owner False
+                committed <- cs-commit-play owner False
                 when committed
                   is Err (e) -> Err e
                   is Ok (_) -> Ok (cp-say input "british:claim" ("Your " & name & " is ready, trained and loyal, at your side."))
@@ -1364,9 +1481,9 @@ Chapter: CompositePaging
           is Err (e) -> act Ok (cp-say input "stable:buy" ("The stablemaster cannot: " & e)) end
           is Ok (serial) -> if eu-pay x True purse 1 line.copper line.silver line.gold /= 0 then
               (let undone = gws-dismiss g game serial in act Ok (cp-say input "stable:buy" "The sale could not be recorded.") end)
-            else act
-              logged <- slg-line game.log slg-world slg-info ("STABLE SALE buyer=" & show me.serial & " animal=" & name & " price=" & show price & " serial=" & show serial)
-              committed <- cs-commit owner False
+            else let packed = if csm-key name == "packhorse" | csm-key name == "packllama" then cg-pack-of owner.state serial else 0 in act
+              logged <- slg-line game.log slg-world slg-info ("STABLE SALE buyer=" & show me.serial & " animal=" & name & " price=" & show price & " serial=" & show serial & " pack=" & show packed)
+              committed <- cs-commit-play owner False
               when committed
                 is Err (e) -> Err e
                 is Ok (_) -> Ok (cp-say input "stable:buy" ("Here is thy " & name & ", for " & show price & " copper."))
@@ -1385,7 +1502,7 @@ Chapter: CompositePaging
         in if list-length stabled == 0 then act Ok (cp-say input "stable:none" "I see no pet of thine here to stable.") end
         else act
           logged <- slg-line game.log slg-world slg-info ("STABLE owner=" & show input.session.serial & " keeper=" & show keeper & " pets=" & show (list-length stabled))
-          committed <- cs-commit owner False
+          committed <- cs-commit-play owner False
           when committed
             is Err (e) -> Err e
             is Ok (_) -> Ok (gs-reply (cp-removes stabled 0 [] & [cp-line input ("I shall keep thy " & show (list-length stabled) & " " & cp-pets-text (list-length stabled) & ". Say claim when thou wouldst have them back.")]) "stable:stabled")
@@ -1398,7 +1515,7 @@ Chapter: CompositePaging
             in if list-length claimed == 0 then act Ok (cp-say input "stable:claim" "Thou hast no pets stabled with me.") end
             else act
               logged <- slg-line game.log slg-world slg-info ("STABLE CLAIM owner=" & show me.serial & " pets=" & show (list-length claimed))
-              committed <- cs-commit owner False
+              committed <- cs-commit-play owner False
               when committed
                 is Err (e) -> Err e
                 is Ok (_) -> Ok (cp-say input "stable:claim" ("Here " & (if list-length claimed == 1 then "is thy pet" else "are thy " & show (list-length claimed) & " pets") & "."))
@@ -1417,7 +1534,7 @@ Chapter: CompositePaging
             is Err (e) -> act Ok (cp-say input "british:refused" ("Cannot summon: " & e)) end
             is Ok (serial) -> let profile = cb-profile owner.state.combat game serial "Creature" 40 2 5 300
               in act
-                committed <- cs-commit owner False
+                committed <- cs-commit-play owner False
                 when committed
                   is Err (e) -> Err e
                   is Ok (_) -> Ok (cp-say input "british:summon" ("Summoned " & cp-hex-text serial "" & "."))
@@ -1554,7 +1671,7 @@ Chapter: CompositePaging
       applied <- cp-panel-apply cache owner game input map port queued 0 []
       Ok (Just (gs-reply applied "panel:action"))
     end
- A stat a skill gain raised in the record (gs-skill-gain) reaches the cached actors at the player's next pulse: the
+ A stat a skill gain raised in the record (gs-skill-learn) reaches the cached actors at the player's next pulse: the
  magery actor's base, whose buffs mge-sync folds into the combat actor, else the combat actor. A rise is told and the
  client gets a fresh 0x11 status.
   cp-stats-follow : CompositeOwner, GameShard, GameInput -> List (List Integer)

@@ -94,8 +94,8 @@ tunic 0x1FA1, surcoat 0x1FFD 17; cloak 0x1515 20; robe 0x1F04, plain dress
 
 ## What the 1.25 client draws (measured)
 
-Measured 2026-10-07 from the client Damian plays (`C:\Users\Damian\uo1998-client`,
-byte-identical to `D:\Projects\uoaix-client`). Every wearable art id the server
+Measured 2026-10-07 from the client Damian plays (`D:\Games\UO1998com-Client1`,
+byte-identical to `D:\Games\UOAIX-Reference`). Every wearable art id the server
 names in `apps/uoaix` has its male paperdoll gump (50000 + animation id) and, for
 every body-drawn layer, its body animation (ANIM.IDX entry 35000 + (animation -
 400) x 175). Backpacks, the necklace 0x1085, the ring 0x108A and the platemail

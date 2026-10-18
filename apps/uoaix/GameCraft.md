@@ -16,7 +16,7 @@ C06 already belongs to the item registry. Keep bank-access filtering first.
 `lookup map mobile recipeId category -> Integer` is the trusted workshop
 adapter. It returns an authorized EpStation ID or0. Validate real workshop
 position and permission, not client-supplied graphics. Smith finishing
-requires nearby forge and anvil. Other recipes
+requires an anvil and a forge each within 3 tiles (UOAIX-242 D4). Other recipes
 require their declared workshop. Bind the station to the verified player's
 production actor/place. ep-craft rechecks station kind, owner and enablement.
 Lookup runs at menu opening and selection. The composite's adapter is

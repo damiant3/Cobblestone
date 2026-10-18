@@ -1,0 +1,167 @@
+Chapter: IsoBootLoader
+
+ The El Torito no-emulation boot sector (IsoBoot.md) as x86 machine code, laid out at org 0x7C00 in 2048 bytes:
+ real mode, E820 for the contiguous usable RAM above 1 MiB into the runtime RAM cell (0xFE8), A20, extended INT 13
+ reads of 16 blocks into a buffer at 0x8000 and INT 15 AH 87 copies to 1 MiB, then protected mode and a jump to the
+ CDX trampoline at 0x100020. The payload block count and LBA are 32-bit immediates the builder patches at the offsets
+ this program reports. Encodings are Intel SDM's: 0x66 is the operand-size prefix in 16-bit code, 0F 8x a near Jcc
+ with a 16-bit displacement, 7x a short Jcc, EA ptr16:16 the far jump.
+  IblPiece = record { kind : Integer, bytes : List Integer, label : Integer, add : Integer }
+  ibl-b : List Integer -> IblPiece
+  ibl-b (xs) = IblPiece { kind = 0, bytes = xs, label = 0, add = 0 }
+  ibl-at : Integer -> IblPiece
+  ibl-at (l) = IblPiece { kind = 1, bytes = [], label = l, add = 0 }
+  ibl-a16 : Integer, Integer -> IblPiece
+  ibl-a16 (l) (n) = IblPiece { kind = 2, bytes = [], label = l, add = n }
+  ibl-a32 : Integer -> IblPiece
+  ibl-a32 (l) = IblPiece { kind = 3, bytes = [], label = l, add = 0 }
+  ibl-r8 : Integer -> IblPiece
+  ibl-r8 (l) = IblPiece { kind = 4, bytes = [], label = l, add = 0 }
+  ibl-r16 : Integer -> IblPiece
+  ibl-r16 (l) = IblPiece { kind = 5, bytes = [], label = l, add = 0 }
+  ibl-align : Integer -> IblPiece
+  ibl-align (n) = IblPiece { kind = 6, bytes = [], label = 0, add = n }
+  ibl-imm : Integer -> IblPiece
+  ibl-imm (which) = IblPiece { kind = 7, bytes = [], label = 0, add = which }
+  ibl-org : Integer = 31744
+  ibl-size : Integer = 2048
+  ibl-l-memory : Integer = 1
+  ibl-l-error : Integer = 2
+  ibl-l-memory-done : Integer = 3
+  ibl-l-memory-type : Integer = 4
+  ibl-l-next : Integer = 5
+  ibl-l-store : Integer = 6
+  ibl-l-read : Integer = 7
+  ibl-l-loaded : Integer = 8
+  ibl-l-count : Integer = 9
+  ibl-l-halt : Integer = 10
+  ibl-l-protected : Integer = 11
+  ibl-l-drive : Integer = 12
+  ibl-l-fuel : Integer = 13
+  ibl-l-transfer : Integer = 14
+  ibl-l-destination : Integer = 15
+  ibl-l-gdt-block : Integer = 16
+  ibl-l-gdt-dst : Integer = 17
+  ibl-l-pm-gdt : Integer = 18
+  ibl-l-pm-desc : Integer = 19
+  ibl-l-dap : Integer = 20
+  ibl-l-dap-count : Integer = 21
+  ibl-l-dap-lba : Integer = 22
+  ibl-labels : Integer = 23
+ Real mode: cli; xor ax,ax; mov ds/es/ss,ax; mov sp,0x7C00; sti; cld; mov [drive],dl; xor ebx,ebx; clear the RAM cell
+ pair at 0xFE8 and 0xFEC.
+  ibl-start : List IblPiece
+  ibl-start = [ibl-b [#FA, #31, #C0, #8E, #D8, #8E, #C0, #8E, #D0, #BC, #00, #7C, #FB, #FC, #88, #16], ibl-a16 ibl-l-drive 0,
+    ibl-b [#66, #31, #DB, #66, #C7, #06, #E8, #0F, #00, #00, #00, #00, #66, #C7, #06, #EC, #0F, #00, #00, #00, #00]]
+ E820 (eax 0xE820, edx 'SMAP', ecx 24, es:di 0x6000, the ACPI 3 attribute preset to 1) up to 257 entries: a usable
+ (type 1), enabled, below-4 GiB region starting at or below 1 MiB whose end is at least 768 MiB sets the cell to its
+ end, capped at 3 GiB and rounded down to a page.
+  ibl-memory : List IblPiece
+  ibl-memory = [ibl-at ibl-l-memory, ibl-b [#FF, #0E], ibl-a16 ibl-l-fuel 0, ibl-b [#0F, #84], ibl-r16 ibl-l-error,
+    ibl-b [#66, #B8, #20, #E8, #00, #00, #66, #BA, #50, #41, #4D, #53, #66, #B9, #18, #00, #00, #00, #BF, #00, #60,
+      #66, #C7, #45, #14, #01, #00, #00, #00, #CD, #15, #72], ibl-r8 ibl-l-memory-done,
+    ibl-b [#66, #3D, #50, #41, #4D, #53, #0F, #85], ibl-r16 ibl-l-error, ibl-b [#66, #83, #F9, #14, #0F, #82], ibl-r16 ibl-l-error,
+    ibl-b [#66, #83, #F9, #18, #72], ibl-r8 ibl-l-memory-type, ibl-b [#66, #F7, #45, #14, #01, #00, #00, #00, #74], ibl-r8 ibl-l-next,
+    ibl-at ibl-l-memory-type, ibl-b [#66, #83, #7D, #10, #01, #75], ibl-r8 ibl-l-next, ibl-b [#66, #83, #7D, #04, #00, #75], ibl-r8 ibl-l-next,
+    ibl-b [#66, #81, #3D, #00, #00, #10, #00, #77], ibl-r8 ibl-l-next, ibl-b [#66, #83, #7D, #0C, #00, #75], ibl-r8 ibl-l-next,
+    ibl-b [#66, #8B, #05, #66, #03, #45, #08, #72], ibl-r8 ibl-l-next, ibl-b [#66, #3D, #00, #00, #00, #30, #72], ibl-r8 ibl-l-next,
+    ibl-b [#66, #3D, #00, #00, #00, #C0, #76], ibl-r8 ibl-l-store, ibl-b [#66, #B8, #00, #00, #00, #C0],
+    ibl-at ibl-l-store, ibl-b [#66, #25, #00, #F0, #FF, #FF, #66, #A3, #E8, #0F],
+    ibl-at ibl-l-next, ibl-b [#66, #85, #DB, #0F, #85], ibl-r16 ibl-l-memory,
+    ibl-at ibl-l-memory-done, ibl-b [#66, #83, #3E, #E8, #0F, #00, #0F, #84], ibl-r16 ibl-l-error]
+ A20 (INT 15 AX 2401, then port 0x92 bit 1), then the payload read: up to 16 blocks a pass into the DAP's buffer,
+ copied to the destination by INT 15 AH 87 through gdt_block's descriptors, until the block count is spent.
+  ibl-read : List IblPiece
+  ibl-read = [ibl-b [#B8, #01, #24, #CD, #15, #E4, #92, #0C, #02, #24, #FE, #E6, #92, #66, #B9], ibl-imm 0,
+    ibl-at ibl-l-read, ibl-b [#66, #85, #C9, #74], ibl-r8 ibl-l-loaded, ibl-b [#66, #51, #66, #83, #F9, #10, #76], ibl-r8 ibl-l-count,
+    ibl-b [#B9, #10, #00],
+    ibl-at ibl-l-count, ibl-b [#89, #0E], ibl-a16 ibl-l-dap-count 0, ibl-b [#89, #0E], ibl-a16 ibl-l-transfer 0,
+    ibl-b [#B4, #42, #8A, #16], ibl-a16 ibl-l-drive 0, ibl-b [#BE], ibl-a16 ibl-l-dap 0, ibl-b [#CD, #13, #72], ibl-r8 ibl-l-error,
+    ibl-b [#66, #A1], ibl-a16 ibl-l-destination 0, ibl-b [#A3], ibl-a16 ibl-l-gdt-dst 2, ibl-b [#66, #C1, #E8, #10, #A2], ibl-a16 ibl-l-gdt-dst 4,
+    ibl-b [#88, #26], ibl-a16 ibl-l-gdt-dst 7, ibl-b [#8B, #0E], ibl-a16 ibl-l-transfer 0, ibl-b [#C1, #E1, #0A, #B4, #87, #BE],
+    ibl-a16 ibl-l-gdt-block 0, ibl-b [#CD, #15, #72], ibl-r8 ibl-l-error,
+    ibl-b [#66, #0F, #B7, #06], ibl-a16 ibl-l-transfer 0, ibl-b [#66, #01, #06], ibl-a16 ibl-l-dap-lba 0,
+    ibl-b [#66, #89, #C2, #66, #C1, #E2, #0B, #66, #01, #16], ibl-a16 ibl-l-destination 0,
+    ibl-b [#66, #59, #66, #29, #C1, #EB], ibl-r8 ibl-l-read]
+ cli; lgdt; set CR0.PE; far jump to the 32-bit code. The error path writes 'E' to COM1 and 1 to the debug-exit port
+ 0xF4, then halts.
+  ibl-enter : List IblPiece
+  ibl-enter = [ibl-at ibl-l-loaded, ibl-b [#FA, #0F, #01, #16], ibl-a16 ibl-l-pm-desc 0,
+    ibl-b [#0F, #20, #C0, #0C, #01, #0F, #22, #C0, #EA], ibl-a16 ibl-l-protected 0, ibl-b [#08, #00],
+    ibl-at ibl-l-error, ibl-b [#BA, #F8, #03, #B0, #45, #EE, #BA, #F4, #00, #66, #B8, #01, #00, #00, #00, #66, #EF, #FA],
+    ibl-at ibl-l-halt, ibl-b [#F4, #EB], ibl-r8 ibl-l-halt,
+    ibl-at ibl-l-protected, ibl-b [#66, #B8, #10, #00, #8E, #D8, #8E, #C0, #8E, #E0, #8E, #E8, #8E, #D0,
+      #BC, #00, #7C, #00, #00, #B8, #20, #00, #10, #00, #FF, #E0]]
+ Data: the drive, E820 fuel 257, the pass's block count, the 1 MiB destination, INT 15 AH 87's six descriptors (source
+ 0x8000 and destination writable data), the flat code and data GDT (selectors 8 and 0x10) and its descriptor, and the
+ 16-byte DAP (16 blocks to 0000:8000 from the payload LBA).
+  ibl-data : List IblPiece
+  ibl-data = [ibl-align 8, ibl-at ibl-l-drive, ibl-b [0], ibl-at ibl-l-fuel, ibl-b [1, 1], ibl-at ibl-l-transfer, ibl-b [0, 0],
+    ibl-at ibl-l-destination, ibl-b [0, 0, #10, 0], ibl-at ibl-l-gdt-block, ibl-b [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ibl-b [#FF, #FF, 0, #80, 0, #93, 0, 0], ibl-at ibl-l-gdt-dst, ibl-b [#FF, #FF, 0, 0, #10, #93, 0, 0],
+    ibl-b [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ibl-at ibl-l-pm-gdt, ibl-b [0, 0, 0, 0, 0, 0, 0, 0, #FF, #FF, 0, 0, 0, #9A, #CF, 0, #FF, #FF, 0, 0, 0, #92, #CF, 0],
+    ibl-at ibl-l-pm-desc, ibl-b [23, 0], ibl-a32 ibl-l-pm-gdt, ibl-align 4,
+    ibl-at ibl-l-dap, ibl-b [16, 0], ibl-at ibl-l-dap-count, ibl-b [0, 0, 0, #80, 0, 0], ibl-at ibl-l-dap-lba, ibl-imm 1, ibl-b [0, 0, 0, 0]]
+  ibl-program : List IblPiece
+  ibl-program = ibl-start & ibl-memory & ibl-read & ibl-enter & ibl-data
+  ibl-width : IblPiece, Integer -> Integer
+  ibl-width (p) (at) = if p.kind == 0 then list-length p.bytes else if p.kind == 1 then 0 else if p.kind == 2 | p.kind == 5 then 2
+    else if p.kind == 4 then 1 else if p.kind == 6 then int-mod (p.add - int-mod at p.add) p.add else 4
+ Pass 1: each label's offset into a table of ibl-labels cells.
+  ibl-place : List IblPiece, Integer, Integer, Integer -> Integer
+  ibl-place (ps) (table) (i) (at) = if i >= list-length ps then at
+    else let p = list-at ps i
+    in let marked = if p.kind == 1 then poke-qword table (p.label * 8) at else 0
+    in ibl-place ps table (i + 1) (at + ibl-width p at)
+  ibl-put : Integer, Integer, Integer, Integer -> Integer
+  ibl-put (buf) (at) (value) (n) = if n == 0 then 0 else let a = poke-byte buf at (bit-and value 255) in ibl-put buf (at + 1) (bit-shru value 8) (n - 1)
+  ibl-fill : Integer, Integer, Integer, Integer -> Integer
+  ibl-fill (buf) (at) (b) (n) = if n == 0 then 0 else let a = poke-byte buf at b in ibl-fill buf (at + 1) b (n - 1)
+  ibl-copy : Integer, Integer, List Integer, Integer -> Integer
+  ibl-copy (buf) (at) (xs) (i) = if i >= list-length xs then 0 else let a = poke-byte buf (at + i) (list-at xs i) in ibl-copy buf at xs (i + 1)
+ Pass 2: the bytes. A displacement is the target less the end of its own field; an address adds the org.
+  ibl-emit : List IblPiece, Integer, Integer, Integer, Integer -> Integer
+  ibl-emit (ps) (table) (buf) (i) (at) = if i >= list-length ps then at
+    else let p = list-at ps i
+    in let w = ibl-width p at
+    in let target = peek-qword table (p.label * 8)
+    in let done = if p.kind == 0 then ibl-copy buf at p.bytes 0
+      else if p.kind == 2 then ibl-put buf at (ibl-org + target + p.add) 2
+      else if p.kind == 3 then ibl-put buf at (ibl-org + target) 4
+      else if p.kind == 4 then ibl-put buf at (target - (at + 1)) 1
+      else if p.kind == 5 then ibl-put buf at (target - (at + 2)) 2
+      else if p.kind == 6 then ibl-fill buf at #90 w
+      else if p.kind == 7 then ibl-put buf at 0 4 else 0
+    in ibl-emit ps table buf (i + 1) (at + w)
+  ibl-imm-at : List IblPiece, Integer, Integer, Integer -> Integer
+  ibl-imm-at (ps) (which) (i) (at) = if i >= list-length ps then -1
+    else let p = list-at ps i in if p.kind == 7 & p.add == which then at else ibl-imm-at ps which (i + 1) (at + ibl-width p at)
+  ibl-hex : Integer -> Text
+  ibl-hex (b) = let d = "0123456789ABCDEF" in substring d (bit-shru b 4) 1 & substring d (bit-and b 15) 1
+  ibl-row : Integer, Integer, Integer, Text -> Text
+  ibl-row (buf) (at) (n) (out) = if n == 0 then out else ibl-row buf (at + 1) (n - 1) (out & ibl-hex (peek-byte buf at))
+  ibl-rows : Integer, Integer -> [Console] Integer
+  ibl-rows (buf) (r) = if r * 64 >= ibl-size then act 0 end else act
+    print-line-uni ("ISOBOOT ROW " & show r & " " & ibl-row buf (r * 64) 64 "")
+    ibl-rows buf (r + 1)
+  end
+  opening : [Console] Integer = act
+    let table = alloc-bytes (ibl-labels * 8)
+    in let cleared = ibl-fill table 0 0 (ibl-labels * 8)
+    in let ps = ibl-program
+    in let used = ibl-place ps table 0 0
+    in if used > ibl-size then act
+      print-line-uni ("ISOBOOT FAIL loader is " & show used & " bytes")
+      1
+    end
+    else let buf = alloc-bytes ibl-size
+    in let zeroed = ibl-fill buf 0 0 ibl-size
+    in let emitted = ibl-emit ps table buf 0 0
+    in act
+      print-line-uni ("ISOBOOT USED " & show used & " BLOCKS-AT " & show (ibl-imm-at ps 0 0 0) & " LBA-AT " & show (ibl-imm-at ps 1 0 0))
+      rows <- ibl-rows buf 0
+      print-line-uni "ISOBOOT END"
+      0
+    end
+  end

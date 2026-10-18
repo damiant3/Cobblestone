@@ -40,7 +40,8 @@ pack alone is 1.9 MB of base64 TrueType); the panel keeps the system fonts.
 of 336 (14 game days), as `{"ok":true,"rows":N,"hours":[...],"copper":[...],"silver":[...],"gold":[...],"names":[...]}`,
 oldest first, the treasury coin by metal; with `item` 1 up to the catalog it adds `"item"`, `"price"` (the lowest asking
 price over the shops holding the item, -1 for none) and `"stock"` (what all shops hold). An unbound panel answers
-`history-unbound`. The ring is made at panel bind (`cgs-panel`); a server without the panel keeps none.
+`history-unbound`. `panel-houses` answers `{"ok":true,"houses":[...]}`: every house a deed placed, with its row number, design,
+place and holder; the World tab's Houses card lists them. The ring is made at panel bind (`cgs-panel`); a server without the panel keeps none.
 ## Browser protocol
 
 The login form takes the owner role's 32-byte key as 64 hex characters or a
@@ -128,9 +129,8 @@ play, story and the script's length and digest, never the script, which the worl
 
 `panel-action` accepts a bounded command record with `action` and its arguments.
 The allowlist is `lord-british-enter`, `lord-british-leave`, `teleport`,
-`invisible`, `summon-item`, `summon-creature`, `move`, `inspect` and
-`grant-plot` (target the holder, x and y the plot's center; the composite runs it as
- British's `[plot`, Construction.codex). The panel
+`invisible`, `summon-item`, `summon-creature`, `move`, `inspect`, `navy`, `ban`, `unban` and
+`decor-baked` (`panel-action-known`). The panel
 records the authenticated identity, session, tick, action and arguments before
 making the command available to the game owner. The browser labels acceptance
 as **queued**, never applied. At most one game command awaits application.
@@ -151,8 +151,8 @@ of the same id is refused. An expired or replaced session cancels pending work.
 Game clients have no entry to this path and cannot confer authority by sending
 administrator flags.
 
-The composite server (`cgs-panel-take`, `cp-pulse`) applies a queued action
-on the next pulse of British's own logged-in connection, as British's in-game
+While British is logged in, the composite server (`cgs-panel-take`, `cp-pulse`)
+applies a queued action on the next pulse of his connection, as his in-game
 command, and the client shows the command's own answer. The `connection` field
 is ignored: only British's session applies. `teleport` is `[go x y`,
 `invisible` toggles `[invisible`, `summon-item` is `[add graphic amount`
@@ -164,7 +164,20 @@ panel queue alone, never from a client packet); `lord-british-leave` changes
 nothing, because British is invulnerable at all times (Damian, 2026-10-05)
 and keeps his stats and skills. A target of 0 and an argument out of range
 are logged refused.
-Until British logs in, the action stays queued.
+
+While no session is British's, the server's own round (`cpo-tick`, claimed by
+`cgs-panel-offline`) applies `teleport`, `invisible`, `summon-item`,
+`summon-creature`, `inspect`, `move`, `lord-british-enter` and
+`lord-british-leave` to British's character from his account record
+(`CompositePanelOffline`): `teleport` moves the character, `summon-item` puts
+the item in his backpack, `summon-creature` places the creature at `x`, `y`
+when given and beside British otherwise, `move` refuses a player character,
+and `lord-british-enter` writes his saved skills and stats. A `panel-answer`
+record follows each one in the log (`of` the action's id, `applied`, `text`,
+which carries the `inspect` answer), and a refusal marks the action's own
+result -1. Every other panel action applies the same way: `ban` bans `target`'s account and
+disconnects it; `unban` frees `account`; `navy` toggles the daily patrol order;
+`decor-baked` deletes the baked decorations in `serials`.
 
 The game server implementing Lord British mode must bind its privileges to
 `panel.sessions` and check `panel-live panel session now` before granting those
@@ -217,7 +230,9 @@ recorded had already been applied or refused.
 
 `AdminLoginPage.codex` (served at `/`) and `AdminPanelPage.codex` (returned by `panel-open` with `codex` 1 as `page`)
 are the pages, Codex DOM compiled by the HTML plug without its font pack. `build-admin-page.ps1` encodes them into
-`AdminPage.codex`; `-Check` verifies exact parity. Through the composite's game links an admin-panel slot's transmit
+`AdminPage.codex`; `-Check` verifies exact parity. The pages compile with `seed\Codex.cdx`, so a seed that moved since the
+last regeneration fails `-Check` with no page edit; before reading a regeneration diff, regenerate from the depot page
+source and set the seed's lines apart from the page's. Through the composite's game links an admin-panel slot's transmit
 queue is `stx-admin-bytes` (`ShardTx`), sized for the sealed panel page; a game slot's is `stx-max-bytes`
 (`bvt/BvtAdminTx`). The standalone proof is:
 

@@ -2,13 +2,17 @@ Chapter: EconomyProduction
   cites Uoaix chapter EconomyCatalog
   cites Uoaix chapter EconomyMoney
   cites Uoaix chapter SkillCurve
+  cites Uoaix chapter Skill1998
+  cites Uoaix chapter Smith1998
+  cites Uoaix chapter Craft1998
   cites Uoaix chapter SlotArray
   cites Uoaix chapter WorldRecords
   cites Foreword chapter Result
+  cites Foreword chapter Random
 
   EpActor = record { purse : Integer, place : Integer, hunger : Integer,
     attempts : Integer, stock : Integer, quality : Integer, cost : Integer,
-    wear : Integer, skills : Integer, row : Integer, card : Integer }
+    wear : Integer, skills : Integer, row : Integer, card : Integer, learn-hook : (Integer, Integer, Integer, Integer, Integer -> Integer) }
   EpStation = record { kind : Integer, place : Integer, owner : Integer, enabled : Integer }
   EpNode = record { resource : Integer, place : Integer, owner : Integer,
     ground : Integer, planted : Integer, stage : Integer, ready : Integer,
@@ -22,7 +26,8 @@ Chapter: EconomyProduction
     hour : Integer, gathered : Integer, found : Integer, taxed : Integer, crafted : Integer, consumed : Integer,
     sales : Integer, turnover : Integer, crown-turnover : Integer,
     trades : List EpTrade, trade-count : Integer,
-    mint-owner : Integer, mint-rate : Integer, mint-ingots : Integer, opening : Integer, goods : EpGoods, no-picks : List EpPick, levies : Integer }
+    mint-owner : Integer, mint-rate : Integer, mint-ingots : Integer, opening : Integer, goods : EpGoods, no-picks : List EpPick, levies : Integer,
+    learn-hook : (Integer, Integer, Integer, Integer, Integer -> Integer) }
   EpLot = record { serial : Integer, actor : Integer, item : Integer,
     quality : Integer, wear : Integer, basis : Integer }
   EpGoods = record { rows : Integer, heads : Integer, world : WorldTable }
@@ -84,10 +89,15 @@ Chapter: EconomyProduction
   ep-actor-block : Integer = 128
  Economy skills 0 to 11 (11 is Masonry, UOAIX-122).
   ep-skill-cells : Integer = 12
+ What a player's 1998 practice shares with the characters beside it (bound by the game, GameHarvestState gh-row): the
+ character's skill row, the skill, then a check's difficulty and range, or for a direct use (range 0) its gain factor,
+ and a draw. The tenths it raised; none by default.
+  ep-learn-none : Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-learn-none (row) (skill) (difficulty) (range) (draw) = 0
   ep-actor-new : Integer -> EpActor
   ep-actor-new (cells) = EpActor { purse = 0, place = 0, hunger = 0,
       attempts = 0, stock = ep-buffer cells, quality = ep-buffer cells,
-      cost = ep-buffer cells, wear = ep-buffer cells, skills = ep-buffer ep-skill-cells, row = 0, card = 0 }
+      cost = ep-buffer cells, wear = ep-buffer cells, skills = ep-buffer ep-skill-cells, row = 0, card = 0, learn-hook = ep-learn-none }
   ep-actors : Integer, Integer, List EpActor -> List EpActor
   ep-actors (cells) (i) (xs) = if i == ep-actor-block then xs else ep-actors cells (i + 1) (list-push xs (ep-actor-new cells))
  The actor table grows a block at a time; the heap it takes must be kept (UoaixDynamicTables.md stage 4).
@@ -167,7 +177,7 @@ Chapter: EconomyProduction
       gathered = ep-buffer (eg-cells catalog), found = ep-buffer (eg-cells catalog), taxed = ep-buffer (eg-cells catalog), crafted = ep-buffer (eg-cells catalog), consumed = ep-buffer (eg-cells catalog),
       sales = ep-buffer (eg-cells catalog), turnover = ep-buffer 8, crown-turnover = ep-buffer 8,
       trades = ep-trades 0 [], trade-count = 0, mint-owner = 0, mint-rate = 0, mint-ingots = 0, opening = ep-buffer (ep-open-cells catalog),
-      goods = ep-goods-new 0, no-picks = [], levies = ep-buffer (1 + ep-levy-rows * 4) })
+      goods = ep-goods-new 0, no-picks = [], levies = ep-buffer (1 + ep-levy-rows * 4), learn-hook = ep-learn-none })
  GVS1's fixed block holds 1024 lot records; the rest travel in its tail.
   ep-lot-limit : Integer = 1024
  A lot's row sits at its world item's slot, 80 bytes: serial (0 for none), actor, item, quality, wear, basis, then the
@@ -635,13 +645,18 @@ Chapter: EconomyProduction
     in let low = range / 10000
     in let high = int-mod range 10000
     in let ranged = player & classic >= 0 & high > low
-    in let chance = if skill == 0 | (player & classic < 0) then 1000 else if ranged then ep-range-chance level low high else 100 + level * 9 / 10
-    in let roll = int-mod (p.attempts * 137 + 37) 1000
+    in let direct = player & classic >= 0 & range == 0 & c98-direct classic
+    in let value = if not direct then 0 else if p.card == 0 then level else s98-value classic level (skc-stat p.card 0) (skc-stat p.card 1) (skc-stat p.card 2)
+    in let chance = if skill == 0 | (player & classic < 0) then 1000 else if direct then value else if ranged then ep-range-chance level low high else 100 + level * 9 / 10
+    in let draw = mix-bits (p.row + p.card) p.attempts
+    in let roll = if player then int-mod (bit-and draw #7FFFFFFF) 1000 else int-mod (p.attempts * 137 + 37) 1000
     in let gain = int-mod (p.attempts * 271 + 101) 1000
     in let a = __record-set p "attempts" (p.attempts + 1)
     in let success = roll < chance
-    in let b = if skill == 0 | (player & classic < 0) | (ranged & level < low) | level >= 1000 | gain >= skc-gain-at 100 level level success then 0
-      else if player then (if skc-train p.row classic gain == 0 then 0 else skc-stat-gain p.card classic (p.attempts * 7919 + gain)) else ep-add p.skills skill 1
+    in let b = if skill == 0 | (player & classic < 0) | (ranged & level < low) | level >= 1000 then 0
+      else if player then skc-learn p.row p.card classic (if direct then c98-direct-chance level success else chance) success (bit-shru draw 31)
+      else if gain >= skc-gain-at 100 level level success then 0 else ep-add p.skills skill 1
+    in let watched = if direct then p.learn-hook p.row classic (if success then 100 else 50) 0 draw else 0
     in success
   ep-range-chance : Integer, Integer, Integer -> Integer
   ep-range-chance (level) (low) (high) = if level < low then 0 else if level >= high then 1000 else (level - low) * 1000 / (high - low)
@@ -689,19 +704,55 @@ Chapter: EconomyProduction
     else let cost = ep-input-cost p one r.one-count + ep-input-cost p two r.two-count + ep-input-cost p three r.three-count + ep-labor-in w r.item
     in if ep-at p.cost r.item > ep-limit - cost then -1
     else let classic = ep-classic skill r.station r.item
-    in let success = ep-practice-in p skill classic (ep-skill-range r.item)
+    in if p.row /= 0 & classic >= 0 & ep-in98 classic r.item then ep-craft-98 w actor p r one two three picks tool-serial classic (ep-d98 classic r.item)
+    else let success = ep-practice-in p skill classic (ep-skill-range r.item)
     in let wear = ep-wear-serial w actor r.tool tool-serial
     in if not success then -2
-    else let before = ep-inputs-cost p one two three
+    else ep-craft-make w actor p r one two three picks (100 + ep-level p skill classic * 9 / 10)
+  ep-craft-make : EpWorld, Integer, EpActor, EgRecipe, Integer, Integer, Integer, List EpPick, Integer -> Integer
+  ep-craft-make (w) (actor) (p) (r) (one) (two) (three) (picks) (quality) =
+    let before = ep-inputs-cost p one two three
     in let a = ep-consume-picks w actor one r.one-count picks 0
     in let b = ep-consume-picks w actor two r.two-count picks 0
     in let c = ep-consume-picks w actor three r.three-count picks 0
     in let d = ep-add p.stock r.item r.quantity
     in let e = ep-add p.cost r.item (before - ep-inputs-cost p one two three + ep-labor-in w r.item)
-    in let f = ep-add p.quality r.item (r.quantity * (100 + ep-level p skill classic * 9 / 10))
+    in let f = ep-add p.quality r.item (r.quantity * quality)
     in let durability = ep-add p.wear r.item (r.quantity * 32)
     in let g = ep-add w.crafted r.item r.quantity
     in r.quantity
+ UOAIX-242: a player's craft with a 1998 script row checks testAndLearnSkill(user, skill, difficulty, range) on the
+ character's checked value (range 0: the script's direct use, chance = the value), one hashed roll per attempt as
+ ep-practice-in rolls; a success makes the item at its 1998 quality, a failure spends the 1998 loss of the first input
+ and answers -3.
+  ep-smith98 : Integer, Integer -> Boolean
+  ep-smith98 (classic) (item) = classic == sm98-skill & sm98-index item >= 0
+  ep-in98 : Integer, Integer -> Boolean
+  ep-in98 (classic) (item) = ep-smith98 classic item | c98-range classic item >= 0
+  ep-d98 : Integer, Integer -> Integer
+  ep-d98 (classic) (item) = if ep-smith98 classic item then sm98-of item else if c98-range classic item >= 0 then c98-difficulty classic item else -1
+  ep-r98 : Integer, Integer -> Integer
+  ep-r98 (classic) (item) = if ep-smith98 classic item then sm98-range else c98-range classic item
+  ep-loss98 : Integer, Integer, Integer, Integer, Integer -> Integer
+  ep-loss98 (classic) (item) (amount) (success) (level) = if ep-smith98 classic item then sm98-loss amount success
+    else if c98-range classic item >= 0 then c98-loss classic item amount success level else 0
+  ep-quality98 : Integer, Integer, Integer, Integer -> Integer
+  ep-quality98 (classic) (item) (success) (level) = if ep-smith98 classic item then sm98-quality success else 100 + level * 9 / 10
+  ep-craft-98 : EpWorld, Integer, EpActor, EgRecipe, Integer, Integer, Integer, List EpPick, Integer, Integer, Integer -> Integer
+  ep-craft-98 (w) (actor) (p) (r) (one) (two) (three) (picks) (tool-serial) (classic) (difficulty) =
+    let range = ep-r98 classic r.item
+    in let level = peek-qword p.row (classic * 8)
+    in let chance = if range == 0 then skc-check-chance p.row p.card classic 500 100 else skc-check-chance p.row p.card classic difficulty range
+    in let draw = mix-bits (p.row + p.card) p.attempts
+    in let roll = int-mod (bit-and draw #7FFFFFFF) 1000
+    in let a = __record-set p "attempts" (p.attempts + 1)
+    in let success = chance - roll
+    in let learned = skc-learn p.row p.card classic (if range == 0 then c98-direct-chance level (success > 0) else chance) (success > 0) (bit-shru draw 31)
+    in let shared = if range == 0 then p.learn-hook p.row classic (if success > 0 then 100 else 50) 0 draw
+      else if s98-learns level (success > 0) False then p.learn-hook p.row classic difficulty range draw else 0
+    in let wear = ep-wear-serial w actor r.tool tool-serial
+    in if success <= 0 then (let lost = ep-consume-picks w actor one (min r.one-count (ep-loss98 classic r.item r.one-count success level)) picks 0 in -3)
+    else ep-craft-make w actor p r one two three picks (ep-quality98 classic r.item success level)
 
   ep-price-gold : EpWorld, Integer, Integer -> Integer
   ep-price-gold (w) (seller) (item) = ep-price w seller item / ep-unit w

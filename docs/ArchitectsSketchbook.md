@@ -738,9 +738,17 @@ writes in place under capacity and returns the same list, so pushing onto a
 list the caller still holds corrupts the entries after it -- tried
 2026-07-18, and it silently zeroed every phase after DESUGAR. Copy first.
 
-A phase that exceeds its floor halts with CDX9002 (DeckOverflow, now
-"deck floor exceeded") -- retained as a hard guard, though the selfhost
-runs at 2-6x headroom under every floor.
+**A deck that overflows grows.** The phase reruns with that deck doubled,
+and CDX9014 names the deck and its new height, for as long as the doubled
+reservation fits under the guard page (`deck-grow-fits`, `opening.codex`).
+The front end (LEX, PARSE, PARSE-KEEP, SCOPE, and the frontend keep that
+DESUGAR and DESUGAR-KEEP write) reruns from the source with the grown decks
+listed in `CompileFlags.deck-grow`; CHECK, CHECK-KEEP, LOWER, LOWER-KEEP,
+RESOLVE and LIFT rerun in place from a heap and deck mark taken before their
+reservation; QUOTE-KEEP reserves exactly what its prefix needs. A deck that
+cannot grow halts with CDX9002 ("deck floor exceeded"). Output does not
+depend on the reservation: the compiler's own unit compiles byte-identical
+at `-Decks` 100, 40 and 20 (2026-10-16).
 
 ### Why the floors are flat, not derived
 

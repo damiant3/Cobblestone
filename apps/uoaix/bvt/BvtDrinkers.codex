@@ -1,0 +1,65 @@
+Chapter: BvtDrinkers
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter TavernBoard
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter GameNet
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-119 on BvtWorkerDay's town at game hour 3 (bsh-shut): answers a bit per check. 1 the blacksmith's keeper (shop
+ 1, shut) drinks and the healer's (4, never closes) does not; 2 the blacksmith's keeper reopened is sober company again;
+ 4 a miner drinks and the first foot guard does not; 8 cg-folk-near beside the shut keeper finds it, and beside the healer
+ does not find the healer; 16 one round reads " (merry)", three " (drunk)", and the dare scan opens only at three; 32 a
+ Britain drinker's round pays the Sweet Dreams, and a city with no founded house takes no round; 64 a blow the subdue hook
+ cut short (calm) leaves its defender idle, where the same blow uncut makes it turn on its attacker; 127 is all, negative
+ when not buildable.
+  bdk-has : List Integer, Integer, Integer -> Boolean
+  bdk-has (xs) (x) (i) = if i >= list-length xs then False else list-at xs i == x | bdk-has xs x (i + 1)
+  bdk-near : CompositeGame, Integer -> Integer
+  bdk-near (owner) (serial) = when world-get owner.checkpoint.game.world serial is Err (_) -> -1 is Ok (me) -> cg-folk-near owner me 2
+ A blow from serial a on serial d, defender idle, through cb-apply-hit-as: answers the defender's target after it.
+  bdk-calm : CompositeGame, Integer, Integer, Boolean -> Integer
+  bdk-calm (owner) (a) (d) (calm) = let game = owner.checkpoint.game
+    in when cb-ensure owner.combat game a
+      is Err (_) -> -1
+      is Ok (x) -> when cb-ensure owner.combat game d
+        is Err (_) -> -1
+        is Ok (y) -> let idle = cb-stop owner.combat y
+          in when world-get game.world a
+            is Err (_) -> -1
+            is Ok (src) -> when world-get game.world d
+              is Err (_) -> -1
+              is Ok (tgt) -> when cb-apply-hit-as owner.combat game (gn-input 0) x y src tgt 1 [] calm
+                is Err (_) -> -1
+                is Ok (_) -> let after = y.target in let stopped = cb-stop owner.combat y + cb-stop owner.combat x in after
+  bdk-checks : Integer -> Integer
+  bdk-checks (unused) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.civic
+      is None -> -2
+      is Just (c) -> if list-length c.guards == 0 | list-length owner.miners == 0 | owner.vendor.vendor-count <= 4 then -2
+        else let shut = bsh-shut owner.vendor (3 * 3600) 0 0
+        in let smith = (list-at owner.vendor.vendors 1).serial
+        in let healer = (list-at owner.vendor.vendors bsh-healer).serial
+        in let night = cg-drinker-serials owner
+        in let keepers = if bdk-has night smith 0 & not (bdk-has night healer 0) then 1 else 0
+        in let near = if bdk-near owner smith == smith & bdk-near owner healer /= healer then 8 else 0
+        in let worker = if bdk-has night (list-at owner.miners 0).serial 0 & not (bdk-has night (list-at c.guards 0).serial 0) then 4 else 0
+        in let opened = gv-set-shut owner.vendor 1 False
+        in let day = if not (bdk-has (cg-drinker-serials owner) smith 0) then 2 else 0
+        in let sober = not (cg-any-drunk owner 0) & cg-drink-suffix owner smith == ""
+        in let one = cg-drink-add owner smith
+        in let merry = cg-drink-suffix owner smith == " (merry)" & not (cg-any-drunk owner 0)
+        in let three = cg-drink-add owner smith + cg-drink-add owner smith
+        in let drunk = cg-drink-suffix owner smith == " (drunk)" & cg-any-drunk owner 0
+        in let house = if cg-round-house owner smith == tbd-house & cg-round-payee owner.worker-cities 1 0 == -1 then 32 else 0
+        in let miner = (list-at owner.miners 0).serial
+        in let calm = if bdk-calm owner miner smith True == 0 & bdk-calm owner miner smith False == miner then 64 else 0
+        in keepers + day + worker + near + (if sober & merry & drunk then 16 else 0) + house + calm
+  bvt-drinkers : Integer -> [Console] Integer
+  bvt-drinkers (unused) = act
+    n <- bdk-checks 0
+    bvt-check ("a shut keeper and a worker drink and answer a duel; an open healer and a guard stay sober; a drunk keeper's name reads merry then drunk, and the dare scan opens at three rounds; a round pays the drinker's own town's house; a subdued loser does not turn on the winner (UOAIX-119, code " & show n & ")") (n == 127)
+  end

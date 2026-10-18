@@ -96,6 +96,7 @@ Section: Record Types
    builtin-emitters : List BuiltinX86Emitter,
    emit-work : Integer between 0 and 4294967295,
    exit-mode : X86_64ExitMode,
+   pe-link : Boolean,
    watchdog-mode : X86_64WatchdogMode,
    opening-ret-type : CodexType,
    state-local : Integer,
@@ -204,6 +205,17 @@ Section: Constants
 
   bare-metal-load-addr : Integer = 1048576
 
+ A payload compiled with the `pe-base` mode flag, for the UEFI PE stub
+ (`build/cdx-to-pe.ps1`), links at 32 MiB because firmware owns the low band: under QEMU
+ OVMF the free range at 1 MiB ends at 0x7FFFFF, ACPI NVS holds 0x800000-0x8FFFFF
+ and boot-services data runs to 0x177FFFF (UEFI shell `memmap`, 2026-10-16), so
+ a payload past 7 MiB cannot load at 1 MiB. 32 MiB is the first 2 MiB-aligned
+ address above that band with room to spare, and it clears the serial ring at
+ 15 MiB and the bare-metal heap at 16 MiB. The stub refuses at boot when the
+ firmware's map does not show the range free (COMPILER-130).
+
+  uefi-load-addr : Integer = 33554432
+
   bare-metal-stack-top : Integer = bare-metal-ram-size
 
   bare-metal-page-count : Integer = (bare-metal-ram-size + 2097151) / 2097152
@@ -284,7 +296,8 @@ Section: Rodata Tables
     228, 161, 28, 109, 255, 255,
     228, 163, 28, 126, 255, 255,
     228, 167, 28, 79, 1, 0,
-    228, 168, 28, 126, 255, 255]
+    228, 168, 28, 126, 255, 255,
+    164, 169, 28, 126, 255, 255]
 
   tier2-rodata-offset : Integer = 288
 
@@ -293,7 +306,7 @@ Section: Rodata Tables
   cce-to-unicode-hi-table : List Integer
   cce-to-unicode-hi-table = for x in cce-to-unicode-table -> int-mod (x / 256) 256
 
-  cce-to-unicode-hi-rodata-offset : Integer = 348
+  cce-to-unicode-hi-rodata-offset : Integer = 354
 
   init-rodata : List Integer = cce-to-unicode-byte-table & unicode-to-cce-byte-table & tier1-block-rodata & tier2-rodata & cce-to-unicode-hi-table
 
@@ -315,7 +328,10 @@ Section: State Helpers
  patched for its own address rather than copied down to ours at startup.
 
   st-load-base : CodegenState -> Integer
-  st-load-base (st) = if st-windows st then hosted-win-load-addr else bare-metal-load-addr
+  st-load-base (st) = if st-windows st then hosted-win-load-addr else st-native-base st
+
+  st-native-base : CodegenState -> Integer
+  st-native-base (st) = if st.pe-link then uefi-load-addr else bare-metal-load-addr
 
  The arena moves for the same reason the cells did: a fixed request low down is
  refused from a freshly loaded image. Linux keeps the bare-metal base, which its
@@ -374,6 +390,7 @@ Section: State Helpers
     builtin-emitters = x86-builtin-emitters,
     emit-work = 0,
     exit-mode = ExitRepl,
+    pe-link = False,
     watchdog-mode = WatchdogProgress,
     opening-ret-type = NothingTy,
     state-local = 0 - 1,
@@ -588,6 +605,7 @@ Section: State Helpers
      builtin-emitters = st.builtin-emitters,
      emit-work = new-emit-work,
      exit-mode = st.exit-mode,
+     pe-link = st.pe-link,
      watchdog-mode = st.watchdog-mode,
      opening-ret-type = st.opening-ret-type,
      state-local = 0 - 1,

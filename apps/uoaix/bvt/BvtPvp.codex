@@ -1,0 +1,39 @@
+Chapter: BvtPvp
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-247: on BvtLeash's founded world, two player mobiles (combat actors with npc False) and a creature, with the
+ first player the shard's active one. Answers a bit per check: 1 the active player selects the other, present but not
+ active; 2 not once that one has departed (concealed 2); 4 the creature still cannot select a present player who is not
+ active (NPC combat unchanged); 7 is all, negative when not buildable.
+  bpv-actor : CompositeGame, Integer, Boolean -> Result CombatActor Text
+  bpv-actor (owner) (body) (npc) = let game = owner.checkpoint.game
+    in when world-create game.world (gs-mobile 0 1450 1600 0 body (if body == 400 then 1002 else 0))
+      is Err (e) -> Err e
+      is Ok (serial) -> when cb-ensure owner.combat game serial
+        is Err (e) -> Err e
+        is Ok (a) -> let kind = __record-set a "npc" npc in Ok a
+  bpv-checks : Integer -> Integer
+  bpv-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when bpv-actor owner 400 False
+      is Err (_) -> -2
+      is Ok (pa) -> when bpv-actor owner 400 False
+        is Err (_) -> -2
+        is Ok (pb) -> when bpv-actor owner 14 True
+          is Err (_) -> -2
+          is Ok (beast) -> let game = owner.checkpoint.game
+            in let active = __record-set game "active" pa.serial
+            in let fought = if cb-select owner.combat game pa pb then 1 else 0
+            in let stopped = cb-stop owner.combat pa
+            in let gone = cg-departed owner pb.serial
+            in let refused = if cb-select owner.combat game pa pb then 0 else 2
+            in let back = cg-return owner pb.serial
+            in let unchanged = if cb-select owner.combat game beast pb then 0 else 4
+            in fought + refused + unchanged
+  bvt-pvp : Integer -> [Console] Integer
+  bvt-pvp (unused) = act
+    n <- bpv-checks 0
+    bvt-check ("a player fights a present player who is not the active session, not a departed one, and a creature's rule is unchanged (UOAIX-247, code " & show n & ")") (n == 7)
+  end

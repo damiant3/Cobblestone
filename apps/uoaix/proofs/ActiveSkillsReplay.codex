@@ -78,7 +78,9 @@ Chapter: ActiveSkillsReplay
   asr-services (unused) = AsServices { light = asr-light, animal = asr-animal, item-name = asr-item-name,
     intelligence = asr-intelligence, poison = asr-poison, cure = asr-cure, resurrect = asr-resurrect, snoop = asr-snoop,
     provoke = asr-provoke, lure = asr-lure, taming = asr-taming, master = asr-master, tame = asr-tame, pet-name = asr-pet-name, herd = asr-herd,
-    envenom = asr-envenom }
+    envenom = asr-envenom, durability = asr-durability }
+  asr-durability : Integer -> Integer
+  asr-durability (serial) = 0
   asr-send : ActiveSkills, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
   asr-send (s) (shard) (input) (map) (packet) (tick) = as-handler-at (asr-services 0) s shard input map 2593 packet tick
   asr-denied : Text -> List Integer
@@ -230,9 +232,11 @@ Chapter: ActiveSkillsReplay
     fixture <- __record-set other "serial" npc
     sneaking <- __record-set other "hidden" True
     hidden-npc <- as-conceal s npc 1
-    seeker <- sk-set a.skills.levels 14 300
+    seeker <- sk-set a.skills.levels 14 450
+    pinned <- __record-set a.skills "seed" 634785765
     missed <- asr-detect-try s shard input map 1426 1698 80000000 40
     asr-check "detecting away from the hider finds nothing" (asr-texts missed == "skills:detect" & other.hidden & asr-has missed (as-say "You can see nothing hidden there.") 0)
+    repinned <- __record-set a.skills "seed" 634785765
     found <- asr-detect-try s shard input map 1421 1698 90000000 40
     asr-check "detecting at the hider reveals it" (asr-texts found == "skills:detect" & not other.hidden & peek-byte (sa-at s.concealed (world-slot shard.world npc)) 0 == 0)
     far <- asr-detect-try s shard input map 1440 1698 100000000 0
@@ -287,6 +291,7 @@ Chapter: ActiveSkillsReplay
         asr-check "finishing consumes exactly one bandage from world and economy" (asr-amount shard bandage == 2 & ep-at p.stock 75 == 2 & ep-at p.quality 75 == 1000 & ep-at p.wear 75 == 64 & ep-at p.cost 75 == 20 & ep-at w.consumed 75 == consumed + 1 & lots >= 0 & (ep-lot-amount s.vendor.currency.world.goods lots) == 2 & (ep-lot s.vendor.currency.world.goods lots).basis == 20)
         asr-check "a successful application heals the patient" (asr-hits shard self > 10 & asr-has done (as-say "You finish applying the bandages.") 0 & a.due == 0)
         next <- a.next
+        npc-hurt <- asr-health shard npc 10
         started <- asr-bandage s shard input map bandage npc (next + 10)
         npc-due <- a.due
         moved <- when world-get shard.world npc is Err (_) -> -1 is Ok (m) -> (when world-update shard.world (__record-set m "x" 1426) is Err (_) -> -1 is Ok (_) -> 0)
@@ -899,11 +904,11 @@ Chapter: ActiveSkillsReplay
     asr-check "a use without a gain roll sends no skill update" (a.skills.attempts == tried + 1 & as-level a 1 == 100 & not (asr-opcode flat #3A 0))
     always <- __record-set a.skills "gain-rate" 100000
     grown <- asr-try s shard input map 1 npc 30100000 0
-    asr-check "a gain raises the skill by one tenth and resends the list" (as-level a 1 == 101 & asr-opcode grown #3A 0)
+    asr-check "a gain raises the skill and resends the list" (as-level a 1 > 100 & asr-opcode grown #3A 0)
     trivial-level <- sk-set a.skills.levels 1 500
     tried3 <- a.skills.attempts
     easy <- asr-try s shard input map 1 input.session.serial 30150000 0
-    asr-check "a far too easy use practises nothing" (a.skills.attempts == tried3 + 1 & as-level a 1 == 500 & not (asr-opcode easy #3A 0))
+    asr-check "UOAIX-242: a direct use at 50.0 still practises (1998 DirectUse has no too-easy rule)" (a.skills.attempts == tried3 + 1 & as-level a 1 > 500 & asr-opcode easy #3A 0)
     restored-level <- sk-set a.skills.levels 1 101
     capped <- sk-set a.skills.levels 0 1000
     more <- sk-set a.skills.levels 5 1000
@@ -912,10 +917,11 @@ Chapter: ActiveSkillsReplay
     more4 <- sk-set a.skills.levels 8 1000
     more5 <- sk-set a.skills.levels 9 1000
     more6 <- sk-set a.skills.levels 10 1000
-    total <- skc-total a.skills 0
+    total <- skc-total-cells a.skills.levels 0
     tried2 <- a.skills.attempts
     held <- asr-try s shard input map 1 npc 30200000 0
-    asr-check "a gain at the total cap lowers another skill and keeps the total" (a.skills.attempts == tried2 + 1 & total >= 7000 & as-level a 1 == 102 & skc-total a.skills 0 == total & asr-opcode held #3A 0)
+    rate-back <- __record-set a.skills "gain-rate" 100
+    asr-check "UOAIX-242 D7: a gain past the 700.0 total raises the skill and lowers no other" (a.skills.attempts == tried2 + 1 & total >= 7000 & as-level a 1 > 101 & skc-total-cells a.skills.levels 0 == total + as-level a 1 - 101 & asr-opcode held #3A 0)
   end
   asr-codec : ActiveSkills, GvWorld, GmbState, GameCombat -> [Console] Nothing
   asr-codec (s) (v) (banks) (combat) = act
@@ -927,7 +933,7 @@ Chapter: ActiveSkillsReplay
       is Ok (restored) -> act
         decoded <- asc-decode restored 2000 buf asc-size
         r <- list-at restored.actors 0
-        asr-check "ASC1 restores serial and counters and clears cursors; the levels are the character's row in the shard's skill table" (is-ok encoded & is-ok decoded & r.serial == a.serial & gs-skill v.game a.serial 1 == 102 & gs-skill v.game a.serial 16 == 1000 & as-level a 16 == 1000 & r.skills.attempts == a.skills.attempts & r.skills.seed == a.skills.seed & r.cursor == 0 & r.connection == -1 & restored.next-target == s.next-target)
+        asr-check "ASC1 restores serial and counters and clears cursors; the levels are the character's row in the shard's skill table" (is-ok encoded & is-ok decoded & r.serial == a.serial & gs-skill v.game a.serial 1 == as-level a 1 & gs-skill v.game a.serial 16 == 1000 & as-level a 16 == 1000 & r.skills.attempts == a.skills.attempts & r.skills.seed == a.skills.seed & r.cursor == 0 & r.connection == -1 & restored.next-target == s.next-target)
         bad <- poke-qword buf (32 + 8) #100000000
         fresh <- as-new v banks combat
         when fresh

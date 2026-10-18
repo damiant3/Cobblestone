@@ -31,7 +31,7 @@ Chapter: GameWorldSpawnCodec
         in a.serial == serial & a.npc & (m.graphic == p.body | (p.body == #00CF & m.graphic == #00DF)) & m.hue >= p.hue & m.hue <= p.hue-high
   gwsc-write-timers : GameWorldSpawn, Integer, Integer, Integer -> Integer
   gwsc-write-timers (g) (now) (buf) (i) = if i == list-length g.catalog.regions then 0
-    else let written = poke-qword buf (64 + i * 8) (max 0 (peek-qword g.deadlines (i * 8) - now))
+    else let written = poke-qword buf (64 + i * 8) (if gws-region-cleared g i then gws-cleared else max 0 (peek-qword g.deadlines (i * 8) - now))
     in gwsc-write-timers g now buf (i + 1)
   gwsc-write-slots : GameWorldSpawn, WorldTable, Integer, Integer, Integer -> Integer
   gwsc-write-slots (g) (world) (now) (buf) (i) = if i == list-length g.slots then 0
@@ -58,7 +58,7 @@ Chapter: GameWorldSpawnCodec
   gwsc-timers-valid (g) (buf) (i) = if i == list-length g.catalog.regions then True
     else let remaining = peek-qword buf (64 + i * 8)
     in let r = list-at g.catalog.regions i
-    in remaining >= 0 & remaining <= gm-ticks (max 1000 (r.maximum-minutes * 60000))
+    in (remaining == gws-cleared | (remaining >= 0 & remaining <= gm-ticks (max 1000 (r.maximum-minutes * 60000))))
       & gwsc-count g buf i 0 <= r.maximum & gwsc-timers-valid g buf (i + 1)
   gwsc-summoning : GameWorldSpawn, Integer, Boolean, Integer -> Integer
   gwsc-summoning (g) (buf) (tail) (i) = if tail then peek-qword (gwsc-tail g buf i) 0 else 0
@@ -111,7 +111,7 @@ Chapter: GameWorldSpawnCodec
     else gwsc-bad-row g world buf (i + 1)
   gwsc-read-timers : GameWorldSpawn, Integer, Integer, Integer -> Integer
   gwsc-read-timers (g) (now) (buf) (i) = if i == list-length g.catalog.regions then 0
-    else let timer = poke-qword g.deadlines (i * 8) (now + peek-qword buf (64 + i * 8))
+    else let timer = poke-qword g.deadlines (i * 8) (if peek-qword buf (64 + i * 8) == gws-cleared then gws-cleared else now + peek-qword buf (64 + i * 8))
     in let count = poke-qword g.populations (i * 8) (gwsc-count g buf i 0)
     in gwsc-read-timers g now buf (i + 1)
   gwsc-read-slots : GameWorldSpawn, Integer, Integer, Boolean, Integer -> Integer

@@ -177,6 +177,23 @@ try {
         if (!await evaluate('!!document.getElementById("ux-title")')) throw new Error('Landing UOAIX card navigation failed');
         current.actions.push({navigation:'lineage, home, landing card',pass:true});
       }
+      if (name === 'uoaix-desk.html') {
+        const shots = ['overview', 'treasury', 'actions', 'world', 'plays', 'activity'];
+        for (const width of [1280, 390]) {
+          await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+          await evaluate('scrollTo(0,0)');
+          await sleep(200);
+          const content = await evaluate('({text:document.body.innerText,overflow:document.documentElement.scrollWidth>innerWidth})');
+          for (const word of ['The admin panel, as the shard serves it', 'game hour 335', 'support queue','Treasury', 'Actions', 'World', 'Plays', 'Activity']) if (!content.text.includes(word)) throw new Error('UOAIX desk content missing: ' + word);
+          if (content.overflow) throw new Error('UOAIX desk layout overflows at ' + width);
+          const art = await evaluate('Promise.all(' + JSON.stringify(shots) + '.map((tab,i)=>new Promise((resolve,reject)=>{const name="uoaix-desk-"+tab+".jpg",i2=new Image();i2.onload=()=>resolve({name,width:i2.naturalWidth,applied:getComputedStyle(document.getElementById("kd-s"+(i+1)+"i")).backgroundImage.includes(name),box:document.getElementById("kd-s"+(i+1)+"i").getBoundingClientRect().height});i2.onerror=()=>reject(new Error("UOAIX desk capture did not load: "+name));i2.src="uoaix-art/"+name;})))');
+          for (const image of art) if (!image.width || !image.applied || image.box < 40) throw new Error('UOAIX desk capture is not shown: ' + JSON.stringify(image));
+          current.actions.push({width,art,overflow:content.overflow});
+          const shot = await send('Page.captureScreenshot', {format:'png'});
+          writeFileSync(join(out, 'uoaix-desk-' + width + '.png'), Buffer.from(shot.data, 'base64'));
+        }
+        await send('Emulation.clearDeviceMetricsOverride');
+      }
       if (name === 'games/index.html') {
         const cats = await evaluate('[...document.querySelectorAll("[data-cat]")].map(e=>e.dataset.cat)');
         if (!cats.length) throw new Error('Arcade controls did not initialize');

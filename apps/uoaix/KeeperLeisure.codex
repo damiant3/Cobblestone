@@ -57,8 +57,17 @@ Chapter: KeeperLeisure
     in if peek-qword at 32 == night + 1 then 0
     else let marked = poke-qword at 32 (night + 1)
     in let w = v.currency.world
-    in if eu-pay v.currency True (ep-actor w (list-at v.vendors i).actor).purse (ep-actor w (list-at v.vendors payee).actor).purse (kl-price choice) 0 0 /= 0 then 0
+    in if kl-pay-coin v.currency (ep-actor w (list-at v.vendors i).actor).purse (ep-actor w (list-at v.vendors payee).actor).purse (kl-price choice) /= 0 then 0
     else let lifted = poke-qword at 8 (min 100 (peek-qword at 8 + kl-cheer)) in 1
+ A price in copper paid from whatever the purse holds: the copper, else the price rounded up in silver, else in gold;
+ eu-pay makes no change and shops earn mostly gold, so a copper-only price left every keeper unable to pay (trial 43802:
+ CITY LEISURE arrived=47 paid=0). 0 when paid.
+  kl-pay-coin : EuCurrency, Integer, Integer, Integer -> Integer
+  kl-pay-coin (x) (payer) (payee) (price) = if eu-pay x True payer payee price 0 0 == 0 then 0
+    else if eu-pay x True payer payee 0 (kl-round-up price (x.copper-rate / x.silver-rate)) 0 == 0 then 0
+    else eu-pay x True payer payee 0 0 (kl-round-up price x.copper-rate)
+  kl-round-up : Integer, Integer -> Integer
+  kl-round-up (price) (coin) = (price + coin - 1) / max 1 coin
  The persisted rows (codec tail 18): the row count, then the rows.
   kl-tail-size : Integer -> Integer
   kl-tail-size (unused) = 8 + bb-shop-count * kl-row-bytes

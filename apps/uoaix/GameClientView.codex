@@ -9,7 +9,7 @@ Chapter: GameClientView
   GcvSeen = record { object : WorldObject, maximum : Integer, flags : Integer, direction : Integer, notoriety : Integer, listed : Boolean }
   GameClientView = record { seen : List GcvSeen, connection : Integer, actor : Integer,
     radius : Integer, season : Integer, light : Integer, season-enabled : Boolean,
-    sent-season : Integer, sent-light : Integer, status : Integer, status-ready : Boolean, visible : Integer, visible-count : Integer, concealed : Integer, unseen-hook : (Integer, Integer -> Boolean), drawn : Integer, noto-hook : (Integer -> Integer) }
+    sent-season : Integer, sent-light : Integer, status : Integer, status-ready : Boolean, visible : Integer, visible-count : Integer, concealed : Integer, unseen-hook : (Integer, Integer -> Boolean), drawn : Integer, noto-hook : (Integer -> Integer), facing-hook : (Integer -> Integer) }
   gcv-rows : Integer, List GcvSeen -> List GcvSeen
   gcv-rows (left) (rows) = if left == 0 then rows else
     gcv-rows (left - 1) (list-push rows (GcvSeen { object = gs-item 0 0 0, maximum = 0, flags = 0, direction = 4, notoriety = 3, listed = False }))
@@ -24,7 +24,7 @@ Chapter: GameClientView
     else Ok (GameClientView { seen = gcv-rows capacity (__list-with-capacity capacity), connection = -1, actor = 0,
       radius = radius, season = season, light = light, season-enabled = season-enabled,
       sent-season = -1, sent-light = -1, status = alloc-bytes 66, status-ready = False,
-      visible = sa-new 8 capacity, visible-count = 0, concealed = 0, unseen-hook = gcv-unseen-none, drawn = 0, noto-hook = gcv-noto-none })
+      visible = sa-new 8 capacity, visible-count = 0, concealed = 0, unseen-hook = gcv-unseen-none, drawn = 0, noto-hook = gcv-noto-none, facing-hook = gcv-facing-none })
   gcv-environment : GameClientView, Integer, Integer -> Result Integer Text
   gcv-environment (view) (season) (light) = if season < 0 | season > 4 | light < 0 | light > 30 then Err "client environment invalid"
     else let a = __record-set view "season" season in let b = __record-set view "light" light in Ok 0
@@ -51,6 +51,8 @@ Chapter: GameClientView
   gcv-noto (view) (serial) (shown) = let o = view.noto-hook serial in if o > 0 then o else shown
   gcv-unseen-none : Integer, Integer -> Boolean
   gcv-unseen-none (viewer) (serial) = False
+  gcv-facing-none : Integer -> Integer
+  gcv-facing-none (serial) = 0 - 1
   gcv-conceal : GameClientView, Integer -> Integer
   gcv-conceal (view) (bytes) = let bound = __record-set view "concealed" bytes in 0
   gcv-hidden : GameClientView, Integer -> Boolean
@@ -105,6 +107,7 @@ Chapter: GameClientView
   gcv-sound-unseen (view) (items) (viewer) (x) (y) (serial) = if serial == 0 | (viewer.x == x & viewer.y == y) then False
     else if serial /= viewer.serial & view.unseen-hook viewer.serial serial then True
     else gcv-sound-unseen view items viewer x y (world-tile-next items.world serial)
+ A 0xAF death action turns the client's mobile into its corpse, so a mobile that dies and rises elsewhere is drawn anew.
   gcv-filter : GameClientView, GameCombat, GsiState, WorldObject, List (List Integer), Integer, List (List Integer) -> List (List Integer)
   gcv-filter (view) (combat) (items) (viewer) (packets) (i) (out) = if i == list-length packets then out
     else let packet = list-at packets i
@@ -146,7 +149,22 @@ Chapter: GameClientView
       in let clear = if slot < 0 then 0 else let row = list-at view.seen slot
         in if row.object.serial /= serial then 0 else let a = __record-set row.object "serial" 0 in 0
       in gcv-filter view combat items viewer packets (i + 1) (list-push out packet)
+    else if op == #AF & list-length packet == 13 then
+      let serial = gp-u32 packet 1
+      in let slot = gcv-slot view serial
+      in let forgot = if slot < 0 then 0 else let row = list-at view.seen slot
+        in if row.object.serial /= serial then 0 else let a = __record-set row.object "serial" 0 in 0
+      in gcv-filter view combat items viewer packets (i + 1) (list-push out packet)
+    else if op == #6E & list-length packet == 14 & gmb-layer items (gp-u32 packet 1) 25 0 /= 0 then
+      let mounted = gcv-mounted-action (gp-u16 packet 5)
+      in gcv-filter view combat items viewer packets (i + 1) (if mounted < 0 then out else list-push out (cbp-animation (gp-u32 packet 1) mounted))
     else gcv-filter view combat items viewer packets (i + 1) (list-push out packet)
+ A rider (layer 25 worn) drawn with an on-foot action is drawn off its mount (Damian, 2026-10-13: "mounted combat causes
+ me to dismount and remount each swing"). ServUO BaseWeapon.PlaySwingAnimation mounted: one-handed 26, bow 27, crossbow
+ 28, two-handed 29; Mobile hurt and Spell cast animations play only on foot, so a rider's other actions are dropped.
+  gcv-mounted-action : Integer -> Integer
+  gcv-mounted-action (a) = if a >= 9 & a <= 12 then 26 else if a == 13 | a == 14 then 29 else if a == 18 then 27
+    else if a == 19 then 28 else if a >= 23 & a <= 29 then a else 0 - 1
   gcv-prune : GameClientView, GsiState, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
   gcv-prune (view) (items) (viewer) (i) (kept) (out) = if i == view.visible-count then
       let count = __record-set view "visible-count" kept in out
@@ -188,9 +206,12 @@ Chapter: GameClientView
     in let dy = mobile.y - row.object.y
     in let stepped = not fresh & (dx /= 0 | dy /= 0)
     in let faced = if stepped then let d = __record-set row "direction" (gcv-heading dx dy) in 0 else 0
+    in let facing = if fresh | stepped | current == viewer.serial then 0 - 1 else view.facing-hook current
+    in let turned = facing >= 0 & facing /= bit-and row.direction 7
+    in let swung = if turned then let d = __record-set row "direction" facing in 0 else 0
     in let running = if stepped & max (walk-abs dx) (walk-abs dy) > 1 then #80 else 0
     in let moved = if fresh | row.object.graphic /= mobile.graphic | row.object.hue /= mobile.hue then list-push removed (gcv-draw items row mobile flags)
-      else if changed then list-push removed (cbp-move mobile (bit-or row.direction running) flags row.notoriety) else removed
+      else if changed | turned then list-push removed (cbp-move mobile (bit-or row.direction running) flags row.notoriety) else removed
     in let health = if fresh | row.object.health /= mobile.health | row.maximum /= maximum
       then list-push moved (cbp-health mobile.serial mobile.health maximum False) else moved
     in let saved = gcv-remember row mobile maximum flags
@@ -231,7 +252,8 @@ Chapter: GameClientView
     else let item = world-read-slot items.world i
     in let saved = gcv-remember row item 0 0
     in let counted = __record-set view "drawn" (view.drawn + 1)
-    in list-push out (sip-ground item)
+    in if item.graphic == 8198 then out & gmb-rewrite items [cbp-corpse item item.amount (cb-corpse-facing item.health)] 0 []
+    else list-push out (sip-ground item)
   gcv-tiles : GameClientView, GameCombat, GsiState, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
   gcv-tiles (view) (combat) (items) (viewer) (x) (y) (out) =
     if y > min 4095 (viewer.y + view.radius) then out

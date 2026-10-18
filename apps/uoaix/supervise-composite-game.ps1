@@ -2,7 +2,7 @@
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$StateFile,[Parameter(Mandatory)][string]$OutDir,
     [switch]$Testing,[switch]$Dev,[switch]$Hosted,[switch]$Admin,[string]$Vm='',
     [ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,
-    [ValidateRange(10,120)][int]$StartupSeconds=60,[ValidateRange(1,600)][int]$BackoffSeconds=5,
+    [ValidateRange(10,900)][int]$StartupSeconds=60,[ValidateRange(1,600)][int]$BackoffSeconds=5,
     [ValidateRange(1,3600)][int]$MaxBackoffSeconds=300,[ValidateRange(1,100)][int]$MaxRestarts=5,
     [ValidateRange(60,86400)][int]$RestartWindowSeconds=600,[ValidateRange(0,3600)][int]$HeartbeatSeconds=180,[ValidateRange(1,100)][int]$ClockScale=1)
 # Relaunches a composite shard after every guest exit; CompositeGame.md documents the contract.

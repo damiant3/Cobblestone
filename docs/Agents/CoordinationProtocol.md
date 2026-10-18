@@ -585,7 +585,13 @@ chronically under utilized"). The standing rule:**
   tool and a bounded `Wait-Process`, then continue. Do not end the turn and
   sit deaf until the commander bumps you; that latency, multiplied by six
   lanes and a 15-minute pulse, is what left the box idle.
-- **A fan-out is launched on a RUNTIME MEASUREMENT, by the lane** (Damian,
+- **Root is the one runner of wide runs** (Damian, 2026-10-12 21:10: "keep
+  the fleet running, but you manage a single soaker and test battery runner.
+  i don't want the box bogging down"). A lane runs its focused compile and
+  its own single-guest checks; every trial, soak, battery, BVT fan-out and bed
+  goes to root as a candidate or a command, and root runs them one at a time.
+  The measurement rule below governs what root launches.
+- **A fan-out is launched on a RUNTIME MEASUREMENT, by its runner** (Damian,
   2026-09-08 15:50: "that can be easily measured at runtime by the agent to
   see if it fits, then go"). Measure free memory at the moment of launch and
   count the guests the run will boot (`-Jobs N` is N guests, and a batch
@@ -600,8 +606,7 @@ chronically under utilized"). The standing rule:**
   a ceiling, not a consumption (L-REQUEST).
   A lane's scratch fixed point and another lane's fan-out may overlap when
   free memory covers both; only a RELEASE gate's compiler stages take the box
-  whole. The commander no longer grants fan-outs;
-  root arbitrates a collision (two fan-outs measured against the same free
+  whole. Root arbitrates a collision (two fan-outs measured against the same free
   memory in the same minute) and holds the box for a release gate's compiler
   stages, which is where a hold still comes from. The per-guest figures above
   are re-measured at each release (`build/box-sample.ps1` writes the profile)

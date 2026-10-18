@@ -40,7 +40,7 @@ when it bounds what one player can make the server do. Every other limit is oper
 | `eg-station-kinds` | 24 | Station kinds | EconomyCatalog |
 | `bb-shop-count` | 20 | Britain shops | BritainCatalog |
 | spawn regions † | 1024 | The spawn catalog's regions | GameWorldSpawn |
-| `cst-most-rows` | 7 | Clothing rows per styled NPC | CharacterStylist |
+| `cst-most-rows` | 10 | Clothing rows per styled NPC | CharacterStylist |
 | `cgm-limit` / `cgw-sheep` / `cv-guard-limit` | 4 / 4 / 4 | Miners, the flock, foot guards on patrol | CompositeGameRules, CivicLiveState |
 | `shp-haven-max`, `gm-new` † | 8 / 8 | Pirate ships, monsters at the monster home | Ships, GameMonster |
 | `cgg-raw-cap` | 16 | A worker's raw stockpile (a gameplay rule) | CompositeGatherer |

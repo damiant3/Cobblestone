@@ -9,6 +9,15 @@ Chapter: CompositeProductionReplay
   cites Uoaix chapter MageryResources
   cpp-check : Text, Boolean -> [Console] Nothing
   cpp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+ A player's practice roll is int-mod (mix-bits (row + card) attempts) 1000 (ep-practice-in, UOAIX-242 stage 1): the first
+ attempts value from n whose roll is under 50 passes at any chance above that, and one at 950 or over fails below it.
+  cpp-attempts : EpActor, Boolean, Integer -> Integer
+  cpp-attempts (p) (pass) (n) = let r = int-mod (bit-and (mix-bits (p.row + p.card) n) #7FFFFFFF) 1000
+    in if n >= 100000 | (pass & r < 50) | (not pass & r >= 950) then n else cpp-attempts p pass (n + 1)
+ A pass whose gain roll (the draw shifted 31, skc-learn) is 0, so a gain under a whole tenth rounds up to exactly one.
+  cpp-attempts-gain : EpActor, Integer -> Integer
+  cpp-attempts-gain (p) (n) = let draw = mix-bits (p.row + p.card) n
+    in if n >= 1000000 | (int-mod (bit-and draw #7FFFFFFF) 1000 < 50 & int-mod (bit-and (bit-shru draw 31) #7FFFFFFF) 1000 == 0) then n else cpp-attempts-gain p (n + 1)
   cpp-mine : EpWorld, Integer, Integer, Integer -> Integer
   cpp-mine (w) (actor) (node) (left) = if left == 0 then -3
     else let rolled = __record-set (ep-actor w actor) "attempts" 0
@@ -253,12 +262,13 @@ Chapter: CompositeProductionReplay
     cpp-check "field recipes need no premises" (field > 0 & cpr-craft-lookup v 0 map outside field 4 > 0)
     anvil-row <- cpp-anvil-row map #0FAF 1421 1700
     by-anvil <- gs-mobile serial 1420 1700 0 400 0
-    past-anvil <- gs-mobile serial 1424 1700 0 400 0
+    past-anvil <- gs-mobile serial 1425 1700 0 400 0
+    forge-item <- (when world-create v.game.world (WorldObject { serial = 0, kind = 2, x = 1421, y = 1701, z = 0, graphic = #0FB1, hue = 0, container = 0, amount = 1, health = 0 }) is Err (_) -> 0 is Ok (f) -> f)
     print-line-uni ("ANVIL row=" & (when anvil-row is Err (e) -> e is Ok (_) -> "ok"))
-    cpp-check "smithing needs an anvil within 2 tiles wherever it stands, not the smithy premises (UOAIX-109)" (when anvil-row
+    cpp-check "smithing needs an anvil and a forge within 3 tiles wherever it stands, not the smithy premises (UOAIX-242 D4)" (forge-item > 0 & (when anvil-row
       is Err (_) -> False
       is Ok (d) -> cpr-craft-lookup-at (Just d) v 0 map by-anvil smith 1 > 0 & cpr-craft-lookup-at (Just d) v 0 map past-anvil smith 1 == 0
-        & cpr-craft-lookup v 0 map by-anvil smith 1 == 0)
+        & cpr-craft-lookup v 0 map by-anvil smith 1 == 0))
   end
   cpp-hours : EuCurrency, Integer -> Integer
   cpp-hours (x) (left) = if left == 0 then 0 else if eu-hour x /= 0 then left else cpp-hours x (left - 1)
@@ -305,6 +315,7 @@ Chapter: CompositeProductionReplay
     cpp-check "the seed keeps the chopped walnut's species, trunk 0CE0, as its health (UOAIX-106)" (when world-get s.harvest.items.world sapling is Err (_) -> False is Ok (o) -> o.health == #0CE0)
     sites <- s.harvest.count
     slot <- gsi-slot shard input.session.serial 0
+    plant-roll <- __record-set p "attempts" (cpp-attempts p True 0)
     planted <- cpl-handler pl s.harvest None shard input map (cpp-target (list-at pl.requests slot).target 1421 1697 0 0) 4001
     cpp-check "planting on free ground within reach takes the sapling and makes a planted timber site" (ep-at p.stock 56 == seeds & s.harvest.count == sites + 1 & cpl-planted s.harvest sites & cpp-opcode planted #1D 0)
     pw <- v.currency.world
@@ -317,6 +328,7 @@ Chapter: CompositeProductionReplay
     day <- cpp-hours v.currency 1
     young <- cpl-view pl s.harvest 7 1420 1698
     cpp-check "one game day after planting it draws as a 0CE9 sapling at 1421,1697" (day == 0 & list-length young == 1 & gp-u16 (list-at young 0) 7 == #0CE9 & gp-u16 (list-at young 0) 9 == 1421 & gp-u16 (list-at young 0) 11 == 1697)
+    tend-roll <- __record-set p "attempts" (cpp-attempts p True 0)
     tended <- cpl-handler pl s.harvest None shard input map (gp-put32 [6] (cpl-serial-base + sites * 2 + 1)) 4002
     cpp-check "double-clicking one's planted sapling tends it" ((cpl-node s.harvest sites).tended == 1)
     clicked <- cpl-handler pl s.harvest None shard input map (gp-put32 [9] (cpl-serial-base + sites * 2 + 1)) 4002
@@ -403,13 +415,13 @@ Chapter: CompositeProductionReplay
     steaks <-cpp-steaks v s.harvest.items pack 2
     raw <- ep-at p.stock 9
     meals <- ep-at p.stock 50
-    roll6 <- __record-set p "attempts" 0
+    roll6 <- __record-set p "attempts" (cpp-attempts p True 0)
     cooked <- cpp-use s shard input map steaks 1418 1699 #0461 9000
     cpp-check "raw fish steaks on an oven cook into a fish steak (097B), as UOX3 6063, and the census holds" (steaks > 0 & cpp-art cooked #097B 0 & ep-at p.stock 9 == raw - 1
       & ep-at p.stock 50 == meals + 1 & ep-census w 1 & cpp-backed v 9 & cpp-backed v 50)
     hurried <- cpp-use s shard input map steaks 1418 1699 #0461 9002
     cpp-check "a second steak inside the five seconds answers UOX3 6094" (cpp-note hurried "You are already cooking something.")
-    roll7 <- __record-set p "attempts" 1
+    roll7 <- __record-set p "attempts" (cpp-attempts p False 0)
     burnt <- cpp-use s shard input map steaks 1418 1699 #0461 (9002 + gh-ticks 5000)
     cpp-check "a failed Cooking roll burns the last steak, as UOX3 6093, and the census holds" (cpp-note burnt "cooking burnt"
       & ep-at p.stock 9 == raw - 2 & ep-at p.stock 50 == meals + 1 & gv-lot v steaks 0 < 0 & ep-census w 1 & cpp-backed v 9 & cpp-backed v 50)
@@ -422,7 +434,7 @@ Chapter: CompositeProductionReplay
     oven-row <- cpp-oven-row map
     row-raw <- ep-at p.stock 9
     row-meals <- ep-at p.stock 50
-    roll-row <- __record-set p "attempts" 0
+    roll-row <- __record-set p "attempts" (cpp-attempts p True 0)
     unplaced <- (when oven-row is Err (e) -> Err e is Ok (d) -> cpp-use-oven-row s shard input map d more False (9002 + gh-ticks 10000))
     placed <- (when oven-row is Err (e) -> Err e is Ok (d) -> cpp-use-oven-row s shard input map d more True (9004 + gh-ticks 10000))
     cpp-check "raw fish steaks aimed at a decoration oven's item (serial 7E000001, art 092C) cook on the oven it stands for (UOAIX-87)" (is-ok oven-row
@@ -436,7 +448,7 @@ Chapter: CompositeProductionReplay
     fuel-before <- ep-at p.stock 2
     mining <- ep-level p 1 (ep-classic 1 0 0)
     smithy <- ep-level p 8 (ep-classic 8 0 0)
-    roll-smelt <- __record-set p "attempts" 22
+    roll-smelt <- __record-set p "attempts" (cpp-attempts-gain p 0)
     smelted <- cpp-smelt s shard input map gold-pile forge 1419 1699 #0FB1 30000
     cpp-check "5 gold ore used on a forge within 2 tiles smelt into 2 ingots with 1 ore left and no fuel spent; the roll and its gain are Mining, never Blacksmithy; the census holds (Damian, 2026-10-07)" (forge > 0 & gold-pile > 0 & cpp-note smelted "smelt smelted"
       & ep-at p.stock 6 == gold-ore - 4 & ep-at p.stock 32 == gold-bars + 2 & ep-at p.stock 2 == fuel-before
@@ -499,18 +511,18 @@ Chapter: CompositeProductionReplay
     pan <- cpp-stuff v s.harvest.items pack 42 #097F 1
     asked-pan <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pan) 30000
     menu <- cpr-handler-at s shard input map 2593 (cpp-target (list-at s.harvest.requests slot).target 1418 1699 0 #0461) 30001
-    cpp-check "a skillet aimed at an oven opens the Cooking menu" (pan > 0 & cpp-opcode asked-pan #6C 0 & cpp-opcode menu #7C 0)
+    cpp-check "a skillet aimed at an oven opens the Cooking craft gump (UOAIX-185)" (pan > 0 & cpp-opcode asked-pan #6C 0 & cpp-opcode menu #B0 0)
     catch <- cpp-stuff v s.harvest.items pack 9 #09CC 1
     short <- cpr-handler-at s shard input map 2593 (cpp-choice pan (list-at s.craft.requests slot).menu 3) 30002
     cpp-check "cooking fish with no water names the shortfall (F41)" (catch > 0 & cpp-note short "You need 1 water in your backpack and have 0.")
     water <- cpp-stuff v s.harvest.items pack 4 #0FF8 1
     sticks <- cpp-stuff v s.harvest.items pack 2 #0DE1 1
     dinners <- ep-at p.stock 50
-    roll-pan <- __record-set p "attempts" 0
+    roll-pan <- __record-set p "attempts" (cpp-attempts p True 0)
     reopened <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pan) (30003 + gh-ticks 3000)
     remenu <- cpr-handler-at s shard input map 2593 (cpp-target (list-at s.harvest.requests slot).target 1418 1699 0 #0461) (30004 + gh-ticks 3000)
     supper <- cpr-handler-at s shard input map 2593 (cpp-choice pan (list-at s.craft.requests slot).menu 3) (30005 + gh-ticks 3000)
-    cpp-check "the Cooking menu cooks fish, water and branches into two cooked fish steaks (097B)" (water > 0 & sticks > 0 & cpp-opcode remenu #7C 0
+    cpp-check "the Cooking gump cooks fish, water and branches into two cooked fish steaks (097B)" (water > 0 & sticks > 0 & cpp-opcode remenu #B0 0
       & cpp-art supper #097B 0 & ep-at p.stock 50 == dinners + 2 & ep-census w 1)
     cook <- (when world-get shard.world input.session.serial is Err (_) -> 0 is Ok (m) -> if cpr-craft-lookup v s.heat map (__record-set m "x" (m.x + 5)) 29 5 == 0 then 1 else 0)
     cpp-check "a cook five tiles from the chosen heat gets no Cooking station" (cook == 1)
@@ -522,8 +534,8 @@ Chapter: CompositeProductionReplay
     cold <- when ash is Err (_) -> 0 is Ok (f) -> f
     cold-pan <- cpr-handler-at s shard input map 2593 (gp-put32 [6] pan) (30008 + gh-ticks 6000)
     on-ash <- cpr-handler-at s shard input map 2593 (cpp-aim-at (list-at s.harvest.requests slot).target cold 1419 1700 #0DEA) (30009 + gh-ticks 6000)
-    cpp-check "a skillet aimed at a lit campfire (0DE3) opens the Cooking menu, and at a fire gone out (0DEA) is refused (UOAIX-87)" (flame > 0 & cold > 0
-      & cpp-opcode lit-pan #6C 0 & cpp-opcode on-fire #7C 0 & cpp-opcode cold-pan #6C 0 & cpp-note on-ash "You cannot cook your food on that.")
+    cpp-check "a skillet aimed at a lit campfire (0DE3) opens the Cooking craft gump, and at a fire gone out (0DEA) is refused (UOAIX-87)" (flame > 0 & cold > 0
+      & cpp-opcode lit-pan #6C 0 & cpp-opcode on-fire #B0 0 & cpp-opcode cold-pan #6C 0 & cpp-note on-ash "You cannot cook your food on that.")
     flax-bed <- gh-site-find s.harvest 11 1215 1595 0 0
     at-flax <- world-update shard.world (gs-mobile input.session.serial 1215 1597 0 400 0)
     flax-name <- cpl-label s.harvest flax-bed

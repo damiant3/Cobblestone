@@ -1,0 +1,82 @@
+Chapter: BvtSkillShare1998
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Random
+
+ UOAIX-242 stage 2: a check by the character at (1405, 1685) reaches a character beside it only while that one faces it.
+ The bystander learns Blacksmithy from 0.0 at difficulty -200, range 50: chance 900, so a share passes 225 times in 1000
+ and gains 800 thousandths of a tenth; 300 checks raise it several tenths. A watcher at 0.0 below a value of 600 learns
+ at factor 60.
+  bsh98-yes : Integer -> Boolean
+  bsh98-yes (serial) = True
+  bsh98-no : Integer -> Boolean
+  bsh98-no (serial) = False
+  bsh98-place : GameShard, Integer, Integer -> Integer
+  bsh98-place (shard) (slot) (x) = when world-create shard.world (gs-mobile 0 x 1685 0 400 0)
+    is Err (_) -> 0
+    is Ok (serial) -> let named = poke-qword shard.characters (slot * 160) serial in serial
+  bsh98-shares : GameShard, Integer, (Integer -> Boolean), Integer, Integer -> Integer
+  bsh98-shares (shard) (checker) (present) (left) (raised) = if left == 0 then raised
+    else bsh98-shares shard checker present (left - 1) (raised + gs-skill-share shard checker 7 (0 - 200) 50 100 (mix-bits 7919 left) present)
+  bsh98-watches : GameShard, Integer, Integer, Integer -> Integer
+  bsh98-watches (shard) (checker) (left) (raised) = if left == 0 then raised
+    else bsh98-watches shard checker (left - 1) (raised + gs-skill-watch shard checker 7 600 100 (mix-bits 104729 left) bsh98-yes)
+  bsh98-stand : GameShard, Integer, Integer, Integer, Integer -> Integer
+  bsh98-stand (shard) (bystander) (x) (facing) (base) = let moved = world-update shard.world (gs-mobile bystander x 1685 0 400 0)
+    in let faced = gs-face-set shard bystander facing
+    in gs-skill-set shard bystander 7 base
+  bsh98-share-arm : GameShard, Integer, Integer, Integer, Integer, (Integer -> Boolean) -> Integer
+  bsh98-share-arm (shard) (checker) (bystander) (x) (facing) (present) = let stood = bsh98-stand shard bystander x facing 0
+    in let raised = bsh98-shares shard checker present 300 0
+    in if raised /= gs-skill shard bystander 7 then -1 else raised
+  bsh98-watch-arm : GameShard, Integer, Integer, Integer, Integer -> Integer
+  bsh98-watch-arm (shard) (checker) (bystander) (facing) (base) = let stood = bsh98-stand shard bystander 1406 facing base
+    in let raised = bsh98-watches shard checker 300 0
+    in if raised /= gs-skill shard bystander 7 - base then -1 else raised
+  bsh98-turned : GameShard, Integer -> Integer
+  bsh98-turned (shard) (checker) = when walk-map-new 1400 1680 16 16
+    is Err (_) -> -2
+    is Ok (map) -> let s = gs-session 0
+      in let a = __record-set s "serial" checker
+      in let b = __record-set s "phase" 2
+      in when gs-walk shard s map [2, 6, 0]
+        is Err (_) -> -3
+        is Ok (_) -> gs-facing shard checker
+ The arms' results, in order: the user's start facing, the share arms facing, an octant off, two octants off, away, two
+ tiles off and absent, the user's own Blacksmithy after them, the watch arms facing, away and at the value, and the
+ facing after a turn; empty when the fixture fails.
+  bsh98-results : Integer -> List Integer
+  bsh98-results (unused) = when gs-new 64
+    is Err (_) -> []
+    is Ok (shard) -> let checker = bsh98-place shard 0 1405
+      in let bystander = bsh98-place shard 1 1406
+      in let unknown = gs-facing shard bystander
+      in let facing = bsh98-share-arm shard checker bystander 1406 6 bsh98-yes
+      in let beside = bsh98-share-arm shard checker bystander 1406 5 bsh98-yes
+      in let past = bsh98-share-arm shard checker bystander 1406 4 bsh98-yes
+      in let away = bsh98-share-arm shard checker bystander 1406 2 bsh98-yes
+      in let far = bsh98-share-arm shard checker bystander 1407 6 bsh98-yes
+      in let absent = bsh98-share-arm shard checker bystander 1406 6 bsh98-no
+      in let own = gs-skill shard checker 7
+      in let watched = bsh98-watch-arm shard checker bystander 6 0
+      in let unwatched = bsh98-watch-arm shard checker bystander 2 0
+      in let level = bsh98-watch-arm shard checker bystander 6 600
+      in let turned = bsh98-turned shard checker
+      in [unknown, facing, beside, past, away, far, absent, own, watched, unwatched, level, turned]
+  bsh98-show : List Integer -> Text
+  bsh98-show (r) = if list-length r /= 12 then "no fixture" else show (list-at r 1) & " " & show (list-at r 2) & " | " & show (list-at r 3) & " " & show (list-at r 4) & " " & show (list-at r 5) & " " & show (list-at r 6) & " | own " & show (list-at r 7) & " | " & show (list-at r 8) & " " & show (list-at r 9) & " " & show (list-at r 10) & " | turned " & show (list-at r 11)
+  bvt-skill-share-1998 : Integer -> [Console] Integer
+  bvt-skill-share-1998 (unused) = act
+    r <- bsh98-results 0
+    ok <- list-length r == 12
+    a <- bvt-check ("UOAIX-242 stage 2 results: " & bsh98-show r) ok
+    b <- bvt-check "UOAIX-242 stage 2: a mobile faces a neighbour it points at or an octant beside it, never one two octants off; on its own tile, or with no facing held, it faces every way" (gs-faces 6 (0 - 1) 0 & gs-faces 5 (0 - 1) 0 & gs-faces 7 (0 - 1) 0 & not (gs-faces 4 (0 - 1) 0) & not (gs-faces 2 (0 - 1) 0) & gs-faces 2 0 0 & gs-faces (0 - 1) 1 1 & ok & list-at r 0 == 0 - 1)
+    c <- bvt-check "UOAIX-242 stage 2: a check is shared at divisor 4 with a character beside the user that faces it or an octant off it" (ok & list-at r 1 > 0 & list-at r 2 > 0)
+    d <- bvt-check "UOAIX-242 stage 2: no share reaches a character facing two octants off, facing away, two tiles off, or absent" (ok & list-at r 3 == 0 & list-at r 4 == 0 & list-at r 5 == 0 & list-at r 6 == 0)
+    e <- bvt-check "UOAIX-242 stage 2: the user does not share its own check" (ok & list-at r 7 == 0)
+    f <- bvt-check "UOAIX-242 stage 2: a direct use teaches a watcher facing it whose base is below the user's value, not one facing away or at that value" (ok & list-at r 8 > 0 & list-at r 9 == 0 & list-at r 10 == 0)
+    g <- bvt-check "UOAIX-242 stage 2: a turn records the character's facing" (ok & list-at r 11 == 6)
+    a + b + c + d + e + f + g
+  end

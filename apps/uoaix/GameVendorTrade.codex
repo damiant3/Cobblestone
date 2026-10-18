@@ -143,6 +143,48 @@ Chapter: GameVendorTrade
       & gv-tender-plan v.currency lines (em-purse v.currency.copper b.purse).coin (em-purse v.currency.silver b.purse).coin (em-purse w.money b.purse).coin 0
       & gv-metal-room v.currency lines b.purse s.purse 1 & gv-metal-room v.currency lines b.purse s.purse 2 & gv-metal-room v.currency lines b.purse s.purse 3
       & ep-lot-room v.currency.world.goods (gv-splits v lines 0) & gv-check-pools v lines buyer seller 0 & gv-chains-room v lines 1
+  gv-pay-why : GvWorld, List GvLine, Integer, Integer -> Text
+  gv-pay-why (v) (lines) (buyer) (seller) =
+    if not (eu-ready v.currency) then "currency not ready"
+    else if not (ep-valid-actor v.currency.world buyer) | not (ep-valid-actor v.currency.world seller) | buyer == seller then "actors " & show buyer & "/" & show seller
+    else let w = v.currency.world
+    in let b = ep-actor w buyer
+    in let s = ep-actor w seller
+    in let count = list-length lines
+    in let gross = gv-line-total v lines 0 4 0
+    in let x = v.currency
+    in if count < 1 | count > 32 then "line count " & show count
+    else if b.place /= s.place then "place " & show b.place & "/" & show s.place
+    else if b.purse == s.purse | b.purse == 1 | s.purse == 1 then "purse " & show b.purse & "/" & show s.purse
+    else if v.sale-count > 1024 - count then "sale rows " & show v.sale-count
+    else if w.trade-count > list-length w.trades - count then "trade rows " & show w.trade-count & "/" & show (list-length w.trades)
+    else if x.count > em-rows - count then "currency events " & show x.count
+    else if v.sequence >= ep-limit then "sequence"
+    else if gross <= 0 | gross > em-limit then "gross " & show gross
+    else if not (gv-tender-plan x lines (em-purse x.copper b.purse).coin (em-purse x.silver b.purse).coin (em-purse w.money b.purse).coin 0) then
+      "buyer coin " & show (em-purse x.copper b.purse).coin & "c " & show (em-purse x.silver b.purse).coin & "s " & show (em-purse w.money b.purse).coin & "g for " & show gross
+    else if not (gv-metal-room x lines b.purse s.purse 1) then "copper ledger room"
+    else if not (gv-metal-room x lines b.purse s.purse 2) then "silver ledger room"
+    else if not (gv-metal-room x lines b.purse s.purse 3) then "gold ledger room"
+    else if not (ep-lot-room w.goods (gv-splits v lines 0)) then "lot room"
+    else if not (gv-check-pools v lines buyer seller 0) then gv-pools-why v lines buyer seller 0
+    else if not (gv-chains-room v lines 1) then "chain turnover"
+    else "no term"
+  gv-pools-why : GvWorld, List GvLine, Integer, Integer, Integer -> Text
+  gv-pools-why (v) (lines) (buyer) (seller) (i) = if i == list-length lines then "pools"
+    else let l = ep-lot v.currency.world.goods (list-at lines i).lot
+    in let b = ep-actor v.currency.world buyer
+    in let s = ep-actor v.currency.world seller
+    in let quantity = gv-line-total v lines l.item 0 0
+    in let at = " item " & show l.item & ": "
+    in if ep-at s.stock l.item < quantity then "seller stock" & at & show (ep-at s.stock l.item) & " < " & show quantity
+    else if not (ep-room b l.item quantity) then "buyer stock room" & at & show (ep-at b.stock l.item) & " + " & show quantity
+    else if ep-at s.quality l.item < gv-line-total v lines l.item 1 0 then "seller quality" & at & show (ep-at s.quality l.item) & " < " & show (gv-line-total v lines l.item 1 0)
+    else if ep-at s.wear l.item < gv-line-total v lines l.item 2 0 then "seller wear" & at & show (ep-at s.wear l.item) & " < " & show (gv-line-total v lines l.item 2 0)
+    else if ep-at s.cost l.item < gv-line-total v lines l.item 3 0 then "seller cost" & at & show (ep-at s.cost l.item) & " < " & show (gv-line-total v lines l.item 3 0)
+    else if ep-at b.cost l.item > ep-limit - gv-line-total v lines l.item 4 0 then "buyer cost" & at & show (ep-at b.cost l.item)
+    else if ep-at v.currency.world.sales l.item > ep-limit - quantity then "sales" & at & show (ep-at v.currency.world.sales l.item)
+    else gv-pools-why v lines buyer seller (i + 1)
  Classic backpack gump 0x3C interior: x 44..141, y 65..93. Spread is a hash of the
  serial and cart line, so a replay places items identically.
   gv-spot-x : Integer, Integer -> Integer

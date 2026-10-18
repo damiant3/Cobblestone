@@ -17,10 +17,12 @@ of the resident set are outside this adapter.
 Home is the whole building (Damian, 2026-10-07: "lets make the whole building
 "home" for them, they can be happy in any room."): the Sweet Dreams Inn's
 footprint on every floor, `tl-inn-building` (ServUO `Data/Regions.xml`, 1492,1602
-8x19). A resident, shopkeeper, gatherer, miner or farmer bound home has arrived
-anywhere inside it (`tl-in-lodging`) and is reported resting there; the sleeping
-tile is only where the walk aims. Keepers' tiles never take a worker's
-(`bsh-reserved`).
+8x19). An NPC bound home there has arrived anywhere inside it (`tl-in-lodging`)
+and is reported resting there; the sleeping tile is only where the walk aims.
+Only the innkeeper lives there (UOAIX-239, Damian 2026-10-10): at every boot
+`cg-lodge-all` gives the workers, then every townsperson homed in the lodging,
+then every other keeper the first free floor tile of the least-loaded reachable
+house in `cgg-houses`, and the `INN LODGERS` line counts whoever is left there.
 
 ## Composite entry
 

@@ -1943,7 +1943,7 @@ control in an investigation, which sent a real regression looking like a
 host-versus-guest divergence for an hour. Grep for `error CDX` or read the exit
 code, which is the number the script actually publishes.
 
-**A one-letter helper can be a built-in alias.** `function R` in a session script loses to `R`, which is `Invoke-History`, so every call fails with "A positional parameter cannot be found" and a file written back afterwards is written UNCHANGED while the script reports nothing applied. Name helpers with a verb and a noun.
+**A one-letter helper can be a built-in alias.** `function R` in a session script loses to `R`, which is `Invoke-History`, so every call fails with "A positional parameter cannot be found" and a file written back afterwards is written UNCHANGED while the script reports nothing applied. `rd` is `Remove-Item` the same way (blu, 2026-10-17: a map-dump helper named `Rd` read nothing). Name helpers with a verb and a noun. A function that returns a byte array unrolls it into the pipeline unless it ends `return ,$b`.
 
 **`[IO.File]` resolves a relative path against the PROCESS directory, not the PowerShell location.** After `cd` (or `Set-Location`) a `[IO.File]::ReadAllBytes('x.codex')` reads from wherever the pwsh process started, while `Resolve-Path x.codex` follows the location: a read-modify-write that reads with the one and writes with the other writes an EMPTY file over the real one (fester, 2026-10-09: six opened files truncated to 0 bytes, restored with `p4 print -q -o` from their have revision, which also leaves them read-only). Pass absolute paths to every `[IO.File]` call.
 

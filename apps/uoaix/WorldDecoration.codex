@@ -11,7 +11,13 @@ Chapter: WorldDecoration
     base : Integer, opened : Integer, visible : Integer, connection : Integer, cursor : Integer, view-x : Integer, view-y : Integer,
     window-x : Integer, window-y : Integer, width : Integer, height : Integer, land : Integer, solids : Integer, limit : Integer, stride : Integer,
     tiles : Integer, pages : Integer, links : Integer, shown : Integer, shown-count : Integer, row : Integer,
-    viewers : List WdViewer, viewer : Integer, clock : Integer, extras : List Integer, reach : Integer }
+    viewers : List WdViewer, viewer : Integer, clock : Integer, extras : List Integer, reach : Integer, epoch : Integer }
+ The door epoch is one qword (epoch, shared like opened by every state over the same doors), raised at each change of
+ a door's state, so a plan refused while no door changed is refused again without a search (UOAIX-259).
+  wd-epoch : WdState -> Integer
+  wd-epoch (state) = peek-qword state.epoch 0
+  wd-bump : WdState -> Integer
+  wd-bump (state) = poke-qword state.epoch 0 (peek-qword state.epoch 0 + 1)
   WdViewer = record { connection : Integer, visible : Integer, shown : Integer, shown-count : Integer,
     cursor : Integer, view-x : Integer, view-y : Integer, row : Integer, used : Integer }
   wd-serial-base : Integer = #7E000000
@@ -61,15 +67,17 @@ Chapter: WorldDecoration
   wd-unlock : WdState, Integer -> Integer
   wd-unlock (state) (i) = let raw = peek-byte state.opened i
     in let unbarred = if bit-and raw 4 /= 0 then raw - 4 else raw
+    in let bumped = wd-bump state
     in poke-byte state.opened i (if wd-field state i 7 == 4 then bit-or unbarred 2 else unbarred)
  Lifting a bar (the morning, the jail emptying) clears bit 4 only, so a kind-4 door stays locked until a pick or key.
   wd-unbar : WdState, Integer -> Integer
-  wd-unbar (state) (i) = let raw = peek-byte state.opened i in if bit-and raw 4 == 0 then 0 else poke-byte state.opened i (raw - 4)
+  wd-unbar (state) (i) = let raw = peek-byte state.opened i in if bit-and raw 4 == 0 then 0 else let bumped = wd-bump state in poke-byte state.opened i (raw - 4)
  A shut door locks: a locked door (kind 4) loses its unlocked bit, any other door is barred. An open one refuses (0).
   wd-lock : WdState, Integer -> Integer
   wd-lock (state) (i) = let raw = peek-byte state.opened i
     in if not (wd-is-door state i) | bit-and raw 1 /= 0 then 0
-    else if wd-field state i 7 == 4 then let locked = poke-byte state.opened i (bit-and raw 253) in 1
+    else let bumped = wd-bump state
+    in if wd-field state i 7 == 4 then let locked = poke-byte state.opened i (bit-and raw 253) in 1
     else let barred = poke-byte state.opened i (bit-or raw 4) in 1
  The other leaf of a double door: a door whose closed tile touches this one's along a row or a column at the same
  height; -1 when there is none.
@@ -82,7 +90,7 @@ Chapter: WorldDecoration
     in if j /= i & wd-is-door state j & dx + dy == 1 & wd-field state j 2 == wd-field state i 2 then j
     else wd-leaf-scan state i (j + 1)
   wd-bar : WdState, Integer -> Integer
-  wd-bar (state) (i) = if wd-field state i 7 /= 1 | peek-byte state.opened i /= 0 then 0 else let barred = poke-byte state.opened i 4 in 1
+  wd-bar (state) (i) = if wd-field state i 7 /= 1 | peek-byte state.opened i /= 0 then 0 else let bumped = wd-bump state in let barred = poke-byte state.opened i 4 in 1
   wd-is-door : WdState, Integer -> Boolean
   wd-is-door (state) (i) = wd-field state i 7 == 1 | wd-field state i 7 == 4
   wd-x : WdState, Integer -> Integer
@@ -184,7 +192,8 @@ Chapter: WorldDecoration
       base = base, opened = opened, visible = first.visible, connection = -1, cursor = -1, view-x = -1, view-y = -1,
       window-x = map.x, window-y = map.y, width = map.width, height = map.height, land = map.land, solids = map.solids, limit = count, stride = stride,
       tiles = tiles, pages = pages, links = links, shown = first.shown, shown-count = 0, row = 0,
-      viewers = viewers, viewer = 0, clock = 0, extras = [], reach = 0 }
+      viewers = viewers, viewer = 0, clock = 0, extras = [], reach = 0, epoch = alloc-bytes 8 }
+    in let unchanged = poke-qword state.epoch 0 0
     in let indexed = wd-index state (count - 1)
     in let reached = __record-set state "reach" (wd-reach state 0 0)
     in when wd-solids state (wd-lower state (map.x - 1) 0 count)
@@ -280,8 +289,16 @@ Chapter: WorldDecoration
     in if cell < 0 then Err "door outside loaded collision window"
     else let reset = poke-qword state.solids (cell * state.stride) (peek-16 state.base (cell * 2))
     in wd-rebuild-rows state x y 0
+ The import gives every light-flagged decoration Circle225 (1) unless its line names a Light, so a candle lit as far as a
+ street lamp (Damian, 2026-10-13). ServUO Scripts/Items/Decorative: LampPost1-3 (0x0B20-0x0B25) Circle300 29;
+ CandleLarge, CandleLong, CandleShort, CandleSkull Circle150 2.
+  wd-light-shape : Integer, Integer -> Integer
+  wd-light-shape (art) (light) = if light < 0 then light
+    else if art >= #0B20 & art <= #0B25 then 29
+    else if art == #0A0F | (art >= #0A26 & art <= #0A28) | (art >= #0B1A & art <= #0B1D) | (art >= #1853 & art <= #1858) then 2
+    else light
   wd-packet : WdState, Integer -> List Integer
-  wd-packet (state) (i) = let light = wd-field state i 11
+  wd-packet (state) (i) = let light = wd-light-shape (wd-art state i) (wd-field state i 11)
     in let hue = wd-field state i 4
     in let a = gp-put16 (gp-put32 [#1A,0,0] (wd-serial-base + i + 1)) (wd-art state i)
     in let b = gp-put16 (gp-put16 a (wd-x state i + (if light < 0 then 0 else #8000))) (wd-y state i + (if hue == 0 then 0 else #8000))
@@ -318,7 +335,8 @@ Chapter: WorldDecoration
     in if wd-locked state i then Ok (gsi-denied "That door is locked.")
     else if old /= 0 & (wd-occupied shard.world (wd-field state i 0) (wd-field state i 1) (wd-field state i 2) 0
       | wd-deco-occupied state (wd-field state i 0) (wd-field state i 1) (wd-field state i 2) (wd-lower state (wd-field state i 0) 0 state.count)) then Ok (gsi-denied "The doorway is blocked.")
-    else let changed = poke-byte state.opened i (if old == 1 then raw - 1 else raw + 1)
+    else let bumped = wd-bump state
+    in let changed = poke-byte state.opened i (if old == 1 then raw - 1 else raw + 1)
     in let next-x = wd-x state i
     in let next-y = wd-y state i
     in let rebuild = when wd-rebuild-cell state x y

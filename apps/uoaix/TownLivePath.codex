@@ -8,8 +8,8 @@ Chapter: TownLivePath
 
   TlPath = record { width : Integer, height : Integer, epoch : Integer, count : Integer,
     seen : Integer, cost : Integer, parent : Integer, z : Integer, position : Integer, heap : Integer,
-    goal-x : Integer, goal-y : Integer, goal-z : Integer, expanded : Integer,
-    route-keys : Integer, route-steps : Integer, route-count : Integer, route-cursor : Integer }
+    goal-x : Integer, goal-y : Integer, goal-z : Integer, expanded : Integer, near : Integer, near-h : Integer, ended : Integer,
+    route-keys : Integer, route-steps : Integer, route-count : Integer, route-cursor : Integer, cap : Integer }
   tl-path-new : WalkMap -> TlPath
   tl-path-new (map) = let cells = map.width * map.height
     in let seen = alloc-bytes (cells * 8)
@@ -17,8 +17,40 @@ Chapter: TownLivePath
     in TlPath { width = map.width, height = map.height, epoch = 0, count = 0,
       seen = seen, cost = alloc-bytes (cells * 8), parent = alloc-bytes (cells * 8),
       z = alloc-bytes (cells * 8), position = alloc-bytes (cells * 8), heap = alloc-bytes (cells * 8),
-      goal-x = 0, goal-y = 0, goal-z = 0, expanded = 0,
-      route-keys = alloc-bytes (tl-route-limit * tl-route-key-bytes), route-steps = alloc-bytes (tl-route-limit * cells), route-count = 0, route-cursor = 0 }
+      goal-x = 0, goal-y = 0, goal-z = 0, expanded = 0, near = 0 - 1, near-h = 0, ended = 0,
+      route-keys = alloc-bytes (tl-route-limit * tl-route-key-bytes), route-steps = alloc-bytes (tl-route-limit * cells), route-count = 0, route-cursor = 0, cap = cells }
+ A search planner for any window of at most cells cells, with no route table: its width and height are set by tl-begin.
+  tl-path-cap : Integer -> TlPath
+  tl-path-cap (cells) = let seen = alloc-bytes (cells * 8)
+    in let zero = wd-zero seen 0 (cells * 8)
+    in TlPath { width = 0, height = 0, epoch = 0, count = 0,
+      seen = seen, cost = alloc-bytes (cells * 8), parent = alloc-bytes (cells * 8),
+      z = alloc-bytes (cells * 8), position = alloc-bytes (cells * 8), heap = alloc-bytes (cells * 8),
+      goal-x = 0, goal-y = 0, goal-z = 0, expanded = 0, near = 0 - 1, near-h = 0, ended = 0,
+      route-keys = alloc-bytes 8, route-steps = alloc-bytes 8, route-count = 0, route-cursor = 0, cap = cells }
+ A search begun here is advanced a slice at a time by tl-resume: the open set, costs and parents stay in the planner
+ between slices. The answer is the start cell, or -1 when the start or goal is off the map or the map is too large.
+  tl-begin : TlPath, WalkMap, WorldObject, Integer, Integer, Integer -> Integer
+  tl-begin (p) (map) (mobile) (x) (y) (z) = let start = walk-cell map mobile.x mobile.y
+    in let goal = walk-cell map x y
+    in if start < 0 | goal < 0 | map.width * map.height > p.cap then -1
+    else let w = __record-set p "width" map.width
+    in let h = __record-set p "height" map.height
+    in let gx = __record-set p "goal-x" (x - map.x)
+    in let gy = __record-set p "goal-y" (y - map.y)
+    in let gz = __record-set p "goal-z" z
+    in let expanded = __record-set p "expanded" 0
+    in let epoch = __record-set p "epoch" (p.epoch + 1)
+    in let cleared = if p.epoch < 1000000000 then 0 else let zero = wd-zero p.seen 0 (p.cap * 8) in let reset = __record-set p "epoch" 1 in 0
+    in let count = __record-set p "count" 0
+    in let unnear = __record-set p "near" (0 - 1)
+    in let unended = __record-set p "ended" 0
+    in let opened = tl-open p start 0 0 mobile.z
+    in start
+ One slice of a begun search: the goal cell when found, else -1 with ended telling a spent slice from a sealed region.
+  tl-resume : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Integer, Integer -> Integer
+  tl-resume (p) (world) (map) (doors) (self) (start) (goal) (slice) = let unended = __record-set p "ended" 0
+    in tl-search p world map doors self start True goal slice
  Each shared route is 8 qwords: from x, y, z, to x, y, z, step count, generation; its steps are one direction byte each
  in a slot of one byte per map cell, because a found path enters no cell twice, so no plan outgrows its slot.
   tl-route-limit : Integer = 64
@@ -154,12 +186,19 @@ Chapter: TownLivePath
     in tl-expand p world map doors self start walls cell (direction + 1)
   tl-search : TlPath, WorldTable, WalkMap, Maybe WdState, Integer, Integer, Boolean, Integer, Integer -> Integer
   tl-search (p) (world) (map) (doors) (self) (start) (walls) (goal) (budget) =
-    if p.count == 0 | budget == 0 then -1
+    if p.count == 0 | budget == 0 then (let ended = __record-set p "ended" (if p.count == 0 then tl-ended-sealed else tl-ended-budget) in -1)
     else let cell = tl-pop p
     in let expanded = __record-set p "expanded" (p.expanded + 1)
+    in let nearer = tl-nearer p cell
     in if cell == goal & walk-abs (peek-qword p.z (cell * 8) - p.goal-z) <= 2 then cell
     else let neighbors = tl-expand p world map doors self start walls cell 0
     in tl-search p world map doors self start walls goal (budget - 1)
+  tl-ended-budget : Integer = 1
+  tl-ended-sealed : Integer = 2
+  tl-nearer : TlPath, Integer -> Integer
+  tl-nearer (p) (cell) = let h = tl-heuristic p cell
+    in if p.near >= 0 & h >= p.near-h then 0
+    else let a = __record-set p "near" cell in let b = __record-set p "near-h" h in 0
   tl-reverse-path : TlPath, Integer, Integer, Integer, Integer, Integer -> Integer
   tl-reverse-path (p) (cell) (start) (path) (limit) (count) = if cell == start then count
     else if count == limit then -1
@@ -185,6 +224,8 @@ Chapter: TownLivePath
   tl-pass-budget (p) (world) (map) (doors) (mobile) (start) (goal) (walls) (budget) = let epoch = __record-set p "epoch" (p.epoch + 1)
     in let cleared = if p.epoch < 1000000000 then 0 else let zero = wd-zero p.seen 0 (p.width * p.height * 8) in let reset = __record-set p "epoch" 1 in 0
     in let count = __record-set p "count" 0
+    in let unnear = __record-set p "near" (0 - 1)
+    in let unended = __record-set p "ended" 0
     in let opened = tl-open p start 0 0 mobile.z
     in tl-search p world map doors mobile.serial start walls goal budget
  A plan into a path buffer of 256 bytes; tl-plan-sized takes the buffer's size.
@@ -203,7 +244,7 @@ Chapter: TownLivePath
     in let gz = __record-set p "goal-z" z
     in let expanded = __record-set p "expanded" 0
     in let walled = tl-pass-budget p world map doors mobile start goal True budget
-    in let found = if walled >= 0 | not (tl-boxed world mobile 0) then walled else tl-pass-budget p world map doors mobile start goal False budget
+    in let found = if walled >= 0 | not (tl-boxed world mobile 0) | tl-occupied world (world-tile-first world x y) mobile.serial z then walled else tl-pass-budget p world map doors mobile start goal False budget
     in let zero = wd-zero path 0 limit
     in if found < 0 then -1
     else let length = tl-reverse-path p found start path limit 0

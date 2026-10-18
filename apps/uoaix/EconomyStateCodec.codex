@@ -199,8 +199,10 @@ Chapter: EconomyStateCodec
     else let p = list-at w.actors i
     in let a = es-write-actor buf at p
     in let b = es-copy-cells p.skills (buf + at + 32) ep-skill-cells 0
-    in let c = poke-qword buf (at + es-actor-row - 8) (es-used-count p (eg-cells w.catalog) 0 0)
-    in es-write-actors buf (es-write-used buf (at + es-actor-row) p (eg-cells w.catalog) 0) w (i + 1)
+    in let start = at + es-actor-row
+    in let stop = es-write-used buf start p (eg-cells w.catalog) 0
+    in let c = poke-qword buf (start - 8) ((stop - start) / 40)
+    in es-write-actors buf stop w (i + 1)
 
   es-write-counters : Integer, EpWorld -> Integer
   es-write-counters (buf) (w) = let at = buf + es-catalog-counters w.catalog
@@ -271,9 +273,12 @@ Chapter: EconomyStateCodec
   es-encode (checkpoint) (buf) (capacity) = es-encode-over checkpoint buf capacity 0
  Written over prev, the previous record (0 for none), whose part slots it keeps.
   es-encode-over : EconomyCheckpoint, Integer, Integer, Integer -> Result Integer Text
-  es-encode-over (checkpoint) (buf) (capacity) (prev) =
+  es-encode-over (checkpoint) (buf) (capacity) (prev) = es-encode-as checkpoint buf capacity prev True
+ checked False: the caller has validated the economy itself (euc-write-timed, which times the check apart).
+  es-encode-as : EconomyCheckpoint, Integer, Integer, Integer, Boolean -> Result Integer Text
+  es-encode-as (checkpoint) (buf) (capacity) (prev) (checked) =
     if not (ev-range checkpoint.tick ep-limit) | not (ev-range checkpoint.sequence ep-limit) then Err "economy metadata outside budget"
-    else if not (ev-valid checkpoint.world) then Err ("economy state invalid: " & ev-invalid-part checkpoint.world)
+    else if checked & not (ev-valid checkpoint.world) then Err ("economy state invalid: " & ev-invalid-part checkpoint.world)
     else let w = checkpoint.world
     in let parts = es-part-slots w prev
     in let size = es-catalog-head w.catalog + es-parts-bytes parts 0

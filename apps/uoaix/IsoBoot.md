@@ -1,12 +1,13 @@
 # Dual BIOS and UEFI ISO
 
-`build-iso.ps1 -BiosCdx <cdx> -UefiImage <img> -Nasm <nasm.exe> -Out <new.iso>`
+`build-iso.ps1 -BiosCdx <cdx> -UefiImage <img> -Out <new.iso> [-Kernel <cdx>]`
 packages a BIOS runtime payload and the UEFI image's first ESP into an
 El Torito ISO. The builder verifies CDX section bounds/tiling, content hash
 and expected multiboot trampoline addresses. The UEFI input must be the
 GPT/FAT16 image emitted by `build/build-img.ps1`, with the ESP first and
 at most 65535 sectors. The builder checks extraction bounds; it is not a
-general GPT repair or validation utility. Supply a native Windows NASM.
+general GPT repair or validation utility. The BIOS loader is `IsoBootLoader.codex`, compiled with the
+named kernel (the depot seed by default) and run under codex-vm; the builder patches its payload count and LBA.
 No Unix toolchain is required. Output paths must be new.
 
 The ISO has a BIOS no-emulation entry and a UEFI platform entry referring
@@ -25,7 +26,7 @@ entry and initialize the runtime after ExitBootServices. These are distinct
 entry paths inside the same ISO, not byte-identical executable payloads.
 Build both from the same application source with the corresponding startup
 wrapper. The builder does not prove semantic equality of arbitrary inputs.
-The receipt records both input hashes, the assembler hash and the ISO hash.
+The receipt records both input hashes, the kernel and loader source hashes and the ISO hash.
 
 The optical image is read-only. Persistent state belongs on a separate
 writable virtio disk. The ISO builder copies only the UEFI ESP and the BIOS
@@ -40,12 +41,11 @@ The BIOS variant omits the opening's explicit `runtime-init 0`, since normal
 CDX startup already initializes the runtime. The UEFI variant is emitted by
 `test-uefi-storage.ps1 -CombinedTown` and uses its usual PE flags.
 
-From the repository root, use new directories and an installed NASM path:
+From the repository root, use new directories:
 
 ```powershell
 $uefiProof = Join-Path (Get-Location) 'build-output/uoaix/iso-uefi-input'
 $isoProof = Join-Path (Get-Location) 'build-output/uoaix/iso-input'
-$assembler = 'C:/Tools/nasm/nasm.exe'
 pwsh -File apps/uoaix/proofs/test-uefi-storage.ps1 -Kernel seed/Codex.cdx -CombinedTown -OutDir $uefiProof
 if ($LASTEXITCODE) { throw 'UEFI input proof failed' }
 New-Item -ItemType Directory $isoProof -ErrorAction Stop | Out-Null
@@ -55,7 +55,7 @@ if ([regex]::Matches($source,[regex]::Escape($line)).Count -ne 1) { throw 'Start
 [IO.File]::WriteAllText("$isoProof/bios.codex",$source.Replace($line,''))
 pwsh -File build/compile.ps1 -Src "$isoProof/bios.codex" -Out "$isoProof/bios.cdx" -Log "$isoProof/compile.log" -Kernel seed/Codex.cdx
 if ($LASTEXITCODE) { throw 'BIOS compile failed' }
-pwsh -File apps/uoaix/build-iso.ps1 -BiosCdx "$isoProof/bios.cdx" -UefiImage "$uefiProof/pristine.img" -Nasm $assembler -Out "$isoProof/uoaix.iso"
+pwsh -File apps/uoaix/build-iso.ps1 -BiosCdx "$isoProof/bios.cdx" -UefiImage "$uefiProof/pristine.img" -Out "$isoProof/uoaix.iso"
 if ($LASTEXITCODE) { throw 'ISO build failed' }
 pwsh -File apps/uoaix/proofs/test-iso-storage.ps1 -Iso "$isoProof/uoaix.iso" -DataTemplate "$uefiProof/pristine.img" -OutDir "$isoProof/acceptance"
 ```

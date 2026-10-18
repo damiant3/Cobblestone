@@ -29,21 +29,24 @@ Chapter: BvtCompositeGrow
   bcg-item : Integer -> WorldObject
   bcg-item (i) = WorldObject { serial = 0, kind = 2, x = 1000 + int-mod i 200, y = 1000 + i / 200, z = 0, graphic = #0EED, hue = 0, container = 0, amount = 1, health = 0 }
   bcg-fill : WorldTable, Integer -> Integer
-  bcg-fill (w) (i) = if w.capacity - world-count w < 256 then i
+  bcg-fill (w) (i) = if (w.capacity - world-count w) * 4 <= w.capacity then i
     else when world-create w (bcg-item i) is Err (_) -> -1 is Ok (_) -> bcg-fill w (i + 1)
- Growth is due only once fewer than a page of slots are free, and one growth clears it.
+ Growth is due only once fewer than a quarter of the slots are free: at exactly a quarter free it is not, one more
+ object makes it due, and one growth clears it.
   bcg-due : Integer -> Boolean
   bcg-due (unused) = when bcg-small 0
     is Err (_) -> False
     is Ok (owner) -> let before = cg-grow-due owner
       in let filled = bcg-fill owner.items.world 0
+      in let quarter = cg-grow-due owner
+      in let one = when world-create owner.items.world (bcg-item filled) is Err (_) -> -1 is Ok (_) -> 1
       in let due = cg-grow-due owner
       in when cg-grow owner
         is Err (_) -> False
-        is Ok (cap) -> not before & filled > 0 & due & cap == 768 & not (cg-grow-due owner)
+        is Ok (cap) -> not before & filled > 0 & not quarter & one == 1 & due & cap == 768 & not (cg-grow-due owner)
   bvt-composite-grow : Integer -> [Console] Integer
   bvt-composite-grow (unused) = act
     a <- bvt-check "a 512-slot composite grows to 768 and every per-slot table, list and slot array follows (cg-grow)" (bcg-grows 0)
-    b <- bvt-check "growth is due once fewer than a page of slots are free, not before, and one growth clears it (cg-grow-due)" (bcg-due 0)
+    b <- bvt-check "growth is due once fewer than a quarter of the slots are free, not at a quarter, and one growth clears it (cg-grow-due)" (bcg-due 0)
     a + b
   end

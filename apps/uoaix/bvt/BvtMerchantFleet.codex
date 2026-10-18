@@ -14,7 +14,7 @@ Chapter: BvtMerchantFleet
   bmf-roles (port) (role) (i) = if i >= list-length port then False else ct-vendor-role (list-at port i) == role | bmf-roles port role (i + 1)
   bmf-at-most : EpWorld, List GvVendor, List Integer, Integer, Integer, Integer -> Boolean
   bmf-at-most (w) (vendors) (port) (item) (best) (i) = if i >= list-length port then True
-    else let k = list-at port i in gvb-bid-for w (ct-vendor-role k) (list-at vendors k).actor item <= best & bmf-at-most w vendors port item best (i + 1)
+    else let k = list-at port i in (k >= list-length vendors | gvb-bid-for w (ct-vendor-role k) (list-at vendors k).actor item <= best) & bmf-at-most w vendors port item best (i + 1)
   bvt-merchant-fleet : Integer -> [Console] Integer
   bvt-merchant-fleet (unused) = when cg-new 0
     is Err (e) -> bvt-check ("merchant fleet fixture: " & e) False
@@ -30,5 +30,12 @@ Chapter: BvtMerchantFleet
       b <- bvt-check "Nujel'm's port holds its innkeeper, tanner and leatherworker and no Britain shop; Britain's holds the 21 Britain shops" (list-length nujelm >= 6 & bmf-roles nujelm 5 0 & bmf-roles nujelm 14 0 & bmf-roles nujelm 15 0 & list-at nujelm 0 >= bb-shop-count & list-length britain >= bb-shop-count & list-at britain 0 == 0 & mf-port-of cities cityshops (0 - 1) < 0)
       c <- bvt-check "the best bid at a port is no lower than any of its shops' bids" (bmf-at-most w v.vendors britain 5 best 0 & best >= 0)
       d <- bvt-check "a ship buys 20% under the next port's bid and no closer, never at no price, and sells only above its cost" (mf-worth-buying 80 100 & not (mf-worth-buying 81 100) & not (mf-worth-buying 0 100) & not (mf-worth-buying 10 0) & mf-worth-selling 11 10 & not (mf-worth-selling 10 10) & not (mf-worth-selling 0 0))
-      a + b + c + d
+      at <- mf-best-shop w v.vendors britain 5 0 (0 - 1) 0
+      e <- bvt-check "the best shop at a port is the one making the best bid, and none when none bids" ((best == 0 & at < 0) | (at >= 0 & gvb-bid-for w (ct-vendor-role at) (list-at v.vendors at).actor 5 == best))
+      ships <- cg-fleet-install owner 0
+      first <- cg-fleet-captain owner 0
+      actor <- cg-fleet-actor v.currency 0
+      again <- cg-fleet-install owner 0
+      f <- bvt-check ("boot installs the 3 ships (a captain and hold each, an actor at place 100), and a second boot finds the same captain and actor: ships=" & show ships) (ships == mf-ships & again == mf-ships & first > 0 & cg-fleet-captain owner 0 == first & actor > 0 & cg-fleet-actor v.currency 0 == actor & gsi-pack-find owner.items.world first 0 > 0 & (ep-actor w actor).place == cgg-town-place)
+      a + b + c + d + e + f
     end

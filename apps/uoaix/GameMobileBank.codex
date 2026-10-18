@@ -86,6 +86,9 @@ Chapter: GameMobileBank
     in gmb-rewrite state packets (i + 1) (list-push (list-push (list-push out next) (gmb-corpse-equip state corpse)) (gsi-contents state corpse 0 [#3C,0,0,0,0] 0))
  A corpse is 0x1A art 0x2006 (cbp-corpse). What it holds lifts and drops like any container's contents, a container in it opens
  (the backpack's gump 0x3C), and 0x89 lists its worn layers so the client draws the body clothed (RunUO CorpseEquip).
+ Health 65534 marks a worn layer copied onto the corpse of an NPC that rises (cg-corpse-dress): drawn, never lifted. 65535 is
+ the master key's health; a key otherwise holds its chest's world slot + 1.
+  gmb-shown : Integer = 65534
   gmb-corpse-serial : List Integer -> Integer
   gmb-corpse-serial (packet) = if list-length packet < 14 | list-at packet 0 /= #1A | gp-u16 packet 7 /= #2006 then 0
     else bit-and (gp-u32 packet 3) #7FFFFFFF
@@ -95,9 +98,9 @@ Chapter: GameMobileBank
     in when world-get state.world serial
       is Err (_) -> gmb-corpse-own state next depth
       is Ok (item) -> if item.kind /= 2 then gmb-corpse-own state next depth
-        else let meta = if gsi-known state serial then gsi-meta state serial else GsiItem { serial = serial, layer = 0, gump = 0, movable = True, stackable = item.amount > 1 }
+        else let meta = if gsi-known state serial then gsi-meta state serial else GsiItem { serial = serial, layer = 0, gump = 0, movable = True, stackable = item.amount > 1, held = 0 }
         in let gump = if meta.gump == 0 & item.graphic == #0E75 then #003C else meta.gump
-        in let registered = gsi-register state serial meta.layer gump True (meta.stackable & meta.layer == 0 & gump == 0)
+        in let registered = gsi-register state serial meta.layer gump (item.health /= gmb-shown) (meta.stackable & meta.layer == 0 & gump == 0)
         in let inner = if gump == 0 then 0 else gmb-corpse-own state (world-first-child state.world serial) (depth - 1)
         in gmb-corpse-own state next depth
   gmb-corpse-equip : GsiState, Integer -> List Integer
@@ -111,9 +114,43 @@ Chapter: GameMobileBank
   gmb-reply : GsiState, GameReply -> GameReply
   gmb-reply (state) (reply) = GameReply { packets = gmb-rewrite state reply.packets 0 [], close = reply.close, note = reply.note }
   gmb-near-banker : GmbState, WorldObject, Integer -> Boolean
-  gmb-near-banker (state) (mobile) (i) = if i == state.count then False else when world-get state.items.world (list-at state.bankers i)
-    is Err (e) -> gmb-near-banker state mobile (i + 1)
-    is Ok (npc) -> if npc.kind == 1 & gmb-in-range mobile npc then True else gmb-near-banker state mobile (i + 1)
+  gmb-near-banker (state) (mobile) (i) = gmb-banker-at state mobile i /= 0
+  gmb-banker-at : GmbState, WorldObject, Integer -> Integer
+  gmb-banker-at (state) (mobile) (i) = if i == state.count then 0 else when world-get state.items.world (list-at state.bankers i)
+    is Err (e) -> gmb-banker-at state mobile (i + 1)
+    is Ok (npc) -> if npc.kind == 1 & gmb-in-range mobile npc then npc.serial else gmb-banker-at state mobile (i + 1)
+ D-17 (Damian, 2026-10-13: "every bank is its own bank. it is not a shared bank."): a character keeps one box at each
+ bank building. The banks are ServUO Data/Common.map's bank rows on maps 0 (both facets) and 1 (Felucca): the First
+ Bank of Britain, East Britain Bank, the Abbey, Trinsic's branch and royal bank, Magincia, Minoc, Nujel'm, Ocllo,
+ Skara Brae, Moonglow, Jhelom, Vesper's mint, Buccaneer's Den, Serpent's Hold, the Wind bank, Papua and Delucia. A
+ box's health is its bank's index, so a box made before banks were told apart (health 0) is the First Bank of Britain's.
+  gmb-banks-x : List Integer = [1425, 1655, 652, 1813, 1897, 3734, 2503, 3764, 3695, 587, 4471, 1317, 2881, 2731, 2880, 5346, 5275, 5669]
+  gmb-banks-y : List Integer = [1690, 1606, 820, 2825, 2684, 2149, 552, 1317, 2511, 2146, 1156, 3773, 684, 2188, 3472, 74, 3977, 3131]
+ A craft or a shop within gmb-link tiles (the larger axis) of a bank draws on the nearest bank; past that it has none.
+  gmb-link : Integer = 128
+  gmb-span : Integer, Integer, Integer -> Integer
+  gmb-span (x) (y) (i) = let dx = x - list-at gmb-banks-x i in let dy = y - list-at gmb-banks-y i
+    in let ax = if dx < 0 then 0 - dx else dx in let ay = if dy < 0 then 0 - dy else dy in if ax > ay then ax else ay
+  gmb-nearest : Integer, Integer, Integer, Integer -> Integer
+  gmb-nearest (x) (y) (i) (best) = if i >= list-length gmb-banks-x then best
+    else gmb-nearest x y (i + 1) (if gmb-span x y i < gmb-span x y best then i else best)
+  gmb-bank-at : Integer, Integer -> Integer
+  gmb-bank-at (x) (y) = gmb-nearest x y 1 0
+  gmb-linked : Integer, Integer -> Integer
+  gmb-linked (x) (y) = let bank = gmb-bank-at x y in if gmb-span x y bank <= gmb-link then bank else -1
+  gmb-box-from : WorldTable, Integer, Integer -> Integer
+  gmb-box-from (world) (serial) (bank) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> gmb-box-from world (world-next-sibling world serial) bank
+      is Ok (o) -> if o.kind == 2 & o.graphic == #09B2 & o.health == bank then serial else gmb-box-from world (world-next-sibling world serial) bank
+  gmb-box : GsiState, Integer, Integer -> Integer
+  gmb-box (items) (owner) (bank) = if bank < 0 then 0 else gmb-box-from items.world (world-first-child items.world owner) bank
+ The box a character standing by a banker opens: the one at that banker's bank, 0 when no banker is near.
+  gmb-local-box : GmbState, WorldObject -> Integer
+  gmb-local-box (state) (mobile) = let npc = gmb-banker-at state mobile 0
+    in if npc == 0 then 0 else when world-get state.items.world npc
+      is Err (_) -> 0
+      is Ok (banker) -> gmb-box state.items mobile.serial (gmb-bank-at banker.x banker.y)
   gmb-is-banker : GmbState, Integer, Integer -> Boolean
   gmb-is-banker (state) (serial) (i) = if i == state.count then False
     else if list-at state.bankers i == serial then True else gmb-is-banker state serial (i + 1)
@@ -124,16 +161,20 @@ Chapter: GameMobileBank
  The First Bank of Britain; ServUO's banker spawner stands at 1433,1687.
   gmb-bank-x : Integer = 1433
   gmb-bank-y : Integer = 1687
+ East Britain Bank (UOX3's Second Bank of Britain); ServUO's banker spawner (felucca.xml Vendors#25) stands at 1650,1608,20.
+  gmb-east-x : Integer = 1650
+  gmb-east-y : Integer = 1608
+  gmb-east-z : Integer = 20
   gmb-find-banker : GsiState, Integer -> Integer
   gmb-find-banker (state) (serial) = if serial == 0 then 0
     else when world-get state.world serial
       is Err (_) -> gmb-find-banker state (world-tile-next state.world serial)
       is Ok (obj) -> if obj.kind == 1 & obj.graphic == 400 & obj.hue == 1002 then serial
         else gmb-find-banker state (world-tile-next state.world serial)
-  gmb-ensure-banker : GmbState, Integer -> Result Integer Text
-  gmb-ensure-banker (state) (z) =
-    let found = gmb-find-banker state.items (world-tile-first state.items.world gmb-bank-x gmb-bank-y)
-    in when (if found /= 0 then Ok found else world-create state.items.world (gs-mobile 0 gmb-bank-x gmb-bank-y z 400 1002))
+  gmb-ensure-banker : GmbState, Integer, Integer, Integer -> Result Integer Text
+  gmb-ensure-banker (state) (x) (y) (z) =
+    let found = gmb-find-banker state.items (world-tile-first state.items.world x y)
+    in when (if found /= 0 then Ok found else world-create state.items.world (gs-mobile 0 x y z 400 1002))
       is Err (e) -> Err e
       is Ok (serial) -> when gmb-dress state.items serial
         is Err (e) -> Err e
@@ -143,10 +184,12 @@ Chapter: GameMobileBank
   gmb-open : GmbState, GameInput, Integer -> GameReply
   gmb-open (state) (input) (slot) = when world-get state.items.world input.session.serial
     is Err (e) -> gsi-denied "Your bank is unavailable."
-    is Ok (mobile) -> if not (gmb-near-banker state mobile 0) then gsi-denied "You must be near a banker."
+    is Ok (mobile) -> let npc = gmb-banker-at state mobile 0
+      in if npc == 0 then gsi-denied "You must be near a banker."
       else if state.gump < 1 | state.gump > 65535 then gsi-denied "Bank container is unavailable."
-      else let found = gmb-bank-find state.items mobile.serial 0
-      in when (if found == 0 then world-create state.items.world (gs-item mobile.serial #09B2 0) else Ok found)
+      else let bank = when world-get state.items.world npc is Err (_) -> 0 is Ok (banker) -> gmb-bank-at banker.x banker.y
+      in let found = gmb-box state.items mobile.serial bank
+      in when (if found == 0 then world-create state.items.world (__record-set (gs-item mobile.serial #09B2 0) "health" bank) else Ok found)
         is Err (e) -> gsi-denied "Your bank is unavailable."
         is Ok (serial) -> let registered = gsi-register state.items serial 29 state.gump False False
           in let lease = list-at state.leases slot

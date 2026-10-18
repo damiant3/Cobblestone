@@ -12,7 +12,11 @@ Chapter: WorldRecords
     graphic : Integer, hue : Integer, container : Integer, amount : Integer, health : Integer
   }
   WorldTable = record { buffer : Integer, capacity : Integer, index : Integer,
-    grow : (Integer -> Result Integer Text), growing : Boolean, blocks : (Integer -> Boolean) }
+    grow : (Integer -> Result Integer Text), growing : Boolean, blocks : (Integer -> Boolean), carries : (Integer, Integer -> Boolean) }
+  world-carries-none : Integer, Integer -> Boolean
+  world-carries-none (actor) (mobile) = False
+  world-bind-carries : WorldTable, (Integer, Integer -> Boolean) -> Integer
+  world-bind-carries (world) (carries) = let a = __record-set world "carries" carries in 0
   world-grow-none : Integer -> Result Integer Text
   world-grow-none (unused) = Err "world grows only while founding"
  Whether a mobile blocks a walking NPC. Every mobile does until the server binds its rule: NPCs walk through each other
@@ -29,7 +33,7 @@ Chapter: WorldRecords
   world-blocked : WorldTable, Integer, Integer -> Boolean
   world-blocked (world) (x) (y) = not (world-indexed world) | world-blocker-at world (world-tile-first world x y)
   world-view : Integer, Integer -> WorldTable
-  world-view (buffer) (capacity) = WorldTable { buffer = buffer, capacity = capacity, index = 0, grow = world-grow-none, growing = False, blocks = world-blocks-all }
+  world-view (buffer) (capacity) = WorldTable { buffer = buffer, capacity = capacity, index = 0, grow = world-grow-none, growing = False, blocks = world-blocks-all, carries = world-carries-none }
  While founding, a create on an empty free list grows the world and every per-slot table through grow, so room counts
  up to the ceiling. A live world grows only at the round's growth point (GameLinks), above which a create would
  allocate past the compaction mark (L-BELOWMARK).
@@ -68,7 +72,7 @@ Chapter: WorldRecords
     in let cleared = wi-zero buffer (16 + world-directory * 8) 0
     in let paged = world-add-pages buffer 0 ((capacity + 255) / 256)
     in let slots = world-init-slots buffer capacity 0
-    in Ok (WorldTable { buffer = buffer, capacity = capacity, index = wi-new capacity, grow = world-grow-none, growing = False, blocks = world-blocks-all })
+    in Ok (WorldTable { buffer = buffer, capacity = capacity, index = wi-new capacity, grow = world-grow-none, growing = False, blocks = world-blocks-all, carries = world-carries-none })
  A table grows to the next page boundary, allocating a world page and its index pages when it is already on one; the
  new slots join both free lists. The heap it allocates must be kept (L-BELOWMARK, UoaixDynamicTables.md).
   world-grow : WorldTable -> Result Integer Text

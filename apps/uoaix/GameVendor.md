@@ -61,12 +61,19 @@ with the crown (`gv-change`), then selects exact tender, using gold, then
 silver, then copper at the current royal rates (`gv-tender-plan`).
 A rate edit invalidates outstanding quotes. The classic status field displays
 the total purse value rounded down to whole gold; the reply and server log
-state the actual denominations paid. The client's buy and sell windows show
-one number a line, which counts copper, so each line's name carries its price
-as `<item> at 6g5s` (`gvp-priced`): a quote of a gold or more is rounded to the
+state the actual denominations paid. Each buy and sell line's name carries its
+price as `<item> at 6g 5s`, a space between coins (`gvp-priced`): a quote of a gold or more is rounded to the
 nearest silver and one under a gold is exact in silver and copper, never three
 coins (`gvp-round`, applied where the quote is filled, so the charge is the
-label; UOAIX-225). The vendor's opening line states the
+label; UOAIX-225). The stock 1.25 client draws its own copper number beside
+each line (`%s at %dgp`, `at %d g.p.`) and a copper total; the players'
+clients run `transform-trade-gump.ps1`, which drops those line numbers, draws the
+Bill of Sale and Offer totals as `1g 55s 8c` through a formatter added to
+`CLIENT.EXE` at the royal rates it reads from the shard's admin port
+(`treasury-view`; the founding rates with no shard), and moves the Bill of
+Sale's "Gold Avail" (the purse in whole gold) one row down to give the total its
+row. The formatter's rates are baked: after a royal rate edit, rerun the
+transform at the next switch. The vendor's opening line states the
 rates, and a settled cart answers with a receipt gump (`gv-receipt`, 0xB0):
 each line, the total, the coin by metal with tax, and the purse after. Sell receipts report net proceeds and
 per-metal tax separately. `eu-pay` retains the old gold-only path;

@@ -149,3 +149,9 @@ before then.
    and the refusal of a seal that would not fit. The live seal rate is measured
    above.
 3. A fresh live world on the new format (UCC1 24 and a reinstalled cache).
+4. Built: the export. `export-archive.ps1 -WorldDisk <stopped disk> -OutDir <new dir>` refuses a disk a codex-vm
+   holds, verifies ARC1, walks every SEG1 by its FNV32 and its link to the one before, and writes
+   `segment-NNNNNN.seg` and `index.txt` (file, number, bytes, FNV32, previous FNV32). `-Clear` then rewrites ARC1
+   with next free sector 1, the same segment count and the last FNV32: the server numbers a segment from the
+   economy's seal count and links it from ARC1's last, so the first segment written after a clear chains onto the
+   last one exported. `EconomyArchiveRead` walks a region from its first segment's number.

@@ -1,0 +1,43 @@
+Chapter: BvtValidStart
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter BvtSealLoans
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-257: a sealed economy lends 140 loans past the 128 a block holds, saves and restores, so the restored start
+ table is shorter than the live one, as at a world restore. Answers a bit per check: 1 the condition reached (sealed,
+ 140 lent, start shorter than live), 2 the restored currency valid, 4 the start table's loans unchanged by the
+ validation, 8 the restored currency re-encodes byte for byte; -9 to -5 a fixture that failed.
+  vst-run : Integer -> Integer
+  vst-run (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let opened = bsl-open x
+      in let metal = bsl-metal x 1
+      in if metal < 0 then -7
+      else let sealed = eu-seal x
+      in let lender = bsl-rich (eu-money x metal) 1 0
+      in let lent = bsl-lend x metal lender (if lender == 1 then 2 else 1) 140 0 (x.world.hour + 100)
+      in let buf = alloc-bytes us-max-payload
+      in when euc-encode (CurrencyCheckpoint { currency = x, tick = x.world.hour, sequence = 1 }) buf us-max-payload
+        is Err (_) -> -6
+        is Ok (_) -> when euc-decode buf (peek-qword buf 16)
+          is Err (_) -> -5
+          is Ok (s) -> let y = s.currency
+            in let start = if metal == 1 then y.start.copper else if metal == 2 then y.start.silver else y.start.gold
+            in let before = list-length start.loans
+            in let short = if sealed == 0 & lent == 140 & before < list-length (eu-money y metal).loans then 1 else 0
+            in let valid = if euv-valid y then 2 else 0
+            in let kept = if list-length start.loans == before then 4 else 0
+            in let copy = alloc-bytes us-max-payload
+            in let same = if kept == 0 then 0 else when euc-encode s copy us-max-payload
+              is Err (_) -> 0
+              is Ok (_) -> if bsl-equal buf copy 0 then 8 else 0
+            in short + valid + kept + same
+  bvt-valid-start : Integer -> [Console] Integer
+  bvt-valid-start (unused) = act
+    n <- vst-run 0
+    a <- bvt-check ("a restored start table shorter than the live one survives validation (UOAIX-257, code " & show n & ")") (n == 15)
+    a
+  end

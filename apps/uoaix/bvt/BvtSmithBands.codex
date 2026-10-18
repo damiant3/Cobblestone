@@ -1,0 +1,67 @@
+Chapter: BvtSmithBands
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-242: a smith-made item's lot quality bands its stats, x1.2 exceptional and x0.8 poor (blacksmith.m), through the
+ hooks the composite binds: combat's band-hook for the held weapon and shield, the harvest's temper for max hits.
+  bsb-mobile : WorldTable -> Integer
+  bsb-mobile (world) = when world-create world (WorldObject { serial = 0, kind = 1, x = 10, y = 10, z = 0, graphic = #0190,
+    hue = 0, container = 0, amount = 1, health = 50 })
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bsb-item : CompositeGame, Integer, Integer, Integer, Integer, Integer -> Integer
+  bsb-item (owner) (holder) (graphic) (layer) (item) (quality) = when world-create owner.items.world (gs-item holder graphic 0)
+    is Err (_) -> 0
+    is Ok (serial) -> let worn = if layer == 0 then 0 else gsi-register owner.items serial layer 0 True False
+      in let lot = if item == 0 then 0 else gv-add-lot owner.vendor serial (bsb-maker owner item quality) item quality 32 0
+      in if worn < 0 then -1 else if lot < 0 then -2 else serial
+ A maker holding one unlisted unit of the item, as ep-room-for requires of a new lot.
+  bsb-maker : CompositeGame, Integer, Integer -> Integer
+  bsb-maker (owner) (item) (quality) = let x = owner.vendor.currency
+    in let actor = ep-admit x.world (eu-open x 2 (9000 + world-count owner.items.world)) 100
+    in if actor < 0 then actor
+    else let p = ep-actor x.world actor
+    in let s = ep-add p.stock item 1 in let q = ep-add p.quality item quality in let w = ep-add p.wear item 32 in actor
+  bsb-max : CompositeGame, Integer, Integer -> Integer
+  bsb-max (owner) (serial) (graphic) = int-mod (id-read owner.durability owner.items.world serial graphic) 65536
+  bsb-hits : CompositeGame, Integer, Integer -> Integer
+  bsb-hits (owner) (serial) (graphic) = id-read owner.durability owner.items.world serial graphic / 65536
+  bvt-smith-bands : Integer -> [Console] Integer
+  bvt-smith-bands (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("smith bands fixture: " & e) False
+    is Ok (owner) -> act
+      world <- owner.items.world
+      armed <- bsb-mobile world
+      bare <- bsb-mobile world
+      plain <- bsb-mobile world
+      sword <- bsb-item owner armed #0F5E 1 40 sm98-exceptional
+      shield <- bsb-item owner armed #0F5E 2 40 sm98-poor
+      found <- bsb-item owner plain #0F5E 1 0 0
+      a <- bvt-check "the bands per mille: exceptional 1200, ordinary 1000, poor 800" (sm98-band-permille sm98-exceptional == 1200 & sm98-band-permille sm98-regular == 1000 & sm98-band-permille sm98-poor == 800)
+      print-line-uni ("SMITH BANDS mobiles=" & show armed & "," & show bare & "," & show plain & " sword=" & show sword & " shield=" & show shield & " found=" & show found
+        & " weapon=" & show (owner.combat.band-hook armed False) & " guard=" & show (owner.combat.band-hook armed True))
+      b <- bvt-check "combat's band-hook reads the held smith lots: an exceptional broadsword in layer 1 1200, a poor one in layer 2, the shield hand, 800 (cg-new's 68-item catalog lists no smith shield)" (armed > 0 & sword > 0 & shield > 0 & owner.combat.band-hook armed False == 1200 & owner.combat.band-hook armed True == 800)
+      c <- bvt-check "nothing held, or a sword that is no smith lot, bands 1000" (bare > 0 & plain > 0 & found > 0 & owner.combat.band-hook bare False == 1000 & owner.combat.band-hook bare True == 1000 & owner.combat.band-hook plain False == 1000)
+      fine <- bsb-item owner 0 #1415 0 41 sm98-exceptional
+      plate <- bsb-item owner 0 #1415 0 41 sm98-regular
+      rough <- bsb-item owner 0 #1415 0 41 sm98-poor
+      top-fine <- id-max fine #1415
+      top-plate <- id-max plate #1415
+      top-rough <- id-max rough #1415
+      t1 <- owner.production.harvest.temper fine #1415 1200
+      t2 <- owner.production.harvest.temper plate #1415 1000
+      t3 <- owner.production.harvest.temper rough #1415 800
+      print-line-uni ("SMITH BANDS plate max fine=" & show (bsb-max owner fine #1415) & "/" & show top-fine & " plain=" & show (bsb-max owner plate #1415) & "/" & show top-plate
+        & " rough=" & show (bsb-max owner rough #1415) & "/" & show top-rough & " temper=" & show t1 & "," & show t2 & "," & show t3)
+      d <- bvt-check "the harvest's temper sets an exceptional plate's max to its rolled max x1.2 and a poor one's x0.8, both full" (fine > 0 & rough > 0 & t1 == 0 & t3 == 0 & bsb-max owner fine #1415 == top-fine * 1200 / 1000 & bsb-hits owner fine #1415 == top-fine * 1200 / 1000 & bsb-max owner rough #1415 == top-rough * 800 / 1000 & bsb-hits owner rough #1415 == top-rough * 800 / 1000)
+      e <- bvt-check "an ordinary plate keeps its rolled max and gets no row" (plate > 0 & t2 == 0 & bsb-max owner plate #1415 == top-plate & top-plate >= 50)
+      w1 <- id-set owner.durability world fine 10 20
+      w2 <- id-set owner.durability world plate 10 20
+      w3 <- id-set owner.durability world rough 10 20
+      r1 <- cg-restore owner fine
+      r2 <- cg-restore owner plate
+      r3 <- cg-restore owner rough
+      f <- bvt-check ("a powder of restoration raises a smith piece's max to its kind's highest times its band: platemail (65) exceptional 78, ordinary 65, poor 52: " & show r1 & " " & show r2 & " " & show r3) (w1 == 0 & w2 == 0 & w3 == 0 & r1 == 78 & r2 == 65 & r3 == 52 & bsb-max owner rough #1415 == 52 & bsb-hits owner rough #1415 == 10)
+      g <- bvt-check "a poor piece at its banded highest needs no powder; the town smith's due test reads the banded top" (not (cg-powder-due 52 (id-top-banded #1415 800) 1) & cg-powder-due 51 (id-top-banded #1415 800) 1 & id-top-banded #1415 1200 == 78 & id-top-banded #1F03 1200 == 0)
+      a + b + c + d + e + f + g
+    end

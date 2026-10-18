@@ -5,6 +5,7 @@ Chapter: CompositeFighter
   cites Uoaix chapter CompositeGatherer
   cites Uoaix chapter WorldTimers
   cites Uoaix chapter ClassicSkills
+  cites Uoaix chapter Skill1998
 
  Saved-path stepping follows TownLive's port of Source-X CCharNPCAct.cpp
  NPC_WalkToPoint, Apache-2.0; Sphere-LICENSE.txt.
@@ -25,7 +26,7 @@ Chapter: CompositeFighter
  whose undead no one can tame; the trailhead is the north-west corner of the Britain walk window, where the route window takes over.
   cgf-ground : BbShop = BbShop { title = "Hunting ground", premises = "Britain Cemetary", x1 = 1382, y1 = 1484, x2 = 1389, y2 = 1491 }
   cgf-trail : BbShop = BbShop { title = "Trailhead", premises = "West of Britain", x1 = 1408, y1 = 1536, x2 = 1415, y2 = 1551 }
-  cgf-fighter-profile : CgfProfile = CgfProfile { owner = cgf-owner, place = cgf-place, ground = cgf-ground, trail = cgf-trail, tame = False, look = cst-fighter, key = 0, lodge = -1 }
+  cgf-fighter-profile : CgfProfile = CgfProfile { owner = cgf-owner, place = cgf-place, ground = cgf-ground, trail = cgf-trail, tame = False, look = cst-warrior, key = 0, lodge = -1 }
  The hunter (row 26 (b)) takes the tameable animals of UOX3's "Britain GY Forest East - 26 heavy" spawn region 5653
  (1395-1450 by 1439-1509) from a ground inside the fighter's route window, so both walk the one route map; it carves its
  kill's hides (cg-hunter-carve) and sells them with the rest of its loot, the tanner bidding for hides. It sleeps at the
@@ -161,7 +162,7 @@ Chapter: CompositeFighter
   cgf-debt : EmMoney, Integer, Integer -> Integer
   cgf-debt (m) (purse) (i) = if i == m.loan-count then 0
     else let loan = list-at m.loans i
-    in if loan.borrower == purse & loan.status /= 2 then i + 1 else cgf-debt m purse (i + 1)
+    in if loan.borrower == purse & loan.status /= 2 then loan.id else cgf-debt m purse (i + 1)
   cgf-value : EuCurrency, Integer -> Integer
   cgf-value (x) (purse) = eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
   cgf-shopping : CgFighter, TownLive -> Boolean
@@ -255,7 +256,7 @@ Chapter: CompositeFighter
     in let purse = (ep-actor x.world c.fighter.producer.actor).purse
     in let id = cgf-debt x.world.money purse 0
     in if id == 0 then 0
-    else let loan = list-at x.world.money.loans (id - 1)
+    else let loan = em-loan x.world.money id
     in let gold = (em-purse x.world.money purse).coin
     in let silver = (em-purse x.silver purse).coin
     in let copper = (em-purse x.copper purse).coin
@@ -351,8 +352,8 @@ Chapter: CompositeFighter
     in let better = o.serial /= 0 & o.health > 0 & d <= cgf-sight & (o.health < health | (o.health == health & d < distance))
     in if better & cgf-lone g world o 0 then cgf-prey-for tame g world m (i + 1) serial o.health d
     else cgf-prey-for tame g world m (i + 1) best health distance
- Each melee swing practises the fighter's combat skill by ClassicSkills' rule (skc-gain-at, gain rate 100), the hit
- as the success and the defender's skill as the difficulty. The draw is the fighter's own, so combat's rolls do not move.
+ Each melee hit practises the fighter's combat skill by the 1998 swing (GameCombat cb-practise): a check against the
+ defender's skill, range 50, with alwaysGain. The draw is the fighter's own, so combat's rolls do not move.
   cgf-swing : CgFighter, GameCombat, GameShard, Integer, Integer, Boolean -> Integer
   cgf-swing (c) (combat) (game) (attacker) (defender) (hit) = if c.serial == 0 | attacker /= c.serial then 0
     else when cb-ensure combat game attacker
@@ -361,10 +362,11 @@ Chapter: CompositeFighter
         is Err (_) -> 0
         is Ok (p) -> let seed = int-mod (c.seed * 1664525 + 1013904223) 4294967296
           in let drawn = __record-set c "seed" seed
-          in let chance = if a.skill >= 1000 then 0 else skc-gain-at 100 a.skill (cb-level game p 43 p.skill) hit
-          in if int-mod (bit-shru seed 8) 1000 >= chance then 0
-          else let raised = __record-set a "skill" (a.skill + 1)
-          in let kept = __record-set c "skill" a.skill in 1
+          in let chance = s98-chance a.skill (cb-level game p 43 p.skill) 50
+          in let tenths = if not hit then 0 else min (1000 - a.skill) (s98-tenths (s98-gain 43 a.skill chance (if p.npc then 100 else 50)) (int-mod (bit-shru seed 8) 1000))
+          in if tenths <= 0 then 0
+          else let raised = __record-set a "skill" (a.skill + tenths)
+          in let kept = __record-set c "skill" a.skill in tenths
  At home the fighter regains Source-X's one hit point per 40 seconds (cb-regen-ms) over each idle wait, and sets out only at full health.
   cgf-rest : CgFighter, TownLive, WorldObject -> Result (List (List Integer)) Text
   cgf-rest (c) (t) (mobile) = let world = t.vendors.game.world

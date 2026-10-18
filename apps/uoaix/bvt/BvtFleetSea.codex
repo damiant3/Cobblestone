@@ -1,0 +1,38 @@
+Chapter: BvtFleetSea
+  cites Uoaix chapter MerchantFleetView
+  cites Uoaix chapter BvtCheck
+
+  bfs-x : Integer -> Integer
+  bfs-x (pos) = pos / 16 / 65536
+  bfs-y : Integer -> Integer
+  bfs-y (pos) = int-mod (pos / 16) 65536
+  bfs-ends : List (List Integer), Integer, Integer -> Boolean
+  bfs-ends (lanes) (k) (leg) = if k >= list-length lanes then True
+    else let lane = list-at lanes k
+    in if leg >= list-length lane then bfs-ends lanes (k + 1) 0
+    else let from = list-at lane leg
+    in let to = mf-next lane leg
+    in let r = mfl-route from to
+    in list-length r >= 4 & list-at r 0 == mfl-dock-x from & list-at r 1 == mfl-dock-y from
+      & list-at r (list-length r - 2) == mfl-dock-x to & list-at r (list-length r - 1) == mfl-dock-y to & bfs-ends lanes k (leg + 1)
+  bvt-fleet-sea : Integer -> [Console] Integer
+  bvt-fleet-sea (unused) = let lane = list-at (mf-lanes 0) 0
+    in let moored = mfv-pos 0 0 1800
+    in let arrived = mfv-pos 0 mf-leg-hours 0
+    in let sailing = mfv-pos 0 3 0
+    in let next = list-at lane 1
+    in let s = shp-new 0
+    in let v = shp-viewer s 7
+    in let near = mfv-view v (mfl-dock-x 0) (mfl-dock-y 0) 0 1800 0
+    in let again = mfv-view v (mfl-dock-x 0) (mfl-dock-y 0) 0 1800 0
+    in let w = shp-viewer s 8
+    in let far = mfv-view w 100 100 0 1800 0
+    in act
+      a <- bvt-check "every leg's sea route runs from its port's dock to the next port's dock (UOAIX-237 F2)" (bfs-ends (mf-lanes 0) 0 0)
+      b <- bvt-check "ship 0 lies at Britain's dock in the leg's first hour and at the next port's dock when the next leg begins" (bfs-x moored == mfl-dock-x 0 & bfs-y moored == mfl-dock-y 0 & bfs-x arrived == mfl-dock-x next & bfs-y arrived == mfl-dock-y next)
+      d <- bvt-check "mid-leg the ship is at sea, at neither dock" (not (bfs-x sailing == mfl-dock-x 0 & bfs-y sailing == mfl-dock-y 0) & not (bfs-x sailing == mfl-dock-x next & bfs-y sailing == mfl-dock-y next))
+      e <- bvt-check "a viewer at the dock is drawn ship 0 once; an unchanged ship is not drawn again; a far viewer is drawn none" (list-length near >= 1 & list-length again == 0 & list-length far == 0)
+      a + b + d + e
+    end
+
+Page 1

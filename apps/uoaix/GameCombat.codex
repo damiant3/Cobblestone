@@ -33,10 +33,14 @@ Chapter: GameCombat
     wheel : Maybe WorldTimers, regen-work : Integer, sound-hook : (Integer, Integer -> Integer), arm-hook : (Integer -> Integer),
     swing-hook : (Integer, Integer, Boolean -> Integer), ammo-hook : (Integer, Integer -> Result (List (List Integer)) Text),
     drop-hook : (Integer, Integer, Integer -> Integer), shield-hook : (Integer -> Integer), slain : Integer,
-    venom-hook : (Integer, Integer, Integer -> Boolean), vanish-hook : (Integer -> Boolean), revive-hook : (Integer -> Boolean),
-    fall-hook : (Integer, Integer, Integer, Integer -> Integer), subdue-hook : (Integer, Integer, Integer -> Integer), poison-hook : (Integer -> Integer) }
-  cb-fall-none : Integer, Integer, Integer, Integer -> Integer
-  cb-fall-none (serial) (x) (y) (z) = 0
+    wear-hook : (Integer, Integer -> Integer), venom-hook : (Integer, Integer, Integer -> Boolean), vanish-hook : (Integer -> Boolean), revive-hook : (Integer -> Boolean),
+    fall-hook : (Integer, Integer, Integer, Integer, Integer -> Integer), subdue-hook : (Integer, Integer, Integer -> Integer), poison-hook : (Integer -> Integer),
+    band-hook : (Integer, Boolean -> Integer), armor-hook : (Integer, Integer, Integer -> Integer), present-hook : (Integer -> Boolean),
+    face-hook : (Integer -> Integer) }
+  cb-fall-none : Integer, Integer, Integer, Integer, Integer -> Integer
+  cb-fall-none (serial) (x) (y) (z) (corpse) = 0
+  cb-face-none : Integer -> Integer
+  cb-face-none (serial) = 0 - 1
   cb-subdue-none : Integer, Integer, Integer -> Integer
   cb-subdue-none (source) (target) (damage) = damage
   cb-vanish-none : Integer -> Boolean
@@ -191,7 +195,20 @@ Chapter: GameCombat
       admit-hook = cb-admit-all, struck-hook = cb-struck-none, notice-hook = cb-notice-none, death-hook = cb-death-none,
       events = alloc-bytes (cb-event-rows * cb-event-bytes), event-count = 0, event-lost = 0, weapon-hook = cb-unarmed,
       wheel = None, regen-work = 0, sound-hook = cb-silent, arm-hook = cb-unarmed, swing-hook = cb-swing-none, ammo-hook = cb-no-ammo, drop-hook = cb-drop-none,
-      shield-hook = cb-unarmed, slain = sa-new 16 capacity, venom-hook = cb-no-venom, vanish-hook = cb-vanish-none, revive-hook = cb-vanish-none, fall-hook = cb-fall-none, subdue-hook = cb-subdue-none, poison-hook = cb-no-poison }
+      shield-hook = cb-unarmed, slain = sa-new 16 capacity, wear-hook = cb-wear-none, venom-hook = cb-no-venom, vanish-hook = cb-vanish-none, revive-hook = cb-vanish-none, fall-hook = cb-fall-none, subdue-hook = cb-subdue-none, poison-hook = cb-no-poison, band-hook = cb-band-none, armor-hook = cb-armor-none, present-hook = cb-vanish-none,
+      face-hook = cb-face-none }
+ The damage a defender's worn armor leaves of a landed blow (defender, damage, a roll 0..999999); none by default.
+  cb-armor-none : Integer, Integer, Integer -> Integer
+  cb-armor-none (defender) (damage) (roll) = damage
+ A roll for the armor that does not advance the draws, so a combat with no armor hook rolls exactly as before.
+  cb-armor-roll : GameCombat, Integer -> Integer
+  cb-armor-roll (c) (defender) = int-mod (bit-and (mix-bits (mix-bits c.seed c.draws) defender) #7FFFFFFF) 1000000
+ The band of the weapon (False) or shield (True) a combatant holds, per mille of its stats: 1998 blacksmith.m's x1.2
+ exceptional and x0.8 poor; 1000 for anything else.
+  cb-band-none : Integer, Boolean -> Integer
+  cb-band-none (holder) (shield) = 1000
+  cb-wear-none : Integer, Integer -> Integer
+  cb-wear-none (attacker) (defender) = 0
   cb-zeroed : Integer -> Integer
   cb-zeroed (bytes) = let buf = alloc-bytes bytes in let cleared = cb-zero buf 0 bytes in buf
   cb-zero : Integer, Integer, Integer -> Integer
@@ -294,8 +311,9 @@ Chapter: GameCombat
     in let anatomy = cb-level shard a 1 a.anatomy
     in let bonus = (tactics - 500) / 10 + anatomy / 50
       + (if anatomy >= 1000 then 10 else 0) + a.strength * 20 / 100
-    in let base-low = if w == 0 then a.low else wpn-low w
-    in let base-high = if w == 0 then a.high else wpn-high w
+    in let band = if w == 0 then 1000 else c.band-hook a.serial False
+    in let base-low = if w == 0 then a.low else wpn-low w * band / 1000
+    in let base-high = if w == 0 then a.high else wpn-high w * band / 1000
     in let low = max 1 (base-low + base-low * bonus / 100)
     in let high = max low (base-high + base-high * bonus / 100)
     in low + cb-random c (high - low + 1)
@@ -307,9 +325,16 @@ Chapter: GameCombat
   cb-live (shard) (a) = when world-get shard.world a.serial
     is Err (_) -> False
     is Ok (m) -> m.kind == 1 & m.health > 0 & (a.npc | shard.active == a.serial)
+ UOAIX-247: between two players either counts while present in the world (present-hook: logged in or lingering, Source-X
+ ClientLinger), not only while its own session is the shard's active one; a fight with an NPC keeps cb-live.
+  cb-live-against : GameCombat, GameShard, CombatActor, CombatActor -> Boolean
+  cb-live-against (c) (shard) (a) (other) = if a.npc | other.npc then cb-live shard a
+    else when world-get shard.world a.serial
+      is Err (_) -> False
+      is Ok (m) -> m.kind == 1 & m.health > 0 & (shard.active == a.serial | c.present-hook a.serial)
   cb-select : GameCombat, GameShard, CombatActor, CombatActor -> Boolean
   cb-select (c) (shard) (attacker) (target) =
-    if attacker.serial == target.serial | (target.immune & not attacker.npc) | not (cb-live shard attacker & cb-live shard target)
+    if attacker.serial == target.serial | (target.immune & not attacker.npc) | not (cb-live-against c shard attacker target & cb-live-against c shard target attacker)
       | not (c.admit-hook attacker.serial target.serial) then
       let clear = cb-stop c attacker in False
     else let changed = attacker.target /= target.serial
@@ -369,7 +394,7 @@ Chapter: GameCombat
     else let m = world-read-slot shard.world slot
     in let a = list-at c.actors slot
     in let shown = if m.kind == 1 & m.health > 0 & a.serial == serial & a.npc then list-push packets (cbp-mobile m 4 (cbp-flags a.war False) 3)
-      else if m.kind == 2 & m.graphic == 8198 then list-push packets (cbp-corpse m m.amount 0)
+      else if m.kind == 2 & m.graphic == 8198 then list-push packets (cbp-corpse m m.amount (cb-corpse-facing m.health))
       else packets
     in cb-view-tile c shard viewer next shown
   cb-view-tiles : GameCombat, GameShard, WorldObject, Integer, Integer, List (List Integer) -> List (List Integer)
@@ -473,30 +498,52 @@ Chapter: GameCombat
       is Err (message) -> Err message
       is Ok (_) -> let told = cb-notice c mobile input.session.serial 0 0 [cbp-remove mobile.serial] 0
         in Ok [cbp-remove mobile.serial, cbp-target 0]
-  cb-revive : GameCombat, GameShard, GameInput, CombatActor, WorldObject -> Result (List (List Integer)) Text
-  cb-revive (c) (shard) (input) (a) (mobile) = let ended = cb-stop c a
+ A corpse's health keeps bit 1 (carved) and bit 2 (a player's), and the facing of the body that fell in bits 3 to 5, so
+ every redraw lies the body as its death drew it.
+  cb-corpse-facing : Integer -> Integer
+  cb-corpse-facing (health) = bit-and (health / 8) 7
+  cb-corpse-make : GameCombat, GameShard, WorldObject, Integer, Integer, Integer -> Integer
+  cb-corpse-make (c) (shard) (mobile) (flags) (killer) (facing) = when world-create shard.world (WorldObject { serial = 0, kind = 2,
+      x = mobile.x, y = mobile.y, z = mobile.z, graphic = 8198, hue = mobile.hue, container = 0, amount = mobile.graphic, health = flags + facing * 8 })
+    is Err (_) -> 0
+    is Ok (serial) -> let decays = when c.wheel is None -> 0 is Just (w) -> wtm-add w (c.tick + 1) cb-corpse-kind serial
+      in let slot = world-slot shard.world serial
+      in let named = if slot < 0 then 0 else let k = poke-qword (sa-at c.slain slot) 0 killer in poke-qword (sa-at c.slain slot) 8 c.tick
+      in serial
+ UOX3 sound.cpp cEffects::PlayDeathSound: a female human dies with 0x150 to 0x153, a male with 0x15A to 0x15D, one of the
+ four at random (here by serial, so combat draws stay unchanged); all eight are in the 1.25 client's SOUNDIDX.MUL.
+  cb-death-sound : Integer, Integer -> Integer
+  cb-death-sound (body) (serial) = if body == 401 | body == 403 then #0150 + int-mod serial 4
+    else if cb-form body == 0 then #015A + int-mod serial 4 else 0
+  cb-death-cry : WorldObject -> List (List Integer)
+  cb-death-cry (mobile) = let sound = cb-death-sound mobile.graphic mobile.serial in if sound == 0 then [] else [cbp-sound sound mobile]
+  cb-revive : GameCombat, GameShard, GameInput, CombatActor, WorldObject, Integer, Integer -> Result (List (List Integer)) Text
+  cb-revive (c) (shard) (input) (a) (mobile) (killer) (facing) = let ended = cb-stop c a
     in let cleared = cb-clear-target c a.serial 0
     in when world-update shard.world (cb-object mobile a.maximum mobile.graphic mobile.hue mobile.container)
       is Err (message) -> Err message
-      is Ok (_) -> when world-get shard.world mobile.serial
-        is Err (message) -> Err message
-        is Ok (risen) -> let seen = [cbp-mobile risen 4 (cbp-flags False False) 1, cbp-health risen.serial a.maximum a.maximum False]
-          in let told = cb-notice c mobile input.session.serial 0 0 seen 0
-          in Ok (seen & [cbp-target 0])
+      is Ok (_) -> let corpse = cb-corpse-make c shard mobile 0 killer facing
+        in if c.fall-hook mobile.serial mobile.x mobile.y mobile.z corpse == 1 then cb-fallen c shard input mobile corpse facing
+        else when (if corpse == 0 then Ok 0 else world-delete shard.world corpse)
+          is Err (message) -> Err message
+          is Ok (_) -> when world-get shard.world mobile.serial
+            is Err (message) -> Err message
+            is Ok (risen) -> let seen = [cbp-mobile risen 4 (cbp-flags False False) 1, cbp-health risen.serial a.maximum a.maximum False]
+              in let told = cb-notice c mobile input.session.serial 0 0 seen 0
+              in Ok (seen & [cbp-target 0])
+  cb-fallen : GameCombat, GameShard, GameInput, WorldObject, Integer, Integer -> Result (List (List Integer)) Text
+  cb-fallen (c) (shard) (input) (mobile) (corpse) (facing) = let body = if corpse == 0 then []
+      else when world-get shard.world corpse is Err (_) -> [] is Ok (o) -> [cbp-death mobile.serial corpse, cbp-corpse o mobile.graphic facing]
+    in let seen = body & cb-death-cry mobile & [cbp-remove mobile.serial]
+    in let told = cb-notice c mobile input.session.serial 0 0 seen 0
+    in Ok (seen & [cbp-target 0])
   cb-die : GameCombat, GameShard, GameInput, Integer, CombatActor, WorldObject -> Result (List (List Integer)) Text
-  cb-die (c) (shard) (input) (killer) (a) (mobile) = if a.npc & c.vanish-hook mobile.serial then cb-vanish c shard input a mobile
-    else if a.npc & c.revive-hook mobile.serial then (when cb-revive c shard input a mobile
-      is Err (message) -> Err message
-      is Ok (seen) -> if c.fall-hook mobile.serial mobile.x mobile.y mobile.z == 1 then Ok [cbp-remove mobile.serial, cbp-target 0] else Ok seen)
-    else let corpse = WorldObject { serial = 0, kind = 2, x = mobile.x, y = mobile.y, z = mobile.z,
-      graphic = 8198, hue = mobile.hue, container = 0, amount = mobile.graphic, health = (if a.npc then 0 else 2) }
-    in when world-create shard.world corpse
-      is Err (message) -> Err message
-      is Ok (serial) ->
-        let remembered = __record-set a "corpse" serial
-        in let decays = when c.wheel is None -> 0 is Just (w) -> wtm-add w (c.tick + 1) cb-corpse-kind serial
-        in let slot = world-slot shard.world serial
-        in let named = if slot < 0 then 0 else let k = poke-qword (sa-at c.slain slot) 0 killer in poke-qword (sa-at c.slain slot) 8 c.tick
+  cb-die (c) (shard) (input) (killer) (a) (mobile) = let facing = max 0 (c.face-hook mobile.serial)
+    in if a.npc & c.vanish-hook mobile.serial then cb-vanish c shard input a mobile
+    else if a.npc & c.revive-hook mobile.serial then cb-revive c shard input a mobile killer facing
+    else let serial = cb-corpse-make c shard mobile (if a.npc then 0 else 2) killer facing
+    in if serial == 0 then Err "combat corpse refused"
+    else let remembered = __record-set a "corpse" serial
         in when cb-transfer shard mobile.serial serial (if a.npc then 0 else chs-record shard.characters shard.accounts mobile.serial) 0
           is Err (message) -> Err message
           is Ok (_) ->
@@ -509,16 +556,16 @@ Chapter: GameCombat
               is Ok (_) -> when world-get shard.world serial
                 is Err (message) -> Err message
                 is Ok (body) ->
-                  let packets = if mobile.serial == input.session.serial then [cbp-corpse body mobile.graphic 0]
-                    else [cbp-death mobile.serial serial, cbp-corpse body mobile.graphic 0]
+                  let packets = (if mobile.serial == input.session.serial then [cbp-corpse body mobile.graphic facing]
+                    else [cbp-death mobile.serial serial, cbp-corpse body mobile.graphic facing]) & cb-death-cry mobile
                   in let me = input.session.serial
-                  in let seen = [cbp-death mobile.serial serial, cbp-corpse body mobile.graphic 0]
+                  in let seen = [cbp-death mobile.serial serial, cbp-corpse body mobile.graphic facing] & cb-death-cry mobile
                   in if a.npc then let told = cb-notice c mobile me 0 0 (seen & [cbp-remove mobile.serial]) 0
                     in Ok (packets & [cbp-remove mobile.serial, cbp-target 0])
                   else when world-get shard.world mobile.serial
                     is Err (message) -> Err message
                     is Ok (ghost) -> let told = cb-notice c mobile me mobile.serial 0 (seen & [cbp-mobile ghost 4 (cbp-flags a.war True) 3]) 0
-                      in let own = if mobile.serial == me then 0 else cb-notice c mobile me 0 mobile.serial [cbp-corpse body mobile.graphic 0, [44, 0],
+                      in let own = if mobile.serial == me then 0 else cb-notice c mobile me 0 mobile.serial [cbp-corpse body mobile.graphic facing, [44, 0],
                         cbp-war a.war, cbp-player ghost 4 (cbp-flags a.war True), cbp-target 0] 0
                       in if mobile.serial /= input.session.serial then
                         Ok (packets & [cbp-mobile ghost 4 (cbp-flags a.war True) 3])
@@ -609,23 +656,25 @@ Chapter: GameCombat
       in if a.serial /= serial | not a.armed then Ok 0
       else if serial /= shard.active & not a.npc then let idle = __record-set a "armed" False in Ok 0
       else cb-regen-step c shard a w
- A player's swing practises the weapon's skill in the skill table by SkillCurve's rule, the hit as the success and the
- defender's skill as the difficulty. The draw hashes the attacker into the combat stream's position without advancing it.
-  cb-practise : GameCombat, GameShard, CombatActor, Integer, Integer, Boolean -> Integer
-  cb-practise (c) (shard) (a) (difficulty) (w) (hit) = let tactics = cb-practise-tactics c shard a difficulty hit
-    in cb-practise-skill c shard a (if w == 0 then 43 else wpn-skill w) difficulty hit
- Tactics (27), which damage reads, is practised by every swing beside the weapon skill, on a draw salted apart from the
- weapon skill's so the two do not gain together.
-  cb-practise-tactics : GameCombat, GameShard, CombatActor, Integer, Boolean -> Integer
-  cb-practise-tactics (c) (shard) (a) (difficulty) (hit) = if a.npc then 0
-    else let level = gs-skill shard a.serial 27
-    in let draw = int-mod (bit-and (mix-bits (c.seed + a.serial + 27) c.draws) #7FFFFFFF) 1000
-    in if level >= 1000 | draw >= skc-gain-at 100 level difficulty hit then 0 else gs-skill-gain shard a.serial 27 (mix-bits (c.seed + a.serial + 27) c.draws)
-  cb-practise-skill : GameCombat, GameShard, CombatActor, Integer, Integer, Boolean -> Integer
-  cb-practise-skill (c) (shard) (a) (skill) (difficulty) (hit) = if a.npc | skill <= 0 then 0
-    else let level = gs-skill shard a.serial skill
-    in let draw = int-mod (bit-and (mix-bits (c.seed + a.serial) c.draws) #7FFFFFFF) 1000
-    in if level >= 1000 | draw >= skc-gain-at 100 level difficulty hit then 0 else gs-skill-gain shard a.serial skill (mix-bits (c.seed + a.serial) c.draws)
+ OUO combat.c (the 1998 swing), every check range 50 with alwaysGain, at gain percent 50 against a player and 100
+ against an NPC: a hit checks the attacker's weapon skill and Tactics (27) against the defender's skill; a miss checks
+ the defender's weapon skill against the attacker's. Each draw hashes its trainee into the combat stream's position
+ without advancing it, Tactics salted apart from the weapon skill so the two do not gain together.
+  cb-practise : GameCombat, GameShard, CombatActor, CombatActor, Integer, Integer, Integer, Integer, Boolean -> Integer
+  cb-practise (c) (shard) (a) (d) (defence) (attack) (w) (guard) (hit) = if hit
+    then cb-practise-skill c shard a 27 defence (cb-gain-percent d) 27 + cb-practise-skill c shard a (cb-weapon-skill w) defence (cb-gain-percent d) 0
+    else cb-practise-skill c shard d (cb-weapon-skill guard) attack (cb-gain-percent a) 0
+  cb-weapon-skill : Integer -> Integer
+  cb-weapon-skill (w) = if w == 0 then 43 else wpn-skill w
+  cb-gain-percent : CombatActor -> Integer
+  cb-gain-percent (other) = if other.npc then 100 else 50
+  cb-practise-skill : GameCombat, GameShard, CombatActor, Integer, Integer, Integer, Integer -> Integer
+  cb-practise-skill (c) (shard) (a) (skill) (difficulty) (percent) (salt) = cb-practise-check c shard a skill difficulty True percent salt
+  cb-practise-check : GameCombat, GameShard, CombatActor, Integer, Integer, Boolean, Integer, Integer -> Integer
+  cb-practise-check (c) (shard) (a) (skill) (difficulty) (passed) (percent) (salt) = if a.npc | skill <= 0 then 0
+    else let gained = gs-skill-learn shard a.serial skill (gs-skill-chance shard a.serial skill difficulty 50) passed percent (mix-bits (c.seed + a.serial + salt) c.draws)
+    in let shared = if passed then gs-skill-share shard a.serial skill difficulty 50 percent (mix-bits (c.seed + a.serial + salt + 4096) c.draws) c.present-hook else 0
+    in gained
  UOX3 CHandleCombat: a missed arrow or bolt falls at the target one time in three (CreateItem, not in a pack).
   cb-hit : GameCombat, GameShard, GameInput, CombatActor, CombatActor, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
   cb-hit (c) (shard) (input) (attacker) (defender) (source) (target) (ammo) =
@@ -635,7 +684,7 @@ Chapter: GameCombat
     in let swing = [cbp-swing source.serial target.serial, cbp-animation source.serial (cb-swing-action source.graphic weapon)]
     in let missed = cb-random c 100 >= cb-chance-of (cb-skill-for shard attacker arms) (cb-skill-for shard defender guard)
     in let practiced = c.swing-hook source.serial target.serial (not missed)
-    in let trained = cb-practise c shard attacker (cb-skill-for shard defender guard) arms (not missed)
+    in let trained = cb-practise c shard attacker defender (cb-skill-for shard defender guard) (cb-skill-for shard attacker arms) arms guard (not missed)
     in if missed then
       let dropped = if ammo == 0 then 0 else if cb-random c 3 == 0 then c.drop-hook source.serial target.serial ammo else 0
       in let packets = list-push swing (cbp-sound #0238 source)
@@ -647,11 +696,12 @@ Chapter: GameCombat
     in let absorbed = cb-parry c shard attacker defender arms
     in let shown = if absorbed == 0 then packets else cb-blocked c input attacker defender target packets
     in let venom = cb-venom c shard input attacker defender target
-    in when c.damage-hook shard input source.serial target.serial (max 0 (rolled - absorbed))
+    in when c.damage-hook shard input source.serial target.serial (c.armor-hook target.serial (max 0 (rolled - absorbed)) (cb-armor-roll c target.serial))
         is Err (e) -> Err e
         is Ok (impact) -> if impact.damage < 0 then Err "combat damage hook returned negative damage"
           else let effects = cb-notice c target input.session.serial 0 0 impact.packets 0
-          in cb-apply-hit c shard input attacker defender source target (c.subdue-hook source.serial target.serial impact.damage) (shown & venom & impact.packets)
+          in let dealt = c.subdue-hook source.serial target.serial impact.damage
+          in cb-apply-hit-as c shard input attacker defender source target dealt (shown & venom & impact.packets) (dealt < impact.damage)
  UOX3 ApplyDefenseModifiers, ExpansionShieldParry T2A: a landed physical blow on a defender holding a shield (shield-hook
  answers the left hand's art) practises Parrying (skill 5) and is blocked when 1 to 100 falls below (Parrying / 2) / 10;
  a block absorbs half the shield's AR, all of it against Archery, plays 0x37B9 on the defender (speed 10, 16 frames) and
@@ -692,11 +742,12 @@ Chapter: GameCombat
     else if defender.serial == input.session.serial then [gs-system "You have been poisoned!"]
     else let told = cb-notice c target input.session.serial 0 defender.serial [gs-system "You have been poisoned!"] 0 in []
   cb-parry : GameCombat, GameShard, CombatActor, CombatActor, Integer -> Integer
-  cb-parry (c) (shard) (attacker) (defender) (arms) = let ar = shd-ar (c.shield-hook defender.serial)
+  cb-parry (c) (shard) (attacker) (defender) (arms) = let base = shd-ar (c.shield-hook defender.serial)
+    in let ar = if base == 0 then 0 else base * c.band-hook defender.serial True / 1000
     in if ar == 0 then 0
     else let level = cb-level shard defender 5 0
     in let blocked = cb-parry-blocks (cb-random c 100) level
-    in let trained = cb-practise-skill c shard defender 5 (cb-skill-for shard attacker arms) blocked
+    in let trained = cb-practise-check c shard defender 5 (cb-skill-for shard attacker arms) blocked (cb-gain-percent attacker) 5
     in cb-parry-absorb blocked (wpn-skill arms == 31) ar
   cb-parry-blocks : Integer, Integer -> Boolean
   cb-parry-blocks (roll) (level) = 1 + roll < level / 2 / 10
@@ -721,10 +772,16 @@ Chapter: GameCombat
  is play protection, and British fights back.
   cb-apply-hit : GameCombat, GameShard, GameInput, CombatActor, CombatActor, WorldObject, WorldObject, Integer,
     List (List Integer) -> Result (List (List Integer)) Text
-  cb-apply-hit (c) (shard) (input) (attacker) (defender) (source) (target) (dealt) (packets) =
+  cb-apply-hit (c) (shard) (input) (attacker) (defender) (source) (target) (dealt) (packets) = cb-apply-hit-as c shard input attacker defender source target dealt packets False
+ A blow the subdue hook cut short (calm) ended a duel and stopped both fighters: the loser does not turn on the winner,
+ or its next blow is no longer a duel's and is a deed (UOAIX-119).
+  cb-apply-hit-as : GameCombat, GameShard, GameInput, CombatActor, CombatActor, WorldObject, WorldObject, Integer,
+    List (List Integer), Boolean -> Result (List (List Integer)) Text
+  cb-apply-hit-as (c) (shard) (input) (attacker) (defender) (source) (target) (dealt) (packets) (calm) =
       let damage = if defender.immune then 0 else dealt
     in let remaining = max 0 (target.health - damage)
     in let revealed = if damage > 0 then c.struck-hook target.serial else 0
+    in let worn = if damage > 0 then c.wear-hook source.serial target.serial else 0
     in let healing = if damage > 0 & remaining > 0 then cb-regen-npc c defender else 0
     in if remaining == 0 & peek-qword shard.world.buffer 8 < 0 then Err "combat corpse capacity"
     else let health = cbp-health target.serial remaining defender.maximum (target.serial == input.session.serial)
@@ -744,7 +801,7 @@ Chapter: GameCombat
       is Err (message) -> Err message
       is Ok (_) ->
           let was-war = defender.war
-        in let retaliate = if defender.target == 0 & cb-live shard attacker then cb-select c shard defender attacker else False
+        in let retaliate = if not calm & defender.target == 0 & cb-live-against c shard attacker defender then cb-select c shard defender attacker else False
         in let told = if not retaliate | defender.npc then [] else (if was-war then [] else [cbp-war True]) & [cbp-target attacker.serial]
         in let sent = if list-length told == 0 | target.serial == me then 0 else cb-notice c target me 0 target.serial told 0
         in let flinch = cb-notice c target me 0 0 [cbp-animation target.serial (cb-hurt-action target.graphic)] 0
@@ -777,7 +834,7 @@ Chapter: GameCombat
       is Err (_) -> let clear = cb-stop c a
         in let next = if a.serial == input.session.serial then list-push chunks [cbp-target 0] else chunks
         in cb-batches c shard input map pending (i + 1) next
-      is Ok (b) -> if (b.immune & not a.npc) | not (cb-live shard b) then let clear = cb-stop c a
+      is Ok (b) -> if (b.immune & not a.npc) | not (cb-live-against c shard b a) then let clear = cb-stop c a
         in let next = if a.serial == input.session.serial then list-push chunks [cbp-target 0] else chunks
         in cb-batches c shard input map pending (i + 1) next
       else when world-get shard.world a.serial

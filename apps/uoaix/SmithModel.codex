@@ -1,0 +1,171 @@
+Chapter: SmithModel
+
+ The 1998 Ultima Online blacksmithing rules, from draxinar's OUO (github.com/draxinar/ouo, a C translation of the
+ June 1998 UoDemo.exe server) and its data repository draxinar/rundir. Not UOAIX's own rules: SkillCurve is.
+ Item rows: metal is itemres.mul resource 44 (metal) value1, the template's required amount, which getResource reads
+ for the menu (OUO item.c CResourceEntity_GetResourceAmount). Weapon speed and damage dice, and armor class, come from
+ the rundir weapons/ definition whose NAME matches the tiledata name: the tiledata weapon id does not resolve against
+ those files (the dagger's points at Long Sword). Axe, double axe and large battle axe match no definition: their rows
+ are UOX3's (Smith1998 names the files and entries), and their raw values sit inside the range, so the rescale is
+ unchanged. Heater shield takes definition 144 (AC 23) of the two named Heater Shield.
+
+  smm-names : List Text = ["ringmail gloves", "ringmail sleeves", "ringmail leggings", "ringmail tunic",
+    "chainmail coif", "chainmail leggings", "chainmail tunic", "helmet", "bascinet", "nose helm", "close helmet",
+    "plate helm", "platemail gorget", "platemail gloves", "platemail arms", "platemail legs", "platemail",
+    "plate armor (female)", "buckler", "bronze shield", "metal shield", "kite shield 1B78", "kite shield 1B74",
+    "heater shield", "dagger", "cutlass", "katana", "kryss", "scimitar", "broadsword", "longsword", "viking sword",
+    "battle axe", "executioner's axe", "two handed axe", "war axe", "short spear", "spear", "war fork", "bardiche",
+    "halberd", "mace", "maul", "war mace", "war hammer", "hammer pick", "axe", "double axe", "large battle axe"]
+  smm-metal : List Integer = [10, 14, 16, 18, 10, 18, 20, 15, 15, 15, 15, 15, 10, 12, 18, 20, 25, 20, 10, 12, 14, 8,
+    16, 18, 3, 8, 8, 8, 10, 10, 12, 14, 14, 14, 16, 16, 6, 12, 12, 18, 20, 6, 10, 14, 16, 18, 14, 12, 14]
+  smm-ac : List Integer = [20, 20, 20, 20, 23, 23, 23, 30, 18, 30, 30, 30, 30, 30, 30, 30, 30, 30, 7, 10, 9, 16, 16,
+    23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  smm-speed : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 55, 45, 40, 50,
+    45, 35, 35, 35, 40, 40, 30, 20, 55, 30, 35, 30, 20, 55, 40, 30, 20, 30, 37, 37, 30]
+  smm-dice : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1]
+  smm-faces : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 5, 4, 5, 6,
+    7, 8, 7, 8, 8, 9, 4, 6, 7, 8, 12, 4, 4, 8, 9, 7, 28, 31, 33]
+  smm-bonus : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 2, 1,
+    0, 0, 0, 2, 0, 0, 3, 3, 0, 3, 0, 0, 5, 2, 0, 5, 5, 4, 5]
+  smm-n : Integer = list-length smm-names
+
+ blacksmith.m Q4Y7: a weapon's raw value is metal + speed * average damage / 12, armor's metal + 2 * max AC; average
+ damage is dice * (faces + 1) / 2 + bonus (OUO dice.c CDiceRoll_Average). Q4Y8 rescales every raw value to 0..1000.
+  smm-raw : Integer -> Integer
+  smm-raw (i) = if list-at smm-speed i > 0
+    then list-at smm-metal i + list-at smm-speed i * (list-at smm-dice i * (list-at smm-faces i + 1) / 2 + list-at smm-bonus i) / 12
+    else list-at smm-metal i + list-at smm-ac i * 2
+  smm-lo : Integer, Integer -> Integer
+  smm-lo (i) (acc) = if i == smm-n then acc else smm-lo (i + 1) (min acc (smm-raw i))
+  smm-hi : Integer, Integer -> Integer
+  smm-hi (i) (acc) = if i == smm-n then acc else smm-hi (i + 1) (max acc (smm-raw i))
+  smm-diff : Integer, Integer, Integer -> Integer
+  smm-diff (i) (lo) (hi) = (smm-raw i - lo) * 1000 / (hi - lo)
+
+ skills.txt Blacksmithy: AdvRate 8000 2000 100, a curve B * u^(s / 500) + C through skill 0, 50.0 and 100.0 (OUO
+ skill.c Double3_Init, the non-trivial root): u + 1 = 7900 / 6000, so u = 19 / 60, B = 360000 / 41, C = -32000 / 41.
+ smm-root is u^(1/500) at the 2^30 fixed point, found by bisection.
+  smm-one : Integer = 1073741824
+  smm-mul : Integer, Integer -> Integer
+  smm-mul (a) (b) = a * b / smm-one
+  smm-pow : Integer, Integer, Integer -> Integer
+  smm-pow (base) (n) (acc) = if n == 0 then acc
+    else smm-pow (smm-mul base base) (n / 2) (if int-mod n 2 == 1 then smm-mul acc base else acc)
+  smm-root : Integer, Integer, Integer -> Integer
+  smm-root (lo) (hi) (left) = if left == 0 then lo
+    else let mid = (lo + hi) / 2
+    in if smm-pow mid 500 smm-one <= 19 * smm-one / 60 then smm-root mid hi (left - 1) else smm-root lo mid (left - 1)
+  smm-curve : Integer, Integer -> Integer
+  smm-curve (a) (s) = (360000000 * smm-pow a s smm-one - 32000000 * smm-one) / (41 * smm-one)
+
+ CalcDelay: the advance rate is base delay * curve / 1000, where base delay is 1000 * (average skill use) / (this
+ skill's use + 1), clamped to 500..5000, over the whole server's usage counters. 1000 means blacksmithy is used as
+ often as the average skill.
+  smm-adv : Integer, Integer, Integer -> Integer
+  smm-adv (a) (bd) (s) = bd * smm-curve a s / 1000000
+
+ GetSkillValue: Blacksmithy weighs strength 100 with SkillStat 90, so the checked value is
+ skill * (1000 - str) / 1000 + str. testAndLearnSkill(user, 7, difficulty, 50): chance = (value - difficulty) * 100 / 50
+ + 500, success = chance - random(1000). The menu lists an item while difficulty <= value + 250 (blacksmith.m use).
+  smm-eff : Integer, Integer -> Integer
+  smm-eff (str) (s) = s * (1000 - str) / 1000 + str
+  smm-chance : Integer, Integer, Integer -> Integer
+  smm-chance (str) (s) (d) = if d > smm-eff str s + 250 then -1 else (smm-eff str s - d) * 100 / 50 + 500
+
+ SkillGain on a success: gain = (1000 - chance) * advance rate / 1000 thousandths of a tenth, the fraction rounded up
+ at random. The value per attempt is chance * gain, in millionths of a tenth.
+  smm-egain : Integer, Integer, Integer, Integer, Integer -> Integer
+  smm-egain (a) (bd) (str) (s) (d) = let c = smm-chance str s d
+    in if c < 0 | c >= 1000 then 0 else c * ((1000 - c) * smm-adv a bd s / 1000)
+
+ Ingots: a success spends the item's metal; a failure (random r >= chance) spends metal * (r - chance) / 1000 + 1
+ (blacksmith.m Q4ER). smm-fsum is the sum of floor((a * i + b) / m) for i below n.
+  smm-fsum : Integer, Integer, Integer, Integer -> Integer
+  smm-fsum (n) (m) (a) (b) = if n <= 0 then 0
+    else let base = n * (n - 1) / 2 * (a / m) + n * (b / m)
+    in let ra = int-mod a m
+    in let ymax = ra * n + int-mod b m
+    in if ymax < m then base else base + smm-fsum (ymax / m) ra m (int-mod ymax m)
+  smm-ingots : Integer, Integer -> Integer
+  smm-ingots (metal) (c) = let n = 1000 - c
+    in let loss = if n <= 0 then 0 else 1000 * (smm-fsum n 1000 metal 0 + n) / n
+    in (c * metal * 1000 + n * loss) / 1000
+
+ The cost of one tenth at skill s crafting item i: attempts * 1000 (objective 0) or ingots * 1000 (objective 1);
+ -1 when the item is hidden or gains nothing.
+  smm-cost : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  smm-cost (obj) (a) (bd) (str) (lo) (hi) (s) (i) = let d = smm-diff i lo hi
+    in let g = smm-egain a bd str s d
+    in if g == 0 then -1
+    else if obj == 0 then 1000000000 / g
+    else smm-ingots (list-at smm-metal i) (smm-chance str s d) * 1000000 / g
+  smm-best : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  smm-best (obj) (a) (bd) (str) (lo) (hi) (s) (i) (bi) (bc) = if i == smm-n then bi
+    else let k = smm-cost obj a bd str lo hi s i
+    in if k >= 0 & (bi < 0 | k < bc) then smm-best obj a bd str lo hi s (i + 1) i k
+    else smm-best obj a bd str lo hi s (i + 1) bi bc
+
+  smm-tenths : Integer -> Text
+  smm-tenths (s) = show (s / 10) & "." & show (int-mod s 10)
+  smm-run : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  smm-run (i) (lo) (hi) (str) (from) (to) (sw) (ing) = "  " & smm-tenths from & " to " & smm-tenths to & ": "
+    & list-at smm-names i & " (" & show (list-at smm-metal i) & " metal, difficulty " & show (smm-diff i lo hi)
+    & ", chance at start " & show (smm-chance str from (smm-diff i lo hi) / 10) & "%) " & show (sw / 1000)
+    & " swings, " & show (ing / 1000) & " ingots\n"
+
+ Walks skill s from the start to 1000 one tenth at a time, crafting the item that minimises the objective, and
+ reports each run of one item and the totals. Expected values: a tenth costs the per-attempt cost over the expected
+ tenths per attempt.
+  smm-plan : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  smm-plan (obj) (a) (bd) (str) (lo) (hi) (s) (cur) (from) (sw) (ing) (tsw) (ting) (out) =
+    if s >= 1000 then (if cur < 0 then out else out & smm-run cur lo hi str from s sw ing)
+      & "  TOTAL " & show (tsw / 1000) & " swings, " & show (ting / 1000) & " ingots\n"
+    else let b = smm-best obj a bd str lo hi s 0 (0 - 1) 0
+    in if b < 0 then out & "  NO ITEM GAINS at " & smm-tenths s & "\n"
+    else let d = smm-diff b lo hi
+    in let g = smm-egain a bd str s d
+    in let swt = 1000000000 / g
+    in let ingt = smm-ingots (list-at smm-metal b) (smm-chance str s d) * 1000000 / g
+    in if b == cur then smm-plan obj a bd str lo hi (s + 1) cur from (sw + swt) (ing + ingt) (tsw + swt) (ting + ingt) out
+    else let closed = if cur < 0 then out else out & smm-run cur lo hi str from s sw ing
+    in smm-plan obj a bd str lo hi (s + 1) b s swt ingt (tsw + swt) (ting + ingt) closed
+
+  smm-table : Integer, Integer, Integer, Text -> Text
+  smm-table (i) (lo) (hi) (out) = if i == smm-n then out
+    else smm-table (i + 1) lo hi (out & "  " & list-at smm-names i & ": metal " & show (list-at smm-metal i) & ", raw "
+      & show (smm-raw i) & ", difficulty " & show (smm-diff i lo hi) & "\n")
+  smm-curve-row : Integer, Integer, Text -> Text
+  smm-curve-row (a) (s) (out) = if s > 1000 then out else smm-curve-row a (s + 100) (out & " " & smm-tenths s & "=" & show (smm-adv a 1000 s))
+
+ An observed run of n swings of item i from skill s, to compare with play: a success raises the skill one whole tenth
+ with chance gain / 1000 (gain below 1000), so one swing gains a tenth with q = chance * gain per million; n swings
+ expect n * q tenths and gain nothing with (1 - q)^n.
+  smm-none : Integer, Integer, Integer -> Integer
+  smm-none (q) (n) (acc) = if n == 0 then acc else smm-none q (n - 1) (acc * (1000000 - q) / 1000000)
+  smm-observe : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  smm-observe (a) (bd) (str) (lo) (hi) (s) (i) (n) = let d = smm-diff i lo hi
+    in let c = smm-chance str s d
+    in let q = smm-egain a bd str s d
+    in "  " & list-at smm-names i & " x" & show n & " from " & smm-tenths s & ", strength " & show str & ", base delay "
+      & show bd & ": chance " & show (c / 10) & "%, " & show (q / 100) & " tenths per 10,000 swings, expect "
+      & show (n * q / 10000) & " hundredths of a tenth, no gain " & show ((smm-none q n 1000000) / 10000) & "%\n"
+  smm-observations : Integer, Integer, Integer, Integer, Integer -> Text
+  smm-observations (a) (bd) (str) (lo) (hi) = smm-observe a bd str lo hi 900 12 20 & smm-observe a bd str lo hi 903 13 40
+    & smm-observe a bd str lo hi 924 33 8
+
+  opening : [Console] Nothing = act
+    a <- smm-root 0 smm-one 40
+    lo <- smm-lo 0 1000000
+    hi <- smm-hi 0 0
+    print-line-uni ("ADVANCE RATE at base delay 1000:" & smm-curve-row a 0 "")
+    print-line-uni ("ITEMS (raw " & show lo & " to " & show hi & " rescaled to difficulty 0..1000)\n" & smm-table 0 lo hi "")
+    print-line-uni ("PLAN A, fewest swings, strength 100, base delay 1000, 50.0 to 100.0\n" & smm-plan 0 a 1000 100 lo hi 500 (0 - 1) 500 0 0 0 0 "")
+    print-line-uni ("PLAN B, fewest ingots, strength 100, base delay 1000, 50.0 to 100.0\n" & smm-plan 1 a 1000 100 lo hi 500 (0 - 1) 500 0 0 0 0 "")
+    print-line-uni ("PLAN A at strength 50\n" & smm-plan 0 a 1000 50 lo hi 500 (0 - 1) 500 0 0 0 0 "")
+    print-line-uni ("PLAN B at strength 50\n" & smm-plan 1 a 1000 50 lo hi 500 (0 - 1) 500 0 0 0 0 "")
+    print-line-uni ("OBSERVED RUNS (Damian on uo1998.com, 2026-10-12: 20 gorgets ~0.3, a bag of gloves ~0.6, 8 executioner's axes at 92.4 none)\n"
+      & smm-observations a 1000 100 lo hi & smm-observations a 1000 70 lo hi & smm-observations a 3000 100 lo hi)
+  end
+
+Page 1

@@ -22,16 +22,34 @@ Chapter: WorldSnapshot
 
  FNV-1a over the bytes in memory order; eight at a time from one qword read, low byte first (little-endian), the
  same digest as one at a time.
-  ws-hash-word : Integer, Integer, Integer -> Integer
-  ws-hash-word (q) (k) (hash) = if k == 8 then hash
-    else ws-hash-word q (k + 1) (bit-and ((bit-xor hash (bit-and (bit-shr q (k * 8)) 255)) * 16777619) 4294967295)
+ Unrolled: 1.5 to 2 times the looped form's speed on codex-vm (UOAIX-196).
+  ws-hash-word : Integer, Integer -> Integer
+  ws-hash-word (q) (h0) = let h1 = bit-and ((bit-xor h0 (bit-and q 255)) * 16777619) 4294967295
+    in let h2 = bit-and ((bit-xor h1 (bit-and (bit-shr q 8) 255)) * 16777619) 4294967295
+    in let h3 = bit-and ((bit-xor h2 (bit-and (bit-shr q 16) 255)) * 16777619) 4294967295
+    in let h4 = bit-and ((bit-xor h3 (bit-and (bit-shr q 24) 255)) * 16777619) 4294967295
+    in let h5 = bit-and ((bit-xor h4 (bit-and (bit-shr q 32) 255)) * 16777619) 4294967295
+    in let h6 = bit-and ((bit-xor h5 (bit-and (bit-shr q 40) 255)) * 16777619) 4294967295
+    in let h7 = bit-and ((bit-xor h6 (bit-and (bit-shr q 48) 255)) * 16777619) 4294967295
+    in bit-and ((bit-xor h7 (bit-and (bit-shr q 56) 255)) * 16777619) 4294967295
   ws-hash : Integer, Integer, Integer, Integer -> Integer
   ws-hash (buf) (size) (i) (hash) =
     if i >= size then hash
     else if i == 48 then ws-hash buf size 56 hash
-    else if size - i >= 8 & (i >= 56 | i + 8 <= 48) then ws-hash buf size (i + 8) (ws-hash-word (peek-qword buf i) 0 hash)
+    else if size - i >= 8 & (i >= 56 | i + 8 <= 48) then ws-hash buf size (i + 8) (ws-hash-word (peek-qword buf i) hash)
     else let mixed = bit-xor hash (peek-byte buf i)
     in ws-hash buf size (i + 1) (bit-and (mixed * 16777619) 4294967295)
+ 32-bit FNV-1a over 32-bit little-endian words where ws-hash takes bytes: two multiplies a qword instead of eight, the
+ same skip of bytes 48-55 and the same byte tail. A different digest from ws-hash (the composite image's, UOAIX-196).
+  ws-digest-word : Integer, Integer -> Integer
+  ws-digest-word (q) (h0) = let h1 = bit-and ((bit-xor h0 (bit-and q 4294967295)) * 16777619) 4294967295
+    in bit-and ((bit-xor h1 (bit-shru q 32)) * 16777619) 4294967295
+  ws-digest : Integer, Integer, Integer, Integer -> Integer
+  ws-digest (buf) (size) (i) (hash) =
+    if i >= size then hash
+    else if i == 48 then ws-digest buf size 56 hash
+    else if size - i >= 8 & (i >= 56 | i + 8 <= 48) then ws-digest buf size (i + 8) (ws-digest-word (peek-qword buf i) hash)
+    else ws-digest buf size (i + 1) (bit-and ((bit-xor hash (peek-byte buf i)) * 16777619) 4294967295)
 
  A world's image is its 16-byte header and then its rows in slot order: the layout UWS1 saves, and what a whole-table
  copy, comparison or hash reads.

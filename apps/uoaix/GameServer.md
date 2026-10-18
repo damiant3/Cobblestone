@@ -158,7 +158,7 @@ executable with an inbound listener raises a Windows firewall prompt. Old
 From the repository root, with host ports 2593 and 2595 free:
 
 ```powershell
-pwsh -File apps/uoaix/serve.ps1 -ClientRoot C:/Users/Damian/uo1998-client -Kernel seed/Codex.cdx
+pwsh -File apps/uoaix/serve.ps1 -ClientRoot D:/Games/UO1998com-Client1 -Kernel seed/Codex.cdx
 ```
 
 The launcher compiles with the explicit compiler, admits RAM, starts the

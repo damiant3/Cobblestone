@@ -1,0 +1,32 @@
+Chapter: Craft1998
+
+ The June 1998 server's checks for crafts and harvests other than blacksmithing (rundir scripts.wombat, UOAIX-242), keyed
+ by the client skill ep-classic names and the made item. testSkill and testSkillReal are DirectUse (OUO skill.c
+ 0x004D5F09): success is value - random(1000) > 0, so the chance is the checked value; testAndLearnSkill(skill,
+ difficulty, range) is SkillCheck. Fishing (userisfishing.m), lumberjacking (bladed.m), mining (mining.m), smelting
+ (ore.m), cooking (cook.m), carpentry (carpentry.m), tinkering (tinker.m) and tailoring (tailor.m) are direct uses;
+ bowcraft carving (bladed.m: kindling -1000, shafts 0, bow 300, crossbow 600, heavy crossbow 900, range 80) and
+ fletching (fletcher.m: difficulty 0, range 80) are checks. Alchemy (alchemy.m) has no UOAIX craft.
+  c98-direct : Integer -> Boolean
+  c98-direct (classic) = classic == 18 | classic == 44 | classic == 45 | classic == 13 | classic == 11 | classic == 37 | classic == 34
+ The range of the item's check: 0 for a direct use, -1 for no 1998 row (blacksmithing is Smith1998's).
+  c98-range : Integer, Integer -> Integer
+  c98-range (classic) (item) = if c98-direct classic then 0 else if classic == 8 & (item == 48 | item == 49) then 80 else -1
+  c98-difficulty : Integer, Integer -> Integer
+  c98-difficulty (classic) (item) = if classic == 8 & item == 48 then 300 else 0
+ Units of the input lost on a failed attempt, success being the attempt's value - roll (below 1): a carved bow loses all
+ its wood; a fletcher loses one feather or shaft 1 time in 4; a tailor ruins need / d - random(0, need / d) of its cloth
+ or leather, d 4 from 80.0, 2 from 40.0, else 1; a cook burns the one piece; smelting burns away half the ore, all of it
+ when half is one; carpentry, tinkering and the harvests lose nothing.
+  c98-loss : Integer, Integer, Integer, Integer, Integer -> Integer
+  c98-loss (classic) (item) (amount) (success) (level) = let r = if success < 0 then 0 - success else success
+    in if classic == 8 & item == 48 then amount
+    else if classic == 8 & item == 49 then (if int-mod r 4 == 0 then 1 else 0)
+    else if classic == 34 then (let share = amount / (if level >= 800 then 4 else if level >= 400 then 2 else 1) in share - int-mod r (share + 1))
+    else if classic == 13 then 1
+    else if classic == 45 & (item == 31 | item == 32 | item == 65 | item == 66) then (if amount / 2 <= 1 then amount else amount / 2)
+    else 0
+ A direct use's gain factor (TestSkillInternal, 0x004D567D): (1000 - base) at gain factor 100 on success, 50 on failure,
+ passed to SkillGain as the factor a check would pass as 1000 - chance.
+  c98-direct-chance : Integer, Boolean -> Integer
+  c98-direct-chance (base) (passed) = 1000 - (1000 - base) * (if passed then 100 else 50) / 100

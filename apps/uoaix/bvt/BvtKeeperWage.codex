@@ -1,0 +1,49 @@
+Chapter: BvtKeeperWage
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-239: a keeper's day wage is a silver, else up to 10 copper, from coin its shop holds, into purse owner 4000 plus
+ the shop's index; eu-pay takes the gold table's transfer tax from what the payee receives. The crown (the actor holding the kind-5 purse) mints its founding stock and grants the town (kind 4), which pays shop 0 25 copper, then 2 silver.
+  bkw-royal : EuCurrency, Integer -> Integer
+  bkw-royal (x) (i) = if i > 256 then 0 else if eu-royal x True i then i else bkw-royal x (i + 1)
+  bvt-keeper-wage : Integer -> [Console] Integer
+  bvt-keeper-wage (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("keeper wage fixture: " & e) False
+    is Ok (owner) -> let x = owner.vendor.currency
+      in let shops = owner.vendor.vendor-count
+      in let shop = if shops == 0 then 0 else (ep-actor x.world (list-at owner.vendor.vendors 0).actor).purse
+      in let minted = bb-founding-stock x
+      in let crown = bkw-royal x 1
+      in let town = eu-open x 4 1
+      in let granted = eu-grant x True crown town 100 10 0
+      in let funded = if shop == 0 | granted < 0 then -1 else eu-pay x True town shop 25 0 0
+      in let held = if shop == 0 then -1 else (em-purse x.copper shop).coin
+      in let first = cg-pay-keepers owner 0
+      in let keeper = em-find x.world.money 2 4000 1
+      in let copper-paid = if keeper < 1 then -1 else (em-purse x.copper keeper).coin
+      in let copper-left = if shop == 0 then -1 else (em-purse x.copper shop).coin
+      in let silvered = if shop == 0 then -1 else eu-pay x True town shop 0 2 0
+      in let silver-held = if shop == 0 then -1 else (em-purse x.silver shop).coin
+      in let second = cg-pay-keepers owner 0
+      in let silver-paid = if keeper < 1 then -1 else (em-purse x.silver keeper).coin
+      in let silver-left = if shop == 0 then -1 else (em-purse x.silver shop).coin
+      in let silver-ok = silvered == 0 & second == 0 & silver-left == silver-held - 1 & silver-paid >= 0 & silver-paid <= 1 & (em-purse x.copper keeper).coin == copper-paid & (em-purse x.copper shop).coin == copper-left
+      in let other = shop
+      in let emptied = if other == 0 then -1 else eu-pay x True other town (em-purse x.copper other).coin (em-purse x.silver other).coin 0
+      in let gilded = if other == 0 | emptied /= 0 then -1 else (let g = eu-grant x True crown town 0 0 2 in if g < 0 then -2 else eu-pay x True town other 0 0 1)
+      in let bare = if other == 0 then -1 else (em-purse x.silver other).coin + (em-purse x.copper other).coin
+      in let before = if keeper < 1 then -1 else (em-purse x.silver keeper).coin
+      in let gold-before = if other == 0 then -1 else (em-purse x.world.money other).coin
+      in let third = cg-pay-keepers owner 0
+      in let gold-left = if other == 0 then -1 else (em-purse x.world.money other).coin
+      in let broken-left = if other == 0 then -1 else (em-purse x.silver other).coin
+      in let keeper-two = if keeper < 1 then -1 else (em-purse x.silver keeper).coin - before
+      in act
+        print-line-uni ("KEEPER WAGE shops=" & show shops & " crown=" & show crown & " funded=" & show funded & " copper paid=" & show copper-paid & " left=" & show copper-left & " silver paid=" & show silver-paid & " left=" & show silver-left)
+        a <- bvt-check "UOAIX-239: the wage is a silver, else up to 10 copper, else nothing" (cg-keeper-wage 0 1 == 10 & cg-keeper-wage 25 0 == 10 & cg-keeper-wage 4 0 == 4 & cg-keeper-wage 0 0 == 0)
+        b <- bvt-check ("UOAIX-239: a shop holding copper and no silver pays its keeper 10 copper (less the transfer tax) into purse owner 4000: held " & show held) (shops > 0 & funded == 0 & held >= 10 & first == 0 & keeper > 0 & copper-left == held - 10 & copper-paid >= 8 & copper-paid <= 10)
+        c <- bvt-check "UOAIX-239: a shop holding silver pays a silver and no copper" silver-ok
+        broke <- gilded == 0 & bare == 0 & third == 0 & gold-left == gold-before - 1 & broken-left == eu-unit x 3 / eu-unit x 2 - 1 & keeper-two >= 0 & keeper-two <= 1
+        d <- bvt-check ("a shop holding only gold (a crown loan) breaks one gold into silver with the crown and pays its keeper a silver: gilded " & show gilded & ", gold " & show gold-before & " to " & show gold-left & ", silver left " & show broken-left & " of " & show (eu-unit x 3 / eu-unit x 2)) broke
+        a + b + c + d
+      end

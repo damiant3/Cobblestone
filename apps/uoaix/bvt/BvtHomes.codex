@@ -2,6 +2,8 @@ Chapter: BvtHomes
   cites Uoaix chapter CompositeGatherer
   cites Uoaix chapter BritainCatalog
   cites Uoaix chapter BritainWindow
+  cites Uoaix chapter HouseData
+  cites Uoaix chapter CityWorkers
   cites Uoaix chapter BvtCheck
 
  Worker homes (UOAIX-163): a home is a house no shop keeps. A floor box overlaps a shop's premises when neither lies
@@ -15,15 +17,27 @@ Chapter: BvtHomes
     | h.floor.x1 < bwn-x1 | h.floor.x2 > bwn-x2 | h.floor.y1 < bwn-y1 | h.floor.y2 > bwn-y2
   bhm-count-bad : Integer, Integer -> Integer
   bhm-count-bad (i) (n) = if i >= list-length cgg-houses then n else bhm-count-bad (i + 1) (if bhm-bad (list-at cgg-houses i) then n + 1 else n)
+ UOAIX-239: a house is a home or for sale, never both, and the homes are taken first. A sale row's floor box is cells 6..9.
+  bhm-sale-homes : List Integer, List CggHouse, Integer, Integer -> Integer
+  bhm-sale-homes (rows) (homes) (i) (n) = if i >= hd-count then n
+    else let at = i * hd-row-cells
+    in let floor = BbShop { title = "Sale", premises = "", x1 = list-at rows (at + 6), y1 = list-at rows (at + 7), x2 = list-at rows (at + 8), y2 = list-at rows (at + 9) }
+    in bhm-sale-homes rows homes (i + 1) (if bhm-hits floor homes 0 then n + 1 else n)
+  bhm-hits : BbShop, List CggHouse, Integer -> Boolean
+  bhm-hits (floor) (homes) (i) = if i >= list-length homes then False else bhm-overlap floor (list-at homes i).floor | bhm-hits floor homes (i + 1)
  Bits: 1 no home lies in a shop, on its own door or outside the walk window; 2 the house at 1647,1580 Damian showed is
- a home; 4 the old tanner home (The Best Hides of Britain) is refused; 7 is all.
+ a home; 4 the old tanner home (The Best Hides of Britain) is refused; 8 no house for sale is a home; 16 the house at
+ 1607,1515, once for sale, is a home; 32 the first house still for sale is not a home; 63 is all.
   bhm-checks : Integer -> Integer
   bhm-checks (unused) = let tanner = CggHouse { door = BbSpot { x = 1439, y = 1612, z = 20 }, floor = BbShop { title = "Home", premises = "The Best Hides of Britain", x1 = 1434, y1 = 1611, x2 = 1438, y2 = 1612 } }
     in (if bhm-count-bad 0 0 == 0 then 1 else 0)
       + (if cgg-house-of (BbSpot { x = 1645, y = 1580, z = 0 }) 0 >= 0 then 2 else 0)
       + (if bhm-bad tanner then 4 else 0)
+      + (if bhm-sale-homes (hd-rows 0) (cgg-houses & cw-nujelm-houses & cw-cove-houses & cw-minoc-houses) 0 0 == 0 then 8 else 0)
+      + (if cgg-house-of (BbSpot { x = 1610, y = 1515, z = 40 }) 0 >= 0 then 16 else 0)
+      + (if cgg-house-of (BbSpot { x = list-at (hd-rows 0) 6, y = list-at (hd-rows 0) 7, z = 0 }) 0 < 0 then 32 else 0)
   bvt-homes : Integer -> [Console] Integer
   bvt-homes (unused) = let code = bhm-checks 0 in act
-    a <- bvt-check ("worker homes: none in a shop, on its door or outside the window; 1647,1580 is a home; the tanner's shop is refused (code " & show code & ")") (code == 7)
+    a <- bvt-check ("worker homes: none in a shop, on its door or outside the window; 1647,1580 is a home; the tanner's shop is refused; no house for sale is a home, 1607,1515 is a home and the first sale house is not (code " & show code & ")") (code == 63)
     a
   end

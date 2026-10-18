@@ -1,6 +1,7 @@
 Chapter: CivicLive
   cites Uoaix chapter CivicLiveState
   cites Uoaix chapter GameNpcSpeech
+  cites Uoaix chapter GameCombatPackets
 
   cv-sign : Integer -> Integer
   cv-sign (n) = if n < 0 then -1 else if n > 0 then 1 else 0
@@ -23,13 +24,18 @@ Chapter: CivicLive
         else Ok (BbSpot { x = x, y = y, z = z })
   cv-admit : CivicLive, Integer, Integer, Integer -> Boolean
   cv-admit (s) (serial) (x) (y) = lw-step s.law serial x y True == 0
+ UOAIX-216 13.45: a foot guard's plan expands at most 16384 cells, as a keeper's does (bsh-plan-budget), and at most
+ cv-plans guards with no route plan in one advance; a chased offender moves the goal, so every failed retry was a search of
+ all 117,504 cells of Britain's map, up to 27.6 s guest a slow tick (trial 43383).
+  cv-plan-budget : Integer = 16384
+  cv-plans : Integer = 2
   cv-walk : CivicLive, CvPatrol, WorldObject, WalkMap, Maybe WdState, BbSpot -> Result (List (List Integer)) Text
   cv-walk (s) (p) (mobile) (map) (doors) (target) = cv-walk-on s s.town.nav p mobile map doors target
   cv-walk-on : CivicLive, TlPath, CvPatrol, WorldObject, WalkMap, Maybe WdState, BbSpot -> Result (List (List Integer)) Text
   cv-walk-on (s) (nav) (p) (mobile) (map) (doors) (target) =
     let kept = tl-copy-spot p.target target
     in let moves = p.walk.moves
-    in when rte-toward-in nav s.law.world (Just s.town.vendors.game) map doors (cv-admit s mobile.serial) p.walk mobile target.x target.y target.z
+    in when rte-toward-budget nav s.law.world (Just s.town.vendors.game) map doors (cv-admit s mobile.serial) p.walk mobile target.x target.y target.z cv-plan-budget
       is Err (e) -> Err (if e == "route step refused" then "Law refused civic step" else e)
       is Ok (packets) -> if p.walk.moves == moves then let retry = __record-set p "next-step" (p.next-step + 60) in Ok packets
         else let direction-set = __record-set p "direction" p.walk.facing
@@ -53,6 +59,36 @@ Chapter: CivicLive
     else when cv-approach s map mobile cell 0
       is Err (_) -> let retry = __record-set p "next-step" (p.next-step + 60) in Ok []
       is Ok (target) -> cv-walk-on s nav p mobile map doors target
+ A patrolling guard whose last cv-stuck-fails patrol plans all failed is set back on its waypoint: trial 43802's castle
+ guard stood on the land at z 50 under the main floor at z 72 and reached no waypoint. The count is the patrol's own
+ (stuck): a chase or an armor errand walks the same RteWalk, and a plan of theirs that succeeds clears its fails
+ (live-43827: guard 4 sat 60 tiles from the castle at fails 3 to 5 for 7 game hours).
+  cv-stuck-fails : Integer = 6
+ A castle guard below the main floor walks to the north stair's top first: the planner keeps one z a cell and the floor
+ stands over courtyard land, so no plan from the town reaches a floor waypoint (proofs/GuardCastleRouteProof). The
+ stair is two tiles wide and its top steps (y + 1) already stand at z 72, yet plan no route onto the floor either
+ (trial 44158: guards 4 and 5 at 1352,1617,72), so the stair's own tiles walk to the top as well.
+  cv-on-stair : WorldObject -> Boolean
+  cv-on-stair (mobile) = mobile.x >= cv-castle-stair-x & mobile.x <= cv-castle-stair-x + 1 & mobile.y > cv-castle-stair-y
+    & mobile.y <= cv-castle-stair-y + 8
+  cv-leg-goal : WorldObject, BbSpot -> BbSpot
+  cv-leg-goal (mobile) (target) = if target.z == cv-castle-floor & (walk-abs (mobile.z - cv-castle-floor) > 2 | cv-on-stair mobile)
+    then BbSpot { x = cv-castle-stair-x, y = cv-castle-stair-y, z = cv-castle-floor } else target
+  cv-stuck-after : RteWalk, Integer -> Integer
+  cv-stuck-after (w) (n) = if w.route >= 0 then 0 else if w.fails > 0 & w.rest == bit-shl 1 w.fails then n + 1 else n
+  cv-return : CivicLive, CvPatrol, WorldObject, BbSpot -> Result (List (List Integer)) Text
+  cv-return (s) (p) (mobile) (target) =
+    let moved = WorldObject { serial = mobile.serial, kind = mobile.kind, x = target.x, y = target.y, z = target.z,
+      graphic = mobile.graphic, hue = mobile.hue, container = mobile.container, amount = mobile.amount, health = mobile.health }
+    in when world-update s.law.world moved
+      is Err (e) -> Err e
+      is Ok (_) -> let reset = cv-reset p
+        in let cleared = __record-set p.walk "fails" 0
+        in let rested = __record-set p.walk "rest" 0
+        in let unstuck = __record-set p "stuck" 0
+        in let delay = __record-set p "next-step" (p.next-step + 12)
+        in let touched = world-touch s.law.world
+        in Ok [cbp-move moved p.direction 0 1]
   cv-step : CivicLive, CvPatrol, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
   cv-step (s) (p) (map) (doors) = cv-step-on s s.town.nav p map doors
   cv-step-on : CivicLive, TlPath, CvPatrol, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
@@ -63,8 +99,11 @@ Chapter: CivicLive
       else if g.state == 0 then let target = list-at p.route p.waypoint
         in let patrolling = world-state-clear s.law.world mobile.serial
         in if tl-at mobile target then let next = __record-set p "waypoint" (int-mod (p.waypoint + 1) 4)
-          in let reset = cv-reset p in let delay = __record-set p "next-step" (p.next-step + 12) in Ok []
-        else cv-walk-on s nav p mobile map doors target
+          in let reset = cv-reset p in let unstuck = __record-set p "stuck" 0 in let delay = __record-set p "next-step" (p.next-step + 12) in Ok []
+        else if p.stuck >= cv-stuck-fails then cv-return s p mobile target
+        else when cv-walk-on s nav p mobile map doors (cv-leg-goal mobile target)
+          is Err (e) -> Err e
+          is Ok (packets) -> let counted = __record-set p "stuck" (cv-stuck-after p.walk p.stuck) in Ok packets
       else if g.state == 4 then cv-escort-on s nav p mobile map doors g.case-id
       else if g.state == 2 then let waiting = __record-set p "next-step" (p.next-step + 60) in Ok []
       else if not (lw-valid-case s.law g.case-id) then Err "Civic guard case binding"
@@ -83,23 +122,25 @@ Chapter: CivicLive
   cv-earliest (s) (i) (best) = if i >= list-length s.guards then best
     else let p = list-at s.guards i
     in cv-earliest s (i + 1) (if p.serial /= 0 & (best < 0 | p.next-step < (list-at s.guards best).next-step) then i else best)
-  cv-advance-steps : CivicLive, WalkMap, Maybe WdState, Integer, List (List Integer) -> Result GameReply Text
-  cv-advance-steps (s) (map) (doors) (left) (packets) =
+  cv-advance-steps : CivicLive, WalkMap, Maybe WdState, Integer, Integer, List (List Integer) -> Result GameReply Text
+  cv-advance-steps (s) (map) (doors) (left) (plans) (packets) =
     let i = cv-earliest s 0 -1
     in if left == 0 | i < 0 then Ok (gs-reply packets "civic foot patrol")
     else let p = list-at s.guards i
     in if p.next-step > s.now | p.next-step >= tl-max-seconds then Ok (gs-reply packets "civic foot patrol")
+    else let planning = p.walk.route < 0
+    in if planning & plans <= 0 then Ok (gs-reply packets "civic foot patrol")
     else when cv-step s p map doors
       is Err (e) -> Err e
       is Ok (next) -> let touched = world-touch s.law.world
-        in cv-advance-steps s map doors (left - 1) (packets & next)
+        in cv-advance-steps s map doors (left - 1) (if planning then plans - 1 else plans) (packets & next)
   cv-advance : CivicLive, WalkMap, Maybe WdState, Integer, Integer -> Result GameReply Text
   cv-advance (s) (map) (doors) (seconds) (budget) =
     if seconds < s.now | seconds > tl-max-seconds - 86400 | budget < 1 | budget > 32
       | not (world-indexed s.law.world) then Err "Civic time or budget"
     else if lw-hour s.law (seconds / 3600) /= 0 then Err "Law clock refused"
     else let time = __record-set s "now" seconds
-    in cv-advance-steps s map doors budget []
+    in cv-advance-steps s map doors budget cv-plans []
   cv-reported : LawWorld, Integer -> Integer
   cv-reported (w) (i) = if i == w.count then 0
     else (if (list-at w.cases i).known & (list-at w.cases i).status /= 5 then 1 else 0) + cv-reported w (i + 1)
@@ -123,28 +164,28 @@ Chapter: CivicLive
   cv-guard-role : CivicLive, Integer, Integer -> Integer
   cv-guard-role (s) (serial) (i) = if i >= list-length s.guards then 0
     else if (list-at s.guards i).serial == serial then i + 2 else cv-guard-role s serial (i + 1)
+ Speech only: a click on the mayor or a guard is their name label, cg-trade-click's (UOAIX-56).
   cv-handler : CivicLive, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   cv-handler (s) (game) (input) (map) (port) (packet) =
     if list-length packet == 0 then Ok None else let op = list-at packet 0
-    in if op /= 3 & op /= 9 then Ok None
+    in if op /= 3 then Ok None
     else if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | game.world.buffer /= s.law.world.buffer then Err "Civic session binding"
     else if not (gs-byte-range packet 0) then Err "Civic packet bytes"
-    else if op == 9 & list-length packet /= 5 then Err "Civic name extent"
-    else if op == 3 & (list-length packet < 9 | list-length packet > 256) then Err "Civic speech extent"
-    else if op == 3 & not (gp-speech-valid packet) then Err "Civic speech profile"
-    else let text = if op == 3 then gp-speech-text packet else ""
-    in let role = if op == 9 then cv-role s (gp-u32 packet 1) else if ns-has text "mayor" then 1 else 0
-    in let call = op == 3 & ns-has text "guards"
+    else if (list-length packet < 9 | list-length packet > 256) then Err "Civic speech extent"
+    else if not (gp-speech-valid packet) then Err "Civic speech profile"
+    else let text = gp-speech-text packet
+    in let role = if ns-has text "mayor" then 1 else 0
+    in let call = ns-has text "guards"
     in if role == 0 & not call then Ok None
     else when world-get s.law.world input.session.serial
       is Err (e) -> Err e
-      is Ok (player) -> if op == 3 & (list-at packet 3 == 2 | player.health <= 0) then Ok None
+      is Ok (player) -> if list-at packet 3 == 2 | player.health <= 0 then Ok None
         else if call then let result = cv-call s player (when s.place-map player.x player.y is Just (m) -> m is None -> map) (if list-at packet 3 == 8 then 1 else cv-earshot * cv-earshot) 0
           in Ok (Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 (if result > 0 then "A guard is coming on foot." else "No nearby guard can answer an admitted report.")] "civic guard call"))
         else let serial = if role == 1 then s.mayor else (list-at s.guards (role - 2)).serial
         in when world-get s.law.world serial
           is Err (_) -> Ok None
-          is Ok (npc) -> if not (ns-near player npc (if op == 9 then 18 else if list-at packet 3 == 8 then 1 else 4)) then Ok None
+          is Ok (npc) -> if not (ns-near player npc (if list-at packet 3 == 8 then 1 else 4)) then Ok None
             else Ok (Just (gs-reply [gvp-speech npc (if role == 1 then "Mayor of Britain" else "Britain Guard")
               (if role == 1 then "Britain keeps " & show (cv-reported s.law 0) & " reported cases open. Our guards patrol the streets." & s.mayor-note 0
                else "I patrol Britain on foot. Report what you witnessed when you call guards.")] "civic NPC reply"))

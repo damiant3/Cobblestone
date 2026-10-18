@@ -38,7 +38,7 @@ Chapter: PlayRun
  scene since the last fire, 10 wait-until second, 11 hint turn, 12 compiled, 13 its story's registry row, 14 the story
  stays; 16 on, the cast's mobile serials.
  Header qwords: 0 the selected play, 1 the last line's sequence.
-  PlrStore = record { scripts : Integer, tables : Integer, runs : Integer, walks : List RteWalk, lines : Integer, viewers : Integer, header : Integer, stories : StyStore, trade : (Integer, Integer, Integer, Integer, Integer -> Integer) }
+  PlrStore = record { scripts : Integer, tables : Integer, runs : Integer, walks : List RteWalk, lines : Integer, viewers : Integer, header : Integer, stories : StyStore, trade : (Integer, Integer, Integer, Integer, Integer -> Integer), doors : (List (List Integer) -> Integer) }
   plr-zero : Integer, Integer, Integer -> Integer
   plr-zero (b) (i) (n) = if i >= n then 0 else let z = poke-qword b (i * 8) 0 in plr-zero b (i + 1) n
   plr-walks : Integer, List RteWalk -> List RteWalk
@@ -53,10 +53,12 @@ Chapter: PlayRun
     in let header = alloc-bytes 64
     in let d = plr-zero header 0 8
     in PlrStore { scripts = alloc-bytes (plr-slots * plr-script-bytes), tables = alloc-bytes (plr-slots * pls-table-bytes), runs = runs,
-      walks = plr-walks (plr-slots * pls-max-cast) [], lines = lines, viewers = viewers, header = header, stories = sty-new 0, trade = plr-trade-none }
+      walks = plr-walks (plr-slots * pls-max-cast) [], lines = lines, viewers = viewers, header = header, stories = sty-new 0, trade = plr-trade-none, doors = plr-doors-none }
 
   plr-trade-none : Integer, Integer, Integer, Integer, Integer -> Integer
   plr-trade-none (slot) (cast) (kind) (item) (n) = 0 - 1
+  plr-doors-none : List (List Integer) -> Integer
+  plr-doors-none (packets) = 0
   plr-run : PlrStore, Integer, Integer -> Integer
   plr-run (st) (slot) (f) = peek-qword st.runs (slot * plr-run-bytes + f * 8)
   plr-set : PlrStore, Integer, Integer, Integer -> Integer
@@ -251,6 +253,7 @@ Chapter: PlayRun
         else let w = list-at st.walks (slot * pls-max-cast + actor)
         in let before = w.moves
         in let stepped = rte-toward nav game map doors w m x y z
+        in let synced = when stepped is Ok (packets) -> st.doors packets is Err (_) -> 0
         in let fails = if w.moves == before then plr-run st slot 8 + 1 else 0
         in if fails > 40 then plr-next st slot a 1
         else let kept = plr-set st slot 8 fails in gm-ticks 400
@@ -422,7 +425,7 @@ Chapter: PlayRun
     in let scripts = plr-copy st.scripts (at + 16 + plr-registry-bytes + plr-slots * plr-run-bytes) 0 (plr-slots * plr-script-bytes / 8)
     in at + plr-tail-size 0
   plr-read-tail : PlrStore, Integer, Integer -> Result Integer Text
-  plr-read-tail (st) (at) (length) = if length /= plr-tail-size 0 | peek-qword at 0 /= plr-ply1 | peek-qword at 8 /= 1 then Err "PLY1 header"
+  plr-read-tail (st) (at) (length) = if length < plr-tail-size 0 | peek-qword at 0 /= plr-ply1 | peek-qword at 8 /= 1 then Err "PLY1 header"
     else let r = plr-registry st (at + 16) False
     in let runs = plr-copy (at + 16 + plr-registry-bytes) st.runs 0 (plr-slots * plr-run-bytes / 8)
     in let scripts = plr-copy (at + 16 + plr-registry-bytes + plr-slots * plr-run-bytes) st.scripts 0 (plr-slots * plr-script-bytes / 8)

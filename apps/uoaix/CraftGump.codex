@@ -1,16 +1,22 @@
 Chapter: CraftGump
   cites Uoaix chapter GamePackets
+  cites Uoaix chapter Smith1998
 
  The craft gump (UOAIX-185), after ServUO Engines/Craft CraftGump: a title, the categories down the left, the chosen
  category's items down the right with what each makes and needs, a status line, and Make Last and Exit. ServUO draws
  it with art the 1998 GUMPIDX lacks (5054, 4005-4012); this one uses the 2600 backing and the 15 by 15 round button
  2117 (pressed 2118), both in it. Each category is a gump page, so choosing one is the client's own page switch
  (button type 0); only an item, Make Last or Exit answers the server (0xB1). Every text and button lies inside the
- 2600 frame (corners 47 by 44, left edge 34, right edge 45, bottom 40; UOAIX-230): x 52 to 485, y 52 to 440 of 530 by 480.
+ 2600 frame (corners 47 by 44, left edge 34, right edge 45, bottom 40; UOAIX-230): x 52 to 485, y 52 to 400 of 530 by 440.
+ The 1.25 client's window is 640 by 480, so the gump opens at 60,20 and ends at 460 (D-16: at 60,60 and 480 tall, the
+ bottom 60 pixels, Make Last and Exit, fell off the window).
  Category names are ServUO's Def files' (DefBlacksmithy, DefTailoring, DefCarpentry, DefTinkering, DefCooking,
  DefBowFletching, DefAlchemy, DefInscription), in their order; a category with nothing in it is not shown.
   crg-tag : Integer = #43520000
   crg-make-last : Integer = 9999
+  crg-repair : Integer = 9998
+  crg-repairs : List Text -> Boolean
+  crg-repairs (labels) = list-length labels > 0 & list-at labels 0 == "Metal Armor"
  Alchemy and Inscription sit above the tool categories (gcr-category 1 to 9).
   crg-alchemy : Integer = 20
   crg-inscription : Integer = 21
@@ -28,7 +34,7 @@ Chapter: CraftGump
  Furniture, bow 48 Weapons; the toolkits 42 and scissors 74 Tools, nails 39 Parts; bread 34 Baking, cooked meat and
  fish 50 Barbecue; for the fletcher, arrows Ammunition and the bow Weapons.
   crg-category : Integer, Integer -> Integer
-  crg-category (craft) (item) = if craft == 1 then (if item == 69 | item == 70 then 3 else 0)
+  crg-category (craft) (item) = if craft == 1 then (if sm98-index item >= 0 then sm98-at sm98-cats (sm98-index item) else 0)
     else if craft == 2 then (if item == 72 | item == 73 then 1 else if item >= 121 & item <= 124 then 3 else 2)
     else if craft == 3 | (craft >= 7 & craft <= 9) then (if item == 47 | (item >= 128 & item <= 133) then 1 else if item >= 134 & item <= 138 then 2 else if item == 48 | item == 77 then 3
       else if item >= 139 & item <= 142 then 5 else if item == 143 then 6 else if item == 144 | item == 145 | item == 147 then 7 else if item == 146 then 9 else 0)
@@ -48,7 +54,7 @@ Chapter: CraftGump
   crg-used (cats) (count) (k) (out) = if k >= count then out else crg-used cats count (k + 1) (if crg-has cats k 0 then out & [k] else out)
   crg-left : List Text, List Integer, Integer, Text, List Text -> Text
   crg-left (labels) (used) (j) (layout) (texts) = if j >= list-length used then layout
-    else let y = 108 + 22 * j
+    else let y = 104 + 20 * j
     in crg-left labels used (j + 1) (layout & "{ button 52 " & show y & " 2117 2118 0 " & show (j + 1) & " 0 }{ text 72 " & show (y - 2) & " 0 " & show (list-length texts + j) & " }") texts
   crg-left-texts : List Text, List Integer, Integer, List Text -> List Text
   crg-left-texts (labels) (used) (j) (out) = if j >= list-length used then out else crg-left-texts labels used (j + 1) (out & [list-at labels (list-at used j)])
@@ -57,7 +63,7 @@ Chapter: CraftGump
   crg-page : List Text, List Integer, List Integer, Integer, Integer, Integer, Text, List Text -> Text
   crg-page (names) (cats) (ids) (k) (i) (row) (layout) (texts) = if i >= list-length names | row >= 13 then layout
     else if list-at cats i /= k then crg-page names cats ids k (i + 1) row layout texts
-    else let y = 108 + 22 * row
+    else let y = 104 + 20 * row
     in crg-page names cats ids k (i + 1) (row + 1) (layout & "{ button 250 " & show y & " 2117 2118 1 0 " & show (list-at ids i) & " }{ text 270 " & show (y - 2) & " 0 " & show (list-length texts + row) & " }") texts
   crg-page-texts : List Text, List Integer, Integer, Integer, List Text -> List Text
   crg-page-texts (names) (cats) (k) (i) (out) = if i >= list-length names then out
@@ -76,15 +82,16 @@ Chapter: CraftGump
   crg-gump-ids : Integer, Integer, Text, List Text, List Text, List Integer, List Integer, Text, Boolean -> List Integer
   crg-gump-ids (serial) (context) (title) (labels) (names) (cats) (ids) (status) (lastable) =
     let used = crg-used cats (list-length labels) 0 []
-    in let head-texts = [title & " Menu", "CATEGORIES", "SELECTIONS", (if status == "" then " " else status), "MAKE LAST", "EXIT"]
-    in let head = "{ page 0 }{ resizepic 0 0 2600 530 480 }{ text 200 52 0 0 }{ text 52 80 0 1 }{ text 250 80 0 2 }{ text 52 395 0 3 }"
-      & (if lastable then "{ button 52 422 2117 2118 1 0 " & show crg-make-last & " }{ text 72 420 0 4 }" else "") & "{ button 400 422 2117 2118 1 0 0 }{ text 420 420 0 5 }"
+    in let head-texts = [title & " Menu", "CATEGORIES", "SELECTIONS", (if status == "" then " " else status), "MAKE LAST", "EXIT", "REPAIR"]
+    in let head = "{ page 0 }{ resizepic 0 0 2600 530 440 }{ text 200 52 0 0 }{ text 52 80 0 1 }{ text 250 80 0 2 }{ text 52 360 0 3 }"
+      & (if lastable then "{ button 52 384 2117 2118 1 0 " & show crg-make-last & " }{ text 72 382 0 4 }" else "") & "{ button 400 384 2117 2118 1 0 0 }{ text 420 382 0 5 }"
+      & (if crg-repairs labels then "{ button 226 384 2117 2118 1 0 " & show crg-repair & " }{ text 246 382 0 6 }" else "")
     in let left = crg-left labels used 0 head head-texts
     in let texts = crg-left-texts labels used 0 head-texts
     in let built = crg-pages names cats ids used 0 left texts
     in let layout = list-at built 0
     in let lines = crg-rest built 1 []
-    in let start = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) (crg-tag + context)) 60) 60) (text-length layout + 1)
+    in let start = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) (crg-tag + context)) 60) 20) (text-length layout + 1)
     in let counted = gp-put16 (gp-ascii start layout 0 (text-length layout + 1)) (list-length lines)
     in crg-finish (crg-lines counted lines 0)
   crg-rest : List Text, Integer, List Text -> List Text

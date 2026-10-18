@@ -2,6 +2,7 @@ Chapter: BritainProduction
   cites Uoaix chapter BritainCatalog
   cites Uoaix chapter EconomyCurrency
   cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyProduction
   cites Foreword chapter Result
 
   BbProducer = record { currency : EuCurrency, actor : Integer, remaining : Integer,
@@ -98,7 +99,7 @@ Chapter: BritainProduction
               in let basis = ep-at a.cost item
               in let budget = __record-set p "remaining" (p.remaining - 1)
               in let result = ep-craft w p.actor recipe station
-              in if result == -2 then Ok 0
+              in if result == -2 | result == -3 then Ok 0
               else if result < 0 then Err ("Britain recipe refused item=" & show item)
               else bb-receipt p item stock quality wear basis
   bb-make : BbProducer, Integer, Integer -> Result Integer Text
@@ -113,14 +114,23 @@ Chapter: BritainProduction
       is Err (e) -> Err e
       is Ok (n) -> if n == 0 then bb-make p item depth else Ok n
 
+ A production founds nodes and stations (eh-source, ep-station); a table grown inside the mark below would be reclaimed
+ at its restore and leave the world a dangling list (L-BELOWMARK: the boot trap of main 44085, a city smith stocking 49
+ smith rows). The tables grow first, before the mark, whenever fewer than bb-make-slack slots are free.
+  bb-make-slack : Integer = 256
+  bb-make-room : EpWorld -> Integer
+  bb-make-room (w) = let nodes = if list-length w.nodes - w.node-count < bb-make-slack & w.goods.world.growing then ep-grow-nodes w ep-node-limit else 0
+    in if list-length w.stations - w.station-count < bb-make-slack & w.goods.world.growing then ep-grow-stations w ep-station-limit else 0
   bb-produce : BbProducer, Integer -> Result Integer Text
-  bb-produce (p) (item) = let mark = __heap-save
+  bb-produce (p) (item) = let roomy = bb-make-room p.currency.world
+    in let mark = __heap-save
     in let budget = __record-set p "remaining" bb-budget
     in when bb-make p item 0
       is Err (e) -> Err e
       is Ok (n) -> let restored = __heap-restore mark in Ok n
   bb-require : BbProducer, Integer, Integer -> Result Integer Text
-  bb-require (p) (item) (quantity) = let mark = __heap-save
+  bb-require (p) (item) (quantity) = let roomy = bb-make-room p.currency.world
+    in let mark = __heap-save
     in let budget = __record-set p "remaining" bb-budget
     in when bb-ensure p item quantity 0
       is Err (e) -> Err e

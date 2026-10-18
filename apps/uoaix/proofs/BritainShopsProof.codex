@@ -1,6 +1,8 @@
 Chapter: BritainShopsProof
   cites Uoaix chapter WorldDisk
   cites Uoaix chapter BritainShops
+  cites Uoaix chapter Smith1998
+  cites Uoaix chapter CompositeGameRules
   cites Uoaix chapter EconomyCurrencyCodec
   cites Uoaix chapter GsiCodec
 
@@ -31,6 +33,11 @@ Chapter: BritainShopsProof
       is Ok (_) -> let station = bb-station x.world crown 12 0
         in if station < 1 | ep-find x.world crown 32 1 < 0 then 0
         else if eu-strike x True crown station 3 1 /= 0 then 0 else 1
+  bsp-change : EuCurrency -> Integer
+  bsp-change (x) = let crown = x.world.mint-owner
+    in let station = bb-station x.world crown 12 0
+    in let gold = (em-purse x.world.money 1).coin
+    in if station < 1 then -1 else cg-open-change x crown station 1 (gold * x.copper-rate) + cg-open-change x crown station 2 (gold * x.silver-rate)
   bsp-due : EuCurrency, Integer -> Boolean
   bsp-due (x) (i) = if i == x.world.money.loan-count then True else (list-at x.world.money.loans i).due == em-limit & bsp-due x (i + 1)
   bsp-say : Text -> List Integer
@@ -42,7 +49,7 @@ Chapter: BritainShopsProof
     is Ok (Just (reply)) -> if list-length reply.packets == 0 then False
       else let packet = list-at reply.packets 0
       in list-length packet >= 44 & list-at packet 0 == 28
-        & utf8-bytes-to-text (list-take (list-drop packet 14) (text-length name)) == name
+        & text-contains (utf8-bytes-to-text (list-drop packet 14)) name
   bsp-draw-packets : List (List Integer), Integer -> Boolean
   bsp-draw-packets (packets) (i) = if i == list-length packets then False
     else let packet = list-at packets i
@@ -52,9 +59,12 @@ Chapter: BritainShopsProof
     is Err (_) -> False
     is Ok (None) -> False
     is Ok (Just (reply)) -> bsp-draw-packets reply.packets 0
+  bsp-visited : Integer = 8
+  bsp-pick : List GvQuote, Integer, Integer -> Integer
+  bsp-pick (offers) (role) (k) = if k >= list-length offers then 0 else if gvb-goods role (list-at offers k).item then k else bsp-pick offers role (k + 1)
   bsp-visit : BbTown, GameInput, WalkMap, Integer -> [Console] Nothing
-  bsp-visit (t) (input) (map) (i) = if i == bb-shop-count then act
-    bsp-check "the seven stocked shops' purchases and resales conserve currency and lots" (t.vendors.sale-count == 2 * (bb-shop-count - 1) & gvsc-valid t.vendors)
+  bsp-visit (t) (input) (map) (i) = if i == bsp-visited then act
+    bsp-check "the seven stocked shops' purchases and resales conserve currency and lots" (t.vendors.sale-count == 2 * (bsp-visited - 1) & gvsc-valid t.vendors)
   end
     else let v = t.vendors
     in let shop = list-at v.vendors i
@@ -71,7 +81,7 @@ Chapter: BritainShopsProof
           bsp-visit t input map (i + 1)
         end
         else if p.count < 1 then print-line-uni ("FAIL empty shop " & show i)
-        else let source = (list-at p.offers 0).serial
+        else let source = (list-at p.offers (bsp-pick p.offers (gvb-role i) 0)).serial
         in let before = v.sale-count
         in let request = gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] npc.serial) 2) 26) source) 1
         in let bought = bb-handler t v.game input map 2593 request
@@ -86,7 +96,13 @@ Chapter: BritainShopsProof
   bsp-note : Result (Maybe GameReply) Text -> Text
   bsp-note (r) = when r is Err (e) -> e is Ok (None) -> "none" is Ok (Just (reply)) -> reply.note
   bsp-hello : Result (Maybe GameReply) Text -> Boolean
-  bsp-hello (r) = when r is Err (_) -> False is Ok (None) -> False is Ok (Just (reply)) -> list-length reply.packets == 2 & list-at (list-at reply.packets 0) 9 == 6 & list-at (list-at reply.packets 1) 9 == 0
+  bsp-hello (r) = when r is Err (_) -> False is Ok (None) -> False is Ok (Just (reply)) -> list-length reply.packets == 1 & list-at (list-at reply.packets 0) 9 == 6
+  bsp-forge-try : GvWorld, GsiState, Integer -> Result Integer Text
+  bsp-forge-try (v) (items) (n) = if n == 0 then Ok 0 else when bb-forge v items
+    is Err (e) -> Err e
+    is Ok (made) -> if made == 1 then Ok 1 else bsp-forge-try v items (n - 1)
+  bsp-held-row : GvWorld, Integer, Integer -> Integer
+  bsp-held-row (v) (actor) (k) = if k >= sm98-n then -1 else if bb-has-lot v actor (sm98-at sm98-items k) 0 then k else bsp-held-row v actor (k + 1)
   bsp-stand : BbTown, GameInput, Integer -> Boolean
   bsp-stand (t) (input) (vendor) = when world-get t.vendors.game.world (list-at t.vendors.vendors vendor).serial
     is Err (_) -> False
@@ -103,24 +119,29 @@ Chapter: BritainShopsProof
         in let menu = bb-handler t v.game input map 2593 (bsp-say "Blacksmith sell")
         in let offered = p.count
         in let bid = (list-at p.offers 0).price
+        in let quoted = gvb-bid-for v.currency.world 1 (list-at v.vendors 1).actor 31
         in let unbound = (list-at p.offers 0).lot
         in let found-before = ep-at v.currency.world.found 31
         in let sales = v.sale-count
         in let sold = bb-handler t v.game input map 2593 (gp-put16 (gp-put32 (gp-put16 (gp-put32 [159,0,15] smith) 1) ingots) 4)
-        in let forged = bb-forge v t.items
-        in let sword = ep-price v.currency.world (list-at v.vendors 1).actor 70
+        in let forger = list-at v.vendors 1
+        in let held = ep-at (ep-actor v.currency.world forger.actor).stock 31
+        in let forged = bsp-forge-try v t.items 30
+        in let got = bsp-held-row v forger.actor 0
+        in let made = sm98-at sm98-items got
+        in let sword = ep-price v.currency.world forger.actor made
         in let near-healer = bsp-stand t input 4
         in let refused = bb-handler t v.game input map 2593 (bsp-say "sell")
         in let clicked = bb-handler t v.game input map 2593 (gp-put32 [9] (list-at v.vendors 4).serial)
         in act
           bsp-check "a role standing out of range does not answer" (near-smith & bsp-note wrong == "none")
-          bsp-check "the blacksmith offers a loose ingot stack at its melt value" (bsp-note menu == "vendor sell menu" & offered == 1 & unbound < 0 & bid == gvb-standard v.currency.world 31 16 & bid > 0)
+          bsp-check "the blacksmith offers a loose ingot stack at its melt value, raised while it holds none" (bsp-note menu == "vendor sell menu" & offered == 1 & unbound < 0 & bid == quoted & bid > 0)
           bsp-check "the sale admits found goods as a lot and the census balances" (v.sale-count == sales + 1 & ep-at v.currency.world.found 31 == found-before + 10 & ep-census v.currency.world 1 & gvsc-valid v & euv-valid v.currency)
-          print-line-uni ("Britain forged longsword=" & show sword & " ingots-left=" & show (ep-at (ep-actor v.currency.world (list-at v.vendors 1).actor).stock 31))
-          bsp-check "the blacksmith forges a longsword from the bought ingots and it quotes near 1 gold" ((when forged is Err (_) -> False is Ok (n) -> n == 1)
-            & sword >= 630 & sword <= 770 & ep-at (ep-actor v.currency.world (list-at v.vendors 1).actor).stock 31 == 2 & gvsc-valid v & euv-valid v.currency)
+          print-line-uni ("Britain forged " & (if got < 0 then "nothing" else list-at sm98-names got) & "=" & show sword & " ingots-left=" & show (ep-at (ep-actor v.currency.world forger.actor).stock 31))
+          bsp-check "the blacksmith forges a 1998 menu row from the bought ingots, spending iron, and quotes it" ((when forged is Err (_) -> False is Ok (n) -> n == 1)
+            & got >= 0 & sword > 0 & ep-at (ep-actor v.currency.world forger.actor).stock 31 < held & gvsc-valid v & euv-valid v.currency)
           bsp-check "a vendor with nothing to buy says so overhead" (near-healer & bsp-note refused == "vendor sell menu empty")
-          bsp-check "single-clicking a shopkeeper answers its name and Hello" (bsp-note clicked == "Britain shop name" & bsp-hello clicked)
+          bsp-check "single-clicking a shopkeeper answers its name label" (bsp-note clicked == "Britain shop name" & bsp-hello clicked)
         end
   bsp-client : BbTown, WalkMap -> [Console] Nothing
   bsp-client (t) (map) = let v = t.vendors
@@ -131,6 +152,9 @@ Chapter: BritainShopsProof
         is Ok (pack) ->
           let registered = gsi-register t.items pack 21 #003C False False
           in let bound = gv-add-player v serial 1 pack
+          in let wallet = (ep-actor v.currency.world (list-at v.players 0).actor).purse
+          in let paid = eu-pay v.currency True 2 wallet 0 0 1
+          in let changed = eu-exchange v.currency wallet 3 1 1
           in let slot = poke-qword v.game.characters 0 serial
           in let active = __record-set v.game "active" serial
           in let input = gn-input-with bb-specs 41
@@ -141,14 +165,15 @@ Chapter: BritainShopsProof
             bsp-visit t input map 0
             bsp-found t input map
             let coin-buf = alloc-bytes us-max-payload
-            in let vendors-buf = alloc-bytes gvsc-bytes
+            in let vendor-cap = gvsc-bytes + gvsc-tail-size v
+            in let vendors-buf = alloc-bytes vendor-cap
             in let items-buf = alloc-bytes (gic-size t.items)
             in let coin-save = euc-encode (CurrencyCheckpoint { currency = v.currency, tick = 0, sequence = 0 }) coin-buf us-max-payload
-            in let vendor-save = gvsc-encode v vendors-buf gvsc-bytes
+            in let vendor-save = gvsc-encode v vendors-buf vendor-cap
             in let item-save = gic-write t.items items-buf (gic-size t.items)
             in when euc-decode coin-buf (peek-qword coin-buf 16)
               is Err (e) -> print-line-uni ("FAIL Britain currency restore " & e)
-              is Ok (currency) -> when gvsc-decode vendors-buf gvsc-bytes v.game currency.currency
+              is Ok (currency) -> when gvsc-decode vendors-buf (when vendor-save is Err (_) -> vendor-cap is Ok (n) -> n) v.game currency.currency
                 is Err (e) -> print-line-uni ("FAIL Britain vendor restore " & e)
                 is Ok (vendors) -> when gic-read v.game.world items-buf (gic-size t.items)
                   is Err (e) -> print-line-uni ("FAIL Britain item restore " & e)
@@ -156,7 +181,7 @@ Chapter: BritainShopsProof
                     is Err (e) -> print-line-uni ("FAIL Britain runtime restore " & e)
                     is Ok (loaded) ->
                       let draw = bb-pulse loaded v.game input map 2593 2000
-                      in bsp-check "EUC1 GVS1 GSI1 restore preserves shops and resets visibility" (is-ok coin-save & is-ok vendor-save & is-ok item-save & bsp-shops loaded 0 & loaded.vendors.sale-count == 2 * (bb-shop-count - 1) + 1 & bsp-drawn draw & gvsc-valid loaded.vendors)
+                      in bsp-check "EUC1 GVS1 GSI1 restore preserves shops and resets visibility" (is-ok coin-save & is-ok vendor-save & is-ok item-save & bsp-shops loaded 0 & loaded.vendors.sale-count == 2 * (bsp-visited - 1) + 1 & bsp-drawn draw & gvsc-valid loaded.vendors)
           end
   bsp-run : GameShard, WalkMap, EuCurrency -> [Console] Nothing
   bsp-run (game) (map) (currency) =
@@ -172,9 +197,11 @@ Chapter: BritainShopsProof
         struck <- bsp-strike currency
         lent <- bb-borrow-shops v 0
         bsp-check "after the crown strikes one gold ingot into the treasury, eight shops borrow one gold each" (struck == 1 & lent == bb-shop-count & bsp-funded town 0 & currency.world.money.loan-count == bb-shop-count & euv-valid currency)
+        changed <- bsp-change currency
         shop-actor <- (list-at v.vendors 0).actor
         shop-purse <- (ep-actor currency.world shop-actor).purse
         kept <- bb-repay currency shop-actor
+        granted <- eu-grant currency True currency.world.mint-owner 2 0 0 4
         funded <- eu-pay currency True 2 shop-purse 0 0 2
         repaid <- bb-repay currency shop-actor
         loan0 <- list-at currency.world.money.loans 0
@@ -182,10 +209,11 @@ Chapter: BritainShopsProof
         bsp-check "a shop repays its crown loan only from what it holds beyond the loan's worth of working capital" (kept == 0 & funded == 0 & repaid == 1 & loan0.status == 2 & (em-purse currency.world.money shop-purse).coin == 2 & bb-repay currency shop-actor == 0 & euv-valid currency)
         print-line-uni ("Britain prices bread=" & show (ep-price currency.world (list-at v.vendors 3).actor 34) & " pizza=" & show (ep-price currency.world (list-at v.vendors 3).actor 76))
         bsp-check "a day's bread and meal quote near 8 copper" (ep-price currency.world (list-at v.vendors 3).actor 34 + ep-price currency.world (list-at v.vendors 3).actor 76 <= 8)
-        let buf = alloc-bytes gvsc-bytes
-        in let encoded = gvsc-encode v buf gvsc-bytes
+        let cap = gvsc-bytes + gvsc-tail-size v
+        in let buf = alloc-bytes cap
+        in let encoded = gvsc-encode v buf cap
         in act
-          bsp-check "Britain registry uses unchanged GVS1 codec" (is-ok encoded & is-ok (gvsc-decode buf gvsc-bytes game currency))
+          bsp-check "Britain registry uses unchanged GVS1 codec" (is-ok encoded & is-ok (gvsc-decode buf (when encoded is Err (_) -> cap is Ok (n) -> n) game currency))
           print-line-uni ("Britain nodes=" & show currency.world.node-count & " stations=" & show currency.world.station-count & " lots=" & show (ep-lot-count v.currency.world.goods) & " objects=" & show (world-count game.world))
           bsp-client town map
         end

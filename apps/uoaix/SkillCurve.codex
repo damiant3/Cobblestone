@@ -1,6 +1,7 @@
 Chapter: SkillCurve
+  cites Uoaix chapter Skill1998
 
- Gain (Damian, 2026-10-06, ActiveSkills.md "Gain curve"): skill is the log of
+ NPC economy actors only (players gain by skc-learn below). Gain (Damian, 2026-10-06): skill is the log of
  uses, so the uses per 0.1 grow exponentially, 10 * 80^(level/1000): 10 at 0.0
  and 800 at 100.0, for every character alike. skc-root is 80^(1/1000) at the
  2^20 fixed point, rounded. Below 50.0 a failure gains a normal gain; from
@@ -27,43 +28,77 @@ Chapter: SkillCurve
     else if not success then base / 10
     else if difficulty + 100 >= level then full
     else full * (difficulty + 200 - level) / 100
- A play gain of 0.1 on a character's 46 skill cells. At the 700.0 total another skill, searched from the draw, gives up
- 0.1 (ClassicSkills' rule); with none above 0 there is no gain. 1 when the skill rose.
+ A play gain of 0.1 on a character's 46 skill cells, to 100.0 a skill. No total cap and no decay (Damian, 2026-10-12,
+ D7: "no skill caps, no decay"). 1 when the skill rose.
   skc-total-cells : Integer, Integer -> Integer
   skc-total-cells (cells) (i) = if i == 46 then 0 else peek-qword cells (i * 8) + skc-total-cells cells (i + 1)
-  skc-lower : Integer, Integer, Integer, Integer -> Boolean
-  skc-lower (cells) (skill) (at) (left) = if left == 0 then False
-    else let i = int-mod at 46
-    in if i /= skill & peek-qword cells (i * 8) > 0 then let lowered = poke-qword cells (i * 8) (peek-qword cells (i * 8) - 1) in True
-    else skc-lower cells skill (at + 1) (left - 1)
   skc-train : Integer, Integer, Integer -> Integer
   skc-train (cells) (skill) (draw) = if cells == 0 | skill < 0 | skill >= 46 then 0
     else let level = peek-qword cells (skill * 8)
     in if level >= 1000 then 0
-    else if skc-total-cells cells 0 < 7000 then let raised = poke-qword cells (skill * 8) (level + 1) in 1
-    else if skc-lower cells skill (int-mod (bit-and draw #7FFFFFFF) 46) 46 then let raised = poke-qword cells (skill * 8) (level + 1) in 1
-    else 0
- ServUO Server/Skills.cs SkillInfo StrGain, DexGain, IntGain in hundredths, skill-id order; SkillCheck.cs's pre-ML
- rule raises strength, else dexterity, else intelligence, each with chance gain / 33.3. A stat stops at 100 (Damian,
- 2026-10-07, CompositeSkillCommand) and the three at 225 (ServUO StatCap). The character record holds a raised stat at
- byte 147 + stat over its creation stat at 79 + stat.
-  skc-stat-gains : List Integer = [0, 50, 50, 15, 15, 70, 0, 0, 100, 0, 0, 100, 75, 15, 10, 75, 25, 0, 0, 0, 0, 100, 0, 0,
-    60, 160, 0, 0, 0, 0, 200, 150, 150, 200, 50, 0, 0, 75, 75, 0, 200, 300, 0, 40, 60, 0, 25, 25, 0, 0, 100, 60, 60, 80,
-    50, 50, 0, 0, 20, 80, 163, 63, 25, 0, 80, 20, 0, 45, 5, 0, 20, 80, 0, 200, 0, 0, 0, 150, 25, 25, 50, 0, 0, 0,
-    0, 250, 0, 0, 80, 20, 0, 40, 160, 25, 75, 0, 0, 0, 100, 0, 100, 0, 38, 163, 50, 140, 20, 40, 20, 0, 80, 50, 20, 30,
-    0, 125, 125, 80, 40, 80, 75, 25, 0, 90, 10, 0, 45, 55, 0, 90, 10, 0, 200, 0, 0, 200, 0, 0]
+    else let raised = poke-qword cells (skill * 8) (level + 1) in 1
+ A practised check on a character's skill row: the 1998 gain (Skill1998) for a check whose success chance was chance,
+ raised a tenth at a time under the total. card 0 checks the bare skill. The tenths raised.
+  skc-check-chance : Integer, Integer, Integer, Integer, Integer -> Integer
+  skc-check-chance (cells) (card) (skill) (difficulty) (range) = if cells == 0 | skill < 0 | skill >= 46 then 0
+    else let base = peek-qword cells (skill * 8)
+    in let value = if card == 0 then base else s98-value skill base (skc-stat card 0) (skc-stat card 1) (skc-stat card 2)
+    in s98-chance value difficulty range
+  skc-learn : Integer, Integer, Integer, Integer, Boolean, Integer -> Integer
+  skc-learn (cells) (card) (skill) (chance) (passed) (draw) = skc-learn-at cells card skill chance passed 100 draw
+  skc-learn-at : Integer, Integer, Integer, Integer, Boolean, Integer, Integer -> Integer
+  skc-learn-at (cells) (card) (skill) (chance) (passed) (percent) (draw) = if cells == 0 | skill < 0 | skill >= 46 then 0
+    else let base = peek-qword cells (skill * 8)
+    in let stat = skc-stat-try card skill base percent draw
+    in if not (s98-learns base passed False) then 0
+    else skc-raise cells card skill (s98-tenths (s98-gain skill base chance percent) (int-mod (bit-and draw #7FFFFFFF) 1000)) draw 0
+  skc-raise : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  skc-raise (cells) (card) (skill) (left) (draw) (raised) = if left <= 0 then raised
+    else if skc-train cells skill (draw + left) == 0 then raised
+    else skc-raise cells card skill (left - 1) draw (raised + 1)
+ 1998 stat gain (OUO skill.c CMobile_TryStatGain, 0x004D5A5D; CalcStatThreshold, 0x004D5A2C): a try rolls strength,
+ dexterity and intelligence once each, and raises a stat by 1 when (100 - stat) * weight * value / 1000 beats a roll of 0 to
+ 19999, weight the skill's percent for that stat in skills.txt (all three judged on the stats before the try). A stat
+ at 100 ends the raises of it and of every stat after it in that try. A check (SkillCheck, 0x004D52ED, divisor 1) tries
+ at value CalcDelay * gain percent / 10000; a direct use at half its gain factor. A stat stops at 100 (Damian,
+ 2026-10-07, CompositeSkillCommand) and the three at 225 (ServUO StatCap, UOAIX's; 1998 has none). The character record
+ holds a raised stat at byte 147 + stat over its creation stat at 79 + stat.
   skc-stat : Integer, Integer -> Integer
   skc-stat (card) (stat) = let set = peek-byte card (147 + stat) in if set > 0 then set else peek-byte card (79 + stat)
   skc-next : Integer -> Integer
   skc-next (x) = int-mod (bit-and x #FFFFFFFF * 1664525 + 1013904223) 4294967296
-  skc-stat-roll : Integer, Integer, Integer, Integer -> Integer
-  skc-stat-roll (card) (skill) (stat) (x) = if stat == 3 then -1
-    else let next = skc-next x
-    in let room = skc-stat card stat < 100 & skc-stat card 0 + skc-stat card 1 + skc-stat card 2 < 225
-    in if room & int-mod (bit-shru next 8) 3330 < list-at skc-stat-gains (skill * 3 + stat) then let raised = poke-byte card (147 + stat) (skc-stat card stat + 1) in stat
-    else skc-stat-roll card skill (stat + 1) next
- The stat a skill gain raised (0 to 2), or -1.
+  skc-stat-weight : Integer, Integer -> Integer
+  skc-stat-weight (skill) (stat) = if stat == 0 then list-at s98d-str skill else if stat == 1 then list-at s98d-dex skill else list-at s98d-int skill
+  skc-stat-beats : Integer, Integer, Integer, Integer, Integer -> Boolean
+  skc-stat-beats (card) (skill) (value) (stat) (x) = (100 - skc-stat card stat) * skc-stat-weight skill stat * value / 1000 > int-mod (bit-shru x 8) 20000
+  skc-stat-flag : Integer, Integer, Boolean, Integer -> Integer
+  skc-stat-flag (card) (stat) (won) (flag) = if won & skc-stat card stat + flag > 100 then 0 else flag
+  skc-stat-room : Integer -> Boolean
+  skc-stat-room (card) = skc-stat card 0 + skc-stat card 1 + skc-stat card 2 < 225
+  skc-stat-raise : Integer, Integer -> Integer
+  skc-stat-raise (card) (stat) = let raised = poke-byte card (147 + stat) (skc-stat card stat + 1) in stat
+ A try at value; the lowest stat raised (0 to 2), or -1.
+  skc-stat-value : Integer, Integer, Integer, Integer -> Integer
+  skc-stat-value (card) (skill) (value) (draw) = if card == 0 | not (s98-valid skill) | value <= 0 then -1
+    else let x0 = skc-next draw
+    in let x1 = skc-next x0
+    in let x2 = skc-next x1
+    in let w0 = skc-stat-beats card skill value 0 x0
+    in let w1 = skc-stat-beats card skill value 1 x1
+    in let w2 = skc-stat-beats card skill value 2 x2
+    in let f0 = skc-stat-flag card 0 w0 1
+    in let r0 = if w0 & f0 == 1 & skc-stat-room card then skc-stat-raise card 0 else -1
+    in let f1 = skc-stat-flag card 1 w1 f0
+    in let r1 = if w1 & f1 == 1 & skc-stat-room card then skc-stat-raise card 1 else -1
+    in let f2 = skc-stat-flag card 2 w2 f1
+    in let r2 = if w2 & f2 == 1 & skc-stat-room card then skc-stat-raise card 2 else -1
+    in if r0 >= 0 then r0 else if r1 >= 0 then r1 else r2
+ A check's try, on the skill's base and the check's gain percent.
+  skc-stat-try : Integer, Integer, Integer, Integer, Integer -> Integer
+  skc-stat-try (card) (skill) (base) (percent) (draw) = if card == 0 | not (s98-valid skill) then -1
+    else skc-stat-value card skill (s98-delay skill base * percent / 10000) draw
+ A successful direct use's try: gain factor 100, so value 50.
   skc-stat-gain : Integer, Integer, Integer -> Integer
-  skc-stat-gain (card) (skill) (draw) = if card == 0 | skill < 0 | skill >= 46 then -1 else skc-stat-roll card skill 0 draw
+  skc-stat-gain (card) (skill) (draw) = skc-stat-value card skill 50 draw
 
 Page 1

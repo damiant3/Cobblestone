@@ -2,6 +2,7 @@ Chapter: GameVendor
   cites Uoaix chapter GameVendorUndo
   cites Uoaix chapter GameVendorBuys
   cites Uoaix chapter GameNet
+  cites Uoaix chapter GameMobileBank
   cites Foreword chapter Maybe
 
  SphereServer X receive.cpp PacketVendorBuyReq/PacketVendorSellReq and
@@ -193,6 +194,63 @@ Chapter: GameVendor
     in let cr = __record-set p "copper-rate" v.currency.copper-rate
     in let sr = __record-set p "silver-rate" v.currency.silver-rate
     in if side == 2 then gv-sell-walk v p (gvb-role index) vendor.actor (world-first-child v.game.world p.pack) 4 else gv-fill v p vendor side 0
+  gv-coin-metal : Integer -> Integer
+  gv-coin-metal (graphic) = if graphic == #0EEA then 1 else if graphic == #0EF0 then 2 else if graphic == #0EED then 3 else 0
+  gv-coin-piles : WorldTable, Integer, List Integer -> List Integer
+  gv-coin-piles (world) (serial) (out) = if serial == 0 then out
+    else let next = world-next-sibling world serial
+    in when world-get world serial
+      is Err (_) -> gv-coin-piles world next out
+      is Ok (o) -> gv-coin-piles world next (if gv-coin-metal o.graphic > 0 & o.amount > 0 then out & [serial] else out)
+  gv-coin-sum : WorldTable, List Integer, Integer, Integer -> Integer
+  gv-coin-sum (world) (piles) (metal) (i) = if i == list-length piles then 0
+    else (when world-get world (list-at piles i) is Err (_) -> 0 is Ok (o) -> if gv-coin-metal o.graphic == metal then o.amount else 0)
+      + gv-coin-sum world piles metal (i + 1)
+  gv-coin-drop : WorldTable, List Integer, Integer, List (List Integer) -> List (List Integer)
+  gv-coin-drop (world) (piles) (i) (out) = if i == list-length piles then out
+    else gv-coin-drop world piles (i + 1) (when world-delete world (list-at piles i) is Err (_) -> out is Ok (_) -> out & [sip-remove (list-at piles i)])
+  gv-deposit : GvWorld, GvPlayer, List GvLine -> List (List Integer)
+  gv-deposit (v) (p) (lines) = let x = v.currency
+    in if not (ep-valid-actor x.world p.actor) then []
+    else let purse = (ep-actor x.world p.actor).purse
+    in if eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin >= gv-line-total v lines 0 4 0 then []
+    else let piles = gv-coin-piles v.game.world (world-first-child v.game.world p.pack) []
+    in let c = gv-coin-sum v.game.world piles 1 0
+    in let s = gv-coin-sum v.game.world piles 2 0
+    in let g = gv-coin-sum v.game.world piles 3 0
+    in if c + s + g == 0 | eu-deposit x p.actor purse c s g /= 0 then []
+    else gv-coin-drop v.game.world piles 0 []
+ D-17 (Damian, 2026-10-13: "every shop that links to a bank links to specific bank"): a purchase the purse and the pack's
+ coin leave short takes the rest from the buyer's box at the bank nearest the shopkeeper (gmb-linked), copper first,
+ then silver, then gold, and only as many coins as the shortfall needs; another bank's box is never touched.
+  gv-purse-value : GvWorld, GvPlayer -> Integer
+  gv-purse-value (v) (p) = let x = v.currency in let purse = (ep-actor x.world p.actor).purse
+    in eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+  gv-bank-coin : GvWorld, GvPlayer, GvVendor, Integer -> List (List Integer)
+  gv-bank-coin (v) (p) (vendor) (total) =
+    if not (ep-valid-actor v.currency.world p.actor) | gv-purse-value v p >= total then []
+    else when world-get v.game.world vendor.serial
+      is Err (_) -> []
+      is Ok (keeper) -> let box = gmb-box-from v.game.world (world-first-child v.game.world p.serial) (gmb-linked keeper.x keeper.y)
+        in if box == 0 then [] else gv-bank-take v p total 1 0 (gv-coin-piles v.game.world (world-first-child v.game.world box) []) []
+  gv-bank-take : GvWorld, GvPlayer, Integer, Integer, Integer, List Integer, List (List Integer) -> List (List Integer)
+  gv-bank-take (v) (p) (total) (metal) (i) (piles) (out) =
+    let short = total - gv-purse-value v p
+    in if short <= 0 | metal > 3 then out
+    else if i >= list-length piles then gv-bank-take v p total (metal + 1) 0 piles out
+    else when world-get v.game.world (list-at piles i)
+      is Err (_) -> gv-bank-take v p total metal (i + 1) piles out
+      is Ok (pile) -> if gv-coin-metal pile.graphic /= metal then gv-bank-take v p total metal (i + 1) piles out
+        else let x = v.currency
+        in let worth = eu-unit x metal
+        in let take = min ((short + worth - 1) / worth) pile.amount
+        in if worth < 1 | eu-deposit x p.actor (ep-actor x.world p.actor).purse (if metal == 1 then take else 0) (if metal == 2 then take else 0) (if metal == 3 then take else 0) /= 0 then out
+        else if take == pile.amount then
+          (when world-delete v.game.world pile.serial is Err (_) -> out is Ok (_) -> gv-bank-take v p total metal (i + 1) piles (out & [sip-remove pile.serial]))
+        else let less = __record-set pile "amount" (pile.amount - take)
+        in when world-update v.game.world pile
+          is Err (_) -> out
+          is Ok (_) -> gv-bank-take v p total metal (i + 1) piles (out & [sip-item pile])
   gv-cart : GvWorld, GvPlayer, GvVendor, GameInput, List Integer, Integer -> GameReply
   gv-cart (v) (p) (vendor) (input) (packet) (tick) =
     let side = if list-at packet 0 == 59 then 1 else 2
@@ -210,12 +268,15 @@ Chapter: GameVendor
         in let seller = if side == 1 then vendor.actor else p.actor
         in let owner = if side == 1 then vendor.serial else p.serial
         in let destination = if side == 1 then p.pack else vendor.extra
+        in let pocketed = if side == 1 then gv-deposit v p lines else []
+        in let banked = if side == 1 then gv-bank-coin v p vendor (gv-line-total v lines 0 4 0) else []
+        in let deposited = pocketed & banked
         in when gv-checkout v lines buyer seller owner destination p.serial
-          is Err (e) -> gv-refuse p vendor.serial e
+          is Err (e) -> let r = gv-refuse p vendor.serial e in GameReply { packets = deposited & r.packets, close = r.close, note = r.note }
           is Ok (n) ->
             let a = __record-set p "side" 0
             in let b = __record-set p "count" 0
-            in let packets = gv-updates v lines side 0 [gvp-close vendor.serial]
+            in let packets = deposited & gv-updates v lines side 0 [gvp-close vendor.serial]
             in let receipt = packets & [gv-status-packet v p]
             in let audible = when world-get v.game.world p.serial
               is Err (_) -> receipt

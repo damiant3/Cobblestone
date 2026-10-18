@@ -17,7 +17,7 @@ Chapter: GameSkillsItems
  Codex port/adaptation of SphereServer Source-X receive.cpp and CClientEvent.cpp,
  Apache-2.0. Attribution and changes: SkillsItems.md; license in Sphere-LICENSE.txt.
 
-  GsiItem = record { serial : Integer, layer : Integer, gump : Integer, movable : Boolean, stackable : Boolean }
+  GsiItem = record { serial : Integer, layer : Integer, gump : Integer, movable : Boolean, stackable : Boolean, held : Integer }
   GsiActor = record { serial : Integer, connection : Integer, holding : Integer, amount : Integer,
     origin : WorldObject, pack : Integer, target : Integer, skill : Integer, next-lift : Integer }
   GsiState = record { world : WorldTable, items : List GsiItem, actors : List GsiActor, next-target : Integer, tiles : Integer,
@@ -34,7 +34,7 @@ Chapter: GameSkillsItems
   gsi-specs (unused) = [gsi-spec #06 5 5 5, gsi-spec #07 7 7 7, gsi-spec #08 14 14 14,
     gsi-spec #09 5 5 5, gsi-spec #12 0 5 256, gsi-spec #13 10 10 10, gsi-spec #34 10 10 10, gsi-spec #6C 19 19 19]
   gsi-items : Integer, List GsiItem -> List GsiItem
-  gsi-items (left) (xs) = if left == 0 then xs else gsi-items (left - 1) (list-push xs (GsiItem { serial = 0, layer = 0, gump = 0, movable = False, stackable = False }))
+  gsi-items (left) (xs) = if left == 0 then xs else gsi-items (left - 1) (list-push xs (GsiItem { serial = 0, layer = 0, gump = 0, movable = False, stackable = False, held = 0 }))
   gsi-grow : GsiState, Integer -> Integer
   gsi-grow (state) (capacity) = let from = list-length state.items
     in if capacity <= from then 0
@@ -65,7 +65,8 @@ Chapter: GameSkillsItems
     else let registered = world-set-layer state.world serial layer
     in if registered < 0 then -1 else let item = list-at state.items at
     in if item.serial == serial & item.layer == layer & item.gump == gump & item.movable == movable & item.stackable == stackable then 0
-    else let a = __record-set item "serial" serial
+    else let freed = if item.serial == serial then 0 else let h = __record-set item "held" 0 in 0
+    in let a = __record-set item "serial" serial
     in let b = __record-set item "layer" layer
     in let c = __record-set item "gump" gump
     in let d = __record-set item "movable" movable
@@ -164,7 +165,8 @@ Chapter: GameSkillsItems
       is Err (e) -> gs-reply [sip-remove serial,sip-bounce 0] "items:absent"
       is Ok (item) -> let meta = gsi-meta state serial
         in let amount = if asked == 0 then item.amount else asked
-        in if not meta.movable | amount < 1 | amount > item.amount | (amount /= item.amount & not meta.stackable) then gs-reply [sip-bounce 0] ("items:amount-or-type serial=" & show serial & " graphic=" & show item.graphic
+        in if meta.held /= 0 then gs-reply [sip-bounce 0, sip-message #FFFFFFFF #FFFF 6 "That is locked down."] ("items:locked-down serial=" & show serial)
+        else if not meta.movable | amount < 1 | amount > item.amount | (amount /= item.amount & not meta.stackable) then gs-reply [sip-bounce 0] ("items:amount-or-type serial=" & show serial & " graphic=" & show item.graphic
           & " movable=" & (if meta.movable then "1" else "0") & " stackable=" & (if meta.stackable then "1" else "0")
           & " asked=" & show amount & " have=" & show item.amount & " layer=" & show meta.layer)
         else if not (gsi-access state actor item) then gs-reply [sip-bounce 1] "items:out-of-reach"
@@ -255,6 +257,8 @@ Chapter: GameSkillsItems
     else if target == actor.serial then when gsi-pack state actor
       is Err (e) -> gsi-bounce state actor 5
       is Ok (pack) -> gsi-drop-to state shard actor slot (ItemContainer pack.serial 20 20) now
+    else if state.world.carries actor.serial target then
+      (let carried = world-layer-serial state.world target 21 in if carried == 0 then gsi-bounce state actor 5 else gsi-drop-to state shard actor slot (ItemContainer carried 20 20) now)
     else if not (gsi-known state target) then gsi-bounce state actor 5
     else let dest = gsi-meta state target
     in if dest.gump > 0 then gsi-drop-to state shard actor slot (ItemContainer target (if x == 65535 then 20 else x) (if y == 65535 then 20 else y)) now
@@ -347,7 +351,8 @@ Chapter: GameSkillsItems
       is Err (e) -> gsi-denied "That item is gone."
       is Ok (item) -> if not (gsi-access state actor item) then gsi-denied "That is out of reach."
         else let meta = gsi-meta state serial
-        in if meta.gump == 0 then gsi-denied "That item has no use action."
+        in if meta.held > 0 & meta.held /= actor.serial then gsi-denied "That is secure."
+        else if meta.gump == 0 then gsi-denied "That item has no use action."
         else gs-reply [sip-open serial meta.gump,gsi-contents state serial 0 [#3C,0,0,0,0] 0] "items:container"
   gsi-skill-number : List Integer, Integer, Integer -> Integer
   gsi-skill-number (packet) (i) (n) = if i >= list-length packet then -1 else let c = list-at packet i

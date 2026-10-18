@@ -1,0 +1,55 @@
+Chapter: BvtPackAnimal
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bpa-mobile : GameShard, Integer, Integer -> Integer
+  bpa-mobile (game) (x) (y) = when world-create game.world (__record-set (gs-mobile 0 x y 0 400 1015) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bpa-move : WorldTable, Integer, Integer, Integer -> Boolean
+  bpa-move (world) (actor) (item) (pack) = let checkpoint = WorldCheckpoint { world = world, sequence = 0, tick = 1 }
+    in let request = ItemMove { actor = actor, item = item, amount = 1, destination = ItemContainer pack 20 20 }
+    in let admission = ItemAdmission { movable = True, stackable = False, destination = True }
+    in when ia-plan checkpoint 1 request admission
+      is Err (_) -> False
+      is Ok (action) -> is-ok (gsi-apply world 1 action)
+  bpa-reach : WorldTable, Integer, Integer -> Boolean
+  bpa-reach (world) (actor) (item) = when world-get world actor
+    is Err (_) -> False
+    is Ok (a) -> when world-get world item
+      is Err (_) -> False
+      is Ok (o) -> ia-access world a o 65
+  bpa-checks : Integer -> Integer
+  bpa-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let world = game.world
+        in let bound = world-bind-carries world (cg-carries owner)
+        in let master = bpa-mobile game 1420 1700
+        in let stranger = bpa-mobile game 1421 1701
+        in let packer = gws-profile-key g "packhorse" 0
+        in let rider = gws-profile-key g "horse" 0
+        in if master == 0 | stranger == 0 | packer < 0 | rider < 0 then -2
+        else when gws-summon g game packer 1421 1700 0 master (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (beast) -> when gws-summon g game rider 1419 1700 0 master (g.combat.tick + gws-forever)
+            is Err (_) -> -4
+            is Ok (horse) -> let owned = cg-carries owner master beast & not (cg-carries owner stranger beast) & not (cg-carries owner master horse)
+              in let pack = cg-pack-of owner beast
+              in let worn = pack /= 0 & world-layer-serial world beast 21 == pack & cg-pack-of owner beast == pack
+              in when cts-item owner.items pack #1BF2 1 0
+                is Err (_) -> -5
+                is Ok (inside) -> let reach = bpa-reach world master inside & not (bpa-reach world stranger inside)
+                  in when world-create world (__record-set (__record-set (gs-item 0 #1BF2 0) "x" 1420) "y" 1701)
+                    is Err (_) -> -6
+                    is Ok (loose) -> let refused = not (bpa-move world stranger loose pack)
+                      in let admitted = bpa-move world master loose pack & (when world-get world loose is Err (_) -> False is Ok (o) -> o.container == pack)
+                      in (if owned then 1 else 0) + (if worn then 2 else 0) + (if reach then 4 else 0) + (if refused & admitted then 8 else 0)
+  bvt-pack-animal : Integer -> [Console] Integer
+  bvt-pack-animal (unused) = act
+    n <- bpa-checks 0
+    bvt-check ("a pack horse wears one backpack its owner reaches and drops into; a stranger and the owner's plain horse do not carry for him (1998 packanimal, code " & show n & ")") (n == 15)
+  end

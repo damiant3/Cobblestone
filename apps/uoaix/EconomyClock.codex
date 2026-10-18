@@ -9,7 +9,7 @@ Chapter: EconomyClock
   EcJob = record { actor : Integer, resource : Integer, recipe : Integer,
     station : Integer, plot : Integer, enabled : Integer, produced : Integer,
     shortages : Integer }
-  EcClock = record { world : EpWorld, jobs : List EcJob, consumer : Integer,
+  EcClock = record { world : EpWorld, jobs : List EcJob, consumer : Integer, unmet : Integer,
     checks : Integer, bad-census : Integer, exhausted : Integer }
 
   ec-jobs : Integer, List EcJob -> List EcJob
@@ -56,7 +56,7 @@ Chapter: EconomyClock
     in when ep-new (eg-standard 0) money
       is Err (e) -> Err e
       is Ok (world) ->
-        let clock = EcClock { world = world, jobs = ec-jobs 0 [], consumer = 55,
+        let clock = EcClock { world = world, jobs = ec-jobs 0 [], consumer = 55, unmet = ec-unmet-new (list-length world.catalog.items),
           checks = 0, bad-census = 0, exhausted = 0 }
         in if ec-admit clock 0 /= 0 | ec-warrant clock 0 /= 0 | ec-bootstrap clock /= 0 | ec-fund clock 0 /= 0 | ec-equip clock 1 /= 0 | ec-stock-maker clock /= 0 then Err "economy fixture admission refused"
         else Ok clock
@@ -134,7 +134,13 @@ Chapter: EconomyClock
     in if job.resource > 0 then (list-at clock.world.catalog.resources (job.resource - 1)).tool
     else if job.recipe > 0 then (list-at clock.world.catalog.recipes (job.recipe - 1)).tool else 0
   ec-keeps : EcClock, Integer, Integer -> Integer
-  ec-keeps (clock) (actor) (item) = if item > 0 & ec-tool-of clock actor == item then 1 else 0
+  ec-keeps (clock) (actor) (item) = if item <= 0 then 0
+    else if ec-tool-of clock actor == item then 1
+    else if actor < 1 | actor > list-length clock.jobs then 0
+    else let job = list-at clock.jobs (actor - 1)
+    in if job.recipe <= 0 then 0
+    else let r = list-at clock.world.catalog.recipes (job.recipe - 1)
+    in if r.one == item then r.one-count else if r.two == item then r.two-count else if r.three == item then r.three-count else 0
   ec-seller : EcClock, Integer, Integer, Integer, Integer -> Integer
   ec-seller (clock) (buyer) (item) (i) (best) =
     if i == 54 then best
@@ -146,14 +152,26 @@ Chapter: EconomyClock
       else if ep-price w id item < ep-price w best item then id else best
     in ec-seller clock buyer item (i + 1) pick
   ec-get : EcClock, Integer, Integer, Integer -> Boolean
-  ec-get (clock) (actor) (item) (quantity) =
+  ec-get (clock) (actor) (item) (quantity) = ec-get-counted clock actor item quantity (ec-recipe-input clock actor item)
+ A civic repair's materials (boards, nails) are demand as a recipe input is.
+  ec-repair-get : EcClock, Integer, Integer, Integer -> Boolean
+  ec-repair-get (clock) (actor) (item) (quantity) = ec-get-counted clock actor item quantity True
+  ec-recipe-input : EcClock, Integer, Integer -> Boolean
+  ec-recipe-input (clock) (actor) (item) = if item <= 0 | actor < 1 | actor > list-length clock.jobs then False
+    else if ec-tool-of clock actor == item then True
+    else let job = list-at clock.jobs (actor - 1)
+    in if job.recipe <= 0 then False
+    else let r = list-at clock.world.catalog.recipes (job.recipe - 1)
+    in r.one == item | r.two == item | r.three == item
+  ec-get-counted : EcClock, Integer, Integer, Integer, Boolean -> Boolean
+  ec-get-counted (clock) (actor) (item) (quantity) (counts) =
     if item == 0 then True
     else let w = clock.world
     in let p = ep-actor w actor
     in let missing = quantity - ep-at p.stock item
     in if missing <= 0 then True
     else let seller = ec-seller clock actor item 0 0
-    in if seller == 0 then False
+    in if seller == 0 then (let wanted = if counts then ec-unmet-bump clock item else 0 in False)
     else let available = ep-at (ep-actor w seller).stock item
     in let buy = if available < missing then available else missing
     in let result = ep-buy w actor seller item buy
@@ -176,8 +194,21 @@ Chapter: EconomyClock
       in if n.tended == 0 then eh-care w job.actor job.plot False else 0
     else 0
   ec-work : EcClock, Integer -> Integer
-  ec-work (clock) (i) = if i == 54 then 0
+  ec-work (clock) (i) = if i == 24 then ec-work-bids clock 0 30
+    else let done = ec-work-job clock i in ec-work clock (i + 1)
+  ec-work-bids : EcClock, Integer, Integer -> Integer
+  ec-work-bids (clock) (seen) (left) = if left == 0 then 0
+    else let i = ec-best-bid clock seen 24 (0 - 1) (0 - 1)
+    in if i < 0 then 0 else let done = ec-work-job clock i in ec-work-bids clock (bit-or seen (bit-shl 1 (i - 24))) (left - 1)
+  ec-best-bid : EcClock, Integer, Integer, Integer, Integer -> Integer
+  ec-best-bid (clock) (seen) (i) (best) (bid) = if i == 54 then best
     else let job = list-at clock.jobs i
+    in if bit-and seen (bit-shl 1 (i - 24)) /= 0 | job.recipe <= 0 then ec-best-bid clock seen (i + 1) best bid
+    else let own = ec-unmet-at clock (list-at clock.world.catalog.recipes (job.recipe - 1)).item
+    in if own > bid then ec-best-bid clock seen (i + 1) i own else ec-best-bid clock seen (i + 1) best bid
+  ec-work-job : EcClock, Integer -> Integer
+  ec-work-job (clock) (i) =
+    let job = list-at clock.jobs i
     in let w = clock.world
     in let p = ep-actor w job.actor
     in let result = if job.enabled == 0 then 0
@@ -198,19 +229,23 @@ Chapter: EconomyClock
         else ep-craft w job.actor job.recipe job.station
     in let recorded = if result > 0 then __record-set job "produced" (job.produced + result)
       else if result < 0 then __record-set job "shortages" (job.shortages + 1) else job
-    in ec-work clock (i + 1)
+    in 0
   ec-meals : EcClock, Integer -> Integer
   ec-meals (clock) (actor) = if actor > clock.world.actor-count then 0
     else let w = clock.world
-    in let item = if ec-get clock actor 34 1 then 34 else if ec-get clock actor 50 1 then 50 else if ec-get clock actor 14 1 then 14 else if ec-get clock actor 16 1 then 16 else 0
+    in let item = if ec-get clock actor 34 1 then 34 else if ec-get clock actor 50 1 then 50 else if ec-get clock actor 14 1 then 14 else if ec-get clock actor 16 1 then 16 else ec-meal-wanted clock
     in let ate = if item > 0 then ep-eat w actor item else -1
     in ec-meals clock (actor + 1)
+ A meal no seller can supply is demand for bread, the first food a meal tries (34), as a consumer purchase is.
+  ec-meal-wanted : EcClock -> Integer
+  ec-meal-wanted (clock) = let wanted = ec-unmet-bump clock 34 in 0
   ec-consume-market : EcClock, Integer -> Integer
   ec-consume-market (clock) (item) = if item == 50 then 0
     else let w = clock.world
     in let buyer = clock.consumer
     in let seller = ec-seller clock buyer item 0 0
     in let bought = if seller == 0 then -1 else ep-buy w buyer seller item 1
+    in let wanted = if seller == 0 then ec-unmet-bump clock item else 0
     in let exhausted = if w.trade-count >= list-length w.trades | w.money.entry-count >= em-rows - 1 then __record-set clock "exhausted" 1 else clock
     in ec-consume-market clock (item + 1)
   ec-check : EcClock -> Integer
@@ -220,11 +255,28 @@ Chapter: EconomyClock
     in let a = __record-set clock "checks" (clock.checks + 1)
     in let b = if valid then 0 else let c = __record-set clock "bad-census" (clock.bad-census + 1) in 0
     in if valid then 0 else -1
+ UOAIX-240 (root, 2026-10-16: production follows demand): unmet demand per catalog item, a qword per item at 1024 per
+ purchase that found no seller: the consumer's, an input of the buyer's own recipe (ec-recipe-input), or a civic
+ repair's material (ec-repair-get), and no other (root, 2026-10-16: counting every failed buy moved the corpus's price
+ response, TownNetworkGateProbe 9 of 11), decaying by 15/16 each economy hour. The recipe makers work in descending order of
+ their product's unmet demand, so a scarce input goes first to the product buyers went without.
+  ec-unmet-new : Integer -> Integer
+  ec-unmet-new (items) = let buf = alloc-bytes ((items + 1) * 8) in let zeroed = ec-unmet-zero buf 0 (items + 1) in buf
+  ec-unmet-zero : Integer, Integer, Integer -> Integer
+  ec-unmet-zero (buf) (i) (n) = if i >= n then 0 else let z = poke-qword buf (i * 8) 0 in ec-unmet-zero buf (i + 1) n
+  ec-unmet-at : EcClock, Integer -> Integer
+  ec-unmet-at (clock) (item) = if item < 1 | item > list-length clock.world.catalog.items then 0 else peek-qword clock.unmet (item * 8)
+  ec-unmet-bump : EcClock, Integer -> Integer
+  ec-unmet-bump (clock) (item) = if item < 1 | item > list-length clock.world.catalog.items then 0 else poke-qword clock.unmet (item * 8) (peek-qword clock.unmet (item * 8) + 1024)
+  ec-unmet-decay : EcClock, Integer -> Integer
+  ec-unmet-decay (clock) (item) = if item > list-length clock.world.catalog.items then 0
+    else let d = poke-qword clock.unmet (item * 8) (peek-qword clock.unmet (item * 8) * 15 / 16) in ec-unmet-decay clock (item + 1)
   ec-hour : EcClock, Boolean -> Integer
   ec-hour (clock) (remove-hunters) =
     let w = clock.world
     in if eh-step w /= 0 then let a = __record-set clock "exhausted" 1 in -1
     else let h = int-mod w.hour 24
+    in let decayed = ec-unmet-decay clock 1
     in let removed = if remove-hunters & w.hour >= 240 then __record-set (list-at clock.jobs 6) "enabled" 0 else list-at clock.jobs 6
     in let removed-meat = if remove-hunters & w.hour >= 240 then __record-set (list-at clock.jobs 7) "enabled" 0 else list-at clock.jobs 7
     in let worked = if h >= 8 & h <= 17 then ec-work clock 0 else 0

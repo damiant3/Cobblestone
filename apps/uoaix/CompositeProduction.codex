@@ -464,16 +464,41 @@ Chapter: CompositeProduction
   cpr-workshop (kind) = if kind == 3 | kind == 9 then 1 else if kind == 4 | kind == 5 | kind == 11 then 2 else -1
   cpr-craft-lookup : GvWorld, Integer, WalkMap, WorldObject, Integer, Integer -> Integer
   cpr-craft-lookup (vendor) (heat) (map) (mobile) (recipe) (category) = cpr-craft-lookup-at None vendor heat map mobile recipe category
- Smithing (kinds 3 and 9) needs an anvil, 0x0FAF or 0x0FB0, in reach wherever it stands (UOAIX-109; Damian, 2026-10-10:
- "smith hammer should work near an anvil, not in a workshop"): a decoration anvil or an anvil item on the ground; with no
- decoration loaded and no anvil item it falls back to The Hammer And Anvil premises. The 1.25 STATICS0.MUL holds no anvil.
+ With no decoration loaded the smith falls back to The Hammer And Anvil premises. The 1.25 STATICS0.MUL holds no anvil.
+ UOAIX-242 D4 (Damian, 2026-10-12: "the forge and anvil rule keep"): the 1998 smith needs an anvil AND a forge within 3
+ tiles (blacksmith.m), each an item on the ground or a decoration, within 16 z.
+  cpr-smith-reach : Integer = 3
+  cpr-anvil-art : Integer -> Boolean
+  cpr-anvil-art (g) = g == #0FAF | g == #0FB0
+  cpr-forge-art : Integer -> Boolean
+  cpr-forge-art (g) = g == #0FB1 | (g >= #197A & g <= #19A9)
   cpr-anvil-item : WorldTable, WorldObject, Integer -> Boolean
-  cpr-anvil-item (world) (m) (i) = if i >= 25 then False
-    else cpr-anvil-on world m (world-tile-first world (m.x - 2 + int-mod i 5) (m.y - 2 + i / 5)) | cpr-anvil-item world m (i + 1)
-  cpr-anvil-on : WorldTable, WorldObject, Integer -> Boolean
-  cpr-anvil-on (world) (m) (serial) = if serial == 0 then False
-    else (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.container == 0 & (o.graphic == #0FAF | o.graphic == #0FB0) & walk-abs (o.z - m.z) <= 16)
-      | cpr-anvil-on world m (world-tile-next world serial)
+  cpr-anvil-item (world) (m) (i) = cpr-station-item world m cpr-anvil-art 2 i
+  cpr-station-item : WorldTable, WorldObject, (Integer -> Boolean), Integer, Integer -> Boolean
+  cpr-station-item (world) (m) (art) (reach) (i) = let side = 2 * reach + 1
+    in if i >= side * side then False
+    else cpr-station-on world m art (world-tile-first world (m.x - reach + int-mod i side) (m.y - reach + i / side)) | cpr-station-item world m art reach (i + 1)
+  cpr-station-on : WorldTable, WorldObject, (Integer -> Boolean), Integer -> Boolean
+  cpr-station-on (world) (m) (art) (serial) = if serial == 0 then False
+    else (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.container == 0 & art o.graphic & walk-abs (o.z - m.z) <= 16)
+      | cpr-station-on world m art (world-tile-next world serial)
+  cpr-deco-near : WdState, WorldObject, (Integer -> Boolean), Integer -> Boolean
+  cpr-deco-near (d) (m) (art) (i) = if i >= d.count | wd-field d i 0 > m.x + cpr-smith-reach then False
+    else if walk-abs (wd-field d i 1 - m.y) <= cpr-smith-reach & walk-abs (wd-field d i 2 - m.z) <= 16 & art (wd-art d i) then True
+    else cpr-deco-near d m art (i + 1)
+  cpr-station-near : Maybe WdState, WorldTable, WorldObject, (Integer -> Boolean) -> Boolean
+  cpr-station-near (decoration) (world) (m) (art) = cpr-station-item world m art cpr-smith-reach 0
+    | (when decoration is None -> False is Just (d) -> cpr-deco-near d m art (wd-lower d (m.x - cpr-smith-reach) 0 d.count))
+  cpr-smithy : Maybe WdState, WorldTable, WorldObject -> Boolean
+  cpr-smithy (decoration) (world) (m) = cpr-station-near decoration world m cpr-anvil-art & cpr-station-near decoration world m cpr-forge-art
+ D-15 (Damian, live 2026-10-13): a tinker's tool works at a tinker's workbench, a table holding tinker's parts within 3
+ tiles. ServUO britain.cfg sets the Tinkers' Guild benches with ClockFrame 0x104D, ClockParts 0x104F-0x1050, AxleGears
+ 0x1051-0x1052, Gears 0x1053, SextantParts 0x1059-0x105A and Springs 0x105D-0x105E (art 0x104D to 0x105E, the parts
+ between included); a clock (0x104B, 0x104C) stands in any house and does not count.
+  cpr-tinker-art : Integer -> Boolean
+  cpr-tinker-art (g) = g >= #104D & g <= #105E
+  cpr-tinker-bench : Maybe WdState, WorldTable, WorldObject -> Boolean
+  cpr-tinker-bench (decoration) (world) (m) = cpr-station-near decoration world m cpr-tinker-art
   cpr-craft-lookup-at : Maybe WdState, GvWorld, Integer, WalkMap, WorldObject, Integer, Integer -> Integer
   cpr-craft-lookup-at (decoration) (vendor) (heat) (map) (mobile) (recipe) (category) = let w = vendor.currency.world
     in let player = gv-player vendor mobile.serial 0
@@ -486,8 +511,9 @@ Chapter: CompositeProduction
       then 0 else bb-station w (list-at vendor.players player).actor kind 0)
     else let shop = if category == 4 then 6 else cpr-workshop kind
     in if kind == 1 then bb-station w (list-at vendor.players player).actor kind 0
-    else if shop == 1 & (cpr-anvil-item vendor.game.world mobile 0 | (when decoration is None -> False is Just (d) -> wd-art-near d mobile.x mobile.y mobile.z #0FAF #0FB0 (wd-lower d (mobile.x - 2) 0 d.count)))
-      then bb-station w (list-at vendor.players player).actor kind 0
+    else if category == 4 & cpr-tinker-bench decoration vendor.game.world mobile then bb-station w (list-at vendor.players player).actor kind 0
+    else if category == 4 & (when decoration is None -> False is Just (_) -> True) then 0
+    else if shop == 1 & cpr-smithy decoration vendor.game.world mobile then bb-station w (list-at vendor.players player).actor kind 0
     else if shop == 1 & (when decoration is None -> False is Just (_) -> True) then 0
     else if kind == 8 then (if cpr-inside cpr-saw-horse mobile then bb-station w (list-at vendor.players player).actor kind 0 else 0)
     else if shop < 0 then 0

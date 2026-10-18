@@ -242,14 +242,14 @@ for 149 checks (2026-09-28).
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,885,964 bytes, 2026-10-09, the NX boundary follows the image's code end: a bare-metal program whose code passes 6 MiB boots instead of faulting in `__start`) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,828,909 bytes, 2026-10-17, UEFI runtime-init enables COM1 receive) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `FDB106CB40FCF902` |
-| SHA-256 | `B6A2A44653E9735E1BBC2EC8267F124EC914CF179F70C047F21237F1ABD3A308` |
-| MD5 | `F472B3901D3B5C1CDA0185773249D6F7` |
+| Content hash prefix | `D65FCA6EB536BF6B` |
+| SHA-256 | `A24CC2ED139BC6C4DA60C252A712B398D84AA15CF9939F399A626C9E4A60BA63` |
+| MD5 | `489A0857A02603C42AFE5508DA18CB11` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the

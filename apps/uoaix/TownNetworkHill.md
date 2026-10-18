@@ -12,7 +12,7 @@ iteration count, score definition, accepted-candidate count, initial/final
 scores, source/model hashes and CUDA execution evidence. The CPU image loads
 only frozen weights and the [CPU core](TownNetwork.md).
 
-## Score version 1
+## Score version 2
 
 The corpus records outcomes of bounded layer 1 action trials from
 stable simulation snapshots. Each action starts from the same snapshot;
@@ -29,7 +29,12 @@ no positive output selects no action, with utility zero. The GPU score is:
 `1000 * measured utility of the selected action - sum((output - outcome)^2 / 16)`
 
 The calibration sum covers all 14 outputs, with integer division per term.
-Candidate score is the unweighted sum of every case's score.
+A demand case (variant 7 or 8; the chain is fed 2, then 7, then 8) whose
+trade-opinion outcome (output 12) rises over its chain predecessor's, but
+whose output 12 falls below the predecessor's output, also loses
+`1000 * (predecessor output - output)`, so the gate's sale rule is part of
+the score (UOAIX-240). Candidate score is the unweighted sum of every case's
+score.
 The four affect/opinion outcomes must be derived from the trial observations
 and declared preferences as well. Every outcome lies in -1000..1000;
 happiness and alarm outcomes are nonnegative. This combines achieved
@@ -81,8 +86,10 @@ corpus retains less than 10000 bytes; that is not a transient-peak measure.
 
 `TownNetworkOutcomes` builds the standard `EconomyClock` fixture and runs
 96 game hours. Four existing economic roles are sampled at hour 96 and
-hour 108, each under two trade preferences: 16 base rows, each in nine
-variants (144 cases): as found; a raid in sight (safety input 0); fed, after the
+hour 108, each under two trade preferences, plus two rows at hour 108 of a
+smith wanting a spare of its tool (`tno-tool-rows`: its goal that tool, one
+more needed than it holds, so the goal has a stocked seller): 18 base rows
+(`tno-base-rows`), each in nine variants (162 cases): as found; a raid in sight (safety input 0); fed, after the
 actor buys and eats food on sale until its hunger is under 10 (up to four
 meals, `tno-feed`, real fixture trades that later rows inherit); fed with a raid
 in sight; fed, buying the goal from the dearest stocked seller (`tno-dearest`);
@@ -174,22 +181,23 @@ as an export candidate. Module generation needs the existing PTX plug CDX.
 
 Initialization and mutation use the recorded 32-bit LCG in
 `TownNetworkHillSeed`; coordinate and direction selection use higher bits.
-The recorded run (blu, 2026-10-09, compiler seed 8264163DB8E24012) uses seed
-104729, step 50 and 20000 proposals on the 144-case corpus (checksum 884696177).
-Score rises from -228261391 to 45362625 with 2771 accepted proposals in 23 s; the
-CUDA census records zero live buffers at exit.
+The recorded run (root, 2026-10-16, main 44956, score tnh-outcome-v2, the score
+kernel taking the corpus's base-row count) uses seed 104729, step 50 and 20000
+proposals on the 162-case corpus (checksum 1374860148). Score rises from
+-265480626 to 37916382 with 2993 accepted proposals in 25.9 s; the CUDA census
+records zero live buffers at exit.
 
 `proofs/TownNetworkGateProbe` gates the trained model's intent on the corpus
 rows, in two arms: the corpus targets (the control, which must pass) and the
 model. Each check grades only rows where the targets express it:
 
-| Check | Bound | Model (2026-10-09) |
+| Check | Bound | Model (2026-10-16) |
 |---|---|---|
-| Raid alarm minus the same row's calm alarm, fed or unfed, hunger input at most 100 | at least 300 | 553 |
-| Calm fed alarm at safety 1000, hunger input at most 100 | at most 200 | 198 |
+| Raid alarm minus the same row's calm alarm, fed or unfed, hunger input at most 100 | at least 300 | 783 |
+| Calm fed alarm at safety 1000, hunger input at most 100 | at most 200 | 59 |
 | Fed alarm below unfed alarm, on every row the meals fed (hunger input down 200 or more) | 4 of 4 rows | 4 of 4 |
-| Trade opinion non-increasing across the cheapest, dearest, 3/2 and 2 rows, and lower at 2 than at the cheapest, on every row whose target falls | 4 of 4 rows | 4 of 4 |
-| Trade opinion non-decreasing across the fed and two demand rows, and higher at the second, on every row whose slot 9 and target rise | 10 of 10 rows | 10 of 10 |
+| Trade opinion non-increasing across the cheapest, dearest, 3/2 and 2 rows, and lower at 2 than at the cheapest, on every row whose target falls (the spare-tool rows 16 and 17) | 2 of 2 rows | 2 of 2 |
+| Trade opinion non-decreasing across the fed and two demand rows, and higher at the second, on every row whose slot 9 and target rise | 12 of 12 rows | 12 of 12 |
 | Outputs pinned at a bound on every case where the target is not | 0 | 0 |
 `proofs/TownNetworkHillModelProof.codex`
 recomputes initial/final scores on CPU and compares selected measured utility.

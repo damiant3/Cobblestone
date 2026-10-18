@@ -141,17 +141,16 @@ key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
 
-**CORE-11. PBKDF2 is too slow on codex-vm for the current iteration guidance.**
-Measured 2026-10-07 (red, seed 8264163D, one 200000-iteration hash against a
-1-iteration control, three runs): 8.4 us per iteration, where the byte-level PRF
-took 18.3, so 600000 iterations, the current guidance for PBKDF2-HMAC-SHA256, take
-about 5 s per verify. Every caller (`apps/market/MarketAuth`,
-`apps/uoaix/GameAccounts`) verifies on a single request loop and stays at 20000.
-An iteration is two `sha256-compress` calls over the precomputed pad states; what
-remains is the compression itself, and not its allocation: threading the eight
-working variables through the rounds with no `Sha256State` record and giving the
-schedule its 64 words up front measured 7.6 us per iteration (2026-10-07), about
-10%, too little for a seed move, so the per-round arithmetic is the cost.
+**CORE-11. PBKDF2 has no native compression, for Damian to ask for.** PBKDF2-HMAC-SHA256
+runs 1.45 us per iteration on seed DF6F316E (2026-10-17,
+one 200000-iteration hash against a 1-iteration control, host wall clock), so 600000
+iterations take about 0.87 s per verify, and every caller (`apps/market/MarketAuth`,
+`apps/uoaix/GameAccounts`) stays at 20000. The four compression functions take the LIR path
+(arms `codex/test/ops/lir-bitops`, `lir-bitops-shadow`, `lir-listat`, `codex/test/apps/sha256-test`,
+each with a `.census` pin), and a profile puts 76% of the time inside them. Neither a wider
+allocator (shelf 45053, parked) nor an eight-round unroll made it faster. **Open:** a native
+compression builtin on the x86 SHA extensions with a CPUID fallback to the Codex rounds.
+Root closed the campaign at this state (2026-10-17); the builtin is a new capability.
 
 **CORE-12. SHA-1, SHA-256 and SHA-512 alias a non-octet element instead of
 refusing it.** `bytes-to-words` (`Sha256.codex`) and its siblings in
@@ -214,13 +213,3 @@ children's digest bytes and `dht-bucket-index` measures the XOR distance over by
 nothing builds a handshake yet, and `codex/test/apps/fileshare-bytes` proves the
 32-byte fields round-trip (both other lines go red with the old code). Open: the three
 held persisted sites, DamianDecisions 3.12 and 3.13.
-
-## CCE has no Dingbats block
-
-U+2700..U+27BF (Dingbats) is in neither CCE tier, so a character from it
-reaches Codex text as `?`. Measured 2026-09-30 by `codex/test/apps/spark-audio`:
-the WPF Spark's `sfx_config.json` labels its 15 Magic presets with U+2728
-(sparkles), and every other character in that file and in `music_config.json`
-(Latin-1 letters, U+2013, U+266D, U+266F, emoji) survives. The oracle
-`build/spark-audio-oracle.ps1` applies the same substitution by name, so the
-test stays green on the rest and turns red the day the block is added.

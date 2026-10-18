@@ -30,7 +30,7 @@ measured 2026-10-04):
 - A player's client needs the flora strip and the decorator bake applied to its map statics before it connects:
   [PlayerClient.md](PlayerClient.md).
 - `LOGIN.CFG` names the login server. The shard install is
-  `D:\Projects\uoaix-client`, a copy whose `LOGIN.CFG` is
+  `D:\Games\UOAIX-Reference`, a copy whose `LOGIN.CFG` is
   `LoginServer=127.0.0.1,2593` and whose `UO.CFG` carries only the test
   account `uoaixtest`; Damian's own install is never edited and none of its
   account details enter the project.
@@ -425,75 +425,45 @@ judgement calls (what to make next, whether to haggle, where to hunt).
   wear, instrument sub-skills and masters (`Skills.codex` models them; no
   live chapter calls it).
 
-### Construction: houses and ships are built on site
+### Houses come from deeds
 
-Every multi (houses, towers, keeps, boats and ships) is built by workers
-from materials, never bought as a finished building (accepted by Damian,
-2026-10-04).
+A house is bought as a deed and stands the moment the deed is placed, as in
+1998 (Damian, 2026-10-17: "remove the stuff about king land grants and
+building parties and just go back to the deed system for now. we can revisit
+that mechanic at a future time.").
 
-- **A deed is a plan.** An architect NPC, or a player with Carpentry, draws
-  up the deed for one design. Drawing a deed is cheap.
-- **Placing a deed opens a construction site** on a plot the owner holds.
-  The site carries a bill of materials for its design (boards, stone
-  blocks, nails, hinges, iron fittings; rope and sailcloth for ships).
-- **Builders do the work.** NPC carpenters, masons and shipwrights carry
-  materials to the site and work it over game days; a player with the
-  skills can build their own or hire builders. When the bill is filled and
-  the work done, the finished multi replaces the site.
-- **Skills:** Carpentry builds wooden houses, boats, ships and furniture;
-  Tinkering makes nails and hinges; Blacksmithy makes iron fittings;
-  Masonry builds in stone. Masonry is not in the 1998 skill list and is
-  added on purpose, as gold mining is.
-- **Land is the scarce good.** Plots are sold or granted by a town's mayor
-  (section 5, town government); keeps, castles and other large plots only
-  by Lord British, from the admin panel.
+- **A vendor sells the deed.** The Saw Horse carpenter in Britain sells a
+  small wooden house deed, a thatched-roof cottage deed or a field stone house
+  deed to a player inside the shop who says "buy a deed" ("buy a cottage
+  deed", "buy a stone house deed"), for 490 silver (7 gold): what a crown house
+  of the same 49 floor tiles cost at a city's edge (UOAIX-239). The deed is
+  0x14F0, its design in its health; the testing kit carries one.
+- **Placing the deed stands the house.** The holder double-clicks the deed in
+  the pack and targets the house's front step within 12 tiles. The house and
+  its steps must stand on level land in the walk window clear of items, flora,
+  impassable statics and every other house; a refusal names the nearest front
+  step within 8 tiles that will do. The house (multi 0x6A, 0x6E or 0x66, the
+  SmallOldHouse footprint) stands at once with its door (0x06A5) and a sign
+  naming the holder; its walls, floor, door and steps are solid in the walk
+  map. Every rune marked inside it is deleted.
+- **Keys and locks.** The door is locked when the house stands, and an iron
+  key (0x1010) to it is cut into the holder's pack and another into the
+  holder's bank box when one exists (ServUO BaseHouse.CreateKeys). The holder,
+  and anyone carrying the key or Lord British's master key, opens the locked
+  door; a key aimed at the door unlocks it or locks it shut.
+- **Inside.** The holder locks down, secures, bans and ejects from inside the
+  house (UOAIX-253); items on its land never decay; Mark inside it is the
+  holder's alone.
 - **Houses stand forever** (Damian, 2026-10-04): no upkeep, no tax and no
   decay, until housing becomes scarce; then this rule is revisited.
-- **A deleted account's houses and boats go to the crown.** When a player
-  deletes an account that owns a house or a boat, the house or boat is
-  removed from the world, and everything that was in it becomes Lord
-  British's property and moves to the King's bank.
-- **The King's bank sorts itself.** Everything that arrives is merged into
-  full stacks and filed into bags by the vendor type that sells it (the
-  smith's goods in one bag, the tailor's in another, the provisioner's,
-  the mage's), so the crown's holdings are always in perfect order for
-  Lord British to grant, sell or use.
-- **The client draws only finished multis.** The 1.25.32 client renders a
-  multi from its own `MULTI.MUL` designs, so a site appears as scaffolding
-  and foundation items on the plot until completion, when the server swaps
-  in the finished multi.
-- **Built (`Construction.codex`):** Lord British's `[plot` (or the admin panel's
-  `grant-plot`, logged in its action log) grants a 9 by 9 plot (holder, then center tile; an `ADMIN plot` info line, sys=admin),
-  refusing land where no house fits and naming the nearest center that does;
-  wooden posts stake every plot's corners;
-  a holder who says "my plot" hears each plot's bounds and what stands on it. A
-  deed (0x14F0, one in each new testing kit; `[add 14F0`; or drawn on a
-  blank scroll by a carpenter of 50.0 who says "draw a deed") targeted anywhere
-  in the holder's plot opens a site at the nearest spot where the house and
-  its steps stand on level land clear of items, flora and impassable statics:
-  a lumber pile
-  and four scaffolds. The holder double-clicks the pile to deliver the bill
-  (small wooden house, multi 0x6A: 250 boards, 60 nails, 20 iron ingots, 2 hinges;
-  thatched-roof cottage, 0x6E, drawn by "draw a cottage deed": 150 boards,
-  40 nails, 60 wheat lots, 2 hinges; field stone house, 0x66, drawn by "draw a stone house deed": 60 boards, 40 nails,
-  120 stone blocks, 2 hinges; a hinge is catalog item 148, made by Tinkering from 2 iron ingots and sold by the tinker;
-  a stone block is item 149, cut by Masonry (economy skill 11, practising client Carpentry) from 1 stone and sold by the provisioner) from the
-  backpack, and the builders fetch the rest from the holder's bank; economy lots leave the ledger as consumed goods. Two builders
-  stand hammering at the front step while they work. One game day
-  on the town clock after the bill fills, the client is sent the design's multi
-  with its door (0x06A5, which only the holder opens) and a sign naming
-  the holder (graded in the client, Damian 2026-10-07). The standing house is solid in the server's walk map: floor
-  at +7, walls on its border, the closed door in the doorway, the steps.
-  A deleted character's plots return to the crown and its sites and houses
-  come down; the next site takes the freed row. What stood in a house moves
-  to the King's bank (British's bank box), one bag per catalog chain, plain
-  stacks merged.
-  The Saw Horse carpenter is the architect: a player in the shop who says "buy a deed" (or a cottage or stone house deed)
-  pays 70 copper and gets it. A holder beside an unfilled site who says "hire builders" has them buy the rest of the bill
-  from the shops (boards, nails, hinges, stone blocks) and the gatherers (iron ingots, wheat) at their asking prices from the holder's purse; leftovers go to
-  the bank.
-  **Open:** the larger designs; plot grants by mayors.
-
+- **A deleted character's houses go to the crown.** Its houses come down, and
+  everything that stood in them becomes Lord British's and moves to the
+  King's bank (his bank box), which sorts itself: one bag per catalog chain,
+  plain stacks merged.
+- **The scenery houses are the crown's.** A sign on a scenery house answers
+  that the house is not for sale; the city's NPCs live in them (UOAIX-239).
+- **Open:** the larger designs; buildable multis cut from the map, which a
+  deed places (Damian, 2026-10-17).
 ### The sea: fishermen, pirates and the navy
 
 The sea is part of the living world (Damian, 2026-10-04: "there is also a
@@ -961,7 +931,7 @@ Each stage is its own landing and is graded before the next starts.
 |---|---|---|
 | B | The database (`apps/uoaix/Database.md`): all shard state in Codex DB (`apps/data`), one transaction per game action, every player-to-player trade logged server side, a double-entry coin ledger; first the page store and WAL backend Codex DB lacks, over the shard disk | a trade, a purchase and a death each commit atomically and survive a kill and reboot; a crash mid-action leaves all or none of it; the coin census is a ledger query that balances; the restart proof passes on the database before the snapshot/journal codecs retire |
 | K | Skills (section 5): professions and blessed starting kits, tool tiers per trade (shovel below pickaxe), the carpentry kit consolidated with one job per tool and the other trades reviewed, sub-skills per tool and weapon kind, master trainers and rare trainers by place | a new character holds only its blessed kit, jerky and a full belly; a shovel cannot dig a big ore and a pickaxe can; the blessed tool survives death and never decays; longsword skill does not carry to a katana; a sub-skill stops at the basics until a master trains it; a rare trainer teaches only where placed |
-| C | Construction (section 5): deeds as plans, construction sites with bills of materials, NPC and player builders, Carpentry/Tinkering/Blacksmithy/Masonry, plots granted by mayors and Lord British, the site-to-multi swap in the client; needs stage E's chains | a 30-game-day run: a placed deed becomes a site, builders deliver every item on its bill (each traced to a harvestable), the finished house replaces the site and the 1.25.32 client draws it, and a plot granted from the panel is a logged administrative action |
+| C | Houses from deeds (section 5, "Houses come from deeds"): a vendor sells a deed, the placed deed stands the house at once with its sign, a locked door and its keys | in the 1.25.32 client a player buys a deed in the Saw Horse, places it, and the house stands with its sign; the door opens to the holder's key and refuses another player |
 | S | The sea (section 5): shipwrights and ships, NPC fishing fleets landing the catch, pirate havens and raids, the royal navy under Lord British's orders; needs ships that move in the game server and stage M's populations | a 30-game-day run: the fish stalls' stock traced to landed catches, a grown pirate haven takes cargo and shows in the economy census, a navy patrol sinks pirates and the haven shrinks, and a navy order from the panel is a logged administrative action |
 | T | Tavern backgammon (section 5): the client's game board refereed by `Backgammon.codex`, server dice and setup, NPC patrons who accept and play by persona and drink, wagers in real coin, the board UI spruced up within the client | a scripted client session plays a full game against an NPC patron: an illegal move is put back, the server's dice and the engine agree at every turn, the result and wager settle in both purses, and a drunk patron accepts a challenge a sober one refused |
 | L | The law (section 5): witnesses and their willingness to tell, NPC memory of criminals, guards in earshot responding on foot, the three-tile capture check, submit to jail by the sentence table or fight with the three nearest guards assisting | scripted scenarios: an unwitnessed theft raises nothing; a witnessed one is remembered by the witness; a call with no guard in earshot gets no response; a guard walks (no teleport) to within three tiles and the arrest fires; submitting jails for the table's term; fighting draws exactly the three nearest other guards on foot |
@@ -981,13 +951,40 @@ Each stage is its own landing and is graded before the next starts.
 | slice | delivers | file | check |
 |---|---|---|---|
 | D1 | Built (compiled; codex-vm falls back to IDE, probed): the composite server opens its world on a virtio disk when one is present, else IDE, and logs `DISK virtio` or `DISK ide` | `CompositeGameServer.codex`, `CompositeCompact.codex` (`UoVirtio` beside `UoIde`, `WorldBlock.codex`) | `proofs/test-world-virtio.ps1` shape with the real server: boot, commit, kill, reboot restores |
-| D2 | The server answers on a virtio NIC with a static address from the launch record (`CompositeLaunch.codex`, `cl-read`, the record the launcher writes), no DHCP | `CompositeGameServer.codex`; the probe order in `codex/os/net/NetDriver.codex` only with blu's word (blu owns `codex/os/net`) | `proofs/test-virtio-net.ps1` shape: a 1.25 login reaches the character list over the virtio NIC |
-| D3 | A provisioning step writes journal, map cache and DWD from the user's own client onto a blank virtio data disk (never into the image, R1) | `install-map-cache.ps1 -WorldDisk` on the data disk | the installed disk boots D1 and loads Britain |
-| D4 | The UEFI image and the BIOS ISO carry the real server CDX (`build-img.ps1 -PeInput`, `build-iso.ps1`) | `apps/uoaix/build-shard-image.ps1` (new) | QEMU OVMF and BIOS boots both reach `READY` on the D3 disk |
-| D5 | Only 2593 and 2594 answer; the admin port refuses an unauthenticated client | the built image | a port scan of the running image lists exactly those two; an unauthenticated panel request is refused |
-| D6 | Recovery from a commit cut mid-write | the built image on the D3 disk | kill during a commit, reboot, the world restores the last whole commit |
+| D2 | Checked (fester, 2026-10-16, the D4 ISO's BIOS entry, QEMU TCG 3 GiB, modern virtio NIC and disk): a 1.25 login reached the character list (0xA9) at 10.0.2.15 from the launch record's NET line, sent after the first `WORLD COMMITTED` (577 s; a login during the first commit gets no answer within 60 s). Built: the server answers on the NIC with a static address from the launch record's `NET <ip> <gateway> <mask>` line, logging `NET <card> <ip> via <gateway> launch|default`, and a record QEMU delivers byte by byte settles before it is read (`cl-settle`). Delivers: the server answers on a virtio NIC with a static address from the launch record (`CompositeLaunch.codex`, `cl-read`, the record the launcher writes), no DHCP | `CompositeGameServer.codex`; the probe order in `codex/os/net/NetDriver.codex` only with blu's word (blu owns `codex/os/net`) | `proofs/test-virtio-net.ps1` shape: a 1.25 login reaches the character list over the virtio NIC |
+| D3 | Built (fester, 2026-10-16): `install-map-cache.ps1 -WorldDisk` creates the disk when absent and writes the map cache, the economy archive region, the world journal and the DWD from the user's client; the check is a run. Delivers: a provisioning step writes journal, map cache and DWD from the user's own client onto a blank virtio data disk (never into the image, R1) | `install-map-cache.ps1 -WorldDisk` on the data disk | the installed disk boots D1 and loads Britain |
+| D4 | Built (fester, 2026-10-16; the ISO builds, 36 MB): `build-shard-image.ps1` compiles the server as a BIOS CDX and, with `runtime-init` added to its opening, as a UEFI application (the stub sizes the heap at boot from the UEFI memory map, the largest free range below the ceiling after the 512 MiB owned pool, and refuses below a 1 GiB floor, `-HeapFloorPages`), and packs both into one El Torito ISO (`build-iso.ps1`, `IsoBoot.md`). BIOS half checked (2026-10-16, main 44785 + 44794): QEMU TCG, 3 GiB, the ISO's BIOS entry on a D3 disk over modern virtio reached `READY` in 340 s with `UOAIX TESTING OPEN` sent over a TCP serial (QEMU on Windows takes no serial input file), and with no launch record public mode correctly refused British's default password. WHPX stops at its first exit (code 4), so TCG it is. OVMF half checked on `-machine pc` (fester, 2026-10-17, main 45136, seed A24CC2ED): QEMU TCG 4 GiB, OVMF, the ISO's UEFI entry on a D3 disk over virtio, the launch record written to the TCP serial after the stub's marks (`svrchgxo`; OVMF reads the serial as console input before them) reached `MODE composite TESTING`, `NET virtio-net ... launch` and `READY` in 363 s; `cl-read` waits up to 3 s for a record's first byte (without the wait the same boot came up public). q35 checked (red, 2026-10-17, seed A24CC2ED): the same arm on `-machine q35` 3 GiB reached `READY` in 361 s with the heap sized at boot to 1389 MiB (`WATERMARK heap-ceiling`), and `-machine pc` 4 GiB in 409 s at 1454 MiB; both used 973 MiB. Below the floor the stub prints the free size and the floor and halts `L`. Delivers: the UEFI image and the BIOS ISO carry the real server CDX (`build-img.ps1 -PeInput`, `build-iso.ps1`) | `apps/uoaix/build-shard-image.ps1` (new) | QEMU OVMF and BIOS boots both reach `READY` on the D3 disk |
+| D5 | Checked on 25 forwarded ports (fester, 2026-10-17, the D4 ISO's BIOS entry; 21, 22, 23, 25, 53, 80, 110, 143, 443, 2590-2600, 3306, 3389, 5432, 8080, 8443): only 2593 and 2594 answered, the other 23 timed out at QEMU's 75 s (port 80 the closed control); the admin port served `GET /` and `GET /handshake` (200) and refused `/status` and `/api/world` without a seal (401). QEMU user networking reaches only forwarded ports, so the scan covers those 25. Holds in the code: the server listens on 2593 and, with an ADMIN launch line, 2594 alone (`cgs-ports`; `gl-ports` admits no other port), and to an unauthenticated client the admin port serves only the static login page (`GET /`) and the protocol name and epoch (`GET /handshake`); every other request is 401 without an AES-GCM seal under an enabled role key and a fresh sequence (`admin-route`, `admin-open`). Delivers: only 2593 and 2594 answer; the admin port refuses an unauthenticated client | the built image | a port scan of the running image lists exactly those two; an unauthenticated panel request is refused |
+| D6 | Checked (fester, 2026-10-17, the D4 ISO's BIOS entry): killed at commit 6's BEGIN, the reboot restored sequence 5 and committed 6 with no section refused. A launch record over QEMU's TCP serial must be written at connect: `cl-read` runs 0.63 s after connect and reads the ring once (red, 2026-10-17), so a record sent 2 s later boots public. Holds in the storage layer: UOS1 writes a record's payload and then its commit sector (header and payload FNV32), so a cut mid-write leaves a tail that is never applied (`WorldDisk`, `proofs/WorldDiskRead` tail mode), and a cut before a compaction twin's commit sector leaves the live half picked (`us-pick`, `proofs/WorldDiskPair`). Delivers: recovery from a commit cut mid-write | the built image on the D3 disk | kill during a commit, reboot, the world restores the last whole commit |
 | D7 | The same bytes boot on the chosen host (R6: Vultr custom ISO; region, plan and date are Damian's) | none | a Vultr boot of the D4 ISO serves a 1.25 client |
 
+**Proposal: the launch record on a hosted shard (red, 2026-10-17; no code; joins R6).**
+The launch record (`CompositeLaunch.codex`: optional `LINKS`, `ADMIN` with the
+four role keys and epoch, `NET`, then the mode line) is read once, first in
+`opening`, from the serial ring. Measured on the D4 ISO's BIOS entry under QEMU
+TCG: the guest reaches that read 0.63 s after the serial connects, and a record
+written at connect is received, and one written 2 s or 30 s later is not (the
+D6 loss was a harness writing 2 s after connect). A hosted shard has no host
+writing its serial port in that window, and the record is also the shard's
+only source for its address, because the server takes no DHCP (D2). Five
+routes, each with the boundary the route trusts and the route's cost:
+
+| route | trusts | cost |
+|---|---|---|
+| **A, recommended: a record sector on the D3 data disk.** `install-map-cache.ps1 -WorldDisk` writes the record (448 bytes at most, one 512-byte sector) at a fixed sector with a magic, a length and a digest; the server reads the sector before the serial ring, and a serial record present at the first poll still wins, for local QEMU runs | the data disk: the host's storage and every copy of the disk file, which the host already holds, as the host holds the VM's memory | one reserved sector in the D3 layout, a writer in the provisioning step, a block read before the mode line (the block driver comes up later in `cgs-run` today); the admin keys and British's password at rest in plaintext on the disk, unless the password line carries a PBKDF2 hash rather than the password (the keys cannot: the server needs them to verify seals); a mode change means stopping the shard and rewriting the sector |
+| B: the record inside the ISO, built per deployment | everyone who can fetch the ISO's public URL (R6: Vultr fetches the ISO from a public URL) | the admin keys and British's password published; therefore only `NET` and a password-free mode can ride there, and the admin port needs another source for its keys |
+| C: the host's metadata service over the network at boot | the host's metadata service and every holder of the host account; not our stack (L-ALTERNATIVE: route A is the one we own) | a DHCP and HTTP client running before the mode line, which the server has neither of at boot; a reversal of the record's rule that no network packet enables a mode |
+| D: a person typing the record at the host's console on every boot | whoever holds the host console | a person at every reboot (L-HUMAN); the read would have to wait for typing, and a reboot with nobody there comes up public with British's password unchanged |
+| E: the server waits at boot for a serial record | n/a | no host serial input exists on the hosted path, therefore the wait buys nothing there and delays every boot |
+
+Whichever route Damian picks, two rules belong in the reader rather than in
+prose (L-BODY): a record from the disk sector or the ISO refuses `UOAIX TESTING`
+and `UOAIX DEV`, which today only the comment "hosted images supply no testing
+or dev record" forbids, and a hosted boot with no record refuses to open public
+with British's password unchanged. The open question for Damian, beside R6's
+region and plan: route A (and with route A, whether the password travels as a hash),
+or another route; and how the D3 disk itself reaches the host, which D7 needs
+whatever the record does.
 ## 10. Rulings for Damian
 
 | id | question |
@@ -996,7 +993,7 @@ Each stage is its own landing and is graded before the next starts.
 | R2 | Answered in part (Damian, 2026-10-06: "lets work with the canned approach first. we can revisit live llm ai service calls later."): NPC speech ships from the canned library alone (UOAIX-66). Root's reading: the fleet's lanes write the library offline, so the shard and the build need no provider key and make no billed call. Still open, for later: the provider and model for on-the-fly lines and for the keeper, the relay's host, and the monthly budget; or local Qwen3 as the relay model |
 | R3 | Answered in part (Damian, 2026-10-04): no instant guards; the law runs on witnesses, guards on foot, a three-tile capture and jail or combat; notoriety stays the classic 1.25.32 scale, moved by every crime, witnessed or not; PvP is open, with unarmed and wrestling blows subdual-only inside a consensual duel (section 5, the law) |
 | R4 | Answered (Damian, 2026-10-04): conduct reports go to the support queue on the admin-port panel, read by Lord British and the GMs, who act on them within their powers (section 3). Which action classes ever become automatic is decided later, class by class |
-| R6 | The VM host, its region and size, and when the shard goes on the public internet. Vultr attaches a custom ISO to an instance (any OS, served from a public URL, 10 GB at most), so the image needs a BIOS boot path beside UEFI (stage D). **Host chosen (Damian, 2026-10-04): Vultr, booting the image from a custom ISO.** Still open: region, plan size (working assumption: the smallest plan with 1 GiB) and when the shard goes public; the Vultr account is Damian's |
+| R6 | The VM host, its region and size, and when the shard goes on the public internet. Vultr attaches a custom ISO to an instance (any OS, served from a public URL, 10 GB at most), so the image needs a BIOS boot path beside UEFI (stage D). **Host chosen (Damian, 2026-10-04): Vultr, booting the image from a custom ISO.** Still open: how the launch record reaches the hosted shard (stage D, "Proposal: the launch record on a hosted shard"), region, plan size (a fresh world's server heap peaks at 944 MiB by game hour 81, trial 44695, so a 1 GiB plan cannot hold the shard; 2 GiB is the smallest that can) and when the shard goes public; the Vultr account is Damian's |
 | R8 | Answered in part (Damian, 2026-10-04): the royal treasury taxes gold changing hands and funds royal businesses until the economy runs on its own, and new coin comes from gold mining: gold ore smelted to ingots and struck into coin at the royal mint (section 5, the economy). The treasury starts with no gold at all: Lord British mines the first gold himself (Damian, 2026-10-04: "The treasure has no starting purse. Lord British has to go gold mining"); monsters carry no new gold, only gold they acquired, as a dragon's hoard. The Crown takes its share of gold at the moment the gold is mined, by magic (Damian, 2026-10-06: "the Crown taxes gold at the moment of its mining, magically."). The mint buys nothing: an owner pays to have the owner's own gold struck into coin. The rates (Damian, 2026-10-06: "mining should have a 10% tax right off the top. another 10% to coin it."): 10% of mined gold to the Crown at the harvest, and 10% of the gold brought to the mint as the minting fee. Both rates apply to all 3 coin metals, gold, silver and copper (Damian, 2026-10-06: "10% for all money refining is fine"); other ore is untaxed. Every fee a player pays (a guild fee, for one) goes to the Crown's treasury (Damian, 2026-10-06: "fees that take coin out should go to the crown"): a fee moves coin and destroys none. Repairs are not a fee (Damian, 2026-10-06: "whoa, not repairs"; root's reading: a repair pays whoever does the repair). Answered |
 | R7 | Answered (Damian, 2026-10-04): the browser client (stage W) uses art of our own, inspired by the game: terrain tiles, buildings and statics, items, creature and character animations, and the window art, made with the project's own image pipeline (`codex_image` and the diffusion work in `apps/diffusion`), never copied or traced from EA's files. The 1998 client keeps drawing EA's art from the player's own install |
 | R9 | Answered (Damian, 2026-10-06): the GPL-2 ports (UOX3, ServUO) and the Apache ports (Sphere, Source-X) ship on the public mirror with the licence files their terms require (`Sphere-LICENSE.txt`, `ports/*-LICENSE.txt`), and every ported chapter keeps its attribution header. His words: "we can ship their licensing docs as they require by their licensing terms. It should be noted, however, that sphere stole what they have from UOX, which I helped build originally. At the time we built it (30 years ago), it was just standard to use GPL without thinking." |

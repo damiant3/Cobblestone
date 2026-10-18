@@ -39,6 +39,7 @@ Chapter: EconomyCurrencyCodec
  The size of the record written over prev, the previous version 9 or 10 record (0 for none), whose slots it keeps.
   euc-size-in : EuCurrency, Integer -> Integer
   euc-size-in (x) (prev) = euc-fixed + euc-slot (euc-prev-economy prev) (es-size-in x.world (euc-prev-record prev)) + euc-parts-bytes (euc-part-slots x prev) 0
+  euc-version : Integer = 12
   euc-prev-economy : Integer -> Integer
   euc-prev-economy (prev) = if prev == 0 then 0 else peek-qword prev 184
  The previous record's gold economy, whose part slots the next one keeps, or 0.
@@ -48,7 +49,8 @@ Chapter: EconomyCurrencyCodec
  each of the five tables (copper, silver, start copper, start silver, start gold) its purse count and purse rows (24
  bytes), its opening cells past the first blocks, and its loan rows (56 bytes). The slots are kept from the previous
  record by euc-slot, so a table that gains a purse or a loan moves nothing after it (UOAIX-138: in version 9 one new
- copper purse moved some 550 KB of loan rows into every commit's delta).
+ copper purse moved some 550 KB of loan rows into every commit's delta). Version 11 packs each loan's id and each table's
+ loan-next (EconomyMoney em-loan-pack, em-count-pack).
   euc-part-count : Integer = 15
   euc-tables : EuCurrency -> List EmMoney
   euc-tables (x) = [x.copper, x.silver, x.start.copper, x.start.silver, x.start.gold]
@@ -63,7 +65,7 @@ Chapter: EconomyCurrencyCodec
   euc-kept-walk (at) (stop) (i) (out) = if i == euc-part-count then out
     else let n = euc-part-length at stop in if n < 0 then [] else euc-kept-walk (at + 8 + n) stop (i + 1) (out & [n])
   euc-kept-parts : Integer -> List Integer
-  euc-kept-parts (prev) = if prev == 0 then [] else if peek-qword prev 8 /= 10 then []
+  euc-kept-parts (prev) = if prev == 0 then [] else if peek-qword prev 8 /= euc-version then []
     else euc-kept-walk (prev + euc-purses-from (peek-qword prev 184)) (prev + peek-qword prev 16) 0 []
   euc-pick-parts : List Integer, List Integer, Integer, List Integer -> List Integer
   euc-pick-parts (actual) (kept) (i) (out) = if i == list-length actual then out
@@ -197,13 +199,14 @@ Chapter: EconomyCurrencyCodec
   euc-write : CurrencyCheckpoint, Integer, Integer -> Result Integer Text
   euc-write (checkpoint) (buf) (capacity) = euc-write-in checkpoint buf capacity 0
   euc-write-in : CurrencyCheckpoint, Integer, Integer, Integer -> Result Integer Text
-  euc-write-in (checkpoint) (buf) (capacity) (prev) = euc-write-timed checkpoint buf capacity prev 0
+  euc-write-in (checkpoint) (buf) (capacity) (prev) = euc-write-timed checkpoint buf capacity prev 0 True
  The commit's encode timing (UOAIX-196): HPET stamps in the timing buffer at cells 8 to 12, after the clear, the gold
- economy, the copper and silver ledgers, the events and the tails; 0 times nothing.
+ economy, the copper and silver ledgers, the events and the tails; 0 times nothing. check False skips ev-valid (the
+ composite commit checks once per economy hour; on live 43827 the check was 84% of the gold economy cell by hour 39).
   euc-stamp : Integer, Integer -> Integer
   euc-stamp (timing) (slot) = if timing == 0 then 0 else poke-qword timing (slot * 8) hpet-ticks
-  euc-write-timed : CurrencyCheckpoint, Integer, Integer, Integer, Integer -> Result Integer Text
-  euc-write-timed (checkpoint) (buf) (capacity) (prev) (timing) =
+  euc-write-timed : CurrencyCheckpoint, Integer, Integer, Integer, Integer, Boolean -> Result Integer Text
+  euc-write-timed (checkpoint) (buf) (capacity) (prev) (timing) (check) =
     let x = checkpoint.currency
     in let economy = es-size-in x.world (euc-prev-record prev)
     in let slot = euc-slot (euc-prev-economy prev) economy
@@ -213,14 +216,17 @@ Chapter: EconomyCurrencyCodec
     else let clear = ts-zero buf size 0
     in let s8 = euc-stamp timing 8
     in let a = poke-qword buf 0 #31435545
-    in let b = poke-qword buf 8 10
+    in let b = poke-qword buf 8 euc-version
     in let slotted = poke-qword buf 184 slot
     in let c = poke-qword buf 16 size
     in let d = poke-qword buf 24 economy
     in let e = poke-qword buf 32 checkpoint.tick
     in let f = poke-qword buf 40 checkpoint.sequence
     in let policy = euf-write-policy buf 64 x
-    in when es-encode-over (EconomyCheckpoint { world = x.world, tick = checkpoint.tick, sequence = checkpoint.sequence }) (buf + euc-gold-at) economy (euc-prev-record prev)
+    in let valid = if check then ev-valid x.world else True
+    in let s28 = euc-stamp timing 28
+    in if not valid then Err ("economy state invalid: " & ev-invalid-part x.world)
+    else when es-encode-as (EconomyCheckpoint { world = x.world, tick = checkpoint.tick, sequence = checkpoint.sequence }) (buf + euc-gold-at) economy (euc-prev-record prev) False
       is Err (e) -> Err e
       is Ok (_) ->
         let s9 = euc-stamp timing 9
@@ -234,13 +240,13 @@ Chapter: EconomyCurrencyCodec
         in let tail = euc-tail buf x False slot
         in let purses = euc-write-parts (buf + euc-purses-from slot) (euc-tables x) parts 0
         in let s12 = euc-stamp timing 12
-        in let hash = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+        in let hash = poke-qword buf 48 (ws-digest buf size 0 2166136261)
         in Ok size
   euc-decode : Integer, Integer -> Result CurrencyCheckpoint Text
   euc-decode (buf) (size) = euc-decode-any buf size
   euc-decode-any : Integer, Integer -> Result CurrencyCheckpoint Text
   euc-decode-any (buf) (size) =
-    if peek-qword buf 8 /= 10 then Err "currency checkpoint predates format 10 (each purse table part in a slot); start a fresh world"
+    if peek-qword buf 8 /= euc-version then Err "currency checkpoint predates format 12 (the word digest, ws-digest); start a fresh world"
     else if euc-economy buf size == 0 then Err "currency checkpoint length invalid"
     else let economy = euc-economy buf size
     in let slot = peek-qword buf 184
@@ -251,7 +257,7 @@ Chapter: EconomyCurrencyCodec
     else if not (ev-range (peek-qword buf 32) ep-limit) | not (ev-range (peek-qword buf 40) ep-limit) | not (ev-range (peek-qword buf 64) em-rows) then Err "currency checkpoint metadata invalid"
     else if slot < economy | int-mod slot 8 /= 0 | slot > size - euc-fixed - 40 then Err "currency economy slot invalid"
     else if not (ev-range (peek-qword buf 168) ep-limit) | not (ev-range (peek-qword buf 176) ep-limit) then Err "currency header reserved bytes nonzero"
-    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "currency checkpoint checksum invalid"
+    else if peek-qword buf 48 /= ws-digest buf size 0 2166136261 then Err "currency checkpoint checksum invalid"
     else when es-decode-record (buf + euc-gold-at) economy (peek-qword buf 32) (peek-qword buf 40)
       is Err (e) -> Err e
       is Ok (gold) ->

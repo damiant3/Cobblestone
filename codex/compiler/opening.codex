@@ -44,7 +44,8 @@ Section: Compile Flags
    cost-report : Boolean,
    no-lift : Boolean,
    fidelity : Boolean,
-   pipeline : List Text
+   pipeline : List Text,
+   deck-grow : List Text
   }
 
   compile-flags-default : CompileFlags
@@ -58,7 +59,8 @@ Section: Compile Flags
     cost-report = False,
     no-lift = False,
     fidelity = False,
-    pipeline = default-ir-pipeline
+    pipeline = default-ir-pipeline,
+    deck-grow = []
   }
 
  A floor is a guard band plus a workspace, and only the workspace scales. The
@@ -83,6 +85,15 @@ Section: Compile Flags
     if pct == 100 then floor / 100 * pct
     else let ws = (floor - band) / 100 * pct
     in band + (if ws < deck-min-workspace then deck-min-workspace else ws)
+
+  grow-factor : List Text, Text, Integer, Integer, Integer -> Integer
+  grow-factor (grows) (label) (i) (n) (acc) =
+    if i >= n then acc
+    else grow-factor grows label (i + 1) n (if list-at grows i == label then acc * 2 else acc)
+
+  grown-floor : CompileFlags, Text, Integer, Integer -> Integer
+  grown-floor (flags) (label) (floor) (band) =
+    scaled-floor (flags.deck-scale) floor band * grow-factor (flags.deck-grow) label 0 (list-length (flags.deck-grow)) 1
 
   deck-scale-of : Text -> Integer
   deck-scale-of (mode) =
@@ -481,7 +492,7 @@ Section: Frontend
   compile-lex : Text, Integer, CompileFlags -> LexResult
   compile-lex (source) (h0) (flags) =
     let mountain-base = init-phase-allocator
-    in let lex-deck-height = scaled-floor (flags.deck-scale) demand-lex-floor demand-lex-guard-band
+    in let lex-deck-height = grown-floor flags "LEX" demand-lex-floor demand-lex-guard-band
     in let lex-base = build lex-deck-height
     in let lex-phase = phase-start
     in let tok-result = tokenize-into source 1 (flags.prose) (lex-base + lex-deck-height)
@@ -507,10 +518,10 @@ Section: Frontend
   compile-parse : List Token, Text, Integer, List PhaseMetrics, CompileFlags -> ParseResult
   compile-parse (tokens) (source) (h0) (prior-metrics) (flags) =
     let h1 = __heap-save
-    in let parse-keep-height = scaled-floor (flags.deck-scale) demand-parse-keep-floor demand-parse-guard-band
+    in let parse-keep-height = grown-floor flags "PARSE-KEEP" demand-parse-keep-floor demand-parse-guard-band
     in let parse-base = build parse-keep-height
     in let parse-guard = pitch demand-parse-guard-band
-    in let parse-scratch-height = scaled-floor (flags.deck-scale) demand-parse-scratch-floor demand-parse-scratch-guard-band
+    in let parse-scratch-height = grown-floor flags "PARSE" demand-parse-scratch-floor demand-parse-scratch-guard-band
     in let scratch-base = build (parse-scratch-height + (if parse-guard < 0 then 1 else 0))
     in let scratch-ceiling = scratch-base + parse-scratch-height
     in let parse-phase = phase-start
@@ -704,7 +715,7 @@ Section: Frontend
     in let desugar-esc-bag = deck-record (escape-check-bag (flags.escape-check) desugar-metrics "DESUGAR")
     in let desugar-sealed = compact-phase flags poison-desugar
     in let h5 = __heap-save
-    in let scope-deck-height = scaled-floor (flags.deck-scale) demand-scope-floor demand-scope-guard-band
+    in let scope-deck-height = grown-floor flags "SCOPE" demand-scope-floor demand-scope-guard-band
     in let scope-base = build scope-deck-height
     in let scope-ceiling = scope-base + scope-deck-height
     in let scope-origin = __deck-pos
@@ -764,11 +775,220 @@ Section: Frontend
  catch. Reading CHECK's requirement off the first number understates it by 7 to
  29 per cent, measured over four units 2026-08-09.
 
+ A hosted compiler does not grow the keep: the guard cell that bounds the
+ arena is a fixed physical address a hosted process does not map.
+
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
+    let keep0 = scaled-floor (flags.deck-scale) demand-check-keep-floor 0
+    in let mark = __heap-save
+    in let deck0 = __deck-pos
+    in let check0 = scaled-floor (flags.deck-scale) demand-check-floor demand-check-guard-band
+    in compile-type-check-keep sr source-len flags keep0 check0 mark deck0 0 0
+
+  check-keep-retry : ScopeResult, Integer, CompileFlags, Integer, Integer, Integer, Integer, Integer, Integer -> CompileChecked
+  check-keep-retry (sr) (source-len) (flags) (keep-height) (check-height) (mark) (deck0) (grown) (cgrown) =
+    let restored = __heap-restore mark
+    in let reset = __deck-set deck0
+    in compile-type-check-keep sr source-len flags (keep-height * 2) check-height mark deck0 (grown + 1) cgrown
+
+  check-deck-retry : ScopeResult, Integer, CompileFlags, Integer, Integer, Integer, Integer, Integer, Integer -> CompileChecked
+  check-deck-retry (sr) (source-len) (flags) (keep-height) (check-height) (mark) (deck0) (grown) (cgrown) =
+    let restored = __heap-restore mark
+    in let reset = __deck-set deck0
+    in compile-type-check-keep sr source-len flags keep-height (check-height * 2) mark deck0 grown (cgrown + 1)
+
+  lowering-floors : CompileFlags -> Integer
+  lowering-floors (flags) =
+    let lower-keep = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
+    in let lower = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
+    in let resolve = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
+    in lower-keep + lower + resolve + scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
+
+  keep-grow-fits : CompileFlags, Integer, Integer, Integer -> Boolean
+  keep-grow-fits (flags) (keep-base) (next) (check-height) =
+    if hosted-kind /= 0 then False
+    else let lowering = lowering-floors flags
+    in let headroom = if lowering > check-height then lowering else check-height
+    in deck-grow-fits keep-base next headroom
+
+  deck-grow-fits : Integer, Integer, Integer -> Boolean
+  deck-grow-fits (base) (next) (headroom) =
+    if hosted-kind /= 0 then False
+    else let guard-base = peek-qword guard-page-base-cell 0
+    in guard-base >= guard-page-plausible-floor & base + next + headroom < guard-base
+
+  deck-grown-notes : Text, Integer, Integer, List Diagnostic -> List Diagnostic
+  deck-grown-notes (label) (height) (n) (acc) =
+    if n <= 0 then acc
+    else let msg = label & " deck grown to " & show height & " bytes; phase repeated"
+    in let note = make-info cdx-deck-grown msg synthetic-span
+    in deck-grown-notes label (height / 2) (n - 1) ([note] & acc)
+
+ The emit deck's own sizing (`compile-cdx`), so a grown deck before emit
+ leaves emit the room it will ask for.
+
+  emit-deck-headroom : List IRDef -> Integer
+  emit-deck-headroom (defs) = list-length defs * 65536 + 29360128
+
+  ResolveRun = record {
+   defs : List IRDef,
+   stds : List TypeBinding,
+   metrics : PhaseMetrics,
+   short : Boolean,
+   height : Integer,
+   grown : Integer
+  }
+
+  resolve-run : CompileChecked, List IRDef, CompileFlags, Integer, Integer -> ResolveRun
+  resolve-run (checked) (defs) (flags) (height) (grown) =
+    let mark = __heap-save
+    in let deck0 = __deck-pos
+    in let resolve-base = build height
+    in let resolve-ceiling = resolve-base + height
+    in let resolve-phase = phase-start
+    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
+    in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
+    in let resolved = deck-record (rewrite-ir-defs stds defs resolve-ceiling)
+    in let short = list-length resolved < list-length defs | deck-short-of resolve-ceiling demand-resolve-guard-band | __deck-pos - resolve-base > height
+    in let after = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band + emit-deck-headroom defs
+    in if short & deck-grow-fits resolve-base (height * 2) after then
+      let restored = __heap-restore mark
+      in let reset = __deck-set deck0
+      in resolve-run checked defs flags (height * 2) (grown + 1)
+    else ResolveRun {
+     defs = resolved,
+     stds = stds,
+     metrics = phase-measure resolve-phase "RESOLVE",
+     short = short,
+     height = height,
+     grown = grown
+    }
+
+  LowerRun = record {
+   ir-raw : IRChapter,
+   passed : IRPassResult,
+   keep-base : Integer,
+   keep-end : Integer,
+   keep-height : Integer,
+   lower-height : Integer,
+   keep-sat : Boolean,
+   lower-short : Boolean,
+   metrics : PhaseMetrics,
+   keep-grown : Integer,
+   lower-grown : Integer
+  }
+
+  lower-run : CompileChecked, CompileFlags, Boolean, Integer, Integer, Integer, Integer -> LowerRun
+  lower-run (checked) (flags) (run-passes) (keep-height) (lower-height) (keep-grown) (lower-grown) =
+    let mark = __heap-save
+    in let deck0 = __deck-pos
+    in let lower-keep-base = build keep-height
+    in let lower-base = build lower-height
+    in let lower-ceiling = lower-base + lower-height
+    in let set-lo = __deck-set lower-keep-base
+    in let lower-origin = __deck-pos
+    in let lower-phase = phase-start
+    in let set-ls = __deck-set lower-base
+    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter
+      (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names)
+      (checked.renames) (checked.colliding) (checked.assignments)
+      lower-ceiling run-passes lower-keep-base (lower-keep-base + keep-height))
+    in let keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + keep-height
+    in let passed = if run-passes then
+      deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
+    else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
+    in let lower-end = __deck-pos
+    in let lower-short = list-length (ir-raw.defs) < list-length (checked.scoped.defs) | lower-end - lower-origin > lower-height
+    in let next-keep = if keep-sat then keep-height * 2 else keep-height
+    in let next-lower = if lower-short then lower-height * 2 else lower-height
+    in let resolve-h = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
+    in let after = resolve-h + scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band + emit-deck-headroom (ir-raw.defs)
+    in if (keep-sat | lower-short) & deck-grow-fits lower-keep-base (next-keep + next-lower) after then
+      let restored = __heap-restore mark
+      in let reset = __deck-set deck0
+      in let kg = if keep-sat then keep-grown + 1 else keep-grown
+      in let lg = if lower-short then lower-grown + 1 else lower-grown
+      in lower-run checked flags run-passes next-keep next-lower kg lg
+    else LowerRun {
+     ir-raw = ir-raw,
+     passed = passed,
+     keep-base = lower-keep-base,
+     keep-end = lower-keep-end,
+     keep-height = keep-height,
+     lower-height = lower-height,
+     keep-sat = keep-sat,
+     lower-short = lower-short,
+     metrics = phase-measure lower-phase "LOWER",
+     keep-grown = keep-grown,
+     lower-grown = lower-grown
+    }
+
+  lower-run-bags : LowerRun, CompileFlags -> DiagnosticBag
+  lower-run-bags (lw) (flags) =
+    let ov = if lw.lower-short then deck-overflow-bag "LOWER"
+    else if lw.keep-sat then deck-overflow-bag "LOWER-KEEP" else no-overflow-bag
+    in let trace = if flags.phase-trace then
+      let lk-used = "LOWER-KEEP used=" & integer-to-text (lw.keep-end - lw.keep-base)
+      in let lk-msg = lk-used & " of " & integer-to-text (lw.keep-height)
+      in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
+    else no-overflow-bag
+    in let keep-notes = deck-grown-notes "LOWER-KEEP" (lw.keep-height) (lw.keep-grown) []
+    in bag-merge-all [ov, trace, bag-from-list (keep-notes & deck-grown-notes "LOWER" (lw.lower-height) (lw.lower-grown) [])]
+
+  resolve-run-bag : ResolveRun -> DiagnosticBag
+  resolve-run-bag (rr) =
+    let ov = if rr.short then deck-overflow-bag "RESOLVE" else no-overflow-bag
+    in bag-merge-all [ov, bag-from-list (deck-grown-notes "RESOLVE" (rr.height) (rr.grown) [])]
+
+  LiftRun = record {
+   chapter : IRChapter,
+   metrics : PhaseMetrics,
+   short : Boolean,
+   height : Integer,
+   grown : Integer
+  }
+
+ `lift-lambdas` writes its answer into the chapter record it is handed, so
+ every attempt lifts a chapter record of its own.
+
+  lift-run : IRChapter, List IRDef, Integer, Integer -> LiftRun
+  lift-run (ir) (defs) (height) (grown) =
+    let mark = __heap-save
+    in let deck0 = __deck-pos
+    in let lift-base = build height
+    in let lift-ceiling = lift-base + height
+    in let lift-phase = phase-start
+    in let lifted = deck-record (lift-lambdas (IRChapter {
+     name = ir.name,
+     defs = defs,
+     effect-op-names = ir.effect-op-names,
+     span = ir.span
+    }) lift-ceiling)
+    in let short = deck-short-of lift-ceiling demand-lift-guard-band | __deck-pos - lift-base > height
+    in if short & deck-grow-fits lift-base (height * 2) (emit-deck-headroom defs) then
+      let restored = __heap-restore mark
+      in let reset = __deck-set deck0
+      in lift-run ir defs (height * 2) (grown + 1)
+    else LiftRun {
+     chapter = lifted,
+     metrics = phase-measure lift-phase "LIFT",
+     short = short,
+     height = height,
+     grown = grown
+    }
+
+  keep-grown-notes : Integer, Integer, List Diagnostic -> List Diagnostic
+  keep-grown-notes (height) (n) (acc) =
+    if n <= 0 then acc
+    else let msg = "CHECK-KEEP deck grown to " & show height & " bytes; type check repeated"
+    in let note = make-info cdx-deck-grown msg synthetic-span
+    in keep-grown-notes (height / 2) (n - 1) ([note] & acc)
+
+  compile-type-check-keep : ScopeResult, Integer, CompileFlags, Integer, Integer, Integer, Integer, Integer, Integer -> CompileChecked
+  compile-type-check-keep (sr) (source-len) (flags) (keep-height) (check-height) (mark) (deck0) (grown) (cgrown) =
     let check-units = count-typecheck-units (sr.scoped.type-defs) 0 (list-length (sr.scoped.type-defs)) 0
-    in let check-deck-height = scaled-floor (flags.deck-scale) demand-check-floor demand-check-guard-band
-    in let keep-height = scaled-floor (flags.deck-scale) demand-check-keep-floor 0
+    in let check-deck-height = check-height
     in let keep-base = build keep-height
     in let check-base = build check-deck-height
     in let check-ceiling = check-base + check-deck-height
@@ -778,7 +998,9 @@ Section: Frontend
       (sr.scoped) (sr.renames) (sr.colliding) (sr.assignments)
       check-ceiling check-base keep-base (keep-base + keep-height - 4194304)
       (if flags.poison-compact then poison-check else 0) (flags.fidelity))
-    in let batch-bag = if flags.phase-trace then
+    in if check-result.keep-overflow & keep-grow-fits flags keep-base (keep-height * 2) check-deck-height then
+      check-keep-retry sr source-len flags keep-height check-deck-height mark deck0 grown cgrown
+    else let batch-bag = if flags.phase-trace then
       deck-record (bag-from-list [
         make-warning cdx-escape-violation (check-result.batch-note) synthetic-span
       ])
@@ -794,17 +1016,23 @@ Section: Frontend
     in let check-sat = if deck-short-of check-ceiling demand-check-guard-band then 1 else 0
     in let check-metrics = phase-measure check-phase "CHECK"
     in let check-ov = check-deck-overflow (check-end - check-origin) check-deck-height
-    in let check-ov-bag = if check-ov == 1 | check-sat == 1 then
+    in if (check-ov == 1 | check-sat == 1) & deck-grow-fits check-base (check-deck-height * 2) (lowering-floors flags) then
+      check-deck-retry sr source-len flags keep-height check-deck-height mark deck0 grown cgrown
+    else let check-ov-bag = if check-ov == 1 | check-sat == 1 then
       deck-overflow-bag "CHECK"
     else no-overflow-bag
     in let check-esc-bag = escape-check-bag (flags.escape-check) check-metrics "CHECK"
     in let cost-bag = deck-record (cost-growth-bag (flags.cost-report) (sr.scoped.defs) (check-result.state))
+    in let check-grown = deck-record (deck-grown-notes "CHECK" check-deck-height cgrown [])
+    in let early-grown = deck-record (early-grown-notes flags (flags.deck-grow) 0 (list-length (flags.deck-grow)) [])
+    in let grown-bag = deck-record (bag-from-list (early-grown & check-grown & keep-grown-notes keep-height grown []))
     in let check-bag = deck-record (bag-merge-all [
       check-bag0,
       check-ov-bag,
       check-esc-bag,
       cost-bag,
-      batch-bag
+      batch-bag,
+      grown-bag
     ])
     in let check-heap-marks = deck-record (list-push (sr.heap-marks) h8)
     in let check-phase-metrics = deck-record (list-push (sr.phase-metrics) check-metrics)
@@ -900,7 +1128,10 @@ Section: Frontend
     }))
     in let keep-metrics = phase-measure keep-phase "CHECK-KEEP"
     in let keep-ov = check-deck-overflow (keep-metrics.deck-end - keep-metrics.deck-origin) keep-height
-    in let keep-ov-bag = if keep-ov == 1 | keep-metrics.deck-end >= mc.mc-ceiling | check-result.keep-overflow then
+    in let keep-short = keep-ov == 1 | keep-metrics.deck-end >= mc.mc-ceiling | check-result.keep-overflow
+    in if keep-short & keep-grow-fits flags keep-base (keep-height * 2) check-deck-height then
+      check-keep-retry sr source-len flags keep-height check-deck-height mark deck0 grown cgrown
+    else let keep-ov-bag = if keep-short then
       deck-overflow-bag "CHECK-KEEP"
     else no-overflow-bag
     in let keep-metrics-bag = if flags.phase-trace then
@@ -986,9 +1217,88 @@ Section: Frontend
     in let sealed = compact-phase flags poison-check
     in result
 
+  early-floor : CompileFlags, Text -> Integer
+  early-floor (flags) (label) =
+    if label == "LEX" then grown-floor flags label demand-lex-floor demand-lex-guard-band
+    else if label == "PARSE-KEEP" then grown-floor flags label demand-parse-keep-floor demand-parse-guard-band
+    else if label == "PARSE" then grown-floor flags label demand-parse-scratch-floor demand-parse-scratch-guard-band
+    else if label == "SCOPE" then grown-floor flags label demand-scope-floor demand-scope-guard-band
+    else grown-floor flags label demand-frontend-keep-floor demand-frontend-keep-guard-band
+
+  early-grown-notes : CompileFlags, List Text, Integer, Integer, List Diagnostic -> List Diagnostic
+  early-grown-notes (flags) (grows) (i) (n) (acc) =
+    if i >= n then acc
+    else let label = list-at grows i
+    in let msg = label & " deck grown to " & show (early-floor flags label) & " bytes; front end repeated"
+    in early-grown-notes flags grows (i + 1) n (acc & [make-info cdx-deck-grown msg synthetic-span])
+
+ DESUGAR and DESUGAR-KEEP both write the frontend keep deck, so either one
+ grows that deck.
+
+  early-label-of : Text -> Text
+  early-label-of (m) =
+    if text-starts-with m "Deck overflow in LEX;" then "LEX"
+    else if text-starts-with m "Deck overflow in PARSE;" then "PARSE"
+    else if text-starts-with m "Deck overflow in PARSE-KEEP;" then "PARSE-KEEP"
+    else if text-starts-with m "Deck overflow in DESUGAR;" then "FRONTEND-KEEP"
+    else if text-starts-with m "Deck overflow in DESUGAR-KEEP;" then "FRONTEND-KEEP"
+    else if text-starts-with m "Deck overflow in SCOPE;" then "SCOPE"
+    else ""
+
+  early-overflow-label : List Diagnostic, Integer, Integer -> Text
+  early-overflow-label (ds) (i) (n) =
+    if i >= n then ""
+    else let d = list-at ds i
+    in let lbl = if d.code == cdx-deck-overflow then early-label-of (d.message) else ""
+    in if lbl /= "" then lbl else early-overflow-label ds (i + 1) n
+
+ The front end's peak is the frontend keep under either the PARSE pair (LEX's
+ tokens still live) or SCOPE with CHECK or the lowering decks above it; every
+ later deck starts at a compacted cursor no higher than these.
+
+  early-grow-fits : CompileFlags, Integer -> Boolean
+  early-grow-fits (flags) (mark) =
+    let fk = early-floor flags "FRONTEND-KEEP"
+    in let parse-pair = early-floor flags "PARSE-KEEP" + demand-parse-guard-band + early-floor flags "PARSE"
+    in let front = fk + early-floor flags "LEX" + parse-pair
+    in let ck = scaled-floor (flags.deck-scale) demand-check-keep-floor 0
+    in let check = scaled-floor (flags.deck-scale) demand-check-floor demand-check-guard-band
+    in let low = lowering-floors flags
+    in let back = fk + early-floor flags "SCOPE" + ck + (if low > check then low else check)
+    in deck-grow-fits mark (if front > back then front else back) 0
+
+  with-deck-grow : CompileFlags, Text -> CompileFlags
+  with-deck-grow (flags) (label) =
+    CompileFlags {
+      prose = flags.prose,
+      escape-check = flags.escape-check,
+      poison-compact = flags.poison-compact,
+      deck-scale = flags.deck-scale,
+      phase-trace = flags.phase-trace,
+      wire-trace = flags.wire-trace,
+      cost-report = flags.cost-report,
+      no-lift = flags.no-lift,
+      fidelity = flags.fidelity,
+      pipeline = flags.pipeline,
+      deck-grow = flags.deck-grow & [label]
+    }
+
   compile-checked : Text, Text, CompileFlags -> CompileChecked
   compile-checked (source) (chapter-name) (flags) =
-    let fk-height = scaled-floor (flags.deck-scale) demand-frontend-keep-floor demand-frontend-keep-guard-band
+    let mark = __heap-save
+    in let deck0 = __deck-pos
+    in let checked = compile-checked-once source chapter-name flags
+    in let ds = checked.bag.diagnostics
+    in let label = if bag-has-errors (checked.bag) then early-overflow-label ds 0 (list-length ds) else ""
+    in if label == "" then checked
+    else if early-grow-fits (with-deck-grow flags label) mark == False then checked
+    else let restored = __heap-restore mark
+    in let reset = __deck-set deck0
+    in compile-checked source chapter-name (with-deck-grow flags label)
+
+  compile-checked-once : Text, Text, CompileFlags -> CompileChecked
+  compile-checked-once (source) (chapter-name) (flags) =
+    let fk-height = grown-floor flags "FRONTEND-KEEP" demand-frontend-keep-floor demand-frontend-keep-guard-band
     in let fk-base = build fk-height
     in let h0 = __heap-save
     in let lr = compile-lex source h0 flags
@@ -1020,30 +1330,11 @@ Section: Frontend
   compile-frontend-passes (source) (chapter-name) (flags) (run-passes) =
     let checked = compile-checked source chapter-name flags
     in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-    else let lower-keep-height = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
-    in let lower-keep-base = build lower-keep-height
-    in let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
-    in let lower-base = build lower-deck-height
-    in let lower-ceiling = lower-base + lower-deck-height
-    in let set-lo = __deck-set lower-keep-base
-    in let lower-origin = __deck-pos
-    in let lower-phase = phase-start
-    in let set-ls = __deck-set lower-base
-    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter
-      (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names)
-      (checked.renames) (checked.colliding) (checked.assignments)
-      lower-ceiling run-passes lower-keep-base (lower-keep-base + lower-keep-height))
-    in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
-    in let lower-keep-bag = deck-record (
-      if flags.phase-trace then
-        let lk-used = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base)
-        in let lk-msg = lk-used & " of " & integer-to-text lower-keep-height
-        in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
-      else no-overflow-bag
-    )
-    in let passed = if run-passes then
-      deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
-    else IRPassResult { chapter = ir-raw, violations = [], infos = [] }
+    else let keep-h0 = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
+    in let lower-h0 = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
+    in let lw = lower-run checked flags run-passes keep-h0 lower-h0 0 0
+    in let passed = lw.passed
+    in let lower-height = lw.lower-height
     in let ir-passed = passed.chapter
     in let ir = passed.chapter
     in let tm = deck-record (IRTextMeta {
@@ -1056,12 +1347,7 @@ Section: Frontend
      ground-effects = checked.scoped.ground-effects,
      method-templates = ""
     })
-    in let lower-end = __deck-pos
-    in let lower-sat = if list-length (ir-raw.defs) < list-length (checked.scoped.defs) then
-      1
-    else 0
-    in let lower-metrics = phase-measure lower-phase "LOWER"
-    in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
+    in let lower-metrics = lw.metrics
     in let lp-root = address-of ir
     in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) lp-root "IRChapter" lower-metrics "LOWER")
     in let blank-ir = IRChapter {
@@ -1071,35 +1357,28 @@ Section: Frontend
       span = ir.span
     }
     in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
-    in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then
-      deck-overflow-bag "LOWER"
-    else if lower-keep-sat then deck-overflow-bag "LOWER-KEEP" else no-overflow-bag
     in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
     in let fe-bag = deck-record (
-      let lower-bags = bag-merge-all [lower-ov-bag, lower-keep-bag]
+      let lower-bags = deck-record (lower-run-bags lw flags)
       in frontend-bag-with-passes (checked.bag) lower-bags lower-esc-bag lower-precise-bag passed
     )
     in let lower-sealed = compact-phase flags poison-lower
-    in let resolved-defs = if run-passes then
-      let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
-      in let resolve-base = build resolve-deck-height
-      in let resolve-ceiling = resolve-base + resolve-deck-height
-      in let scoped-tds = checked.scoped.type-defs
-      in let type-map = deck-record (build-type-def-map scoped-tds 0 (list-length scoped-tds) [])
-      in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
-      in deck-record (rewrite-ir-defs stds (ir.defs) resolve-ceiling)
-    else ir.defs
+    in let runs = if run-passes then
+      [resolve-run checked (ir.defs) flags (scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band) 0]
+    else []
+    in let resolved-defs = if run-passes then (list-at runs 0).defs else ir.defs
+    in let resolve-bag = if run-passes then deck-record (resolve-run-bag (list-at runs 0)) else no-overflow-bag
     in let ir-resolved = __record-set ir "defs" resolved-defs
     in let result = deck-record (CompileFrontend {
      type-defs = checked.scoped.type-defs,
      text-meta = tm,
      method-inputs = method-capture-inputs (checked.scoped) (checked.all-bindings) (checked.renames) (text-length source),
-     method-height = lower-deck-height,
+     method-height = lower-height,
       ir = ir-resolved,
      cdx-ir = blank-ir,
      sorted-type-defs = [],
      renames = checked.renames,
-     bag = fe-bag,
+     bag = bag-merge-all [fe-bag, resolve-bag],
      heap-marks = checked.heap-marks,
      phase-metrics = pm1,
      fid-types = checked.ust.fid-types
@@ -1111,63 +1390,26 @@ Section: Frontend
   compile-frontend-cdx (source) (chapter-name) (flags) =
     let checked = compile-checked source chapter-name flags
     in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-    else let lower-keep-height = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
-    in let lower-keep-base = build lower-keep-height
-    in let lower-deck-height = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
-    in let lower-base = build lower-deck-height
-    in let lower-ceiling = lower-base + lower-deck-height
-    in let set-lo = __deck-set lower-keep-base
-    in let lower-origin = __deck-pos
-    in let lower-phase = phase-start
-    in let set-ls = __deck-set lower-base
-    in let (ir-raw, lower-keep-end) = deck-record (lower-chapter
-      (checked.scoped) (checked.all-bindings) (checked.ust) (checked.ctor-names)
-      (checked.renames) (checked.colliding) (checked.assignments)
-      lower-ceiling True lower-keep-base (lower-keep-base + lower-keep-height))
-    in let lower-keep-sat = lower-keep-end + demand-lower-guard-band >= lower-keep-base + lower-keep-height
-    in let lower-keep-bag = deck-record (
-      if flags.phase-trace then
-        let lk-used = "LOWER-KEEP used=" & integer-to-text (lower-keep-end - lower-keep-base)
-        in let lk-msg = lk-used & " of " & integer-to-text lower-keep-height
-        in bag-from-list [make-warning cdx-escape-violation lk-msg synthetic-span]
-      else no-overflow-bag
-    )
-    in let passed = deck-record (run-ir-pipeline (flags.pipeline) ir-raw (flags.phase-trace))
+    else let keep-h0 = scaled-floor (flags.deck-scale) demand-lower-keep-floor 0
+    in let lower-h0 = scaled-floor (flags.deck-scale) demand-lower-floor demand-lower-guard-band
+    in let lw = lower-run checked flags True keep-h0 lower-h0 0 0
+    in let lower-bags = deck-record (lower-run-bags lw flags)
+    in let passed = lw.passed
     in let ir = passed.chapter
     in let ir-check-bag = deck-record (ir-check-violation-bag (passed.violations))
     in let occ-report-bag = deck-record (occ-info-bag (passed.infos))
-    in let lower-end = __deck-pos
-    in let lower-sat = if list-length (ir-raw.defs) < list-length (checked.scoped.defs) then
-      1
-    else 0
-    in let lower-metrics = phase-measure lower-phase "LOWER"
-    in let lower-ov = check-deck-overflow (lower-end - lower-origin) lower-deck-height
+    in let lower-metrics = lw.metrics
     in let lp-root = address-of ir
     in let lower-precise-bag = deck-record (precise-escape-bag (flags.escape-check) lp-root "IRChapter" lower-metrics "LOWER")
     in let lower-sealed = compact-phase flags poison-lower
-    in let resolve-deck-height = scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band
-    in let resolve-base = build resolve-deck-height
-    in let resolve-ceiling = resolve-base + resolve-deck-height
-    in let resolve-phase = phase-start
-    in let type-map = deck-record (build-type-def-map (checked.scoped.type-defs) 0 (list-length (checked.scoped.type-defs)) [])
-    in let stds = deck-record (sort-bindings (type-map & checked.all-bindings))
-    in let resolved-defs = deck-record (rewrite-ir-defs stds (ir.defs) resolve-ceiling)
-    in let resolve-sat = if deck-short-of resolve-ceiling demand-resolve-guard-band then 1 else 0
-    in let resolve-metrics = phase-measure resolve-phase "RESOLVE"
-    in let resolve-ov = check-deck-overflow (resolve-metrics.deck-end - resolve-metrics.deck-origin) resolve-deck-height
-    in let lift-deck-height = scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band
-    in let lift-base = build lift-deck-height
-    in let lift-ceiling = lift-base + lift-deck-height
-    in let lift-phase = phase-start
-    in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
-     name = ir.name,
-     defs = resolved-defs,
-     effect-op-names = ir.effect-op-names,
-     span = ir.span
-    }) lift-ceiling)
-    in let lift-sat = if deck-short-of lift-ceiling demand-lift-guard-band then 1 else 0
-    in let lift-metrics = phase-measure lift-phase "LIFT"
-    in let lift-ov = check-deck-overflow (lift-metrics.deck-end - lift-metrics.deck-origin) lift-deck-height
+    in let rr = resolve-run checked (ir.defs) flags (scaled-floor (flags.deck-scale) demand-resolve-floor demand-resolve-guard-band) 0
+    in let resolved-defs = rr.defs
+    in let stds = rr.stds
+    in let resolve-metrics = rr.metrics
+    in let lr = lift-run ir resolved-defs (scaled-floor (flags.deck-scale) demand-lift-floor demand-lift-guard-band) 0
+    in let cdx-chapter = lr.chapter
+    in let lift-metrics = lr.metrics
+    in let lift-deck-height = lr.height
     in let tm = deck-record (IRTextMeta {
      chapter-title = checked.scoped.chapter-title,
      prose = checked.scoped.prose,
@@ -1187,15 +1429,10 @@ Section: Frontend
     in let pm1 = deck-record (list-push (checked.phase-metrics) lower-metrics)
     in let pm2 = deck-record (list-push pm1 resolve-metrics)
     in let pm3 = deck-record (list-push pm2 lift-metrics)
-    in let lower-ov-bag = if lower-ov == 1 | lower-sat == 1 then
-      deck-overflow-bag "LOWER"
-    else if lower-keep-sat then deck-overflow-bag "LOWER-KEEP" else no-overflow-bag
-    in let resolve-ov-bag = if resolve-ov == 1 | resolve-sat == 1 then
-      deck-overflow-bag "RESOLVE"
-    else no-overflow-bag
-    in let lift-ov-bag = if lift-ov == 1 | lift-sat == 1 then
-      deck-overflow-bag "LIFT"
-    else no-overflow-bag
+    in let resolve-ov-bag = if rr.short then deck-overflow-bag "RESOLVE" else no-overflow-bag
+    in let lift-ov-bag = if lr.short then deck-overflow-bag "LIFT" else no-overflow-bag
+    in let resolve-grown = deck-record (deck-grown-notes "RESOLVE" (rr.height) (rr.grown) [])
+    in let late-grown-bag = deck-record (bag-from-list (resolve-grown & deck-grown-notes "LIFT" (lr.height) (lr.grown) []))
     in let lower-esc-bag = escape-check-bag (flags.escape-check) lower-metrics "LOWER"
     in let resolve-esc-bag = escape-check-bag (flags.escape-check) resolve-metrics "RESOLVE"
     in let lift-esc-bag = escape-check-bag (flags.escape-check) lift-metrics "LIFT"
@@ -1249,10 +1486,10 @@ Section: Frontend
       lir-report-bag,
       lir-probe-bag,
       lir-narrow-bag,
-      lower-ov-bag,
-      lower-keep-bag,
+      lower-bags,
       resolve-ov-bag,
       lift-ov-bag,
+      late-grown-bag,
       lower-esc-bag,
       resolve-esc-bag,
       lift-esc-bag,
@@ -1692,7 +1929,7 @@ Section: Text Compilation
 Section: Binary Compilation
 
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False False False
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False False WatchdogProgress 0 False False False False
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write"]
@@ -1721,8 +1958,8 @@ Section: Binary Compilation
   ]
 
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode,
-    Integer between 0 and 2, Boolean, Boolean, Boolean -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) (census) (cover) =
+    Integer between 0 and 2, Boolean, Boolean, Boolean, Boolean -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) (trace) (wd-mode) (hosted-target) (avx-local) (census) (cover) (pe-link) =
     if bag-has-errors (fe.bag) then
       EmitChapterResult {
         header-bytes = [],
@@ -1740,7 +1977,7 @@ Section: Binary Compilation
     in let dropped = ir-dropped-budgeted-punctuals all-defs (pruned.defs)
     in let emit-input = ir-chapter-with-proofs pruned proofs
     in let emit-result = if list-length (fe.method-inputs.classes) == 0 then
-      x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover
+      x86-64-emit-cdx-with-exit-mode emit-input (fe.sorted-type-defs) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover pe-link
     else let scan-copy = IRChapter {
       name = emit-input.name,
       defs = emit-input.defs,
@@ -1759,7 +1996,7 @@ Section: Binary Compilation
         symbol-map = []
       }
     else
-      x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover
+      x86-64-emit-cdx-with-exit-mode emit-input (method-runtime-bindings (fe.sorted-type-defs) materialized) exit-mode poison trace wd-mode dropped hosted-target avx-local census cover pe-link
     in EmitChapterResult {
      header-bytes = emit-result.header-bytes,
      content-buf = emit-result.content-buf,
@@ -2023,7 +2260,7 @@ Section: Entry Point
       let cm-avx = has-mode-flag mode "avx-local"
       in let cm-census = has-mode-flag mode "callcensus"
       in let cm-cover = has-mode-flag mode "cover"
-      in let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target cm-avx cm-census cm-cover
+      in let result = compile-to-cdx-with-exit-mode fe exit-mode poison trace wd-mode hosted-target cm-avx cm-census cm-cover (has-mode-flag mode "pe-base")
       in act
        if prof then print-line-uni ("PROF-END: " & show (prof-dump 0))
        else print-line-uni ""
@@ -2408,7 +2645,8 @@ Section: Entry Point
       cost-report = has-mode-flag mode "cost-report",
       no-lift = has-mode-flag mode "no-lift",
       fidelity = has-mode-flag mode "fidelity",
-      pipeline = pipeline-of mode
+      pipeline = pipeline-of mode,
+      deck-grow = []
     }
 
  The volume is resolved from the disk's own GPT rather than assumed to
@@ -2818,9 +3056,14 @@ Section: Entry Point
 
   admit-quotations : SourceSplit, Text, Text, CompileFlags, Integer, Integer, Text -> [Console, FileSystem] Nothing
   admit-quotations (split) (cmd) (mode) (flags) (keep-base) (keep-height) (prefix) =
-    if check-deck-overflow (text-length prefix * 2 + 4096) keep-height == 1
-    then refuse-quotations (bag-errors (deck-overflow-bag "QUOTE-KEEP"))
-    else let dset = __deck-set keep-base
+    let need = text-length prefix * 2 + 4096
+    in if check-deck-overflow need keep-height == 0 then admit-quotations-at split cmd mode flags keep-base prefix
+    else if deck-grow-fits __heap-save need 0 then admit-quotations-at split cmd mode flags (build need) prefix
+    else refuse-quotations (bag-errors (deck-overflow-bag "QUOTE-KEEP"))
+
+  admit-quotations-at : SourceSplit, Text, Text, CompileFlags, Integer, Text -> [Console, FileSystem] Nothing
+  admit-quotations-at (split) (cmd) (mode) (flags) (keep-base) (prefix) =
+    let dset = __deck-set keep-base
     in let kept = deck-record (copy-sx-text keep-base prefix)
     in let sealed = compact-phase flags poison-parse
     in compile-plain (kept & split.sp-body) cmd mode flags

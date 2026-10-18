@@ -114,6 +114,48 @@ Chapter: BvtBedDecor
           shut <- bbe-rebed owner bed (Just entrance)
           print-line-uni ("BEDDECOR rebed beside " & show beside.x & "," & show beside.y & " open " & show opened.x & "," & show opened.y & " walled " & show shut.x & "," & show shut.y & " walls-refused=" & show walls)
           e <- bvt-check "a worker whose bed is blocked moves it to the free tile beside it when that tile routes from its door" (not (bbe-same beside bed) & bbe-same opened beside)
-          f <- bvt-check "the same tile walled in from every side but the bed is refused, and the worker takes an inn bed" (walls == 0 & not (bbe-same shut beside) & not (bbe-same shut bed))
-          a + b + d + e + f
+          f <- bvt-check "the same tile walled in from every side but the bed is refused" (walls == 0 & not (bbe-same shut beside) & not (bbe-same shut bed))
+          housed <- cgg-house-of shut 0
+          print-line-uni ("BEDDECOR rehoused house " & show housed)
+          g <- bvt-check "the refused worker moves into another house's floor, not the inn (UOAIX-239)" (housed >= 0 & housed < list-length cgg-houses)
+          fam0 <- owner.housing.fam-count
+          spouse <- bbe-grow owner 1 1
+          fam1 <- owner.housing.fam-count
+          same-day <- bbe-grow owner 2 1
+          week <- bbe-grow owner 2 8
+          fam2 <- owner.housing.fam-count
+          full <- bbe-grow owner 256 9
+          inside <- bbe-inside owner 0
+          print-line-uni ("BEDDECOR family " & show fam0 & " -> " & show fam1 & " -> " & show fam2 & " grown " & show spouse & "," & show same-day & "," & show week & "," & show full & " astray " & show inside)
+          k <- bvt-check "a lodged NPC whose city house has room takes a spouse in the house, no child the same day, a child 7 days on; a full house adds no one; every member stands in the house (UOAIX-239)" (spouse == 1 & fam1 == fam0 + 1 & same-day == 0 & week == 1 & fam2 == fam1 + 1 & full == 0 & inside == 0)
+          pick-up <- cg-ambition-pick [bbe-edge 0, bbe-centre 0] [0, 0] 2 True 0 0 (0 - 1)
+          pick-down <- cg-ambition-pick [bbe-edge 0, bbe-centre 0] [0, 0] 2 False 1000000 0 (0 - 1)
+          pick-full <- cg-ambition-pick [bbe-edge 0, bbe-centre 0] [0, 16] 2 True (cg-house-worth (bbe-edge 0)) 0 (0 - 1)
+          print-line-uni ("BEDDECOR ambition worth edge " & show (cg-house-worth (bbe-edge 0)) & " centre " & show (cg-house-worth (bbe-centre 0)) & " up " & show pick-up & " down " & show pick-down & " full " & show pick-full)
+          m <- bvt-check "ambition: a prospering NPC picks the more valuable house with room (Britain's centre over its edge), a failing one the less valuable; a full house is never picked (UOAIX-239)" (cg-house-worth (bbe-centre 0) > cg-house-worth (bbe-edge 0) & pick-up == 1 & pick-down == 0 & pick-full < 0)
+          alone <- cg-house-ok [True, True] (BbSpot { x = 1502, y = 1523, z = 40 }) [] (cg-least-load [True, True] [] 0 (0 - 1)) (\s -> True)
+          crowded <- cg-house-ok [True, True] (BbSpot { x = 1503, y = 1524, z = 40 }) [BbSpot { x = 1502, y = 1523, z = 40 }] (cg-least-load [True, True] [BbSpot { x = 1502, y = 1523, z = 40 }] 0 (0 - 1)) (\s -> True)
+          shared <- cg-house-ok [True, True] (BbSpot { x = 1503, y = 1524, z = 40 }) [BbSpot { x = 1474, y = 1517, z = 20 }, BbSpot { x = 1502, y = 1523, z = 40 }] (cg-least-load [True, True] [BbSpot { x = 1474, y = 1517, z = 20 }, BbSpot { x = 1502, y = 1523, z = 40 }] 0 (0 - 1)) (\s -> True)
+          print-line-uni ("BEDDECOR census alone " & show (if alone then 1 else 0) & " crowded " & show (if crowded then 1 else 0) & " shared " & show (if shared then 1 else 0))
+          n <- bvt-check "the census keeps a worker alone in its house; a second in a house re-spreads while a house stands empty, and keeps its tile once every house holds one (UOAIX-239)" (alone & not crowded & shared)
+          a + b + d + e + f + g + k + m + n
         end
+ A 16 x 16 house inside the fixture's walk map (256 tiles, room for 16), holding miner 0 with a load.
+  bbe-house : CggHouse = CggHouse { door = BbSpot { x = 1416, y = 1689, z = 0 }, floor = BbShop { title = "Home", premises = "Test", x1 = 1416, y1 = 1690, x2 = 1431, y2 = 1705 } }
+  bbe-grow : CompositeGame, Integer, Integer -> Integer
+  bbe-grow (owner) (load) (day) = when owner.town
+    is None -> 0
+    is Just (t) -> when owner.town-map
+      is None -> 0
+      is Just (map) -> let c = list-at owner.miners 0
+        in cg-family-grow owner t map [bbe-house] [c.serial] [BbSpot { x = 1420, y = 1695, z = 0 }] [load] day 0
+  bbe-inside : CompositeGame, Integer -> Integer
+  bbe-inside (owner) (i) = if i >= owner.housing.fam-count then 0
+    else (when world-get owner.checkpoint.game.world (hs-fam owner.housing i 1) is Err (_) -> 1 is Ok (m) -> if cgg-in-box bbe-house.floor m.x m.y then 0 else 1) + bbe-inside owner (i + 1)
+ Two 16 x 16 houses of the same size, one with its door at Britain's centre and one at the box's corner.
+  bbe-centre : Integer -> CggHouse
+  bbe-centre (unused) = let c = list-at (ct-table 0) 0 in let x = (c.x1 + c.x2) / 2 in let y = (c.y1 + c.y2) / 2
+    in CggHouse { door = BbSpot { x = x, y = y, z = 0 }, floor = BbShop { title = "Home", premises = "Test", x1 = x, y1 = y + 1, x2 = x + 15, y2 = y + 16 } }
+  bbe-edge : Integer -> CggHouse
+  bbe-edge (unused) = let c = list-at (ct-table 0) 0
+    in CggHouse { door = BbSpot { x = c.x1, y = c.y1, z = 0 }, floor = BbShop { title = "Home", premises = "Test", x1 = c.x1, y1 = c.y1 + 1, x2 = c.x1 + 15, y2 = c.y1 + 16 } }

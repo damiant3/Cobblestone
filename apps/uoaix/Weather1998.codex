@@ -1,0 +1,133 @@
+Chapter: Weather1998
+  cites Foreword chapter Random
+
+ The June 1998 weather (draxinar's OUO weather.c, UoDemo.exe 0x004E04FC to 0x004E0E88; rundir weather.txt, read at OUO
+ file slot 0x2D). weather.txt holds three circular snow regions; OUO keeps MoveSpeed and the two extreme chances but no
+ code reads them. A region is in range by Chebyshev distance below its radius.
+  wx-names : List Text = ["Arctic_Island_Blizzard", "Crazy_Snow_One", "Crazy_Snow_Two"]
+  wx-cx : List Integer = [4121, 1366, 2544]
+  wx-cy : List Integer = [508, 1180, 846]
+  wx-radius : List Integer = [250, 125, 125]
+  wx-average : List Integer = [10, 10, 10]
+  wx-chance : List Integer = [100, 50, 50]
+  wx-n : Integer = 3
+ CTimeManager_Update runs WeatherManager_UpdateWeather every 128 ticks; a game minute is 20 ticks (time.c), so a weather
+ tick is 6.4 game minutes, 384 game seconds. A month is 4 weeks of 7 days and each month advances the season, winter
+ first (WeatherManager_AdvanceSeason).
+  wx-tick-seconds : Integer = 384
+  wx-month-days : Integer = 28
+ The 1.25.32 client's weather handler (CLIENT.EXE 0x47D610): with no weather showing, type 1 begins rain ("It begins to
+ rain.") and type 2 snow, each with count particles, at most 70; while one shows, type 1 or 2 moves the particle count
+ to count and type 0 clears it. Type 4 only draws two random numbers and 0xFF is no clear, so neither is sent; a change
+ of kind is a clear and then the new kind.
+  wx-rain : Integer = 1
+  wx-snow : Integer = 2
+ Rain (UOAIX-244, Damian 2026-10-12: "snow, rain, etc."; root's spec, beyond 1998): the land west of the dungeons (x below
+ 5120, y below 4096) in cells of 256 tiles, 20 across and 16 down, each running the 1998 region's spell. A clear cell
+ starts a spell when a roll of 1..1000 is at most its season's chance, more in spring and autumn; one spell in five is a
+ storm, drawn as rain of up to 70 drops against rain's 40, the client having no storm effect.
+  wx-cell-tiles : Integer = 256
+  wx-cols : Integer = 20
+  wx-cells : Integer = 320
+  wx-cell-chance : Integer -> Integer
+  wx-cell-chance (season) = if season == 0 then 8 else if season == 2 then 6 else 15
+  wx-storm-in : Integer = 200
+  wx-rain-drops : Integer = 40
+ State (wx-bytes): 0 the last tick run (+ 1), then 40-byte rows, the three regions and then the cells: intensity,
+ precipitating, waning, the intensity shown, storm. Made at boot; a restart starts the weather clear.
+  wx-row : Integer = 40
+  wx-bytes : Integer = 8 + (3 + 320) * 40
+  wx-new : Integer -> Integer
+  wx-new (unused) = let b = alloc-bytes wx-bytes in wx-zero b 0
+  wx-zero : Integer, Integer -> Integer
+  wx-zero (b) (i) = if i >= wx-bytes then b else let z = poke-qword b i 0 in wx-zero b (i + 8)
+  wx-get : Integer, Integer, Integer -> Integer
+  wx-get (b) (r) (field) = peek-qword b (8 + r * wx-row + field * 8)
+  wx-put : Integer, Integer, Integer, Integer -> Integer
+  wx-put (b) (r) (field) (value) = poke-qword b (8 + r * wx-row + field * 8) value
+  wx-at : List Integer, Integer -> Integer
+  wx-at (xs) (k) = if k < 0 | k >= list-length xs then 0 else list-at xs k
+ A hash of the tick, the row and a salt, so a replay rolls the same; uniform in 0..999.
+  wx-draw : Integer, Integer, Integer -> Integer
+  wx-draw (k) (r) (salt) = int-mod (bit-and (mix-bits (k * 512 + r) (1998 + salt)) #7FFFFFFF) 1000
+ CWeatherRegion::tick (0x004E0BCE): a clear row starts when its roll comes; the intensity rises 5 a tick past its target
+ (precipChance + random + 100, capped at 70, so always 70) and falls 5 a tick until it is below 1. OUO's cooldown never
+ stops the roll, so it is left out.
+  wx-start : Integer, Integer, Integer -> Integer
+  wx-start (b) (r) (storm) = let a = wx-put b r 0 0 in let c = wx-put b r 1 1 in let d = wx-put b r 2 0 in let e = wx-put b r 3 0 in wx-put b r 4 storm
+  wx-ramp : Integer, Integer -> Integer
+  wx-ramp (b) (r) = if wx-get b r 1 == 0 then 0
+    else let shown = wx-put b r 3 (wx-get b r 0)
+    in if wx-get b r 2 == 0 then (let up = wx-put b r 0 (wx-get b r 0 + 5) in if wx-get b r 0 > 70 then wx-put b r 2 1 else 0)
+    else let down = wx-put b r 0 (wx-get b r 0 - 5) in if wx-get b r 0 < 1 then wx-put b r 1 0 else 0
+ GetRandomRange(1, 100) < precipChance for a 1998 region.
+  wx-tick-region : Integer, Integer, Integer -> Integer
+  wx-tick-region (b) (r) (k) = let started = if wx-get b r 1 == 0 & wx-draw k r 0 / 10 + 1 < wx-at wx-chance r then wx-start b r 0 else 0
+    in wx-ramp b r
+  wx-tick-cell : Integer, Integer, Integer, Integer -> Integer
+  wx-tick-cell (b) (c) (k) (season) = let r = wx-n + c
+    in let started = if wx-get b r 1 == 0 & wx-draw k r 0 + 1 <= wx-cell-chance season then wx-start b r (if wx-draw k r 1 < wx-storm-in then 1 else 0) else 0
+    in wx-ramp b r
+  wx-tick-all : Integer, Integer, Integer -> Integer
+  wx-tick-all (b) (r) (k) = if r >= wx-n then wx-tick-cells b 0 k (wx-season (k * wx-tick-seconds))
+    else let t = wx-tick-region b r k in wx-tick-all b (r + 1) k
+  wx-tick-cells : Integer, Integer, Integer, Integer -> Integer
+  wx-tick-cells (b) (c) (k) (season) = if c >= wx-cells then 0 else let t = wx-tick-cell b c k season in wx-tick-cells b (c + 1) k season
+ Runs every tick due by game second seconds; a gap of more than 64 ticks (a restart, a clock jump) runs only the last.
+  wx-advance : Integer, Integer -> Integer
+  wx-advance (b) (seconds) = if b == 0 then 0
+    else let due = seconds / wx-tick-seconds
+    in let done = peek-qword b 0 - 1
+    in if due <= done then 0
+    else let from = if due - done > 64 then due - 1 else done
+    in let ran = wx-run b (from + 1) due in let marked = poke-qword b 0 (due + 1) in ran
+  wx-run : Integer, Integer, Integer -> Integer
+  wx-run (b) (k) (last) = if k > last then 0 else let t = wx-tick-all b 0 k in 1 + wx-run b (k + 1) last
+  wx-season : Integer -> Integer
+  wx-season (seconds) = int-mod (seconds / 86400 / wx-month-days) 4
+ getSeasonModifier and getLatitudeModifier (0x004E0A12, 0x004E0A66), as OUO has them.
+  wx-season-mod : Integer -> Integer
+  wx-season-mod (season) = if season == 0 then -30 else if season == 1 then 5 else if season == 2 then 30 else -5
+  wx-latitude-mod : Integer -> Integer
+  wx-latitude-mod (y) = if y >= 0 & y < 32 then -30 else if y > 96 then 30 else 0
+  wx-in : Integer, Integer, Integer -> Boolean
+  wx-in (r) (x) (y) = max (wx-abs (x - wx-at wx-cx r)) (wx-abs (y - wx-at wx-cy r)) < wx-at wx-radius r
+  wx-abs : Integer -> Integer
+  wx-abs (v) = if v < 0 then 0 - v else v
+ getAverageWeather (0x004E04FC): the season and latitude modifiers and each region in range, averaged.
+  wx-temperature : Integer, Integer, Integer -> Integer
+  wx-temperature (seconds) (x) (y) = let season = wx-season seconds
+    in wx-temp-sum season x y 0 (wx-season-mod season + wx-latitude-mod y) 1
+  wx-temp-sum : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wx-temp-sum (season) (x) (y) (r) (sum) (count) = if r >= wx-n then sum / count
+    else if wx-in r x y then wx-temp-sum season x y (r + 1) (sum + wx-at wx-average r + wx-season-mod season + wx-latitude-mod (wx-at wx-cy r)) (count + 1)
+    else wx-temp-sum season x y (r + 1) sum count
+ The ground under a player, from the whole-map cache's land marks: 0 open land, 1 sand (deserts and beaches), 2 cave
+ (mountain and cave land below z 40), 3 high ground (mountain land from z 40).
+  wx-plain : Integer = 0
+  wx-sand : Integer = 1
+  wx-cave : Integer = 2
+  wx-high : Integer = 3
+  wx-high-z : Integer = 40
+ What a player at x, y sees, as type * 256 + count, 0 for none: a precipitating 1998 region's snow first; nothing in the
+ dungeons, on sand or in a cave; else its cell's spell, rain (snow on high ground in winter).
+  wx-code : Integer, Integer, Integer, Integer, Integer -> Integer
+  wx-code (b) (x) (y) (seconds) (ground) = if b == 0 then 0 else wx-code-in b x y seconds ground 0
+  wx-code-in : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  wx-code-in (b) (x) (y) (seconds) (ground) (r) = if r < wx-n then (if wx-get b r 1 /= 0 & wx-in r x y then wx-snow * 256 + min 70 (wx-get b r 3) else wx-code-in b x y seconds ground (r + 1))
+    else if x < 0 | y < 0 | x >= wx-cols * wx-cell-tiles | y >= 4096 | ground == wx-sand | ground == wx-cave then 0
+    else let row = wx-n + y / wx-cell-tiles * wx-cols + x / wx-cell-tiles
+    in if wx-get b row 1 == 0 then 0
+    else let kind = if ground == wx-high & wx-season seconds == 0 then wx-snow else wx-rain
+    in kind * 256 + min (if wx-get b row 4 /= 0 then 70 else wx-rain-drops) (wx-get b row 3)
+ PDSTRUCT_WEATHERCHANGE (0x65): type, count, temperature, the temperature as an unsigned byte.
+  wx-packet : Integer, Integer -> List Integer
+  wx-packet (code) (temperature) = [#65, code / 256, int-mod code 256, int-mod (temperature + 256) 256]
+ sendWeatherToPlayer (0x004E0E3D) at login: type 0xFE with the season and the temperature.
+  wx-login : Integer, Integer, Integer -> List Integer
+  wx-login (seconds) (x) (y) = [#65, #FE, wx-season seconds, int-mod (wx-temperature seconds x y + 256) 256]
+ The packets that move a client showing old to new: a change of kind clears first.
+  wx-change : Integer, Integer, Integer -> List (List Integer)
+  wx-change (old) (new) (temperature) = if new == 0 then [wx-packet 0 temperature]
+    else if old > 0 & old / 256 /= new / 256 then [wx-packet 0 temperature, wx-packet new temperature]
+    else [wx-packet new temperature]

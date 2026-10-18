@@ -1,0 +1,24 @@
+Chapter: DayLight
+
+ The global light level, 0 full daylight to 30 full darkness (packet 0x4F). The hourly table and the moon tables are
+ OUO's (github.com/draxinar/ouo, MIT) time.c LightTables_Init, which fills the tables the 1998 UoDemo binary leaves at
+ zero; the moon phases are OUO's CLightManager_GetTrammelPhase (0x00473C3F) and GetFeluccaPhase (0x00473C74), and the
+ light is the hour's level less both moons' contribution, never below 0 (GlobalLightManager_Tick, 0x00473CCD).
+  dl-hourly : List Integer = [30, 30, 30, 30, 20, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 20, 30, 30, 30, 30]
+  dl-moon : List Integer = [0, 1, 2, 3, 4, 3, 2, 1]
+ Source-X CServerConfig m_iLightDungeon (Apache-2.0, Sphere-LICENSE.txt): the light of a dungeon, the 1.25 map east of
+ x 5120, at every hour.
+  dl-dungeon : Integer = 27
+  dl-trammel : Integer, Integer -> Integer
+  dl-trammel (hour) (minute) = bit-and ((hour * 6 + minute / 10 + 1) / 3 + 4) 7
+  dl-felucca : Integer, Integer -> Integer
+  dl-felucca (hour) (minute) = bit-and (hour * 6 + minute / 10 + 4) 7
+ The darkest sky the shard sends: the table's 30 scaled to 12, near RunUO's NightLevel 9 (Damian, 2026-10-13: "the
+ light levels are too low, its gotten even darker now and the screen is almost totally black").
+  dl-night : Integer = 12
+  dl-sky : Integer -> Integer
+  dl-sky (seconds) = let hour = int-mod (seconds / 3600) 24
+    in let minute = int-mod (seconds / 60) 60
+    in max 0 (list-at dl-hourly hour - list-at dl-moon (dl-trammel hour minute) - list-at dl-moon (dl-felucca hour minute)) * dl-night / 30
+  dl-light : Integer, Integer -> Integer
+  dl-light (x) (seconds) = if x >= 5120 then dl-dungeon else dl-sky seconds

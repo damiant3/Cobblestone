@@ -1,5 +1,7 @@
 Chapter: CompositeGameServer
   cites Uoaix chapter CompositePaging
+  cites Uoaix chapter MultiDesigns
+  cites Uoaix chapter CompositePanelOffline
   cites Uoaix chapter CompositePlays
   cites Uoaix chapter GameHuffman
   cites Uoaix chapter CompositeLaunch
@@ -85,6 +87,7 @@ Chapter: CompositeGameServer
               citied <- cgs-cities cache installed owner.state britain
               cited <- slg-line owner.state.checkpoint.game.log slg-town slg-info citied
               guarded <- slg-line owner.state.checkpoint.game.log slg-town slg-info (cgs-city-guards owner.state)
+              lodged <- slg-line owner.state.checkpoint.game.log slg-town slg-info (cg-inn-lodgers owner.state)
               regrown <- cs-grow owner
               h5 <- cgs-heap "city-windows"
               when doored
@@ -110,12 +113,22 @@ Chapter: CompositeGameServer
       is Err (e) -> "CITY WINDOWS off: " & e
       is Ok (maps) -> let bound = __record-set game "city-maps" maps
         in let planned = __record-set game "city-navs" (cgs-navs game maps 0 [])
+        in let sliced = cgs-plan-job game britain maps
         in let founded = bb-found-cities-noted game.vendor game.items game.cities maps
         in let workers = cg-city-workers game
         in ct-said game.cities maps 0 ("CITY WINDOWS " & show (list-length maps) & ":") & (when founded is Err (e) -> "; CITY SHOPS refused: " & e is Ok (f) -> "; CITY SHOPS founded=" & show f.founded & " vendors=" & show game.vendor.vendor-count & (if text-length f.refused == 0 then "" else " cornered (no clear tile): " & f.refused)) & "; " & workers
   end
  Each city's route planner is sized to its own window (tl-plan-sized refuses a map of other dimensions), city 0's is the
  townsfolk's: a planner costs 112 bytes a cell, 8.5 MB for Trinsic's 272 x 280.
+ The keepers' slice job (TownRoutes RteJob) gets one planner sized to the largest window, Britain's or a city's.
+  cgs-most-cells : List WalkMap, Integer, Integer -> Integer
+  cgs-most-cells (maps) (i) (most) = if i >= list-length maps then most else let m = list-at maps i in cgs-most-cells maps (i + 1) (max most (m.width * m.height))
+  cgs-plan-job : CompositeGame, WalkMap, List WalkMap -> Integer
+  cgs-plan-job (game) (britain) (maps) = when game.staff
+    is None -> 0
+    is Just (s) -> when game.town
+      is None -> 0
+      is Just (t) -> let set = __record-set s "job" (Just (rte-job-new (cgs-most-cells maps 0 (britain.width * britain.height)) t.nav britain game.town-doors)) in 1
   cgs-city-guards : CompositeGame -> Text
   cgs-city-guards (game) = when cg-city-guards game
     is Err (e) -> "CITY GUARDS refused: " & e
@@ -183,7 +196,8 @@ Chapter: CompositeGameServer
       & ",\"links\":{\"slots\":" & show (list-length links.server.protocols) & ",\"dynamic\":" & (if links.admit-dynamic then "true" else "false") & ",\"round_ticks\":" & show links.round-ticks & ",\"round_budget\":" & show links.round-budget & "}"
       & ",\"help_pages\":" & cgs-pages owner.pages 0 [] & ",\"law\":" & cgs-law owner.state & ",\"wilds\":" & cgs-wilds owner.state & ",\"sea\":" & cgs-sea owner.state & ",\"town\":" & cgs-town owner.state
       & ",\"decor\":{\"land\":[" & panel-join (cgs-land owner.state.land links.server.game.accounts 0 []) 0 [] & "]"
-      & ",\"count\":" & show s.decor.count & ",\"marked\":" & dc-marked-json s.decor world 0 "" & ",\"removed\":" & dc-removed-json s.decor world 0 "" & "}}"
+      & ",\"count\":" & show s.decor.count & ",\"marked\":" & dc-marked-json s.decor world 0 "" & ",\"removed\":" & dc-removed-json s.decor world 0 ""
+      & ",\"cuts\":" & md-cuts-json s.designs s.decor world 0 "" & "}}"
  live.decor.land (UoaixDecorator.md, the bake): every pending land edit, art -1 keeping the client's art.
   cgs-land : GmLand, Integer, Integer, List Text -> List Text
   cgs-land (s) (accounts) (i) (out) = if i >= s.count then out
@@ -224,7 +238,7 @@ Chapter: CompositeGameServer
   cgs-due : GameWorldSpawn, Integer -> Integer
   cgs-due (g) (i) = let since = peek-qword g.shortfalls (i * 8)
     in let wait = gm-ticks 7200000
-    in if since <= 0 then 0 - 1 else max 0 (wait - (g.combat.tick - since)) * 120 / wait
+    in if since <= 0 | gws-region-cleared g i then 0 - 1 else max 0 (wait - (g.combat.tick - since)) * 120 / wait
   cgs-notable : GameWorldSpawn, Integer, Integer, List Text -> List Text
   cgs-notable (g) (i) (n) (out) = if i >= n | list-length out >= 24 then out
     else let r = list-at g.catalog.regions i
@@ -307,7 +321,6 @@ Chapter: CompositeGameServer
     else if action == "summon-creature" then (if graphic < 1 | graphic > #3FF then [] else [cgs-speech ("[summon " & cgs-hex4 graphic)])
     else if action == "inspect" then (if target <= 0 then [] else [cgs-target 1 target 0 0 0])
     else if action == "move" then (if target <= 0 | not placed then [] else [cgs-target 2 target 0 0 0, cgs-target 3 0 x y z])
-    else if action == "grant-plot" then (if target <= 0 | not placed then [] else [cgs-speech "[plot", cgs-target 6 target 0 0 0, cgs-target 7 0 x y z])
     else if action == "ban" then (if target <= 0 then [] else [cgs-speech "[ban", cgs-target 11 target 0 0 0])
     else if action == "decor-baked" then cgs-baked (json-get-str v "serials" "") 0 0 []
     else if action == "unban" then (let account = json-get-str v "account" "" in if text-length account < 1 | text-length account > 30 | not (cgs-name-ok account 0) then [] else [cgs-speech ("[unban " & account)])
@@ -328,6 +341,32 @@ Chapter: CompositeGameServer
     else let cleared = __record-set cell "packets" []
     in let applied = panel-action-apply panel panel.pending get-ticks (cgs-panel-held cell)
     in if applied == 0 then cell.packets else []
+  CgsOffline = record { claimed : Text, id : Integer }
+  cgs-british-on : GameLinks, Integer -> Boolean
+  cgs-british-on (links) (i) = if i >= list-length links.peers | i >= list-length links.server.protocols then False
+    else let p = list-at links.server.protocols i
+    in let peer = list-at links.peers i
+    in if p.game.mode == 2 & p.game.session.phase == 2 & peer.lord == 1 & peer.account == ga-british links.server.game.accounts then True
+    else cgs-british-on links (i + 1)
+  cgs-panel-offline : AdminPanel, GameLinks, CgsOffline, Integer -> Text
+  cgs-panel-offline (panel) (links) (cell) (unused) = if panel.pending-state /= 1 then ""
+    else if cgs-british-on links 0 then ""
+    else let log = admin-load panel.log (panel-log-at panel (panel.pending-log - 1))
+    in let entry = (json-parse-value log 0 (text-length log)).value
+    in if not (cpo-offline (json-get-str entry "action" "")) then ""
+    else let cleared = __record-set cell "claimed" ""
+    in let id = __record-set cell "id" panel.pending-log
+    in let applied = panel-action-apply panel panel.pending get-ticks (cgs-panel-claimed cell)
+    in if applied == 0 then cell.claimed else ""
+  cgs-panel-claimed : CgsOffline, JsonValue -> Integer
+  cgs-panel-claimed (cell) (v) = if list-length (cgs-panel-command v) == 0 then 1
+    else let kept = __record-set cell "claimed" (json-emit v) in 0
+  cgs-panel-answer : AdminPanel, CgsOffline, Text, Boolean -> Integer
+  cgs-panel-answer (panel) (cell) (said) (ok) = if cell.id < 1 then -1
+    else let marked = panel-log-result panel cell.id (if ok then 1 else -1)
+    in let text = if text-length said > 400 then substring said 0 400 else said
+    in let logged = panel-log panel "panel-answer" (JsonObject [json-pair "of" (JsonInt cell.id), json-pair "applied" (JsonBool ok), json-pair "text" (JsonStr text)]) get-ticks False
+    in if logged < 0 then -1 else panel-log-result panel logged (if ok then 1 else -1)
   cgs-resident : TownLive, Integer, Integer -> Integer
   cgs-resident (t) (person) (i) = if i == t.count then -1
     else if (list-at t.residents i).person == person then i else cgs-resident t person (i + 1)
@@ -395,7 +434,11 @@ Chapter: CompositeGameServer
         in let naming = panel-bind-names panel (cgs-who owner)
         in let rotting = panel-bind-decays panel (cgs-decays owner)
         in let baking = panel-bind-land-baked panel (cgs-land-baked owner)
+        in let housing = panel-bind-houses panel (\unused -> hs-json owner.state.construction (as-mobile-name owner.state.active owner.state.checkpoint.game))
         in let taking = __record-set owner "panel-take" (cgs-panel-take panel (CgsTake { packets = [] }))
+        in let offline = CgsOffline { claimed = "", id = 0 }
+        in let claiming = __record-set owner "panel-offline" (cgs-panel-offline panel links offline)
+        in let answering = __record-set owner "panel-answer" (cgs-panel-answer panel offline)
         in let ruling = __record-set owner "gm-allow" (cgs-gm-allow panel)
         in let gm-dues = __record-set owner "gm-due" (\u -> gm-due panel.gms | panel-log-due panel)
         in let gm-grows = __record-set owner "gm-grow" (\u -> (if gm-due panel.gms then gm-grow panel.gms else 0) + panel-log-grow panel)
@@ -474,6 +517,11 @@ Chapter: CompositeGameServer
                     configured <- __record-set owner.state "testing" testing
                     tiled <- __record-set owner.state.items "tiles" table
                     slg-line owner.state.checkpoint.game.log slg-items slg-info (if table == 0 then "ITEMS none: reinstall the map cache for TILEDATA names and weights" else "ITEMS installed")
+                    multis <- wmc-multis cache
+                    designed <- __record-set owner.state.designs "data" (when multis is Err (_) -> 0 is Ok (d) -> d)
+                    slg-line owner.state.checkpoint.game.log slg-items slg-info (when multis
+                      is Err (e) -> "MULTIS off: " & e
+                      is Ok (d) -> if d == 0 then "MULTIS none: reinstall the map cache for placed multis to collide" else "MULTIS installed rows=" & show (peek-qword d 16))
                     slg-line owner.state.checkpoint.game.log slg-town slg-info (when owner.state.town is None -> "TOWNSFOLK off: this world runs the demo economy; a fresh world disk builds Britain with townsfolk" is Just (town) -> "TOWNSFOLK on: Britain economy with " & show town.count & " residents")
                     accounted <- cgs-accounts owner launch entropy
                     when accounted
@@ -568,7 +616,7 @@ Chapter: CompositeGameServer
                           fitted <- cs-fit-links owner (cgs-links launch)
                           when views
                             is Err (e) -> cgs-fail e
-                            is Ok (_) -> let stopped = world-unbind-grow owner.state.checkpoint.game.world in when gl-new specs owner.state.checkpoint.game map huffman 2593 (cgs-ports launch) net-driver-mac [10,0,2,15] [10,0,2,2] [255,255,255,0]
+                            is Ok (_) -> let stopped = world-unbind-grow owner.state.checkpoint.game.world in when gl-new specs owner.state.checkpoint.game map huffman 2593 (cgs-ports launch) net-driver-mac (cl-address launch 0) (cl-address launch 4) (cl-address launch 8)
                               is Err (e) -> cgs-fail e
                               is Ok (links) -> when cgs-panel owner launch links
                                is Err (e) -> cgs-fail e
@@ -577,9 +625,10 @@ Chapter: CompositeGameServer
                                 listed <- if panel == 0 then act 0 end else slg-line owner.state.checkpoint.game.log slg-admin slg-info "LISTEN admin-panel 2594"
                                 print-line-uni (gn-log "LISTEN game-server 0")
                                 growing <- gl-bind-grow links (\now -> cs-grow-need owner now) (\u -> cs-grow owner) cs-grow-limit
+                                explained <- gl-bind-grow-why links (\now -> cs-grow-why owner now)
                                 admitting <- if launch.links == 0 then gl-bind-admission links (ss-protocol-bytes + sl-recv-bytes + owner.state.checkpoint.game.world.capacity * 16) (hpet-ticks-per-second / 10) else 0
                                 linked <- slg-line owner.state.checkpoint.game.log slg-server slg-info ("LINKS " & show (cgs-links launch) & (if launch.links == 0 then " admitted by heap and round time" else " fixed"))
-                                gl-serve (cp-route cache owner) (cp-pulse cache owner) (cs-disconnect owner) (cp-tick cache owner) links
+                                gl-serve (cp-route cache owner) (cp-pulse cache owner) (cs-disconnect owner) (cpo-tick cache owner) links
                               end
                         end
                      end
@@ -602,6 +651,7 @@ Chapter: CompositeGameServer
       in let device = cgs-device 0
       in act
         said <- slg-line 0 slg-server slg-info (when device is UoIde -> "DISK ide" is UoVirtio (_) -> "DISK virtio")
+        addressed <- slg-line 0 slg-server slg-info ("NET " & net-driver-card-name card & " " & cl-dotted (cl-address launch 0) & " via " & cl-dotted (cl-address launch 4) & (if list-length launch.net == 12 then " launch" else " default"))
         opened <- wmc-open device
         when opened
           is Err (e) -> cgs-fail e

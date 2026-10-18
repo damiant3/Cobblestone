@@ -40,7 +40,8 @@ mountains, cut rivers, even build buildings. i want to see boundaries for guard 
    move the ground, `[flatten` levels to the picked tile, `[landclear` drops pending edits, `[brush 0-8` sizes the square,
    `[landshow` shows pending edits as runes at their new height; blu's menu calls `gld-menu`. The server holds no land
    art, so a height-only edit carries art -1, which the bake keeps. The client cannot redraw land live: an edit shows
-   only as a rune until the bake. Pending edits are held in memory: a restart before the export drops them.
+   only as a rune until the bake. Pending edits are saved after the decorator's rows in its composite tail (UOAIX-250), so
+   a restart keeps them until the bake.
    Building pieces built (red, `CompositePaging.codex`): `[decor run <art>` lays one art in a line from the GM's tile to
    the picked tile (at most 64), `[decor fill <art>` covers the rectangle between them (at most 256), both at the GM's
    height and all or nothing against the table's room; `[decor multi <id>` places a MULTI.MUL building as one item of art

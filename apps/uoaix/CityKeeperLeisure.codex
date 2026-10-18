@@ -1,0 +1,206 @@
+Chapter: CityKeeperLeisure
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter KeeperLeisure
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter Teleporters
+
+  CkKeeper = record { vendor : Integer, payee : Integer, box : BbShop, inn : BbShop, town : TownLive, map : WalkMap,
+    work : BbSpot, out : BbSpot, walk : RteWalk, next-step : Integer, goal : Integer, paid : Integer, seen : Integer, stop : Integer, refused : Integer, refused-2 : Integer, via : Integer }
+ A city keeper is out on two nights in three, as a worker is (cgg-out-on).
+  ck-out-on : Integer, Integer -> Boolean
+  ck-out-on (vendor) (night) = int-mod (vendor + night) 3 /= 0
+  ck-goal : Integer, Boolean, Integer -> Integer
+  ck-goal (vendor) (shut) (now) = let hour = int-mod (now / 3600) 24
+    in if shut & hour >= bsh-close-hour & hour < bsh-tavern-hour & ck-out-on vendor (bsh-night now) then 2 else 1
+  ck-role-vendor : CgCity, Integer -> Integer
+  ck-role-vendor (c) (role) = if role < 0 | role >= list-length c.vendors then -1 else list-at c.vendors role
+ A keeper's evening is personal spending (root for Damian, 2026-10-13): it is paid from the keeper's own wage purse
+ (UOAIX-239, kind 2, owner ck-wage-base + vendor index), and a keeper whose purse cannot pay a drink stays at the shop.
+  ck-wage-base : Integer = 4000
+  ck-wallet : GvWorld, Integer -> Integer
+  ck-wallet (v) (vendor) = em-find v.currency.world.money 2 (ck-wage-base + vendor) 1
+  ck-can-pay : EuCurrency, Integer -> Boolean
+  ck-can-pay (x) (purse) = if purse < 1 | purse > x.world.money.purse-count then False
+    else (em-purse x.copper purse).coin >= kl-drink-price | (em-purse x.silver purse).coin >= 1 | (em-purse x.world.money purse).coin >= 1
+  ck-payee : CgCity -> Integer
+  ck-payee (c) = if ck-role-vendor c bb-tavern-keeper >= 0 then ck-role-vendor c bb-tavern-keeper else ck-role-vendor c bb-inn
+  ck-spot : Integer -> BbSpot
+  ck-spot (unused) = BbSpot { x = 0, y = 0, z = 0 }
+ cgs and towns are cw-build's parallel lists, Britain first: a city's town is at the city's own index. Indexing a list
+ with Britain removed gave each city the town before it, whose planner is another map's size, so every plan failed
+ (trial 44288: due 66 to 69 a night, can-pay all of them, arrived 0).
+  ck-town-index : List CgCity, Integer, Integer -> Integer
+  ck-town-index (cgs) (city) (i) = if i >= list-length cgs | city == 0 then 0 - 1
+    else if (list-at cgs i).city == city then i else ck-town-index cgs city (i + 1)
+  ck-build : GvWorld, List BbShop, List CtCity, List CgCity, List TownLive, List WalkMap, Integer, List CkKeeper -> List CkKeeper
+  ck-build (v) (shops) (cities) (cgs) (towns) (maps) (k) (out) = if k >= v.vendor-count | k - bb-shop-count >= list-length shops then out
+    else let box = list-at shops (k - bb-shop-count)
+    in let city = ct-city-at cities box.x1 box.y1 0
+    in let at = ck-town-index cgs city 0
+    in if at < 0 | at >= list-length towns then ck-build v shops cities cgs towns maps (k + 1) out
+    else let c = list-at cgs at
+    in let payee = ck-payee c
+    in if payee < 0 | payee == k then ck-build v shops cities cgs towns maps (k + 1) out
+    else when ct-map-of maps city
+      is None -> ck-build v shops cities cgs towns maps (k + 1) out
+      is Just (map) -> ck-build v shops cities cgs towns maps (k + 1) (out & [CkKeeper { vendor = k, payee = payee, box = box, inn = c.inn, town = list-at towns at, map = map,
+        work = ck-spot 0, out = ck-spot 0, walk = rte-walk 0, next-step = 0, goal = 0 - 1, paid = 0, seen = 0, stop = 0, refused = 0, refused-2 = 0, via = 0 - 1 }])
+ Tally (ck-tally-bytes): 0 the night counted (night + 1), 8 keepers arrived, 16 paid, 56 keepers due out that evening,
+ 64 of those whose wage purse could pay a drink; 24, 32, 40, 72, 80 the last finished night's five; 48 the night last
+ reported (night + 1). The night rolls on the first step of a new night, so a night no keeper reached still reports.
+ 88, 96, 104 the keepers whose evening ended unarrived: no tile at the inn, no route held, or still walking; 112, 120,
+ 128 the last finished night's three. 136 to 263 the first eight no-route keepers of the night, two qwords each
+ (vendor * 16 + plan failures at most 15, then the keeper's last failed plan's stop, ck-stop-pack), 264 to 391 the
+ last finished night's eight.
+  ck-tally-bytes : Integer = 392
+  ck-named : Integer = 8
+  ck-named-at : Integer = 136
+  ck-named-last : Integer = 264
+  ck-copy-named : Integer, Integer -> Integer
+  ck-copy-named (tally) (i) = if i >= ck-named * 2 then 0
+    else let moved = poke-qword tally (ck-named-last + i * 8) (peek-qword tally (ck-named-at + i * 8)) in let cleared = poke-qword tally (ck-named-at + i * 8) 0 in ck-copy-named tally (i + 1)
+  ck-roll : Integer, Integer -> Integer
+  ck-roll (tally) (night) = if peek-qword tally 0 == night + 1 then 0
+    else let a = poke-qword tally 24 (peek-qword tally 0) in let b = poke-qword tally 32 (peek-qword tally 8) in let c = poke-qword tally 40 (peek-qword tally 16)
+    in let f = poke-qword tally 72 (peek-qword tally 56) in let g = poke-qword tally 80 (peek-qword tally 64)
+    in let j = poke-qword tally 112 (peek-qword tally 88) in let k = poke-qword tally 120 (peek-qword tally 96) in let l = poke-qword tally 128 (peek-qword tally 104)
+    in let p = ck-copy-named tally 0
+    in let m = poke-qword tally 88 0 in let n = poke-qword tally 96 0 in let o = poke-qword tally 104 0
+    in let d = poke-qword tally 0 (night + 1) in let e = poke-qword tally 8 0 in let h = poke-qword tally 56 0 in let i = poke-qword tally 64 0 in poke-qword tally 16 0
+  ck-missed : Integer, Integer, Integer -> Integer
+  ck-missed (tally) (spot-x) (route) = let at = if spot-x == 0 then 88 else if route < 0 then 96 else 104
+    in poke-qword tally at (peek-qword tally at + 1)
+  ck-name-missed : Integer, Integer, Integer, Integer -> Integer
+  ck-name-missed (tally) (vendor) (fails) (stop) = let n = peek-qword tally 96 - 1
+    in if n < 0 | n >= ck-named then 0
+    else let named = poke-qword tally (ck-named-at + n * 16) (vendor * 16 + min 15 fails) in poke-qword tally (ck-named-at + n * 16 + 8) stop
+ A stop packs the expanded tile nearest the goal, its distance in tiles (Chebyshev, at most 1023) and why the search
+ ended (tl-ended-budget, tl-ended-sealed); 0 is a keeper with no failed search of its own.
+  ck-stop-pack : Integer, Integer, Integer, Integer -> Integer
+  ck-stop-pack (x) (y) (d) (why) = ((x * 8192 + y) * 1024 + min 1023 d) * 4 + why
+  ck-stop-text : Integer -> Text
+  ck-stop-text (s) = if s == 0 then "@none"
+    else "@" & show (s / 4 / 1024 / 8192) & "." & show (int-mod (s / 4 / 1024) 8192) & ".d" & show (int-mod (s / 4) 1024)
+      & (if int-mod s 4 == tl-ended-budget then ".budget" else if int-mod s 4 == tl-ended-sealed then ".sealed" else ".other")
+ A sealed search expanded every cell its start reaches, and a city map carries no doors, so the same start and target
+ are never planned again by that keeper (root, 2026-10-16): the search runs inside the world tick and costs the whole
+ region. A keeper keeps two refusals, the way out and the way back.
+  ck-pair : WorldObject, BbSpot -> Integer
+  ck-pair (from) (target) = bsh-pair from target
+  ck-refusal : Integer, WorldObject, BbSpot -> Integer
+  ck-refusal (ended) (from) (target) = if ended == tl-ended-sealed then ck-pair from target else 0
+  ck-refuses : CkKeeper, Integer -> Boolean
+  ck-refuses (k) (pair) = k.refused == pair | k.refused-2 == pair
+  ck-note-stop : CkKeeper, WorldObject, BbSpot -> Integer
+  ck-note-stop (k) (from) (target) = let p = k.town.nav
+    in if p.near < 0 then 0
+    else let s = __record-set k "stop" (ck-stop-pack (k.map.x + int-mod p.near p.width) (k.map.y + p.near / p.width) (p.near-h / tl-step-cost) p.ended)
+    in ck-store k (ck-refusal p.ended from target)
+  ck-store : CkKeeper, Integer -> Integer
+  ck-store (k) (refusal) = if refusal == 0 then 0 else if k.refused == 0 then (let r = __record-set k "refused" refusal in 0) else (let r = __record-set k "refused-2" refusal in 0)
+  ck-job-base : Integer = 1000
+  ck-job-answer : Maybe RteJob, Integer -> Integer
+  ck-job-answer (job) (who) = when job is None -> 0 is Just (j) -> rte-job-answer j who
+  ck-ask : Maybe RteJob, Integer, CkKeeper, WorldObject, BbSpot -> Integer
+  ck-ask (job) (who) (k) (npc) (aim) = when job
+    is None -> 0
+    is Just (j) -> if rte-job-ask j who k.town.nav k.map False npc aim.x aim.y aim.z then 1 else 0
+ A keeper refused its target from where it stands walks to the teleporter in its city's window nearest it whose
+ destination lies nearer the target, and is carried there on arrival (Jhelom's herbalist on the south island).
+  ck-cheb : Integer, Integer, Integer, Integer -> Integer
+  ck-cheb (ax) (ay) (bx) (by) = max (walk-abs (ax - bx)) (walk-abs (ay - by))
+  ck-pick-via : Integer, WalkMap, WorldObject, BbSpot, Integer, Integer, Integer -> Integer
+  ck-pick-via (tp) (map) (npc) (target) (i) (best) (best-d) = if tp == 0 | i >= tpd-count then best
+    else let sx = tp-at tp i 0
+    in let sy = tp-at tp i 1
+    in let usable = walk-cell map sx sy >= 0 & walk-cell map (tp-at tp i 3) (tp-at tp i 4) >= 0
+      & ck-cheb (tp-at tp i 3) (tp-at tp i 4) target.x target.y < ck-cheb npc.x npc.y target.x target.y
+    in let d = ck-cheb npc.x npc.y sx sy
+    in if usable & (best < 0 | d < best-d) then ck-pick-via tp map npc target (i + 1) i d else ck-pick-via tp map npc target (i + 1) best best-d
+  ck-carry : CkKeeper, GvWorld, WorldObject, Integer, Integer -> Integer
+  ck-carry (k) (v) (npc) (tp) (now) = let i = k.via
+    in let moved = WorldObject { serial = npc.serial, kind = 1, x = tp-at tp i 3, y = tp-at tp i 4, z = tp-at tp i 5,
+      graphic = npc.graphic, hue = npc.hue, container = 0, amount = 1, health = npc.health }
+    in let cleared = __record-set k "via" (0 - 1)
+    in let dropped = rte-drop k.walk
+    in let next = __record-set k "next-step" (now + 1)
+    in when world-update v.game.world moved is Err (_) -> 0 is Ok (_) -> let touched = world-touch v.game.world in 0
+  ck-count : Integer, Integer, Boolean -> Integer
+  ck-count (tally) (night) (paid) = let rolled = ck-roll tally night
+    in let out = poke-qword tally 8 (peek-qword tally 8 + 1)
+    in if paid then poke-qword tally 16 (peek-qword tally 16 + 1) else 0
+  ck-due : CkKeeper, Integer, Integer, Boolean -> Integer
+  ck-due (k) (tally) (night) (funded) = if k.seen == night + 1 then 0
+    else let marked = __record-set k "seen" (night + 1)
+    in let due = poke-qword tally 56 (peek-qword tally 56 + 1)
+    in if funded then poke-qword tally 64 (peek-qword tally 64 + 1) else 0
+  ck-pay : CkKeeper, GvWorld, Integer, Integer -> Integer
+  ck-pay (k) (v) (tally) (now) = let night = bsh-night now
+    in if k.paid == night + 1 | k.payee >= v.vendor-count then 0
+    else let marked = __record-set k "paid" (night + 1)
+    in let w = v.currency.world
+    in let wallet = ck-wallet v k.vendor
+    in let paid = wallet > 0 & kl-pay-coin v.currency wallet (ep-actor w (list-at v.vendors k.payee).actor).purse kl-drink-price == 0
+    in let counted = ck-count tally night paid in if paid then 1 else 0
+  ck-fix-work : CkKeeper, GvWorld, WorldObject -> Integer
+  ck-fix-work (k) (v) (npc) = if bsh-inside k.box npc.x npc.y 0 then tl-copy-spot k.work (BbSpot { x = npc.x, y = npc.y, z = npc.z })
+    else when bb-placement v.game.world k.map k.box 0 is Err (_) -> 0 is Ok (spot) -> tl-copy-spot k.work spot
+  ck-pick-out : CkKeeper, GvWorld -> Integer
+  ck-pick-out (k) (v) = when bb-placement v.game.world k.map k.inn (ck-out-index k.vendor k.inn)
+    is Ok (spot) -> tl-copy-spot k.out spot
+    is Err (_) -> when bb-placement v.game.world k.map k.inn 0
+      is Err (_) -> tl-copy-spot k.out (ck-spot 0)
+      is Ok (spot) -> tl-copy-spot k.out spot
+  ck-out-index : Integer, BbShop -> Integer
+  ck-out-index (vendor) (inn) = int-mod vendor (max 1 ((inn.x2 - inn.x1 + 1) * (inn.y2 - inn.y1 + 1)))
+  ck-settle : CkKeeper, Integer -> Integer
+  ck-settle (k) (now) = let rest = __record-set k "next-step" (bsh-next-change now) in rte-drop k.walk
+ A city keeper's plan expands at most rte-slice cells in its step; a longer one goes to the staff's RteJob (Nujel'm's
+ west shops need 16802 cells to the inn and Vesper's Shimmering Jewel 32115).
+ One step of keeper k; the answer is 1 when the step started a route plan.
+  ck-step : CkKeeper, GvWorld, Integer, Maybe RteJob, Integer, Integer, Integer -> Integer
+  ck-step (k) (v) (tp) (job) (tally) (now) (left) = let wanted = ck-goal k.vendor (gv-shut v k.vendor) now
+    in let funded = if wanted == 2 then ck-can-pay v.currency (ck-wallet v k.vendor) else False
+    in let counted = if wanted == 2 then ck-due k tally (bsh-night now) funded else 0
+    in let goal = if wanted == 2 & not funded then 1 else wanted
+    in if k.next-step > now & k.goal == goal then 0
+    else when world-get v.game.world (list-at v.vendors k.vendor).serial
+      is Err (_) -> 0
+      is Ok (npc) -> if npc.kind /= 1 | npc.health <= 0 then 0
+        else let fixed = if k.work.x == 0 then ck-fix-work k v npc else 0
+        in let missed = if k.goal == 2 & goal == 1 & k.paid /= bsh-night now + 1 then
+            (let counted = ck-missed tally k.out.x k.walk.route in if k.out.x /= 0 & k.walk.route < 0 then ck-name-missed tally k.vendor k.walk.fails k.stop else 0)
+          else 0
+        in let changed = if k.goal == goal then 0
+          else let selected = __record-set k "goal" goal in let dropped = rte-drop k.walk in let unvia = __record-set k "via" (0 - 1) in if goal == 2 then ck-pick-out k v else 0
+        in let target = if k.goal == 2 then k.out else k.work
+        in if target.x == 0 then (let settled = ck-settle k now in 0)
+        else if (k.goal == 1 & bsh-inside k.box npc.x npc.y 0) | (k.goal == 2 & bsh-inside k.inn npc.x npc.y 0) | tl-at npc target then
+          (let paid = if k.goal == 2 then ck-pay k v tally now else 0 in let settled = ck-settle k now in 0)
+        else let plans = k.walk.route < 0
+        in let picked = if plans & k.via < 0 & ck-refuses k (ck-pair npc target) then (let p = __record-set k "via" (ck-pick-via tp k.map npc target 0 (0 - 1) 0) in 0) else 0
+        in if k.via >= 0 & npc.x == tp-at tp k.via 0 & npc.y == tp-at tp k.via 1 then ck-carry k v npc tp now
+        else let aim = if k.via >= 0 then BbSpot { x = tp-at tp k.via 0, y = tp-at tp k.via 1, z = tp-at tp k.via 2 } else target
+        in let who = ck-job-base + k.vendor
+        in let answer = if plans then ck-job-answer job who else 0
+        in let sealed = if answer == 3 then ck-store k (ck-pair npc aim) else 0
+        in if answer == 1 then (let rest = __record-set k "next-step" (now + 1) in 0)
+        else if plans & ck-refuses k (ck-pair npc aim) then (let rest = __record-set k "next-step" (now + tl-retry-seconds) in 0)
+        else if plans & left <= 0 then 0
+        else let rested = if answer == 2 then (let r = __record-set k.walk "rest" 0 in 0) else 0
+        in let moves = k.walk.moves
+        in let epoch = k.town.nav.epoch
+        in when rte-toward-budget k.town.nav v.game.world (Just v.game) k.map None rte-any k.walk npc aim.x aim.y aim.z rte-slice
+          is Err (_) -> let rest = __record-set k "next-step" (now + tl-retry-seconds) in 0
+          is Ok (_) -> let failed = plans & k.walk.route < 0 & k.town.nav.epoch /= epoch
+          in let stopped = if failed then ck-note-stop k npc aim else 0
+          in let asked = if failed & k.town.nav.ended == tl-ended-budget then ck-ask job who k npc aim else 0
+          in let queued = if failed & k.town.nav.ended == tl-ended-budget then rte-queued k.walk else 0
+          in let next = __record-set k "next-step" (now + (if asked == 1 | k.walk.moves /= moves then 1 else tl-retry-seconds)) in if plans then 1 else 0
+ At most bsh-plans keepers start a route plan in one step, as Britain's keepers do (UOAIX-216).
+  ck-step-all : List CkKeeper, GvWorld, Integer, Maybe RteJob, Integer, Integer, Integer, Integer -> Integer
+  ck-step-all (keepers) (v) (tp) (job) (tally) (now) (i) (left) = if i >= list-length keepers then 0
+    else let rolled = if i == 0 then ck-roll tally (bsh-night now) else 0
+    in let used = ck-step (list-at keepers i) v tp job tally now left
+    in used + ck-step-all keepers v tp job tally now (i + 1) (left - used)

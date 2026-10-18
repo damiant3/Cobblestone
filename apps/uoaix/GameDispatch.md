@@ -217,7 +217,7 @@ server logs (`gn-default-handler` skips every packet with no fixed size, `gs-han
 ## Proof
 
 ```powershell
-pwsh -File apps/uoaix/proofs/test-game-dispatch.ps1 -ClientRoot C:/Users/Damian/uo1998-client -CompressionSource <Compression.cs> -Kernel seed/Codex.cdx -OutDir <new directory>
+pwsh -File apps/uoaix/proofs/test-game-dispatch.ps1 -ClientRoot D:/Games/UO1998com-Client1 -CompressionSource <Compression.cs> -Kernel seed/Codex.cdx -OutDir <new directory>
 ```
 
 The harness creates a synthetic block fixture, checks the exact native

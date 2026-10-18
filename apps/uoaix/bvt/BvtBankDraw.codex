@@ -1,0 +1,78 @@
+Chapter: BvtBankDraw
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter GameVendor
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameHarvestState
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter GameCraftProduction
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ D-17 (Damian, 2026-10-13): every bank keeps its own box per character, and a craft takes what the pack lacks from the
+ box at the bank its place links to, never from another bank's box.
+  bvbk-made : Result Integer Text -> Integer
+  bvbk-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvbk-boards : GvWorld, Integer, Integer, Integer -> Integer
+  bvbk-boards (v) (actor) (container) (amount) =
+    let made = bvbk-made (world-create v.game.world (__record-set (gs-item container #1BD7 0) "amount" amount))
+    in if made == 0 then -1 else gv-add-lot v made actor 38 1000 32 0
+  bvbk-count : Result (List CraftTake) Text -> Integer
+  bvbk-count (r) = when r is Err (_) -> -1 is Ok (takes) -> gcr-held takes 38 0
+  bvbk-pile : GvWorld, Integer, Integer, Integer -> Integer
+  bvbk-pile (v) (box) (graphic) (amount) = bvbk-made (world-create v.game.world (__record-set (gs-item box graphic 0) "amount" amount))
+  bvbk-left : GvWorld, Integer -> Integer
+  bvbk-left (v) (serial) = when world-get v.game.world serial is Err (_) -> 0 is Ok (o) -> o.amount
+  bvbk-keeper : GvWorld, EuCurrency, Integer, Integer, Integer -> GvVendor
+  bvbk-keeper (v) (x) (label) (at-x) (at-y) =
+    let actor = ep-admit x.world (eu-open x 2 label) 100
+    in let npc = bvbk-made (world-create v.game.world (gs-mobile 0 at-x at-y 0 400 1002))
+    in let stock = bvbk-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bvbk-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bvbk-made (world-create v.game.world (gs-item npc #0E75 0))
+    in list-at v.vendors (gv-add-vendor v npc actor stock extra buys)
+  bvt-bank-draw : Integer -> [Console] Integer
+  bvt-bank-draw (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("bank draw fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("bank draw fixture economy: " & e) False
+      is Ok (x) -> act
+        a <- bvt-check "a banker opens the nearest bank's box: the First Bank of Britain (0) at its banker, East Britain Bank (1), Serpent's Hold (14); the Tinkers' Guild links to the First Bank, a field 300 tiles from any bank to none (gmb-bank-at, gmb-linked)" (gmb-bank-at 1433 1687 == 0 & gmb-bank-at 1650 1600 == 1 & gmb-bank-at 2880 3470 == 14 & gmb-linked 1424 1650 == 0 & gmb-linked 1000 1150 == -1)
+        v <- gv-new shard x
+        who <- bvbk-made (world-create v.game.world (gs-mobile 0 1424 1650 0 400 1002))
+        pack <- bvbk-made (world-create v.game.world (gs-item who #0E75 0))
+        bound <- gv-add-player v who 1 pack
+        craft <- gcr-state (gh-state v (gsi-new shard.world))
+        actor <- ep-admit x.world (eu-open x 2 2001) 100
+        p <- list-at v.players 0
+        owned <- __record-set p "actor" actor
+        first <- bvbk-made (world-create v.game.world (gs-item who #09B2 0))
+        east <- bvbk-made (world-create v.game.world (__record-set (gs-item who #09B2 0) "health" 1))
+        b <- bvt-check "a character's boxes are told apart by bank: the First Bank's (health 0), East Britain's (1), none at Serpent's Hold (gmb-box)" (first > 0 & east > 0 & gmb-box craft.harvest.items who 0 == first & gmb-box craft.harvest.items who 1 == east & gmb-box craft.harvest.items who 14 == 0 & gmb-box craft.harvest.items who (0 - 1) == 0)
+        found <- ep-find v.currency.world actor 38 10
+        in-pack <- bvbk-boards v actor pack 2
+        in-first <- bvbk-boards v actor first 3
+        in-east <- bvbk-boards v actor east 5
+        h <- craft.harvest
+        pack-only <- bvbk-count (gcr-select h p 38 2 0 [])
+        topped <- bvbk-count (gcr-select h p 38 4 first [])
+        c <- bvt-check "a craft takes from the pack first, then what it lacks from the linked bank's box: 4 boards by the First Bank are the pack's 2 and 2 from that box (gcr-select)" (found >= 0 & in-pack >= 0 & in-first >= 0 & in-east >= 0 & pack-only == 2 & topped == 4)
+        short <- bvbk-count (gcr-select h p 38 6 first [])
+        unlinked <- bvbk-count (gcr-select h p 38 3 0 [])
+        other <- bvbk-count (gcr-select h p 38 7 east [])
+        d <- bvt-check "the other bank's boards are not taken: 6 by the First Bank (2 + 3 there) and 3 with no bank refuse; 7 by East Britain Bank take its 5 (gcr-select)" (short == -1 & unlinked == -1 & other == 7)
+        copper <- bvbk-pile v first #0EEA 30
+        silver <- bvbk-pile v first #0EF0 2
+        gold <- bvbk-pile v east #0EED 5
+        smith <- bvbk-keeper v x 3001 1421 1698
+        far <- bvbk-keeper v x 3002 1000 1150
+        start <- gv-purse-value v p
+        paid <- gv-bank-coin v p smith (start + 25)
+        e <- bvt-check "a Britain shop's sale the purse leaves 25 copper short takes 25 copper from the First Bank box, no silver, nothing from East Britain's (gv-bank-coin)" (copper > 0 & silver > 0 & gold > 0 & gv-purse-value v p == start + 25 & bvbk-left v copper == 5 & bvbk-left v silver == 2 & bvbk-left v gold == 5 & list-length paid == 1)
+        more <- gv-bank-coin v p smith (start + 40)
+        f <- bvt-check "15 more copper short takes the last 5 copper, then 1 silver for the 10 left (700 copper and 70 silver to the gold), still nothing from East Britain's box (gv-bank-coin)" (gv-purse-value v p == start + 40 & bvbk-left v copper == 0 & bvbk-left v silver == 1 & bvbk-left v gold == 5)
+        none <- gv-bank-coin v p far (start + 100)
+        g <- bvt-check "a shop 300 tiles from any bank takes no bank coin (gv-bank-coin)" (list-length none == 0 & gv-purse-value v p == start + 40 & bvbk-left v silver == 1 & bvbk-left v gold == 5)
+        a + b + c + d + e + f + g
+      end

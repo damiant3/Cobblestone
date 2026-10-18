@@ -21,25 +21,29 @@ Chapter: EconomyCurrencyCodecProof
   eucp-equal : Integer, Integer, Integer -> Boolean
   eucp-equal (a) (b) (i) = if i >= peek-qword a 16 then True
     else if peek-qword a i /= peek-qword b i then False else eucp-equal a b (i + 8)
+ A tamper arm passes when the decode refuses the damaged bytes or the economy validator catches what they decode to,
+ and fails only when they decode and validate (UOAIX-194, EconomySealProof's rule).
   eucp-corrupt : Integer, Integer, Integer -> Boolean
   eucp-corrupt (buf) (at) (value) =
     let old = peek-qword buf at
     in let changed = poke-qword buf at value
-    in let hash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
+    in let hash = poke-qword buf 48 (ws-digest buf (peek-qword buf 16) 0 2166136261)
     in let mark = __heap-save
-    in let refused = is-err (euc-decode buf (peek-qword buf 16))
+    in let refused = when euc-decode buf (peek-qword buf 16)
+      is Err (_) -> True
+      is Ok (s) -> not (euv-valid s.currency)
     in let restored = __heap-restore mark
     in let original = poke-qword buf at old
-    in let rehash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
+    in let rehash = poke-qword buf 48 (ws-digest buf (peek-qword buf 16) 0 2166136261)
     in refused
   eucp-roundtrip : CurrencyCheckpoint, Integer, Integer -> [Console] Nothing
   eucp-roundtrip (s) (buf) (copy) = act
     x <- s.currency
-    eucp-check "all denominations policies loans and material state recover" (s.tick == 400 & s.sequence == 17 & x.copper.issued == 2000 & x.silver.issued == 100 & x.world.money.issued == 20 & x.copper-rate == 200 & x.silver-rate == 20 & x.world.hour == 12 & x.copper.defaults == 1 & x.silver.defaults == 1 & x.world.money.defaults == 1 & (list-at x.world.money.loans 0).paid == 1 & eu-census x)
+    eucp-check "all denominations policies loans and material state recover" (s.tick == 400 & s.sequence == 17 & x.copper.issued == 2000 & x.silver.issued == 100 & x.world.money.issued == 20 & x.copper-rate == 200 & x.silver-rate == 20 & x.world.hour == 12 & x.copper.defaults == 1 & x.silver.defaults == 1 & x.world.money.defaults == 1 & (list-at x.world.money.loans 0).paid == 1 & eu-census x & euv-valid x)
     encoded <- euc-encode s copy us-max-payload
     eucp-check "canonical complete currency roundtrip" (is-ok encoded & eucp-equal buf copy 0)
     changed <- __record-set (em-purse x.copper 3) "coin" 999
-    eucp-check "decoded purse mutation cannot change source bytes" (eucp-equal buf copy 0 & is-err (euc-encode s copy us-max-payload))
+    eucp-check "decoded purse mutation cannot change source bytes, and the validator catches it" (eucp-equal buf copy 0 & not (euv-valid x))
   end
   eucp-run : EuCurrency -> [Console] Nothing
   eucp-run (x) = act
@@ -53,14 +57,18 @@ Chapter: EconomyCurrencyCodecProof
     smelter <- ep-station w actor 3 1
     mint <- ep-station w actor 12 1
     stone <- eh-source w 1 1
-    branch <- eh-source w 2 1
-    fuel <- eh-source w 2 1
+    bench <- ep-station w actor 8 1
+    quarry <- eh-source w 1 1
+    tree <- eh-source w 15 1
     gold <- eh-source w 6 1
     copper <- eh-source w 25 1
     silver <- eh-source w 26 1
     a <- eh-harvest w actor stone
-    b <- eh-harvest w actor branch
-    c <- eh-harvest w actor fuel
+    b <- eh-harvest w actor quarry
+    axe <- ep-craft w actor 2 hand
+    lumber <- ep-set p.skills 6 1000
+    c <- eh-harvest w actor tree
+    boards <- ep-craft w actor 16 bench
     d <- ep-craft w actor 1 hand
     e <- ep-craft w actor 31 hand
     f <- ep-set p.skills 1 1000
@@ -100,7 +108,7 @@ Chapter: EconomyCurrencyCodecProof
     encoded <- euc-encode checkpoint buf us-max-payload
     print-line-uni ("CURRENCY-CHECKPOINT-BYTES " & show (peek-qword buf 16))
     eucp-check "complete currency snapshot encodes" (is-ok encoded)
-    eucp-check "published component offsets locate complete payloads" (peek-qword buf 192 == #31434555 & peek-qword buf 1432880 == 4 & peek-qword buf 1905008 == 4 & peek-qword buf 2377136 == 1)
+    eucp-check "published component offsets locate complete payloads" (peek-qword buf euc-gold-at == #31434555 & peek-qword buf (euc-gold-at + peek-qword buf 184) == x.copper.purse-count & peek-qword buf (euc-gold-at + peek-qword buf 184 + euc-money-bytes) == x.silver.purse-count & peek-qword buf (euc-events-from (peek-qword buf 184)) == 1)
     before <- __heap-save
     decoded <- euc-decode buf (peek-qword buf 16)
     after <- __heap-save

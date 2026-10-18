@@ -1,0 +1,47 @@
+Chapter: BvtGuardRise
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-150 (live 43827): on BvtWorkerDay's town, a foot guard and a plain NPC each killed at 1430,1600 through cb-die.
+ Answers a bit per check: 1 the guard lives at full health, 2 it stands on its patrol's next waypoint, 4 a corpse lies
+ where it fell, 8 the plain NPC's body is gone; 15 is all, negative when not buildable.
+  bgu-kill : CompositeGame, Integer -> Result (List (List Integer)) Text
+  bgu-kill (owner) (serial) = let game = owner.checkpoint.game
+    in when cb-ensure owner.combat game serial
+      is Err (e) -> Err e
+      is Ok (a) -> when world-get game.world serial
+        is Err (e) -> Err e
+        is Ok (m) -> let fell = __record-set (__record-set (__record-set m "x" 1430) "y" 1600) "health" 0
+          in when world-update game.world fell
+            is Err (e) -> Err e
+            is Ok (_) -> cb-die owner.combat game (gn-input 1) 0 a fell
+  bgu-corpse : WorldTable, Integer -> Boolean
+  bgu-corpse (world) (serial) = if serial == 0 then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (o) -> (o.kind == 2 & o.graphic == 8198 & o.amount == 400) | bgu-corpse world (world-tile-next world serial)
+  bgu-checks : Integer -> Integer
+  bgu-checks (unused) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.civic
+      is None -> -2
+      is Just (c) -> if list-length c.guards == 0 then -2
+        else let p = list-at c.guards 0
+        in let spot = list-at p.route p.waypoint
+        in let world = owner.checkpoint.game.world
+        in let other = when world-create world (gs-mobile 0 1432 1600 0 400 1002) is Err (_) -> 0 is Ok (serial) -> serial
+        in if p.serial == 0 | other == 0 | (spot.x == 1430 & spot.y == 1600) then -3
+        else let guard-died = bgu-kill owner p.serial
+        in let risen = when world-get world p.serial
+          is Err (_) -> 0
+          is Ok (g) -> (if g.health > 0 & lw-live c.law p.serial then 1 else 0) + (if g.x == spot.x & g.y == spot.y then 2 else 0)
+        in let corpse = if bgu-corpse world (world-tile-first world 1430 1600) then 4 else 0
+        in let other-died = bgu-kill owner other
+        in let gone = if is-ok other-died & is-err (world-get world other) then 8 else 0
+        in if is-err guard-died then -4 else risen + corpse + gone
+  bvt-guard-rise : Integer -> [Console] Integer
+  bvt-guard-rise (unused) = act
+    n <- bgu-checks 0
+    bvt-check ("a killed foot guard leaves a corpse and rises on its patrol's next waypoint; any other NPC stays dead (UOAIX-150, code " & show n & ")") (n == 15)
+  end

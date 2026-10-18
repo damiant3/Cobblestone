@@ -136,8 +136,5 @@ if ($LASTEXITCODE -ne 0) { & dotnet build $work -c Release -v q -o (Join-Path $w
 [IO.File]::WriteAllText((Join-Path $work 'bin\music_config.json'), $music, $u8)
 [IO.File]::WriteAllText((Join-Path $work 'bin\sfx_config.json'), $sfx, $u8)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-# CCE has no Dingbats block (codex/foreword/core/core-backlog.md, "CCE has no
-# Dingbats block"): U+2728, the only character of it in these files, reaches
-# Codex text as '?'. Any other character the port loses stays a failure.
 $out = & (Join-Path $work 'bin\o.exe') $data | Out-String
-[Console]::Out.Write($out.Replace([string][char]0x2728, '?'))
+[Console]::Out.Write($out)

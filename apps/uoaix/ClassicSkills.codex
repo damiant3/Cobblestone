@@ -5,9 +5,7 @@ Chapter: ClassicSkills
  Source-X CExpression.cpp Calc_GetBellCurve/Calc_GetSCurve and CCharSkill.cpp
  Skill_CheckSuccess/Skill_Experience, Apache-2.0; Sphere-LICENSE.txt.
  Classic active skills extend K's admitted fixed-point practice storage.
- Gain follows SkillCurve (skc-gain-at), scaled by gain-rate percent. At the 7000 total a gain lowers a
- random other skill by 0.1 instead, as the 1998 shard did (the 1.25 client has
- no lock arrows); with no other skill above 0 there is no gain.
+ Gain follows Skill1998's SkillGain, gain-rate as its gain percent, with no total cap (D7).
 
   SkClassic = record { levels : Integer, seed : Integer, attempts : Integer, gain-rate : Integer }
   skc-new : Integer, Integer -> SkClassic
@@ -23,23 +21,19 @@ Chapter: ClassicSkills
   skc-chance (level) (difficulty) = let diff = level - difficulty
     in let chance = skc-bell (if diff < 0 then 0 - diff else diff) 500
     in if diff > 0 then 1000 - chance else chance
-  skc-gain-chance : SkClassic, Integer, Integer, Boolean -> Integer
-  skc-gain-chance (p) (level) (difficulty) (success) = skc-gain-at p.gain-rate level difficulty success
-  skc-total : SkClassic, Integer -> Integer
-  skc-total (p) (i) = if i == 46 then 0 else sk-at p.levels i + skc-total p (i + 1)
-  skc-decay : SkClassic, Integer, Integer, Integer -> Integer
-  skc-decay (p) (skill) (at) (left) = if left == 0 then 0
-    else let i = int-mod at 46
-    in if i /= skill & sk-at p.levels i > 0 then let lowered = sk-set p.levels i (sk-at p.levels i - 1) in 1
-    else skc-decay p skill (at + 1) (left - 1)
   skc-use : SkClassic, Integer, Integer, Boolean -> Integer
   skc-use (p) (skill) (difficulty) (admitted) = if not admitted | skill < 0 | skill >= 46 | difficulty < 0 | difficulty > 1000 | p.attempts >= 1000000000 then -1
     else let level = sk-at p.levels skill
     in if level < 0 | level > 1000 then -1
-    else let success = skc-random p 1000 <= skc-chance level difficulty
+    else let chance = skc-chance level difficulty
+    in let success = skc-random p 1000 <= chance
     in let gain = skc-random p 1000
     in let count = __record-set p "attempts" (p.attempts + 1)
-    in let practiced = if level >= 1000 | gain >= skc-gain-chance p level difficulty success then 0
-      else if skc-total p 0 < 7000 then sk-set p.levels skill (level + 1)
-      else if skc-decay p skill (skc-random p 46) 46 == 1 then sk-set p.levels skill (level + 1) else 0
+    in let practiced = if not (s98-learns level success False) then 0
+      else skc-use-raise p skill (s98-tenths (s98-gain skill level chance p.gain-rate) gain)
     in if success then 1 else 0
+  skc-use-raise : SkClassic, Integer, Integer -> Integer
+  skc-use-raise (p) (skill) (left) = let level = sk-at p.levels skill
+    in if left <= 0 | level >= 1000 then 0
+    else let raised = sk-set p.levels skill (level + 1)
+    in skc-use-raise p skill (left - 1)

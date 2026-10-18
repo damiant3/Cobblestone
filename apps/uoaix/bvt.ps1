@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Kernel='seed/Codex.cdx',[string]$ClientRoot='C:/Users/Damian/uo1998-client',[string]$OutDir='',
+param([string]$Kernel='seed/Codex.cdx',[string]$ClientRoot='D:/Games/UO1998com-Client1',[string]$OutDir='',
     [string]$Cache=(Join-Path $env:LOCALAPPDATA 'uoaix-bvt'),[ValidateSet('TESTING','DEV')][string]$Mode='TESTING')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -38,7 +38,7 @@ foreach($f in $caseFiles){
 }
 if($calls.Count -lt 1){throw 'No BVT case functions found'}
 $entry=@('Chapter: BvtRun')+$cites+@('','  opening : [Console] Integer = act')
-for($i=0;$i -lt $calls.Count;$i++){$entry+="    f$i <- $($calls[$i]) 0"}
+for($i=0;$i -lt $calls.Count;$i++){$entry+=@("    m$i <- __heap-save","    f$i <- $($calls[$i]) 0","    r$i <- __heap-restore m$i")}
 $sum=(0..($calls.Count-1)|ForEach-Object{"f$_"}) -join ' + '
 $entry+=@("    print-line-uni (`"UOAIX BVT unit failures=`" & show ($sum) & `" functions=$($calls.Count)`")",'    0','  end')
 $body=($parts -join "`r`n")+"`r`n"+($entry -join "`r`n")+"`r`n"
@@ -188,7 +188,7 @@ try{
         Check "a fresh world founds the herb farmer on its first reagent's plant cluster (ginseng, the garden) and the root and vegetable farmers ($($herbed.Count) of 1)" ($herbed.Count -eq 1 -and $workers -match '(?m)^WORKER root-farmer ' -and $workers -match '(?m)^WORKER vegetable-farmer ')
         $beach=[regex]::Match($workers,'(?m)^WORKER sand-gatherer .* node (\d+),(\d+) ')
         Check 'the sand gatherer digs beside Britain''s sand land, 1497-1503 by 1721-1727 (install-map-cache sand mark)' ($beach.Success -and [int]$beach.Groups[1].Value -ge 1496 -and [int]$beach.Groups[1].Value -le 1503 -and [int]$beach.Groups[2].Value -ge 1720 -and [int]$beach.Groups[2].Value -le 1727)
-        Check 'no worker founding is refused and no worker is logged under a miner''s name past the fourth' ($workers -notmatch 'not founded' -and $workers -notmatch '(?m)^WORKER miner-([5-9]|\d\d) ')
+        Check 'no worker founding is refused (a herb farmer whose buyer does not route, UOAIX-260, is named and allowed) and no worker is logged under a miner''s name past the fourth' (($workers -replace 'herb farmer not founded: its buyer''s sale tile [0-9,-]+ does not route from the town entrance;','') -notmatch 'not founded' -and $workers -notmatch '(?m)^WORKER miner-([5-9]|\d\d) ')
         $deadline=[datetime]::UtcNow.AddSeconds(45)
         while((ReadShared $first.log) -notmatch '(?m)^WORKER lumberjack leg (1 at|12) .* node \d+,14[0-8]\d ' -and [datetime]::UtcNow -lt $deadline -and -not $first.vm.HasExited){Start-Sleep -Milliseconds 200}
         $walked=ReadShared $first.log
@@ -211,6 +211,8 @@ try{
     foreach($s in $script:stderrs){if(Test-Path -LiteralPath $s.from){Move-Item -LiteralPath $s.from -Destination $s.to -Force}}
 }
 $seconds=[int]$clock.Elapsed.TotalSeconds
-Check "BVT within 120 s (took $seconds s)" ($seconds -le 120)
+# 120 s is a reporting threshold, not a gate (Damian, 2026-10-13): it exists to catch the BVT being stuffed with more
+# tests, not to fail a run on box pressure.
+if($seconds -gt 120){Write-Output "OVER BVT took $seconds s, past the 120 s threshold"}
 if($script:failures -gt 0){Write-Output "UOAIX BVT FAIL failures=$($script:failures) evidence=$OutDir";exit 1}
 Write-Output "UOAIX BVT PASS seconds=$seconds evidence=$OutDir"

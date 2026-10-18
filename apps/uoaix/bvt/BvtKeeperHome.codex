@@ -1,0 +1,45 @@
+Chapter: BvtKeeperHome
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ Live 44142: two Britain keepers never planned home. A keeper with no goal yet (a boot) bound home goes by the entrance,
+ as every other homeward keeper does, and a keeper's home is one its plan budget reaches from the entrance both ways.
+ On BvtNpcMove's fixture at game hour 3. Answers a bit per check: 1 a keeper with goal -1 bound home sets via-home, 2 a
+ tile 5 west of the entrance is reached both ways, 4 a tile off the walk map is not, 8 a keeper on the entrance's tile a floor above it has reached the entrance (trial 44188: keepers 12, 14, 15 stood at 1495,1618,20); -1 to -4 a fixture that failed.
+  bkh-night : Integer = 10800
+  bkh-pick : Integer -> Integer
+  bkh-pick (i) = if i >= bb-shop-count then -1 else if bsh-goal i bkh-night == 0 then i else bkh-pick (i + 1)
+  bkh-run : CompositeGame -> Integer
+  bkh-run (owner) = when owner.staff
+    is None -> -1
+    is Just (s) -> when owner.town
+      is None -> -2
+      is Just (t) -> when owner.town-map
+        is None -> -3
+        is Just (map) -> let i = bkh-pick 0
+          in if i < 0 then -4
+          else let k = list-at s.keepers i
+          in let away = tl-copy-spot k.home (BbSpot { x = t.entrance.x - 9, y = t.entrance.y, z = t.entrance.z })
+          in let unset = __record-set k "goal" (0 - 1)
+          in let woke = __record-set k "next-step" 0
+          in let stepped = bsh-keeper s t map owner.town-doors bkh-night i
+          in let routed = if k.goal == 0 & k.via-home == 1 then 1 else 0
+          in let near = if bsh-reaches t map owner.town-doors (BbSpot { x = t.entrance.x - 5, y = t.entrance.y, z = t.entrance.z }) then 2 else 0
+          in let off = if bsh-reaches t map owner.town-doors (BbSpot { x = 1300, y = t.entrance.y, z = t.entrance.z }) then 0 else 4
+          in let upstairs = when world-get t.vendors.game.world (list-at t.vendors.vendors i).serial
+            is Err (_) -> 0
+            is Ok (npc) -> let moved = world-update t.vendors.game.world (__record-set (__record-set (__record-set npc "x" t.entrance.x) "y" t.entrance.y) "z" (t.entrance.z + 20))
+              in let via = __record-set k "via-home" 1
+              in let again = __record-set k "next-step" 0
+              in let stepped2 = bsh-keeper s t map owner.town-doors bkh-night i
+              in if k.via-home == 0 then 8 else 0
+          in routed + near + off + upstairs
+  bvt-keeper-home : Integer -> [Console] Integer
+  bvt-keeper-home (unused) = when bnm-founded 0
+    is Err (e) -> bvt-check ("keeper home fixture: " & e) False
+    is Ok (owner) -> act
+      n <- bkh-run owner
+      a <- bvt-check ("a keeper bound home at boot walks by the entrance, and a keeper's home is reached within its plan budget (code " & show n & ")") (n == 15)
+      a
+    end

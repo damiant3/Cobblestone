@@ -55,10 +55,11 @@ $kernelPath = if ([System.IO.Path]::IsPathRooted($Kernel)) { $Kernel } else { Jo
 # the pass compiles perfectly and emits nothing, which would read as an empty
 # actual -- caught by the floor assertion below, not by the diff.
 Write-Host "[lir-dump] compiling lir-check with -Passes lir-dump against $Kernel ..."
+Remove-Item -Force $cdx, $log -ErrorAction SilentlyContinue
 pwsh $compile -Src $src -Out $cdx -Log $log -Kernel $kernelPath -Passes "+lir-dump" | Out-Null
 
-if (-not (Test-Path $log)) {
-  Write-Host "[lir-dump] FAIL: no compile log at $log" -ForegroundColor Red
+if (-not (Test-Path $log) -or -not (Test-Path $cdx)) {
+  Write-Host "[lir-dump] FAIL: the compile wrote no log or no binary at $out (is -Kernel $Kernel there?)" -ForegroundColor Red
   exit 1
 }
 

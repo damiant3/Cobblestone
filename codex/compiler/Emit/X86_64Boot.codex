@@ -2088,7 +2088,7 @@ Section: ISR Stubs
     in let st2 = emit-isr-stubs-loop st1r 0 common-handler-offset
     in IsrStubResult {
      state = st2,
-     first-stub-vaddr = __narrow (bare-metal-load-addr + first-stub-offset)
+     first-stub-vaddr = __narrow (st-native-base st1 + first-stub-offset)
   }
 
 Section: IDT Construction
@@ -2429,6 +2429,31 @@ Section: Runtime Init Builtin
  10-byte mov rax imm64, push, retfq) so the return vaddr is a fixed
  13 bytes past the measurement point regardless of immediate width.
 
+  emit-com1-ring-init : CodegenState -> CodegenState
+  emit-com1-ring-init (st) =
+    let st24 = emit-out-byte st 1019 128
+    in let st25 = emit-out-byte st24 1016 1
+    in let st26 = emit-out-byte st25 1017 0
+    in let st27 = emit-out-byte st26 1019 3
+    in let st28 = emit-out-byte st27 1018 199
+    in let st29 = emit-out-byte st28 1020 11
+    in let st29a = emit-com2-init st29
+    in let st30 = emit-out-byte st29a 1017 1
+    in let st31m = st-append-code st30 (li reg-rdi serial-primed-magic-addr)
+    in let st31n = st-append-code st31m (mov-load reg-rax reg-rdi 0)
+    in let st31o = st-append-code st31n (cmp-ri reg-rax serial-primed-magic)
+    in let primed-skip = st31o.code-len
+    in let st31p = st-append-code st31o (jcc cc-e 0)
+    in let st31 = st-append-code st31p (li reg-rdi serial-write-pos-addr)
+    in let st32 = st-append-code st31 (li reg-rax 0)
+    in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
+    in let st33a = patch-jcc-at st33 primed-skip (st33.code-len)
+    in let st33b = st-append-code st33a (li reg-rax 0)
+    in let st33c = st-append-code st33b (li reg-rdi serial-primed-magic-addr)
+    in let st33d = st-append-code st33c (mov-store reg-rdi reg-rax 0)
+    in let st34 = st-append-code st33d (li reg-rdi serial-read-pos-addr)
+    in st-append-code st34 (mov-store reg-rdi reg-rax 0)
+
   emit-runtime-init-fn : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-runtime-init-fn (st) (first-stub-vaddr) (syscall-handler-offset) (grant-mask) =
     let st0 = record-func-offset st "runtime-init"
@@ -2456,7 +2481,7 @@ Section: Runtime Init Builtin
     in let r7 = st-append-code r6 (add-ri reg-rsp 16)
     in let f0 = st-append-code r7 (li reg-rax 8)
     in let f1 = st-append-code f0 (push-r reg-rax)
-    in let after = bare-metal-load-addr + f1.code-len + 13
+    in let after = st-native-base f1 + f1.code-len + 13
     in let b0 = bit-and after 255
     in let b1 = bit-and (bit-shru after 8) 255
     in let b2 = bit-and (bit-shru after 16) 255
@@ -2482,7 +2507,7 @@ Section: Runtime Init Builtin
     in let i3 = st-append-code i2 (li reg-rax 1)
     in let i4 = st-append-code i3 (mov-store-byte reg-rdi reg-rax 0)
     in let m0 = emit-write-msr i4 3221225601 (8 * 4294967296)
-    in let m1 = emit-write-msr m0 3221225602 (bare-metal-load-addr + syscall-handler-offset)
+    in let m1 = emit-write-msr m0 3221225602 (st-native-base m0 + syscall-handler-offset)
     in let m2 = emit-write-msr m1 3221225604 512
     in let m3 = st-append-code m2 (li reg-rcx 3221225600)
     in let m4 = st-append-code m3 [15, 50]
@@ -2508,7 +2533,8 @@ Section: Runtime Init Builtin
     in let z14 = st-append-code z13 (li reg-rdi prof-cursor-addr)
     in let z15 = st-append-code z14 (mov-store reg-rdi reg-rax 0)
     in let slices = emit-slice-table-init z15
-    in let s0 = emit-interrupt-setup slices
+    in let com1 = if slices.pe-link then emit-com1-ring-init slices else slices
+    in let s0 = emit-interrupt-setup com1
     in let e0 = st-append-code s0 (li reg-rax 0)
     in st-append-code e0 [195]
 
@@ -2905,12 +2931,12 @@ Section: SMP Initialization
     in let blob-skip-pos = st5b.code-len
     in let sb0 = st-append-code st5b (jmp 0)
     in let tramp-pos = sb0.code-len
-    in let sb1 = st-append-code sb0 (ap-tramp-blob (bare-metal-load-addr + ap-entry-pos))
+    in let sb1 = st-append-code sb0 (ap-tramp-blob (st-native-base sb0 + ap-entry-pos))
     in let sb2 = patch-jmp-at sb1 blob-skip-pos (sb1.code-len)
     in let id0 = st-append-code sb2 (li reg-rdi ap-id-next-addr)
     in let id1 = st-append-code id0 (li reg-rax 1)
     in let id2 = st-append-code id1 (mov-store reg-rdi reg-rax 0)
-    in let cp0 = st-append-code id2 (li reg-rsi (bare-metal-load-addr + tramp-pos))
+    in let cp0 = st-append-code id2 (li reg-rsi (st-native-base id2 + tramp-pos))
     in let cp1 = st-append-code cp0 (li reg-rdi ap-trampoline-addr)
     in let cp2 = st-append-code cp1 (li reg-rcx ap-tramp-size)
     in let cp3 = st-append-code cp2 cld

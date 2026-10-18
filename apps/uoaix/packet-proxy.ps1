@@ -14,7 +14,7 @@ $Log=[IO.Path]::GetFullPath($Log)
 $book=[regex]::Match([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'GameHuffman.codex')),'(?s)gh-codebook : List Integer = \[(.*?)\]').Groups[1].Value
 $pairs=[int[]]@([regex]::Matches($book,'#([0-9A-Fa-f]+)')|ForEach-Object{[Convert]::ToInt32($_.Groups[1].Value,16)})
 if($pairs.Count -ne 514){throw "Huffman codebook has $($pairs.Count) values, not 514"}
-Add-Type -TypeDefinition @'
+$source=@'
 using System; using System.IO; using System.Net; using System.Net.Sockets; using System.Text; using System.Threading; using System.Collections.Generic;
 public static class UoaixPacketProxy {
     static readonly object Gate = new object(); static StreamWriter Out; static Dictionary<long,int> Codes = new Dictionary<long,int>(); static int Next;
@@ -26,7 +26,7 @@ public static class UoaixPacketProxy {
         Line(0, "--", "LISTEN " + listen + " -> " + host + ":" + port);
         while (true) { var client = listener.AcceptTcpClient(); int id = Interlocked.Increment(ref Next); var t = new Thread(() => Serve(id, client, host, port)); t.IsBackground = true; t.Start(); }
     }
-    class Conn { public bool Game; public bool Seeded; public bool First; public int SeedAt; public long Pos; public byte Op; public byte[] Seed = new byte[4]; public ulong Low, High; }
+    class Conn { public bool Game; public bool First; public int SeedAt; public long Pos; public byte Op; public byte[] Seed = new byte[4]; public UoKeystream Key; }
     static void Serve(int id, TcpClient client, string host, int port) {
         TcpClient server = null;
         try {
@@ -46,9 +46,8 @@ public static class UoaixPacketProxy {
                 if (up) {
                     var sb = new StringBuilder();
                     for (int i = 0; i < n; i++) {
-                        if (!c.Seeded) { c.Seed[c.SeedAt++] = buf[i]; if (c.SeedAt == 4) { Seed(c); sb.Append("[seed " + BitConverter.ToString(c.Seed).Replace("-", "") + "] "); } continue; }
-                        byte p = (byte)(buf[i] ^ (byte)(c.Low & 255)); ulong next = (((c.Low >> 1) | (c.High << 31)) ^ 0x026950C6UL) & 0xFFFFFFFFUL;
-                        c.High = (((c.High >> 1) | (c.Low << 31)) ^ 0x389DE58CUL) & 0xFFFFFFFFUL; c.Low = next;
+                        if (c.Key == null) { c.Seed[c.SeedAt++] = buf[i]; if (c.SeedAt == 4) { c.Key = new UoKeystream(((uint)c.Seed[0] << 24) | ((uint)c.Seed[1] << 16) | ((uint)c.Seed[2] << 8) | c.Seed[3]); sb.Append("[seed " + BitConverter.ToString(c.Seed).Replace("-", "") + "] "); } continue; }
+                        byte p = c.Key.Apply(buf[i]);
                         if (!c.First) { c.First = true; c.Op = p; if (p == 0x91) c.Game = true; }
                         long at = c.Pos++; bool secret = (c.Op == 0x80 && at >= 31 && at <= 60) || (c.Op == 0x91 && at >= 35 && at <= 64);
                         if (secret) { sb.Append("**"); continue; }
@@ -70,12 +69,9 @@ public static class UoaixPacketProxy {
         } catch (Exception e) { Line(id, "--", (up ? "C>S" : "S>C") + " END " + e.Message); }
         try { to.Close(); } catch {}
     }
-    static void Seed(Conn c) {
-        ulong seed = ((ulong)c.Seed[0] << 24) | ((ulong)c.Seed[1] << 16) | ((ulong)c.Seed[2] << 8) | c.Seed[3]; ulong m = 0xFFFFFFFFUL;
-        c.Low = ((((seed ^ m) ^ 0x1357UL) << 16) | ((seed ^ 0xFFFFAAAAUL) & 65535UL)) & m;
-        c.High = ((seed ^ 0x43210000UL) >> 16) | (((seed ^ m) ^ 0xABCDFFFFUL) & 4294901760UL); c.Seeded = true;
-    }
 }
 '@
+$source+="`n"+[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'assist/UoWire.cs'))
+Add-Type -TypeDefinition $source
 Write-Output "PROXY listening on $ListenPort -> ${ServerHost}:$ServerPort log=$Log"
 [UoaixPacketProxy]::Run($ListenPort,$ServerHost,$ServerPort,$Log,$pairs)

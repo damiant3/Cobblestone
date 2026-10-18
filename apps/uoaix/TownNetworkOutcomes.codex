@@ -71,7 +71,7 @@ Chapter: TownNetworkOutcomes
   tno-trial-body : EconomyCheckpoint, EcClock, TnoCase, Integer -> Integer
   tno-trial-body (checkpoint) (source) (c) (action) =
     let w = checkpoint.world
-    in let clock = EcClock { world = w, jobs = source.jobs, consumer = source.consumer,
+    in let clock = EcClock { world = w, jobs = source.jobs, consumer = source.consumer, unmet = source.unmet,
       checks = 0, bad-census = 0, exhausted = 0 }
     in let p = ep-actor w c.actor
     in let before-coin = (em-purse w.money p.purse).coin
@@ -214,19 +214,27 @@ Chapter: TownNetworkOutcomes
     in let reopened = ep-set w.opening (ep-open-sales + c.item) opened
     in let restored = ep-set w.sales c.item sold
     in result
-  tno-base-rows : Integer = 16
+ Rows from tno-tool-rows are a role-1 maker wanting a spare of its tool, its goal that tool with one more needed than it
+ holds, so the price variants raise a quoted goal (root, 2026-10-16: once production followed demand the hungry maker's
+ food goal had no seller, and TownNetworkGateProbe's price rule had no row to measure). They run at the hour of rows 8
+ to 15, inside the snapshot bound sized at the corpus start.
+  tno-tool-rows : Integer = 16
+  tno-base-rows : Integer = 18
+  tno-tooled : EcClock, TnoCase, Integer -> TnoCase
+  tno-tooled (clock) (c) (row) = if row < tno-tool-rows | c.tool <= 0 then c
+    else let a = __record-set c "goal" c.tool in let b = __record-set c "needed" (ep-at (ep-actor clock.world c.actor).stock c.tool + 1) in c
   tno-cases : EcClock, TnoData, Integer, Integer, Integer, Integer -> Integer
   tno-cases (clock) (d) (snapshot) (original) (compared) (row) = if row == tno-base-rows then 0
-    else let advance = if row > 0 & int-mod row 8 == 0 then ec-run clock 12 False else 0
+    else let advance = if row > 0 & row < tno-tool-rows & int-mod row 8 == 0 then ec-run clock 12 False else 0
     in if advance /= 0 then -2000000008
-    else let c = tno-case clock row snapshot original compared
+    else let c = tno-tooled clock (tno-case clock row snapshot original compared) row
     in let food = if int-mod row 8 == 0 then ec-get clock c.actor 34 1 else True
     in let plain = tno-row clock d c snapshot original compared row 0
     in if plain /= 0 then plain
     else let raid = tno-row clock d c snapshot original compared row 1
     in if raid /= 0 then raid
     else let fed = tno-feed clock c.actor 4
-    in let f = tno-case clock row snapshot original compared
+    in let f = tno-tooled clock (tno-case clock row snapshot original compared) row
     in let calm = tno-row clock d f snapshot original compared row 2
     in if calm /= 0 then calm
     else let alarmed = tno-row clock d f snapshot original compared row 3

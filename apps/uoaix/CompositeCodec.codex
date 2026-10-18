@@ -15,6 +15,7 @@ Chapter: CompositeCodec
   cites Uoaix chapter Decorator
   cites Uoaix chapter CityWorkers
   cites Uoaix chapter Housing
+  cites Uoaix chapter ItemDurability
 
  UCC1 fixes section offsets by world capacity. The reserved vendor section
  is zero-padded; its used extent is recorded separately. All sections share
@@ -161,8 +162,9 @@ Chapter: CompositeCodec
  One written before the map pins (MPN rows, UOAIX-176) has seventeen; it reads as no courses. One written before the books (WBK rows, UOAIX-177) has eighteen; it reads as no written books. One written before the
  keepers' leisure (UOAIX-222) has nineteen; it reads as every keeper rested and at the starting happiness. One written before the city guards (UOAIX-217) has twenty; it reads as none, founded at boot. One written before the city
  workers (UOAIX-217 W2) has twenty-one; it reads as none, founded at boot. One written before the housing (UOAIX-236) has twenty-two;
- it reads as every house for sale and no bids.
-  cc-section-count : Integer = 23
+ it reads as every house for sale and no bids. One written before durability (UOAIX-238) has twenty-three; it reads
+ as every item full.
+  cc-section-count : Integer = 24
   cc-pick-slots : List Integer, List Integer, Integer, List Integer -> List Integer
   cc-pick-slots (kept) (actual) (i) (out) = if i == list-length actual then out
     else cc-pick-slots kept actual (i + 1) (out & [cc-slot-for kept actual i])
@@ -187,10 +189,10 @@ Chapter: CompositeCodec
   cc-tail-at (buf) (k) = cc-section-at buf (k + 1)
   cc-tail-room : Integer, Integer -> Integer
   cc-tail-room (buf) (k) = let at = cc-tail-at buf k in if at < 0 then -1 else peek-qword buf (at - 8)
- The slots of a format 43 image of size bytes, or none when it is not one.
+ The slots of a format 44 image of size bytes, or none when it is not one.
   cc-kept-slots : Integer, Integer -> List Integer
   cc-kept-slots (buf) (size) = if buf == 0 | size < 128 then []
-    else if peek-qword buf 0 /= #31434355 | peek-qword buf 8 /= 43 | peek-qword buf 16 /= size then []
+    else if peek-qword buf 0 /= #31434355 | peek-qword buf 8 /= 44 | peek-qword buf 16 /= size then []
     else cc-kept-rooms buf 0 []
   cc-kept-rooms : Integer, Integer, List Integer -> List Integer
   cc-kept-rooms (buf) (s) (out) = if s == cc-section-count then out
@@ -228,7 +230,7 @@ Chapter: CompositeCodec
     in let gone-tail = gv-gone-tail-size owner.vendor
     in let speech-tail = cc-speech-tail-size owner
     in let hunter-tail = 8 + cgf-bytes
-    in let decor-tail = dc-tail-size owner.decor
+    in let decor-tail = dc-tail-size owner.decor + gld-tail-size owner.land
     in let plays-tail = plr-tail-size 0
     in let pruned = mpn-prune owner.pins (cg-map-drawn owner owner.checkpoint.game) 0
     in let pins-tail = mpn-tail-size owner.pins
@@ -238,7 +240,8 @@ Chapter: CompositeCodec
     in let guards-tail = cc-city-guards-size owner
     in let workers-tail = cw-tail-size owner.city-workers owner.city-held
     in let housing-tail = hs-tail-size owner.housing
-    in let slots = cc-pick-slots (cc-kept-slots previous previous-size) [currency-bytes, vendor-tail, accounts-tail, law-tail, gov-tail, town-tail, harvest-tail, spawn-tail, construction-tail, help-tail, board-tail, known-tail, gone-tail, speech-tail, hunter-tail, plays-tail, decor-tail, pins-tail, books-tail, leisure-tail, guards-tail, workers-tail, housing-tail] 0 []
+    in let durability-tail = id-tail-size owner.durability owner.items.world
+    in let slots = cc-pick-slots (cc-kept-slots previous previous-size) [currency-bytes, vendor-tail, accounts-tail, law-tail, gov-tail, town-tail, harvest-tail, spawn-tail, construction-tail, help-tail, board-tail, known-tail, gone-tail, speech-tail, hunter-tail, plays-tail, decor-tail, pins-tail, books-tail, leisure-tail, guards-tail, workers-tail, housing-tail, durability-tail] 0 []
     in let size = cc-size count + cc-slots-bytes slots 0
     in let t1 = cc-stamp timing 1
     in if count < 64 | count > world-max-objects | capacity < size | sequence < 0 | tick < 0 then Err "composite checkpoint budget invalid"
@@ -261,7 +264,10 @@ Chapter: CompositeCodec
     in let f-written = cc-fault "game" (gc-encode-as owner.checkpoint.state game (buf + game-at) (gc-size count) False)
     in let f-game = f-written & gc-faults owner.checkpoint.state game (buf + game-at)
     in let t3 = cc-stamp timing 3
-    in let f-currency = cc-fault "currency" (euc-write-timed (CurrencyCheckpoint { currency = owner.vendor.currency, sequence = sequence, tick = tick }) (buf + currency-at) currency-bytes currency-kept timing)
+    in let economy-hour = owner.vendor.currency.world.hour
+    in let audited = economy-hour /= owner.economy-hour
+    in let marked = __record-set owner "economy-hour" economy-hour
+    in let f-currency = cc-fault "currency" (euc-write-timed (CurrencyCheckpoint { currency = owner.vendor.currency, sequence = sequence, tick = tick }) (buf + currency-at) currency-bytes currency-kept timing audited)
     in let t4 = cc-stamp timing 4
     in let vendored = gvsc-write-without owner.vendor (buf + vendor-at) (cc-vendor-budget - gv-gone-bytes) residents (buf + cc-section-walk (cc-size count) slots 0 1)
     in let accounted = ga-write-tail game.accounts (buf + cc-section-walk (cc-size count) slots 0 2)
@@ -278,13 +284,14 @@ Chapter: CompositeCodec
     in let spoken-tail = cc-write-speech-tail owner (buf + cc-section-walk (cc-size count) slots 0 13)
     in let hunted-tail = cc-write-hunter-tail owner (buf + cc-section-walk (cc-size count) slots 0 14)
     in let played-tail = plr-write-tail owner.plays (buf + cc-section-walk (cc-size count) slots 0 15)
-    in let decorated = dc-write-tail owner.decor (buf + cc-section-walk (cc-size count) slots 0 16)
+    in let decorated = gld-write-tail owner.land (dc-write-tail owner.decor (buf + cc-section-walk (cc-size count) slots 0 16))
     in let pinned = mpn-write-tail owner.pins (buf + cc-section-walk (cc-size count) slots 0 17)
     in let booked = wbk-write-tail owner.books (buf + cc-section-walk (cc-size count) slots 0 18)
     in let rested = kl-write-tail owner.leisure (buf + cc-section-walk (cc-size count) slots 0 19)
     in let citied = cc-write-city-guards owner (buf + cc-section-walk (cc-size count) slots 0 20)
     in let city-worked = cw-write-tail owner.city-workers owner.checkpoint.game.world owner.city-held (buf + cc-section-walk (cc-size count) slots 0 21)
     in let housed = hs-write-tail owner.housing (buf + cc-section-walk (cc-size count) slots 0 22)
+    in let worn = id-write-tail owner.durability owner.items.world (buf + cc-section-walk (cc-size count) slots 0 23)
     in let vendor-size = when vendored is Err (_) -> 1 is Ok (n) -> n
     in let f-vendor = cc-fault "vendor" vendored
     in let t5 = cc-stamp timing 5
@@ -320,17 +327,21 @@ Chapter: CompositeCodec
     in let f-board = cc-fault "board" (cc-write-board owner buf count)
     in let s21 = cc-stamp timing 21
     in let f-gov = cc-fault "government" (cc-write-gov owner buf count)
+    in let s24 = cc-stamp timing 24
     in let f-built = cc-fault "construction" (cc-write-construction owner buf count)
+    in let s25 = cc-stamp timing 25
     in let f-workers = cc-fault "workers" (cc-write-workers owner buf count)
+    in let s26 = cc-stamp timing 26
     in let f-ships = cc-fault "ships" (cc-write-ships owner buf count)
     in let f-haven = cc-fault "haven" (cc-write-haven owner buf count)
+    in let s27 = cc-stamp timing 27
     in let f-day = cc-fault "day" (cc-write-day owner buf count)
     in let t7 = cc-stamp timing 7
     in let faults = f-game & f-currency & f-vendor & f-combat & f-items & f-extra & f-magic & f-town & f-network & f-skills
       & f-production & f-spawns & f-speech & f-gatherer & f-fighter & f-british & f-miners & f-pages & f-known & f-farmer & f-table & f-civic & f-guards & f-board & f-gov & f-built & f-workers & f-ships & f-haven & f-day & f-spawn-tail
     in let noted = __record-set owner "save-faults" faults
     in let a = poke-qword buf 0 #31434355
-              in let b = poke-qword buf 8 43
+              in let b = poke-qword buf 8 44
               in let c = poke-qword buf 16 size
               in let d = poke-qword buf 24 count
               in let e = poke-qword buf 32 sequence
@@ -343,7 +354,9 @@ Chapter: CompositeCodec
               in let grant-size = poke-qword buf 120 48
               in let grant-header = poke-qword buf (cc-v2-size count) #31544743
               in let grants = ws-copy owner.test-grants (buf + cc-v2-size count + 8) 40 0
-              in let digest = poke-qword buf 48 (ws-hash buf size 0 2166136261)
+              in let s22 = cc-stamp timing 22
+              in let digest = poke-qword buf 48 (ws-digest buf size 0 2166136261)
+              in let s23 = cc-stamp timing 23
               in Ok size
   cc-tolerate : Text, CompositeGame, Result CompositeGame Text -> Result CompositeGame Text
   cc-tolerate (name) (owner) (result) = when result
@@ -530,14 +543,16 @@ Chapter: CompositeCodec
   cc-read-plays : CompositeGame, Integer -> Result CompositeGame Text
   cc-read-plays (owner) (buf) = let at = cc-tail-at buf 14
     in if at < 0 then Ok owner
-    else when plr-read-tail owner.plays at (peek-qword buf (at - 8))
+    else when plr-read-tail owner.plays (buf + at) (peek-qword buf (at - 8))
       is Err (e) -> Err e
       is Ok (_) -> Ok owner
   cc-read-decor : CompositeGame, Integer -> Result CompositeGame Text
   cc-read-decor (owner) (buf) = let at = cc-tail-at buf 15
     in if at < 0 then Ok owner
     else let length = dc-tail-length (buf + at) (cc-tail-room buf 15)
-    in if length < 0 | dc-read-tail owner.decor (buf + at) length < 0 then Err "composite decorator tail invalid" else Ok owner
+    in if length < 0 | dc-read-tail owner.decor (buf + at) length < 0 then Err "composite decorator tail invalid"
+    else let land = gld-tail-length (buf + at + length) (cc-tail-room buf 15 - length)
+    in if land < 0 | gld-read-tail owner.land (buf + at + length) land < 0 then Err "composite land edit tail invalid" else Ok owner
   cc-read-pins : CompositeGame, Integer -> Result CompositeGame Text
   cc-read-pins (owner) (buf) = let at = cc-tail-at buf 16
     in if at < 0 then Ok owner
@@ -559,7 +574,13 @@ Chapter: CompositeCodec
       is Err (e) -> Err e
       is Ok (guarded) -> when cc-tolerate "city workers" guarded (cc-read-city-workers guarded buf)
         is Err (e) -> Err e
-        is Ok (worked) -> cc-tolerate "housing" worked (cc-read-housing worked buf)
+        is Ok (worked) -> when cc-tolerate "housing" worked (cc-read-housing worked buf)
+          is Err (e) -> Err e
+          is Ok (housed) -> cc-tolerate "durability" housed (cc-read-durability housed buf)
+  cc-read-durability : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-durability (owner) (buf) = let at = cc-tail-at buf 22
+    in if at < 0 then Ok owner
+    else if id-read-tail owner.durability owner.items.world (buf + at) (cc-tail-room buf 22) < 0 then Err "composite durability tail invalid" else Ok owner
   cc-read-housing : CompositeGame, Integer -> Result CompositeGame Text
   cc-read-housing (owner) (buf) = let at = cc-tail-at buf 21
     in if at < 0 then Ok owner
@@ -817,6 +838,9 @@ Chapter: CompositeCodec
       is Just (s) -> when tgc-encode s (buf + at + 8) tgc-bytes
         is Err (e) -> let wiped = ts-zero (buf + at) (8 + tgc-bytes) 0 in Err e
         is Ok (n) -> let length = poke-qword buf at n
+          in let hour = s.government.economy.hour
+          in if hour == owner.gov-hour then Ok 0
+          else let checked = __record-set owner "gov-hour" hour
           in if tgv-valid s.government s.works s.disputes then Ok 0 else Err "government state invalid, written anyway"
   cc-read-gov : CompositeGame, Integer -> Result CompositeGame Text
   cc-read-gov (owner) (buf) = if peek-qword buf 8 < 29 then Ok owner
@@ -980,7 +1004,7 @@ Chapter: CompositeCodec
     else let capacity = peek-qword buf 24
     in let version = peek-qword buf 8
     in let currency = peek-qword buf 64
-    in if version /= 43 then Err "composite world predates format 43 (fame and karma in the skill table); start a fresh world"
+    in if version /= 44 then Err "composite world predates format 44 (the word digest, ws-digest); start a fresh world"
     else if capacity < 64 | capacity > world-max-objects
       | currency < euc-fixed + es-bytes + 8 | size < cc-size capacity + 8 + currency + 192 then Err "composite checkpoint capacity invalid"
     else if peek-qword buf (cc-size capacity) < currency | peek-qword buf (cc-size capacity) > size - cc-size capacity - 8 then Err "composite currency slot invalid"
@@ -994,7 +1018,7 @@ Chapter: CompositeCodec
     in if peek-qword buf 56 /= gc-size capacity | peek-qword buf 64 /= currency | peek-qword buf 80 /= cbc-size capacity
       | peek-qword buf 88 /= 16 + capacity * 40 | vendor-size < 1 | vendor-size > cc-vendor-budget - gv-gone-bytes then Err "composite section lengths invalid"
     else if not ((if version >= 3 then peek-qword buf 120 == 48 else gc-zero-range buf (if version == 1 then 96 else 120) 128) & gc-zero-range buf (vendor-at + vendor-size) (combat-at - gv-gone-bytes) & cc-gone-valid (buf + combat-at - gv-gone-bytes) 0) then Err "composite reserved bytes invalid"
-    else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "composite checksum invalid"
+    else if peek-qword buf 48 /= ws-digest buf size 0 2166136261 then Err "composite checksum invalid"
     else when gc-decode-record-as (buf + 128) (gc-size capacity) tick sequence False
       is Err (e) -> Err e
       is Ok (game) -> when euc-decode-record-any (buf + currency-at) currency tick sequence

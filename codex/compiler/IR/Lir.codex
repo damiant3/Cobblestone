@@ -53,6 +53,13 @@ Section: Representation
     | LoMul
     | LoRem
     | LoDiv
+    | LoAnd
+    | LoOr
+    | LoXor
+    | LoShl
+    | LoShr
+    | LoShru
+    | LoListAt
 
  The six comparison conditions a branch tests. A comparison sets flags
  (`LiCmp`) and the following conditional branch reads them -- the fused
@@ -184,7 +191,8 @@ Section: Lowering
    tail : Boolean,
    fname : Text,
    np : Integer,
-   header : Integer
+   header : Integer,
+   bits : Boolean
   }
 
   loop-notail : LirLoopCtx -> LirLoopCtx
@@ -196,7 +204,8 @@ Section: Lowering
         tail = False,
         fname = lc.fname,
         np = lc.np,
-        header = lc.header
+        header = lc.header,
+        bits = lc.bits
       }
 
  A back-edge fires only for a tail call to this very function with exactly
@@ -246,6 +255,68 @@ Section: Lowering
   lir-op-wraps (op) (t) =
     when op
      is IrAddInt | IrSubInt | IrMulInt -> int-ty-wraps t
+     is otherwise -> False
+
+  lir-is-bit-name : Text -> Boolean
+  lir-is-bit-name (n) =
+    if n == "bit-and" then True
+    else if n == "bit-or" then True
+    else if n == "bit-xor" then True
+    else if n == "bit-shl" then True
+    else if n == "bit-shr" then True
+    else n == "bit-shru"
+
+  lir-bit-op-of : Text -> LirOp
+  lir-bit-op-of (n) =
+    if n == "bit-and" then LoAnd
+    else if n == "bit-or" then LoOr
+    else if n == "bit-xor" then LoXor
+    else if n == "bit-shl" then LoShl
+    else if n == "bit-shr" then LoShr
+    else LoShru
+
+  lir-op-shifts : LirOp -> Boolean
+  lir-op-shifts (op) =
+    when op
+     is LoShl -> True
+     is LoShr -> True
+     is LoShru -> True
+     is otherwise -> False
+
+ A shift count reaches the instruction only as an immediate from 0 to 63,
+ where it means what the tree emitter's CL form means; any other count keeps
+ the function on the tree path.
+
+  lir-shift-count-ok : LirValue -> Boolean
+  lir-shift-count-ok (v) =
+    when v
+     is LvImm (k) -> k >= 0 & k <= 63
+     is LvReg (r) -> False
+
+  lower-lir-bitop : List LirEnvEntry, LirOp, IRExpr, IRExpr, Integer, List LirBlock, Integer, List LirInsn, Integer, Integer,
+    LirLoopCtx -> LowerRes
+  lower-lir-bitop (env) (op) (l) (r) (counter) (blocks) (cur) (curi) (bctr) (depth) (lc) =
+    let rl = lower-lir-expr env l counter blocks cur curi bctr (depth + 1) (loop-notail lc)
+    in if rl.ok == False then rl
+    else let rr = lower-lir-expr env r (rl.counter) (rl.blocks) (rl.cur) (rl.curi) (rl.bctr) (depth + 1) (loop-notail lc)
+    in if rr.ok == False then rr
+    else if lir-op-shifts op & lir-shift-count-ok (rr.val) == False then lower-fail (rr.counter) (rr.blocks) (rr.cur) (rr.curi) (rr.bctr)
+    else let dst = rr.counter
+    in LowerRes {
+     val = LvReg dst,
+     counter = dst + 1,
+     blocks = rr.blocks,
+     cur = rr.cur,
+     curi = list-push (rr.curi) (deck-record (LiBin op dst (rl.val) (rr.val))),
+     bctr = rr.bctr,
+     ok = True,
+     term = False
+    }
+
+  lir-list-elem-ok : CodexType -> Boolean
+  lir-list-elem-ok (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) | BooleanTy | CharTy -> True
      is otherwise -> False
 
   lir-op-whitelisted : IRBinaryOp -> Boolean
@@ -400,7 +471,7 @@ Section: Lowering
      }
      is IrName (n) (t) (s) ->
       let i = lir-env-find env n 0 (list-length env)
-      in if i < 0 then lower-fail counter blocks cur curi bctr
+      in if i < 0 then lower-call-args env [] 0 0 n counter blocks cur curi bctr [] (depth + 1) (loop-notail lc)
       else
         LowerRes {
           val = (list-at env i).val,
@@ -502,7 +573,15 @@ Section: Lowering
       else if lir-env-find env root 0 (list-length env) >= 0 then
         lower-fail counter blocks cur curi bctr
       else let args = lir-apply-args e []
-      in if lir-backedge-fires lc root (list-length args) then
+      in if lc.bits & list-length args == 2 & lir-is-bit-name root then
+        lower-lir-bitop env (lir-bit-op-of root) (list-at args 0) (list-at args 1) counter blocks cur curi bctr depth lc
+      else if lc.bits & list-length args == 2 & root == "list-at" & lir-list-elem-ok t then
+        lower-lir-bitop env LoListAt (list-at args 0) (list-at args 1) counter blocks cur curi bctr depth lc
+      else if lc.bits & list-length args == 3 & root == "list-set-at" then
+        lower-call-args env args 0 3 "__list_set_at" counter blocks cur curi bctr [] (depth + 1) (loop-notail lc)
+      else if lc.bits & list-length args == 2 & root == "list-push" then
+        lower-call-args env args 0 2 "__list_snoc" counter blocks cur curi bctr [] (depth + 1) (loop-notail lc)
+      else if lir-backedge-fires lc root (list-length args) then
         lower-backedge env args 0 (list-length args) counter blocks cur curi bctr [] (depth + 1) lc
       else
         lower-call-args env args 0 (list-length args) root counter blocks cur curi bctr [] (depth + 1) (loop-notail lc)
@@ -1146,11 +1225,18 @@ Section: Lowering
  unreachable then, and it costs nothing to emit, but it keeps the block ids
  dense, which every table indexed by id depends on.
 
+ `bits` is True only when the program defines none of the six bitwise
+ builtin names and no `list-at`, because a definition beats a builtin: the
+ selector knows the user arities and passes the answer down.
+
   lower-def-to-lir : IRDef -> LowerFuncRes
-  lower-def-to-lir (d) =
+  lower-def-to-lir (d) = lower-def-to-lir-bits d False
+
+  lower-def-to-lir-bits : IRDef, Boolean -> LowerFuncRes
+  lower-def-to-lir-bits (d) (bits) =
     let np = list-length (d.params)
     in let env0 = lir-seed-params (d.params) 0 np []
-    in let lc0 = LirLoopCtx { active = True, tail = True, fname = d.name, np = np, header = 0 }
+    in let lc0 = LirLoopCtx { active = True, tail = True, fname = d.name, np = np, header = 0, bits = bits }
     in let r = lower-lir-expr env0 (d.body) np [] 0 [] 1 0 lc0
     in if r.ok == False then LowerFuncRes { func = lir-empty-func (d.name), ok = False }
     else let blocks-final = list-push (r.blocks) (deck-record (LirBlock {
@@ -3186,6 +3272,13 @@ Section: Dump and Pass
      is LoMul -> "mul"
      is LoRem -> "rem"
      is LoDiv -> "div"
+     is LoAnd -> "and"
+     is LoOr -> "or"
+     is LoXor -> "xor"
+     is LoShl -> "shl"
+     is LoShr -> "sar"
+     is LoShru -> "shr"
+     is LoListAt -> "list-at"
 
   lir-cond-text : LirCond -> Text
   lir-cond-text (c) =

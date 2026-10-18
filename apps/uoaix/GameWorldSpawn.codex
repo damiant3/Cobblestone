@@ -77,9 +77,11 @@ Chapter: GameWorldSpawn
  NPCRunningSpeed (0.3 s a step); IsValidAttackTarget (ai.cpp:66) refuses a hidden target.
   gws-aggro : Integer = 10
   gws-chase-ms : Integer = 300
- A follower more than 3 tiles behind its master runs at a player's on-foot run (ServUO Mobile.RunFoot, 0.2 s a step)
- until it is close, then walks at WalkFoot (0.4 s) (Damian, 2026-10-09: "make sure followers will run to catch up").
-  gws-run-ms : Integer = 200
+ A pet more than 3 tiles behind its owner runs at a mounted run (ServUO Mobile.RunMount, 0.1 s a step), so it gains on an
+ owner running on foot and keeps pace with a rider, then walks at WalkFoot (0.4 s) when close (Damian, 2026-10-09: "make
+ sure followers will run to catch up"; 2026-10-13: "pet followers need to run, and be more agressive in following
+ heuristic pathfinding. way too easy to lose em").
+  gws-pet-run-ms : Integer = 100
   gws-walk-ms : Integer = 400
   gws-slot-seen : GameWorldSpawn, WorldSpawnSlot -> Boolean
   gws-slot-seen (g) (slot) = bit-and slot.seen (bit-shl 1 g.viewer) /= 0
@@ -409,9 +411,9 @@ Chapter: GameWorldSpawn
           in let counted = __record-set g "steps" (g.steps + 1)
           in let raced = if quick then __record-set g "fast" (g.fast + 1) else g
           in let stamp = __record-set slot "stepped" g.combat.tick in True
- A step sooner than this after the creature's last one is faster than the 200 ms run a follower catches up at allows
- (UOAIX-161).
-  gws-step-floor-ms : Integer = 150
+ A step sooner than this after the creature's last one is faster than the 100 ms run a following pet catches up at
+ allows (UOAIX-161).
+  gws-step-floor-ms : Integer = 90
   gws-moves-said : Maybe GameWorldSpawn -> Text
   gws-moves-said (spawns) = when spawns
     is None -> "SPAWN MOVES none"
@@ -425,6 +427,15 @@ Chapter: GameWorldSpawn
     in if r < 30 then False
     else let turn = if r < 35 then 4 else if r < 40 then 3 else if r < 65 then 2 else 1
     in gws-step g shard map slot m (int-mod (direction + 8 + (if int-mod r 2 == 1 then 0 - turn else turn)) 8) free
+ A following pet's step: the direction toward the owner, then each neighbour of it, then the next pair out, never a
+ random give-up.
+  gws-chase : GameWorldSpawn, GameShard, WalkMap, WorldSpawnSlot, WorldObject, Integer -> Boolean
+  gws-chase (g) (shard) (map) (slot) (m) (direction) =
+    if gws-step g shard map slot m direction True then True
+    else if gws-step g shard map slot m (int-mod (direction + 1) 8) True then True
+    else if gws-step g shard map slot m (int-mod (direction + 7) 8) True then True
+    else if gws-step g shard map slot m (int-mod (direction + 2) 8) True then True
+    else gws-step g shard map slot m (int-mod (direction + 6) 8) True
  A tamed slot's order (UOX3 pet commands): follow walks to its owner, guard follows and fights whoever its owner
  fights or whoever fights its owner, stay holds its tile. A pet keeps a combat target it already has, and under any
  order fights back whoever attacks it, its owner excepted (UOAIX-195, as a struck wild creature does, UOAIX-172).
@@ -485,13 +496,13 @@ Chapter: GameWorldSpawn
         in let due = __record-set slot "due" (g.combat.tick + gm-ticks 1000) in False
       is Ok (master) -> let foe = if master.kind /= 1 | master.health <= 0 then 0 else gws-pet-foe g shard slot a master
         in let gap = max (walk-abs (master.x - m.x)) (walk-abs (master.y - m.y))
-        in let due = __record-set slot "due" (g.combat.tick + gm-ticks (if foe > 0 then gws-chase-ms else if gap > 3 then gws-run-ms else if gap > 1 then gws-walk-ms else 1000))
+        in let due = __record-set slot "due" (g.combat.tick + gm-ticks (if foe > 0 then gws-chase-ms else if gap > 3 then gws-pet-run-ms else if gap > 1 then gws-walk-ms else 1000))
         in if foe > 0 then gws-pet-fight g shard map slot m a foe
         else let stopped = cb-stop g.combat a
         in let peace = __record-set a "war" False
         in if slot.order == gws-order-stay | master.kind /= 1 | master.health <= 0 | not (gm-near m.x m.y master.x master.y gws-sight)
           | gm-near m.x m.y master.x master.y 1 then False
-        else gws-walk g shard map slot m (cb-direction (master.x - m.x) (master.y - m.y)) True
+        else gws-chase g shard map slot m (cb-direction (master.x - m.x) (master.y - m.y))
  UOX3 taming.js: a tamed creature drops its combat, follows its master and stops counting against its region.
   gws-owner-of : GameWorldSpawn, Integer -> Integer
   gws-owner-of (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
@@ -785,6 +796,13 @@ Chapter: GameWorldSpawn
   gws-forget : GameWorldSpawn, Integer -> Integer
   gws-forget (g) (i) = if i == list-length g.slots then poke-qword (gws-list g) 0 0
     else let invisible = gws-slot-mark g (list-at g.slots i) False in gws-forget g (i + 1)
+ UOAIX-262 (Damian, 2026-10-14: "the elementals shouldn't respawn once killed by the guards"): a region the guards have
+ cleared keeps its timer at gws-cleared, which gws-region-at never reaches, and the save keeps the mark.
+  gws-cleared : Integer = 4611686018427387904
+  gws-clear-region : GameWorldSpawn, Integer -> Integer
+  gws-clear-region (g) (region) = if region < 0 | region >= list-length g.catalog.regions then 0 else poke-qword g.deadlines (region * 8) gws-cleared
+  gws-region-cleared : GameWorldSpawn, Integer -> Boolean
+  gws-region-cleared (g) (region) = region >= 0 & region < list-length g.catalog.regions & peek-qword g.deadlines (region * 8) >= gws-cleared
   gws-slot-of : GameWorldSpawn, Integer, Integer -> Integer
   gws-slot-of (g) (serial) (i) = if i == list-length g.slots then -1
     else if (list-at g.slots i).serial == serial then i else gws-slot-of g serial (i + 1)

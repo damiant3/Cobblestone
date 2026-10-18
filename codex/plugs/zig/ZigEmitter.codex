@@ -106,7 +106,7 @@ Section: Keywords and Sanitization
    "cx_ll_with_capacity",
    "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
    "cx_real_to_bits", "cx_bits_to_real",
-   "cx_real_to_int", "cx_real_from_int", "cx_to_real_approx",
+   "cx_real_to_int", "cx_real_from_int", "cx_to_real_approx", "cx_real_trap", "cx_real_sat",
    "cx_w", "cx_x", "cx_real_to_text",
    "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
    "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
@@ -1168,6 +1168,14 @@ Section: Builtin Emitter
        emit = \args ctx d ty -> "cx_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
      },
      ZigBuiltinEmitter {
+       name = "to-real-trapping",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "to-real-saturating",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
        name = "real-approx-to-int",
        emit = \args ctx d ty -> "cx_real_to_int(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
      },
@@ -1675,6 +1683,10 @@ Section: Binary Operator Mapping
     when op
      is IrAddInt | IrSubInt | IrMulInt ->
       "(" & emit-zig-expr l ctx (d + 1) & " " & (if int-ty-wraps ty then zig-bin-op-symbol op else zig-bin-op-plain op) & " " & emit-zig-expr r ctx (d + 1) & ")"
+     is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping ->
+      "cx_real_trap(" & emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1) & ")"
+     is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating ->
+      "cx_real_sat(" & emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1) & ")"
      is IrAppendText -> "cx_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
      is IrAppendList -> "cx_ll_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
      is IrConsList -> "cx_ll_cons(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
@@ -4838,6 +4850,24 @@ Section: Chapter Emission
     ShakeLit "(n: i64) f64 {\n    return @floatFromInt(n);\n}\n"
   ]
 
+ A trapping Real traps when the result has no value (an infinity or a NaN),
+ and a saturating one answers the largest finite f64 of the same sign for an
+ infinity and zero for a NaN: bare metal's `emit-real-trapping-arith` and
+ `emit-real-saturating-arith`. `v - v == 0` holds exactly for a finite v.
+
+  zig-p-cx-real-trap : List ShakeFrag
+  zig-p-cx-real-trap = [
+    ShakeLit "fn ",
+    ShakeUse "cx_real_trap",
+    ShakeLit "(v: f64) f64 {\n    if (!(v - v == 0)) @panic(\"CODEX_TRAP_real_not_finite\");\n    return v;\n}\n"
+  ]
+
+  zig-p-cx-real-sat : List ShakeFrag
+  zig-p-cx-real-sat = [
+    ShakeLit "fn ",
+    ShakeUse "cx_real_sat",
+    ShakeLit "(v: f64) f64 {\n    if (v != v) return 0.0;\n    if (v - v == 0) return v;\n    return if (v > 0) 1.7976931348623157e308 else -1.7976931348623157e308;\n}\n"
+  ]
   zig-p-cx-real-to-int : List ShakeFrag
   zig-p-cx-real-to-int = [
     ShakeLit "// cvttsd2si on bare metal (emit-real-to-int-builtin): truncate toward\n// zero, and answer x86's \"integer indefinite\" -- INT64_MIN -- for a NaN,\n// for an infinity, and for anything whose truncation will not fit i64.\n// Zig's @intFromFloat truncates the same way but is UNDEFINED out of\n// range, so these guards are the mirror of what the hardware actually\n// answers rather than decoration: without them the out-of-range cases are\n// not merely a different answer from bare metal, they are no answer at\n// all. 2^63 is exact in f64, so both bounds are exact and the comparisons\n// catch the infinities on the way past.\nfn ",
@@ -5888,14 +5918,14 @@ Section: Chapter Emission
   zig-p-cce-t2-uni = [
     ShakeLit "const ",
     ShakeUse "cce_t2_uni",
-    ShakeLit " = [10]u32{ 12288, 12352, 12448, 19968, 13312, 44032, 3584, 8192, 127744, 9728 };\n"
+    ShakeLit " = [11]u32{ 12288, 12352, 12448, 19968, 13312, 44032, 3584, 8192, 127744, 9728, 9984 };\n"
   ]
 
   zig-p-cce-t2-size : List ShakeFrag
   zig-p-cce-t2-size = [
     ShakeLit "const ",
     ShakeUse "cce_t2_size",
-    ShakeLit " = [10]u32{ 64, 96, 96, 20992, 6592, 11172, 256, 512, 1024, 256 };\n"
+    ShakeLit " = [11]u32{ 64, 96, 96, 20992, 6592, 11172, 256, 512, 1024, 256, 192 };\n"
   ]
 
   zig-p-cx-cce-to-cp : List ShakeFrag
@@ -6030,6 +6060,8 @@ Section: Chapter Emission
      ShakePart { name = "cx_real_from_int", frags = zig-p-cx-real-from-int },
      ShakePart { name = "cx_real_to_int", frags = zig-p-cx-real-to-int },
      ShakePart { name = "cx_to_real_approx", frags = zig-p-cx-to-real-approx },
+     ShakePart { name = "cx_real_trap", frags = zig-p-cx-real-trap },
+     ShakePart { name = "cx_real_sat", frags = zig-p-cx-real-sat },
      ShakePart { name = "cx_real_to_text", frags = zig-p-cx-real-to-text },
      ShakePart { name = "cx_char_to_text", frags = zig-p-cx-char-to-text },
      ShakePart { name = "cx_char_encode", frags = zig-p-cx-char-encode },

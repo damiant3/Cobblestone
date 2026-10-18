@@ -24,7 +24,7 @@ Chapter: GameHarvestProduction
     else if item == 78 then #09D1 else if item == 80 then #0C77 else if item == 82 then #0C6D else if item == 84 then #0C70
     else if item == 86 then #0D39 else if item == 88 then #0C7F else if item == 90 then #0C6A else if item == 92 then #0C72
     else if item == 94 then #0C74 else if item == 96 then #0C5C else if item == 98 then #0C64 else if item == 100 then #1AA2
-    else if item == 9 then #09CC else if item >= gh-gem-first & item < gh-gem-first + 9 then list-at [#0F25, #0F16, #0F15, #0F26, #0F10, #0F13, #0F11, #0F0F, #0F18] (item - gh-gem-first)
+    else if item == 9 then #09CC else if item == gh-powder then #1006 else if item >= gh-gem-first & item < gh-gem-first + 9 then list-at [#0F25, #0F16, #0F15, #0F26, #0F10, #0F13, #0F11, #0F0F, #0F18] (item - gh-gem-first)
     else if item-ingot-art item /= 0 then item-ingot-art item else #0DCF
  ServUO Lumberjacking and Mining EffectSounds: 0x13E per chop, 0x125 or 0x126 per swing; Fishing.cs and
  UOX3 fishing.js splash 0x364. Pre-SA EffectActions: mine 11, chop 13, fish 12.
@@ -93,6 +93,15 @@ Chapter: GameHarvestProduction
   gh-gem-roll : Integer, Integer -> Integer
   gh-gem-roll (serial) (now) = let r = bit-and (mix-bits serial now) #7FFFFFFF
     in if int-mod r gh-gem-odds /= 0 then 0 else gh-gem-first + int-mod (r / gh-gem-odds) 9
+ UOAIX-238 (Damian, 2026-10-10: "they can be mined in the sands of nujelm"): a sand dig inside Nujel'm's rectangle (Cities
+ ct-table, city 8) turns up a powder of restoration, item 166 (ServUO PowderOfTemperament art 0x1006), 1 time in 10.
+  gh-powder : Integer = 166
+  gh-powder-odds : Integer = 10
+  gh-powder-roll : GameHarvest, Integer, Integer -> Integer
+  gh-powder-roll (state) (serial) (now) = when world-get state.items.world serial
+    is Err (_) -> 0
+    is Ok (m) -> if m.x < 3544 | m.x > 3773 | m.y < 1166 | m.y > 1400 then 0
+      else if int-mod (bit-and (mix-bits serial (now + 7)) #7FFFFFFF) gh-powder-odds /= 0 then 0 else gh-powder
   gh-produce : GameHarvest, GvPlayer, Integer, Integer, Integer -> Result GameReply Text
   gh-produce (state) (player) (node-id) (lot-id) (now) =
     let v = state.vendor
@@ -131,8 +140,8 @@ Chapter: GameHarvestProduction
             in let felled = if at >= 0 & node.planted == 1 & node.resource == 15 then (let f = __record-set (list-at state.sites at) "felled" 1 in 1) else 0
             in when (if resource.seed == gh-sapling then gh-place-as state player gh-sapling 1 (gh-grade 1000) (if list-length w.catalog.items >= 68 then 1 else 0) (now + 1) species else Ok [])
             is Err (e) -> Err e
-            is Ok (sapling) -> let gem = if resource.item == 5 | resource.item == 6 then gh-gem-roll player.serial now else 0
-              in when (if gem < 1 | list-length w.catalog.items < gh-gem-first + 8 then Ok [] else let added = eh-add-yield w p gem 1 1000 in gh-place state player gem 1 (gh-grade 1000) 1 (now + 2))
+            is Ok (sapling) -> let gem = if resource.item == 5 | resource.item == 6 then gh-gem-roll player.serial now else if resource.item == 104 then gh-powder-roll state player.serial now else 0
+              in when (if gem < 1 | list-length w.catalog.items < (if gem == gh-powder then gh-powder else gh-gem-first + 8) then Ok [] else let added = eh-add-yield w p gem 1 1000 in gh-place state player gem 1 (gh-grade 1000) 1 (now + 2))
               is Err (e) -> Err e
               is Ok (gemmed) -> let made = if list-length sapling == 0 then list-push skill item else list-push (list-push skill item) sapling
               in let drawn = if list-length gemmed == 0 then made else list-push made gemmed

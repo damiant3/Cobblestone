@@ -1,0 +1,101 @@
+Chapter: BvtHouseKey
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-252 for a deed house (Damian, 2026-10-17: houses come from deeds): a composite town (BvtWorkerDay's flat land,
+ one decoration door at 1500, 1600), a holder with a pack and a bank box and a stranger with a pack, standing on the
+ steps of a small wooden house deed placed centered on 1510, 1610. Answers a bit per check: 1 the deed becomes the house
+ at once (its row, a plot over its walls and steps, the deed spent), the door locked, a key to it in the holder's pack
+ and another in the bank box; 2 the stranger is refused the locked door and the holder opens it; 4 the stranger carrying
+ a key cut to it opens it; 8 a key that does not fit is refused, the fitting key unlocks, an open door is not locked, the
+ shut door locks, and the master key fits; 16 a house whose walls or steps would overlap finds no room and one past them
+ does; 31 is all, negative when not buildable.
+  bhk-data : Integer, Integer -> Integer
+  bhk-data (x) (y) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let px = poke-qword data 64 x
+    in let py = poke-qword data 72 y
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  bhk-founded : Integer, Integer -> Result CompositeGame Text
+  bhk-founded (x) (y) = when walk-map-new (x - 16) (y - 16) 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> Err e
+      is Ok (britain) -> let filled = bwd-fill map 0
+        in let town-filled = bwd-fill britain 0
+        in let data = bhk-data x y
+        in when wd-read data 240 map map.stride
+          is Err (e) -> Err e
+          is Ok (decoration) -> when cg-britain britain
+            is Err (e) -> Err e
+            is Ok (owner) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+              is Err (e) -> Err e
+              is Ok (_) -> Ok owner
+  bhk-input : Integer -> GameInput
+  bhk-input (serial) = let input = gn-input 3
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let who = __record-set input.session "serial" serial in input
+  bhk-note : Result (Maybe GameReply) Text -> Text
+  bhk-note (r) = when r is Err (_) -> "" is Ok (None) -> "" is Ok (Just (reply)) -> reply.note
+ A small wooden house deed in the pack, registered as cn-make-deed registers one; 0 when the world refuses.
+  bhk-deed : GsiState, Integer -> Integer
+  bhk-deed (items) (pack) = when world-create items.world (gs-item pack cn-deed-art 0)
+    is Err (_) -> 0
+    is Ok (serial) -> if gsi-register items serial 0 0 True False /= 0 then 0 else serial
+  bhk-checks : Integer -> Integer
+  bhk-checks (unused) = let x = 1510 in let y = 1610
+    in when bhk-founded 1500 1600
+      is Err (_) -> -2
+      is Ok (owner) -> let h = owner.production.harvest
+        in let world = h.items.world
+        in let game = owner.checkpoint.game
+        in let s = owner.construction
+        in when world-create world (gs-mobile 0 x (y + 4) 0 400 1002)
+          is Err (_) -> -4
+          is Ok (holder) -> when world-create world (gs-mobile 0 x (y + 5) 0 400 1002)
+            is Err (_) -> -4
+            is Ok (stranger) -> let pack = glk-own-pack h.items holder
+              in let theirs = glk-own-pack h.items stranger
+              in let bank = when world-create world (gs-item holder #09B2 0) is Err (_) -> 0 is Ok (b) -> b
+              in let deed-serial = if pack == 0 then 0 else bhk-deed h.items pack
+              in when world-get world deed-serial
+                is Err (_) -> -5
+                is Ok (deed) -> if theirs == 0 | bank == 0 then -6
+                  else let placed = bhk-note (cn-stand s h game holder deed x y 0 (x - 3) (y - 3) (x + 3) (y + 4))
+                  in let k = cn-house-at s holder x y 0
+                  in let id = if k < 0 then 0 else cn-key-id s k
+                  in if k < 0 then -7
+                  else let stood = placed == "construction:placed" & cn-site s k 0 == 1 & cn-site s k 4 == holder & cn-site s k 14 == 1 & cn-plots s == 1
+                    & cn-in-plot s 0 (x - 3) (y - 3) & cn-in-plot s 0 (x + 3) (y + 4) & not (cn-in-plot s 0 (x + 4) y) & is-err (world-get world deed-serial)
+                    & glk-key-in world (world-first-child world pack) id & glk-key-in world (world-first-child world bank) id
+                  in let barred = bhk-note (cn-use-door s h game (bhk-input stranger) k) == "This door is locked." & cn-site s k 13 == 0
+                  in let opened = bhk-note (cn-use-door s h game (bhk-input holder) k) == "construction:door" & cn-site s k 13 == 1
+                  in let shut = cn-use-door s h game (bhk-input holder) k
+                  in let cut = cn-cut-key h theirs id
+                  in let keyed = list-length cut == 1 & bhk-note (cn-use-door s h game (bhk-input stranger) k) == "construction:door" & cn-site s k 13 == 1 & cn-site s k 14 == 1
+                  in let wrong = cn-turn s k (id + 1) == "The key does not fit into that lock." & cn-site s k 14 == 1
+                  in let unlocked = cn-turn s k id == "You unlock the door." & cn-site s k 14 == 0
+                  in let open-door = cn-turn s k id == "Close the door first." & cn-site s k 14 == 0
+                  in let closed = cn-use-door s h game (bhk-input stranger) k
+                  in let relocked = cn-site s k 13 == 0 & cn-turn s k id == "You lock the door." & cn-site s k 14 == 1
+                  in let master = cn-turn s k glk-master == "You unlock the door."
+                  in let room = not (cn-room s (x + 3) y) & not (cn-room s x (y + 7)) & cn-room s (x + 7) y & cn-room s x (y + 8)
+                  in (if stood then 1 else 0) + (if barred & opened then 2 else 0) + (if keyed then 4 else 0) + (if wrong & unlocked & open-door & relocked & master then 8 else 0) + (if room then 16 else 0)
+  bvt-house-key : Integer -> [Console] Integer
+  bvt-house-key (unused) = act
+    n <- bhk-checks 0
+    bvt-check ("a placed deed stands its house at once with a locked door, a key in the holder's pack and bank, the key turns the door, and an overlapping house is refused (UOAIX-252, code " & show n & ")") (n == 31)
+  end

@@ -1,13 +1,15 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$BiosCdx,[Parameter(Mandatory)][string]$UefiImage,
-    [Parameter(Mandatory)][string]$Nasm,[Parameter(Mandatory)][string]$Out)
+    [Parameter(Mandatory)][string]$Out,[string]$Kernel='')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $BiosCdx=(Resolve-Path -LiteralPath $BiosCdx).Path
 $UefiImage=(Resolve-Path -LiteralPath $UefiImage).Path
-$Nasm=(Resolve-Path -LiteralPath $Nasm).Path
+$repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+if(-not $Kernel){$Kernel=Join-Path $repo 'seed/Codex.cdx'}
+$Kernel=(Resolve-Path -LiteralPath $Kernel).Path
 $Out=[IO.Path]::GetFullPath($Out)
-foreach($path in @($Out,($Out+'.bios.bin'),($Out+'.json'))){if(Test-Path -LiteralPath $path){throw 'Output and sidecars must be new'}}
+foreach($path in @($Out,($Out+'.bios.bin'),($Out+'.json'),($Out+'.loader.cdx'),($Out+'.loader.log'),($Out+'.loader.run'))){if(Test-Path -LiteralPath $path){throw 'Output and sidecars must be new'}}
 $cdx=[IO.File]::ReadAllBytes($BiosCdx)
 if($cdx.Length -lt 512 -or [Text.Encoding]::ASCII.GetString($cdx,0,4) -cne 'CDX1'){throw 'Expected CDX1'}
 $text=[BitConverter]::ToInt64($cdx,168)
@@ -77,13 +79,25 @@ $iso[$cat+64]=0x91;$iso[$cat+65]=0xef;U16 ($cat+66) 1
 $iso[$cat+96]=0x88;U16 ($cat+102) $espSectors;U32 ($cat+104) $espLba
 $bootFile=$Out+'.bios.bin'
 if(Test-Path -LiteralPath $bootFile){throw 'BIOS scratch output exists'}
-& $Nasm -f bin "-DPAYLOAD_LBA=24" "-DPAYLOAD_BLOCKS=$payloadBlocks" (Join-Path $PSScriptRoot 'iso-boot.asm') -o $bootFile
-if($LASTEXITCODE -ne 0){throw 'BIOS assembly failed'}
-$loader=[IO.File]::ReadAllBytes($bootFile);if($loader.Length -ne 2048){throw 'Unexpected loader extent'}
+# The loader is IsoBootLoader.codex, run under codex-vm: 32 rows of 64 hex bytes and the offsets of its two immediates.
+& pwsh -NoProfile -File (Join-Path $repo 'build/compile.ps1') -Src (Join-Path $PSScriptRoot 'IsoBootLoader.codex') -Out ($Out+'.loader.cdx') -Log ($Out+'.loader.log') -Kernel $Kernel | Out-Null
+if($LASTEXITCODE -ne 0){throw 'BIOS loader compile failed'}
+& pwsh -NoProfile -File (Join-Path $repo 'build/test-run.ps1') -Kernel ($Out+'.loader.cdx') -OutFile ($Out+'.loader.run') | Out-Null
+if($LASTEXITCODE -ne 0){throw 'BIOS loader run failed'}
+$run=[IO.File]::ReadAllText($Out+'.loader.run')
+$at=[regex]::Match($run,'(?m)^ISOBOOT USED (\d+) BLOCKS-AT (\d+) LBA-AT (\d+)\r?$')
+$rows=[regex]::Matches($run,'(?m)^ISOBOOT ROW (\d+) ([0-9A-F]{128})\r?$')
+if(-not $at.Success -or $rows.Count -ne 32 -or [regex]::Matches($run,'(?m)^ISOBOOT END\r?$').Count -ne 1){throw "BIOS loader output incomplete: $run"}
+for($i=0;$i -lt 32;$i++){if([int]$rows[$i].Groups[1].Value -ne $i){throw 'BIOS loader rows out of order'}}
+$loader=[Convert]::FromHexString((($rows|ForEach-Object{$_.Groups[2].Value}) -join ''))
+$blocksAt=[int]$at.Groups[2].Value;$lbaAt=[int]$at.Groups[3].Value
+if($loader.Length -ne 2048 -or $blocksAt -lt 0 -or $blocksAt -gt 2044 -or $lbaAt -lt 0 -or $lbaAt -gt 2044 -or [BitConverter]::ToUInt32($loader,$blocksAt) -ne 0 -or [BitConverter]::ToUInt32($loader,$lbaAt) -ne 0){throw 'Unexpected loader extent or immediates'}
+[BitConverter]::GetBytes([uint32]$payloadBlocks).CopyTo($loader,$blocksAt);[BitConverter]::GetBytes([uint32]24).CopyTo($loader,$lbaAt)
+[IO.File]::WriteAllBytes($bootFile,$loader)
 Bytes (23*2048) $loader
 [Array]::Copy($cdx,$text,$iso,24*2048,$payloadSize)
 [Array]::Copy($disk,$first*512,$iso,$espLba*2048,$espSize)
 [IO.File]::WriteAllBytes($Out,$iso)
-$receipt=@{biosCdxHash=(Get-FileHash $BiosCdx).Hash;uefiImageHash=(Get-FileHash $UefiImage).Hash;nasmHash=(Get-FileHash $Nasm).Hash;loaderSourceHash=(Get-FileHash (Join-Path $PSScriptRoot 'iso-boot.asm')).Hash;loaderHash=(Get-FileHash $bootFile).Hash;isoHash=(Get-FileHash $Out).Hash;payloadLba=24;payloadBlocks=$payloadBlocks;espLba=$espLba;espSectors=$espSectors}
+$receipt=@{biosCdxHash=(Get-FileHash $BiosCdx).Hash;uefiImageHash=(Get-FileHash $UefiImage).Hash;kernelHash=(Get-FileHash $Kernel).Hash;loaderSourceHash=(Get-FileHash (Join-Path $PSScriptRoot 'IsoBootLoader.codex')).Hash;loaderHash=(Get-FileHash $bootFile).Hash;isoHash=(Get-FileHash $Out).Hash;payloadLba=24;payloadBlocks=$payloadBlocks;espLba=$espLba;espSectors=$espSectors}
 [IO.File]::WriteAllText($Out+'.json',($receipt|ConvertTo-Json))
 Write-Output "ISO: $Out"

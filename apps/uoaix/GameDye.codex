@@ -1,5 +1,7 @@
 Chapter: GameDye
   cites Uoaix chapter GameHarvest
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter EconomyProduction
 
  UOX3 cPlayerAction.cpp IT_DYE/IT_DYEVAT, targeting.cpp ColorsTarget/DVatTarget, CPacketReceive.cpp
  CPIDyeWindow::Handle and dictionary.ENG 400, 441, 442, 1031, 1032, 1033: dyes (0x0FA9) aimed at a dye tub (0x0FAB)
@@ -10,6 +12,8 @@ Chapter: GameDye
   gdy-spec : GameOpcodeSpec = GameOpcodeSpec { opcode = #95, size = 9, minimum = 9, maximum = 9 }
   gdy-dyes : Integer -> Boolean
   gdy-dyes (g) = g == #0FA9
+  gdy-powder : Integer -> Boolean
+  gdy-powder (art) = art == #1006
   gdy-tub : Integer -> Boolean
   gdy-tub (g) = g == #0FAB
   gdy-dyeable : Integer -> Boolean
@@ -55,6 +59,27 @@ Chapter: GameDye
         else if not (gdy-dyeable item.graphic) then gh-denied "You can only dye clothes with this."
         else if item.container /= 0 & not (gv-owned state.items.world serial actor.serial 65) then gh-denied "This is not yours!"
         else gdy-paint state actor.serial item tub.hue
+ UOAIX-238: a powder of restoration on a weapon or armour piece the user can reach sets its max durability to the
+ highest its kind has (GameHarvest restore hook); the powder is used up.
+  gdy-restore : GameHarvest, GsiActor, GhRequest, Integer, Integer, Boolean, Integer -> Result (Maybe GameReply) Text
+  gdy-restore (state) (actor) (request) (powder) (aimed) (cancelled) (now) = let clear = __record-set request "target" 0
+    in if cancelled then Ok (Just (gs-reply [] "powder cancelled"))
+    else if now > request.expires then gh-denied "That target expired."
+    else if powder < 0 then gh-denied "That is too far away!"
+    else if aimed == 0 | not (gsi-known state.items aimed) then gh-denied "The powder works only on weapons and armour."
+    else when world-get state.items.world aimed
+      is Err (_) -> gh-denied "The powder works only on weapons and armour."
+      is Ok (item) -> if item.kind /= 2 | not (gsi-access state.items actor item) then gh-denied "That is too far away!"
+        else when world-get state.items.world powder
+          is Err (_) -> gh-denied "That is too far away!"
+          is Ok (dose) -> if dose.amount > 1 then gh-denied "Take a single powder from the pile first."
+          else let restored = state.restore aimed
+          in if restored < 0 then gh-denied "The powder works only on weapons and armour."
+          else let at = gv-lot state.vendor powder 0
+          in let retired = if at < 0 then 0 else ep-forget-lot state.vendor.currency.world at
+          in when world-delete state.items.world powder
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (Just (gs-reply [sip-remove powder, sip-message #FFFFFFFF #FFFF 6 ("The powder restores it to " & show restored & " durability at most.")] "powder restored"))
   gdy-handler-at : GameHarvest, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
   gdy-handler-at (state) (shard) (input) (packet) (now) =
     if list-length packet == 0 then Ok None
@@ -74,7 +99,10 @@ Chapter: GameDye
       (let used = bit-and (gp-u32 packet 1) #7FFFFFFF
       in let dyes = gdy-reach state actor used gdy-dyes
       in let tub = gdy-reach state actor used gdy-tub
-      in if dyes > 0 then gdy-begin state request dyes now "Which dye vat will you use this on?" "dyes target"
+      in let powder = gdy-reach state actor used gdy-powder
+      in if powder > 0 then gdy-begin state request powder now "Which weapon or armour will you restore?" "powder target"
+      else if powder < 0 then gh-denied "That is too far away!"
+      else if dyes > 0 then gdy-begin state request dyes now "Which dye vat will you use this on?" "dyes target"
       else if tub > 0 then gdy-begin state request tub now "Select the clothing to use this on." "dye tub target"
       else if dyes < 0 | tub < 0 then gh-denied "That is too far away!"
       else Ok None)
@@ -90,7 +118,9 @@ Chapter: GameDye
     else if request.target == 0 | request.target /= gp-u32 packet 2 then Ok None
     else let dyes = gdy-reach state actor request.tool gdy-dyes
     in let tub = gdy-reach state actor request.tool gdy-tub
-    in if dyes == 0 & tub == 0 then Ok None
+    in let powder = gdy-reach state actor request.tool gdy-powder
+    in if powder /= 0 then gdy-restore state actor request powder (bit-and (gp-u32 packet 7) #7FFFFFFF) (gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535) now
+    else if dyes == 0 & tub == 0 then Ok None
     else let clear = __record-set request "target" 0
     in if gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 then Ok (Just (gs-reply [] "dye cancelled"))
     else if now > request.expires then gh-denied "That target expired."

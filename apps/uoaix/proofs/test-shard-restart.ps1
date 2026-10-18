@@ -1,11 +1,11 @@
 [CmdletBinding()]
 param([string]$Kernel='',[string]$OutDir='',
-    [Parameter(Mandatory)][string]$Nasm,[string]$Qemu='D:/Program Files/qemu/qemu-system-x86_64.exe')
+    [string]$Qemu='D:/Program Files/qemu/qemu-system-x86_64.exe')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 if(-not $Kernel){$Kernel=Join-Path $repo 'seed/Codex.cdx'}
-$Kernel=(Resolve-Path $Kernel).Path;$Nasm=(Resolve-Path $Nasm).Path;$Qemu=(Resolve-Path $Qemu).Path
+$Kernel=(Resolve-Path $Kernel).Path;$Qemu=(Resolve-Path $Qemu).Path
 if(-not $OutDir){$OutDir=Join-Path $repo ('build-output/uoaix/shard-restart-'+[guid]::NewGuid().ToString('N'))}
 $OutDir=[IO.Path]::GetFullPath($OutDir)
 if(Test-Path $OutDir){throw 'OutDir must be new'}
@@ -88,7 +88,9 @@ function Boot([string]$Mode,[string]$Phase,[string]$Disk){
         $expected="SHARD STORE START`nSHARD STORE DEVICE $backend`n"
         if($Phase -eq 'write'){$expected+="PASS owner mismatch refuses before disk mutation`nPASS blank composite recovery refused`nSHARD STORE SAVED`n"}
         elseif($Phase -eq 'suffix'){$expected+="PASS unsupported committed suffix refused`nSHARD STORE END`n"}
-        else{$expected+=([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ShardRestartBoot.expected'))-replace "`r",'')+"SHARD STORE END`n"}
+        else{$expected+=([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ShardRestartBoot.expected'))-replace "`r",'')+"SHARD STORE END`n"
+            # The BIOS CDX runtime prints opening's Integer result when opening returns; the UEFI PE entry does not.
+            if($Mode -eq 'bios-iso'){$expected+="0`n"}}
         [IO.File]::WriteAllText((Join-Path $OutDir "$name.actual"),$body)
         if($body -cne $expected){throw "$name oracle mismatch: $body"}
         $receipt.runs+=@{name=$name;pid=$p.Id;freeKiB=$free;exit=$p.ExitCode;killedAfterCommit=$killed;diskHash=(Get-FileHash $Disk).Hash}
@@ -116,7 +118,7 @@ try{
     if($LASTEXITCODE -ne 0){throw 'PE build failed'}
     & pwsh -NoProfile -File (Join-Path $repo 'build/build-img.ps1') -PeInput $pe -Out $pristine -TotalSectors 65536
     if($LASTEXITCODE -ne 0){throw 'GPT build failed'}
-    & pwsh -NoProfile -File (Join-Path $PSScriptRoot '../build-iso.ps1') -BiosCdx (Join-Path $OutDir 'shard-bios.cdx') -UefiImage $pristine -Nasm $Nasm -Out $iso
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot '../build-iso.ps1') -BiosCdx (Join-Path $OutDir 'shard-bios.cdx') -UefiImage $pristine -Out $iso -Kernel $Kernel
     if($LASTEXITCODE -ne 0){throw 'ISO build failed'}
     $receipt.imageHash=(Get-FileHash $pristine).Hash;$receipt.isoHash=(Get-FileHash $iso).Hash
     $initial=[IO.File]::ReadAllBytes($pristine)

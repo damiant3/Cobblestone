@@ -48,10 +48,67 @@ Chapter: TownRoutes
     in let d = poke-qword p.route-keys (at + 24) tx
     in let e = poke-qword p.route-keys (at + 32) ty
     in let f = poke-qword p.route-keys (at + 40) tz
-    in let g = poke-qword p.route-keys (at + 48) (if count > 0 then count else 0 - max 1 p.epoch)
+    in let g = poke-qword p.route-keys (at + 48) (if count > 0 then count else if p.ended == tl-ended-budget then 0 else 0 - max 1 p.epoch)
     in let h = poke-qword p.route-keys (at + 56) generation
     in let taken = rte-take p full id
     in if count <= 0 then 0 - 1 else id
+ A keeper search longer than rte-slice cells runs as the one RteJob, a slice a town step on its own planner (root,
+ 2026-10-16: a whole-window search in one step stalled the shard about 10 s guest); the keeper waits meanwhile, and a
+ found route is adopted into its town's route table, where the keeper's next plan finds it. result: 1 running, 2 found
+ and adopted, 3 sealed. A finished job its keeper does not collect within rte-job-keep steps is dropped.
+  rte-slice : Integer = 4096
+  rte-job-keep : Integer = 600
+ The job is built at boot and keeps only boot structures and scalars: the town's door state is bound once (doors) and a
+ request says by door-on whether its search uses it, so nothing made during play is stored past a compaction.
+  RteJob = record { nav : TlPath, busy : Integer, who : Integer, result : Integer, waited : Integer, town : TlPath, map : WalkMap,
+    doors : Maybe WdState, door-on : Integer, self : Integer, start : Integer, goal : Integer, fx : Integer, fy : Integer, fz : Integer, tx : Integer, ty : Integer, tz : Integer }
+  rte-job-new : Integer, TlPath, WalkMap, Maybe WdState -> RteJob
+  rte-job-new (cells) (town) (map) (doors) = RteJob { nav = tl-path-cap cells, busy = 0, who = 0, result = 0, waited = 0, town = town, map = map,
+    doors = doors, door-on = 0, self = 0, start = 0, goal = 0, fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0 }
+  rte-job-ask : RteJob, Integer, TlPath, WalkMap, Boolean, WorldObject, Integer, Integer, Integer -> Boolean
+  rte-job-ask (j) (who) (town) (map) (doored) (m) (tx) (ty) (tz) = if j.busy /= 0 then False
+    else let start = tl-begin j.nav map m tx ty tz
+    in if start < 0 then False
+    else let a = __record-set j "busy" 1 in let b = __record-set j "who" who in let c = __record-set j "result" 1 in let d = __record-set j "waited" 0
+    in let e = __record-set j "town" town in let f = __record-set j "map" map in let g = __record-set j "door-on" (if doored then 1 else 0)
+    in let h = __record-set j "self" m.serial in let i = __record-set j "start" start in let k = __record-set j "goal" (walk-cell map tx ty)
+    in let l = __record-set j "fx" m.x in let n = __record-set j "fy" m.y in let o = __record-set j "fz" m.z
+    in let q = __record-set j "tx" tx in let r = __record-set j "ty" ty in let s = __record-set j "tz" tz in True
+  rte-job-step : RteJob, WorldTable -> Integer
+  rte-job-step (j) (world) = rte-job-step-by j world rte-slice
+  rte-job-step-by : RteJob, WorldTable, Integer -> Integer
+  rte-job-step-by (j) (world) (slice) = if j.busy == 0 then 0
+    else if j.result /= 1 then (if j.waited >= rte-job-keep then let freed = __record-set j "busy" 0 in 0 else let w = __record-set j "waited" (j.waited + 1) in 0)
+    else let found = tl-resume j.nav world j.map (if j.door-on == 1 then j.doors else None) j.self j.start j.goal slice
+    in if found >= 0 then (let id = rte-adopt j.town j.nav found j.start j.fx j.fy j.fz j.tx j.ty j.tz in let r = __record-set j "result" (if id >= 0 then 2 else 3) in 1)
+    else if j.nav.ended == tl-ended-sealed then (let r = __record-set j "result" 3 in 1)
+    else 1
+ The job's answer for keeper who: 0 not its job, 1 still running, 2 found (the route is in the town's table), 3 sealed;
+ a finished answer frees the job.
+  rte-job-answer : RteJob, Integer -> Integer
+  rte-job-answer (j) (who) = if j.busy == 0 | j.who /= who then 0
+    else if j.result == 1 then 1
+    else let answer = j.result in let freed = __record-set j "busy" 0 in answer
+  rte-adopt : TlPath, TlPath, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  rte-adopt (p) (slow) (found) (start) (fx) (fy) (fz) (tx) (ty) (tz) = if slow.width /= p.width | slow.height /= p.height then 0 - 1
+    else let full = p.route-count == tl-route-limit
+    in let id = if full then p.route-cursor else p.route-count
+    in let at = id * tl-route-key-bytes
+    in let generation = (if full then peek-qword p.route-keys (at + 56) else 0) + 1
+    in let path = p.route-steps + id * (tl-route-step-bytes p)
+    in let zero = wd-zero path 0 (tl-route-step-bytes p)
+    in let length = tl-reverse-path slow found start path (tl-route-step-bytes p) 0
+    in if length <= 0 then 0 - 1
+    else let ordered = tl-flip-path path length 0
+    in let a = poke-qword p.route-keys at fx
+    in let b = poke-qword p.route-keys (at + 8) fy
+    in let c = poke-qword p.route-keys (at + 16) fz
+    in let d = poke-qword p.route-keys (at + 24) tx
+    in let e = poke-qword p.route-keys (at + 32) ty
+    in let f = poke-qword p.route-keys (at + 40) tz
+    in let g = poke-qword p.route-keys (at + 48) length
+    in let h = poke-qword p.route-keys (at + 56) generation
+    in let taken = rte-take p full id in id
   rte-take : TlPath, Boolean, Integer -> Integer
   rte-take (p) (full) (id) = if full then let a = __record-set p "route-cursor" (int-mod (id + 1) tl-route-limit) in 0
     else let b = __record-set p "route-count" (id + 1) in 0
@@ -63,6 +120,8 @@ Chapter: TownRoutes
     else let next = min 6 (w.fails + 1)
     in let failed = __record-set w "fails" next
     in let waiting = __record-set w "rest" (bit-shl 1 next) in 0
+  rte-queued : RteWalk -> Integer
+  rte-queued (w) = let a = __record-set w "rest" 0 in let b = __record-set w "fails" 0 in 0
   rte-bound : TlPath, RteWalk, WorldObject, Integer, Integer, Integer -> Boolean
   rte-bound (p) (w) (m) (tx) (ty) (tz) = if w.route < 0 | m.x /= w.x | m.y /= w.y then False
     else rte-key p w.route 7 == w.generation & w.step < rte-key p w.route 6

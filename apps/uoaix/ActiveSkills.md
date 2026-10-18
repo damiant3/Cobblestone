@@ -43,12 +43,9 @@ minus skill/5). Animal Lore on a player refuses with "People are capable of
 more than animal behavior. Usually." Arms Lore admits catalog items 40, 41,
 44, 48, 69, 70 and 71.
 
-Gain: 1000 per skill and 7000 in total (blu, 2026-10-06). The chance per use
-follows Source-X Skill_Experience: 10, 200 and 800 uses per 0.1 at 0, 50.0
-and 100.0 skill, interpolated, and no gain when the difficulty plus 200 is
-below the level. At the 7000 total a gain lowers a random other skill above
-0 by 0.1, as the 1998 shard did (root, 2026-10-06): the client has no lock
-arrows.
+Gain: 1000 per skill and no total cap or decay (Damian, 2026-10-12, D7). Every
+player check gains by the 1998 SkillGain (`Skill1998.codex`,
+`docs/Designs/Active/Apps/Uoaix1998Skills.md`, UOAIX-242).
 
 Gain curve (Damian, 2026-10-06): "skill gains need to be logarithmic. big
 gains early, slow gains late. also early, you gain on both success and fail,
@@ -60,12 +57,11 @@ log of uses, so the uses per 0.1 are 10 * 80^(level/1000), 10 at 0.0 and 800 at
 tenth of one, and a success gains fully on a difficulty within 10.0 below the
 level or above it, falling to nothing 20.0 below. The chance depends only on the
 character's level, the difficulty and the outcome, never on a shard-wide count.
-Scope: every character, player and NPC, on every practice path: ClassicSkills'
-active skills, the fighter's swings (the hit is the success) and the economy's
-`ep-practice` (harvest and craft, the level as the difficulty).
+Scope since UOAIX-242 stage 1: NPC economy actors only (`ep-practice-in` with no
+character row); every player path gains by the 1998 rules.
 `proofs/SkillCurveProof` is the per-level arm.
 
-Success bonus (Damian, 2026-10-06): "we should give big bumps for success here. catching a fish should be like 10x a normal skill gain, tapering off after 50 is achieved. 0-50 should be doable in a 8 hour gaming session starting from 0 and doing all the work at the water". Root's reading: below 50.0 a successful use gains ten times a normal gain, the bonus tapers to 1x between 50.0 and 100.0, and the curve is tuned so that one player using one gathering skill continuously, at the pace the server allows, goes from 0.0 to 50.0 within 4 hours of play (Damian, same day: "actually lets make it 4 hours. after work, first session, you should be able to catch fish pretty good. bigger hauls (kracken) will be for the GMs"); the same rule covers every skill (one bar for every character). Built as `skc-bonus` in `SkillCurve.codex`, applied in `skc-gain-at` on every practice path: a success gains 10x a normal gain below 50.0, tapering linearly to 1x at 100.0 (5.5x at 75.0). `proofs/SkillCurveProof` replays 4,800 casts through `ep-practice` (4 hours at the harvest adapter's 3 s cooldown) and asserts the fisher reaches 50.0. The biggest catches (sea serpents, the kraken) are reserved for grandmaster fishers.
+Success bonus (Damian, 2026-10-06): "we should give big bumps for success here. catching a fish should be like 10x a normal skill gain, tapering off after 50 is achieved. 0-50 should be doable in a 8 hour gaming session starting from 0 and doing all the work at the water". Root's reading: below 50.0 a successful use gains ten times a normal gain, the bonus tapers to 1x between 50.0 and 100.0, and the curve is tuned so that one player using one gathering skill continuously, at the pace the server allows, goes from 0.0 to 50.0 within 4 hours of play (Damian, same day: "actually lets make it 4 hours. after work, first session, you should be able to catch fish pretty good. bigger hauls (kracken) will be for the GMs"); the same rule covers every skill (one bar for every character). Built as `skc-bonus` in `SkillCurve.codex`, applied in `skc-gain-at` on the NPC economy path: a success gains 10x a normal gain below 50.0, tapering linearly to 1x at 100.0 (5.5x at 75.0). `proofs/SkillCurveProof` replays 4,800 casts through `ep-practice` (4 hours at the harvest adapter's 3 s cooldown) and asserts the fisher reaches 50.0. The biggest catches (sea serpents, the kraken) are reserved for grandmaster fishers.
 
 Farming replaces Begging (Damian, 2026-10-06: "yeah lets just replace begging skill. that isn't the actions our players need to get good at. make it farming."). Client skill 6 is Farming: the client's SKILLS.MUL entry is renamed in the shard's client install, sowing, tending and reaping crops roll and gain skill 6 in the one skill store, and the begging action is removed.
 

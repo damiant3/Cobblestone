@@ -5684,7 +5684,7 @@ pwsh build/lir-dump-test.ps1 -Accept                        # re-record the pin
 
 The dump rides the info channel as **CDX4030** under `-Passes lir-dump`, so it
 lands in the compile log and the comparison is a string compare. Measured
-2026-07-18 against seed `00F5F34F`: **83 lines, all verifiers ok.**
+2026-10-17 against seed `DF6F316E`: **127 lines, all verifiers ok.**
 
 **It fails two ways, and both were run rather than assumed.** A one-register
 perturbation of the pin (`v1->r4` to `v1->r9`) fails with a two-line diff.
@@ -5693,12 +5693,10 @@ floor** -- which exists because an empty actual compared against an
 accidentally-emptied pin is the classic function that always answers the same
 thing. A pin nobody can fail is a comment.
 
-**The pin is RED on purpose as of 2026-08-05, and it is a stale pin rather
-than a defect.** 113 lines pinned against 119 emitted; the six extra lines
-are `math-isqrt` / `math-isqrt-loop`, both carrying `[check: ok]`. Damian
-parked LIR that day, so nobody re-recorded it. **Whoever picks LIR back up
-re-records it**; do not `-Accept` it as a drive-by, and do not report it as
-a regression.
+**`build/cite-gate.ps1` runs this pin and `build/lir-a64-test.ps1` on every
+`codex/compiler` change**, whatever the BVT answers. Both harnesses delete
+their previous log and binary first and fail when the compile writes neither,
+so a missing `-Kernel` is a FAIL rather than a PASS over the last run.
 
 **`-Accept` records whatever the compiler just did, including whatever it did
 wrong** -- the same hazard as `test-gui.ps1 -Accept` and the same rule: it

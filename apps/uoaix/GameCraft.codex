@@ -4,10 +4,10 @@ Chapter: GameCraft
   gcr-spec : GameOpcodeSpec = GameOpcodeSpec { opcode = #7D, size = 13, minimum = 13, maximum = 13 }
   gcr-denied : Text -> Result (Maybe GameReply) Text
   gcr-denied (message) = Ok (Just (gsi-denied message))
- Smithing (stations 3 and 9) needs an anvil, not a workshop (Damian, 2026-10-10).
-  gcr-away-text : EpWorld, Integer, Text -> Text
-  gcr-away-text (w) (recipe) (other) = if recipe < 1 | recipe > list-length w.catalog.recipes then other
-    else let kind = (list-at w.catalog.recipes (recipe - 1)).station in if kind == 3 | kind == 9 then "You must be within 2 tiles of an anvil." else other
+  gcr-away-text : EpWorld, Integer, Integer, Text -> Text
+  gcr-away-text (w) (category) (recipe) (other) = if category == 4 then "You must be near a tinker's workbench."
+    else if recipe < 1 | recipe > list-length w.catalog.recipes then other
+    else let kind = (list-at w.catalog.recipes (recipe - 1)).station in if kind == 3 | kind == 9 then "You must be within 3 tiles of an anvil and a forge." else other
   gcr-open : (WalkMap, WorldObject, Integer, Integer -> Integer),
     GameCraft, GvPlayer, CraftRequest, WorldObject, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   gcr-open (lookup) (state) (player) (request) (mobile) (map) (tool) (now) =
@@ -15,7 +15,7 @@ Chapter: GameCraft
     in if category == 0 then gcr-denied "You need your own crafting tool."
     else if now < request.next then gcr-denied "Wait before crafting again."
     else if state.nonce > 16383 then gcr-denied "Craft menu contexts exhausted."
-    else if lookup map mobile (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) category < 1 then gcr-denied (gcr-away-text state.harvest.vendor.currency.world (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) "Move beside the required workshop.")
+    else if lookup map mobile (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) category < 1 then gcr-denied (gcr-away-text state.harvest.vendor.currency.world category (list-at (gcr-recipes state.harvest.vendor.currency.world category) 0) "Move beside the required workshop.")
     else let a = __record-set request "tool" tool
     in let c = __record-set request "category" category
     in Ok (Just (gs-reply [gcr-show state request now ""] "craft menu"))
@@ -27,7 +27,9 @@ Chapter: GameCraft
     in let n = __record-set state "nonce" (state.nonce + 1)
     in let b = __record-set request "menu" context
     in let d = __record-set request "expires" (now + gh-ticks gcr-life)
-    in gcr-gump state.harvest.vendor.currency.world request.tool context request.category status
+    in let at = gv-player state.harvest.vendor request.serial 0
+    in let actor = if at < 0 then 0 else (list-at state.harvest.vendor.players at).actor
+    in gcr-gump state.harvest.vendor.currency.world actor request.tool context request.category status
   gcr-status : Text -> Text
   gcr-status (note) = if note == "craft produced" then "You create the item." else if note == "craft failed attempt" then "You failed to create the item." else ""
   gcr-choice : (WalkMap, WorldObject, Integer, Integer -> Integer),
@@ -45,12 +47,13 @@ Chapter: GameCraft
     else if now < request.next then Ok (Just (gs-reply [gcr-show state request now "You must wait a moment before crafting again."] "craft wait"))
     else let recipe = list-at recipes (choice - 1)
     in let station = lookup map mobile recipe request.category
-    in if station < 1 then Ok (Just (gs-reply [gcr-show state request now (gcr-away-text state.harvest.vendor.currency.world recipe "The required workshop is out of reach.")] "craft workshop"))
+    in if station < 1 then Ok (Just (gs-reply [gcr-show state request now (gcr-away-text state.harvest.vendor.currency.world request.category recipe "The required workshop is out of reach.")] "craft workshop"))
     else if gcr-no-chance state.harvest.vendor.currency.world player.actor recipe then Ok (Just (gs-reply [gcr-show state request now "You have no chance to make that."] "craft no chance"))
     else let next = __record-set request "next" (now + gh-ticks 3000)
     in let remembered = __record-set request "last" choice
     in let item = (list-at state.harvest.vendor.currency.world.catalog.recipes (recipe - 1)).item
-    in when gcr-produce state player recipe station (gcr-variant request.category choice item) (gh-into state.harvest player.pack request.tool)
+    in let bank = gmb-box state.harvest.items player.serial (gmb-linked mobile.x mobile.y)
+    in when gcr-produce state player recipe station (gcr-variant request.category choice item) (gh-into state.harvest player.pack request.tool) bank
       is Err (e) -> Err e
       is Ok (reply) -> let sounded = gcr-sounded state player request.category reply
         in Ok (Just (gs-reply (sounded.packets & [gcr-show state request now (gcr-status reply.note)]) sounded.note))

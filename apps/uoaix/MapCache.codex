@@ -11,7 +11,8 @@ Chapter: MapCache
   MapCacheState = record { device : UoDevice, sectors : Integer, colliders : Integer,
     directory : Integer, directory-sector : Integer, buffer : Integer, map : WalkMap, ready : Boolean,
     map-end : Integer, decoration-sector : Integer, decoration-size : Integer, decoration-hash : Integer,
-    items-sector : Integer, items-size : Integer, items-hash : Integer, flora-sector : Integer, flora-size : Integer, flora-hash : Integer }
+    items-sector : Integer, items-size : Integer, items-hash : Integer, flora-sector : Integer, flora-size : Integer, flora-hash : Integer,
+    multis-sector : Integer, multis-size : Integer, multis-hash : Integer }
   MapInstallData = record { data : Integer, size : Integer }
  The world journal's region as [start sector, sectors]: the store the map-cache header names at cells 320 and 328
  (install-map-cache.ps1 -StoreMiB), or the first 64 MiB on a disk installed before it.
@@ -66,13 +67,16 @@ Chapter: MapCache
           else if items-size /= 0 & (items-size /= 608256 | items < map-end
             | (items-size + 511) / 512 /= items-end - items) then Err "map cache item table extent invalid"
           else if flora-size /= 0 & (flora-size < 64 | flora-size > 16777216 | flora < map-end | (flora-size + 511) / 512 /= cache-end - flora) then Err "map cache flora extent invalid"
+          else if peek-qword header 344 /= 0 & (peek-qword header 344 < 32832 | peek-qword header 336 < cache-end
+            | peek-qword header 336 + (peek-qword header 344 + 511) / 512 > sectors - wmc-start) then Err "map cache multi table extent invalid"
           else when walk-map-sized 0 0 64 64 total-colliders
             is Err (e) -> Err e
             is Ok (map) -> Ok (MapCacheState { device = device, sectors = sectors - wmc-start, colliders = maximum,
               directory = alloc-bytes 512, directory-sector = -1, buffer = alloc-bytes (464 + 64 * maximum * 6), map = map, ready = False,
               map-end = map-end, decoration-sector = decoration, decoration-size = decoration-size, decoration-hash = peek-qword header 104,
               items-sector = items, items-size = items-size, items-hash = peek-qword header 272,
-              flora-sector = flora, flora-size = flora-size, flora-hash = peek-qword header 296 })
+              flora-sector = flora, flora-size = flora-size, flora-hash = peek-qword header 296,
+              multis-sector = peek-qword header 336, multis-size = peek-qword header 344, multis-hash = peek-qword header 352 })
     end
   end
   wmc-directory : MapCacheState, Integer -> [Device.Block] Result Integer Text
@@ -247,6 +251,19 @@ Chapter: MapCache
       when loaded
         is Err (e) -> Err e
         is Ok (_) -> if us-hash data cache.items-size 0 2166136261 /= cache.items-hash then Err "installed item table checksum invalid"
+          else Ok data
+    end
+ The multis' collider table (MCP1, install-map-cache.ps1) lies after the world journal; 0 when the cache holds none.
+  wmc-multis : MapCacheState -> [Device.Block] Result Integer Text
+  wmc-multis (cache) = if cache.multis-size == 0 then act Ok 0 end
+    else let data = alloc-bytes cache.multis-size
+    in act
+      loaded <- us-read-payload cache.device (wmc-start + cache.multis-sector) data cache.multis-size 0
+      when loaded
+        is Err (e) -> Err e
+        is Ok (_) -> if us-hash data cache.multis-size 0 2166136261 /= cache.multis-hash then Err "installed multi table checksum invalid"
+          else if peek-qword data 0 /= #3150434D | peek-qword data 8 /= 4096 | peek-qword data 24 /= 12
+            | 32832 + peek-qword data 16 * 12 + peek-qword data 32 * 32 + peek-qword data 40 * 16 /= cache.multis-size then Err "installed multi table header invalid"
           else Ok data
     end
   wmc-flora : MapCacheState -> [Device.Block] Result MapInstallData Text

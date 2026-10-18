@@ -35,7 +35,7 @@ Chapter: AdminPanelPage
     & "@media(max-width:850px){.grid{grid-template-columns:1fr}.topline{flex-direction:column;align-items:flex-start}}@media(max-width:640px){.tabs label{flex:1 1 40%;text-align:center;padding:8px 6px}}@media(max-width:460px){body{padding:8px}.card{padding:16px}}"
   ap-tab-keys : List Text = ["overview", "actions", "treasury", "accounts", "world", "plays", "gms", "activity"]
   ap-tab-names : List Text = ["Overview", "Actions", "Treasury", "Accounts", "World", "Plays", "Game Masters", "Activity"]
-  ap-sub-keys : List Text = ["lord", "bans", "coffers", "ledger", "day", "logs", "connections", "log"]
+  ap-sub-keys : List Text = ["lord", "bans", "coffers", "ledger", "day", "logs", "houses", "connections", "log"]
   ap-rule : Text, Text -> Text
   ap-rule (kind) (key) = "#" & kind & "-" & key & ":checked~.tabs label[for=" & kind & "-" & key & "]{opacity:1;font-weight:600;border-color:rgba(127,127,127,.35)}"
     & "#" & kind & "-" & key & ":checked~." & kind & "panels>[data-" & kind & "=" & key & "]{display:block}"
@@ -366,9 +366,9 @@ Chapter: AdminPanelPage
 
  Lord British's actions: one of the panel-action allowlist (AdminPanel.md, "Actions and game authority") with its
  seven numbers; the server logs it and queues it for British's next pulse.
-  ap-actions : List Text = ["inspect", "lord-british-enter", "lord-british-leave", "teleport", "invisible", "summon-item", "summon-creature", "move", "navy", "grant-plot"]
+  ap-actions : List Text = ["inspect", "lord-british-enter", "lord-british-leave", "teleport", "invisible", "summon-item", "summon-creature", "move", "navy"]
   ap-action-names : List Text = ["Inspect", "Enter Lord British mode", "Leave Lord British mode", "Teleport", "Go invisible", "Summon item", "Summon creature",
-    "Move item or creature", "Order the royal navy to patrol daily, or stand it down", "Grant a plot (target: the holder; x, y: its center)"]
+    "Move item or creature", "Order the royal navy to patrol daily, or stand it down"]
   ap-fields : List Text = ["connection", "target", "graphic", "x", "y", "z", "amount"]
   ap-field-names : List Text = ["Connection ID", "Target serial", "Graphic", "X", "Y", "Z", "Amount"]
   ap-action-fields : DomElement, Integer -> Integer
@@ -382,6 +382,21 @@ Chapter: AdminPanelPage
   ap-queue (unused) = ap-req (ap-action-json 0 ("{\"command\":\"panel-action\",\"action\":" & json-quote (ap-value "act-action"))) ap-queued
   ap-queued : Text -> Integer
   ap-queued (answer) = ap-then-refresh ("Action #" & ap-f (ap-obj answer) "queued" & " recorded and queued. The game server must validate and apply the action.") answer
+ The Houses card: every house a deed placed, with its design, place and holder (panel-houses).
+  ap-houses-load : Text -> Integer
+  ap-houses-load (unused) = ap-req "{\"command\":\"panel-houses\"}" ap-houses
+  ap-houses : Text -> Integer
+  ap-houses (answer) = let o = ap-obj answer
+    in let b = ap-clear "house-list"
+    in if text-length (ap-f o "error") > 0 then ap-msg ("Houses unavailable: " & ap-f o "error")
+    else let houses = ap-arr (ap-f o "houses")
+    in if ap-len houses == 0 then ap-none "house-list" "No house stands yet." 4 else ap-house-rows houses 0
+  ap-house-rows : List Text, Integer -> Integer
+  ap-house-rows (rows) (i) = if i >= ap-len rows then 0
+    else let r = ap-at rows i
+    in let row = ap-add (dom-get "house-list") (dom-create "tr")
+    in let cells = ap-cells row [ap-f r "house", ap-f r "design", ap-f r "where", ap-f r "owner"] 0
+    in ap-house-rows rows (i + 1)
   ap-ban : Text -> Integer
   ap-ban (unused) = let command = "{\"command\":\"panel-action\",\"action\":\"ban\",\"target\":" & show (ap-int "ban-target") & "}"
     in ap-req command (\answer -> ap-then-refresh ("Ban #" & ap-f (ap-obj answer) "queued" & " recorded and queued. Lord British applies the ban in game on his next pulse.") answer)
@@ -814,7 +829,7 @@ Chapter: AdminPanelPage
     in let state = ap-note-el acts "action-state" "Actions are logged before the game server applies them."
     in let go = ap-button acts "act-submit" "Record and queue action" ap-queue
     in let bans = ap-card (ap-pane panels "sub" "bans") "bans-card" "Bans"
-    in let bn = ap-muted bans "The game server applies a ban as Lord British's own [ban or [unban on his next pulse; until he is logged in, the action stays queued. One panel action awaits the game server at a time."
+    in let bn = ap-muted bans "The game server applies a ban as Lord British's own [ban or [unban on his next pulse, or on its own round while he is logged out. One panel action awaits the game server at a time."
     in let g = ap-div bans "" "grid"
     in let left = ap-add g (dom-create "div")
     in let lh = ap-text left "h3" "Ban an account"
@@ -882,7 +897,7 @@ Chapter: AdminPanelPage
     in ap-table d ["When", "Bought or sold", "Item", "Quantity", "Gross", "Other side"] "account-trades"
 
   ap-build-world : DomElement -> Integer
-  ap-build-world (pane) = let panels = ap-tab-set pane "sub" "world-sub" ["day", "logs"] ["Game day", "Log levels"]
+  ap-build-world (pane) = let panels = ap-tab-set pane "sub" "world-sub" ["day", "logs", "houses"] ["Game day", "Log levels", "Houses"]
     in let d = ap-card (ap-pane panels "sub" "day") "day-card" "Game-day length"
     in let dn = ap-muted d "Set real seconds per game day. The shared game clock preserves time already elapsed; schedules and growth remain in game hours."
     in let ds = ap-field d "day-seconds" "Real seconds per game day" "number" "7200"
@@ -895,6 +910,10 @@ Chapter: AdminPanelPage
     in let lv = ap-pick l "log-level" "Level"
     in let lnote = ap-muted l "Changes are logged and apply to the running server without a restart."
     in let lb = ap-button l "level-submit" "Apply log level" ap-set-level
+    in let h = ap-card (ap-pane panels "sub" "houses") "houses-card" "Houses"
+    in let hn = ap-muted h "Every house a player placed from a deed. A carpenter sells the deeds."
+    in let hb = ap-button h "houses-load" "Load houses" ap-houses-load
+    in let ht = ap-table h ["House", "Design", "Where", "Owner"] "house-list"
     in 0
 
   ap-build-plays : DomElement -> Integer

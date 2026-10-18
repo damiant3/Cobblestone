@@ -97,6 +97,25 @@ Chapter: GmLand
     in let c = __record-set s "index" (gld-zeroed (room * 16))
     in let d = __record-set s "slots" (room * 2)
     in let r = gld-index s 0 in room
+ Pending edits ride after the decorator's rows in its composite tail (UOAIX-250): a count, then the rows. A tail that ends
+ with the decorator's rows (an image saved before) holds none.
+  gld-tail-size : GmLand -> Integer
+  gld-tail-size (s) = 8 + s.count * gld-row-bytes
+  gld-write-tail : GmLand, Integer -> Integer
+  gld-write-tail (s) (at) = let a = poke-qword at 0 s.count in let b = gld-copy s.rows (at + 8) 0 (s.count * 5) in at + gld-tail-size s
+  gld-tail-length : Integer, Integer -> Integer
+  gld-tail-length (at) (room) = if room < 8 then 0
+    else if peek-qword at 0 < 0 | peek-qword at 0 > (room - 8) / gld-row-bytes then -1
+    else 8 + peek-qword at 0 * gld-row-bytes
+  gld-read-tail : GmLand, Integer, Integer -> Integer
+  gld-read-tail (s) (at) (size) = if size <= 8 then 0
+    else let n = peek-qword at 0
+    in let grown = gld-room s n
+    in let copied = gld-copy (at + 8) s.rows 0 (n * 5)
+    in let counted = __record-set s "count" n
+    in let indexed = gld-reindex s in 0
+  gld-room : GmLand, Integer -> Integer
+  gld-room (s) (n) = if s.room - n >= 2 * gld-stroke then 0 else let grown = gld-grow s in gld-room s n
   gld-tool-find : List GldTool, Integer, Integer -> Integer
   gld-tool-find (tools) (connection) (i) = if i == list-length tools then -1
     else if (list-at tools i).connection == connection then i else gld-tool-find tools connection (i + 1)

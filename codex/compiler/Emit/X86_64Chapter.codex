@@ -659,7 +659,7 @@ Section: Bare-Metal Start
       in let st14s = emit-set-boot-scope st14 0 proc-scope-offset fs-scope
       in let st14n = emit-set-boot-scope st14s 0 proc-net-scope-offset net-scope
       in let st15 = emit-grant-capability st14n 1 cap-console
-      in let syscall-vaddr = bare-metal-load-addr + syscall-handler-offset
+      in let syscall-vaddr = st-native-base st15 + syscall-handler-offset
       in let st16 = emit-write-msr st15 3221225601 (8 * 4294967296)
       in let st17 = emit-write-msr st16 3221225602 syscall-vaddr
       in let st18 = emit-write-msr st17 3221225604 512
@@ -670,28 +670,7 @@ Section: Bare-Metal Start
       in let st23 = emit-idt-entries st22 first-stub-vaddr
       in let st23a = emit-load-idt st23
       in let st23b = emit-load-tss st23a
-      in let st24 = emit-out-byte st23b 1019 128
-      in let st25 = emit-out-byte st24 1016 1
-      in let st26 = emit-out-byte st25 1017 0
-      in let st27 = emit-out-byte st26 1019 3
-      in let st28 = emit-out-byte st27 1018 199
-      in let st29 = emit-out-byte st28 1020 11
-      in let st29a = emit-com2-init st29
-      in let st30 = emit-out-byte st29a 1017 1
-      in let st31m = st-append-code st30 (li reg-rdi serial-primed-magic-addr)
-      in let st31n = st-append-code st31m (mov-load reg-rax reg-rdi 0)
-      in let st31o = st-append-code st31n (cmp-ri reg-rax serial-primed-magic)
-      in let primed-skip = st31o.code-len
-      in let st31p = st-append-code st31o (jcc cc-e 0)
-      in let st31 = st-append-code st31p (li reg-rdi serial-write-pos-addr)
-      in let st32 = st-append-code st31 (li reg-rax 0)
-      in let st33 = st-append-code st32 (mov-store reg-rdi reg-rax 0)
-      in let st33a = patch-jcc-at st33 primed-skip (st33.code-len)
-      in let st33b = st-append-code st33a (li reg-rax 0)
-      in let st33c = st-append-code st33b (li reg-rdi serial-primed-magic-addr)
-      in let st33d = st-append-code st33c (mov-store reg-rdi reg-rax 0)
-      in let st34 = st-append-code st33d (li reg-rdi serial-read-pos-addr)
-      in let st35 = st-append-code st34 (mov-store reg-rdi reg-rax 0)
+      in let st35 = emit-com1-ring-init st23b
       in let st35p = emit-blit-probe st35
       in let st35a = emit-control-string st35p [66, 79, 79, 84, 58, 83, 48, 45, 72, 87, 10]
       in let st35v = emit-avx-admit st35a True
@@ -937,6 +916,7 @@ Section: Finalize
     builtin-emitters = x86-builtin-emitters,
     emit-work = 0,
     exit-mode = ExitRepl,
+    pe-link = False,
     watchdog-mode = WatchdogProgress,
     opening-ret-type = NothingTy,
     state-local = 0 - 1,
@@ -1467,7 +1447,7 @@ Section: Binary Debug Map (MAP1)
     in build-map-entries offsets names str-offsets code-len (i + 1) count ent5
 
   x86-64-emit-cdx : IRChapter, List TypeBinding -> EmitChapterResult
-  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress [] 0 False False False
+  x86-64-emit-cdx (m) (tdefs) = x86-64-emit-cdx-with-exit-mode m tdefs Exit False False WatchdogProgress [] 0 False False False False
 
  The emit deck's flat term is 28 MB. Bare metal spends 23.65 MB of it on a
  three-definition subject and 23.71 MB on sixty-one, so the per-definition
@@ -1487,8 +1467,8 @@ Section: Binary Debug Map (MAP1)
  than taught a second ordering.
 
   x86-64-emit-cdx-with-exit-mode : IRChapter, List TypeBinding, X86_64ExitMode, Boolean, Boolean, X86_64WatchdogMode,
-    List IRDef, Integer between 0 and 2, Boolean, Boolean, Boolean -> EmitChapterResult
-  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) (hosted-target) (avx-local) (census) (cover) =
+    List IRDef, Integer between 0 and 2, Boolean, Boolean, Boolean, Boolean -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (tdefs) (exit-mode) (poison) (trace) (wd-mode) (unchecked) (hosted-target) (avx-local) (census) (cover) (pe-link) =
     let emit-deck = emit-build (list-length (m.defs) * 65536 + 29360128)
     in let de = __deck-enter
     in let tramp = bare-metal-trampoline
@@ -1496,7 +1476,8 @@ Section: Binary Debug Map (MAP1)
     in let st-mode0 = __record-set st0 "exit-mode" exit-mode
     in let st-mode1 = __record-set st-mode0 "hosted-target" hosted-target
     in let st-mode = __record-set st-mode1 "stack-guard" (hosted-target == 0)
-    in let st-poison = __record-set st-mode "poison-alloc" poison
+    in let st-pe = __record-set st-mode "pe-link" pe-link
+    in let st-poison = __record-set st-pe "poison-alloc" poison
     in let st-trace = __record-set st-poison "trace-alloc" trace
     in let st-wd0 = __record-set st-trace "watchdog-mode" wd-mode
     in let st-wd1 = __record-set st-wd0 "avx-local" avx-local

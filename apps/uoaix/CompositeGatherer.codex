@@ -112,9 +112,13 @@ Chapter: CompositeGatherer
   cgg-crop-trade (place) (item) = cgg-crop-in cgg-britain place item
   cgg-crop-in : CgCity, Integer, Integer -> CgTrade
   cgg-crop-in (city) (place) (item) = if place == cgg-herb-farm then CgTrade { raw = item, product = item, buyer = bb-herbalist, tool = 28,
-      art = list-at cgg-herb-arts (item - 17), station = cgg-station city 0, region = list-at city.gardens (int-mod (item - 17) (list-length city.gardens)), look = cst-farmer, input = 0 }
+      art = list-at cgg-herb-arts (item - 17), station = cgg-station city 0, region = cgg-garden-of city (item - 17), look = cst-farmer, input = 0 }
     else CgTrade { raw = item, product = item, buyer = 5, tool = if place == cgg-root-farm then 25 else 0,
       art = list-at cgg-crop-arts (cgg-index-of cgg-crop-items item 0), station = cgg-station city 0, region = city.field, look = cst-farmer, input = 0 }
+ A city with no gardens (Nujel'm) has its herbs in its field, an empty box there, so it founds no herb farmer: dividing
+ by its 0 gardens trapped !EXC=00 at boot (trial 43559).
+  cgg-garden-of : CgCity, Integer -> BbShop
+  cgg-garden-of (city) (k) = if list-length city.gardens == 0 then city.field else list-at city.gardens (int-mod k (list-length city.gardens))
   cgg-station : CgCity, Integer -> BbSpot
   cgg-station (city) (k) = list-at city.stations k
   cgg-herb-arts : List Integer = [#0F85, #0F84, #0F86, #0F88, #0F7B]
@@ -139,6 +143,15 @@ Chapter: CompositeGatherer
  (127) at the market's cutting table and sells the steaks back to the fishmonger's shelf. Fish is sold at the docks, so
  the castle cook buys its fish from the fishmonger too.
   cgg-cutter-place : Integer = 423
+ UOAIX-237 F3: Nujel'm's powder digger digs the powder of restoration (resource item 166) from its sands with a shovel and
+ sells it to the blacksmith; only Nujel'm founds one (cw-wants).
+  cgg-powder-place : Integer = 424
+ UOAIX-248: the three reagents the herbalist's plants lack, each dug by a Britain city worker and sold to the herbalist.
+  cgg-pearl-place : Integer = 425
+  cgg-silk-place : Integer = 426
+  cgg-ash-place : Integer = 427
+  cgg-reagent-place : Integer -> Boolean
+  cgg-reagent-place (place) = place == cgg-pearl-place | place == cgg-silk-place | place == cgg-ash-place
   cgg-kitchen-place : Integer -> Boolean
   cgg-kitchen-place (place) = place == cgg-baker-place | place == cgg-cook-place | place == cgg-cutter-place
   cgg-raw-seller : Integer -> Integer
@@ -161,6 +174,14 @@ Chapter: CompositeGatherer
     else if place == cgg-clay-place then CgTrade { raw = 3, product = 3, buyer = bb-potter, tool = 0, art = #0F81,
       station = cgg-station city 0, region = city.ore, look = cst-miner, input = 0 }
     else if place == cgg-stone-place then CgTrade { raw = cgg-stone, product = cgg-stone, buyer = 0, tool = 0, art = #1363,
+      station = cgg-station city 0, region = city.ore, look = cst-miner, input = 0 }
+    else if place == cgg-powder-place then CgTrade { raw = 166, product = 166, buyer = 1, tool = 115, art = #1006,
+      station = cgg-station city 0, region = city.shore, look = cst-miner, input = 0 }
+    else if place == cgg-pearl-place then CgTrade { raw = 23, product = 23, buyer = bb-herbalist, tool = 29, art = #0F7A,
+      station = cgg-station city 0, region = city.shore, look = cst-fisher, input = 0 }
+    else if place == cgg-silk-place then CgTrade { raw = 22, product = 22, buyer = bb-herbalist, tool = 27, art = #0F8D,
+      station = cgg-station city 0, region = city.woods, look = cst-picker, input = 0 }
+    else if place == cgg-ash-place then CgTrade { raw = 24, product = 24, buyer = bb-herbalist, tool = 25, art = #0F8C,
       station = cgg-station city 0, region = city.ore, look = cst-miner, input = 0 }
     else if place == cgg-sand-place then CgTrade { raw = 104, product = 104, buyer = bb-glassblower, tool = 115, art = #19B9,
       station = cgg-station city 0, region = city.ore, look = cst-miner, input = 0 }
@@ -277,6 +298,7 @@ Chapter: CompositeGatherer
       else cgg-home-apart-in city t map taken ((spot.y - r.y1) * (r.x2 - r.x1 + 1) + spot.x - r.x1 + 1)
  The town's houses, north first: buildings with no UOX3 shop sign (felucca_signs.jsdata) at the door, each an unlocked door from
  UOX3 felucca_doors.jsdata and a floor box of roofed, unblocked tiles beside it in the 1998 client's statics (UOAIX-163).
+ The last 18 are import-houses.ps1's Britain houses, taken for the town's lodgers before any is offered for sale (UOAIX-239).
   CggHouse = record { door : BbSpot, floor : BbShop }
   cgg-houses : List CggHouse = [
     CggHouse { door = BbSpot { x = 1475, y = 1519, z = 20 }, floor = BbShop { title = "Home", premises = "The North Side Inn", x1 = 1473, y1 = 1517, x2 = 1477, y2 = 1518 } },
@@ -296,11 +318,29 @@ Chapter: CompositeGatherer
     CggHouse { door = BbSpot { x = 1675, y = 1599, z = 7 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1675, y1 = 1595, x2 = 1676, y2 = 1598 } },
     CggHouse { door = BbSpot { x = 1513, y = 1599, z = 10 }, floor = BbShop { title = "Home", premises = "Britain", x1 = 1511, y1 = 1596, x2 = 1512, y2 = 1600 } },
     CggHouse { door = BbSpot { x = 1655, y = 1611, z = 20 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1651, y1 = 1606, x2 = 1654, y2 = 1614 } },
-    CggHouse { door = BbSpot { x = 1599, y = 1651, z = 10 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1595, y1 = 1648, x2 = 1598, y2 = 1654 } }]
+    CggHouse { door = BbSpot { x = 1599, y = 1651, z = 10 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1595, y1 = 1648, x2 = 1598, y2 = 1654 } },
+    CggHouse { door = BbSpot { x = 1462, y = 1711, z = 0 }, floor = BbShop { title = "Home", premises = "Britain", x1 = 1460, y1 = 1704, x2 = 1464, y2 = 1710 } },
+    CggHouse { door = BbSpot { x = 1468, y = 1711, z = 0 }, floor = BbShop { title = "Home", premises = "Britain", x1 = 1466, y1 = 1704, x2 = 1470, y2 = 1710 } },
+    CggHouse { door = BbSpot { x = 1477, y = 1727, z = 0 }, floor = BbShop { title = "Home", premises = "Britain", x1 = 1472, y1 = 1720, x2 = 1482, y2 = 1726 } },
+    CggHouse { door = BbSpot { x = 1510, y = 1545, z = 25 }, floor = BbShop { title = "Home", premises = "Britain", x1 = 1508, y1 = 1540, x2 = 1511, y2 = 1544 } },
+    CggHouse { door = BbSpot { x = 1515, y = 1545, z = 25 }, floor = BbShop { title = "Home", premises = "Britain", x1 = 1513, y1 = 1540, x2 = 1517, y2 = 1544 } },
+    CggHouse { door = BbSpot { x = 1520, y = 1545, z = 25 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1519, y1 = 1540, x2 = 1521, y2 = 1544 } },
+    CggHouse { door = BbSpot { x = 1525, y = 1545, z = 25 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1523, y1 = 1540, x2 = 1526, y2 = 1544 } },
+    CggHouse { door = BbSpot { x = 1541, y = 1711, z = 20 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1538, y1 = 1704, x2 = 1543, y2 = 1710 } },
+    CggHouse { door = BbSpot { x = 1543, y = 1751, z = 15 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1537, y1 = 1736, x2 = 1550, y2 = 1750 } },
+    CggHouse { door = BbSpot { x = 1563, y = 1751, z = 15 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1560, y1 = 1736, x2 = 1566, y2 = 1750 } },
+    CggHouse { door = BbSpot { x = 1571, y = 1751, z = 15 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1568, y1 = 1736, x2 = 1574, y2 = 1750 } },
+    CggHouse { door = BbSpot { x = 1579, y = 1751, z = 15 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1576, y1 = 1736, x2 = 1582, y2 = 1750 } },
+    CggHouse { door = BbSpot { x = 1582, y = 1589, z = 20 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1576, y1 = 1584, x2 = 1582, y2 = 1588 } },
+    CggHouse { door = BbSpot { x = 1607, y = 1515, z = 40 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1608, y1 = 1512, x2 = 1614, y2 = 1518 } },
+    CggHouse { door = BbSpot { x = 1630, y = 1659, z = 15 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1624, y1 = 1656, x2 = 1629, y2 = 1662 } },
+    CggHouse { door = BbSpot { x = 1655, y = 1604, z = 20 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1656, y1 = 1600, x2 = 1662, y2 = 1606 } },
+    CggHouse { door = BbSpot { x = 1691, y = 1551, z = 45 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1688, y1 = 1544, x2 = 1694, y2 = 1550 } },
+    CggHouse { door = BbSpot { x = 1707, y = 1567, z = 50 }, floor = BbShop { title = "Home", premises = "East Britain", x1 = 1704, y1 = 1552, x2 = 1710, y2 = 1566 } }]
   cgg-in-box : BbShop, Integer, Integer -> Boolean
   cgg-in-box (r) (x) (y) = x >= r.x1 & x <= r.x2 & y >= r.y1 & y <= r.y2
- The house whose floor holds a home, or -1 (a home at the inn). A list constant is built again at every mention (1744
- bytes for cgg-houses), so the walk names cgg-lodges once: naming it at each step cost 88 KB a call, and the bed census
+ The house whose floor holds a home, or -1 (a home at the inn). A list constant is built again at every mention (36
+ records for cgg-houses), so the walk names cgg-lodges once: naming it at each step cost 88 KB a call, and the bed census
  at boot (cg-own-beds) kept 168 MB of them.
   cgg-house-of : BbSpot, Integer -> Integer
   cgg-house-of (home) (i) = cgg-house-in cgg-lodges home i
@@ -329,7 +369,8 @@ Chapter: CompositeGatherer
     in let b = __record-set out "y" door.y
     in let d = __record-set out "z" z in 0
   cgg-fix-door : CgGatherer, TownLive, WalkMap -> Integer
-  cgg-fix-door (c) (t) (map) = cgg-door-stand map (cgg-door-in c.city c.home t) c.door
+  cgg-fix-door (c) (t) (map) = if cgg-house-in c.city.lodges c.home 0 < 0 then tl-copy-spot c.door t.entrance
+    else cgg-door-stand map (cgg-door-in c.city c.home t) c.door
   cgg-way : CgGatherer, TownLive -> BbSpot
   cgg-way (c) (t) = if c.door.x == 0 then cgg-door-in c.city c.home t else c.door
  Britain's lodging is the inn above its doorway rows (tl-in-lodging); another city's is its inn box.
@@ -484,10 +525,13 @@ Chapter: CompositeGatherer
     else let a = __record-set c "say" kind
     in let b = __record-set c "say-item" item
     in let d = __record-set c "say-price" price in 1
+  cgg-songs : List Text = ["Heigh-ho, heigh-ho!", "Heigh-ho, it's off to work I go!", "Whistle while you work!", "Heigh-ho, heigh-ho, it's home from work we go!"]
+  cgg-song-odds : Integer = 12
   cgg-say-text : CgGatherer -> Text
   cgg-say-text (c) = let items = c.gatherer.producer.currency.world.catalog.items
     in let name = if c.say-item < 1 | c.say-item > list-length items then "goods" else (list-at items (c.say-item - 1)).name
-    in if c.say == 5 then cpr-prick-line else tls-say c.say (int-mod (c.serial + c.trips) 2) name 1 c.say-price
+    in if c.say == 6 then list-at cgg-songs (int-mod (c.serial + c.visit) (list-length cgg-songs))
+    else if c.say == 5 then cpr-prick-line else tls-say c.say (int-mod (c.serial + c.trips) 2) name 1 c.say-price
   cgg-blocked : CgGatherer -> Result (List (List Integer)) Text
   cgg-blocked (c) = let cleared = cgg-reset c
     in let count = __record-set c "blocked" (c.blocked + 1) in Ok []
@@ -534,7 +578,7 @@ Chapter: CompositeGatherer
     in let v = t.vendors
     in if payee < 0 | payee >= v.vendor-count then 0
     else let w = v.currency.world
-    in if eu-pay v.currency True (ep-actor w c.gatherer.producer.actor).purse (ep-actor w (list-at v.vendors payee).actor).purse (kl-price choice) 0 0 /= 0 then 0 else 1
+    in if kl-pay-coin v.currency (ep-actor w c.gatherer.producer.actor).purse (ep-actor w (list-at v.vendors payee).actor).purse (kl-price choice) /= 0 then 0 else 1
   cgg-ready : CgGatherer -> Boolean
   cgg-ready (c) = let w = c.gatherer.producer.currency.world
     in if not (eh-valid-node w c.gatherer.node) then False
@@ -644,13 +688,24 @@ Chapter: CompositeGatherer
     else when cgg-rock-nth-at o t.vendors.game.world map (int-mod n total)
       is Err (e) -> Err e
       is Ok (spot) -> if cgg-reaches t map doors spot then Ok spot else cgg-rock-try o t map doors (n + 1) total (left - 1)
+  cgg-rock-best : BbSpot, TownLive, WalkMap, Maybe WdState, BbSpot, Integer, Integer, Integer, Integer, BbSpot -> Result BbSpot Text
+  cgg-rock-best (o) (t) (map) (doors) (from) (n) (total) (left) (best-len) (best) =
+    if left <= 0 then (if best-len < 0 then Err "no reachable rock face" else Ok best)
+    else when cgg-rock-nth-at o t.vendors.game.world map (int-mod n total)
+      is Err (e) -> if best-len < 0 then Err e else Ok best
+      is Ok (spot) -> let walker = WorldObject { serial = 0, kind = 1, x = from.x, y = from.y, z = from.z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+        in let id = if cgg-reaches t map doors spot then rte-plan t.nav t.vendors.game.world map doors walker spot.x spot.y spot.z else 0 - 1
+        in let len = if id < 0 then 0 - 1 else rte-key t.nav id 6
+        in if len >= 0 & (best-len < 0 | len < best-len) then cgg-rock-best o t map doors from (n + 1) total (left - 1) len spot
+        else cgg-rock-best o t map doors from (n + 1) total (left - 1) best-len best
  With no face on the map (a cache without mountain marks) a spent miner falls back to the strip, wrapping its offset.
   cgg-rock-spot : CgGatherer, TownLive, WalkMap, Maybe WdState -> Result BbSpot Text
   cgg-rock-spot (c) (t) (map) (doors) = let w = t.vendors.game.world
     in let mark = __heap-save
     in let total = cgg-rock-count-at c.city.rock w map
     in let restored = __heap-restore mark
-    in if total > 0 then cgg-rock-try c.city.rock t map doors (c.trips + cgg-kind c - cgg-place) total cgg-rock-plans
+    in let from = when world-get w c.serial is Err (_) -> t.entrance is Ok (m) -> BbSpot { x = m.x, y = m.y, z = m.z }
+    in if total > 0 then cgg-rock-best c.city.rock t map doors from (c.trips + cgg-kind c - cgg-place) total cgg-rock-plans (0 - 1) from
     else if cgg-ready c then Err "no rock face"
     else let r = c.city.ore
     in bb-placement w map r (int-mod (c.trips + c.blocked + 1) ((r.x2 - r.x1 + 1) * (r.y2 - r.y1 + 1)))
@@ -714,14 +769,22 @@ Chapter: CompositeGatherer
       else cgg-arrive c t
     else when rte-toward t.nav t.vendors.game map doors c.walk mobile target.x target.y target.z
       is Err (e) -> Err e
-      is Ok (packets) -> if c.walk.route < 0 & c.leg == 1 & c.via == 0 & c.walk.fails >= cgg-give-up-fails & c.walk.rest == bit-shl 1 cgg-give-up-fails then cgg-depart c t 3
+      is Ok (packets) -> if cgg-gives-up c then cgg-depart c t 3
         else if c.walk.route < 0 then cgg-sidestep c t mobile map doors else Ok packets
- A worker bound out whose plan has failed cgg-give-up-fails times running (rte-pace's slowest, 64 steps a plan) turns
- home; arriving counts the trip, so a rock worker's next trip scans another face. A worker at home whose plans to its
+ A worker bound out, or to a shop, a forge or a seller (legs 4, 6, 8 and 10; UOAIX-260: the Jhelom herb farmer's sale
+ walk sidestepped for 142 hours), whose plan has failed cgg-give-up-fails times running (rte-pace's slowest, 64 steps a
+ plan) turns home; arriving counts the trip, so a rock worker's next trip scans another face. A worker at home whose plans to its
  bed failed as often takes a bed at the inn, the lodging every worker reaches, from an offset its serial spreads
  (cgg-inn-bed): a house bed past a door at another height is walked out of once (trial 41676: the lumberjack's bed at
  z 10 behind a door at z 10, standing on ground at z 0). The next boot's cg-own-beds places it again.
+ No NPC lives in an inn while a house stands (UOAIX-239), so the worker first tries the first free floor tile of up to
+ cgg-rehouse-tries other houses of its city, from an offset its serial spreads, that routes both ways with the town
+ entrance (2 plans a house, about 56 ms on Britain, once per broken bed); the inn takes it only when none does.
   cgg-give-up-fails : Integer = 6
+  cgg-gives-up : CgGatherer -> Boolean
+  cgg-gives-up (c) = c.walk.route < 0 & c.via == 0 & (c.leg == 1 | c.leg == 4 | c.leg == 6 | c.leg == 8 | c.leg == 10)
+    & c.walk.fails >= cgg-give-up-fails & c.walk.rest == bit-shl 1 cgg-give-up-fails
+  cgg-rehouse-tries : Integer = 8
  A bed on a collider is a goal no plan reaches (UOAIX-154: miner-1's bed at 1508,1540 lay on ServUO's water trough
  there), so a worker whose bed tile no walker can stand on moves its bed to a free standable tile beside it, or to the
  inn when that tile does not route from its door (trial 41911: 1632,1505 beside miner-1's chest, walled in by beds and
@@ -732,11 +795,25 @@ Chapter: CompositeGatherer
   cgg-rebed : CgGatherer, TownLive, WorldObject, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
   cgg-rebed (c) (t) (mobile) (map) (doors) = let spot = cgg-beside t mobile map c.home 0
     in if spot.x == c.home.x & spot.y == c.home.y then let count = __record-set c "blocked" (c.blocked + 1) in Ok []
-    else if not (cgg-plans t map doors (cgg-way c t) spot) then cgg-inn-bed c t map
+    else if not (cgg-plans t map doors (cgg-way c t) spot) then cgg-inn-bed c t map doors
     else let a = __record-set c.home "x" spot.x in let b = __record-set c.home "y" spot.y in let d = __record-set c.home "z" spot.z
     in let cleared = cgg-reset c in cgg-calm c
-  cgg-inn-bed : CgGatherer, TownLive, WalkMap -> Result (List (List Integer)) Text
-  cgg-inn-bed (c) (t) (map) = let r = c.city.inn
+  cgg-inn-bed : CgGatherer, TownLive, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
+  cgg-inn-bed (c) (t) (map) (doors) = let n = list-length c.city.houses
+    in let h = if n == 0 then -1 else cgg-rehouse-at c t map doors (cgg-house-in c.city.houses c.home 0) (int-mod c.serial n) n cgg-rehouse-tries n
+    in if h >= 0 then (let stood = cgg-fix-door c t map in let cleared = cgg-reset c in cgg-calm c) else cgg-inn-lodge c t map
+ Scans each house once at most; only a house with a free placement spends one of the tries on its two plans.
+  cgg-rehouse-at : CgGatherer, TownLive, WalkMap, Maybe WdState, Integer, Integer, Integer, Integer, Integer -> Integer
+  cgg-rehouse-at (c) (t) (map) (doors) (own) (h) (n) (left) (scan) = if left <= 0 | scan <= 0 then -1
+    else let next = int-mod (h + 1) n
+    in if h == own then cgg-rehouse-at c t map doors own next n left (scan - 1)
+    else when bb-placement t.vendors.game.world map (list-at c.city.houses h).floor 0
+      is Err (_) -> cgg-rehouse-at c t map doors own next n left (scan - 1)
+      is Ok (bed) -> if cgg-bed t bed 0 then cgg-rehouse-at c t map doors own next n left (scan - 1)
+        else if not (cgg-reaches t map doors bed) then cgg-rehouse-at c t map doors own next n (left - 1) (scan - 1)
+        else let a = __record-set c.home "x" bed.x in let b = __record-set c.home "y" bed.y in let d = __record-set c.home "z" bed.z in h
+  cgg-inn-lodge : CgGatherer, TownLive, WalkMap -> Result (List (List Integer)) Text
+  cgg-inn-lodge (c) (t) (map) = let r = c.city.inn
     in when cgg-home-in c.city t map (int-mod c.serial ((r.x2 - r.x1 + 1) * (r.y2 - r.y1 + 1)))
       is Err (_) -> Ok []
       is Ok (bed) -> let a = __record-set c.home "x" bed.x in let b = __record-set c.home "y" bed.y in let d = __record-set c.home "z" bed.z
@@ -914,7 +991,8 @@ Chapter: CompositeGatherer
     else let made = c.made
     in when cgg-smelt c t mobile
       is Err (e) -> Err e
-      is Ok (_) -> if c.made == made | c.lot == 0 | cgg-shut c t then cgg-depart c t 3
+      is Ok (_) -> if c.made /= made & c.lot /= 0 & cgg-vein-worker c & not (cgg-shut c t) & cgg-free c t.vendors c.trade.raw >= 2 then Ok []
+        else if c.made == made | c.lot == 0 | cgg-shut c t then cgg-depart c t 3
         else when cgg-shop-spot c t map
           is Err (_) -> cgg-depart c t 3
           is Ok (_) -> let cleared = cgg-reset c
@@ -983,8 +1061,8 @@ Chapter: CompositeGatherer
     in when bb-craft p item recipe 0
       is Err (e) -> Err e
       is Ok (n) -> let restored = __heap-restore mark in if n > 0 then Ok n else cgg-craft p item recipe (left - 1)
-  cgg-sell : CgGatherer, TownLive, WorldObject, WalkMap -> Result (List (List Integer)) Text
-  cgg-sell (c) (t) (mobile) (map) = let v = t.vendors
+  cgg-sell : CgGatherer, TownLive, WorldObject, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
+  cgg-sell (c) (t) (mobile) (map) (doors) = let v = t.vendors
     in let index = cgg-vendor-of c c.trade.buyer
     in if index < 0 | index >= v.vendor-count then cgg-refuse c t
     else let merchant = list-at v.vendors index
@@ -1002,7 +1080,9 @@ Chapter: CompositeGatherer
           is Ok (_) -> let said = cgg-say c 4 c.trade.product price 2
             in let sold = __record-set c "sold" (c.sold + 1)
             in let lot = __record-set c "lot" 0
-            in let cleared = __record-set c "refused" 0 in Ok []
+            in let cleared = __record-set c "refused" 0
+            in let next = if cgg-vein-worker c then cgg-next-lot c t (ep-lot-first v.currency.world.goods c.gatherer.producer.actor) else 0
+            in let looped = if next > 0 then (let held = __record-set c "lot" next in cgg-go c t 5) else cgg-back-to-rock c t map doors in Ok []
  A buyer who has walked from the sale tile is followed: the seller aims again beside the keeper and walks back (leg 4)
  instead of carrying its lot home, and goes home at every fourth miss.
   cgg-reaim : CgGatherer, TownLive, WalkMap -> Result (List (List Integer)) Text
@@ -1073,11 +1153,11 @@ Chapter: CompositeGatherer
     in if n.resource == resource & n.place == place & n.stage == 2 & n.owner == 0 then i + 1 else cgg-field-node w resource place (i + 1)
  A harvest spends its node (stage 0), so a worker still short of its load moves to another ready node of the same
  resource at its place and works on from the same spot; it finds nodes and never makes one. With none it goes home.
- Britain's lumberjack's other trees stand elsewhere (cg-lumber-pick), so it goes home with what it felled; another city's
- works its city's woods nodes (cw-grounds) as a fisherman works its spots.
+ A lumberjack's other trees stand elsewhere (cg-lumber-pick, cg-city-lumber-pick pick each at home), so it goes home
+ with what it felled.
   cgg-renode : CgGatherer -> Integer
   cgg-renode (c) = let w = c.gatherer.producer.currency.world
-    in if not (eh-valid-node w c.gatherer.node) | ((cgg-kind c) == cgg-lumber-place & c.city.city == 0) then 0
+    in if not (eh-valid-node w c.gatherer.node) | (cgg-kind c) == cgg-lumber-place then 0
     else let node = cgg-field-node w (list-at w.nodes (c.gatherer.node - 1)).resource c.gatherer.place 0
     in if node < 1 then 0 else let set = __record-set c.gatherer "node" node in 1
  A farmer works one crop at a time: its node names the crop, so the trade follows the node (a restored farmer rebuilds
@@ -1090,17 +1170,18 @@ Chapter: CompositeGatherer
     else cgg-retrade c.trade (cgg-crop-in c.city (cgg-kind c) item)
  A farmer whose crop is spent takes the next of its crops with a ready node at its place, and walks to that crop's
  ground; with none ready it waits.
-  cgg-farm-next : CgGatherer, TownLive, WalkMap, Integer -> Result (List (List Integer)) Text
-  cgg-farm-next (c) (t) (map) (j) = let crops = cgg-farm-crops (cgg-kind c)
+  cgg-farm-next : CgGatherer, TownLive, WalkMap, Maybe WdState, Integer -> Result (List (List Integer)) Text
+  cgg-farm-next (c) (t) (map) (doors) (j) = let crops = cgg-farm-crops (cgg-kind c)
     in let w = c.gatherer.producer.currency.world
     in if j > list-length crops then Ok []
     else let item = list-at crops (int-mod (max 0 (cgg-index-of crops c.trade.raw 0) + j) (list-length crops))
     in let node = cgg-field-node w (cgg-resource-of w item 0) c.gatherer.place 0
-    in if node < 1 then cgg-farm-next c t map (j + 1)
+    in if node < 1 then cgg-farm-next c t map doors (j + 1)
     else let want = cgg-crop-in c.city (cgg-kind c) item
     in when bb-placement t.vendors.game.world map want.region 0
-      is Err (_) -> cgg-farm-next c t map (j + 1)
-      is Ok (spot) -> let a = __record-set c.gatherer "node" node
+      is Err (_) -> cgg-farm-next c t map doors (j + 1)
+      is Ok (spot) -> if not (cgg-reaches t map doors spot) then cgg-farm-next c t map doors (j + 1)
+        else let a = __record-set c.gatherer "node" node
         in let b = cgg-retrade c.trade want
         in let d = tl-copy-spot c.node spot in Ok []
  Founding opens every crop's node at the farmer's place, so each regrows from the first day.
@@ -1152,6 +1233,31 @@ Chapter: CompositeGatherer
     in if eh-royal-gold w n | n.resource < 1 | n.resource > list-length w.catalog.resources then 0
     else let stage = __record-set n "stage" (if ready then 2 else 0)
     in let due = __record-set n "ready" (if ready then w.hour else w.hour + (list-at w.catalog.resources (n.resource - 1)).regrow) in 1
+  cgg-visit-ore : Integer = 6
+  cgg-next-lot : CgGatherer, TownLive, Integer -> Integer
+  cgg-next-lot (c) (t) (serial) = if serial == 0 then 0
+    else let g = t.vendors.currency.world.goods
+    in if (ep-lot g serial).item == c.trade.product & ep-lot-amount g serial > 0 & gv-lot t.vendors serial 0 >= 0 then serial
+    else cgg-next-lot c t (ep-lot-next g serial)
+  cgg-vein-worker : CgGatherer -> Boolean
+  cgg-vein-worker (c) = cgg-kind c > cgg-place & cgg-kind c <= cgg-place + 4
+  cgg-go : CgGatherer, TownLive, Integer -> Integer
+  cgg-go (c) (t) (leg) = let cleared = cgg-reset c
+    in let calmed = cgg-calm c
+    in let out = __record-set c "leg" leg
+    in let via = __record-set c "via" 0
+    in let touched = world-touch t.vendors.game.world in leg
+  cgg-mine-on : CgGatherer, TownLive, WalkMap -> Result (List (List Integer)) Text
+  cgg-mine-on (c) (t) (map) = if not (cgg-vein-worker c) | cgg-shut c t then cgg-leave-node c t
+    else if c.lot /= 0 then (if cgg-waiting c t | cgg-holding c t then cgg-leave-node c t
+      else when cgg-shop-spot c t map is Err (_) -> cgg-leave-node c t is Ok (_) -> let gone = cgg-go c t 4 in Ok [])
+    else if cgg-free c t.vendors c.trade.raw >= 2 then (when cgg-forge-spot c t map is Err (_) -> cgg-leave-node c t is Ok (_) -> let gone = cgg-go c t 6 in Ok [])
+    else cgg-leave-node c t
+  cgg-back-to-rock : CgGatherer, TownLive, WalkMap, Maybe WdState -> Integer
+  cgg-back-to-rock (c) (t) (map) (doors) = if not (cgg-vein-worker c) | cgg-shut c t | cgg-leisure-due c t then 0
+    else let trip = __record-set c "trips" (c.trips + 1)
+    in let faced = cgg-rock c t map doors
+    in if cgg-ready c then cgg-go c t 1 else 0
   cgg-leave-node : CgGatherer, TownLive -> Result (List (List Integer)) Text
   cgg-leave-node (c) (t) = if cgg-afield c then cgg-afield-back c t else cgg-depart c t 3
   cgg-afield-back : CgGatherer, TownLive -> Result (List (List Integer)) Text
@@ -1176,29 +1282,29 @@ Chapter: CompositeGatherer
         is Err (_) -> let count = __record-set c "blocked" (c.blocked + 1) in Ok []
         is Ok (bed) -> let a = __record-set c.home "x" bed.x in let b = __record-set c.home "y" bed.y in let d = __record-set c.home "z" bed.z in Ok [])
       else if c.leg == 0 & c.via == 0 & not (tl-at mobile c.home) & cgg-bed-blocked c.home map then cgg-rebed c t mobile map doors
-      else if c.leg == 0 & c.via == 0 & cgg-shut c t & not (tl-at mobile c.home) then (if c.walk.fails >= cgg-give-up-fails then cgg-inn-bed c t map else cgg-move c t mobile map doors)
+      else if c.leg == 0 & c.via == 0 & cgg-shut c t & not (tl-at mobile c.home) then (if c.walk.fails >= cgg-give-up-fails then cgg-inn-bed c t map doors else cgg-move c t mobile map doors)
       else if c.leg == 0 & cgg-leisure-due c t then cgg-leisure-go c t map
       else if c.leg == 0 then (when cgg-day c t map doors
         is Err (e) -> Err e
         is Ok (packets) -> if c.leg == 0 & c.via == 0 & c.walk.fails < cgg-give-up-fails & not (cgg-indoors c.city c.home mobile) & not (tl-at mobile c.home) then cgg-move c t mobile map doors else Ok packets)
-      else if c.leg == 2 & cgg-capped c then cgg-leave-node c t
+      else if c.leg == 2 & cgg-capped c then cgg-mine-on c t map
       else if c.leg == 2 then
         let got = egg-hour c.gatherer
         in let sown = if got > 0 & (cgg-kind c) == cpr-farm-place then cpr-season-sow c.gatherer.producer.currency.world else 0
         in let gemmed = if got > 0 & c.trade.raw == cgg-ore then cgg-gem-yield c else 0
         in let pricked = if got > 0 & c.trade.raw == cpr-prick-resource then cpr-prick t.vendors.game.world c.serial else -1
-        in let said = if pricked >= 0 then cgg-say c 5 0 0 1 else if got > 0 then cgg-say c 1 c.trade.raw 0 8 else 0
+        in let said = if pricked >= 0 then cgg-say c 5 0 0 1 else if got > 0 then cgg-say c 1 c.trade.raw 0 8 else if cgg-vein-worker c then cgg-say c 6 0 0 cgg-song-odds else 0
         in let visits = c.visit + 1
         in let tried = __record-set c "visit" visits
         in let touched = world-touch t.vendors.game.world
-        in let target = if c.lot == 0 then 2 else cgg-raw-cap
+        in let target = if c.lot == 0 & cgg-vein-worker c then cgg-visit-ore else if c.lot == 0 then 2 else cgg-raw-cap
         in let swung = if got > 0 then __record-set c "swings" (c.swings + 1) else c
         in let again = if got > 0 & c.swings < cgg-vein-swings & cgg-free c t.vendors c.trade.raw < target then cgg-vein-set c True else 0
         in let renewed = if cgg-ready c then 0 else cgg-renode c
         in if visits < cgg-visit-limit & cgg-ready c & cgg-free c t.vendors c.trade.raw < target then Ok []
         else let spent = if c.swings > 0 & cgg-ready c then cgg-vein-set c False else 0
-        in when cgg-leave-node c t is Err (e) -> Err e is Ok (left) -> Ok left
-      else if c.leg == 5 then cgg-sell c t mobile map
+        in when cgg-mine-on c t map is Err (e) -> Err e is Ok (left) -> Ok left
+      else if c.leg == 5 then cgg-sell c t mobile map doors
       else if c.leg == 7 then cgg-forge-work c t map mobile
       else if c.leg == 9 then (if cgg-kitchen-place (cgg-kind c) then cgg-buy-raw c t mobile map else cgg-buy-tool c t mobile)
       else if c.leg == 11 then (if cgg-leisure-over t then cgg-depart c t 3 else Ok [])
@@ -1224,7 +1330,7 @@ Chapter: CompositeGatherer
             is Ok (_) -> cgg-depart c t 8)
         else if cgg-rock-worker c.trade & (not (cgg-ready c) | c.face /= c.trips) then cgg-rock c t map doors
         else if (cgg-kind c) == cgg-sand-place & not (cgg-ready c) & c.face /= c.trips then cgg-sand c t map doors
-        else if not (cgg-ready c) & cgg-crop-farm (cgg-kind c) then (when cgg-retarget c is Err (e) -> Err e is Ok (_) -> if cgg-ready c then Ok [] else cgg-farm-next c t map 1)
+        else if not (cgg-ready c) & cgg-crop-farm (cgg-kind c) then (when cgg-retarget c is Err (e) -> Err e is Ok (_) -> if cgg-ready c then Ok [] else cgg-farm-next c t map doors 1)
         else if not (cgg-ready c) then cgg-retarget c
         else if cgg-shopping c t then (when cgg-vendor-spot c t map cgg-seller
           is Err (_) -> cgg-make-tool c
@@ -1300,7 +1406,7 @@ Chapter: CompositeGatherer
     in let sold = cgg-field buf bytes 184
     in if bytes /= cgg-bytes & bytes /= cgg-v1-bytes then Err "gatherer extent"
     else if peek-qword buf 0 /= #31474743 | peek-qword buf 8 /= 1 then Err "gatherer format"
-    else if (place < cgg-place | place > cgg-place + 4) & not (cgg-field-place place) & place /= cgg-lumber-place & place /= cgg-fish-place & place /= cgg-sand-place & place /= cgg-clay-place & place /= cgg-stone-place & not (cgg-crop-farm place) & not (cgg-kitchen-place place) | not (ep-valid-actor x.world actor)
+    else if (place < cgg-place | place > cgg-place + 4) & not (cgg-field-place place) & place /= cgg-lumber-place & place /= cgg-fish-place & place /= cgg-sand-place & place /= cgg-clay-place & place /= cgg-stone-place & place /= cgg-powder-place & not (cgg-reagent-place place) & not (cgg-crop-farm place) & not (cgg-kitchen-place place) | not (ep-valid-actor x.world actor)
       | (if cgg-kitchen-place place then node /= 0 else not (eh-valid-node x.world node)) then Err "gatherer economy binding"
     else if ((ep-actor x.world actor).place /= economic & (ep-actor x.world actor).place /= cgg-town-place) | (node /= 0 & (list-at x.world.nodes (node - 1)).place /= economic)
       | leg < 0 | leg > 13 | via < 0 | via > 1 | visit < 0 | visit > cgg-visit-limit | trips < 0 | gathered < 0

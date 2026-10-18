@@ -7,7 +7,7 @@ Chapter: CivicLiveState
   CvDress = record { serial : Integer, owner : Integer, item : Integer, quality : Integer, wear : Integer, basis : Integer, layer : Integer }
   CvPatrol = record { serial : Integer, law-id : Integer, route : List BbSpot,
     waypoint : Integer, next-step : Integer, direction : Integer, target : BbSpot,
-    walk : RteWalk }
+    walk : RteWalk, stuck : Integer }
   CivicLive = record { town : TownLive, law : LawWorld, mayor : Integer, production-actor : Integer,
     guards : List CvPatrol, clothes : List CvDress, cloth-count : Integer, cursor : Integer, now : Integer,
     mayor-note : (Integer -> Text), focus : Integer, focus-by : Integer, city-guards : List CvPatrol, city-clothes : List CvDress,
@@ -26,7 +26,7 @@ Chapter: CivicLiveState
   cv-patrols : Integer, Integer, List CvPatrol -> List CvPatrol
   cv-patrols (i) (now) (xs) = if i == cv-guard-limit then xs
     else cv-patrols (i + 1) now (list-push xs (CvPatrol { serial = 0, law-id = 0, route = cv-spots 0 (__list-with-capacity 4),
-      waypoint = 0, next-step = now, direction = 4, target = BbSpot { x = -1, y = -1, z = 0 }, walk = rte-walk 0 }))
+      waypoint = 0, next-step = now, direction = 4, target = BbSpot { x = -1, y = -1, z = 0 }, walk = rte-walk 0, stuck = 0 }))
   cv-clothes : Integer, List CvDress -> List CvDress
   cv-clothes (i) (xs) = if i == 3 + 4 * cv-guard-limit then xs else cv-clothes (i + 1) (list-push xs
     (CvDress { serial = 0, owner = 0, item = 0, quality = 0, wear = 0, basis = 0, layer = 0 }))
@@ -44,6 +44,10 @@ Chapter: CivicLiveState
  50, which is standable, so a castle spot is taken at the floor's height rather than searched up from the land. The
  loop walks the north hall (Damian's call at 1341,1612, UOAIX-159), the east corridor and the south hall.
   cv-castle-floor : Integer = 72
+ The north stair's top (STATICS0.MUL stone stairs at x 1352, z 50 at y 1621 to z 67 at y 1617), the one castle-floor cell
+ a plan from the town reaches at z 72 (proofs/GuardCastleRouteProof).
+  cv-castle-stair-x : Integer = 1352
+  cv-castle-stair-y : Integer = 1616
   cv-floor : WalkMap, Integer, Integer, Integer -> Result Integer Text
   cv-floor (map) (x) (y) (which) = if which == 2 then (when walk-height map x y cv-castle-floor
       is Err (e) -> Err e
@@ -89,16 +93,23 @@ Chapter: CivicLiveState
     else when cv-wear s (list-at s.city-clothes (4 * k + i)) producer owner True i
       is Err (e) -> Err e
       is Ok (_) -> cv-city-outfit s producer owner k (i + 1)
-  cv-route : CvPatrol, WalkMap, Integer, Integer -> Result Integer Text
-  cv-route (p) (map) (which) (i) = if i == 4 then Ok 0
-    else let x = if which == 0 then (if i == 0 then 1424 else if i == 1 then 1440 else if i == 2 then 1450 else 1432)
+ The south beat's last two waypoints stand in the street at x 1446 between Premier Gems (walls x 1449-1457) and the hall
+ to its west (walls x 1428-1441, STATICS0.MUL): 1450,1680 and 1432,1688 lay inside them, and trial 43802's two south
+ guards failed every plan there (UOAIX-216 13.45).
+  cv-route-x : Integer, Integer -> Integer
+  cv-route-x (which) (i) = if which == 0 then (if i == 0 then 1424 else if i == 1 then 1440 else 1446)
       else if which == 1 then (if i == 0 then 1496 else if i == 1 then 1439 else if i == 2 then 1416 else 1495)
       else if which == 3 then (if i == 0 then 1495 else if i == 1 then 1492 else if i == 2 then 1481 else 1427)
       else (if i == 0 | i == 3 then 1324 else 1357)
-    in let y = if which == 0 then (if i == 0 then 1696 else if i == 1 then 1698 else if i == 2 then 1680 else 1688)
+  cv-route-y : Integer, Integer -> Integer
+  cv-route-y (which) (i) = if which == 0 then (if i == 0 then 1696 else if i == 1 then 1698 else if i == 2 then 1680 else 1690)
       else if which == 1 then (if i == 0 then 1617 else if i == 1 then 1625 else if i == 2 then 1625 else 1619)
       else if which == 3 then (if i == 0 then 1619 else if i == 1 then 1575 else if i == 2 then 1530 else 1566)
       else (if i < 2 then 1613 else 1637)
+  cv-route : CvPatrol, WalkMap, Integer, Integer -> Result Integer Text
+  cv-route (p) (map) (which) (i) = if i == 4 then Ok 0
+    else let x = cv-route-x which i
+    in let y = cv-route-y which i
     in when cv-floor map x y which
       is Err (e) -> Err e
       is Ok (z) -> let spot = list-at p.route i

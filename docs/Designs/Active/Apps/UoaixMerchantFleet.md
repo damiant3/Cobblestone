@@ -42,8 +42,8 @@ port of call whose own resource, once Damian picks it, is cargo the fleet carrie
   place 100) with a hold, a lane of port cities and 6 game hours a leg. A port is a city of `ct-table`, and its shops
   are that city's vendors (Britain 0 to 20; city shop k is vendor `bb-shop-count + k`), found by the city rectangle that
   holds the shop's centre (`mf-port-shops`). The lanes, all from and back to Britain (city 0): east, Britain, Magincia
-  (7), Moonglow (2), Nujel'm (8); south, Britain, Trinsic (1), Jhelom (9); north, Britain, Vesper (12), Minoc (13),
-  Cove (14). Built (F1a): `MerchantFleet.codex` holds the lanes, the ports' shops, the best bid at a port and the buy
+  (7), Moonglow (2), Nujel'm (8); south, Britain, Trinsic (1), Jhelom (9); north, Britain, Vesper (12), Cove (14).
+  Minoc lies on a lake no sea reaches in the 1.25 MAP0, so no lane calls there. Built (F1a): `MerchantFleet.codex` holds the lanes, the ports' shops, the best bid at a port and the buy
   and sell rules; `bvt/BvtMerchantFleet`. F1b is the ships themselves: actors, hold, timer, trades and codec. On arrival, first sell each lot in the hold to the port's shop
   bidding the most (`gvb-bid-for`) above the lot's cost, then buy, within the purse and a hold of 8 lots, the lots
   whose ask here (`ep-price`) is at least 20% below the best bid at the lane's next port. Trades call `gv-checkout`
@@ -55,10 +55,22 @@ port of call whose own resource, once Damian picks it, is cargo the fleet carrie
   Logs `FLEET ship=k port=city bought|sold item=i n=q at=p margin=m` per trade. A bvt case on two ports grades the
   choice of goods: buys below the next port's bid by the margin, sells only above cost, never past the purse or the
   hold (template: `bvt/BvtCityStables.codex`, a `blh-owner` fixture with bit-per-check answers).
-- **F2, ships at sea.** The ships are drawn on their lanes as `Ships.codex` draws the boat today, per viewer, at the
-  position the voyage clock gives, and moored at the port's dock while trading.
-- **F3, Nujel'm's resource.** Waits for Damian's pick of a tangible resource found only there; the east lane then
-  carries it from Nujel'm to the cities that buy it.
+- **F2, ships at sea.** Built: `import-fleet-lanes.ps1` writes `MerchantFleetLanes.codex` from MAP0: each port's dock
+  (the open-sea 8 x 8 water block nearest the city, Britain's the fishing harbour) and each leg's sea route (a
+  breadth-first path over all-water blocks, kept at its turns). `MerchantFleetView` draws ship k per viewer within 24
+  tiles as a large boat: at the dock for the leg's first economy hour, then along the route at an even pace to the next
+  dock (`mfv-pos`, `mfv-view`, called beside `shp-view`); `bvt/BvtFleetSea`.
+- **F3, Nujel'm's resource.** The powder of restoration (UOAIX-238, item 166): a player's sand dig inside Nujel'm turns
+  one up 1 time in 10 (`gh-powder-roll`, GameHarvestProduction). Nothing in the economy makes or trades it yet: an
+  economy sand harvest (resource 40, the sand gatherer `cgg-sand-place`) yields sand only, no role's goods list the
+  powder, and Nujel'm founds no workers (no `cw-city` branch) and keeps only an innkeeper, a tanner and a leatherworker
+  among its city shops. Built: (a) the blacksmith (role 1) buys and sells the powder and bids for it, and no shelf list
+  names it, so no shop makes it (`gvb-material`, `gvb-goods`; `bvt/BvtPowderTrade`); (b) Nujel'm already keeps a
+  Blacksmith, "Nujel'm Public Smithing" (`ct-shops-nujelm`); (c) Nujel'm's `cw-city` branch (`cw-nujelm`, city 8, lodging at
+  Restful Slumber, door 3739,1316) founds one powder digger (place `cgg-powder-place`, 424): it digs the powder
+  (resource item 166, already in the catalog) with a shovel on the sands 3600..3615, 1264..1279 and sells it to the
+  smithy; `cw-wants` admits it in Nujel'm alone (`bvt/BvtNujelmPowder`). The east lane buys it in Nujel'm and sells it
+  where a blacksmith bids more. All of F1 to F3 is built and NOT RUN in a trial.
 
 ## Open decisions
 

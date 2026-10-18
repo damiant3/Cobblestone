@@ -153,7 +153,7 @@ when the mobile is gone), leg, mining tries, gold ore mined, blocked steps,
 home tile and the stand tile's height. Version22 appends one length qword (0 or `cgg-bytes`, 192) and CGG1,
 the farmer (`CompositeGatherer` at place 300, `cgg-trade-of`): wheat from the strip x 1410..1415, y 1660..1670,
 milled at the Good Eats mill, sold to the baker. Version30 appends one length qword (`cn-codec-bytes`) and CNS1,
-the plots and building sites (`Construction`); a version29 world loads with none and is rewritten as version30.
+the plots and houses (`Construction`); a version29 world loads with none and is rewritten as version30.
 Versions 9 and later carry
 EUC1 version 4 (found counters), so a disk written before main 35832 is
 refused; version8 carries EUC1 version 2 and versions

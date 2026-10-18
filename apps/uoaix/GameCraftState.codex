@@ -3,6 +3,8 @@ Chapter: GameCraftState
   cites Uoaix chapter GameHarvest
   cites Uoaix chapter CraftGump
   cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter SkillCurve
+  cites Uoaix chapter Smith1998
 
  Copyright 2026 SphereServer development team. Apache-2.0.
  Adapted Source-X PacketDisplayMenu/PacketMenuChoice and Skill_Menu.
@@ -36,7 +38,7 @@ Chapter: GameCraftState
   gcr-recipes (world) (category) =
     let britain = if list-length world.catalog.recipes < 43 | list-length world.catalog.items < 76 then False
       else (list-at world.catalog.items 68).name == "dagger" & (list-at world.catalog.recipes 35).item == 69
-    in if category == 1 then (if britain then [36,37,38] else [17,18,19])
+    in if category == 1 then (if britain then gcr-smith-recipes world sm98-items 0 else [17,18,19])
     else if category == 2 then (if britain then [39,40] else [22,24])
     else if category == 3 then (if britain then [16,25] & gcr-recipes-of world 128 138 else [16,25,26,27])
     else if category == 7 then (if britain then [26,27] & gcr-recipes-of world 77 77 else [26,27])
@@ -54,6 +56,21 @@ Chapter: GameCraftState
   gcr-recipe-of : EpWorld, Integer, Integer -> Integer
   gcr-recipe-of (world) (item) (i) = if i >= list-length world.catalog.recipes then 0
     else if (list-at world.catalog.recipes i).item == item then i + 1 else gcr-recipe-of world item (i + 1)
+ The 1998 smith menu (Smith1998) in its row order; each row takes the last recipe for its item, so the broadsword (40)
+ and platemail (41) take Britain's 1998 recipe over the standard catalog's.
+  gcr-recipe-last : EpWorld, Integer, Integer, Integer -> Integer
+  gcr-recipe-last (world) (item) (i) (found) = if i >= list-length world.catalog.recipes then found
+    else gcr-recipe-last world item (i + 1) (if (list-at world.catalog.recipes i).item == item then i + 1 else found)
+  gcr-smith-recipes : EpWorld, List Integer, Integer -> List Integer
+  gcr-smith-recipes (world) (items) (k) = if k >= list-length items then []
+    else let id = gcr-recipe-last world (list-at items k) 0 0 in (if id > 0 then [id] else []) & gcr-smith-recipes world items (k + 1)
+ A smith's checked Blacksmithy value (the chance at difficulty 0 and range 100 is value + 500); -1 for an NPC actor.
+  gcr-smith-value : EpActor -> Integer
+  gcr-smith-value (p) = if p.row == 0 then -1 else skc-check-chance p.row p.card sm98-skill 0 100 - 500
+  gcr-listed : EpWorld, EpActor, Integer -> Boolean
+  gcr-listed (world) (p) (recipe) = let r = list-at world.catalog.recipes (recipe - 1)
+    in let k = sm98-index r.item
+    in k < 0 | p.row == 0 | sm98-listed k (gcr-smith-value p) (ep-at p.stock r.one)
   gcr-recipes-of : EpWorld, Integer, Integer -> List Integer
   gcr-recipes-of (world) (item) (last) = if item > last then []
     else let id = gcr-recipe-of world item 0 in (if id > 0 then [id] else []) & gcr-recipes-of world (item + 1) last
@@ -63,12 +80,15 @@ Chapter: GameCraftState
     in let p = ep-actor world actor
     in let skill = if r.station == 3 then 1 else r.skill
     in let classic = ep-classic skill r.station r.item
-    in range > 0 & p.row /= 0 & classic >= 0 & ep-level p skill classic < range / 10000
+    in if sm98-index r.item >= 0 then p.row /= 0 & sm98-of r.item > gcr-smith-value p + 250
+    else if classic >= 0 & ep-in98 classic r.item then False
+    else range > 0 & p.row /= 0 & classic >= 0 & ep-level p skill classic < range / 10000
   gcr-title : Integer -> Text
   gcr-title (category) = if category == 1 then "Blacksmithing" else if category == 2 then "Tailoring"
     else if category == 3 | (category >= 7 & category <= 9) then "Carpentry" else if category == 5 then "Cooking" else if category == 6 then "Bowcraft and Fletching" else if category == 10 then "Masonry" else "Tinkering"
   gcr-graphic : Integer -> Integer
-  gcr-graphic (item) = if item == 31 | item == 32 then gh-output-graphic item else if item == 38 then #1BD7 else if item == 39 then #102E
+  gcr-graphic (item) = if sm98-index item >= 0 then sm98-at sm98-arts (sm98-index item)
+    else if item == 31 | item == 32 then gh-output-graphic item else if item == 38 then #1BD7 else if item == 39 then #102E
     else if item == 40 then #0F5E else if item == 41 then #1415 else if item == 42 then #1EB8
     else if item == 43 then #108A else if item == 44 then #13CC else if item == 46 then #1517
     else if item == 47 then #0B2C else if item == 48 then #13B2 else if item == 49 then #0F3F
@@ -81,7 +101,8 @@ Chapter: GameCraftState
     else if item == 139 then #0EB2 else if item == 140 then #0E9C else if item == 141 then #0EB3 else if item == 142 then #0E9D
     else if item == 143 then #1E2E else if item == 144 then #0EC6 else if item == 145 then #1019 else if item == 146 then #1074 else if item == 147 then #14F0 else if item == 148 then #1055 else if item == 149 then #1364 else 0
   gcr-layer : Integer -> Integer
-  gcr-layer (item) = if item == 40 | item == 69 | item == 70 then 1
+  gcr-layer (item) = if sm98-index item >= 0 then sm98-at sm98-layers (sm98-index item)
+    else if item == 40 | item == 69 | item == 70 then 1
     else if item == 41 | item == 44 then 13 else if item == 46 | item == 72 then 5
     else if item == 73 then 4 else if item == 71 then 10 else if item == 48 then 2 else 0
   gcr-variant : Integer, Integer, Integer -> Integer
@@ -92,6 +113,7 @@ Chapter: GameCraftState
   gcr-name (catalog) (item) (graphic) = if item == 42 then
     (if graphic == #0F9D then "Sewing kit" else if graphic == #1034 then "Saw" else "Tinker's tools")
     else if item == 50 then (if graphic == #09F2 then "Cooked ribs" else "Cooked fish steak")
+    else if sm98-index item >= 0 then list-at sm98-names (sm98-index item)
     else (list-at catalog.items (item - 1)).name
   gcr-menu-rows : EpWorld, List Integer, Integer, Integer, List Integer -> List Integer
   gcr-menu-rows (world) (recipes) (category) (i) (out) = if i == list-length recipes then sip-length out
@@ -124,9 +146,20 @@ Chapter: GameCraftState
   gcr-cats : EpWorld, Integer, List Integer, Integer, List Integer -> List Integer
   gcr-cats (world) (category) (recipes) (i) (out) = if i >= list-length recipes then out
     else gcr-cats world category recipes (i + 1) (out & [crg-category category (list-at world.catalog.recipes (list-at recipes i - 1)).item])
-  gcr-gump : EpWorld, Integer, Integer, Integer, Text -> List Integer
-  gcr-gump (world) (tool) (context) (category) (status) = let recipes = gcr-recipes world category
-    in crg-gump tool context (gcr-title category) (crg-labels category) (gcr-lines world category recipes 0 []) (gcr-cats world category recipes 0 []) status
+ The gump shows the rows the crafter may see (gcr-listed), each answering its place in the whole menu.
+  gcr-listed-at : EpWorld, EpActor, List Integer, Integer, List Integer -> List Integer
+  gcr-listed-at (world) (p) (recipes) (i) (out) = if i >= list-length recipes then out
+    else gcr-listed-at world p recipes (i + 1) (if gcr-listed world p (list-at recipes i) then out & [i + 1] else out)
+  gcr-gump : EpWorld, Integer, Integer, Integer, Integer, Text -> List Integer
+  gcr-gump (world) (actor) (tool) (context) (category) (status) = let recipes = gcr-recipes world category
+    in let shown = if ep-valid-actor world actor then gcr-listed-at world (ep-actor world actor) recipes 0 [] else crg-count (list-length recipes) 1 []
+    in let picked = gcr-pick recipes shown 0 []
+    in crg-gump-ids tool context (gcr-title category) (crg-labels category) (gcr-lines-at world category recipes shown 0 []) (gcr-cats world category picked 0 []) shown status True
+  gcr-pick : List Integer, List Integer, Integer, List Integer -> List Integer
+  gcr-pick (recipes) (positions) (i) (out) = if i >= list-length positions then out else gcr-pick recipes positions (i + 1) (out & [list-at recipes (list-at positions i - 1)])
+  gcr-lines-at : EpWorld, Integer, List Integer, List Integer, Integer, List Text -> List Text
+  gcr-lines-at (world) (category) (recipes) (positions) (i) (out) = if i >= list-length positions then out
+    else let at = list-at positions i in gcr-lines-at world category recipes positions (i + 1) (out & [gcr-line world category at (list-at recipes (at - 1))])
   gcr-skill : Integer -> Integer
   gcr-skill (category) = if category == 1 then 7 else if category == 2 then 34 else if category == 3 | (category >= 7 & category <= 10) then 11 else 37
   gcr-session : GameCraft, GameInput, GvPlayer, Integer -> CraftRequest
